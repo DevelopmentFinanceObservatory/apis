@@ -29,6 +29,22 @@
 #   exclusions        series not admitted, each undata/<segment>/SERIES-<code>
 #                     with reason superseded_by_dfo and `dfo_provenance`, the
 #                     DFO provenance holding the data the series derives from
+#
+# [[alias]]: other names users write for a source, where the catalogue's own
+# names do not yield them. Search matches a source mention's words against
+# both, ignoring case, punctuation and a leading "the". A parenthesised
+# abbreviation in a catalogue name, such as "(IDS)", needs no alias when its
+# letters are the initials of the capitalised words before it.
+# An alias name replaces any key the catalogue's own names derive from the
+# same words, so a word the catalogue gives to several unrelated sources
+# (WHO) resolves to the alias.
+#   refs              one or more references, each a provenance, a dc/d/*
+#                     Dataset or a Source, none written twice. Several make a
+#                     collection standing for all of them, labelled with the
+#                     first name. A ref the catalogue does not admit is left
+#                     out, and an alias with none left is skipped
+#   names             the other names, none blank or written twice in the
+#                     file, ignoring case and extra whitespace
 
 [[base]]
 source = "dc/s/BankForInternationalSettlementsBis"
@@ -302,3 +318,48 @@ exclusions = [
   { series = "undata/sdg/SERIES-DT_DOD_DECT_GN_ZS", reason = "superseded_by_dfo", dfo_provenance = "provenance/WorldBankInternationalDebtStatistics" },
   { series = "undata/sdg/SERIES-DT_TDS_DECT", reason = "superseded_by_dfo", dfo_provenance = "provenance/WorldBankInternationalDebtStatistics" },
 ]
+
+[[alias]]
+refs = ["provenance/WorldBankInternationalDebtStatistics"]
+names = ["International Debt Statistics", "World Bank IDS"]
+
+[[alias]]
+refs = ["provenance/OECDCreditorReportingSystem"]
+names = ["Creditor Reporting System", "OECD CRS", "SNPC"]
+
+[[alias]]
+refs = ["provenance/OECDDAC1"]
+names = ["DAC1", "DAC 1", "DAC Table 1"]
+
+[[alias]]
+refs = ["provenance/OECDDAC2A"]
+names = ["DAC2a", "DAC 2a", "DAC Table 2a"]
+
+[[alias]]
+refs = ["provenance/OECDDAC2B"]
+names = ["DAC2b", "DAC 2b", "DAC Table 2b", "OECD DAC2b"]
+
+[[alias]]
+refs = ["provenance/ONEImputedMultilateralSectors"]
+names = ["Imputed Multilateral Sectors"]
+
+[[alias]]
+refs = ["provenance/IMFWorldEconomicOutlook"]
+names = ["World Economic Outlook", "IMF WEO"]
+
+[[alias]]
+refs = ["dc/base/WorldDevelopmentIndicators"]
+names = ["WDI"]
+
+[[alias]]
+refs = [
+  "provenance/OECDCreditorReportingSystem",
+  "provenance/OECDDAC1",
+  "provenance/OECDDAC2A",
+  "provenance/OECDDAC2B",
+]
+names = ["DAC", "OECD DAC"]
+
+[[alias]]
+refs = ["dc/s/WorldHealthOrganizationWho", "undata/p/WHO"]
+names = ["WHO", "World Health Organization", "World Health Organization (WHO)"]

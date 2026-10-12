@@ -22,7 +22,14 @@ from code_index.loader import (
     load_measure_axes,
     parse_index,
 )
-from code_index.types import DatasetDeclaration, DeclaredDefault, MeasureAxis, MeasurePartitionLabel
+from code_index.shared import get_index
+from code_index.types import (
+    DatasetDeclaration,
+    DeclaredDefault,
+    MeasureAxis,
+    MeasurePartitionLabel,
+    PartyRow,
+)
 from materialise.graph import (
     UNRESOLVED_NODE,
     GraphNotAdvancingError,
@@ -34,8 +41,14 @@ from scripts.export_code_index import (
     _MEASURE_VALUE_TEXT,
     CODE_SYSTEMS,
     DATASETS,
+    PARTY_KIND_OVERRIDES,
+    PARTY_TYPE_KINDS,
+    TOTAL_GROUPS,
     CodeSystemConfig,
     CoverageJoin,
+    KindOverride,
+    PartyPublication,
+    TotalGroup,
     _apply_concept_groups,
     _MeasureValueText,
     _minimal_system_sets,
@@ -282,6 +295,8 @@ def test_export_index_round_trips_through_load_index(tmp_path: Path):
         now=_NOW,
         code_systems=(_HIERARCHICAL, _FLAT),
         measure_axes=(),
+        total_groups={},
+        party_kind_overrides={},
     )
 
     out = tmp_path / "index.json"
@@ -1140,6 +1155,8 @@ def test_content_hash_identical_across_runs_and_differs_on_a_row_change():
         now=_NOW,
         code_systems=(_HIERARCHICAL, _FLAT),
         measure_axes=(),
+        total_groups={},
+        party_kind_overrides={},
     )
     later = export_index(
         graph,
@@ -1149,6 +1166,8 @@ def test_content_hash_identical_across_runs_and_differs_on_a_row_change():
         now=datetime(2026, 9, 9, 13, 0, 0, tzinfo=UTC),
         code_systems=(_HIERARCHICAL, _FLAT),
         measure_axes=(),
+        total_groups={},
+        party_kind_overrides={},
     )
     assert first["stamp"]["exported_at"] != later["stamp"]["exported_at"]
     assert first["stamp"]["content_hash"] == later["stamp"]["content_hash"]
@@ -1163,6 +1182,8 @@ def test_content_hash_identical_across_runs_and_differs_on_a_row_change():
         now=_NOW,
         code_systems=(_HIERARCHICAL, _FLAT),
         measure_axes=(),
+        total_groups={},
+        party_kind_overrides={},
     )
     assert changed["stamp"]["content_hash"] != first["stamp"]["content_hash"]
 
@@ -1369,6 +1390,8 @@ def test_export_index_refuses_an_alias_whose_canonical_value_is_not_exported(
             code_systems=(_HIERARCHICAL, _FLAT),
             measure_axes=_MEASURE_AXES_FOR_TEST,
             measure_partition_labels=_MEASURE_PARTITION_LABELS_FOR_TEST,
+            total_groups={},
+            party_kind_overrides={},
         )
 
 
@@ -1404,6 +1427,8 @@ def test_export_index_empty_measure_axes_exports_no_measure_values():
         code_systems=(_HIERARCHICAL, _FLAT),
         measure_axes=(),
         measure_partition_labels=(),
+        total_groups={},
+        party_kind_overrides={},
     )
     assert document["measure_axes"] == []
     assert document["measure_values"] == []
@@ -1422,6 +1447,8 @@ def test_export_index_wires_measure_axes_into_the_document(tmp_path):
         measure_axes=_MEASURE_AXES_FOR_TEST,
         measure_partition_labels=_MEASURE_PARTITION_LABELS_FOR_TEST,
         measure_nouns=_MEASURE_NOUNS_FOR_TEST,
+        total_groups={},
+        party_kind_overrides={},
     )
 
     assert document["measure_axes"] == [
@@ -1506,7 +1533,8 @@ def test_export_strips_the_measure_words_a_code_synonym_would_take():
     on a code would leave "gross" unread as the netting basis. The synonym keeps its other
     words. Every SysFlatA series is a disbursement, so "disbursements" stays on it, and every
     SysFlatB series a commitment, so "gross disbursement" has no words left there. `Net` is
-    no exported value here, and "alpha: gross" matches no query, so both stay."""
+    no exported value here, so "net alpha" stays. A query reads "alpha: gross" whatever its
+    separators, so it loses "gross", and its remainder "alpha" is already there."""
     graph = _two_system_graph_with_measure_labels()
     graph.forward_arcs["SysFlatA"]["alternateName"] = (
         "Gross alpha",
@@ -1532,7 +1560,6 @@ def test_export_strips_the_measure_words_a_code_synonym_would_take():
     assert by_dcid["SysFlatA"]["synonyms"] == [
         "alpha",
         "alpha disbursements",
-        "alpha: gross",
         "engrossed alpha",
         "net alpha",
     ]
@@ -1552,6 +1579,8 @@ def test_content_hash_moves_when_only_measure_axes_change():
         code_systems=(_HIERARCHICAL, _FLAT),
         measure_axes=_MEASURE_AXES_FOR_TEST,
         measure_partition_labels=_MEASURE_PARTITION_LABELS_FOR_TEST,
+        total_groups={},
+        party_kind_overrides={},
     )
     without_axes = export_index(
         graph,
@@ -1562,6 +1591,8 @@ def test_content_hash_moves_when_only_measure_axes_change():
         code_systems=(_HIERARCHICAL, _FLAT),
         measure_axes=(),
         measure_partition_labels=_MEASURE_PARTITION_LABELS_FOR_TEST,
+        total_groups={},
+        party_kind_overrides={},
     )
     assert with_axes["stamp"]["content_hash"] != without_axes["stamp"]["content_hash"]
 
@@ -1674,6 +1705,8 @@ def test_export_index_refuses_when_the_guard_fails():
             code_systems=(_HIERARCHICAL, _FLAT),
             measure_axes=_MEASURE_AXES_FOR_TEST,
             measure_partition_labels=(),
+            total_groups={},
+            party_kind_overrides={},
         )
 
 
@@ -1757,6 +1790,8 @@ def test_export_index_stamps_plain_name_from_the_code_system_table():
         now=_NOW,
         code_systems=(_HIERARCHICAL, _FLAT),
         measure_axes=(),
+        total_groups={},
+        party_kind_overrides={},
     )
     by_system = {row["code_system"]: row for row in document["declarations"]}
     assert by_system["sysHier"]["plain_name"] == _HIERARCHICAL.plain_name
@@ -1788,6 +1823,8 @@ def test_export_index_stamps_a_declared_default_and_it_round_trips(tmp_path: Pat
         now=_NOW,
         code_systems=(_HIERARCHICAL_WITH_DEFAULT, _FLAT),
         measure_axes=(),
+        total_groups={},
+        party_kind_overrides={},
     )
     by_system = {row["code_system"]: row for row in document["declarations"]}
     assert by_system["sysHier"]["default"] == {
@@ -1836,6 +1873,8 @@ def test_export_index_stamps_when_named_and_it_round_trips(tmp_path: Path):
         now=_NOW,
         code_systems=(_HIERARCHICAL_WITH_NAMED_DEFAULT, _FLAT),
         measure_axes=(),
+        total_groups={},
+        party_kind_overrides={},
     )
     by_system = {row["code_system"]: row for row in document["declarations"]}
     assert by_system["sysHier"]["default"]["when_named"] == ["aid"]
@@ -1871,6 +1910,8 @@ def test_export_index_refuses_a_declared_default_when_named_entry_that_is_not_lo
             now=_NOW,
             code_systems=(wrong, _FLAT),
             measure_axes=(),
+            total_groups={},
+            party_kind_overrides={},
         )
 
 
@@ -1899,6 +1940,8 @@ def test_export_index_refuses_a_declared_default_when_named_entry_that_is_empty(
             now=_NOW,
             code_systems=(wrong, _FLAT),
             measure_axes=(),
+            total_groups={},
+            party_kind_overrides={},
         )
 
 
@@ -1930,6 +1973,8 @@ def test_export_index_refuses_a_declared_default_when_named_entry_that_is_null()
             now=_NOW,
             code_systems=(wrong, _FLAT),
             measure_axes=(),
+            total_groups={},
+            party_kind_overrides={},
         )
 
 
@@ -1957,6 +2002,8 @@ def test_export_index_refuses_a_declared_default_code_outside_its_own_system():
             now=_NOW,
             code_systems=(wrong, _FLAT),
             measure_axes=(),
+            total_groups={},
+            party_kind_overrides={},
         )
 
 
@@ -1983,6 +2030,8 @@ def test_export_index_refuses_a_declared_default_scoped_under_an_unknown_dcid():
             now=_NOW,
             code_systems=(wrong, _FLAT),
             measure_axes=(),
+            total_groups={},
+            party_kind_overrides={},
         )
 
 
@@ -2010,6 +2059,8 @@ def test_export_index_refuses_a_declared_default_scoped_under_its_own_code_syste
             now=_NOW,
             code_systems=(wrong, _FLAT),
             measure_axes=(),
+            total_groups={},
+            party_kind_overrides={},
         )
 
 
@@ -2041,6 +2092,8 @@ def _export_two_system_graph(coverage: CoverageJoin, **overrides) -> dict:
         code_systems=overrides.pop("code_systems", (_HIERARCHICAL, _FLAT)),
         measure_axes=(),
         datasets=overrides.pop("datasets", _TEST_DATASETS),
+        total_groups={},
+        party_kind_overrides={},
     )
 
 
@@ -2083,6 +2136,8 @@ def test_export_index_writes_dataset_declarations_and_they_round_trip(tmp_path: 
         ),
         measure_axes=(),
         datasets=(_OPT_IN,),
+        total_groups={},
+        party_kind_overrides={},
     )
 
     assert document["datasets"] == [
@@ -2138,14 +2193,14 @@ def test_content_hash_moves_with_a_dataset_declaration_and_with_a_rows_provenanc
     assert rebuilt["stamp"]["coverage_build"] == "another-build"
 
 
-def test_export_graph_blocks_holds_the_documents_blocks_without_provenances_or_a_stamp():
+def test_export_graph_blocks_holds_the_documents_blocks_without_provenances_parties_or_stamp():
     graph = _two_system_graph()
     blocks = export_graph_blocks(
         graph, code_systems=(_HIERARCHICAL, _FLAT), measure_axes=(), datasets=_TEST_DATASETS
     )
     document = _export_two_system_graph(_covered(graph))
 
-    assert set(blocks) == set(document) - {"stamp"}
+    assert set(blocks) == set(document) - {"stamp", "parties"}
     assert all("provenances" not in row for row in blocks["statvars"])
     for block, rows in blocks.items():
         if block != "statvars":
@@ -2161,12 +2216,81 @@ def test_export_graph_blocks_holds_the_documents_blocks_without_provenances_or_a
     assert counts["code_counts"] == document["stamp"]["code_counts"]
     assert counts["statvar_shape_counts"] == document["stamp"]["statvar_shape_counts"]
     assert content_hash(blocks) != document["stamp"]["content_hash"]
-    assert content_hash({key: document[key] for key in blocks}) == document["stamp"]["content_hash"]
+    hashed = {key: document[key] for key in (*blocks, "parties")}
+    assert content_hash(hashed) == document["stamp"]["content_hash"]
 
 
 def test_export_index_refuses_a_declared_dataset_with_no_row():
     with pytest.raises(SystemExit, match=r"provenance/TestDataset.*no StatVar row"):
         _export_two_system_graph(CoverageJoin(build_id="empty-build", provenances={}))
+
+
+_LISTED_PROVENANCE = "provenance/ListedDataset"
+
+
+def _graph_with_listed(*extra: str) -> _FakeGraph:
+    """The two-system graph plus StatVars on a CRS-like row's five-tuple that declare no code
+    system, as IDS series do: `SV_Listed_Disbursement` and each of `extra`."""
+    graph = _two_system_graph()
+    for dcid in ("SV_Listed_Disbursement", *extra):
+        graph.forward_arcs[dcid] = {
+            "typeOf": ("StatisticalVariable",),
+            "constraintProperties": ("financialFlowType",),
+            "populationType": ("FinancialFlow",),
+            "measuredProperty": ("amount",),
+            "statType": ("measuredValue",),
+            "measurementQualifier": ("Nominal",),
+            "observationProperties": ("financingRecipient",),
+            "financialFlowType": ("Disbursement",),
+        }
+    return graph
+
+
+def _export_with_listed(graph: _FakeGraph, provenances: dict[str, tuple[str, ...]]) -> dict:
+    return export_index(
+        graph,
+        graph_endpoint="https://fake.example",
+        now=_NOW,
+        coverage=CoverageJoin(
+            build_id="test-build",
+            provenances={**_covered(_two_system_graph()).provenances, **provenances},
+        ),
+        code_systems=(_HIERARCHICAL, _FLAT),
+        measure_axes=(),
+        datasets=_TEST_DATASETS,
+        total_groups={},
+        party_kind_overrides={},
+        listed_datasets=(_LISTED_PROVENANCE,),
+    )
+
+
+def test_export_index_lists_the_statvars_of_a_dataset_no_code_system_enumerates():
+    """No code read reaches a StatVar that declares no code system, so the coverage build
+    lists it, as a listed row apart from the index rows."""
+    document = _export_with_listed(
+        _graph_with_listed(), {"SV_Listed_Disbursement": (_LISTED_PROVENANCE,)}
+    )
+
+    index = parse_index(document)
+    assert [row.dcid for row in index.listed_statvars] == ["SV_Listed_Disbursement"]
+    assert index.listed_statvars[0].provenances == (_LISTED_PROVENANCE,)
+    assert index.listed_statvars[0].constraint_properties == {"financialFlowType": "Disbursement"}
+    assert "SV_Listed_Disbursement" not in {row.dcid for row in index.statvars}
+
+
+def test_export_index_refuses_a_statvar_of_a_listed_five_tuple_it_neither_exports_nor_lists():
+    """Members elected from the index stand for every StatVar of a listed row's five-tuple,
+    so a StatVar there the coverage build does not list refuses the export, named."""
+    with pytest.raises(SystemExit, match=r"1 StatVar.*SV_Unlisted_Disbursement"):
+        _export_with_listed(
+            _graph_with_listed("SV_Unlisted_Disbursement"),
+            {"SV_Listed_Disbursement": (_LISTED_PROVENANCE,)},
+        )
+
+
+def test_export_index_refuses_a_listed_dataset_the_build_holds_no_statvar_of():
+    with pytest.raises(SystemExit, match=r"provenance/ListedDataset.*no StatVar"):
+        _export_with_listed(_graph_with_listed(), {})
 
 
 def test_export_index_refuses_a_provenance_no_dataset_declares():
@@ -2197,6 +2321,8 @@ def test_export_index_refuses_a_row_lacking_a_system_its_dataset_always_declares
             code_systems=(_HIERARCHICAL, _FLAT),
             measure_axes=(),
             datasets=_TEST_DATASETS,
+            total_groups={},
+            party_kind_overrides={},
         )
 
 
@@ -2280,7 +2406,7 @@ def test_load_coverage_join_reads_the_build_id_and_variable_provenances():
     slice_uri = (Path(__file__).parents[1] / "fixtures" / "coverage_slice").as_uri()
     loaded = load_coverage(slice_uri)
 
-    join = load_coverage_join(slice_uri)
+    join = load_coverage_join(slice_uri, datasets={"provenance/OECDCreditorReportingSystem"})
 
     assert join.build_id == loaded.manifest.build_id
     assert join.provenances == loaded.index.variable_provenances()
@@ -2288,6 +2414,13 @@ def test_load_coverage_join_reads_the_build_id_and_variable_provenances():
     assert all(
         provenances == tuple(sorted(provenances)) for provenances in join.provenances.values()
     )
+    # A donor and a recipient of the slice's one CRS facet, each with the dataset publishing
+    # it and the axis it is published on, and no empty cell of a one-role row.
+    crs = frozenset({"provenance/OECDCreditorReportingSystem"})
+    assert join.parties["AdaptationFund"] == PartyPublication(crs, frozenset({"origin"}))
+    assert join.parties["DACAfricaUnallocated"] == PartyPublication(crs, frozenset({"destination"}))
+    assert "" not in join.parties
+    assert load_coverage_join(slice_uri, datasets=()).parties == {}
 
 
 # --- A StatVar the index would decide must be an exported row ---
@@ -2441,3 +2574,303 @@ def test_a_malformed_concept_group_refuses(groups, message):
 
     with pytest.raises(SystemExit, match=message):
         _apply_concept_groups(rows, groups, {"sysA", "sysB", "sysC"})
+
+
+# --- Party kinds and the groups totals hold ---
+
+
+def _export_parties(
+    types_by_party: dict[str, tuple[str, ...]],
+    *,
+    parties: frozenset[str] | None = None,
+    total_groups: dict[str, TotalGroup] | None = None,
+    kind_overrides: dict[str, KindOverride] | None = None,
+    names: dict[str, str] | None = None,
+) -> dict:
+    """Export the two-system graph with `types_by_party` as graph nodes, named by `names`, and
+    `parties` (all of them by default) as the coverage build's parties."""
+    graph = _two_system_graph()
+    names = names or {}
+    graph.forward_arcs.update(
+        {
+            dcid: {"typeOf": types, "name": (names[dcid],) if dcid in names else ()}
+            for dcid, types in types_by_party.items()
+        }
+    )
+    published = frozenset(types_by_party) if parties is None else parties
+    publication = PartyPublication(
+        datasets=frozenset({_TEST_PROVENANCE}), axes=frozenset({"destination"})
+    )
+    coverage = dataclasses.replace(_covered(graph), parties=dict.fromkeys(published, publication))
+    return export_index(
+        graph,
+        graph_endpoint="https://fake.example",
+        now=_NOW,
+        coverage=coverage,
+        code_systems=(_HIERARCHICAL, _FLAT),
+        measure_axes=(),
+        datasets=_TEST_DATASETS,
+        total_groups=total_groups or {},
+        party_kind_overrides=kind_overrides or {},
+    )
+
+
+def test_export_index_writes_each_partys_kind_label_and_the_group_a_total_holds(tmp_path: Path):
+    document = _export_parties(
+        {
+            "country/FRA": ("Country",),
+            "country/IND": ("Country", "Place"),
+            "IDA": ("Organization", "ProvisionalNode"),
+            "DACAfrica": ("DACGroup",),
+            "DACAllRecipients": ("DACGroup",),
+            "DACAfricaUnallocated": ("DACRecipientUnallocatedByCountry",),
+        },
+        total_groups={"DACAfrica": TotalGroup("africa", ("DACAfricaUnallocated",))},
+        names={
+            "country/FRA": "France",
+            "DACAfrica": "Africa (DAC)",
+            "DACAfricaUnallocated": "Africa, unallocated by country (DAC)",
+        },
+    )
+    out = tmp_path / "index.json"
+    out.write_text(json.dumps(document))
+    index = load_index(out)
+
+    published, recipient = (_TEST_PROVENANCE,), ("destination",)
+    assert index.parties == {
+        "country/FRA": PartyRow(
+            dcid="country/FRA", kind="party", label="France", datasets=published, axes=recipient
+        ),
+        "country/IND": PartyRow(
+            dcid="country/IND", kind="party", datasets=published, axes=recipient
+        ),
+        "IDA": PartyRow(dcid="IDA", kind="party", datasets=published, axes=recipient),
+        "DACAfrica": PartyRow(
+            dcid="DACAfrica",
+            kind="total",
+            totals="africa",
+            residuals=("DACAfricaUnallocated",),
+            label="Africa (DAC)",
+            datasets=published,
+            axes=recipient,
+        ),
+        "DACAllRecipients": PartyRow(
+            dcid="DACAllRecipients", kind="total", datasets=published, axes=recipient
+        ),
+        "DACAfricaUnallocated": PartyRow(
+            dcid="DACAfricaUnallocated",
+            kind="residual",
+            label="Africa, unallocated by country (DAC)",
+            datasets=published,
+            axes=recipient,
+        ),
+    }
+    assert index.totals_by_group == {"africa": index.parties["DACAfrica"]}
+    assert index.party_types == PARTY_TYPE_KINDS
+
+
+@pytest.mark.parametrize(
+    ("types_by_party", "parties", "total_groups", "message"),
+    [
+        ({"Mystery": ("MysteryGroup",)}, None, {}, "MysteryGroup"),
+        ({"Both": ("Country", "DACGroup")}, None, {}, "no single kind"),
+        ({"Earth": ("Place",)}, None, {}, "no single kind"),
+        ({}, frozenset({"Unread"}), {}, "no typeOf"),
+        (
+            {"country/FRA": ("Country",)},
+            None,
+            {"country/FRA": TotalGroup("europe")},
+            "TOTAL_GROUPS names",
+        ),
+        ({"DACAfrica": ("DACGroup",)}, None, {"DACAsia": TotalGroup("asia")}, "TOTAL_GROUPS names"),
+        (
+            {"DACAfrica": ("DACGroup",), "country/EGY": ("Country",)},
+            None,
+            {"DACAfrica": TotalGroup("africa", ("country/EGY",))},
+            "as residuals",
+        ),
+        (
+            {"DACAfrica": ("DACGroup",)},
+            None,
+            {"DACAfrica": TotalGroup("africa", ("DACAfricaUnallocated",))},
+            "as residuals",
+        ),
+    ],
+    ids=[
+        "undeclared-type",
+        "two-kinds",
+        "no-kind",
+        "no-node",
+        "group-on-a-party",
+        "group-on-an-unpublished-total",
+        "residual-is-a-party",
+        "residual-unpublished",
+    ],
+)
+def test_export_index_refuses_a_party_it_cannot_declare(
+    types_by_party, parties, total_groups, message
+):
+    with pytest.raises(SystemExit, match=message):
+        _export_parties(types_by_party, parties=parties, total_groups=total_groups)
+
+
+def test_a_kind_override_replaces_the_kind_the_types_give(tmp_path: Path):
+    document = _export_parties(
+        {
+            "WorldBankGroup": ("Organization",),
+            "InternationalFinanceCorporation": ("Organization",),
+            # Neither type is declared, and the override reads no types.
+            "Mystery": ("MysteryGroup",),
+        },
+        kind_overrides={
+            "WorldBankGroup": KindOverride("total", "IFC plus the rest of the group"),
+            "Mystery": KindOverride("residual", "published beside the parties it leaves out"),
+        },
+        total_groups={"WorldBankGroup": TotalGroup("groups/WB")},
+    )
+    out = tmp_path / "index.json"
+    out.write_text(json.dumps(document))
+
+    published, recipient = (_TEST_PROVENANCE,), ("destination",)
+    assert load_index(out).parties == {
+        "WorldBankGroup": PartyRow(
+            dcid="WorldBankGroup",
+            kind="total",
+            totals="groups/WB",
+            datasets=published,
+            axes=recipient,
+        ),
+        "InternationalFinanceCorporation": PartyRow(
+            dcid="InternationalFinanceCorporation", kind="party", datasets=published, axes=recipient
+        ),
+        "Mystery": PartyRow(dcid="Mystery", kind="residual", datasets=published, axes=recipient),
+    }
+
+
+def test_export_index_refuses_a_kind_override_naming_a_party_no_dataset_publishes():
+    with pytest.raises(SystemExit, match=r"PARTY_KIND_OVERRIDES names .*Ghost"):
+        _export_parties(
+            {"country/FRA": ("Country",)},
+            kind_overrides={"Ghost": KindOverride("total", "named in error")},
+        )
+
+
+# Each organisation group a donor sum would count beside its members, with the members whose
+# gross and net disbursements add to the group's in every year it reports (see the comment on
+# `PARTY_KIND_OVERRIDES`).
+_REVIEWED_KIND_OVERRIDES = {
+    "AfricanDevelopmentBankGroup": ("AfricanDevelopmentBank", "AfricanDevelopmentFund"),
+    "InterAmericanDevelopmentBankGroup": ("InterAmericanDevelopmentBank", "IDBInvest"),
+    "PostcodeLotteryGroup": (
+        "DutchPostcodeLottery",
+        "GermanPostcodeLottery",
+        "NorwegianPostcodeLottery",
+        "PeoplesPostcodeLottery",
+        "SwedishPostcodeLottery",
+    ),
+    "WorldBankGroup": (
+        "InternationalDevelopmentAssociation",
+        "InternationalBankForReconstructionAndDevelopment",
+        "InternationalFinanceCorporation",
+    ),
+}
+
+
+def test_party_kind_overrides_holds_only_reviewed_total_rows():
+    # A row joins PARTY_KIND_OVERRIDES only after the sum check its comment describes, and is
+    # added here with the members it was checked against.
+    assert {party: row.kind for party, row in PARTY_KIND_OVERRIDES.items()} == dict.fromkeys(
+        _REVIEWED_KIND_OVERRIDES, "total"
+    )
+    assert all(row.reason for row in PARTY_KIND_OVERRIDES.values())
+
+
+@pytest.mark.parametrize(("group", "members"), sorted(_REVIEWED_KIND_OVERRIDES.items()))
+def test_the_packaged_index_carries_each_reviewed_kind_override(group: str, members: tuple[str]):
+    index = get_index()
+    assert (index.parties[group].kind, index.parties[group].totals) == ("total", None)
+    assert {member: index.parties[member].kind for member in members} == dict.fromkeys(
+        members, "party"
+    )
+
+
+_AFRICA_RESIDUALS = (
+    "DACAfricaUnallocated",
+    "DACEasternAfricaUnallocated",
+    "DACMiddleAfricaUnallocated",
+    "DACNorthOfSaharaUnallocated",
+    "DACSouthOfSaharaUnallocated",
+    "DACSouthernAfricaUnallocated",
+    "DACWesternAfricaUnallocated",
+)
+_AMERICA_RESIDUALS = (
+    "DACAmericaUnallocated",
+    "DACCaribbeanAndCentralAmericaUnallocated",
+    "DACCaribbeanUnallocated",
+    "DACCentralAmericaUnallocated",
+    "DACSouthAmericaUnallocated",
+)
+_OCEANIA_RESIDUALS = (
+    "DACMelanesiaUnallocated",
+    "DACMicronesiaUnallocated",
+    "DACOceaniaUnallocated",
+    "DACPolynesiaUnallocated",
+)
+_REVIEWED_TOTAL_GROUPS = {
+    "DACAfrica": TotalGroup("africa", _AFRICA_RESIDUALS),
+    "DACAmerica": TotalGroup("undata-geo/G00134000", _AMERICA_RESIDUALS),
+    "DACCaribbean": TotalGroup("Caribbean", ("DACCaribbeanUnallocated",)),
+    "DACCentralAmerica": TotalGroup("CentralAmerica", ("DACCentralAmericaUnallocated",)),
+    "DACMelanesia": TotalGroup("Melanesia", ("DACMelanesiaUnallocated",)),
+    "DACMicronesia": TotalGroup("Micronesia", ("DACMicronesiaUnallocated",)),
+    "DACNonDACCountries": TotalGroup("groups/OECD.NonDAC"),
+    "DACOceania": TotalGroup("oceania", _OCEANIA_RESIDUALS),
+    "DACPolynesia": TotalGroup("Polynesia", ("DACPolynesiaUnallocated",)),
+    "DACSouthernAfrica": TotalGroup("SouthernAfrica", ("DACSouthernAfricaUnallocated",)),
+    "GroupOfSeven": TotalGroup("groups/G7"),
+    "UNLandlockedDevelopingCountries": TotalGroup("groups/UN.LLDC"),
+    "UNLeastDevelopedCountries": TotalGroup("groups/UN.LDC"),
+    "WorldBankHighIncome": TotalGroup("groups/WB.IncomeGroup.High"),
+    "WorldBankLowIncome": TotalGroup("groups/WB.IncomeGroup.Low"),
+}
+
+
+def test_total_groups_holds_only_reviewed_rows():
+    # A row joins TOTAL_GROUPS only after the sum check its comment describes, and is added here.
+    assert dict(TOTAL_GROUPS) == _REVIEWED_TOTAL_GROUPS
+
+
+@pytest.mark.parametrize(("party", "total"), sorted(_REVIEWED_TOTAL_GROUPS.items()))
+def test_the_packaged_index_carries_each_reviewed_total_group(party: str, total: TotalGroup):
+    index = get_index()
+    row = index.parties[party]
+    assert (row.kind, row.totals, row.residuals) == ("total", total.group, total.residuals)
+    assert index.totals_by_group[total.group] == row
+    assert {index.parties[residual].kind for residual in total.residuals} <= {"residual"}
+    assert all(index.parties[residual].datasets for residual in total.residuals)
+
+
+@pytest.mark.parametrize(
+    ("party", "kind", "axis"),
+    [
+        ("WorldBankSubSaharanAfricaExcludingHighIncome", "total", "destination"),
+        ("WorldBankIDATotal", "total", "destination"),
+        ("IDSBondholders", "residual", "origin"),
+        ("EUROFIMA", "party", "origin"),
+    ],
+)
+def test_the_packaged_index_declares_the_ids_parties(party: str, kind: str, axis: str):
+    """IDS is a listed dataset, outside `DATASETS`, and its debtors and creditors still need
+    a kind for a sum across them."""
+    row = get_index().parties[party]
+    assert (row.kind, row.datasets, row.axes) == (
+        kind,
+        ("provenance/WorldBankInternationalDebtStatistics",),
+        (axis,),
+    )
+
+
+def test_the_packaged_index_declares_the_exporters_party_types():
+    index = get_index()
+    assert index.party_types == PARTY_TYPE_KINDS
+    assert index.parties

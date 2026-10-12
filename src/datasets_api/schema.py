@@ -80,15 +80,14 @@ class Manifest(BaseModel):
 
 
 class OptionsEnvelope(BaseModel):
-    """`GET /api/datasets/{id}/options`'s response, the write-free
-    projection of a manifest onto `content_version`, `coverage`,
-    `output_options`, `warnings`, and `trace`. Nested shapes stay open
-    objects here, the same as `Manifest`'s. `trace` carries the same
-    `served_from`/`confirmed_at` currency pair a manifest's own `trace`
-    does, read from the stored subject head under the same rule, though
-    this route never writes it. `confirmed_at` has the same meaning on
-    both routes, the instant the stored head was last confirmed. This
-    route records nothing, so it reports the stored instant.
+    """`GET /api/datasets/{id}/options`'s response, the projection of a
+    manifest onto `content_version`, `coverage`, `output_options`,
+    `warnings`, and `trace`. Nested shapes stay open objects here, the same
+    as `Manifest`'s. `trace` carries the same `served_from`/`confirmed_at`
+    currency pair a manifest's own `trace` does, under the same head rule:
+    a rebuild here records the version and advances the head as a GET
+    does. `confirmed_at` has the same meaning on both routes, the instant
+    the stored head was last confirmed.
     """
 
     model_config = ConfigDict(
@@ -216,7 +215,7 @@ class OperationResource(BaseModel):
     returns this shape.
 
     `manifest` is set only once `operation.status == "done"`: the same
-    manifest a synchronous mint returns, re-signed at read time
+    manifest a synchronous mint returns, read at poll time
     (`datasets_api.doors.meta`'s operations route reuses `datasets_api
     .doors.snapshot.read_snapshot_manifest` against the operation's own
     stored `subject_id`/`content_version`). `error` models a `failed`

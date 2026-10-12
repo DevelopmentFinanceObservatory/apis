@@ -320,7 +320,7 @@ def test_a_failed_second_pass_logs_the_refusals_its_prune_made(monkeypatch, capl
                 emit=None,
                 first_sentences=[],
                 first_measure_class_refused=3,
-                first_names_dataset=False,
+                first_scope_stands=False,
                 second_state=lambda emit, bound: cast(Any, state),
             )
         )

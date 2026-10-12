@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from typing import Literal
 
 from materialise.roles import axis_noun
 from search.models import (
@@ -27,10 +29,29 @@ from .what import _lower_first_word
 # The next step a role_not_resolved refusal gives.
 _NAME_A_DIRECTION = 'Put "from" or "to" before a name.'
 
+# The next step a source_not_resolved refusal gives.
+_NAME_A_SOURCE = "Try a publisher or dataset name, or leave the source out."
+
+
+@dataclass(frozen=True, slots=True)
+class ScopeSources:
+    """The sources a part's no-data outcome was read under, by label: those it names
+    (`include`), else those it leaves out (`exclude`)."""
+
+    polarity: Literal["include", "exclude"]
+    labels: tuple[str, ...]
+
+
 # Term-free wording by NoDataReason. Unknown codes use _GENERIC_NO_DATA.
 # no_data_phrase adds query terms for supported reasons.
 _NO_DATA_PHRASES: dict[str, str] = {
     "no_observations": "No data found for this query.",
+    "source_not_resolved": (
+        f"Could not match the data source named in this query. {_NAME_A_SOURCE}"
+    ),
+    "source_ambiguous": (
+        "A data source named in this query matches more than one source. Name one of them."
+    ),
     "entity_not_resolved": "Could not use the place named in this query. Try a different place name.",
     "entity_ambiguous": (
         "An entity named in this query matches more than one entity in the graph. Be more specific."
@@ -161,6 +182,8 @@ def no_data_phrase(
     ambiguous_candidates: list[str] | None = None,
     elected_stat_vars: list[GraphRef] | None = None,
     qualifier_terms: list[ResolvedQualifier] | None = None,
+    source_terms: list[str] | None = None,
+    scope: ScopeSources | None = None,
 ) -> str:
     """Map a reason to its phrase, using query terms where supported.
 
@@ -177,6 +200,10 @@ def no_data_phrase(
     entity_ambiguous. For entity_role_not_admitted, ``variable_term`` names
     the indicator whose data is unavailable for the entity.
 
+    ``source_terms`` are quoted and joined for source_not_resolved and
+    source_ambiguous, where ``ambiguous_candidates`` holds the labels of the
+    sources the wording matches.
+
     ``elected_stat_vars`` is used only for no_observations
     (`_no_observations_concept`). Up to three graph names take precedence, unquoted.
     Otherwise ``variable_term`` is quoted.
@@ -188,11 +215,15 @@ def no_data_phrase(
     For qualifier_not_bound, any ``unbound`` terms take precedence and
     identify categories the search could not apply. Otherwise, ``no_vocabulary``
     terms name distinctions the data does not record and advise omitting them.
+    With neither, a part read under a source ``scope`` says no series comes from the
+    sources it names, or from any source but those it leaves out (`_scope_verdict`).
     Empty terms and unsupported reasons use the term-free phrase. Embedded
     double quotes pass through unchanged.
     """
     if variable_term is not None:
         variable_term = variable_term.strip() or None
+    if reason in ("source_not_resolved", "source_ambiguous"):
+        return _source_phrase(reason, source_terms, ambiguous_candidates)
     if reason == "no_observations":
         concept = _no_observations_concept(elected_stat_vars, variable_term=variable_term)
         axis = axis_noun(role_axis) if role_axis is not None else None
@@ -219,6 +250,8 @@ def no_data_phrase(
                 f"{joined} {verb} not a distinction this data records. "
                 f"Try the question without {pronoun}."
             )
+    if reason == "qualifier_not_bound" and scope is not None:
+        return _scope_verdict(scope)
     if variable_term and reason in _VARIABLE_TERM_PHRASES:
         return _VARIABLE_TERM_PHRASES[reason].format(t=variable_term)
     if entity_terms:
@@ -257,11 +290,63 @@ def no_data_phrase(
     return _NO_DATA_PHRASES.get(reason, _GENERIC_NO_DATA)
 
 
+def _source_phrase(
+    reason: NoDataReason, source_terms: list[str] | None, candidates: list[str] | None
+) -> str:
+    """The source_not_resolved or source_ambiguous phrase, quoting the wordings and,
+    for an ambiguous one, the sources they match."""
+    terms = [t.strip() for t in source_terms or () if t and t.strip()]
+    if not terms:
+        return _NO_DATA_PHRASES[reason]
+    plural = len(terms) != 1
+    joined = _join_labels([f'"{t}"' for t in terms])
+    if reason == "source_not_resolved":
+        noun = "data sources" if plural else "a data source"
+        return f"Could not match {joined} to {noun}. {_NAME_A_SOURCE}"
+    verb = "match" if plural else "matches"
+    labels = [c.strip() for c in candidates or () if c and c.strip()]
+    if labels:
+        candidate_list = _join_labels([f'"{c}"' for c in labels])
+        return f"{joined} {verb} more than one source: {candidate_list}. Name one of them."
+    return f"{joined} {verb} more than one source. Name one of them."
+
+
+def _scope_verdict(scope: ScopeSources) -> str:
+    """The qualifier_not_bound verdict of a part whose scope leaves no series for it."""
+    joined = _join_labels(list(scope.labels))
+    if scope.polarity == "include":
+        return f"No series for this query comes from {joined}."
+    return f"No series for this query comes from a source other than {joined}."
+
+
+def scope_sentence(
+    reason: NoDataReason,
+    scope: ScopeSources | None,
+    qualifier_terms: list[ResolvedQualifier] | None = None,
+) -> str | None:
+    """The sentence a no-data outcome read under `scope` closes on, naming the sources that
+    limited it: "The search read only ..." or "The search left out ...". `None` without a
+    scope, and for a qualifier_not_bound outcome naming no term, whose verdict already names
+    the sources (`_scope_verdict`)."""
+    if scope is None:
+        return None
+    if reason == "qualifier_not_bound" and not any(
+        q.disposition in ("unbound", "no_vocabulary") for q in qualifier_terms or ()
+    ):
+        return None
+    joined = _join_labels(list(scope.labels))
+    if scope.polarity == "include":
+        return f"The search read only {joined}."
+    return f"The search left out {joined}."
+
+
 # Reasons whose no_data_phrase already closes on an imperative ("Try ...").
 # _compose_nearest_series drops its own trailing "Check that it measures..."
 # clause for these: an envelope carries one call to action, not two.
 _REASONS_WITH_TRAILING_IMPERATIVE = frozenset(
     {
+        "source_not_resolved",
+        "source_ambiguous",
         "entity_not_resolved",
         "entity_ambiguous",
         "entity_set_too_large",
@@ -301,10 +386,13 @@ def no_data_message(
     ambiguous_candidates: list[str] | None = None,
     elected_stat_vars: list[GraphRef] | None = None,
     qualifier_terms: list[ResolvedQualifier] | None = None,
+    source_terms: list[str] | None = None,
+    scope: ScopeSources | None = None,
 ) -> str:
     """The bare no-data sentence: `no_data_phrase` with every term given, plus the guidance
-    a bare no_observations sentence adds, as `no_data_sentence_plan` renders it when it
-    names no near match."""
+    a bare no_observations sentence adds and the sources a scoped part was read under
+    (`scope_sentence`), as `no_data_sentence_plan` renders it when it names no near
+    match."""
     phrase = no_data_phrase(
         reason,
         variable_term=variable_term,
@@ -313,8 +401,12 @@ def no_data_message(
         ambiguous_candidates=ambiguous_candidates,
         elected_stat_vars=elected_stat_vars,
         qualifier_terms=qualifier_terms,
+        source_terms=source_terms,
+        scope=scope,
     )
-    return _bare_no_data_text(phrase, reason)
+    text = _bare_no_data_text(phrase, reason)
+    closing = scope_sentence(reason, scope, qualifier_terms)
+    return f"{text} {closing}" if closing else text
 
 
 def _join_separators(count: int) -> list[str]:
@@ -485,6 +577,8 @@ def no_data_sentence_plan(
     ambiguous_candidates: list[str] | None = None,
     ambiguous_roles: Mapping[str, RoleAxis] | None = None,
     qualifier_terms: list[ResolvedQualifier] | None = None,
+    source_terms: list[str] | None = None,
+    scope: ScopeSources | None = None,
     departures: Sequence[Departure] = (),
 ) -> list[SentenceToken]:
     """Build a no-data plan: a verdict, a near-match's sentence when one is available,
@@ -526,7 +620,10 @@ def no_data_sentence_plan(
     entity-ambiguity form; ``ambiguous_roles`` maps a wording to its flow axis.
     ``elected_stat_vars`` are added when the verdict would not repeat a
     variable already named by the match. ``qualifier_terms`` apply only to
-    qualifier_not_bound. The part's ``departures`` follow as departure-segment tokens.
+    qualifier_not_bound, and ``source_terms`` to the two source reasons, whose
+    ``ambiguous_candidates`` are source labels. A part read under a source ``scope``
+    closes its verdict on the sources it was read under (`scope_sentence`). The part's
+    ``departures`` follow as departure-segment tokens.
     """
     plan = _no_data_verdict_plan(
         reason,
@@ -542,7 +639,11 @@ def no_data_sentence_plan(
         ambiguous_candidates=ambiguous_candidates,
         ambiguous_roles=ambiguous_roles,
         qualifier_terms=qualifier_terms,
+        source_terms=source_terms,
+        scope=scope,
     )
+    if closing := scope_sentence(reason, scope, qualifier_terms):
+        plan.append(_text(f" {closing}" if plan else closing))
     plan.extend(departure_tokens([d.text for d in departures], after_text=bool(plan)))
     return plan
 
@@ -562,8 +663,11 @@ def _no_data_verdict_plan(
     ambiguous_candidates: list[str] | None,
     ambiguous_roles: Mapping[str, RoleAxis] | None,
     qualifier_terms: list[ResolvedQualifier] | None,
+    source_terms: list[str] | None,
+    scope: ScopeSources | None,
 ) -> list[SentenceToken]:
-    """The no-data plan before its departures (`no_data_sentence_plan`)."""
+    """The no-data plan before its departures and its scope sentence
+    (`no_data_sentence_plan`)."""
     if gate == "no_member_has_data_at_place" and flagged_match is not None:
         plan = _checked_match_plan(
             no_data_phrase(reason, variable_term=variable_term, role_axis=role_axis),
@@ -596,6 +700,7 @@ def _no_data_verdict_plan(
                     entity_terms=entity_terms,
                     role_axis=role_axis,
                     qualifier_terms=qualifier_terms,
+                    scope=scope,
                 )
             )
         ]
@@ -640,6 +745,8 @@ def _no_data_verdict_plan(
                 ambiguous_candidates=ambiguous_candidates,
                 elected_stat_vars=elected_stat_vars,
                 qualifier_terms=qualifier_terms,
+                source_terms=source_terms,
+                scope=scope,
             ),
             reason,
         )

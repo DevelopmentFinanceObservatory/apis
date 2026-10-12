@@ -1,7 +1,7 @@
-"""Generates member, group, and preview frames inside a revision snapshot.
+"""Generates member, group, and preview frames.
 
 `materialise.finish` builds content versions, warnings, statistics, and traces
-once the snapshot is known.
+once generation returns.
 """
 
 from __future__ import annotations
@@ -42,6 +42,7 @@ from materialise.errors import (
     MaterialisationIssue,
     MaterialisationUsageError,
     MembersNotHeldError,
+    MixedGrainError,
     OverCeilingError,
     UpstreamResponseError,
 )
@@ -51,23 +52,35 @@ from materialise.facets import (
     CollectionFacetProbe,
     CoverageAdmission,
     FacetBinding,
+    FacetElection,
     FacetSelection,
     MemberProbe,
+    ProvenanceRefresh,
     RowAdmission,
     _alternatives,
+    _probe_provenance_refresh,
     admitted_candidates,
+    cadences_by_member,
     dataset_candidates,
     declared_default_policies,
     default_scope_of,
+    facet_election,
     fetch_role_bindings,
     joint_dispatch_facet_ids,
+    joint_matches,
     probe_collection_candidates,
     probe_facets,
     probe_from_candidates,
     request_scope_key,
+    role_bearing_facet_candidates,
     select_facet,
 )
-from materialise.frame_build import Frame, build_frame_from_member_tables, build_frame_from_table
+from materialise.frame_build import (
+    Frame,
+    build_frame_from_member_tables,
+    build_frame_from_table,
+    period_grains,
+)
 from materialise.graph import Facet, GraphReader, GraphReadError
 from materialise.group_facets import _as_issue, group_breadth, select_group_facets
 from materialise.member_conversion import (
@@ -175,7 +188,8 @@ class _MemberOutcome:
     `default_scope` is the member's default place scope (`MemberProbe.scope`), for a
     request that binds no entity. `series_conversions` holds each converted series' record
     (`_convert_by_series`). `probe_empty` is true when the member's probe returned no
-    candidate, and the outcome then holds no row and no selection.
+    candidate, and the outcome then holds no row and no selection. `provenance_refresh` holds
+    the dispatched provenance's refresh dates, read before the fetch (`_dispatch_refresh`).
     """
 
     frame: Frame
@@ -188,6 +202,7 @@ class _MemberOutcome:
     default_scope: DefaultPlaceScope = NO_DEFAULT_SCOPE
     series_conversions: dict[SeriesKey, SeriesConversion] = field(default_factory=dict)
     probe_empty: bool = False
+    provenance_refresh: Mapping[str, ProvenanceRefresh] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -202,9 +217,10 @@ class _GroupOutcome:
     `None` when no arithmetic ran; recipe IDs are `None` for ref/unbound or
     native-satisfied units. `default_scope` is the group's default place
     scope, for members that bind no entity. `series_conversions` holds every
-    member's converted series' records (`_convert_by_series`). `probe_empty` is true
-    when no member's probe returned a candidate, and the outcome then holds no row and no
-    selection.
+    member's converted series' records (`_convert_by_series`). `off_cadence_members` is
+    `_GroupPlan.off_cadence_members`. `probe_empty` is true when no member's probe returned a
+    candidate, and the outcome then holds no row and no selection. `provenance_refresh` is
+    `_MemberOutcome.provenance_refresh` for the group's shared selection.
     """
 
     frame_chunks: Callable[[], Iterator[Frame]]
@@ -220,7 +236,9 @@ class _GroupOutcome:
     member_conversion_recipe_ids: dict[str, str | None]
     default_scope: DefaultPlaceScope = NO_DEFAULT_SCOPE
     series_conversions: dict[SeriesKey, SeriesConversion] = field(default_factory=dict)
+    off_cadence_members: tuple[str, ...] = ()
     probe_empty: bool = False
+    provenance_refresh: Mapping[str, ProvenanceRefresh] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -302,9 +320,11 @@ def _select_member_facets(
     *,
     graph: GraphReader,
     breadth: Mapping[str, int] | None = None,
-) -> dict[str, FacetSelection]:
+) -> FacetElection:
     """Resolves all facet axes for one member from the probed candidates, ranked with
-    `breadth`, each facet's series count under `request.window` (`MemberProbe.breadth_in`).
+    `breadth`, each facet's series count under `request.window` (`MemberProbe.breadth_in`),
+    and the cadence its dispatch serves: the cadence of the facet the same ranking puts first
+    among the candidates matching every selected ref (`facets.dispatch_cadence`).
 
     The helper performs no graph reads, so a group can plan each member
     before fetching observations. Declared defaults resolve first, and
@@ -325,6 +345,9 @@ def _select_member_facets(
     dataset publishes (`facets.dataset_candidates`), so the selected provenance is that
     dataset's.
     """
+    # The candidates its dispatch reads, each merged across places with the AND of its
+    # places' annual evidence (`Facet.reads_annual`).
+    (cadence_of,) = cadences_by_member([candidates])
     candidates = dataset_candidates(request, candidates)
     selections: dict[str, FacetSelection] = {}
     issues: list[MaterialisationIssue] = []
@@ -374,7 +397,8 @@ def _select_member_facets(
             issues=tuple(issues),
         )
     bound_axis_count = sum(1 for selection in selections.values() if selection.basis == "bound")
-    if bound_axis_count < 2 and not joint_dispatch_facet_ids(candidates, selections):
+    matching = joint_matches(candidates, selections)
+    if bound_axis_count < 2 and not matching:
         dispatchable = [c for c in candidates if c.facet_id is not None]
         coherence_issues: list[MaterialisationIssue] = []
         for axis in FACET_AXES:
@@ -383,7 +407,7 @@ def _select_member_facets(
                 _as_issue(
                     axis,
                     FacetNotAvailableError(
-                        pointer=f"/facets/{axis}",
+                        facet_pointer=f"/facets/{axis}",
                         alternatives=alternatives,
                         alternatives_truncated=truncated,
                     ),
@@ -394,7 +418,42 @@ def _select_member_facets(
             "all three selected refs at once",
             issues=tuple(coherence_issues),
         )
-    return selections
+    return facet_election(
+        selections,
+        matching=matching,
+        member_matches=[matching],
+        cadence_of=[cadence_of],
+        stat_vars=[request.stat_var],
+        window=request.window,
+        breadth=breadth,
+    )
+
+
+def _validate_empty_member_probe(
+    request: MaterialisationRequest,
+    *,
+    coverage: CoverageIndex | None,
+    graph: GraphReader,
+) -> None:
+    """Validate explicit facet pins before an empty served role probe returns.
+
+    The served probe respects the active source scope and per-series DFO
+    precedence.  When that leaves it empty, a bound facet still needs the
+    globally-admitted candidate view so an unavailable pin is reported as a
+    client-correctable facet refusal.  No bound pin, no coverage index, or no
+    global candidate stays the ordinary empty/no-data outcome.
+    """
+    if coverage is None or not any(
+        binding.state == "bound" for binding in request.facet_bindings.values()
+    ):
+        return
+    candidates = role_bearing_facet_candidates(
+        stat_var=_bare_stat_var_ref(request.stat_var),
+        role_bindings=request.role_bindings,
+        coverage=coverage,
+    )
+    if candidates:
+        _select_member_facets(request, candidates, graph=graph)
 
 
 def _log_no_joint_facet_match(stat_var: str, selections: Mapping[str, FacetSelection]) -> None:
@@ -790,6 +849,33 @@ def _probe_member(
     )
 
 
+def dispatched_provenances(selections: Mapping[str, FacetSelection]) -> list[str]:
+    """The sorted provenance refs `selections` dispatch."""
+    return sorted(
+        {
+            selection.ref
+            for selection in selections.values()
+            if selection.axis == "provenance" and selection.ref is not None
+        }
+    )
+
+
+def _dispatch_refresh(
+    selections: Mapping[str, FacetSelection],
+    *,
+    precomputed_probe: CollectionFacetProbe | None,
+    graph: GraphReader,
+) -> dict[str, ProvenanceRefresh]:
+    """The refresh dates of the provenances `selections` dispatch, called before the fetch so
+    a run's source tokens are never newer than its rows. Dates `precomputed_probe` holds
+    serve as read; the rest come from one `node_arcs_many`."""
+    refs = dispatched_provenances(selections)
+    known = precomputed_probe.provenance_refresh if precomputed_probe is not None else {}
+    missing = [ref for ref in refs if ref not in known]
+    read = _probe_provenance_refresh(missing, graph=graph)
+    return {ref: known[ref] if ref in known else read[ref] for ref in refs}
+
+
 def _plan_conversion(
     *,
     request: MaterialisationRequest,
@@ -868,6 +954,7 @@ def _generate_member(
         request.candidate_filter,
     )
     if not probe.candidates:
+        _validate_empty_member_probe(request, coverage=coverage, graph=graph)
         empty = _finish_member_table(
             request,
             {},
@@ -879,9 +966,10 @@ def _generate_member(
         )
         return replace(empty, probe_empty=True)
 
-    selections = _select_member_facets(
+    election = _select_member_facets(
         request, probe.candidates, graph=graph, breadth=probe.breadth_in(request.window)
     )
+    selections = election.selections
     conversion_plan = _plan_conversion(
         request=request,
         selections=selections,
@@ -890,7 +978,10 @@ def _generate_member(
         rate_cache=rate_cache,
         deadline=deadline,
     )
-    dispatch_ids = joint_dispatch_facet_ids(probe.candidates, selections)
+    provenance_refresh = _dispatch_refresh(
+        selections, precomputed_probe=precomputed_probe, graph=graph
+    )
+    dispatch_ids = joint_dispatch_facet_ids(probe.candidates, election, member=0)
     if dispatch_ids:
         schema, batches = _fetch_member_batches(
             request,
@@ -934,7 +1025,7 @@ def _generate_member(
             ceiling=ceiling,
         ),
     )
-    return _finish_member_table(
+    outcome = _finish_member_table(
         request,
         selections,
         table,
@@ -943,6 +1034,7 @@ def _generate_member(
         currencies=currencies,
         default_scope=probe.scope,
     )
+    return replace(outcome, provenance_refresh=provenance_refresh)
 
 
 def _surviving_tables(
@@ -1017,7 +1109,8 @@ def _finish_member_table(
     the ceiling check use the converted rows; the grammar receives `unit`
     unchanged, whether it is a native string or converted struct. A role-shaped current-price
     member's servable rows are checked against the ceiling before conversion
-    (`_check_servable_ceiling`).
+    (`_check_servable_ceiling`). A frame whose periods hold more than one grain raises
+    `MixedGrainError` (`frame_build.period_grains`).
     """
     _check_servable_ceiling(request, table, conversion_plan=conversion_plan, ceiling=ceiling)
     table, conversion_record, series_conversions = _convert_by_series(
@@ -1039,6 +1132,9 @@ def _finish_member_table(
     frame = build_frame_from_table(
         table, role_keys=request.declared_roles, stat_var=request.stat_var
     )
+    grains = period_grains(frame)
+    if len(grains) > 1:
+        raise MixedGrainError(grains, stat_vars=[request.stat_var])
     return _MemberOutcome(
         frame=frame,
         served_entities_by_role=served_entities_by_role,
@@ -1206,10 +1302,13 @@ def _generate_chunk(
     Header roles are checked before batches are consumed. The shared
     `facetId` filter is the union of member dispatch IDs and only narrows
     the read; each member's row mask enforces its own selection and
-    admission. An empty union skips the fetch. In a populated chunk, a
-    role-bearing member with no dispatch IDs is skipped; a subject-only one
-    goes through its empty place admission, which drops its rows and refuses
-    a malformed one.
+    admission. An empty union skips the fetch. Every member keeps only rows
+    under its own dispatch IDs (`columnar.dispatched_rows`), so a member with
+    none, whether its probe found no facet or none at the group's cadence,
+    serves nothing. Under place admission a row naming no facet or no place
+    still reaches the member's admission mask, which refuses it as malformed;
+    a role-bearing member with no dispatch IDs is skipped outright, since its
+    mask keeps every row.
 
     Non-latest batches filter per member. Exceeding the member's `_streaming_ceiling`
     raises `OverCeilingError`, with up to one batch of overshoot; a conversion that omits
@@ -1305,20 +1404,17 @@ def _generate_chunk(
                     batch, index_by_bare_stat_var=chunk.index_by_stat_var
                 )
                 for index, member_batch in routed.items():
-                    if not plans[index].dispatch_ids and isinstance(
-                        plans[index].admission, CoverageAdmission
-                    ):
-                        # A role-bearing member with no dispatch IDs found
-                        # no facet in its probe. Its rows pass the admission
-                        # mask unchecked, and `survivor_mask` matches them
-                        # against the group's shared `selections` alone, so
-                        # a row on this member's bare `stat_var` would
-                        # otherwise pass. The fetch and the probe are
-                        # separate SDMX queries and can disagree. A
-                        # subject-only member's place admission admits
-                        # nothing here, so the mask drops its rows and
-                        # refuses a malformed one.
+                    plan = plans[index]
+                    if not plan.dispatch_ids and isinstance(plan.admission, CoverageAdmission):
+                        # A role-bearing member dispatching no facet serves nothing. Its
+                        # admission mask keeps every row, so a row naming no facet would
+                        # otherwise pass on the group's shared `selections` alone.
                         continue
+                    # The fetch filters on every member's ids, so a member's variable can
+                    # come back under an id only another member dispatched.
+                    member_batch = columnar.dispatched_rows(
+                        member_batch, facet_ids=plan.dispatch_ids, admission=plan.admission
+                    )
                     if index in latest_indices:
                         # Raw, pre-reduction rows for a `"latest"` member:
                         # bounded by the shared `raw_budget` draw above
@@ -1617,8 +1713,6 @@ def _probe_group_members(
     if precomputed_probe is not None:
         probed_members = precomputed_probe.members
     else:
-        # This runs inside `read_generation`'s before/after window, so a
-        # separate revision snapshot read would be ignored.
         probed_members = probe_collection_candidates(
             requests,
             graph=graph,
@@ -1635,10 +1729,15 @@ def _probe_group_members(
 
 @dataclass(frozen=True)
 class _GroupPlan:
-    """Shared group selections and per-member fetch plans in request order."""
+    """Shared group selections and per-member fetch plans in request order.
+    `off_cadence_members` names, in request order, each member whose probe jointly matches
+    the selections and whom the election did not count (`FacetElection.members`): it holds no
+    facet at the group's cadence, or under a range window none with a point in it, so it
+    serves nothing."""
 
     selections: dict[str, FacetSelection]
     plans: list[_MemberFetchPlan]
+    off_cadence_members: tuple[str, ...] = ()
 
 
 def _plan_group_members(
@@ -1656,14 +1755,20 @@ def _plan_group_members(
     selections. A request-form unit with no rate cache raises
     `MaterialisationUsageError` in request order. Ref and unbound units need
     no conversion plan.
+
+    Each member dispatches only its facets at the group's one cadence
+    (`FacetElection.cadence`, the one serving the most members). A member the election did
+    not count serves nothing and is named in `off_cadence_members`, for
+    `finish._build_warnings` to report.
     """
     graph = _planning_graph(requests, graph=graph)
-    selections = select_group_facets(
+    election = select_group_facets(
         requests,
         [probe.candidates for probe in probes],
         graph=graph,
         breadth=group_breadth(probes, window=requests[0].window),
     )
+    selections = election.selections
     conversion_plans = [
         _plan_conversion(
             request=request,
@@ -1678,13 +1783,18 @@ def _plan_group_members(
     plans = [
         _MemberFetchPlan(
             selections=selections,
-            dispatch_ids=joint_dispatch_facet_ids(probes[index].candidates, selections),
+            dispatch_ids=joint_dispatch_facet_ids(probes[index].candidates, election, member=index),
             admission=probes[index].admission,
             conversion_plan=conversion_plans[index],
         )
         for index in range(len(requests))
     ]
-    return _GroupPlan(selections=selections, plans=plans)
+    off_cadence_members = tuple(
+        request.stat_var
+        for index, (request, probe) in enumerate(zip(requests, probes, strict=True))
+        if index not in election.members and joint_matches(probe.candidates, selections)
+    )
+    return _GroupPlan(selections=selections, plans=plans, off_cadence_members=off_cadence_members)
 
 
 def _empty_group_plan(probes: Sequence[MemberProbe]) -> _GroupPlan:
@@ -1799,6 +1909,7 @@ class _GroupRowStreamer:
         self.series_conversions: dict[SeriesKey, SeriesConversion] = {}
         self.latest_windows: list[AppliedWindow | None] = []
         self.frame_columns: list[tuple[str, ...]] = []
+        self.grains: dict[str, str] = {}
         self.totals = _PooledCoverageTotals(shared_roles=shared_roles)
         self.parquet_sink = _CanonicalParquetSink()
         self.statistics_sink = SeriesStatisticsSink()
@@ -1872,7 +1983,9 @@ class _GroupRowStreamer:
         two provenances in one chunk this builds; a group both over
         ceiling and carrying a duplicate grain raises this refusal first,
         since a row chunk always closes before `_assemble_group_outcome`'s
-        pooled ceiling check runs), writes that `Frame`'s
+        pooled ceiling check runs), refuses with `MixedGrainError` once the
+        chunks closed so far hold periods of two grains (`self.grains`, each
+        grain's earliest period), writes that `Frame`'s
         own canonical Arrow table as one Parquet row group
         (`self.parquet_sink`), folds it into the group's pooled coverage
         (`self.totals`), and writes its own statistics table as one row
@@ -1892,6 +2005,12 @@ class _GroupRowStreamer:
         )
         if not self.frame_columns:
             self.frame_columns.append(frame.columns)
+        for grain, period in period_grains(frame).items():
+            self.grains[grain] = min(period, self.grains.get(grain, period))
+        if len(self.grains) > 1:
+            raise MixedGrainError(
+                self.grains, stat_vars=[request.stat_var for _, request in self._dcid_requests]
+            )
         self.parquet_sink.write(frame.table)
         chunk_table = pa.concat_tables([table.select(self._shared_columns) for _, table in members])
         self.totals.fold(chunk_table, shared_roles=self._shared_roles)
@@ -1996,6 +2115,7 @@ def _assemble_group_outcome(
     selections: dict[str, FacetSelection],
     ceiling: int,
     default_scope: DefaultPlaceScope = NO_DEFAULT_SCOPE,
+    off_cadence_members: tuple[str, ...] = (),
     probe_empty: bool = False,
 ) -> _GroupOutcome:
     """Drives `streamer`'s streaming fetch to completion, then assembles
@@ -2008,11 +2128,9 @@ def _assemble_group_outcome(
     what actually drives the fetch/coalesce pass: every chunk's own
     Parquet write, coverage fold, and series-statistics append
     (`streamer._close_row_chunk`) runs as a side effect of this one pull,
-    before that chunk's `Frame` is handed to the hasher. `graph_revision`/
-    `source_revisions` are not yet known here (`read_generation`'s own
-    closure has not returned), so this computes only the digest;
-    `materialise.finish._finish_group` combines it with the revision
-    snapshot afterward (`content_version.mint_version_from_digest`),
+    before that chunk's `Frame` is handed to the hasher. This computes
+    only the digest; `materialise.finish._finish_group` mints the token
+    from it afterward (`content_version.mint_version_from_digest`),
     without a second read of these rows. A `materialise_group` call mints
     exactly one `content_version` this way.
 
@@ -2068,6 +2186,7 @@ def _assemble_group_outcome(
         member_conversion_recipe_ids=streamer.conversion_recipe_ids,
         default_scope=default_scope,
         series_conversions=streamer.series_conversions,
+        off_cadence_members=off_cadence_members,
         probe_empty=probe_empty,
     )
 
@@ -2092,11 +2211,10 @@ def _generate_group(
     deadline: float | None = None,
     progress: RowProgress | None = None,
 ) -> _GroupOutcome:
-    """Runs once inside a `read_generation` closure, for `len(requests) >=
-    2`, and returns one `_GroupOutcome` for the whole group: one facet
-    selection shared by every member, pooled coverage folded from every
-    member's own surviving rows, and exactly one `content_version`-worthy
-    digest bounded by exactly one ceiling check over the pooled total.
+    """Runs once for `len(requests) >= 2` and returns one `_GroupOutcome` for the group, with one
+    facet selection shared by every member, pooled coverage folded from every member's own surviving
+    rows, and exactly one `content_version`-worthy digest bounded by exactly one ceiling check over
+    the pooled total.
 
     Runs in four phases, each of which raises before any later phase's own
     work is attempted: `_probe_group_members` probes every member's own
@@ -2142,6 +2260,9 @@ def _generate_group(
             deadline=deadline,
         )
     )
+    provenance_refresh = _dispatch_refresh(
+        group_plan.selections, precomputed_probe=precomputed_probe, graph=graph
+    )
     ordered = _order_group_by_dcid(
         requests,
         group_plan.plans,
@@ -2162,14 +2283,16 @@ def _generate_group(
         member_concurrency=member_concurrency,
         progress=progress,
     )
-    return _assemble_group_outcome(
+    outcome = _assemble_group_outcome(
         streamer,
         requests,
         selections=group_plan.selections,
         ceiling=ceiling,
         default_scope=default_scope_of(probed),
+        off_cadence_members=group_plan.off_cadence_members,
         probe_empty=probe_empty,
     )
+    return replace(outcome, provenance_refresh=provenance_refresh)
 
 
 def _merge_latest_windows(windows: Sequence[AppliedWindow | None]) -> AppliedWindow | None:
@@ -2312,9 +2435,10 @@ def _prepare_preview_member(
         ),
         request.candidate_filter,
     )
-    selections = _select_member_facets(
+    election = _select_member_facets(
         request, probe.candidates, graph=graph, breadth=probe.breadth_in(request.window)
     )
+    selections = election.selections
     conversion_plan = _plan_conversion(
         request=request,
         selections=selections,
@@ -2324,7 +2448,7 @@ def _prepare_preview_member(
         deadline=deadline,
     )
 
-    dispatch_ids = joint_dispatch_facet_ids(probe.candidates, selections)
+    dispatch_ids = joint_dispatch_facet_ids(probe.candidates, election, member=0)
 
     if dispatch_ids:
         raw_guard = _RAW_FETCH_ROWS_GUARD_MULTIPLIER * ceiling

@@ -52,6 +52,31 @@ _DATASET_STORE = {
         "1ad07c270360607f2f58904689894c140351404dbc20961218329af91f78257f"
     ),
     "0023_frame_recipe.sql": "886f346dd6db7d28dc72a320c2c5341406a877a9652b867b85902bc77bda17a1",
+    "0024_operation_attempt_fencing.sql": (
+        "eeb8ca879e64dc227e6eb72bf2103882ece76062fd8d753010bb20dc41f2a0e4"
+    ),
+    "0025_artifact_location_renewal.sql": (
+        "f97466368768f08f1d82dafc15f6097edc999a5ef6689d158ef68dbba80861b9"
+    ),
+    "0026_artifact_reference_principal_label.sql": (
+        "ee43e91445a16733facc8f00c13e6cf87ff218c609a561d296a154875745c7fe"
+    ),
+    "0027_materialisation_record.sql": (
+        "4b9c3aa5168ce4532d49e1ea08fd88ee7e11f08817a5ee6f8f1f32528edfa23b"
+    ),
+    "0028_spec_alias.sql": "12ee2155239debed4f52725dba93b34af47142b53497a5022891a796bbec80d2",
+    "0029_version_record_frame_grammar_version.sql": (
+        "58e5fa6d931cfd4ba9131e10362aeb0631137f9041be4a2bcaaa814179151aee"
+    ),
+    "0030_version_record_facts.sql": (
+        "ae645ef718676d96331267fc434a549f2157f240d3a48bc07a408e5e6dd8dfcb"
+    ),
+    "0031_version_record_facts_backfill.sql": (
+        "b696e9b578ddb15aafccd1d567e4cc4440a47b1a2d0d7de91595f15acadd81f0"
+    ),
+    "0032_operation_confirmed_at.sql": (
+        "9daa6be37ff91df3c06e49a633b4c8ee81c804025d725f4c0a67ce66d2f76227"
+    ),
 }
 
 _PRESENTATION_STORE = {

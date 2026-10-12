@@ -17,6 +17,7 @@ from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.errors import EngineInputError
 from search.engine.identity_edit import check_described_arm
 from search.engine.region.resubmit_promote import _resolve_standard_promote
+from search.engine.region.resubmit_request import pinned_provenance_scope
 from search.engine.region.result import RegionResult
 from search.engine.region.state import EngineOptions
 from search.engine.region.un_system import with_un_unavailable_warning
@@ -61,7 +62,9 @@ def resolve_spec_resubmit(
     """Resolve an identity without extract, recall, shape, or bind steps.
 
     Elect the identity's members as the Datasets mint does, re-read their arcs and
-    rebuild the shape. Graph labels replace posted labels. `full_read_deadline` bounds a
+    rebuild the shape. Graph labels replace posted labels. A bound `facets.provenance`
+    scopes every read to its refs before DFO precedence (`pinned_provenance_scope`), as the
+    Datasets mint reads it. `full_read_deadline` bounds a
     member walk's full read of a deep-root family and every phase after it
     (`_resolve_standard_promote`).
 
@@ -80,7 +83,11 @@ def resolve_spec_resubmit(
     # Role-bearing shapes bind origins on their origin axis. Standard shapes raise
     # `role_incompatible`.
     try:
-        with recording_degraded_reads() as lost, recording_un_blocked_places() as un_blocked:
+        with (
+            recording_degraded_reads() as lost,
+            recording_un_blocked_places() as un_blocked,
+            pinned_provenance_scope(inp.identity.facets),
+        ):
             result = _resolve_standard_promote(
                 inp,
                 graph,

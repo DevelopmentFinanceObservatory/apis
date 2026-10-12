@@ -412,8 +412,15 @@ def _role_fixture(monkeypatch, holdings: _Holdings) -> _RoleFixture:
             for facet_id, years in held
         ],
         role_names={sv: RoleNames(donor=None, recipient="debtor")},
+        # Every DFO import states `P1Y`; a coverage facet stating no period is a cadence of
+        # its own (`materialise.facets.cadences_by_member`).
         facet_metadata={
-            facet_id: FacetMetadata(provenance_id=provenance, measurement_method=method, unit=unit)
+            facet_id: FacetMetadata(
+                provenance_id=provenance,
+                measurement_method=method,
+                unit=unit,
+                observation_period="P1Y",
+            )
             for facet_id, (provenance, method, unit) in _FACETS.items()
         },
     )
@@ -579,9 +586,18 @@ def test_a_pinned_resubmit_counts_the_points_its_preview_serves(
     except EngineInputError as refusal:
         region = refusal
     pinned = _pinned(axis, value)
-    # A role resubmit judges its pin over the facets its places hold in the years read: it
-    # answers exactly when one holds a pinned point there, and otherwise refuses the pin.
+    # Method and unit pins require a facet in the years read. A provenance pin instead
+    # admits a lifetime source, then reports no observations when it has no point in this
+    # window.
     answers = bool(_places_with_data(fixture.holdings, request_kind, pinned))
+    lifetime_present = bool(_places_with_data(fixture.holdings, "dateless", pinned))
+    if axis == "provenance" and lifetime_present and not answers:
+        assert not isinstance(region, EngineInputError), region
+        assert region.status == "no_data"
+        assert region.no_data_reason == "no_observations"
+        assert region.specs == ()
+        assert previews == [], "a no-data source pin fetches no preview"
+        return
     if isinstance(region, EngineInputError):
         assert not answers, region
         assert region.code == "facet_not_available"

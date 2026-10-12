@@ -94,17 +94,22 @@ empty and gapped.
 caller's `coverage_facts_of` lookup, called once with the node's Provenance
 dcids (the node itself for an orphan Provenance, else every Provenance child of
 its Dataset). Without a lookup, or when the lookup leaves a fact unknown (`None`,
-or no currencies), that member is empty and gapped.
+or no currencies), that member is empty and gapped. `with_coverage_facts` sets
+both facts, and the gaps they decide, on a document already read.
 
 `read_source_citations` is the citation-grain sibling. It returns the name, url,
 licence, source and Data Commons for each cited provenance ref
-(`datasets_api.manifest.build_citation`), taking every member but the licence from
-the origin catalogue's provenance table where it lists the ref. The licence is the
-provenance's `licenseType` dcid, that node's label (its `name`, else its dcid) and the
+(`datasets_api.manifest.build_citation`). The licence is the provenance's
+`licenseType` dcid, that node's label (its `name`, else its dcid) and the
 provenance's `license` terms page. Asked for documentation, it also attaches each
-cited ref's `read_provenance_doc` document. A ref the graph documents nothing for keeps
-its citation without one, and a ref whose document read fails keeps its citation without
-one and is marked `documentation_read_failed`.
+cited ref's document. A ref the origin catalogue lists is cited from its catalogue
+row and entry with no graph read. The catalogue job derives the licence and the
+entry's documentation facts with the `origin_catalogue.card_facts` functions this
+module derives them with, and `_documented` turns either into the same
+`ProvenanceDoc`. Any other ref is read from the graph, its document by
+`read_provenance_doc`. A ref nothing documents keeps its citation without a
+document, and a ref whose document read fails keeps its citation without one and is
+marked `documentation_read_failed`.
 """
 
 from __future__ import annotations
@@ -135,14 +140,24 @@ from materialise.roles import axis_noun
 from origin_catalogue import Catalogue, DataCommons, SourceRef
 from origin_catalogue.card_facts import (
     DATASET_TYPE,
+    DOCUMENT_PROPERTIES,
     LICENCE_PROPERTIES,
     PROVENANCE_TYPE,
     agreed_child_value,
     card_facts_of,
     first_dataset_parent,
     licence_labels_of,
+    licence_of,
     node_label,
+    publisher_node_of,
+    source_documentation_of,
     without_unresolved,
+)
+from origin_catalogue.catalogue import (
+    CardFacts,
+    ProvenanceRow,
+    SourceDocumentation,
+    entry_ref,
 )
 
 if TYPE_CHECKING:
@@ -176,10 +191,7 @@ _ROLLUP_PROPERTIES: tuple[str, ...] = (
 
 # The MCF-escaped Markdown documents, keyed by graph property to the wire member
 # they fill. The batch requests them only when there is exactly one child.
-_TRANSFORMATIONS = "dataTransformationDescription"
-_CHANGELOG = "dataTransformationChangelog"
-_METHODOLOGY = "sourceMethodologyDescription"
-_NOTES = "dataNotes"
+_TRANSFORMATIONS, _CHANGELOG, _METHODOLOGY, _NOTES = DOCUMENT_PROPERTIES
 # The wire paths of the four documents.
 DocumentMember = Literal[
     "transformation_log", "version_history", "methodology.description", "data_notes"
@@ -190,11 +202,10 @@ _DOCUMENT_MEMBERS: dict[str, DocumentMember] = {
     _METHODOLOGY: "methodology.description",
     _NOTES: "data_notes",
 }
-_DOCUMENT_PROPERTIES: tuple[str, ...] = tuple(_DOCUMENT_MEMBERS)
 
 # The fields read from a sole child only: its description, its URL (which
 # fills a missing Dataset URL) and the four documents.
-_SOLE_CHILD_PROPERTIES: tuple[str, ...] = ("description", "url", *_DOCUMENT_PROPERTIES)
+_SOLE_CHILD_PROPERTIES: tuple[str, ...] = ("description", "url", *DOCUMENT_PROPERTIES)
 
 # The longest stored value a `MAX_DOCUMENT_BYTES` document can have. JSON
 # escaping spells one decoded byte in at most six characters (`\u00XX`), so a
@@ -525,11 +536,7 @@ def read_provenance_doc(
             graph, node.get("isPartOf", ()), deadline=deadline
         )
 
-    source_dcid = (
-        _first((dataset_arcs or {}).get("isPartOf", ()))
-        if dataset_dcid
-        else _first(node.get("source", ()))
-    )
+    source_dcid = publisher_node_of(dataset_arcs, node)
 
     if dataset_dcid is not None:
         page = graph.node_subjects(
@@ -575,7 +582,6 @@ def read_provenance_doc(
     child_properties: dict[str, dict[str, tuple[str, ...]]] = {
         c: (batch.get(c) or {}) for c in children_dcids
     }
-    sole_properties = child_properties[sole_child] if sole_child is not None else {}
 
     publisher = node_label(batch.get(source_dcid), source_dcid) if source_dcid is not None else None
 
@@ -607,95 +613,111 @@ def read_provenance_doc(
         if licence is not None
         else {}
     )
-    card = card_facts_of(dataset_arcs, child_properties, licence_labels)
-    description = card.description
-    source_url = card.source_url
-    license_type = card.license_type
-    update_cadence = card.update_cadence
-    years_covered = card.years_covered
-
-    source_data_url = agreed_child_value(child_properties, "sourceDataUrl")
-    citation = agreed_child_value(child_properties, "licenseAttribution")
-    license_url = agreed_child_value(child_properties, "license")
-
-    last_dates = [
-        v for arcs in child_properties.values() for v in arcs.get("lastDataRefreshDate", ())
-    ]
-    next_dates = [
-        v for arcs in child_properties.values() for v in arcs.get("nextDataRefreshDate", ())
-    ]
-    last_update = max(last_dates) if last_dates else None
-    next_expected_update = min(next_dates) if next_dates else None
-
-    issues: list[DocumentIssue] = []
-    methodology = _read_document(
-        sole_properties, _METHODOLOGY, parse_prose, dcid=dcid, issues=issues
-    )
-    data_notes = _read_document(sole_properties, _NOTES, parse_notes, dcid=dcid, issues=issues)
-    transformation_log = _read_document(
-        sole_properties, _TRANSFORMATIONS, parse_transformations, dcid=dcid, issues=issues
-    )
-    version_history = _read_document(
-        sole_properties, _CHANGELOG, parse_changelog, dcid=dcid, issues=issues
-    )
-
-    coverage_facts = (
-        coverage_facts_of(tuple(children_dcids))
-        if coverage_facts_of is not None
-        else _NO_COVERAGE_FACTS
-    )
-    currencies, granularity = coverage_facts.currencies, coverage_facts.granularity
     source, data_commons = (
         _agreed_origin(catalogue, (dcid,) if is_provenance and not is_dataset else children_dcids)
         if catalogue is not None
         else (None, None)
     )
-
-    return ProvenanceDoc(
-        dcid=dcid,
-        provenances=tuple(children_dcids),
+    return _documented(
+        dcid,
         name_of_source=name_of_source,
-        publisher=publisher,
         source=source,
         data_commons=data_commons,
-        description=description,
-        source_url=source_url,
-        source_data_url=source_data_url,
-        citation=citation,
-        license_type=license_type,
-        license_url=license_url,
-        update_cadence=update_cadence,
-        last_update=last_update,
-        next_expected_update=next_expected_update,
-        years_covered=years_covered,
-        granularity=granularity,
-        currencies=currencies,
+        card=card_facts_of(dataset_arcs, child_properties, licence_labels),
+        documentation=source_documentation_of(child_properties, publisher),
+        coverage_facts_of=coverage_facts_of,
+    )
+
+
+def _documented(
+    dcid: str,
+    *,
+    name_of_source: str | None,
+    source: SourceRef | None,
+    data_commons: DataCommons | None,
+    card: CardFacts,
+    documentation: SourceDocumentation,
+    coverage_facts_of: Callable[[tuple[str, ...]], CoverageFacts] | None,
+) -> ProvenanceDoc:
+    """The `ProvenanceDoc` for `dcid` from its entry's card facts and documentation facts,
+    whether read from the graph (`read_provenance_doc`) or the origin catalogue
+    (`_catalogued_documentation`). It parses the four documents and calls
+    `coverage_facts_of` with `documentation.provenances`."""
+    documents = documentation.documents
+    issues: list[DocumentIssue] = []
+    methodology = _read_document(documents, _METHODOLOGY, parse_prose, dcid=dcid, issues=issues)
+    data_notes = _read_document(documents, _NOTES, parse_notes, dcid=dcid, issues=issues)
+    transformation_log = _read_document(
+        documents, _TRANSFORMATIONS, parse_transformations, dcid=dcid, issues=issues
+    )
+    version_history = _read_document(
+        documents, _CHANGELOG, parse_changelog, dcid=dcid, issues=issues
+    )
+
+    coverage_facts = (
+        coverage_facts_of(documentation.provenances)
+        if coverage_facts_of is not None
+        else _NO_COVERAGE_FACTS
+    )
+
+    doc = ProvenanceDoc(
+        dcid=dcid,
+        provenances=documentation.provenances,
+        name_of_source=name_of_source,
+        publisher=documentation.publisher,
+        source=source,
+        data_commons=data_commons,
+        description=card.description,
+        source_url=card.source_url,
+        source_data_url=documentation.source_data_url,
+        citation=documentation.citation,
+        license_type=card.license_type,
+        license_url=documentation.license_url,
+        update_cadence=card.update_cadence,
+        last_update=documentation.last_update,
+        next_expected_update=documentation.next_expected_update,
+        years_covered=card.years_covered,
+        granularity=None,
+        currencies=(),
         methodology=methodology,
         data_notes=data_notes or (),
         transformation_log=transformation_log or (),
         version_history=version_history or (),
         document_errors=tuple(issues),
+        gaps=(),
+    )
+    return with_coverage_facts(doc, coverage_facts)
+
+
+def with_coverage_facts(doc: ProvenanceDoc, facts: CoverageFacts) -> ProvenanceDoc:
+    """`doc` with the currencies and granularity of `facts`, and its `gaps` recomputed to
+    match. A caller that keeps a document read without a `coverage_facts_of` lookup composes
+    each response's coverage facts with this, so the facts follow the coverage index the
+    response reads."""
+    updated = replace(doc, currencies=facts.currencies, granularity=facts.granularity)
+    return replace(
+        updated,
         gaps=_compute_gaps(
-            name_of_source=name_of_source,
-            publisher=publisher,
-            has_source=source is not None,
-            has_data_commons=data_commons is not None,
-            description=description,
-            source_url=source_url,
-            source_data_url=source_data_url,
-            citation=citation,
-            license_type=license_type,
-            license_url=license_url,
-            update_cadence=update_cadence,
-            last_update=last_update,
-            next_expected_update=next_expected_update,
-            years_covered=years_covered,
-            granularity=granularity,
-            has_currencies=bool(currencies),
-            methodology=methodology,
-            has_data_notes=bool(data_notes),
-            has_transformation_log=bool(transformation_log),
-            has_version_history=bool(version_history),
+            name_of_source=updated.name_of_source,
+            publisher=updated.publisher,
+            has_source=updated.source is not None,
+            has_data_commons=updated.data_commons is not None,
+            description=updated.description,
+            source_url=updated.source_url,
+            source_data_url=updated.source_data_url,
+            citation=updated.citation,
+            license_type=updated.license_type,
+            license_url=updated.license_url,
+            update_cadence=updated.update_cadence,
+            last_update=updated.last_update,
+            next_expected_update=updated.next_expected_update,
+            years_covered=updated.years_covered,
+            granularity=updated.granularity,
+            has_currencies=bool(updated.currencies),
+            methodology=updated.methodology,
+            has_data_notes=bool(updated.data_notes),
+            has_transformation_log=bool(updated.transformation_log),
+            has_version_history=bool(updated.version_history),
         ),
     )
 
@@ -785,9 +807,8 @@ def _compute_gaps(
     return tuple(path for path, empty in ordered if empty)
 
 
-# `read_source_citations` reads every cited node first. `typeOf` separates a Provenance's
-# `isPartOf` (its Dataset) from a Dataset's (its Source). When the catalogue lists every
-# cited node, only the licence is read.
+# `read_source_citations` reads every cited node the catalogue does not list. `typeOf`
+# separates a Provenance's `isPartOf` (its Dataset) from a Dataset's (its Source).
 _CITATION_NODE_PROPERTIES: tuple[str, ...] = (
     "typeOf",
     "name",
@@ -796,7 +817,6 @@ _CITATION_NODE_PROPERTIES: tuple[str, ...] = (
     "licenseType",
     "license",
 )
-_CITATION_LICENCE_PROPERTIES: tuple[str, ...] = ("licenseType", "license")
 
 # Its second read covers every distinct `isPartOf` parent, typed so the Dataset is found,
 # and every `licenseType` node.
@@ -810,10 +830,10 @@ class SourceCitation:
 
     `licence` is the label of the provenance's `licenseType` node, `licence_type` that
     node's dcid, and `licence_url` the provenance's `license` terms page.
-    `documentation` is the provenance's `read_provenance_doc` document, `None` when the
-    caller did not ask for it, the graph documents nothing for it, or its read failed.
-    `documentation_read_failed` is `True` only in the last case, which a later read can
-    change. The other two hold until the graph changes.
+    `documentation` is the provenance's documentation, `None` when the caller did not ask
+    for it, nothing documents it, or its graph read failed. `documentation_read_failed` is
+    `True` only in the last case, which a later read can change. A provenance nothing
+    documents stays undocumented until the catalogue or the graph changes.
     """
 
     dcid: str
@@ -837,12 +857,14 @@ def read_source_citations(
     documented: bool = False,
     coverage_facts_of: Callable[[tuple[str, ...]], CoverageFacts] | None = None,
 ) -> dict[str, SourceCitation]:
-    """One `SourceCitation` per distinct dcid the catalogue lists or the graph holds.
+    """One `SourceCitation` per distinct dcid the catalogue lists or the graph holds, in
+    first-seen order.
 
-    A dcid in `catalogue`'s provenance table takes its name, url, source and Data Commons
-    from its row, and only its licence from the graph. Any other dcid, such as a DFO
-    provenance newer than the loaded catalogue, is read from the graph whole and carries
-    no source or Data Commons:
+    A dcid in `catalogue`'s provenance table is cited from its row alone, with no graph
+    read: its name, url, source, Data Commons and licence (`ProvenanceRow.licence`), and,
+    when `documented`, its entry's documentation (`_catalogued_documentation`). Any other
+    dcid, such as a DFO provenance newer than the loaded catalogue, is read from the graph
+    whole and carries no source or Data Commons:
 
     - `name`: the parent Dataset's `name` when the node is a Provenance with an `isPartOf`
       parent typed Dataset (`first_dataset_parent`), else the node's own, each through
@@ -850,43 +872,124 @@ def read_source_citations(
       Datasets is its own publication, as for `read_provenance_doc`.
     - `url`: the node's `url`, else the publication's. The import's own page resolves where
       its Dataset's may 404.
+    - the licence (`licence_of`): the node's `licenseType` when it asserts exactly one,
+      labelled with that licence node's `name`, else its dcid, and the node's `license`
+      when it asserts exactly one.
 
-    `licence_type` is the node's `licenseType` when it asserts exactly one, else `None`,
-    and `licence` that licence node's `name`, else its dcid. `licence_url` is the node's
-    `license` when it asserts exactly one. A dcid that neither the catalogue lists nor the
-    graph holds has no entry, and an empty `dcids` reads nothing. The reads are one
-    batched node read, and a second for the licence nodes and the `isPartOf` parents of
-    unlisted Provenances.
+    A dcid that neither the catalogue lists nor the graph holds has no entry, and a call
+    whose every dcid the catalogue lists reads nothing. The graph reads are one batched node
+    read, and a second for the licence nodes and the `isPartOf` parents of unlisted
+    Provenances.
 
-    `documented` adds each cited dcid's `read_provenance_doc` document, read with
-    `catalogue`, `deadline` and `coverage_facts_of`, one cited dcid after another
+    `documented` adds each unlisted dcid's `read_provenance_doc` document, read with
+    `catalogue`, `deadline` and `coverage_facts_of`, one dcid after another
     (`_read_citation_documentation`). The citation itself stands whatever that read finds.
     """
     unique = list(dict.fromkeys(dcids))
-    if not unique:
-        return {}
     rows = {dcid: row for dcid in unique if (row := catalogue.provenance(dcid)) is not None}
-    properties = (
-        _CITATION_NODE_PROPERTIES if len(rows) < len(unique) else _CITATION_LICENCE_PROPERTIES
+    read = _read_unlisted_citations(
+        graph, [dcid for dcid in unique if dcid not in rows], deadline=deadline
     )
-    nodes = without_unresolved(
-        graph.node_arcs_many(unique, properties=properties, deadline=deadline)
+    citations: dict[str, SourceCitation] = {}
+    for dcid in unique:
+        row = rows.get(dcid)
+        if row is not None:
+            citations[dcid] = _catalogued_citation(
+                row,
+                catalogue=catalogue,
+                documented=documented,
+                coverage_facts_of=coverage_facts_of,
+            )
+            continue
+        citation = read.get(dcid)
+        if citation is None:
+            continue
+        if documented:
+            documentation, failed = _read_citation_documentation(
+                graph,
+                dcid,
+                catalogue=catalogue,
+                deadline=deadline,
+                coverage_facts_of=coverage_facts_of,
+            )
+            citation = replace(
+                citation, documentation=documentation, documentation_read_failed=failed
+            )
+        citations[dcid] = citation
+    return citations
+
+
+def _catalogued_citation(
+    row: ProvenanceRow,
+    *,
+    catalogue: Catalogue,
+    documented: bool,
+    coverage_facts_of: Callable[[tuple[str, ...]], CoverageFacts] | None,
+) -> SourceCitation:
+    return SourceCitation(
+        dcid=row.id,
+        name=row.name,
+        url=row.url,
+        licence=row.licence.label,
+        source=row.source,
+        data_commons=row.data_commons,
+        licence_type=row.licence.type,
+        licence_url=row.licence.url,
+        documentation=(
+            _catalogued_documentation(row, catalogue=catalogue, coverage_facts_of=coverage_facts_of)
+            if documented
+            else None
+        ),
     )
 
+
+def _catalogued_documentation(
+    row: ProvenanceRow,
+    *,
+    catalogue: Catalogue,
+    coverage_facts_of: Callable[[tuple[str, ...]], CoverageFacts] | None,
+) -> ProvenanceDoc | None:
+    """The document `read_provenance_doc` gives a listed provenance, from the card facts and
+    documentation facts of its catalogue entry (`entry_ref`), with the row's name, source and
+    Data Commons. `None` when the catalogue holds no card facts or no documentation facts for
+    the entry, as for a UN row, or the entry's documentation does not list the provenance."""
+    ref = entry_ref(row)
+    card = catalogue.dataset_facts(ref)
+    documentation = catalogue.source_documentation(ref)
+    if card is None or documentation is None or row.id not in documentation.provenances:
+        return None
+    return _documented(
+        row.id,
+        name_of_source=row.name,
+        source=row.source,
+        data_commons=row.data_commons,
+        card=card,
+        documentation=documentation,
+        coverage_facts_of=coverage_facts_of,
+    )
+
+
+def _read_unlisted_citations(
+    graph: ProvenanceGraphReader, dcids: Sequence[str], *, deadline: float | None
+) -> dict[str, SourceCitation]:
+    """The graph's citation of each of `dcids` it holds, from at most two batched reads.
+    An empty `dcids` reads nothing."""
+    if not dcids:
+        return {}
+    nodes = without_unresolved(
+        graph.node_arcs_many(dcids, properties=_CITATION_NODE_PROPERTIES, deadline=deadline)
+    )
+    held = {dcid: node for dcid in dcids if (node := nodes.get(dcid)) is not None}
     parent_dcids = [
         parent
-        for dcid in unique
-        if dcid not in rows
-        and (node := nodes.get(dcid)) is not None
-        and DATASET_TYPE not in node.get("typeOf", ())
+        for node in held.values()
+        if DATASET_TYPE not in node.get("typeOf", ())
         for parent in node.get("isPartOf", ())
     ]
-    licence_by_dcid: dict[str, str] = {}
-    for dcid in unique:
-        licence_type = _sole((nodes.get(dcid) or {}).get("licenseType", ()))
-        if licence_type is not None:
-            licence_by_dcid[dcid] = licence_type
-    linked_dcids = list(dict.fromkeys([*parent_dcids, *licence_by_dcid.values()]))
+    licence_dcids = [
+        licence for node in held.values() if (licence := _sole(node.get("licenseType", ())))
+    ]
+    linked_dcids = list(dict.fromkeys([*parent_dcids, *licence_dcids]))
     linked = (
         without_unresolved(
             graph.node_arcs_many(
@@ -896,31 +999,11 @@ def read_source_citations(
         if linked_dcids
         else {}
     )
-    licence_labels = licence_labels_of(
-        {licence: linked.get(licence) for licence in licence_by_dcid.values()}
-    )
+    licence_labels = licence_labels_of({licence: linked.get(licence) for licence in licence_dcids})
 
     citations: dict[str, SourceCitation] = {}
-    for dcid in unique:
-        node = nodes.get(dcid)
-        licence_type = licence_by_dcid.get(dcid)
-        licence = licence_labels.get(licence_type) if licence_type is not None else None
-        licence_url = _sole((node or {}).get("license", ()))
-        row = rows.get(dcid)
-        if row is not None:
-            citations[dcid] = SourceCitation(
-                dcid=dcid,
-                name=row.name,
-                url=row.url,
-                licence=licence,
-                source=row.source,
-                data_commons=row.data_commons,
-                licence_type=licence_type,
-                licence_url=licence_url,
-            )
-            continue
-        if node is None:
-            continue
+    for dcid, node in held.items():
+        licence = licence_of(node, licence_labels)
         parent, parent_arcs = (
             (None, None)
             if DATASET_TYPE in node.get("typeOf", ())
@@ -932,25 +1015,11 @@ def read_source_citations(
             dcid=dcid,
             name=node_label(publication_arcs, publication) or node_label(node, dcid),
             url=_first(node.get("url", ())) or _first(publication_arcs.get("url", ())),
-            licence=licence,
-            licence_type=licence_type,
-            licence_url=licence_url,
+            licence=licence.label,
+            licence_type=licence.type,
+            licence_url=licence.url,
         )
-    if not documented:
-        return citations
-    documented_citations: dict[str, SourceCitation] = {}
-    for dcid, citation in citations.items():
-        documentation, failed = _read_citation_documentation(
-            graph,
-            dcid,
-            catalogue=catalogue,
-            deadline=deadline,
-            coverage_facts_of=coverage_facts_of,
-        )
-        documented_citations[dcid] = replace(
-            citation, documentation=documentation, documentation_read_failed=failed
-        )
-    return documented_citations
+    return citations
 
 
 def _sole(values: tuple[str, ...]) -> str | None:

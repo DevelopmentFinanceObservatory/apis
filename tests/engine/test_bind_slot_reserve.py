@@ -61,7 +61,6 @@ def _state(shapes_found: list[ShapeDraft]) -> ResolveState:
         include_observations=False,
         stream_observations=False,
         unit_text=None,
-        source_text=None,
         materialise_graph=None,
         materialise_sdmx=None,
         timing={},

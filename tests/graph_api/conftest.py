@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import ExitStack
 
+import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -182,3 +185,45 @@ def make_client(
         make_app(graph=graph, resolver=resolver, node_pool_size=node_pool_size, coverage=coverage),
         raise_server_exceptions=False,
     )
+
+
+def queued_dcp_reads(client: TestClient) -> int:
+    """Count the reads waiting for a worker in the running surface's DCP-read executor."""
+    return client.app.state.graph_deps.dcp_executor._work_queue.qsize()
+
+
+def wait_until(condition: Callable[[], bool], *, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not condition():
+        assert time.monotonic() < deadline, "condition still false after the timeout"
+        time.sleep(0.01)
+
+
+def send_past_a_full_pool(
+    client: TestClient,
+    send: Callable[[], httpx.Response],
+    *,
+    entered: threading.Event,
+    release: threading.Event,
+) -> list[httpx.Response]:
+    """Send two concurrent requests through a one-worker pool whose reader blocks on `release`.
+
+    The first request's read takes the worker. Once the second request is queued behind it,
+    or has already answered, release the reader and return both responses in send order.
+    """
+    responses: list[httpx.Response | None] = [None, None]
+
+    def send_into(slot: int) -> None:
+        responses[slot] = send()
+
+    first = threading.Thread(target=send_into, args=(0,))
+    first.start()
+    assert entered.wait(timeout=5.0), "the first request never reached the blocking read"
+    second = threading.Thread(target=send_into, args=(1,))
+    second.start()
+    wait_until(lambda: queued_dcp_reads(client) == 1 or responses[1] is not None)
+    release.set()
+    first.join(timeout=5.0)
+    second.join(timeout=5.0)
+    assert all(response is not None for response in responses), "a request never returned"
+    return [response for response in responses if response is not None]

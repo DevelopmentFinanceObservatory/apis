@@ -8,7 +8,9 @@ from __future__ import annotations
 import pytest
 
 from materialise.graph import SubjectPage
+from search.engine.clients.graph import Facet
 from search.engine.errors import EngineInputError
+from search.engine.facet_refusals import candidate_facet_refusal
 from search.engine.region import resolve_spec_resubmit
 from search.engine.region.state import EngineOptions
 from search.models import IdentityBindingValue, ResubmitIdentityPayload
@@ -147,6 +149,35 @@ def test_binding_satisfied_by_every_stat_var_answers_definite_with_all_series():
     assert {sv.ref.dcid for sv in spec.resolved.members} == {_SV_A, _SV_B}
     assert spec.resolved.observations is not None
     assert {s.stat_var.ref for s in spec.resolved.observations.series} == {_SV_A, _SV_B}
+
+
+def test_lifetime_source_does_not_mask_windowed_method_missing_from_one_stat_var():
+    """Every StatVar must hold method pins in-window even when its source exists lifetime."""
+    lifetime = {
+        sv: [
+            Facet(
+                earliest_date="2015",
+                latest_date="2020",
+                obs_count=1,
+                provenance_id="dc/base/Common",
+                measurement_method="GrossDisbursement",
+            )
+        ]
+        for sv in (_SV_A, _SV_B)
+    }
+    windowed = {_SV_A: lifetime[_SV_A], _SV_B: []}
+    refusal = candidate_facet_refusal(
+        FakeGraph(),
+        windowed,
+        {
+            "provenance": IdentityBindingValue(ref="dc/base/Common"),
+            "measurementMethod": IdentityBindingValue(ref="GrossDisbursement"),
+        },
+        provenance_facets_by_sv=lifetime,
+        deadline=None,
+    )
+    assert refusal is not None
+    assert refusal.pointer == "/input/facets/measurementMethod"
 
 
 def test_single_stat_var_behavior_unaffected_by_the_per_sv_check():

@@ -8,12 +8,23 @@ import re
 import sqlite3
 from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import contextmanager
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
+from typing import cast
 
+import pytest
+
+from artifact_store import signing
 from artifact_store.errors import ArtifactNotFoundError, ArtifactRecordConflictError
-from artifact_store.inventory import ArtifactLocation
+from artifact_store.inventory import ArtifactLocation, InventoryBatch
 from artifact_store.signing import SIGNED_URL_TTL_CEILING, SIGNED_URL_TTL_FLOOR
 from artifact_store.store import SPILL_THRESHOLD_BYTES, ArtifactSink, StoredArtifact, Tier
+
+
+@pytest.fixture(autouse=True)
+def _fresh_process_credentials(monkeypatch):
+    """Give each test its own ADC cache, so a test's stubbed `google.auth.default` is the one
+    signing discovers."""
+    monkeypatch.setattr(signing, "_process_credentials", signing._ProcessCredentials())
 
 
 class _BufferedSink(io.BytesIO):
@@ -83,18 +94,18 @@ class FakeArtifactStore:
             raise ArtifactNotFoundError(digest=artifact_digest, tier=tier)
         return self.objects[key]
 
-    def signed_get_url(
+    def signed_location_url(
         self,
         digest: str,
         *,
         tier: Tier,
+        bucket: str,
+        object_name: str,
         ttl: timedelta,
         response_type: str,
         response_disposition: str,
     ) -> str:
-        self.calls.append(("signed_get_url", tier, digest))
-        if (tier, digest) not in self.objects:
-            raise ArtifactNotFoundError(digest=digest, tier=tier)
+        self.calls.append(("signed_location_url", tier, digest))
         if ttl < SIGNED_URL_TTL_FLOOR or ttl > SIGNED_URL_TTL_CEILING:
             raise ValueError(
                 f"ttl {ttl!r} is out of bounds "
@@ -108,17 +119,24 @@ class FakeArtifactStore:
             "&X-Goog-Signature=fake0000signature"
         )
 
+    def deferred(self, batch: InventoryBatch) -> FakeArtifactStore:
+        """This store: it records no inventory, so a write owes no row."""
+        return self
+
 
 class RecordingArtifactInventory:
     """Records accepted inventory calls and returns locations from them.
 
     Conflicting size, bucket, or object names raise
     `ArtifactRecordConflictError`; identical repeats remain separate calls.
-    `uploaded` is recorded but no row state or `stored_at` is modelled.
+    `uploaded` is recorded but no row state is modelled: every location reads as stored
+    at construction time, so it is never past retention, and a `renew` call replaces it.
     """
 
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
+        self.renewals: list[dict[str, object]] = []
+        self._stored_at = datetime.now(UTC)
 
     def record(
         self,
@@ -129,6 +147,7 @@ class RecordingArtifactInventory:
         object_name: str,
         size_bytes: int,
         uploaded: bool = True,
+        stored_at: datetime | None = None,
     ) -> None:
         stored_for_digest = next((c for c in self.calls if c["digest"] == digest), None)
         stored_size = stored_for_digest["size_bytes"] if stored_for_digest is not None else None
@@ -170,10 +189,44 @@ class RecordingArtifactInventory:
             }
         )
 
+    def renew(
+        self,
+        *,
+        digest: str,
+        tier: Tier,
+        bucket: str,
+        object_name: str,
+        size_bytes: int,
+        renewal: int,
+        stored_at: datetime | None = None,
+    ) -> None:
+        self.renewals.append(
+            {
+                "digest": digest,
+                "tier": tier,
+                "bucket": bucket,
+                "object_name": object_name,
+                "renewal": renewal,
+            }
+        )
+
     def get_location(self, digest: str, *, tier: Tier) -> ArtifactLocation | None:
+        for renewal in reversed(self.renewals):
+            if renewal["digest"] == digest and renewal["tier"] == tier:
+                return ArtifactLocation(
+                    bucket=renewal["bucket"],
+                    object_name=renewal["object_name"],
+                    stored_at=self._stored_at,
+                    renewal=renewal["renewal"],
+                )
         for call in self.calls:
             if call["digest"] == digest and call["tier"] == tier:
-                return ArtifactLocation(bucket=call["bucket"], object_name=call["object_name"])
+                return ArtifactLocation(
+                    bucket=call["bucket"],
+                    object_name=call["object_name"],
+                    stored_at=self._stored_at,
+                    renewal=0,
+                )
         return None
 
 
@@ -200,8 +253,14 @@ class FakeGCSBlob:
         if if_generation_match == 0 and exists:
             raise PreconditionFailed(f"object {self.name!r} already exists")
         self._bucket.objects[self.name] = data
+        self._bucket.time_created[self.name] = datetime.now(UTC)
         self._bucket.upload_log.append(self.name)
         self._bucket.cache_control[self.name] = self.cache_control
+
+    @property
+    def time_created(self) -> datetime | None:
+        """Return when the object landed, or `None` when it is absent."""
+        return self._bucket.time_created.get(self.name)
 
     @property
     def size(self) -> int | None:
@@ -272,6 +331,7 @@ class FakeGCSBlobWriter:
         if self._if_generation_match == 0 and exists:
             raise PreconditionFailed(f"object {self._blob.name!r} already exists")
         bucket.objects[self._blob.name] = bytes(self._buffer)
+        bucket.time_created[self._blob.name] = datetime.now(UTC)
         bucket.upload_log.append(self._blob.name)
         bucket.cache_control[self._blob.name] = self._blob.cache_control
 
@@ -336,6 +396,7 @@ class DiscardingFakeGCSBlobWriter(FakeGCSBlobWriter):
         if self._if_generation_match == 0 and exists:
             raise PreconditionFailed(f"object {self._blob.name!r} already exists")
         bucket.objects[self._blob.name] = bytes(self.landed)
+        bucket.time_created[self._blob.name] = datetime.now(UTC)
         bucket.upload_log.append(self._blob.name)
         bucket.cache_control[self._blob.name] = self._blob.cache_control
 
@@ -348,6 +409,8 @@ class FakeGCSBucket:
         self.name = name
         self.objects: dict[str, bytes] = {}
         self.upload_log: list[str] = []
+        # Set when an object lands; a test planting an object sets its own.
+        self.time_created: dict[str, datetime] = {}
         # Populated only when an upload lands.
         self.cache_control: dict[str, str | None] = {}
         # Fail the next upload in this bucket when set.
@@ -385,6 +448,7 @@ class FakeGCSBucket:
                 f"object {dest_name!r} already exists in bucket {destination_bucket.name!r}"
             )
         destination_bucket.objects[dest_name] = self.objects[blob.name]
+        destination_bucket.time_created[dest_name] = datetime.now(UTC)
         destination_bucket.upload_log.append(dest_name)
         return FakeGCSBlob(destination_bucket, dest_name)
 
@@ -468,8 +532,8 @@ CREATE TABLE datasets.artifact_location (
     bucket TEXT NOT NULL,
     object_name TEXT NOT NULL,
     stored_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (artifact_digest, tier),
-    CHECK (object_name = artifact_digest)
+    renewal INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (artifact_digest, tier)
 );
 """
 
@@ -493,7 +557,15 @@ class _FakeTransaction:
     def fetch_all(self, sql: str, params: Sequence[object] = ()) -> list[Mapping[str, object]]:
         params = tuple(p.value if isinstance(p, Tier) else p for p in params)
         cursor = self._conn.execute(_to_sqlite_paramstyle(sql), params)
-        return [dict(row) for row in cursor.fetchall()]
+        return [_decode_timestamps(dict(row)) for row in cursor.fetchall()]
+
+
+def _decode_timestamps(row: dict[str, object]) -> dict[str, object]:
+    """SQLite stores `timestamptz` columns as text; decode them as Postgres does."""
+    for key in ("stored_at", "created_at"):
+        if isinstance(row.get(key), str):
+            row[key] = datetime.fromisoformat(cast(str, row[key]))
+    return row
 
 
 class FakeArtifactInventoryDatasetStore:

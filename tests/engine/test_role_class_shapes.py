@@ -21,6 +21,7 @@ import pytest
 
 from code_index import CodeIndex, IndexStamp, StatVarRow
 from code_index import shared as code_index_shared
+from code_index.members import DatasetScope
 from code_index.shared import get_index, get_measure_index
 from code_index.types import CodeRow, CodeSystemDeclaration
 from datasets_api.adapter import resolve_definition_members
@@ -1628,7 +1629,7 @@ def test_the_population_memo_keys_on_role_keys_and_not_on_the_entities_under_the
     )
 
 
-def test_the_measure_family_cache_keys_on_role_keys_and_exclusions():
+def test_the_measure_family_cache_keys_on_role_keys_and_scope():
     shape = _debt_shape()
     axes = get_measure_index().axes
     query = shape_query(shape, [], ["destination"])
@@ -1637,7 +1638,11 @@ def test_the_measure_family_cache_keys_on_role_keys_and_exclusions():
         shape, axes, shape_query(shape, [], ["origin", "destination"])
     )
     assert measure_family_cache_key(shape, axes, query) != measure_family_cache_key(
-        shape, axes, dataclasses.replace(query, excluded=frozenset({"provenance/Excluded"}))
+        shape,
+        axes,
+        dataclasses.replace(
+            query, scope=DatasetScope(allowed=frozenset({"provenance/Allowed"}), named=False)
+        ),
     )
     assert measure_family_cache_key(shape, axes, query) != measure_family_cache_key(
         shape, axes, shape_query(shape, [], ["destination"], open_role_keys=["origin"])

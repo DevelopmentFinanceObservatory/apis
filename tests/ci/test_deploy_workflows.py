@@ -5,6 +5,7 @@ triggers, the GitHub Environment, and the owner guard.
 """
 
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -173,6 +174,7 @@ def test_every_name_comes_from_the_environment_variables():
         "JOB_COVERAGE",
         "JOB_ORIGIN_CATALOGUE",
         "JOB_SEARCH_CATALOGUE",
+        "JOB_DATASETS_MAINTENANCE",
     ):
         assert image["env"][name] == f"${{{{ vars.{name} }}}}"
         assert name in image["run"]
@@ -184,8 +186,8 @@ def test_every_name_comes_from_the_environment_variables():
             r"gcloud run (?:jobs|services) \w+ (\S+ \S+ \S+)", step.get("run", "")
         )
     ]
-    # Five job updates, eight job executions, and two service updates.
-    assert len(targets) == 15
+    # Six job updates, nine job executions, and two service updates.
+    assert len(targets) == 17
     for target in targets:
         assert re.fullmatch(r'"\$\{\{ vars\.(JOB|SERVICE)_[A-Z_]+ \}\}"', target), target
 
@@ -251,12 +253,69 @@ def test_search_catalogue_job_moves_to_the_new_image_without_executing():
     assert names.index(update) < names.index("Point the datasets worker at the new image")
 
 
+def test_maintenance_job_moves_to_the_new_image_after_both_migrations():
+    """Its next run, scheduled or the settle below, finds the schema the new image expects."""
+    names = [step.get("name") for step in _steps()]
+    update = "Point the datasets maintenance job at the new image"
+    run = _named(update)["run"]
+
+    assert 'gcloud run jobs update "${{ vars.JOB_DATASETS_MAINTENANCE }}"' in run
+    assert "--image=" in run
+    assert names.index("Run the datasets migration job") < names.index(update)
+    assert names.index("Run the presentation migration job") < names.index(update)
+    assert names.index(update) < names.index("Point the datasets worker at the new image")
+
+
+def test_the_maintenance_job_settles_once_both_services_run_the_new_image():
+    """The previous image writes rows in the old shape until both services move, so the settle
+    runs after the apis service moves, and it is the deploy's only maintenance execution."""
+    names = [step.get("name") for step in _steps()]
+    settle = "Settle rows the previous image wrote"
+    executions = [
+        step.get("name")
+        for step in _steps()
+        if 'jobs execute "${{ vars.JOB_DATASETS_MAINTENANCE }}"' in step.get("run", "")
+    ]
+
+    assert executions == [settle]
+    assert "--args=settle" in _named(settle)["run"]
+    assert "--wait" in _named(settle)["run"]
+    assert names.index("Point Cloud Run at the new image") < names.index(settle)
+
+
+def test_the_upfront_check_refuses_a_deploy_without_the_maintenance_job():
+    """The settle step needs the maintenance job, so an environment that does not name it fails
+    the check before the build, and the maintenance steps carry no guard of their own."""
+    image = _step("image")
+    # The check, with workflow expressions filled in as Actions would.
+    check = re.sub(r"\$\{\{[^}]*\}\}", "dev", image["run"])
+    env = dict.fromkeys(image["env"], "set") | {"JOB_DATASETS_MAINTENANCE": ""}
+    unset = subprocess.run(
+        ["bash", "-c", check],
+        env=env | {"PATH": "/usr/bin:/bin", "GITHUB_OUTPUT": "/dev/null"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert unset.returncode == 1
+    assert unset.stdout.splitlines() == [
+        "::error::Missing vars.JOB_DATASETS_MAINTENANCE in the 'dev' GitHub Environment."
+    ]
+    for name in (
+        "Point the datasets maintenance job at the new image",
+        "Settle rows the previous image wrote",
+    ):
+        assert _named(name)["run"].lstrip().startswith("set -euo pipefail\ngcloud run jobs")
+
+
 def test_worker_then_service_move_then_the_code_index_is_recorded():
     names = [step.get("name") for step in _steps()]
 
-    assert names[-3:] == [
+    assert names[-4:] == [
         "Point the datasets worker at the new image",
         "Point Cloud Run at the new image",
+        "Settle rows the previous image wrote",
         "Record the code index the services run",
     ]
 
@@ -276,7 +335,7 @@ def test_decide_step_runs_gcloud_describe_and_git_diff_and_gates_every_later_ste
     steps = _steps()
     decide_index = steps.index(decide)
     later = steps[decide_index + 1 :]
-    assert len(later) == 17
+    assert len(later) == 19
     for step in later:
         assert step["if"] == "steps.decide.outputs.deploy == 'true'", step
 

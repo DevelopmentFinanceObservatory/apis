@@ -99,15 +99,13 @@ class RollingAnchor:
 
 @dataclass(frozen=True)
 class ResolvedFrame:
-    """`manifest` is the stored Datasets version body the frame was minted
-    under. `retrieved_on` is the UTC date the platform first stored this
-    frame's canonical frame1 bytes, which is when the values it holds were
-    read from their sources; a minted component's `provenance.sources[]`
-    states it as `retrieved`. `anchor` is the rolling anchor a derived frame's
-    recipe records, and `None` for a dataset frame or a recipe without one. An
-    intent's relative periods count from `anchor.period` when it is set, and from
-    the newest period half of the component's own series hold otherwise
-    (`assembler.rolling`).
+    """`manifest` is the stored Datasets version document the frame was minted under
+    (`datasets_api.manifest.version_document`). `retrieved_on` is the UTC date the platform first
+    stored this frame's canonical frame, which is when the values it holds were read from their
+    sources; a minted component's `provenance.sources[]` states it as `retrieved`. `anchor` is the
+    rolling anchor a derived frame's recipe records, and `None` for a dataset frame or a recipe
+    without one. An intent's relative periods count from `anchor.period` when it is set, and from
+    the newest period half of the component's own series hold otherwise (`assembler.rolling`).
     """
 
     frame_ref: FrameRef
@@ -121,7 +119,7 @@ class ResolvedFrame:
 
 class FrameUnavailable(Exception):
     # reason: "revoked" | "expired" | "missing_rendering" | "digest_mismatch" |
-    # "ops_unsupported" | "io" | "unknown"
+    # "ops_unsupported" | "quarantined" | "io" | "unknown"
     # Publishing an `ops_`/`ocv_` pair can make `ops_unsupported` succeed on retry.
     def __init__(self, *, reason: str, detail: str) -> None:
         self.reason = reason

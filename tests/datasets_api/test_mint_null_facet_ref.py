@@ -9,9 +9,8 @@ from __future__ import annotations
 
 import httpx
 
-from datasets_api.revision import SentinelRevisionReader
 from dc_sdmx import SdmxClient
-from series_coverage.schema import FacetMetadata, RoleNames
+from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from spec_registry import LiveSpecRegistry
 from spec_registry.reader import LiveSpecReader
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
@@ -63,10 +62,10 @@ def _client(artifact_store: FakeArtifactStore):
     store = FakeDatasetStore()
     coverage = build_coverage_index(
         [
-            (_STAT_VAR, "f-grant", "country/USA", _RECIPIENT, [2015, 2016]),
-            (_STAT_VAR, "f-none", "country/USA", _RECIPIENT, [2015]),
+            (_STAT_VAR, "f-grant", ABSENT_ENTITY, _RECIPIENT, [2015, 2016]),
+            (_STAT_VAR, "f-none", ABSENT_ENTITY, _RECIPIENT, [2015]),
         ],
-        role_names={_STAT_VAR: RoleNames(donor="provider", recipient="recipient")},
+        role_names={_STAT_VAR: RoleNames(donor=None, recipient="recipient")},
         facet_metadata={
             "f-grant": FacetMetadata(
                 provenance_id=_PROVENANCE, measurement_method="GrantEquivalent", unit="CurrencyUSD"
@@ -90,7 +89,6 @@ def _client(artifact_store: FakeArtifactStore):
         spec_reader=LiveSpecReader(store=store),
         graph=graph,
         sdmx=_sdmx(),
-        revision_reader=SentinelRevisionReader(),
         artifact_store=artifact_store,
         snapshot_reader=FakeSnapshotReader(),
         reference_writer=FakeArtifactReferenceWriter(),

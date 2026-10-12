@@ -106,6 +106,10 @@ FAMILY_TOTAL_ABSENT = "family_total_absent"
 # may resolve other members for the same identity, so the response cache does not
 # store the answer.
 MEMBERSHIP_UNVERIFIED = "membership_unverified"
+# A resubmit's elected members include StatVars whose arcs the graph does not hold, so the
+# answer leaves them out. The code index lists members the graph no longer serves, or the
+# graph dropped a member between the election and the arc read. The message names them.
+MEMBERS_ABSENT_FROM_GRAPH = "members_absent_from_graph"
 # A named place's direction is dropped when the elected shape cannot carry it,
 # so the place becomes the subject. The warning carries this fact. A query with
 # no direction hint emits none. Promote paths refuse role_incompatible instead.

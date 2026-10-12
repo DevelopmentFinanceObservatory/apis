@@ -5,15 +5,16 @@ write reaches a GET at the next graph generation, and each request reuses one `D
 from __future__ import annotations
 
 import dataclasses
-import threading
 from collections.abc import Mapping, Sequence
 
 import httpx
 
+import datasets_api.doors.definition as definition_module
+from datasets_api.doors.definition import DefinitionDeps
 from dc_sdmx import SdmxClient
 from graph_generation import FakeGeneration, GenerationStamp
 from materialise.graph import Facet, FacetDefaultPolicy
-from series_coverage.schema import FacetMetadata, RoleNames
+from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from spec_registry import LiveSpecRegistry
 from spec_registry.identity import recompute_identity
 from spec_registry.reader import LiveSpecReader
@@ -217,12 +218,12 @@ def _coverage_service() -> FakeCoverageService:
     """One-facet coverage for both StatVars, matching `_FACET` and their 2020 rows."""
     index = build_coverage_index(
         [
-            (_ODA_GRANTS, "facet1", "country/USA", _RECIPIENT, [2020]),
-            (_ODA_LOANS, "facet1", "country/USA", _RECIPIENT, [2020]),
+            (_ODA_GRANTS, "facet1", ABSENT_ENTITY, _RECIPIENT, [2020]),
+            (_ODA_LOANS, "facet1", ABSENT_ENTITY, _RECIPIENT, [2020]),
         ],
         role_names={
-            _ODA_GRANTS: RoleNames(donor="provider", recipient="recipient"),
-            _ODA_LOANS: RoleNames(donor="provider", recipient="recipient"),
+            _ODA_GRANTS: RoleNames(donor=None, recipient="recipient"),
+            _ODA_LOANS: RoleNames(donor=None, recipient="recipient"),
         },
         facet_metadata={
             "facet1": FacetMetadata(
@@ -286,23 +287,24 @@ def test_a_graph_write_between_two_retrievals_reaches_the_next_graph_generation(
     assert resolved_refs() == {_ODA_GRANTS_REF, _ODA_LOANS_REF}
 
 
-def test_the_definition_doors_own_deps_are_built_once_not_rebuilt_per_request(monkeypatch):
-    """Each request replaces the same base `DefinitionDeps`."""
-    seen_base_ids: list[int] = []
-    real_replace = dataclasses.replace
-    lock = threading.Lock()
+def test_every_retrieval_shares_the_surfaces_rebuilds_and_enrichment(monkeypatch):
+    """Each request's `DefinitionDeps` wraps the surface's one `RebuildFlights` and enrichment
+    cache, so concurrent rebuilds of one subject meet and labels are read once."""
+    views: list[DefinitionDeps] = []
+    real_definition_deps = definition_module.definition_deps
 
-    def _spy_replace(obj, **changes):
-        with lock:
-            seen_base_ids.append(id(obj))
-        return real_replace(obj, **changes)
+    def _spy(deps, **kwargs):
+        view = real_definition_deps(deps, **kwargs)
+        views.append(view)
+        return view
 
-    monkeypatch.setattr("datasets_api.doors.definition.replace", _spy_replace)
+    monkeypatch.setattr(definition_module, "definition_deps", _spy)
 
     client, _graph, _arcs, spec_id = _register_and_client()
 
     client.get(f"/api/datasets/{spec_id}")
     client.get(f"/api/datasets/{spec_id}")
 
-    assert len(seen_base_ids) == 2
-    assert seen_base_ids[0] == seen_base_ids[1]
+    first, second = views
+    assert first.rebuilds is second.rebuilds
+    assert first.enrichment is second.enrichment

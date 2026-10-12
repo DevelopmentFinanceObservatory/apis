@@ -11,7 +11,6 @@ import time
 import pytest
 
 from materialise.graph import SubjectPage
-from search.engine.envelope import now_ms
 from search.engine.errors import EngineInputError
 from search.engine.options.resolve import resolve_options_target
 from search.engine.options.surface import build_options_response
@@ -163,7 +162,7 @@ def _present_dcids(
         req,
         target,
         graph=graph,
-        start_ms=now_ms(),
+        deadline=time.monotonic() + 30.0,
         materialise_graph=materialise_graph,
         materialise_sdmx=materialise_sdmx,
         coverage=empty_coverage_snapshot(),
@@ -301,7 +300,7 @@ def test_deadline_is_threaded_into_the_request_form_unit_decision():
         req,
         target,
         graph=graph,
-        start_ms=now_ms(),
+        deadline=time.monotonic() + 30.0,
         materialise_graph=materialise_graph,
         materialise_sdmx=materialise_sdmx,
         coverage=empty_coverage_snapshot(),
@@ -447,7 +446,7 @@ def test_request_form_unit_narrows_per_stat_var_not_pooled_across_stat_vars():
         req,
         target,
         graph=graph,
-        start_ms=now_ms(),
+        deadline=time.monotonic() + 30.0,
         materialise_graph=materialise_graph,
         materialise_sdmx=materialise_sdmx,
         coverage=empty_coverage_snapshot(),

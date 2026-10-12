@@ -22,22 +22,17 @@ from materialise.facets import FacetBinding
 from materialise.graph import Facet
 from materialise.profile import ColumnProfile, OutputProfile, compute_output_profile
 from materialise.reshape import PivotAnalysis, Table, analyse_pivot, classify_columns
-from materialise.revision import RevisionSnapshot, SourceRevision
 from materialise.window import RequestedWindow
 from series_coverage.index import CoverageIndex
 from series_coverage.schema import FacetMetadata, RoleNames
 from tests.engine._fake_coverage import build_coverage_index
 
-from .conftest import FakeGraphReader, FakeRevisionReader
+from .conftest import FakeGraphReader
 
 _BASE_URL = "https://datacommons.one.org/core/api"
 _STAT_VAR = "dcid:MalariaGrantDisbursements"
 _BARE_STAT_VAR = "MalariaGrantDisbursements"
 
-_SNAPSHOT = RevisionSnapshot(
-    graph_revision="graph-rev-2024-01",
-    source_revisions=(SourceRevision(source="OECD_DAC_CRS", revision="rev-7"),),
-)
 
 _CRS_CSV_HEADER = (
     "STRUCTURE,STRUCTURE_ID,ACTION,variableMeasured,provider,recipient,unit,measurementMethod,"
@@ -130,8 +125,7 @@ def _materialise_crs_fixture():
         [request],
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -175,8 +169,7 @@ def _materialise_observation_about_fixture():
         [request],
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
     )
@@ -298,7 +291,9 @@ def test_multiple_role_columns_share_one_enrichment_lookup_call():
     )
 
     profile = compute_output_profile(
-        table, role_columns=("provider", "recipient"), enrichment=EnrichmentLookup(graph)
+        table,
+        role_columns=("provider", "recipient"),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
     )
 
     assert graph.calls["node_arcs_many"] == 1
@@ -325,7 +320,9 @@ class TestComputeOutputProfileEdgeCases:
         table = Table(columns=self._COLUMNS, rows=rows)
         graph = FakeGraphReader(arcs=arcs or {})
         return compute_output_profile(
-            table, role_columns=("recipient",), enrichment=EnrichmentLookup(graph)
+            table,
+            role_columns=("recipient",),
+            enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         )
 
     def test_zero_row_frame_reports_columns_with_empty_pivots_and_enrichments(self):
@@ -443,7 +440,9 @@ def _assert_pivot_feasibility_agrees_with_analyse_pivot(table: Table) -> None:
     """Compares each reported pivot pair's six feasibility fields with `analyse_pivot`."""
     classification = classify_columns(table.columns)
     profile = compute_output_profile(
-        table, role_columns=(), enrichment=EnrichmentLookup(FakeGraphReader())
+        table,
+        role_columns=(),
+        enrichment=EnrichmentLookup(FakeGraphReader(), type_kinds={}, parties={}),
     )
     assert profile.pivots, "fixture produced no pivot pairs to compare"
     for feasibility in profile.pivots:
@@ -569,7 +568,9 @@ class TestPivotFeasibilityAgreesWithAnalysePivot:
             table = _random_grammar_shaped_table(rng)
             classification = classify_columns(table.columns)
             profile = compute_output_profile(
-                table, role_columns=(), enrichment=EnrichmentLookup(FakeGraphReader())
+                table,
+                role_columns=(),
+                enrichment=EnrichmentLookup(FakeGraphReader(), type_kinds={}, parties={}),
             )
             for feasibility in profile.pivots:
                 expected = analyse_pivot(

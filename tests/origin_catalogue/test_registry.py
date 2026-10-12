@@ -195,6 +195,13 @@ def _series(*series: str, reason: str = "superseded_by_dfo", extra: str = "") ->
     return _UN + f"exclusions = [{rows}]\n"
 
 
+def _alias(refs: str | list[str], *names: str) -> str:
+    refs = [refs] if isinstance(refs, str) else refs
+    listed_refs = ", ".join(f'"{ref}"' for ref in refs)
+    listed = ", ".join(f'"{name}"' for name in names)
+    return f"[[alias]]\nrefs = [{listed_refs}]\nnames = [{listed}]\n"
+
+
 @pytest.mark.parametrize(
     ("toml", "message"),
     [
@@ -305,6 +312,16 @@ def _series(*series: str, reason: str = "superseded_by_dfo", extra: str = "") ->
             _BASE + '[[un_system]]\nprovenance = "undata/p/X"\nsegment = "UN_X"\nlabel = "x"\n',
             "segment",
         ),
+        (_BASE + _UN + _alias("provenance/A", "IDS") + _alias("provenance/B", "ids"), "alias name"),
+        (_BASE + _UN + _alias("provenance/A", "IDS", "I D S", "ids "), "alias name"),
+        (_BASE + _UN + _alias(["provenance/A", "provenance/B"], "X", "x"), "alias name"),
+        (_BASE + _UN + _alias(["provenance/A", "provenance/B", "provenance/A"], "X"), "alias ref"),
+        (_BASE + _UN + _alias([], "X"), r"alias\.0\.refs\n  Tuple should have at least"),
+        (_BASE + _UN + _alias(["provenance/A", "WorldBank"], "X"), r"alias\.0\.refs\.1"),
+        (_BASE + _UN + _alias("provenance/A", " "), r"alias\.0\.names\.0"),
+        (_BASE + _UN + _alias("provenance/A"), r"alias\.0\.names\n  Tuple should have at least"),
+        (_BASE + _UN + _alias("WorldBank", "World Bank"), r"alias\.0\.refs\.0"),
+        (_BASE + _UN + _alias("dc/s/World Bank", "World Bank"), r"alias\.0\.refs\.0"),
         (_BASE + _UN + "extra = 1\n", "extra"),
         (_BASE + '[[base]]\nsource = "dc/s/A"\n' + _UN, "label"),
         ("[[base]\n", "not valid UTF-8 TOML"),
@@ -320,6 +337,37 @@ def test_parse_registry_accepts_a_minimal_registry() -> None:
     assert [entry.source for entry in registry.base] == ["dc/s/WorldBank"]
     assert registry.base[0].exclusions is None
     assert registry.un_system[0].exclusions == ()
+    assert registry.alias == ()
+
+
+def test_parse_registry_accepts_aliases_of_any_reference_kind() -> None:
+    toml = (
+        _BASE
+        + _UN
+        + _alias("provenance/OECDDAC2A", "DAC2a", "DAC 2a")
+        + _alias("dc/d/WorldBank_WorldDevelopmentIndicators", "WDI")
+        + _alias("dc/s/OrganisationForEconomicCo-operationAndDevelopmentOecd", "the OECD")
+    )
+    registry = parse_registry(toml.encode("utf-8"))
+    assert [(entry.refs, entry.names) for entry in registry.alias] == [
+        (("provenance/OECDDAC2A",), ("DAC2a", "DAC 2a")),
+        (("dc/d/WorldBank_WorldDevelopmentIndicators",), ("WDI",)),
+        (("dc/s/OrganisationForEconomicCo-operationAndDevelopmentOecd",), ("the OECD",)),
+    ]
+
+
+def test_parse_registry_accepts_a_collection_alias_and_a_ref_shared_by_aliases() -> None:
+    toml = (
+        _BASE
+        + _UN
+        + _alias(["provenance/OECDDAC1", "provenance/OECDDAC2A"], "DAC")
+        + _alias("provenance/OECDDAC1", "DAC1")
+    )
+    registry = parse_registry(toml.encode("utf-8"))
+    assert [entry.refs for entry in registry.alias] == [
+        ("provenance/OECDDAC1", "provenance/OECDDAC2A"),
+        ("provenance/OECDDAC1",),
+    ]
 
 
 def test_parse_registry_accepts_both_supersessions() -> None:

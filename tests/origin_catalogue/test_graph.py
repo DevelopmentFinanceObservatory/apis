@@ -772,6 +772,25 @@ def test_withheld_at_names_only_pairs_with_no_admitted_facet(
     )
 
 
+@pytest.mark.parametrize(
+    ("allowed", "withheld"),
+    [
+        # Every facet at KEN and USA sits outside the scope: the request left them out.
+        ({_UN_WHO}, {}),
+        # Census is outside the scope, so `geoId/06` withholds nothing it would name.
+        ({_WDI, _CRS}, {}),
+        # Census inside the scope and still not admitted is named.
+        ({_WDI, _CENSUS}, {"geoId/06": (_CENSUS,)}),
+    ],
+)
+def test_withheld_at_never_names_a_provenance_outside_the_scope(
+    client: OriginGraphClient, bind_catalogue, allowed: set[str], withheld: dict
+) -> None:
+    bind_catalogue(_catalogue().scoped(frozenset(allowed)))
+
+    assert client.withheld_at([_POPULATION], ["country/KEN", "country/USA", "geoId/06"]) == withheld
+
+
 def test_withheld_reads_carry_the_deadline_and_byte_cap(
     graph: _Graph, client: OriginGraphClient, bind_catalogue
 ) -> None:
@@ -800,6 +819,31 @@ def test_base_presence_answers_scan_places_from_the_table_and_reads_the_rest(
     assert payload["entity"]["dcids"] == ["geoId/08", "geoId/06"]
     assert payload["select"] == ["variable", "entity", "facet"]
     assert payload["filter"] == {"domains": ["data-explorer.oecd.org", "datatopics.worldbank.org"]}
+
+
+def test_presence_under_a_scope_reads_scan_places_live(
+    graph: _Graph, client: OriginGraphClient, bind_catalogue
+) -> None:
+    """The table places `_GDP` at Kenya under WDI. A scope holding only CRS leaves that row
+    out, so Kenya is read live, where `_GDP` holds no CRS facet."""
+    bind_catalogue(_catalogue().scoped(frozenset({_CRS})))
+    places = ["country/KEN", "geoId/06"]
+
+    assert client.entities_with_data([_GDP], places) == []
+    assert client.entities_with_data_by_variable([_GDP], places) == {_GDP: []}
+    assert [
+        json.loads(r.content)["entity"]["dcids"] for r in graph.observation_requests(_OURS_HOST)
+    ] == [places, places]
+
+
+def test_a_scope_excluding_dfo_lets_a_base_facet_serve_at_a_dfo_place(
+    client: OriginGraphClient, bind_catalogue
+) -> None:
+    bind_catalogue(_catalogue().scoped(frozenset({_WDI, _CENSUS})))
+
+    facets = client.observation_facets_batch([_POPULATION], ["country/KEN", "geoId/06"])
+
+    assert _providers(facets[_POPULATION]) == {"country/KEN": [_WDI], "geoId/06": []}
 
 
 def test_presence_reads_nothing_when_the_table_covers_every_place(

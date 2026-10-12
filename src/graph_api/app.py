@@ -1,11 +1,12 @@
 """Compose the Graph API's routes, dependencies, and error classifiers into one surface.
 
 The lifespan builds one shared graph reader, which routes `undata/` dcids to
-the UN System Data Commons, and a bounded DCP-read executor with an admission
-semaphore. Surface construction loads the origin catalogue, so a missing or
-unloadable `ORIGIN_CATALOGUE_URI` fails startup, and each request binds its
-loaded snapshot. Resolve confirmation and region reads, node
-reads, and source-document reads share them. Resolvekit matching uses its
+the UN System Data Commons, and a bounded DCP-read executor that queues
+reads past its worker count and logs a WARNING when it fills. Surface
+construction loads the origin catalogue, so a missing or unloadable
+`ORIGIN_CATALOGUE_URI` fails startup, and each request binds its loaded
+snapshot. Resolve confirmation and region reads, node reads, and
+source-document reads share them. Resolvekit matching uses its
 own single-worker executor. A live surface also acquires the process-wide
 coverage service when `COVERAGE_ARTIFACT_URI` is set, and the sources door
 reads currency and granularity from it. A missing URI, a missing `coverage`
@@ -25,8 +26,6 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
-import threading
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
@@ -38,11 +37,17 @@ from dfo_platform.doors import DoorContribution, combine_classifiers, flatten
 from entity_resolution import EntityResolver, SharedResolver, acquire_shared, release_shared
 from graph_api.codes import GRAPH_CODE_CATALOGUE
 from graph_api.config import GRAPH_NODE_POOL_SIZE, GraphSettings
-from graph_api.deps import GRAPH_DEPS_SLOT, GraphDeps, GraphDepsNotSet
+from graph_api.deps import (
+    GRAPH_DEPS_SLOT,
+    DcpExecutorShutDown,
+    DcpReadExecutor,
+    GraphDeps,
+    GraphDepsNotSet,
+)
 from graph_api.doors.health import build_health_door
 from graph_api.doors.node import build_node_door
 from graph_api.doors.resolve import build_resolve_door
-from graph_api.doors.sources import build_sources_door
+from graph_api.doors.sources import build_sources_door, new_provenance_doc_cache
 from graph_api.reader import GraphNodeReader
 from graph_api.version import GRAPH_CAPABILITY_VERSION
 from graph_generation import UNKNOWN_GENERATION, GenerationProvider, RegistrationHandle
@@ -59,12 +64,20 @@ logger = logging.getLogger(__name__)
 
 
 def _classify_deps_exception(exc: BaseException) -> ProblemSpec | None:
-    """Classify requests that arrive before the lifespan publishes `GRAPH_DEPS_SLOT`."""
+    """Classify requests that arrive before the lifespan publishes `GRAPH_DEPS_SLOT`, and
+    reads submitted after teardown shut the DCP-read executor down."""
     if isinstance(exc, GraphDepsNotSet):
         return ProblemSpec(
             status=503,
             code="service_unavailable",
             detail="the Graph surface has not finished starting; retry",
+            retryable=True,
+        )
+    if isinstance(exc, DcpExecutorShutDown):
+        return ProblemSpec(
+            status=503,
+            code="service_unavailable",
+            detail="the Graph surface is shutting down; retry",
             retryable=True,
         )
     return None
@@ -111,8 +124,8 @@ def graph_surface(
     """Build the Graph surface.
 
     Inject `graph` or `resolver` to bypass their live startup resources.
-    `node_pool_size` sets both the bounded DCP executor size and its
-    admission semaphore; `None` uses `GRAPH_NODE_POOL_SIZE`. `coverage`
+    `node_pool_size` sets the bounded DCP executor's worker count; `None` uses
+    `GRAPH_NODE_POOL_SIZE`. `coverage`
     feeds the sources door's currency and granularity. When it is omitted, a
     live surface (no injected `graph`) acquires the process-wide service and an
     injected graph runs without coverage.
@@ -136,18 +149,20 @@ def graph_surface(
         shared_resolver: SharedResolver | None = None
         shared_generation: GenerationProvider | None = None
         generation_registration: RegistrationHandle | None = None
-        dcp_executor: ThreadPoolExecutor | None = None
-        dcp_semaphore: threading.BoundedSemaphore | None = None
+        doc_cache_registration: RegistrationHandle | None = None
+        dcp_executor: DcpReadExecutor | None = None
         graph_dcp_base_url: str | None = None
         resolved_coverage = coverage
 
         async def _release_owned() -> None:
-            """Drain queued and running work off-loop. Close registration, release the
+            """Drain queued and running work off-loop. Close registrations, release the
             resolver, then generation, and close the reader last. Release only resources
             this lifespan owns. Injected graph and resolver objects remain caller-owned.
             """
             if dcp_executor is not None:
                 await asyncio.to_thread(dcp_executor.shutdown, wait=True)
+            if doc_cache_registration is not None:
+                doc_cache_registration.close()
             if generation_registration is not None:
                 generation_registration.close()
             if shared_resolver is not None:
@@ -172,10 +187,9 @@ def graph_surface(
             effective_pool_size = (
                 node_pool_size if node_pool_size is not None else GRAPH_NODE_POOL_SIZE
             )
-            dcp_executor = ThreadPoolExecutor(
+            dcp_executor = DcpReadExecutor(
                 max_workers=effective_pool_size, thread_name_prefix="graph-dcp"
             )
-            dcp_semaphore = threading.BoundedSemaphore(effective_pool_size)
 
             resolved_resolver = resolver
             resolved_generation: GenerationProvider = UNKNOWN_GENERATION
@@ -206,6 +220,15 @@ def graph_surface(
                 resolved_resolver = resolver_instance
                 resolved_generation = shared_generation
 
+            provenance_docs = new_provenance_doc_cache(
+                executor=dcp_executor, generation=resolved_generation
+            )
+            doc_cache_registration = resolved_generation.register(
+                "graph_api.provenance_docs",
+                stats=provenance_docs.stats,
+                clear=provenance_docs.clear,
+            )
+
             if resolved_coverage is None and graph is None:
                 resolved_coverage = await _acquire_coverage()
         except BaseException:
@@ -217,8 +240,8 @@ def graph_surface(
             graph=resolved_graph,
             resolver=resolved_resolver,
             dcp_executor=dcp_executor,
-            dcp_semaphore=dcp_semaphore,
             generation=resolved_generation,
+            provenance_docs=provenance_docs,
             coverage=resolved_coverage,
         )
         GRAPH_DEPS_SLOT.set(_app, deps)
@@ -237,10 +260,12 @@ def graph_surface(
         classify=combine_classifiers(_classify_deps_exception, *(door.classify for door in doors)),
         exception_types=(
             GraphDepsNotSet,
+            DcpExecutorShutDown,
             *(exc_type for door in doors for exc_type in door.exception_types),
         ),
         exception_exemplars=(
             GraphDepsNotSet(),
+            DcpExecutorShutDown(),
             *(exemplar for door in doors for exemplar in door.exception_exemplars),
         ),
         lifespan=lifespan,

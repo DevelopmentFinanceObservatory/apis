@@ -68,7 +68,7 @@ The status keys `definite`, `candidates`, `no_data`, `unsupported` and `mixed` a
 
 A measure's `shape` keys are `population_type`, `measured_property`, `stat_type`, `measurement_qualifier` and `measurement_denominator`. An omitted key is not asserted and `null` asserts absence. `bound` maps a slot to a value, or to a list for a set binding. `open` lists slots that must stay unbound. `stat_vars` pins exact StatVars only where the StatVar is the answer.
 
-A `provenance` names the Data Commons (`dfo`, `base`, `un_system`) and the provenance dcid the answer's facets carry; naming either replaces the family's pair. `bound: true` asserts that `definition.identity.facets.provenance` is a value binding, which an answer carries when the part names a dataset or bind elects a shape only an opt-in dataset publishes, which names that table, and `bound: false` asserts that it is not. Written alone, `bound` keeps the family's pair.
+A `provenance` names the Data Commons (`dfo`, `base`, `un_system`) and the provenance dcid the answer's facets carry; naming either replaces the family's pair. `bound: true` asserts that `definition.identity.facets.provenance` is a value binding, which an answer carries when the part names or excludes a source, since the identity binds the provenance that served, or when bind elects a shape only an opt-in dataset publishes, which names that table, and `bound: false` asserts that it is not. Written alone, `bound` keeps the family's pair.
 
 `{gl: "..."}` in place of a value marks it unconfirmed: the text says what the grounding pass must read from the graph.
 

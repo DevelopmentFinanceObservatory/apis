@@ -1,16 +1,27 @@
 """Standalone ASGI app for `POST /internal/datasets/operations/{operation_id}/run`.
 
-The main app mounts it when `DFO_WORKER_SURFACE` is truthy. It bypasses `Surface`, whose
-prefixes must start with `/api/`, so the route sits under `/internal/` for Cloud Run's internal
-ingress and has no problem-details envelope or trace id. Cloud Tasks uses HTTP status only. A 2xx ends
-a delivery. Other statuses retry. Cloud Run concurrency 1 allows one request per instance. The
-app builds one `DefinitionDeps` and runs materialisation in a worker thread, with one origin
-catalogue build bound for that one operation. Before claiming, the route reads the operation row.
-When the loaded build is the one the row names, the operation runs under it. Otherwise the route
-reads the published build (`CatalogueService.snapshot_current`), so an operation submitted under a
-build newer than this instance's loaded one runs under the newer admission. A row with no
-build, written before migration 0015, also takes the published build. A failed read answers 503
-without a claim, and Cloud Tasks retries.
+The worker is a separate deployment: `dfo_apis.app` builds this app instead of the API surfaces
+when `DFO_WORKER_SURFACE` is truthy, and the main app never mounts it. It bypasses `Surface`,
+whose prefixes must start with `/api/`, so the route sits under `/internal/` for Cloud Run's
+internal ingress and has no problem-details envelope or trace id. Cloud Tasks uses HTTP status
+only. A 2xx ends a delivery. Other statuses retry. Cloud Run concurrency 1 allows one request per
+instance.
+
+The lifespan builds one `DefinitionDeps` per process: one artifact store, one graph client, one
+SDMX client, and one materialise semaphore with a single permit, which every operation's
+materialisation takes. Materialisation runs in a worker thread.
+
+The route verifies the OIDC token and claims the row (`OperationStore.claim`) for the task's
+submission, with a static lease of `LEASE_SECONDS`, under Cloud Tasks' 1,800-second dispatch
+deadline. A delivery that finds the row inside another attempt's lease answers 409. A delivery
+that finds the row past the operation deadline fails it retryable (`OperationStore.abandon`) and
+answers 200 without running it. The run's work deadline is `RUN_DEADLINE_SECONDS` after the stored
+`claimed_at`, read against the same wall clock as the store, so the lease outlasts it by the time
+the final writes need. The operation runs under one origin catalogue build. It is the loaded build
+when it is the one the row names, otherwise the published build
+(`CatalogueService.snapshot_current`), so an operation submitted under a build newer than this
+instance's loaded one runs under the newer admission. A row with no build also takes the published
+build. A failed catalogue read is a transient failure of the claimed attempt.
 
 Tests can inject every dependency. With dependencies omitted, `build_worker_app` resolves live
 services in its lifespan from shared and worker-specific settings.
@@ -21,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import time
 from collections.abc import Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import timedelta
@@ -35,10 +47,12 @@ from code_index.query import CodeIndex
 from code_index.shared import get_index
 from dataset_store import DatasetStore, LiveDatasetStore, close_shared_pool, shared_pool
 from dataset_store.snapshot import LiveSnapshotReader
+from datasets_api.admission import MaterialisePermits
 from datasets_api.config import DatasetsBuildSettings, DatasetsConfigError, DatasetsSettings
-from datasets_api.doors.definition import DefinitionDeps
+from datasets_api.current import DefinitionDeps
 from datasets_api.generation import enter_shared_generation, register_place_scope_memo
-from datasets_api.operation_store import LiveOperationStore, OperationStore
+from datasets_api.operation_store import Clock, LiveOperationStore, OperationStore, utc_now
+from datasets_api.operations.lease import LEASE_SECONDS, RUN_DEADLINE_SECONDS
 from datasets_api.operations.oidc import LiveOidcVerifier, OidcRejected, OidcVerifier
 from datasets_api.operations.worker import (
     OperationSuperseded,
@@ -46,9 +60,10 @@ from datasets_api.operations.worker import (
     run_operation,
 )
 from datasets_api.publish_models import MAX_ROWS as _MATERIALISE_RAW_FETCH_GUARD_ROWS
-from datasets_api.revision import SentinelRevisionReader
+from datasets_api.version import DATASETS_CAPABILITY_VERSION
 from datasets_api.version_store import LiveHeadStore, LiveVersionRecordWriter
 from dc_sdmx import SdmxClient
+from dfo_platform.build import build_commit
 from materialise import EnrichmentLookup
 from materialise.graph import GraphReader
 from materialise.rate_tables import RateTableCache
@@ -56,6 +71,7 @@ from origin_catalogue import bound_catalogue
 from origin_catalogue.graph import OriginGraphClient, build_graph_client
 from origin_catalogue.service import CatalogueService, get_catalogue_service
 from series_coverage.shared import CoverageService, get_coverage_service
+from spec_registry import LiveSpecRegistry
 from spec_registry.reader import LiveSpecReader
 from statvar_members import shared_enumerator
 
@@ -75,36 +91,40 @@ def _build_live_definition_deps(
     artifact_store: ArtifactStore,
     code_index: CodeIndex,
     coverage: CoverageService,
+    materialise_semaphore: MaterialisePermits,
     settings: DatasetsBuildSettings | None = None,
 ) -> DefinitionDeps:
     """Assembles dependencies without I/O.
 
-    The ceiling and member concurrency match the mint and definition doors, keeping admission
-    estimates and execution limits aligned. The snapshot reader reads the same store, so a worker
+    The ceiling, member concurrency, build and capability version match the mint and definition
+    doors, keeping admission estimates and execution limits aligned and recording each run
+    under the release that produced it. The snapshot reader reads the same store, so a worker
     render serves as the synchronous path does: a version on record keeps its stored citation and
     `prepared_at`, the response lists the artifact already linked under each rendering key, and
     `run_operation` checks that the request's rendering is servable before completing.
     """
     _settings = settings if settings is not None else DatasetsBuildSettings.from_env()
     return DefinitionDeps(
+        registry=LiveSpecRegistry(store=store),
         spec_reader=LiveSpecReader(store=store),
         graph=graph,
         sdmx=sdmx,
-        revision_reader=SentinelRevisionReader(),
         artifact_store=artifact_store,
-        materialiser_build="",
-        capability_version="",
+        materialiser_build=build_commit(),
+        capability_version=DATASETS_CAPABILITY_VERSION,
         ceiling=_MATERIALISE_RAW_FETCH_GUARD_ROWS,
         member_concurrency=_settings.mint_member_max_concurrency,
         enumerator=shared_enumerator(),
-        enrichment=EnrichmentLookup(graph),
+        enrichment=EnrichmentLookup(
+            graph, type_kinds=code_index.party_types, parties=code_index.parties
+        ),
         code_index=code_index,
         rate_cache=RateTableCache(),
         coverage=coverage,
         version_writer=LiveVersionRecordWriter(store=store),
         head_store=LiveHeadStore(store=store),
         snapshot_reader=LiveSnapshotReader(store=store),
-        materialise_semaphore=None,
+        materialise_semaphore=materialise_semaphore,
         head_recheck_interval=timedelta(seconds=_settings.head_recheck_seconds),
         head_max_age=timedelta(seconds=_settings.head_max_age_seconds),
         settings=_settings,
@@ -113,9 +133,8 @@ def _build_live_definition_deps(
 
 class WorkerSettings(BaseSettings):
     """No-safe-default env this module reads on its own, independent of
-    `DatasetsSettings.from_env()`. See this module's docstring for why
-    `DFO_TASKS_QUEUE` (the one other var in that family) is not part of
-    this same object: this app never enqueues anything.
+    `DatasetsSettings.from_env()`. `DFO_TASKS_QUEUE`, the one other var in that family, is not
+    part of it: this app never enqueues anything.
     """
 
     model_config = SettingsConfigDict()
@@ -178,23 +197,21 @@ def build_worker_app(
     oidc_verifier: OidcVerifier | None = None,
     worker_url: str | None = None,
     worker_invoker_service_account: str | None = None,
-    lease_seconds: float | None = None,
     max_attempts: int | None = None,
     run_in_thread: Callable[..., None] = run_operation,
     catalogue: CatalogueService | None = None,
+    now: Clock = utc_now,
 ) -> FastAPI:
     """Builds the worker app, resolving omitted dependencies in its lifespan.
 
-    Tests can inject all dependencies and a `run_in_thread` stub. The runner receives the
-    claimed operation, lease duration, dependencies, and final-attempt flag. After a normal
-    return, the route reads the stored terminal state and answers 2xx so Cloud Tasks does not
-    retry completed or failed work. `catalogue` defaults to the process-wide service, so a
-    missing or unloadable `ORIGIN_CATALOGUE_URI` fails construction.
+    Tests can inject all dependencies and a `run_in_thread` stub. The runner receives the claimed
+    operation, dependencies, the run's absolute monotonic work deadline, and the final-attempt flag.
+    `now` is the wall clock the work deadline is counted against, the same clock the operation store
+    stamps `claimed_at` with. After a normal return, the route reads the stored terminal state and
+    answers 2xx so Cloud Tasks does not retry completed or failed work. `catalogue` defaults to the
+    process-wide service, so a missing or unloadable `ORIGIN_CATALOGUE_URI` fails construction.
     """
     _settings = settings if settings is not None else DatasetsBuildSettings.from_env()
-    _lease_seconds = (
-        lease_seconds if lease_seconds is not None else _settings.operation_lease_seconds
-    )
     _max_attempts = max_attempts if max_attempts is not None else _settings.operation_max_attempts
     _operation_store: OperationStore | None = operation_store
     _deps: DefinitionDeps | None = deps
@@ -266,6 +283,17 @@ def build_worker_app(
                         inventory=LiveArtifactInventory(store=store),
                     )
                     code_index = get_index()
+                    coverage = get_coverage_service()
+                    materialise_semaphore = MaterialisePermits(1)
+                    # A coverage reload holds the run's permit, as on the API surface. The run
+                    # confirms its coverage snapshot before and while it waits for the permit
+                    # and once it holds it, so it builds its frame beside the one index the
+                    # service serves and drops a replaced index within one wait slice of the
+                    # reload (`admission.STALE_CHECK_SECONDS`), as it does while it waits its
+                    # turn at a shared rebuild. Before it waits, a run can hold a replaced
+                    # index for as long as its head checks, its graph reads, member
+                    # resolution, the estimate and the budget decision take.
+                    stack.callback(coverage.register_load_guard(materialise_semaphore.every_permit))
                     # Run state uses the top-level store. This worker only runs tasks.
                     # Dependency defaults stay inert.
                     _deps = _build_live_definition_deps(
@@ -274,7 +302,8 @@ def build_worker_app(
                         sdmx=sdmx,
                         artifact_store=artifact_store,
                         code_index=code_index,
-                        coverage=get_coverage_service(),
+                        coverage=coverage,
+                        materialise_semaphore=materialise_semaphore,
                         settings=_settings,
                     )
                 if _operation_store is None:
@@ -309,31 +338,22 @@ def build_worker_app(
         assert _operation_store is not None and _deps is not None
         submission_count = await _task_submission_count(request)
         if submission_count is None:
-            # Reject malformed tasks before claiming a lease.
-            # Cloud Tasks retries the 400 to its cap. Dead-row expiry then fails the operation.
+            # Reject malformed tasks before claiming.
             logger.error(
                 "Datasets worker: task for operation %r has no valid submission_count",
                 operation_id,
             )
             return JSONResponse({"detail": "missing or invalid submission_count"}, status_code=400)
-        submitted = _operation_store.get(operation_id)
-        if submitted is None:
-            return JSONResponse({"detail": "unknown operation"}, status_code=404)
-        catalogue = _catalogue.snapshot()
-        if catalogue.build_id != submitted.origin_catalogue_build_id:
-            try:
-                catalogue = await asyncio.to_thread(_catalogue.snapshot_current)
-            except Exception:
-                logger.exception(
-                    "Datasets worker: could not read the published origin catalogue"
-                    " for operation %r",
-                    operation_id,
-                )
-                return JSONResponse({"detail": "origin catalogue unavailable"}, status_code=503)
+        is_final_attempt = _cloud_tasks_retry_count(request) >= _max_attempts - 1
         # Protects tests that issue concurrent claims through a thread pool.
         with _lock:
-            operation = _operation_store.claim_lease(
-                operation_id, submission_count=submission_count, lease_seconds=_lease_seconds
+            # The claim records whether a later delivery is due, which decides whether a poll
+            # past the lease fails the row or waits for that delivery.
+            operation = _operation_store.claim(
+                operation_id,
+                submission_count=submission_count,
+                lease_seconds=LEASE_SECONDS,
+                final_delivery=is_final_attempt,
             )
         if operation is None:
             current = _operation_store.get(operation_id)
@@ -357,12 +377,44 @@ def build_worker_app(
             if current.state in ("done", "failed"):
                 # The operation is terminal. A 2xx stops duplicate task retries.
                 return JSONResponse({"status": current.state}, status_code=200)
+            # A row past the operation deadline is unclaimable and abandoned. Failing it here
+            # ends the submission without a poll, and the 2xx stops the task's deliveries.
+            abandoned = _operation_store.abandon(operation_id, attempt=current.attempt_count)
+            if abandoned is not None:
+                logger.warning(
+                    "Datasets worker: operation %r is abandoned; failed without running",
+                    operation_id,
+                )
+                return JSONResponse({"status": abandoned.state}, status_code=200)
             return JSONResponse(
-                {"detail": f"operation {operation_id!r} already has a live lease"},
+                {"detail": f"operation {operation_id!r} is claimed by a live attempt"},
                 status_code=409,
             )
+        # Count the work deadline from the stored claim time, the instant the lease runs from.
+        assert operation.claimed_at is not None
+        work_ends = operation.claimed_at + timedelta(seconds=RUN_DEADLINE_SECONDS)
+        deadline = time.monotonic() + (work_ends - now()).total_seconds()
 
-        is_final_attempt = _cloud_tasks_retry_count(request) >= _max_attempts - 1
+        catalogue = _catalogue.snapshot()
+        if catalogue.build_id != operation.origin_catalogue_build_id:
+            try:
+                catalogue = await asyncio.to_thread(_catalogue.snapshot_current)
+            except Exception:
+                logger.exception(
+                    "Datasets worker: could not read the published origin catalogue"
+                    " for operation %r",
+                    operation_id,
+                )
+                if is_final_attempt:
+                    _operation_store.fail(
+                        operation_id,
+                        attempt=operation.attempt_count,
+                        refusal_code="internal_error",
+                        retryable=True,
+                    )
+                    return JSONResponse({"status": "failed"}, status_code=200)
+                _operation_store.release(operation_id, attempt=operation.attempt_count)
+                return JSONResponse({"detail": "origin catalogue unavailable"}, status_code=503)
         try:
             # One catalogue version serves the whole operation. `to_thread` carries the binding.
             with bound_catalogue(catalogue):
@@ -371,7 +423,7 @@ def build_worker_app(
                     operation=operation,
                     deps=_deps,
                     operation_store=_operation_store,
-                    lease_seconds=_lease_seconds,
+                    deadline=deadline,
                     is_final_attempt=is_final_attempt,
                 )
         except OperationSuperseded:

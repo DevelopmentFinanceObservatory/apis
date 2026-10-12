@@ -777,9 +777,11 @@ class _SyntheticNoBindingLLM:
         ), None
 
 
-def test_synthetic_code_system_admission_reaches_both_halves(monkeypatch):
+def test_synthetic_code_system_admission_reaches_both_halves(monkeypatch, search_settings):
     """A synthetic non-CRS code system exercises both halves, proving
-    neither reads a CRS name."""
+    neither reads a CRS name. "equipment" beside the synthetic code is a word no coverage
+    reader covers, so the log mode keeps the answer definite."""
+    search_settings(qualifier_coverage="log")
     index = _synthetic_index()
     monkeypatch.setattr(phase_rank_bind_module, "get_index", lambda: index)
     monkeypatch.setattr(phase_election_module, "get_index", lambda: index)

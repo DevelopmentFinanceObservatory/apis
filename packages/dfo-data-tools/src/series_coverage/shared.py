@@ -27,6 +27,19 @@ gate, or a local run against an index not yet deployed. Every load then logs
 a WARNING naming the index and the build it serves unchecked. Any value other
 than unset or `off` refuses at startup. Terraform and the deploy never set it.
 
+A load runs inside every registered load guard (`register_load_guard`), so a
+surface can keep its memory-heavy work from overlapping one: the Datasets surface
+holds every materialise permit from before the new index loads until the service
+serves it and holds no reference to the old one. A `CoverageSnapshot` a caller took
+earlier keeps its index resident past that point. On the Datasets surface a request
+that holds a permit builds its frame beside the one index the service serves, since it
+asks `serves` once it holds the permit and gives the permit back on a replaced
+snapshot. A request waiting for a permit or for its turn at a shared rebuild asks
+`serves` in slices of the wait and releases a replaced index within one slice of the
+reload. Before it waits, a request can hold a replaced index for as long as its head
+checks, its graph reads, member resolution, the estimate and the budget decision take,
+beside the frames other requests build.
+
 For the 1,782,460-row artifact, a full load takes 0.43 to 0.47 s and two
 concurrent loads use up to 1.72 GiB. The compatibility check over 22,208
 index rows takes 0.20 to 0.25 s and runs only after a load. A pointer read
@@ -40,6 +53,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable
+from contextlib import AbstractContextManager, ExitStack
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -157,6 +171,8 @@ class CoverageService:
         # Serialises pointer reads and loads, avoiding duplicate full loads.
         self._load_lock = threading.Lock()
         self._in_flight: concurrent.futures.Future[None] | None = None
+        self._guards_lock = threading.Lock()
+        self._load_guards: tuple[Callable[[], AbstractContextManager[object]], ...] = ()
         self._consecutive_failures = 0
         # The published build last found incompatible with `index`, while `current.json`
         # names it.
@@ -212,6 +228,33 @@ class CoverageService:
             index=loaded.index, manifest=loaded.manifest, stamp=loaded.manifest.stamp
         )
 
+    def serves(self, snapshot: CoverageSnapshot) -> bool:
+        """Whether `snapshot` holds the index the service serves, without waiting for I/O.
+
+        A load replaces the served index only inside every registered load guard, so the
+        answer holds for as long as the caller excludes a guard's scope.
+        """
+        return self._snapshot.loaded.index is snapshot.index
+
+    def register_load_guard(
+        self, guard: Callable[[], AbstractContextManager[object]]
+    ) -> Callable[[], None]:
+        """Run every later load of a moved build inside a fresh `guard()`, entered once the
+        pointer read finds the move and left once the new build is served and the old one
+        dropped. Returns the function that unregisters it.
+
+        A caller of `snapshot_current` that holds what a guard takes waits on itself, so none
+        may.
+        """
+        with self._guards_lock:
+            self._load_guards = (*self._load_guards, guard)
+
+        def unregister() -> None:
+            with self._guards_lock:
+                self._load_guards = tuple(g for g in self._load_guards if g is not guard)
+
+        return unregister
+
     def close(self) -> None:
         """Waits for an in-flight background reload to finish."""
         with self._refresh_lock:
@@ -257,8 +300,9 @@ class CoverageService:
         """Reads the pointer and reloads only when `build_id` names neither the
         served build nor the rejected one.
 
-        The load lock serialises refreshes. Errors leave `_snapshot` unchanged.
-        The returned artifact is the one this call loaded or retained.
+        The load lock serialises refreshes. A load runs inside every registered guard, which
+        it leaves only after dropping its reference to the build it replaced. Errors leave
+        `_snapshot` unchanged. The returned artifact is the one this call loaded or retained.
         """
         with self._load_lock:
             served = self._snapshot.loaded
@@ -270,13 +314,21 @@ class CoverageService:
             ):
                 self._snapshot = _Snapshot(loaded=served, checked_at=self._clock())
                 return served
-            loaded = self._compatible_build(served=served)
-            self._snapshot = _Snapshot(loaded=loaded, checked_at=self._clock())
-        if loaded is not served:
+            replaced = served.manifest
+            with ExitStack() as guards:
+                with self._guards_lock:
+                    registered = self._load_guards
+                for guard in registered:
+                    guards.enter_context(guard())
+                loaded = self._compatible_build(served=served)
+                self._snapshot = _Snapshot(loaded=loaded, checked_at=self._clock())
+                changed = loaded is not served
+                del served
+        if changed:
             logger.info(
                 "coverage: served artifact changed (stamp %r build %r -> stamp %r build %r)",
-                served.manifest.stamp,
-                served.manifest.build_id,
+                replaced.stamp,
+                replaced.build_id,
                 loaded.manifest.stamp,
                 loaded.manifest.build_id,
             )

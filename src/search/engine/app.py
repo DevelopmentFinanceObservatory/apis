@@ -8,9 +8,12 @@ The surface returns RFC 9457 refusals. Infrastructure details stay server-side. 
 routing failures use generic details to prevent ID probing. Query length is checked before LLM
 or graph calls, and unsupported doors return 501.
 
-Resolve has a shared soft deadline. Buffered JSON also has an outer limit: `request_timeout_s`,
-or `resubmit_full_read_timeout_s` for a dataset_resubmit, whose member walk may run past it.
-SSE ends with a partial `done` after a soft timeout or a terminal `error` for pipeline failures.
+Resolve has one budget per request (`request_budget`): a soft deadline `request_timeout_s` from
+its start, where the fan-out answers with what it has, and a hard cap `finalise_grace_s` later
+(at least `resubmit_full_read_timeout_s` for a dataset_resubmit, whose member walk may run past
+the soft deadline). The hard cap ends buffered JSON with a 504 and SSE with a terminal `error`,
+and bounds every graph and SDMX read the request makes. SSE ends with a partial `done` after a
+soft timeout or a terminal `error` for pipeline failures.
 Options shares one deadline across two worker-thread hops. Cancellation
 detaches a running thread, which keeps its executor slot until it finishes.
 Upstream timeouts bound stalled calls.
@@ -22,7 +25,6 @@ import asyncio
 import dataclasses
 import functools
 import logging
-import sys
 import time
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextlib import AsyncExitStack, ExitStack, asynccontextmanager, contextmanager
@@ -42,6 +44,7 @@ from dfo_platform.app import create_app as platform_create_app
 from dfo_platform.build import build_commit
 from dfo_platform.config import parse_cors_origins
 from dfo_platform.named import cut
+from dfo_platform.request_deadline import request_deadline
 from dfo_platform.static_response import freeze_public_json
 from dfo_platform.trace import get_trace_id
 from dfo_platform.validation import error_field_loc, pointer_for_error, validation_problem
@@ -75,7 +78,7 @@ from search.engine.clients.sdmx import EngineSdmxClient, LiveSdmxClient
 from search.engine.clients.sdmx_cache import CachingSdmxClient
 from search.engine.codes import CODE_CATALOG, SEARCH_CODE_CATALOGUE
 from search.engine.config import SEARCH_UNIMPLEMENTED_DOORS, settings
-from search.engine.core import ResolveHealth, resolve_async, resolve_events
+from search.engine.core import ResolveHealth, request_budget, resolve_async, resolve_events
 from search.engine.deadline import _await_bounded
 from search.engine.deps import (
     SEARCH_DEPS_SLOT,
@@ -218,7 +221,7 @@ def classify_search_exception(exc: BaseException) -> ProblemSpec | None:
                 )
         return problem
     if isinstance(exc, asyncio.TimeoutError):
-        logger.error("Request timed out after %.1fs", settings().request_timeout_s)
+        logger.error("Request hit its hard deadline")
         return ProblemSpec(status=504, code="timeout", retryable=True)
     return None
 
@@ -228,20 +231,29 @@ _HEARTBEAT = object()  # 10s tick, serialized as `: ping\n\n`
 _SENTINEL = object()
 
 
-async def _event_source(stream: AsyncIterator[Event]) -> AsyncIterator[str]:
+async def _event_source(
+    stream: AsyncIterator[Event], *, hard_deadline: float
+) -> AsyncIterator[str]:
     """Merge events with 10-second heartbeat comments. Stop at the terminal event and cancel
-    both helper tasks on completion or disconnect. `resolve_events` owns deadline handling.
+    both helper tasks on completion or disconnect. `resolve_events` owns the soft deadline.
+
+    `hard_deadline`, an absolute `time.monotonic()` value, caps the stream. The producer
+    cancels the pipeline then and ends the stream with the 504 `timeout` error event. It also
+    bounds every read the pipeline makes (`request_deadline`). The cap wraps the producer's
+    loop, so it never fires inside a `yield` the consumer resumes.
     """
     queue: asyncio.Queue[object] = asyncio.Queue()
 
     async def produce() -> None:
         try:
-            async for ev in stream:
-                await queue.put(ev)
+            with request_deadline(hard_deadline):
+                async with asyncio.timeout(hard_deadline - time.monotonic()):
+                    async for ev in stream:
+                        await queue.put(ev)
         except Exception as exc:
             # This is the sole conversion of a pipeline failure into a terminal ErrorEvent.
-            # Log the exception here. The event carries only the classified client detail.
-            logger.error("SSE pipeline failure: %s", exc, exc_info=exc)
+            # Classification logs the failure as it does on the JSON route, so an unhandled
+            # error's traceback appears once. The event carries only the client detail.
             try:
                 spec = classify_search_exception(exc) or refusal.classify_default(exc)
                 # The envelope validates codes against the same registry as JSON responses.
@@ -437,10 +449,16 @@ async def resolve_endpoint(body: ResolveRequest, request: Request, deps: SearchD
         "caller": request.headers.get("user-agent"),
     }
 
+    # The soft deadline and the hard cap share this start.
+    budget = request_budget(kind=body.input.kind)
+
     # JSON and SSE share the ResolveResponse body. SSE adds trailing slot-option coverage events.
     if _accepts_sse(request):
         return StreamingResponse(
-            _event_source(resolve_events(body, stream_slot_options=True, **pipeline_deps)),
+            _event_source(
+                resolve_events(body, stream_slot_options=True, budget=budget, **pipeline_deps),
+                hard_deadline=budget.hard,
+            ),
             media_type="text/event-stream",
             headers={
                 # `no-transform` prevents intermediaries such as the Next dev proxy from
@@ -451,17 +469,14 @@ async def resolve_endpoint(body: ResolveRequest, request: Request, deps: SearchD
             },
         )
 
-    # The soft deadline usually returns a partial response first. This wait is the hard
-    # fallback. A resubmit's member walk may run its full read past request_timeout_s.
+    # The soft deadline returns a partial response first. The hard cap, finalise_grace_s
+    # later, ends a request whose unfinished work does not unwind in time.
     health = ResolveHealth()
-    result: ResolveResponse = await asyncio.wait_for(
-        resolve_async(body, health=health, **pipeline_deps),
-        timeout=(
-            settings().resubmit_full_read_timeout_s
-            if body.input.kind == "dataset_resubmit"
-            else settings().request_timeout_s
-        ),
-    )
+    with request_deadline(budget.hard):
+        result: ResolveResponse = await asyncio.wait_for(
+            resolve_async(body, health=health, budget=budget, **pipeline_deps),
+            timeout=budget.hard - time.monotonic(),
+        )
     # The degraded-leg flag rides in a header so the body contract stays unchanged.
     headers = {DEGRADED_LEG_HEADER: "1"} if health.degraded_leg else None
     return JSONResponse(result.model_dump(mode="json", exclude_none=True), headers=headers)
@@ -517,12 +532,12 @@ async def options_endpoint(body: OptionsRequest, deps: SearchDepsDep) -> Respons
         deadline=deadline,
     )
 
-    def _compute() -> ComputedOptions:
+    def _compute(compute_deadline: float) -> ComputedOptions:
         response = build_options_response(
             body,
             target,
             graph=deps.graph,
-            start_ms=start_ms,
+            deadline=compute_deadline,
             materialise_graph=materialise_graph,
             coverage=coverage_snapshot,
         )
@@ -536,10 +551,11 @@ async def options_endpoint(body: OptionsRequest, deps: SearchDepsDep) -> Respons
         key = options_response_cache_key(
             body, target, build_commit=engine_build, coverage=coverage_snapshot
         )
-        # get_or_compute bounds its own wait by the deadline.
+        # A shared compute reads by its flight's deadline, so this request's deadline never
+        # cuts a result others reuse. get_or_compute bounds this request's wait.
         computed = await options_response_cache.get_or_compute(key, _compute, deadline=deadline)
     else:
-        computed = await _await_bounded(asyncio.to_thread(_compute), deadline=deadline)
+        computed = await _await_bounded(asyncio.to_thread(_compute, deadline), deadline=deadline)
 
     # Rebuild diagnostics per request so trace ID and timing describe this call.
     diagnostics = make_diagnostics(engine_build, list(computed.warnings), {}, now_ms() - start_ms)
@@ -618,17 +634,6 @@ def _register(
     clear: Callable[[], None],
 ) -> None:
     registrations.callback(generation.register(name, stats=stats, clear=clear).close)
-
-
-def _configure_search_logger() -> None:
-    # The guard keeps repeated lifespan entries from stacking handlers.
-    search_log = logging.getLogger("search")
-    if not search_log.handlers:
-        handler = logging.StreamHandler(sys.stdout)
-        handler.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s"))
-        search_log.addHandler(handler)
-        search_log.setLevel(logging.INFO)
-        search_log.propagate = False
 
 
 def _build_response_cache(
@@ -718,8 +723,6 @@ async def _open_search_deps(
             _logged, "graph generation provider released", release_shared_generation, generation
         )
         logger.info("graph generation provider acquired (service base: %s)", settings().graph_base)
-
-    _configure_search_logger()
 
     shared_resolvekit: SharedResolver | None = None
     if resolver is None:

@@ -12,13 +12,14 @@ from typing import Any
 
 import pytest
 
-from search.eval.checks import CHECKS, ScoreContext, Verdict
+from search.eval.checks import CHECKS, ScoreContext, Verdict, WireSchema
 from tests.eval.checks.conftest import (
     IDS,
     make_case,
     no_members_door,
     panel,
     panel_members,
+    response_schema,
     schema_listing_members,
     serve,
 )
@@ -886,6 +887,19 @@ def test_an_app_listing_its_members_on_the_wire_is_scored_from_them(listed: bool
     )
 
     assert result.verdict == verdict, result.detail
+
+
+def test_a_failed_members_read_leaves_candidates_to_infrastructure():
+    """A family that pins its StatVars pairs only through the members door, so a door that
+    answers 404 makes the check an infrastructure loss."""
+    ctx = ScoreContext(
+        schema=WireSchema.from_document({"response": response_schema()}), members=no_members_door
+    )
+    case = make_case({"candidates": {"include_families": ["crs.disbursement_unserved"]}})
+
+    result = CHECKS["candidates"](case, as_candidates("crs-001"), ctx)
+
+    assert (result.verdict, result.infra) == (U, True), result.detail
 
 
 GROUP_A = (

@@ -1,8 +1,8 @@
 """Tests that the datasets graph clients key their caches on the shared graph generation.
 
-The mint door, the definition door and the worker acquire the process-wide provider in their
-lifespans, pass it to `build_graph_client` beside the UN availability client, register the
-default-scope memo on it, and release it after their clients close.
+The surface's `open_deps` and the worker acquire the process-wide provider in their lifespans,
+pass it to `build_graph_client` beside the UN availability client, register the default-scope
+memo on it, and release it after their clients close.
 """
 
 from __future__ import annotations
@@ -14,25 +14,23 @@ from typing import Any, cast
 
 import pytest
 
+from code_index.shared import get_index
+from datasets_api import deps as deps_module
 from datasets_api import generation as generation_module
 from datasets_api.config import DatasetsBuildSettings
-from datasets_api.doors import definition as definition_door
-from datasets_api.doors import mint as mint_door
-from datasets_api.doors.definition import build_definition_door
-from datasets_api.doors.mint import build_mint_door
+from datasets_api.deps import DepsOverrides, open_deps
 from datasets_api.operation_store import OperationStore
 from datasets_api.operations import worker_app as worker_module
 from datasets_api.operations.task_client import FakeTaskClient
 from datasets_api.operations.worker_app import WORKER_PLACE_SCOPE_MEMO_NAME, build_worker_app
-from datasets_api.versions import NullVersionRecordWriter
 from graph_generation import GraphGeneration
 from graph_generation.fake import FakeGeneration
-from spec_registry import LiveSpecRegistry
-from spec_registry.reader import LiveSpecReader
+from materialise.rate_tables import RateTableCache
+from series_coverage.shared import get_coverage_service
+from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 from tests.origin_catalogue.fake_catalogue import fake_catalogue_service
 
 from ._artifact_doubles import FakeArtifactStore
-from .conftest import FakeDatasetStore
 
 _SETTINGS_ENV = {
     "DATASETS_GRAPH_BASE_URL": "https://graph.example.org",
@@ -98,59 +96,50 @@ def _sdmx_builder(events: _Events) -> Callable[..., _RecordingClient]:
     return _build
 
 
-def _enter_and_exit(door) -> None:
+_STORES = (
+    "registry",
+    "spec_reader",
+    "snapshot_reader",
+    "version_writer",
+    "head_store",
+    "version_lister",
+    "operation_store",
+    "recipe_store",
+    "reference_writer",
+)
+
+
+def _open_deps(**injected: Any) -> None:
+    """Open and close the surface's `Deps` with every store injected."""
+    overrides = DepsOverrides(
+        coverage=get_coverage_service(),
+        rate_cache=RateTableCache(),
+        code_index=get_index(),
+        task_client=FakeTaskClient(),
+        **{name: object() for name in _STORES},
+        **({"artifact_store": FakeArtifactStore()} | injected),
+    )
+
     async def _run() -> None:
-        async with door.lifespan(None):
+        async with open_deps(
+            settings=DatasetsBuildSettings(),
+            overrides=overrides,
+            catalogue=fake_catalogue_service(),
+        ):
             pass
 
     asyncio.run(_run())
 
 
-def _mint_door(**injected: Any):
-    return build_mint_door(
-        materialiser_build="test-build",
-        capability_version="dset_test",
-        ceiling=50_000,
-        member_concurrency=4,
-        settings=DatasetsBuildSettings(),
-        registry=LiveSpecRegistry(store=FakeDatasetStore()),
-        spec_reader=LiveSpecReader(store=FakeDatasetStore()),
-        artifact_store=FakeArtifactStore(),
-        version_writer=NullVersionRecordWriter(),
-        task_client=FakeTaskClient(),
-        catalogue=fake_catalogue_service(),
-        **injected,
-    )
+@pytest.fixture
+def live_clients(monkeypatch: pytest.MonkeyPatch, events: _Events) -> None:
+    monkeypatch.setattr(deps_module, "build_graph_client", _graph_builder(events))
+    monkeypatch.setattr(deps_module, "SdmxClient", _sdmx_builder(events))
 
 
-def _definition_door(**injected: Any):
-    return build_definition_door(
-        materialiser_build="test-build",
-        capability_version="dset_test",
-        ceiling=50_000,
-        member_concurrency=4,
-        settings=DatasetsBuildSettings(),
-        spec_reader=LiveSpecReader(store=FakeDatasetStore()),
-        artifact_store=FakeArtifactStore(),
-        version_writer=NullVersionRecordWriter(),
-        task_client=FakeTaskClient(),
-        catalogue=fake_catalogue_service(),
-        **injected,
-    )
-
-
-@pytest.mark.parametrize(
-    ("module", "build_door"),
-    [(mint_door, _mint_door), (definition_door, _definition_door)],
-    ids=["mint", "definition"],
-)
-def test_a_door_builds_its_graph_client_on_the_shared_generation(
-    monkeypatch: pytest.MonkeyPatch, events: _Events, module: Any, build_door: Callable[..., Any]
-) -> None:
-    monkeypatch.setattr(module, "build_graph_client", _graph_builder(events))
-    monkeypatch.setattr(module, "SdmxClient", _sdmx_builder(events))
-
-    _enter_and_exit(build_door())
+@pytest.mark.usefixtures("live_clients")
+def test_the_graph_client_is_built_on_the_shared_generation(events: _Events) -> None:
+    _open_deps()
 
     assert events.acquire_kwargs["expected_graph_base"] == _SETTINGS_ENV["DATASETS_GRAPH_BASE_URL"]
     assert events.graph_kwargs["generation"] is events.generation
@@ -159,18 +148,9 @@ def test_a_door_builds_its_graph_client_on_the_shared_generation(
     assert un_availability.kwargs["timeout"] == DatasetsBuildSettings().sdmx_timeout_seconds
 
 
-@pytest.mark.parametrize(
-    ("module", "build_door"),
-    [(mint_door, _mint_door), (definition_door, _definition_door)],
-    ids=["mint", "definition"],
-)
-def test_a_door_releases_the_shared_generation_after_its_graph_client_closes(
-    monkeypatch: pytest.MonkeyPatch, events: _Events, module: Any, build_door: Callable[..., Any]
-) -> None:
-    monkeypatch.setattr(module, "build_graph_client", _graph_builder(events))
-    monkeypatch.setattr(module, "SdmxClient", _sdmx_builder(events))
-
-    _enter_and_exit(build_door())
+@pytest.mark.usefixtures("live_clients")
+def test_the_shared_generation_is_released_after_the_graph_client_closes(events: _Events) -> None:
+    _open_deps()
 
     assert events.log[0] == "acquire generation"
     assert events.log.index("build graph") > events.log.index("acquire generation")
@@ -178,47 +158,27 @@ def test_a_door_releases_the_shared_generation_after_its_graph_client_closes(
     assert events.log[-1] == "release generation"
 
 
-@pytest.mark.parametrize(
-    ("module", "build_door"),
-    [(mint_door, _mint_door), (definition_door, _definition_door)],
-    ids=["mint", "definition"],
-)
-def test_a_door_acquires_nothing_for_an_injected_graph(
-    monkeypatch: pytest.MonkeyPatch, events: _Events, module: Any, build_door: Callable[..., Any]
-) -> None:
-    monkeypatch.setattr(module, "SdmxClient", _sdmx_builder(events))
-    graph = _RecordingClient(events, "injected graph")
-
-    _enter_and_exit(build_door(graph=graph))
+@pytest.mark.usefixtures("live_clients")
+def test_an_injected_graph_acquires_no_generation(events: _Events) -> None:
+    _open_deps(graph=_RecordingClient(events, "injected graph"))
 
     assert events.log == [f"close sdmx {_SETTINGS_ENV['DATASETS_SDMX_BASE_URL']}"]
 
 
-def test_a_door_releases_the_shared_generation_when_construction_fails(
+@pytest.mark.usefixtures("live_clients")
+def test_the_shared_generation_is_released_when_construction_fails(
     monkeypatch: pytest.MonkeyPatch, events: _Events
 ) -> None:
-    monkeypatch.setattr(mint_door, "build_graph_client", _graph_builder(events))
-    monkeypatch.setattr(mint_door, "SdmxClient", _sdmx_builder(events))
+    def _explode(**_kwargs: object) -> object:
+        raise RuntimeError("artifact store exploded")
 
-    def _raise_shared_pool() -> None:
-        raise RuntimeError("shared_pool exploded")
+    monkeypatch.setattr(deps_module, "shared_pool", object)
+    monkeypatch.setattr(deps_module, "close_shared_pool", lambda: None)
+    monkeypatch.setattr(deps_module, "LiveDatasetStore", lambda **_kwargs: object())
+    monkeypatch.setattr(deps_module, "LiveArtifactStore", _explode)
 
-    monkeypatch.setattr(mint_door, "shared_pool", _raise_shared_pool)
-    door = build_mint_door(
-        materialiser_build="test-build",
-        capability_version="dset_test",
-        ceiling=50_000,
-        member_concurrency=4,
-        settings=DatasetsBuildSettings(),
-        registry=LiveSpecRegistry(store=FakeDatasetStore()),
-        spec_reader=LiveSpecReader(store=FakeDatasetStore()),
-        version_writer=NullVersionRecordWriter(),
-        task_client=FakeTaskClient(),
-        catalogue=fake_catalogue_service(),
-    )
-
-    with pytest.raises(RuntimeError, match="shared_pool exploded"):
-        _enter_and_exit(door)
+    with pytest.raises(RuntimeError, match="artifact store exploded"):
+        _open_deps(artifact_store=None)
 
     assert events.log.index("close graph") < events.log.index("release generation")
     assert events.log[-1] == "release generation"
@@ -235,7 +195,11 @@ def test_the_worker_builds_its_graph_client_on_the_shared_generation(
     monkeypatch.setattr(worker_module, "LiveArtifactStore", lambda **_: object())
     monkeypatch.setattr(worker_module, "LiveArtifactInventory", lambda **_: object())
     monkeypatch.setattr(worker_module, "get_index", lambda: object())
-    monkeypatch.setattr(worker_module, "get_coverage_service", lambda: object())
+    monkeypatch.setattr(
+        worker_module,
+        "get_coverage_service",
+        lambda: FakeCoverageService(build_coverage_index([], role_names={})),
+    )
     monkeypatch.setattr(worker_module, "_build_live_definition_deps", lambda **_: object())
     registered: list[tuple[str, ...]] = []
 

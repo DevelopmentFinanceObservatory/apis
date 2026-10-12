@@ -30,7 +30,7 @@ entries and 64 side refs across them. An entry is `{stat_var, relation, first, s
 `relation` is `quotient` (`first` divided by `second`), `sum`, or `share` (`first` as a
 percentage of `second`). Each side is a non-empty list of StatVar refs, and every ref
 matches `^dcid:.`, is at most 200 characters in NFC, the form the entry is stored in, and
-holds no U+0000, which the version record's `jsonb` body cannot store.
+holds no U+0000, which the version record's `jsonb` `composed_stat_vars` column cannot store.
 `stat_var` values are distinct, and a side ref that names an entry names an earlier one, so the
 list holds no cycle. A side ref no entry describes is valid. The same validator rule applies to
 keys: an entry's keys are checked on the raw body, and a key outside the four is refused there.
@@ -110,9 +110,6 @@ OcvContentVersion = Annotated[str, Field(pattern=_OCV_CONTENT_VERSION_PATTERN)]
 ReplayKey = Annotated[str, Field(pattern=_REPLAY_KEY_PATTERN)]
 
 _BoundedText = Annotated[str, Field(min_length=1, max_length=MAX_CELL_CHARS)]
-
-# The request member and the key the version's `immutable_body` stores it under.
-COMPOSED_STAT_VARS_KEY = "composed_stat_vars"
 
 _COMPOSED_UNIT_KEYS = frozenset({"numerator", "denominator"})
 _STAT_VAR_PART_KEY = "stat_var"
@@ -434,7 +431,7 @@ class PublishFrameRequest(BaseModel):
     def _bound_composed_stat_vars(cls, value: list[ComposedStatVar]) -> list[ComposedStatVar]:
         """Puts every ref in NFC, the form `Frame.build` stores a `stat_var` cell in, and
         refuses a ref over `MAX_UNIT_STAT_VAR_CHARS` in that form, a ref holding U+0000 (the
-        version body is a Postgres `jsonb` value, which cannot hold it), more than
+        version's `composed_stat_vars` is a Postgres `jsonb` value, which cannot hold it), more than
         `MAX_COMPOSED_STAT_VAR_SIDE_REFS` side refs, a repeated `stat_var`, and a side ref that
         names its own entry or a later one. Messages name an entry by its position."""
         entries: list[ComposedStatVar] = []

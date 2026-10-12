@@ -17,7 +17,7 @@ from datasets_api.render import (
     StatVarsSummedWarning,
     _reshape,
 )
-from materialise.content_version import MintPreimage
+from materialise.content_version import mint_version
 from materialise.enrichment import EnrichmentLookup
 from materialise.reshape import Table
 
@@ -135,16 +135,9 @@ _TABLE = Table(
 
 _BY_NO_CRS_AXIS = MintOptions(groupby=GroupbyOptions(by=["financingProvider"], op="sum"))
 
-_PREIMAGE = MintPreimage(
-    graph_revision="rev-1",
-    source_revisions=({"source": "OECD_CRS", "revision": "2026-09-01"},),
-    facets=({"axis": "provenance", "ref": "p1", "basis": "bound"},),
-    conversion=None,
-)
-
 
 def _enrichment() -> EnrichmentLookup:
-    return EnrichmentLookup(FakeMintGraphReader())
+    return EnrichmentLookup(FakeMintGraphReader(), type_kinds={}, parties={})
 
 
 class TestFullCollapseMultiMember:
@@ -158,7 +151,6 @@ class TestFullCollapseMultiMember:
             resolved_stat_var_refs=(),
             provenance_refs=("p1",),
             subject_id="spec_990600",
-            groupby_preimage=_PREIMAGE,
             pivot_max_output_cells=5_000_000,
         )
 
@@ -181,7 +173,6 @@ class TestFullCollapseMultiMember:
             resolved_stat_var_refs=(),
             provenance_refs=("p1",),
             subject_id="spec_990600",
-            groupby_preimage=_PREIMAGE,
             pivot_max_output_cells=5_000_000,
         )
 
@@ -203,7 +194,6 @@ class TestFullCollapseMultiMember:
             resolved_stat_var_refs=(),
             provenance_refs=("p1",),
             subject_id="spec_990600",
-            groupby_preimage=_PREIMAGE,
             pivot_max_output_cells=5_000_000,
         )
 
@@ -213,56 +203,7 @@ class TestFullCollapseMultiMember:
         assert frame.columns[0] == "stat_var"
         assert all(row[0] == "dcid:spec_990600" for row in frame.rows)
 
-    def test_content_version_is_minted_deterministically_and_moves_with_the_preimage(self):
-        result = _reshape(
-            _TABLE,
-            options=_BY_NO_CRS_AXIS,
-            entity_columns=_ENTITY_COLUMNS,
-            enrichment=_enrichment(),
-            code_index=_INDEX,
-            resolved_stat_var_refs=(),
-            provenance_refs=("p1",),
-            subject_id="spec_990600",
-            groupby_preimage=_PREIMAGE,
-            pivot_max_output_cells=5_000_000,
-        )
-        repeat = _reshape(
-            _TABLE,
-            options=_BY_NO_CRS_AXIS,
-            entity_columns=_ENTITY_COLUMNS,
-            enrichment=_enrichment(),
-            code_index=_INDEX,
-            resolved_stat_var_refs=(),
-            provenance_refs=("p1",),
-            subject_id="spec_990600",
-            groupby_preimage=_PREIMAGE,
-            pivot_max_output_cells=5_000_000,
-        )
-        assert result.collapse is not None
-        assert repeat.collapse is not None
-        assert result.collapse.content_version == repeat.collapse.content_version
-
-        moved_graph_revision = _reshape(
-            _TABLE,
-            options=_BY_NO_CRS_AXIS,
-            entity_columns=_ENTITY_COLUMNS,
-            enrichment=_enrichment(),
-            code_index=_INDEX,
-            resolved_stat_var_refs=(),
-            provenance_refs=("p1",),
-            subject_id="spec_990600",
-            groupby_preimage=MintPreimage(
-                graph_revision="rev-2",
-                source_revisions=_PREIMAGE.source_revisions,
-                facets=_PREIMAGE.facets,
-                conversion=None,
-            ),
-            pivot_max_output_cells=5_000_000,
-        )
-        assert moved_graph_revision.collapse is not None
-        assert moved_graph_revision.collapse.content_version != result.collapse.content_version
-
-    def test_no_preimage_still_restores_stat_var_but_mints_nothing(self):
+    def test_content_version_is_minted_from_the_collapsed_frame_alone(self):
         result = _reshape(
             _TABLE,
             options=_BY_NO_CRS_AXIS,
@@ -276,8 +217,7 @@ class TestFullCollapseMultiMember:
         )
 
         assert result.collapse is not None
-        assert result.collapse.content_version is None
-        assert "stat_var" in result.table.columns
+        assert result.collapse.content_version == mint_version(result.collapse.frame)
 
     def test_more_than_one_contributor_with_no_subject_id_refuses(self):
         with pytest.raises(ValueError, match="subject_id"):
@@ -308,7 +248,6 @@ class TestFullCollapseSoleContributor:
             code_index=_INDEX,
             resolved_stat_var_refs=(),
             provenance_refs=("p1",),
-            groupby_preimage=_PREIMAGE,
             pivot_max_output_cells=5_000_000,
         )
 
@@ -327,7 +266,6 @@ class TestFullCollapseSoleContributor:
             code_index=_INDEX,
             resolved_stat_var_refs=(),
             provenance_refs=("p1",),
-            groupby_preimage=_PREIMAGE,
             pivot_max_output_cells=5_000_000,
         )
         assert result.collapse is not None
@@ -353,7 +291,6 @@ class TestFullCollapseEmpty:
             resolved_stat_var_refs=("dcid:SV_A",),
             provenance_refs=("p1",),
             subject_id="spec_990600",
-            groupby_preimage=_PREIMAGE,
             pivot_max_output_cells=5_000_000,
         )
 
@@ -373,6 +310,5 @@ class TestFullCollapseEmpty:
                 code_index=_INDEX,
                 resolved_stat_var_refs=("dcid:SV_A",),
                 provenance_refs=("p1",),
-                groupby_preimage=_PREIMAGE,
                 pivot_max_output_cells=5_000_000,
             )

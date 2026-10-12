@@ -1,7 +1,10 @@
-"""Snapshot, observations, and pin refusal codes. The doors reuse `codes_core`'s
-`spec_not_found`."""
+"""Snapshot, observations, pin and download refusal codes. The doors reuse `codes_core`'s
+`spec_not_found`. `snapshot_not_found`, `snapshot_revoked` and `artifact_not_found` raise from
+`dataset_store.snapshot.read_servable_version`, so their classes live there."""
 
 from __future__ import annotations
+
+from dfo_platform.problem import Refusal
 
 SNAPSHOT_DOOR_CODE_CATALOGUE: dict[str, tuple[str, str]] = {
     "snapshot_not_found": (
@@ -34,31 +37,24 @@ SNAPSHOT_DOOR_CODE_CATALOGUE: dict[str, tuple[str, str]] = {
 }
 
 
-class SpecNotFound(Exception):
+class SpecNotFound(Refusal):
     """The path id is unregistered. It maps to shared `spec_not_found`, 404."""
+
+    code = "spec_not_found"
 
     def __init__(self, *, id: str) -> None:
         self.id = id
         super().__init__(f"{id!r} is not registered")
 
 
-class SnapshotNotFound(Exception):
-    """The registry knows the id, and this content version has no record. It maps to
-    `snapshot_not_found`, 404.
-    """
-
-    def __init__(self, *, id: str, content_version: str) -> None:
-        self.id = id
-        self.content_version = content_version
-        super().__init__(f"{id!r} has no version at content_version {content_version!r}")
-
-
-class ArtifactExpired(Exception):
+class ArtifactExpired(Refusal):
     """The version's working-tier artifacts are expired and its pinned tier has no copy.
 
     Snapshot retrieval maps this to `artifact_expired`, 410, directing callers to definition
     retrieval. Pin requests report the named artifact's expiry.
     """
+
+    code = "artifact_expired"
 
     def __init__(self, *, id: str, content_version: str) -> None:
         self.id = id
@@ -69,45 +65,17 @@ class ArtifactExpired(Exception):
         )
 
 
-class ObservationsUnavailable(Exception):
-    """The version is a groupby collapse, holds no servable frame1 where its preview reads
+class ObservationsUnavailable(Refusal):
+    """The version is a groupby collapse, holds no servable stored frame where its preview reads
     rows, holds a converted series without its per-series conversion record, or does not say
     whether its default place scope was plural. It maps to `observations_unavailable`, 404."""
+
+    code = "observations_unavailable"
 
     def __init__(self, *, id: str, content_version: str, reason: str) -> None:
         self.id = id
         self.content_version = content_version
         super().__init__(f"{id!r} at content_version {content_version!r} {reason}")
-
-
-class ArtifactNotFound(Exception):
-    """The digest is absent from this version's artifacts.
-
-    It maps to `artifact_not_found`, 404.
-    """
-
-    def __init__(self, *, id: str, content_version: str, artifact_digest: str) -> None:
-        self.id = id
-        self.content_version = content_version
-        self.artifact_digest = artifact_digest
-        super().__init__(
-            f"artifact_digest {artifact_digest!r} is not among the artifacts of "
-            f"{id!r} at content_version {content_version!r}"
-        )
-
-
-class PinNotPermitted(Exception):
-    """Pin permission is absent or programmatic pinning is disabled.
-
-    It maps to `pin_not_permitted`, 403.
-    """
-
-    def __init__(self, *, principal: str | None) -> None:
-        self.principal = principal
-        detail = "the pin permission is not granted to this caller"
-        if principal is None:
-            detail = f"no principal header was presented; {detail}"
-        super().__init__(detail)
 
 
 class SnapshotSigningFailed(Exception):

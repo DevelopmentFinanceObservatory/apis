@@ -9,11 +9,10 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from datasets_api.revision import SentinelRevisionReader
 from dc_sdmx import SdmxClient
 from materialise import window as window_module
 from materialise.graph import Facet
-from series_coverage.schema import FacetMetadata, RoleNames
+from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from spec_registry import LiveSpecRegistry
 from spec_registry.reader import LiveSpecReader
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
@@ -69,8 +68,8 @@ def _client(years: range):
         )
     )
     coverage = build_coverage_index(
-        [(_STAT_VAR, "facet1", "country/USA", _PLACE, list(years))],
-        role_names={_STAT_VAR: RoleNames(donor="provider", recipient="recipient")},
+        [(_STAT_VAR, "facet1", ABSENT_ENTITY, _PLACE, list(years))],
+        role_names={_STAT_VAR: RoleNames(donor=None, recipient="recipient")},
         facet_metadata={
             "facet1": FacetMetadata(
                 provenance_id="OECD_DAC2A", measurement_method="GrantEquivalent", unit="USD"
@@ -83,7 +82,6 @@ def _client(years: range):
         spec_reader=LiveSpecReader(store=store),
         graph=graph,
         sdmx=SdmxClient(base_url="https://datacommons.one.org/core/api", transport=transport),
-        revision_reader=SentinelRevisionReader(),
         artifact_store=FakeArtifactStore(),
         snapshot_reader=FakeSnapshotReader(),
         reference_writer=FakeArtifactReferenceWriter(),

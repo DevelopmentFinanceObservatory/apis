@@ -54,6 +54,10 @@ _NON_INDEX_SHAPE = IdentityShapeSchema(
     population_type="Person", measured_property="lifeExpectancy", stat_type="measuredValue"
 )
 
+# The graph-source cases walk fake IDS series on IDS five-tuples, which the packaged index
+# lists.
+pytestmark = pytest.mark.usefixtures("unlisted_index")
+
 
 def _crs_population_dcids() -> list[str]:
     """Returns the CRS family's index members for `_CRS_SHAPE`, independently of
@@ -472,7 +476,24 @@ def _ids_reader(members: dict[str, tuple[dict[str, str], tuple[str, ...]]]) -> F
     )
 
 
-def _ids_index(members: dict[str, tuple[dict[str, str], tuple[str, ...]]]) -> CodeIndex:
+def _ids_index(
+    members: dict[str, tuple[dict[str, str], tuple[str, ...]]], *, listed: bool = False
+) -> CodeIndex:
+    """An index holding `members` as rows, or as listed rows (`CodeIndex.listed_statvars`)."""
+    rows = tuple(
+        StatVarRow(
+            dcid=dcid,
+            population_type="FinancialPosition",
+            measured_property="amount",
+            stat_type="measuredValue",
+            measurement_qualifier="Nominal",
+            measurement_denominator=None,
+            observation_properties=roles,
+            constraint_properties=constraints,
+            provenances=("provenance/Test",),
+        )
+        for dcid, (constraints, roles) in members.items()
+    )
     return CodeIndex(
         stamp=IndexStamp(
             graph_endpoint="test",
@@ -483,20 +504,8 @@ def _ids_index(members: dict[str, tuple[dict[str, str], tuple[str, ...]]]) -> Co
         ),
         declarations=(),
         codes=(),
-        statvars=tuple(
-            StatVarRow(
-                dcid=dcid,
-                population_type="FinancialPosition",
-                measured_property="amount",
-                stat_type="measuredValue",
-                measurement_qualifier="Nominal",
-                measurement_denominator=None,
-                observation_properties=roles,
-                constraint_properties=constraints,
-                provenances=("provenance/Test",),
-            )
-            for dcid, (constraints, roles) in members.items()
-        ),
+        statvars=() if listed else rows,
+        listed_statvars=rows if listed else (),
     )
 
 
@@ -563,20 +572,21 @@ _IDS_WITH_LENDER = {
 }
 
 
-@pytest.mark.parametrize("source", ["graph", "index"])
+@pytest.mark.parametrize("source", ["graph", "index", "listed"])
 def test_a_total_beside_a_lender_series_resolves_the_total(monkeypatch, source):
     """The lender series holds its own constraint values and declares the creditor beside
     the debtor. The identity names no creditor, so the population is the total, the
-    series published without one."""
-    if source == "index":
-        _use_index(monkeypatch, _ids_index(_IDS_WITH_LENDER))
-        reader = FakeMemberArcReader(arcs={})
-    else:
+    series published without one. Listed rows elect the walk's population without a
+    graph read."""
+    if source == "graph":
         reader = _ids_reader(_IDS_WITH_LENDER)
+    else:
+        _use_index(monkeypatch, _ids_index(_IDS_WITH_LENDER, listed=source == "listed"))
+        reader = FakeMemberArcReader(arcs={})
 
     result = options_population(_ids_identity({"destination": ["country/KEN"]}), graph=reader)
 
-    assert result.source == source
+    assert result.source == ("graph" if source == "listed" else source)
     assert result.stat_var_dcids == (_IDS_TOTAL,)
     assert result.declared_roles == ("financingRecipient",)
 
@@ -644,6 +654,8 @@ def test_an_unreadable_candidate_refuses_request_invalid_naming_it(monkeypatch, 
     identity, naming the candidate in a sentence that carries no Python repr."""
 
     class _Refusing:
+        member_cap = DEFAULT_MEMBER_CAP
+
         def enumerate(self, **kwargs):
             raise error
 

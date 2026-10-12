@@ -520,6 +520,18 @@ def test_options_population_reads_the_dataset_the_identity_names():
     assert _population_key(plain) != _population_key(named)
 
 
+def test_a_set_pinned_identity_keys_its_options_population_apart_from_the_unpinned_one():
+    plain = education_aid_identity()
+    pinned = education_aid_identity()
+    pinned["facets"] = {
+        "provenance": {"state": "set", "refs": sorted([CRS_PROVENANCE, IMPUTED_PROVENANCE])}
+    }
+    pinned_identity = BaseIdentity.model_validate(pinned)
+
+    assert identity_query(pinned_identity).scope is not None
+    assert _population_key(BaseIdentity.model_validate(plain)) != _population_key(pinned_identity)
+
+
 def test_the_measure_family_holds_one_datasets_rows():
     shape, query = _education_shape(education_aid_identity())
     index = get_index()

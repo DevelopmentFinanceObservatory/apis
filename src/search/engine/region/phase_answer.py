@@ -947,6 +947,7 @@ def _build_definite_spec(
         entities=state.entity_objects,
         coverage=state.elected_coverage,
         plan=state.elected_plan,
+        pin_served_provenance=state.pin_served_provenance,
         headline=state.elected_headline,
         coverage_index=state.coverage.index,
         coverage_stamp=mat_result.coverage_stamp,

@@ -189,6 +189,21 @@ def test_each_side_has_its_own_resolvekit_cache_with_no_fallback_key():
     assert len(launches) == 2 and launches[0] != launches[1]
 
 
+def test_each_side_serves_datasets_from_a_database_its_own_tree_migrated():
+    """The members door the checks read is on the Datasets surface, so both apps mount it,
+    each on its own database, and neither counts as started until it serves."""
+    step = next(step for step in _steps("run") if step.get("id") == "eval")
+    run = step["run"]
+    migrated = re.findall(r"migrate (datasets_\w+)", run)
+    served = re.findall(r"DATASET_STORE_DATABASE=(datasets_\w+)", run)
+
+    assert step["env"]["DFO_DATASETS_SURFACE"] == "1"
+    assert "postgres" in _WORKFLOW["jobs"]["run"]["services"]
+    assert migrated == served == ["datasets_head", "datasets_base"]
+    assert run.index('cd "$BASE_DIR" && migrate datasets_base') > 0
+    assert "/api/datasets/healthz" in run.split("wait_for_app() {")[1].split("\n}")[0]
+
+
 def test_no_eval_workflow_persists_checkout_credentials():
     workflows = sorted(_WORKFLOW_PATH.parent.glob("eval-*.yml"))
     checkouts = [
@@ -254,8 +269,9 @@ def test_each_shard_runs_its_own_slice_and_uploads_its_code_under_its_index():
     assert '--concurrency "$EVAL_CONCURRENCY"' in eval_step["run"]
     assert upload["with"]["name"] == "eval-gate-${{ matrix.shard.index }}"
     assert upload["if"] == "always()"
-    # No deployed build, a base app that did not serve, and the driver's own code.
-    assert eval_step["run"].count('> "$out/code"') == 3
+    # No deployed build, base migrations that did not apply, a base app that did not
+    # serve, and the driver's own code.
+    assert eval_step["run"].count('> "$out/code"') == 4
     assert "GITHUB_OUTPUT" not in eval_step["run"]
 
 

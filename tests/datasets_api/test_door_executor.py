@@ -57,7 +57,7 @@ def test_drain_logs_the_permits_still_held_when_the_budget_expires(caplog) -> No
     with caplog.at_level(logging.WARNING, logger="datasets_api.door_executor"):
         door_executor.drain(ShutdownBudget(total_seconds=0.05))
 
-    assert "datasets-exemplar door's shutdown drain timed out with 1/2" in caplog.text
+    assert "datasets-exemplar executor's shutdown drain timed out with 1/2" in caplog.text
     # The drain released what it took: one permit is still free.
     assert door_executor.semaphore.acquire(blocking=False) is True
     assert door_executor.semaphore.acquire(blocking=False) is False
@@ -165,5 +165,5 @@ def test_run_logs_a_broken_executor_and_reraises(monkeypatch, caplog) -> None:
     ):
         asyncio.run(door_executor.run(lambda: "unreached", refuse=_Refused))
 
-    assert "datasets-exemplar door's own executor pool is permanently broken" in caplog.text
+    assert "datasets-exemplar executor pool is permanently broken" in caplog.text
     assert _free_permits(door_executor, 1) == 1

@@ -14,7 +14,6 @@ import pytest
 
 from datasets_api.adapter import build_identity_document
 from datasets_api.mint_models import Scope
-from datasets_api.revision import SentinelRevisionReader
 from datasets_api.shape import resolve_shape
 from dc_sdmx import SdmxClient
 from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
@@ -151,7 +150,6 @@ def _client(case: _OneRole, recorded: list[httpx.Request]):
         spec_reader=LiveSpecReader(store=store),
         graph=_graph(case),
         sdmx=SdmxClient(base_url=_BASE_URL, transport=httpx.MockTransport(handler)),
-        revision_reader=SentinelRevisionReader(),
         artifact_store=FakeArtifactStore(),
         snapshot_reader=FakeSnapshotReader(),
         reference_writer=FakeArtifactReferenceWriter(),

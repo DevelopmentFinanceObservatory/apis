@@ -466,6 +466,59 @@ def enumerate_members(
     )
 
 
+def group_of_arcs(
+    five_tuple: FiveTuple,
+    arcs_by_dcid: Mapping[str, Mapping[str, tuple[str, ...]]],
+    *,
+    slots: Mapping[str, SlotBinding],
+    readings: Mapping[str, AbsentReading] = EMPTY_READINGS,
+    member_cap: int = DEFAULT_MEMBER_CAP,
+    role_keys: Collection[str] = (),
+    open_role_keys: Collection[str] = (),
+) -> MemberGroup:
+    """Return the group `enumerate_members` resolves when the graph holds exactly
+    `arcs_by_dcid`, each StatVar's out-arcs as a forward read returns them, with no graph
+    read.
+
+    Each StatVar passes the walk's admission (`_confirm_member`), and the admitted ones go
+    through the walk's election, member cap and role-agreement check, raising what the walk
+    raises. The arcs are trusted as read, so the group is complete and untruncated. The
+    caller vouches that `arcs_by_dcid` holds every StatVar of `five_tuple` the walk could
+    admit, as the code index export proves for the five-tuples of its listed rows
+    (`code_index.members.listed_group`)."""
+    role_keys = frozenset(role_keys)
+    open_role_keys = frozenset(open_role_keys)
+    confirmed = [
+        member
+        for dcid, arcs in arcs_by_dcid.items()
+        if (member := _confirm_member(dcid, arcs, five_tuple=five_tuple, slots=slots).member)
+        is not None
+    ]
+    election = _elect(
+        confirmed, readings=readings, role_keys=role_keys, open_role_keys=open_role_keys
+    )
+    members = _sorted_members(confirmed, election.members)
+    if len(members) > member_cap:
+        raise MemberEnumerationTooLarge(
+            five_tuple=five_tuple, count=len(members), member_cap=member_cap
+        )
+    _check_role_agreement(five_tuple, members)
+    return MemberGroup(
+        five_tuple=five_tuple,
+        members=members,
+        family=election.family,
+        candidates_considered=len(arcs_by_dcid),
+        candidate_cap=CANDIDATE_CAP,
+        truncated=False,
+        proven_complete=True,
+        root_confirmed=_antichain_proven_complete(
+            members, slots=slots, readings=readings, role_keys=election.role_keys
+        )
+        and _root_covers_bound_keys(confirmed, slots=slots, role_keys=role_keys),
+        elected_open_role_keys=election.role_keys - role_keys,
+    )
+
+
 @dataclass
 class _Window:
     """The reverse-arc window a walk is reading: its cap and subjects returned, for the

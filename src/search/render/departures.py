@@ -367,18 +367,26 @@ def _group_read_as_members(
     fact: DepartureFact, _family: FlowFamily | None, shows_data: bool
 ) -> str:
     """The group asked for, read as its members, which a region group names as the places
-    in it (`labels.group_members_text`). A door holding no words for the group (a
-    resubmit, `asked` is `None`) states only the members shown, as the heading names them
-    (`labels.group_text`)."""
+    in it (`labels.group_members_text`), and the residuals its total counts that the members
+    leave out (`DepartureFact.excluded`), separated by semicolons since each label holds a
+    comma. A door holding no words for the group (a resubmit, `asked` is `None`) states only
+    the members shown, as the heading names them (`labels.group_text`)."""
     verb = "shows" if shows_data else "checked"
+    left_out = (
+        f", and {'leaves' if shows_data else 'left'} out what the data allocates to no single "
+        f"country: "
+        f"{'; '.join(fact.excluded)}"
+        if fact.excluded
+        else ""
+    )
     if fact.asked is not None:
         members = group_members_text(fact.group_type)
-        return f"You asked for {_asked(fact)}. This {verb} {members}, each on its own."
+        return f"You asked for {_asked(fact)}. This {verb} {members}, each on its own{left_out}."
     if fact.group is None or fact.group_size is None:
         raise ValueError("group_read_as_members with nothing asked needs the group shown")
     group = EntityGroup(label=fact.group, entity_type=fact.group_type)
     members = group_text(fact.group_size, group)
-    return f"This {verb} {members}, each on its own."
+    return f"This {verb} {members}, each on its own{left_out}."
 
 
 def _direction_discarded(fact: DepartureFact, _family: FlowFamily | None, shows_data: bool) -> str:

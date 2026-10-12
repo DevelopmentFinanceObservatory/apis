@@ -1,13 +1,21 @@
 """Postgres writers for immutable version records and mutable subject heads.
 
-`LiveVersionRecordWriter` stores a version and its artifact links in one
-transaction. Version inserts use `ON CONFLICT DO NOTHING`,
-so records are immutable and retries are idempotent. Store errors become
-`DatasetsStoreUnavailable` after the transaction exits.
+`LiveVersionRecordWriter` stores a version and its artifact links in one transaction. A version's
+facts go in their own columns (`dataset_store.snapshot.VERSION_FACT_COLUMNS`), and `immutable_body`
+holds the body those facts encode (`datasets_api.manifest.version_body`). Nothing in this image
+reads the column; the writer keeps filling it for any image that decodes version bodies from it.
+Version inserts use `ON CONFLICT DO NOTHING`, so records are immutable and retries are idempotent.
+Store errors become `DatasetsStoreUnavailable` after the transaction exits.
 
 `record_version` uses `RETURNING` to report whether its insert created the
 row. Concurrent first writes have one winner, without a racy existence read.
-`record_artifact` adds an idempotent rendering in its own transaction.
+`record_artifact` adds an idempotent rendering in its own transaction, and
+`record_replacement_artifact` does the same while copying the references of the digest it
+replaces.
+`write_version` stores a serve's whole write in one transaction: the inventory
+rows its artifacts owe (`artifact_store.inventory.write_entry`), the record
+and its links, the rendered links and collapsed version when the stored record
+holds the body they were rendered from, and the served version read back.
 `LiveVersionLister.list_versions` reads a subject's versions by `recorded_at`, newest first,
 each with the renderings of the files linked under it. The second statement selects and orders
 those files as `LiveSnapshotReader.read_artifact_locations` does, so a rendering read from the
@@ -22,35 +30,54 @@ concurrent re-render is unlinking.
 `rendering_key` hashes sorted JSON options, giving equivalent mappings the
 same key. Definition retrieval uses the same function.
 
-`subject_head` holds two timestamps. `confirmed_at` is when a probe or materialisation last
-confirmed the stored `content_version` current. `materialised_at` is when a materialisation last
-wrote it. `LiveHeadStore.advance_head` sets both, and updates a head only when its version matches
-the caller's `expected_content_version`. Postgres applies the conflict
-update under the row lock, so concurrent writers with the same expectation
-have one winner. `confirm_head` updates only `confirmed_at` while the
-version matches.
+`subject_head` holds two timestamps. `confirmed_at` is when a freshness check or materialisation
+last confirmed the stored `content_version` current. `materialised_at` is when a materialisation
+last wrote it. `LiveHeadStore.advance_head` inserts the run's `datasets.materialisation` row and, in
+the same transaction, sets both timestamps, the run's id and its dependencies, updating a head only
+while it names the run the caller observed (`expected_materialisation_id`, `None` for no head).
+Postgres applies the conflict update under the row lock, so concurrent writers with the same
+expectation have one winner, including two that produce the version the head already holds, and a
+head this store writes names the run that produced its version. A losing writer keeps its run's row.
+A worker run passes its claim as a `HeadFence`, and the same transaction first takes a share lock on
+that `datasets.operation` row and checks it is still `running` at the claim's attempt
+(`_holds_fence`). The lock conflicts with a claim's update, so a claim either commits first and the
+advance raises `HeadFenceLost` having written nothing, or waits until the advance commits.
+`confirm_head` updates only `confirmed_at` while the version matches. `read_head` reports no
+dependencies for a head whose run made another version, as a head another writer advanced without
+naming its run does. The `signal` column keeps its default on every head this store writes.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from typing import cast
 
+from artifact_store.errors import ArtifactRecordConflictError
+from artifact_store.inventory import write_entry
 from dataset_store import DatasetStore, Transaction
-from dataset_store.snapshot import WORKING_TIER_RETENTION
+from dataset_store.snapshot import (
+    VERSION_FACT_COLUMNS,
+    WORKING_TIER_RETENTION,
+    VersionState,
+    version_fact_values,
+    version_state_in,
+)
+from datasets_api.manifest import version_body
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.versions import (
+    RENDERED_FACT_FIELDS,
     ArtifactRecord,
+    HeadFence,
+    HeadFenceLost,
     ListedVersion,
-    MalformedSignalError,
-    MemberSignal,
+    MaterialisationRecord,
     SubjectHead,
     VersionRecord,
-    decode_signal,
-    encode_signal,
+    VersionWrite,
+    WrittenVersion,
 )
 from dfo_platform.store_errors import extract_sqlstate, safe_diagnostics
 
@@ -133,6 +160,68 @@ def _insert_artifact(
     )
 
 
+_FACT_COLUMN_LIST = ", ".join(VERSION_FACT_COLUMNS)
+_RECORD_PLACEHOLDERS = ", ".join(["%s"] * (10 + len(VERSION_FACT_COLUMNS)))
+
+_INSERT_VERSION_SQL = (
+    "INSERT INTO datasets.version_record "
+    "(subject_id, subject_kind, content_version, schema_version, immutable_body, "
+    "trace_id, recorded_at, base_content_version, frame_grammar_version, frame_sha256, "
+    f"{_FACT_COLUMN_LIST}) "
+    f"VALUES ({_RECORD_PLACEHOLDERS}) "
+    "ON CONFLICT (subject_id, content_version) DO NOTHING "
+    "RETURNING subject_id"
+)
+
+
+def _insert_version(
+    tx: Transaction, record: VersionRecord, *, trace_id: str | None, now: datetime
+) -> bool:
+    """Insert `record` and link its artifacts. `True` when this call created the row."""
+    inserted_row = tx.fetch_one(
+        _INSERT_VERSION_SQL,
+        (
+            record.subject_id,
+            record.subject_kind,
+            record.content_version,
+            record.schema_version,
+            version_body(record),
+            trace_id,
+            now,
+            record.base_content_version,
+            record.frame_grammar_version,
+            record.frame_sha256,
+            *version_fact_values(record.facts),
+        ),
+    )
+    for artifact in record.artifacts:
+        _insert_artifact(
+            tx,
+            subject_id=record.subject_id,
+            content_version=record.content_version,
+            artifact=artifact,
+            now=now,
+        )
+    return inserted_row is not None
+
+
+def _state(tx: Transaction, record: VersionRecord) -> VersionState:
+    state = version_state_in(
+        tx, subject_id=record.subject_id, content_version=record.content_version
+    )
+    assert state is not None, "version record missing inside the transaction that wrote it"
+    return state
+
+
+def _holds_rendered_facts(state: VersionState, record: VersionRecord) -> bool:
+    """Whether the stored version carries the facts `record`'s artifacts render."""
+    stored, written = state.version.facts, record.facts
+    return all(
+        getattr(stored, field, None) == getattr(written, field, None)
+        for field in RENDERED_FACT_FIELDS
+    )
+
+
 class LiveVersionRecordWriter:
     def __init__(self, *, store: DatasetStore, now: Clock = utc_now) -> None:
         self._store = store
@@ -142,35 +231,10 @@ class LiveVersionRecordWriter:
         recorded_at = self._now()
         failure: str | None = None
         sqlstate: str | None = None
-        inserted_row: Mapping[str, object] | None = None
+        created = False
         try:
             with self._store.transaction() as tx:
-                inserted_row = tx.fetch_one(
-                    "INSERT INTO datasets.version_record "
-                    "(subject_id, subject_kind, content_version, schema_version, "
-                    "immutable_body, trace_id, recorded_at, base_content_version) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
-                    "ON CONFLICT (subject_id, content_version) DO NOTHING "
-                    "RETURNING subject_id",
-                    (
-                        record.subject_id,
-                        record.subject_kind,
-                        record.content_version,
-                        record.schema_version,
-                        dict(record.immutable_body),
-                        trace_id,
-                        recorded_at,
-                        record.base_content_version,
-                    ),
-                )
-                for artifact in record.artifacts:
-                    _insert_artifact(
-                        tx,
-                        subject_id=record.subject_id,
-                        content_version=record.content_version,
-                        artifact=artifact,
-                        now=recorded_at,
-                    )
+                created = _insert_version(tx, record, trace_id=trace_id, now=recorded_at)
         except Exception as exc:
             # Save only safe diagnostics, then raise after leaving this exception handler.
             failure = (
@@ -180,7 +244,49 @@ class LiveVersionRecordWriter:
             sqlstate = extract_sqlstate(exc)
         if failure is not None:
             raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
-        return inserted_row is not None
+        return created
+
+    def write_version(self, write: VersionWrite, *, trace_id: str | None = None) -> WrittenVersion:
+        now = self._now()
+        record = write.record
+        failure: str | None = None
+        sqlstate: str | None = None
+        written: WrittenVersion | None = None
+        try:
+            with self._store.transaction() as tx:
+                for entry in write.inventory:
+                    write_entry(tx, entry, now=now)
+                created = _insert_version(tx, record, trace_id=trace_id, now=now)
+                rendered = created or _holds_rendered_facts(_state(tx, record), record)
+                served = record
+                if rendered:
+                    for artifact in write.rendered:
+                        _insert_artifact(
+                            tx,
+                            subject_id=record.subject_id,
+                            content_version=record.content_version,
+                            artifact=artifact,
+                            now=now,
+                        )
+                    if write.collapsed is not None:
+                        served = write.collapsed
+                        created = _insert_version(tx, served, trace_id=trace_id, now=now)
+                state = _state(tx, served)
+                written = WrittenVersion(created=created, rendered=rendered, state=state)
+        except ArtifactRecordConflictError as exc:
+            exc.subject_id = record.subject_id
+            exc.content_version = record.content_version
+            raise
+        except Exception as exc:
+            failure = (
+                f"writing version subject_id {record.subject_id!r} content_version "
+                f"{record.content_version!r} failed: {safe_diagnostics(exc)}"
+            )
+            sqlstate = extract_sqlstate(exc)
+        if failure is not None:
+            raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
+        assert written is not None
+        return written
 
     def record_artifact(
         self,
@@ -189,7 +295,49 @@ class LiveVersionRecordWriter:
         content_version: str,
         artifact: ArtifactRecord,
         trace_id: str | None = None,
+    ) -> str:
+        now = self._now()
+        failure: str | None = None
+        sqlstate: str | None = None
+        linked: Mapping[str, object] | None = None
+        try:
+            with self._store.transaction() as tx:
+                _insert_artifact(
+                    tx,
+                    subject_id=subject_id,
+                    content_version=content_version,
+                    artifact=artifact,
+                    now=now,
+                )
+                # The upsert keeps a link whose digest is servable, so the linked digest is read.
+                linked = tx.fetch_one(
+                    "SELECT artifact_digest FROM datasets.version_artifact "
+                    "WHERE subject_id = %s AND content_version = %s AND rendering_key = %s",
+                    (subject_id, content_version, rendering_key(artifact.rendering)),
+                )
+        except Exception as exc:
+            failure = (
+                f"recording artifact subject_id {subject_id!r} content_version "
+                f"{content_version!r} failed: {safe_diagnostics(exc)}"
+            )
+            sqlstate = extract_sqlstate(exc)
+        if failure is not None:
+            raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
+        assert linked is not None, "artifact link missing inside the transaction that wrote it"
+        return cast(str, linked["artifact_digest"])
+
+    def record_replacement_artifact(
+        self,
+        *,
+        subject_id: str,
+        content_version: str,
+        artifact: ArtifactRecord,
+        replaces: str,
     ) -> None:
+        """Link `artifact` and copy every `artifact_reference` row the version holds on the
+        `replaces` digest, live or removed, to it, in one transaction. A converted artifact then
+        counts as referenced exactly as the one it replaces, by `reconciliation.sweep` and by
+        anything else that reads references per digest. A rerun changes nothing."""
         now = self._now()
         failure: str | None = None
         sqlstate: str | None = None
@@ -202,9 +350,20 @@ class LiveVersionRecordWriter:
                     artifact=artifact,
                     now=now,
                 )
+                tx.execute(
+                    "INSERT INTO datasets.artifact_reference "
+                    "(principal, artifact_digest, subject_id, content_version, reference_kind, "
+                    "created_at, removed_at) "
+                    "SELECT principal, %s, subject_id, content_version, reference_kind, "
+                    "created_at, removed_at FROM datasets.artifact_reference "
+                    "WHERE artifact_digest = %s AND subject_id = %s AND content_version = %s "
+                    "ON CONFLICT (principal, artifact_digest, subject_id, content_version, "
+                    "reference_kind) DO NOTHING",
+                    (artifact.artifact_digest, replaces, subject_id, content_version),
+                )
         except Exception as exc:
             failure = (
-                f"recording artifact subject_id {subject_id!r} content_version "
+                f"recording replacement artifact subject_id {subject_id!r} content_version "
                 f"{content_version!r} failed: {safe_diagnostics(exc)}"
             )
             sqlstate = extract_sqlstate(exc)
@@ -262,6 +421,72 @@ class LiveVersionLister:
         ]
 
 
+_HEAD_COLUMNS = "content_version, confirmed_at, materialised_at, materialisation_id, dependencies"
+
+# A head's columns with its fingerprint kept only while its run produced its version.
+_JUDGED_HEAD_SELECT = (
+    "SELECT h.content_version, h.confirmed_at, h.materialised_at, h.materialisation_id, "
+    "CASE WHEN m.content_version = h.content_version THEN h.dependencies END AS dependencies "
+    "FROM datasets.subject_head h "
+    "LEFT JOIN datasets.materialisation m ON m.id = h.materialisation_id "
+    "WHERE h.subject_id = %s"
+)
+
+
+def _insert_materialisation(
+    tx: Transaction, materialisation: MaterialisationRecord, *, now: datetime
+) -> int:
+    row = tx.fetch_one(
+        "INSERT INTO datasets.materialisation "
+        '(subject_id, content_version, materialised_at, "trigger", materialiser_build, '
+        "frame_grammar_version, code_index_stamp, origin_catalogue_build_id, coverage_stamp, "
+        "graph_generation, dependencies, selection, conversion, trace_id) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+        (
+            materialisation.subject_id,
+            materialisation.content_version,
+            now,
+            materialisation.trigger,
+            materialisation.materialiser_build,
+            materialisation.frame_grammar_version,
+            materialisation.code_index_stamp,
+            materialisation.origin_catalogue_build_id,
+            materialisation.coverage_stamp,
+            materialisation.graph_generation,
+            dict(materialisation.dependencies),
+            dict(materialisation.selection),
+            dict(materialisation.conversion) if materialisation.conversion is not None else None,
+            materialisation.trace_id,
+        ),
+    )
+    assert row is not None  # an INSERT ... RETURNING without a conflict clause returns its row
+    return cast(int, row["id"])
+
+
+def _holds_fence(tx: Transaction, fence: HeadFence) -> bool:
+    """Whether the fence's operation is still `running` at its attempt, holding a share lock on
+    the row until the transaction ends. Under READ COMMITTED a lock that waited on a claim's
+    update re-checks the committed row, so a claimed row reads as lost."""
+    row = tx.fetch_one(
+        "SELECT 1 AS held FROM datasets.operation "
+        "WHERE id = %s AND state = 'running' AND attempt_count = %s FOR SHARE",
+        (fence.operation_id, fence.attempt),
+    )
+    return row is not None
+
+
+def _head(subject_id: str, row: Mapping[str, object]) -> SubjectHead:
+    """The head a `_HEAD_COLUMNS` row holds."""
+    return SubjectHead(
+        subject_id=subject_id,
+        content_version=cast(str, row["content_version"]),
+        confirmed_at=cast(datetime, row["confirmed_at"]),
+        materialised_at=cast(datetime, row["materialised_at"]),
+        materialisation_id=cast("int | None", row["materialisation_id"]),
+        dependencies=cast("Mapping[str, object] | None", row["dependencies"]),
+    )
+
+
 class LiveHeadStore:
     def __init__(self, *, store: DatasetStore, now: Clock = utc_now) -> None:
         self._store = store
@@ -270,38 +495,48 @@ class LiveHeadStore:
     def advance_head(
         self,
         *,
-        subject_id: str,
-        content_version: str,
-        signal: Sequence[MemberSignal],
-        expected_content_version: str | None,
+        materialisation: MaterialisationRecord,
+        expected_materialisation_id: int | None,
+        fence: HeadFence | None = None,
     ) -> SubjectHead | None:
         now = self._now()
+        subject_id = materialisation.subject_id
+        content_version = materialisation.content_version
         failure: str | None = None
         sqlstate: str | None = None
+        fence_lost = False
         row = None
         try:
             with self._store.transaction() as tx:
-                row = tx.fetch_one(
-                    "INSERT INTO datasets.subject_head "
-                    "(subject_id, content_version, confirmed_at, materialised_at, signal) "
-                    "VALUES (%s, %s, %s, %s, %s) "
-                    "ON CONFLICT (subject_id) DO UPDATE SET "
-                    "content_version = EXCLUDED.content_version, "
-                    "confirmed_at = EXCLUDED.confirmed_at, "
-                    "materialised_at = EXCLUDED.materialised_at, "
-                    "signal = EXCLUDED.signal "
-                    "WHERE datasets.subject_head.content_version "
-                    "IS NOT DISTINCT FROM %s "
-                    "RETURNING content_version, confirmed_at, materialised_at, signal",
-                    (
-                        subject_id,
-                        content_version,
-                        now,
-                        now,
-                        encode_signal(signal),
-                        expected_content_version,
-                    ),
-                )
+                # The fence is the first statement, so the operation row is locked before any
+                # write and the transaction writes nothing when the claim has moved on.
+                fence_lost = fence is not None and not _holds_fence(tx, fence)
+                if not fence_lost:
+                    materialisation_id = _insert_materialisation(tx, materialisation, now=now)
+                    row = tx.fetch_one(
+                        "INSERT INTO datasets.subject_head "
+                        "(subject_id, content_version, confirmed_at, materialised_at, "
+                        "materialisation_id, dependencies) "
+                        "VALUES (%s, %s, %s, %s, %s, %s) "
+                        "ON CONFLICT (subject_id) DO UPDATE SET "
+                        "content_version = EXCLUDED.content_version, "
+                        "confirmed_at = EXCLUDED.confirmed_at, "
+                        "materialised_at = EXCLUDED.materialised_at, "
+                        "materialisation_id = EXCLUDED.materialisation_id, "
+                        "dependencies = EXCLUDED.dependencies "
+                        "WHERE datasets.subject_head.materialisation_id "
+                        "IS NOT DISTINCT FROM %s "
+                        f"RETURNING {_HEAD_COLUMNS}",
+                        (
+                            subject_id,
+                            content_version,
+                            now,
+                            now,
+                            materialisation_id,
+                            dict(materialisation.dependencies),
+                            expected_materialisation_id,
+                        ),
+                    )
         except Exception as exc:
             failure = (
                 f"advancing head subject_id {subject_id!r} content_version "
@@ -310,16 +545,12 @@ class LiveHeadStore:
             sqlstate = extract_sqlstate(exc)
         if failure is not None:
             raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
+        if fence is not None and fence_lost:
+            raise HeadFenceLost(fence)
         if row is None:
-            # The expected version lost. Reread the head to find the winner.
+            # The head names a run other than `expected_materialisation_id`. The caller rereads it.
             return None
-        return SubjectHead(
-            subject_id=subject_id,
-            content_version=cast(str, row["content_version"]),
-            confirmed_at=cast(datetime, row["confirmed_at"]),
-            materialised_at=cast(datetime, row["materialised_at"]),
-            signal=decode_signal(cast(Mapping[str, object], row["signal"])),
-        )
+        return _head(subject_id, row)
 
     def confirm_head(self, *, subject_id: str, content_version: str) -> SubjectHead | None:
         confirmed_at = self._now()
@@ -331,7 +562,7 @@ class LiveHeadStore:
                 row = tx.fetch_one(
                     "UPDATE datasets.subject_head SET confirmed_at = %s "
                     "WHERE subject_id = %s AND content_version = %s "
-                    "RETURNING content_version, confirmed_at, materialised_at, signal",
+                    f"RETURNING {_HEAD_COLUMNS}",
                     (confirmed_at, subject_id, content_version),
                 )
         except Exception as exc:
@@ -345,13 +576,7 @@ class LiveHeadStore:
         if row is None:
             # No matching head exists at this version.
             return None
-        return SubjectHead(
-            subject_id=subject_id,
-            content_version=cast(str, row["content_version"]),
-            confirmed_at=cast(datetime, row["confirmed_at"]),
-            materialised_at=cast(datetime, row["materialised_at"]),
-            signal=decode_signal(cast(Mapping[str, object], row["signal"])),
-        )
+        return _head(subject_id, row)
 
     def read_head(self, subject_id: str) -> SubjectHead | None:
         failure: str | None = None
@@ -359,11 +584,7 @@ class LiveHeadStore:
         row = None
         try:
             with self._store.transaction() as tx:
-                row = tx.fetch_one(
-                    "SELECT content_version, confirmed_at, materialised_at, signal "
-                    "FROM datasets.subject_head WHERE subject_id = %s",
-                    (subject_id,),
-                )
+                row = tx.fetch_one(_JUDGED_HEAD_SELECT, (subject_id,))
         except Exception as exc:
             failure = f"reading head subject_id {subject_id!r} failed: {safe_diagnostics(exc)}"
             sqlstate = extract_sqlstate(exc)
@@ -371,19 +592,4 @@ class LiveHeadStore:
             raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
         if row is None:
             return None
-        signal_failure: str | None = None
-        signal: tuple[MemberSignal, ...] = ()
-        try:
-            signal = decode_signal(cast(Mapping[str, object], row["signal"]))
-        except MalformedSignalError as exc:
-            # Malformed stored data uses the same store-unavailable path as driver failures.
-            signal_failure = f"reading head subject_id {subject_id!r} failed: {exc}"
-        if signal_failure is not None:
-            raise DatasetsStoreUnavailable(signal_failure)
-        return SubjectHead(
-            subject_id=subject_id,
-            content_version=cast(str, row["content_version"]),
-            confirmed_at=cast(datetime, row["confirmed_at"]),
-            materialised_at=cast(datetime, row["materialised_at"]),
-            signal=signal,
-        )
+        return _head(subject_id, row)

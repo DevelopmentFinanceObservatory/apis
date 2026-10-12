@@ -11,6 +11,7 @@ import asyncio
 import pytest
 
 from code_index.shared import get_index
+from code_index.tokens import tokenize
 from search.engine.bind import (
     DraftBindingEvidence,
     DraftBindingKind,
@@ -1363,7 +1364,7 @@ class TestApplyDeclaredDefaultsDoesNotFire:
         bindings = [_finance(), _flow_unbound()]
         tie = QualifierTie(
             matched_text="flows",
-            rows=(get_index().codes_by_normalized_text("official development assistance")[0],),
+            rows=(get_index().codes_by_tokens(tokenize("official development assistance"))[0],),
         )
 
         _repaired, defaulted = apply_declared_defaults(

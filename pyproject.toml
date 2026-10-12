@@ -18,6 +18,9 @@ dependencies = [
     "cachetools>=7.2",
 ]
 
+[project.scripts]
+datasets-maintenance = "datasets_api.maintenance:main"
+
 [project.optional-dependencies]
 eval = [
     "langfuse>=4.6.1",
@@ -200,7 +203,7 @@ dfo-data-tools = { workspace = true }
 # and the components catalogue's `unit` slot takes the matching `composed_unit`.
 # Follow-up: move all four to a real spec-kit tag once one is cut, so a
 # future force-push or GC on spec-kit's main can't silently break this lock.
-dfo-spec-kit = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git", rev = "a9b8df5234195d5eb023749cf9d745d9f5acd24b", subdirectory = "python/spec-kit" }
+dfo-spec-kit = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git", rev = "0a34033f23d0ee400cbe7131781a6d142eba0508", subdirectory = "python/spec-kit" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

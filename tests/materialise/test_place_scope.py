@@ -24,6 +24,7 @@ from dc_sdmx import (
     SdmxHttpError,
     SdmxTransportError,
 )
+from dfo_platform.request_deadline import bounded_deadline, request_deadline
 from graph_generation import FakeGeneration, GenerationStamp
 from materialise import place_scope
 from materialise.errors import MaterialisationUsageError
@@ -47,6 +48,7 @@ from materialise.place_scope import (
     scope_of_places,
     scope_places,
 )
+from origin_catalogue import bound_catalogue, current_catalogue
 from tests.materialise._scope_availability import ScopeAvailability
 
 _KEN, _TGO, _UGA = "country/KEN", "country/TGO", "country/UGA"
@@ -351,6 +353,19 @@ def test_the_memo_is_shared_only_by_readers_of_the_same_backends(
 
     assert scope.places == ((_KEN,) if shared else (_UGA,))
     assert availability.read_stat_vars() == ([] if shared else ["A"])
+
+
+def test_a_source_scope_reads_and_memoises_apart_from_the_unscoped_request():
+    """The countries fallback counts admitted facets, which a source scope narrows, so a
+    fallback memoised under one scope never answers a request under another."""
+    availability = _Availability(errors={"D": SdmxHttpError("server error", upstream_status=500)})
+    graph = _Graph(admitted=_ADMITTED)
+    with bound_catalogue(current_catalogue().scoped(frozenset({"provenance/X"}))):
+        read_default_presence(graph=graph, availability=availability, stat_vars=["D"])
+
+    read_default_presence(graph=graph, availability=availability, stat_vars=["D"])
+
+    assert availability.read_stat_vars() == ["D", "D"]
 
 
 def test_a_generation_change_clears_the_memo_and_reads_the_scope_again():
@@ -924,6 +939,24 @@ def test_a_cancelled_flight_leaves_at_once_and_its_read_still_memoises(monkeypat
 
 
 # -- settling reads --
+
+
+def test_a_flight_started_inside_a_request_runs_detached_from_its_deadline():
+    """The settle flight is shared with other requests and the mint, so the starting
+    request's deadline must not narrow its read."""
+    request_bounds: list[float | None] = []
+
+    class _RecordingAvailability(_Availability):
+        def availability_values(self, **kwargs) -> list[str]:  # type: ignore[override]
+            request_bounds.append(bounded_deadline(None))
+            return super().availability_values(**kwargs)
+
+    with request_deadline(time.monotonic() + 1):
+        read_default_presence(
+            graph=_Graph(), availability=_RecordingAvailability(data=_EVERY), stat_vars=["A"]
+        )
+
+    assert request_bounds == [None]
 
 
 def test_a_settling_read_waits_past_the_requests_window(monkeypatch):

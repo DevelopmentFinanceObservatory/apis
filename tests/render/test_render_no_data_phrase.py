@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from typing import get_args
+
 import pytest
 
-from search.models import GraphRef, ResolvedQualifier
+from search.models import GraphRef, NoDataReason, ResolvedQualifier
 from search.render.no_data import (
     _GENERIC_NO_DATA,
     _NO_DATA_PHRASES,
@@ -20,6 +22,15 @@ from search.render.tokens import sentence_from_plan
     ("reason", "expected"),
     [
         ("no_observations", "No data found for this query."),
+        (
+            "source_not_resolved",
+            "Could not match the data source named in this query. Try a publisher or "
+            "dataset name, or leave the source out.",
+        ),
+        (
+            "source_ambiguous",
+            "A data source named in this query matches more than one source. Name one of them.",
+        ),
         (
             "entity_not_resolved",
             "Could not use the place named in this query. Try a different place name.",
@@ -87,26 +98,9 @@ def test_no_data_phrase_by_reason(reason, expected):
     assert no_data_phrase(reason) == expected
 
 
-def test_no_data_phrase_all_fifteen_are_distinct():
-    reasons = [
-        "no_observations",
-        "entity_not_resolved",
-        "entity_ambiguous",
-        "entity_role_not_admitted",
-        "entity_set_too_large",
-        "variable_not_resolved",
-        "role_not_resolved",
-        "no_matching_slice",
-        "binding_mismatch",
-        "denominator_not_available",
-        "unit_not_resolved",
-        "facet_not_available",
-        "role_incompatible",
-        "role_signature_incompatible",
-        "qualifier_not_bound",
-    ]
-    phrases = [no_data_phrase(r) for r in reasons]  # ty: ignore[invalid-argument-type]  # list[str] not narrowed to NoDataReason
-    assert len(set(phrases)) == 15, "Each NoDataReason must map to a distinct phrase"
+def test_no_data_phrase_is_distinct_for_every_reason():
+    reasons = get_args(NoDataReason)
+    assert len({no_data_phrase(reason) for reason in reasons}) == len(reasons)
 
 
 def test_no_data_phrase_unknown_code_falls_back():
@@ -250,6 +244,50 @@ def test_no_data_phrase_entity_ambiguous_lists_candidates(
         )
         == expected
     )
+
+
+@pytest.mark.parametrize(
+    ("reason", "source_terms", "candidates", "expected"),
+    [
+        (
+            "source_not_resolved",
+            ["XYZ statistics"],
+            None,
+            'Could not match "XYZ statistics" to a data source. Try a publisher or dataset '
+            "name, or leave the source out.",
+        ),
+        (
+            "source_not_resolved",
+            ["XYZ", " ", "ABC"],
+            None,
+            'Could not match "XYZ" and "ABC" to data sources. Try a publisher or dataset '
+            "name, or leave the source out.",
+        ),
+        (
+            "source_ambiguous",
+            ["WHO"],
+            ["World Health Organization (WHO)", "World Health Organization (WHO)"],
+            '"WHO" matches more than one source: "World Health Organization (WHO)" and '
+            '"World Health Organization (WHO)". Name one of them.',
+        ),
+        (
+            "source_ambiguous",
+            ["WHO"],
+            None,
+            '"WHO" matches more than one source. Name one of them.',
+        ),
+    ],
+)
+def test_no_data_phrase_quotes_the_source_wordings(reason, source_terms, candidates, expected):
+    assert (
+        no_data_phrase(reason, source_terms=source_terms, ambiguous_candidates=candidates)
+        == expected
+    )
+
+
+def test_a_bare_source_refusal_plan_is_its_phrase():
+    plan = no_data_sentence_plan("source_not_resolved", source_terms=["XYZ"])
+    assert sentence_from_plan(plan) == no_data_phrase("source_not_resolved", source_terms=["XYZ"])
 
 
 def test_no_data_phrase_entity_role_not_admitted_names_the_variable():

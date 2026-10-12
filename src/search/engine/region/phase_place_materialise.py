@@ -689,9 +689,9 @@ def _walk_key(state: ResolveState, index: int, shape: ShapeDraft, rep_sv: str) -
     """The memo key of a walk: everything `walk_alternate` reads from the request. That is
     the alternate, by capped-shape index, its members and the role keys its places are
     assigned under, and the representative its bindings come from. The dataset it names is
-    its shape's (`ShapeDraft.named_dataset`), or the one the part's exclusions leave serving
-    under those bindings, whatever bindings the shape in play holds. The exclusions are the
-    leg's, fixed once vetting runs."""
+    its shape's (`ShapeDraft.named_dataset`), or the one the part's source scope leaves
+    serving under those bindings, whatever bindings the shape in play holds. The scope is
+    the leg's, fixed once vetting runs."""
     role_keys = state.alternate_place_roles[index].role_keys
     places = (tuple(sorted(role_keys.bound)), tuple(sorted(role_keys.open)))
     return (index, tuple(shape.sv_arc_facts or {}), places, rep_sv)
@@ -705,7 +705,7 @@ def _walk_args(state: ResolveState, index: int, shape: ShapeDraft, rep_sv: str) 
         "graph": state.graph,
         "deadline": state.deadline,
         "role_class_walks": state.role_class_walks,
-        "excluded": state.excluded_datasets,
+        "scope": state.scope,
     }
 
 
@@ -951,16 +951,14 @@ async def _read_alternates_presence(
 
 
 async def _phase_facet_requests(state: ResolveState) -> RegionResult | None:
-    """Bind parsed-door unit/source text or return its terminal refusal.
+    """Bind parsed-door unit text or return its terminal refusal.
 
-    Raw-text and resubmit calls have neither field. Expressible unit requests continue with
-    narrowed facets. Parse errors, unsupported units, and source text terminate here.
+    Resubmit calls have no unit text. Expressible unit requests continue with narrowed
+    facets. Parse errors and unsupported units terminate here.
     """
-    # Raw-text and resubmit calls have no facet text. Unit parse failures return
-    # ``unit_not_resolved`` or ``unit_request_unsupported``. The binder emits only ISO codes
-    # and role shapes, every one expressible, and a bound unit narrows later reads. When
-    # both fields are posted, ``unit_text`` takes precedence and a warning marks
-    # ``source_text`` unevaluated. Completion reads the conversion tables' base year only
+    # Unit parse failures return ``unit_not_resolved`` or ``unit_request_unsupported``. The
+    # binder emits only ISO codes and role shapes, every one expressible, and a bound unit
+    # narrows later reads. Completion reads the conversion tables' base year only
     # for a constant-price phrase that names no year, off the event loop because the first
     # such read in a process goes to the graph.
     if state.unit_text is not None:
@@ -975,19 +973,6 @@ async def _phase_facet_requests(state: ResolveState) -> RegionResult | None:
             policy=policy,
             bound_roles=frozenset(role for _, role in state.place.roles.roles),
         )
-        if state.source_text is not None:
-            state.warnings.append(
-                Warning(
-                    code="facet_binding_unsupported",
-                    severity="warn",
-                    message=(
-                        "source_text was also posted on this part; unit_text's outcome "
-                        "takes precedence and source_text is not evaluated, but a "
-                        "requested data source is a recognised facet axis this "
-                        "deployment has no binding machinery for regardless."
-                    ),
-                )
-            )
         if unit_outcome.code == "unit_not_resolved":
             return state.no_data(
                 "unit_not_resolved",
@@ -1033,21 +1018,6 @@ async def _phase_facet_requests(state: ResolveState) -> RegionResult | None:
     _unit_request_basis = state.unit_request_basis = (
         _bound_unit_outcome.request_basis if _bound_unit_outcome is not None else None
     )
-
-    # ``source_text`` is parsed-door only. Provenance can bind by ref, but free text has no
-    # binding path and returns ``facet_binding_unsupported``.
-    if state.source_text is not None and state.unit_text is None:
-        return _unsupported(
-            state,
-            "facet_binding_unsupported",
-            pointer="/identity/facets/provenance",
-            detail=(
-                "a requested data source names a recognised facet axis (provenance) "
-                "this deployment can bind by ref but has no machinery to bind from "
-                "free text."
-            ),
-            llm_usage=state.var_usage,
-        )
 
     return None
 
@@ -1500,6 +1470,7 @@ async def _nearest_real_for(state: ResolveState) -> tuple[NearestRealSpec, ...] 
         named_groups=request_named_groups(state, state.place.roles),
         coverage=state.coverage,
         unsettled=state.unsettled_place,
+        pin_served_provenance=state.pin_served_provenance,
     )
     if near_presence is not None:
         known = state.default_presence

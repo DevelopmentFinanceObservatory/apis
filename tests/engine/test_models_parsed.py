@@ -135,6 +135,12 @@ class TestParsedInputParts:
                     ],
                     "time_text": "2015 to 2024",
                     "unit_text": "constant 2023 USD",
+                    "sources": [
+                        {"text": "IDS", "ref": None, "polarity": "include"},
+                        {"text": "CRS", "ref": None, "polarity": "exclude"},
+                        {"text": None, "ref": "provenance/SomeTable", "polarity": "include"},
+                        {"text": "OECD CRS", "ref": None, "polarity": "include"},
+                    ],
                     "source_text": "OECD CRS",
                     "provenance": "provenance/SomeTable",
                     "operations": [
@@ -192,6 +198,57 @@ class TestParsedPartFields:
             ParsedPart.model_validate(
                 {"variable_text": "GDP", "source_text": "x" * (SEARCH_MAX_SOURCE_TEXT_CHARS + 1)}
             )
+
+    @pytest.mark.parametrize(
+        "mention",
+        [{}, {"polarity": "exclude"}, {"text": ""}, {"text": "x" * 121}, {"ref": ""}],
+        ids=["empty", "polarity only", "blank text", "long text", "blank ref"],
+    )
+    def test_a_mention_without_text_or_ref_refuses(self, mention: dict):
+        with pytest.raises(ValidationError):
+            ParsedPart.model_validate({"variable_text": "GDP", "sources": [mention]})
+
+    @pytest.mark.parametrize(
+        "deprecated",
+        [{}, {"provenance": "provenance/X"}, {"source_text": "OECD"}],
+        ids=["sources", "sources-and-provenance", "sources-and-source-text"],
+    )
+    def test_more_than_eight_mentions_refuse_counting_the_deprecated_fields(self, deprecated: dict):
+        posted = 9 if not deprecated else 8
+        with pytest.raises(ValidationError):
+            ParsedPart.model_validate(
+                {
+                    "variable_text": "GDP",
+                    "sources": [{"text": f"IDS {i}"} for i in range(posted)],
+                    **deprecated,
+                }
+            )
+
+    def test_the_deprecated_fields_fold_into_sources_after_the_posted_mentions(self):
+        part = ParsedPart.model_validate(
+            {
+                "variable_text": "GDP",
+                "sources": [{"text": "CRS", "polarity": "exclude"}],
+                "provenance": "provenance/X",
+                "source_text": "OECD",
+            }
+        )
+        assert [(m.text, m.ref, m.polarity) for m in part.sources] == [
+            ("CRS", None, "exclude"),
+            (None, "provenance/X", "include"),
+            ("OECD", None, "include"),
+        ]
+        assert [part.mention_field(i) for i in range(3)] == [
+            "sources/0",
+            "provenance",
+            "source_text",
+        ]
+
+    def test_a_dump_posted_back_folds_to_the_same_sources(self):
+        part = ParsedPart(variable_text="GDP", provenance="provenance/X", source_text="OECD")
+        again = ParsedPart.model_validate(part.model_dump(mode="json"))
+        assert again.sources == part.sources
+        assert len(again.sources) == 2
 
     def test_entities_over_max_refuses(self):
         with pytest.raises(ValidationError):

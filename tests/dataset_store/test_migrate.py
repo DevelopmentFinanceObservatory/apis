@@ -383,6 +383,15 @@ def test_apply_pending_applies_every_real_migration_in_order():
         "0021_drop_collections.sql",
         "0022_drop_null_collection.sql",
         "0023_frame_recipe.sql",
+        "0024_operation_attempt_fencing.sql",
+        "0025_artifact_location_renewal.sql",
+        "0026_artifact_reference_principal_label.sql",
+        "0027_materialisation_record.sql",
+        "0028_spec_alias.sql",
+        "0029_version_record_frame_grammar_version.sql",
+        "0030_version_record_facts.sql",
+        "0031_version_record_facts_backfill.sql",
+        "0032_operation_confirmed_at.sql",
     ]
     statements = [sql for sql, _params in conn.executed]
     assert any("CREATE TABLE datasets.version_record" in sql for sql in statements)
@@ -390,6 +399,8 @@ def test_apply_pending_applies_every_real_migration_in_order():
     assert any("DROP TABLE IF EXISTS datasets.version_member" in sql for sql in statements)
     assert any("CREATE TABLE datasets.version_artifact" in sql for sql in statements)
     assert any("CREATE TABLE datasets.frame_recipe" in sql for sql in statements)
+    assert any("CREATE TABLE datasets.materialisation" in sql for sql in statements)
+    assert any("CREATE TABLE datasets.spec_alias" in sql for sql in statements)
     assert any("CREATE TABLE datasets.version_revocation" in sql for sql in statements)
     assert any("CREATE TABLE datasets.artifact_reference" in sql for sql in statements)
     assert any(
@@ -398,10 +409,22 @@ def test_apply_pending_applies_every_real_migration_in_order():
     )
     assert any("CREATE TABLE datasets.subject_head" in sql for sql in statements)
     assert any(
+        "ALTER TABLE datasets.artifact_location DROP CONSTRAINT artifact_location_check" in sql
+        for sql in statements
+    )
+    assert any(
+        "ALTER TABLE datasets.artifact_location ADD COLUMN renewal" in sql for sql in statements
+    )
+    assert any(
         "ALTER TABLE datasets.version_record ADD COLUMN base_content_version" in sql
         for sql in statements
     )
     assert any("CREATE TABLE datasets.operation" in sql for sql in statements)
+    # The fencing migration is additive, so the image before it runs against the migrated table.
+    fencing = [sql for sql in statements if "ADD COLUMN claimed_at timestamptz" in sql]
+    assert len(fencing) == 1
+    assert "DROP " not in fencing[0]
+    assert "CONSTRAINT" not in fencing[0]
     assert any(
         "CREATE INDEX operation_backlog_state_idx ON datasets.operation" in sql
         for sql in statements
@@ -434,3 +457,35 @@ def test_missing_recorded_file_is_caught_before_a_pending_file_would_apply(tmp_p
 
     assert not any(sql == "CREATE TABLE y (id int);" for sql, _params in conn.executed)
     assert conn.rollbacks == 1
+
+
+def _statement_kinds(name: str) -> list[str]:
+    """The first two words of each statement of `name`, comments dropped and each
+    dollar-quoted body read as `$$`."""
+    code = "\n".join(
+        line
+        for line in (MIGRATIONS_DIR / name).read_text().splitlines()
+        if not line.lstrip().startswith("--")
+    )
+    code = re.sub(r"\$(\w*)\$.*?\$\1\$", "$$", code, flags=re.DOTALL)
+    return [" ".join(statement.split()[:2]) for statement in code.split(";") if statement.strip()]
+
+
+@pytest.mark.parametrize(
+    ("name", "kinds"),
+    [
+        ("0029_version_record_frame_grammar_version.sql", ["SET LOCAL", "ALTER TABLE"]),
+        (
+            "0030_version_record_facts.sql",
+            ["SET LOCAL", "ALTER TABLE", "CREATE OR", "CREATE OR"],
+        ),
+        ("0031_version_record_facts_backfill.sql", ["UPDATE datasets.version_record", "DO $$"]),
+    ],
+)
+def test_version_record_alters_run_apart_from_the_backfill(name: str, kinds: list[str]):
+    """An ALTER holds ACCESS EXCLUSIVE until its transaction commits, so a file that alters
+    `version_record` while the previous image serves writes no row and gives up waiting for
+    the lock, and the backfill and its closing check run in their own file under row locks."""
+    assert _statement_kinds(name) == kinds
+    if kinds[0] == "SET LOCAL":
+        assert "SET LOCAL lock_timeout = '5s'" in (MIGRATIONS_DIR / name).read_text()

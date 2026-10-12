@@ -1,17 +1,28 @@
 """Version-record and subject-head interfaces used by the Datasets API.
 
-`VersionRecordWriter` stores immutable manifest data. `VersionLister` lists a
-subject's stored versions. `HeadWriter` and
-`HeadReader` manage the current content version. The default null writers
-record or advance nothing. `datasets_surface` injects live implementations.
+`VersionRecordWriter` stores a version's immutable facts (`dataset_store.snapshot.VersionFacts`),
+and `write_version` stores everything one
+serve writes (`VersionWrite`) in one transaction. `VersionLister` lists a
+subject's stored versions. `HeadWriter` records each materialisation run
+(`MaterialisationRecord`) and moves the current content version, and `HeadReader`
+reads it. An operation run fences its head advance on its claim (`HeadFence`), and a write the
+fence refuses raises `HeadFenceLost`. The default null writers record or advance nothing.
+`datasets_surface` injects live implementations.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import Literal, Protocol
+
+from artifact_store.inventory import InventoryEntry
+from dataset_store.snapshot import StoredVersion, VersionFacts, VersionState
+
+# The entry point a materialisation ran through, recorded on its `MaterialisationRecord` and
+# logged on its `datasets.timings` line.
+Trigger = Literal["mint", "get", "options", "refresh", "worker"]
 
 
 @dataclass(frozen=True)
@@ -33,12 +44,56 @@ class VersionRecord:
     subject_kind: str  # "spec"
     content_version: str
     schema_version: int
-    immutable_body: Mapping[str, object]
-    # Signed URLs expire. Writers store artifact metadata separately without them.
+    facts: VersionFacts
+    # A manifest's download links derive from the subject, version and digest, so writers store
+    # artifact metadata without them.
     artifacts: tuple[ArtifactRecord, ...] = ()
-    # Full collapses store their source version in a column because older Manifest
-    # readers reject unknown body fields. Other records use `None`.
+    # The raw version a full collapse was rendered from. Other records use `None`.
     base_content_version: str | None = None
+    # The frame grammar version that minted `content_version`. `None` for a derived frame,
+    # whose token another service minted.
+    frame_grammar_version: str | None = None
+    # The hash of the version's frame (`dfo_frame_grammar.frame_sha256`), which every writer
+    # holds when it records the version.
+    frame_sha256: str | None = None
+
+
+# The facts a rendered artifact carries. An artifact links to a version only when the stored
+# record holds the same values, so every linked artifact dates and cites as its record.
+RENDERED_FACT_FIELDS = ("prepared_at", "citation")
+
+
+@dataclass(frozen=True)
+class VersionWrite:
+    """Everything one serve writes for a version, for `VersionRecordWriter.write_version`.
+
+    `record` is inserted once, and its `artifacts` (the canonical frame and series statistics, which
+    depend on no option and carry no fact a render reads) are linked whoever inserted it. `rendered`
+    are artifacts rendered from `record`'s `RENDERED_FACT_FIELDS`, and `collapsed` the full-collapse
+    version recorded from that render with its own artifacts. Both are written only when the stored
+    record holds those fields. That is so when this call inserts it, or when `record` carries the
+    stored facts it was read from. `inventory` holds the inventory row each written artifact owes.
+    """
+
+    record: VersionRecord
+    inventory: tuple[InventoryEntry, ...] = ()
+    rendered: tuple[ArtifactRecord, ...] = ()
+    collapsed: VersionRecord | None = None
+
+
+@dataclass(frozen=True)
+class WrittenVersion:
+    """What a `write_version` call stored.
+
+    `rendered` says whether the rendered artifacts and the collapsed version were written.
+    `state` is the version the response serves, read in the same transaction. It is the collapsed
+    version when written, else the record. `created` says this call inserted that version, so
+    `state` holds this call's body. Otherwise it holds the stored one.
+    """
+
+    created: bool
+    rendered: bool
+    state: VersionState
 
 
 class VersionRecordWriter(Protocol):
@@ -55,8 +110,16 @@ class VersionRecordWriter(Protocol):
         content_version: str,
         artifact: ArtifactRecord,
         trace_id: str | None = None,
-    ) -> None:
-        """Add one rendering, idempotent on `(subject_id, content_version, rendering_key)`."""
+    ) -> str:
+        """Add one rendering, idempotent on `(subject_id, content_version, rendering_key)`.
+        Return the digest linked under `artifact`'s rendering key after the call. That is
+        `artifact`'s, or the one a link kept."""
+        ...
+
+    def write_version(self, write: VersionWrite, *, trace_id: str | None = None) -> WrittenVersion:
+        """Store `write` in one transaction. It writes the inventory rows, the record and its
+        links, then the rendered links and collapsed version when the stored record holds the
+        rendered body fields, and reads back the version the response serves."""
         ...
 
 
@@ -77,8 +140,30 @@ class NullVersionRecordWriter:
         content_version: str,
         artifact: ArtifactRecord,
         trace_id: str | None = None,
-    ) -> None:
-        return None
+    ) -> str:
+        return artifact.artifact_digest
+
+    def write_version(self, write: VersionWrite, *, trace_id: str | None = None) -> WrittenVersion:
+        # Every write creates, and nothing is linked for a response to list.
+        served = write.collapsed if write.collapsed is not None else write.record
+        return WrittenVersion(created=True, rendered=True, state=unlinked_state(served))
+
+
+def unlinked_state(record: VersionRecord) -> VersionState:
+    """`record` as a stored version with no revocation and no linked location."""
+    return VersionState(
+        version=StoredVersion(
+            subject_id=record.subject_id,
+            subject_kind=record.subject_kind,
+            content_version=record.content_version,
+            schema_version=record.schema_version,
+            facts=record.facts,
+            base_content_version=record.base_content_version,
+            frame_sha256=record.frame_sha256,
+        ),
+        revocation=None,
+        locations=[],
+    )
 
 
 NULL_VERSION_RECORD_WRITER = NullVersionRecordWriter()
@@ -105,218 +190,99 @@ class VersionLister(Protocol):
 
 
 @dataclass(frozen=True)
-class MemberSignal:
-    """Currency-check signal captured for one materialised member.
+class MaterialisationRecord:
+    """One materialisation run, stored as a `datasets.materialisation` row.
 
-    A frame head carries one signal. `obs_count` is measured on the ordinary path,
-    but stored role-bearing signals may have `None`. Two `None` counts match.
-    checks then compare the facet id and dates. `None` stays distinct from
-    zero, which would falsely assert an observation count.
-
-    On the role path, the dates cover only the latest period per bound entity.
-
-
-    `observation_period` and provenance refresh dates come from the
-    dispatched facet. Refresh dates catch value-only source updates. When
-    cadence or refresh dates are unavailable, currency checks fall back to
-    maximum age.
-
-    Converted members carry sorted `(provenance_id, refresh_date)` pairs
-    for their rate or deflator tables, plus `(recipe_id, digest)` for the
-    conversion recipe body. Only materialisation runs recipes, so it captures
-    both. Currency checks compare table refresh dates and recompute
-    the live recipe digest, catching changed inputs under an unchanged id.
-    Unconverted members use `()` and `None`, respectively.
-
-    `clock_window` is the start and end year a range read when its definition
-    leaves the end unstated: the current year ends it, or for a start after
-    the current year it stays open (`materialise.window.election_window`).
-    A read in a later year can take another window, so currency checks
-    compare it with the window a read now takes (`currency.clock_moved`). It
-    is `None` for a window stating its end, `all` and `latest`, which read
-    no clock.
+    `dependencies` is the run's fingerprint (`materialise.dependencies.Dependencies.as_json`).
+    `selection` holds the run's `trace.facets` under `facets`, and `conversion` its
+    `trace.conversion` entries under `entries`, which name
+    the rate and deflator table row digests, or `None` for an unconverted run.
+    `code_index_stamp` is the code index's content hash, and `graph_generation` the graph
+    service's serving revision, `None` when unknown. The store stamps `materialised_at`.
+    `materialiser_build` names the release that ran it and is never empty.
     """
 
-    dispatch_facet_id: str | None
-    obs_count: int | None
-    earliest_date: str | None
-    latest_date: str | None
-    observation_period: str | None = None
-    provenance_last_refresh: str | None = None
-    provenance_next_refresh: str | None = None
-    rate_provenance_refresh: tuple[tuple[str, str | None], ...] = ()
-    recipe_dependency_fingerprint: tuple[str, str] | None = None
-    clock_window: tuple[int | None, int | None] | None = None
+    subject_id: str
+    content_version: str
+    trigger: Trigger
+    materialiser_build: str
+    frame_grammar_version: str
+    code_index_stamp: str
+    origin_catalogue_build_id: str
+    coverage_stamp: str | None
+    graph_generation: str | None
+    dependencies: Mapping[str, object]
+    selection: Mapping[str, object]
+    conversion: Mapping[str, object] | None
+    trace_id: str | None
+
+    def __post_init__(self) -> None:
+        assert self.materialiser_build, "a materialisation run names the build that ran it"
 
 
 @dataclass(frozen=True)
 class SubjectHead:
-    """`confirmed_at` advances on a current probe or materialisation.
-    `materialised_at` advances only when materialisation writes a version.
+    """`confirmed_at` advances when a freshness check confirms the head or a materialisation
+    advances it. `materialised_at` advances only when materialisation writes a version.
     Maximum-age checks use it.
+
+    `materialisation_id` names the `datasets.materialisation` row of the run that produced
+    the head's version, and `dependencies` is that run's fingerprint as stored, which
+    freshness compares. Both are `None` on a head written before runs were recorded, and
+    `dependencies` is `None` on a head whose run produced another version.
     """
 
     subject_id: str
     content_version: str
     confirmed_at: datetime
     materialised_at: datetime
-    signal: tuple[MemberSignal, ...]
+    materialisation_id: int | None
+    dependencies: Mapping[str, object] | None
 
 
-_SIGNAL_MEMBERS_KEY = "members"
+@dataclass(frozen=True)
+class HeadFence:
+    """The operation claim a worker run advances the head under: the `datasets.operation` row
+    `operation_id` must still be `running` at `attempt_count` `attempt`."""
+
+    operation_id: str
+    attempt: int
 
 
-def encode_signal(signal: Sequence[MemberSignal]) -> dict[str, object]:
-    """Encode as `{"members": [...]}` because pg8000 maps a dict to JSONB and a bare
-    list to a Postgres array. Optional conversion fields and `clock_window` are omitted when
-    empty. `decode_signal` reads them back as `()` or `None`.
-    """
-    members: list[dict[str, object]] = []
-    for member in signal:
-        entry: dict[str, object] = {
-            "dispatch_facet_id": member.dispatch_facet_id,
-            "obs_count": member.obs_count,
-            "earliest_date": member.earliest_date,
-            "latest_date": member.latest_date,
-            "observation_period": member.observation_period,
-            "provenance_last_refresh": member.provenance_last_refresh,
-            "provenance_next_refresh": member.provenance_next_refresh,
-        }
-        if member.rate_provenance_refresh:
-            entry["rate_provenance_refresh"] = [
-                [provenance_id, refresh_date]
-                for provenance_id, refresh_date in member.rate_provenance_refresh
-            ]
-        if member.recipe_dependency_fingerprint is not None:
-            recipe_id, digest = member.recipe_dependency_fingerprint
-            entry["recipe_dependency_fingerprint"] = [recipe_id, digest]
-        if member.clock_window is not None:
-            entry["clock_window"] = list(member.clock_window)
-        members.append(entry)
-    return {_SIGNAL_MEMBERS_KEY: members}
+class HeadFenceLost(Exception):
+    """A fenced head advance found its operation claimed by another attempt or no longer
+    `running`, and wrote neither the run's row nor the head."""
 
-
-class MalformedSignalError(ValueError):
-    """`decode_signal` raises this for malformed data. `obs_count` is required.
-    Refresh pairs are `[str, str | None]`; recipe fingerprints are `[str, str]`; clock
-    windows are `[int | None, int | None]`.
-    A bad row never escapes as `KeyError` or `TypeError`.
-    `LiveHeadStore.read_head` maps this to store-unavailable.
-    """
-
-
-def _decode_member_signal(member: object) -> MemberSignal:
-    if not isinstance(member, Mapping):
-        raise MalformedSignalError(f"signal member is not an object: {member!r}")
-
-    def _optional_str(key: str) -> str | None:
-        value = member.get(key)
-        if value is not None and not isinstance(value, str):
-            raise MalformedSignalError(f"signal member {key!r} is not a str or None: {value!r}")
-        return value
-
-    def _rate_provenance_refresh() -> tuple[tuple[str, str | None], ...]:
-        """Decode refresh pairs.
-
-        Missing means `()`. Entries are `[str, str | None]`.
-        """
-        value = member.get("rate_provenance_refresh", [])
-        if not isinstance(value, list):
-            raise MalformedSignalError(
-                f"signal member 'rate_provenance_refresh' is not a list: {value!r}"
-            )
-        pairs: list[tuple[str, str | None]] = []
-        for entry in value:
-            if (
-                not isinstance(entry, list)
-                or len(entry) != 2
-                or not isinstance(entry[0], str)
-                or (entry[1] is not None and not isinstance(entry[1], str))
-            ):
-                raise MalformedSignalError(
-                    f"signal member 'rate_provenance_refresh' entry is malformed: {entry!r}"
-                )
-            pairs.append((entry[0], entry[1]))
-        return tuple(pairs)
-
-    def _recipe_dependency_fingerprint() -> tuple[str, str] | None:
-        """Decode the optional `[recipe_id, digest]` pair. Missing means `None`."""
-        value = member.get("recipe_dependency_fingerprint")
-        if value is None:
-            return None
-        if (
-            not isinstance(value, list)
-            or len(value) != 2
-            or not isinstance(value[0], str)
-            or not isinstance(value[1], str)
-        ):
-            raise MalformedSignalError(
-                f"signal member 'recipe_dependency_fingerprint' is malformed: {value!r}"
-            )
-        return (value[0], value[1])
-
-    def _clock_window() -> tuple[int | None, int | None] | None:
-        """Decode the optional `[start_year, end_year]` pair. Missing means `None`."""
-        value = member.get("clock_window")
-        if value is None:
-            return None
-        if not isinstance(value, list) or len(value) != 2:
-            raise MalformedSignalError(f"signal member 'clock_window' is malformed: {value!r}")
-
-        def _year(year: object) -> int | None:
-            if year is None or (isinstance(year, int) and not isinstance(year, bool)):
-                return year
-            raise MalformedSignalError(f"signal member 'clock_window' is malformed: {value!r}")
-
-        return (_year(value[0]), _year(value[1]))
-
-    _missing = object()
-    obs_count = member.get("obs_count", _missing)
-    if obs_count is _missing:
-        raise MalformedSignalError(f"signal member is missing 'obs_count': {member!r}")
-    if obs_count is not None and not isinstance(obs_count, int):
-        raise MalformedSignalError(
-            f"signal member 'obs_count' is not an int or None: {obs_count!r}"
+    def __init__(self, fence: HeadFence) -> None:
+        super().__init__(
+            f"operation {fence.operation_id!r} is no longer running at attempt {fence.attempt}"
         )
-    return MemberSignal(
-        dispatch_facet_id=_optional_str("dispatch_facet_id"),
-        obs_count=obs_count,
-        earliest_date=_optional_str("earliest_date"),
-        latest_date=_optional_str("latest_date"),
-        observation_period=_optional_str("observation_period"),
-        provenance_last_refresh=_optional_str("provenance_last_refresh"),
-        provenance_next_refresh=_optional_str("provenance_next_refresh"),
-        rate_provenance_refresh=_rate_provenance_refresh(),
-        recipe_dependency_fingerprint=_recipe_dependency_fingerprint(),
-        clock_window=_clock_window(),
-    )
-
-
-def decode_signal(encoded: Mapping[str, object]) -> tuple[MemberSignal, ...]:
-    """Decode `encode_signal`'s shape, raising `MalformedSignalError` for malformed data."""
-    if not isinstance(encoded, Mapping):
-        raise MalformedSignalError(f"signal is not an object: {encoded!r}")
-    members = encoded.get(_SIGNAL_MEMBERS_KEY, [])
-    if not isinstance(members, list):
-        raise MalformedSignalError(f"signal {_SIGNAL_MEMBERS_KEY!r} is not a list: {members!r}")
-    return tuple(_decode_member_signal(member) for member in members)
+        self.fence = fence
 
 
 class HeadWriter(Protocol):
     def advance_head(
         self,
         *,
-        subject_id: str,
-        content_version: str,
-        signal: Sequence[MemberSignal],
-        expected_content_version: str | None,
+        materialisation: MaterialisationRecord,
+        expected_materialisation_id: int | None,
+        fence: HeadFence | None = None,
     ) -> SubjectHead | None:
-        """Write the new head only if its stored version matches `expected_content_version`.
+        """Insert the run's row and, in the same transaction, move the subject's head to the
+        run's version only if the head still names the run `expected_materialisation_id`.
 
-        The caller passes the version read before materialisation. `None`
-        matches an empty row. An applied write sets both timestamps and
-        returns the stored head. A mismatch returns `None` without changing
-        the row. The caller rereads the head to find the winner.
+        The caller passes the `materialisation_id` of the head read before materialisation,
+        `None` for no head. `None` matches an empty row or a head that names no run, so of two
+        writers with one expectation only the first applies, whatever versions they produce.
+        An applied write sets both timestamps to the run's `materialised_at`, names the run, stores
+        its dependencies, and returns the stored head. A mismatch keeps the run's row, leaves the
+        head unchanged, and returns `None`. The caller rereads the head to find the winner. A
+        failure writes neither.
+
+        A `fence` makes the same transaction first lock the fence's operation row and check it
+        is still `running` at the fence's attempt. When it is not, the call raises
+        `HeadFenceLost` and writes neither. A claim that races the write either commits first,
+        and the write refuses, or waits until the write commits. `None` checks nothing.
         """
         ...
 
@@ -327,7 +293,7 @@ class HeadWriter(Protocol):
         content_version: str,
     ) -> SubjectHead | None:
         """Advance `confirmed_at` only if the stored version matches. Leave the version,
-        `materialised_at`, and signal unchanged. Return `None` on a mismatch or missing row.
+        `materialised_at`, and dependencies unchanged. Return `None` on a mismatch or missing row.
         """
         ...
 
@@ -345,26 +311,26 @@ class HeadStore(HeadReader, HeadWriter, Protocol):
 
 
 class NullHeadWriter:
-    """No-op `HeadStore` for surfaces without persistence. `advance_head` accepts any
-    expected version and returns a head stamped with the current time. `confirm_head` and
-    `read_head` return `None`.
+    """No-op `HeadStore` for surfaces without persistence. `advance_head` accepts any expected
+    run and any fence, and returns a head stamped with the current time that names no run.
+    `confirm_head` and `read_head` return `None`.
     """
 
     def advance_head(
         self,
         *,
-        subject_id: str,
-        content_version: str,
-        signal: Sequence[MemberSignal],
-        expected_content_version: str | None,
+        materialisation: MaterialisationRecord,
+        expected_materialisation_id: int | None,
+        fence: HeadFence | None = None,
     ) -> SubjectHead:
         now = datetime.now(UTC)
         return SubjectHead(
-            subject_id=subject_id,
-            content_version=content_version,
+            subject_id=materialisation.subject_id,
+            content_version=materialisation.content_version,
             confirmed_at=now,
             materialised_at=now,
-            signal=tuple(signal),
+            materialisation_id=None,
+            dependencies=materialisation.dependencies,
         )
 
     def confirm_head(self, *, subject_id: str, content_version: str) -> SubjectHead | None:

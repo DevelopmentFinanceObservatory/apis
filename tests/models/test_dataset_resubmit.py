@@ -152,6 +152,27 @@ class TestEntityGroup:
 
 class TestResubmitIdentityEntry:
     @pytest.mark.parametrize(
+        "model, document",
+        [
+            (ResubmitIdentityEntry, _identity_entry()),
+            (ResubmitCandidatesEntry, _candidates_entry()),
+            (
+                ResubmitPlaceholderEntry,
+                _placeholder_entry(reason="no_observations"),
+            ),
+        ],
+    )
+    def test_comparison_marker_is_false_elided_and_round_trips_when_true(self, model, document):
+        entry = model.model_validate(document)
+
+        assert entry.separate is False
+        assert "separate" not in entry.model_dump(mode="json")
+        assert (
+            model.model_validate({**document, "separate": True}).model_dump(mode="json")["separate"]
+            is True
+        )
+
+    @pytest.mark.parametrize(
         ("field", "value"),
         [
             ("base_spec_id", "abc123"),

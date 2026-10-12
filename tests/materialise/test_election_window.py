@@ -106,7 +106,7 @@ def test_a_datasets_request_elects_and_reads_under_one_clamped_window(
 
     selections = _select_member_facets(
         request, [_PROJECTED, _RECORDED], graph=FakeGraphReader(facets={})
-    )
+    ).selections
 
     assert request.window == reads
     assert selections["provenance"].dispatch_facet_id == elected

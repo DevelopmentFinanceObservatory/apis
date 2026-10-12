@@ -706,6 +706,7 @@ def _finish_candidate(
         entities=groundwork.entities,
         coverage=groundwork.coverage,
         plan=groundwork.plan,
+        pin_served_provenance=state.pin_served_provenance,
         headline=groundwork.headline,
         coverage_index=state.coverage.index,
         coverage_stamp=cand_mat.coverage_stamp,

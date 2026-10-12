@@ -6,7 +6,7 @@ The app-level test includes traceback output and a driver exception containing a
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import google.auth
@@ -41,7 +41,9 @@ class _NullInventory:
         raise AssertionError("record() must not run for a signing-only failure")
 
     def get_location(self, digest: str, *, tier: Tier) -> ArtifactLocation:
-        return ArtifactLocation(bucket=_BUCKETS[tier], object_name=digest)
+        return ArtifactLocation(
+            bucket=_BUCKETS[tier], object_name=digest, stored_at=datetime.now(UTC), renewal=0
+        )
 
 
 def test_package_source_never_references_logging():
@@ -74,6 +76,7 @@ def _fake_adc(monkeypatch):
     class _Credentials:
         service_account_email = "runtime-sa@dev-fin-observatory.iam.gserviceaccount.com"
         token = "fake-access-token"
+        valid = True
 
         def refresh(self, request) -> None:
             pass
@@ -97,7 +100,15 @@ def test_signing_failure_with_leaked_signature_material_never_reaches_the_render
     @router.get("/api/artifact-test/boom")
     async def boom():
         # Leave the error unhandled so the platform exception handler logs it.
-        store.signed_get_url("sha256:deadbeef", tier=Tier.working, ttl=timedelta(minutes=5))
+        store.signed_location_url(
+            "sha256:deadbeef",
+            tier=Tier.working,
+            bucket=_BUCKETS[Tier.working],
+            object_name="sha256:deadbeef",
+            ttl=timedelta(minutes=5),
+            response_type="text/csv",
+            response_disposition='attachment; filename="data.csv"',
+        )
 
     surface = Surface(
         name="artifact-test",

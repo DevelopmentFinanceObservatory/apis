@@ -1,4 +1,4 @@
-"""Writers for CSV, Excel, Parquet, and canonical frame1, plus Table Schema derivation.
+"""Writers for CSV, Excel, Parquet, and the canonical frame, plus Table Schema derivation.
 
 CSV, Excel, and Parquet accept structural `Table` chunks. The first chunk sets column names
 and types. Later chunks must have the same columns and are trusted to be in canonical row
@@ -8,8 +8,14 @@ but its final archive is held in memory so timestamps can be fixed for stable ou
 
 Headers are sanitised and unique across all three tabular formats and Table Schema. CSV and
 Excel escape formula-triggering strings. Excel refuses platform row, column, cell-length,
-and XML-character limits. Parquet enforces a byte bound. `write_frame1` requires grammar
-`Frame` chunks and streams their canonical bytes. Reshaped tables use the other writers.
+and XML-character limits. Parquet enforces a byte bound. Reshaped tables use these writers.
+
+`write_canonical_frame` stores grammar `Frame` chunks as the canonical frame: their Arrow table
+under `canonical_frame_schema`, in Parquet row groups of a fixed row count, so its bytes depend
+on the rows alone. `read_canonical_frame` reads it back as a `Frame`, `read_canonical_frame_table`
+reads chosen columns, and `canonical_frame_document` builds the parsed frame1 document from them.
+`write_frame1` and `read_frame1_table` write and read the frame1 JSON document that versions
+stored before canonical frames hold. `read_stored_frame` reads either by its media type.
 """
 
 from __future__ import annotations
@@ -24,14 +30,23 @@ import zipfile
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING, Protocol, cast
 
 import pyarrow as pa
 import pyarrow.parquet as pq
-from dfo_frame_grammar import Frame, stream_canonical_frame_bytes
+from dfo_frame_grammar import (
+    Frame,
+    canonical_frame_schema,
+    stream_canonical_frame_bytes,
+    unit_cell_to_json,
+    unit_cells,
+    unit_codes,
+)
 from dfo_frame_grammar.grammar import (
     FRAME_VERSION,
     STAT_VAR_COLUMN,
+    STATUS_COLUMN,
     TIME_PERIOD_COLUMN,
     UNIT_COLUMN,
     VALUE_COLUMN,
@@ -65,12 +80,12 @@ class Table(Protocol):
 
 
 _ROWS_SLICE = 8192
-"""How many rows' worth of Python objects `_iter_rows` builds at once for a
+"""How many rows' worth of Python objects `iter_rows` builds at once for a
 `Frame` chunk. Matches `dfo_frame_grammar.frame`'s own streaming slice
 bound (`stream_canonical_frame_bytes`'s `_STREAM_SLICE_ROWS`)."""
 
 
-def _iter_rows(table: Table) -> Iterator[tuple[object, ...]]:
+def iter_rows(table: Table) -> Iterator[tuple[object, ...]]:
     """Yields rows from any `Table`. For `Frame` chunks, reads the Arrow table in
     `_ROWS_SLICE`-row slices to avoid rebuilding all `Frame.rows` at once. Other tables yield
     their stored rows directly."""
@@ -149,7 +164,11 @@ class WrittenArtifact:
 
 
 FRAME1_MEDIA_TYPE = "application/vnd.dfo.frame1+json"
-"""Vendor media type returned by `write_frame1`. `frame_store` re-exports it for location scans."""
+"""Vendor media type returned by `write_frame1`."""
+
+CANONICAL_FRAME_MEDIA_TYPE = "application/vnd.apache.parquet"
+"""Media type returned by `write_canonical_frame`. Requested Parquet and series statistics share
+it, so a reader finds a version's canonical frame by its rendering."""
 
 
 # Excel caps are spreadsheet limits. Parquet's byte cap is configurable. CSV and Parquet
@@ -183,8 +202,11 @@ class ExcelLimitError(MaterialisationError):
     """422 `excel_limit`. Raised before workbook creation when row count (including header),
     column count, or a string's character count exceeds Excel limits. Detail gives count and cap."""
 
+    code = "excel_limit"
+    status = 422
+
     def __init__(self, *args: object, detail: str | None = None) -> None:
-        super().__init__(*args, code="excel_limit", status=422, detail=detail)
+        super().__init__(*args, detail=detail)
 
 
 class ExcelIllegalCharacterError(MaterialisationError):
@@ -192,8 +214,11 @@ class ExcelIllegalCharacterError(MaterialisationError):
     appended. Tab, LF, and CR are allowed. `row` and `column` are zero-based in the sanitised
     header-and-row grid, with row 0 as the header. The offending character remains in the error."""
 
+    code = "excel_illegal_character"
+    status = 422
+
     def __init__(self, *args: object, row: int, column: int, detail: str | None = None) -> None:
-        super().__init__(*args, code="excel_illegal_character", status=422, detail=detail)
+        super().__init__(*args, detail=detail)
         self.row = row
         self.column = column
 
@@ -202,8 +227,11 @@ class ParquetSizeBoundError(MaterialisationError):
     """422 `parquet_size_bound`. Raised when encoded bytes exceed `size_bound`, checked after
     each row group and again after close to include footer and schema metadata."""
 
+    code = "parquet_size_bound"
+    status = 422
+
     def __init__(self, *args: object, detail: str | None = None) -> None:
-        super().__init__(*args, code="parquet_size_bound", status=422, detail=detail)
+        super().__init__(*args, detail=detail)
 
 
 FORMATS_CODE_CATALOGUE: CodeCatalogue = {
@@ -304,7 +332,7 @@ def write_csv(chunks: Iterable[Table], *, rendering: Rendering, sink: Sink) -> W
     writer = csv.writer(text_wrapper)
     writer.writerow(headers)
     for chunk in stream:
-        for row in _iter_rows(chunk):
+        for row in iter_rows(chunk):
             writer.writerow(
                 [
                     _sanitize_csv_cell(_coerce_cell(value, kind))
@@ -314,6 +342,17 @@ def write_csv(chunks: Iterable[Table], *, rendering: Rendering, sink: Sink) -> W
     text_wrapper.flush()
     text_wrapper.detach()
     return WrittenArtifact(media_type="text/csv", digest=hashing.digest(), size_bytes=hashing.size)
+
+
+def check_excel_rows(total_rows: int) -> None:
+    """Raise `ExcelLimitError` when `total_rows`, counting the header, exceeds
+    `EXCEL_MAX_ROWS`. `write_excel` checks each row as it appends it, so its refusal names the
+    first row past the limit."""
+    if total_rows > EXCEL_MAX_ROWS:
+        raise ExcelLimitError(
+            f"{total_rows} rows (including the header) exceeds Excel's "
+            f"{EXCEL_MAX_ROWS}-row limit; request csv or parquet instead"
+        )
 
 
 def _check_excel_cell(cell: object, *, row_index: int, column_index: int) -> None:
@@ -459,13 +498,9 @@ def write_excel(chunks: Iterable[Table], *, rendering: Rendering, sink: Sink) ->
         total_rows = 1  # the header row already written
 
         for chunk in stream:
-            for row in _iter_rows(chunk):
+            for row in iter_rows(chunk):
                 total_rows += 1
-                if total_rows > EXCEL_MAX_ROWS:
-                    raise ExcelLimitError(
-                        f"{total_rows} rows (including the header) exceeds Excel's "
-                        f"{EXCEL_MAX_ROWS}-row limit; request csv or parquet instead"
-                    )
+                check_excel_rows(total_rows)
                 sanitized_row = [_sanitize_csv_cell(_normalize_excel_cell(cell)) for cell in row]
                 for column_index, cell in enumerate(sanitized_row):
                     _check_excel_cell(cell, row_index=total_rows - 1, column_index=column_index)
@@ -523,7 +558,7 @@ def _infer_column_type(values: Sequence[object]) -> str:
 def _infer_field_types(table: Table) -> tuple[str, ...]:
     # Read rows once because each `Frame.rows` access rebuilds the full row tuple.
     columns_values: list[list[object]] = [[] for _ in table.columns]
-    for row in _iter_rows(table):
+    for row in iter_rows(table):
         for column_values, cell in zip(columns_values, row, strict=True):
             column_values.append(cell)
     return tuple(_infer_column_type(values) for values in columns_values)
@@ -621,7 +656,7 @@ def _write_parquet_stream(
             )
 
     for chunk in chunks:
-        for row in _iter_rows(chunk):
+        for row in iter_rows(chunk):
             buffered_rows.append(row)
             if len(buffered_rows) >= _PARQUET_ROW_GROUP_ROWS:
                 flush()
@@ -742,10 +777,10 @@ def read_frame1_table(data: bytes) -> Table:
     return Frame1Table(columns=columns, rows=tuple(rows))
 
 
-def frame1_entity_columns(table: Table) -> tuple[str, ...]:
-    """Returns columns between `STAT_VAR_COLUMN` and `TIME_PERIOD_COLUMN`. Raises
-    `ValueError` if either marker is missing."""
-    columns = table.columns
+def frame_entity_columns(columns: Sequence[str]) -> tuple[str, ...]:
+    """Returns the frame columns between `STAT_VAR_COLUMN` and `TIME_PERIOD_COLUMN`, its
+    entity roles. Raises `ValueError` if either marker is missing."""
+    columns = tuple(columns)
     if STAT_VAR_COLUMN not in columns:
         raise ValueError(f"table has no {STAT_VAR_COLUMN!r} column")
     if TIME_PERIOD_COLUMN not in columns:
@@ -753,3 +788,157 @@ def frame1_entity_columns(table: Table) -> tuple[str, ...]:
     start = columns.index(STAT_VAR_COLUMN) + 1
     end = columns.index(TIME_PERIOD_COLUMN)
     return columns[start:end]
+
+
+_CANONICAL_FRAME_ROW_GROUP_ROWS = 100_000
+"""Rows in each canonical frame row group but the last. A fixed count keeps the bytes independent
+of how the rows arrive and bounds the writer's buffer to one group."""
+
+_CANONICAL_FRAME_COMPRESSION = "zstd"
+
+
+def write_canonical_frame(chunks: Iterable[Frame], *, sink: Sink) -> WrittenArtifact:
+    """Streams the canonical frame of the rows of `chunks`, in order, into `sink` and returns
+    `CANONICAL_FRAME_MEDIA_TYPE` metadata. Requires grammar `Frame` chunks sharing one column
+    tuple, in canonical row order, which `Frame.from_table` trusts on read. The bytes, digest and
+    size equal those of one frame holding every row, for one PyArrow version. At most one row
+    group of rows is buffered."""
+    first, stream = _prepare_stream(chunks)
+    schema = canonical_frame_schema(first.columns)
+    hashing = _HashingWriteWrapper(sink)
+    # Stubs require nominal `IO`. Runtime accepts this `RawIOBase` write/flush/tell/closed shape.
+    writer = pq.ParquetWriter(
+        cast("IO[bytes]", hashing), schema, compression=_CANONICAL_FRAME_COMPRESSION
+    )
+    pending: list[pa.Table] = []
+    pending_rows = 0
+    for chunk in stream:
+        pending.append(cast(Frame, chunk).table)
+        pending_rows += cast(Frame, chunk).table.num_rows
+        while pending_rows >= _CANONICAL_FRAME_ROW_GROUP_ROWS:
+            buffered = pa.concat_tables(pending)
+            group = buffered.slice(0, _CANONICAL_FRAME_ROW_GROUP_ROWS)
+            writer.write_table(group.combine_chunks(), row_group_size=group.num_rows)
+            pending = [buffered.slice(_CANONICAL_FRAME_ROW_GROUP_ROWS)]
+            pending_rows -= _CANONICAL_FRAME_ROW_GROUP_ROWS
+    if pending_rows:
+        group = pa.concat_tables(pending)
+        writer.write_table(group.combine_chunks(), row_group_size=group.num_rows)
+    writer.close()
+    return WrittenArtifact(
+        media_type=CANONICAL_FRAME_MEDIA_TYPE, digest=hashing.digest(), size_bytes=hashing.size
+    )
+
+
+def read_canonical_frame_table(data: bytes, *, columns: Sequence[str] | None = None) -> pa.Table:
+    """The stored canonical frame's table, or only `columns` of it, read from `data` for
+    `canonical_frame_rows` and `canonical_frame_document`. Its string columns stay dictionary
+    encoded, so each distinct string is decoded once."""
+    names = list(columns) if columns is not None else pq.read_schema(pa.BufferReader(data)).names
+    strings = [name for name in names if name not in _NON_STRING_FRAME_COLUMNS]
+    return pq.read_table(pa.BufferReader(data), columns=names, read_dictionary=strings)
+
+
+_NON_STRING_FRAME_COLUMNS = frozenset((VALUE_COLUMN, UNIT_COLUMN, STATUS_COLUMN))
+
+
+def read_canonical_frame(data: bytes) -> Frame:
+    """The stored canonical frame `data` holds, every column, as a `Frame`. Raises `FrameError`
+    `schema_violation` for a table outside the canonical schema."""
+    table = pq.read_table(pa.BufferReader(data))
+    return Frame.from_table(columns=tuple(table.column_names), table=table)
+
+
+def read_stored_frame(data: bytes, *, media_type: str) -> Table:
+    """A version's stored frame as a writer-ready `Table`: the frame1 document when `media_type`
+    is `FRAME1_MEDIA_TYPE`, the canonical frame otherwise."""
+    if media_type == FRAME1_MEDIA_TYPE:
+        return read_frame1_table(data)
+    return read_canonical_frame(data)
+
+
+def canonical_frame_rows(table: pa.Table) -> Iterator[tuple[object, ...]]:
+    """The rows of a canonical frame table, whole or projected, as `Frame.rows` gives them, a
+    `unit` cell as its grammar cell. Builds `_ROWS_SLICE` rows of Python objects at once."""
+    for start in range(0, table.num_rows, _ROWS_SLICE):
+        row_slice = table.slice(start, _ROWS_SLICE)
+        yield from zip(
+            *(_column_cells(row_slice, name, json_form=False) for name in row_slice.column_names),
+            strict=True,
+        )
+
+
+def canonical_frame_document(table: pa.Table) -> dict[str, object]:
+    """The frame1 document of a canonical frame table, as `json.loads` parses its canonical
+    bytes: a whole-number value as an `int`, a unit as its JSON form. Each distinct string and
+    unit is one shared object, so the rows hold little beyond their lists."""
+    columns = table.column_names
+    cells = [_column_cells(table, name, json_form=True) for name in columns]
+    return {
+        "columns": list(columns),
+        "frame_version": FRAME_VERSION,
+        "rows": [list(row) for row in zip(*cells, strict=True)],
+    }
+
+
+def _column_cells(table: pa.Table, name: str, *, json_form: bool) -> list[object]:
+    """One column's cells, each distinct value one shared object. A `unit` cell is its grammar
+    cell, or with `json_form` its JSON form as parsed JCS. With `json_form` a value cell is
+    parsed JCS too (`_jcs_number`)."""
+    column = table.column(name)
+    if name == UNIT_COLUMN:
+        codes = unit_codes(column)
+        cells = unit_cells(column, codes)
+        distinct: list[object] = (
+            [_parsed_jcs(unit_cell_to_json(cell)) for cell in cells] if json_form else list(cells)
+        )
+        return [distinct[cast(int, code)] for code in codes.codes.to_pylist()]
+    if name == VALUE_COLUMN:
+        values = column.to_pylist()
+        return [_jcs_number(value) for value in values] if json_form else values
+    if pa.types.is_dictionary(column.type) or pa.types.is_string(column.type):
+        return _string_cells(column)
+    return column.to_pylist()
+
+
+def _string_cells(column: pa.ChunkedArray) -> list[object]:
+    """A string column's cells, plain or dictionary encoded, each distinct string one object."""
+    shared: dict[str, str] = {}
+    cells: list[object] = []
+    for chunk in column.chunks:
+        encoded = cast(
+            pa.DictionaryArray,
+            chunk if pa.types.is_dictionary(chunk.type) else chunk.dictionary_encode(),
+        )
+        distinct = [
+            None if value is None else shared.setdefault(value, value)
+            for value in encoded.dictionary.to_pylist()
+        ]
+        cells.extend(
+            None if index is None else distinct[index] for index in encoded.indices.to_pylist()
+        )
+    return cells
+
+
+_JCS_EXPONENT_FROM = 1e21
+"""JCS writes a number of this magnitude or more in exponent form, which parses as a float."""
+
+
+def _jcs_number(value: float | None) -> float | int | None:
+    """`value` as `json.loads` parses its JCS text: a whole number below `_JCS_EXPONENT_FROM` in
+    magnitude as an `int`, any other number as the same float.
+
+    JCS writes the shortest digits that round-trip to the double, as `repr` does, so the
+    `int` is the one those digits spell. From 2**53 upward it can differ from `int(value)`,
+    the double's exact value."""
+    if value is not None and value.is_integer() and abs(value) < _JCS_EXPONENT_FROM:
+        return int(Decimal(repr(value)))
+    return value
+
+
+def _parsed_jcs(value: object) -> object:
+    """`value` as `json.loads` parses its JCS text, with JCS's sorted mapping keys."""
+    if isinstance(value, Mapping):
+        mapping = cast("Mapping[str, object]", value)
+        return {key: _parsed_jcs(mapping[key]) for key in sorted(mapping)}
+    return value

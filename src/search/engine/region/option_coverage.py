@@ -24,7 +24,7 @@ from code_index.members import (
     option_families,
 )
 from code_index.shared import get_index
-from materialise import GraphReader, facet_axis_value, role_bearing_facets
+from materialise import GraphReader, facet_axis_value, role_bearing_facet_candidates
 from origin_catalogue import recording_un_blocked_places
 from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import EngineGraphClient, Facet
@@ -1288,7 +1288,7 @@ def _observed_facets(
             )
         return _ObservedFacets(by_sv, windowed)
     for sv in sv_dcids:
-        facets = role_bearing_facets(
+        facets = role_bearing_facet_candidates(
             stat_var=sv,
             role_bindings=probe_entities,
             coverage=coverage,

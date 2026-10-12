@@ -76,9 +76,9 @@ range naming its end year ("2016 to 2030") reaches projections. Search ends
 an open-ended answer at the same year, so an answer and a dataset minted from
 its Spec select the same facet and serve the same years. The stored identity
 keeps its open end, so the selection and the years served can change when
-the year changes. Its stored head records the window it read, and the first
-read whose clock ends that window at another year reads the data again
-(`datasets_api.currency.clock_moved`). The applied window is judged against
+the year changes. Its stored head's dependency fingerprint records the window
+it read, and the first read past the recheck interval whose clock ends that
+window at another year reads the data again (`materialise.dependencies`). The applied window is judged against
 the years the definition states: data that ends before the current year
 answers the whole of "since 2016", so the window's origin is `query` and the
 request carries no `coverage_below_scope`. A stated start or end year the
@@ -101,9 +101,10 @@ carries an `obsCount`: a role-bearing StatVar's candidates take theirs from
 the coverage index. `facet_id` is unique per candidate, so the order is
 total. The same candidate set always
 ranks the same way, in any process, on any call. Determinism matters here
-specifically because the selection feeds `content_version`'s preimage. An
-unstable rule would rotate a materialisation's identity for reasons a
-caller could not observe or reproduce.
+because the selection decides which rows the frame holds, and
+`content_version` hashes that frame. An unstable rule would rotate a
+materialisation's identity for reasons a caller could not observe or
+reproduce.
 
 The top-ranked candidate after narrowing is the selection for every unbound
 axis. Each reason below describes the narrowed pool, window step included,
@@ -267,10 +268,8 @@ into the same frame alongside the ones that don't. Binding the axis to
 null keeps the constraint active. Only rows whose own cell is null on that
 axis are kept, matching the absent value on the winning facet exactly.
 
-The content-version preimage still omits a null-ref axis entirely, because
-its own contract defines the facets it carries as one entry per axis
-"actually resolved," and a null ref there is refused outright. The full
-resolution, including the null, is still recorded on the manifest's trace.
+The full resolution, including the null, is recorded on the manifest's
+trace.
 
 ## Enforcement points
 
@@ -287,6 +286,82 @@ Two enforcement points implement this policy:
    axis has resolved, builds the row filter and facet-id dispatch set from
    the resolved selections, so the fetched and served rows match the
    selection exactly.
+
+The dispatch set holds every probed facet carrying the selected value on
+each axis, which can be more than one facet id. It holds facets of one
+observation period only. The three axes leave out `observationPeriod`, and
+a source may publish one series at two cadences under the same provenance
+and unit: the UN graph's ILO unemployment rates come as an annual (`P1Y`)
+and a quarterly (`P3M`) facet for most countries. The election decides the
+period (`materialise.facets.dispatch_cadence`): among the facets carrying
+every selected value, the one this policy's ranking puts first, under the
+same window and the same breadth the election used, gives its cadence, and
+only facets of that cadence dispatch. For an unbound request that facet is
+the elected one. A group takes the period serving the most members
+(below). For a request binding axes the ranking still decides, so a facet
+covering more of the bound places leads one holding more points at fewer
+of them. Member selection and group selection return the period with the
+selections (`materialise.facets.FacetElection`), and the mint, a preview
+and Search's served facets
+(`materialise.facets.served_facets`) all read it.
+
+Each member judges the cadence of every facet id it holds
+(`materialise.facets.cadences_by_member`). A stated period is the id's own
+and holds for every member. A facet id stating no period reads as annual
+for a member only when every place's facet that member holds, as the graph
+reports it before any merge, dates by bare years: every date of a complete
+date list, or its first and last dates when the read lists no complete set
+(`dc_graph.client.Facet.reads_annual`). Merging facets of one id, across
+places or blocks of one read, keeps that evidence only when every merged
+facet has it, and never judges the widened bounds. Otherwise the id is a
+cadence of its own, keyed by the id. So one series split across a `P1Y`
+facet and an unstated one serves whole, and an unstated facet that one
+place dates by month stands alone. Members are judged apart, because one
+unstated id can date one variable by year and another by month: the first
+member's copy reads as annual and the second's does not, so no cadence
+holds both. Two unstated facets dispatch together only when both read as
+annual. A coverage-index candidate's dates are coverage's years, whatever
+its cadence, so they are no such evidence: it states its period through
+the coverage metadata or stands alone.
+
+A group serves one period, because it mints one frame. The election takes
+the period at which the most members hold a facet carrying every selected
+value. When any member's facet holds a point in a range window, a member
+counts only through facets of its own that do, so a member whose copy of a
+facet falls outside the window does not count toward that facet's period.
+Among periods held by as many members, the one whose facet ranks first
+wins, under the group's ranking over the members' matching facets merged
+by facet id and each facet's series count across the members
+(`materialise.group_facets.group_breadth`), and then the one the earliest
+member holds. Every member dispatches only its facets at that period. A
+member holding observations at another period alone dispatches nothing,
+and the result carries a `coverage_below_scope` warning naming it. A group
+chunk fetches the union of its members' dispatch sets, and each member
+serves only rows from its own (`materialise.columnar.dispatched_rows`).
+
+Members whose copies of an unstated facet both lack annual evidence share
+its cadence and both dispatch it, and their rows can still arrive at two
+grains. The mint refuses a frame whose periods hold two grains with
+`internal_error` (`materialise.errors.MixedGrainError`), checked on each
+member's frame and on every group chunk as it closes, so no such frame is
+stored. The presentation assembler refuses one too
+(`assembler.frame_view`), so `2019` beside `2019-01` is refused rather
+than drawn with one grain's points missing. Neither check sees two
+cadences written at one grain (a monthly and a quarterly facet, or an
+annual facet dated by month), so dispatch is where cadences are kept
+apart.
+
+Beyond that, this policy does not choose between cadences: a member serves
+the period of the facet that wins the ranking above, annual or not, and a
+group the period serving the most members. No axis lets a caller ask for a
+cadence.
+
+A stored dataset head holding two cadences rebuilds at its next source
+refresh, which its dependency fingerprint compares past the recheck interval
+(`DATASETS_HEAD_RECHECK_SECONDS`, default 900), or at the maximum-age
+rebuild (`DATASETS_HEAD_MAX_AGE_SECONDS`, default 86,400). Presentation
+frames recompute their structural view on load, so the assembler refuses a
+stored mixed frame on its next read.
 
 ## What this policy does not cover
 

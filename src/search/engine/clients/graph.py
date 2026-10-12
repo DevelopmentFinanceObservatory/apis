@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import dataclasses
+import functools
 from collections.abc import Iterable, Sequence
 from concurrent.futures import Future
 from dataclasses import dataclass
@@ -19,9 +20,13 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import pydantic
 
+from code_index.query import CodeIndex, IndexFamily
+from code_index.shared import get_index
+from code_index.types import StatVarRow
 from dc_graph import Facet, FacetDefaultPolicy
 from origin_catalogue import Catalogue
 from origin_catalogue.origins import UN_ID_PREFIX
+from statvar_members import FiveTuple
 
 if TYPE_CHECKING:
     from graph_generation import GenerationStamp
@@ -60,6 +65,8 @@ class DetectedSV:
     score: float
     type_of: str | None  # candidate.typeOf, used to decide Topic expansion.
     sentence: str | None  # candidate.metadata.sentence, carried for diagnostics and labels.
+    # A row `with_rival_families` adds for its five-tuple, which the resolve did not return.
+    rival: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,7 +85,8 @@ class DetectLegs:
 @dataclass(frozen=True, slots=True)
 class Detection:
     """Recall's candidates per resolve, each admitted, in descending score and capped at
-    ``SEARCH_DETECT_K``. `candidates` come from our resolve. `un` settles to the UN System Data
+    ``SEARCH_DETECT_K``, ours with the rival-family rows `recall_hits` adds past the cap.
+    `candidates` come from our resolve. `un` settles to the UN System Data
     Commons' candidates, or to ``None`` when that resolve failed; it may still be running when
     the detection returns, and the search pipeline waits for it only on a gap-fill pass
     (`region.pipeline`)."""
@@ -86,8 +94,9 @@ class Detection:
     candidates: tuple[DetectedSV, ...]
     un: Future[tuple[DetectedSV, ...] | None]
     # Our resolve's hits inside the cut, under their own dcids, superseded ones included
-    # (`cut_hits`). The confirm cap counts these, as it counted them when the superseded
-    # provenance was admitted (`derive.derive_shapes`). `None` reads as `candidates`.
+    # (`cut_hits`), and the rival rows past it. The confirm cap counts the hits inside the
+    # cut, as it counted them when the superseded provenance was admitted, and confirms the
+    # rival rows past it (`derive.derive_shapes`). `None` reads as `candidates`.
     hits: tuple[DetectedSV, ...] | None = None
 
 
@@ -125,6 +134,132 @@ def cut_hits(
     ]
     kept.sort(key=lambda c: c.score, reverse=True)
     return tuple(kept[:detect_k])
+
+
+def _family_roles(family: IndexFamily) -> frozenset[str]:
+    """The roles any row of `family` declares."""
+    return frozenset(role for row in family.rows for role in row.observation_properties)
+
+
+@functools.lru_cache(maxsize=1)
+def _rows_broadest_first(
+    index: CodeIndex,
+) -> dict[tuple[FiveTuple, frozenset[str]], tuple[StatVarRow, ...]]:
+    """Each index family's rows, keyed by five-tuple and family properties, fewest constraint
+    properties first and in index order within a count."""
+    return {
+        (family.five_tuple, family.properties): tuple(
+            sorted(family.rows, key=lambda row: len(row.constraint_properties))
+        )
+        for families in index.families_by_five_tuple.values()
+        for family in families
+    }
+
+
+def with_rival_families(
+    hits: Sequence[DetectedSV], *, catalogue: Catalogue, index: CodeIndex
+) -> tuple[DetectedSV, ...]:
+    """`hits` and, for each five-tuple an index row among them belongs to, one row for each
+    set of roles that a family publishing it declares and that falls strictly inside the
+    roles of a family among the hits (`CodeIndex.families_by_five_tuple`), in descending
+    score.
+
+    A family on fewer roles publishes the totals over the axes the other breaks down: DAC1
+    holds a donor's grant-equivalent ODA, the CRS the same by donor and recipient. The
+    resolve ranks sentences, so the parts can fill the cut and keep the whole out: fifty CRS
+    variables fill it for "official development assistance grant equivalents" and no DAC1
+    variable reaches it. Which of the two answers turns on the roles the query names
+    (`place_roles.without_unasked_axes`), which a sentence score cannot see. Families on the
+    same roles differ in wording, which the score does rank, and a query naming the axis the
+    whole lacks recalls the parts by its own words, so the cut stands for both. Among
+    families on one set of roles the first in serving order stands for them.
+
+    Search builds one shape per family it confirms a member of (`derive.derive_shapes`), and
+    an index family's shape reads its slots from every row of the family, so one row stands
+    for it. The row is the family's first in index order among those `catalogue` admits with
+    the fewest constraint properties, as DAC1's `DAC1AidType1010` total, and takes the best
+    score of the five-tuple's hits. A family with no admitted row gives way to the next on
+    its roles.
+
+    A row added here is marked `DetectedSV.rival`. It adds to what the cut yields and
+    displaces none of it: derivation confirms it past the confirm cap, and its shape
+    displaces only shapes of its own five-tuple (`without_unasked_axes`). The query did not
+    recall it, so it holds no claim against a table of another five-tuple.
+
+    Each five-tuple adds at most one row per role set its families declare, less one. In
+    today's index three five-tuples gain a row, each a DAC1 total by donor: grant-equivalent
+    flows and FinancialObligation amounts, which the CRS publishes by donor and recipient,
+    and flow amounts per GNI, which DAC2a does. The FinancialFlow amount gains none, since
+    DAC1 declares `financingProvider` and `financingRecipient` there, as the CRS, DAC2a and
+    DAC2b do.
+
+    Under a source scope (`Catalogue.scope`), a five-tuple among the hits none of whose
+    recalled families a provenance in the scope publishes gains a row of each of its
+    families that one does, whatever its roles. A part naming DAC2a recalls the DAC2a family
+    of a five-tuple whose CRS variables filled the cut. A five-tuple with a recalled family
+    in scope gains none, so a part naming the DAC tables answers from the DAC2a family it
+    recalled as the unscoped question does, and an exclusion that removes no recalled family
+    leaves recall as it is without the exclusion."""
+    scope = catalogue.scope
+    best: dict[FiveTuple, float] = {}
+    present: dict[FiveTuple, set[frozenset[str]]] = {}
+    held: set[int] = set()
+    recalled_in_scope: set[FiveTuple] = set()
+    for hit in hits:
+        family = index.family_by_dcid.get(hit.dcid)
+        if family is None:
+            continue
+        held.add(id(family))
+        present.setdefault(family.five_tuple, set()).add(_family_roles(family))
+        best[family.five_tuple] = max(best.get(family.five_tuple, hit.score), hit.score)
+        if scope is not None and not scope.isdisjoint(family.datasets):
+            recalled_in_scope.add(family.five_tuple)
+
+    rivals: list[DetectedSV] = []
+    for five_tuple, score in best.items():
+        covered = present[five_tuple]
+        for family in index.families_by_five_tuple[five_tuple]:
+            if id(family) in held:
+                continue
+            roles = _family_roles(family)
+            rival = roles not in covered and any(roles < whole for whole in covered)
+            in_scope = (
+                scope is not None
+                and five_tuple not in recalled_in_scope
+                and not scope.isdisjoint(family.datasets)
+            )
+            if not (rival or in_scope):
+                continue
+            rows = _rows_broadest_first(index)[five_tuple, family.properties]
+            row = next((r for r in rows if catalogue.admit_candidate(r.dcid) is not None), None)
+            if row is not None:
+                covered.add(roles)
+                held.add(id(family))
+                rivals.append(
+                    DetectedSV(
+                        dcid=row.dcid,
+                        score=score,
+                        type_of="StatisticalVariable",
+                        sentence=None,
+                        rival=True,
+                    )
+                )
+    if not rivals:
+        return tuple(hits)
+    return tuple(sorted((*hits, *rivals), key=lambda c: c.score, reverse=True))
+
+
+def recall_hits(
+    pool: Iterable[DetectedSV],
+    *,
+    catalogue: Catalogue,
+    detect_k: int,
+    index: CodeIndex | None = None,
+) -> tuple[DetectedSV, ...]:
+    """`pool`'s hits cut at `detect_k` (`cut_hits`), with a row of each index family the cut
+    left out of a five-tuple it holds (`with_rival_families`)."""
+    hits = cut_hits(pool, catalogue=catalogue, detect_k=detect_k)
+    return with_rival_families(hits, catalogue=catalogue, index=index or get_index())
 
 
 def stand_candidates(hits: Iterable[DetectedSV], *, catalogue: Catalogue) -> tuple[DetectedSV, ...]:
@@ -168,9 +303,12 @@ def settled_un(un: tuple[DetectedSV, ...] | None) -> Future[tuple[DetectedSV, ..
     return future
 
 
-def admit_legs(legs: DetectLegs, *, catalogue: Catalogue, detect_k: int) -> Detection:
-    """Both finished resolves, each admitted through `catalogue` and cut at `detect_k`."""
-    hits = cut_hits(legs.ours, catalogue=catalogue, detect_k=detect_k)
+def admit_legs(
+    legs: DetectLegs, *, catalogue: Catalogue, detect_k: int, index: CodeIndex | None = None
+) -> Detection:
+    """Both finished resolves, each admitted through `catalogue` and cut at `detect_k`, ours
+    with the rival families of its five-tuples (`recall_hits`)."""
+    hits = recall_hits(legs.ours, catalogue=catalogue, detect_k=detect_k, index=index)
     return Detection(
         candidates=stand_candidates(hits, catalogue=catalogue),
         un=settled_un(admit_un_candidates(legs.un, catalogue=catalogue, detect_k=detect_k)),

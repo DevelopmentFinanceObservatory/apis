@@ -5,6 +5,7 @@ mint, definition, snapshot, register, and pin doors.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from datetime import UTC, datetime
@@ -14,12 +15,12 @@ import pytest
 
 from artifact_store import Tier
 from datasets_api import timings
+from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors.pin import build_pin_door
 from datasets_api.doors.snapshot import build_snapshot_door
 from datasets_api.kinds import spec_id as spec_id_kind
 from datasets_api.operation_store import LiveOperationStore
 from datasets_api.operations.task_client import FakeTaskClient
-from datasets_api.revision import SentinelRevisionReader
 from datasets_api.versions import NullHeadWriter, NullVersionRecordWriter
 from dc_sdmx import SdmxClient
 from materialise import finish as finish_module
@@ -29,6 +30,7 @@ from spec_registry.reader import LiveSpecReader
 
 from ._app_factories import make_client
 from ._artifact_doubles import FakeArtifactStore
+from ._deps_doubles import fake_deps_cell
 from ._graph_doubles import FakeMintGraphReader
 from ._identity_builders import pinned_identity, register_body
 from ._operation_store import FakeOperationDatasetStore
@@ -73,7 +75,6 @@ def _mint_client(*, graph: FakeMintGraphReader | None = None):
         spec_reader=LiveSpecReader(store=store),
         graph=graph if graph is not None else _default_graph(),
         sdmx=SdmxClient(base_url=_BASE_URL, transport=_sdmx_transport()),
-        revision_reader=SentinelRevisionReader(),
         artifact_store=FakeArtifactStore(),
         snapshot_reader=FakeSnapshotReader(),
         reference_writer=FakeArtifactReferenceWriter(),
@@ -82,7 +83,17 @@ def _mint_client(*, graph: FakeMintGraphReader | None = None):
 
 
 def _server_timing_metric_names(header_value: str) -> set[str]:
-    return {metric.split(";", 1)[0] for metric in header_value.split(", ")}
+    """The phases the header names, leaving out its counts (`name;desc=n`)."""
+    return {metric.split(";", 1)[0] for metric in header_value.split(", ") if ";dur=" in metric}
+
+
+def _server_timing_counts(header_value: str) -> dict[str, int]:
+    return {
+        name: int(value)
+        for name, _, value in (
+            metric.partition(";desc=") for metric in header_value.split(", ") if ";desc=" in metric
+        )
+    }
 
 
 def test_mint_response_carries_server_timing_with_every_expected_phase():
@@ -96,21 +107,29 @@ def test_mint_response_carries_server_timing_with_every_expected_phase():
         "total",
         "queue",
         "resolve",
+        "coverage",
+        "estimate",
         "materialise_wait",
         "head_read",
-        "facet_probe",
-        "signal",
         "materialise",
         "profile",
         "citation",
-        "snapshot_read",
         "render",
         "store",
-        "sign",
         "record",
         "head_advance",
         "handoff",
     }
+    counts = _server_timing_counts(resp.headers["server-timing"])
+    assert set(counts) == {
+        "sdmx_requests",
+        "graph_requests",
+        "db_transactions",
+        "sign_blob_calls",
+        "permit_wait_ms",
+    }
+    assert counts["sdmx_requests"] >= 1
+    assert counts["sign_blob_calls"] == 0
 
 
 def test_definition_retrieval_response_carries_server_timing_and_keeps_no_store():
@@ -128,13 +147,12 @@ def test_definition_retrieval_response_carries_server_timing_and_keeps_no_store(
         "total",
         "resolve",
         "materialise_wait",
+        "head_read",
         "materialise",
         "profile",
         "citation",
-        "snapshot_read",
         "render",
         "store",
-        "sign",
         "record",
         "head_advance",
     }
@@ -186,9 +204,10 @@ def _delayed_sdmx_transport(delay: _Delay) -> httpx.MockTransport:
 def _spec_id_mint_client(delay: _Delay):
     """Every dependency the spec_id mint path calls sleeps `delay` per call.
 
-    The artifact store's `open_put` is exempt: the frame1 write calls it on its own
+    The artifact store's `open_put` is exempt: the canonical frame write calls it on its own
     thread while the requested rendering runs, and that overlapping `store` span
-    would offset an untimed stage in the sum.
+    would offset an untimed stage in the sum. So is `deferred`, which builds a view of the
+    store and calls nothing.
     """
     store = FakeDatasetStore()
     return make_client(
@@ -196,8 +215,9 @@ def _spec_id_mint_client(delay: _Delay):
         spec_reader=_Delayed(LiveSpecReader(store=store), delay=delay),
         graph=_Delayed(_default_graph(), delay=delay),
         sdmx=SdmxClient(base_url=_BASE_URL, transport=_delayed_sdmx_transport(delay)),
-        revision_reader=_Delayed(SentinelRevisionReader(), delay=delay),
-        artifact_store=_Delayed(FakeArtifactStore(), delay=delay, exempt=frozenset({"open_put"})),
+        artifact_store=_Delayed(
+            FakeArtifactStore(), delay=delay, exempt=frozenset({"open_put", "deferred"})
+        ),
         snapshot_reader=_Delayed(FakeSnapshotReader(), delay=delay),
         version_writer=_Delayed(NullVersionRecordWriter(), delay=delay),
         head_writer=_Delayed(NullHeadWriter(), delay=delay),
@@ -210,12 +230,21 @@ def _spec_id_mint_client(delay: _Delay):
     )
 
 
-def _mint_spec_id(client, *, delay: _Delay, seconds: float = 0.0) -> httpx.Response:
+def _mint_spec_id(
+    client,
+    *,
+    delay: _Delay,
+    seconds: float = 0.0,
+    over_budget: pytest.MonkeyPatch | None = None,
+) -> httpx.Response:
     """Register a definition through a statvar_set mint, then re-mint it by `spec_id`
-    with every dependency sleeping `seconds` per call."""
+    with every dependency sleeping `seconds` per call, over the sync budget when
+    `over_budget` is given."""
     minted = client.post("/api/datasets", json=_BODY)
     assert minted.status_code == 200, minted.text
     spec_id = minted.json()["definition"]["spec_id"]
+    if over_budget is not None:
+        over_budget.setattr(spec_id_kind, "within_sync_budget", lambda estimate, **_: False)
     delay.seconds = seconds
     return client.post(
         "/api/datasets",
@@ -225,10 +254,6 @@ def _mint_spec_id(client, *, delay: _Delay, seconds: float = 0.0) -> httpx.Respo
             "options": {"bundle": False},
         },
     )
-
-
-def _force_spec_id_over_budget(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(spec_id_kind, "within_sync_budget", lambda estimate, **_: False)
 
 
 def test_spec_id_mint_server_timing_names_every_stage():
@@ -247,15 +272,11 @@ def test_spec_id_mint_server_timing_names_every_stage():
         "estimate",
         "materialise_wait",
         "head_read",
-        "facet_probe",
-        "signal",
         "materialise",
         "profile",
         "citation",
-        "snapshot_read",
         "render",
         "store",
-        "sign",
         "record",
         "head_advance",
         "handoff",
@@ -265,11 +286,10 @@ def test_spec_id_mint_server_timing_names_every_stage():
 def test_over_budget_spec_id_mint_server_timing_names_every_stage(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    _force_spec_id_over_budget(monkeypatch)
     delay = _Delay()
     client = _spec_id_mint_client(delay)
 
-    resp = _mint_spec_id(client, delay=delay)
+    resp = _mint_spec_id(client, delay=delay, over_budget=monkeypatch)
 
     assert resp.status_code == 202, resp.text
     names = _server_timing_metric_names(resp.headers["server-timing"])
@@ -278,6 +298,7 @@ def test_over_budget_spec_id_mint_server_timing_names_every_stage(
         "queue",
         "resolve",
         "coverage",
+        "head_read",
         "estimate",
         "operation",
         "dispatch",
@@ -302,8 +323,6 @@ def test_spec_id_mint_phases_sum_to_the_total(
     `total` unaccounted for. The sum leaves out `_NESTED_PHASES`, which are
     recorded inside other phases.
     """
-    if over_budget:
-        _force_spec_id_over_budget(monkeypatch)
     delay = _Delay()
     client = _spec_id_mint_client(delay)
     real_sync_estimate = spec_id_kind.sync_estimate
@@ -314,7 +333,12 @@ def test_spec_id_mint_phases_sum_to_the_total(
 
     monkeypatch.setattr(spec_id_kind, "sync_estimate", slow_sync_estimate)
 
-    resp = _mint_spec_id(client, delay=delay, seconds=_STAGE_DELAY_SECONDS)
+    resp = _mint_spec_id(
+        client,
+        delay=delay,
+        seconds=_STAGE_DELAY_SECONDS,
+        over_budget=monkeypatch if over_budget else None,
+    )
 
     assert resp.status_code == (202 if over_budget else 200), resp.text
     metrics = _server_timing_metrics(resp.headers["server-timing"])
@@ -329,7 +353,8 @@ def _server_timing_metrics(header_value: str) -> dict[str, float]:
     metrics: dict[str, float] = {}
     for metric in header_value.split(", "):
         name, _, rest = metric.partition(";dur=")
-        metrics[name] = float(rest)
+        if rest:
+            metrics[name] = float(rest)
     return metrics
 
 
@@ -357,8 +382,8 @@ class _AdvancingClock:
             return current
 
 
-def test_mint_server_timing_store_counts_the_frame1_write(monkeypatch: pytest.MonkeyPatch):
-    """Frame1 and requested-artifact writes run concurrently and their `store` spans are summed.
+def test_mint_server_timing_store_counts_the_canonical_frame_write(monkeypatch: pytest.MonkeyPatch):
+    """Canonical frame and requested-artifact writes run concurrently and their `store` spans are summed.
     The clock advances 0.05 s per read, so both spans total at least 95 ms."""
     clock = _AdvancingClock(step=0.05)
     monkeypatch.setattr(timings.time, "perf_counter", clock)
@@ -368,7 +393,6 @@ def test_mint_server_timing_store_counts_the_frame1_write(monkeypatch: pytest.Mo
         spec_reader=LiveSpecReader(store=store),
         graph=_default_graph(),
         sdmx=SdmxClient(base_url=_BASE_URL, transport=_sdmx_transport()),
-        revision_reader=SentinelRevisionReader(),
         artifact_store=FakeArtifactStore(),
         snapshot_reader=FakeSnapshotReader(),
         reference_writer=FakeArtifactReferenceWriter(),
@@ -408,10 +432,12 @@ def _snapshot_client():
         locations={("spec_a", "cv1"): [location]},
     )
     door = build_snapshot_door(
-        spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
-        snapshot_reader=reader,
-        artifact_store=store,
-        now=lambda: _NOW,
+        deps=fake_deps_cell(
+            spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
+            snapshot_reader=reader,
+            artifact_store=store,
+            now=lambda: _NOW,
+        )
     )
     return _make_snapshot_client(door)
 
@@ -424,7 +450,7 @@ def test_snapshot_response_carries_server_timing_and_keeps_no_store():
     assert resp.status_code == 200, resp.text
     assert resp.headers["cache-control"] == "no-store"
     names = _server_timing_metric_names(resp.headers["server-timing"])
-    assert names == {"total", "sign"}
+    assert names == {"total"}
 
 
 def _register_client():
@@ -456,11 +482,14 @@ def _pin_client():
         locations={("spec_a", "cv1"): [location]},
     )
     door = build_pin_door(
-        spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
-        snapshot_reader=reader,
-        artifact_store=store,
-        reference_writer=FakeArtifactReferenceWriter(),
-        now=lambda: _NOW,
+        deps=fake_deps_cell(
+            spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
+            snapshot_reader=reader,
+            artifact_store=store,
+            reference_writer=FakeArtifactReferenceWriter(),
+            now=lambda: _NOW,
+        ),
+        settings=DatasetsBuildSettings.from_env(),
         allowed_principals=frozenset({_PRINCIPAL}),
     )
     return _make_snapshot_client(door), location
@@ -500,6 +529,11 @@ def test_mint_call_logs_one_datasets_timings_line_with_trace_id_and_outcome(
     assert "outcome=ok" in message
     assert "trace_id=" in message
     assert "resolve=" in message
+    assert "trigger=mint served_from=materialise" in message
+    assert " rebuild_reason=no_head " in message
+    # The SDMX fetch runs on the client's chunk threads, which carry the door's timings. The
+    # graph double sends no HTTP request.
+    assert re.search(r" sdmx_requests=[1-9]\d* graph_requests=0 ", message), message
 
 
 def test_snapshot_call_logs_one_datasets_timings_line_with_trace_id_and_outcome(caplog):
@@ -515,7 +549,6 @@ def test_snapshot_call_logs_one_datasets_timings_line_with_trace_id_and_outcome(
     assert "door=snapshot" in message
     assert "outcome=ok" in message
     assert "trace_id=" in message
-    assert "sign=" in message
 
 
 def test_register_call_logs_one_datasets_timings_line_with_trace_id_and_outcome(caplog):

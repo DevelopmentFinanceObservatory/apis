@@ -1,11 +1,13 @@
-"""Pins worker-route authentication, lease outcomes, submission-count validation, and status mapping.
+"""Pins worker-route authentication, claim outcomes, submission-count validation, and status mapping.
 Route tests stub `run_operation`. Dependency-construction tests exercise `_build_live_definition_deps`.
 A successful route response reports the operation's stored terminal state."""
 
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from typing import cast
 
 import pytest
@@ -15,16 +17,23 @@ from artifact_store import ArtifactStore
 from code_index.query import CodeIndex
 from code_index.types import IndexStamp
 from dataset_store.snapshot import LiveSnapshotReader
+from datasets_api.admission import MaterialisePermits
 from datasets_api.config import DatasetsBuildSettings
+from datasets_api.doors.meta import _resolve_operation
 from datasets_api.operation_store import LiveOperationStore, Operation, OperationStore
 from datasets_api.operations.oidc import FakeOidcVerifier, OidcVerifier
-from datasets_api.operations.worker import OperationSuperseded, OperationTransientFailure
+from datasets_api.operations.worker import (
+    RUN_DEADLINE_SECONDS,
+    OperationSuperseded,
+    OperationTransientFailure,
+)
 from datasets_api.operations.worker_app import (
     RUN_ROUTE_PATH,
     _build_live_definition_deps,
     build_worker_app,
 )
 from datasets_api.publish_models import MAX_ROWS as _MATERIALISE_RAW_FETCH_GUARD_ROWS
+from datasets_api.version import DATASETS_CAPABILITY_VERSION
 from dc_sdmx import SdmxClient
 from materialise.graph import GraphReader
 from origin_catalogue import Catalogue, current_catalogue
@@ -35,6 +44,7 @@ from tests.origin_catalogue.fake_catalogue import FakeCatalogue
 
 from ._operation_store import FakeOperationDatasetStore
 
+_CONFIRMED_AT = datetime(2026, 1, 1, tzinfo=UTC)
 _WORKER_URL = "https://worker.example.org"
 _INVOKER = "worker-invoker@example.iam.gserviceaccount.com"
 _SUBJECT_ID = "spec_abc123"
@@ -71,6 +81,7 @@ def _complete_run(
         attempt=operation.attempt_count,
         subject_id=_SUBJECT_ID,
         content_version="cv_1",
+        confirmed_at=_CONFIRMED_AT,
     )
 
 
@@ -212,7 +223,16 @@ class TestOriginCatalogue:
 
         assert self._bound_build(operation_store, operation_id, catalogue) == ["published-build"]
 
-    def test_unreadable_published_catalogue_is_503_before_any_claim(self):
+    @pytest.mark.parametrize(
+        ("retry_count", "status", "state", "retryable"),
+        [
+            pytest.param("0", 503, "pending", None, id="released-for-the-retry"),
+            pytest.param("4", 200, "failed", True, id="final-attempt-fails-retryable"),
+        ],
+    )
+    def test_an_unreadable_published_catalogue_is_a_transient_failure_of_the_claim(
+        self, retry_count: str, status: int, state: str, retryable: bool | None
+    ):
         operation_store = _operation_store()
         operation_id = _submit(operation_store)
         ran: list[int] = []
@@ -225,14 +245,16 @@ class TestOriginCatalogue:
         )
 
         resp = client.post(
-            _run_path(operation_id), json=_task_body(), headers={"Authorization": "Bearer t"}
+            _run_path(operation_id),
+            json=_task_body(),
+            headers={"Authorization": "Bearer t", "X-CloudTasks-TaskRetryCount": retry_count},
         )
 
-        assert resp.status_code == 503
+        assert resp.status_code == status
         assert ran == []
         stored = operation_store.get(operation_id)
         assert stored is not None
-        assert (stored.state, stored.attempt_count) == ("pending", 0)
+        assert (stored.state, stored.attempt_count, stored.retryable) == (state, 1, retryable)
 
 
 class TestLeaseSemantics:
@@ -258,6 +280,7 @@ class TestLeaseSemantics:
                 attempt=operation.attempt_count,
                 subject_id=_SUBJECT_ID,
                 content_version="cv_1",
+                confirmed_at=_CONFIRMED_AT,
             )
 
         client = _client(operation_store=operation_store, run_in_thread=run)
@@ -274,7 +297,9 @@ class TestLeaseSemantics:
     def test_live_lease_from_a_concurrent_attempt_is_non_2xx(self):
         operation_store = _operation_store()
         operation_id = _submit(operation_store)
-        claimed = operation_store.claim_lease(operation_id, submission_count=0, lease_seconds=1_700)
+        claimed = operation_store.claim(
+            operation_id, submission_count=0, lease_seconds=1_500, final_delivery=False
+        )
         assert claimed is not None
         ran: list[int] = []
         client = _client(operation_store=operation_store, run_in_thread=lambda **kw: ran.append(1))
@@ -289,9 +314,15 @@ class TestLeaseSemantics:
     def test_done_operation_is_200_and_does_not_rerun(self):
         operation_store = _operation_store()
         operation_id = _submit(operation_store)
-        operation_store.claim_lease(operation_id, submission_count=0, lease_seconds=1_700)
+        operation_store.claim(
+            operation_id, submission_count=0, lease_seconds=1_500, final_delivery=False
+        )
         operation_store.complete(
-            operation_id, attempt=1, subject_id=_SUBJECT_ID, content_version="cv_1"
+            operation_id,
+            attempt=1,
+            subject_id=_SUBJECT_ID,
+            content_version="cv_1",
+            confirmed_at=_CONFIRMED_AT,
         )
         ran: list[int] = []
         client = _client(operation_store=operation_store, run_in_thread=lambda **kw: ran.append(1))
@@ -307,7 +338,9 @@ class TestLeaseSemantics:
     def test_failed_operation_is_200_and_does_not_rerun(self):
         operation_store = _operation_store()
         operation_id = _submit(operation_store)
-        operation_store.claim_lease(operation_id, submission_count=0, lease_seconds=1_700)
+        operation_store.claim(
+            operation_id, submission_count=0, lease_seconds=1_500, final_delivery=False
+        )
         operation_store.fail(
             operation_id, attempt=1, refusal_code="member_not_resolvable", retryable=False
         )
@@ -325,7 +358,9 @@ class TestLeaseSemantics:
     def test_a_task_from_an_earlier_submission_is_superseded_and_claims_nothing(self):
         operation_store = _operation_store()
         operation_id = _submit(operation_store)
-        operation_store.claim_lease(operation_id, submission_count=0, lease_seconds=1_700)
+        operation_store.claim(
+            operation_id, submission_count=0, lease_seconds=1_500, final_delivery=False
+        )
         operation_store.fail(operation_id, attempt=1, refusal_code="internal_error", retryable=True)
         assert _submit(operation_store) == operation_id  # resets to submission 1
         ran: list[int] = []
@@ -343,21 +378,24 @@ class TestLeaseSemantics:
         assert current.submission_count == 1
 
 
-class _ClaimLeaseSpy:
-    """Wraps an `OperationStore`, counting `claim_lease` calls. Everything
+class _ClaimSpy:
+    """Wraps an `OperationStore`, counting `claim` calls. Everything
     else forwards straight through to `inner`.
     """
 
     def __init__(self, inner: OperationStore) -> None:
         self._inner = inner
-        self.claim_lease_calls = 0
+        self.claim_calls = 0
 
-    def claim_lease(
-        self, id: str, *, submission_count: int, lease_seconds: float
+    def claim(
+        self, id: str, *, submission_count: int, lease_seconds: int, final_delivery: bool
     ) -> Operation | None:
-        self.claim_lease_calls += 1
-        return self._inner.claim_lease(
-            id, submission_count=submission_count, lease_seconds=lease_seconds
+        self.claim_calls += 1
+        return self._inner.claim(
+            id,
+            submission_count=submission_count,
+            lease_seconds=lease_seconds,
+            final_delivery=final_delivery,
         )
 
     def __getattr__(self, name: str) -> object:
@@ -367,7 +405,7 @@ class _ClaimLeaseSpy:
 class TestMalformedSubmissionCount:
     """Missing, non-integer, negative, and future counts return 400. Older counts are superseded.
 
-    Missing or invalid fields fail before `claim_lease`. A future count fails its lease claim."""
+    Missing or invalid fields fail before `claim`. A future count fails its claim."""
 
     @pytest.mark.parametrize(
         "body",
@@ -382,7 +420,7 @@ class TestMalformedSubmissionCount:
     ) -> None:
         operation_store = _operation_store()
         operation_id = _submit(operation_store)
-        spy = _ClaimLeaseSpy(operation_store)
+        spy = _ClaimSpy(operation_store)
         ran: list[int] = []
         client = _client(
             operation_store=cast(OperationStore, spy), run_in_thread=lambda **kw: ran.append(1)
@@ -395,7 +433,7 @@ class TestMalformedSubmissionCount:
 
         assert resp.status_code == 400
         assert ran == []
-        assert spy.claim_lease_calls == 0
+        assert spy.claim_calls == 0
         assert operation_store.get(operation_id).state == "pending"
         assert operation_id in caplog.text
 
@@ -421,7 +459,7 @@ class TestMalformedSubmissionCount:
 
 
 class TestRunOutcomes:
-    def test_transient_failure_is_non_2xx_and_leaves_the_lease_for_a_retry(self):
+    def test_transient_failure_is_non_2xx_and_leaves_the_claim_to_its_runner(self):
         operation_store = _operation_store()
         operation_id = _submit(operation_store)
 
@@ -435,7 +473,7 @@ class TestRunOutcomes:
         )
 
         assert resp.status_code >= 300
-        # The lease can be claimed after it expires, so a retry can succeed.
+        # `run_operation` releases a transient failure itself; this stub never did.
         assert operation_store.get(operation_id).state == "running"
 
     def test_deterministic_failure_calls_fail_and_returns_200(self):
@@ -478,7 +516,7 @@ class TestRunOutcomes:
         assert resp.status_code == 200
         assert resp.json() == {"status": "superseded"}
 
-    def test_unexpected_crash_is_500_and_leaves_the_lease_for_a_retry(self):
+    def test_unexpected_crash_is_500_and_leaves_the_claim_until_its_lease_ends(self):
         operation_store = _operation_store()
         operation_id = _submit(operation_store)
 
@@ -496,10 +534,11 @@ class TestRunOutcomes:
 
 
 class TestFinalAttempt:
-    """The route's own `is_final_attempt`/`lease_seconds` wiring into
-    `run_in_thread`, computed from `X-CloudTasks-TaskRetryCount` against
-    `max_attempts`. `run_operation`'s own behavior once it receives
-    `is_final_attempt` is `test_worker.py`'s concern, not this module's.
+    """The route's own `is_final_attempt`/`deadline` wiring into
+    `run_in_thread` and the `final_delivery` it stores with the claim, both
+    computed from `X-CloudTasks-TaskRetryCount` against `max_attempts`.
+    `run_operation`'s own behavior once it receives `is_final_attempt` is
+    `test_worker.py`'s concern, not this module's.
     """
 
     def test_missing_retry_count_header_is_attempt_zero_not_final(self):
@@ -507,14 +546,16 @@ class TestFinalAttempt:
         operation_id = _submit(operation_store)
         captured: dict[str, object] = {}
 
-        def run(*, operation, deps, operation_store, lease_seconds, is_final_attempt) -> None:
-            captured["lease_seconds"] = lease_seconds
+        def run(*, operation, deps, operation_store, deadline, is_final_attempt) -> None:
+            captured["deadline"] = deadline
             captured["is_final_attempt"] = is_final_attempt
+            captured["final_delivery"] = operation.final_delivery
             operation_store.complete(
                 operation.id,
                 attempt=operation.attempt_count,
                 subject_id=_SUBJECT_ID,
                 content_version="cv_1",
+                confirmed_at=_CONFIRMED_AT,
             )
 
         client = _client(operation_store=operation_store, run_in_thread=run, max_attempts=5)
@@ -525,20 +566,78 @@ class TestFinalAttempt:
 
         assert resp.status_code == 200
         assert captured["is_final_attempt"] is False
-        assert captured["lease_seconds"] == 60  # DATASETS_OPERATION_LEASE_SECONDS' own default
+        assert captured["final_delivery"] is False
+        remaining = cast(float, captured["deadline"]) - time.monotonic()
+        assert RUN_DEADLINE_SECONDS - 60 < remaining <= RUN_DEADLINE_SECONDS
+
+    def test_the_work_deadline_counts_from_the_claim_time(self):
+        """A claim stored 100 s before the route reads the clock leaves 100 s less to run."""
+        operation_store = LiveOperationStore(
+            store=FakeOperationDatasetStore(),
+            now=lambda: datetime.now(UTC) - timedelta(seconds=100),
+        )
+        operation_id = _submit(operation_store)
+        captured: dict[str, float] = {}
+
+        def run(*, operation, deps, operation_store, deadline, is_final_attempt) -> None:
+            captured["remaining"] = deadline - time.monotonic()
+            _complete_run(operation=operation, deps=deps, operation_store=operation_store)
+
+        client = _client(operation_store=operation_store, run_in_thread=run)
+
+        resp = client.post(
+            _run_path(operation_id), json=_task_body(), headers={"Authorization": "Bearer t"}
+        )
+
+        assert resp.status_code == 200
+        assert RUN_DEADLINE_SECONDS - 160 < captured["remaining"] <= RUN_DEADLINE_SECONDS - 100
+
+    def test_a_poll_past_the_work_deadline_leaves_the_run_its_lease_for_the_final_writes(self):
+        claimed_at = datetime.now(UTC)
+        now_box = {"t": claimed_at}
+        operation_store = LiveOperationStore(
+            store=FakeOperationDatasetStore(), now=lambda: now_box["t"]
+        )
+        operation_id = _submit(operation_store)
+        polled: list[str] = []
+
+        def run(*, operation, deps, operation_store, deadline, is_final_attempt) -> None:
+            # The poll and the store's fenced abandon both read the clock past the deadline.
+            now_box["t"] = claimed_at + timedelta(seconds=RUN_DEADLINE_SECONDS + 1)
+            resource = _resolve_operation(
+                operation_id=operation.id,
+                operation_store=operation_store,
+                task_client=None,
+                spec_reader=None,
+                snapshot_reader=None,
+                now=lambda: now_box["t"],
+                settings=DatasetsBuildSettings(),
+            )
+            polled.append(resource.operation.status)
+            _complete_run(operation=operation, deps=deps, operation_store=operation_store)
+
+        client = _client(operation_store=operation_store, run_in_thread=run)
+
+        resp = client.post(
+            _run_path(operation_id), json=_task_body(), headers={"Authorization": "Bearer t"}
+        )
+
+        assert polled == ["running"]
+        assert (resp.status_code, resp.json()) == (200, {"status": "done"})
 
     def test_retry_count_below_max_minus_one_is_not_final(self):
         operation_store = _operation_store()
         operation_id = _submit(operation_store)
         captured: dict[str, object] = {}
 
-        def run(*, operation, deps, operation_store, lease_seconds, is_final_attempt) -> None:
+        def run(*, operation, deps, operation_store, deadline, is_final_attempt) -> None:
             captured["is_final_attempt"] = is_final_attempt
             operation_store.complete(
                 operation.id,
                 attempt=operation.attempt_count,
                 subject_id=_SUBJECT_ID,
                 content_version="cv_1",
+                confirmed_at=_CONFIRMED_AT,
             )
 
         client = _client(operation_store=operation_store, run_in_thread=run, max_attempts=5)
@@ -557,13 +656,15 @@ class TestFinalAttempt:
         operation_id = _submit(operation_store)
         captured: dict[str, object] = {}
 
-        def run(*, operation, deps, operation_store, lease_seconds, is_final_attempt) -> None:
+        def run(*, operation, deps, operation_store, deadline, is_final_attempt) -> None:
             captured["is_final_attempt"] = is_final_attempt
+            captured["final_delivery"] = operation.final_delivery
             operation_store.complete(
                 operation.id,
                 attempt=operation.attempt_count,
                 subject_id=_SUBJECT_ID,
                 content_version="cv_1",
+                confirmed_at=_CONFIRMED_AT,
             )
 
         client = _client(operation_store=operation_store, run_in_thread=run, max_attempts=5)
@@ -576,6 +677,7 @@ class TestFinalAttempt:
 
         assert resp.status_code == 200
         assert captured["is_final_attempt"] is True
+        assert captured["final_delivery"] is True
 
     def test_retry_count_past_max_minus_one_is_still_final(self):
         """Cloud Tasks itself never dispatches past max_attempts, but a
@@ -585,13 +687,14 @@ class TestFinalAttempt:
         operation_id = _submit(operation_store)
         captured: dict[str, object] = {}
 
-        def run(*, operation, deps, operation_store, lease_seconds, is_final_attempt) -> None:
+        def run(*, operation, deps, operation_store, deadline, is_final_attempt) -> None:
             captured["is_final_attempt"] = is_final_attempt
             operation_store.complete(
                 operation.id,
                 attempt=operation.attempt_count,
                 subject_id=_SUBJECT_ID,
                 content_version="cv_1",
+                confirmed_at=_CONFIRMED_AT,
             )
 
         client = _client(operation_store=operation_store, run_in_thread=run, max_attempts=5)
@@ -610,13 +713,14 @@ class TestFinalAttempt:
         operation_id = _submit(operation_store)
         captured: dict[str, object] = {}
 
-        def run(*, operation, deps, operation_store, lease_seconds, is_final_attempt) -> None:
+        def run(*, operation, deps, operation_store, deadline, is_final_attempt) -> None:
             captured["is_final_attempt"] = is_final_attempt
             operation_store.complete(
                 operation.id,
                 attempt=operation.attempt_count,
                 subject_id=_SUBJECT_ID,
                 content_version="cv_1",
+                confirmed_at=_CONFIRMED_AT,
             )
 
         client = _client(operation_store=operation_store, run_in_thread=run, max_attempts=5)
@@ -639,6 +743,8 @@ class TestLiveDefinitionDepsConstruction:
     dependencies, since none of them do any I/O merely by being
     constructed or referenced."""
 
+    _semaphore = MaterialisePermits(1)
+
     def _deps(self):
         return _build_live_definition_deps(
             store=FakeOperationDatasetStore(),
@@ -658,6 +764,7 @@ class TestLiveDefinitionDepsConstruction:
                 statvars=(),
             ),
             coverage=cast(CoverageService, object()),
+            materialise_semaphore=self._semaphore,
         )
 
     def test_ceiling_is_the_configured_raw_fetch_guard(self):
@@ -675,6 +782,21 @@ class TestLiveDefinitionDepsConstruction:
             self._deps().member_concurrency == DatasetsBuildSettings().mint_member_max_concurrency
         )
 
+    def test_materialisation_takes_the_process_semaphore(self):
+        """The worker takes a materialise permit, as the doors do."""
+        assert self._deps().materialise_semaphore is self._semaphore
+
     def test_snapshot_reader_is_live(self):
         """`run_operation` reads artifact locations through it before completing a row."""
         assert isinstance(self._deps().snapshot_reader, LiveSnapshotReader)
+
+    def test_runs_record_the_surface_build_and_capability_version(self, monkeypatch):
+        """A worker run records and stamps the release that produced it, as the API does."""
+        monkeypatch.setenv("DFO_BUILD_COMMIT", "abc123")
+
+        deps = self._deps()
+
+        assert (deps.materialiser_build, deps.capability_version) == (
+            "abc123",
+            DATASETS_CAPABILITY_VERSION,
+        )

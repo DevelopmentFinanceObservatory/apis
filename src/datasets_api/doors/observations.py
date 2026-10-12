@@ -1,104 +1,103 @@
 """The observations door serves `GET /api/datasets/{spec_id}/{content_version}/observations`.
 
 It returns the stored version's observation preview as `SpecObservations`, bare, built from the
-version's canonical frame (frame1) by the assembly live resolve uses (`search.observations`):
+version's stored frame by the assembly live resolve uses (`search.observations`):
 the same preview mode, labels, sources, conversion block, ranking and caps. The body is
 serialised as the live preview's observations event serialises it. A natively satisfied unit
 request (one naming the series' own currency, which converts no member) shows each series under
 the traced native unit ref with no conversion block, as live does.
 
-Refusals follow the snapshot door (`read_stored_version`): `spec_not_found`,
+The path id resolves to the served ids the registry binds to it, and a version recorded under
+the posted id itself answers too (`doors.snapshot.read_under_served_id`). Refusals follow the
+snapshot door (`read_stored_version`): `spec_not_found`, `identity_quarantined`,
 `snapshot_not_found`, `snapshot_revoked` before expiry, and `artifact_expired` once no listable
 rendering is servable. A groupby collapse (`base_content_version` set), a converted version
-whose body stores no per-series conversion record for a converted series, and a version whose
-preview needs rows but which holds no servable frame1 refuse `observations_unavailable`. A graph
-read failure refuses retryable `service_unavailable`. The route takes `spec_` ids alone
+that stores no per-series conversion record for a converted series, and a version whose
+preview needs rows but which holds no servable stored frame refuse `observations_unavailable`. A
+graph read failure refuses retryable `service_unavailable`. The route takes `spec_` ids alone
 (`routing.SpecIdConvertor`), as every Datasets route does, so any other id matches no route and
 answers the platform's `not_found`.
 
 The preview mode comes from the stored version without reading frame bytes: role-bearing when
 no resolved StatVar declares `observationAbout`; places defaulted for a standard version that
-binds no place and whose mint's default place scope was plural, as the body's
-`default_scope_plural` records (such a version minted before bodies stored it refuses
+binds no place and whose mint's default place scope was plural, as the version's stored
+`default_scope_plural` records (such a version minted before versions stored it refuses
 `observations_unavailable`); bound pairs from the members times the entities bound on each
-role; the series count from the manifest. A too-large
-preview, a converted version's bulk preview and a scope-defaulted version's range read return
-live's omissions without looking for frame1, so a version too large for a frame1 answers them
-too. Bulk `total_obs` counts frame rows, where live counts coverage rows. Under a latest window
-the mint keeps each member's latest period, so a place short of it has no frame row and the read
-needs no short-of-latest guard.
+role; the series count from the manifest. A too-large preview, a converted version's bulk
+preview and a scope-defaulted version's range read return live's omissions without reading the
+stored frame. Bulk `total_obs` counts frame rows, where live counts coverage rows. Under a latest
+window the mint keeps each member's latest period, so a place short of it has no frame row and
+the read needs no short-of-latest guard.
 
-Reads run on the door's own executor with `submit_with_context`, so the request's origin
-catalogue stays bound, behind a non-blocking semaphore sized like the snapshot door's. The
-frame load and decode hold a slot of the materialise semaphore the mint and definition doors
-share, since a frame1 holds up to 250,000 rows and decodes whole.
+Reads run on the surface's read executor with `submit_with_context`, so the request's origin
+catalogue stays bound. The frame load and decode hold a permit of the surface's materialise
+semaphore, since the frame loads whole. A canonical frame is read without its `status` column,
+which the preview never reads.
 """
 
 from __future__ import annotations
 
-import asyncio
 import functools
 import logging
 import math
-import threading
 from collections.abc import Iterable, Mapping, Sequence
-from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from typing import cast
 
-from fastapi import APIRouter, FastAPI
+import pyarrow as pa
+import pyarrow.parquet as pq
+from dfo_frame_grammar import STATUS_COLUMN
+from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
-from artifact_store import ArtifactStore, LiveArtifactInventory, LiveArtifactStore, Tier
+from artifact_store import Tier
 from artifact_store.errors import ArtifactNotFoundError
 from code_index.labels import normalize_label
 from code_index.query import CodeIndex
-from code_index.shared import get_index
-from dataset_store import LiveDatasetStore, close_shared_pool, shared_pool
-from dataset_store.clock import Clock, utc_now
 from dataset_store.snapshot import (
-    LiveSnapshotReader,
-    SnapshotReader,
+    SnapshotNotFound,
     SnapshotRevoked,
-    servable_location_of_media_type,
+    StoredArtifactLocation,
 )
 
 # Register the route converters before building routes.
 from datasets_api import routing  # noqa: F401
 from datasets_api.admission import bounded_materialise_slot
+from datasets_api.backpressure import Backpressure
 from datasets_api.codes_snapshot import (
     ArtifactExpired,
     ObservationsUnavailable,
-    SnapshotNotFound,
     SpecNotFound,
 )
-from datasets_api.config import DatasetsBuildSettings, DatasetsConfigError, DatasetsSettings
-from datasets_api.door_executor import build_door_executor
+from datasets_api.deps import Deps, DepsCell
 from datasets_api.doors.mint_errors import MintBackpressure
 from datasets_api.doors.snapshot import (
-    classify_snapshot_exception,
     read_stored_version,
+    read_under_served_id,
     servable_listable_locations,
 )
-from datasets_api.generation import enter_shared_generation
 from datasets_api.headers import no_store_headers
 from datasets_api.manifest import (
-    decode_default_scope_plural,
-    decode_series_conversions,
-    decode_version_body,
+    stored_manifest,
+    stored_manifest_facts,
+    stored_series_conversions,
 )
 from datasets_api.manifest_models import Manifest
-from datasets_api.render import rendition_token
-from datasets_api.shutdown import ShutdownBudget
+from datasets_api.refusals import classify_datasets_refusal
+from datasets_api.render import rendition_token, servable_frame_location
 from datasets_api.timings import door_call, phase, run_with_timings
-from dc_sdmx import SdmxClient
 from dfo_platform import ProblemSpec
-from dfo_platform.doors import DoorContribution
-from materialise.formats import FRAME1_MEDIA_TYPE, Table, frame1_entity_columns, read_frame1_table
+from dfo_platform.doors import DoorContribution, route_registry_endpoints
+from dfo_platform.problem import Refusal
+from materialise.formats import (
+    FRAME1_MEDIA_TYPE,
+    canonical_frame_rows,
+    frame_entity_columns,
+    read_canonical_frame_table,
+    read_frame1_table,
+)
 from materialise.graph import UNRESOLVED_NODE, GraphReader, GraphReadError
 from materialise.series_conversion import SeriesConversion, SeriesKey
-from origin_catalogue.graph import OriginGraphClient, build_graph_client
-from origin_catalogue.service import CatalogueService
 from search.models import SpecObservations
 from search.observations import (
     PreviewMode,
@@ -114,7 +113,7 @@ from search.observations import (
     role_bulk_order,
     role_bulk_shown,
 )
-from spec_registry.reader import LiveSpecReader, SpecReader
+from spec_registry import IdentityQuarantined
 
 logger = logging.getLogger(__name__)
 
@@ -125,19 +124,29 @@ _PLACE_ROLE = "observationAbout"
 _FACET_AXES = ("provenance", "measurementMethod", "unit")
 
 
-class ObservationsBackpressure(Exception):
+class ObservationsBackpressure(Backpressure):
     """The door's executor or the shared materialise semaphore is full. Maps to retryable
     `service_unavailable` (503)."""
 
+    code = "service_unavailable"
 
-class ObservationsGraphUnavailable(Exception):
+    detail = "the observations door is at its concurrent-read capacity right now; retry"
+
+
+class ObservationsGraphUnavailable(Refusal):
     """A graph read for labels or member constraints failed. Maps to retryable
     `service_unavailable` (503)."""
 
+    code = "service_unavailable"
+    retryable = True
+    detail = "a graph read these observations need failed; retry"
 
-class StoredFrameCorrupt(Exception):
-    """A stored frame1 holds one series under two facets, which a mint never writes. Maps to
+
+class StoredFrameCorrupt(Refusal):
+    """A stored frame holds one series under two facets, which a mint never writes. Maps to
     `internal_error` (500)."""
+
+    code = "internal_error"
 
     def __init__(self, *, id: str, content_version: str, key: SeriesKey) -> None:
         self.id = id
@@ -149,29 +158,8 @@ class StoredFrameCorrupt(Exception):
 
 
 def classify_observations_exception(exc: BaseException) -> ProblemSpec | None:
-    """Classify the door's own refusals, then the snapshot refusals it shares."""
-    if isinstance(exc, ObservationsUnavailable):
-        return ProblemSpec(
-            status=404, code="observations_unavailable", detail=str(exc), retryable=False
-        )
-    if isinstance(exc, ObservationsBackpressure):
-        return ProblemSpec(
-            status=503,
-            code="service_unavailable",
-            detail="the observations door is at its concurrent-read capacity right now; retry",
-            retryable=True,
-        )
-    if isinstance(exc, ObservationsGraphUnavailable):
-        return ProblemSpec(
-            status=503,
-            code="service_unavailable",
-            detail="a graph read these observations need failed; retry",
-            retryable=True,
-        )
-    if isinstance(exc, StoredFrameCorrupt):
-        logger.error("Datasets observations door read a corrupt stored frame: %s", exc)
-        return ProblemSpec(status=500, code="internal_error", detail=str(exc), retryable=False)
-    return classify_snapshot_exception(exc)
+    """Classify the door's own refusals and the snapshot refusals it shares."""
+    return classify_datasets_refusal(exc)
 
 
 @dataclass(frozen=True)
@@ -254,15 +242,31 @@ class _StoredPreview:
         )
 
 
+def _stored_frame_rows(
+    data: bytes, *, media_type: str
+) -> tuple[tuple[str, ...], Iterable[tuple[object, ...]]]:
+    """The columns and rows of a version's stored frame: its frame1 document, or its canonical
+    frame without the `status` column, whose rows are built a slice at a time."""
+    if media_type == FRAME1_MEDIA_TYPE:
+        table = read_frame1_table(data)
+        return table.columns, table.rows
+    columns = [
+        name for name in pq.read_schema(pa.BufferReader(data)).names if name != STATUS_COLUMN
+    ]
+    projected = read_canonical_frame_table(data, columns=columns)
+    return tuple(columns), canonical_frame_rows(projected)
+
+
 def _series_reads(
-    table: Table,
+    columns: Sequence[str],
+    rows: Iterable[tuple[object, ...]],
     *,
     conversions: Mapping[SeriesKey, SeriesConversion],
     native_unit_ref: str | None,
     id: str,
     content_version: str,
 ) -> dict[SeriesKey, SeriesRead]:
-    """Group frame1 rows into series keyed as `materialise.series_conversion.series_key` keys
+    """Group stored frame rows into series keyed as `materialise.series_conversion.series_key` keys
     them: the bare StatVar and its `(role, entity)` pairs sorted by role.
 
     Each series' facet refs come from its rows' `provenance`, `measurementMethod` and `unit`
@@ -272,12 +276,11 @@ def _series_reads(
     series under two facets and `ObservationsUnavailable` for a converted series without a
     record.
     """
-    columns = table.columns
     column = {name: index for index, name in enumerate(columns)}
-    roles = sorted(frame1_entity_columns(table))
+    roles = sorted(frame_entity_columns(columns))
     facet_columns = [column[axis] for axis in _FACET_AXES]
     rows_by_key: dict[SeriesKey, tuple[tuple[object, ...], list[tuple[str, float | None]]]] = {}
-    for row in table.rows:
+    for row in rows:
         stat_var = cast(str, row[column["stat_var"]]).removeprefix(_STAT_VAR_REF_PREFIX)
         key = (stat_var, tuple((role, cast(str, row[column[role]])) for role in roles))
         facet = tuple(row[index] for index in facet_columns)
@@ -307,6 +310,32 @@ def _series_reads(
             conversion=conversion,
         )
     return reads
+
+
+def _load_series_reads(
+    frame: StoredArtifactLocation,
+    *,
+    deps: Deps,
+    conversions: Mapping[SeriesKey, SeriesConversion],
+    native_unit_ref: str | None,
+    id: str,
+    content_version: str,
+) -> dict[SeriesKey, SeriesRead]:
+    """Read the stored frame at `frame`, decode it and group its rows (`_series_reads`). The
+    caller holds a materialise permit and binds neither the bytes nor the decoded rows, so
+    both are freed when this returns, before the permit is released."""
+    with phase("frame_load"):
+        data = deps.artifact_store.get(artifact_digest=frame.artifact_digest, tier=Tier(frame.tier))
+    with phase("frame_decode"):
+        columns, rows = _stored_frame_rows(data, media_type=frame.media_type)
+        return _series_reads(
+            columns,
+            rows,
+            conversions=conversions,
+            native_unit_ref=native_unit_ref,
+            id=id,
+            content_version=content_version,
+        )
 
 
 def _member_constraints(
@@ -346,88 +375,70 @@ def _member_constraints(
     return constraints
 
 
-@dataclass(kw_only=True)
-class ObservationsDeps:
-    """The door's readers and clients. The lifespan fills the ones left uninjected."""
-
-    spec_reader: SpecReader
-    snapshot_reader: SnapshotReader
-    artifact_store: ArtifactStore
-    graph: GraphReader
-    code_index: CodeIndex
-    materialise_semaphore: threading.BoundedSemaphore | None
-    settings: DatasetsBuildSettings
-    now: Clock
-
-
-def read_snapshot_observations(
-    *, id: str, content_version: str, deps: ObservationsDeps
-) -> SpecObservations:
+def read_snapshot_observations(*, id: str, content_version: str, deps: Deps) -> SpecObservations:
     """The stored version's observation preview (see the module docstring).
 
     Raises the snapshot refusals, `ObservationsUnavailable`, `ObservationsBackpressure` when
     the materialise semaphore stays full, `ObservationsGraphUnavailable` for a failed graph
     read, and `StoredFrameCorrupt`.
     """
-    stored_version = read_stored_version(
+    read_at = deps.now()
+    stored = read_under_served_id(
         id=id,
-        content_version=content_version,
         spec_reader=deps.spec_reader,
-        snapshot_reader=deps.snapshot_reader,
+        read=lambda subject_id, subject_ids: read_stored_version(
+            id=subject_id,
+            content_version=content_version,
+            spec_reader=None,
+            snapshot_reader=deps.snapshot_reader,
+            now=read_at,
+            revoked_under=subject_ids,
+        ),
     )
-    if stored_version.base_content_version is not None:
+    if stored.version.base_content_version is not None:
         raise ObservationsUnavailable(
             id=id,
             content_version=content_version,
             reason="is a groupby collapse, which no live preview shows",
         )
-    body = stored_version.immutable_body
-    fields, _profile = decode_version_body(body)
-    manifest = Manifest.model_validate({**fields, "artifacts": []})
+    facts = stored_manifest_facts(stored.version)
+    manifest = stored_manifest(stored.version)
 
-    read_at = deps.now()
-    locations = deps.snapshot_reader.read_artifact_locations(id, content_version)
+    locations = stored.servable
     if not servable_listable_locations(
         locations, now=read_at, rendition=rendition_token(deps.settings.site)
     ):
         raise ArtifactExpired(id=id, content_version=content_version)
     stored = _StoredPreview.from_manifest(
-        manifest, default_scope_plural=decode_default_scope_plural(body), id=id
+        manifest, default_scope_plural=facts.default_scope_plural, id=id
     )
-    conversions = decode_series_conversions(body)
+    conversions = stored_series_conversions(facts)
 
     @functools.cache
     def reads() -> dict[SeriesKey, SeriesRead]:
-        # Looked up only here, so a preview the mode omits answers for a version too large
-        # for a frame1.
-        frame = servable_location_of_media_type(
-            locations, media_type=FRAME1_MEDIA_TYPE, now=read_at
-        )
+        # Looked up only here, so a preview the mode omits reads no frame.
+        frame = servable_frame_location(locations, now=read_at)
         if frame is None:
             raise ObservationsUnavailable(
-                id=id, content_version=content_version, reason="holds no servable frame1"
+                id=id, content_version=content_version, reason="holds no servable stored frame"
             )
         try:
             with bounded_materialise_slot(
                 deps.materialise_semaphore, wait_seconds=deps.settings.materialise_wait_seconds
             ):
-                with phase("frame_load"):
-                    data = deps.artifact_store.get(
-                        artifact_digest=frame.artifact_digest, tier=Tier(frame.tier)
-                    )
-                with phase("frame_decode"):
-                    return _series_reads(
-                        read_frame1_table(data),
-                        conversions=conversions,
-                        native_unit_ref=stored.native_unit_ref,
-                        id=id,
-                        content_version=content_version,
-                    )
+                return _load_series_reads(
+                    frame,
+                    deps=deps,
+                    conversions=conversions,
+                    native_unit_ref=stored.native_unit_ref,
+                    id=id,
+                    content_version=content_version,
+                )
         except MintBackpressure:
             raise ObservationsBackpressure() from None
         except ArtifactNotFoundError:
             raise ObservationsUnavailable(
-                id=id, content_version=content_version, reason="has lost its frame1 bytes"
+                id=id, content_version=content_version, reason="has lost its stored frame bytes"
             ) from None
 
     def series_count() -> int:
@@ -487,107 +498,9 @@ def observations_body(observations: SpecObservations) -> dict[str, object]:
     return observations.model_dump(mode="json", exclude_none=True, context={"surface": "sse"})
 
 
-@dataclass
-class _Injected:
-    stores: bool
-    graph: bool
-
-
-def build_observations_door(
-    *,
-    settings: DatasetsBuildSettings | None = None,
-    spec_reader: SpecReader | None = None,
-    snapshot_reader: SnapshotReader | None = None,
-    artifact_store: ArtifactStore | None = None,
-    graph: GraphReader | None = None,
-    code_index: CodeIndex | None = None,
-    materialise_semaphore: threading.BoundedSemaphore | None = None,
-    catalogue: CatalogueService | None = None,
-    now: Clock = utc_now,
-    pool_size: int | None = None,
-    budget: ShutdownBudget | None = None,
-) -> DoorContribution:
-    """Build the observations door and its executor.
-
-    Inject `spec_reader`, `snapshot_reader` and `artifact_store` together, or leave all three
-    for the lifespan to build over one pool borrow; a partial set raises `DatasetsConfigError`.
-    An uninjected `graph` is a live origin graph client keyed on the shared graph generation.
-    `code_index` defaults to the process-wide index. `materialise_semaphore` is the one the
-    mint and definition doors share. `pool_size` defaults to
-    `settings.snapshot_max_concurrency`. `budget` bounds the shutdown drain.
-    """
-    stores = (spec_reader, snapshot_reader, artifact_store)
-    injected_stores = sum(store is not None for store in stores)
-    if injected_stores not in (0, len(stores)):
-        raise DatasetsConfigError(
-            "datasets observations door built with some of spec_reader/snapshot_reader/"
-            "artifact_store injected; inject every one of them or none"
-        )
-    _settings = settings if settings is not None else DatasetsBuildSettings.from_env()
-    _budget = budget if budget is not None else ShutdownBudget()
-    injected = _Injected(stores=injected_stores == len(stores), graph=graph is not None)
-    deps = ObservationsDeps(
-        spec_reader=cast(SpecReader, spec_reader),
-        snapshot_reader=cast(SnapshotReader, snapshot_reader),
-        artifact_store=cast(ArtifactStore, artifact_store),
-        graph=cast(GraphReader, graph),
-        code_index=code_index if code_index is not None else get_index(),
-        materialise_semaphore=materialise_semaphore,
-        settings=_settings,
-        now=now,
-    )
-    effective_pool_size = pool_size if pool_size is not None else _settings.snapshot_max_concurrency
-    door_executor = build_door_executor(effective_pool_size, "observations")
-    executor = door_executor.executor
-
-    @asynccontextmanager
-    async def lifespan(_app: FastAPI):
-        pool_opened_here = False
-        async with AsyncExitStack() as stack:
-            try:
-                if not injected.stores:
-                    live_settings = DatasetsSettings.from_env()
-                    store = LiveDatasetStore(connections=shared_pool())
-                    pool_opened_here = True
-                    deps.spec_reader = LiveSpecReader(store=store)
-                    deps.snapshot_reader = LiveSnapshotReader(store=store)
-                    deps.artifact_store = LiveArtifactStore(
-                        buckets={
-                            Tier.working: live_settings.artifact_bucket_working,
-                            Tier.pinned: live_settings.artifact_bucket_pinned,
-                        },
-                        inventory=LiveArtifactInventory(store=store),
-                    )
-                if not injected.graph:
-                    live_settings = DatasetsSettings.from_env()
-                    generation = await enter_shared_generation(
-                        stack, catalogue=catalogue, graph_base_url=live_settings.graph_base_url
-                    )
-                    deps.graph = build_graph_client(
-                        base_url=live_settings.graph_base_url,
-                        token=_settings.graph_token,
-                        generation=generation,
-                        un_base_url=live_settings.un_graph_base_url,
-                        un_availability=SdmxClient(
-                            base_url=live_settings.un_graph_base_url,
-                            timeout=_settings.sdmx_timeout_seconds,
-                        ),
-                        **live_settings.graph_cache_options(),
-                    )
-            except BaseException:
-                if pool_opened_here:
-                    close_shared_pool()
-                raise
-            try:
-                yield
-            finally:
-                executor.shutdown(wait=False, cancel_futures=True)
-                await asyncio.to_thread(door_executor.drain, _budget)
-                if not injected.graph:
-                    cast(OriginGraphClient, deps.graph).close()
-                if pool_opened_here:
-                    close_shared_pool()
-
+def build_observations_door(*, deps: DepsCell) -> DoorContribution:
+    """Build the observations door over the surface's dependency cell. Reads run on the read
+    executor."""
     router = APIRouter()
 
     @router.get(
@@ -595,15 +508,16 @@ def build_observations_door(
         response_model=SpecObservations,
     )
     async def get_observations(id: str, content_version: str) -> JSONResponse:
+        current = deps.get()
         with door_call("observations", logger=logger) as call:
-            observations = await door_executor.run(
+            observations = await current.read_executor.run(
                 functools.partial(
                     run_with_timings,
                     read_snapshot_observations,
                     call.timings,
                     id=id,
                     content_version=content_version,
-                    deps=deps,
+                    deps=current,
                 ),
                 refuse=ObservationsBackpressure,
             )
@@ -614,9 +528,13 @@ def build_observations_door(
 
     return DoorContribution(
         router=router,
+        registry_endpoints=route_registry_endpoints(router, "datasets.observations"),
         classify=classify_observations_exception,
         exception_types=(
             SpecNotFound,
+            # The path id resolves through the spec registry, which raises it for a quarantined
+            # path id or served id bound to it.
+            IdentityQuarantined,
             SnapshotNotFound,
             SnapshotRevoked,
             ArtifactExpired,
@@ -626,6 +544,7 @@ def build_observations_door(
             StoredFrameCorrupt,
         ),
         exception_exemplars=(
+            IdentityQuarantined(subject_id="spec_exemplar", id_kind="spec"),
             ObservationsUnavailable(
                 id="spec_exemplar", content_version="cv_exemplar", reason="holds no frame1"
             ),
@@ -635,5 +554,4 @@ def build_observations_door(
                 id="spec_exemplar", content_version="cv_exemplar", key=("Count_Person", ())
             ),
         ),
-        lifespan=lifespan,
     )

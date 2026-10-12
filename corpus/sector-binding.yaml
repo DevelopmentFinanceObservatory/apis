@@ -1,0 +1,323 @@
+# Sector binding: a phrase that restricts a CRS answer is applied or refused, never dropped,
+# broadened or narrowed. Each parsed case sends the part as data-mcp sends it: the variable phrase,
+# the CRS provenance, the window 2010 to 2024, and Kenya as recipient where the query names it.
+#
+# Each expectation is the outcome under the default qualifier_coverage=refuse. A known_failure marks
+# a case whose answer differs on the current engine; the comment above it names the behaviour that
+# fixes it.
+# Not assertable here: which phrase a refusal names, a qualifier record's evidence, and the
+# operation (union or refinement) behind a set binding. The why line states them.
+
+- id: sb-reproductive-health
+  query: reproductive health ODA gross disbursements
+  door: parsed
+  parsed:
+    - variable_text: reproductive health ODA gross disbursements
+      time_text: 2010 to 2024
+      provenance: provenance/OECDCreditorReportingSystem
+  why: By convention "reproductive health" is CRS sector 130, so the answer binds 130 for the whole phrase.
+  tags: {theme: health, entity: none, direction: none, unit: default, time: range, operation: none, breakdown: sector, door: parsed, phrasing: technical, probe: [sector_binding]}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode130}}
+      entities: []
+      window: {kind: range, start: 2010, end: 2024}
+
+- id: sb-population-policies-and-reproductive-health-kenya
+  query: population policies and reproductive health ODA gross disbursements
+  door: parsed
+  parsed:
+    - variable_text: population policies and reproductive health ODA gross disbursements
+      time_text: 2010 to 2024
+      provenance: provenance/OECDCreditorReportingSystem
+      entities: [{text: Kenya, role_text: to}]
+  why: The union of 13010 or 130 with 130 is 130; "population policies" reaches 13010 or 130 through the candidate menu, so the model's choice decides, and "population" must not read as a type of finance.
+  tags: {theme: health, entity: country, direction: destination_only, unit: default, time: range, operation: union, breakdown: sector, door: parsed, phrasing: technical, probe: [sector_binding]}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode130}}
+      entities: [{dcid: country/KEN, role: destination}]
+      window: {kind: range, start: 2010, end: 2024}
+
+- id: sb-population-policy-programme-reproductive-health
+  query: gross disbursements for population policy, programme, and reproductive health
+  door: parsed
+  parsed:
+    - variable_text: gross disbursements for population policy, programme, and reproductive health
+      time_text: 2010 to 2024
+      provenance: provenance/OECDCreditorReportingSystem
+  why: This is the full label of CRS sector 130, so it binds 130; the commas hide the label from the matcher, and "population" then claims a type of finance and refuses.
+  tags: {theme: health, entity: none, direction: none, unit: default, time: range, operation: none, breakdown: sector, door: parsed, phrasing: technical, probe: [sector_binding]}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsPurpose: CRSPurposeCode130}}
+      entities: []
+      window: {kind: range, start: 2010, end: 2024}
+
+- id: sb-hiv-aids-and-reproductive-health-kenya
+  query: ODA gross disbursements for HIV/AIDS and reproductive health
+  door: parsed
+  parsed:
+    - variable_text: ODA gross disbursements for HIV/AIDS and reproductive health
+      time_text: 2010 to 2024
+      provenance: provenance/OECDCreditorReportingSystem
+      entities: [{text: Kenya, role_text: to}]
+  why: HIV/AIDS is 13040 and reproductive health is 130; the union reduces to 130, and the records for "HIV" and "AIDS" count as applied through it.
+  tags: {theme: health, entity: country, direction: destination_only, unit: default, time: range, operation: union, breakdown: sector, door: parsed, phrasing: technical, probe: [sector_binding]}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode130}}
+      entities: [{dcid: country/KEN, role: destination}]
+      window: {kind: range, start: 2010, end: 2024}
+
+- id: sb-purpose-reproductive-health-care
+  query: reproductive health care
+  door: parsed
+  parsed:
+    - variable_text: reproductive health care
+      time_text: 2010 to 2024
+      provenance: provenance/OECDCreditorReportingSystem
+  why: The whole label of CRS purpose 13020 binds that code, not the sector above it.
+  tags: {theme: health, entity: none, direction: none, unit: default, time: range, operation: none, breakdown: sector, door: parsed, phrasing: technical, probe: [sector_binding]}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsPurpose: CRSPurposeCode13020}}
+      window: {kind: range, start: 2010, end: 2024}
+
+- id: sb-purpose-family-planning
+  query: family planning
+  door: parsed
+  parsed:
+    - variable_text: family planning
+      time_text: 2010 to 2024
+      provenance: provenance/OECDCreditorReportingSystem
+  why: The whole label of CRS purpose 13030 binds that code.
+  tags: {theme: health, entity: none, direction: none, unit: default, time: range, operation: none, breakdown: sector, door: parsed, phrasing: technical, probe: [sector_binding]}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsPurpose: CRSPurposeCode13030}}
+      window: {kind: range, start: 2010, end: 2024}
+
+- id: sb-purpose-std-control-including-hiv-aids
+  query: STD control including HIV/AIDS
+  door: parsed
+  parsed:
+    - variable_text: STD control including HIV/AIDS
+      time_text: 2010 to 2024
+      provenance: provenance/OECDCreditorReportingSystem
+  why: A synonym of CRS purpose 13040 as a whole; it binds 13040 whether the matcher reads the phrase whole or by its words "STD", "HIV" and "AIDS".
+  tags: {theme: health, entity: none, direction: none, unit: default, time: range, operation: none, breakdown: sector, door: parsed, phrasing: technical, probe: [sector_binding]}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsPurpose: CRSPurposeCode13040}}
+      window: {kind: range, start: 2010, end: 2024}
+
+- id: sb-purpose-population-policy-and-administrative-management
+  query: population policy and administrative management
+  door: parsed
+  parsed:
+    - variable_text: population policy and administrative management
+      time_text: 2010 to 2024
+      provenance: provenance/OECDCreditorReportingSystem
+  why: The whole label of CRS purpose 13010 binds that code.
+  tags: {theme: health, entity: none, direction: none, unit: default, time: range, operation: none, breakdown: sector, door: parsed, phrasing: technical, probe: [sector_binding]}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsPurpose: CRSPurposeCode13010}}
+      window: {kind: range, start: 2010, end: 2024}
+
+- id: sb-purpose-personnel-development-population-reproductive-health
+  query: personnel development for population and reproductive health
+  door: parsed
+  parsed:
+    - variable_text: personnel development for population and reproductive health
+      time_text: 2010 to 2024
+      provenance: provenance/OECDCreditorReportingSystem
+  why: The whole label of CRS purpose 13081 binds that code.
+  tags: {theme: health, entity: none, direction: none, unit: default, time: range, operation: none, breakdown: sector, door: parsed, phrasing: technical, probe: [sector_binding]}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsPurpose: CRSPurposeCode13081}}
+      window: {kind: range, start: 2010, end: 2024}
+
+- id: sb-raw-population-policies-and-reproductive-health-kenya
+  query: population policies and reproductive health ODA gross disbursements to Kenya, 2010 to 2024
+  why: Extraction splits the ask into "population policies" and "reproductive health ODA gross disbursements"; both sides must stay on CRS and fold into one answer bound to 130. Depends on extraction.
+  tags: {theme: health, entity: country, direction: destination_only, unit: default, time: range, operation: union, breakdown: sector, door: raw_text, phrasing: technical, probe: [sector_binding]}
+  # Extraction splits off "population policies" as its own part with no CRS provenance and no ODA
+  # word, so that part resolves outside CRS and refuses on "policies", and the answer is mixed.
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode130}}
+      entities: [{dcid: country/KEN, role: destination}]
+      window: {kind: range, start: 2010, end: 2024}
+
+- id: sb-raw-hiv-aids-and-reproductive-health-kenya
+  query: ODA gross disbursements for HIV/AIDS and reproductive health to Kenya, 2010 to 2024
+  why: Extraction splits the ask into HIV/AIDS (13040) and reproductive health (130); the fold unions them to 130. Depends on extraction.
+  tags: {theme: health, entity: country, direction: destination_only, unit: default, time: range, operation: union, breakdown: sector, door: raw_text, phrasing: technical, probe: [sector_binding]}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode130}}
+      entities: [{dcid: country/KEN, role: destination}]
+      window: {kind: range, start: 2010, end: 2024}
+
+- id: sb-maternal-health
+  query: maternal health ODA
+  door: parsed
+  parsed:
+    - variable_text: maternal health ODA
+      time_text: 2010 to 2024
+      provenance: provenance/OECDCreditorReportingSystem
+  why: No CRS purpose is named "maternal", so the answer refuses on that word and offers health 120 as the near match; a definite 13020 (maternity and prenatal care) is also correct.
+  tags: {theme: health, entity: none, direction: none, unit: default, time: range, operation: none, breakdown: sector, door: parsed, phrasing: technical, probe: [sector_binding]}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode13020}}
+      window: {kind: range, start: 2010, end: 2024}
+    no_data:
+      reason: qualifier_not_bound
+      category: absent
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode120}}
+
+- id: sb-girls-education
+  query: girls education ODA
+  door: parsed
+  parsed:
+    - variable_text: girls education ODA
+      time_text: 2010 to 2024
+      provenance: provenance/OECDCreditorReportingSystem
+  why: No CRS purpose covers girls' education, so the answer refuses on "girls" and offers education 110 as the near match; the near match must not add 15180, violence against women and girls.
+  tags: {theme: education, entity: none, direction: none, unit: default, time: range, operation: none, breakdown: sector, door: parsed, phrasing: technical, probe: [sector_binding]}
+  expect:
+    no_data:
+      reason: qualifier_not_bound
+      category: absent
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode110}}
+
+- id: sb-health-and-education
+  query: health and education ODA
+  door: parsed
+  parsed:
+    - variable_text: health and education ODA
+      time_text: 2010 to 2024
+      provenance: provenance/OECDCreditorReportingSystem
+  why: '"and" joins two sectors, so the answer is their union, the set {110, 120}.'
+  tags: {theme: health, entity: none, direction: none, unit: default, time: range, operation: union, breakdown: sector, door: parsed, phrasing: casual, probe: [sector_binding]}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: [CRSPurposeCode110, CRSPurposeCode120]}}
+      window: {kind: range, start: 2010, end: 2024}
+
+- id: sb-malaria-control-within-health
+  query: malaria control within health ODA
+  door: parsed
+  parsed:
+    - variable_text: malaria control within health ODA
+      time_text: 2010 to 2024
+      provenance: provenance/OECDCreditorReportingSystem
+  why: Malaria control (12262) sits under health (120), so "within" refines health to 12262; the connective counts as read and the narrower code binds.
+  tags: {theme: health, entity: none, direction: none, unit: default, time: range, operation: none, breakdown: sector, door: parsed, phrasing: technical, probe: [sector_binding]}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode12262}}
+      window: {kind: range, start: 2010, end: 2024}
+
+- id: sb-health-excluding-malaria-control
+  query: health excluding malaria control ODA
+  door: parsed
+  parsed:
+    - variable_text: health excluding malaria control ODA
+      time_text: 2010 to 2024
+      provenance: provenance/OECDCreditorReportingSystem
+  why: Exclusion has no binding, so the restriction refuses with disposition no_vocabulary and offers health 120, the phrase before the exclusion, as the near match; 12262 is the code the query excludes.
+  tags: {theme: health, entity: none, direction: none, unit: default, time: range, operation: exclusion, breakdown: sector, door: parsed, phrasing: technical, probe: [sector_binding]}
+  expect:
+    no_data:
+      reason: qualifier_not_bound
+      category: absent
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode120}}
+
+- id: sb-compare-health-and-education-one-part
+  query: compare aid to health and education
+  door: parsed
+  parsed:
+    - variable_text: compare aid to health and education
+      time_text: 2010 to 2024
+      provenance: provenance/OECDCreditorReportingSystem
+  why: One part cannot hold two series, so a comparison inside one variable refuses with disposition no_vocabulary; the caller sends one part per side.
+  tags: {theme: health, entity: none, direction: none, unit: default, time: range, operation: compare, breakdown: sector, door: parsed, phrasing: casual, probe: [sector_binding]}
+  expect:
+    no_data: {reason: qualifier_not_bound, category: absent}
+
+- id: sb-raw-compare-health-and-education
+  query: compare aid to health and education
+  why: Extraction splits a comparison into one part per side, each bound to its own sector and marked separate so the fold keeps them apart (health 120, then education 110). Depends on extraction.
+  tags: {theme: health, entity: none, direction: none, unit: default, time: none, operation: compare, breakdown: sector, door: raw_text, phrasing: casual, probe: [sector_binding]}
+  expect:
+    parts:
+      - definite:
+          measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode120}}
+      - definite:
+          measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode110}}
+
+- id: sb-multilateral-oda-kenya
+  query: multilateral ODA
+  door: parsed
+  parsed:
+    - variable_text: multilateral ODA
+      time_text: 2010 to 2024
+      provenance: provenance/OECDCreditorReportingSystem
+      entities: [{text: Kenya, role_text: to}]
+  why: No CRS slot reads the bare word "multilateral" as a restriction (the modality codes name core contributions), so it refuses and the ODA answer for Kenya with no sector bound is the near match.
+  tags: {theme: aid, entity: country, direction: destination_only, unit: default, time: range, operation: none, breakdown: none, door: parsed, phrasing: technical, probe: [sector_binding, crs_quirk]}
+  expect:
+    no_data:
+      reason: qualifier_not_bound
+      category: absent
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}, open: [crsPurpose]}
+      entities: [{dcid: country/KEN, role: destination}]
+
+- id: sb-global-health
+  query: global health ODA
+  door: parsed
+  parsed:
+    - variable_text: global health ODA
+      time_text: 2010 to 2024
+      provenance: provenance/OECDCreditorReportingSystem
+  why: No CRS code reads "global", so an unread modifier beside a recognised sector is a restriction, so the answer refuses on "global" and offers health 120 as the near match.
+  tags: {theme: health, entity: none, direction: none, unit: default, time: range, operation: none, breakdown: sector, door: parsed, phrasing: casual, probe: [sector_binding]}
+  expect:
+    no_data:
+      reason: qualifier_not_bound
+      category: absent
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode120}}
+
+- id: sb-contraceptive-services
+  query: contraceptive services ODA
+  door: parsed
+  parsed:
+    - variable_text: contraceptive services ODA
+      time_text: 2010 to 2024
+      provenance: provenance/OECDCreditorReportingSystem
+  why: No label or synonym holds "contraceptive services"; the candidate menu offers 13030 family planning and the model picks it. Depends on the model.
+  tags: {theme: health, entity: none, direction: none, unit: default, time: range, operation: none, breakdown: sector, door: parsed, phrasing: casual, probe: [sector_binding]}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode13030}}
+      window: {kind: range, start: 2010, end: 2024}
+
+- id: sb-population-oda
+  query: population ODA
+  door: parsed
+  parsed:
+    - variable_text: population ODA
+      time_text: 2010 to 2024
+      provenance: provenance/OECDCreditorReportingSystem
+  why: No CRS row holds the code "population" names (CRSTypeOfFinance4); the candidate menu offers purpose 130 as its lexical hit and the model picks it. Depends on the model.
+  tags: {theme: aid, entity: none, direction: none, unit: default, time: range, operation: none, breakdown: sector, door: parsed, phrasing: casual, probe: [sector_binding, crs_quirk]}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode130}}
+      window: {kind: range, start: 2010, end: 2024}

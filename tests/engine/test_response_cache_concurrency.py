@@ -268,6 +268,24 @@ def test_layer2_leader_timeout_wakes_the_layer2_follower_with_timed_out_done(
 
     monkeypatch.setattr("search.engine.fanout.resolve_variable", _stub)
 
+    # The leader must reach its fan-out inside the 0.05 s deadline. Building the fakes
+    # here and running one request through another cache first keeps fixture parsing and
+    # the process-wide loads the cache lookup reads out of that window.
+    leader_graph, follower_graph = FakeGraph(), FakeGraph()
+    leader_llm, follower_llm = FakeLLM(), FakeLLM()
+    asyncio.run(
+        _collect(
+            resolve_events(
+                make_request("layer two timeout warm-up"),
+                graph=FakeGraph(),
+                llm=FakeLLM(),
+                sdmx=EMPTY_SDMX,
+                response_cache=ResponseCache(),
+            )
+        )
+    )
+    fan_out_calls = 0
+
     cache = ResponseCache()
     query_a = "layer two timeout alpha wording"
     query_b = "layer two timeout beta wording"
@@ -277,8 +295,8 @@ def test_layer2_leader_timeout_wakes_the_layer2_follower_with_timed_out_done(
             _collect(
                 resolve_events(
                     make_request(query_a),
-                    graph=FakeGraph(),
-                    llm=FakeLLM(),
+                    graph=leader_graph,
+                    llm=leader_llm,
                     sdmx=EMPTY_SDMX,
                     response_cache=cache,
                 )
@@ -290,8 +308,8 @@ def test_layer2_leader_timeout_wakes_the_layer2_follower_with_timed_out_done(
             _collect(
                 resolve_events(
                     make_request(query_b),
-                    graph=FakeGraph(),
-                    llm=FakeLLM(),
+                    graph=follower_graph,
+                    llm=follower_llm,
                     sdmx=EMPTY_SDMX,
                     response_cache=cache,
                 )
@@ -328,6 +346,7 @@ async def _test_layer2_leader_raising_lets_exactly_one_follower_become_the_new_l
         "variable_qualifiers": [()],
         "operations": [()],
         "entity_roles": {},
+        "sources": [()],
         "query_text": None,
     }
     pipeline_runs = 0

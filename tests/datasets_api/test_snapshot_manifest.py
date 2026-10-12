@@ -1,5 +1,6 @@
-"""Tests snapshot refusals, signed manifest fields, output options, route grammar, and cache
-headers through `read_snapshot_manifest` and the HTTP door.
+"""Tests snapshot refusals, manifest fields and download links, output options, route grammar,
+and cache headers through `read_snapshot_manifest` and the HTTP door, and the file names a
+download link signs.
 """
 
 from __future__ import annotations
@@ -9,18 +10,19 @@ import pytest
 from artifact_store import Tier
 from dataset_store.snapshot import (
     Revocation,
+    SnapshotNotFound,
     SnapshotRevoked,
     StoredArtifactLocation,
     StoredVersion,
 )
 from datasets_api.codes_snapshot import (
     ArtifactExpired,
-    SnapshotNotFound,
     SpecNotFound,
 )
 from datasets_api.config import DatasetsBuildSettings
+from datasets_api.doors.files import resolve_link
 from datasets_api.doors.snapshot import build_snapshot_door, read_snapshot_manifest
-from datasets_api.manifest import encode_version_body
+from datasets_api.manifest import manifest_facts
 from datasets_api.manifest_models import (
     CitationModel,
     CoverageModel,
@@ -41,6 +43,7 @@ from materialise.frame_build import build_frame
 from materialise.profile import compute_output_profile
 
 from ._artifact_doubles import FakeArtifactStore
+from ._deps_doubles import fake_deps, fake_deps_cell
 from ._graph_doubles import FakeMintGraphReader
 from ._snapshot_doubles import (
     _NOW,
@@ -50,7 +53,9 @@ from ._snapshot_doubles import (
     _store_and_locate,
     _version,
     make_client_for_door,
+    version_body,
 )
+from ._version_facts import facts_from_body
 
 _STAT_VAR_A = "dcid:GrantA"
 # A bundle rendered under the current settings carries this rendition.
@@ -87,7 +92,7 @@ def _output_options_fixture_profile(*, stat_var: str = _STAT_VAR_A):
     return compute_output_profile(
         _output_options_fixture_frame(stat_var=stat_var),
         role_columns=("recipient",),
-        enrichment=EnrichmentLookup(FakeMintGraphReader()),
+        enrichment=EnrichmentLookup(FakeMintGraphReader(), type_kinds={}, parties={}),
     )
 
 
@@ -109,7 +114,6 @@ def test_unregistered_id_refuses_spec_not_found():
             content_version="cv1",
             spec_reader=FakeSpecReader(),
             snapshot_reader=FakeSnapshotReader(),
-            artifact_store=FakeArtifactStore(),
             now=lambda: _NOW,
             settings=DatasetsBuildSettings(),
         )
@@ -122,7 +126,6 @@ def test_registered_id_with_no_version_at_that_content_version_refuses_snapshot_
             content_version="cv_unknown",
             spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
             snapshot_reader=FakeSnapshotReader(versions={("spec_a", "cv1"): _version()}),
-            artifact_store=FakeArtifactStore(),
             now=lambda: _NOW,
             settings=DatasetsBuildSettings(),
         )
@@ -140,7 +143,6 @@ def test_a_revoked_version_refuses_snapshot_revoked_even_with_servable_artifacts
             content_version="cv1",
             spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
             snapshot_reader=reader,
-            artifact_store=FakeArtifactStore(),
             now=lambda: _NOW,
             settings=DatasetsBuildSettings(),
         )
@@ -163,7 +165,9 @@ def test_a_collapsed_versions_row_names_its_base_content_version():
     reader = FakeSnapshotReader(
         versions={
             ("spec_a", "cv_collapsed"): _version(
-                immutable_body=body, content_version="cv_collapsed", base_content_version="cv1"
+                facts=facts_from_body(body),
+                content_version="cv_collapsed",
+                base_content_version="cv1",
             )
         },
         locations={("spec_a", "cv_collapsed"): [location]},
@@ -174,7 +178,6 @@ def test_a_collapsed_versions_row_names_its_base_content_version():
         content_version="cv_collapsed",
         spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
         snapshot_reader=reader,
-        artifact_store=store,
         now=lambda: _NOW,
         settings=DatasetsBuildSettings(),
     )
@@ -199,7 +202,9 @@ def test_a_collapsed_version_refuses_snapshot_revoked_when_its_base_version_is_r
     reader = FakeSnapshotReader(
         versions={
             ("spec_a", "cv_collapsed"): _version(
-                immutable_body=body, content_version="cv_collapsed", base_content_version="cv1"
+                facts=facts_from_body(body),
+                content_version="cv_collapsed",
+                base_content_version="cv1",
             )
         },
         locations={("spec_a", "cv_collapsed"): [_location(stored_at=_NOW)]},
@@ -212,7 +217,6 @@ def test_a_collapsed_version_refuses_snapshot_revoked_when_its_base_version_is_r
             content_version="cv_collapsed",
             spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
             snapshot_reader=reader,
-            artifact_store=FakeArtifactStore(),
             now=lambda: _NOW,
             settings=DatasetsBuildSettings(),
         )
@@ -238,7 +242,9 @@ def test_a_collapsed_version_serves_fine_when_only_an_unrelated_version_is_revok
     reader = FakeSnapshotReader(
         versions={
             ("spec_a", "cv_collapsed"): _version(
-                immutable_body=body, content_version="cv_collapsed", base_content_version="cv1"
+                facts=facts_from_body(body),
+                content_version="cv_collapsed",
+                base_content_version="cv1",
             )
         },
         locations={("spec_a", "cv_collapsed"): [location]},
@@ -250,7 +256,6 @@ def test_a_collapsed_version_serves_fine_when_only_an_unrelated_version_is_revok
         content_version="cv_collapsed",
         spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
         snapshot_reader=reader,
-        artifact_store=store,
         now=lambda: _NOW,
         settings=DatasetsBuildSettings(),
     )
@@ -273,7 +278,9 @@ def test_read_snapshot_currency_also_refuses_when_the_base_version_is_revoked():
     reader = FakeSnapshotReader(
         versions={
             ("spec_a", "cv_collapsed"): _version(
-                immutable_body=body, content_version="cv_collapsed", base_content_version="cv1"
+                facts=facts_from_body(body),
+                content_version="cv_collapsed",
+                base_content_version="cv1",
             )
         },
         revocations={("spec_a", "cv1"): Revocation(reason="base-takedown", revoked_at=_NOW)},
@@ -285,47 +292,11 @@ def test_read_snapshot_currency_also_refuses_when_the_base_version_is_revoked():
             content_version="cv_collapsed",
             spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
             snapshot_reader=reader,
+            now=lambda: _NOW,
             settings=DatasetsBuildSettings(),
         )
     assert exc_info.value.content_version == "cv_collapsed"
     assert exc_info.value.reason == "base-takedown"
-
-
-class RevokingDuringLocationsReadSnapshotReader(FakeSnapshotReader):
-    """Wraps `FakeSnapshotReader`, but `read_artifact_locations()` records a
-    revocation as a side effect before returning. This stands in for a
-    revocation committing in the gap between `read_snapshot_manifest`'s own
-    early revocation check and its later pre-signing recheck, without
-    needing real concurrency timing.
-    """
-
-    def read_artifact_locations(
-        self, subject_id: str, content_version: str
-    ) -> list[StoredArtifactLocation]:
-        self.revocations[(subject_id, content_version)] = Revocation(
-            reason="revoked-before-sign", revoked_at=_NOW
-        )
-        return super().read_artifact_locations(subject_id, content_version)
-
-
-def test_a_revocation_landing_after_the_early_check_is_caught_before_signing():
-    store = FakeArtifactStore()
-    location = _store_and_locate(store, b"revoked-before-sign")
-    reader = RevokingDuringLocationsReadSnapshotReader(
-        versions={("spec_a", "cv1"): _version()},
-        locations={("spec_a", "cv1"): [location]},
-    )
-
-    with pytest.raises(SnapshotRevoked):
-        read_snapshot_manifest(
-            id="spec_a",
-            content_version="cv1",
-            spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
-            snapshot_reader=reader,
-            artifact_store=store,
-            now=lambda: _NOW,
-            settings=DatasetsBuildSettings(),
-        )
 
 
 def test_every_working_artifact_expired_and_none_pinned_refuses_artifact_expired():
@@ -342,7 +313,6 @@ def test_every_working_artifact_expired_and_none_pinned_refuses_artifact_expired
             content_version="cv1",
             spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
             snapshot_reader=reader,
-            artifact_store=FakeArtifactStore(),
             now=lambda: _NOW,
             settings=DatasetsBuildSettings(),
         )
@@ -356,7 +326,6 @@ def test_a_version_with_zero_artifacts_ever_linked_also_refuses_artifact_expired
             content_version="cv1",
             spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
             snapshot_reader=reader,
-            artifact_store=FakeArtifactStore(),
             now=lambda: _NOW,
             settings=DatasetsBuildSettings(),
         )
@@ -387,7 +356,6 @@ def test_an_expired_listable_rendering_refuses_artifact_expired_despite_an_unexp
             content_version="cv1",
             spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
             snapshot_reader=reader,
-            artifact_store=FakeArtifactStore(),
             now=lambda: _NOW,
             settings=DatasetsBuildSettings(),
         )
@@ -409,7 +377,6 @@ def test_a_pinned_artifact_is_always_servable_regardless_of_age():
         content_version="cv1",
         spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
         snapshot_reader=reader,
-        artifact_store=store,
         now=lambda: _NOW,
         settings=DatasetsBuildSettings(),
     )
@@ -441,10 +408,12 @@ def test_two_renderings_sharing_one_digest_both_survive_on_the_wire_manifest():
         locations={("spec_a", "cv1"): [csv_location, parquet_location]},
     )
     door = build_snapshot_door(
-        spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
-        snapshot_reader=reader,
-        artifact_store=store,
-        now=lambda: _NOW,
+        deps=fake_deps_cell(
+            spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
+            snapshot_reader=reader,
+            artifact_store=store,
+            now=lambda: _NOW,
+        )
     )
     client = make_client_for_door(door)
 
@@ -457,26 +426,43 @@ def test_two_renderings_sharing_one_digest_both_survive_on_the_wire_manifest():
     assert {artifact["rendering"]["format"] for artifact in artifacts} == {"csv", "parquet"}
 
 
-def test_a_version_with_one_csv_and_one_internal_frame1_location_lists_only_the_csv():
-    """Frame1 is internal and has no file extension mapping, so the manifest must list only CSV."""
+@pytest.mark.parametrize(
+    ("rendering", "media_type", "listed"),
+    [
+        ({"format": "frame1"}, FRAME1_MEDIA_TYPE, ["text/csv"]),
+        (
+            {"format": "frame"},
+            "application/vnd.apache.parquet",
+            ["text/csv", "application/vnd.apache.parquet"],
+        ),
+    ],
+    ids=["frame1", "canonical-frame"],
+)
+def test_a_snapshot_lists_the_canonical_frame_after_the_csv_and_never_frame1(
+    rendering: dict[str, object], media_type: str, listed: list[str]
+):
+    """frame1 is internal by its media type. The canonical frame is listed under its own
+    rendering and stable download link, after the requested files."""
     store = FakeArtifactStore()
-    csv_location = _store_and_locate(store, b"csv-bytes", media_type="text/csv")
-    frame1_location = _store_and_locate(
+    frame_location = _store_and_locate(
         store,
-        b"frame1-bytes",
-        rendering_key="rk-frame1",
-        rendering={"format": "frame1"},
-        media_type=FRAME1_MEDIA_TYPE,
+        b"frame-bytes",
+        rendering_key="rk-frame",
+        rendering=rendering,
+        media_type=media_type,
     )
+    csv_location = _store_and_locate(store, b"csv-bytes", media_type="text/csv")
     reader = FakeSnapshotReader(
         versions={("spec_a", "cv1"): _version()},
-        locations={("spec_a", "cv1"): [csv_location, frame1_location]},
+        locations={("spec_a", "cv1"): [frame_location, csv_location]},
     )
     door = build_snapshot_door(
-        spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
-        snapshot_reader=reader,
-        artifact_store=store,
-        now=lambda: _NOW,
+        deps=fake_deps_cell(
+            spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
+            snapshot_reader=reader,
+            artifact_store=store,
+            now=lambda: _NOW,
+        )
     )
     client = make_client_for_door(door)
 
@@ -484,12 +470,16 @@ def test_a_version_with_one_csv_and_one_internal_frame1_location_lists_only_the_
 
     assert resp.status_code == 200, resp.text
     artifacts = resp.json()["artifacts"]
-    assert len(artifacts) == 1
-    assert artifacts[0]["media_type"] == "text/csv"
+    assert [artifact["media_type"] for artifact in artifacts] == listed
     assert artifacts[0]["artifact_digest"] == csv_location.artifact_digest
+    if len(artifacts) == 2:
+        assert artifacts[1]["rendering"] == {"format": "frame"}
+        assert artifacts[1]["url"] == (
+            f"/api/datasets/spec_a/cv1/files/{frame_location.artifact_digest}"
+        )
 
 
-def test_servable_artifacts_get_freshly_signed_urls_and_the_stored_body_round_trips():
+def test_servable_artifacts_carry_their_download_links_and_the_stored_body_round_trips():
     store = FakeArtifactStore()
     location = _store_and_locate(store, b"csv-bytes")
     reader = FakeSnapshotReader(
@@ -502,7 +492,6 @@ def test_servable_artifacts_get_freshly_signed_urls_and_the_stored_body_round_tr
         content_version="cv1",
         spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
         snapshot_reader=reader,
-        artifact_store=store,
         now=lambda: _NOW,
         settings=DatasetsBuildSettings(),
     )
@@ -514,20 +503,19 @@ def test_servable_artifacts_get_freshly_signed_urls_and_the_stored_body_round_tr
     artifact = manifest.artifacts[0]
     assert artifact.artifact_digest == location.artifact_digest
     assert artifact.tier == "working"
-    assert artifact.url == f"fake://artifact/working/{location.artifact_digest}"
-
-
-_CRS_CV = "cv_5c9dfd37e657d3a3c7000cc6acf49c43"
+    assert artifact.url == f"/api/datasets/spec_a/cv1/files/{location.artifact_digest}"
+    assert store.signings == []
 
 
 def _cited(*sources: tuple[str, str]) -> dict[str, object]:
     return {"text": "", "sources": [{"ref": ref, "label": label} for ref, label in sources]}
 
 
-def _signed_file_names(
+def _download_file_names(
     *, id: str, version: StoredVersion, locations: list[StoredArtifactLocation]
 ) -> dict[str, str]:
-    """Each signed artifact's `Content-Disposition`, keyed by its rendering's repr."""
+    """Each artifact's `Content-Disposition`, as its download link signs it, keyed by its
+    rendering's repr."""
     store = FakeArtifactStore()
     stored = [
         _store_and_locate(
@@ -539,9 +527,7 @@ def _signed_file_names(
         )
         for location in locations
     ]
-    read_snapshot_manifest(
-        id=id,
-        content_version=version.content_version,
+    deps = fake_deps(
         spec_reader=FakeSpecReader(spec_ids=[id]),
         snapshot_reader=FakeSnapshotReader(
             versions={(id, version.content_version): version},
@@ -549,18 +535,46 @@ def _signed_file_names(
         ),
         artifact_store=store,
         now=lambda: _NOW,
-        settings=DatasetsBuildSettings(),
     )
+    for location in stored:
+        resolve_link(
+            id=id,
+            content_version=version.content_version,
+            digest=location.artifact_digest,
+            deps=deps,
+        )
     return {
         repr(location.rendering): store.signed_headers[(Tier.working, location.artifact_digest)][1]
         for location in stored
     }
 
 
+_CRS_CV = "cv_5c9dfd37e657d3a3c7000cc6acf49c43"
+
+
+_LONG_CSV = {"bundle": False, "format": "csv", LAYOUT_KEY: DATA_LAYOUT_VERSION}
+_PIVOT = {"index": "time_period", "columns": "stat_var"}
+
+
 def test_a_standalone_version_names_its_artifacts_by_source_first_mint_date_and_version():
+    """Each rendering that reshapes the default table names its shape before the version tag,
+    so no two artifacts of one version share a download name. The long table keeps its name."""
     bundle = {"bundle": True, "format": "csv", RENDITION_KEY: _RENDITION}
+    shaped = {
+        "pivot": {**_LONG_CSV, "pivot": _PIVOT},
+        "transposed pivot": {**_LONG_CSV, "pivot": {"index": "stat_var", "columns": "time_period"}},
+        "frame layout": {"bundle": False, "format": "parquet", LAYOUT_KEY: FRAME_LAYOUT},
+        "columns": {**_LONG_CSV, "columns": ["time_period", "value"]},
+        "groupby": {**_LONG_CSV, "groupby": {"by": ["stat_var"], "op": "sum"}},
+        "incomplete": {**_LONG_CSV, "metadata": "incomplete"},
+        "pivoted bundle": {**bundle, "pivot": _PIVOT},
+    }
+    media_types = {
+        "frame layout": "application/vnd.apache.parquet",
+        "pivoted bundle": "application/zip",
+    }
     body = {
-        **_version().immutable_body,
+        **version_body(),
         "content_version": _CRS_CV,
         "prepared_at": "2026-10-04T09:00:00Z",
         "citation": _cited(
@@ -572,10 +586,10 @@ def test_a_standalone_version_names_its_artifacts_by_source_first_mint_date_and_
         subject_kind="spec",
         content_version=_CRS_CV,
         schema_version=1,
-        immutable_body=body,
+        facts=facts_from_body(body),
     )
 
-    names = _signed_file_names(
+    names = _download_file_names(
         id="spec_a",
         version=version,
         locations=[
@@ -583,6 +597,12 @@ def test_a_standalone_version_names_its_artifacts_by_source_first_mint_date_and_
             _location(rendering={"bundle": False, "format": "csv"}, media_type="text/csv"),
             _location(
                 rendering={"statistics": "series"}, media_type="application/vnd.apache.parquet"
+            ),
+            _location(rendering={"format": "frame"}, media_type="application/vnd.apache.parquet"),
+            _location(rendering=_LONG_CSV, media_type="text/csv"),
+            *(
+                _location(rendering=rendering, media_type=media_types.get(label, "text/csv"))
+                for label, rendering in shaped.items()
             ),
         ],
     )
@@ -592,12 +612,21 @@ def test_a_standalone_version_names_its_artifacts_by_source_first_mint_date_and_
         repr(bundle): f'{prefix}_csv_5c9dfd.zip"',
         repr({"bundle": False, "format": "csv"}): f'{prefix}_5c9dfd.csv"',
         repr({"statistics": "series"}): f'{prefix}_series-statistics_5c9dfd.parquet"',
+        repr({"format": "frame"}): f'{prefix}_frame_5c9dfd.parquet"',
+        repr(_LONG_CSV): f'{prefix}_5c9dfd.csv"',
+        repr(shaped["pivot"]): f'{prefix}_pivot-9c1fe3_5c9dfd.csv"',
+        repr(shaped["transposed pivot"]): f'{prefix}_pivot-eaf356_5c9dfd.csv"',
+        repr(shaped["frame layout"]): f'{prefix}_frame-621641_5c9dfd.parquet"',
+        repr(shaped["columns"]): f'{prefix}_columns-0311dc_5c9dfd.csv"',
+        repr(shaped["groupby"]): f'{prefix}_groupby-0a5418_5c9dfd.csv"',
+        repr(shaped["incomplete"]): f'{prefix}_incomplete-b40b02_5c9dfd.csv"',
+        repr(shaped["pivoted bundle"]): f'{prefix}_csv_pivot-9c1fe3_5c9dfd.zip"',
     }
 
 
 def test_a_version_citing_no_source_names_its_artifacts_dataset():
     bundle = {"bundle": True, "format": "xlsx", RENDITION_KEY: _RENDITION}
-    names = _signed_file_names(
+    names = _download_file_names(
         id="spec_a",
         version=_version(),
         locations=[_location(rendering=bundle, media_type="application/zip")],
@@ -620,9 +649,7 @@ def test_a_stored_profile_derives_output_options_from_the_current_capability_doc
     location = _store_and_locate(store, b"csv-bytes")
     reader = FakeSnapshotReader(
         versions={
-            ("spec_a", "cv1"): _version(
-                immutable_body=encode_version_body(manifest, output_profile=profile)
-            )
+            ("spec_a", "cv1"): _version(facts=manifest_facts(manifest, output_profile=profile))
         },
         locations={("spec_a", "cv1"): [location]},
     )
@@ -632,7 +659,6 @@ def test_a_stored_profile_derives_output_options_from_the_current_capability_doc
         content_version="cv1",
         spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
         snapshot_reader=reader,
-        artifact_store=store,
         now=lambda: _NOW,
         settings=DatasetsBuildSettings(),
     )
@@ -657,7 +683,6 @@ def test_a_legacy_stored_body_without_an_output_profile_serves_with_output_optio
         content_version="cv1",
         spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
         snapshot_reader=reader,
-        artifact_store=store,
         now=lambda: _NOW,
         settings=DatasetsBuildSettings(),
     )
@@ -665,10 +690,12 @@ def test_a_legacy_stored_body_without_an_output_profile_serves_with_output_optio
     assert manifest.output_options is None
 
     door = build_snapshot_door(
-        spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
-        snapshot_reader=reader,
-        artifact_store=store,
-        now=lambda: _NOW,
+        deps=fake_deps_cell(
+            spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
+            snapshot_reader=reader,
+            artifact_store=store,
+            now=lambda: _NOW,
+        )
     )
     client = make_client_for_door(door)
 
@@ -688,9 +715,11 @@ def test_an_id_outside_the_grammar_refuses_the_platforms_own_not_found_before_th
     """`SpecIdConvertor` sends any id outside the `spec_` namespace, a retired collection's
     `col_` id included, to the platform's generic `not_found` response."""
     door = build_snapshot_door(
-        spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
-        snapshot_reader=FakeSnapshotReader(),
-        artifact_store=FakeArtifactStore(),
+        deps=fake_deps_cell(
+            spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
+            snapshot_reader=FakeSnapshotReader(),
+            artifact_store=FakeArtifactStore(),
+        )
     )
     client = make_client_for_door(door)
 
@@ -706,9 +735,11 @@ def test_a_well_formed_but_unregistered_id_still_refuses_spec_not_found():
     grammar constraint.
     """
     door = build_snapshot_door(
-        spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
-        snapshot_reader=FakeSnapshotReader(),
-        artifact_store=FakeArtifactStore(),
+        deps=fake_deps_cell(
+            spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
+            snapshot_reader=FakeSnapshotReader(),
+            artifact_store=FakeArtifactStore(),
+        )
     )
     client = make_client_for_door(door)
 
@@ -718,13 +749,12 @@ def test_a_well_formed_but_unregistered_id_still_refuses_spec_not_found():
     assert resp.json()["code"] == "spec_not_found"
 
 
-# --- Cache-Control: every response carries freshly signed URLs, so a cache
-# handing a stored copy back later would serve a URL past its own
-# `url_expires_at`, or for an artifact revoked/expired since.
+# --- Cache-Control: every response is read fresh, so a cache never hands back a listing of an
+# artifact revoked or expired since.
 
 
-# --- `rendering_key`: narrows to one stored rendering before signing, for
-# the definition door's own head-hit path.
+# --- `rendering_key`: narrows to one stored rendering, for the definition door's own head-hit
+# path. Listing signs nothing.
 
 
 def _three_renderings_reader() -> tuple[
@@ -754,7 +784,7 @@ def _three_renderings_reader() -> tuple[
     return store, reader, locations
 
 
-def test_rendering_key_left_none_lists_and_signs_every_rendering():
+def test_rendering_key_left_none_lists_every_rendering():
     store, reader, locations = _three_renderings_reader()
 
     manifest = read_snapshot_manifest(
@@ -762,7 +792,6 @@ def test_rendering_key_left_none_lists_and_signs_every_rendering():
         content_version="cv1",
         spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
         snapshot_reader=reader,
-        artifact_store=store,
         now=lambda: _NOW,
         settings=DatasetsBuildSettings(),
     )
@@ -770,7 +799,7 @@ def test_rendering_key_left_none_lists_and_signs_every_rendering():
     assert {a.artifact_digest for a in manifest.artifacts} == {
         loc.artifact_digest for loc in locations
     }
-    assert len(store.signed_headers) == 3
+    assert store.signings == []
 
 
 def test_rendering_key_narrows_to_the_one_matching_rendering():
@@ -782,7 +811,6 @@ def test_rendering_key_narrows_to_the_one_matching_rendering():
         content_version="cv1",
         spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
         snapshot_reader=reader,
-        artifact_store=store,
         now=lambda: _NOW,
         rendering_key=target.rendering_key,
         settings=DatasetsBuildSettings(),
@@ -790,7 +818,7 @@ def test_rendering_key_narrows_to_the_one_matching_rendering():
 
     assert len(manifest.artifacts) == 1
     assert manifest.artifacts[0].artifact_digest == target.artifact_digest
-    assert len(store.signed_headers) == 1
+    assert store.signings == []
 
 
 def test_rendering_key_matching_nothing_returns_empty_artifacts_with_no_error():
@@ -801,14 +829,13 @@ def test_rendering_key_matching_nothing_returns_empty_artifacts_with_no_error():
         content_version="cv1",
         spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
         snapshot_reader=reader,
-        artifact_store=store,
         now=lambda: _NOW,
         rendering_key="rk-does-not-exist",
         settings=DatasetsBuildSettings(),
     )
 
     assert manifest.artifacts == []
-    assert store.signed_headers == {}
+    assert store.signings == []
 
 
 def test_a_successful_snapshot_response_carries_cache_control_no_store():
@@ -819,10 +846,12 @@ def test_a_successful_snapshot_response_carries_cache_control_no_store():
         locations={("spec_a", "cv1"): [location]},
     )
     door = build_snapshot_door(
-        spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
-        snapshot_reader=reader,
-        artifact_store=store,
-        now=lambda: _NOW,
+        deps=fake_deps_cell(
+            spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
+            snapshot_reader=reader,
+            artifact_store=store,
+            now=lambda: _NOW,
+        )
     )
     client = make_client_for_door(door)
 
@@ -875,7 +904,6 @@ def test_a_bundle_from_before_renditions_is_listed_only_when_pinned_after_the_cu
         content_version="cv1",
         spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
         snapshot_reader=reader,
-        artifact_store=store,
         now=lambda: _NOW,
         settings=DatasetsBuildSettings(),
     )
@@ -886,11 +914,18 @@ def test_a_bundle_from_before_renditions_is_listed_only_when_pinned_after_the_cu
 
 
 def test_a_bare_file_in_an_old_layout_stays_listed_after_the_current_one():
-    """The reader lists the old-layout file first. The snapshot puts the current long layout
-    first, then the frame-layout file, keeps the old file listed unpinned, and keeps the
-    statistics artifact last."""
+    """The reader lists the canonical frame and the old-layout file first. The snapshot puts
+    the current long layout first, then the frame-layout file, keeps the old file listed
+    unpinned, lists the canonical frame after every requested file, and keeps the statistics
+    artifact last."""
     store = FakeArtifactStore()
     locations = {
+        "canonical": _store_and_locate(
+            store,
+            b"canonical-frame",
+            rendering={"format": "frame"},
+            media_type="application/vnd.apache.parquet",
+        ),
         "old": _store_and_locate(
             store, b"old-csv", rendering={"format": "csv", "bundle": False}, media_type="text/csv"
         ),
@@ -923,11 +958,11 @@ def test_a_bare_file_in_an_old_layout_stays_listed_after_the_current_one():
         content_version="cv1",
         spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
         snapshot_reader=reader,
-        artifact_store=store,
         now=lambda: _NOW,
         settings=DatasetsBuildSettings(),
     )
 
     assert [a.artifact_digest for a in manifest.artifacts] == [
-        locations[name].artifact_digest for name in ("current", "frame", "old", "statistics")
+        locations[name].artifact_digest
+        for name in ("current", "frame", "old", "canonical", "statistics")
     ]

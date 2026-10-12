@@ -7,11 +7,7 @@ from dataclasses import dataclass
 
 import httpx
 import pytest
-from dfo_frame_grammar import (
-    FrameTrace,
-    canonical_frame_bytes,
-    recompute_content_version,
-)
+from dfo_frame_grammar import canonical_frame_bytes
 
 from dc_sdmx import SdmxClient
 from materialise import (
@@ -20,7 +16,7 @@ from materialise import (
     materialise_spec,
 )
 from materialise.ceiling import DEFAULT_SYNC_CEILING_ROWS
-from materialise.content_version import mint_preimage_from_trace
+from materialise.content_version import recompute_version
 from materialise.convert import ConversionRecord
 from materialise.enrichment import EnrichmentLookup
 from materialise.errors import MaterialisationUsageError, OverCeilingError
@@ -35,17 +31,15 @@ from materialise.pipeline import (
     PreviewResult,
 )
 from materialise.rate_tables import RateTableCache
-from materialise.recipe_bodies import RECIPE_BODIES, recipe_body_digest
+from materialise.recipe_bodies import RECIPE_BODIES
 from materialise.recipes import RateCoverageGapError
-from materialise.revision import RevisionSnapshot, SourceRevision
 from materialise.window import RequestedWindow
 from series_coverage.index import CoverageIndex
 from series_coverage.schema import FacetMetadata, RoleNames
-from tests.datasets_api._legacy_conversion_trace import LEGACY_CONVERSION
 from tests.engine._fake_coverage import build_coverage_index
 
 from ._rate_table_support import RateTableServer
-from .conftest import FakeGraphReader, FakeRevisionReader, only_chunk
+from .conftest import FakeGraphReader, only_chunk
 
 _BASE_URL = "https://datacommons.one.org/core/api"
 
@@ -76,15 +70,6 @@ class _Sha256Hex:
 
 _TABLE_VERSION = _Sha256Hex()
 
-_RECIPE_BODY_REVISION = {
-    "source": f"recipe_body/{_DAC_RECIPE}",
-    "revision": recipe_body_digest(RECIPE_BODIES[_DAC_RECIPE]),
-}
-
-_SNAPSHOT = RevisionSnapshot(
-    graph_revision="graph-rev-2024-01",
-    source_revisions=(SourceRevision(source="OECD_DAC_CRS", revision="rev-7"),),
-)
 
 _ROLE_HEADER = (
     "STRUCTURE,STRUCTURE_ID,ACTION,variableMeasured,financingProvider,financingRecipient,unit,"
@@ -94,10 +79,6 @@ _SUBJECT_HEADER = (
     "STRUCTURE,STRUCTURE_ID,ACTION,variableMeasured,observationAbout,unit,measurementMethod,"
     "observationPeriod,provenance,TIME_PERIOD,OBS_VALUE,scalingFactor,facetId\r\n"
 )
-
-
-def _reader() -> FakeRevisionReader:
-    return FakeRevisionReader([_SNAPSHOT, _SNAPSHOT])
 
 
 def _coverage_for(
@@ -260,10 +241,9 @@ def test_member_converted_trace_and_content_version_shape():
         request,
         sdmx=sdmx,
         graph=_graph(),
-        revision_reader=_reader(),
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(_graph()),
+        enrichment=EnrichmentLookup(_graph(), type_kinds={}, parties={}),
         rate_cache=RateTableCache(),
         coverage=coverage,
     )
@@ -277,18 +257,15 @@ def test_member_converted_trace_and_content_version_shape():
             "projected": {"count": 0, "examples": [], "truncated": False},
         },
     )
-    assert any(
-        entry == {"source": f"native_unit/{_BARE_STAT_VAR}", "revision": "CurrencyUSD"}
-        for entry in result.trace.source_revisions
-    )
     assert result.content_version.startswith("cv_")
     assert result.conversion_record is not None
     assert result.conversion_record.table_provenance_id == _TABLE_PROVENANCE
     assert result.member_conversion_records == {_STAT_VAR: result.conversion_record}
-    assert mint_preimage_from_trace(result.trace.to_dict()) == result.mint_preimage
 
 
-def test_content_version_moves_when_only_the_native_unit_dcid_changes():
+def test_content_version_stays_when_only_the_native_unit_dcid_changes():
+    """Two runs whose converted rows are identical are one frame and one version. The trace's
+    conversion entry names each run's own native unit."""
     request_usd = _request(
         unit=FacetBinding(state="request", request=UnitRequest("EUR", "current"))
     )
@@ -303,10 +280,9 @@ def test_content_version_moves_when_only_the_native_unit_dcid_changes():
         request_usd,
         sdmx=sdmx_usd,
         graph=_graph(),
-        revision_reader=_reader(),
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(_graph()),
+        enrichment=EnrichmentLookup(_graph(), type_kinds={}, parties={}),
         rate_cache=RateTableCache(),
         coverage=coverage_usd,
     )
@@ -337,10 +313,9 @@ def test_content_version_moves_when_only_the_native_unit_dcid_changes():
         request_gbp,
         sdmx=sdmx_gbp,
         graph=_graph(),
-        revision_reader=_reader(),
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(_graph()),
+        enrichment=EnrichmentLookup(_graph(), type_kinds={}, parties={}),
         rate_cache=RateTableCache(),
         coverage=coverage_gbp,
     )
@@ -353,7 +328,7 @@ def test_content_version_moves_when_only_the_native_unit_dcid_changes():
     (gbp_entry,) = result_gbp.trace.conversion
     assert usd_entry["members"] == [{"stat_var": _BARE_STAT_VAR, "native_unit": "CurrencyUSD"}]
     assert gbp_entry["members"] == [{"stat_var": _BARE_STAT_VAR, "native_unit": "CurrencyGBP"}]
-    assert result_usd.content_version != result_gbp.content_version
+    assert result_usd.content_version == result_gbp.content_version
 
 
 def test_ref_form_spec_carries_no_conversion():
@@ -367,10 +342,9 @@ def test_ref_form_spec_carries_no_conversion():
         request,
         sdmx=sdmx,
         graph=_graph(),
-        revision_reader=_reader(),
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(_graph()),
+        enrichment=EnrichmentLookup(_graph(), type_kinds={}, parties={}),
         coverage=coverage,
     )
 
@@ -417,10 +391,9 @@ def _constant_price_member() -> MaterialisationResult:
         request,
         sdmx=sdmx,
         graph=_graph(),
-        revision_reader=_reader(),
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(_graph()),
+        enrichment=EnrichmentLookup(_graph(), type_kinds={}, parties={}),
         rate_cache=RateTableCache(),
         coverage=coverage,
     )
@@ -465,10 +438,9 @@ def test_group_with_two_converted_members_carries_one_conversion_entry_naming_bo
         members,
         sdmx=sdmx,
         graph=_graph(arcs),
-        revision_reader=_reader(),
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(_graph(arcs)),
+        enrichment=EnrichmentLookup(_graph(arcs), type_kinds={}, parties={}),
         rate_cache=RateTableCache(),
         coverage=coverage,
     )
@@ -485,10 +457,6 @@ def test_group_with_two_converted_members_carries_one_conversion_entry_naming_bo
             "projected": {"count": 0, "examples": [], "truncated": False},
         },
     )
-    assert mint_preimage_from_trace(result.trace.to_dict()) == result.mint_preimage
-    revision_sources = {entry["source"] for entry in result.trace.source_revisions}
-    assert f"native_unit/{_BARE_STAT_VAR}" in revision_sources
-    assert f"native_unit/{_BARE_STAT_VAR_B}" in revision_sources
     assert result.conversion_record is None
     assert result.member_conversion_records.keys() == {_STAT_VAR, _STAT_VAR_B}
     for record in result.member_conversion_records.values():
@@ -497,8 +465,8 @@ def test_group_with_two_converted_members_carries_one_conversion_entry_naming_bo
 
 
 def test_us_dollar_group_members_trace_their_facet_unit_like_the_member_path():
-    """`USDollar` facets convert on `CurrencyUSD` rates. The group trace and its content-version
-    preimage name `USDollar` per member, as each member's own `materialise_spec` result does.
+    """`USDollar` facets convert on `CurrencyUSD` rates. The group trace names `USDollar` per
+    member, as each member's own `materialise_spec` result does.
 
     A one-request group takes the member path, so the group here has two members."""
     bare_stat_vars = (_BARE_STAT_VAR, _BARE_STAT_VAR_B)
@@ -518,10 +486,9 @@ def test_us_dollar_group_members_trace_their_facet_unit_like_the_member_path():
             request,
             sdmx=sdmx,
             graph=_graph(arcs),
-            revision_reader=_reader(),
             materialiser_build="test-build",
             capability_version="v1",
-            enrichment=EnrichmentLookup(_graph(arcs)),
+            enrichment=EnrichmentLookup(_graph(arcs), type_kinds={}, parties={}),
             rate_cache=RateTableCache(),
             coverage=_coverage_for(entries, unit="USDollar"),
         )
@@ -540,25 +507,15 @@ def test_us_dollar_group_members_trace_their_facet_unit_like_the_member_path():
         [(bare, "country/KEN") for bare in bare_stat_vars],
     )
 
-    def _native_revisions(result) -> list[dict[str, object]]:
-        return [
-            entry
-            for entry in result.trace.source_revisions
-            if str(entry["source"]).startswith("native_unit/")
-        ]
-
     member_entries: list[object] = []
-    member_native_revisions: list[dict[str, object]] = []
     for result in members.values():
         (member_entry,) = result.trace.conversion
         member_entries += member_entry["members"]
-        member_native_revisions += _native_revisions(result)
     assert member_entries == [
         {"stat_var": bare, "native_unit": "USDollar"} for bare in bare_stat_vars
     ]
     (group_entry,) = group.trace.conversion
     assert group_entry["members"] == member_entries
-    assert _native_revisions(group) == member_native_revisions
     for stat_var, record in group.member_conversion_records.items():
         assert record is not None
         assert record.native_currency == "CurrencyUSD"
@@ -650,10 +607,9 @@ def _deflator_gap_member(deflator_years: tuple[str, ...]) -> MaterialisationResu
         request,
         sdmx=sdmx,
         graph=_graph(),
-        revision_reader=_reader(),
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(_graph()),
+        enrichment=EnrichmentLookup(_graph(), type_kinds={}, parties={}),
         rate_cache=RateTableCache(),
         coverage=coverage,
     )
@@ -696,10 +652,9 @@ def test_deflator_projected_warning_on_member():
         request,
         sdmx=sdmx,
         graph=_graph(),
-        revision_reader=_reader(),
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(_graph()),
+        enrichment=EnrichmentLookup(_graph(), type_kinds={}, parties={}),
         rate_cache=RateTableCache(),
         coverage=coverage,
     )
@@ -737,10 +692,9 @@ def test_deflator_projected_warning_on_group():
         members,
         sdmx=sdmx,
         graph=_graph(arcs),
-        revision_reader=_reader(),
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(_graph(arcs)),
+        enrichment=EnrichmentLookup(_graph(arcs), type_kinds={}, parties={}),
         rate_cache=RateTableCache(),
         coverage=coverage,
     )
@@ -872,10 +826,9 @@ def _destination_currency_result(
         "ceiling": ceiling,
         "sdmx": inputs.sdmx,
         "graph": _graph(inputs.arcs),
-        "revision_reader": _reader(),
         "materialiser_build": "test-build",
         "capability_version": "v1",
-        "enrichment": EnrichmentLookup(_graph(inputs.arcs)),
+        "enrichment": EnrichmentLookup(_graph(inputs.arcs), type_kinds={}, parties={}),
         "rate_cache": RateTableCache(),
         "coverage": inputs.coverage,
     }
@@ -1012,8 +965,7 @@ def test_eleven_distinct_projected_entities_are_truncated_at_ten():
 
 
 # ---------------------------------------------------------------------------
-# Preview (#662): a converted preview mints the mint's own version, native
-# unit source revision and conversion record included
+# Preview (#662): a converted preview mints the mint's own version
 # ---------------------------------------------------------------------------
 
 
@@ -1055,10 +1007,9 @@ def _converted_preview_and_mint(*, native_unit: str = "CurrencyUSD"):
         request,
         sdmx=_sdmx(),
         graph=_graph(),
-        revision_reader=_reader(),
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(_graph()),
+        enrichment=EnrichmentLookup(_graph(), type_kinds={}, parties={}),
         rate_cache=RateTableCache(),
         coverage=coverage,
     )
@@ -1067,7 +1018,7 @@ def _converted_preview_and_mint(*, native_unit: str = "CurrencyUSD"):
         sdmx=_sdmx(),
         graph=_graph(),
         coverage=coverage,
-        revision_reader=_reader(),
+        with_content_version=True,
         limit=10,
         rate_cache=RateTableCache(),
     )
@@ -1081,23 +1032,6 @@ def test_converted_preview_content_version_equals_the_mint_version():
     assert previewed.conversion_record is not None
     assert previewed.content_version is not None
     assert previewed.content_version == minted.content_version
-
-
-def test_converted_preview_content_version_moves_with_only_the_native_unit():
-    # The native-unit source revision is part of the mint's own preimage
-    # (`_finish_member` appends it for a converted member), so a preview
-    # minting without it would report the same token for two different
-    # native units. The converted value is byte-identical across the two
-    # runs here (CurrencyGBP's rate entity carries the same 1.0 rate
-    # CurrencyUSD's does), so only the native-unit entry moves the token.
-    _minted_usd, previewed_usd = _converted_preview_and_mint(native_unit="CurrencyUSD")
-    _minted_gbp, previewed_gbp = _converted_preview_and_mint(native_unit="CurrencyGBP")
-
-    assert (
-        previewed_usd.conversion_record.native_currency
-        != previewed_gbp.conversion_record.native_currency
-    )
-    assert previewed_usd.content_version != previewed_gbp.content_version
 
 
 def test_conversion_trace_groups_members_by_recipe_and_table_versions():
@@ -1168,41 +1102,14 @@ def test_conversion_trace_members_do_not_depend_on_arrival_order():
     assert _conversion_trace(records) == _conversion_trace(list(reversed(records)))
 
 
-def test_mint_preimage_from_trace_refuses_a_conversion_that_is_not_one_entry():
-    """A definition converts under one recipe and table-version pair, so a stored `conversion`
-    that is not a one-entry list is corrupt and raises. The object shape that predates the list
-    raises too; migrations 0017 and 0020 rewrote every stored one."""
-    (entry,) = _conversion_trace([(_STAT_VAR, _record())])
-    trace = {"graph_revision": "rev", "source_revisions": [], "mint_facets": []}
-
-    assert mint_preimage_from_trace({**trace, "conversion": [entry]}) is not None
-    with pytest.raises(ValueError, match="one-entry list"):
-        mint_preimage_from_trace({**trace, "conversion": [entry, entry]})
-    with pytest.raises(ValueError, match="one-entry list"):
-        mint_preimage_from_trace({**trace, "conversion": []})
-    with pytest.raises(ValueError, match="one-entry list"):
-        mint_preimage_from_trace({**trace, "conversion": "ConversionRecipeDAC"})
-    with pytest.raises(ValueError, match="one-entry list"):
-        mint_preimage_from_trace({**trace, "conversion": LEGACY_CONVERSION})
-
-
 # ---------------------------------------------------------------------------
-# A served trace alone reproduces a converted frame's content version
+# Canonical frame bytes alone reproduce a converted frame's content version
 # ---------------------------------------------------------------------------
 
 
-def _recompute_from_served_trace(result: MaterialisationResult) -> str:
-    """Recomputes the token as a client does: spec-kit's grammar over the canonical frame
-    bytes and the wire trace, with no dfo-apis code adding revisions."""
-    wire = result.trace.to_dict()
-    fragment = FrameTrace(
-        graph_revision=wire["graph_revision"],
-        source_revisions=tuple(wire["source_revisions"]),
-        facets=tuple(wire["mint_facets"]),
-        frame_grammar_version=wire["frame_grammar_version"],
-        conversion=wire.get("conversion"),
-    )
-    return recompute_content_version(canonical_frame_bytes(only_chunk(result)), fragment)
+def _recompute_from_frame_bytes(result: MaterialisationResult) -> str:
+    """Recomputes the token as a client does, from the canonical frame bytes alone."""
+    return recompute_version(canonical_frame_bytes(only_chunk(result)))
 
 
 def _current_price_member() -> MaterialisationResult:
@@ -1214,10 +1121,9 @@ def _current_price_member() -> MaterialisationResult:
         _request(unit=FacetBinding(state="request", request=UnitRequest("EUR", "current"))),
         sdmx=sdmx,
         graph=_graph(),
-        revision_reader=_reader(),
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(_graph()),
+        enrichment=EnrichmentLookup(_graph(), type_kinds={}, parties={}),
         rate_cache=RateTableCache(),
         coverage=_coverage_for([(_BARE_STAT_VAR, "country/KEN")]),
     )
@@ -1226,15 +1132,14 @@ def _current_price_member() -> MaterialisationResult:
 @pytest.mark.parametrize(
     "build", [_current_price_member, _constant_price_member], ids=["current", "constant"]
 )
-def test_converted_member_token_recomputes_from_its_served_trace_alone(build):
+def test_converted_member_token_recomputes_from_its_frame_bytes_alone(build):
     result = build()
 
     assert result.trace.conversion is not None
-    assert _RECIPE_BODY_REVISION in result.trace.source_revisions
-    assert _recompute_from_served_trace(result) == result.content_version
+    assert _recompute_from_frame_bytes(result) == result.content_version
 
 
-def test_converted_group_token_recomputes_from_its_served_trace_alone():
+def test_converted_group_token_recomputes_from_its_frame_bytes_alone():
     arcs = _base_arcs(bare_stat_vars=(_BARE_STAT_VAR, _BARE_STAT_VAR_B))
     sdmx, _requests = _router_sdmx(
         role_bodies={
@@ -1253,14 +1158,13 @@ def test_converted_group_token_recomputes_from_its_served_trace_alone():
         ],
         sdmx=sdmx,
         graph=_graph(arcs),
-        revision_reader=_reader(),
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(_graph(arcs)),
+        enrichment=EnrichmentLookup(_graph(arcs), type_kinds={}, parties={}),
         rate_cache=RateTableCache(),
         coverage=_coverage_for(
             [(_BARE_STAT_VAR, "country/KEN"), (_BARE_STAT_VAR_B, "country/KEN")]
         ),
     )
 
-    assert _recompute_from_served_trace(result) == result.content_version
+    assert _recompute_from_frame_bytes(result) == result.content_version

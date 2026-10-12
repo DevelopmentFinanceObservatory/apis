@@ -36,6 +36,7 @@ from tests.code_index.test_elect_dataset import (
     _row,
     _split_index,
 )
+from tests.engine._source_scopes import part_scope
 from tests.fixtures import FakeGraph
 
 _FIVE_TUPLE = FiveTuple("TestFlow", "amount", "measuredValue", None, None)
@@ -281,7 +282,7 @@ def test_a_part_reads_its_shapes_own_tables_when_its_slot_keys_select_another_fa
     tables = by_member["tables_health"]
 
     assert part_datasets(plain, None, index) == (_PLAIN,)
-    assert part_datasets(plain, _TABLES, index) == ()
+    assert part_datasets(plain, part_scope(_TABLES), index) == ()
     assert part_source(plain, [], _no_place) == _PLAIN
     assert part_datasets(tables, None, index) == (_TABLES,)
     assert part_source(tables, [], _no_place) is None

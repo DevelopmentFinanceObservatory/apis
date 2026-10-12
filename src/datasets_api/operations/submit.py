@@ -1,10 +1,11 @@
 """Submits over-budget mint and definition requests as async operations.
 
 `request_identity` contains the resolved `subject_id`, so either door reuses the same operation
-for identical identity, coverage, origin catalogue build, and rendering. The build is the one
-bound to the submitting request. Options stay on the row. Their rendering key
-sets the id. Different renderings get separate operations and isolate rendering-specific
-failures such as `excel_limit`.
+for identical identity, origin catalogue build, and rendering. The build is the one bound to the
+submitting request. Options stay on the row. Their rendering key sets the id. Different
+renderings get separate operations and isolate rendering-specific failures such as
+`excel_limit`. The coverage stamp the estimate ran against is stored for lineage and stays out
+of the id, so a coverage build never orphans a done operation.
 
 `request_identity` also holds `member_dcids`, the StatVars the submitting door resolved. The
 members are part of the operation id: two submissions share an operation only when their doors
@@ -33,7 +34,8 @@ OPERATION_SUBMIT_RETRY_AFTER_MS = 1_500
 
 
 class OperationSubmitted(Exception):
-    """Signals a successful 202 submission after recording and dispatching the operation when due.
+    """Signals a successful 202 submission after recording the operation and creating its task
+    when the submission records no dispatch.
 
     Mint and definition doors render the envelope outside RFC 9457 error handling.
     """
@@ -63,10 +65,12 @@ def submit_over_budget(
 
     Otherwise, async row or request limits raise `OverCeilingError` before a row or task exists.
     `OperationBacklogFull` also propagates. The function records or reuses the operation,
-    dispatches if this call wins the claim, and raises `OperationSubmitted` for a 202 response.
+    creates its task when the submission records no dispatch, and raises `OperationSubmitted`
+    for a 202 response.
 
-    Enqueue follows the committed store transaction. A timeout has an unknown outcome. Polling
-    can retry after the grace period.
+    The create follows the committed store transaction. A create that fails or times out leaves
+    the dispatch unrecorded, and the operations poll creates the task again under the same name
+    once the enqueue recovery window has passed.
     """
     if within_budget:
         return

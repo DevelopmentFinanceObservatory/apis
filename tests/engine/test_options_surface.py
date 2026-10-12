@@ -17,7 +17,6 @@ from materialise.graph import GraphReadError, SubjectPage
 from origin_catalogue import UnReadFailure, note_un_blocked_places
 from origin_catalogue.context import un_unavailability_record
 from search.engine.config import settings
-from search.engine.envelope import now_ms
 from search.engine.errors import EngineInputError, GraphCapExceededError
 from search.engine.options import surface
 from search.engine.options.resolve import resolve_options_target
@@ -217,7 +216,7 @@ def _options_response(
         req,
         target,
         graph=graph,
-        start_ms=now_ms(),
+        deadline=time.monotonic() + 30.0,
         materialise_graph=materialise_graph,
         coverage=empty_coverage_snapshot(),
     )
@@ -733,7 +732,7 @@ class TestObservationAboutFacetBoundMembership:
             req,
             target,
             graph=graph,
-            start_ms=now_ms(),
+            deadline=time.monotonic() + 30.0,
             materialise_graph=materialise_graph,
             coverage=empty_coverage_snapshot(),
         )
@@ -1029,7 +1028,7 @@ def _directional_response(
         req,
         target,
         graph=graph,
-        start_ms=now_ms(),
+        deadline=time.monotonic() + 30.0,
         coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
     )
     return target, resp, sdmx
@@ -1398,12 +1397,8 @@ class TestFacetReadNoLongerBoundedByScopeMaxMembers:
         assert OPTION_COVERAGE_PROBE_FAILED not in [w.code for w in resp.diagnostics.warnings]
 
     def test_deadline_is_threaded_into_the_facet_read(self):
-        """build_options_response's own remaining-budget deadline
-        (start_ms + SEARCH_REQUEST_TIMEOUT_S) reaches
-        observation_facets_via_materialise's own chunked read, the
-        same way it already reaches _directional_options_set's availability
-        call (TestDirectionalOptions.test_deadline_is_threaded_into_the_
-        availability_call)."""
+        """The deadline passed to build_options_response reaches
+        observation_facets_via_materialise's chunked read."""
 
         class _DeadlineCapturingGraphReader(FakeGraphReader):
             def __init__(self, *args, **kwargs) -> None:
@@ -1430,16 +1425,15 @@ class TestFacetReadNoLongerBoundedByScopeMaxMembers:
         )
         target = resolve_options_target(req, graph=graph, materialise_graph=materialise_graph)
 
-        before = time.monotonic()
+        deadline = time.monotonic() + 30.0
         build_options_response(
             req,
             target,
             graph=graph,
-            start_ms=now_ms(),
+            deadline=deadline,
             materialise_graph=materialise_graph,
             coverage=empty_coverage_snapshot(),
         )
 
         assert materialise_graph.deadlines, "the facet read must have been issued at all"
-        assert all(d is not None for d in materialise_graph.deadlines)
-        assert all(d > before for d in materialise_graph.deadlines)
+        assert all(d == deadline for d in materialise_graph.deadlines)

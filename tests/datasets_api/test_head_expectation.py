@@ -1,27 +1,27 @@
-"""Tests that mint and definition requests pass the head version they read before probing as
-`expected_content_version`. A hook races a second writer inside the SDMX fetch, so the first
-writer loses the compare-and-set. Revision snapshots must be read before coverage probes.
-The composed app and materialiser are real. Graph, SDMX, artifact, and head stores are fakes.
+"""Tests that mint and definition requests pass the head they read before materialising as
+the compare-and-set expectation (its `materialisation_id`). A hook races a second writer inside the SDMX
+fetch, so the first writer loses the compare-and-set. The composed app and materialiser are
+real. Graph, SDMX, artifact, and head stores are fakes.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import itertools
+import threading
+from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 import httpx
-import pytest
 
-from datasets_api.adapter import prime_head_signal
-from datasets_api.doors import definition as definition_door
-from datasets_api.revision import SentinelRevisionReader
-from datasets_api.versions import SubjectHead
+from artifact_store import LiveArtifactInventory
+from dataset_store.snapshot import LiveSnapshotReader
+from datasets_api.version_store import LiveVersionRecordWriter
+from datasets_api.versions import HeadFence, SubjectHead
 from dc_sdmx import SdmxClient
-from materialise import MaterialisationRequest
-from materialise.revision import RevisionReader, RevisionSnapshot, SourceRevision
-from materialise.window import RequestedWindow
-from series_coverage.schema import CoverageManifest, FacetMetadata, RoleNames
+from origin_catalogue.context import current_source_scope
+from series_coverage.schema import ABSENT_ENTITY, CoverageManifest, FacetMetadata, RoleNames
 from series_coverage.shared import CoverageSnapshot
 from spec_registry import LiveSpecRegistry
 from spec_registry.reader import LiveSpecReader
@@ -31,8 +31,10 @@ from ._app_factories import make_client
 from ._artifact_doubles import FakeArtifactStore
 from ._graph_doubles import FakeMintGraphReader
 from ._snapshot_doubles import FakeSnapshotReader
+from ._version_record_store import FakeVersionRecordDatasetStore, materialisation_record
 from .conftest import FakeDatasetStore
 from .test_pin_door import FakeArtifactReferenceWriter
+from .test_snapshot_lifecycle import _InventoryRecordingArtifactStore
 
 _BASE_URL = "https://datacommons.one.org/core/api"
 _RECIPIENT = "country/KEN"
@@ -78,6 +80,7 @@ _MINT_BODY = {
     "options": {"bundle": False},
 }
 
+_PAST_MAX_AGE = timedelta(hours=25)  # past the 86400s default maximum age
 _PAST_RECHECK_INTERVAL = timedelta(minutes=20)  # past the 900s default recheck interval
 
 
@@ -120,11 +123,11 @@ def _graph() -> FakeMintGraphReader:
 
 def _coverage_index(*, year: int = 2020):
     """One-facet coverage matching `_CSV_ROW`.
-    Setting `year=2021` changes the signal from 2020.
+    Setting `year=2021` moves the series to 2021.
     """
     return build_coverage_index(
-        [(_STAT_VAR, "facet1", "country/USA", _RECIPIENT, [year])],
-        role_names={_STAT_VAR: RoleNames(donor="provider", recipient="recipient")},
+        [(_STAT_VAR, "facet1", ABSENT_ENTITY, _RECIPIENT, [year])],
+        role_names={_STAT_VAR: RoleNames(donor=None, recipient="recipient")},
         facet_metadata={
             "facet1": FacetMetadata(
                 provenance_id="OECD_DAC2A", measurement_method="GrantEquivalent", unit="USD"
@@ -146,6 +149,13 @@ class _MutableCoverageService:
     def replace(self, index) -> None:
         self._index = index
 
+    def serves(self, snapshot: CoverageSnapshot) -> bool:
+        return snapshot.index is self._index
+
+    def register_load_guard(self, guard: object) -> Callable[[], None]:
+        """This fake never loads a build, so no guard is ever entered."""
+        return lambda: None
+
     def snapshot(self) -> CoverageSnapshot:
         return CoverageSnapshot(
             index=self._index,
@@ -166,8 +176,9 @@ class _MutableCoverageService:
 class _RecordedAdvanceCall:
     subject_id: str
     content_version: str
-    expected_content_version: str | None
+    expected_materialisation_id: int | None
     applied: bool
+    fence: HeadFence | None
 
 
 @dataclass
@@ -178,6 +189,7 @@ class _FakeHeadStore:
 
     _heads: dict[str, SubjectHead] = field(default_factory=dict)
     advance_head_calls: list[_RecordedAdvanceCall] = field(default_factory=list)
+    _runs: Iterator[int] = field(default_factory=lambda: itertools.count(1))
 
     def read_head(self, subject_id: str) -> SubjectHead | None:
         return self._heads.get(subject_id)
@@ -185,20 +197,22 @@ class _FakeHeadStore:
     def advance_head(
         self,
         *,
-        subject_id: str,
-        content_version: str,
-        signal,
-        expected_content_version: str | None,
+        materialisation,
+        expected_materialisation_id: int | None,
+        fence=None,
     ) -> SubjectHead | None:
+        subject_id = materialisation.subject_id
+        content_version = materialisation.content_version
         existing = self._heads.get(subject_id)
-        stored_content_version = existing.content_version if existing is not None else None
-        applied = stored_content_version == expected_content_version
+        stored_run = existing.materialisation_id if existing is not None else None
+        applied = stored_run == expected_materialisation_id
         self.advance_head_calls.append(
             _RecordedAdvanceCall(
                 subject_id=subject_id,
                 content_version=content_version,
-                expected_content_version=expected_content_version,
+                expected_materialisation_id=expected_materialisation_id,
                 applied=applied,
+                fence=fence,
             )
         )
         if not applied:
@@ -209,7 +223,8 @@ class _FakeHeadStore:
             content_version=content_version,
             confirmed_at=now,
             materialised_at=now,
-            signal=tuple(signal),
+            materialisation_id=next(self._runs),
+            dependencies=materialisation.dependencies,
         )
         self._heads[subject_id] = written
         return written
@@ -223,7 +238,8 @@ class _FakeHeadStore:
             content_version=existing.content_version,
             confirmed_at=datetime.now(UTC),
             materialised_at=existing.materialised_at,
-            signal=existing.signal,
+            materialisation_id=existing.materialisation_id,
+            dependencies=existing.dependencies,
         )
         self._heads[subject_id] = written
         return written
@@ -235,7 +251,8 @@ class _FakeHeadStore:
             content_version=existing.content_version,
             confirmed_at=datetime.now(UTC) - age,
             materialised_at=datetime.now(UTC) - age,
-            signal=existing.signal,
+            materialisation_id=existing.materialisation_id,
+            dependencies=existing.dependencies,
         )
 
 
@@ -244,7 +261,6 @@ def _client(
     graph,
     sdmx_transport: httpx.MockTransport | None = None,
     head_writer: _FakeHeadStore | None = None,
-    revision_reader: RevisionReader | None = None,
     store: FakeDatasetStore | None = None,
     coverage: _MutableCoverageService | None = None,
 ):
@@ -257,9 +273,6 @@ def _client(
             base_url=_BASE_URL,
             transport=sdmx_transport if sdmx_transport is not None else _sdmx_transport(),
         ),
-        revision_reader=revision_reader
-        if revision_reader is not None
-        else SentinelRevisionReader(),
         artifact_store=FakeArtifactStore(),
         snapshot_reader=FakeSnapshotReader(),
         head_writer=head_writer,
@@ -268,9 +281,9 @@ def _client(
     )
 
 
-def test_definition_get_expects_the_head_it_read_before_its_own_probe() -> None:
+def test_definition_get_expects_the_head_it_read_before_its_own_fetch() -> None:
     """A second writer advances the head inside the fetch for this GET. The GET must retain its earlier
-    `expected_content_version`, lose the compare-and-set, and leave the second writer's head intact.
+    observed head, lose the compare-and-set, and leave the second writer's head intact.
     """
     hook = _SdmxProbeHook()
     head_store = _FakeHeadStore()
@@ -285,21 +298,20 @@ def test_definition_get_expects_the_head_it_read_before_its_own_probe() -> None:
     minted = client.post("/api/datasets", json=_MINT_BODY)
     assert minted.status_code == 200, minted.text
     spec_id = minted.json()["definition"]["spec_id"]
-    initial_version = head_store.read_head(spec_id).content_version
+    initial = head_store.read_head(spec_id)
 
-    # Age past the recheck interval and change coverage before the race.
-    # Both changes force rematerialisation.
-    head_store.age_head(spec_id, age=_PAST_RECHECK_INTERVAL)
+    # Age past the maximum age, which forces rematerialisation, and change the data.
+    head_store.age_head(spec_id, age=_PAST_MAX_AGE)
     hook.body = _CSV_BODY_CHANGED
     coverage.replace(_coverage_index(year=2021))
 
     def _second_writer() -> None:
         current = head_store.read_head(spec_id)
         head_store.advance_head(
-            subject_id=spec_id,
-            content_version="racer-version",
-            signal=(),
-            expected_content_version=current.content_version if current is not None else None,
+            materialisation=materialisation_record(
+                subject_id=spec_id, content_version="racer-version"
+            ),
+            expected_materialisation_id=current.materialisation_id if current is not None else None,
         )
 
     hook.on_probe = _second_writer
@@ -311,35 +323,45 @@ def test_definition_get_expects_the_head_it_read_before_its_own_probe() -> None:
     lost_calls = [
         call
         for call in head_store.advance_head_calls
-        if call.expected_content_version == initial_version
+        if call.expected_materialisation_id == initial.materialisation_id
     ]
     assert lost_calls, head_store.advance_head_calls
     assert lost_calls[-1].applied is False
     assert head_store.read_head(spec_id).content_version == "racer-version"
+    # A request that is not an operation run fences nothing.
+    assert all(call.fence is None for call in head_store.advance_head_calls)
 
 
-def test_mint_reprime_expects_the_head_it_read_before_its_own_probe() -> None:
-    """A remint must carry the head version read before its coverage probe through the SDMX fetch.
+def test_mint_reprime_expects_the_head_it_read_before_its_own_fetch() -> None:
+    """A remint must carry the head version it read through the SDMX fetch.
     A racing writer advances the head first, so the remint loses its compare-and-set.
     """
     hook = _SdmxProbeHook()
     head_store = _FakeHeadStore()
+    coverage = _MutableCoverageService(_coverage_index())
     client = _client(
-        graph=_graph(), sdmx_transport=httpx.MockTransport(hook), head_writer=head_store
+        graph=_graph(),
+        sdmx_transport=httpx.MockTransport(hook),
+        head_writer=head_store,
+        coverage=coverage,
     )
 
     minted = client.post("/api/datasets", json=_MINT_BODY)
     assert minted.status_code == 200, minted.text
     spec_id = minted.json()["definition"]["spec_id"]
-    initial_version = head_store.read_head(spec_id).content_version
+    initial = head_store.read_head(spec_id)
+    # A current head answers a remint with no fetch, so age it past the maximum age to rebuild.
+    head_store.age_head(spec_id, age=_PAST_MAX_AGE)
+    hook.body = _CSV_BODY_CHANGED
+    coverage.replace(_coverage_index(year=2021))
 
     def _second_writer() -> None:
         current = head_store.read_head(spec_id)
         head_store.advance_head(
-            subject_id=spec_id,
-            content_version="racer-version",
-            signal=(),
-            expected_content_version=current.content_version if current is not None else None,
+            materialisation=materialisation_record(
+                subject_id=spec_id, content_version="racer-version"
+            ),
+            expected_materialisation_id=current.materialisation_id if current is not None else None,
         )
 
     hook.on_probe = _second_writer
@@ -357,94 +379,133 @@ def test_mint_reprime_expects_the_head_it_read_before_its_own_probe() -> None:
     lost_calls = [
         call
         for call in head_store.advance_head_calls
-        if call.expected_content_version == initial_version
+        if call.expected_materialisation_id == initial.materialisation_id
     ]
     assert lost_calls, head_store.advance_head_calls
     assert lost_calls[-1].applied is False
     assert head_store.read_head(spec_id).content_version == "racer-version"
+    # A request that is not an operation run fences nothing.
+    assert all(call.fence is None for call in head_store.advance_head_calls)
 
 
-def test_prime_head_signal_reads_the_revision_before_its_own_probe() -> None:
-    """`prime_head_signal` stamps the revision snapshot read before its first coverage lookup."""
-    order: list[str] = []
+def test_two_concurrent_rebuilds_from_one_head_read_advance_it_once() -> None:
+    """Two processes rebuild one subject from the same stale head read. Both fetch, and the
+    head compare-and-set applies one advance and refuses the other, which returns `None`."""
+    head_store = _LockedHeadStore()
+    store = FakeDatasetStore()
+    coverage = _MutableCoverageService(_coverage_index())
+    both_fetching = threading.Barrier(2, timeout=10)
+    # Armed after the mint: the first fetch of each rebuild waits for the other's.
+    fetches: list[int] | None = None
+    count_lock = threading.Lock()
 
-    class _OrderRecordingRevisionReader:
-        def __init__(self, snapshot: RevisionSnapshot) -> None:
-            self._snapshot = snapshot
+    def _respond(request: httpx.Request) -> httpx.Response:
+        with count_lock:
+            waits = fetches is not None and len(fetches) < 2
+            if fetches is not None:
+                fetches.append(1)
+        if waits:
+            both_fetching.wait()
+        return httpx.Response(
+            200,
+            text=_CSV_BODY if fetches is None else _CSV_BODY_CHANGED,
+            headers={"content-type": "application/vnd.sdmx.data+csv;version=2.0.0"},
+        )
 
-        def read(self) -> RevisionSnapshot:
-            order.append("revision")
-            return self._snapshot
+    processes = [
+        _client(
+            graph=_graph(),
+            sdmx_transport=httpx.MockTransport(_respond),
+            head_writer=head_store,
+            store=store,
+            coverage=coverage,
+        )
+        for _ in range(2)
+    ]
+    minted = processes[0].post("/api/datasets", json=_MINT_BODY)
+    assert minted.status_code == 200, minted.text
+    spec_id = minted.json()["definition"]["spec_id"]
+    initial = head_store.read_head(spec_id)
+    head_store.age_head(spec_id, age=_PAST_MAX_AGE)
+    coverage.replace(_coverage_index(year=2021))
+    fetches = []
 
-    class _OrderMarkingCoverage:
-        """Records the first coverage lookup, then delegates to the real index."""
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(
+            pool.map(lambda client: client.get(f"/api/datasets/{spec_id}?bundle=false"), processes)
+        )
 
-        def __init__(self, index) -> None:
-            self._index = index
+    assert [response.status_code for response in responses] == [200, 200]
+    rebuilds = [
+        call
+        for call in head_store.advance_head_calls
+        if call.expected_materialisation_id == initial.materialisation_id
+    ]
+    assert sorted(call.applied for call in rebuilds) == [False, True]
+    assert head_store.read_head(spec_id).content_version != initial.content_version
 
-        @property
-        def role_names(self):
-            return self._index.role_names
 
-        @property
-        def facet_metadata(self):
-            return self._index.facet_metadata
+@dataclass
+class _LockedHeadStore(_FakeHeadStore):
+    """`_FakeHeadStore` whose compare-and-set runs under one lock, as the database row's does."""
 
-        def filter_candidates(self, **kwargs):
-            order.append("probe")
-            return self._index.filter_candidates(**kwargs)
+    _lock: threading.Lock = field(default_factory=threading.Lock)
 
-        def series_counts(self, **kwargs):
-            return self._index.series_counts(**kwargs)
+    def advance_head(self, **kwargs) -> SubjectHead | None:
+        with self._lock:
+            return super().advance_head(**kwargs)
 
-    snapshot = RevisionSnapshot(
-        graph_revision="rev-1", source_revisions=(SourceRevision(source="oecd", revision="42"),)
+
+def test_a_pinned_definition_materialises_and_refreshes_inside_its_provenance_scope() -> None:
+    """The mint's scope pins `facets.provenance`, so the materialisation's SDMX fetch and,
+    past the recheck window, the head's fingerprint read both run with the catalogue scoped to
+    that provenance (`adapter.pinned_provenance_scope`)."""
+    fetch_scopes: list[frozenset[str] | None] = []
+    refresh_scopes: list[frozenset[str] | None] = []
+
+    def _respond(request: httpx.Request) -> httpx.Response:
+        fetch_scopes.append(current_source_scope())
+        return httpx.Response(
+            200,
+            text=_CSV_BODY,
+            headers={"content-type": "application/vnd.sdmx.data+csv;version=2.0.0"},
+        )
+
+    class _ScopeRecordingGraph(FakeMintGraphReader):
+        def node_arcs_many(self, *args, **kwargs):
+            refresh_scopes.append(current_source_scope())
+            return super().node_arcs_many(*args, **kwargs)
+
+    head_store = _FakeHeadStore()
+    store = FakeDatasetStore()
+    version_store = FakeVersionRecordDatasetStore()
+    client = make_client(
+        registry=LiveSpecRegistry(store=store),
+        spec_reader=LiveSpecReader(store=store),
+        graph=_ScopeRecordingGraph(
+            arcs={_STAT_VAR: _ARCS},
+            labels={"OECD_DAC2A": "OECD DAC2a", _RECIPIENT: "Kenya"},
+        ),
+        sdmx=SdmxClient(base_url=_BASE_URL, transport=httpx.MockTransport(_respond)),
+        artifact_store=_InventoryRecordingArtifactStore(
+            inventory=LiveArtifactInventory(store=version_store)
+        ),
+        version_writer=LiveVersionRecordWriter(store=version_store),
+        snapshot_reader=LiveSnapshotReader(store=version_store),
+        head_writer=head_store,
+        reference_writer=FakeArtifactReferenceWriter(),
+        coverage=_MutableCoverageService(_coverage_index()),
     )
-    request = MaterialisationRequest(
-        stat_var=_STAT_VAR_REF,
-        role_bindings={"recipient": [_RECIPIENT]},
-        declared_roles=("recipient",),
-        facet_bindings={},
-        window=RequestedWindow(kind="all"),
-    )
-
-    priming = prime_head_signal(
-        (request,),
-        subject_id="spec_test",
-        graph=_graph(),
-        sdmx=SdmxClient(base_url=_BASE_URL, transport=httpx.MockTransport(_SdmxProbeHook())),
-        head_store=_FakeHeadStore(),
-        materialise_wait_seconds=30,
-        revision_reader=_OrderRecordingRevisionReader(snapshot),
-        coverage=_OrderMarkingCoverage(_coverage_index()),
-    )
-
-    assert priming.probe.revision == snapshot
-    assert order == ["revision", "probe"]
-
-
-def test_resolve_currency_probe_carries_the_revision_readers_snapshot(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """`_resolve_currency` passes its revision reader to the facet probe before rematerialisation."""
-    recorded: list[RevisionReader | None] = []
-    real_probe = definition_door.probe_collection_facets
-
-    def _recording_probe(requests, *, graph, revision_reader=None, **kwargs):
-        recorded.append(revision_reader)
-        return real_probe(requests, graph=graph, revision_reader=revision_reader, **kwargs)
-
-    monkeypatch.setattr(definition_door, "probe_collection_facets", _recording_probe)
-
-    revision_reader = SentinelRevisionReader()
-    client = _client(graph=_graph(), revision_reader=revision_reader)
-
     minted = client.post("/api/datasets", json=_MINT_BODY)
     assert minted.status_code == 200, minted.text
     spec_id = minted.json()["definition"]["spec_id"]
+    head_store.age_head(spec_id, age=_PAST_RECHECK_INTERVAL)
+    refresh_scopes.clear()
 
-    # The default null head writer returns no head, so each GET reaches the probe.
     got = client.get(f"/api/datasets/{spec_id}?bundle=false")
 
     assert got.status_code == 200, got.text
-    assert recorded and recorded[-1] is revision_reader
+    assert got.json()["trace"]["served_from"] == "head"
+    pinned = frozenset({"OECD_DAC2A"})
+    assert fetch_scopes and set(fetch_scopes) == {pinned}
+    assert refresh_scopes and set(refresh_scopes) == {pinned}

@@ -49,7 +49,10 @@ from search.engine.region.convertibility import (
     decide_part_unit,
     elected_unit_refs,
 )
-from search.engine.region.resubmit_request import _source_dcids_from_facets_provenance
+from search.engine.region.resubmit_request import (
+    _source_dcids_from_facets_provenance,
+    pinned_provenance_scope,
+)
 from search.engine.region.un_system import NO_LABELS, un_unavailable_warning
 from search.engine.retrieval.coverage import CoverageForm, answer_coverage
 from search.engine.retrieval.elected_dataset import published
@@ -723,7 +726,7 @@ def build_options_response(
     target: ResolvedOptionsTarget,
     *,
     graph: EngineGraphClient,
-    start_ms: int,
+    deadline: float,
     materialise_graph: GraphReader | None = None,
     materialise_sdmx: MaterialiseSdmxClient | None = None,
     coverage: CoverageSnapshot,
@@ -732,17 +735,19 @@ def build_options_response(
 
     `observationAbout` reads graph candidates; flow axes group the supplied
     coverage snapshot. `materialise_sdmx` is used only for request-form unit
-    conversion. `start_ms` is the route-entry time, so diagnostics include
-    target resolution; it also sets the absolute request deadline. The
-    observationAbout coverage probe uses that deadline. The supplied snapshot
-    is shared across both branches. Warnings report coverage-probe failures and UN
-    System Data Commons reads that could not serve (`un_system_unavailable`).
-    `timing_by_step` is empty.
+    conversion. `deadline` is the absolute monotonic deadline the
+    observationAbout reads honour. The supplied snapshot is shared across both
+    branches. Warnings report coverage-probe failures and UN System Data
+    Commons reads that could not serve (`un_system_unavailable`). The target's
+    provenance pin scopes every read (`resubmit_request.pinned_provenance_scope`), so a
+    base pin answers at a place a DFO table also holds. The diagnostics time this call
+    alone; `timing_by_step` is empty.
     """
+    start_ms = now_ms()
     include_coverage = bool(req.include_coverage)
-    deadline = start_ms / 1000.0 + settings().request_timeout_s
 
-    with recording_un_blocked_places() as un_blocked:
+    # A provenance pin scopes every read before DFO precedence, as resubmit reads it.
+    with recording_un_blocked_places() as un_blocked, pinned_provenance_scope(target.facets):
         if req.for_.role == "observationAbout":
             options, probe_warning = _observation_about_options_set(
                 req,

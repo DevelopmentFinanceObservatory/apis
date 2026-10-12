@@ -21,6 +21,7 @@ from search.engine.shape import STANDARD_SHAPE_LABEL
 from search.models import Axis
 
 if TYPE_CHECKING:
+    from code_index.types import CodeRow
     from search.engine.qualifier_match import QualifierMatch, QualifierTie
     from search.engine.shape import ShapeDraft, SlotKeyDraft
 
@@ -158,21 +159,6 @@ class _UniversalBindOutput(BaseModel):
     )
 
 
-class _SourceSlotBindOutput(_UniversalBindOutput):
-    """LLM output schema for a choose+bind call whose menu offers a source slot
-    (`ShapeDraft.source_options`): the universal output and the dropped phrase the source
-    binding consumed. A call with no source slot keeps `_UniversalBindOutput`."""
-
-    source_phrase: str | None = Field(
-        default=None,
-        description=(
-            "When the chosen shape's source slot is bound kind=value, the DROPPED "
-            "QUALIFIERS phrase that names or excludes that table, copied verbatim; null "
-            "when the slot is unbound or no DROPPED QUALIFIERS phrase names the table."
-        ),
-    )
-
-
 _UNIVERSAL_BIND_SYSTEM_PROMPT: str = """\
 You are a shape-selection and slot-binding agent for a statistical-indicator search engine built on a knowledge graph of StatisticalVariables (SVs).
 
@@ -305,34 +291,13 @@ _MAX_SAMPLE_DCIDS_SHOWN = 5
 # Render an alternatives group only when at least two rows survive filtering.
 _MIN_TIE_ROWS_TO_RENDER = 2
 
-# The source slot's spelling of a table the part excludes: the prefix and the table's dcid.
-EXCLUDED_SOURCE_PREFIX = "excluded:"
-
-# The rules for the source slot, rendered in the user prompt only when a shape offers the
-# slot, so a prompt without it is unchanged.
-_SOURCE_SLOT_RULES = (
-    "SOURCE SLOT (a shape that lists a constraint slot with axis=source is published by "
-    "several tables; the slot names the table its figures come from, its taxonomy lists "
-    f"each table's dcid and an {EXCLUDED_SOURCE_PREFIX}<dcid> form, and its labels line "
-    "gives each table's name and what it measures):",
-    "  - Bind it kind=value to a table's dcid when the variable phrase or a DROPPED "
-    "QUALIFIERS phrase names that table: its name, an abbreviation, a translation, or a "
-    "description of what it measures.",
-    f"  - Bind it kind=value to the {EXCLUDED_SOURCE_PREFIX}<dcid> form when a phrase asks "
-    "to leave that table out.",
-    "  - A donor, lender, foundation, agency or other organisation is not a table, even "
-    "when a table's name or description mentions one: leave the slot kind=unbound.",
-    "  - Bind it kind=unbound when no phrase names a table.",
-    "  - When a DROPPED QUALIFIERS phrase names or excludes the table you bind, copy that "
-    "phrase verbatim into source_phrase.",
-)
-
 
 def _display_taxonomy_values(shape: ShapeDraft, values: list[str]) -> list[str]:
     """Return taxonomy dcids for a slot's prompt line.
 
     Recall-sourced values are already bounded. Index-sourced values roll up to covering
-    roots, whose subtrees remain bindable, then both paths use the 20-value prompt cap.
+    roots, whose subtrees remain bindable through the codes a candidate menu offers and
+    the forced bindings, then both paths use the 20-value prompt cap.
     Values stay bare dcids: a ``(label)`` suffix gets copied into ``value_dcids`` and never
     matches a StatVar arc. ``_taxonomy_labels_line`` supplies labels on a separate line.
     """
@@ -360,27 +325,6 @@ def _taxonomy_labels_line(shape: ShapeDraft, displayed_values: list[str]) -> str
     return "labels: " + "; ".join(parts) if parts else None
 
 
-def _source_slot_values(shape: ShapeDraft) -> list[str]:
-    """The values the shape's source slot offers: each table's dcid, then each table's
-    excluded form. Empty when the shape offers no source slot (`ShapeDraft.source_options`)."""
-    options = list(shape.source_options)
-    return [*options, *(f"{EXCLUDED_SOURCE_PREFIX}{dataset}" for dataset in options)]
-
-
-def _source_slot_lines(shape: ShapeDraft) -> list[str]:
-    """The prompt lines of the shape's source slot, with each table's declared label and
-    description (`DatasetDeclaration`) on the labels line."""
-    datasets = [get_index().datasets[dataset] for dataset in shape.source_options]
-    labels = [f"{d.provenance} = {d.label}: {d.description}" for d in datasets] + [
-        f"{EXCLUDED_SOURCE_PREFIX}{d.provenance} = every table except {d.label}" for d in datasets
-    ]
-    return [
-        "    axis=source, property_dcid=provenance (data source)",
-        f"      taxonomy: {_source_slot_values(shape)}",
-        "      labels: " + "; ".join(labels),
-    ]
-
-
 def _listed_slots(shape: ShapeDraft, withheld_measure_axes: frozenset[str]) -> list[SlotKeyDraft]:
     """The constraint slots the prompt lists for `shape`. Only an index-sourced shape has an
     election to settle a withheld axis; a recall-sourced shape binds it here like any other
@@ -396,11 +340,43 @@ def _listed_slots(shape: ShapeDraft, withheld_measure_axes: frozenset[str]) -> l
 
 
 @dataclass(frozen=True, slots=True)
+class CandidateMenu:
+    """A phrase of the variable that no code reads in full, and the codes a shape's prompt
+    block offers for it (`phase_rank_bind._candidate_menus`).
+
+    `text` is the phrase, `start` and `end` its offsets in the variable. `candidates`
+    holds the codes the shape's family holds, in menu order
+    (`code_index.query.CodeIndex.candidate_codes`). `hits` holds those of them that share
+    a word of the phrase the shape's own reading leaves unread. Only a choice of a hit,
+    or of a descendant of one, reads the phrase (`phase_rank_bind._menu_choices`).
+    """
+
+    text: str
+    start: int
+    end: int
+    candidates: tuple[CodeRow, ...]
+    hits: tuple[str, ...] = ()
+
+    def holds(self, match: QualifierMatch) -> bool:
+        """Whether `match` is a term inside the phrase, of a code system a candidate
+        names. The phrase's menu decides that code system."""
+        return (
+            match.start is not None
+            and match.end is not None
+            and self.start <= match.start
+            and match.end <= self.end
+            and any(row.code_system == match.code_system for row in self.candidates)
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class _QualifierMenu:
-    """One shape's own fixed values and tie groups, as its prompt block lists them."""
+    """One shape's own fixed values, tie groups and candidate menus, as its prompt block
+    lists them."""
 
     fixed: tuple[QualifierMatch, ...]
     groups: tuple[tuple[QualifierMatch, ...], ...]
+    candidates: tuple[tuple[str, tuple[CodeRow, ...]], ...] = ()
 
 
 def _qualifier_menu(
@@ -408,22 +384,38 @@ def _qualifier_menu(
     matches: tuple[QualifierMatch, ...],
     ties: tuple[QualifierTie, ...],
     withheld_measure_axes: frozenset[str],
+    candidate_menus: tuple[CandidateMenu, ...] = (),
 ) -> _QualifierMenu:
     """`shape`'s own admitted `matches` and `ties` on the constraint slots it lists, less the
-    withheld measure axes. A tie group left with fewer than two rows has nothing to elect
-    between and is dropped."""
+    withheld measure axes, and its candidate menus' codes on those slots. A tie group left
+    with fewer than two rows has nothing to elect between and is dropped, as is a menu left
+    with no code. A match a menu holds (`CandidateMenu.holds`) is no fixed value, since
+    the menu reads the phrase around it."""
     listed = {
         s.property_dcid for s in _listed_slots(shape, withheld_measure_axes)
     } - withheld_measure_axes
     groups = (tuple(row for row in tie.rows if row.code_system in listed) for tie in ties)
+    menus = (
+        (menu.text, tuple(row for row in menu.candidates if row.code_system in listed))
+        for menu in candidate_menus
+    )
     return _QualifierMenu(
-        fixed=tuple(m for m in matches if m.code_system in listed),
+        fixed=tuple(
+            m
+            for m in matches
+            if m.code_system in listed and not any(menu.holds(m) for menu in candidate_menus)
+        ),
         groups=tuple(rows for rows in groups if len(rows) >= _MIN_TIE_ROWS_TO_RENDER),
+        candidates=tuple((text, rows) for text, rows in menus if rows),
     )
 
 
 def _qualifier_row(match: QualifierMatch) -> str:
     return f"property_dcid={match.code_system}, value_dcid={match.code_dcid} ({match.label})"
+
+
+def _candidate_row(row: CodeRow) -> str:
+    return f"property_dcid={row.code_system}, value_dcid={row.dcid} ({row.label})"
 
 
 def _build_universal_bind_prompt(
@@ -434,6 +426,7 @@ def _build_universal_bind_prompt(
     admitted_ties: Sequence[tuple[QualifierTie, ...]] = (),
     withheld_measure_axes: frozenset[str] = frozenset(),
     dropped_qualifier_phrases: tuple[str, ...] = (),
+    candidate_menus: Sequence[tuple[CandidateMenu, ...]] = (),
 ) -> str:
     """Build the user prompt for the choose-and-bind call.
 
@@ -460,13 +453,16 @@ def _build_universal_bind_prompt(
     identity, which names the dataset, binds that value (`canonical_pin_bindings`). A part
     that names no dataset is offered every slot, and a value the model binds stays bound.
 
-    A shape several declared tables publish (`ShapeDraft.source_options`) lists a source
-    slot after its constraint slots, and the SOURCE SLOT rules precede the shapes. A
-    prompt with no such shape holds neither.
+    ``candidate_menus`` holds each shape's candidate menus (`CandidateMenu`), in `shapes`
+    order. A shape lists each menu's codes under its phrase as ``candidate_menus``, every
+    code of it whatever `_MAX_TAXONOMY_VALUES_SHOWN` caps, and a match inside the phrase
+    on a code system the menu names leaves the shape's fixed context: the model reads the
+    phrase from the menu, at any depth. The CANDIDATE MENUS rule precedes the shapes only
+    when a shape lists a menu, so a prompt with none is unchanged.
 
-    Empty qualifier, tie, withheld-axis, and dropped-phrase inputs leave recall-sourced
-    prompts unchanged. Index-sourced slots show labels
-    on a separate line. Slots named by fixed context or a tie use no label line.
+    Empty qualifier, tie, withheld-axis, dropped-phrase and menu inputs leave
+    recall-sourced prompts unchanged. Index-sourced slots show labels on a separate line.
+    Slots named by fixed context, a tie or a candidate menu use no label line.
     """
     menus = [
         _qualifier_menu(
@@ -474,6 +470,7 @@ def _build_universal_bind_prompt(
             admitted_qualifiers[idx] if admitted_qualifiers else (),
             admitted_ties[idx] if admitted_ties else (),
             withheld_measure_axes,
+            candidate_menus[idx] if candidate_menus else (),
         )
         for idx, shape in enumerate(shapes)
     ]
@@ -495,6 +492,17 @@ def _build_universal_bind_prompt(
             "exactly one row of each group kind=value and no other row of it."
         )
         lines.append("")
+    if any(menu.candidates for menu in menus):
+        lines.append(
+            "CANDIDATE MENUS (a phrase of the variable phrase that no fixed value reads in "
+            "full, with the codes it may name at any depth -- if you choose a shape that "
+            "lists candidate_menus, bind each phrase to the code on its menu whose label "
+            "states what the phrase asks for, on that code's property_dcid: kind=value, or "
+            "kind=set with the fixed_context value or other phrase's code that shares its "
+            "slot; a menu code counts as offered taxonomy. When no code on a phrase's menu "
+            "states it, bind that slot as its taxonomy alone would let you)."
+        )
+        lines.append("")
     if dropped_qualifier_phrases:
         lines.append(
             "DROPPED QUALIFIERS (the query asked for these but no earlier stage could "
@@ -506,9 +514,6 @@ def _build_universal_bind_prompt(
             "shape's own constraint slots):"
         )
         lines.extend(f"  {phrase}" for phrase in dropped_qualifier_phrases)
-        lines.append("")
-    if any(shape.source_options for shape in shapes):
-        lines.extend(_SOURCE_SLOT_RULES)
         lines.append("")
     lines.append(f"CANDIDATE SHAPES ({len(shapes)} total):")
     lines.append("")
@@ -547,9 +552,11 @@ def _build_universal_bind_prompt(
         constraint_slots = _listed_slots(shape, withheld_measure_axes)
         # Slots named by the shape's fixed context or alternatives get no labels line (see
         # _taxonomy_labels_line).
-        tied_properties = {m.code_system for m in menu.fixed} | {
-            row.code_system for rows in menu.groups for row in rows
-        }
+        tied_properties = (
+            {m.code_system for m in menu.fixed}
+            | {row.code_system for rows in menu.groups for row in rows}
+            | {row.code_system for _text, rows in menu.candidates for row in rows}
+        )
         if constraint_slots:
             lines.append("  constraint_slots:")
             taxonomy = shape.slot_taxonomy or {}
@@ -572,12 +579,8 @@ def _build_universal_bind_prompt(
                 )
                 if labels_line:
                     lines.append(f"      {labels_line}")
-        elif not shape.source_options:
-            lines.append("  constraint_slots: (none)")
         else:
-            lines.append("  constraint_slots:")
-        if shape.source_options:
-            lines.extend(_source_slot_lines(shape))
+            lines.append("  constraint_slots: (none)")
         if menu.fixed:
             lines.append("  fixed_context:")
             lines.extend(f"    {_qualifier_row(match)}" for match in menu.fixed)
@@ -586,6 +589,11 @@ def _build_universal_bind_prompt(
             for number, rows in enumerate(menu.groups, start=1):
                 lines.append(f"    group {number}:")
                 lines.extend(f"      {_qualifier_row(row)}" for row in rows)
+        if menu.candidates:
+            lines.append("  candidate_menus:")
+            for text, rows in menu.candidates:
+                lines.append(f'    phrase "{text}":')
+                lines.extend(f"      {_candidate_row(row)}" for row in rows)
 
         sample = list(shape.sv_arc_facts or {})[:_MAX_SAMPLE_DCIDS_SHOWN]
         if sample:
@@ -604,21 +612,21 @@ async def bind_universal(
     admitted_ties: Sequence[tuple[QualifierTie, ...]] = (),
     withheld_measure_axes: frozenset[str] = frozenset(),
     dropped_qualifier_phrases: tuple[str, ...] = (),
+    candidate_menus: Sequence[tuple[CandidateMenu, ...]] = (),
     llm: SupportsLLM,
 ) -> tuple[_UniversalBindOutput, dict | None]:
     """Elect a shape and bind its slots from the ordered candidate shapes.
 
     Each shape must have a populated taxonomy. Admitted qualifiers and ties are each
-    shape's own, in `shapes` order, already checked against that shape. Withheld axes are omitted from the prompt. Dropped
+    shape's own, in `shapes` order, already checked against that shape, and so are its
+    candidate menus. Withheld axes are omitted from the prompt. Dropped
     phrases ask for ``unbound`` with ``requested_all`` evidence and a verbatim echo.
     The stage wrapper applies bind-specific thinking settings without changing the injected LLM.
     The prompt holds only the variable phrase, dropped-qualifier phrases, and graph-sourced
     text, never other raw user text.
 
     Returns the structured output and token usage, or ``None`` when usage is unavailable. A
-    source-axis draft comes back as the chosen shape's source slot offers it, else unbound
-    (`_offered_source_drafts`). A menu offering a source slot is answered as
-    `_SourceSlotBindOutput`, which also names the dropped phrase the slot consumed.
+    source-axis draft comes back unbound, whatever the model wrote (`_without_source_values`).
     """
     prompt = _build_universal_bind_prompt(
         variable,
@@ -627,82 +635,27 @@ async def bind_universal(
         admitted_ties=admitted_ties,
         withheld_measure_axes=withheld_measure_axes,
         dropped_qualifier_phrases=dropped_qualifier_phrases,
+        candidate_menus=candidate_menus,
     )
     output, usage = await generate_structured_async(
         for_stage(llm, "bind"),
         prompt=prompt,
         system=_UNIVERSAL_BIND_SYSTEM_PROMPT,
-        schema=(
-            _SourceSlotBindOutput
-            if any(shape.source_options for shape in shapes)
-            else _UniversalBindOutput
-        ),
+        schema=_UniversalBindOutput,
     )
-    chosen = (
-        shapes[output.chosen_shape_index] if 0 <= output.chosen_shape_index < len(shapes) else None
-    )
-    return output.model_copy(
-        update={"bindings": _offered_source_drafts(output.bindings, chosen)}
-    ), usage
+    return output.model_copy(update={"bindings": _without_source_values(output.bindings)}), usage
 
 
-def _offered_source_drafts(
-    bindings: list[SlotBindingDraft], shape: ShapeDraft | None
-) -> list[SlotBindingDraft]:
-    """Return the model's drafts with each source-axis draft that binds one value `shape`'s
-    source slot offers (`_source_slot_values`) kept as that value, and every other
-    source-axis draft unbound.
+def _without_source_values(bindings: list[SlotBindingDraft]) -> list[SlotBindingDraft]:
+    """Return the model's drafts with every source-axis draft unbound.
 
     A source-axis value binding names the dataset a family is elected from
-    (`retrieval.bound_values.shape_query`), so the model names one only from the slot.
-    Vetting reads the kept draft (`drafted_source`) and writes the binding the identity
-    carries.
+    (`retrieval.bound_values.shape_query`), and the prompt offers the model no source to
+    choose from. Only the engine sets one, so a value the model writes there is dropped.
     """
-    offered = frozenset(_source_slot_values(shape)) if shape is not None else frozenset()
-
-    def offered_draft(draft: SlotBindingDraft) -> SlotBindingDraft:
-        if (
-            draft.kind == "value"
-            and len(draft.value_dcids) == 1
-            and draft.value_dcids[0] in offered
-        ):
-            return SlotBindingDraft(
-                axis="source", property_dcid=None, kind="value", value_dcids=draft.value_dcids
-            )
-        return SlotBindingDraft(axis="source", property_dcid=draft.property_dcid, kind="unbound")
-
-    return [offered_draft(draft) if draft.axis == "source" else draft for draft in bindings]
-
-
-def _source_drafts(bindings: list[SlotBindingDraft]) -> tuple[list[str], list[str]]:
-    """The datasets the source-axis value drafts of `bindings` name, and the datasets their
-    `EXCLUDED_SOURCE_PREFIX` form excludes, each distinct and in draft order."""
-    values = [
-        draft.value_dcids[0]
+    return [
+        SlotBindingDraft(axis="source", property_dcid=draft.property_dcid, kind="unbound")
+        if draft.axis == "source" and draft.kind != "unbound"
+        else draft
         for draft in bindings
-        if draft.axis == "source" and draft.kind == "value" and len(draft.value_dcids) == 1
     ]
-    excluded = dict.fromkeys(
-        value.removeprefix(EXCLUDED_SOURCE_PREFIX)
-        for value in values
-        if value.startswith(EXCLUDED_SOURCE_PREFIX)
-    )
-    named = dict.fromkeys(value for value in values if not value.startswith(EXCLUDED_SOURCE_PREFIX))
-    return list(named), list(excluded)
-
-
-def drafted_source(bindings: list[SlotBindingDraft]) -> tuple[str | None, frozenset[str]]:
-    """The dataset the source slot's draft names, and the datasets its
-    `EXCLUDED_SOURCE_PREFIX` form excludes, read from source-axis value drafts. Drafts
-    naming two datasets name none, and vetting refuses them (`conflicting_sources`)."""
-    named, excluded = _source_drafts(bindings)
-    return (named[0] if len(named) == 1 else None), frozenset(excluded)
-
-
-def conflicting_sources(bindings: list[SlotBindingDraft]) -> tuple[str, ...]:
-    """The datasets the source-axis drafts of `bindings` contradict each other on, in draft
-    order: every dataset named when the drafts name two or more, and each dataset one
-    draft names and another excludes. Empty for drafts a part can follow."""
-    named, excluded = _source_drafts(bindings)
-    several = named if len(named) > 1 else []
-    return tuple(dict.fromkeys((*several, *(dataset for dataset in named if dataset in excluded))))

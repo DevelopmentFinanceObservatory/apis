@@ -95,6 +95,8 @@ class FakeRegistryState:
     spec_registry: dict[str, dict] = field(default_factory=dict)
     spec_definition: dict[tuple[str, int], dict] = field(default_factory=dict)
     identity_quarantine: list[dict] = field(default_factory=list)
+    # (posted_spec_id, served_spec_id) rows, oldest binding first.
+    spec_alias: list[tuple[str, str]] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -196,11 +198,37 @@ class FakeTransaction:
             return [{"1": 1}] if hit else []
 
         if "SELECT subject_id FROM datasets.identity_quarantine" in sql:
-            id_kind, *subject_ids = params
+            id_kind, *asked = params
+            # The statement names the asked ids twice: as subjects and as posted ids.
+            posted_ids = asked[: len(asked) // 2]
+            subject_ids = [
+                *posted_ids,
+                *(served for posted, served in s.spec_alias if posted in posted_ids),
+            ]
             return [
                 {"subject_id": row["subject_id"]}
                 for row in s.identity_quarantine
                 if row["id_kind"] == id_kind and row["subject_id"] in subject_ids
+            ]
+
+        if "SELECT 1 FROM datasets.spec_definition" in sql:
+            (spec_id,) = params
+            return [{"1": 1}] if any(key[0] == spec_id for key in s.spec_definition) else []
+
+        if "INSERT INTO datasets.spec_alias" in sql:
+            posted_spec_id, served_spec_id = params
+            # Both columns reference `spec_registry`.
+            assert posted_spec_id in s.spec_registry and served_spec_id in s.spec_registry
+            if (posted_spec_id, served_spec_id) not in s.spec_alias:
+                s.spec_alias.append((posted_spec_id, served_spec_id))
+            return []
+
+        if "SELECT served_spec_id FROM datasets.spec_alias" in sql:
+            (posted_spec_id,) = params
+            return [
+                {"served_spec_id": served}
+                for posted, served in reversed(s.spec_alias)
+                if posted == posted_spec_id
             ]
 
         raise AssertionError(f"FakeTransaction has no handler for statement: {sql!r}")

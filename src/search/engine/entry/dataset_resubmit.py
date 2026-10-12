@@ -205,6 +205,7 @@ def _placeholder_region(entry: ResubmitPlaceholderEntry, index: int) -> RegionRe
             warnings=(warning,),
             timing_by_step={},
             earliest_index=index,
+            separate=entry.separate,
         )
     assert entry.code is not None, (
         "ResubmitPlaceholderEntry's own validator requires code when status is unsupported"
@@ -217,6 +218,7 @@ def _placeholder_region(entry: ResubmitPlaceholderEntry, index: int) -> RegionRe
         warnings=(warning,),
         timing_by_step={},
         earliest_index=index,
+        separate=entry.separate,
         unsupported=Unsupported(
             code=entry.code,
             pointer="",
@@ -294,7 +296,12 @@ async def handle(
             # Stored before any trailing task launches, without its closures.
             if memo is not None and key is not None:
                 memo.store(key, region)
-        return dataclasses.replace(region, variable_text=entry.variable_text, earliest_index=index)
+        return dataclasses.replace(
+            region,
+            variable_text=entry.variable_text,
+            earliest_index=index,
+            separate=entry.separate,
+        )
 
     def _memo_hit(stored: RegionResult) -> RegionResult:
         """Return `stored` with this request's relaunch closures, built over its own conversion

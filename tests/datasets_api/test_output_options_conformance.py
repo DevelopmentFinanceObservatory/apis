@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import httpx
 
-from datasets_api.revision import SentinelRevisionReader
 from dc_sdmx import SdmxClient
 from materialise.graph import Facet
 from series_coverage.schema import FacetMetadata, RoleNames
@@ -204,7 +203,6 @@ def _client(
                 )
             ),
         ),
-        revision_reader=SentinelRevisionReader(),
         artifact_store=FakeArtifactStore(),
         snapshot_reader=FakeSnapshotReader(),
         reference_writer=FakeArtifactReferenceWriter(),

@@ -7,7 +7,6 @@ from __future__ import annotations
 import httpx
 
 from datasets_api.doors.mint_errors import classify_mint_exception
-from datasets_api.revision import SentinelRevisionReader
 from dc_sdmx import SdmxClient
 from materialise.graph import Facet, GraphDeadlineExceededError, GraphReadError
 from spec_registry import LiveSpecRegistry
@@ -111,6 +110,9 @@ class _DeadlineExceededGraphReader:
     def declares_facet_defaults(self) -> bool:
         return self._delegate.declares_facet_defaults()
 
+    def generation_stamp(self):
+        return self._delegate.generation_stamp()
+
     def default_facet_policy(self, *, stat_var: str, axis: str):
         return self._delegate.default_facet_policy(stat_var=stat_var, axis=axis)
 
@@ -149,7 +151,6 @@ def _client(*, graph, store: FakeDatasetStore):
         spec_reader=LiveSpecReader(store=store),
         graph=graph,
         sdmx=SdmxClient(base_url=_BASE_URL, transport=_sdmx_transport()),
-        revision_reader=SentinelRevisionReader(),
         artifact_store=FakeArtifactStore(),
         snapshot_reader=FakeSnapshotReader(),
         reference_writer=FakeArtifactReferenceWriter(),

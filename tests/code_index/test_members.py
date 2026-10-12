@@ -14,6 +14,7 @@ from code_index.members import (
     family_for_five_tuple,
     identity_family_query,
     index_covers_slot_keys,
+    listed_group,
 )
 from code_index.query import CodeIndex
 from code_index.types import IndexStamp, StatVarRow
@@ -381,3 +382,134 @@ def test_a_total_answers_beside_a_by_creditor_row_of_other_constraint_values(
     assert [row.dcid for row in family.rows] == expected
     assert family.role_keys == elected_keys
     assert not family.tied
+
+
+_FLOW_FIVE_TUPLE = FiveTuple(
+    population_type="FinancialFlow",
+    measured_property="amount",
+    stat_type="measuredValue",
+    measurement_qualifier="Nominal",
+)
+_NET_DISBURSEMENT = {"financialFlowType": "Disbursement", "nettingBasis": "Net"}
+_DEBTOR = ("financingRecipient",)
+_DEBTOR_AND_CREDITOR = ("financingProvider", "financingRecipient")
+# Two listed IDS-like rows of each role set, the second narrowed by a guarantee status, and
+# an index row of the same five-tuple the IDS slots cannot admit (it declares `crsPurpose`)
+# beside one they can.
+_LISTED_FAMILY: dict[str, tuple[tuple[str, ...], dict[str, str], bool]] = {
+    "Ids_Net": (_DEBTOR, _NET_DISBURSEMENT, True),
+    "Ids_Net_ByCreditor": (_DEBTOR_AND_CREDITOR, _NET_DISBURSEMENT, True),
+    "Ids_Net_Ppg": (_DEBTOR, {**_NET_DISBURSEMENT, "guaranteeStatus": "Ppg"}, True),
+    "Ids_Net_Ppg_ByCreditor": (
+        _DEBTOR_AND_CREDITOR,
+        {**_NET_DISBURSEMENT, "guaranteeStatus": "Ppg"},
+        True,
+    ),
+    "Crs_Net_Education": (_DEBTOR_AND_CREDITOR, {**_NET_DISBURSEMENT, "crsPurpose": "Edu"}, False),
+    "Crs_Net_Ppg": (_DEBTOR, {**_NET_DISBURSEMENT, "guaranteeStatus": "Ppg"}, False),
+}
+
+
+def _flow_row(dcid: str) -> StatVarRow:
+    roles, constraints, _listed = _LISTED_FAMILY[dcid]
+    return StatVarRow(
+        dcid=dcid,
+        population_type=_FLOW_FIVE_TUPLE.population_type,
+        measured_property=_FLOW_FIVE_TUPLE.measured_property,
+        stat_type=_FLOW_FIVE_TUPLE.stat_type,
+        measurement_qualifier=_FLOW_FIVE_TUPLE.measurement_qualifier,
+        measurement_denominator=None,
+        observation_properties=roles,
+        constraint_properties=constraints,
+        provenances=("provenance/Listed",) if _listed else ("provenance/Test",),
+    )
+
+
+def _listed_index(*listed: str) -> CodeIndex:
+    return CodeIndex(
+        stamp=_STAMP,
+        declarations=(),
+        codes=(),
+        statvars=[
+            _flow_row(dcid) for dcid, (*_, is_listed) in _LISTED_FAMILY.items() if not is_listed
+        ],
+        listed_statvars=[_flow_row(dcid) for dcid in listed],
+    )
+
+
+def _listed_family_reader() -> FakeMemberArcReader:
+    def _arcs(dcid: str) -> dict[str, tuple[str, ...]]:
+        roles, constraints, _listed = _LISTED_FAMILY[dcid]
+        return {
+            "typeOf": ("StatisticalVariable",),
+            "populationType": ("FinancialFlow",),
+            "measuredProperty": ("amount",),
+            "statType": ("measuredValue",),
+            "measurementQualifier": ("Nominal",),
+            "measurementDenominator": (),
+            "constraintProperties": tuple(constraints),
+            "observationProperties": roles,
+            **{prop: (value,) for prop, value in constraints.items()},
+        }
+
+    return FakeMemberArcReader(arcs={dcid: _arcs(dcid) for dcid in _LISTED_FAMILY})
+
+
+@pytest.mark.parametrize(
+    ("slots", "role_keys", "open_role_keys"),
+    [
+        ({"guaranteeStatus": ("unbound",)}, ("destination",), ()),
+        ({"guaranteeStatus": ("unbound",)}, ("origin", "destination"), ()),
+        ({"guaranteeStatus": ("unbound",)}, ("destination",), ("origin",)),
+        ({"guaranteeStatus": ("value", "Ppg")}, ("destination",), ()),
+        ({"guaranteeStatus": ("value", "Ppg")}, (), ()),
+    ],
+    ids=["total", "by-creditor", "open-creditor", "bound-guarantee", "no-roles"],
+)
+def test_a_listed_family_elects_the_walks_members_with_no_graph_read(
+    slots, role_keys, open_role_keys
+):
+    """The index's listed and exported rows of a five-tuple stand for every StatVar the walk
+    reads there, so the election over them is the walk's: same members, same family."""
+    index = _listed_index("Ids_Net", "Ids_Net_ByCreditor", "Ids_Net_Ppg", "Ids_Net_Ppg_ByCreditor")
+    full_slots: dict[str, SlotBinding] = {
+        "financialFlowType": ("value", "Disbursement"),
+        "nettingBasis": ("value", "Net"),
+        **slots,
+    }
+    query = FamilyQuery(
+        _FLOW_FIVE_TUPLE,
+        full_slots,
+        None,
+        role_keys=frozenset(role_keys),
+        open_role_keys=frozenset(open_role_keys),
+    )
+
+    listed = listed_group(index, query, member_cap=700)
+    walked = enumerate_members(
+        five_tuple=_FLOW_FIVE_TUPLE,
+        slots=full_slots,
+        graph=_listed_family_reader(),
+        role_keys=role_keys,
+        open_role_keys=open_role_keys,
+    )
+
+    assert listed is not None
+    assert listed.members == walked.members
+    assert set(listed.family) == set(walked.family)
+    assert listed.elected_open_role_keys == walked.elected_open_role_keys
+
+
+def test_a_family_with_no_listed_row_is_left_to_the_walk():
+    """A five-tuple with no listed row, and one whose listed rows the query admits none of,
+    return `None`, so the walk resolves them."""
+    slots: dict[str, SlotBinding] = {
+        "financialFlowType": ("value", "Disbursement"),
+        "nettingBasis": ("value", "Net"),
+        "guaranteeStatus": ("value", "Ppg"),
+    }
+    query = FamilyQuery(_FLOW_FIVE_TUPLE, slots, None, role_keys=frozenset({"destination"}))
+
+    assert listed_group(_listed_index(), query, member_cap=700) is None
+    assert listed_group(_listed_index("Ids_Net_ByCreditor"), query, member_cap=700) is None
+    assert listed_group(_listed_index("Ids_Net_Ppg"), query, member_cap=700) is not None

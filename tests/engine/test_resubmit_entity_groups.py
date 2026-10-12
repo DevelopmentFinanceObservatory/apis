@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from entity_resolution import Entity, Group
 from search.engine.bind import _UniversalBindOutput
 from search.engine.region import resolve_spec_resubmit, resolve_variable
+from search.engine.region.resubmit_request import resubmit_named_groups
 from search.engine.spec_id import build_spec_identity
 from search.models import (
     BaseIdentity,
@@ -25,7 +26,13 @@ from search.models import (
     ResubmitIdentityEntry,
     ResubmitIdentityPayload,
 )
-from tests.engine._base_identity import PERSON_COUNT_SHAPE, subject_entity
+from tests.engine._base_identity import (
+    DECLARING_SHAPE,
+    PERSON_COUNT_SHAPE,
+    destination_entity,
+    origin_entity,
+    subject_entity,
+)
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import offline_resolve, walk_options
@@ -324,3 +331,153 @@ def test_the_request_models_refuse_a_group_on_no_entity_role(model):
         model.model_validate(fields)
 
     assert {error["loc"][0] for error in exc_info.value.errors()} == {"entity_groups"}
+
+
+_AFRICA_MEMBERS = ("country/KEN", "country/NGA")
+_AFRICA_GRAPH = FakeGraph(
+    nodes={
+        "africa": {"label": "Africa"},
+        **{
+            dcid: {"label": dcid, "arcs": {"containedInPlace": {"nodes": [{"dcid": "africa"}]}}}
+            for dcid in _AFRICA_MEMBERS
+        },
+    }
+)
+
+
+_ROLE_ENTITIES = {
+    "destination": (DECLARING_SHAPE, destination_entity),
+    "origin": (DECLARING_SHAPE, origin_entity),
+    "observationAbout": (PERSON_COUNT_SHAPE, subject_entity),
+}
+
+
+@pytest.mark.parametrize(
+    ("role", "group", "role_entities", "kept"),
+    [
+        pytest.param(
+            "destination",
+            EntityGroup(dcid="africa", label="Africa"),
+            ("DACAfrica",),
+            ("africa", "Africa", "DACAfrica"),
+            id="a-region-bound-as-its-total",
+        ),
+        pytest.param(
+            "origin",
+            EntityGroup(label="G7"),
+            ("GroupOfSeven",),
+            (None, "G7", "GroupOfSeven"),
+            id="a-resolver-group-bound-as-its-total",
+        ),
+        pytest.param(
+            "origin",
+            EntityGroup(dcid="groups/G7", label="G7"),
+            ("GroupOfSeven",),
+            ("groups/G7", "G7", "GroupOfSeven"),
+            id="a-resolver-id-bound-as-its-total",
+        ),
+        pytest.param(
+            "destination",
+            EntityGroup(dcid="africa", label="Africa"),
+            _AFRICA_MEMBERS,
+            ("africa", "Africa", None),
+            id="a-region-bound-as-its-members",
+        ),
+        pytest.param(
+            "destination",
+            EntityGroup(dcid="africa", label="Africa"),
+            ("DACAmerica",),
+            None,
+            id="another-groups-total-bound",
+        ),
+        pytest.param(
+            "destination",
+            EntityGroup(label="Ally"),
+            ("DACAllRecipients",),
+            None,
+            id="a-total-holding-no-group-bound",
+        ),
+        pytest.param(
+            "destination",
+            EntityGroup(dcid="africa", label="Africa", total="DACAfrica"),
+            ("DACAfrica",),
+            ("africa", "Africa", "DACAfrica"),
+            id="a-posted-total",
+        ),
+        pytest.param(
+            "origin",
+            EntityGroup(label="G7", total="GroupOfSeven"),
+            ("GroupOfSeven",),
+            (None, "G7", "GroupOfSeven"),
+            id="a-posted-resolver-groups-total",
+        ),
+        pytest.param(
+            "destination",
+            EntityGroup(dcid="asia", label="Asia", total="DACAfrica"),
+            ("DACAfrica",),
+            None,
+            id="a-posted-total-of-another-group",
+        ),
+        pytest.param(
+            "destination",
+            EntityGroup(dcid="africa", label="Africa", total="DACAfrica"),
+            ("DACAfrica", "country/KEN"),
+            None,
+            id="a-posted-total-beside-a-place",
+        ),
+        pytest.param(
+            "destination",
+            EntityGroup(dcid="africa", label="Africa", total="DACAfrica"),
+            _AFRICA_MEMBERS,
+            None,
+            id="a-posted-total-the-role-does-not-bind",
+        ),
+        pytest.param(
+            "destination",
+            EntityGroup(label="Ally", total="DACAllRecipients"),
+            ("DACAllRecipients",),
+            None,
+            id="a-posted-total-holding-no-group",
+        ),
+        pytest.param(
+            "destination",
+            EntityGroup(label="G7"),
+            ("GroupOfSeven",),
+            None,
+            id="a-total-off-its-flow-axis",
+        ),
+        pytest.param(
+            "observationAbout",
+            EntityGroup(label="G7"),
+            ("GroupOfSeven",),
+            None,
+            id="a-total-on-a-subject-role",
+        ),
+        pytest.param(
+            "observationAbout",
+            EntityGroup(label="G7", total="GroupOfSeven"),
+            ("GroupOfSeven",),
+            None,
+            id="a-posted-total-on-a-subject-role",
+        ),
+    ],
+)
+def test_a_group_on_a_role_bound_to_its_total_is_read_as_that_total(
+    role, group, role_entities, kept
+):
+    """A role binding the one party the code index declares the group's total, on a flow axis
+    the code index publishes it on, keeps the group with that `total`, whether or not the
+    client posts it, so a resubmit of a served group's label and dcid alone gets it back. A
+    role binding members reads the group as its members, and a total of another group, or
+    none, drops it, as does a total on another axis or on a subject role (`Count_Person`
+    about the G7)."""
+    shape, entity = _ROLE_ENTITIES[role]
+    _spec_id, identity = build_spec_identity(
+        shape, [], entities=[entity(dcid) for dcid in role_entities], open_roles=()
+    )
+    payload = ResubmitIdentityPayload(identity=identity, entity_groups={role: group})
+
+    named = resubmit_named_groups(payload, graph=_AFRICA_GRAPH, deadline=None)
+
+    expected = [] if kept is None else [(*kept, frozenset(role_entities))]
+    assert [(g.dcid, g.label, g.total, g.member_dcids) for g in named] == expected

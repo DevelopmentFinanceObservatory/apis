@@ -78,6 +78,7 @@ def test_every_datasets_path_is_present(app: FastAPI):
         "/api/datasets/{id}/{content_version}",
         "/api/datasets/{id}/{content_version}/pin",
         "/api/datasets/{id}/{content_version}/observations",
+        "/api/datasets/{id}/{content_version}/files/{digest}",
         "/api/datasets/frames/publish",
         "/api/datasets/frames/refresh",
         "/api/datasets/frames/{spec_id}/{content_version}/recipe",
@@ -87,12 +88,15 @@ def test_every_datasets_path_is_present(app: FastAPI):
 
 
 def test_every_datasets_operation_declares_its_runtime_response(app: FastAPI):
+    """Each operation declares a 2xx response, or, for the download route, its 302 with the
+    `Location` header it answers."""
     schema = app.openapi()
     operations = list(_datasets_operations(schema))
     assert operations, "expected at least one datasets operation in the schema"
     for path, method, operation in operations:
         two_xx = list(_two_xx_responses(operation))
-        assert two_xx, f"{method.upper()} {path} declares no 2xx response"
+        redirect = operation["responses"].get("302", {}).get("headers", {})
+        assert two_xx or "Location" in redirect, f"{method.upper()} {path} declares no success"
 
 
 def test_every_datasets_2xx_response_carries_a_non_empty_schema(app: FastAPI):

@@ -72,6 +72,7 @@ from search.engine.retrieval.retrieve import (
 from search.engine.retrieval.role_resolve import role_members_served
 from search.engine.role_text import DoorRole
 from search.engine.shape import ShapeDraft, is_role_bearing, role_names_by_axis
+from search.engine.source_scope import SourceScope
 from search.engine.unit.bind import BoundUnitRequest, RequestBasis
 from search.heading.departure_fact import DepartureFact
 from search.models import (
@@ -181,9 +182,9 @@ def _elected_stat_vars(
 ) -> list[GraphRef] | None:
     """Return confirmed StatVars from the materialise result, or `None`.
 
-    Only named-entity and role-incompatible terminals may opt into the
-    ShapeDraft's confirmed-member fallback. Labels use each member's `->name`
-    arc, falling back to its dcid.
+    Only role-incompatible terminals may opt into the ShapeDraft's
+    confirmed-member fallback. Labels use each member's `->name` arc, falling
+    back to its dcid.
     """
     sv_dcids: list[str] | None = None
     if isinstance(mat_result, (Materialised, NoDataDraft)):
@@ -346,7 +347,6 @@ class ResolveState:
     # The raw-text door's unit phrase is best effort: data that cannot convert answers
     # unconverted, with the phrase departing (`phase_shared.withdraw_typed_unit`).
     unit_text_best_effort: bool = False
-    source_text: str | None
     materialise_graph: GraphReader | None
     materialise_sdmx: MaterialiseSdmxClient | None
     rate_cache: RateTableCache | None = None
@@ -454,18 +454,20 @@ class ResolveState:
     # Normalised phrases matched in `variable` or `query_text`, plus tie phrases.
     # Excludes dropped-only phrases, whose warning ownership belongs to raw-text entry.
     variable_matched_qualifier_phrases: frozenset[str] = frozenset()
-    # The dataset the part names as its source and the datasets it excludes, the one place
-    # a part's datasets enter: shape candidacy (`phase_rank_bind._dataset_candidates`)
-    # reads both, vetting adds the bind menu's source slot here and restamps the menu
-    # under it (`phase_election._apply_source_slot`), then sets the named one to the
-    # elected shape's (`ShapeDraft.named_dataset`) and writes it into the bindings as the
-    # source binding. The parsed door names the dataset a part posts in
-    # `ParsedPart.provenance`. A part naming none answers from its family's default
-    # datasets (`CodeIndex.family_of`), from the one opt-in dataset publishing the shape it
-    # elects, or from the dataset the source slot names or leaves after its exclusions. A part naming or
-    # excluding one runs no UN second pass (`pipeline._fill_gap`).
-    named_dataset: str | None = None
-    excluded_datasets: frozenset[str] = frozenset()
+    # The provenances the part may answer from, compiled from its source mentions
+    # (`search.engine.source_scope`), or `None` when it names and excludes none. Shape
+    # candidacy (`phase_rank_bind._dataset_candidates`) and every election read it, and the
+    # read applies it through the bound catalogue (`pipeline.resolve_variable`).
+    scope: SourceScope | None = None
+    # Whether the part refused because its exclusions left out every reading the unscoped
+    # question reaches (`phase_rank_bind._phase_prune_and_rank`), or the elected reading's
+    # data at the places (`pipeline._excluded_from_the_place`). Our catalogue holds the
+    # measure and the part left its publishers out, so the UN pass, which fills gaps in our
+    # catalogue, does not run (`pipeline._second_pass_skip`).
+    scope_settled: bool = False
+    # Whether the part posted source mentions, so each answer's identity binds the
+    # provenances that served it (`spec_build.build_spec`'s `pin_served_provenance`).
+    pin_served_provenance: bool = False
     # Ambiguous qualifier matches across variable, single-variable query text, dropped
     # phrases and the sidecar, one list per vocabulary as `query_qualifier_matches`. Bind
     # narrows them to one value or alternatives.
@@ -509,6 +511,10 @@ class ResolveState:
     applied_dropped_qualifier_phrases: frozenset[str] = frozenset()
     # Qualifiers admitted against the capped shapes, then narrowed to the elected shape.
     admitted_qualifiers: tuple[QualifierMatch, ...] = ()
+    # The codes the bind model chose for the elected shape from a phrase's candidate menu
+    # that read that phrase, each located at it (`phase_rank_bind._menu_choices`). Vetting
+    # sets them.
+    menu_choices: tuple[QualifierMatch, ...] = ()
     # Bind assigns this before any reader; `cast(None)` avoids an invalid sentinel or Optional checks.
     bind_result: _UniversalBindOutput = field(default=cast(_UniversalBindOutput, None))
     # Shape selected by the bind call.
@@ -730,20 +736,14 @@ class ResolveState:
 
     def settled_dataset(self, candidate: _Candidate | None = None) -> str | None:
         """The dataset the part's run has settled on for `candidate`, else for the elected
-        shape: the one the part or its source slot names (`named_dataset`), else the one
-        the shape names (`ShapeDraft.named_dataset`), which is the opt-in dataset electing
-        it chose or the one the part's exclusions leave serving it
-        (`phase_election._name_served_dataset`). `None` when neither names one: the part
-        answers from its family's default datasets, or its exclusions leave the election
-        where it was. A dataset the part excludes is never the settled one.
-
-        Before bind elects a shape the answer is the dataset the part names. A candidate's
-        shape names its own dataset, since vetting stamps every shape the part is offered.
+        shape: the one the shape names (`ShapeDraft.named_dataset`), which is the dataset
+        the part's scope leaves serving it or the opt-in dataset electing it chose
+        (`phase_election._name_served_dataset`). `None` when it names none, and before
+        bind elects a shape. A candidate's shape names its own dataset, since vetting
+        stamps every shape the part is offered.
         """
         shape = self.shape_draft if candidate is None else candidate.shape
-        named = shape.named_dataset if isinstance(shape, ShapeDraft) else None
-        dataset = named if candidate is not None else self.named_dataset or named
-        return None if dataset in self.excluded_datasets else dataset
+        return shape.named_dataset if isinstance(shape, ShapeDraft) else None
 
     def no_data(
         self,
@@ -760,6 +760,7 @@ class ResolveState:
         role_not_admitted_entities: tuple[RoleNotAdmittedEntity, ...] = (),
         cause: Cause | None = None,
         unbound_qualifiers: tuple[ResolvedQualifier, ...] = (),
+        unbound_sources: tuple[ResolvedQualifier, ...] = (),
         unit_alternatives: tuple[UnitAlternative, ...] = (),
         candidate: _Candidate | None = None,
     ) -> RegionResult:
@@ -801,8 +802,7 @@ class ResolveState:
             elected_stat_vars=_elected_stat_vars(
                 _mat_result,
                 _shape,
-                allow_shape_draft_fallback=reason
-                in {"entity_not_resolved", "entity_ambiguous", "role_incompatible"},
+                allow_shape_draft_fallback=reason == "role_incompatible",
             ),
             llm_usage=llm_usage,
             unresolved_entity_names=unresolved_entity_names,
@@ -816,6 +816,7 @@ class ResolveState:
                 else None
             ),
             unbound_qualifiers=unbound_qualifiers,
+            unbound_sources=unbound_sources,
             unit_alternatives=unit_alternatives,
             no_data_role_axis=(
                 open_role_axis(_shape, _place.roles.resolved_entities)

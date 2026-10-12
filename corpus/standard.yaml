@@ -1376,9 +1376,6 @@
   tags:
     directional_flow: na
     conjunction: none
-  known_failure:
-    issue: 1156
-    checks: [disposition]
   expect:
     definite:
       measure:
@@ -2139,9 +2136,6 @@
   tags:
     directional_flow: na
     conjunction: none
-  known_failure:
-    issue: 1156
-    checks: [measure, request]
   expect:
     definite:
       measure:
@@ -2230,9 +2224,6 @@
   tags:
     directional_flow: na
     conjunction: none
-  known_failure:
-    issue: 1156
-    checks: [request]
   expect:
     definite:
       measure: {family: dac2a.oda_gross_received}
@@ -2259,9 +2250,6 @@
   tags:
     directional_flow: na
     conjunction: none
-  known_failure:
-    issue: 1156
-    checks: [measure]
   expect:
     definite:
       measure:
@@ -2287,7 +2275,7 @@
     conjunction: none
   known_failure:
     issue: 1156
-    checks: [measure, operations]
+    checks: [operations]
   expect:
     definite:
       measure:
@@ -2866,9 +2854,6 @@
   tags:
     directional_flow: na
     conjunction: none
-  known_failure:
-    issue: 1156
-    checks: [disposition]
   expect:
     definite:
       measure:

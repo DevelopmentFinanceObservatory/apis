@@ -113,8 +113,12 @@ def _resolve(
         monkeypatch,
         rows,
         role_names={role_bearing._SV_DCID: RoleNames(donor=None, recipient="debtor")},
+        # Every DFO import states `P1Y`; a coverage facet stating no period is a cadence of
+        # its own (`materialise.facets.cadences_by_member`).
         facet_metadata={
-            facet_id: FacetMetadata(provenance_id=_BASE, measurement_method=method)
+            facet_id: FacetMetadata(
+                provenance_id=_BASE, measurement_method=method, observation_period="P1Y"
+            )
             for facets in _FACETS.values()
             for facet_id, _years, method in facets
         },
@@ -414,7 +418,7 @@ def test_a_windowed_discovered_pair_dates_and_cites_the_facet_materialise_serves
         request,
         [f for f in series.candidates if request.candidate_filter(f)],
         graph=FakeGraphReader(),
-    )
+    ).selections
 
     assert selection["provenance"].dispatch_facet_id == "f-short"
     assert result.coverage.dimensions[1] == BreadthDim(label="sources", count=1)

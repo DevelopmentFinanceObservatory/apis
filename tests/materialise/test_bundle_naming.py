@@ -91,6 +91,12 @@ def test_file_names_follow_the_dataset_and_card_patterns():
     assert bare_file_name(
         slug=slug, prepared=prepared, tag=tag, extension="parquet", kind="series-statistics"
     ) == ("dfo_oecd-creditor-reporting-system_2026-10-04_series-statistics_5c9dfd.parquet")
+    assert bare_file_name(
+        slug=slug, prepared=prepared, tag=tag, extension="csv", shape="pivot-9c1fe3"
+    ) == ("dfo_oecd-creditor-reporting-system_2026-10-04_pivot-9c1fe3_5c9dfd.csv")
+    assert zip_file_name(
+        slug=slug, prepared=prepared, format="csv", tag=tag, shape="pivot-9c1fe3"
+    ) == ("dfo_oecd-creditor-reporting-system_2026-10-04_csv_pivot-9c1fe3_5c9dfd.zip")
     card = card_slug("ODA from Germany to Nigeria")
     assert zip_file_name(slug=card, prepared=prepared, format="xlsx", tag=revision_tag(3)) == (
         "dfo_oda-from-germany-to-nigeria_2026-10-04_xlsx_r3.zip"

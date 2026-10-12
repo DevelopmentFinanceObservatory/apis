@@ -690,14 +690,19 @@ class TestUnitBoundSentenceEventSpecIdAgreement:
         assert sentence_ids[0] == final_id
 
 
-class TestSourceTextGate:
-    def test_source_text_is_unsupported_not_definite(self):
-        """Provenance binding is unsupported, so `source_text` yields a refusal."""
+class TestSourceText:
+    def test_source_text_reads_as_a_source_mention(self):
+        """The deprecated `source_text` folds into one included mention, which compiles
+        against the catalogue like any other: words naming no admitted source refuse
+        source_not_resolved, quoting them."""
         result = _resolve_parsed([_fertility_kenya_part(source_text="OECD")])
-        assert result.status == "unsupported"
-        assert result.parts[0].unsupported.code == "facet_binding_unsupported"
-        assert result.parts[0].unsupported.pointer == "/identity/facets/provenance"
-        assert "spec_id" not in result.parts[0].unsupported.definition
+        assert result.status == "no_data"
+        (part,) = result.parts
+        assert part.no_data.reason == "source_not_resolved"
+        assert part.no_data.source_terms == ["OECD"]
+        assert part.restatement is not None
+        assert [m.text for m in part.restatement.sources] == ["OECD"]
+        assert part.restatement.source_text is None
 
 
 class _CountingGraph(FakeGraph):
@@ -777,19 +782,15 @@ class TestUnitCompletionFromDeclaredSources:
 
 
 class TestUnitSourcePrecedence:
-    def test_unit_wins_but_warns_source_is_also_unbindable(self):
-        """The unit gate takes precedence, while a warning names the unevaluated source request.
-
-        PPP dollars parse but the request grammar cannot express them."""
+    def test_an_unresolved_source_refuses_before_the_unit_is_read(self):
+        """A part's sources compile before anything else resolves, so words naming no
+        source refuse ahead of a unit the request grammar cannot express (PPP dollars)."""
         result = _resolve_parsed(
             [_fertility_kenya_part(unit_text="PPP dollars", source_text="OECD")]
         )
-        assert result.status == "unsupported"
-        assert result.parts[0].unsupported.code == "unit_request_unsupported"
-        assert result.parts[0].unsupported.pointer == "/identity/facets/unit"
-        matching = [w for w in result.parts[0].warnings if w.code == "facet_binding_unsupported"]
-        assert len(matching) == 1
-        assert "source_text" in matching[0].message
+        assert result.status == "no_data"
+        assert result.parts[0].no_data.reason == "source_not_resolved"
+        assert not [w for w in result.parts[0].warnings if w.code == "facet_binding_unsupported"]
 
 
 class TestPartDedupe:
@@ -801,6 +802,23 @@ class TestPartDedupe:
         # ambiguity warning is possible (there is nothing to disambiguate).
         assert [p.variable_text for p in result.parts] == ["fertility rate"]
         assert result.diagnostics.warnings == []
+
+    @pytest.mark.parametrize("separate", [False, True])
+    def test_a_part_marked_separate_never_folds_into_a_same_shape_part(self, separate):
+        """Kenya's and Nigeria's fertility rate share a shape and fold into one spec, unless
+        the second part is marked separate. Then each answers its own spec, neither
+        carries binding_folded, and the second's restatement states the mark."""
+        kenya = _fertility_kenya_part()
+        nigeria = ParsedPart(
+            variable_text="fertility rate",
+            entities=[ParsedEntity(text="Nigeria")],
+            separate=separate,
+        )
+        first, second = _resolve_parsed([kenya, nigeria]).parts
+        assert [first.status, second.status] == ["definite", "definite"]
+        assert (first.spec.spec_id == second.spec.spec_id) is not separate
+        assert any(w.code == "binding_folded" for w in second.warnings) is not separate
+        assert second.restatement.separate is separate
 
     def test_parts_sharing_variable_text_but_differing_fields_stay_separate(self):
         """Different time windows keep same-variable parts separate and produce distinct specs."""
@@ -919,7 +937,7 @@ class TestUnsupportedConjunction:
         assert result.parts[1].status == "no_data"
         assert result.parts[1].no_data.reason == "rate_coverage_gap"
 
-    def test_every_unsupported_leg_reports_its_own_code(self):
+    def test_every_refused_leg_reports_its_own_code(self):
         result = _resolve_parsed(
             [
                 # PPP dollars parse but the request grammar cannot express
@@ -928,9 +946,9 @@ class TestUnsupportedConjunction:
                 ParsedPart(variable_text="population", source_text="OECD"),
             ]
         )
-        assert result.status == "unsupported"
+        assert result.status == "mixed"
         assert result.parts[0].unsupported.code == "unit_request_unsupported"
-        assert result.parts[1].unsupported.code == "facet_binding_unsupported"
+        assert result.parts[1].no_data.reason == "source_not_resolved"
 
 
 class TestEntityPreResolutionBounding:

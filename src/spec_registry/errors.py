@@ -5,16 +5,17 @@ Store failures omit raw driver messages.
 
 from __future__ import annotations
 
+from dfo_platform.problem import Refusal
+
 
 class SpecRegistryError(Exception):
     """Base for every spec_registry exception."""
 
 
-class SpecIdMismatch(SpecRegistryError):
-    """Supplied and recomputed ids differ.
+class SpecIdMismatch(SpecRegistryError, Refusal):
+    """Supplied and recomputed ids differ. Wire error is `spec_id_mismatch`."""
 
-    Wire error is `spec_id_mismatch` (422).
-    """
+    code = "spec_id_mismatch"
 
     def __init__(self, *, supplied: str, computed: str) -> None:
         super().__init__(
@@ -24,12 +25,14 @@ class SpecIdMismatch(SpecRegistryError):
         self.computed = computed
 
 
-class IdentityCollision(SpecRegistryError):
+class IdentityCollision(SpecRegistryError, Refusal):
     """Canonical bytes differ at `subject_id`.
 
-    Both versions are quarantined before this raises. Wire error is `identity_collision`
-    (500), fail-closed and non-retryable.
+    Both versions are quarantined before this raises. Wire error is `identity_collision`,
+    fail-closed and non-retryable.
     """
+
+    code = "identity_collision"
 
     def __init__(self, *, subject_id: str) -> None:
         super().__init__(
@@ -38,11 +41,13 @@ class IdentityCollision(SpecRegistryError):
         self.subject_id = subject_id
 
 
-class IdentityQuarantined(SpecRegistryError):
+class IdentityQuarantined(SpecRegistryError, Refusal):
     """`subject_id` is quarantined, so neither stored identity is authoritative.
 
-    Wire error is `identity_quarantined` (500), fail-closed and non-retryable.
+    Wire error is `identity_quarantined`, fail-closed and non-retryable.
     """
+
+    code = "identity_quarantined"
 
     def __init__(self, *, subject_id: str, id_kind: str) -> None:
         super().__init__(
@@ -61,8 +66,10 @@ class SpecRegistryStoreError(SpecRegistryError):
     """
 
 
-class SpecRegistryUnavailable(SpecRegistryError):
-    """Pool borrow timed out before the write began.
+class SpecRegistryUnavailable(SpecRegistryError, Refusal):
+    """Pool borrow timed out before the write began. Wire error is retryable
+    `service_unavailable`."""
 
-    Wire error is retryable `service_unavailable` (503).
-    """
+    code = "service_unavailable"
+    retryable = True
+    detail = "the registry write pool had no connection free right now; retry"

@@ -1,5 +1,6 @@
 """`GET /api/datasets/{id}/options` returns output options, version, and coverage without
-rendering artifacts or writing a version record. Registry and materialisation are real;
+rendering the requested artifact. A rebuild records the version and advances the head; a posted
+definition for an unregistered spec writes nothing. Registry and materialisation are real;
 graph, SDMX, and artifact storage are faked.
 """
 
@@ -10,16 +11,15 @@ import json
 import httpx
 import pytest
 
-from artifact_store import StoredArtifact, Tier
+from artifact_store import LiveArtifactInventory, StoredArtifact, Tier
 from dataset_store.snapshot import LiveSnapshotReader
-from datasets_api.revision import SentinelRevisionReader
 from datasets_api.schema import OptionsEnvelope as PublishedOptionsEnvelope
 from datasets_api.version import DATASETS_CAPABILITY_VERSION
 from datasets_api.version_store import LiveHeadStore, LiveVersionRecordWriter
 from datasets_api.versions import ArtifactRecord, VersionRecord
 from dc_sdmx import SdmxClient
 from materialise.graph import Facet
-from series_coverage.schema import FacetMetadata, RoleNames
+from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from spec_registry import LiveSpecRegistry
 from spec_registry.identity import recompute_identity
 from spec_registry.reader import LiveSpecReader
@@ -42,6 +42,7 @@ from .test_definition_door import (
     _unit_request_identity,
 )
 from .test_pin_door import FakeArtifactReferenceWriter
+from .test_snapshot_lifecycle import _InventoryRecordingArtifactStore
 
 _STAT_VAR = "MalariaGrantDisbursements"
 _STAT_VAR_REF = f"dcid:{_STAT_VAR}"
@@ -176,10 +177,10 @@ def _coverage_service() -> FakeCoverageService:
     """Builds 2020 coverage rows for the two entities in `_graph()`."""
     index = build_coverage_index(
         [
-            (_STAT_VAR, "facet1", "country/USA", "country/KEN", [2020]),
-            (_STAT_VAR, "facet1", "country/USA", "country/UGA", [2020]),
+            (_STAT_VAR, "facet1", ABSENT_ENTITY, "country/KEN", [2020]),
+            (_STAT_VAR, "facet1", ABSENT_ENTITY, "country/UGA", [2020]),
         ],
-        role_names={_STAT_VAR: RoleNames(donor="provider", recipient="recipient")},
+        role_names={_STAT_VAR: RoleNames(donor=None, recipient="recipient")},
         facet_metadata={
             "facet1": FacetMetadata(
                 provenance_id="OECD_DAC2A", measurement_method="GrantEquivalent", unit="USD"
@@ -197,14 +198,17 @@ def _client(
     version_writer=None,
     head_writer=None,
     snapshot_reader=None,
+    sdmx_transport: httpx.MockTransport | None = None,
 ):
     store = store if store is not None else FakeDatasetStore()
     return make_client(
         registry=LiveSpecRegistry(store=store),
         spec_reader=LiveSpecReader(store=store),
         graph=graph if graph is not None else _graph(),
-        sdmx=SdmxClient(base_url=_BASE_URL, transport=_sdmx_transport()),
-        revision_reader=SentinelRevisionReader(),
+        sdmx=SdmxClient(
+            base_url=_BASE_URL,
+            transport=sdmx_transport if sdmx_transport is not None else _sdmx_transport(),
+        ),
         artifact_store=artifact_store if artifact_store is not None else FakeArtifactStore(),
         version_writer=version_writer,
         head_writer=head_writer,
@@ -245,24 +249,46 @@ def test_definition_options_envelope_matches_a_minted_content_version():
     PublishedOptionsEnvelope.model_validate(envelope)
 
 
-def test_the_options_route_stores_no_artifact_and_writes_no_version_record():
-    store = FakeDatasetStore()
-    writer = _RecordingVersionRecordWriter()
-    artifact_store = _CountingArtifactStore()
-    client = _client(store=store, artifact_store=artifact_store, version_writer=writer)
+def test_a_stale_options_call_records_the_version_and_advances_the_head():
+    """An options call that rebuilds records the version and advances the head as a GET does,
+    so the next GET is a head hit that fetches nothing."""
+    version_store = FakeVersionRecordDatasetStore()
+    head_store = LiveHeadStore(store=version_store)
+    fetches: list[httpx.Request] = []
+    respond = _sdmx_transport().handler
+
+    def _counted(request: httpx.Request) -> httpx.Response:
+        fetches.append(request)
+        return respond(request)
+
+    client = _client(
+        artifact_store=_InventoryRecordingArtifactStore(
+            inventory=LiveArtifactInventory(store=version_store)
+        ),
+        version_writer=LiveVersionRecordWriter(store=version_store),
+        snapshot_reader=LiveSnapshotReader(store=version_store),
+        head_writer=head_store,
+        sdmx_transport=httpx.MockTransport(_counted),
+    )
     mint_resp = client.post("/api/datasets", json=_body())
     assert mint_resp.status_code == 200, mint_resp.text
     spec_id = mint_resp.json()["definition"]["spec_id"]
-    records_after_mint = len(writer.records)
-    puts_after_mint = artifact_store.put_calls
-    assert records_after_mint > 0
-    assert puts_after_mint > 0
+    with version_store.transaction() as tx:
+        tx.execute("DELETE FROM datasets.subject_head WHERE subject_id = %s", (spec_id,))
 
-    resp = client.get(f"/api/datasets/{spec_id}/options")
+    options = client.get(f"/api/datasets/{spec_id}/options")
 
-    assert resp.status_code == 200, resp.text
-    assert len(writer.records) == records_after_mint
-    assert artifact_store.put_calls == puts_after_mint
+    assert options.status_code == 200, options.text
+    assert options.json()["trace"]["served_from"] == "materialise"
+    head = head_store.read_head(spec_id)
+    assert head is not None
+    assert head.content_version == options.json()["content_version"]
+    fetches.clear()
+    got = client.get(f"/api/datasets/{spec_id}?bundle=false")
+    assert got.status_code == 200, got.text
+    assert got.json()["trace"]["served_from"] == "head"
+    assert got.json()["content_version"] == options.json()["content_version"]
+    assert fetches == []
 
 
 def _minted_manifest() -> dict:
@@ -455,7 +481,6 @@ def _currency_client(
         spec_reader=LiveSpecReader(store=store),
         graph=graph,
         sdmx=SdmxClient(base_url=_BASE_URL, transport=_currency_sdmx_transport(unit, rates=rates)),
-        revision_reader=SentinelRevisionReader(),
         artifact_store=FakeArtifactStore(),
         snapshot_reader=FakeSnapshotReader(),
         reference_writer=FakeArtifactReferenceWriter(),

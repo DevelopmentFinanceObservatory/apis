@@ -16,7 +16,6 @@ from ._group_support import (
     _BARE_B,
     _CSV_HEADER,
     _ENTITY,
-    _SNAPSHOT,
     _STAT_VAR_A,
     _STAT_VAR_B,
     _coverage_for,
@@ -24,7 +23,7 @@ from ._group_support import (
     _request,
     _sdmx_client_for,
 )
-from .conftest import FakeGraphReader, FakeRevisionReader, only_chunk
+from .conftest import FakeGraphReader, only_chunk
 
 _SHARED_FACET = Facet(
     facet_id="facetShared",
@@ -81,8 +80,7 @@ def test_group_frame_rows_carry_one_provenance_across_members():
         [request_a, request_b],
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,

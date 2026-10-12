@@ -6,7 +6,7 @@ import dataclasses
 import itertools
 import json
 import os
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -174,19 +174,22 @@ def build_test_artifact(
     stamp: str = "test-coverage-stamp",
     build_id: str | None = None,
     provenance: str | None = None,
+    variables: Collection[str] | None = None,
 ) -> str:
     """Writes one build (`manifest.json`, `coverage.parquet`,
     `role_names.json`, `facets.json`) into `build_dir(base, build_id)` and
     points `pointer_path(base)` at it, the layout a published artifact
     uses. `build_id` defaults to `<stamp>-build`. `provenance`, when set,
-    replaces every facet's provenance. Returns the `file://` URI a
+    replaces every facet's provenance. `variables`, when set, keeps only the
+    rows of those variables. Returns the `file://` URI a
     `COVERAGE_ARTIFACT_URI` should point at, `base` itself.
     """
     build_id = build_id or f"{stamp}-build"
     prefix = build_dir(base, build_id)
     prefix.mkdir(parents=True, exist_ok=True)
 
-    table, horizon = coverage_table(_ROWS)
+    rows = _ROWS if variables is None else [row for row in _ROWS if row[0] in variables]
+    table, horizon = coverage_table(rows)
     write_coverage_table(table, prefix / "coverage.parquet", horizon=horizon)
     write_role_names(ROLE_NAMES, prefix / "role_names.json")
     facet_metadata = (
@@ -203,7 +206,7 @@ def build_test_artifact(
         build_id=build_id,
         built_at="2026-09-24T00:00:00Z",
         source="tests.series_coverage.support.build_test_artifact",
-        row_counts={"rows": len(_ROWS)},
+        row_counts={"rows": len(rows)},
         files={
             "coverage": "coverage.parquet",
             "role_names": "role_names.json",

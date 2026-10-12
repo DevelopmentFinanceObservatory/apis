@@ -49,7 +49,6 @@ from materialise.place_scope import (
     scope_of_places,
 )
 from materialise.recipes import NonCurrencyUnitError
-from materialise.revision import RevisionReader, RevisionSnapshot
 from materialise.window import RequestedWindow
 from origin_catalogue import (
     UnUnserved,
@@ -63,6 +62,7 @@ from series_coverage.coverage_types import BoundRoles, Role
 from series_coverage.facets import FacetCandidate as _CoverageFacetCandidate
 from series_coverage.facets import facet_candidates as _coverage_facet_candidates
 from series_coverage.facets import rank_candidates as _coverage_rank_candidates
+from series_coverage.schema import RoleNames
 
 if TYPE_CHECKING:
     from materialise.pipeline import MaterialisationRequest
@@ -81,7 +81,7 @@ FACET_AXES: tuple[str, ...] = ("provenance", "measurementMethod", "unit")
 
 # `probe_collection_facets`' own batched `node_arcs_many` read on every
 # distinct provenance id its facet probe returned (`_probe_provenance_refresh`).
-_PROVENANCE_REFRESH_PROPERTIES: tuple[str, ...] = ("lastDataRefreshDate", "nextDataRefreshDate")
+_PROVENANCE_REFRESH_PROPERTIES: tuple[str, ...] = ("lastDataRefreshDate",)
 
 # Fallback when the graph declares no axis default. Its id and version travel with each selection.
 DEPLOYMENT_FACET_POLICY = "dfo/facet-policy/most-observations"
@@ -318,9 +318,10 @@ def _bound_roles_for_coverage(
 def _facet_from_coverage_candidate(candidate: _CoverageFacetCandidate) -> Facet:
     """Maps a coverage candidate's `n_obs`, `first_year` and `last_year` to facet count and
     year-grain dates, and its years with data (from the row year masks) to `dates`, so
-    `overlaps_window` tests the points a window holds. Coverage has no cadence, so
-    `observation_period` is `None`. Four-digit years sort lexically through 9999. This
-    artifact's horizon starts in 1960."""
+    `overlaps_window` tests the points a window holds. Its `observation_period` comes from the
+    coverage artifact's facet metadata, so `cadences_by_member` can tell a quarterly facet from
+    an annual one whatever the year-grain dates say. Four-digit years sort lexically through
+    9999. This artifact's horizon starts in 1960."""
     return Facet(
         dates=tuple(str(year) for year in candidate.years),
         facet_id=candidate.facet_id,
@@ -331,7 +332,8 @@ def _facet_from_coverage_candidate(candidate: _CoverageFacetCandidate) -> Facet:
         earliest_date=str(candidate.first_year),
         latest_date=str(candidate.last_year),
         scaling_factor=candidate.scaling_factor,
-        observation_period=None,
+        observation_period=candidate.observation_period,
+        dates_coarsened=True,
     )
 
 
@@ -347,8 +349,8 @@ def role_bearing_facets(
     and the `[first_year, last_year]` window, joined to facet metadata and ranked. A role
     `role_bindings` omits stays open. `obs_count` counts in-window observations, and a facet
     with none in the window is absent. Returns `None` when `stat_var` lacks `RoleNames`, and
-    `[]` when it is covered but no rows match. Materialisation probes with no window, and
-    search's facet options with the query's window, so both read one candidate set."""
+    `[]` when it is covered but no rows match. It describes the rows the current request can
+    serve; use ``role_bearing_facet_candidates`` to validate a replacement facet pin."""
     bound = _bound_roles_for_coverage(role_bindings, coverage=coverage, stat_var=stat_var)
     if bound is None:
         return None
@@ -361,6 +363,34 @@ def role_bearing_facets(
     )
 
 
+def role_bearing_facet_candidates(
+    *,
+    stat_var: str,
+    role_bindings: Mapping[str, EntityFilter],
+    coverage: CoverageIndex,
+    first_year: int | None = None,
+    last_year: int | None = None,
+) -> list[Facet] | None:
+    """Facet choices that can validate a role-bearing request.
+
+    Choices are globally catalogue-admitted at the bound role tuples, but do
+    not inherit a current provenance pin or per-series precedence.  A choice
+    can replace that pin, whereas ``role_bearing_facets`` describes rows the
+    current request can actually serve.
+    """
+    bound = _bound_roles_for_coverage(role_bindings, coverage=coverage, stat_var=stat_var)
+    if bound is None:
+        return None
+    return _coverage_facets(
+        stat_var=stat_var,
+        bound=bound,
+        coverage=coverage,
+        first_year=first_year,
+        last_year=last_year,
+        facet_candidates=True,
+    )
+
+
 def _coverage_facets(
     *,
     stat_var: str,
@@ -368,9 +398,13 @@ def _coverage_facets(
     coverage: CoverageIndex,
     first_year: int | None = None,
     last_year: int | None = None,
+    facet_candidates: bool = False,
 ) -> list[Facet]:
-    """`stat_var`'s coverage rows under `bound` and the window, as ranked facets."""
-    variable_coverage = coverage.filter_candidates(
+    """`stat_var`'s served rows or pin-validation candidates, as ranked facets."""
+    coverage_filter = (
+        coverage.filter_facet_candidates if facet_candidates else coverage.filter_candidates
+    )
+    variable_coverage = coverage_filter(
         variables=[stat_var], bound=bound, first_year=first_year, last_year=last_year
     )
     facet_coverage = variable_coverage[0].facets if variable_coverage else ()
@@ -397,9 +431,18 @@ def coverage_probe(*, stat_var: str, bound: BoundRoles, coverage: CoverageIndex)
             variable=stat_var, bound=bound, first_year=first, last_year=last
         )
 
+    admitted_pairs = coverage.admitted_pairs(variable=stat_var, bound=bound)
+    admission = (
+        CoverageAdmission(
+            pairs_by_facet=admitted_pairs,
+            role_names=coverage.role_names[stat_var],
+        )
+        if admitted_pairs is not None
+        else CoverageAdmission()
+    )
     return MemberProbe(
         candidates=tuple(_coverage_facets(stat_var=stat_var, bound=bound, coverage=coverage)),
-        admission=CoverageAdmission(),
+        admission=admission,
         breadth=breadth,
     )
 
@@ -453,8 +496,12 @@ class PlaceAdmission:
 @dataclass(frozen=True)
 class CoverageAdmission:
     """Admission for a role-bearing StatVar, whose candidates come from the coverage index.
-    The index holds DFO's data alone, which admission never withholds, so its rows serve
-    unmasked."""
+    The unscoped sentinel has ``pairs_by_facet=None`` and serves every row. A source-scoped
+    probe carries its admitted donor/recipient pairs per facet and the variable's graph role
+    names, so an SDMX response cannot serve another pair holding the same facet."""
+
+    pairs_by_facet: Mapping[str, frozenset[tuple[str, str]]] | None = None
+    role_names: RoleNames | None = None
 
 
 RowAdmission = PlaceAdmission | CoverageAdmission
@@ -502,7 +549,7 @@ def admitted_candidates(
     admitted = [c for c in candidates if candidate_filter(c)]
     if not admitted:
         raise FacetNotAvailableError(
-            "no probed facet satisfies the request's facet filter", pointer="/facets"
+            "no probed facet satisfies the request's facet filter", facet_pointer="/facets"
         )
     return admitted
 
@@ -707,7 +754,8 @@ def default_scope_of(members: Sequence[MemberProbe]) -> DefaultPlaceScope:
 
 def merge_facets(facets: Sequence[Facet]) -> Facet:
     """The first of `facets` with the others' points added: counts summed, date bounds
-    widened, and dated points concatenated in order. The merged dates are complete while
+    widened, dated points concatenated in order, and annual evidence held only when every
+    facet holds it (`Facet.reads_annual`). The merged dates are complete while
     each facet's dates account for its observations, so a facet read without dates leaves
     them incomplete. Metadata stays the first facet's.
 
@@ -727,6 +775,7 @@ def merge_facets(facets: Sequence[Facet]) -> Facet:
         dates_complete=all(
             _dates_account_for_points(f) if dates else f.dates_complete for f in facets
         ),
+        annual_evidence=all(f.reads_annual for f in facets),
     )
 
 
@@ -747,16 +796,12 @@ class CollectionFacetProbe:
     the probe adds it to the caller's `recording_un_blocked_places` record, so a probe made
     before that record opened still reports the places the UN refused.
 
-    `revision` is read before the first probe call so the caller's drift guard covers the
-    probe-to-generation gap. It is `None` without a reader.
-
-    `provenance_refresh` maps distinct candidate provenance ids to refresh dates from one
-    batched `node_arcs_many` call. It is empty when no candidate has an id. Currency checks
-    use these dates.
+    `provenance_refresh` maps distinct candidate provenance ids to their `lastDataRefreshDate`
+    from one batched `node_arcs_many` call. It is empty when no candidate has an id. A run that
+    reuses the probe takes its source tokens from it (`materialise.dependencies`).
     """
 
     members: tuple[MemberProbe, ...]
-    revision: RevisionSnapshot | None = None
     provenance_refresh: Mapping[str, ProvenanceRefresh] = field(default_factory=dict)
     un_unserved: UnUnserved = field(default_factory=UnUnserved)
 
@@ -778,19 +823,16 @@ def probe_collection_facets(
     availability: AvailabilityReader,
     settle: bool,
     coverage: CoverageIndex | None = None,
-    revision_reader: RevisionReader | None = None,
     deadline: float | None = None,
 ) -> CollectionFacetProbe:
-    """Probes a request group and returns its candidates, revision snapshot, and provenance
-    refresh dates. Reads `revision_reader` before any probe call. Then fetches distinct
-    provenance dates in one `node_arcs_many` call. That method has no `deadline` parameter.
-    Empty `requests` returns empty candidates and refresh dates without network calls.
-    For grouping and refusals, see `probe_collection_candidates`.
+    """Probes a request group and returns its candidates and provenance refresh dates. After the
+    probe it fetches distinct provenance dates in one `node_arcs_many` call. That method has no
+    `deadline` parameter. Empty `requests` returns empty candidates and refresh dates without
+    network calls. For grouping and refusals, see `probe_collection_candidates`.
 
     The probe runs under its own `recording_un_blocked_places` record and returns what that
     record held as `un_unserved`. A UN read that fails beside a read of our variables
     therefore joins `un_unserved` and leaves the UN members without candidates."""
-    revision = revision_reader.read() if revision_reader is not None else None
     with recording_un_blocked_places() as un_record:
         members = probe_collection_candidates(
             requests,
@@ -811,7 +853,6 @@ def probe_collection_facets(
     provenance_refresh = _probe_provenance_refresh(provenance_ids, graph=graph)
     return CollectionFacetProbe(
         members=members,
-        revision=revision,
         provenance_refresh=provenance_refresh,
         un_unserved=un_record.snapshot(),
     )
@@ -984,9 +1025,9 @@ def _probe_at_own_places(
 def _probe_provenance_refresh(
     provenance_ids: Sequence[str], *, graph: GraphReader
 ) -> dict[str, ProvenanceRefresh]:
-    """Fetches last and next refresh dates in one graph batch. A missing node or arcs yields
-    `ProvenanceRefresh(None, None)`, leaving currency checks with no date to compare. Empty
-    `provenance_ids` returns `{}` without a network call."""
+    """Fetches each provenance's `lastDataRefreshDate` in one graph batch. A missing node or
+    arc yields `ProvenanceRefresh(None)`, a source token with no date. Empty `provenance_ids`
+    returns `{}` without a network call."""
     if not provenance_ids:
         return {}
     arcs_by_id = graph.node_arcs_many(provenance_ids, properties=_PROVENANCE_REFRESH_PROPERTIES)
@@ -994,10 +1035,8 @@ def _probe_provenance_refresh(
     for provenance_id in provenance_ids:
         arcs = arcs_by_id.get(provenance_id)
         last_values = arcs.get("lastDataRefreshDate", ()) if arcs is not None else ()
-        next_values = arcs.get("nextDataRefreshDate", ()) if arcs is not None else ()
         refresh_by_id[provenance_id] = ProvenanceRefresh(
-            last_data_refresh_date=last_values[0] if last_values else None,
-            next_data_refresh_date=next_values[0] if next_values else None,
+            last_data_refresh_date=last_values[0] if last_values else None
         )
     return refresh_by_id
 
@@ -1259,9 +1298,10 @@ def served_facets(
     """The facets a preview for `stat_vars` under `window` serves from `candidates` when no
     axis is bound and the graph declares no default: the top of `rank_pool` over the
     dispatchable candidates, and every dispatchable candidate carrying the top's provenance,
-    measurement method and unit (`joint_dispatch_facet_ids` over the selections those values
-    form), since dispatch fetches each of them and a `latest` read keeps the latest period
-    across them. Empty when no candidate carries a `facet_id`, since only those dispatch.
+    measurement method and unit at the cadence `dispatch_cadence` decides
+    (`FacetElection.serves`), since dispatch fetches each of them and a `latest` read keeps
+    the latest period across them. Empty when no candidate carries a `facet_id`, since only
+    those dispatch.
 
     A top carrying no provenance serves too: unbound, `select_facet` refuses it, so the
     preview binds its provenance axis to the null ref (`FacetBinding(state="bound",
@@ -1270,9 +1310,25 @@ def served_facets(
     dispatchable = [c for c in candidates if c.facet_id is not None]
     if not dispatchable:
         return ()
+    stat_vars = tuple(stat_vars)
     top = rank_pool(dispatchable, stat_vars=stat_vars, window=window, breadth=breadth).ranked[0]
     refs = {axis: facet_axis_value(top, axis) for axis in FACET_AXES}
-    return tuple(c for c in dispatchable if _matches_refs(c, refs))
+    matching = [c for c in dispatchable if _matches_refs(c, refs)]
+    (cadence_of,) = cadences_by_member([dispatchable])
+    decided = dispatch_cadence(
+        matching,
+        member_matches=[matching],
+        cadence_of=[cadence_of],
+        stat_vars=stat_vars,
+        window=window,
+        breadth=breadth,
+    )
+    cadence = decided[1] if decided is not None else None
+    return tuple(
+        c
+        for c in matching
+        if c.facet_id is not None and at_cadence(c.facet_id, cadence=cadence, cadence_of=cadence_of)
+    )
 
 
 def dfo_precedence(stat_vars: Iterable[str], candidates: Sequence[Facet]) -> frozenset[str]:
@@ -1388,7 +1444,7 @@ def select_facet(
         alternatives, alternatives_truncated = _alternatives(dispatchable, axis, graph)
         raise FacetNotAvailableError(
             f"facet axis {axis!r}'s declared default {policy.resolved_ref!r} has no observations",
-            pointer=f"/facets/{axis}",
+            facet_pointer=f"/facets/{axis}",
             alternatives=alternatives,
             alternatives_truncated=alternatives_truncated,
         )
@@ -1398,7 +1454,7 @@ def select_facet(
         raise DefaultFacetUndefinedError(
             f"facet axis {axis!r} is unbound, no default policy is declared, and no "
             "probed candidate has any observations",
-            pointer=f"/facets/{axis}",
+            facet_pointer=f"/facets/{axis}",
         )
     declared = _declared_refs(policies, dispatchable, all_bindings, except_axis=axis)
     ranked_pool = rank_pool(
@@ -1411,7 +1467,7 @@ def select_facet(
             raise DefaultFacetUndefinedError(
                 "facet axis 'provenance' is unbound, no default policy is declared, and "
                 "the winning candidate carries no provenance",
-                pointer="/facets/provenance",
+                facet_pointer="/facets/provenance",
             )
         return _selection(
             axis,
@@ -1457,7 +1513,7 @@ def select_bound_facet(
     bound_to = repr(cut(ref)) if ref is not None else "no declared value"
     raise FacetNotAvailableError(
         f"facet axis {axis!r} bound to {bound_to}, which has no observations",
-        pointer=f"/facets/{axis}",
+        facet_pointer=f"/facets/{axis}",
         alternatives=alternatives,
         alternatives_truncated=alternatives_truncated,
     )
@@ -1498,7 +1554,7 @@ def _select_unit_request(
         raise FacetNotAvailableError(
             f"facet axis {axis!r} requests a unit conversion, but narrowing by the "
             "request's other bound axes leaves no probed candidate",
-            pointer=f"/facets/{axis}",
+            facet_pointer=f"/facets/{axis}",
             alternatives=alternatives,
             alternatives_truncated=alternatives_truncated,
         )
@@ -1634,7 +1690,7 @@ def _require_currency_native_unit(ref: str | None) -> None:
     raise NonCurrencyUnitError(
         f"unit request resolved to native unit {ref!r}, which is not a currency",
         unit=ref if ref is not None else "",
-        pointer="/facets/unit",
+        facet_pointer="/facets/unit",
     )
 
 
@@ -1679,20 +1735,232 @@ def _narrow_by_bound_axes(
     return _narrow_by_currency_native_request(viable, all_bindings)
 
 
-def joint_dispatch_facet_ids(
+def joint_matches(
     candidates: Sequence[Facet], selections: Mapping[str, FacetSelection]
-) -> tuple[str, ...]:
-    """Returns sorted unique ids for candidates matching every selection at once. Independent
-    per-axis witnesses can miss a candidate that matches all axes, excluding its rows before
-    post-fetch filtering. Only candidates with `facet_id` dispatch. An empty tuple signals no
-    joint match."""
+) -> list[Facet]:
+    """The candidates with a `facet_id` carrying every selected ref at once, in candidate
+    order. Independent per-axis witnesses can miss a candidate that matches all axes, so the
+    joint-coherence checks (`generation._select_member_facets`,
+    `group_facets._check_group_joint_coherence`) and dispatch read this set. Empty when no
+    candidate jointly matches."""
     refs = {axis: selection.ref for axis, selection in selections.items()}
-    matching_ids = {
-        candidate.facet_id
-        for candidate in candidates
-        if candidate.facet_id is not None and _matches_refs(candidate, refs)
+    return [c for c in candidates if c.facet_id is not None and _matches_refs(c, refs)]
+
+
+def joint_dispatch_facet_ids(
+    candidates: Sequence[Facet], election: FacetElection, *, member: int
+) -> tuple[str, ...]:
+    """Returns the sorted unique ids of the `joint_matches` of `election.selections` among
+    member `member`'s `candidates` that serve the election's cadence
+    (`FacetElection.serves`). An empty tuple signals no joint match at that cadence, and a
+    `None` cadence, an election with no joint match, dispatches nothing."""
+    return tuple(
+        sorted(
+            {
+                c.facet_id
+                for c in joint_matches(candidates, election.selections)
+                # `joint_matches` keeps only facets with an id; this narrows the type.
+                if c.facet_id is not None and election.serves(c.facet_id, member=member)
+            }
+        )
+    )
+
+
+@dataclass(frozen=True)
+class Cadence:
+    """The one observation period a dispatch serves (`cadences_by_member`): a stated or
+    inferred `observationPeriod` in `period`, or, for a facet id stating none without
+    bare-year evidence, that id in `facet_id`, so two such facets never share a cadence."""
+
+    period: str | None = None
+    facet_id: str | None = None
+
+
+@dataclass(frozen=True)
+class FacetElection:
+    """An election's selections, axis to `FacetSelection`, the cadence its dispatch serves
+    (`dispatch_cadence`), `None` when no candidate carries every selected ref, and each
+    member's cadence of every facet id it holds (`cadences_by_member`), in request order: one
+    map for a member's own election, one per member for a group's. Member selection
+    (`generation._select_member_facets`) and group selection
+    (`group_facets.select_group_facets`) return it, so every dispatch, preview and currency
+    signal reads one decision. `members` holds the indexes of the members the cadence was
+    counted for (`dispatch_cadence`), each holding a facet at it with a point in a range
+    window when any member's facet has one: a group member outside it serves nothing."""
+
+    selections: dict[str, FacetSelection]
+    cadence: Cadence | None
+    cadence_of: tuple[Mapping[str, Cadence], ...]
+    members: frozenset[int] = frozenset()
+
+    def serves(self, facet_id: str, *, member: int) -> bool:
+        """Whether member `member`'s facet `facet_id` dispatches at the election's cadence."""
+        return at_cadence(facet_id, cadence=self.cadence, cadence_of=self.cadence_of[member])
+
+
+def at_cadence(
+    facet_id: str, *, cadence: Cadence | None, cadence_of: Mapping[str, Cadence]
+) -> bool:
+    """Whether the facet `facet_id` is at `cadence` (`cadence_of`, one member's map from
+    `cadences_by_member`). A `None` cadence, a decision with no joint match, holds no facet."""
+    return cadence is not None and cadence_of.get(facet_id) == cadence
+
+
+def cadences_by_member(members: Sequence[Iterable[Facet]]) -> tuple[dict[str, Cadence], ...]:
+    """Each member's facet ids mapped to their cadence, one map per member of `members`, each
+    member's candidates as its dispatch reads them.
+
+    A stated `observationPeriod` is the id's own, so every member's copy shares it (the
+    earliest in sort order should copies state different ones). An id stating none is `P1Y`
+    for a member when every copy that member holds carries annual evidence
+    (`Facet.reads_annual`), and otherwise the id's own cadence. Members are judged apart,
+    since one unstated id can date one variable by year and another by month: the first
+    member's copy is `P1Y` and the second's is not, so no cadence holds both. Each place's
+    facet judges its own dates as it is read, and a merge across places keeps the evidence
+    only when every merged facet has it, so one place dating the id by month makes it the
+    id's own cadence for that member, however the merged bounds read. Members whose copies
+    carry no annual evidence share the id's cadence, and the mint refuses their rows should
+    they hold two grains (`errors.MixedGrainError`)."""
+    held = [list(facets) for facets in members]
+    stated: dict[str, str] = {}
+    for facet in (facet for facets in held for facet in facets):
+        if facet.facet_id is not None and facet.observation_period is not None:
+            period = stated.get(facet.facet_id)
+            if period is None or facet.observation_period < period:
+                stated[facet.facet_id] = facet.observation_period
+    cadences: list[dict[str, Cadence]] = []
+    for facets in held:
+        copies: dict[str, list[Facet]] = {}
+        for facet in facets:
+            if facet.facet_id is not None:
+                copies.setdefault(facet.facet_id, []).append(facet)
+        cadences.append(
+            {
+                facet_id: Cadence(period=stated[facet_id])
+                if facet_id in stated
+                else Cadence(period="P1Y")
+                if all(c.reads_annual for c in copies_of_id)
+                else Cadence(facet_id=facet_id)
+                for facet_id, copies_of_id in copies.items()
+            }
+        )
+    return tuple(cadences)
+
+
+def dispatch_cadence(
+    matching: Sequence[Facet],
+    *,
+    member_matches: Sequence[Sequence[Facet]],
+    cadence_of: Sequence[Mapping[str, Cadence]],
+    stat_vars: Iterable[str],
+    window: RequestedWindow | None,
+    breadth: Mapping[str, int] | None,
+) -> tuple[Facet, Cadence, frozenset[int]] | None:
+    """The cadence the election dispatches, the facet of `matching` ranked first among those
+    a counted member holds at it, and the members counted for it, or `None` when no member
+    holds a candidate carrying every selected ref.
+
+    `member_matches` holds each member's candidates carrying every selected ref
+    (`joint_matches`), `cadence_of` each member's `cadences_by_member` map, and `matching`
+    those candidates merged across members, which the election's ranking (`rank_pool` under
+    `stat_vars`, `window` and `breadth`) orders. A member counts toward a cadence through its
+    own copies of the facets the ranking keeps, and, when any member's copy holds a point in
+    a range window (`overlaps_window`), only through such copies, since a merged facet's
+    dates are every member's together. The cadence held by the most members wins, so a
+    group serves every member it can at one cadence. Among cadences held by as many,
+    the one whose counted copy ranks first wins, then the one held by the earliest member. The
+    facet axes leave out `observationPeriod`, so the UN graph's annual (`P1Y`) and quarterly
+    (`P3M`) ILO facets match alike, and dispatching both puts `2019` and `2019-01` into one
+    series.
+
+    For one member every cadence it holds counts once, so its cadence is its top facet's: an
+    unbound election's elected facet's, and for a bound axis or a graph-declared default the
+    facet the ranking, breadth first, puts first among those it admits, so a bound request
+    over several places keeps the facet covering the most."""
+    if not matching:
+        return None
+    ranked = rank_pool(matching, stat_vars=stat_vars, window=window, breadth=breadth).ranked
+    kept = {facet.facet_id for facet in ranked}
+    held = [[f for f in facets if f.facet_id in kept] for facets in member_matches]
+    if any(overlaps_window(f, window=window) for facets in held for f in facets):
+        held = [[f for f in facets if overlaps_window(f, window=window)] for facets in held]
+    members_at: dict[Cadence, list[int]] = {}
+    cadences_by_facet_id: dict[str, set[Cadence]] = {}
+    for member, (facets, cadences) in enumerate(zip(held, cadence_of, strict=True)):
+        seen_cadences: set[Cadence] = set()
+        for facet in facets:
+            if facet.facet_id is None:
+                continue
+            cadence = cadences.get(facet.facet_id)
+            if cadence is None:
+                continue
+            cadences_by_facet_id.setdefault(facet.facet_id, set()).add(cadence)
+            if cadence not in seen_cadences:
+                members_at.setdefault(cadence, []).append(member)
+                seen_cadences.add(cadence)
+    if not members_at:
+        return None
+    rank_of: dict[Cadence, int] = {}
+    top_by_cadence: dict[Cadence, Facet] = {}
+    for position, facet in enumerate(ranked):
+        for cadence in cadences_by_facet_id.get(facet.facet_id, ()):
+            rank_of.setdefault(cadence, position)
+            top_by_cadence.setdefault(cadence, facet)
+    cadence = min(
+        members_at,
+        key=lambda one: (-len(members_at[one]), rank_of.get(one, len(ranked)), members_at[one][0]),
+    )
+    return top_by_cadence[cadence], cadence, frozenset(members_at[cadence])
+
+
+def facet_election(
+    selections: Mapping[str, FacetSelection],
+    *,
+    matching: Sequence[Facet],
+    member_matches: Sequence[Sequence[Facet]],
+    cadence_of: Sequence[Mapping[str, Cadence]],
+    stat_vars: Iterable[str],
+    window: RequestedWindow | None,
+    breadth: Mapping[str, int] | None,
+) -> FacetElection:
+    """The election over `selections`: the cadence `dispatch_cadence` decides, and each
+    selection's `dispatch_facet_id` re-pointed to the ranking's top facet at that cadence
+    when it names no facet of `matching` at it. A bound axis's or a declared default's
+    witness is only the first candidate carrying its value (`select_bound_facet`,
+    `_match_policy`), which can sit at another cadence or carry another axis's value apart;
+    the top carries every selected ref at the cadence, so the trace cites a facet the
+    dispatch serves whatever the candidate order."""
+    cadence_of = tuple(cadence_of)
+    decided = dispatch_cadence(
+        matching,
+        member_matches=member_matches,
+        cadence_of=cadence_of,
+        stat_vars=stat_vars,
+        window=window,
+        breadth=breadth,
+    )
+    if decided is None:
+        return FacetElection(selections=dict(selections), cadence=None, cadence_of=cadence_of)
+    top, cadence, members = decided
+    assert top.facet_id is not None  # `dispatch_cadence` returns a facet at a cadence.
+    matching_ids = {c.facet_id for c in matching if c.facet_id is not None}
+    served = {
+        facet_id
+        for member_cadences in cadence_of
+        for facet_id, member_cadence in member_cadences.items()
+        if member_cadence == cadence and facet_id in matching_ids
     }
-    return tuple(sorted(matching_ids))
+    return FacetElection(
+        selections={
+            axis: selection
+            if selection.dispatch_facet_id in served
+            else replace(selection, dispatch_facet_id=top.facet_id)
+            for axis, selection in selections.items()
+        },
+        cadence=cadence,
+        cadence_of=cadence_of,
+        members=members,
+    )
 
 
 def _matches_refs(candidate: Facet, refs: Mapping[str, str | None]) -> bool:

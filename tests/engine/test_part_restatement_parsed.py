@@ -3,7 +3,14 @@
 from __future__ import annotations
 
 from search.engine.entry.parsed import _part_restatement
-from search.models import Operation, ParsedEntity, ParsedInput, ParsedPart, ResolveRequest
+from search.models import (
+    Operation,
+    ParsedEntity,
+    ParsedInput,
+    ParsedPart,
+    ResolveRequest,
+    SourceMention,
+)
 from tests.engine._harness import offline_resolve
 
 
@@ -14,7 +21,7 @@ def _a_parsed_part(**overrides) -> ParsedPart:
         "entities": [ParsedEntity(text="Kenya", role_text="in")],
         "time_text": "2020",
         "unit_text": "US dollars",
-        "source_text": "World Bank",
+        "sources": [SourceMention(text="World Bank", polarity="exclude")],
         "operations": [Operation(verb="rank", phrase="top 5", over="place")],
         "open_roles": ["donor"],
     }
@@ -34,7 +41,7 @@ class TestTheOverrideEchoesTheLegsOwnInputs:
         assert [(e.text, e.role_text) for e in restatement.entities or []] == [("Kenya", "in")]
         assert restatement.time_text == "2020"
         assert restatement.unit_text == "US dollars"
-        assert restatement.source_text == "World Bank"
+        assert restatement.sources == [SourceMention(text="World Bank", polarity="exclude")]
         assert restatement.operations == [Operation(verb="rank", phrase="top 5", over="place")]
         assert restatement.open_roles == ["donor"]
 

@@ -37,6 +37,7 @@ import pytest
 
 from code_index import shared as shared_module
 from code_index.members import (
+    DatasetScope,
     elected_pins,
     index_decides,
     invariant_bindings,
@@ -48,7 +49,11 @@ from code_index.shared import get_index, get_measure_index
 from code_index.types import StatVarRow
 from datasets_api.adapter import resolve_definition_members
 from datasets_api.codes_materialise import RoleSignatureIncompatible, SpecNotExportable
-from materialise.errors import DefaultFacetUndefinedError, FacetNotAvailableError
+from materialise.errors import (
+    DefaultFacetUndefinedError,
+    FacetNotAvailableError,
+    OverCeilingError,
+)
 from search.engine.bind import SlotBindingDraft
 from search.engine.errors import EngineInputError, RoleSignatureError
 from search.engine.options.population import options_population
@@ -301,7 +306,8 @@ def _draw(rng: random.Random) -> list[_Drawn]:
 
 def _mint(identity: dict, *, pinned: StatVarRow | None = None) -> tuple[frozenset[str], str | None]:
     """The mint's family and elected dataset, or an empty family and no dataset when the
-    mint refuses the identity for holding no family. A pinned identity elects no dataset."""
+    mint refuses the identity for holding no family. A pinned identity and a family of listed
+    rows (`code_index.members.listed_group`) elect no dataset."""
     graph = FakeMintGraphReader(arcs={pinned.dcid: _mint_arcs(pinned)} if pinned else {})
     try:
         resolved = resolve_definition_members(
@@ -317,6 +323,9 @@ def _mint(identity: dict, *, pinned: StatVarRow | None = None) -> tuple[frozense
     datasets = {shape.dataset.provenance for shape in resolved.shapes if shape.dataset}
     if pinned is not None:
         assert not datasets, datasets
+        return resolved.family, None
+    if not datasets:
+        # A family elected from the index's listed rows elects no dataset, as a walk elects none.
         return resolved.family, None
     assert len(datasets) == 1, datasets
     return resolved.family, datasets.pop()
@@ -402,7 +411,7 @@ def _check(drawn: _Drawn, rng: random.Random, kinds: dict[str, int], *, wide: bo
     kinds["names a dataset by a set of one ref"] += len(facet.get("refs", ())) == 1
     kinds["binds the provenance to a set of two"] += len(facet.get("refs", ())) == 2
     kinds["binds a provenance outside the index"] += (
-        query.source is not None and query.source not in index.datasets
+        "ref" in facet and facet["ref"] not in index.datasets
     )
     decided = index_decides(index, query)
     synthetic = dataclasses.replace(
@@ -453,15 +462,19 @@ def _check(drawn: _Drawn, rng: random.Random, kinds: dict[str, int], *, wide: bo
     if not wide:
         return found + _first_pass_disagreements(drawn, rng, kinds, family)
 
-    try:
-        population = set(
-            options_population(model, graph=FakeMintGraphReader(arcs={})).stat_var_dcids
-        )
-    except EngineInputError as exc:
-        assert exc.code == "population_empty", exc
-        population = set()
-    if population != family:
-        found.append(f"options: Search {len(population)} members, mint {len(family)}")
+    # Options does not refuse a named dataset. For an identity the index does not decide it
+    # reads the walk's family, or the listed rows' (`code_index.members.listed_group`), where
+    # the mint refuses the dataset, so only an identity the index decides compares.
+    if decided:
+        try:
+            population = set(
+                options_population(model, graph=FakeMintGraphReader(arcs={})).stat_var_dcids
+            )
+        except EngineInputError as exc:
+            assert exc.code == "population_empty", exc
+            population = set()
+        if population != family:
+            found.append(f"options: Search {len(population)} members, mint {len(family)}")
 
     if family:
         partitions = measure_family_partitions(synthetic, index, get_measure_index().axes, query)
@@ -510,10 +523,15 @@ def _first_pass_disagreements(
     shape = _first_pass_shape(drawn, rng)
     bindings = _first_pass_bindings(drawn.identity)
     # The engine carries the dataset an identity names as one source binding.
-    source = named_dataset(drawn.identity.get("facets", {}))
+    source = named_dataset(get_index(), drawn.identity.get("facets", {}))
     if source is not None:
         bindings.append(source_binding(source))
     query = shape_query(shape, bindings, drawn.identity.get("entities", {}))
+    # A part naming two or more provenances elects among them alone, as the identity that
+    # pins them does (`identity_family_query`).
+    refs = frozenset(drawn.identity.get("facets", {}).get("provenance", {}).get("refs", ()))
+    if len(refs) > 1:
+        query = dataclasses.replace(query, scope=DatasetScope(allowed=refs, named=True))
     found = []
     if query != identity_query(BaseIdentity.model_validate(drawn.identity)):
         found.append("before an identity: the bindings and the identity ask different queries")
@@ -566,10 +584,12 @@ def _resubmit_disagreements(drawn: _Drawn, monkeypatch, kinds: dict[str, int]):
             ),
         )
     except EngineInputError as exc:
-        # A provenance set needs a facet of every member on the family, and the family's
-        # facets carry its one dataset, so a set naming another dataset refuses.
-        bound = drawn.identity.get("facets", {}).get("provenance", {}).get("refs", ())
-        if exc.code == "facet_not_available" and set(bound) - {dataset}:
+        # A provenance pin needs a facet of every member on the family, and the family's
+        # facets carry its one dataset, so a set naming another dataset refuses, as does a
+        # pin on a provenance the index does not declare, which scopes the reads alone.
+        binding = drawn.identity.get("facets", {}).get("provenance", {})
+        bound = {binding["ref"]} if "ref" in binding else set(binding.get("refs", ()))
+        if exc.code == "facet_not_available" and bound - {dataset}:
             return []
         raise
     found: list[str] = []
@@ -589,8 +609,8 @@ def _resubmit_disagreements(drawn: _Drawn, monkeypatch, kinds: dict[str, int]):
         where = next(slot for slot in spec.resolved.slots if slot.key.axis == "where")
         if not isinstance(where.binding, BindingValue) or where.binding.value.ref.dcid != _KEN:
             found.append(f"resubmit: the where slot binds {where.binding!r}")
-        if named_dataset(returned.get("facets", {})) != named_dataset(
-            drawn.identity.get("facets", {})
+        if named_dataset(get_index(), returned.get("facets", {})) != named_dataset(
+            get_index(), drawn.identity.get("facets", {})
         ):
             found.append("resubmit: the returned identity names another dataset")
         if invariant_bindings(get_index(), identity_query(spec.definition.identity)):
@@ -634,6 +654,10 @@ def _resubmit_sample(drawn: list[_Drawn]) -> list[int]:
         if item.pinned is not None or not item.all_keys:
             continue
         identity = BaseIdentity.model_validate(item.identity)
+        if not index_decides(get_index(), identity_query(identity)):
+            # The resubmit's graph holds the drawn index rows alone, which a family the index
+            # does not decide, such as one of listed rows, need not be.
+            continue
         releasing = bool(invariant_bindings(get_index(), identity_query(identity)))
         sample = releasing_sample if releasing else canonical_sample
         if len(sample) == (_RELEASING_RESUBMITS if releasing else _RESUBMITS):
@@ -1027,8 +1051,9 @@ class _NoWalk(MemberEnumerator):
 
 
 def _mint_answer(identity: dict) -> tuple:
-    """How the mint answers `identity`: it refuses the named dataset, walks the graph, or
-    resolves these index rows, none when no row matches."""
+    """How the mint answers `identity`: it refuses the named dataset, walks the graph or
+    elects over listed rows in its place, or resolves these index rows, none when no row
+    matches."""
     graph = FakeMintGraphReader(arcs={})
     try:
         resolved = resolve_definition_members(
@@ -1041,10 +1066,14 @@ def _mint_answer(identity: dict) -> tuple:
         )
     except FacetNotAvailableError:
         return ("refused",)
-    except _Walked:
+    except (_Walked, OverCeilingError):
+        # Only a walk, or the election over listed rows in its place, has a member cap.
         return ("walk",)
     except SpecNotExportable:
         return ("index", frozenset())
+    if not any(shape.dataset for shape in resolved.shapes):
+        # A family of listed rows (`code_index.members.listed_group`) is the walk's family.
+        return ("walk",)
     return ("index", resolved.family)
 
 

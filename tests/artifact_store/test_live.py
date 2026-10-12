@@ -57,7 +57,15 @@ def test_written_artifact_is_fetchable_through_its_signed_url_and_digest_matches
     data = b"artifact_store live smoke test payload"
     result = live_store.put(data, tier=Tier.working)
 
-    url = live_store.signed_get_url(result.digest, tier=Tier.working, ttl=timedelta(minutes=5))
+    url = live_store.signed_location_url(
+        result.digest,
+        tier=Tier.working,
+        bucket=result.bucket,
+        object_name=result.object_name,
+        ttl=timedelta(minutes=5),
+        response_type="application/octet-stream",
+        response_disposition="attachment",
+    )
     response = httpx.get(url)
     response.raise_for_status()
 
@@ -77,7 +85,15 @@ def test_concurrent_puts_of_identical_bytes_converge_to_one_stored_object(live_s
     assert results[0].digest == results[1].digest
     assert {result.deduplicated for result in results} == {True, False}
 
-    url = live_store.signed_get_url(results[0].digest, tier=Tier.working, ttl=timedelta(minutes=5))
+    url = live_store.signed_location_url(
+        results[0].digest,
+        tier=Tier.working,
+        bucket=results[0].bucket,
+        object_name=results[0].object_name,
+        ttl=timedelta(minutes=5),
+        response_type="application/octet-stream",
+        response_disposition="attachment",
+    )
     response = httpx.get(url)
     response.raise_for_status()
     assert response.content == data

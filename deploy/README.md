@@ -70,6 +70,7 @@ Each caller has its own concurrency group (`deploy-dev`, `deploy-production`) wi
    the decision is to deploy.
 1. Points `JOB_DATASETS_MIGRATE` at the new image and executes it with `--wait`.
 1. Points `JOB_PRESENTATION_MIGRATE` at the new image and executes it with `--wait`.
+1. Points `JOB_DATASETS_MAINTENANCE` at the new image. Cloud Scheduler runs its `datasets-maintenance` tasks.
 1. Points `JOB_COVERAGE` at the new image, so scheduled runs use the new code (see [deploy/coverage.md](coverage.md)).
 1. Executes `JOB_COVERAGE` with its args overridden to `-m series_coverage.verify` (the command stays `python`), confirming a compatible artifact is published in the new image's coverage format root. Only when verify fails, executes the build job (`python -m series_coverage.job`) and verifies again; a second failure stops the run before either service moves onto the new image (see [deploy/coverage.md](coverage.md)'s "Deploy order" section).
 1. Executes `JOB_COVERAGE` with `-m series_coverage.verify_index --record`, checking the image's code index against the published coverage build and recording its compatibility pointer. A difference stops the run before either service moves onto the new image.
@@ -78,6 +79,7 @@ Each caller has its own concurrency group (`deploy-dev`, `deploy-production`) wi
 1. Points `JOB_SEARCH_CATALOGUE` at the new image without executing it. The apis service starts without a search catalogue and answers 503 on `GET /api/search/catalogue` until one loads. The job's Cloud Scheduler tick runs every 15 minutes, and its build key includes the image's commit, so the first tick after a deploy rebuilds the catalogue on the new image in about 90 seconds.
 1. Updates the datasets worker service revision (`SERVICE_WORKER`, the async operations worker) using `gcloud run services update`.
 1. Updates the apis service revision (`SERVICE_APIS`) using `gcloud run services update`.
+1. Executes `JOB_DATASETS_MAINTENANCE` with `--args=settle --wait`, repeating the data statements of the migrations over rows the previous image wrote between the migration job and the service move.
 1. Executes `JOB_COVERAGE` with `-m series_coverage.record_serving_index`, recording the image's code index as the one both services run.
 
 Every job moves to the new image before it executes, so a job still on the `gcr.io/cloudrun/hello` placeholder a fresh project starts with never runs as the placeholder. A failed job step stops the run before the service moves to the new image.
@@ -120,6 +122,7 @@ Configuration values map to GitHub Environment secrets and variables:
 | `SERVICE_WORKER`           | Environment | Variable | Cloud Run datasets worker service name (`dfo-dev-datasets-worker` in dev), the async operations worker `google_cloud_run_v2_service.datasets_worker` provisions. | `just handoff apis` in dfo-infra |
 | `JOB_DATASETS_MIGRATE`     | Environment | Variable | Cloud Run Job that applies the datasets migrations (`dfo-dev-datasets-migrate` in dev).                                                                          | `just handoff apis` in dfo-infra |
 | `JOB_PRESENTATION_MIGRATE` | Environment | Variable | Cloud Run Job that applies the presentation migrations (`dfo-dev-presentation-migrate` in dev).                                                                  | `just handoff apis` in dfo-infra |
+| `JOB_DATASETS_MAINTENANCE` | Environment | Variable | Cloud Run Job that runs the `datasets-maintenance` tasks: the reconciliation sweep, aging terminal operations and the deploy's settle.                           | `just handoff apis` in dfo-infra |
 | `JOB_COVERAGE`             | Environment | Variable | Cloud Run Job that builds and verifies the coverage artifact (`dfo-dev-coverage` in dev).                                                                        | `just handoff apis` in dfo-infra |
 | `JOB_ORIGIN_CATALOGUE`     | Environment | Variable | Cloud Run Job that builds and verifies the origin catalogue (`dfo-dev-origin-catalogue` in dev).                                                                 | `just handoff apis` in dfo-infra |
 | `JOB_SEARCH_CATALOGUE`     | Environment | Variable | Cloud Run Job that builds the search catalogue (`dfo-dev-search-catalogue` in dev).                                                                              | `just handoff apis` in dfo-infra |

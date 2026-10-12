@@ -7,7 +7,6 @@ before the resolve handler.
 from __future__ import annotations
 
 import os
-import threading
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -16,6 +15,7 @@ from fastapi.testclient import TestClient
 from dfo_platform.app import SERVER_TIMING_HEADER
 from entity_resolution import Resolution
 from graph_api.deps import GRAPH_DEPS_SLOT, GraphDeps
+from graph_api.doors.sources import new_provenance_doc_cache
 from graph_generation import UNKNOWN_GENERATION
 from tests.engine._search_app import with_fake_search_deps
 from tests.fixtures import FakeGraph
@@ -79,14 +79,17 @@ def client() -> TestClient:
         "skills",
     ]
     with_fake_search_deps(app)
+    executor = ThreadPoolExecutor(max_workers=1)
     GRAPH_DEPS_SLOT.set(
         app,
         GraphDeps(
             graph=FakeGraph(),
             resolver=_UnreadResolver(),
-            dcp_executor=ThreadPoolExecutor(max_workers=1),
-            dcp_semaphore=threading.BoundedSemaphore(1),
+            dcp_executor=executor,
             generation=UNKNOWN_GENERATION,
+            provenance_docs=new_provenance_doc_cache(
+                executor=executor, generation=UNKNOWN_GENERATION
+            ),
         ),
     )
     return TestClient(app, raise_server_exceptions=False)

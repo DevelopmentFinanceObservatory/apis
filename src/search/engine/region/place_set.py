@@ -2,7 +2,8 @@
 
 A request names a place by a text: a country, a continent or UN subregion, or a group the
 resolver knows ("G7"). Each is one `PlaceSet`. A continent, subregion or group is a set with
-members, and may also be a graph node of its own that holds observations. A country is a set
+members, and may also be a graph node of its own that holds observations, or a group a flow
+dataset publishes a total party for. A country is a set
 of one: a node with no members. `ResolveState.place_sets` holds the sets from place
 resolution onward, keyed by the request's text.
 """
@@ -53,6 +54,10 @@ class PlaceSet:
     # The resolver's name for each member, by dcid. A group's only.
     member_names: Mapping[str, str] = field(default_factory=dict)
     reading: PlaceReading = "default"
+    # The party a flow dataset publishes as the set's total ("Africa (DAC)" for Africa), as
+    # the code index declares it (`CodeIndex.totals_by_group`). `None` for a set no total
+    # holds. A flow role can bind it in place of the members (`place_roles.set_choices`).
+    total: str | None = None
 
     @property
     def expands(self) -> bool:

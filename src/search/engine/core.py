@@ -139,6 +139,39 @@ def _log_resolve(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class RequestBudget:
+    """One resolve request's deadlines, measured from one clock origin.
+
+    ``soft`` is the pipeline's deadline: the fan-out stops waiting for unfinished variables
+    and answers with what it has. ``hard`` caps the whole request on both transports and
+    bounds every graph and SDMX read it makes (``dfo_platform.request_deadline``), so the
+    partial answer has ``finalise_grace_s`` to land before it. Both are absolute
+    ``time.monotonic()`` values.
+    """
+
+    start_ms: int
+    soft: float
+    hard: float
+
+
+def request_budget(*, kind: str) -> RequestBudget:
+    """The budget of a resolve request of input ``kind`` that starts now.
+
+    A ``dataset_resubmit`` whose member walk runs its full read reads until
+    ``resubmit_full_read_timeout_s`` from the start (``dataset_resubmit.full_read_deadline_for``), so
+    its grace runs from then.
+    """
+    start_ms = now_ms()
+    settings = config.settings()
+    origin = start_ms / 1000.0
+    soft = origin + settings.request_timeout_s
+    last_read = soft
+    if kind == "dataset_resubmit":
+        last_read = origin + settings.resubmit_full_read_timeout_s
+    return RequestBudget(start_ms=start_ms, soft=soft, hard=last_read + settings.finalise_grace_s)
+
+
 def _build_live_graph_client() -> LiveGraphClient:
     """Build a LiveGraphClient from the process's SearchSettings.
 
@@ -168,6 +201,7 @@ async def resolve_events(
     part_memo: PartMemo | None = None,
     generation: GenerationProvider = UNKNOWN_GENERATION,
     caller: str | None = None,
+    budget: RequestBudget | None = None,
 ) -> AsyncIterator[Event]:
     """Stream typed events for one resolve request.
 
@@ -208,8 +242,13 @@ async def resolve_events(
     ``caller``, the client's User-Agent. Its transport is ``sse`` when
     ``stream_slot_options`` is set, which only the SSE route does, and
     ``buffered`` otherwise.
+
+    ``budget`` is the route's ``request_budget``, so the pipeline's soft deadline and the
+    route's hard cap share one start. Without one the request starts here.
     """
-    start_ms = now_ms()
+    if budget is None:
+        budget = request_budget(kind=request.input.kind)
+    start_ms = budget.start_ms
     record = _ResolveRecord()
     request_rate_cache = rate_cache.for_request() if rate_cache is not None else None
     owns_graph = graph is None
@@ -237,6 +276,7 @@ async def resolve_events(
                 llm=_llm,
                 sdmx=_sdmx,
                 start_ms=start_ms,
+                deadline=budget.soft,
                 stream_slot_options=stream_slot_options,
                 materialise_graph=materialise_graph,
                 materialise_sdmx=materialise_sdmx,
@@ -307,6 +347,7 @@ async def _resolve_pipeline_events(
     llm: SupportsLLM,
     sdmx: EngineSdmxClient,
     start_ms: int,
+    deadline: float,
     stream_slot_options: bool = False,
     materialise_graph: GraphReader | None = None,
     materialise_sdmx: MaterialiseSdmxClient | None = None,
@@ -332,11 +373,10 @@ async def _resolve_pipeline_events(
     generation stamp at construction. Both key on the UTC day.
 
     Read ``shared_skills_index`` once. Every stage uses that request snapshot.
+
+    ``deadline``, the request's soft deadline, governs every pipeline stage and thread hop.
     """
     inp = request.input
-
-    # One absolute monotonic deadline governs every pipeline stage and thread hop.
-    deadline = start_ms / 1000.0 + config.settings().request_timeout_s
 
     # Per-option coverage probes and entity-option labels are opt-in, for example,
     # "Kenya, 205 obs". Facet options are built either way. Over SSE with this flag set they
@@ -530,6 +570,7 @@ async def resolve_async(
     generation: GenerationProvider = UNKNOWN_GENERATION,
     health: ResolveHealth | None = None,
     caller: str | None = None,
+    budget: RequestBudget | None = None,
 ) -> ResolveResponse:
     """Drain ``resolve_events`` into one buffered response.
 
@@ -538,7 +579,7 @@ async def resolve_async(
     when given, receives ``done.degraded_leg``, which the body omits. Client
     injection and lifetimes match ``resolve_events``. The buffered path emits
     no trailing SSE events, so ``place_options_pool`` launches no tasks.
-    ``caller`` reaches the ``resolve`` log line.
+    ``caller`` reaches the ``resolve`` log line, and ``budget`` reaches ``resolve_events``.
 
     Returns a ``ResolveResponse``: a ``Resolution`` carries one part per requested
     variable.
@@ -562,6 +603,7 @@ async def resolve_async(
         part_memo=part_memo,
         generation=generation,
         caller=caller,
+        budget=budget,
     ):
         if isinstance(event, ResponseEvent):
             response = event.response

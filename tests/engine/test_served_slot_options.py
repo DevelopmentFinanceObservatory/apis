@@ -237,6 +237,17 @@ _CRS_SLOTS: dict[str, str | None] = {
 }
 
 
+@functools.cache
+def _index_member_nodes() -> dict[str, dict]:
+    """A graph node for every StatVar the packaged index lists, as the live graph holds
+    them, so an answer whose index election spans the whole family re-reads every member's
+    arcs and drops none under `members_absent_from_graph`."""
+    return {
+        row.dcid: {"label": row.dcid, "type": "StatisticalVariable", "arcs": _arcs_for_row(row)}
+        for row in get_index().statvars
+    }
+
+
 def _crs_region(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -280,15 +291,7 @@ def _crs_region(
         # A client posts its pins on the identity's facets, beside an unpinned base.
         edited = edited.model_copy(update={"facets": facets})
     members = list(dict.fromkeys(row[0] for row in rows))
-    index = get_index()
-    nodes = {
-        dcid: {
-            "label": dcid,
-            "type": "StatisticalVariable",
-            "arcs": _arcs_for_row(next(r for r in index.statvars if r.dcid == dcid)),
-        }
-        for dcid in members
-    }
+    nodes = dict(_index_member_nodes())
     nodes |= {o: {"label": o, "type": "Country"} for o in origins}
     nodes |= {_GTM: {"label": "Guatemala", "type": "Country"}}
     # The CRS provenance converts by the DAC recipe into US dollars or euros.
@@ -714,6 +717,7 @@ def _debt_resubmit(monkeypatch: pytest.MonkeyPatch, **bound: str):
     )
 
 
+@pytest.mark.usefixtures("unlisted_index")
 def test_a_walked_family_serving_its_total_counts_the_parts_a_pick_would_serve(monkeypatch):
     """The answer serves the total alone, yet the creditor menu counts the parts. Official
     creditors serve the official series (the general-government part is reduced under it),
@@ -728,6 +732,7 @@ def test_a_walked_family_serving_its_total_counts_the_parts_a_pick_would_serve(m
     assert _menu(spec, "idsDebtorType") == {"IDSDebtorTypeGG": 1}
 
 
+@pytest.mark.usefixtures("unlisted_index")
 @pytest.mark.parametrize(
     ("bound", "served"),
     [
@@ -1173,9 +1178,13 @@ _TWO_DONORS_DIFFERENT_LAST_YEARS = [
                     (_PROJECT_EDUCATION, "crs", _DEU, _GTM, [2019]),
                     (_PROJECT_EDUCATION, "crs_more", _DEU, _GTM, [2020]),
                 ],
+                # Two annual facets of one import (an unstated coverage facet is a cadence
+                # of its own, `materialise.facets.cadences_by_member`).
                 "facet_metadata": {
-                    "crs": FacetMetadata(provenance_id=_CRS_PROVENANCE),
-                    "crs_more": FacetMetadata(provenance_id=_CRS_PROVENANCE),
+                    "crs": FacetMetadata(provenance_id=_CRS_PROVENANCE, observation_period="P1Y"),
+                    "crs_more": FacetMetadata(
+                        provenance_id=_CRS_PROVENANCE, observation_period="P1Y"
+                    ),
                 },
             },
             True,

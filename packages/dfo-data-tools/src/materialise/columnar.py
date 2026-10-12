@@ -10,7 +10,7 @@ import pyarrow.compute as pc
 
 from dc_sdmx.errors import SdmxResponseError
 from dc_sdmx.results import VALUE_COLUMN, VARIABLE_COLUMN
-from materialise.facets import CoverageAdmission, FacetSelection, RowAdmission
+from materialise.facets import CoverageAdmission, FacetSelection, PlaceAdmission, RowAdmission
 from materialise.window import (
     AppliedWindow,
     Coverage,
@@ -190,7 +190,8 @@ def selection_mask(table: pa.Table, *, selections: Mapping[str, FacetSelection])
 
 def admission_mask(table: pa.Table, *, admission: RowAdmission) -> pa.BooleanArray:
     """Keeps a row whose `facetId` was admitted at its `observationAbout`. `CoverageAdmission`
-    keeps every row.
+    keeps every row when its coverage probe was unscoped. A scoped coverage probe checks the
+    facet and its complete donor/recipient pair.
 
     Every masked read filters on `c[facetId]` and names the subject places, so a conforming
     response carries a facet and a place on every row. The parser fills an absent `facetId`
@@ -198,7 +199,46 @@ def admission_mask(table: pa.Table, *, admission: RowAdmission) -> pa.BooleanArr
     null, so under `PlaceAdmission` a null in either column raises `SdmxResponseError`: the
     row's admission cannot be checked."""
     if isinstance(admission, CoverageAdmission):
-        return pa.array([True] * table.num_rows, type=pa.bool_())
+        if admission.pairs_by_facet is None:
+            return pa.array([True] * table.num_rows, type=pa.bool_())
+        if admission.role_names is None:
+            raise ValueError("scoped coverage admission requires role names")
+        role_columns = admission.role_names.declared
+        missing_columns = [
+            column
+            for column in (_FACET_ID_COLUMN, *role_columns)
+            if column not in table.column_names
+        ]
+        if missing_columns:
+            raise SdmxResponseError(
+                "a scoped coverage admission cannot check SDMX rows without "
+                f"{', '.join(missing_columns)}"
+            )
+        for column in (_FACET_ID_COLUMN, *role_columns):
+            missing = table[column].null_count
+            if missing:
+                raise SdmxResponseError(
+                    f"{missing} of {table.num_rows} SDMX rows carry no {column}, so their "
+                    "scoped coverage admission cannot be checked"
+                )
+        facet_ids = table[_FACET_ID_COLUMN].to_pylist()
+        donor_values = (
+            table[admission.role_names.donor].to_pylist()
+            if admission.role_names.donor is not None
+            else [""] * table.num_rows
+        )
+        recipient_values = (
+            table[admission.role_names.recipient].to_pylist()
+            if admission.role_names.recipient is not None
+            else [""] * table.num_rows
+        )
+        admitted = [
+            (donor, recipient) in admission.pairs_by_facet.get(facet_id, frozenset())
+            for facet_id, donor, recipient in zip(
+                facet_ids, donor_values, recipient_values, strict=True
+            )
+        ]
+        return pa.array(admitted, type=pa.bool_())
     for column in (_FACET_ID_COLUMN, _PLACE_COLUMN):
         missing = table[column].null_count
         if missing:
@@ -298,6 +338,27 @@ def served_year_bounds(table: pa.Table) -> tuple[int, int] | None:
     if minimum is None or maximum is None:
         return None
     return minimum, maximum
+
+
+def dispatched_rows(
+    batch: pa.RecordBatch, *, facet_ids: Sequence[str], admission: RowAdmission
+) -> pa.RecordBatch:
+    """The rows of `batch` from one of `facet_ids`, the facets a member dispatched. A chunk
+    fetches the union of its members' facet ids, so a member's variable can come back under
+    an id only another member dispatched, such as a reissue of the shared facet that only
+    one member's probe reported. A row naming no facet is kept, and under `PlaceAdmission`
+    so is a row naming no `observationAbout`: `admission_mask` refuses both as malformed
+    there."""
+    facet = batch[_FACET_ID_COLUMN]
+    keep = _as_boolean_array(
+        pc.or_(
+            pc.is_in(facet, value_set=pa.array(list(facet_ids), type=pa.string())),
+            pc.is_null(facet),
+        )
+    )
+    if isinstance(admission, PlaceAdmission) and _PLACE_COLUMN in batch.schema.names:
+        keep = pc.or_(keep, pc.is_null(batch[_PLACE_COLUMN]))
+    return batch.filter(_as_boolean_array(keep))
 
 
 def split_by_variable(

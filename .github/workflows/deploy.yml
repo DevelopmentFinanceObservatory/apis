@@ -42,7 +42,8 @@ name: Deploy
 # deploy/README.md for the full division of responsibility.
 #
 # The apis service moves to an image only after both migration jobs
-# (vars.JOB_DATASETS_MIGRATE, vars.JOB_PRESENTATION_MIGRATE), the coverage
+# (vars.JOB_DATASETS_MIGRATE, vars.JOB_PRESENTATION_MIGRATE), the datasets
+# maintenance job (vars.JOB_DATASETS_MAINTENANCE), the coverage
 # job (vars.JOB_COVERAGE), the origin catalogue job
 # (vars.JOB_ORIGIN_CATALOGUE), the search catalogue job
 # (vars.JOB_SEARCH_CATALOGUE), and the datasets worker service
@@ -56,6 +57,11 @@ name: Deploy
 # as the placeholder. The two migration jobs are idempotent. Given an image
 # with nothing new to apply, each reports nothing to apply and exits 0, so
 # every deploy runs both rather than trying to detect whether any is needed.
+# The datasets maintenance job is pointed at the new image after both
+# migrations and left to its Scheduler, and runs `settle` once the apis
+# service has moved (see those steps). The environment must set
+# vars.JOB_DATASETS_MAINTENANCE; the upfront variable check refuses the
+# deploy when it is missing.
 # The coverage and origin catalogue jobs are pointed at the new image on
 # every deploy but built only when no compatible artifact is published for
 # the image's format (see their steps below). The search catalogue job is
@@ -142,20 +148,21 @@ jobs:
           JOB_COVERAGE: ${{ vars.JOB_COVERAGE }}
           JOB_ORIGIN_CATALOGUE: ${{ vars.JOB_ORIGIN_CATALOGUE }}
           JOB_SEARCH_CATALOGUE: ${{ vars.JOB_SEARCH_CATALOGUE }}
+          JOB_DATASETS_MAINTENANCE: ${{ vars.JOB_DATASETS_MAINTENANCE }}
         run: |
           set -euo pipefail
           missing=0
           checked=0
           for name in PROJECT_ID REGION AR_REPO SERVICE_APIS SERVICE_WORKER \
             JOB_DATASETS_MIGRATE JOB_PRESENTATION_MIGRATE JOB_COVERAGE JOB_ORIGIN_CATALOGUE \
-            JOB_SEARCH_CATALOGUE; do
+            JOB_SEARCH_CATALOGUE JOB_DATASETS_MAINTENANCE; do
             checked=$((checked + 1))
             if [ -z "${!name}" ]; then
               echo "::error::Missing vars.$name in the '${{ inputs.environment }}' GitHub Environment."
               missing=1
             fi
           done
-          [ "$checked" -eq 10 ] || { echo "::error::checked $checked variables, expected 10."; exit 1; }
+          [ "$checked" -eq 11 ] || { echo "::error::checked $checked variables, expected 11."; exit 1; }
           [ "$missing" -eq 0 ] || exit 1
           image="$REGION-docker.pkg.dev/$PROJECT_ID/$AR_REPO/dfo-apis:${{ steps.target.outputs.sha }}"
           echo "image=$image" >> "$GITHUB_OUTPUT"
@@ -276,6 +283,23 @@ jobs:
             --region="${{ vars.REGION }}" \
             --project="${{ vars.PROJECT_ID }}" \
             --wait
+
+      # The datasets maintenance job runs `datasets-maintenance` tasks (the
+      # reconciliation sweep, aging terminal operations) on its own Scheduler,
+      # so the deploy points it at the new image here and executes it only for
+      # the settle step after the services move. It moves after both
+      # migrations, so its next run finds the schema this image expects. The
+      # job and its variable come from dfo-infra, and the upfront variable
+      # check refuses the deploy when the variable is missing.
+      - name: Point the datasets maintenance job at the new image
+        if: steps.decide.outputs.deploy == 'true'
+        run: |
+          set -euo pipefail
+          gcloud run jobs update "${{ vars.JOB_DATASETS_MAINTENANCE }}" \
+            --image="${{ steps.image.outputs.image }}" \
+            --region="${{ vars.REGION }}" \
+            --project="${{ vars.PROJECT_ID }}" \
+            --quiet
 
       # The coverage job moves onto the new image on every deploy so its
       # scheduled runs (every 15 minutes) use the new code. The deploy itself
@@ -481,6 +505,29 @@ jobs:
             --region="${{ vars.REGION }}" \
             --project="${{ vars.PROJECT_ID }}" \
             --quiet
+
+      # Until the apis service moved, the previous image could still write a
+      # pin reference holding the raw shared secret, the shape migration 0026
+      # converted. `datasets-maintenance settle` repeats that migration's
+      # statements, which touch only rows still in the old shape, so a repeat
+      # run changes nothing. A version row the previous image writes with
+      # only immutable_body needs no repair: the insert trigger of migration
+      # 0030 fills its facts, also for a request an old revision finishes
+      # after this step. settle counts the version rows holding no facts and
+      # the pin references still raw, and fails the step when either count is
+      # above 0. It runs as an execution of the maintenance job, whose
+      # container command is `datasets-maintenance`, with the task as its
+      # args. The step must run on every deploy: a raw pin reference matches
+      # no caller's label.
+      - name: Settle rows the previous image wrote
+        if: steps.decide.outputs.deploy == 'true'
+        run: |
+          set -euo pipefail
+          gcloud run jobs execute "${{ vars.JOB_DATASETS_MAINTENANCE }}" \
+            --region="${{ vars.REGION }}" \
+            --project="${{ vars.PROJECT_ID }}" \
+            --wait \
+            --args=settle
 
       # Both services now run the new image's code index. `python -m
       # series_coverage.record_serving_index` records that index's

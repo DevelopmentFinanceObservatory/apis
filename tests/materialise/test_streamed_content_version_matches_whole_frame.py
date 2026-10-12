@@ -17,7 +17,6 @@ from ._group_support import (
     _CSV_HEADER,
     _ENTITY,
     _SHARED_FACET,
-    _SNAPSHOT,
     _STAT_VAR_A,
     _STAT_VAR_B,
     _STAT_VAR_C,
@@ -26,7 +25,7 @@ from ._group_support import (
     _request,
     _sdmx_client_for,
 )
-from .conftest import FakeGraphReader, FakeRevisionReader
+from .conftest import FakeGraphReader
 
 _STAT_VAR_D = "dcid:Stat_D"
 _BARE_D = "Stat_D"
@@ -74,8 +73,7 @@ def _run(
         requests,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,

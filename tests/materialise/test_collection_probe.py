@@ -24,19 +24,16 @@ from materialise.facets import (
     probe_facets,
 )
 from materialise.graph import Facet, ProvenanceRefresh
-from materialise.revision import RevisionSnapshot
 from materialise.window import RequestedWindow
 from series_coverage.index import CoverageIndex
 from series_coverage.schema import FacetMetadata, RoleNames
 from tests.engine._fake_coverage import build_coverage_index
 
 from ._scope_availability import NO_SCOPE_READ
-from .conftest import FakeGraphReader, FakeRevisionReader
+from .conftest import FakeGraphReader
 
 _COUNTRIES = ("country/KEN", "country/TGO", "country/ETH")
 _OTHER_COUNTRIES = ("country/USA", "country/CAN")
-
-_SNAPSHOT = RevisionSnapshot(graph_revision="graph-rev-2024-01", source_revisions=())
 
 
 def _facet(facet_id: str, *, obs_count: int = 1) -> Facet:
@@ -239,12 +236,7 @@ def test_probe_collection_facets_provenance_refresh_batched_once_across_groups()
     )
     graph = FakeGraphReader(
         facets=facets,
-        arcs={
-            "OECD_DAC2A": {
-                "lastDataRefreshDate": ("2026-03-01",),
-                "nextDataRefreshDate": ("2026-04-01",),
-            }
-        },
+        arcs={"OECD_DAC2A": {"lastDataRefreshDate": ("2026-03-01",)}},
     )
     requests = [_shared_scope_request(sv) for sv in shared_scope_vars] + [
         _other_scope_request(sv) for sv in other_scope_vars
@@ -255,15 +247,13 @@ def test_probe_collection_facets_provenance_refresh_batched_once_across_groups()
     assert graph.calls["observation_facets_batch_many"] == 2
     assert graph.calls["node_arcs_many"] == 1
     assert probe.provenance_refresh == {
-        "OECD_DAC2A": ProvenanceRefresh(
-            last_data_refresh_date="2026-03-01", next_data_refresh_date="2026-04-01"
-        )
+        "OECD_DAC2A": ProvenanceRefresh(last_data_refresh_date="2026-03-01")
     }
 
 
 def test_probe_collection_facets_provenance_refresh_absent_provenance_is_none_none():
     """A provenance without refresh dates maps to
-    `ProvenanceRefresh(None, None)`.
+    `ProvenanceRefresh(None)`.
     """
     stat_vars = _member_stat_vars(2)
     facets = {
@@ -278,7 +268,7 @@ def test_probe_collection_facets_provenance_refresh_absent_provenance_is_none_no
 
     assert graph.calls["node_arcs_many"] == 1
     assert probe.provenance_refresh == {
-        "OECD_DAC2A": ProvenanceRefresh(last_data_refresh_date=None, next_data_refresh_date=None)
+        "OECD_DAC2A": ProvenanceRefresh(last_data_refresh_date=None)
     }
 
 
@@ -678,14 +668,12 @@ def test_materialise_group_single_member_precomputed_probe_skips_the_network_cal
     assert graph.calls["observation_facets_batch_many"] == 1
 
     sdmx = _single_variable_sdmx_client(bare_stat_var)
-    reader = FakeRevisionReader([_SNAPSHOT, _SNAPSHOT])
 
     result = materialise_group(
         [request],
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=reader,
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         precomputed_probe=probe,
@@ -734,14 +722,12 @@ def test_materialise_group_multi_member_precomputed_probe_skips_every_probe_call
     sdmx = SdmxClient(
         base_url="https://datacommons.one.org/core/api", transport=httpx.MockTransport(handler)
     )
-    reader = FakeRevisionReader([_SNAPSHOT, _SNAPSHOT])
 
     result = materialise_group(
         requests,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=reader,
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         precomputed_probe=probe,

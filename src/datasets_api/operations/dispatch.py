@@ -1,60 +1,69 @@
-"""Creates Cloud Tasks entries after a successful `OperationStore.claim_dispatch`.
+"""Creates the Cloud Tasks task for a pending operation whose submission records no dispatch.
 
-The claim commits before enqueue, so no database lock spans the Cloud Tasks call. Failed or
-unconfirmed enqueues stay pending and can be retried after the grace period under the same task
-name, up to `MAX_REDISPATCHES`. `AlreadyExists` confirms an existing task. Confirmed dispatches
-leave redispatch. Dead-row expiry waits the full unclaimed window after the last dispatch.
+`OperationStore.create_or_get` commits the row before the create, so no database lock spans the
+Cloud Tasks call. A create that returns, or reports the task already exists, is recorded with
+`mark_dispatched`. A create that fails or never returns leaves `dispatched_at` NULL. The
+operations poll then calls `dispatch_if_due` with `older_than`, so a row past the enqueue
+recovery window gets its task created again under the same name. Cloud Tasks deduplicates by
+name, so a repeated create never runs the operation twice.
 """
 
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
 from datasets_api.operation_store import Operation, OperationStore
-from datasets_api.operations.task_client import TaskClient
+from datasets_api.operations.task_client import ENQUEUE_TIMEOUT_SECONDS, TaskClient
 from datasets_api.store_errors import DatasetsStoreUnavailable
 
 logger = logging.getLogger(__name__)
 
+# A poll recovers an enqueue only after a create started at submission has had time to return.
+ENQUEUE_RECOVERY_SECONDS = 3 * ENQUEUE_TIMEOUT_SECONDS
+
 
 def dispatch_if_due(
-    operation: Operation, *, operation_store: OperationStore, task_client: TaskClient
+    operation: Operation,
+    *,
+    operation_store: OperationStore,
+    task_client: TaskClient,
+    older_than: datetime | None = None,
 ) -> Operation:
-    """Claims and enqueues a due dispatch, returning the claimed row. Otherwise returns the
-    original operation. Enqueue and confirmation failures are logged.
+    """Creates the task for a `pending` row with no recorded dispatch and records it, returning
+    the updated row. With `older_than`, only a submission made before it is due. Any other row
+    is returned unchanged. Create and record failures are logged and leave the row for the next
+    poll.
     """
-    if operation.state != "pending":
+    if operation.state != "pending" or operation.dispatched_at is not None:
         return operation
-    claimed = operation_store.claim_dispatch(operation.id)
-    if claimed is None:
+    if older_than is not None and operation.submitted_at >= older_than:
         return operation
     try:
-        task_client.enqueue(operation_id=claimed.id, submission_count=claimed.submission_count)
+        task_client.enqueue(operation_id=operation.id, submission_count=operation.submission_count)
     except Exception:
         logger.warning(
-            "Datasets operation %r: enqueue of dispatch %d had an unknown outcome; left "
-            "pending and unconfirmed for a later dispatch claim",
-            claimed.id,
-            claimed.dispatch_count,
+            "Datasets operation %r: task create for submission %d had an unknown outcome; "
+            "left undispatched for the next poll",
+            operation.id,
+            operation.submission_count,
             exc_info=True,
         )
-        return claimed
+        return operation
     try:
-        operation_store.confirm_dispatch(
-            claimed.id,
-            submission_count=claimed.submission_count,
-            dispatch_count=claimed.dispatch_count,
+        marked = operation_store.mark_dispatched(
+            operation.id, submission_count=operation.submission_count
         )
     except DatasetsStoreUnavailable:
-        # The task exists, but the row is unconfirmed.
-        # Lease and terminal-state checks fence redelivery.
+        # The task exists. A later poll creates it again, and Cloud Tasks deduplicates the name.
         logger.warning(
-            "Datasets operation %r: dispatch %d was enqueued but could not be confirmed",
-            claimed.id,
-            claimed.dispatch_count,
+            "Datasets operation %r: task for submission %d was created but not recorded",
+            operation.id,
+            operation.submission_count,
             exc_info=True,
         )
-    return claimed
+        return operation
+    return marked if marked is not None else operation
 
 
-__all__ = ["dispatch_if_due"]
+__all__ = ["ENQUEUE_RECOVERY_SECONDS", "dispatch_if_due"]

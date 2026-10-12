@@ -1,7 +1,7 @@
 """Labels the composed StatVars a published frame describes.
 
 An analysis sum, quotient or share writes its rows under a StatVar of its own, which the graph
-does not hold. The frame's version body lists each one under `composed_stat_vars` as
+does not hold. The frame's version stores each one in its `composed_stat_vars` as
 `{stat_var, relation, first, second}`. `read_composed_stat_vars` reads that list, and
 `composed_stat_var_labels` words each entry from its sides.
 """
@@ -39,7 +39,7 @@ class ComposedStatVar:
 
 
 def read_composed_stat_vars(stored: object, *, frame_ref: FrameRef) -> tuple[ComposedStatVar, ...]:
-    """Reads a version body's `composed_stat_vars` value, keeping the entries this module can
+    """Reads a version's stored `composed_stat_vars` value, keeping the entries this module can
     word: a mapping with a string `stat_var`, a `relation` of `quotient`, `sum` or `share`, and two
     non-empty lists of strings.
 

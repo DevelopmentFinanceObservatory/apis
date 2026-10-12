@@ -1,7 +1,7 @@
 """Materialisation entry points, result types and request validation.
 
-Mints generate data under a revision snapshot and finish after the snapshot is confirmed. Previews
-can use the same drift check and content version when given a revision reader.
+A mint generates its data, then finishes it into a frame, trace and content version. A preview can
+mint the same content version over its full survivor frame.
 """
 
 from __future__ import annotations
@@ -13,8 +13,9 @@ from typing import TYPE_CHECKING
 from dc_sdmx import EntityFilter, SdmxClient
 from materialise.ceiling import DEFAULT_SYNC_CEILING_ROWS
 from materialise.codes import MaterialisationWarning
-from materialise.content_version import MintPreimage
+from materialise.content_version import mint_version
 from materialise.convert import ConversionRecord
+from materialise.dependencies import Dependencies, build_dependencies
 from materialise.enrichment import EnrichmentLookup
 from materialise.errors import MaterialisationUsageError
 from materialise.facets import (
@@ -29,7 +30,6 @@ from materialise.finish import (
     _build_warnings,
     _finish_group,
     _finish_member,
-    _mint_member_content_version,
 )
 from materialise.frame_build import Frame
 from materialise.generation import (
@@ -38,12 +38,11 @@ from materialise.generation import (
     _flatten_bound_entities,
     _generate_group,
     _generate_member,
-    _GroupOutcome,
-    _MemberOutcome,
     _prepare_preview_member,
     _PreparedPreview,
     _PreviewOutcome,
     _select_member_facets,
+    dispatched_provenances,
 )
 from materialise.graph import Facet, GraphReader
 from materialise.member_conversion import decide_member_conversion, refuse_if_every_row_omitted
@@ -51,7 +50,6 @@ from materialise.profile import OutputProfile
 from materialise.progress import RowProgress
 from materialise.rate_tables import RateTableCache
 from materialise.reshape import TableLike
-from materialise.revision import RevisionReader, RevisionSnapshot, read_generation
 from materialise.series_conversion import SeriesConversion, SeriesKey
 from materialise.statistics import SeriesStatisticsFile
 from materialise.trace import ManifestTrace, MemberFamily
@@ -111,8 +109,8 @@ class MaterialisationRequest:
 class MaterialisationResult:
     """`frame_chunks` returns a fresh iterator of validated frames in increasing `row_sort_key`
     order. Group chunks read from Parquet, so a caller needing two passes calls it twice and peak
-    memory stays at one chunk. `mint_preimage` is the exact input to `content_version`. The wider
-    `trace.facets` wire shape differs from the preimage, so never rebuild it from `trace`.
+    memory stays at one chunk. `frame_sha256` is the hash of those frames
+    (`dfo_frame_grammar.frame_sha256`), and `content_version` is minted from it alone.
     `conversion_record` is set for a single member and `None` for a group or an unconverted result.
     `member_conversion_records` maps each StatVar to its record or `None`.
     `series_conversions` holds one record per converted series, keyed by bare StatVar and
@@ -122,9 +120,13 @@ class MaterialisationResult:
     `probe_empty` is true when no member's facet probe returned a candidate, so the places the
     requests cover hold no observation of their variables. The result then holds zero rows, an
     `empty_result` warning and no facet selection.
+    `dependencies` is the run's dependency fingerprint (`materialise.dependencies`), built from
+    what it dispatched, so identical inputs give identical fingerprints whoever ran them. Its
+    source tokens are the refresh dates the generation read before its first SDMX request.
     """
 
     frame_chunks: Callable[[], Iterator[Frame]]
+    frame_sha256: str
     content_version: str
     trace: ManifestTrace
     coverage: Coverage
@@ -133,7 +135,7 @@ class MaterialisationResult:
     output_profile: OutputProfile
     conversion_record: ConversionRecord | None
     member_conversion_records: Mapping[str, ConversionRecord | None]
-    mint_preimage: MintPreimage
+    dependencies: Dependencies
     # Time spent computing the output profile, in seconds.
     output_profile_seconds: float = 0.0
     default_scope: tuple[str, ...] = ()
@@ -165,9 +167,8 @@ class ConcatenatedFrameChunks:
 class PreviewResult:
     """Write-free preview of one request's observations, with no trace.
 
-    With a revision reader, generation runs under the mint's drift check and `content_version`
-    matches a mint for the same request. Without one, the version is `None`. The version covers the
-    full survivor set regardless of `limit`.
+    With `with_content_version`, `content_version` matches a mint for the same request. Without
+    it, the version is `None`. The version covers the full survivor set regardless of `limit`.
 
     `total_rows` and `coverage` describe all surviving rows. `frame` keeps at most the `limit`
     most recent rows, in the frame grammar's order (by role dcids, then period). `truncated` is
@@ -223,7 +224,6 @@ def materialise_group(
     *,
     sdmx: SdmxClient,
     graph: GraphReader,
-    revision_reader: RevisionReader,
     ceiling: int = DEFAULT_SYNC_CEILING_ROWS,
     materialiser_build: str,
     capability_version: str,
@@ -235,8 +235,8 @@ def materialise_group(
     deadline: float | None = None,
     progress: RowProgress | None = None,
 ) -> MaterialisationResult:
-    """Generate and finish a group under one revision-drift check. Returns one frame, trace and
-    content version covering every member.
+    """Generate and finish a group. Returns one frame, trace and content version covering every
+    member.
 
     Before any network call, raises `MaterialisationUsageError` for an empty request, duplicate
     StatVars, different declared-role sets or conflicting unit bindings. Other facet-axis
@@ -250,11 +250,10 @@ def materialise_group(
     the same entity scope and `latest` status, and fetch each chunk with one SDMX call. At most
     `member_concurrency` chunks run at once. The aggregate row ceiling applies to the group.
 
-    `precomputed_probe` must match requests in order. Its revision becomes the generation's
-    starting snapshot. The probe is reused on the first attempt, and retries probe again. What
-    its UN reads could not serve joins the caller's `recording_un_blocked_places` record. Groups
-    above the probe-pair limit require a supplied probe. `deadline` is one absolute monotonic bound
-    shared by every SDMX stream and retry.
+    `precomputed_probe` must match requests in order, and generation reuses it. What its UN reads
+    could not serve joins the caller's `recording_un_blocked_places` record. Groups above the
+    probe-pair limit require a supplied probe. `deadline` is one absolute monotonic bound shared by
+    every SDMX stream and retry.
 
     Request-form unit bindings raise `MaterialisationUsageError` before fetch when `rate_cache` is
     absent. Role-bearing requests require `coverage` for facet counts and SDMX dispatch. Missing
@@ -277,29 +276,20 @@ def materialise_group(
     rate_cache = rate_cache.for_request() if rate_cache is not None else None
     if precomputed_probe is not None:
         note_un_unserved(precomputed_probe.un_unserved)
+    # The graph serving revision the run reads, which its trace records.
+    graph_revision = graph.generation_stamp().token
 
     if len(requests) == 1:
-        first_probe: list[CollectionFacetProbe | None] = [precomputed_probe]
-
-        def _generate_one() -> _MemberOutcome:
-            probe = first_probe[0]
-            first_probe[0] = None
-            return _generate_member(
-                requests[0],
-                sdmx=sdmx,
-                graph=graph,
-                ceiling=ceiling,
-                rate_cache=rate_cache,
-                coverage=coverage,
-                precomputed_probe=probe,
-                deadline=deadline,
-                progress=progress,
-            )
-
-        outcome, revision_snapshot = read_generation(
-            revision_reader,
-            _generate_one,
-            before=precomputed_probe.revision if precomputed_probe is not None else None,
+        outcome = _generate_member(
+            requests[0],
+            sdmx=sdmx,
+            graph=graph,
+            ceiling=ceiling,
+            rate_cache=rate_cache,
+            coverage=coverage,
+            precomputed_probe=precomputed_probe,
+            deadline=deadline,
+            progress=progress,
         )
         refuse_if_every_row_omitted(
             served_rows=outcome.coverage.rows, records=(outcome.conversion_record,)
@@ -307,34 +297,29 @@ def materialise_group(
         return _finish_member(
             requests[0],
             outcome,
-            revision_snapshot=revision_snapshot,
+            graph_revision=graph_revision,
             materialiser_build=materialiser_build,
             capability_version=capability_version,
             enrichment=enrichment,
+            dependencies=build_dependencies(
+                requests,
+                source_refs=dispatched_provenances(outcome.selections),
+                provenance_refresh=outcome.provenance_refresh,
+                conversion_records=(outcome.conversion_record,),
+            ),
         )
 
-    first_group_probe: list[CollectionFacetProbe | None] = [precomputed_probe]
-
-    def _generate_grp() -> _GroupOutcome:
-        probe = first_group_probe[0]
-        first_group_probe[0] = None
-        return _generate_group(
-            requests,
-            sdmx=sdmx,
-            graph=graph,
-            ceiling=ceiling,
-            member_concurrency=member_concurrency,
-            rate_cache=rate_cache,
-            coverage_index=coverage,
-            precomputed_probe=probe,
-            deadline=deadline,
-            progress=progress,
-        )
-
-    outcome, revision_snapshot = read_generation(
-        revision_reader,
-        _generate_grp,
-        before=precomputed_probe.revision if precomputed_probe is not None else None,
+    outcome = _generate_group(
+        requests,
+        sdmx=sdmx,
+        graph=graph,
+        ceiling=ceiling,
+        member_concurrency=member_concurrency,
+        rate_cache=rate_cache,
+        coverage_index=coverage,
+        precomputed_probe=precomputed_probe,
+        deadline=deadline,
+        progress=progress,
     )
     refuse_if_every_row_omitted(
         served_rows=outcome.coverage.rows, records=outcome.member_conversion_records.values()
@@ -342,10 +327,16 @@ def materialise_group(
     return _finish_group(
         requests,
         outcome,
-        revision_snapshot=revision_snapshot,
+        graph_revision=graph_revision,
         materialiser_build=materialiser_build,
         capability_version=capability_version,
         enrichment=enrichment,
+        dependencies=build_dependencies(
+            requests,
+            source_refs=dispatched_provenances(outcome.selections),
+            provenance_refresh=outcome.provenance_refresh,
+            conversion_records=outcome.member_conversion_records.values(),
+        ),
     )
 
 
@@ -354,7 +345,6 @@ def materialise_spec(
     *,
     sdmx: SdmxClient,
     graph: GraphReader,
-    revision_reader: RevisionReader,
     ceiling: int = DEFAULT_SYNC_CEILING_ROWS,
     materialiser_build: str,
     capability_version: str,
@@ -375,7 +365,6 @@ def materialise_spec(
         [request],
         sdmx=sdmx,
         graph=graph,
-        revision_reader=revision_reader,
         ceiling=ceiling,
         materialiser_build=materialiser_build,
         capability_version=capability_version,
@@ -426,7 +415,7 @@ def decide_member_unit(
         # A decision fetches no rows, so precomputed candidates need no admission.
         probed = precomputed
     candidates = admitted_candidates(probed, request.candidate_filter)
-    selections = _select_member_facets(request, candidates, graph=graph, breadth=breadth)
+    selections = _select_member_facets(request, candidates, graph=graph, breadth=breadth).selections
     decide_member_conversion(request=request, selections=selections, graph=graph, deadline=deadline)
     return selections
 
@@ -493,7 +482,7 @@ def finish_materialise_preview(
 ) -> PreviewResult:
     """Convert and render a prepared preview, optionally at one exact period."""
     outcome = _finish_preview_member(prepared._prepared, time_period=time_period)
-    return _preview_result(outcome, prepared._prepared.request, revision_snapshot=None)
+    return _preview_result(outcome, prepared._prepared.request)
 
 
 def materialise_preview(
@@ -503,7 +492,7 @@ def materialise_preview(
     graph: GraphReader,
     limit: int,
     ceiling: int = DEFAULT_SYNC_CEILING_ROWS,
-    revision_reader: RevisionReader | None = None,
+    with_content_version: bool = False,
     rate_cache: RateTableCache | None = None,
     coverage: CoverageIndex | None = None,
     deadline: float | None = None,
@@ -526,9 +515,9 @@ def materialise_preview(
     caching. An absolute monotonic `deadline` bounds the read. An omitted deadline leaves the SDMX
     transport timeout as the only bound.
 
-    With `revision_reader`, preview generation uses the mint's drift check and its
-    `content_version` matches a mint for the same request, including converted requests and any
-    `limit`. Without a reader, `content_version` is `None`. Role-bearing requests use `coverage` for
+    With `with_content_version`, the preview's `content_version` matches a mint for the same
+    request, including converted requests and any `limit`. Without it, `content_version` is
+    `None`. Role-bearing requests use `coverage` for
     the mint's facet counts. `precomputed` hands over candidates the caller already probed, which
     skips the probe (`facets.probe_facets`); `request.candidate_filter` still narrows them.
 
@@ -563,46 +552,28 @@ def materialise_preview(
             rate_cache=rate_cache.for_request() if rate_cache is not None else None,
             coverage_index=coverage,
             deadline=deadline,
-            mint_full_frame=revision_reader is not None,
+            mint_full_frame=with_content_version,
             precomputed=precomputed,
             series_roles=series_roles,
             series_limit=series_limit,
         )
         return _finish_preview_member(prepared)
 
-    if revision_reader is None:
-        outcome, revision_snapshot = _generate(), None
-    else:
-        outcome, revision_snapshot = read_generation(revision_reader, _generate)
+    outcome = _generate()
     if refuse_when_every_row_omitted:
         refuse_if_every_row_omitted(
             served_rows=outcome.coverage.rows, records=(outcome.conversion_record,)
         )
-    return _preview_result(outcome, request, revision_snapshot=revision_snapshot)
+    return _preview_result(outcome, request)
 
 
-def _preview_result(
-    outcome: _PreviewOutcome,
-    request: MaterialisationRequest,
-    *,
-    revision_snapshot: RevisionSnapshot | None,
-) -> PreviewResult:
-    """Build a preview result from one generation. With a revision snapshot, mint `content_version`
-    over the full survivor frame, including rows beyond the delivered limit. A missing snapshot
-    yields `content_version=None`. A snapshot pairs with `outcome.full_frame`.
+def _preview_result(outcome: _PreviewOutcome, request: MaterialisationRequest) -> PreviewResult:
+    """Build a preview result from one generation. With `outcome.full_frame`, mint
+    `content_version` over the full survivor frame, including rows beyond the delivered limit.
+    Without it, `content_version` is `None`.
     """
     full_frame = outcome.full_frame
-    if revision_snapshot is None:
-        content_version = None
-    else:
-        assert full_frame is not None
-        content_version = _mint_member_content_version(
-            request,
-            outcome.selections,
-            outcome.conversion_record,
-            full_frame,
-            revision_snapshot=revision_snapshot,
-        ).content_version
+    content_version = mint_version(full_frame) if full_frame is not None else None
     return PreviewResult(
         frame=outcome.frame,
         coverage=outcome.coverage,

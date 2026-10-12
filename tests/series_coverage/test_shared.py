@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -255,6 +257,43 @@ def test_snapshot_current_with_an_unchanged_pointer_never_calls_the_loader(tmp_p
     assert current.stamp == "test-coverage-stamp"
     assert current.index is loaded_index
     assert len(calls) == 1
+
+
+def test_a_load_guard_wraps_only_the_load_of_a_moved_build(tmp_path: Path) -> None:
+    """A registered guard is entered around the load of a moved build and left once the new
+    build is served. A pointer read that finds no move enters it not at all, and an
+    unregistered guard is never entered again."""
+    base = tmp_path / "coverage"
+    uri = build_test_artifact(base, stamp="stamp-1")
+    events: list[str] = []
+
+    def loader(base_uri: str, *, pointer: CoveragePointer | None = None) -> LoadedCoverage:
+        events.append("load")
+        return load_coverage(base_uri, pointer=pointer)
+
+    service = CoverageService(
+        artifact_uri=uri, index=index_for(uri), recheck_seconds=0, loader=loader
+    )
+    events.clear()
+
+    @contextmanager
+    def guard() -> Iterator[None]:
+        events.append("enter")
+        yield
+        events.append(f"leave serving {service.stamp}")
+
+    unregister = service.register_load_guard(guard)
+    service.snapshot_current()
+    assert events == []
+
+    build_test_artifact(base, stamp="stamp-2")
+    service.snapshot_current()
+    assert events == ["enter", "load", "leave serving stamp-2"]
+
+    unregister()
+    build_test_artifact(base, stamp="stamp-3")
+    service.snapshot_current()
+    assert events[3:] == ["load"]
 
 
 def test_snapshot_current_raises_when_the_pointer_is_unreadable(tmp_path: Path) -> None:

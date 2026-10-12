@@ -86,17 +86,11 @@ from dc_sdmx import SdmxClient
 from materialise import (
     MaterialisationRequest,
     RequestedWindow,
-    RevisionSnapshot,
     materialise_spec,
 )
 
-class StaticRevisionReader:
-    def read(self) -> RevisionSnapshot:
-        return RevisionSnapshot(source_revisions=(), graph_revision="rev_123")
-
 sdmx_client = SdmxClient(base_url="https://datacommons.one.org/core/api")
 graph_reader = GraphClient(base_url="https://datacommons.one.org/core/api")
-revision_reader = StaticRevisionReader()
 
 request = MaterialisationRequest(
     stat_var="dcid:Count_Person",
@@ -110,7 +104,6 @@ result = materialise_spec(
     request=request,
     sdmx=sdmx_client,
     graph=graph_reader,
-    revision_reader=revision_reader,
     materialiser_build="v1",
     capability_version="2026-08",
 )
@@ -120,7 +113,7 @@ result = materialise_spec(
 
 These operations execute in memory on `Frame` instances or schema structures without network or disk I/O. The `materialise` modules need the `sdmx` extra, and `materialise.formats` needs `formats`; `dfo_platform` and `assembler` need no extra:
 
-- **Content Versioning**: `materialise.content_version.mint_version` computes deterministic content version hashes over canonical `Frame` objects.
+- **Content Versioning**: `materialise.content_version.mint_version` hashes a canonical `Frame` into its content version.
 - **Reshaping**: `materialise.reshape` provides structural transforms (`decode_columns`, `apply_reshapes`, `groupby_sum`, `select_columns`, `enrich_columns`, `pivot`).
 - **Summary Statistics**: `materialise.statistics.compute_series_statistics_table` computes per-series observation metrics columnar, into the `series-statistics/1` Arrow schema; `SeriesStatisticsSink` streams the result to a Parquet build (`SeriesStatisticsFile`, `data`/`series_count`).
 - **Format Serialization**: `materialise.formats` serialises frames and reshaped tables (`write_csv`, `write_excel`, `write_parquet`, `write_frame1`).
@@ -150,13 +143,8 @@ statistics_sink = SeriesStatisticsSink()
 statistics_sink.write(compute_series_statistics_table(frame))
 statistics_file = statistics_sink.finish()  # .data (bytes), .series_count (int)
 
-# Mint content version from frame and metadata preimages
-version = mint_version(
-    frame,
-    graph_revision="rev_123",
-    source_revisions=(),
-    facets=(),
-)
+# Mint the content version from the canonical frame alone
+version = mint_version(frame)
 
 # Apply reshape operations to convert frame into a wide table
 reshape_plan = ReshapePlan(

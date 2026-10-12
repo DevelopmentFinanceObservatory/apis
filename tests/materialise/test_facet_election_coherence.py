@@ -12,7 +12,7 @@ from materialise.facets import (
     FacetBinding,
     UnitRequest,
     declared_default_policies,
-    joint_dispatch_facet_ids,
+    joint_matches,
     select_facet,
 )
 from materialise.generation import _generate_member, _select_member_facets
@@ -143,7 +143,7 @@ def test_generate_member_recovers_the_native_currency_facet_over_a_higher_ranked
 def test_select_facet_elects_a_coherent_combination_directly():
     """The same reproduction at `facets.select_facet`'s own level, matching
     `verify-p1-facet-tuple.md`'s own repro script: all three axes elect
-    `f_usd`, and `joint_dispatch_facet_ids` finds it.
+    `f_usd`, and `joint_matches` finds it.
     """
     all_bindings = {"unit": FacetBinding(state="request", request=UnitRequest("USD", "current"))}
     candidates = [_FACET_USD, _FACET_EUR]
@@ -166,7 +166,7 @@ def test_select_facet_elects_a_coherent_combination_directly():
     assert selections["provenance"].ref == _USD_PROVENANCE
     assert selections["measurementMethod"].ref == "M1"
     assert selections["unit"].ref == "CurrencyUSD"
-    assert joint_dispatch_facet_ids(candidates, selections) == ("f_usd",)
+    assert [c.facet_id for c in joint_matches(candidates, selections)] == ["f_usd"]
 
 
 def test_no_currency_match_falls_through_to_the_ordinary_disagreeing_ranking():

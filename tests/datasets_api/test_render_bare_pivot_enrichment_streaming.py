@@ -44,7 +44,7 @@ def _whole():
         whole_table,
         options=_options(),
         entity_columns=("recipient",),
-        enrichment=EnrichmentLookup(_GRAPH),
+        enrichment=EnrichmentLookup(_GRAPH, type_kinds={}, parties={}),
         code_index=None,
         resolved_stat_var_refs=(),
         provenance_refs=(),
@@ -57,12 +57,11 @@ def _streamed(bounds: list[int]):
         iter(_chunks(bounds)),
         options=_options(),
         entity_columns=("recipient",),
-        enrichment=EnrichmentLookup(_GRAPH),
+        enrichment=EnrichmentLookup(_GRAPH, type_kinds={}, parties={}),
         code_index=None,
         resolved_stat_var_refs=(),
         provenance_refs=(),
         subject_id="bare-pivot-enrichment-test",
-        groupby_preimage=None,
         pivot_max_output_cells=5_000_000,
     )
 

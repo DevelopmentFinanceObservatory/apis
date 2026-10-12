@@ -1,12 +1,22 @@
 """Serve source documentation and the source catalogue.
 
 The documentation route uses a separate literal prefix because the dcid
-convertor accepts slashes. It submits the dependent provenance-document
-read as one task through the shared executor and semaphore. The same task
-looks up currency and granularity in the coverage index's per-provenance
-views, which the index builds when it loads. A full pool returns retryable
-503. The deadline is computed before admission, so queue time counts against
-`GRAPH_NODE_TIMEOUT_SECONDS`. Oversized dcids return 400 before a read.
+convertor accepts slashes. It serves the dependent provenance-document read
+from `GraphDeps.provenance_docs`, a single-flight cache keyed by the dcid, the
+request's origin catalogue build and the graph generation, holding at most
+`GRAPH_PROVENANCE_DOC_CACHE_SIZE` documents. Concurrent requests for one
+source share one read, a repeat request within a generation and build reads
+nothing, and a read that fails is not kept. A miss runs the read as one task on
+the shared DCP-read executor, under a flight deadline of
+`GRAPH_NODE_TIMEOUT_SECONDS` from the moment the task is submitted, so queue
+time counts against it, and a task still queued at that deadline is cancelled
+before it reads. Each request waits until its own deadline, set the same way
+before it looks the document up. Oversized dcids return 400 before a read.
+
+Currency and granularity stay out of the cached document. Each response looks
+them up in the coverage index's per-provenance views, which the index builds
+when it loads, and `materialise.provenance_doc.with_coverage_facts` sets them
+and the gaps they decide, so a coverage refresh shows on the next response.
 
 The wire mapping converts the cadence token to its label, keeps missing scalars
 null, maps the parsed transformation steps, changelog releases, methodology
@@ -48,8 +58,8 @@ group carries the card facts the catalogue job computed for it
 here as the documentation route maps it. Existing codes
 are reused because a new code needs a `dfo-spec-kit`
 registry row and a `rev` bump. They map missing nodes to 404, invalid source nodes and
-oversized ids to 400, truncated children to non-retryable 503, a full pool
-to retryable 503, deadline expiry to 504, and DCP 4xx or other errors to
+oversized ids to 400, truncated children to non-retryable 503, deadline
+expiry to 504, and DCP 4xx or other errors to
 502 or 503 respectively.
 """
 
@@ -59,7 +69,7 @@ import asyncio
 import functools
 import logging
 import time
-from concurrent.futures import BrokenExecutor
+from concurrent.futures import Executor
 from typing import TYPE_CHECKING
 
 from dfo_provenance_docs import DocumentErrorReason
@@ -68,11 +78,11 @@ from fastapi.responses import JSONResponse
 
 from dfo_platform import ProblemSpec
 from dfo_platform.doors import DoorContribution
-from dfo_platform.executor import submit_with_context
 from dfo_platform.refusal import TIMEOUT_DEFAULT
+from dfo_platform.single_flight_cache import SingleFlightCache
 from graph_api import routing
-from graph_api.config import GRAPH_NODE_TIMEOUT_SECONDS
-from graph_api.deps import GraphDeps, GraphDepsDep
+from graph_api.config import GRAPH_NODE_TIMEOUT_SECONDS, GRAPH_PROVENANCE_DOC_CACHE_SIZE
+from graph_api.deps import GraphDeps, GraphDepsDep, log_queue_wait
 from graph_api.doors.node import DcidTooLong
 from graph_api.origin_models import DataCommonsRef, SourceNodeRef
 from graph_api.source_models import (
@@ -92,6 +102,7 @@ from graph_api.source_models import (
     VersionHistoryEntry,
 )
 from graph_api.usage import usage_document
+from graph_generation import GenerationProvider
 from materialise.cadence import cadence_label
 from materialise.graph import GraphDeadlineExceededError, GraphReadError
 from materialise.provenance_doc import (
@@ -102,6 +113,7 @@ from materialise.provenance_doc import (
     TooManyChildProvenances,
     coverage_facts_from_index,
     read_provenance_doc,
+    with_coverage_facts,
 )
 from origin_catalogue import (
     BASE,
@@ -125,10 +137,6 @@ if TYPE_CHECKING:
     from series_coverage.shared import CoverageService
 
 logger = logging.getLogger(__name__)
-
-
-class GraphSourcesPoolExhausted(Exception):
-    """The shared DCP-read semaphore is full. The door maps this to retryable 503."""
 
 
 def _to_wire(doc: ProvenanceDoc) -> SourceDocumentation:
@@ -202,8 +210,9 @@ def _coverage_facts_of(
 ) -> CoverageFacts:
     """Return the currencies and granularity the coverage index gives these Provenances.
 
-    Runs on the DCP-read executor. Without a coverage service the currencies
-    are empty and the granularity is `None`; startup already logged why. Both
+    Runs on the event loop, since `current()` returns the served index without I/O and the
+    index builds its per-provenance views when it loads. Without a coverage service the
+    currencies are empty and the granularity is `None`; startup already logged why. Both
     facts come from one index snapshot, so a background refresh cannot mix two
     builds in one response.
     A failure reading the snapshot logs one WARNING and empties both facts.
@@ -226,50 +235,42 @@ def _coverage_facts_of(
     return coverage_facts_from_index(index, provenance_dcids)
 
 
-async def _read_provenance_doc(deps: GraphDeps, dcid: str) -> ProvenanceDoc:
-    """Submit the full dependent read through the shared executor and non-blocking gate.
-    Compute the deadline before admission so queue time counts against the budget.
-    """
-    graph = deps.graph
-    executor = deps.dcp_executor
-    semaphore = deps.dcp_semaphore
+def new_provenance_doc_cache(
+    *, executor: Executor, generation: GenerationProvider
+) -> SingleFlightCache[tuple[str, str], ProvenanceDoc]:
+    """The documentation route's cache of source documents, whose reads run on `executor`
+    and whose entries key on `generation`'s stamp."""
+    return SingleFlightCache(
+        maxsize=GRAPH_PROVENANCE_DOC_CACHE_SIZE,
+        flight_timeout_s=GRAPH_NODE_TIMEOUT_SECONDS,
+        executor=executor,
+        generation=generation,
+    )
 
+
+async def _read_provenance_doc(deps: GraphDeps, dcid: str) -> ProvenanceDoc:
+    """Return `dcid`'s document without coverage facts from `deps.provenance_docs`, reading
+    it on a miss. The key carries the request's catalogue build, which decides the children
+    the document covers and its `source` and `data_commons`. Refresh the generation first,
+    as the resolve door does, so the stamp is fresh after an idle gap.
+    """
+    await deps.generation.refresh_if_stale()
     deadline = time.monotonic() + GRAPH_NODE_TIMEOUT_SECONDS
-    if not semaphore.acquire(blocking=False):
-        raise GraphSourcesPoolExhausted()
-    try:
-        future = submit_with_context(
-            executor,
-            functools.partial(
-                read_provenance_doc,
-                graph,
-                dcid,
-                deadline=deadline,
-                catalogue=current_catalogue(),
-                coverage_facts_of=functools.partial(_coverage_facts_of, deps.coverage),
-            ),
-        )
-    except BrokenExecutor:
-        semaphore.release()
-        logger.error(
-            "Graph sources door's own DCP-read executor is permanently broken; "
-            "every future submitted to it will fail the same way",
-            exc_info=True,
-        )
-        raise
-    except RuntimeError:
-        semaphore.release()
-        raise GraphSourcesPoolExhausted() from None
-    except BaseException:
-        semaphore.release()
-        raise
-    future.add_done_callback(lambda _f: semaphore.release())
-    return await asyncio.wrap_future(future)
+    catalogue = current_catalogue()
+
+    def read(flight_deadline: float) -> ProvenanceDoc:
+        return read_provenance_doc(deps.graph, dcid, deadline=flight_deadline, catalogue=catalogue)
+
+    return await deps.provenance_docs.aget_or_fetch(
+        (dcid, catalogue.build_id), log_queue_wait(read), deadline=deadline
+    )
 
 
 async def _build_response(deps: GraphDeps, dcid: str) -> SourceDocumentation:
-    """Read and map one source document."""
-    return _to_wire(await _read_provenance_doc(deps, dcid))
+    """Read one source document, add this response's coverage facts and map it."""
+    doc = await _read_provenance_doc(deps, dcid)
+    facts = _coverage_facts_of(deps.coverage, doc.provenances)
+    return _to_wire(with_coverage_facts(doc, facts))
 
 
 def classify_sources_exception(exc: BaseException) -> ProblemSpec | None:
@@ -287,13 +288,6 @@ def classify_sources_exception(exc: BaseException) -> ProblemSpec | None:
     if isinstance(exc, TooManyChildProvenances):
         logger.error("Graph sources door refused a truncated child set: %s", exc)
         return ProblemSpec(status=503, code="service_unavailable", detail=str(exc), retryable=False)
-    if isinstance(exc, GraphSourcesPoolExhausted):
-        return ProblemSpec(
-            status=503,
-            code="service_unavailable",
-            detail="the sources door is at its DCP-read capacity right now; retry",
-            retryable=True,
-        )
     if isinstance(exc, GraphDeadlineExceededError):
         # This subclass maps to 504, so it must precede `GraphReadError`.
         return ProblemSpec(
@@ -440,7 +434,6 @@ def build_sources_door() -> DoorContribution:
             SourceDocumentNotFound,
             NotASourceNode,
             TooManyChildProvenances,
-            GraphSourcesPoolExhausted,
             GraphDeadlineExceededError,
             GraphReadError,
         ),
@@ -448,7 +441,6 @@ def build_sources_door() -> DoorContribution:
             SourceDocumentNotFound("exemplar/dcid"),
             NotASourceNode("exemplar/dcid", ("Country",)),
             TooManyChildProvenances("exemplar/dataset"),
-            GraphSourcesPoolExhausted(),
             GraphDeadlineExceededError("exemplar"),
             GraphReadError("exemplar", upstream_status=502),
         ),

@@ -234,7 +234,7 @@ def test_a_member_only_unrecorded_datasets_publish_is_refused_as_the_mint_refuse
     The mint raises `DatasetDisagreementError`, and so does the first answer. Search refuses
     it with the platform's catch-all, the status, code and retry advice the mint's door
     gives it."""
-    from datasets_api.doors.mint_errors import _classify_dataset_disagreement
+    from datasets_api.doors.mint_errors import classify_mint_exception
     from dfo_platform import refusal
     from materialise.errors import DatasetDisagreementError
     from search.engine.app import classify_search_exception
@@ -248,7 +248,8 @@ def test_a_member_only_unrecorded_datasets_publish_is_refused_as_the_mint_refuse
     with pytest.raises(DatasetDisagreementError) as minted:
         _mint(world, _mint_request(world, provenance=_STALE, recorded=(_STALE,)))
     searched = classify_search_exception(minted.value) or refusal.classify_default(minted.value)
-    door = _classify_dataset_disagreement(minted.value)
+    door = classify_mint_exception(minted.value)
+    assert door is not None
     assert (searched.status, searched.code, searched.retryable) == (
         door.status,
         door.code,

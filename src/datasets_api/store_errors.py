@@ -5,6 +5,9 @@ errors as `DatasetsStoreUnavailable`. SQLSTATE class determines whether a
 failure is permanent. Transient writes retry safely because version inserts
 and artifact-reference upserts are idempotent. Permanent errors map to
 non-retryable 500 responses. Other failures map to retryable 503 responses.
+
+A spec registry read or write that fails in its store raises
+`SpecRegistryStoreError`, which maps to a retryable 503 response on every door.
 """
 
 from __future__ import annotations
@@ -13,6 +16,7 @@ import logging
 
 from dfo_platform import ProblemSpec
 from dfo_platform.store_errors import store_failure_is_permanent
+from spec_registry.errors import SpecRegistryStoreError
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +51,14 @@ def classify_store_exception(exc: BaseException) -> ProblemSpec | None:
             status=503,
             code="service_unavailable",
             detail="a datasets store write failed; retry",
+            retryable=True,
+        )
+    if isinstance(exc, SpecRegistryStoreError):
+        logger.error("Spec registry store call failed: %s", exc)
+        return ProblemSpec(
+            status=503,
+            code="service_unavailable",
+            detail="a spec registry store call failed; retry",
             retryable=True,
         )
     return None

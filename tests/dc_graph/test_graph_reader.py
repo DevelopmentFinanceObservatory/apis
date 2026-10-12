@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import time
 from collections.abc import Sequence
@@ -2348,3 +2349,34 @@ def test_post_max_attempts_zero_raises_value_error():
             transport=httpx.MockTransport(lambda request: httpx.Response(200)),
             max_attempts=0,
         )
+
+
+@pytest.mark.parametrize(
+    ("status_code", "elapsed_s", "level"),
+    [(200, 0.01, "DEBUG"), (404, 0.01, "DEBUG"), (200, 2.5, "WARNING")],
+)
+def test_each_response_logs_its_path_status_and_elapsed_ms(
+    caplog, monkeypatch: pytest.MonkeyPatch, status_code: int, elapsed_s: float, level: str
+):
+    """A response slower than `_SLOW_RESPONSE_SECONDS` logs at WARNING with the threshold."""
+    clock = iter([100.0, 100.0 + elapsed_s])
+    monkeypatch.setattr(graph_module, "perf_counter", lambda: next(clock))
+    reader = _reader(
+        httpx.MockTransport(lambda _request: httpx.Response(status_code, json={"data": {}})),
+        max_attempts=1,
+    )
+
+    with caplog.at_level("DEBUG", logger="dc_graph.client"), contextlib.suppress(GraphReadError):
+        reader.post("/v2/node", {"nodes": ["country/KEN"]})
+
+    timings = [
+        (record.levelname, record.args)
+        for record in caplog.records
+        if record.name == "dc_graph.client"
+    ]
+    assert len(timings) == 1
+    logged_level, args = timings[0]
+    assert logged_level == level
+    assert args[:3] == ("POST", "/core/api/v2/node", status_code)
+    assert args[3] == pytest.approx(elapsed_s * 1000)
+    assert args[4:] == ((graph_module._SLOW_RESPONSE_SECONDS * 1000,) if level == "WARNING" else ())

@@ -16,6 +16,7 @@ from typing import get_args
 
 from code_index.query import CodeIndex
 from code_index.types import (
+    PARTY_KINDS,
     AbsentObservation,
     CodeRow,
     CodeSystemDeclaration,
@@ -26,10 +27,12 @@ from code_index.types import (
     MeasureIndex,
     MeasurePartitionLabel,
     MeasureValueRow,
+    PartyKind,
+    PartyRow,
     StatVarRow,
     invalid_when_named_entry,
 )
-from dfo_platform.roles import FlowAccount
+from dfo_platform.roles import AXIS_LABELS, FlowAccount
 
 _PACKAGE = __package__
 _DATA_DIR = "data"
@@ -63,13 +66,21 @@ def parse_index(payload: Mapping, *, source: object = "<document>") -> CodeIndex
     `CyclicParent`. Cross-system parents raise `CrossSystemParent`.
     Invalid defaults raise `InvalidDeclaredDefault` when their code is
     outside the declaring system or `when_bound_under` names a missing or
-    same-system code."""
+    same-system code.
+
+    The `party_types`, `parties` and `listed_statvars` blocks are optional: an index without
+    the first two declares no party kind, and one without the third lists no StatVar outside
+    its code systems (`CodeIndex.listed_statvars`). A kind outside `PartyKind`, a type declared twice, or a `totals` on a
+    party that is not a total raises `IndexFormatError`."""
     try:
         stamp = _parse_stamp(payload["stamp"])
         declarations = [_parse_declaration(row) for row in payload["declarations"]]
         codes = [_parse_code(row) for row in payload["codes"]]
         statvars = [_parse_statvar(row) for row in payload["statvars"]]
         datasets = _parse_datasets(payload["datasets"])
+        party_types = _parse_party_types(payload.get("party_types", ()))
+        parties = [_parse_party(row) for row in payload.get("parties", ())]
+        listed_statvars = [_parse_statvar(row) for row in payload.get("listed_statvars", ())]
     except (KeyError, TypeError) as exc:
         raise IndexFormatError(f"malformed code_index export at {source!r}: {exc}") from exc
     _check_datasets(datasets, statvars)
@@ -79,7 +90,55 @@ def parse_index(payload: Mapping, *, source: object = "<document>") -> CodeIndex
         codes=codes,
         statvars=statvars,
         datasets=datasets,
+        party_types=party_types,
+        parties=parties,
+        listed_statvars=listed_statvars,
     )
+
+
+def _parse_party_types(rows: Sequence[Mapping]) -> dict[str, PartyKind | None]:
+    """Each `party_types` row's type and kind, refusing a kind outside `PartyKind` other than
+    `null` and a type declared twice."""
+    kinds: dict[str, PartyKind | None] = {}
+    for row in rows:
+        type_, kind = row["type"], row["kind"]
+        if kind is not None and kind not in PARTY_KINDS:
+            raise IndexFormatError(
+                f"party type {type_!r} carries kind {kind!r}, outside {sorted(PARTY_KINDS)!r}"
+            )
+        if type_ in kinds:
+            raise IndexFormatError(f"party type {type_!r} is declared more than once")
+        kinds[type_] = kind
+    return kinds
+
+
+def _parse_party(row: Mapping) -> PartyRow:
+    """One `parties` row, refusing a kind outside `PartyKind`, an axis outside the flow axes,
+    and a `totals` or `residuals` on a party that is not a total. `residuals`, `label`,
+    `datasets` and `axes` are optional."""
+    party = PartyRow(
+        dcid=row["dcid"],
+        kind=row["kind"],
+        totals=row["totals"],
+        residuals=tuple(row.get("residuals", ())),
+        label=row.get("label"),
+        datasets=tuple(row.get("datasets", ())),
+        axes=tuple(row.get("axes", ())),
+    )
+    if party.kind not in PARTY_KINDS:
+        raise IndexFormatError(
+            f"party {party.dcid!r} carries kind {party.kind!r}, outside {sorted(PARTY_KINDS)!r}"
+        )
+    if unknown := sorted(set(party.axes) - AXIS_LABELS):
+        raise IndexFormatError(
+            f"party {party.dcid!r} names axes {unknown!r}, outside {sorted(AXIS_LABELS)!r}"
+        )
+    if (party.totals is not None or party.residuals) and party.kind != "total":
+        raise IndexFormatError(
+            f"party {party.dcid!r} of kind {party.kind!r} names a group or residuals; "
+            "only a total holds them"
+        )
+    return party
 
 
 def _read_json(source: Traversable | Path | str) -> dict:

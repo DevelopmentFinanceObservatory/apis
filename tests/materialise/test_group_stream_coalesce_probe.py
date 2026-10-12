@@ -25,10 +25,9 @@ from ._group_support import (
     _OTHER_ENTITY,
     _ROLE,
     _SHARED_FACET,
-    _SNAPSHOT,
     _request,
 )
-from .conftest import FakeGraphReader, FakeRevisionReader
+from .conftest import FakeGraphReader
 
 # B is the only member bound to `_OTHER_ENTITY`, so it forms its own chunk.
 _MEMBERS = (
@@ -131,8 +130,7 @@ def _run(
         _requests_in_shuffled_order(),
         sdmx=sdmx,
         graph=_graph(),
-        enrichment=EnrichmentLookup(_graph()),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(_graph(), type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         member_concurrency=member_concurrency,

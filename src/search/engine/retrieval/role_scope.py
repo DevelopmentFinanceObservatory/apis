@@ -442,8 +442,10 @@ def facet_from_coverage(facet: FacetCoverage, meta: FacetMetadata | None) -> Fac
     entry per year whatever the year's count, as a mint's coverage probe carries them
     (`materialise.facets.coverage_probe`). A candidate summed across every role tuple of a
     family therefore holds at most one date per horizon year. An election ranks it by
-    ``obs_count`` and a window check reads the years. Facet metadata is copied from the
-    coverage artifact when present.
+    ``obs_count`` and a window check reads the years. Facet metadata, the observation period
+    included, is copied from the coverage artifact when present. The years are coverage's,
+    whatever the facet's cadence, so they are no evidence that it is annual
+    (``dates_coarsened``).
     """
     dates = tuple(str(year) for year, count in sorted(facet.year_counts.items()) if count)
     return Facet(
@@ -452,11 +454,13 @@ def facet_from_coverage(facet: FacetCoverage, meta: FacetMetadata | None) -> Fac
         obs_count=facet.n_obs,
         dates=dates,
         dates_complete=True,
+        dates_coarsened=True,
         facet_id=facet.facet_id,
         provenance_id=meta.provenance_id if meta else None,
         measurement_method=meta.measurement_method if meta else None,
         unit=meta.unit if meta else None,
         scaling_factor=meta.scaling_factor if meta else None,
+        observation_period=meta.observation_period if meta else None,
     )
 
 

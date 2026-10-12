@@ -686,6 +686,7 @@ def _capture_bind_shapes(monkeypatch) -> list[list[ShapeDraft]]:
         admitted_ties=(),
         withheld_measure_axes=frozenset(),
         dropped_qualifier_phrases=(),
+        candidate_menus=(),
         llm,
     ):
         captured.append(list(shapes))

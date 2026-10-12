@@ -7,7 +7,10 @@ the family the index resolves; an empty indexed result remains empty. Other
 identities use the mint's graph walk, through the enumerator every surface shares
 (`statvar_members.shared_enumerator`), with registry-defined absent readings: a first
 page that truncates without proof reads the whole filtered set up to
-`settings().resubmit_subject_ceiling` subjects, as the mint and a resubmit do.
+`settings().resubmit_subject_ceiling` subjects, as the mint and a resubmit do. A family
+holding a row the index lists outside its code systems, as IDS families do, is elected
+from the index in place of the walk (`code_index.members.listed_group`), as the mint
+elects it.
 
 Index populations are uncapped; the ODA-to-Kenya family has 3,812 members.
 Graph enumeration uses the shared enumerator's member cap and the request deadline. A
@@ -27,6 +30,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal, cast
 
+from code_index.members import FamilyQuery, listed_group
 from code_index.query import dedupe_first_seen
 from code_index.shared import get_index
 from dfo_platform.named import named_capped
@@ -258,18 +262,31 @@ def options_population(
         source = "graph"
         five_tuple = _member_five_tuple(shape)
         slots = _widen_hierarchical_slots(_member_slot_bindings(identity.slots))
+        enumerator = shared_enumerator()
         try:
-            group = shared_enumerator().enumerate(
-                graph=graph,
-                stamp_key=graph.generation_stamp().key,
-                five_tuple=five_tuple,
-                slots=slots,
-                readings=_absent_readings(),
-                role_keys=frozenset(identity.entities),
-                open_role_keys=identity.open_roles or (),
-                subject_ceiling=settings().resubmit_subject_ceiling,
-                deadline=deadline,
+            group = listed_group(
+                get_index(),
+                FamilyQuery(
+                    five_tuple,
+                    slots,
+                    None,
+                    role_keys=frozenset(identity.entities),
+                    open_role_keys=frozenset(identity.open_roles or ()),
+                ),
+                member_cap=enumerator.member_cap,
             )
+            if group is None:
+                group = enumerator.enumerate(
+                    graph=graph,
+                    stamp_key=graph.generation_stamp().key,
+                    five_tuple=five_tuple,
+                    slots=slots,
+                    readings=_absent_readings(),
+                    role_keys=frozenset(identity.entities),
+                    open_role_keys=identity.open_roles or (),
+                    subject_ceiling=settings().resubmit_subject_ceiling,
+                    deadline=deadline,
+                )
         except MemberEnumerationTooLarge as exc:
             raise EngineInputError(
                 f"{exc.count} StatVars are consistent with this identity, exceeding the "

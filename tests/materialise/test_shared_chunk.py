@@ -17,20 +17,13 @@ from materialise import generation as generation_module
 from materialise.errors import MembersNotHeldError, OverCeilingError
 from materialise.facets import CoverageAdmission, FacetBinding, FacetSelection
 from materialise.graph import Facet, GraphReadError
-from materialise.revision import RevisionSnapshot, SourceRevision
 from materialise.window import RequestedWindow
 from series_coverage.index import CoverageIndex
 from series_coverage.schema import FacetMetadata, RoleNames
 from tests.engine._fake_coverage import build_coverage_index
 
 from ._table_support import table_from_cells
-from .conftest import FakeGraphReader, FakeRevisionReader
-
-_SNAPSHOT = RevisionSnapshot(
-    graph_revision="graph-rev-2024-01",
-    source_revisions=(SourceRevision(source="OECD_DAC_CRS", revision="rev-7"),),
-)
-
+from .conftest import FakeGraphReader
 
 _BOUND_FACETS = {
     "provenance": FacetBinding(state="bound", ref="OECD_DAC2A"),
@@ -253,8 +246,7 @@ def _materialise_rejected_chunk(graph: FakeGraphReader) -> None:
             transport=httpx.MockTransport(handler),
         ),
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         member_concurrency=1,

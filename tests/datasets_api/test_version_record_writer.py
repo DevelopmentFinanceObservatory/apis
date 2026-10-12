@@ -2,19 +2,30 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
 
-from dataset_store.snapshot import LiveSnapshotReader
+from dataset_store.snapshot import (
+    FrameLineage,
+    LiveSnapshotReader,
+    ManifestFacts,
+    VersionFactsMissing,
+)
 from datasets_api.manifest_models import CoverageModel
-from datasets_api.revision import SentinelRevisionReader
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.version_store import LiveVersionRecordWriter, rendering_key
-from datasets_api.versions import ArtifactRecord, VersionRecord
+from datasets_api.versions import (
+    ArtifactRecord,
+    NullVersionRecordWriter,
+    VersionRecord,
+    VersionWrite,
+    WrittenVersion,
+)
 from materialise.graph import Facet
-from series_coverage.schema import FacetMetadata, RoleNames
+from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from spec_registry import LiveSpecRegistry
 from spec_registry.reader import LiveSpecReader
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
@@ -24,6 +35,7 @@ from ._artifact_doubles import FakeArtifactStore
 from ._graph_doubles import FakeMintGraphReader
 from ._snapshot_doubles import FakeSnapshotReader
 from ._store_fault_doubles import DriverExplodingFakeDatasetStore, SqlstateExplodingFakeDatasetStore
+from ._version_facts import facts_from_body, golden_cases
 from ._version_record_store import FakeVersionRecordDatasetStore
 from .conftest import FakeDatasetStore
 from .test_pin_door import FakeArtifactReferenceWriter
@@ -58,6 +70,9 @@ _CSV_BY_STAT_VAR = {
     _STAT_VAR_B: _CSV_HEADER + _csv_row(stat_var_ref=_REF_B, year="2017", value="2000"),
 }
 
+# Facts for records whose facts no assertion reads.
+_FACTS = FrameLineage(input_content_versions=["cv_x"])
+
 _FACET = Facet(
     facet_id="facet1",
     provenance_id="OECD_DAC2A",
@@ -87,8 +102,12 @@ class RecordingVersionRecordWriter:
         content_version: str,
         artifact: ArtifactRecord,
         trace_id: str | None = None,
-    ) -> None:
-        return None
+    ) -> str:
+        return artifact.artifact_digest
+
+    def write_version(self, write: VersionWrite, *, trace_id: str | None = None) -> WrittenVersion:
+        self.record_version(write.record, trace_id=trace_id)
+        return NullVersionRecordWriter().write_version(write, trace_id=trace_id)
 
 
 class RaisingVersionRecordWriter:
@@ -105,6 +124,9 @@ class RaisingVersionRecordWriter:
         artifact: ArtifactRecord,
         trace_id: str | None = None,
     ) -> None:
+        raise DatasetsStoreUnavailable("exemplar diagnostics")
+
+    def write_version(self, write: VersionWrite, *, trace_id: str | None = None) -> WrittenVersion:
         raise DatasetsStoreUnavailable("exemplar diagnostics")
 
 
@@ -131,12 +153,12 @@ def _coverage_service() -> FakeCoverageService:
     """Build coverage for both fixture StatVars with `_FACET` metadata and their CSV years."""
     index = build_coverage_index(
         [
-            (_STAT_VAR_A, "facet1", "country/USA", "country/KEN", [2015]),
-            (_STAT_VAR_B, "facet1", "country/USA", "country/KEN", [2017]),
+            (_STAT_VAR_A, "facet1", ABSENT_ENTITY, "country/KEN", [2015]),
+            (_STAT_VAR_B, "facet1", ABSENT_ENTITY, "country/KEN", [2017]),
         ],
         role_names={
-            _STAT_VAR_A: RoleNames(donor="provider", recipient="recipient"),
-            _STAT_VAR_B: RoleNames(donor="provider", recipient="recipient"),
+            _STAT_VAR_A: RoleNames(donor=None, recipient="recipient"),
+            _STAT_VAR_B: RoleNames(donor=None, recipient="recipient"),
         },
         facet_metadata={
             "facet1": FacetMetadata(
@@ -182,7 +204,6 @@ def _client(*, version_writer):
         spec_reader=LiveSpecReader(store=store),
         graph=graph,
         sdmx=sdmx,
-        revision_reader=SentinelRevisionReader(),
         artifact_store=FakeArtifactStore(),
         version_writer=version_writer,
         snapshot_reader=FakeSnapshotReader(),
@@ -210,14 +231,12 @@ def _scope(*, statvars: list[str]) -> dict:
     }
 
 
-def _wire_coverage(immutable_body: dict) -> dict:
-    """A stored body's coverage as a wire response serialises it."""
-    return CoverageModel.model_validate(immutable_body["coverage"]).model_dump(
-        mode="json", exclude_none=True
-    )
+def _wire_coverage(coverage: Mapping[str, object]) -> dict:
+    """A stored coverage fact as a wire response serialises it."""
+    return CoverageModel.model_validate(coverage).model_dump(mode="json", exclude_none=True)
 
 
-def test_definition_mint_records_version_exactly_once_with_no_live_artifacts_in_the_body():
+def test_definition_mint_records_version_exactly_once_with_no_live_artifacts_in_its_facts():
     writer = RecordingVersionRecordWriter()
     client = _client(version_writer=writer)
 
@@ -231,17 +250,18 @@ def test_definition_mint_records_version_exactly_once_with_no_live_artifacts_in_
     assert record.subject_kind == "spec"
     assert record.subject_id == manifest["definition"]["spec_id"]
     assert record.content_version == manifest["content_version"]
-    assert "artifacts" not in record.immutable_body
+    facts = record.facts
+    assert isinstance(facts, ManifestFacts)
 
     # Compare fields carried on the wire.
-    assert record.immutable_body["definition"] == manifest["definition"]
-    assert "collection" not in record.immutable_body
-    assert record.immutable_body["content_version"] == manifest["content_version"]
+    assert facts.definition == manifest["definition"]
     # A stored dimension retains `axis: None`, while the wire response omits it.
-    assert _wire_coverage(record.immutable_body) == manifest["coverage"]
-    assert record.immutable_body["citation"]["text"] == manifest["citation"]["text"]
-    assert record.immutable_body["trace"] == manifest["trace"]
-    assert record.immutable_body["warnings"] == manifest["warnings"]
+    assert _wire_coverage(facts.coverage) == manifest["coverage"]
+    assert facts.citation["text"] == manifest["citation"]["text"]
+    # The response stamps how this call was served onto the stored trace.
+    served = {"served_from": "materialise", "confirmed_at": manifest["trace"]["confirmed_at"]}
+    assert {**facts.trace, **served} == manifest["trace"]
+    assert facts.warnings == manifest["warnings"]
 
 
 def test_mint_door_wire_maps_a_version_writer_store_failure_to_retryable_503():
@@ -256,9 +276,8 @@ def test_mint_door_wire_maps_a_version_writer_store_failure_to_retryable_503():
 
 
 def test_a_repeat_definition_mint_still_records_version_exactly_once_per_call():
-    """`record_version` fires exactly once per `record_definition_version`
-    call. A repeat mint of the same definition is a separate call, with
-    its own single record.
+    """A mint writes its version record exactly once (`write_version`). A repeat mint of the
+    same definition is a separate call, with its own single record.
     """
     writer = RecordingVersionRecordWriter()
     client = _client(version_writer=writer)
@@ -300,7 +319,7 @@ def test_live_writer_persists_the_record_and_its_artifact_links(version_store):
             subject_kind="spec",
             content_version="cv1",
             schema_version=1,
-            immutable_body={"content_version": "cv1"},
+            facts=_FACTS,
             artifacts=(_artifact_record("sha256:aaa"), _artifact_record("sha256:bbb")),
         ),
         trace_id="trace-1",
@@ -324,8 +343,11 @@ def test_live_writer_persists_the_record_and_its_artifact_links(version_store):
     assert record_row["base_content_version"] is None
 
 
-def test_live_writer_round_trips_base_content_version_off_its_own_column(version_store):
-    """`base_content_version` persists in its own column and reads back from that column."""
+def test_live_writer_round_trips_base_content_version_and_frame_sha256_off_their_columns(
+    version_store,
+):
+    """`base_content_version` and `frame_sha256` persist in their own columns and read back
+    from them. The body holds no `frame_sha256`."""
     writer = LiveVersionRecordWriter(
         store=version_store, now=lambda: datetime(2026, 1, 1, tzinfo=UTC)
     )
@@ -336,8 +358,9 @@ def test_live_writer_round_trips_base_content_version_off_its_own_column(version
             subject_kind="spec",
             content_version="cv_collapsed",
             schema_version=1,
-            immutable_body={"content_version": "cv_collapsed"},
+            facts=_FACTS,
             base_content_version="cv_base",
+            frame_sha256="a" * 64,
         )
     )
 
@@ -347,12 +370,60 @@ def test_live_writer_round_trips_base_content_version_off_its_own_column(version
             ("spec_a", "cv_collapsed"),
         )
     assert record_row["base_content_version"] == "cv_base"
-    assert "base_content_version" not in record_row["immutable_body"]
+    assert record_row["frame_sha256"] == "a" * 64
+    assert "frame_sha256" not in record_row["immutable_body"]
 
     stored = LiveSnapshotReader(store=version_store).read_version("spec_a", "cv_collapsed")
     assert stored is not None
     assert stored.base_content_version == "cv_base"
-    assert "base_content_version" not in stored.immutable_body
+    assert stored.frame_sha256 == "a" * 64
+
+
+@pytest.mark.parametrize("name", ["definition", "collapsed", "conversions", "published"])
+def test_live_writer_stores_facts_as_columns_and_the_body_they_encode(version_store, name):
+    """A new version stores its facts in their own columns and, in `immutable_body`, the body
+    the previous writer stored for them, and reads back the facts it stored."""
+    case = golden_cases()[name]
+    facts = facts_from_body(case["body"])
+    LiveVersionRecordWriter(store=version_store).record_version(
+        VersionRecord(
+            subject_id=case["subject_id"],
+            subject_kind="spec",
+            content_version=case["content_version"],
+            schema_version=1,
+            facts=facts,
+            base_content_version=case["base_content_version"],
+        )
+    )
+
+    with version_store.transaction() as tx:
+        record_row = tx.fetch_one(
+            "SELECT immutable_body FROM datasets.version_record "
+            "WHERE subject_id = %s AND content_version = %s",
+            (case["subject_id"], case["content_version"]),
+        )
+    assert record_row == {"immutable_body": case["body"]}
+    stored = LiveSnapshotReader(store=version_store).read_version(
+        case["subject_id"], case["content_version"]
+    )
+    assert stored is not None
+    assert stored.facts == facts
+
+
+def test_a_version_row_holding_no_facts_refuses_to_read(version_store):
+    """A row whose body names neither `prepared_at` nor `input_content_versions` holds no
+    facts. Reading it refuses."""
+    with version_store.transaction() as tx:
+        tx.execute(
+            "INSERT INTO datasets.version_record "
+            "(subject_id, subject_kind, content_version, schema_version, immutable_body, "
+            "recorded_at) VALUES (%s, 'spec', 'cv1', 1, %s, %s)",
+            ("spec_a", {"revision": "first"}, datetime(2026, 1, 1, tzinfo=UTC)),
+        )
+
+    with pytest.raises(VersionFactsMissing) as refused:
+        LiveSnapshotReader(store=version_store).read_version("spec_a", "cv1")
+    assert (refused.value.subject_id, refused.value.content_version) == ("spec_a", "cv1")
 
 
 def test_record_version_returns_whether_its_own_insert_created_the_row(version_store):
@@ -365,7 +436,7 @@ def test_record_version_returns_whether_its_own_insert_created_the_row(version_s
         subject_kind="spec",
         content_version="cv1",
         schema_version=1,
-        immutable_body={"content_version": "cv1"},
+        facts=_FACTS,
         artifacts=(_artifact_record("sha256:aaa"),),
     )
 
@@ -373,8 +444,9 @@ def test_record_version_returns_whether_its_own_insert_created_the_row(version_s
     assert writer.record_version(record) is False
 
 
-def test_live_writer_does_not_rewrite_an_already_recorded_versions_immutable_body(version_store):
-    """A repeated version insert preserves its timestamp and body while adding new artifact links."""
+def test_live_writer_does_not_rewrite_an_already_recorded_versions_facts(version_store):
+    """A repeated version insert with other facts returns `False`, preserves the stored
+    timestamp and facts, and adds new artifact links."""
     writer = LiveVersionRecordWriter(
         store=version_store, now=lambda: datetime(2026, 1, 1, tzinfo=UTC)
     )
@@ -384,7 +456,7 @@ def test_live_writer_does_not_rewrite_an_already_recorded_versions_immutable_bod
             subject_kind="spec",
             content_version="cv1",
             schema_version=1,
-            immutable_body={"content_version": "cv1", "revision": "first"},
+            facts=FrameLineage(input_content_versions=["cv_first"]),
             artifacts=(_artifact_record("sha256:aaa"),),
         )
     )
@@ -392,13 +464,13 @@ def test_live_writer_does_not_rewrite_an_already_recorded_versions_immutable_bod
     later_writer = LiveVersionRecordWriter(
         store=version_store, now=lambda: datetime(2026, 6, 1, tzinfo=UTC)
     )
-    later_writer.record_version(
+    recorded = later_writer.record_version(
         VersionRecord(
             subject_id="spec_a",
             subject_kind="spec",
             content_version="cv1",
             schema_version=1,
-            immutable_body={"content_version": "cv1", "revision": "second"},
+            facts=FrameLineage(input_content_versions=["cv_second"]),
             artifacts=(_artifact_record("sha256:aaa"), _artifact_record("sha256:ccc")),
         )
     )
@@ -413,8 +485,9 @@ def test_live_writer_does_not_rewrite_an_already_recorded_versions_immutable_bod
             "WHERE subject_id = %s AND content_version = %s ORDER BY artifact_digest",
             ("spec_a", "cv1"),
         )
+    assert recorded is False
     assert record_row["recorded_at"] == datetime(2026, 1, 1, tzinfo=UTC)
-    assert record_row["immutable_body"]["revision"] == "first"
+    assert record_row["input_content_versions"] == ["cv_first"]
     assert [row["artifact_digest"] for row in artifact_rows] == ["sha256:aaa", "sha256:ccc"]
 
 
@@ -428,7 +501,7 @@ def test_live_writer_defaults_its_clock_to_the_real_utc_now(version_store):
             subject_kind="spec",
             content_version="cv1",
             schema_version=1,
-            immutable_body={},
+            facts=_FACTS,
         )
     )
     after = datetime.now(UTC)
@@ -444,7 +517,7 @@ def test_live_writer_defaults_its_clock_to_the_real_utc_now(version_store):
 
 
 def test_live_writer_persists_a_definition_mint_end_to_end_through_the_real_door(version_store):
-    """The mint door records both response artifacts and its internal frame1 artifact."""
+    """The mint door records both response artifacts and its internal canonical frame."""
     writer = LiveVersionRecordWriter(store=version_store)
     client = _client(version_writer=writer)
 
@@ -467,7 +540,7 @@ def test_live_writer_persists_a_definition_mint_end_to_end_through_the_real_door
     recorded_digests = {row["artifact_digest"] for row in artifact_rows}
     assert response_digests <= recorded_digests
     assert recorded_digests - response_digests
-    assert any(row["rendering"] == {"format": "frame1"} for row in artifact_rows)
+    assert any(row["rendering"] == {"format": "frame"} for row in artifact_rows)
 
 
 def test_identical_rendering_options_resubmitted_stay_a_single_idempotent_row(version_store):
@@ -480,7 +553,7 @@ def test_identical_rendering_options_resubmitted_stay_a_single_idempotent_row(ve
         subject_kind="spec",
         content_version="cv1",
         schema_version=1,
-        immutable_body={"content_version": "cv1"},
+        facts=_FACTS,
         artifacts=(_artifact_record("sha256:aaa"),),
     )
 
@@ -507,7 +580,7 @@ def test_two_rendering_option_sets_sharing_one_digest_still_yield_two_rows(versi
             subject_kind="spec",
             content_version="cv1",
             schema_version=1,
-            immutable_body={"content_version": "cv1"},
+            facts=_FACTS,
             artifacts=(
                 ArtifactRecord(
                     artifact_digest="sha256:shared",
@@ -544,7 +617,7 @@ def test_record_artifact_adds_a_rendering_to_an_already_recorded_version(version
             subject_kind="spec",
             content_version="cv1",
             schema_version=1,
-            immutable_body={"content_version": "cv1"},
+            facts=_FACTS,
             artifacts=(_artifact_record("sha256:aaa"),),
         )
     )
@@ -589,7 +662,7 @@ def test_a_rendering_key_keeps_its_link_only_while_the_linked_digest_is_servable
             subject_kind="spec",
             content_version="cv1",
             schema_version=1,
-            immutable_body={"content_version": "cv1"},
+            facts=_FACTS,
             artifacts=(
                 ArtifactRecord(
                     artifact_digest="sha256:old", rendering=rendering, media_type="application/zip"
@@ -648,7 +721,7 @@ def test_rendering_key_matches_the_key_record_version_stored(version_store):
             subject_kind="spec",
             content_version="cv1",
             schema_version=1,
-            immutable_body={"content_version": "cv1"},
+            facts=_FACTS,
             artifacts=(
                 ArtifactRecord(
                     artifact_digest="sha256:aaa",
@@ -681,7 +754,7 @@ def test_a_driver_failure_raises_datasets_store_unavailable_with_no_leaked_conte
                 subject_kind="spec",
                 content_version="cv1",
                 schema_version=1,
-                immutable_body={"bound_parameter_marker": "should-never-leak"},
+                facts=FrameLineage(input_content_versions=["should-never-leak"]),
             )
         )
 
@@ -704,7 +777,7 @@ def test_a_driver_failure_carrying_a_sqlstate_attaches_it_to_the_raised_exceptio
                 subject_kind="spec",
                 content_version="cv1",
                 schema_version=1,
-                immutable_body={"k": "v"},
+                facts=_FACTS,
             )
         )
 

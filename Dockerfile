@@ -65,6 +65,7 @@ RUN apt-get update \
 COPY --from=build /opt/uv-python /opt/uv-python
 COPY --from=build /app/.venv /app/.venv
 COPY --from=build /app/resolvekit-cache /app/resolvekit-cache
+COPY log-config.json /app/log-config.json
 
 WORKDIR /app
 ENV PATH="/app/.venv/bin:$PATH" \
@@ -85,4 +86,7 @@ EXPOSE 8080
 
 # Cloud Run restarts crashed containers, so uvicorn runs in the foreground with
 # no supervisor. exec keeps it as PID 1 so SIGTERM reaches it for graceful drain.
-CMD exec uvicorn --factory dfo_apis.app:create_app --host 0.0.0.0 --port "${PORT}"
+# The log config writes every log line as JSON for Cloud Logging
+# (dfo_platform.cloud_logging).
+CMD exec uvicorn --factory dfo_apis.app:create_app --host 0.0.0.0 --port "${PORT}" \
+    --log-config /app/log-config.json

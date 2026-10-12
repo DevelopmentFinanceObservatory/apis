@@ -7,6 +7,7 @@ from __future__ import annotations
 import io
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import httpx
 import pyarrow.parquet as pq
@@ -15,18 +16,18 @@ import pytest
 from code_index.query import CodeIndex
 from code_index.shared import get_index
 from code_index.types import CodeSystemDeclaration, IndexStamp
+from dataset_store.snapshot import ManifestFacts, StoredVersion
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.manifest import (
     assemble_manifest,
     build_citation,
     coverage_model,
-    decode_default_scope_plural,
-    decode_series_conversions,
-    decode_version_body,
-    encode_version_body,
+    definition_version_record,
     healed_citation,
+    manifest_facts,
     persisted_manifest,
-    record_definition_version,
+    stored_output_profile,
+    stored_series_conversions,
 )
 from datasets_api.manifest_models import (
     CitationModel,
@@ -39,23 +40,32 @@ from datasets_api.manifest_models import (
     Manifest,
     TransformationStepModel,
 )
-from datasets_api.revision import SentinelRevisionReader
-from datasets_api.versions import ArtifactRecord, VersionRecord
+from datasets_api.versions import VersionRecord
 from materialise import (
     EnrichmentLookup,
     MaterialisationResult,
 )
-from materialise.content_version import MintPreimage
+from materialise.dependencies import Dependencies
 from materialise.frame_build import build_frame
 from materialise.graph import Facet
 from materialise.profile import compute_output_profile
-from materialise.provenance_doc import read_source_citations
+from materialise.provenance_doc import CoverageFacts, read_provenance_doc, read_source_citations
 from materialise.series_conversion import SeriesConversion, SeriesKey
 from materialise.statistics import SeriesStatisticsSink, compute_series_statistics_table
 from materialise.trace import ManifestTrace
 from materialise.window import Coverage
-from origin_catalogue import BASE, ProvenanceRow, SourceRef, bound_catalogue
-from series_coverage.schema import FacetMetadata, RoleNames
+from origin_catalogue import (
+    BASE,
+    CardFacts,
+    CatalogueSnapshot,
+    ProvenanceRow,
+    SourceRef,
+    bound_catalogue,
+)
+from origin_catalogue.catalogue import Licence, SourceDocumentation
+from origin_catalogue.job import build_provenance_table
+from origin_catalogue.registry import parse_registry
+from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from spec_registry import LiveSpecRegistry
 from spec_registry.reader import LiveSpecReader, StoredDefinition
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
@@ -69,29 +79,6 @@ from .conftest import FakeDatasetStore
 from .test_pin_door import FakeArtifactReferenceWriter
 
 _PREPARED_AT = datetime(2026, 10, 4, 12, 0, tzinfo=UTC)
-
-
-class RecordingVersionRecordWriter:
-    """A `VersionRecordWriter` that records every call and persists
-    nothing, kept local here so this file's own unit tests of the
-    assemble/record split don't need a door-level fixture.
-    """
-
-    def __init__(self) -> None:
-        self.records: list[VersionRecord] = []
-
-    def record_version(self, record: VersionRecord, *, trace_id: str | None = None) -> None:
-        self.records.append(record)
-
-    def record_artifact(
-        self,
-        *,
-        subject_id: str,
-        content_version: str,
-        artifact: ArtifactRecord,
-        trace_id: str | None = None,
-    ) -> None:
-        return None
 
 
 _STAT_VAR_A = "GrantA"
@@ -159,12 +146,12 @@ def _coverage_service() -> FakeCoverageService:
     """Coverage for both StatVars, matching `_FACET` and spanning the CSV fixtures' 2015-2018 years."""
     index = build_coverage_index(
         [
-            (_STAT_VAR_A, "facet1", "country/USA", "country/KEN", [2015, 2016, 2017, 2018]),
-            (_STAT_VAR_B, "facet1", "country/USA", "country/KEN", [2015, 2016, 2017, 2018]),
+            (_STAT_VAR_A, "facet1", ABSENT_ENTITY, "country/KEN", [2015, 2016, 2017, 2018]),
+            (_STAT_VAR_B, "facet1", ABSENT_ENTITY, "country/KEN", [2015, 2016, 2017, 2018]),
         ],
         role_names={
-            _STAT_VAR_A: RoleNames(donor="provider", recipient="recipient"),
-            _STAT_VAR_B: RoleNames(donor="provider", recipient="recipient"),
+            _STAT_VAR_A: RoleNames(donor=None, recipient="recipient"),
+            _STAT_VAR_B: RoleNames(donor=None, recipient="recipient"),
         },
         facet_metadata={
             "facet1": FacetMetadata(
@@ -206,7 +193,6 @@ def _client(*, artifact_store=None, csv_by_stat_var=None):
         spec_reader=LiveSpecReader(store=store),
         graph=graph,
         sdmx=sdmx,
-        revision_reader=SentinelRevisionReader(),
         artifact_store=artifact_store if artifact_store is not None else FakeArtifactStore(),
         snapshot_reader=FakeSnapshotReader(),
         reference_writer=FakeArtifactReferenceWriter(),
@@ -329,29 +315,22 @@ def test_build_citation_keeps_one_entry_per_ref_and_processing_level_pair():
 
 
 def test_build_citation_names_a_catalogued_source_from_the_provenance_table():
-    """A Provenance the origin catalogue lists takes its label, url, source and Data Commons
-    from the provenance table and its licence, as a display label, its dcid and its terms
-    page, from the graph. `citation.text` joins the labels."""
+    """A Provenance the origin catalogue lists takes its label, url, source, Data Commons and
+    licence, as a display label, its dcid and its terms page, from the provenance table.
+    `citation.text` joins the labels."""
     wdi = "dc/base/WorldDevelopmentIndicators"
-    graph = FakeMintGraphReader(
-        arcs={
-            wdi: {
-                "typeOf": ("Provenance",),
-                "name": ("WorldDevelopmentIndicators",),
-                "licenseType": ("CreativeCommonsAttributionLicense",),
-                "license": ("https://creativecommons.org/licenses/by/4.0/",),
-            },
-            "CreativeCommonsAttributionLicense": {
-                "name": ("Creative Commons Attribution License",)
-            },
-        }
-    )
+    graph = FakeMintGraphReader()
     row = ProvenanceRow(
         id=wdi,
         data_commons=BASE,
         source=SourceRef(ref="dc/s/WorldBank", label="World Bank"),
         name="World Development Indicators",
         url="https://datatopics.worldbank.org/world-development-indicators/",
+        licence=Licence(
+            type="CreativeCommonsAttributionLicense",
+            label="Creative Commons Attribution License",
+            url="https://creativecommons.org/licenses/by/4.0/",
+        ),
     )
     refs = [wdi]
 
@@ -464,38 +443,43 @@ def test_build_citation_falls_back_to_the_ref_for_a_source_with_no_resolved_entr
 _WDI = "dc/base/WorldDevelopmentIndicators"
 
 
-def _documented_wdi() -> tuple[FakeMintGraphReader, ProvenanceRow]:
-    """A catalogued, licensed and documented source: a mint fills every citation field."""
-    graph = FakeMintGraphReader(
-        arcs={
-            _WDI: {
-                "typeOf": ("Provenance",),
-                "name": ("WorldDevelopmentIndicators",),
-                "licenseType": ("CreativeCommonsAttributionLicense",),
-                "license": ("https://creativecommons.org/licenses/by/4.0/",),
-                "licenseAttribution": ("World Bank (2026), World Development Indicators",),
-                "sourceReleaseFrequency": ("P1Y",),
-            },
-            "CreativeCommonsAttributionLicense": {
-                "name": ("Creative Commons Attribution License",)
-            },
-        }
-    )
+def _documented_wdi() -> CatalogueSnapshot:
+    """A catalogue listing a licensed and documented source: a mint fills every citation
+    field."""
     row = ProvenanceRow(
         id=_WDI,
         data_commons=BASE,
         source=SourceRef(ref="dc/s/WorldBank", label="World Bank"),
         name="World Development Indicators",
         url="https://datatopics.worldbank.org/world-development-indicators/",
+        licence=Licence(
+            type="CreativeCommonsAttributionLicense",
+            label="Creative Commons Attribution License",
+            url="https://creativecommons.org/licenses/by/4.0/",
+        ),
     )
-    return graph, row
+    return restrictive_catalogue(
+        provenances=[row],
+        dataset_facts={
+            _WDI: CardFacts(
+                license_type="Creative Commons Attribution License", update_cadence="P1Y"
+            )
+        },
+        source_documentation={
+            _WDI: SourceDocumentation(
+                provenances=(_WDI,),
+                citation="World Bank (2026), World Development Indicators",
+                license_url="https://creativecommons.org/licenses/by/4.0/",
+            )
+        },
+    )
 
 
 def test_healed_citation_fills_an_old_body_with_what_a_fresh_mint_stores():
     """A body stored before the citation carried a licence, url, source and Data Commons heals to
-    the source a first mint builds from the same live read."""
-    graph, row = _documented_wdi()
-    catalogue = restrictive_catalogue(provenances=[row])
+    the source a first mint builds from the same catalogue."""
+    graph = FakeMintGraphReader()
+    catalogue = _documented_wdi()
     fresh, _ = build_citation(
         provenance_refs=[_WDI],
         source_citations=read_source_citations(graph, [_WDI], catalogue=catalogue, documented=True),
@@ -520,11 +504,12 @@ def test_healed_citation_fills_an_old_body_with_what_a_fresh_mint_stores():
 
     assert fresh.sources[0].documentation is not None
     assert (healed, complete) == (fresh, True)
+    assert graph.calls["node_arcs_many"] == graph.calls["node_subjects"] == 0
 
 
 def test_healed_citation_reads_nothing_for_a_fully_populated_body():
-    graph, row = _documented_wdi()
-    catalogue = restrictive_catalogue(provenances=[row])
+    graph = FakeMintGraphReader()
+    catalogue = _documented_wdi()
     stored, _ = build_citation(
         provenance_refs=[_WDI],
         source_citations=read_source_citations(graph, [_WDI], catalogue=catalogue, documented=True),
@@ -536,6 +521,190 @@ def test_healed_citation_reads_nothing_for_a_fully_populated_body():
 
     assert (healed, complete) == (stored, True)
     assert graph.calls == reads_before
+
+
+# Citations from a catalogue the catalogue job built over the same graph.
+
+_CRS = "provenance/OECDCreditorReportingSystem"
+_CRS_DATASET = "dc/d/OECD_CreditorReportingSystem"
+_OECD = "dc/s/OrganisationForEconomicCo-operationAndDevelopmentOecd"
+_WORLD_BANK = "dc/s/WorldBank"
+_SHARED_DATASET = "dc/d/WorldBank_Shared"
+_SHARED_A = "dc/base/WorldBank_SharedA"
+_SHARED_B = "dc/base/WorldBank_SharedB"
+_CC_BY = "CreativeCommonsAttributionLicense"
+_OECD_TERMS = "OECDTermsAndConditions"
+
+_CATALOGUED_REGISTRY = f"""
+[[base]]
+source = "{_WORLD_BANK}"
+label = "World Bank"
+exclusions = []
+
+[[un_system]]
+provenance = "undata/p/WHO"
+segment = "who"
+label = "World Health Organization (WHO)"
+"""
+
+
+def _catalogued_graph() -> FakeMintGraphReader:
+    """A documented DFO provenance under its Dataset, a licensed base orphan, and a base
+    Dataset with two children, each carrying the citation's licence and documentation
+    arcs."""
+    return FakeMintGraphReader(
+        arcs={
+            _OECD: {"typeOf": ("Source",), "name": ("OECD",)},
+            _WORLD_BANK: {"typeOf": ("Source",), "name": ("World Bank",)},
+            _CRS_DATASET: {
+                "typeOf": ("Dataset",),
+                "name": ("Creditor Reporting System",),
+                "url": ("https://www.oecd.org/en/data/datasets/creditor-reporting-system.html",),
+                "isPartOf": (_OECD,),
+            },
+            _CRS: {
+                "typeOf": ("Provenance",),
+                "name": ("OECDCreditorReportingSystem",),
+                "url": ("https://data-explorer.oecd.org/crs",),
+                "source": (_OECD,),
+                "isPartOf": (_CRS_DATASET,),
+                "licenseType": (_OECD_TERMS,),
+                "license": ("https://www.oecd.org/en/about/terms-conditions.html",),
+                "licenseAttribution": ("OECD (2026), Creditor Reporting System",),
+                "sourceReleaseFrequency": ("P3M",),
+                "sourceDataUrl": ("https://webfs-dcd.oecd.org/files/dotStat/DSD_CRS/CRS.parquet",),
+                "lastDataRefreshDate": ("2026-10-02",),
+                "nextDataRefreshDate": ("2027-01-02",),
+                "earliestObservationDate": ("1973",),
+                "latestObservationDate": ("2024",),
+                "description": ("Activity-level aid flows reported by DAC members.",),
+                "dataTransformationDescription": (
+                    "## Download the source data\\n\\nThe complete CRS file is downloaded.",
+                ),
+                "dataTransformationChangelog": (
+                    "## 2026-08-20 First release\\n\\n### Added\\n\\n- Dataset added to the graph.\\n",
+                ),
+                "sourceMethodologyDescription": (
+                    "The OECD collects activity-level reports\\nfrom each DAC member.\\n",
+                ),
+                "dataNotes": ("- Figures for the latest year are preliminary.\\n",),
+            },
+            _OECD_TERMS: {"name": ("OECD Terms and Conditions",)},
+            _CC_BY: {"name": ("Creative Commons Attribution License",)},
+            _WDI: {
+                "typeOf": ("Provenance",),
+                "name": ("WorldDevelopmentIndicators",),
+                "url": ("https://datatopics.worldbank.org/world-development-indicators/",),
+                "source": (_WORLD_BANK,),
+                "licenseType": (_CC_BY,),
+                "license": ("https://creativecommons.org/licenses/by/4.0/",),
+                "licenseAttribution": ("World Bank (2026), World Development Indicators",),
+                "sourceReleaseFrequency": ("P1Y",),
+                "lastDataRefreshDate": ("2026-07-01",),
+                "earliestObservationDate": ("1960-01",),
+                "latestObservationDate": ("2025",),
+            },
+            _SHARED_DATASET: {
+                "typeOf": ("Dataset",),
+                "name": ("World Bank Shared",),
+                "url": ("https://data.worldbank.org/shared",),
+                "isPartOf": (_WORLD_BANK,),
+            },
+            _SHARED_A: {
+                "typeOf": ("Provenance",),
+                "url": ("https://data.worldbank.org/shared/a",),
+                "source": (_WORLD_BANK,),
+                "isPartOf": (_SHARED_DATASET,),
+                "licenseType": (_CC_BY,),
+                "licenseAttribution": ("World Bank (2026)",),
+                "lastDataRefreshDate": ("2026-03-01",),
+                "nextDataRefreshDate": ("2026-12-01",),
+                "description": ("Child A.",),
+                "dataNotes": ("- A note only a sole child would serve.\\n",),
+            },
+            _SHARED_B: {
+                "typeOf": ("Provenance",),
+                "url": ("https://data.worldbank.org/shared/b",),
+                "source": (_WORLD_BANK,),
+                "isPartOf": (_SHARED_DATASET,),
+                "licenseType": (_CC_BY,),
+                "license": ("https://creativecommons.org/licenses/by/4.0/",),
+                "licenseAttribution": ("World Bank (2026)",),
+                "lastDataRefreshDate": ("2026-05-01",),
+                "nextDataRefreshDate": ("2026-11-01",),
+            },
+        }
+    )
+
+
+def _catalogue_built_from(graph: FakeMintGraphReader) -> CatalogueSnapshot:
+    """The catalogue the job's provenance stage builds from `graph`."""
+    stage = build_provenance_table(
+        registry=parse_registry(_CATALOGUED_REGISTRY.encode()),
+        dfo_provenances=frozenset({_CRS}),
+        graph=graph,
+    )
+    assert stage.refusals == ()
+    return restrictive_catalogue(
+        provenances=stage.rows.values(),
+        dataset_facts=stage.dataset_facts,
+        source_documentation=stage.source_documentation,
+    )
+
+
+_CATALOGUED_REFS = [_CRS, _WDI, _SHARED_A]
+
+
+def _provenances_as_currencies(provenances: tuple[str, ...]) -> CoverageFacts:
+    return CoverageFacts(currencies=tuple(sorted(provenances)))
+
+
+_CATALOGUED_CITATION = Path(__file__).parent / "fixtures" / "catalogued_citation.json"
+
+
+def test_a_first_mint_s_catalogued_citation_is_the_wire_the_graph_reads_gave():
+    """The citation of catalogued sources, licence and documentation included, is the bytes a
+    first mint stored when it read them from the graph. The coverage lookup names the
+    Provenances each document covers as its currencies, so the bytes pin that set too."""
+    graph = _catalogued_graph()
+    catalogue = _catalogue_built_from(graph)
+
+    citation, _warnings = build_citation(
+        provenance_refs=_CATALOGUED_REFS,
+        source_citations=read_source_citations(
+            graph,
+            _CATALOGUED_REFS,
+            catalogue=catalogue,
+            documented=True,
+            coverage_facts_of=_provenances_as_currencies,
+        ),
+    )
+
+    assert citation.model_dump_json(indent=2) + "\n" == _CATALOGUED_CITATION.read_text()
+
+
+def test_a_first_mint_s_catalogued_citation_reads_no_graph():
+    """Licence and documentation come from the catalogue, and each document is the one
+    `read_provenance_doc` reads from the graph, members off the wire included."""
+    graph = _catalogued_graph()
+    catalogue = _catalogue_built_from(graph)
+    reads_before = dict(graph.calls)
+
+    citations = read_source_citations(
+        graph,
+        _CATALOGUED_REFS,
+        catalogue=catalogue,
+        documented=True,
+        coverage_facts_of=_provenances_as_currencies,
+    )
+
+    assert graph.calls == reads_before
+    assert {ref: citation.documentation for ref, citation in citations.items()} == {
+        ref: read_provenance_doc(
+            graph, ref, catalogue=catalogue, coverage_facts_of=_provenances_as_currencies
+        )
+        for ref in _CATALOGUED_REFS
+    }
 
 
 # Statistics placement in definition manifests.
@@ -579,6 +748,7 @@ def _statistics_file(frame):
 def _statistics_fixture_result(frame) -> MaterialisationResult:
     return MaterialisationResult(
         frame_chunks=lambda: iter((frame,)),
+        frame_sha256="0" * 64,
         content_version="cv_fixture",
         trace=ManifestTrace(
             applied_window=None,
@@ -596,11 +766,15 @@ def _statistics_fixture_result(frame) -> MaterialisationResult:
         warnings=(),
         series_statistics=_statistics_file(frame),
         output_profile=compute_output_profile(
-            frame, role_columns=("recipient",), enrichment=EnrichmentLookup(FakeMintGraphReader())
+            frame,
+            role_columns=("recipient",),
+            enrichment=EnrichmentLookup(FakeMintGraphReader(), type_kinds={}, parties={}),
         ),
         conversion_record=None,
         member_conversion_records={_REF_A: None},
-        mint_preimage=MintPreimage(graph_revision="rev1", source_revisions=(), facets=()),
+        dependencies=Dependencies(
+            members="sha256:fixture", sources=(), conversion_sources=(), recipes=(), window=None
+        ),
     )
 
 
@@ -793,15 +967,14 @@ _SERIES_CONVERSIONS = {
     [((), False), (("Earth",), False), (("country/KEN", "country/GHA"), True)],
     ids=["bound", "worldwide", "plural"],
 )
-def test_record_definition_version_writes_the_encoded_body_exactly_once(
+def test_definition_version_record_stores_its_facts(
     series_conversions: dict[SeriesKey, SeriesConversion],
     default_scope: tuple[str, ...],
     plural: bool,
 ):
-    """The body stores each converted series' record and whether the default place scope was
-    plural, alongside the Manifest fields. Decoding the body returns both and the same
-    manifest fields as a body without them. A body without the keys decodes to no records
-    and an unknown scope."""
+    """The facts store each converted series' record and whether the default place scope was
+    plural, alongside the Manifest fields, and assemble the manifest the mint built. Facts
+    without them read no records and an unknown scope, and assemble the same manifest."""
     frame = _statistics_fixture_frame()
     result = replace(
         _statistics_fixture_result(frame),
@@ -821,41 +994,45 @@ def test_record_definition_version_writes_the_encoded_body_exactly_once(
         code_index=get_index(),
         settings=DatasetsBuildSettings(),
     )
-    writer = RecordingVersionRecordWriter()
-
-    record_definition_version(
-        manifest=manifest,
-        stored=stored,
-        materialisation=result,
-        artifacts=[],
-        version_writer=writer,
+    record = definition_version_record(
+        manifest=manifest, stored=stored, materialisation=result, artifacts=[]
     )
 
-    assert len(writer.records) == 1
-    record = writer.records[0]
-    assert record.immutable_body == encode_version_body(
+    facts = record.facts
+    assert facts == manifest_facts(
         manifest,
         output_profile=result.output_profile,
         series_conversions=series_conversions,
         default_scope=default_scope,
     )
-    assert "output_options" not in record.immutable_body
-    assert "collection" not in record.immutable_body
-    assert persisted_manifest(body=record.immutable_body, served=manifest) == manifest
-    assert record.immutable_body["output_profile"] == result.output_profile.to_json()
-    assert decode_series_conversions(record.immutable_body) == series_conversions
-    assert ("series_conversions" in record.immutable_body) == bool(series_conversions)
-    without_records = encode_version_body(manifest, output_profile=result.output_profile)
-    assert decode_series_conversions(without_records) == {}
-    assert decode_default_scope_plural(record.immutable_body) is plural
-    assert decode_default_scope_plural(without_records) is None
-    assert decode_version_body(record.immutable_body) == decode_version_body(without_records)
+    assert isinstance(facts, ManifestFacts)
+    stored_version = _stored_version(record)
+    assert persisted_manifest(stored=stored_version, served=manifest) == manifest
+    assert stored_output_profile(facts) == result.output_profile
+    assert stored_series_conversions(facts) == series_conversions
+    assert (facts.series_conversions is not None) == bool(series_conversions)
+    assert facts.default_scope_plural is plural
+    without_records = manifest_facts(manifest, output_profile=result.output_profile)
+    assert stored_series_conversions(without_records) == {}
+    assert without_records.default_scope_plural is None
+    assert persisted_manifest(
+        stored=replace(stored_version, facts=without_records), served=manifest
+    ) == persisted_manifest(stored=stored_version, served=manifest)
 
 
-def test_record_definition_version_carries_base_content_version_off_the_stored_body():
-    """`base_content_version` belongs on `VersionRecord`, outside `immutable_body` and its
-    strict Manifest schema.
-    """
+def _stored_version(record: VersionRecord) -> StoredVersion:
+    return StoredVersion(
+        subject_id=record.subject_id,
+        subject_kind=record.subject_kind,
+        content_version=record.content_version,
+        schema_version=record.schema_version,
+        facts=record.facts,
+        base_content_version=record.base_content_version,
+    )
+
+
+def test_definition_version_record_carries_base_content_version_on_the_record():
+    """`base_content_version` is the record's own field, outside the strict Manifest schema."""
     frame = _statistics_fixture_frame()
     result = _statistics_fixture_result(frame)
     stored = _fixture_stored_definition(spec_id="spec_fixture", identity_digest="sha256:fixture")
@@ -871,21 +1048,15 @@ def test_record_definition_version_carries_base_content_version_off_the_stored_b
         code_index=get_index(),
         settings=DatasetsBuildSettings(),
     )
-    writer = RecordingVersionRecordWriter()
-
-    record_definition_version(
+    record = definition_version_record(
         manifest=manifest,
         stored=stored,
         materialisation=result,
         artifacts=[],
-        version_writer=writer,
         base_content_version="cv_base",
     )
 
-    assert len(writer.records) == 1
-    record = writer.records[0]
     assert record.base_content_version == "cv_base"
-    assert "base_content_version" not in record.immutable_body
 
 
 # The caller's injected CodeIndex must also supply the manifest capability stamp.

@@ -18,13 +18,12 @@ from materialise import (
 )
 from materialise.facets import FacetBinding
 from materialise.graph import Facet
-from materialise.revision import RevisionSnapshot, SourceRevision
 from materialise.window import RequestedWindow
 from series_coverage.index import CoverageIndex
 from series_coverage.schema import FacetMetadata, RoleNames
 from tests.engine._fake_coverage import build_coverage_index
 
-from .conftest import FakeGraphReader, FakeRevisionReader, only_chunk
+from .conftest import FakeGraphReader, only_chunk
 
 _BASE_URL = "https://datacommons.one.org/core/api"
 _STAT_VAR_A = "dcid:LatestWindowMemberA"
@@ -32,10 +31,6 @@ _STAT_VAR_B = "dcid:LatestWindowMemberB"
 _BARE_A = "LatestWindowMemberA"
 _BARE_B = "LatestWindowMemberB"
 
-_SNAPSHOT = RevisionSnapshot(
-    graph_revision="graph-rev-2024-01",
-    source_revisions=(SourceRevision(source="OECD_DAC_CRS", revision="rev-7"),),
-)
 
 _BOUND_FACETS = {
     "provenance": FacetBinding(state="bound", ref="OECD_DAC2A"),
@@ -127,8 +122,7 @@ def test_single_member_latest_window_sends_time_period_latest():
         ),
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -152,8 +146,7 @@ def test_single_member_non_latest_window_omits_time_period():
         _request(stat_var=_STAT_VAR_A, recipient="country/TGO", window=RequestedWindow(kind="all")),
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -183,8 +176,7 @@ def test_single_member_latest_window_blank_value_at_latest_period_serves_no_row(
         ),
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -240,8 +232,7 @@ def test_group_member_time_period_matches_each_members_own_window_kind():
         ],
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,

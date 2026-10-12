@@ -22,6 +22,8 @@ from dfo_platform.app import create_app
 from presentation_api.app import presentation_surface
 from presentation_api.config import PRESENTATION_FRAMES_TIMEOUT_SECONDS
 from presentation_api.doors.frames import classify_frames_exception
+from spec_registry.errors import SpecRegistryStoreError, SpecRegistryUnavailable
+from tests.presentation_store.test_frame_store import _posted_frame_fixture, _store
 
 
 def _frame_url(frame_ref: FrameRef) -> str:
@@ -305,3 +307,70 @@ def test_a_permanent_datasets_store_failure_is_internal_error_and_not_retryable(
     assert spec.status == 500
     assert spec.code == "internal_error"
     assert spec.retryable is False
+
+
+class _RegistryDownFrameStore(FakeFrameStore):
+    """A frame store whose revocation-scope read finds the spec registry unavailable."""
+
+    def load(self, *, frame_ref: FrameRef) -> Never:
+        raise SpecRegistryUnavailable("spec registry pool borrow timed out")
+
+
+def test_a_frame_load_the_registry_cannot_scope_answers_retryable_service_unavailable(
+    frame_ref: FrameRef, revision_store: FakeRevisionStore, release_registry: FakeReleaseRegistry
+):
+    """A frame load fails closed when the registry cannot name the ids its revocation check
+    covers, and the route answers retryable 503 as a Datasets door does for an unavailable
+    store, never 500."""
+    surface = presentation_surface(
+        frame_store=_RegistryDownFrameStore(),
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+    with TestClient(create_app([surface]), raise_server_exceptions=False) as client:
+        resp = _get_frame(client, frame_ref)
+
+    assert resp.status_code == 503, resp.text
+    assert (resp.json()["code"], resp.json()["retryable"]) == ("service_unavailable", True)
+
+
+@pytest.mark.parametrize(
+    ("fault", "status", "code", "retryable"),
+    [
+        ("unavailable", 503, "service_unavailable", True),
+        ("store-error", 503, "service_unavailable", True),
+        ("quarantined", 404, "frame_unavailable", False),
+    ],
+)
+def test_a_live_frame_load_whose_registry_read_fails_answers_a_declared_refusal(
+    fault: str,
+    status: int,
+    code: str,
+    retryable: bool,
+    revision_store: FakeRevisionStore,
+    release_registry: FakeReleaseRegistry,
+):
+    """A real frame store reads the registry to scope a frame ref's revocation check. Each
+    fault that read can raise answers a declared refusal through the frames route, never 500."""
+    snapshots, artifacts, frame_ref, _served_id, spec_reader = _posted_frame_fixture()
+    if fault == "quarantined":
+        spec_reader.quarantined = frozenset({frame_ref.spec_id})
+    else:
+        spec_reader.definition_error = (
+            SpecRegistryUnavailable("spec registry pool borrow timed out")
+            if fault == "unavailable"
+            else SpecRegistryStoreError("spec registry read failed")
+        )
+    surface = presentation_surface(
+        frame_store=_store(snapshots=snapshots, artifacts=artifacts, spec_reader=spec_reader),
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+    with TestClient(create_app([surface]), raise_server_exceptions=False) as client:
+        resp = _get_frame(client, frame_ref)
+
+    assert (resp.status_code, resp.json()["code"], resp.json()["retryable"]) == (
+        status,
+        code,
+        retryable,
+    ), resp.text

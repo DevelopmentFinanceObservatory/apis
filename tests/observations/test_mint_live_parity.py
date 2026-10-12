@@ -37,7 +37,6 @@ import search.observations
 from artifact_store import LiveArtifactInventory
 from dataset_store.snapshot import LiveSnapshotReader
 from datasets_api.doors.observations import observations_body
-from datasets_api.revision import SentinelRevisionReader
 from datasets_api.version_store import LiveVersionRecordWriter
 from dc_sdmx import SdmxClient, SdmxObservation
 from materialise.graph import Facet
@@ -467,7 +466,6 @@ def _mint_and_read_frozen(upstream: _Upstream, spec: Spec) -> dict[str, object]:
         ),
         graph=upstream.materialise_graph(),
         sdmx=upstream.sdmx(),
-        revision_reader=SentinelRevisionReader(),
         reference_writer=FakeArtifactReferenceWriter(),
         coverage=upstream.coverage(),
         rate_cache=RateTableCache(),

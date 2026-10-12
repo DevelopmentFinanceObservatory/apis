@@ -1315,13 +1315,29 @@ class TestParseColumnTokens:
         assert [(a.ref, a.label) for a in excinfo.value.alternatives] == [
             ("entity_iso2", "entity_iso2"),
             ("entity_iso3", "entity_iso3"),
+            ("entity_kind", "entity_kind"),
             ("entity_label", "entity_label"),
             ("entity_type", "entity_type"),
             ("donor_iso2", "donor_iso2"),
             ("donor_iso3", "donor_iso3"),
+            ("donor_kind", "donor_kind"),
             ("donor_label", "donor_label"),
             ("donor_type", "donor_type"),
         ]
+
+    def test_a_bare_field_requests_it_for_every_entity_column_once(self):
+        # A caller asks for kinds without knowing the table's roles; a qualified token the
+        # bare one covers adds no second request.
+        result = parse_column_tokens(
+            ("donor_kind", "kind", "value", "entity_kind"),
+            table_columns=self._TABLE_COLUMNS,
+            entity_columns=("donor", "entity"),
+            supported_fields=SUPPORTED_ENRICHMENTS,
+        )
+
+        assert result == ParsedColumns(
+            select=("value",), enrichments=(("donor", "kind"), ("entity", "kind"))
+        )
 
     def test_an_entity_column_containing_an_underscore_resolves_correctly(self):
         table_columns = ("stat_var", "observation_about", "time_period", "value")

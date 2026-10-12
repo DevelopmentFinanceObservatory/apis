@@ -5,6 +5,10 @@ Parameterized queries scan `%` outside single-quoted literals. `%%` escapes a
 percent. A bare `%` raises `InterfaceError`.
 
 Schema-qualify every dataset table as `datasets.<table>`.
+
+`LiveDatasetStore.transaction` adds one to the call's `db_transactions` count
+(`dfo_platform.timings.count`), so each request's timings line says how many
+transactions, and so how many pool borrows, that request made.
 """
 
 from __future__ import annotations
@@ -16,6 +20,7 @@ from typing import Protocol
 
 from dataset_store.dbapi import DBAPIConnection
 from dataset_store.errors import DatasetStoreConnectionError, DatasetStoreError
+from dfo_platform.timings import count
 
 
 class Transaction(Protocol):
@@ -101,6 +106,7 @@ class LiveDatasetStore:
                 "await -- async callers run them in worker threads"
             )
         self._local.in_transaction = True
+        count("db_transactions")
         try:
             with self._connections.borrow(timeout=self._borrow_timeout) as conn:
                 try:

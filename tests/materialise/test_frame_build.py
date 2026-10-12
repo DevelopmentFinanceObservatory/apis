@@ -51,18 +51,8 @@ def test_build_frame_empty_rows_is_stable_and_deterministic():
     frame = build_frame(role_keys=_ROLE_KEYS, rows=())
     assert frame.rows == ()
 
-    token_1 = mint_version(
-        frame,
-        graph_revision="graph-rev-1",
-        source_revisions=[],
-        facets=[],
-    )
-    token_2 = mint_version(
-        frame,
-        graph_revision="graph-rev-1",
-        source_revisions=[],
-        facets=[],
-    )
+    token_1 = mint_version(frame)
+    token_2 = mint_version(frame)
     assert token_1 == token_2
     assert token_1.startswith("cv_")
 
@@ -279,6 +269,6 @@ def test_differential_against_build_frame_over_generated_rows():
         assert via_table.rows == via_rows.rows
         assert canonical_frame_bytes(via_table) == canonical_frame_bytes(via_rows)
 
-        token_rows = mint_version(via_rows, graph_revision="r1", source_revisions=[], facets=[])
-        token_table = mint_version(via_table, graph_revision="r1", source_revisions=[], facets=[])
+        token_rows = mint_version(via_rows)
+        token_table = mint_version(via_table)
         assert token_rows == token_table

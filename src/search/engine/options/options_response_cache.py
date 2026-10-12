@@ -33,8 +33,11 @@ remain uncached. A later request retries every uncached result.
 
 Each entry's generation stamp is part of its key and sets its `max_age_s`.
 A coverage republish changes the caller-supplied key. Single-flight starts
-one `asyncio.Task` per key and runs `compute` in `asyncio.to_thread`.
-Callers await that task through `asyncio.shield`, each with its own deadline.
+one `asyncio.Task` per key and runs `compute` in `asyncio.to_thread`. The
+flight's deadline, `request_timeout_s` from when it starts, is passed to
+`compute` and bound as the task's request deadline, so no caller's deadline
+bounds the reads `compute` makes. Callers await that task through
+`asyncio.shield`, each with its own deadline.
 Timeout or cancellation detaches that caller's wait; the shared task continues.
 Concurrent callers receive the computed result, including results with
 warnings, even though warned results are never stored. Followers wait on the
@@ -223,19 +226,22 @@ class OptionsResponseCache:
             raise ValueError(f"max_entries must be at least 1, got {max_entries!r}")
         self._cache: SingleFlightCache[str, ComputedOptions] = SingleFlightCache(
             maxsize=max_entries if self._enabled else 0,
+            flight_timeout_s=config.settings().request_timeout_s,
             generation=generation,
             clock=clock,
         )
 
     async def get_or_compute(
-        self, key: str, compute: Callable[[], ComputedOptions], *, deadline: float
+        self, key: str, compute: Callable[[float], ComputedOptions], *, deadline: float
     ) -> ComputedOptions:
         """Return the cached result or compute it on a miss.
 
         Exceptions propagate and are not stored. Results with warnings are
         shared with concurrent callers but not cached. `deadline` bounds only
         this caller's wait; timeout raises `asyncio.TimeoutError` without
-        cancelling the shared task.
+        cancelling the shared task. `compute` receives the absolute deadline
+        its reads must honour: the flight's, or this caller's when the cache
+        is disabled.
         """
         return await self._cache.aget_or_fetch(
             key, compute, deadline=deadline, is_cacheable=_is_cacheable

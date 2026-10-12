@@ -46,11 +46,17 @@ def candidates(
         return NA
     families = list(block.family_forms.items())
     specs = answers(part, ctx)
-    verdicts = [[_family_match(form, spec, ctx).verdict for spec in specs] for _, form in families]
+    results = [[_family_match(form, spec, ctx) for spec in specs] for _, form in families]
+    verdicts = [[result.verdict for result in row] for row in results]
     if pairs_one_to_one(len(families), len(specs), lambda f, s: verdicts[f][s] == Verdict.PASS):
         return PASS
     open_verdicts = {Verdict.PASS, Verdict.UNVERIFIABLE}
     if pairs_one_to_one(len(families), len(specs), lambda f, s: verdicts[f][s] in open_verdicts):
+        # A failed graph, coverage or members read leaves the pairing open, so the
+        # check reports it as infrastructure.
+        failed_read = next((r for row in results for r in row if r.infra), None)
+        if failed_read is not None:
+            return failed_read
         return unverifiable("a family pairs only with a candidate whose match is unverifiable")
     unmatched = [
         family

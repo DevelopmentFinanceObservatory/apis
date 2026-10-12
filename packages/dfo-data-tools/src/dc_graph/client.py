@@ -5,7 +5,9 @@ Graph API reader protocols. Search adds an adapter for Search-specific result ty
 
 By default, reads get three attempts with 0.5 s and 2.0 s backoffs. 5xx responses and transport
 errors retry. 4xx responses and non-JSON 2xx bodies fail. Search configures one attempt.
-Sized caches are off by default, and entries are written only after successful reads.
+Sized caches are off by default, and entries are written only after successful reads. Each
+response logs one line with its path, status and milliseconds to headers, at DEBUG, or at WARNING
+past `_SLOW_RESPONSE_SECONDS` (`_log_response`).
 
 Callers can supply read, deadline and cap error subclasses with matching constructor signatures.
 The read and deadline classes must inherit their corresponding `GraphReadError` types. Cap errors
@@ -25,6 +27,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, as_completed, wait
 from dataclasses import dataclass, replace
 from functools import partial
+from time import perf_counter
 from types import MappingProxyType
 from typing import Final, Literal, Self
 
@@ -39,13 +42,19 @@ from dc_graph.errors import (
     GraphReadError,
     ReadErrorFactory,
 )
-from dfo_platform.single_flight_cache import SingleFlightCache
+from dfo_platform.executor import submit_with_context
+from dfo_platform.request_deadline import bounded_deadline
+from dfo_platform.single_flight_cache import SingleFlightCache, WaitTimeout
+from dfo_platform.timings import count
 from graph_generation import UNKNOWN_GENERATION, GenerationProvider, GenerationStamp
 from graph_generation.stamp import ttu_from_stamp_key
 
 logger = logging.getLogger(__name__)
 
 _TOKEN_HEADER = "x-graph-token"
+# The request extension `_count_request` stamps with the `perf_counter` time it sent the request,
+# a clock kept apart from the `time.monotonic` deadlines.
+_SENT_AT = "dfo_sent_at"
 NODE_PATH: Final[str] = "/v2/node"
 _OBSERVATION_PATH = "/v2/observation"
 _RESOLVE_PATH = "/v2/resolve"
@@ -54,7 +63,7 @@ _ERROR_BODY_SNIPPET_BYTES = 4096
 _FRONT_DOOR_REFUSAL_PAGE_MARKER = "<title>403</title>403 Forbidden"
 _OBS_PROPERTIES_FOLLOWER_TIMEOUT_DETAIL = (
     "node_observation_properties_batch: declared-role refresh deadline elapsed waiting "
-    "on another in-flight fetch"
+    "on the shared read"
 )
 
 _UNSAFE_FILTER_CHARS = frozenset(",:{}<>")
@@ -111,6 +120,8 @@ SubjectsCoverageFlag = Literal["complete", "capped", "budget_exhausted"]
 
 # Fixed backoffs make waits deterministic. Index 0 is the first retry.
 _RETRY_BACKOFF_SECONDS: Final[tuple[float, ...]] = (0.5, 2.0)
+# A response slower than this logs at WARNING instead of DEBUG (`_log_response`).
+_SLOW_RESPONSE_SECONDS: Final[float] = 2.0
 
 _DEFAULT_NODE_ARC_CHUNK_SIZE = 50
 _DEFAULT_NODE_ARC_CALL_CONCURRENCY = 16
@@ -121,6 +132,22 @@ _DEFAULT_NODE_ARC_BATCH_CHUNK_SIZE = 12
 _DEFAULT_ENTITIES_WITH_DATA_VARIABLE_CHUNK_SIZE = 200
 
 _ttu_from_stamp_key = ttu_from_stamp_key
+
+_DEFAULT_OBSERVATION_PROPERTIES_FLIGHT_TIMEOUT_S: Final[float] = 60.0
+"""`GraphClient`'s default deadline for a shared `node_observation_properties_batch` read, from
+when it starts. Search, the only reader of observation properties, passes its own value. The
+default bounds the read for every other constructor (graph_api, datasets_api, presentation_api,
+the jobs)."""
+
+_OBSERVATION_PROPERTIES_FLIGHT_WORKERS: Final[int] = 32
+"""Threads that run shared observation-property reads, process-wide, one per concurrent read.
+Each holds its thread mostly waiting on chunk POSTs, which the
+node-arc semaphore bounds."""
+
+_OBSERVATION_PROPERTIES_FLIGHTS: Final = ThreadPoolExecutor(
+    max_workers=_OBSERVATION_PROPERTIES_FLIGHT_WORKERS, thread_name_prefix="obs-properties"
+)
+"""Runs every client's shared observation-property reads. No caller of them runs on it."""
 
 _declared_role_refresh_deadline: contextvars.ContextVar[float | None] = contextvars.ContextVar(
     "dc_graph_declared_role_refresh_deadline", default=None
@@ -148,9 +175,9 @@ class FrontDoorRefused(Exception):
 
 @contextlib.contextmanager
 def declared_role_refresh_deadline(deadline: float | None):
-    """Bound `node_observation_properties_batch` with an absolute monotonic deadline. Expiry stops
-    new chunk submissions and raises `TimeoutError`. Dispatched chunks run to completion. `None`
-    means no deadline.
+    """Bound how long `node_observation_properties_batch` waits, by an absolute monotonic
+    deadline. Expiry raises `TimeoutError` in this caller only. The shared read runs on under its
+    own deadline and publishes. `None` means no deadline beyond the bound request deadline.
     """
     token = _declared_role_refresh_deadline.set(deadline)
     try:
@@ -167,6 +194,13 @@ class Facet:
     `dates` and `values` are index-aligned and hold one entry per dated observation. Both are
     empty unless the read selected dates. `dates_complete` is `False` only when a dated read
     returned fewer dated observations than `obs_count`.
+
+    `reads_annual` is whether the facet's dates are evidence that it is annual. A facet as
+    read judges its own dates (`_reads_annual`). Merging facets of one id
+    (`_merge_facets_by_id`, `materialise.facets.merge_facets`) stores the AND of the merged
+    facets' evidence in `annual_evidence`, never a judgement of the widened bounds, so one
+    place dated by month keeps the merged facet from reading as annual. `annual_evidence` is
+    `None` on a facet no merge built.
     """
 
     obs_count: int
@@ -181,6 +215,34 @@ class Facet:
     dates: tuple[str, ...] = ()
     values: tuple[float | None, ...] = ()
     dates_complete: bool = True
+    # True when the dates are coverage's years rather than the graph's own: they are bare
+    # years whatever the facet's cadence (`materialise.facets._facet_from_coverage_candidate`,
+    # `search.engine.retrieval.role_scope.facet_from_coverage`).
+    dates_coarsened: bool = False
+    annual_evidence: bool | None = None
+
+    @property
+    def reads_annual(self) -> bool:
+        """The merged evidence, or this facet's own dates' (`_reads_annual`)."""
+        return self.annual_evidence if self.annual_evidence is not None else _reads_annual(self)
+
+
+def _reads_annual(facet: Facet) -> bool:
+    """Whether `facet`'s own dates are evidence that it is annual. With a complete date list
+    (`dates_complete`), every listed date and each known bound must be a bare year, so a
+    month inside bare-year bounds is caught. Without one, both bounds, as the graph reports
+    them, must be bare years. A coverage facet's years are coverage's whatever its cadence
+    (`dates_coarsened`), so they are no evidence."""
+    if facet.dates_coarsened:
+        return False
+    bounds = tuple(date for date in (facet.earliest_date, facet.latest_date) if date is not None)
+    if facet.dates and facet.dates_complete:
+        dates = (*bounds, *facet.dates)
+    elif len(bounds) == 2:
+        dates = bounds
+    else:
+        return False
+    return all(len(date) == 4 and date.isdigit() for date in dates)
 
 
 @dataclass(frozen=True)
@@ -193,12 +255,44 @@ class FacetDefaultPolicy:
     selection_reason: str
 
 
+def _count_request(request: httpx.Request) -> None:
+    """Count each request this client sends, retries included, on the calling door's timings
+    as `graph_requests`, and note when it was sent for `_log_response`."""
+    count("graph_requests")
+    request.extensions[_SENT_AT] = perf_counter()
+
+
+def _log_response(response: httpx.Response) -> None:
+    """Log each response with its method, path, status and the milliseconds from sending the
+    request to its response headers, retries each on their own line. The line is DEBUG, or
+    WARNING with the threshold when the response took longer than `_SLOW_RESPONSE_SECONDS`."""
+    request = response.request
+    elapsed_ms = (perf_counter() - request.extensions[_SENT_AT]) * 1000
+    threshold_ms = _SLOW_RESPONSE_SECONDS * 1000
+    if elapsed_ms > threshold_ms:
+        logger.warning(
+            "graph %s %s answered %d in %.0f ms, past the %.0f ms slow-response threshold",
+            request.method,
+            request.url.path,
+            response.status_code,
+            elapsed_ms,
+            threshold_ms,
+        )
+    else:
+        logger.debug(
+            "graph %s %s answered %d in %.0f ms",
+            request.method,
+            request.url.path,
+            response.status_code,
+            elapsed_ms,
+        )
+
+
 @dataclass(frozen=True)
 class ProvenanceRefresh:
-    """A provenance's refresh dates. Both are `None` if the node or both date arcs are absent."""
+    """A provenance's `lastDataRefreshDate`, `None` if the node or the arc is absent."""
 
     last_data_refresh_date: str | None
-    next_data_refresh_date: str | None
 
 
 @dataclass(frozen=True)
@@ -283,6 +377,9 @@ class GraphClient:
         type_cache_size: int = 0,
         arcs_cache_size: int = 0,
         obs_properties_cache_size: int = 0,
+        observation_properties_flight_timeout_s: float = (
+            _DEFAULT_OBSERVATION_PROPERTIES_FLIGHT_TIMEOUT_S
+        ),
         obs_cache_size: int = 0,
         single_value_cache_enabled: bool = False,
         observation_get_url_budget_bytes: int | None = None,
@@ -344,6 +441,7 @@ class GraphClient:
                 max_connections=_total_node_arc_slots * 6,
                 max_keepalive_connections=_total_node_arc_slots * 2,
             ),
+            event_hooks={"request": [_count_request], "response": [_log_response]},
         )
         self._timeout = timeout
         self._max_attempts = max_attempts
@@ -399,6 +497,8 @@ class GraphClient:
         self._observation_properties_flight: SingleFlightCache[str, tuple[str, ...]] = (
             SingleFlightCache(
                 maxsize=max(obs_properties_cache_size, 1),
+                flight_timeout_s=observation_properties_flight_timeout_s,
+                executor=_OBSERVATION_PROPERTIES_FLIGHTS,
                 generation=generation,
                 clock=self._timer,
                 timeout_message=_OBS_PROPERTIES_FOLLOWER_TIMEOUT_DETAIL,
@@ -484,7 +584,9 @@ class GraphClient:
     ) -> dict:
         """Send one request with `post`'s retry and deadline rules. With `front_door_refusals`,
         the front door's refusal raises `FrontDoorRefused`; without it, the read error it raises
-        has a `FrontDoorRefused` cause (`_post_node`)."""
+        has a `FrontDoorRefused` cause (`_post_node`). A bound request deadline narrows
+        `deadline` (`dfo_platform.request_deadline`)."""
+        deadline = bounded_deadline(deadline)
         attempt = 0
         while True:
             attempt += 1
@@ -560,8 +662,9 @@ class GraphClient:
     ) -> tuple[dict, int]:
         """Send one streamed request and return its body with its byte count. The cap error fires
         once `already_read` plus this body's bytes exceed `max_bytes`, so split reads share one cap.
-        `front_door_refusals` follows `_request`.
+        `front_door_refusals` and the bound request deadline follow `_request`.
         """
+        deadline = bounded_deadline(deadline)
         request_timeout = self._timeout
         if deadline is not None:
             remaining = deadline - time.monotonic()
@@ -799,17 +902,23 @@ class GraphClient:
         (`_read_refused_halves`).
 
         Acquire `semaphore` for this POST and release it before recursive retries. `deadline`
-        bounds the wait and raises `_ChunkDeadlineExpired` when time expires.
+        bounds the wait and raises `_ChunkDeadlineExpired` when time expires. A bound request
+        deadline (`dfo_platform.request_deadline`) also bounds the wait and raises the configured
+        deadline error when it is the one that expires.
         """
         acquired = False
         if semaphore is not None:
-            timeout = None if deadline is None else max(0.0, deadline - time.monotonic())
+            wait_deadline = bounded_deadline(deadline)
+            timeout = None if wait_deadline is None else max(0.0, wait_deadline - time.monotonic())
             acquired = semaphore.acquire(timeout=timeout)
             if not acquired:
-                raise _ChunkDeadlineExpired(
+                detail = (
                     f"deadline elapsed before {len(dcids)} dcid(s) reached the front of "
                     "the node-arc semaphore queue"
                 )
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise _ChunkDeadlineExpired(detail)
+                raise self._deadline_error_cls(f"{_DEADLINE_EXCEEDED_DETAIL}: {detail}")
         try:
             if deadline is not None and time.monotonic() >= deadline:
                 raise _ChunkDeadlineExpired(
@@ -887,7 +996,7 @@ class GraphClient:
         with ThreadPoolExecutor(
             max_workers=min(len(chunks), self._node_arc_call_concurrency)
         ) as pool:
-            futures = [pool.submit(_read_chunk, chunk) for chunk in chunks]
+            futures = [submit_with_context(pool, _read_chunk, chunk) for chunk in chunks]
             try:
                 for future in as_completed(futures):
                     merged.update(future.result())
@@ -1158,7 +1267,7 @@ class GraphClient:
         with ThreadPoolExecutor(
             max_workers=min(len(chunks), self._node_arc_call_concurrency)
         ) as pool:
-            futures = [pool.submit(_read_chunk, chunk) for chunk in chunks]
+            futures = [submit_with_context(pool, _read_chunk, chunk) for chunk in chunks]
             try:
                 for future in as_completed(futures):
                     merged.update(future.result())
@@ -1207,7 +1316,9 @@ class GraphClient:
         )
 
     def _acquire_node_arc_slot(self, deadline: float | None) -> None:
-        """Acquire a `node_arcs_many` slot, with `deadline` bounding the wait."""
+        """Acquire a `node_arcs_many` slot, with `deadline` and a bound request deadline
+        (`dfo_platform.request_deadline`) bounding the wait."""
+        deadline = bounded_deadline(deadline)
         if deadline is None:
             self._node_arc_many_semaphore.acquire()
             return
@@ -1459,27 +1570,41 @@ class GraphClient:
         to `()`. An empty response is trusted, while an omitted dcid gets one retry.
 
         A `SingleFlightCache` stores results with capacity at least 1 and coalesces same-generation
-        requests. Under `declared_role_refresh_deadline`, a follower timeout detaches that caller
-        while the leader completes and publishes. The leader stops scheduling chunks at expiry and
-        raises `TimeoutError` to all followers.
-        An in-flight chunk finishes and its result is dropped.
+        requests. Misses are read in a shared flight whose deadline is
+        `observation_properties_flight_timeout_s` from when it starts, whichever caller started
+        it. The flight stops scheduling chunks at that deadline and raises `TimeoutError` to every
+        caller still waiting. An in-flight chunk finishes and its result is dropped.
+
+        Each caller, the one that started the flight included, stops waiting at the earlier of
+        its `declared_role_refresh_deadline` and its bound request deadline, while the flight runs
+        on and publishes. A passed refresh deadline raises `TimeoutError`; otherwise the passed
+        request deadline raises the configured deadline error, as every other read does. An error
+        the flight raises reaches every waiter unchanged.
         """
         if not dcids:
             return {}
-        return self._observation_properties_flight.get_or_fetch_many(
-            dcids,
-            self._fetch_observation_properties_many,
-            deadline=_declared_role_refresh_deadline.get(),
-        )
+        refresh_deadline = _declared_role_refresh_deadline.get()
+        try:
+            return self._observation_properties_flight.get_or_fetch_many(
+                dcids, self._fetch_observation_properties_many, deadline=refresh_deadline
+            )
+        except WaitTimeout as exc:
+            if refresh_deadline is not None and time.monotonic() >= refresh_deadline:
+                raise
+            raise self._deadline_error_cls(
+                f"{_DEADLINE_EXCEEDED_DETAIL}: waiting on the shared observation-property read"
+            ) from exc
 
-    def _fetch_observation_properties_many(self, dcids: list[str]) -> dict[str, tuple[str, ...]]:
-        """Fetch owned misses and parse target tuples. Raise the read error for dcids missing from
-        both the batch and the single-dcid retry.
+    def _fetch_observation_properties_many(
+        self, dcids: list[str], deadline: float
+    ) -> dict[str, tuple[str, ...]]:
+        """Fetch owned misses by the flight's `deadline` and parse target tuples. Raise the read
+        error for dcids missing from both the batch and the single-dcid retry.
         """
-        data = self._post_observation_properties(dcids)
+        data = self._fetch_observation_property_chunks(dcids, deadline=deadline)
         absent = [dcid for dcid in dcids if dcid not in data]
         if absent:
-            retry_data = self._post_observation_properties(absent)
+            retry_data = self._fetch_observation_property_chunks(absent, deadline=deadline)
             unanswered = [dcid for dcid in absent if dcid not in retry_data]
             if unanswered:
                 raise self._read_error_cls(
@@ -1495,18 +1620,13 @@ class GraphClient:
             result[dcid] = tuple(n["dcid"] for n in prop_nodes if n.get("dcid"))
         return result
 
-    def _post_observation_properties(self, dcids: list[str]) -> dict:
-        return self._fetch_observation_property_chunks(dcids)
-
-    def _fetch_observation_property_chunks(self, dcids: list[str]) -> dict:
+    def _fetch_observation_property_chunks(self, dcids: list[str], *, deadline: float) -> dict:
         chunks = list(_chunked(dcids, self._node_arc_batch_chunk_size))
         if not chunks:
             return {}
 
-        deadline = _declared_role_refresh_deadline.get()
-
         def _expired() -> bool:
-            return deadline is not None and time.monotonic() >= deadline
+            return time.monotonic() >= deadline
 
         def _read_chunk(chunk: list[str]) -> dict:
             return self._fetch_single_arc_chunk(
@@ -1519,14 +1639,14 @@ class GraphClient:
         if len(chunks) == 1:
             if _expired():
                 raise TimeoutError(
-                    "node_observation_properties_batch: declared-role refresh deadline "
+                    "node_observation_properties_batch: the shared read's deadline "
                     "elapsed before its one chunk could be read"
                 )
             try:
                 return _read_chunk(dcids)
             except _ChunkDeadlineExpired as exc:
                 raise TimeoutError(
-                    "node_observation_properties_batch: declared-role refresh deadline "
+                    "node_observation_properties_batch: the shared read's deadline "
                     "elapsed while its one chunk queued for the node-arc semaphore"
                 ) from exc
 
@@ -1546,12 +1666,12 @@ class GraphClient:
                 chunk = next(chunk_iter, None)
                 if chunk is None:
                     return
-                in_flight[pool.submit(_read_chunk, chunk)] = chunk
+                in_flight[submit_with_context(pool, _read_chunk, chunk)] = chunk
 
         try:
             _submit_more()
             while in_flight and not budget_exhausted:
-                remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+                remaining = max(0.0, deadline - time.monotonic())
                 done, _pending = wait(
                     list(in_flight), timeout=remaining, return_when=FIRST_COMPLETED
                 )
@@ -1576,7 +1696,7 @@ class GraphClient:
 
         if budget_exhausted:
             raise TimeoutError(
-                "node_observation_properties_batch: declared-role refresh deadline elapsed "
+                "node_observation_properties_batch: the shared read's deadline elapsed "
                 "with chunks left unread"
             )
         return merged
@@ -2403,6 +2523,7 @@ def _merge_facets_by_id(facets: list[Facet]) -> list[Facet]:
                 dates=existing.dates + facet.dates,
                 values=existing.values + facet.values,
                 dates_complete=existing.dates_complete and facet.dates_complete,
+                annual_evidence=existing.reads_annual and facet.reads_annual,
             )
     return result
 

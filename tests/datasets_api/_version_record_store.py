@@ -1,17 +1,24 @@
-"""SQLite-backed store double for version, snapshot, and reference tests."""
+"""SQLite-backed store double for version, snapshot, and reference tests.
+
+It also holds `datasets.operation`, as the one Postgres database does, so a `LiveOperationStore`
+over it shares the database a fenced `LiveHeadStore.advance_head` reads.
+"""
 
 from __future__ import annotations
 
 import json
-import re
 import sqlite3
 import threading
 from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime
 
+from datasets_api.versions import MaterialisationRecord, Trigger
+
+from ._operation_store import _OPERATION_SCHEMA, _lease_end, _to_sqlite_paramstyle
+
 # The schema covers version records, artifacts, revocations, references, inventory, frame recipes,
-# and subject heads. `LiveRecipeStore` and `LiveVersionLister` over this store are the recipe and
+# materialisation runs, and subject heads. `LiveRecipeStore` and `LiveVersionLister` over this store are the recipe and
 # version-list doubles.
 # SQLite runs the real reader/writer SQL here, but does not enforce cross-table foreign keys.
 _VERSION_RECORD_SCHEMA = """
@@ -24,6 +31,21 @@ CREATE TABLE datasets.version_record (
     trace_id TEXT,
     recorded_at TEXT NOT NULL,
     base_content_version TEXT,
+    frame_grammar_version TEXT,
+    prepared_at TEXT,
+    definition TEXT,
+    coverage TEXT,
+    citation TEXT,
+    trace TEXT,
+    warnings TEXT,
+    series_count INTEGER,
+    series_coverage_stamp TEXT,
+    output_profile TEXT,
+    series_conversions TEXT,
+    default_scope_plural INTEGER,
+    input_content_versions TEXT,
+    composed_stat_vars TEXT,
+    frame_sha256 TEXT,
     PRIMARY KEY (subject_id, content_version)
 );
 CREATE TABLE datasets.version_artifact (
@@ -64,6 +86,7 @@ CREATE TABLE datasets.artifact_location (
     bucket TEXT NOT NULL,
     object_name TEXT NOT NULL,
     stored_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    renewal INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (artifact_digest, tier)
 );
 CREATE TABLE datasets.frame_recipe (
@@ -75,31 +98,34 @@ CREATE TABLE datasets.frame_recipe (
     recorded_at TEXT NOT NULL,
     PRIMARY KEY (subject_id, content_version)
 );
+CREATE TABLE datasets.materialisation (
+    id INTEGER PRIMARY KEY,
+    subject_id TEXT NOT NULL,
+    content_version TEXT NOT NULL,
+    materialised_at TEXT NOT NULL,
+    "trigger" TEXT NOT NULL
+        CHECK ("trigger" IN ('mint', 'get', 'options', 'refresh', 'worker')),
+    materialiser_build TEXT NOT NULL,
+    frame_grammar_version TEXT NOT NULL,
+    code_index_stamp TEXT NOT NULL,
+    origin_catalogue_build_id TEXT NOT NULL,
+    coverage_stamp TEXT,
+    graph_generation TEXT,
+    dependencies TEXT NOT NULL,
+    selection TEXT NOT NULL,
+    conversion TEXT,
+    trace_id TEXT
+);
 CREATE TABLE datasets.subject_head (
     subject_id TEXT PRIMARY KEY,
     content_version TEXT NOT NULL,
     confirmed_at TEXT NOT NULL,
     materialised_at TEXT NOT NULL,
-    signal TEXT NOT NULL
+    signal TEXT NOT NULL DEFAULT '{"members": []}',
+    materialisation_id INTEGER,
+    dependencies TEXT
 );
 """
-
-_QUOTED_LITERAL_OR_PERCENT = re.compile(r"('(?:[^']|'')*')|%(.)")
-
-
-def _to_sqlite_paramstyle(sql: str) -> str:
-    def _sub(match: re.Match[str]) -> str:
-        quoted = match.group(1)
-        if quoted is not None:
-            return quoted
-        following = match.group(2)
-        if following == "s":
-            return "?"
-        if following == "%":
-            return "%"
-        raise ValueError("Only %s and %% are supported in the query.")
-
-    return _QUOTED_LITERAL_OR_PERCENT.sub(_sub, sql)
 
 
 def _sqlite_param(value: object) -> object:
@@ -112,7 +138,29 @@ def _sqlite_param(value: object) -> object:
 
 
 # Decode SQLite text to the dict and datetime values that pg8000 returns for JSONB and timestamps.
-_JSON_COLUMNS = frozenset({"immutable_body", "rendering", "signal", "recipe"})
+_JSON_COLUMNS = frozenset(
+    {
+        "immutable_body",
+        "definition",
+        "coverage",
+        "citation",
+        "trace",
+        "warnings",
+        "output_profile",
+        "series_conversions",
+        "input_content_versions",
+        "composed_stat_vars",
+        "rendering",
+        "signal",
+        "recipe",
+        "dependencies",
+        "selection",
+        "conversion",
+        "request_identity",
+        "options",
+        "refusal",
+    }
+)
 _TIMESTAMP_COLUMNS = frozenset(
     {
         "recorded_at",
@@ -122,8 +170,14 @@ _TIMESTAMP_COLUMNS = frozenset(
         "removed_at",
         "confirmed_at",
         "materialised_at",
+        "prepared_at",
+        "claimed_at",
+        "updated_at",
+        "dispatched_at",
+        "submitted_at",
     }
 )
+_BOOL_COLUMNS = frozenset({"retryable", "final_delivery"})
 
 
 def _decode_row(row: sqlite3.Row) -> dict[str, object]:
@@ -134,6 +188,8 @@ def _decode_row(row: sqlite3.Row) -> dict[str, object]:
             value = json.loads(value)
         elif isinstance(value, str) and key in _TIMESTAMP_COLUMNS:
             value = datetime.fromisoformat(value)
+        elif isinstance(value, int) and key in _BOOL_COLUMNS:
+            value = bool(value)
         decoded[key] = value
     return decoded
 
@@ -170,8 +226,10 @@ class FakeVersionRecordDatasetStore:
         # The mint worker uses this connection from a different thread.
         self._conn = sqlite3.connect(":memory:", check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        self._conn.create_function("lease_end", 2, _lease_end, deterministic=True)
         self._conn.execute("ATTACH DATABASE ':memory:' AS datasets")
         self._conn.executescript(_VERSION_RECORD_SCHEMA)
+        self._conn.executescript(_OPERATION_SCHEMA)
         # Mint work and the request thread share this connection, so serialize transaction spans.
         # Postgres gives each call its own pooled connection.
         self._lock = threading.Lock()
@@ -189,3 +247,24 @@ class FakeVersionRecordDatasetStore:
 
     def close(self) -> None:
         self._conn.close()
+
+
+def materialisation_record(
+    *, subject_id: str, content_version: str, trigger: Trigger = "get"
+) -> MaterialisationRecord:
+    """A run record for head-store tests, carrying a fixed schema-1 fingerprint."""
+    return MaterialisationRecord(
+        subject_id=subject_id,
+        content_version=content_version,
+        trigger=trigger,
+        materialiser_build="test-build",
+        frame_grammar_version="1.0.0",
+        code_index_stamp="test-stamp",
+        origin_catalogue_build_id="test-catalogue",
+        coverage_stamp=None,
+        graph_generation=None,
+        dependencies={"schema": 1, "members": f"sha256:{content_version}"},
+        selection={"facets": []},
+        conversion=None,
+        trace_id=None,
+    )

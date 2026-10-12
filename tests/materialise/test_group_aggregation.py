@@ -24,7 +24,6 @@ from ._group_support import (
     _ENTITY,
     _ROLE,
     _SHARED_FACET,
-    _SNAPSHOT,
     _STAT_VAR_A,
     _STAT_VAR_B,
     _STAT_VAR_C,
@@ -33,7 +32,7 @@ from ._group_support import (
     _request,
     _sdmx_client_for,
 )
-from .conftest import FakeGraphReader, FakeRevisionReader, only_chunk
+from .conftest import FakeGraphReader, only_chunk
 
 # ---------------------------------------------------------------------------
 # N=1 byte-identity
@@ -58,8 +57,7 @@ def test_n1_agrees_with_materialise_spec_on_content_version_frame_and_trace():
         request,
         sdmx=sdmx_spec,
         graph=graph_spec,
-        enrichment=EnrichmentLookup(graph_spec),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph_spec, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage_spec,
@@ -72,8 +70,7 @@ def test_n1_agrees_with_materialise_spec_on_content_version_frame_and_trace():
         [request],
         sdmx=sdmx_group,
         graph=graph_group,
-        enrichment=EnrichmentLookup(graph_group),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph_group, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage_group,
@@ -84,23 +81,20 @@ def test_n1_agrees_with_materialise_spec_on_content_version_frame_and_trace():
     golden_frame = only_chunk(golden)
     assert grouped_frame.columns == golden_frame.columns
     assert grouped_frame.rows == golden_frame.rows
-    assert grouped.trace.to_dict() == golden.trace.to_dict()
+    # Each fake graph serves a generation of its own, which each trace records.
+    assert grouped.trace.graph_revision == graph_group.generation_stamp().token
+    assert golden.trace.graph_revision == graph_spec.generation_stamp().token
+    assert {**grouped.trace.to_dict(), "graph_revision": None} == {
+        **golden.trace.to_dict(),
+        "graph_revision": None,
+    }
 
     # A recorded pin, independent of both call paths agreeing with each
     # other: an unrelated change to the grammar's own hashing would move
     # this without necessarily moving `golden`/`grouped` apart from EACH
     # OTHER, so this asserts against the actual value once observed, not
     # just their mutual agreement.
-    recomputed = mint_version(
-        golden_frame,
-        graph_revision=golden.trace.graph_revision,
-        source_revisions=golden.trace.source_revisions,
-        facets=[
-            {"axis": entry["axis"], "ref": entry["ref"], "basis": entry["basis"]}
-            for entry in golden.trace.facets
-        ],
-    )
-    assert golden.content_version == recomputed
+    assert golden.content_version == mint_version(golden_frame)
     assert golden.trace.resolved_stat_vars == (
         {"ref": _STAT_VAR_A, "roles": [_ROLE], "observation_count": 1},
     )
@@ -149,8 +143,7 @@ def test_n2_concatenates_rows_mints_one_content_version_two_resolved_stat_vars()
         [request_a, request_b],
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         member_concurrency=1,
@@ -213,8 +206,7 @@ def test_progress_counter_ends_equal_to_the_frame_row_count():
         [request_a, request_b],
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         member_concurrency=1,
@@ -293,8 +285,7 @@ def test_two_members_each_with_two_disjoint_year_facets_keep_all_four_rows():
         [request_a, request_b],
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         member_concurrency=1,
@@ -353,8 +344,7 @@ def test_n3_resolved_stat_vars_sorted_regardless_of_input_order():
         requests,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -404,8 +394,7 @@ def test_frame_bytes_independent_of_member_order():
         requests,
         sdmx=sdmx_forward,
         graph=graph_forward,
-        enrichment=EnrichmentLookup(graph_forward),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph_forward, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -417,8 +406,7 @@ def test_frame_bytes_independent_of_member_order():
         list(reversed(requests)),
         sdmx=sdmx_reversed,
         graph=graph_reversed,
-        enrichment=EnrichmentLookup(graph_reversed),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph_reversed, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -483,8 +471,7 @@ def test_group_member_with_zero_matching_rows_is_named_with_zero_count():
         [request_a, request_b],
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         member_concurrency=1,
@@ -576,8 +563,7 @@ def test_group_member_observation_count_reflects_post_collapse_rows_not_raw_rows
         [request_a, request_b],
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -660,8 +646,7 @@ def test_group_observation_counts_join_by_stat_var_not_positional_order():
         requests,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -747,8 +732,7 @@ def test_mismatched_declared_roles_raises_usage_error_before_any_network_call():
             [request_a, request_b],
             sdmx=sdmx,
             graph=graph,
-            enrichment=EnrichmentLookup(graph),
-            revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+            enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
             materialiser_build="build-123",
             capability_version="cap-v1",
         )
@@ -772,8 +756,7 @@ def test_duplicate_stat_var_in_group_raises_usage_error_before_any_network_call(
             [request_a1, request_a2],
             sdmx=sdmx,
             graph=graph,
-            enrichment=EnrichmentLookup(graph),
-            revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+            enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
             materialiser_build="build-123",
             capability_version="cap-v1",
         )
@@ -789,8 +772,7 @@ def test_empty_requests_raises_usage_error():
             [],
             sdmx=_sdmx_client_for({})[0],
             graph=graph_empty,
-            enrichment=EnrichmentLookup(graph_empty),
-            revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+            enrichment=EnrichmentLookup(graph_empty, type_kinds={}, parties={}),
             materialiser_build="build-123",
             capability_version="cap-v1",
         )
@@ -819,8 +801,7 @@ def test_mismatched_unit_bindings_raise_usage_error_before_any_network_call():
             [request_a, request_b],
             sdmx=sdmx,
             graph=graph,
-            enrichment=EnrichmentLookup(graph),
-            revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+            enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
             materialiser_build="build-123",
             capability_version="cap-v1",
         )

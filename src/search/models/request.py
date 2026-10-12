@@ -19,6 +19,7 @@ from .vocab import (
     OperationAxis,
     OperationVerb,
     Ordering,
+    SourcePolarity,
     _require_schema_version_int,
 )
 
@@ -47,6 +48,8 @@ _PARSED_MAX_ROLE_TEXT_CHARS = 64
 _PARSED_MAX_TIME_TEXT_CHARS = 100
 _PARSED_MAX_UNIT_TEXT_CHARS = 100
 _PARSED_MAX_SOURCE_TEXT_CHARS = 200
+_PARSED_MAX_SOURCE_MENTION_CHARS = 120
+_PARSED_MAX_PART_SOURCES = 8
 _PARSED_MAX_RAW_QUERY_CHARS = 2000
 # At least extract's MAX_OPERATIONS, the most one query can carry, so every part
 # the engine echoes posts back unrefused. A test pins the relation.
@@ -194,6 +197,57 @@ class ParsedEntity(StrictModel):
         return members or None
 
 
+def _is_false(value: bool) -> bool:
+    return not value
+
+
+class SourceMention(StrictModel):
+    """One data source a part names or excludes, as its words, a reference, or both."""
+
+    text: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=_PARSED_MAX_SOURCE_MENTION_CHARS,
+        description=(
+            "the user's words naming the source, e.g. 'IDS', 'the OECD' or 'World Bank', "
+            "without the words that ask for its data ('World Bank' in 'World Bank debt "
+            "data'). They are matched whole against the names of every "
+            "admitted publisher, dataset and provenance, and their registered "
+            "abbreviations, ignoring case, punctuation and a leading 'the'. Included "
+            "words that match none resolve no_data with source_not_resolved. Excluded "
+            "words that match none remove nothing and warn query_qualifier_dropped. Words "
+            "that match two unrelated sources resolve no_data with source_ambiguous, "
+            "listing both"
+        ),
+    )
+    ref: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=_PARSED_MAX_SOURCE_TEXT_CHARS,
+        description=(
+            "the reference this mention names, when the caller holds one (a provenance "
+            "dcid, a catalogue Dataset ref or a Source ref), such as a restatement's "
+            "resolved mention or a NoData.ambiguous_sources candidate carries. It skips "
+            "matching `text`. A ref the origin catalogue does not admit refuses "
+            "request_invalid with a pointer to it"
+        ),
+    )
+    polarity: SourcePolarity = Field(
+        default="include",
+        description=(
+            "include to answer from this source, exclude to answer from any other. A part "
+            "with an included source answers from the included sources only. A part with "
+            "exclusions alone answers from every admitted source but those"
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _names_something(self) -> SourceMention:
+        if self.text is None and self.ref is None:
+            raise ValueError("a source mention needs text, ref, or both")
+        return self
+
+
 class ParsedPart(StrictModel):
     """One variable ask within a parsed request, with its own entities, time, unit, and source."""
 
@@ -247,14 +301,22 @@ class ParsedPart(StrictModel):
             "request_basis on resolved.facets.unit"
         ),
     )
+    sources: list[SourceMention] = Field(
+        default_factory=list,
+        max_length=_PARSED_MAX_PART_SOURCES,
+        description=(
+            "the data sources this part names or excludes, in query order. Empty, the "
+            "part answers from the sources the engine elects. A restatement echoes each "
+            "mention with the reference it resolved to"
+        ),
+    )
     source_text: str | None = Field(
         default=None,
         min_length=1,
         max_length=_PARSED_MAX_SOURCE_TEXT_CHARS,
         description=(
-            "this part's requested data source as free text, when available; free text "
-            "never binds a source, so it always resolves unsupported with code "
-            "facet_binding_unsupported. Name a declared dataset in `provenance` instead"
+            "deprecated: post `sources` instead. Read as one included mention with this "
+            "text, appended to `sources`"
         ),
     )
     # A dataset dcid is a source; it shares the source text's length cap.
@@ -263,11 +325,10 @@ class ParsedPart(StrictModel):
         min_length=1,
         max_length=_PARSED_MAX_SOURCE_TEXT_CHARS,
         description=(
-            "the dcid of the declared dataset this part answers from, when the caller "
-            "names one; the served request schema lists the declared datasets under this "
-            "field, each with its label, description and opt-in flag. A dcid that is not "
-            "declared refuses request_invalid with a pointer to this field. Absent, the "
-            "part answers from the dataset the code index elects for its identity"
+            "deprecated: post `sources` instead. Read as one included mention with this "
+            "ref, appended to `sources`. The served request schema lists the code index's "
+            "declared datasets under this field, each with its label, description and "
+            "opt-in flag"
         ),
     )
     operations: list[Operation] = Field(
@@ -292,6 +353,49 @@ class ParsedPart(StrictModel):
             "whose over is origin or destination opens that axis too"
         ),
     )
+    separate: bool = Field(
+        default=False,
+        exclude_if=_is_false,
+        description=(
+            "true when this part is asked beside the others to be compared with them, "
+            "as in 'health ODA versus education ODA': it answers as its own part and "
+            "never folds into another part of the same shape (binding_folded). False, "
+            "the default, folds parts that share a shape into one set answer"
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _fold_deprecated_sources(self) -> ParsedPart:
+        """Append `provenance` and `source_text` to `sources` as included mentions, each
+        unless `sources` already holds it, so a dump posted back folds to the same list.
+        The folded list holds at most `_PARSED_MAX_PART_SOURCES` mentions."""
+        for mention in self._deprecated_mentions().values():
+            if mention not in self.sources:
+                self.sources.append(mention)
+        if len(self.sources) > _PARSED_MAX_PART_SOURCES:
+            raise ValueError(
+                f"sources holds at most {_PARSED_MAX_PART_SOURCES} mentions, counting "
+                "provenance and source_text"
+            )
+        return self
+
+    def _deprecated_mentions(self) -> dict[str, SourceMention]:
+        """The mention each set deprecated field reads as, keyed by the field's name."""
+        mentions: dict[str, SourceMention] = {}
+        if self.provenance is not None:
+            mentions["provenance"] = SourceMention(ref=self.provenance)
+        if self.source_text is not None:
+            mentions["source_text"] = SourceMention(text=self.source_text)
+        return mentions
+
+    def mention_field(self, index: int) -> str:
+        """The posted field `sources[index]` reads from, relative to the part: the
+        deprecated field it folds from, else `sources/{index}`."""
+        mention = self.sources[index]
+        for field, folded in self._deprecated_mentions().items():
+            if mention == folded:
+                return field
+        return f"sources/{index}"
 
 
 class ParsedInput(StrictModel):
@@ -393,6 +497,15 @@ class ResubmitIdentityEntry(StrictModel):
         )
     )
     entity_groups: ResubmitEntityGroups
+    separate: bool = Field(
+        default=False,
+        exclude_if=_is_false,
+        description=(
+            "true when this part is asked beside the others to be compared with them; "
+            "it is kept apart from same-shape sibling parts. False, the default, folds "
+            "parts that share a shape into one set answer"
+        ),
+    )
     operations: list[Operation] = Field(
         default_factory=list,
         max_length=_PARSED_MAX_PART_OPERATIONS,
@@ -458,6 +571,15 @@ class ResubmitCandidatesEntry(StrictModel):
             "caps.max_candidates from GET /api/search/capabilities"
         ),
     )
+    separate: bool = Field(
+        default=False,
+        exclude_if=_is_false,
+        description=(
+            "true when this part is asked beside the others to be compared with them; "
+            "it is kept apart from same-shape sibling parts. False, the default, folds "
+            "parts that share a shape into one set answer"
+        ),
+    )
     operations: list[Operation] = Field(
         default_factory=list,
         max_length=_PARSED_MAX_PART_OPERATIONS,
@@ -497,6 +619,15 @@ class ResubmitPlaceholderEntry(StrictModel):
             "the reason, a code from the platform registry, to restate onto the "
             "rebuilt part's Unsupported.code; required when status is unsupported, "
             "refused when status is no_data"
+        ),
+    )
+    separate: bool = Field(
+        default=False,
+        exclude_if=_is_false,
+        description=(
+            "true when this part is asked beside the others to be compared with them; "
+            "it is kept apart from same-shape sibling parts. False, the default, folds "
+            "parts that share a shape into one set answer"
         ),
     )
     operations: list[Operation] = Field(

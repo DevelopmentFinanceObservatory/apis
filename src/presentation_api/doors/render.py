@@ -58,9 +58,8 @@ from assembler.pipeline import ComponentHoldsNoFrame, render_component
 from assembler.pipeline.export_component import export_component_data
 from assembler.pipeline.stored_revision import read_stored_revision
 from assembler.ports import FrameRef, RevisionRecord
-from dataset_store.snapshot import SnapshotReader
+from dataset_store.snapshot import SnapshotNotFound, SnapshotReader
 from datasets_api.artifact_delivery import artifact_content_disposition
-from datasets_api.codes_snapshot import SnapshotNotFound
 from datasets_api.doors.refresh import (
     RenderingNotRecorded,
     refresh_can_answer,
