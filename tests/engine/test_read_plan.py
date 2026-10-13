@@ -9,9 +9,11 @@ from dataclasses import dataclass, field, replace
 import pytest
 
 import search.engine.retrieval.read_plan as read_plan
-from materialise.facets import coverage_probe, served_facets
+from materialise.facets import bound_variable_breadth, coverage_probe, served_facets
 from materialise.series_conversion import series_key
+from search.engine.app import _note_breadth_fallback
 from search.engine.clients.graph import Facet
+from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.extract import DateRequest
 from search.engine.region.facets import FacetAdmission, filter_answer
 from search.engine.region.observations.bulk_role_series import (
@@ -1103,7 +1105,7 @@ def test_a_bulk_plan_narrowed_per_statvar_serves_one_set_of_members(
     assert narrowed.served_members == (health,)
     assert narrowed.population == 3
     assert narrowed.elected is not None
-    fetch = _plan_role_bulk_fetch(narrowed, narrowed.elected)
+    fetch = _plan_role_bulk_fetch(narrowed)
     assert {sv for sv, _ in fetch.to_fetch} == {health}
     assert isinstance(filtered.coverage, CoverageExact)
     assert filtered.coverage.observation_count == 3
@@ -1190,3 +1192,149 @@ def test_a_pair_series_role_tuple_is_the_minted_series_key() -> None:
         "V", ["financingRecipient", "financingProvider"], ["country/KEN", "country/DEU"]
     )
     assert series.rows == ("country/KEN", "country/DEU")
+
+
+@pytest.mark.parametrize(
+    ("places", "usd_count", "group", "reads"),
+    [
+        pytest.param(("country/FRA",), 46, {"fUSD"}, [("sv",)], id="one-place-broader-serves"),
+        # The dollars hold more observations, so nothing ties and no breadth is read.
+        pytest.param(("country/FRA",), 47, {"fUSD"}, [], id="one-place-no-tie-reads-none"),
+        pytest.param(("country/FRA", "country/DEU"), 46, {"fEUR"}, [], id="two-places-read-none"),
+    ],
+)
+def test_a_plan_at_one_place_breaks_a_tie_on_the_variable_s_whole_breadth(
+    places, usd_count, group, reads
+) -> None:
+    """At one place the dollar and euro facets tie on years, count and latest date, so the
+    facet broader across the whole variable serves, as a mint of the answer's Spec elects.
+    Without a tie the breadth is never read. A plan naming several places reads no breadth
+    and elects as before; here euros, which hold both places and lead on the unit's name."""
+    eur = Facet(
+        facet_id="fEUR",
+        provenance_id="P",
+        unit="CurrencyEUR",
+        obs_count=46,
+        earliest_date="1980",
+        latest_date="2025",
+    )
+    usd = replace(eur, facet_id="fUSD", unit="CurrencyUSD", obs_count=usd_count)
+    recorded: list[tuple[str, ...]] = []
+
+    def reader(stat_vars, *, deadline):
+        recorded.append(tuple(stat_vars))
+        return {sv: {"fUSD": 197, "fEUR": 25} for sv in stat_vars}
+
+    with bound_variable_breadth(reader, refuse_unread=False):
+        plan = plan_standard(
+            {("sv", place): (eur, usd) for place in places},
+            members=["sv"],
+            years=None,
+            places=places,
+        )
+
+    assert {f.facet_id for s in plan.series for f in s.group} == group
+    assert recorded == reads
+
+
+@pytest.mark.parametrize(
+    ("profiled", "usd_count", "group", "degraded"),
+    [
+        pytest.param({"sv": {"fUSD": 197, "fEUR": 25}}, 1, {"fUSD"}, [], id="profiled"),
+        pytest.param({}, 1, {"fEUR"}, ["whole-variable breadth"], id="unread-tie-falls-back"),
+        pytest.param({}, 2, {"fUSD"}, [], id="unread-without-a-tie-changes-nothing"),
+    ],
+)
+def test_search_falls_back_on_an_unread_breadth_and_notes_a_degraded_read(
+    profiled, usd_count, group, degraded
+) -> None:
+    """At one place the euro and dollar facets tie on every key before breadth. Search stores
+    no election, so a failed breadth read leaves the tie to the unit's name and notes a
+    degraded read, which marks the answer degraded and keeps it out of the cache. When the
+    dollars hold more observations there is no tie, so the failed read changes nothing and
+    the answer stays cacheable."""
+    eur = Facet(
+        facet_id="fEUR",
+        provenance_id="P",
+        unit="CurrencyEUR",
+        obs_count=1,
+        earliest_date="2020",
+        latest_date="2020",
+    )
+    usd = replace(eur, facet_id="fUSD", unit="CurrencyUSD", obs_count=usd_count)
+
+    with (
+        recording_degraded_reads() as record,
+        bound_variable_breadth(
+            lambda stat_vars, *, deadline: profiled,
+            refuse_unread=False,
+            on_fallback=_note_breadth_fallback,
+        ),
+    ):
+        plan = plan_standard(
+            {("sv", "country/FRA"): (eur, usd)},
+            members=["sv"],
+            years=None,
+            places=["country/FRA"],
+        )
+
+    assert {f.facet_id for s in plan.series for f in s.group} == group
+    assert record.reads == degraded
+
+
+def test_a_one_role_continuation_counts_the_observations_of_every_row_of_a_member():
+    """A one-role read of a two-role variable sums the rows each debtor holds under every
+    creditor. Kenya's reported rows end in 2022 and both creditors' estimates run to 2025,
+    so each later year adds two observations: the count a year-by-year read of the same
+    pairs gives."""
+    from search.engine.retrieval.facet_election import merge_role_candidates
+    from search.engine.retrieval.read_plan import BulkPlan
+    from search.engine.retrieval.role_scope import role_index_for_named_entities
+
+    sv, kenya = "TESTFIXTURE/OneRoleContinuation/Flow", "country/KEN"
+    index = build_coverage_index(
+        [
+            (sv, "rec", "country/CHN", kenya, [2020, 2021, 2022]),
+            (sv, "rec", "country/FRA", kenya, [2020, 2021]),
+            (sv, "est", "country/CHN", kenya, [2023, 2024, 2025]),
+            (sv, "est", "country/FRA", kenya, [2022, 2023, 2024, 2025]),
+        ],
+        role_names={sv: RoleNames(donor="creditor", recipient="debtor")},
+    )
+    first, last = 2020, 2025
+    candidates = merge_role_candidates(
+        role_index_for_named_entities(
+            [sv],
+            {"debtor": [kenya]},
+            time_period=[str(y) for y in range(first, last + 1)],
+            coverage_index=index,
+        ),
+        [sv],
+    )
+    plan = BulkPlan(
+        members=(sv,),
+        years=TimeWindow(start_year=first, end_year=last),
+        facet_id="rec",
+        continuing=("est",),
+        candidates=candidates,
+    )
+
+    def counts(facet_id: str, start: int, end: int) -> dict:
+        (candidate,) = candidates[facet_id].by_sv[sv]
+        return dict(
+            candidate.pairs.head(
+                candidate.pair_count, first_year=start, last_year=end, with_data=True
+            )
+        )
+
+    expected = counts("rec", first, last)
+    for year in range(first, last + 1):
+        later = counts("rec", year, last)
+        for role_tuple, n_obs in counts("est", year, year).items():
+            if role_tuple not in later:
+                expected[role_tuple] = expected.get(role_tuple, 0) + n_obs
+
+    assert expected == {(("debtor", kenya),): 11}
+    assert plan.continued_pairs == {sv: expected}
+    assert plan.observation_count == 11
+    assert plan.max_pair_observations == 11

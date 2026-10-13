@@ -55,7 +55,7 @@ def detect_set_ref(
     label = graph.node_labels_batch([parent]).get(parent)
     if label is None:
         return None
-    return GraphRef(dcid=parent, label=label)
+    return GraphRef(ref=parent, label=label)
 
 
 class PlaceSetRefusedError(Exception):

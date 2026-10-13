@@ -158,7 +158,7 @@ def _render_crs(*, graph: FakeMintGraphReader | None = None) -> dict[str, bytes]
     store = FakeArtifactStore()
     options = MintOptions(format="csv", bundle=True)
     rendered = render_and_store(
-        frame_chunks=iter((_CRS_TABLE,)),
+        frame_chunks=lambda: iter((_CRS_TABLE,)),
         options=options,
         spec=_CRS_SPEC,
         provenance_refs=[_CRS],
@@ -171,9 +171,7 @@ def _render_crs(*, graph: FakeMintGraphReader | None = None) -> dict[str, bytes]
         site=_SITE,
         artifact_store=store,
         entity_columns=("financingProvider", "financingRecipient"),
-        enrichment=EnrichmentLookup(
-            graph or FakeMintGraphReader(arcs=_GRAPH_ARCS), type_kinds={}, parties={}
-        ),
+        enrichment=EnrichmentLookup(graph or FakeMintGraphReader(arcs=_GRAPH_ARCS), parties={}),
         pivot_max_output_cells=5_000_000,
         code_index=get_index(),
         resolved_stat_var_refs=(),
@@ -321,7 +319,7 @@ def test_a_crs_bundle_prints_the_site_link_only_for_a_replayable_identity(
 ):
     store = FakeArtifactStore()
     rendered = render_and_store(
-        frame_chunks=iter((_CRS_TABLE,)),
+        frame_chunks=lambda: iter((_CRS_TABLE,)),
         options=MintOptions(format="csv", bundle=True),
         spec=spec,
         provenance_refs=[_CRS],
@@ -332,9 +330,7 @@ def test_a_crs_bundle_prints_the_site_link_only_for_a_replayable_identity(
         site=site,
         artifact_store=store,
         entity_columns=("financingProvider", "financingRecipient"),
-        enrichment=EnrichmentLookup(
-            FakeMintGraphReader(arcs=_GRAPH_ARCS), type_kinds={}, parties={}
-        ),
+        enrichment=EnrichmentLookup(FakeMintGraphReader(arcs=_GRAPH_ARCS), parties={}),
         pivot_max_output_cells=5_000_000,
         resolved_stat_var_refs=(),
     )
@@ -459,7 +455,7 @@ def test_a_pivot_heading_a_spreadsheet_escapes_is_documented_by_its_written_name
     this pivot fills one heading, so an Excel row ends in an empty cell, and still validates."""
     store = FakeArtifactStore()
     rendered = render_and_store(
-        frame_chunks=iter((_AGE_TABLE,)),
+        frame_chunks=lambda: iter((_AGE_TABLE,)),
         options=MintOptions(
             format=format_,
             bundle=True,
@@ -474,9 +470,7 @@ def test_a_pivot_heading_a_spreadsheet_escapes_is_documented_by_its_written_name
         site=_SITE,
         artifact_store=store,
         entity_columns=("observationAbout",),
-        enrichment=EnrichmentLookup(
-            FakeMintGraphReader(arcs=_GRAPH_ARCS), type_kinds={}, parties={}
-        ),
+        enrichment=EnrichmentLookup(FakeMintGraphReader(arcs=_GRAPH_ARCS), parties={}),
         pivot_max_output_cells=5_000_000,
         code_index=_age_index(f"{trigger}5 to 0"),
         resolved_stat_var_refs=(),

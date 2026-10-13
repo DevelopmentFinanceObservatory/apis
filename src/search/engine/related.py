@@ -174,7 +174,7 @@ def read_related(
             continue
         member = RelatedMember(
             dcids=tuple(dcids),
-            stat_var=GraphRef(dcid=dcids[0], label=labels[dcids[0]]),
+            stat_var=GraphRef(ref=dcids[0], label=labels[dcids[0]]),
             five_tuple=five_tuple,
             constraints=dict(constraints),
         )
@@ -184,7 +184,7 @@ def read_related(
     ranked.sort(key=lambda item: (-item[0], item[1].dcids))
     group_label = read_name(member_arcs.get(group) or {}) or group
     return Related(
-        group=GraphRef(dcid=group, label=group_label),
+        group=GraphRef(ref=group, label=group_label),
         members=tuple(member for _, member in ranked[:RELATED_MEASURES_MAX]),
     )
 

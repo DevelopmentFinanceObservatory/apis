@@ -36,14 +36,14 @@ from search.models import Warning as ResponseWarning
 def _entity_data(dcid: str) -> tuple[EntityRoleKey, GraphRef, GraphRef | None]:
     """A grounded (role, entity_ref, entity_type_ref) triple with a
     presentation "observationAbout" role, mirroring what _ground_answer builds."""
-    return "observationAbout", GraphRef(dcid=dcid, label=dcid), None
+    return "observationAbout", GraphRef(ref=dcid, label=dcid), None
 
 
 def test_build_identity_entities_mirrors_presented_entities_as_subjects():
     """Each grounded triple becomes a subject Entity without another graph call."""
     entity_data = [_entity_data("country/USA"), _entity_data("country/ETH")]
     result = build_identity_entities(entity_data, role_refs={})
-    by_dcid = {e.ref.dcid: e for e in result}
+    by_dcid = {e.ref.ref: e for e in result}
     assert isinstance(by_dcid["country/USA"].role, EntityRoleSubject)
     assert isinstance(by_dcid["country/ETH"].role, EntityRoleSubject)
 

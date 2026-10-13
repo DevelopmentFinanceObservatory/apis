@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
+from code_index import shared as code_index_shared
 from search.engine import deadline as deadline_mod
 from search.engine import envelope as envelope_mod
 from search.engine import fanout as fanout_mod
@@ -111,7 +112,7 @@ _ACTIVITY_SOURCE_SLOT = Slot.model_validate(
     {
         "key": {
             "axis": "how",
-            "property": {"dcid": "activitySource", "label": "activity source"},
+            "property": {"ref": "activitySource", "label": "activity source"},
             "label": "activity source",
         },
         "binding": {"kind": "unbound"},
@@ -202,7 +203,7 @@ def _spec_with_sv(part, ref: str):
     (spec,) = [
         spec
         for spec in part.candidates.specs
-        if ref in {sv.ref.dcid for sv in spec.resolved.members}
+        if ref in {sv.ref.ref for sv in spec.resolved.members}
     ]
     return spec
 
@@ -251,7 +252,7 @@ def test_a_resubmit_drops_a_label_only_group_and_states_a_spec_sentence_without_
     """C134: a posted group naming no graph node drops from the rebuilt part's Spec, since
     nothing ties its label to the role's entities, and the spec sentence holds heading and
     byline tokens only, the same sentence a fresh render of the spec states."""
-    group = EntityGroup(dcid=None, label="South Asia's largest economy")
+    group = EntityGroup(ref=None, label="South Asia's largest economy")
     entities = [subject_entity(_INDIA)]
     _spec_id, identity = build_spec_identity(
         GDP_SHAPE,
@@ -476,10 +477,10 @@ def test_window_disagreement_blocks_fold_editing_to_agree_enables_it():
     gender_slot = next(
         s
         for s in first.spec.resolved.slots
-        if s.key.property is not None and s.key.property.dcid == "gender"
+        if s.key.property is not None and s.key.property.ref == "gender"
     )
     assert gender_slot.binding.kind == "set"
-    assert {v.ref.dcid for v in gender_slot.binding.values if v.ref is not None} == {
+    assert {v.ref.ref for v in gender_slot.binding.values if v.ref is not None} == {
         "Female",
         "Male",
     }
@@ -510,13 +511,13 @@ def test_candidates_entry_preserves_posted_order_even_reversed():
     assert result.status == "candidates"
     part = result.parts[0]
     assert part.status == "candidates"
-    resolved_svs = [[sv.ref.dcid for sv in spec.resolved.members] for spec in part.candidates.specs]
-    posted_svs = [[sv.ref.dcid for sv in spec.resolved.members] for spec in reversed_order]
+    resolved_svs = [[sv.ref.ref for sv in spec.resolved.members] for spec in part.candidates.specs]
+    posted_svs = [[sv.ref.ref for sv in spec.resolved.members] for spec in reversed_order]
     # A fresh sort would reproduce natural_order; asserting against that
     # (rather than only against posted_svs) makes a regression to re-sorting
     # actually fail this test.
     assert resolved_svs == posted_svs
-    assert resolved_svs != [[sv.ref.dcid for sv in spec.resolved.members] for spec in natural_order]
+    assert resolved_svs != [[sv.ref.ref for sv in spec.resolved.members] for spec in natural_order]
     assert part.candidates.ordering == birth_rate_part.candidates.ordering
     assert part.candidates.max_candidates == birth_rate_part.candidates.max_candidates
     assert part.candidates.truncated == birth_rate_part.candidates.truncated
@@ -1683,8 +1684,14 @@ def test_parsed_fanout_timeout_cancels_a_completed_sibling_parsed_trailing_tasks
     substituted with a long-running stand-in here too, asserted
     `cancelled()` from inside the running loop -- a `finally`/except cleanup
     that fires during this generator's own teardown is invisible once
-    `asyncio.run` has already returned and torn the loop down."""
-    search_settings(request_timeout_s=0.2)
+    `asyncio.run` has already returned and torn the loop down.
+
+    The deadline passes on the fake clock once the completed leg has launched
+    both stand-ins, so the leg's own work never races it. The request runs on
+    an empty process code index, as after `tests/code_index/test_shared.py`
+    reset it, so the leg parses the index (about 0.2 s) before it launches."""
+    clock = _frozen_monotonic_clock(monkeypatch)
+    search_settings(request_timeout_s=_DEADLINE_TIMEOUT_S)
 
     real_resolve_variable = _pipeline_mod.resolve_variable
 
@@ -1701,14 +1708,20 @@ def test_parsed_fanout_timeout_cancels_a_completed_sibling_parsed_trailing_tasks
     slot_tasks: list[asyncio.Task] = []
     obs_tasks: list[asyncio.Task] = []
 
+    def _pass_the_deadline_once_both_launched() -> None:
+        if slot_tasks and obs_tasks:
+            clock.now += _DEADLINE_TIMEOUT_S * 10
+
     def _stalling_launch_slot_options(*args, **kwargs):
         task = asyncio.create_task(asyncio.sleep(5.0))
         slot_tasks.append(task)
+        _pass_the_deadline_once_both_launched()
         return task
 
     def _stalling_launch_observations(*args, **kwargs):
         task = asyncio.create_task(asyncio.sleep(5.0))
         obs_tasks.append(task)
+        _pass_the_deadline_once_both_launched()
         return task
 
     monkeypatch.setattr(_relaunch_mod, "_launch_slot_options_task", _stalling_launch_slot_options)
@@ -1750,7 +1763,8 @@ def test_parsed_fanout_timeout_cancels_a_completed_sibling_parsed_trailing_tasks
         for task in (*slot_tasks, *obs_tasks):
             assert task.cancelled(), f"trailing task leaked past the failing request: {task}"
 
-    asyncio.run(_drain())
+    with code_index_shared._singleton.isolated():
+        asyncio.run(_drain())
 
 
 @pytest.mark.unrecorded_requests

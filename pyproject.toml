@@ -147,13 +147,14 @@ members = ["packages/*"]
 [tool.uv.sources]
 dfo-data-tools = { workspace = true }
 # dfo-data-tools's own pyproject.toml pins dfo-spec-kit-frame-grammar,
-# dfo-spec-kit-components, and dfo-spec-kit-provenance-docs to this same
+# dfo-spec-kit-components, dfo-spec-kit-provenance-docs, and
+# dfo-spec-kit-descriptions to this same
 # commit; frame-grammar's pyproject.toml in turn declares its `dfo-spec-kit`
 # dependency as an intra-repo path source (`{ path = "../spec-kit" }`), which
 # uv resolves relative to frame-grammar's own pinned commit -- so this
 # project's own `dfo-spec-kit` source MUST resolve to that identical commit,
 # or `uv lock` refuses with "conflicting URLs for package dfo-spec-kit"
-# (confirmed live). All four pins move together as a single rev. This rev's
+# (confirmed live). All five pins move together as a single rev. This rev's
 # registry schema has no `spec_resubmit` door: a code with a raise site in
 # this repo maps to `dataset_resubmit` instead. `entity_set_too_large` is
 # mapped on `search.resolve` for the `raw_text` and `parsed` doors, which serve
@@ -201,9 +202,35 @@ dfo-data-tools = { workspace = true }
 # The frame grammar's `unit` cell takes a composed unit,
 # `{"numerator": part, "denominator": part}`, for a quotient of two measures,
 # and the components catalogue's `unit` slot takes the matching `composed_unit`.
-# Follow-up: move all four to a real spec-kit tag once one is cut, so a
+# It registers the search.resolve warnings `denominator_unverified`,
+# `artifact_pair_stale`, and `catalogue_index_drift`.
+# The descriptions package ships the step and description schemas, the operation
+# list, `check_steps`, `steps_bytes` (a stored step list's RFC 8785 bytes) and
+# `MAX_CITE_TEXT_LENGTH`. The components envelope admits a card's `description`,
+# keeps provenance to lineage, and its catalogue manifest digests the description
+# and step schemas it references. The identity core binds a unit to each place's
+# national currency (`national_currency`) and refuses a conversion `recipe` in a
+# unit request. The frame grammar is 1.1.0: each unit ref is typed, and a
+# converted unit cell may carry its conversion `recipe`; a frame with no recipe
+# keeps the 1.0.0 unit layout, and every stored layout reads. The registry maps every
+# refusal on `datasets.description`, registers the Graph list, documentation, and
+# description routes, and maps `node_not_held` on the Graph members route.
+# A card's description `about` holds the measure, the fixed values the measure
+# does not name, and the drawn dimensions' values, each with its definition.
+# `check_description` requires a drawn dimension's `values` to hold exactly its
+# `count` of distinct refs.
+# The operation list marks compare as writing a variable of its own, and a compare
+# step records in `sides` the entities each input holds; `check_steps` refuses a
+# compare without `sides` (`missing_sides`) or keyed by other roles than its
+# inputs (`sides_roles_mismatch`).
+# The registry refuses a part's `source_code` on search.resolve with
+# `source_code_not_held`, `source_code_ambiguous`, and
+# `source_code_shares_variable`.
+# The pin is `739caf6`, the head of dfo-spec-kit's branch
+# feat/source-code-refusals.
+# Follow-up: move all five to a real spec-kit tag once one is cut, so a
 # future force-push or GC on spec-kit's main can't silently break this lock.
-dfo-spec-kit = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git", rev = "0a34033f23d0ee400cbe7131781a6d142eba0508", subdirectory = "python/spec-kit" }
+dfo-spec-kit = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git", rev = "739caf69e7ae2fca083ce6781990b912f5e6dc8c", subdirectory = "python/spec-kit" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

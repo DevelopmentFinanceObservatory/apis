@@ -80,7 +80,7 @@ def test_group_frame_rows_carry_one_provenance_across_members():
         [request_a, request_b],
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(graph, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,

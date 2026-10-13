@@ -5,7 +5,13 @@ A published `ops_` frame's version stores only its lineage, so `load()` adds the
 its `provenance` column names, read from the graph, as `manifest["citation"]`. The graph read
 covers the first 300 distinct refs in row order; later refs are cited by their ref alone. A
 dataset version's stored citation is served with its empty documentation and licence fields
-filled from a live read (`datasets_api.manifest.healed_citation`), as a Datasets bundle cites it.
+filled from a live read of the sources with an empty field
+(`datasets_api.manifest.citation_healed_from`), as a Datasets bundle cites it; a stored
+citation with every field set reads nothing. A frame that holds a description record reads
+every cited source, since its card words what each source's document says. Either citation
+read documents each source it reads, one read per load, and the frame carries what each
+source's document says, its publisher, last download and next release, as
+`ResolvedFrame.source_documents`.
 
 The label and citation graph reads stop at the earlier of two deadlines: the store's
 `read_budget_seconds` from the start of `load()`, and the deadline a door sets with
@@ -13,15 +19,78 @@ The label and citation graph reads stop at the earlier of two deadlines: the sto
 one second or a tenth of its budget, whichever is smaller, so the graph reads stop before the
 door's wait ends. A load whose graph label read or family definition read failed is not
 cached, so the next load reads again. A quarantined family identity is a lasting state, so its
-missing label is cached.
+missing label is cached. The load that reads the labels stamps the frame with the graph
+generation the read starts under and the build of the catalogue the load is bound to
+(`ResolvedFrame.graph_generation`, `ResolvedFrame.catalogue_build`), and the cached frame keeps
+both, so a card's vocabulary revision names the read its labels came from. A cached frame's
+words, its labels, its anchor's left-out labels, its citation and its source documents, are
+read again from its cached bytes once the graph generation or the bound catalogue build moves
+past those stamps, or once they are older than that generation's graph cache lifetime (a day
+for a known generation, an hour for an unknown one), as the graph client's own caches expire.
+A load that re-reads them stamps the frame afresh. A re-read whose label, left-out label or
+citation read fails keeps the cached words and their stamps and is tried again once
+`_RECHECK` has passed, so no card is composed from fallbacks where good words were held; a
+load in between that retries only a citation or a record keeps that wait. A card revision
+already issued keeps the description it was issued with.
 
 With a `recipe_reader`, `load()` reads a published `ops_` frame's recipe and attaches its
-`anchor` as `ResolvedFrame.anchor`: the period "latest" names on that frame, and the series its
+replay key as `ResolvedFrame.replay_key` and its `anchor` as `ResolvedFrame.anchor`: the period "latest" names on that frame, and the series its
 rule left out. A left-out series is absent from the derived frame, so its label is built here
 from its coordinates as a series label is, through the same graph and family reads as the
 frame's own refs, with the raw ref where they hold no name. A recipe that states a label keeps
 it. Stored coordinates that name no series are labelled by their raw content, so no stored
 recipe fails a load. A frame with no recipe, or a recipe with a null anchor, loads with no anchor.
+
+With a `description_reader`, `load()` reads the version's description record and attaches it as
+`ResolvedFrame.description_record`. A version with no record yet loads with none, and a load
+`_RECHECK` (a minute) or more later reads the record again, as it does for a
+computed version's record holding `steps: null`, which a later publish fills. A failed record
+read raises `DatasetsStoreUnavailable`, as a failed version read does, so no frame loads
+without the record its version holds. A stored record that fails validation is logged as an
+error, and its frame loads and is cached with none.
+
+A computed version's record names the versions it was computed from. The load that reads the
+record reads theirs too, in one batched read (`DescriptionReader.read_descriptions`), and
+attaches them as `ResolvedFrame.input_records`, so a card names each input by its title. The
+refs each input's title names (`datasets_api.description_record.title_named`) join the frame's
+label read under their bare dcids, within the label read's cap. An input with no record yet
+is left out, and an input record holding `steps: null` is held, and either leaves the frame's
+record not final, so a later load reads the inputs again. A
+failed input read raises as a failed record read does.
+
+A frame's continuation (`ResolvedFrame.continuation`, `assembler.frame_view.frame_continuation`)
+comes from its stored version alone: a dataset version's `trace.continuations`, or the
+`continuations` a computed version stored when it was published, inherited from the versions it
+was computed from, so a derived frame over a series its source's estimates continue groups
+those rows into one series, as the root does, from its first load. Description records arriving
+later do not change it. A computed version published without steps stores the continuations its
+lineage gives, and the publish that fills its steps replaces them with those its retrieved
+versions give; its record holds `steps: null` until then, so a cached frame of it is read again
+at most once per `_RECHECK`, and a load that finds the stored continuations changed computes the
+structural view again. A computed version recorded before versions stored continuations holds
+them as unknown (`continuations: null`, `assembler.frame_view.continuation_known`) until the
+`backfill-descriptions` task fills them; it loads ungrouped meanwhile, and its cached frame is not
+final, so it is read again at most once per `_RECHECK` and groups once the backfill lands.
+
+A computed version's rows sit under variables the graph does not hold, which its record names
+(`_computed_labels`). A step that writes a new variable names it in `stat_var`, and the variable
+takes the name of that step's output (`description.steps_text.step_output_names`), each input
+named by its title (`description.compose.version_title`) as the card's description names it. A
+variable no step names takes the name `description.steps_text.composed_names` words from the
+record's `computed.composed` entry, a body stored before steps named their variables. A
+version with no record, before the backfill describes it or after its publish could not,
+words the composed variables its stored lineage holds (`composed_stat_vars`) the same way. A
+variable named by neither keeps its ref. The graph read leaves out the variables the record
+names and reads the variables of composed entries' sides first, so the entries' sides are
+labelled in the same read. A record that arrives or changes after the first load re-reads all
+the frame's labels as the first load reads them, under a fresh generation stamp. That load
+re-reads the frame's other words too, so a record arriving on a frame cached without one
+widens its citation read to every cited source. When its label read fails, the new record is
+cached with its names over the labels the frame held, under the old stamps, and both the
+record and the words are read again once `_RECHECK` has passed. A name of two sides keeps both
+sides and the word between them within `LABEL_MAX` characters
+(`assembler.limits.joined_label`), and each name is capitalised and cut to `LABEL_MAX`
+characters.
 
 `load()` reads a version's stored frame (`datasets_api.render.servable_frame_location`): its
 canonical frame, Parquet, built into the parsed frame1 document the assembler reads
@@ -40,10 +109,16 @@ counted at its estimated resident size (`_document_bytes`) and a frame1 document
 length. A pair keeps
 its first recipe, so the anchor is cached with the frame. A derived frame cached before it had a
 recipe is marked so, and each later load reads the recipe again until one exists. A load whose
-citation or documentation read failed is cached too, marked incomplete, and each later load
-re-runs only the citation read until one completes, so a failing read never refetches the frame
-bytes. `load()` re-checks revocation and working-tier servability on every call, cache hit or
-not, so a later takedown refuses the next load. `pin()` records a
+citation or documentation read failed is cached too, with the citation that read left, and a
+load once `_RECHECK` has passed re-runs only the citation read, until one completes, so a
+failing read costs at most one read a minute and never refetches the frame bytes. A cached
+frame without a final description record is read the same way, at most once
+per `_RECHECK`: a load that late reads only the record, and the labels it names,
+until the record is final. One load at a time refreshes a cached frame; a load that finds it
+refreshing waits for that load and serves what it cached, or, once its own deadline passes,
+the words the cache holds. A load caches its result only over the entry it read, so it never
+replaces a newer entry another load cached meanwhile. `load()` re-checks revocation and working-tier servability on every
+call, cache hit or not, so a later takedown refuses the next load. `pin()` records a
 presentation reference and promotes working artifacts to pinned.
 """
 
@@ -58,17 +133,26 @@ from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
-from typing import cast
+from typing import Protocol, cast
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 from dfo_frame_grammar import STAT_VAR_COLUMN, UNIT_COLUMN
 from dfo_frame_grammar.grammar import STAT_VAR_REF_PREFIX
+from pydantic import ValidationError
+from pydantic.experimental.missing_sentinel import MISSING
 
 from artifact_store import ArtifactStore, Tier
 from artifact_store.errors import ArtifactIntegrityError, ArtifactNotFoundError
 from assembler.bind import role_columns, series_label
-from assembler.frame_view import compute_structural_view, dimension_columns, facet_dimension_names
+from assembler.frame_view import (
+    compute_structural_view,
+    continuation_known,
+    dimension_columns,
+    facet_dimension_names,
+    frame_continuation,
+)
+from assembler.limits import LABEL_MAX, joined_label
 from assembler.ports import (
     FrameRef,
     FrameUnavailable,
@@ -94,26 +178,36 @@ from dataset_store.snapshot import (
     read_servable_version,
 )
 from datasets_api.codes_snapshot import SpecNotFound
+from datasets_api.description_record import composed_variables, title_named
 from datasets_api.doors.publish import PUBLISH_MAX_ROWS
-from datasets_api.manifest import build_citation, healed_citation, version_document
+from datasets_api.manifest import (
+    HEALED_FIELDS,
+    build_citation,
+    citation_healed_from,
+    version_document,
+)
 from datasets_api.manifest_models import CitationModel
 from datasets_api.recipe_store import RecipeReader
 from datasets_api.render import servable_frame_location
 from datasets_api.subject_ids import served_subject_ids
+from description.citation import figures_processed
+from description.compose import version_title
+from description.facts import ComposedVariable, DescriptionRecord
+from description.steps import Step
+from description.steps_text import bound_entities, composed_names, step_output_names
+from description.vocabulary import SourceDocumentFacts, Vocabulary, build_vocabulary
+from description.world_bank import WORLD_BANK_NAMESPACE
+from dfo_platform.timings import phase
+from graph_generation import GenerationStamp
 from materialise.formats import (
     FRAME1_MEDIA_TYPE,
     canonical_frame_document,
     read_canonical_frame_table,
 )
 from materialise.graph import UNRESOLVED_NODE, GraphReader, GraphReadError
-from materialise.provenance_doc import read_source_citations
+from materialise.provenance_doc import SourceCitation, read_source_citations
 from materialise.unit_cells import composed_unit_sides
 from origin_catalogue import current_catalogue
-from presentation_store.composed_stat_vars import (
-    ComposedStatVar,
-    composed_stat_var_labels,
-    read_composed_stat_vars,
-)
 from spec_registry.errors import (
     IdentityQuarantined,
     SpecRegistryStoreError,
@@ -125,6 +219,7 @@ __all__ = [
     "FRAME1_MEDIA_TYPE",
     "PRESENTATION_PIN_REFERENCE_KIND",
     "PRESENTATION_PRINCIPAL_PREFIX",
+    "DescriptionReader",
     "LiveFrameStore",
     "frame_reads_bounded_by",
 ]
@@ -154,9 +249,16 @@ provenance labels. A unit ref is a string `unit` cell or a string side of a comp
 unit ref beyond this cap keeps its raw ref."""
 
 _CITATION_READ_CAP = 300
-"""Distinct provenance refs `_derived_citation` sends to `read_source_citations` in one
-`load()` call, in row order. A ref beyond the cap is cited by its ref alone, as a ref the graph
-does not hold is."""
+"""Distinct source refs `_cited_manifest` sends to `read_source_citations` in one `load()` call:
+a derived frame's provenance refs in row order, a root frame's stored citation sources in their
+order. On a derived frame a ref beyond the cap is cited by its ref alone, as a ref the graph does
+not hold is. On a root frame a source beyond the cap keeps its stored fields and documents
+nothing."""
+
+_RECHECK = datetime.timedelta(seconds=60)
+"""How long a cached frame serves a description record that is not final, or words whose
+refresh failed, before a load reads them again: at most one such read a minute for each frame,
+however often it loads."""
 
 _READ_BUDGET_SECONDS = 30.0
 """Default seconds a `load()` call may spend before its graph reads stop: the default of both
@@ -197,6 +299,29 @@ _DERIVED_SPEC_PREFIX = "ops_"
 _door_deadline: ContextVar[float | None] = ContextVar(
     "presentation_frame_read_deadline", default=None
 )
+
+
+class DescriptionReader(Protocol):
+    """Reads versions' description records (`datasets_api.description_store`)."""
+
+    def read_description(self, *, id: str, content_version: str) -> DescriptionRecord | None:
+        """Return the version's record, or `None` when it holds none.
+
+        Raises:
+            DatasetsStoreUnavailable: The store could not be read.
+        """
+        ...
+
+    def read_descriptions(
+        self, *, versions: Sequence[tuple[str, str]]
+    ) -> dict[tuple[str, str], DescriptionRecord]:
+        """Return the records `versions` hold, by `(id, content_version)`, in one read,
+        leaving out a version that holds none.
+
+        Raises:
+            DatasetsStoreUnavailable: The store could not be read.
+        """
+        ...
 
 
 def _graph_deadline(seconds: float) -> float:
@@ -301,13 +426,15 @@ def _capped_refs(
     *,
     columns: Sequence[str],
     rows: Sequence[Sequence[object]],
-    composed_stat_vars: Sequence[ComposedStatVar] = (),
+    leading_stat_vars: Sequence[str] = (),
+    worded: Sequence[str] = (),
+    named: frozenset[str] = frozenset(),
 ) -> dict[str, str]:
     """The refs to label in `rows`, each mapped to the bare dcid a graph read takes: stat_var,
     entity, and provenance refs up to `_LABEL_RESOLUTION_CAP`, then unit dcid refs up to
-    `_UNIT_LABEL_CAP`, each in row order. The side refs of `composed_stat_vars`, then a
-    composed unit's StatVar sides, count as stat_var refs ahead of the columns' own refs, and
-    a composed unit's string sides as unit refs. A ref an entry describes is left out."""
+    `_UNIT_LABEL_CAP`, each in row order. `leading_stat_vars`, then the bare dcids in `worded`,
+    then a composed unit's StatVar sides, count under the first cap ahead of the columns' own
+    refs, and a composed unit's string sides as unit refs. A ref in `named` is left out."""
     index_by_column = {column: position for position, column in enumerate(columns)}
     facets = facet_dimension_names()
     ref_columns = tuple(
@@ -326,24 +453,24 @@ def _capped_refs(
         )
 
     # Keep frame refs as label keys. Graph calls use bare stat_var dcids. The sides of a
-    # composed StatVar and of a composed unit come first, since each labels the whole card
-    # and frames hold few of them.
-    composed = {entry.stat_var for entry in composed_stat_vars}
-    stat_var_refs = [ref for entry in composed_stat_vars for ref in (*entry.first, *entry.second)]
-    stat_var_refs += [
+    # composed variable, the refs inputs' titles and steps' names word and the sides of a
+    # composed unit come first, since each labels the whole card and frames hold few of them.
+    # A bare dcid is its own key and strips to itself.
+    leading = [*leading_stat_vars, *worded]
+    leading += [
         cast("Mapping[str, str]", part)["stat_var"]
         for part in unit_parts
         if isinstance(part, Mapping) and "stat_var" in part
     ]
     distinct: dict[str, str] = {
-        ref: ref.removeprefix(STAT_VAR_REF_PREFIX) for ref in stat_var_refs if ref not in composed
+        ref: ref.removeprefix(STAT_VAR_REF_PREFIX) for ref in leading if ref not in named
     }
     for column in ref_columns:
         index = index_by_column[column]
         strip = column == STAT_VAR_COLUMN
         for row in rows:
             ref = row[index]
-            if ref is None or ref in distinct or ref in composed:
+            if ref is None or ref in distinct or ref in named:
                 continue
             distinct[cast(str, ref)] = (
                 cast(str, ref).removeprefix(STAT_VAR_REF_PREFIX) if strip else cast(str, ref)
@@ -358,6 +485,90 @@ def _capped_refs(
     return capped
 
 
+def _composed(
+    record: DescriptionRecord | None, *, stored: StoredVersion
+) -> Sequence[ComposedVariable]:
+    """The composed variables of a computed version: its record's `computed.composed` entries,
+    or for a version with no record, those its stored lineage holds as `composed_stat_vars`
+    (`datasets_api.description_record.composed_variables`), which a record is built from. A
+    stored list that does not read as composed variables is logged and names none, so no
+    stored lineage fails a load."""
+    if record is not None:
+        return (record.computed.composed or []) if record.computed is not None else []
+    if not isinstance(stored.facts, FrameLineage):
+        return []
+    try:
+        return composed_variables(stored.facts.composed_stat_vars) or []
+    except (KeyError, TypeError, ValidationError):
+        logger.warning(
+            "Stored composed_stat_vars of spec_id %s content_version %s do not read as "
+            "composed variables; naming them by ref",
+            stored.subject_id,
+            stored.content_version,
+        )
+        return []
+
+
+def _settled(record: DescriptionRecord) -> bool:
+    """Whether `record` holds every member Datasets fills after the write. A computed record
+    holding `steps: null` does not, since a later publish fills its steps
+    (`datasets_api.version_descriptions.PublishDescriber.settle`)."""
+    return record.computed is None or record.steps is not None
+
+
+def _named_refs(
+    record: DescriptionRecord | None, *, composed: Sequence[ComposedVariable]
+) -> Iterator[str]:
+    """The `dcid:` refs of the variables a computed version names: each step's `stat_var` in
+    its record and each of its `composed` entries' variable."""
+    if record is not None and record.computed is not None:
+        for step in record.steps or ():
+            if step.stat_var is not MISSING:
+                yield f"{STAT_VAR_REF_PREFIX}{step.stat_var}"
+    for entry in composed:
+        yield f"{STAT_VAR_REF_PREFIX}{entry.variable}"
+
+
+def _step_entities(record: DescriptionRecord | None) -> Iterator[str]:
+    """The bare dcids of the entities a computed version's steps record on their sides
+    (`bound_entities`), which a comparison names its sides by."""
+    if record is not None and record.computed is not None:
+        for step in record.steps or ():
+            yield from bound_entities(step)
+
+
+def _composed_sides(composed: Sequence[ComposedVariable]) -> list[str]:
+    """The `dcid:` refs of the variables on the sides of `composed`, in entry order."""
+    return [
+        f"{STAT_VAR_REF_PREFIX}{ref}" for entry in composed for ref in (*entry.first, *entry.second)
+    ]
+
+
+def _source_documents(live: Mapping[str, SourceCitation]) -> dict[str, SourceDocumentFacts]:
+    """What each documented source's document says, by provenance dcid, as the Datasets
+    description door reads it: its publisher, its last download and its next release."""
+    return {
+        ref: SourceDocumentFacts(
+            publisher=doc.source.ref if doc.source is not None else None,
+            last_downloaded=doc.last_update,
+            next_release=doc.next_expected_update,
+        )
+        for ref, cited in live.items()
+        if (doc := cited.documentation) is not None
+    }
+
+
+def _documented(live: Mapping[str, SourceCitation]) -> bool:
+    """Whether every documentation read behind `live` answered."""
+    return not any(cited.documentation_read_failed for cited in live.values())
+
+
+def _joined_within_label_max(first: str, joiner: str, second: str) -> str:
+    """Two sides of a variable's name joined within `LABEL_MAX` (`joined_label`), so both
+    sides and the joiner stay in the name."""
+    return joined_label(first, second, joiner=f" {joiner} ")
+
+
 def _left_out_label(coordinates: Mapping[str, str], *, labels: Mapping[str, str]) -> str:
     """A left-out series' label, as `assembler.bind.series_label` builds a series label.
     Coordinates that hold neither `stat_var` nor an entity role are labelled by their raw
@@ -370,14 +581,36 @@ def _left_out_label(coordinates: Mapping[str, str], *, labels: Mapping[str, str]
 
 @dataclass(frozen=True, slots=True)
 class _CachedFrame:
-    """A cached load: the frame bytes' size, the resolved frame, whether every citation read
-    behind its manifest completed, and whether its anchor is final. The anchor of a derived
-    frame is final once its recipe has been read, and that of any other frame always."""
+    """A cached load: the frame bytes' size, the resolved frame, when a load next retries a
+    citation read that did not complete (`None` once one has), whether its anchor is final, when
+    a load next reads its description record, and when its words were read. A citation read
+    that failed, or whose documentation read failed, is retried once `_RECHECK` has passed, and
+    the frame serves the citation that read left in between. The anchor of a derived frame is final
+    once its recipe has been read, and that of any other frame always. The description record
+    is final once a read finds it holding every member Datasets fills later
+    (`_description_records`), and always for a store with no description reader. No load reads
+    a final record again (`None`); a load reads one that is not final once
+    `_RECHECK` has passed since its last read. The frame's words are its labels,
+    its anchor's left-out labels, its citation and its source documents, all read from the
+    graph and the origin catalogue under the frame's stamps (`LiveFrameStore._words_stale`).
+    `words_retry_at` is when a load next tries to refresh stale words whose last refresh
+    failed, `None` when none has."""
 
     size_bytes: int
     resolved: ResolvedFrame
-    citation_complete: bool
+    citation_retry_at: datetime.datetime | None
     anchor_final: bool
+    description_recheck_at: datetime.datetime | None
+    words_read_at: datetime.datetime
+    words_retry_at: datetime.datetime | None = None
+
+    def citation_due(self, now: datetime.datetime) -> bool:
+        """Whether a load at `now` retries the citation read."""
+        return self.citation_retry_at is not None and now >= self.citation_retry_at
+
+    def description_due(self, now: datetime.datetime) -> bool:
+        """Whether a load at `now` reads the description record again."""
+        return self.description_recheck_at is not None and now >= self.description_recheck_at
 
 
 class LiveFrameStore:
@@ -386,7 +619,8 @@ class LiveFrameStore:
     disables those labels and narrows the check to the ref's own id. Every other dependency is
     required.
     `recipe_reader` supplies a derived frame's rolling anchor, and `None` loads every frame
-    without one.
+    without one. `description_reader` supplies each version's description record, and `None`
+    loads every frame without one.
     `code_index` and `measure_index` default to the packaged indexes. `now` supplies the clock
     for expiry checks and reference timestamps. `read_budget_seconds` bounds the graph reads of
     one `load()` from its start, as the module docstring describes, for a caller that sets no
@@ -404,6 +638,7 @@ class LiveFrameStore:
         reference_writer: ArtifactReferenceWriter,
         spec_reader: SpecReader | None = None,
         recipe_reader: RecipeReader | None = None,
+        description_reader: DescriptionReader | None = None,
         code_index: CodeIndex | None = None,
         measure_index: MeasureIndex | None = None,
         now: Clock = utc_now,
@@ -417,6 +652,7 @@ class LiveFrameStore:
         self._reference_writer = reference_writer
         self._spec_reader = spec_reader
         self._recipe_reader = recipe_reader
+        self._description_reader = description_reader
         self._code_index = code_index if code_index is not None else get_index()
         self._measure_index = measure_index if measure_index is not None else get_measure_index()
         self._now = now
@@ -426,11 +662,14 @@ class LiveFrameStore:
         self._cache_lock = threading.Lock()
         self._cache: dict[tuple[str, str], _CachedFrame] = {}
         self._cache_bytes = 0
+        self._refreshing: set[tuple[str, str]] = set()
+        self._refresh_ended = threading.Condition(self._cache_lock)
 
     # -- FrameStore ---------------------------------------------------
 
     def load(self, *, frame_ref: FrameRef) -> ResolvedFrame:
-        # Recheck revocation and servability on every load. Cache only immutable frame data.
+        # Recheck revocation and servability on every load. The cache keeps the frame bytes for
+        # good and re-reads the frame's words and description record as they go stale.
         deadline = _graph_deadline(self._read_budget_seconds)
         door_deadline = _door_deadline.get()
         if door_deadline is not None:
@@ -438,9 +677,69 @@ class LiveFrameStore:
         cache_key = (frame_ref.spec_id, frame_ref.content_version)
         stored, canonical = self._resolve_canonical_location(frame_ref)
         cached = self._cache_get(cache_key)
-        if cached is not None and cached.citation_complete and cached.anchor_final:
+        if cached is None:
+            return self._resolve(
+                frame_ref, stored=stored, canonical=canonical, cached=None, deadline=deadline
+            )
+        if self._fresh(cached, now=self._now()):
             return cached.resolved
+        with self._refresh_turn(cache_key, deadline=deadline) as turn:
+            if not turn:
+                # Another load's refresh of this frame outlasted this load's budget, so this
+                # load serves the words the cache holds, as a failed refresh does.
+                return cached.resolved
+            # A load that waited takes the entry the refresh before it left.
+            cached = self._cache_get(cache_key)
+            if cached is not None and self._fresh(cached, now=self._now()):
+                return cached.resolved
+            return self._resolve(
+                frame_ref, stored=stored, canonical=canonical, cached=cached, deadline=deadline
+            )
 
+    def _fresh(self, cached: _CachedFrame, *, now: datetime.datetime) -> bool:
+        """Whether a load at `now` serves `cached` as it stands, reading nothing."""
+        return (
+            not cached.citation_due(now)
+            and cached.anchor_final
+            and not cached.description_due(now)
+            and not self._words_stale(cached, now=now)
+        )
+
+    @contextmanager
+    def _refresh_turn(self, cache_key: tuple[str, str], *, deadline: float) -> Iterator[bool]:
+        """Run one refresh of a cached frame at a time: wait until no other load refreshes the
+        frame under `cache_key`, then hold the turn for the body. Yields `False`, holding no
+        turn, when the wait reaches the monotonic `deadline` first."""
+        with self._refresh_ended:
+            turn = self._refresh_ended.wait_for(
+                lambda: cache_key not in self._refreshing,
+                timeout=max(0.0, deadline - time.monotonic()),
+            )
+            if turn:
+                self._refreshing.add(cache_key)
+        if not turn:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            with self._refresh_ended:
+                self._refreshing.discard(cache_key)
+                self._refresh_ended.notify_all()
+
+    def _resolve(
+        self,
+        frame_ref: FrameRef,
+        *,
+        stored: StoredVersion,
+        canonical: StoredArtifactLocation,
+        cached: _CachedFrame | None,
+        deadline: float,
+    ) -> ResolvedFrame:
+        """Load the frame afresh when `cached` is `None`, or refresh what `cached` holds that is
+        due, and cache the result in place of `cached` if the cache still holds it."""
+        cache_key = (frame_ref.spec_id, frame_ref.content_version)
+        now = self._now()
         document = version_document(stored)
         if cached is None:
             recorded_rows = _recorded_rows(stored)
@@ -450,74 +749,274 @@ class LiveFrameStore:
                 and recorded_rows > self._frame_max_rows
             ):
                 raise _over_row_bound(canonical, rows=recorded_rows, max_rows=self._frame_max_rows)
+            record, inputs, description_final = self._description_records(frame_ref)
             data = self._fetch_bytes(canonical)
             doc, size_bytes = _decode_frame(data, location=canonical, max_rows=self._frame_max_rows)
-            labels, labels_resolved = self._resolve_labels(
+            graph_generation, catalogue_build = self._read_under()
+            labels, descriptions, labels_resolved = self._resolve_labels(
                 doc,
-                composed_stat_vars=read_composed_stat_vars(
-                    stored.facts.composed_stat_vars
-                    if isinstance(stored.facts, FrameLineage)
-                    else None,
-                    frame_ref=frame_ref,
-                ),
+                record=record,
+                composed=_composed(record, stored=stored),
+                inputs=inputs,
                 deadline=deadline,
             )
+            continuation = frame_continuation(manifest=document)
             frame = ResolvedFrame(
                 frame_ref=frame_ref,
                 frame=doc,
-                structural_view=compute_structural_view(frame=doc),
+                structural_view=compute_structural_view(frame=doc, continuation=continuation),
+                continuation=continuation,
                 manifest=document,
                 labels=labels,
+                descriptions=descriptions,
                 retrieved_on=canonical.created_at.astimezone(datetime.UTC).date(),
+                description_record=record,
+                input_records=inputs,
+                graph_generation=graph_generation,
+                catalogue_build=catalogue_build,
             )
-            citation_complete = anchor_final = False
+            citation_due, citation_retry_at, anchor_final = True, None, False
+            recheck_at = (
+                None
+                if description_final and continuation_known(manifest=document)
+                else now + _RECHECK
+            )
+            words_read_at = now
+            refreshing = record_changed = False
         else:
             frame, size_bytes, labels_resolved = cached.resolved, cached.size_bytes, True
-            citation_complete, anchor_final = cached.citation_complete, cached.anchor_final
+            citation_due, citation_retry_at = cached.citation_due(now), cached.citation_retry_at
+            anchor_final = cached.anchor_final
+            recheck_at, words_read_at = cached.description_recheck_at, cached.words_read_at
+            record, inputs = frame.description_record, frame.input_records
+            if cached.description_due(now):
+                record, inputs, description_final = self._description_records(frame_ref)
+                recheck_at = (
+                    None
+                    if description_final and continuation_known(manifest=document)
+                    else now + _RECHECK
+                )
+            record_changed = (record, inputs) != (frame.description_record, frame.input_records)
+            continuation = frame_continuation(manifest=document)
+            if continuation != frame.continuation:
+                # The late steps of a version published without them replace its stored
+                # continuations, in the write that fills its record's steps, and the backfill
+                # fills those of a version recorded before versions stored them.
+                frame = replace(
+                    frame,
+                    structural_view=compute_structural_view(
+                        frame=frame.frame, continuation=continuation
+                    ),
+                    continuation=continuation,
+                )
+            refreshing = not record_changed and self._words_stale(cached, now=now)
+            if record_changed or refreshing:
+                # Re-read every word of the cached frame under one stamp: its labels, its
+                # anchor's left-out labels, and its citation and source documents, which a
+                # record arriving widens to every cited source. The bytes stay cached.
+                citation_due, anchor_final = True, False
+                words_read_at = now
+                graph_generation, catalogue_build = self._read_under()
+                labels, descriptions, labels_resolved = self._resolve_labels(
+                    frame.frame,
+                    record=record,
+                    composed=_composed(record, stored=stored),
+                    inputs=inputs,
+                    deadline=deadline,
+                )
+                if record_changed and not labels_resolved:
+                    # The new record's names stand, over the cached labels of the refs the
+                    # failed read left unlabelled; the cached stamps keep the words due.
+                    labels = {**frame.labels, **labels}
+                    descriptions = {**frame.descriptions, **descriptions}
+                    graph_generation, catalogue_build = (
+                        frame.graph_generation,
+                        frame.catalogue_build,
+                    )
+                    words_read_at = cached.words_read_at
+                frame = replace(
+                    frame,
+                    description_record=record,
+                    input_records=inputs,
+                    labels=labels,
+                    descriptions=descriptions,
+                    graph_generation=graph_generation,
+                    catalogue_build=catalogue_build,
+                )
 
         if not anchor_final:
-            anchor, anchor_final, anchor_labelled = self._recipe_anchor(frame, deadline=deadline)
-            frame = replace(frame, anchor=anchor)
+            replay_key, anchor, anchor_final, anchor_labelled = self._recipe_facts(
+                frame, deadline=deadline
+            )
+            frame = replace(frame, replay_key=replay_key, anchor=anchor)
             labels_resolved = labels_resolved and anchor_labelled
-        if not citation_complete:
-            manifest, citation_complete = self._cited_manifest(
+        if citation_due:
+            manifest, documents, citation_complete = self._cited_manifest(
                 frame, stored_manifest=document, deadline=deadline
             )
-            frame = replace(frame, manifest=manifest)
-        if labels_resolved:
+            frame = replace(frame, manifest=manifest, source_documents=documents)
+            citation_retry_at = None if citation_complete else now + _RECHECK
+        if (
+            cached is not None
+            and refreshing
+            and not (labels_resolved and citation_retry_at is None)
+        ):
+            # A failed refresh of stale words keeps the cached words and their stamps, so no
+            # card is composed from fallbacks where good words were held, and tries again once
+            # `_RECHECK` has passed.
+            self._cache_put(
+                cache_key,
+                replace(cached, description_recheck_at=recheck_at, words_retry_at=now + _RECHECK),
+                expected=cached,
+            )
+            return cached.resolved
+        # A load that read no words keeps a failed refresh's retry time.
+        words_retry_at = (
+            cached.words_retry_at
+            if cached is not None and not (refreshing or record_changed)
+            else None
+        )
+        relabel_failed = record_changed and not labels_resolved
+        if relabel_failed:
+            # A record that changed under a failed label read is cached with its words, which
+            # are tried again, and the record read again, once `_RECHECK` has passed.
+            recheck_at = words_retry_at = now + _RECHECK
+        if labels_resolved or relabel_failed:
             self._cache_put(
                 cache_key,
                 _CachedFrame(
                     size_bytes=size_bytes,
                     resolved=frame,
-                    citation_complete=citation_complete,
+                    citation_retry_at=citation_retry_at,
                     anchor_final=anchor_final,
+                    description_recheck_at=recheck_at,
+                    words_read_at=words_read_at,
+                    words_retry_at=words_retry_at,
                 ),
+                expected=cached,
             )
         return frame
 
-    def _recipe_anchor(
+    def _words_stale(self, cached: _CachedFrame, *, now: datetime.datetime) -> bool:
+        """Whether a load at `now` reads the cached frame's words again, as the graph client's
+        caches decide for their own entries: once the graph generation or the bound catalogue
+        build differs from the one they were read under (`_read_under`, read without I/O), or
+        once they are older than that generation's cache lifetime
+        (`graph_generation.stamp.GenerationStamp.max_age_s`: a day for a known generation, an
+        hour for an unknown one). Words whose last read failed are stale from `words_retry_at`
+        on, and not before. A store with no graph reads no words that can change."""
+        if self._graph is None:
+            return False
+        if cached.words_retry_at is not None:
+            return now >= cached.words_retry_at
+        frame = cached.resolved
+        if (frame.graph_generation, frame.catalogue_build) != self._read_under():
+            return True
+        lifetime = GenerationStamp(token=frame.graph_generation).max_age_s
+        return now - cached.words_read_at >= datetime.timedelta(seconds=lifetime)
+
+    def _read_under(self) -> tuple[str | None, str | None]:
+        """The graph generation token a graph read starts under now, and the build of the
+        catalogue this load is bound to, or `(None, None)` for a store with no graph."""
+        if self._graph is None:
+            return None, None
+        return self._graph.generation_stamp().token, current_catalogue().build_id
+
+    def _description_records(
+        self, frame_ref: FrameRef
+    ) -> tuple[DescriptionRecord | None, tuple[DescriptionRecord, ...], bool]:
+        """The version's description record, the records of the inputs it was computed from
+        (`_input_records`), and whether that answer is final. A store with no description
+        reader has none, finally. A version with no record yet has none, not final, so a later
+        load reads again. A record is final once it and each of its inputs' records is settled
+        (`_settled`) and it found every input's record. A stored record that fails validation is logged
+        as an error and counts as none, finally, since reading it again returns the same record.
+
+        A failed read raises `DatasetsStoreUnavailable`, which the doors answer as a retryable
+        503, as they answer the version read every load makes from the same store. A frame
+        loaded without the record it holds would mint a card with no description and its
+        computed variables named by ref, and the card keeps both.
+
+        Raises:
+            DatasetsStoreUnavailable: The record or an input record could not be read.
+        """
+        if self._description_reader is None:
+            return None, (), True
+        try:
+            record = self._description_reader.read_description(
+                id=frame_ref.spec_id, content_version=frame_ref.content_version
+            )
+        except ValidationError:
+            logger.error(
+                "Description record for spec_id %s content_version %s failed validation; "
+                "serving the frame without one",
+                frame_ref.spec_id,
+                frame_ref.content_version,
+                exc_info=True,
+            )
+            return None, (), True
+        if record is None:
+            return None, (), False
+        inputs, inputs_final = self._input_records(record, reader=self._description_reader)
+        return record, inputs, inputs_final and _settled(record)
+
+    def _input_records(
+        self, record: DescriptionRecord, *, reader: DescriptionReader
+    ) -> tuple[tuple[DescriptionRecord, ...], bool]:
+        """The records of the versions a computed version was computed from, in the order its
+        record lists them, read in one batch, and whether that answer is final. An input
+        without an id is left out, finally. An input with no record yet is left out, not final,
+        since the backfill (`datasets_api.maintenance.run_backfill_descriptions`) can write one
+        later. An input record that is not settled (`_settled`) is held, not final, since a
+        later publish fills its steps. A stored input record that fails validation is logged as an error and leaves
+        none, finally. A failed read raises `DatasetsStoreUnavailable`."""
+        if record.computed is None:
+            return (), True
+        versions = list(
+            dict.fromkeys(
+                (one.id, one.content_version)
+                for one in record.computed.inputs
+                if one.id is not None
+            )
+        )
+        if not versions:
+            return (), True
+        try:
+            found = reader.read_descriptions(versions=versions)
+        except ValidationError:
+            logger.error(
+                "An input description record of spec_id %s content_version %s failed "
+                "validation; naming its inputs by id",
+                record.id,
+                record.content_version,
+                exc_info=True,
+            )
+            return (), True
+        held = tuple(found[version] for version in versions if version in found)
+        return held, len(held) == len(versions) and all(_settled(one) for one in held)
+
+    def _recipe_facts(
         self, frame: ResolvedFrame, *, deadline: float
-    ) -> tuple[RollingAnchor | None, bool, bool]:
-        """The rolling anchor a derived frame's recipe records, whether that answer is final,
-        and whether every label read behind it succeeded.
+    ) -> tuple[str | None, RollingAnchor | None, bool, bool]:
+        """The replay key and the rolling anchor a derived frame's recipe records, whether that
+        answer is final, and whether every label read behind it succeeded.
 
         A frame that is not derived, and any frame of a store with no recipe reader, has no
-        anchor, finally. A derived frame with no recipe has none yet, since a recipe can be
+        replay key and no anchor, finally. A derived frame with no recipe has none yet, since a recipe can be
         written after the frame is published. Each left-out series is labelled from its
         coordinates (`_left_out_label`), over the frame's labels plus one `_label_refs` read of
         the refs the frame does not label. A label the recipe states is kept."""
         spec_id = frame.frame_ref.spec_id
         if self._recipe_reader is None or not spec_id.startswith(_DERIVED_SPEC_PREFIX):
-            return None, True, True
+            return None, None, True, True
         recipe = self._recipe_reader.read_recipe(
             spec_id=spec_id, content_version=frame.frame_ref.content_version
         )
         if recipe is None:
-            return None, False, True
+            return None, None, False, True
         body = cast("Mapping[str, object] | None", recipe.body.get("anchor"))
         if body is None:
-            return None, True, True
+            return recipe.replay_key, None, True, True
 
         left_out = cast("Sequence[Mapping[str, object]]", body["left_out"])
         coordinates = [cast("Mapping[str, str]", one["coordinates"]) for one in left_out]
@@ -545,31 +1044,56 @@ class LiveFrameStore:
                 for one, series in zip(left_out, coordinates, strict=True)
             ),
         )
-        return anchor, True, labelled
+        return recipe.replay_key, anchor, True, labelled
 
     def _cited_manifest(
         self, frame: ResolvedFrame, *, stored_manifest: Mapping[str, object], deadline: float
-    ) -> tuple[Mapping[str, object], bool]:
-        """The manifest with its live citation, and whether every citation read completed. A
-        derived frame cites its provenance refs from the graph. A root frame's stored citation
-        has its empty fields filled. With no graph, or no stored citation on a root frame, the
-        stored manifest stands and is complete."""
-        if frame.frame_ref.spec_id.startswith(_DERIVED_SPEC_PREFIX):
-            citation, complete = self._derived_citation(
-                frame.frame, frame_ref=frame.frame_ref, deadline=deadline
+    ) -> tuple[Mapping[str, object], dict[str, SourceDocumentFacts], bool]:
+        """The manifest with its live citation, what each cited source's document says, and
+        whether every citation read completed. One documented citation read
+        (`_source_citations`) serves both. A derived frame cites its provenance refs from the
+        graph. A root frame's stored citation has its empty fields filled
+        (`datasets_api.manifest.citation_healed_from`) from a read of its distinct sources with
+        an empty `HEALED_FIELDS` member, or of all its distinct sources when the frame holds a
+        description record, whose card words what each source's document says. The read
+        covers the first `_CITATION_READ_CAP` of those; a source beyond the cap stands as
+        stored and documents nothing. A root frame with no source to read reads nothing. With no
+        graph, or no stored citation on a root frame, the stored manifest stands, documents
+        nothing and is complete."""
+        frame_ref = frame.frame_ref
+        if frame_ref.spec_id.startswith(_DERIVED_SPEC_PREFIX):
+            return self._derived_citation(
+                frame.frame,
+                stored_manifest=stored_manifest,
+                frame_ref=frame_ref,
+                steps=()
+                if frame.description_record is None
+                else frame.description_record.known_steps,
+                retrieved=frame.retrieved_on,
+                deadline=deadline,
             )
-            if citation is None:
-                return stored_manifest, complete
-            return {**stored_manifest, "citation": citation}, complete
         if self._graph is None or "citation" not in stored_manifest:
-            return stored_manifest, True
+            return stored_manifest, {}, True
         stored_citation = CitationModel.model_validate(stored_manifest["citation"])
-        citation, complete = healed_citation(
-            stored_citation, graph=self._graph, deadline=deadline, coverage_index=None
+        described = frame.description_record is not None
+        refs = list(
+            dict.fromkeys(
+                source.ref
+                for source in stored_citation.sources
+                if described or any(getattr(source, name) is None for name in HEALED_FIELDS)
+            )
         )
-        if citation is stored_citation:
-            return stored_manifest, complete
-        return {**stored_manifest, "citation": citation.model_dump(mode="json")}, complete
+        if not refs:
+            return stored_manifest, {}, True
+        live = self._source_citations(
+            refs[:_CITATION_READ_CAP], frame_ref=frame_ref, deadline=deadline
+        )
+        if live is None:
+            return stored_manifest, {}, False
+        citation = citation_healed_from(stored_citation, live)
+        if citation != stored_citation:
+            stored_manifest = {**stored_manifest, "citation": citation.model_dump(mode="json")}
+        return stored_manifest, _source_documents(live), _documented(live)
 
     def pin(self, *, frame_ref: FrameRef, component_id: str) -> bool:
         # The read and the write-time recheck honour revocations under the same ids.
@@ -752,17 +1276,26 @@ class LiveFrameStore:
             ) from None
 
     def _derived_citation(
-        self, doc: Mapping[str, object], *, frame_ref: FrameRef, deadline: float
-    ) -> tuple[dict[str, object] | None, bool]:
-        """The citation for a derived frame's distinct `provenance` refs, in row order, shaped
-        as a dataset version manifest's `citation`, each source with its documentation, and whether
-        `load` may cache it. The graph read covers the first `_CITATION_READ_CAP` refs and stops
-        at the absolute monotonic `deadline`. With no graph, and for refs beyond the cap, each
-        source is named by its ref alone. A failed or overdue citation read is logged and
-        returns `(None, False)`, and `load` then leaves the citation out and skips the cache so
-        the next load reads it again. A failed documentation read leaves only that source's
-        `documentation` out and also skips the cache. A source the graph documents nothing for
-        is cacheable.
+        self,
+        doc: Mapping[str, object],
+        *,
+        stored_manifest: Mapping[str, object],
+        frame_ref: FrameRef,
+        steps: Sequence[Step],
+        retrieved: datetime.date,
+        deadline: float,
+    ) -> tuple[Mapping[str, object], dict[str, SourceDocumentFacts], bool]:
+        """`stored_manifest` with the citation of a derived frame's distinct `provenance` refs,
+        in row order, shaped as a dataset version manifest's `citation`, each source with its
+        documentation and the text written for the `retrieved` date; what each source's document
+        says; and whether every read behind them completed. The line routes through the DFO as
+        the steps its description record knows (`steps`) decide
+        (`description.citation.figures_processed`). The read covers the first
+        `_CITATION_READ_CAP` refs. With no graph, and for refs beyond the cap, each source is
+        named by its ref alone. A failed or overdue citation read leaves the citation out and
+        is not complete, so `load` retries it. A failed documentation read leaves only that
+        source's `documentation` out and is not complete either. A source the graph documents
+        nothing for is complete.
         """
         columns = tuple(cast("Sequence[str]", doc["columns"]))
         refs: list[str] = []
@@ -770,72 +1303,204 @@ class LiveFrameStore:
             index = columns.index(_PROVENANCE_COLUMN)
             rows = cast("Sequence[Sequence[object]]", doc["rows"])
             refs = list(dict.fromkeys(cast(str, row[index]) for row in rows if row[index]))
-        source_citations = {}
+        live: dict[str, SourceCitation] = {}
         if self._graph is not None and refs:
-            try:
-                source_citations = read_source_citations(
+            read = self._source_citations(
+                refs[:_CITATION_READ_CAP], frame_ref=frame_ref, deadline=deadline
+            )
+            if read is None:
+                return stored_manifest, {}, False
+            live = read
+        citation, _ = build_citation(
+            provenance_refs=refs,
+            source_citations=live,
+            retrieved=retrieved,
+            processed=figures_processed(version_id=frame_ref.spec_id, steps=steps),
+        )
+        manifest = {**stored_manifest, "citation": citation.model_dump(mode="json")}
+        return manifest, _source_documents(live), _documented(live)
+
+    def _source_citations(
+        self, refs: Sequence[str], *, frame_ref: FrameRef, deadline: float
+    ) -> dict[str, SourceCitation] | None:
+        """Each of `refs` cited with its documentation (`read_source_citations` with
+        `documented`), read from the origin catalogue, else the graph, within the absolute
+        monotonic `deadline` and timed as the call's `citation` phase, or `None` when the read
+        failed, which is logged. The store has a graph."""
+        assert self._graph is not None
+        try:
+            with phase("citation"):
+                return read_source_citations(
                     self._graph,
-                    refs[:_CITATION_READ_CAP],
+                    refs,
                     catalogue=current_catalogue(),
                     deadline=deadline,
                     documented=True,
                 )
-            except GraphReadError:
-                logger.warning(
-                    "Citation read failed for spec_id %s content_version %s (%d refs); "
-                    "serving the frame without a citation",
-                    frame_ref.spec_id,
-                    frame_ref.content_version,
-                    len(refs),
-                    exc_info=True,
-                )
-                return None, False
-        citation, _ = build_citation(provenance_refs=refs, source_citations=source_citations)
-        cacheable = not any(cited.documentation_read_failed for cited in source_citations.values())
-        return citation.model_dump(mode="json"), cacheable
+        except GraphReadError:
+            logger.warning(
+                "Citation read failed for spec_id %s content_version %s (%d refs); "
+                "serving the frame with its stored citation, if any",
+                frame_ref.spec_id,
+                frame_ref.content_version,
+                len(refs),
+                exc_info=True,
+            )
+            return None
 
     def _resolve_labels(
         self,
         doc: Mapping[str, object],
         *,
-        composed_stat_vars: Sequence[ComposedStatVar],
+        record: DescriptionRecord | None,
+        composed: Sequence[ComposedVariable],
+        inputs: Sequence[DescriptionRecord],
         deadline: float,
-    ) -> tuple[dict[str, str], bool]:
-        """Resolve the frame's ref labels (`_resolve_ref_labels`), then word each composed
-        StatVar the frame's version stores from its sides' labels
-        (`composed_stat_var_labels`), under the ref its `stat_var` cells hold. A side the read
-        left unlabelled reads as its bare dcid, and the returned flag is the read's own, so a
-        failed read is not cached."""
+    ) -> tuple[dict[str, str], dict[str, str], bool]:
+        """Resolve the frame's ref labels (`_resolve_ref_labels`), with the refs each of
+        `inputs` names in its title (`datasets_api.description_record.title_named`) and the
+        entities `record`'s steps record on their sides (`bound_entities`) under their bare dcids,
+        then add the name of each variable `record` and `composed` name
+        (`_computed_labels`), under the ref its `stat_var` cells hold, and read the description
+        of the World Development Indicators variable `record` resolved to
+        (`_world_bank_descriptions`). The returned flag says both reads succeeded."""
+        worded = set(_step_entities(record))
+        if inputs:
+            indexed = self._vocabulary(labels={})
+            worded = worded.union(
+                *(title_named(held, index=self._code_index, indexed=indexed) for held in inputs)
+            )
         labels, resolved = self._resolve_ref_labels(
-            doc, composed_stat_vars=composed_stat_vars, deadline=deadline
+            doc,
+            leading_stat_vars=_composed_sides(composed),
+            worded=sorted(worded),
+            named=frozenset(_named_refs(record, composed=composed)),
+            deadline=deadline,
         )
-        labels.update(composed_stat_var_labels(entries=composed_stat_vars, labels=labels))
-        return labels, resolved
+        labels.update(
+            self._computed_labels(record, composed=composed, inputs=inputs, labels=labels)
+        )
+        descriptions, described = self._world_bank_descriptions(record, deadline=deadline)
+        return labels, descriptions, resolved and described
+
+    def _world_bank_descriptions(
+        self, record: DescriptionRecord | None, *, deadline: float
+    ) -> tuple[dict[str, str], bool]:
+        """The graph `description` of the one variable `record`'s definition resolved to, by
+        bare dcid, when that variable is a World Development Indicators variable
+        (`worldBank/`), read in one graph read that stops at the absolute monotonic
+        `deadline`, and whether it succeeded. Such a description defines a card's measure
+        (`description.world_bank.world_bank_definition`). A computed version, a version that
+        resolved to several variables and any other variable have none read. A store with no
+        graph reads nothing."""
+        variables = record.variables if record is not None else None
+        variable = variables.variable if variables is not None else None
+        if self._graph is None or variable is None or not variable.startswith(WORLD_BANK_NAMESPACE):
+            return {}, True
+        try:
+            arcs_by_dcid = self._graph.node_arcs_many(
+                (variable,), properties=("description",), deadline=deadline
+            )
+        except GraphReadError:
+            logger.warning(
+                "World Development Indicators description read failed for %s; "
+                "serving the frame without it",
+                variable,
+                exc_info=True,
+            )
+            return {}, False
+        arcs = arcs_by_dcid.get(variable)
+        values = arcs.get("description", ()) if arcs is not None else ()
+        return ({variable: values[0]} if values else {}), True
 
     def _resolve_ref_labels(
         self,
         doc: Mapping[str, object],
         *,
-        composed_stat_vars: Sequence[ComposedStatVar],
+        leading_stat_vars: Sequence[str],
+        named: frozenset[str],
+        worded: Sequence[str] = (),
         deadline: float,
     ) -> tuple[dict[str, str], bool]:
         """Resolve labels for stat_var, entity, and provenance refs, capped at 300 in row
         order, then unit dcid refs, capped at 100 in row order, and say whether the graph read
-        succeeded. The side refs of `composed_stat_vars`, then a composed unit's StatVar sides,
-        count as stat_var refs ahead of the columns' own refs, and a composed unit's string
-        sides as unit refs. A ref an entry describes is left out of the read. `dcid:spec_...`
-        family refs use stored definitions and `CodeIndex`. Other refs use one graph batch that
-        stops at the absolute monotonic `deadline`. Missing readers, lookup/store failures, and
-        over-cap refs remain unlabelled without failing the load. A graph failure, the deadline
-        included, preserves family labels. A graph failure or a failed family definition read
-        returns `False`, so `load` skips the cache.
+        succeeded. `leading_stat_vars`, then a composed unit's StatVar sides, count as stat_var
+        refs ahead of the columns' own refs, and a composed unit's string sides as unit refs.
+        A ref in `named` is left out of the read. Each bare dcid in `worded` counts under the
+        first cap after `leading_stat_vars`. `dcid:spec_...` family refs use stored
+        definitions and `CodeIndex`. Other refs use one graph batch that stops at the absolute
+        monotonic `deadline`. Missing readers, lookup/store failures, and over-cap refs remain
+        unlabelled without failing the load. A graph failure, the deadline included, preserves
+        family labels. A graph failure or a failed family definition read returns `False`, so
+        `load` skips the cache.
         """
         columns = tuple(cast("Sequence[str]", doc["columns"]))
         if STAT_VAR_COLUMN not in columns:
             return {}, True
         rows = tuple(cast("Sequence[Sequence[object]]", doc["rows"]))
-        refs = _capped_refs(columns=columns, rows=rows, composed_stat_vars=composed_stat_vars)
+        refs = _capped_refs(
+            columns=columns,
+            rows=rows,
+            leading_stat_vars=leading_stat_vars,
+            worded=worded,
+            named=named,
+        )
         return self._label_refs(refs, deadline=deadline)
+
+    def _computed_labels(
+        self,
+        record: DescriptionRecord | None,
+        *,
+        composed: Sequence[ComposedVariable],
+        inputs: Sequence[DescriptionRecord],
+        labels: Mapping[str, str],
+    ) -> dict[str, str]:
+        """The label of each variable a computed version names, by `dcid:` ref: the name of
+        the output of the step of its record whose `stat_var` it is, else the name its
+        `composed` entry (`_composed`) words from the sides' `labels`. The step names read a
+        vocabulary of `labels` and this store's indexes (`_vocabulary`), in which each of
+        `inputs` is named by its title (`description.compose.version_title`), as a card's
+        description names it. A name of two sides fits them within `LABEL_MAX` characters
+        (`_joined_within_label_max`), and each name is capitalised and cut to `LABEL_MAX`
+        characters. A dataset version names nothing."""
+        steps = record.steps if record is not None and record.computed is not None else None
+        if not composed and not steps:
+            return {}
+        bare_labels = {
+            ref.removeprefix(STAT_VAR_REF_PREFIX): label for ref, label in labels.items()
+        }
+        names = composed_names(composed, bare_labels, join=_joined_within_label_max)
+        if steps:
+            vocabulary = self._vocabulary(labels=bare_labels)
+            titles = {
+                held.id: title
+                for held in inputs
+                if (title := version_title(held, vocabulary)) is not None
+            }
+            if titles:
+                vocabulary = self._vocabulary(labels=bare_labels | titles)
+            by_step = step_output_names(steps, vocabulary, join=_joined_within_label_max)
+            names.update(
+                (step.stat_var, by_step[step.id])
+                for step in steps
+                if step.stat_var is not MISSING and step.id in by_step
+            )
+        return {
+            f"{STAT_VAR_REF_PREFIX}{variable}": (name[:1].upper() + name[1:])[:LABEL_MAX]
+            for variable, name in names.items()
+        }
+
+    def _vocabulary(self, *, labels: Mapping[str, str]) -> Vocabulary:
+        """`labels` and this store's indexes as a vocabulary, whose revision nothing reads."""
+        return build_vocabulary(
+            index=self._code_index,
+            measure_index=self._measure_index,
+            labels=labels,
+            sources={},
+            currency_units={},
+            graph_generation=None,
+            catalogue_build=None,
+        )
 
     def _label_refs(
         self, refs: Mapping[str, str], *, deadline: float
@@ -912,13 +1577,21 @@ class LiveFrameStore:
         with self._cache_lock:
             return self._cache.get(cache_key)
 
-    def _cache_put(self, cache_key: tuple[str, str], entry: _CachedFrame) -> None:
+    def _cache_put(
+        self, cache_key: tuple[str, str], entry: _CachedFrame, *, expected: _CachedFrame | None
+    ) -> None:
         """Byte-bounded insertion-order cache keyed by `(spec_id, content_version)`. Frame refs
-        identify immutable bytes, so entries need no expiry. Eviction follows insertion order
-        and can drop hot entries. Keep one oversized frame. Adjust byte counts on replacement.
+        identify immutable bytes, so entries need no expiry; `load` refreshes an entry's words
+        and record in place (`_words_stale`, `_CachedFrame.description_due`). `entry` replaces
+        the entry under `cache_key` only while that entry is `expected`, the one its load read
+        (`None` for a key it found absent), so a load never overwrites a newer entry another
+        load cached meanwhile. Eviction follows insertion order and can drop hot entries. Keep
+        one oversized frame. Adjust byte counts on replacement.
         """
         with self._cache_lock:
             prior = self._cache.get(cache_key)
+            if prior is not expected:
+                return
             if prior is not None:
                 self._cache_bytes -= prior.size_bytes
             self._cache[cache_key] = entry

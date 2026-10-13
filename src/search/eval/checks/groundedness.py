@@ -3,8 +3,8 @@
 Walks every spec (``specs.response_specs``) and reads, under ``resolved``:
 
 - ``shape.{population_type, measured_property, stat_type, measurement_qualifier,
-  measurement_denominator}.dcid``;
-- ``slots[].binding.value.ref.dcid`` and ``slots[].binding.values[].ref.dcid``;
+  measurement_denominator}.ref``;
+- ``slots[].binding.value.ref.ref`` and ``slots[].binding.values[].ref.ref``;
 - ``entities[].ref`` and ``entities[].entity_type``;
 - ``scope.members[].ref`` and ``scope.members[].entity_type``.
 
@@ -53,19 +53,19 @@ def _spec_refs(spec: SpecView, ctx: ScoreContext) -> Iterator[tuple[str | None, 
     """Each graph reference in ``spec`` with its JSON pointer; absent ones read None."""
     resolved_at, resolved = f"{spec.at}.resolved", f"{spec.pointer}/resolved"
     for name in _SHAPE_FIELDS:
-        yield spec.read(f"resolved.shape.{name}.dcid", ctx), f"{resolved}/shape/{name}/dcid"
+        yield spec.read(f"resolved.shape.{name}.ref", ctx), f"{resolved}/shape/{name}/ref"
 
     slot_at = f"{resolved_at}.slots[]"
     for i, slot in enumerate(spec.read("resolved.slots", ctx) or []):
         binding = f"{resolved}/slots/{i}/binding"
         yield (
-            read_path(slot, "binding.value.ref.dcid", ctx, at=slot_at),
-            f"{binding}/value/ref/dcid",
+            read_path(slot, "binding.value.ref.ref", ctx, at=slot_at),
+            f"{binding}/value/ref/ref",
         )
         values = read_path(slot, "binding.values", ctx, at=slot_at) or []
         for j, value in enumerate(values):
-            dcid = read_path(value, "ref.dcid", ctx, at=f"{slot_at}.binding.values[]")
-            yield dcid, f"{binding}/values/{j}/ref/dcid"
+            dcid = read_path(value, "ref.ref", ctx, at=f"{slot_at}.binding.values[]")
+            yield dcid, f"{binding}/values/{j}/ref/ref"
 
     yield from _entity_refs(
         spec.read("resolved.entities", ctx),

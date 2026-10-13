@@ -1,0 +1,180 @@
+{
+  "document": {
+    "columns": [
+      "stat_var",
+      "recipient",
+      "time_period",
+      "value",
+      "unit",
+      "measurementMethod",
+      "provenance",
+      "status"
+    ],
+    "frame_version": "frame1",
+    "rows": [
+      [
+        "dcid:Amount_FinancialFlow",
+        "country/R0",
+        "2020",
+        0.5,
+        "USDollar",
+        null,
+        "OECD_CRS",
+        null
+      ],
+      [
+        "dcid:Amount_FinancialFlow",
+        "country/R0",
+        "2021",
+        1.5,
+        "USDollar",
+        null,
+        "OECD_CRS",
+        null
+      ],
+      [
+        "dcid:Amount_FinancialFlow",
+        "country/R1",
+        "2020",
+        10.5,
+        {
+          "base_year": 2021,
+          "currency": "USD",
+          "prices": "constant"
+        },
+        "GrantEquivalent",
+        "OECD_CRS",
+        null
+      ],
+      [
+        "dcid:Amount_FinancialFlow",
+        "country/R1",
+        "2021",
+        11.5,
+        {
+          "base_year": 2021,
+          "currency": "USD",
+          "prices": "constant"
+        },
+        "GrantEquivalent",
+        "OECD_CRS",
+        null
+      ],
+      [
+        "dcid:Amount_FinancialFlow",
+        "country/R2",
+        "2020",
+        20.5,
+        {
+          "currency": "EUR",
+          "prices": "current"
+        },
+        null,
+        "OECD_CRS",
+        null
+      ],
+      [
+        "dcid:Amount_FinancialFlow",
+        "country/R2",
+        "2021",
+        21.5,
+        {
+          "currency": "EUR",
+          "prices": "current"
+        },
+        null,
+        "OECD_CRS",
+        null
+      ],
+      [
+        "dcid:Amount_FinancialFlow",
+        "country/R3",
+        "2020",
+        30.5,
+        {
+          "denominator": {
+            "stat_var": "dcid:Count_Person"
+          },
+          "numerator": "USDollar"
+        },
+        "GrantEquivalent",
+        "OECD_CRS",
+        null
+      ],
+      [
+        "dcid:Amount_FinancialFlow",
+        "country/R3",
+        "2021",
+        31.5,
+        {
+          "denominator": {
+            "stat_var": "dcid:Count_Person"
+          },
+          "numerator": "USDollar"
+        },
+        "GrantEquivalent",
+        "OECD_CRS",
+        null
+      ],
+      [
+        "dcid:Amount_FinancialFlow",
+        "country/R4",
+        "2020",
+        40.5,
+        {
+          "denominator": {
+            "stat_var": "dcid:Count_Person"
+          },
+          "numerator": {
+            "base_year": 2021,
+            "currency": "USD",
+            "prices": "constant"
+          }
+        },
+        null,
+        "OECD_CRS",
+        null
+      ],
+      [
+        "dcid:Amount_FinancialFlow",
+        "country/R4",
+        "2021",
+        41.5,
+        {
+          "denominator": {
+            "stat_var": "dcid:Count_Person"
+          },
+          "numerator": {
+            "base_year": 2021,
+            "currency": "USD",
+            "prices": "constant"
+          }
+        },
+        null,
+        "OECD_CRS",
+        null
+      ],
+      [
+        "dcid:Amount_FinancialFlow",
+        "country/R5",
+        "2020",
+        50.5,
+        null,
+        "GrantEquivalent",
+        "OECD_CRS",
+        null
+      ],
+      [
+        "dcid:Amount_FinancialFlow",
+        "country/R5",
+        "2021",
+        51.5,
+        null,
+        "GrantEquivalent",
+        "OECD_CRS",
+        null
+      ]
+    ]
+  },
+  "frame_sha256": "740a7bceaa416040eee6bb73ba43d5a4bf571b555c8b031f0d08947086e9ce0d"
+}

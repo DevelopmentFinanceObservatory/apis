@@ -89,7 +89,7 @@ def _valid_publish_body() -> dict[str, object]:
                 "recipient": "country/KEN",
             }
         ],
-        "input_content_versions": ["cv_abc123"],
+        "input_content_versions": ["cv_00000000000000000000000000abc123"],
     }
 
 
@@ -195,7 +195,7 @@ def test_response_matches_a_genuinely_door_raised_refusal_over_the_wire() -> Non
             "content_version": "ocv_abc123",
             "role_keys": ["recipient"],
             "rows": [row, row],  # duplicate grain -> Frame.build's own FrameError
-            "input_content_versions": ["cv_abc123"],
+            "input_content_versions": ["cv_00000000000000000000000000abc123"],
         },
         headers={"x-dfo-principal": _PRINCIPAL},
     )

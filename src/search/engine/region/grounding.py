@@ -59,6 +59,7 @@ from search.engine.retrieval.bound_values import (
     entity_role_keys,
     five_tuple_member_facts,
     index_carries_shape,
+    shape_population_arcs,
     shape_query,
     slot_expansions,
 )
@@ -497,7 +498,7 @@ def membership_unverified_warning() -> Warning:
 def role_declaration_unverified_message() -> str:
     """Describe answers using indexed roles without a completed graph refresh.
 
-    Refresh is skipped above `SEARCH_ROLE_REFRESH_MAX_MEMBERS`.
+    The refresh failed or ran past its deadline.
     """
     return (
         "the graph read confirming which entity roles these members declare "
@@ -517,7 +518,8 @@ class _GroundingLookup:
     labels: dict[str, str]
     slot_pairs: list[tuple[SlotKeyDraft, SlotBindingDraft | None]]
     level_options_by_key: dict[str, tuple[LevelOption, ...]]
-    # Constraint values the recall arcs or a served member assert, by `axis:property`.
+    # Constraint values a member the shape stands for or a served member asserts, by
+    # `axis:property`.
     evidenced_values: dict[str, set[str]]
     prov_dcids: list[str]
     resolved_role_bindings: EntityRoleBindings
@@ -623,19 +625,19 @@ def _ground_answer_lookup(
         row = code_index.code_by_dcid(dcid)
         if row is not None:
             labels[dcid] = row.label
-    recalled_facts = {
-        sv: ArcsMemberFacts(arcs=arcs) for sv, arcs in (shape_draft.sv_arc_facts or {}).items()
+    population_facts = {
+        sv: ArcsMemberFacts(arcs=arcs) for sv, arcs in shape_population_arcs(shape_draft).items()
     }
     served_facts = {sv: member_facts[sv] for sv in sv_dcids if sv in member_facts}
     evidenced_values: dict[str, set[str]] = {}
-    for facts in (recalled_facts, served_facts):
+    for facts in (population_facts, served_facts):
         for key, values in read_slot_taxonomy(
             slot_keys=shape_draft.slot_keys, member_facts=facts
         ).items():
             evidenced_values.setdefault(key, set()).update(values)
 
     five_tuple_ref_list = _refs_present(five_tuple_dcids, labels)
-    five_tuple_refs: dict[str, GraphRef] = {r.dcid: r for r in five_tuple_ref_list}
+    five_tuple_refs: dict[str, GraphRef] = {r.ref: r for r in five_tuple_ref_list}
 
     # Role names are plain strings, so `_build_entity` uses a dcid-echo ref.
     role_refs: dict[str, GraphRef] = {}
@@ -682,25 +684,25 @@ def _build_grounded_slots(
             try:
                 prop_ref = _ref_or_miss(prop_dcid, labels)
             except GroundingMiss:
-                prop_ref = GraphRef(dcid=prop_dcid, label=prop_dcid)
+                prop_ref = GraphRef(ref=prop_dcid, label=prop_dcid)
 
         grounded_vals: list[GraphRef] = []
         if b_draft and b_draft.kind in ("value", "set"):
             if slot_draft.axis == "where":
                 grounded_vals = _where_slot_refs(b_draft.value_dcids, labels, roles)
                 grounded_vals = [
-                    GraphRef(dcid=ref.dcid, label=query_entity_text_by_dcid[ref.dcid])
-                    if ref.dcid in query_entity_text_by_dcid
+                    GraphRef(ref=ref.ref, label=query_entity_text_by_dcid[ref.ref])
+                    if ref.ref in query_entity_text_by_dcid
                     else ref
                     for ref in grounded_vals
                 ]
             else:
-                # A bound value stays when the graph or code index labels it, or the recall
-                # arcs or a served member assert it (shown under its dcid). Any other value
-                # is one the model invented.
+                # A bound value stays when the graph or code index labels it, or a member the
+                # shape stands for or a served member asserts it (shown under its dcid). Any
+                # other value is one the model invented.
                 evidenced = lookup.evidenced_values.get(f"{slot_draft.axis}:{prop_dcid}", set())
                 grounded_vals = [
-                    GraphRef(dcid=dcid, label=labels.get(dcid, dcid))
+                    GraphRef(ref=dcid, label=labels.get(dcid, dcid))
                     for dcid in b_draft.value_dcids
                     if dcid in labels or dcid in evidenced
                 ]
@@ -713,9 +715,7 @@ def _build_grounded_slots(
             and slot_draft.axis in ("what", "how")
             and len(grounded_vals) >= 2
         ):
-            slot_set_ref = detect_set_ref(
-                value_dcids=[gv.dcid for gv in grounded_vals], graph=graph
-            )
+            slot_set_ref = detect_set_ref(value_dcids=[gv.ref for gv in grounded_vals], graph=graph)
 
         slot = build_slot(
             slot_draft,
@@ -742,9 +742,9 @@ def _build_grounded_slots(
                             options=[
                                 SlotOption(
                                     value=SlotValue(ref=ref, value_kind=value_kind),
-                                    relation=opt_by_dcid[ref.dcid].relation,
-                                    member_count=opt_by_dcid[ref.dcid].member_count,
-                                    parent=opt_by_dcid[ref.dcid].parent,
+                                    relation=opt_by_dcid[ref.ref].relation,
+                                    member_count=opt_by_dcid[ref.ref].member_count,
+                                    parent=opt_by_dcid[ref.ref].parent,
                                 )
                                 for ref in option_refs
                             ],
@@ -791,7 +791,7 @@ def _ground_entities_and_sources(
     """
     labels = lookup.labels
 
-    sv_refs = [GraphRef(dcid=dcid, label=labels.get(dcid, dcid)) for dcid in sv_dcids]
+    sv_refs = [GraphRef(ref=dcid, label=labels.get(dcid, dcid)) for dcid in sv_dcids]
 
     entity_dcids = list(dict.fromkeys(dcid for dcid, _role in lookup.resolved_role_bindings))
     node_types = graph.node_types_batch(entity_dcids) if entity_dcids else {}
@@ -804,15 +804,15 @@ def _ground_entities_and_sources(
         try:
             entity_ref = _ref_or_miss(dcid, labels)
         except GroundingMiss:
-            entity_ref = GraphRef(dcid=dcid, label=dcid)
+            entity_ref = GraphRef(ref=dcid, label=dcid)
             unresolved_entity_dcids.append(dcid)
         if query_text := query_entity_text_by_dcid.get(dcid):
-            entity_ref = GraphRef(dcid=dcid, label=query_text)
+            entity_ref = GraphRef(ref=dcid, label=query_text)
 
         # A type the graph gives no label keeps a dcid-echo ref.
         node_type = node_types.get(dcid)
         entity_type_ref = (
-            GraphRef(dcid=node_type, label=type_labels.get(node_type) or node_type)
+            GraphRef(ref=node_type, label=type_labels.get(node_type) or node_type)
             if node_type
             else None
         )
@@ -912,7 +912,7 @@ def _build_entity(
     """
     if role == "observationAbout":
         return Entity(ref=entity_ref, entity_type=entity_type_ref, role=EntityRoleSubject())
-    role_ref = role_refs.get(role, GraphRef(dcid=role, label=role))
+    role_ref = role_refs.get(role, GraphRef(ref=role, label=role))
     return Entity(
         ref=entity_ref,
         entity_type=entity_type_ref,
@@ -1070,25 +1070,32 @@ def _walked_relaxations(
 
 
 def _relaxations_presence(
-    ctx: _RelaxationProbeContext, shapes: Sequence[ShapeDraft | None]
+    ctx: _RelaxationProbeContext,
+    relaxations: Sequence[tuple[ShapeDraft, Sequence[SlotBindingDraft]] | None],
 ) -> DefaultPresence | None:
     """The presence the relaxations of a default-scoped answer are probed over: `ctx.presence`
-    topped up, in one presence read (`place.read_default_presence`), with the members of
-    the subject-only `shapes` it does not cover, since a walk can widen a relaxation's
-    family past the members the request's read covered. Off a default scope, or with
-    every member covered, `ctx.presence` itself. A read that fails leaves `ctx.presence`,
-    and a relaxation whose members it lacks yields no suggestion."""
+    topped up, in one presence read (`place.read_default_presence`), with what each
+    relaxation's resolve, its shape under its relaxed bindings, reads at its own scope and
+    `ctx.presence` lacks (`presence_stat_vars`). A walk can widen a relaxation's family past
+    the members the request's read covered, and a relaxed binding can widen a held family's
+    served members. Off a default scope, or with every member covered, `ctx.presence`
+    itself. A read that fails leaves `ctx.presence`, and a relaxation whose members it
+    lacks yields no suggestion."""
     from search.engine.place import read_default_presence
+    from search.engine.region.state import presence_stat_vars
 
     presence = ctx.presence
     if presence is None or ctx.place.default_scope is None:
         return presence
+    role_keys = entity_role_keys(
+        ctx.place.roles.resolved_entities, open_axes=ctx.place.roles.open_axes
+    )
     missing = list(
         dict.fromkeys(
             sv
-            for shape in shapes
-            if shape is not None and not is_role_bearing(shape)
-            for sv in shape.sv_arc_facts or {}
+            for relaxation in relaxations
+            if relaxation is not None
+            for sv in presence_stat_vars(relaxation[0], relaxation[1], role_keys)
             if sv not in presence.scopes
         )
     )
@@ -1331,7 +1338,7 @@ def _relaxed_binding_suggestion(
                 mat.population.confirmed if mat.population is not None else None
             ),
             stat_vars_member_count_exact=(
-                mat.population.exact if mat.population is not None else True
+                mat.population.member_count_exact if mat.population is not None else True
             ),
             walked=walked,
         )
@@ -1380,6 +1387,7 @@ def _suggest_nearest_real(
     coverage: CoverageSnapshot,
     unsettled: UnsettledPlace | None = None,
     pin_served_provenance: bool = False,
+    level: tuple[ShapeDraft, Relaxation] | None = None,
 ) -> tuple[list[NearestRealSpec], list[Warning], dict[str, SuggestionRead], DefaultPresence | None]:
     """Relax one value/set binding at a time and return up to `n_max` confirmed suggestions,
     the warnings, what each suggestion is read over by spec id, and the presence the
@@ -1410,11 +1418,15 @@ def _suggest_nearest_real(
     groups the request named, which a suggestion states for the roles that still bind
     exactly their members. With `pin_served_provenance` each suggestion's identity binds
     the provenances that serve it, as the part's answer would.
+
+    With `level`, a shape and the relaxation that reaches it, the one relaxation probed is
+    that shape under the same bindings: the level reading of a shape that divides by a
+    denominator (`phase_place_materialise._level_relaxation`).
     """
     ctx = _RelaxationProbeContext(
         graph=graph,
         sdmx=sdmx,
-        shape_draft=shape_draft,
+        shape_draft=shape_draft if level is None else level[0],
         place=place,
         unsettled=unsettled,
         presence=presence,
@@ -1438,8 +1450,10 @@ def _suggest_nearest_real(
     _entity_warnings: list[Warning] | None = None
 
     # Relax StatVar constraints only. The suggestion keeps its requested entity.
-    relaxations: list[tuple[list[SlotBindingDraft], Relaxation]] = []
-    for i, binding in enumerate(bindings):
+    relaxations: list[tuple[list[SlotBindingDraft], Relaxation]] = (
+        [] if level is None else [(list(bindings), level[1])]
+    )
+    for i, binding in enumerate(bindings if level is None else ()):
         if binding.kind not in ("value", "set") or binding.axis in ("where", "when", "source"):
             continue
         relaxed = list(bindings)
@@ -1462,7 +1476,14 @@ def _suggest_nearest_real(
     # members, whose presence one read after the walks adds.
     walked = _walked_relaxations(ctx, [relaxed for relaxed, _relaxation in relaxations])
     ctx = dataclasses.replace(
-        ctx, presence=_relaxations_presence(ctx, [w.shape if w else None for w in walked])
+        ctx,
+        presence=_relaxations_presence(
+            ctx,
+            [
+                (walk.shape, relaxed) if walk else None
+                for (relaxed, _relaxation), walk in zip(relaxations, walked, strict=True)
+            ],
+        ),
     )
 
     unverified = False

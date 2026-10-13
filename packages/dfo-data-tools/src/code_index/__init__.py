@@ -23,6 +23,7 @@ from code_index.query import (
     IndexFamily,
     InvalidDeclaredDefault,
     dedupe_first_seen,
+    fold_text,
 )
 from code_index.types import (
     AbsentObservation,
@@ -38,6 +39,7 @@ from code_index.types import (
     LevelOption,
     Open,
     PropertyBinding,
+    SourceCodeRow,
     StatVarRow,
     summable_axes,
 )
@@ -65,6 +67,7 @@ __all__ = [
     "LevelOption",
     "Open",
     "PropertyBinding",
+    "SourceCodeRow",
     "SourceNotInFamily",
     "StatVarRow",
     "absent_readings",
@@ -72,6 +75,7 @@ __all__ = [
     "dedupe_first_seen",
     "default_index_path",
     "elect_dataset",
+    "fold_text",
     "identity_family_query",
     "index_covers_slot_keys",
     "load_index",

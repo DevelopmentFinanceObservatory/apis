@@ -135,7 +135,7 @@ def test_no_data_response_flags_the_explicit_member_as_the_match():
     )
     assert region.flagged_match is not None
     flagged_spec = region.flagged_match[0]
-    assert [sv.ref.dcid for sv in flagged_spec.resolved.members] == [_SV_FEMALE]
+    assert [sv.ref.ref for sv in flagged_spec.resolved.members] == [_SV_FEMALE]
     # outcomes.py's documented flagged_match contract: "its available_at_place is
     # False and confidence is low" -- the carrier Spec must actually carry those
     # fields, not ship the None/None "not assessed" default.
@@ -158,7 +158,7 @@ def test_no_data_anywhere_still_returns_no_data():
     assert region.specs == ()
     assert region.flagged_match is not None
     flagged_spec = region.flagged_match[0]
-    assert [sv.ref.dcid for sv in flagged_spec.resolved.members] == [_SV_FEMALE]
+    assert [sv.ref.ref for sv in flagged_spec.resolved.members] == [_SV_FEMALE]
 
 
 # ---------------------------------------------------------------------------
@@ -291,7 +291,7 @@ def test_mixed_presence_asserting_coanswer_with_data_returns_definite():
     )
     assert region.status == "definite", region.no_data_reason
     spec = region.specs[0]
-    served = {sv.ref.dcid for sv in spec.resolved.members}
+    served = {sv.ref.ref for sv in spec.resolved.members}
     assert served == {_URBAN_SV, _RURAL_ADULT_SV}, (
         f"expected the answer backed only by the members asserting every bound "
         f"claim (age + residence), got {served!r}. Count_Person_Rural_Female must "

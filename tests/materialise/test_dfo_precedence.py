@@ -1,7 +1,8 @@
-"""Facet selection ranks DFO's facet first for a variable in the origin catalogue's overlap set,
-and a fetched row serves only where its facet was admitted at its place, so a base facet never
-serves a place where DFO holds data, even when a binding selects it; elsewhere ranking is
-unchanged."""
+"""Facet selection ranks DFO's facet first for a variable in the origin catalogue's overlap set
+when it covers at least as many requested places as the best base facet, and a broader base
+facet serves every place it holds, DFO's included (#1271). A fetched row serves only where the
+probe admitted its facet at its place, even when a binding selects it. Outside the overlap set
+ranking is unchanged."""
 
 from __future__ import annotations
 
@@ -26,7 +27,9 @@ from materialise.facets import (
     declared_default_policies,
     probe_facets,
     rank_candidates,
+    rank_pool,
     select_facet,
+    series_breadth,
 )
 from materialise.generation import _select_member_facets
 from materialise.graph import Facet
@@ -44,7 +47,8 @@ _P1, _P2 = "country/P1", "country/P2"
 _DFO_PROVENANCE = "provenance/DfoImport"
 _BASE_PROVENANCE = "dc/base/WorldDevelopmentIndicators"
 
-# Admission already applied per place: DFO's facet alone at P1, the base facet alone at P2.
+# The graph holds DFO's facet alone at P1 and the base facet alone at P2, so each covers one
+# place and DFO's leads.
 _DFO_FACET = Facet(
     facet_id="fD",
     provenance_id=_DFO_PROVENANCE,
@@ -118,7 +122,7 @@ def _request(
 
 
 @pytest.mark.usefixtures("overlap")
-def test_dfo_data_at_any_place_selects_dfo_facet_over_more_base_observations():
+def test_a_dfo_facet_as_broad_as_the_base_selects_dfo_over_more_base_observations():
     selections = _select_member_facets(
         _request(_VARIABLE), _candidates(_VARIABLE), graph=_graph(_VARIABLE)
     ).selections
@@ -129,6 +133,54 @@ def test_dfo_data_at_any_place_selects_dfo_facet_over_more_base_observations():
     assert provenance.selection_reason == "dfo_precedence"
     # Both candidates share the unit, so its axis reason stays the count ranking's.
     assert selections["unit"].selection_reason == "most_observations"
+
+
+def _dated(facet_id: str, provenance: str, method: str | None, first: int, last: int) -> Facet:
+    return Facet(
+        facet_id=facet_id,
+        provenance_id=provenance,
+        measurement_method=method,
+        unit="CurrencyUSD",
+        obs_count=last - first + 1,
+        earliest_date=str(first),
+        latest_date=str(last),
+    )
+
+
+_REPORTED = _dated("fR", _DFO_PROVENANCE, None, 2000, 2024)
+_ESTIMATES = _dated("fE", _DFO_PROVENANCE, "Estimated", 2025, 2030)
+_BASE_SERIES = replace(_dated("fB", _BASE_PROVENANCE, None, 2020, 2030), obs_count=100)
+
+
+@pytest.mark.usefixtures("overlap")
+@pytest.mark.parametrize(
+    "held",
+    [
+        pytest.param({p: [_REPORTED] for p in ("P1", "P2", "P3")}, id="control-reported-alone"),
+        # DFO's reported series holds P1 and P2 and its estimates P2 and P3: together they
+        # serve the three places the base series holds.
+        pytest.param(
+            {"P1": [_REPORTED], "P2": [_REPORTED, _ESTIMATES], "P3": [_ESTIMATES]},
+            id="reported-and-estimates-together",
+        ),
+    ],
+)
+def test_dfo_precedence_measures_a_joined_candidate_by_the_places_it_serves(
+    held: dict[str, list[Facet]],
+) -> None:
+    window = RequestedWindow(kind="range", start_year=2020, end_year=2030)
+    by_place = {place: [*facets, _BASE_SERIES] for place, facets in held.items()}
+    pool = list({f.facet_id: f for facets in by_place.values() for f in facets}.values())
+
+    ranked = rank_pool(
+        pool,
+        stat_vars=[_VARIABLE],
+        window=window,
+        breadth=series_breadth(by_place, window=window),
+    )
+
+    assert ranked.precedence == {_DFO_PROVENANCE}
+    assert ranked.ranked[0].facet_id == "fR"
 
 
 @pytest.mark.usefixtures("overlap")
@@ -314,6 +366,44 @@ def _admission_blind_sdmx(fetched: list[str] | None = None) -> SdmxClient:
 _BOUND_BASE = FacetBinding(state="bound", ref=_BASE_PROVENANCE)
 
 
+# DFO's facet at P1 beside the base facet, which also holds P2: the population case of #1271,
+# where OECD DAC1 holds 50 countries and World Development Indicators 169.
+def _narrow_dfo_graph() -> FakeGraphReader:
+    return FakeGraphReader(
+        facets={(_VARIABLE, _P1): [_DFO_FACET, _BASE_FACET], (_VARIABLE, _P2): [_BASE_FACET]}
+    )
+
+
+@pytest.mark.usefixtures("overlap")
+def test_a_base_facet_broader_than_dfo_serves_every_place_from_one_source():
+    fetched: list[str] = []
+
+    outcome = materialise_preview(
+        _request(_VARIABLE),
+        sdmx=_admission_blind_sdmx(fetched),
+        graph=_narrow_dfo_graph(),
+        limit=10,
+    )
+
+    assert outcome.selections["provenance"].ref == _BASE_PROVENANCE
+    assert outcome.selections["provenance"].selection_reason != "dfo_precedence"
+    assert fetched and all("fB" in url and "fD" not in url for url in fetched)
+    assert outcome.coverage.entity_refs["observationAbout"] == frozenset({_P1, _P2})
+
+
+@pytest.mark.usefixtures("overlap")
+def test_a_bound_dfo_provenance_serves_dfo_where_the_base_facet_is_broader():
+    outcome = materialise_preview(
+        _request(_VARIABLE, provenance=FacetBinding(state="bound", ref=_DFO_PROVENANCE)),
+        sdmx=_admission_blind_sdmx(),
+        graph=_narrow_dfo_graph(),
+        limit=10,
+    )
+
+    assert outcome.selections["provenance"].ref == _DFO_PROVENANCE
+    assert outcome.coverage.entity_refs["observationAbout"] == frozenset({_P1})
+
+
 @pytest.mark.usefixtures("overlap")
 def test_a_bound_base_provenance_serves_no_row_where_admission_withheld_its_facet():
     outcome = materialise_preview(
@@ -324,7 +414,7 @@ def test_a_bound_base_provenance_serves_no_row_where_admission_withheld_its_face
     )
 
     assert outcome.selections["provenance"].ref == _BASE_PROVENANCE
-    # Admission withheld fB at P1 in favour of fD, so only P2 serves.
+    # The probe admitted fB at P2 alone, so the row the service returns at P1 does not serve.
     assert outcome.coverage.entity_refs["observationAbout"] == frozenset({_P2})
 
 
@@ -400,7 +490,8 @@ def _base_row(place: str, year: str, *, variable: str = _VARIABLE, facet_id: str
 
 @pytest.mark.usefixtures("overlap")
 def test_a_withheld_row_does_not_set_the_latest_period():
-    # fB is withheld at P1, where it holds the newest period, and admitted at P2.
+    # The probe admitted fB at P2 alone; the service also returns it at P1, with the newest
+    # period.
     outcome = materialise_preview(
         replace(_request(_VARIABLE, provenance=_BOUND_BASE), window=RequestedWindow(kind="latest")),
         sdmx=_sdmx_serving(_base_row(_P1, "2024"), _base_row(_P2, "2023")),
@@ -446,7 +537,7 @@ def test_a_group_fetch_serves_each_member_only_where_its_own_probe_admitted_the_
         [_request(_VARIABLE, provenance=_BOUND_BASE), _request(_OTHER, provenance=_BOUND_BASE)],
         sdmx=_admission_blind_sdmx(),
         graph=graph,
-        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(graph, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         member_concurrency=1,
@@ -467,7 +558,7 @@ def test_a_single_member_mint_serves_no_row_where_admission_withheld_its_facet()
         [_request(_VARIABLE, provenance=_BOUND_BASE)],
         sdmx=_admission_blind_sdmx(),
         graph=graph,
-        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(graph, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
     )
@@ -479,8 +570,8 @@ def _latest(request: MaterialisationRequest) -> MaterialisationRequest:
     return replace(request, window=RequestedWindow(kind="latest"))
 
 
-# Both variables hold fB at P1 for 2024 and at P2 for 2023. Admission withheld fB at P1 for
-# `_VARIABLE` alone.
+# Both variables hold fB at P1 for 2024 and at P2 for 2023. The probe admitted fB at P1 for
+# `_OTHER` alone.
 _NEWEST_AT_P1 = tuple(
     _base_row(place, year, variable=variable)
     for variable in (_VARIABLE, _OTHER)
@@ -499,7 +590,7 @@ def test_a_withheld_row_does_not_set_a_group_member_latest_period():
         ],
         sdmx=_sdmx_serving(*_NEWEST_AT_P1),
         graph=graph,
-        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(graph, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         member_concurrency=1,
@@ -535,7 +626,7 @@ def test_a_malformed_row_mid_stream_fails_a_group_fetch(missing: str):
             [_request(_VARIABLE, provenance=_BOUND_BASE), _request(_OTHER, provenance=_BOUND_BASE)],
             sdmx=_sdmx_serving(*good, _MALFORMED_AFTER_GOOD[missing]),
             graph=graph,
-            enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
+            enrichment=EnrichmentLookup(graph, parties={}),
             materialiser_build="build-123",
             capability_version="cap-v1",
             member_concurrency=1,
@@ -544,7 +635,7 @@ def test_a_malformed_row_mid_stream_fails_a_group_fetch(missing: str):
 
 @pytest.mark.usefixtures("overlap")
 def test_rows_for_a_member_whose_probe_admitted_nothing_serve_nothing():
-    """Admission withheld every facet of `_VARIABLE` at both places, so its probe is empty and it
+    """The graph holds no facet of `_VARIABLE` at either place, so its probe is empty and it
     dispatches nothing. The shared fetch still filters on fB for `_OTHER`, and the service
     returns `_VARIABLE`'s fB rows under that same filter; they do not serve."""
     graph = FakeGraphReader(facets={(_OTHER, _P1): [_BASE_FACET], (_OTHER, _P2): [_BASE_FACET]})
@@ -553,7 +644,7 @@ def test_rows_for_a_member_whose_probe_admitted_nothing_serve_nothing():
         [_request(_VARIABLE, provenance=_BOUND_BASE), _request(_OTHER, provenance=_BOUND_BASE)],
         sdmx=_admission_blind_sdmx(),
         graph=graph,
-        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(graph, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         member_concurrency=1,
@@ -577,7 +668,7 @@ def test_a_malformed_row_for_a_member_whose_probe_admitted_nothing_refuses(missi
             [_request(_VARIABLE, provenance=_BOUND_BASE), _request(_OTHER, provenance=_BOUND_BASE)],
             sdmx=_sdmx_serving(_base_row(_P2, "2023", variable=_OTHER), malformed),
             graph=graph,
-            enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
+            enrichment=EnrichmentLookup(graph, parties={}),
             materialiser_build="build-123",
             capability_version="cap-v1",
             member_concurrency=1,

@@ -5,8 +5,10 @@ nodes, sorted by dcid, then folds each `_MERGED_DCIDS` source record into its ta
 `dac_code` is the node's numerically lowest `dacCode`; its other codes join its aliases, since a
 resolvekit entity holds one code per system and every code must resolve.
 `regions` maps resolvekit subregions and continents to graph dcids via `/v2/resolve`.
+`place-types` lists `Place` and every class below it by `subClassOf`, sorted, which
+`entity_resolution.types.entity_kind` classes as places.
 
-Both commands require `SEARCH_GRAPH_BASE` and read the live graph. Output JSON is stable.
+Every command requires `SEARCH_GRAPH_BASE` and read the live graph. Output JSON is stable.
 Maintainers author `curated_aliases.json` by hand.
 """
 
@@ -31,6 +33,15 @@ _DEFAULT_ENTITIES_OUT = (
     / "entity_resolution"
     / "data"
     / "graph_entities.json"
+)
+_DEFAULT_PLACE_TYPES_OUT = (
+    _REPO_ROOT
+    / "packages"
+    / "dfo-data-tools"
+    / "src"
+    / "entity_resolution"
+    / "data"
+    / "place_types.json"
 )
 _DEFAULT_REGIONS_OUT = (
     _REPO_ROOT
@@ -61,6 +72,15 @@ _CONTINENT_TYPE_OF = "Continent"
 _TYPE_OF_BY_ENTITY_TYPE = {
     "geo.subregion": _SUBREGION_TYPE_OF,
     "geo.continent": _CONTINENT_TYPE_OF,
+}
+
+# The arcs a region's name is matched on, in order. Resolvekit's subregions are UN M49's, so the
+# UN's own label (`unDataLabel`) comes first: the graph's `description` and `name` for "Central
+# America" reach the US Census node `CentralAmericaExceptMexico`, while the M49 subregion, Mexico
+# included, is `CentralAmerica`. Continents are Wikidata's and carry no UN label of their own.
+_ARCS_BY_ENTITY_TYPE = {
+    "geo.subregion": ("unDataLabel", "description", "name"),
+    "geo.continent": ("description", "name"),
 }
 
 
@@ -227,7 +247,7 @@ def _iter_resolvekit_region_entities() -> list[tuple[str, str, str]]:
 def export_regions(*, graph_base_url: str, token: str | None) -> list[dict]:
     """Map each resolvekit region's canonical name to a graph dcid.
 
-    Try the typed `description` arc, then `name`.
+    Try the typed arcs in `_ARCS_BY_ENTITY_TYPE` order, keeping the first match.
 
     Unresolved rows carry `dcid: null` for reporting.
     """
@@ -239,13 +259,38 @@ def export_regions(*, graph_base_url: str, token: str | None) -> list[dict]:
     try:
         for resolvekit_id, entity_type, name in _iter_resolvekit_region_entities():
             type_of = _TYPE_OF_BY_ENTITY_TYPE[entity_type]
-            dcid = _resolve_via_arc(client, name=name, arc="description", type_of=type_of)
-            if dcid is None:
-                dcid = _resolve_via_arc(client, name=name, arc="name", type_of=type_of)
+            dcid = None
+            for arc in _ARCS_BY_ENTITY_TYPE[entity_type]:
+                dcid = _resolve_via_arc(client, name=name, arc=arc, type_of=type_of)
+                if dcid is not None:
+                    break
             rows.append({"resolvekit_id": resolvekit_id, "name": name, "dcid": dcid})
     finally:
         client.close()
     return rows
+
+
+_PLACE_ROOT = "Place"
+
+
+def export_place_types(reader: GraphClient, *, max_results: int = 1000) -> list[str]:
+    """`Place` and every class below it, read one `<-subClassOf` level at a time, sorted.
+
+    Raise `SystemExit` if any level's subclass list comes back incomplete."""
+    found = {_PLACE_ROOT}
+    frontier = [_PLACE_ROOT]
+    while frontier:
+        subclasses = reader.node_subjects_many(
+            frontier, property="subClassOf", max_results=max_results
+        )
+        incomplete = sorted(
+            dcid for dcid, (_, coverage) in subclasses.items() if coverage != "complete"
+        )
+        if incomplete:
+            raise SystemExit(f"subclass lists of {incomplete} are incomplete -- raise max_results")
+        frontier = sorted({d for dcids, _ in subclasses.values() for d in dcids} - found)
+        found.update(frontier)
+    return sorted(found)
 
 
 def _write_json(path: Path, data: object) -> None:
@@ -262,6 +307,17 @@ def _cmd_entities(args: argparse.Namespace) -> None:
         reader.close()
     _write_json(Path(args.out), records)
     print(f"wrote {len(records)} entity records to {args.out}", file=sys.stderr)
+
+
+def _cmd_place_types(args: argparse.Namespace) -> None:
+    base = _graph_base_url()
+    reader = GraphClient(base_url=f"{base}/core/api", token=os.environ.get("SEARCH_GRAPH_TOKEN"))
+    try:
+        types = export_place_types(reader)
+    finally:
+        reader.close()
+    _write_json(Path(args.out), types)
+    print(f"wrote {len(types)} place types to {args.out}", file=sys.stderr)
 
 
 def _cmd_regions(args: argparse.Namespace) -> None:
@@ -287,6 +343,10 @@ def main() -> None:
     regions_parser = subparsers.add_parser("regions", help="export region_ids.json")
     regions_parser.add_argument("--out", default=str(_DEFAULT_REGIONS_OUT))
     regions_parser.set_defaults(func=_cmd_regions)
+
+    place_types_parser = subparsers.add_parser("place-types", help="export place_types.json")
+    place_types_parser.add_argument("--out", default=str(_DEFAULT_PLACE_TYPES_OUT))
+    place_types_parser.set_defaults(func=_cmd_place_types)
 
     args = parser.parse_args()
     args.func(args)

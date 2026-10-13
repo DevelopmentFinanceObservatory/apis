@@ -395,7 +395,7 @@ def _answer_key(body: Mapping) -> tuple:
         return (
             body.get("kind"),
             body.get("reason"),
-            _get(body, "scope", "place", "dcid"),
+            _get(body, "scope", "place", "ref"),
             body.get("code"),
         )
     return tuple(_part_key(part) for part in _items(body.get("parts")))

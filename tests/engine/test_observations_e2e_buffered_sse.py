@@ -91,7 +91,7 @@ def test_buffered_definite_spec_gets_inline_observations_matching_coverage():
     series = spec.resolved.observations.series[0]
     # Chosen-facet consistency: the preview describes the SAME (stat_var, entity)
     # pair coverage already reports.
-    assert series.stat_var.ref == spec.resolved.members[0].ref.dcid
+    assert series.stat_var.ref == spec.resolved.members[0].ref.ref
     assert [e.ref for e in series.entities] == ["country/IND"]
     assert isinstance(spec.resolved.coverage, CoverageExact)
     assert spec.resolved.coverage.observation_count == spec.resolved.observations.total_obs

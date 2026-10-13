@@ -10,6 +10,7 @@ from code_index.shared import get_index
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.clients.graph import Facet
 from search.engine.departures import warning_key
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.region.codes import ELECTED_SHAPE_NO_DATA, NEAR_NEIGHBOR_AMBIGUOUS
 from search.heading.departure_fact import DepartureFact
@@ -19,6 +20,7 @@ from series_coverage.schema import RoleNames
 from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 _QUERY = "grant equivalent flows or gross disbursements to Kenya"
@@ -129,6 +131,8 @@ _SDMX_OBS = {
 
 class _ElectGrantEquivalentAlsoPlausibleAmountLLM:
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0,
@@ -185,7 +189,7 @@ def test_a_measure_only_pair_collapses_to_one_definite_answer(monkeypatch):
     assert len(result.specs) == 1
 
     survivor = result.specs[0]
-    assert any(sv.ref.dcid == _EXTRA_SV for sv in survivor.resolved.members)
+    assert any(sv.ref.ref == _EXTRA_SV for sv in survivor.resolved.members)
     # The region carries the measure facts its Spec was built from, which a same-shape merge
     # re-mints the label from.
     assert result.measure_partition is not None
@@ -230,7 +234,7 @@ def test_no_stale_candidates_warning_survives_the_fold(monkeypatch):
 
 def _spec_for(specs: list[Spec], sv_dcid: str) -> Spec:
     return next(
-        spec for spec in specs if any(sv.ref.dcid == sv_dcid for sv in spec.resolved.members)
+        spec for spec in specs if any(sv.ref.ref == sv_dcid for sv in spec.resolved.members)
     )
 
 
@@ -250,7 +254,7 @@ def test_s8_a_measure_sibling_with_data_answers_instead_of_refusing(monkeypatch)
     assert result.status == "definite"
     assert len(result.specs) == 1
     survivor = result.specs[0]
-    assert any(sv.ref.dcid == _ALT_SV for sv in survivor.resolved.members)
+    assert any(sv.ref.ref == _ALT_SV for sv in survivor.resolved.members)
 
 
 def test_s8_answers_disclose_the_measure_substitution(monkeypatch):

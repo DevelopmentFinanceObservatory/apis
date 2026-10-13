@@ -192,3 +192,42 @@ def test_a_refusal_names_a_posted_string_by_its_first_characters(body: dict, pos
     assert posted[:MAX_VALUE_CHARS] in resp.json()["detail"]
     assert posted[: MAX_VALUE_CHARS + 1] not in resp.text
     assert "[" not in resp.json()["detail"]
+
+
+# The fields the doors leave out of a body when `None` (`exclude_if=is_none`), by schema and
+# def. Every other field of a response schema is required.
+_OMITTED_WHEN_NONE = {
+    ("manifest", "Manifest"): {"series_count", "output_options", "series_coverage_stamp"},
+    ("options_envelope", "OptionsEnvelope"): {"output_options"},
+    ("operation_resource", "OperationEnvelope"): {"poll", "retry_after_ms", "progress"},
+    ("operation_resource", "OperationResource"): {"manifest", "error"},
+}
+_RESPONSE_SCHEMAS = (
+    "register_response",
+    "manifest",
+    "options_envelope",
+    "members_envelope",
+    "pin_response",
+    "operation_resource",
+)
+
+
+def _schema_nodes(schema: dict) -> dict[str, dict]:
+    return {schema["title"]: schema, **schema.get("$defs", {})}
+
+
+def test_a_response_schema_requires_every_field_the_server_emits():
+    document = build_schema_document()
+
+    for name in _RESPONSE_SCHEMAS:
+        for title, node in _schema_nodes(document[name]).items():
+            optional = set(node.get("properties", {})) - set(node.get("required", []))
+            assert optional == _OMITTED_WHEN_NONE.get((name, title), set()), (name, title)
+
+
+def test_a_request_schema_keeps_a_defaulted_field_optional():
+    document = build_schema_document()
+
+    assert document["mint_request"] == PublishedMintRequest.model_json_schema()
+    assert document["mint_request"]["required"] == ["input"]
+    assert document["pin_request"]["required"] == ["artifact_digest"]

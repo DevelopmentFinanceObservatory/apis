@@ -2,8 +2,8 @@
 
 Search loads an origin catalogue at startup, so the docker job in ``ci.yml`` mounts the sample
 build, ``tests/fixtures/origin_catalogue``, into its read-only container. The sample holds
-``tests.origin_catalogue.support.sample_tables()`` and the UN tables of
-``sample_un_mirror()``, encoded and published by the catalogue job's own writer
+``tests.origin_catalogue.support.sample_tables()``, the UN tables of
+``sample_un_mirror()`` and the arc tables of ``sample_arc_tables()``, encoded and published by the catalogue job's own writer
 (``origin_catalogue.artifact``), and ``tests/origin_catalogue/test_fixture.py`` fails when the
 committed files stop matching it.
 
@@ -39,6 +39,7 @@ from tests.origin_catalogue.support import (  # noqa: E402
     FIXTURE_BUILD_ID,
     FIXTURE_DIR,
     publish_sample,
+    sample_arc_tables,
     sample_un_mirror,
 )
 
@@ -54,6 +55,7 @@ def record_sample() -> None:
             stage_fixture(FIXTURE_DIR, Path(root)),
             build_id=FIXTURE_BUILD_ID,
             un_mirror=sample_un_mirror(),
+            arcs=sample_arc_tables(),
         )
     print(f"wrote build {FIXTURE_BUILD_ID!r} to {FIXTURE_DIR}")
 

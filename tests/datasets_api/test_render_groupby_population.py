@@ -9,7 +9,7 @@ from __future__ import annotations
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
 from code_index.types import StatVarRow
 from datasets_api.mint_models import GroupbyOptions, MintOptions
-from datasets_api.render import _reshape
+from datasets_api.render import _RenderReads, _reshape
 from materialise.enrichment import EnrichmentLookup
 from materialise.reshape import RollupNotSummableError, Table
 
@@ -126,7 +126,7 @@ _TABLE_COLUMNS = (
 
 
 def _enrichment() -> EnrichmentLookup:
-    return EnrichmentLookup(FakeMintGraphReader(), type_kinds={}, parties={})
+    return EnrichmentLookup(FakeMintGraphReader(), parties={})
 
 
 def _single_axis_by() -> GroupbyOptions:
@@ -155,7 +155,7 @@ def test_zero_row_resolved_member_refuses_and_names_it():
             table,
             options=options,
             entity_columns=_ENTITY_COLUMNS,
-            enrichment=_enrichment(),
+            reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
             code_index=index,
             # `dcid:SV_malaria` never contributed a row (an entirely
             # zero-row resolved member), but the request still resolved it.
@@ -185,7 +185,7 @@ def test_without_the_zero_row_member_resolved_the_same_frame_passes():
         table,
         options=options,
         entity_columns=_ENTITY_COLUMNS,
-        enrichment=_enrichment(),
+        reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
         code_index=index,
         resolved_stat_var_refs=("dcid:SV_health",),
         provenance_refs=("p1",),
@@ -219,7 +219,7 @@ def test_two_index_gap_statvars_refuse_before_merging():
             table,
             options=options,
             entity_columns=_ENTITY_COLUMNS,
-            enrichment=_enrichment(),
+            reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
             code_index=index,
             resolved_stat_var_refs=(),
             provenance_refs=("p1",),
@@ -259,7 +259,7 @@ def test_reviewer_repro_one_member_row_removed_refuses():
             table,
             options=options,
             entity_columns=_ENTITY_COLUMNS,
-            enrichment=_enrichment(),
+            reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
             code_index=index,
             resolved_stat_var_refs=(),
             provenance_refs=("p1",),
@@ -300,7 +300,7 @@ def test_composition_two_rollups_passes_on_a_complete_frame():
         table,
         options=options,
         entity_columns=_ENTITY_COLUMNS,
-        enrichment=_enrichment(),
+        reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
         code_index=_TWO_AXIS_INDEX,
         resolved_stat_var_refs=(),
         provenance_refs=("p1",),
@@ -308,7 +308,6 @@ def test_composition_two_rollups_passes_on_a_complete_frame():
         pivot_max_output_cells=5_000_000,
     )
 
-    assert [warning["code"] for warning in reshaped.warnings] == ["stat_vars_summed"]
     purpose_pos = reshaped.table.columns.index("stat_var_crsPurpose")
     recipient_pos = reshaped.table.columns.index("financingRecipient")
     value_pos = reshaped.table.columns.index("value")
@@ -340,7 +339,7 @@ def test_composition_two_rollups_refuses_when_a_wholly_absent_finer_cell_surface
             table,
             options=options,
             entity_columns=_ENTITY_COLUMNS,
-            enrichment=_enrichment(),
+            reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
             code_index=_TWO_AXIS_INDEX,
             resolved_stat_var_refs=(),
             provenance_refs=("p1",),

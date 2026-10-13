@@ -90,6 +90,15 @@ def test_parts_that_differ_only_in_their_open_roles_stay_distinct():
     assert [part for _, part in _dedupe_parts_with_indices(parts)] == parts
 
 
+def test_parts_that_differ_only_in_their_series_code_stay_distinct():
+    parts = [
+        ParsedPart(variable_text="debt service", source_code=code)
+        for code in (None, "DT.TDS.DEGG.CD")
+    ]
+
+    assert [part for _, part in _dedupe_parts_with_indices(parts)] == parts
+
+
 def test_parts_that_differ_only_in_a_forecast_target_stay_distinct():
     parts = [
         ParsedPart(

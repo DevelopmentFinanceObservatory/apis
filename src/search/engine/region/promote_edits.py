@@ -37,14 +37,14 @@ def _phase_detect_edits(state: _PromoteState) -> None:
             if slot.key.axis not in ("what", "how"):
                 continue
             prop_ref = slot.key.property
-            prop = prop_ref.dcid if prop_ref is not None else None
+            prop = prop_ref.ref if prop_ref is not None else None
             if prop is None:
                 continue
             binding = slot.binding
             if isinstance(binding, BindingValue) and binding.value.ref:
-                requested = [binding.value.ref.dcid]
+                requested = [binding.value.ref.ref]
             elif isinstance(binding, BindingSet):
-                requested = [v.ref.dcid for v in binding.values if v.ref is not None]
+                requested = [v.ref.ref for v in binding.values if v.ref is not None]
             else:
                 if prop not in state.measure_elected_properties:
                     widened_props.add(prop)

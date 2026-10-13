@@ -165,7 +165,7 @@ def _ambiguous_entity_groups(region: RegionResult) -> list[AmbiguousEntityGroup]
         AmbiguousEntityGroup(
             text=entity.text,
             candidates=[
-                AmbiguousEntityCandidate(dcid=c.dcid, label=c.name, kind=c.kind)
+                AmbiguousEntityCandidate(ref=c.dcid, label=c.name, kind=c.kind)
                 for c in entity.candidates
             ],
         )
@@ -174,8 +174,8 @@ def _ambiguous_entity_groups(region: RegionResult) -> list[AmbiguousEntityGroup]
 
 
 def _ambiguous_source_groups(region: RegionResult) -> list[AmbiguousSourceGroup]:
-    """Each ambiguous source wording of a `source_ambiguous` region with its candidates,
-    in the wire shape."""
+    """Each ambiguous source wording of a `source_ambiguous` region, or the series code of a
+    `source_code_ambiguous` one, with its candidates, in the wire shape."""
     return [
         AmbiguousSourceGroup(
             text=group.text,
@@ -216,25 +216,26 @@ def _unbound_terms(
         return terms or None, None, naming
     sources: dict[tuple[str, ...], ResolvedQualifier] = {}
     for record in (*named, *region.unbound_sources):
-        sources.setdefault(tuple(ref.dcid for ref in record.named), record)
+        sources.setdefault(tuple(ref.ref for ref in record.named), record)
     return terms or None, list(sources.values()) or None, naming
 
 
 def _data_query(region: RegionResult) -> ParsedInput | None:
-    """Return the part's parsed form for an `entity_ambiguous` or `source_ambiguous`
-    outcome.
+    """Return the part's parsed form for an `entity_ambiguous`, `source_ambiguous` or
+    `source_code_ambiguous` outcome.
 
     On `entity_ambiguous` it is the region's parsed form with every entity the region
     resolved to one node pinned to its dcid, and each ambiguous wording left unpinned for
     the client to pin the user's pick. A leg that cannot name a direction withholds its
     restatement and still carries this form. On `source_ambiguous` it is the parsed form
     as it stands: its source mentions already carry the references they resolved to, and
-    each ambiguous wording none. `None` for every other reason, and when the region has
-    no parsed form.
+    each ambiguous wording none. On `source_code_ambiguous` it is the parsed form as it
+    stands too, for the client to add the source the user picks to its `sources`. `None` for
+    every other reason, and when the region has no parsed form.
     """
     if region.parsed_form is None:
         return None
-    if region.no_data_reason == "source_ambiguous":
+    if region.no_data_reason in ("source_ambiguous", "source_code_ambiguous"):
         return ParsedInput(parts=[region.parsed_form])
     if region.no_data_reason != "entity_ambiguous":
         return None
@@ -359,7 +360,7 @@ def _build_part(
         "here is an assembly bug, not a case to default around"
     )
     entity_terms, ambiguous_candidates = _no_data_entity_terms(region)
-    if region.no_data_reason == "source_ambiguous":
+    if region.no_data_reason in ("source_ambiguous", "source_code_ambiguous"):
         ambiguous_candidates = [
             c.label for group in region.ambiguous_sources for c in group.candidates
         ] or None
@@ -390,6 +391,7 @@ def _build_part(
         unbound_sources=unbound_sources,
         scope=scope,
         unit_alternatives=list(region.unit_alternatives) or None,
+        denominator=region.denominator,
         restatement=region.restatement,
         operations=region.operations,
         include_skills=include_skills,
@@ -398,6 +400,7 @@ def _build_part(
         window_gap_fact=region.window_gap_fact,
         departure_facts=surviving_facts(raised, [*region.warnings, *envelope_warnings]),
         request_words=region.entity_words is not None,
+        source_code_refusal=region.source_code_refusal,
     )
 
 

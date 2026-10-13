@@ -1,5 +1,5 @@
-"""Pins `SEARCH_OBS_PROPERTIES_CACHE_SIZE >= SEARCH_ROLE_REFRESH_MAX_MEMBERS`.
-The 5,000-member cap must fit. Fixtures model its cache boundary across chunks."""
+"""The observation-properties cache keeps a read of up to its capacity across chunks, and
+one member past it evicts the earliest."""
 
 from __future__ import annotations
 
@@ -8,9 +8,8 @@ from dc_graph import GraphClient
 
 _CHUNK_SIZE = graph_module._DEFAULT_NODE_ARC_BATCH_CHUNK_SIZE
 
-# A small stand-in for SEARCH_ROLE_REFRESH_MAX_MEMBERS / SEARCH_OBS_PROPERTIES_CACHE_SIZE,
-# spanning several chunks so the fix is exercised across chunk boundaries, not
-# just within one POST.
+# A small stand-in for SEARCH_OBS_PROPERTIES_CACHE_SIZE, spanning several chunks so the
+# boundary is exercised across POSTs, not just within one.
 _MAX_MEMBERS = 4 * _CHUNK_SIZE + 2
 
 

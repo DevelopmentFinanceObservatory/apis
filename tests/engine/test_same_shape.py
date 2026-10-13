@@ -44,7 +44,7 @@ def _entity_options(role: RoleAxis, dcids: frozenset[str] | None) -> list[Entity
             EntityOptions(entity_ref=None, role=role, options=[], truncated=True, source="observed")
         ]
     options = [
-        SlotOption(value=SlotValue(ref=GraphRef(dcid=dcid, label=dcid), value_kind="entity"))
+        SlotOption(value=SlotValue(ref=GraphRef(ref=dcid, label=dcid), value_kind="entity"))
         for dcid in sorted(dcids)
     ]
     return [
@@ -130,7 +130,7 @@ def test_a_merged_answer_unions_each_members_own_known_origin_population(options
 
     (options,) = merged.spec.resolved.entity_options
     assert options.role == "origin"
-    dcids = {o.value.ref.dcid for o in options.options if o.value.ref}
+    dcids = {o.value.ref.ref for o in options.options if o.value.ref}
     if options_listed:
         assert (dcids, options.truncated) == ({"country/FRA", "country/DEU", "country/JPN"}, False)
     else:

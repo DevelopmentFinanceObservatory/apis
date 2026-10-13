@@ -110,6 +110,9 @@ MEMBERSHIP_UNVERIFIED = "membership_unverified"
 # answer leaves them out. The code index lists members the graph no longer serves, or the
 # graph dropped a member between the election and the arc read. The message names them.
 MEMBERS_ABSENT_FROM_GRAPH = "members_absent_from_graph"
+# The question names a denominator and the answer's series declares no denominator arc, so
+# its ratio base comes from the series name. The message names the denominator asked.
+DENOMINATOR_UNVERIFIED = "denominator_unverified"
 # A named place's direction is dropped when the elected shape cannot carry it,
 # so the place becomes the subject. The warning carries this fact. A query with
 # no direction hint emits none. Promote paths refuse role_incompatible instead.
@@ -152,6 +155,13 @@ UN_SYSTEM_UNAVAILABLE = "un_system_unavailable"
 WITHHELD_BY_REGISTRY = "withheld_by_registry"
 # The loaded origin catalogue is older than `origin_catalogue.STALE_AFTER`.
 ORIGIN_CATALOGUE_STALE = "origin_catalogue_stale"
+# The origin catalogue and coverage builds the request bound read different ingestions,
+# so an answer may miss data the newer one added until both rebuild. The message names
+# both builds and their ingestions.
+ARTIFACT_PAIR_STALE = "artifact_pair_stale"
+# The origin catalogue's arcs and the packaged code index disagree on the five-tuple,
+# constraint properties or roles of a StatVar the answer serves. The message names them.
+CATALOGUE_INDEX_DRIFT = "catalogue_index_drift"
 # The app has loaded no conversion catalogue yet, so a currency answer states no
 # unit_conversion offer; the null says nothing about whether it converts.
 UNIT_CONVERSION_UNAVAILABLE = "unit_conversion_unavailable"

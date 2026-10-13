@@ -22,6 +22,34 @@ class DateRange(StrictModel):
     end: str | None = Field(default=None, description="last served date, e.g. '2022'")
 
 
+def _is_empty(value: Sequence[object]) -> bool:
+    return not value
+
+
+def _is_false(value: bool) -> bool:
+    return not value
+
+
+class SourceCode(StrictModel):
+    """A publisher's own series code for a StatVar, such as World Bank `DT.TDS.DEGG.CD`."""
+
+    provenance: str = Field(description="the provenance dcid of the publisher that issues the code")
+    code: str = Field(description="the publisher's series code, as the publisher writes it")
+    exact: bool = Field(
+        default=False,
+        exclude_if=_is_false,
+        description=(
+            "true when the answer is the series the provenance files under this code and "
+            "no other: a part naming the code as its source_code and the provenance as its "
+            "source accepts this Spec as its answer. The answer reads its observations from "
+            "the provenance alone, the provenance gives none of the code's StatVars another "
+            "code, and every StatVar a Datasets mint of the Spec serves is one of the "
+            "code's. False, the default, is omitted: the code names a StatVar the answer "
+            "serves, and the answer may hold other series or data of another source"
+        ),
+    )
+
+
 class StatVar(StrictModel):
     """A resolved StatVar inside the region."""
 
@@ -122,9 +150,12 @@ class ResolvedStatVars(StrictModel):
     donor-only answer can state 255 admitted members beside 1 confirmed while every
     one of the 255 holds data. On a standard (non-role-bearing) shape this population can itself
     be a floor: the packaged code index does not source members for every
-    shape family, so a shape outside it falls back to a recall sample capped
-    at SEARCH_MAX_CONFIRM_CANDIDATES (40), and member_count cannot exceed
-    what that sample admitted. A where-axis merge (same_shape.py, "population
+    shape family, so a shape outside it falls back to its recall sample, the
+    members recall found, and member_count cannot exceed what that sample
+    admitted. An answer naming one member of a family too large for one read stops
+    reading once that member is confirmed, so member_count counts the members read: "latest
+    life expectancy data" reads the family's total and not its other 350 members. A
+    where-axis merge (same_shape.py, "population
     of Kenya and Uganda") publishes max() of its members' own member_count
     rather than the sum, since the same StatVar is typically confirmed at
     every member's own place and summing would double-count the
@@ -152,7 +183,8 @@ class ResolvedStatVars(StrictModel):
             "True when member_count is a true total; False when it is a floor "
             "-- the population being at least member_count large, not exactly "
             "member_count -- because it was measured over a capped recall "
-            "sample, or because it is a where-axis merge's max() of its "
+            "sample, because the probe stopped once the answer's member was "
+            "confirmed, or because it is a where-axis merge's max() of its "
             "members' own counts rather than a computed union. Defaults to "
             "True, correct for a caller that has not measured otherwise"
         ),
@@ -171,5 +203,16 @@ class ResolvedStatVars(StrictModel):
         description=(
             "the earliest first date and latest last date of the points the answer's read "
             "plan serves over its StatVars; null when it serves none"
+        ),
+    )
+    source_codes: list[SourceCode] = Field(
+        default_factory=list,
+        exclude_if=_is_empty,
+        description=(
+            "the publisher series codes of the StatVars the answer serves, sorted by "
+            "provenance then code and without repeats; left out when no served StatVar has a "
+            "code. They identify the series a publisher files these StatVars under, and "
+            "the answer is the same with or without them. A code names the whole answer "
+            "only where its entry is exact"
         ),
     )

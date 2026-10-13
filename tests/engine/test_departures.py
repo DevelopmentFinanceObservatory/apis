@@ -49,6 +49,10 @@ from search.models import (
     Warning,
 )
 from tests.engine._assemble_fixtures import _make_spec
+from tests.engine._fake_coverage import empty_coverage_snapshot
+from tests.engine._harness import build_observations_planned, materialise_double_from_obs
+from tests.engine.test_observations_window_and_label import _recorded_and_estimated_obs
+from tests.fixtures import FakeGraph
 
 
 def _spec(
@@ -330,6 +334,34 @@ def test_modelled_values_when_some_series_are_modelled(methods, projected, model
     assert facts == ([expected] if modelled else [])
 
 
+@pytest.mark.parametrize(("end_year", "modelled"), [(2027, True), (2023, False)])
+def test_modelled_values_when_estimates_continue_the_reported_series(end_year, modelled):
+    """Kenya's reported series runs to 2024 and an `Estimated` facet of its source to 2032
+    (`_recorded_and_estimated_obs`). A window from 2020 to 2027 serves the estimates for 2025
+    to 2027 under the reported facet, so the departure fires as partial. A window inside the
+    reported years serves no estimate and departs nothing."""
+    materialise_graph, materialise_sdmx = materialise_double_from_obs(_recorded_and_estimated_obs())
+    observations, _warn = build_observations_planned(
+        ["Count_Person"],
+        {"observationAbout": ["country/KEN"]},
+        graph=FakeGraph(),
+        materialise_graph=materialise_graph,
+        materialise_sdmx=materialise_sdmx,
+        window=TimeWindow(start_year=2020, end_year=end_year),
+        coverage=empty_coverage_snapshot(),
+    )
+    assert observations is not None and observations.series
+    spec = _spec()
+    spec = spec.model_copy(
+        update={"resolved": spec.resolved.model_copy(update={"observations": observations})}
+    )
+
+    facts = spec_departure_facts(spec, operations=())
+
+    expected = DepartureFact(code="modelled_values", binding_ref=None, partial=True)
+    assert facts == ([expected] if modelled else [])
+
+
 @pytest.mark.parametrize(
     ("role", "binding_ref"), [("destination", "where:"), ("origin", "origin:")]
 )
@@ -348,18 +380,18 @@ def test_modelled_values_when_some_series_are_modelled(methods, projected, model
 def test_group_read_as_members_asks_in_the_request_s_words(role, binding_ref, entity_words, asked):
     groups = {
         role: EntityGroup(
-            dcid="EuropeanUnion", label="European Union", entity_type="ContinentalUnion"
+            ref="EuropeanUnion", label="European Union", entity_type="ContinentalUnion"
         )
     }
 
     facts = spec_departure_facts(_spec(groups=groups), operations=(), entity_words=entity_words)
 
     assert [
-        (fact.code, fact.binding_ref, fact.asked, fact.group, fact.group_type) for fact in facts
-    ] == [("group_read_as_members", binding_ref, asked, "European Union", "ContinentalUnion")]
+        (fact.code, fact.binding_ref, fact.asked, fact.group, fact.group_dcid) for fact in facts
+    ] == [("group_read_as_members", binding_ref, asked, "European Union", "EuropeanUnion")]
 
 
-_AFRICA_GROUP = EntityGroup(dcid="africa", label="Africa", entity_type="Continent")
+_AFRICA_GROUP = EntityGroup(ref="africa", label="Africa", entity_type="Continent")
 
 
 def _served_from(spec: Spec, provenance: str) -> Spec:
@@ -511,7 +543,7 @@ def test_entity_unavailable_on_a_group_asks_for_the_group_and_names_no_member():
     ]
 
     assert (fact.binding_ref, fact.asked, fact.group_size) == ("origin:", "European Union", 3)
-    assert fact.group_type == "ContinentalUnion"
+    assert fact.group_dcid is None
     assert fact.entities == ("Bulgaria", "Cyprus")
 
 
@@ -542,8 +574,8 @@ def test_an_entity_unserved_inside_a_group_counts_toward_the_group_alone():
     ]
 
 
-_AFRICA = EntityGroup(dcid="africa", label="Africa", entity_type="Continent")
-_ASIA = EntityGroup(dcid="asia", label="Asia", entity_type="Continent")
+_AFRICA = EntityGroup(ref="africa", label="Africa", entity_type="Continent")
+_ASIA = EntityGroup(ref="asia", label="Asia", entity_type="Continent")
 _BALTIC = EntityGroup(label="Baltic states")
 _PLACES = {
     "country/GHA": "Ghana",
@@ -555,8 +587,8 @@ _PLACES = {
 }
 _AFRICAN = frozenset({"country/GHA", "country/TZA", "country/KEN"})
 # Two sets of one size that share Kenya.
-_EAST = EntityGroup(dcid="east", label="East")
-_WEST = EntityGroup(dcid="west", label="West")
+_EAST = EntityGroup(ref="east", label="East")
+_WEST = EntityGroup(ref="west", label="West")
 # A set with no node, of the same size, that sorts first by label.
 _NODELESS = EntityGroup(label="Coast")
 _EAST_MEMBERS = frozenset({"country/KEN", "country/TZA"})
@@ -573,7 +605,7 @@ _ASIAN = frozenset({"country/NPL", "country/JPN"})
             ["country/GHA", "country/TZA"],
             "Africa",
             (),
-            (UnservedMembers("Africa", "Continent", 3, "Africa", ("Ghana", "Tanzania")),),
+            (UnservedMembers("Africa", "africa", 3, "Africa", ("Ghana", "Tanzania")),),
             id="a region beside a place",
         ),
         pytest.param(
@@ -582,7 +614,7 @@ _ASIAN = frozenset({"country/NPL", "country/JPN"})
             ["country/GHA", "country/NOR"],
             "Norway, Africa",
             ("Norway",),
-            (UnservedMembers("Africa", "Continent", 3, "Africa", ("Ghana",)),),
+            (UnservedMembers("Africa", "africa", 3, "Africa", ("Ghana",)),),
             id="the place named beside a region is unserved too",
         ),
         pytest.param(
@@ -601,8 +633,8 @@ _ASIAN = frozenset({"country/NPL", "country/JPN"})
             "Africa, Asia",
             (),
             (
-                UnservedMembers("Africa", "Continent", 3, "Africa", ("Ghana", "Tanzania")),
-                UnservedMembers("Asia", "Continent", 2, "Asia", ("Japan",)),
+                UnservedMembers("Africa", "africa", 3, "Africa", ("Ghana", "Tanzania")),
+                UnservedMembers("Asia", "asia", 2, "Asia", ("Japan",)),
             ),
             id="two regions on one role",
         ),
@@ -612,7 +644,7 @@ _ASIAN = frozenset({"country/NPL", "country/JPN"})
             ["country/JPN"],
             "Africa",
             (),
-            (UnservedMembers("Africa", "Continent", 5, "Africa", ("Japan",)),),
+            (UnservedMembers("Africa", "africa", 5, "Africa", ("Japan",)),),
             id="a member of two sets counts toward the larger",
         ),
         pytest.param(
@@ -631,7 +663,7 @@ _ASIAN = frozenset({"country/NPL", "country/JPN"})
                 ["country/KEN"],
                 "East",
                 (),
-                (UnservedMembers("East", None, 2, "East", ("Kenya",)),),
+                (UnservedMembers("East", "east", 2, "East", ("Kenya",)),),
                 id=f"a member of two sets of one size counts toward the first by dcid ({label})",
             )
             for label, order in (
@@ -735,7 +767,7 @@ def test_part_facts_join_raised_and_read_facts_in_precedence_order():
     ],
 )
 def test_qualifier_property_is_the_one_code_system_the_rows_share(named, property_dcid):
-    assert qualifier_property([GraphRef(dcid=dcid, label=dcid) for dcid in named]) == property_dcid
+    assert qualifier_property([GraphRef(ref=dcid, label=dcid) for dcid in named]) == property_dcid
 
 
 # The flagged match of crs-010 "Gates Foundation grants to Nigeria", as the panel recorded
@@ -764,9 +796,9 @@ def _crs_010_flagged() -> Spec:
         update={
             "slot_filters": [
                 ResolvedFilter(
-                    key=SlotKey(axis="how", property=GraphRef(dcid=prop, label=prop), label=prop),
+                    key=SlotKey(axis="how", property=GraphRef(ref=prop, label=prop), label=prop),
                     binding_kind="value" if refs else "unbound",
-                    refs=[GraphRef(dcid=dcid, label=label) for dcid, label in refs],
+                    refs=[GraphRef(ref=dcid, label=label) for dcid, label in refs],
                     provenance=provenance,
                 )
                 for prop, provenance, refs in _CRS_010_SLOT_FILTERS
@@ -819,9 +851,9 @@ def test_a_limit_with_no_name_is_left_out():
         update={
             "slot_filters": [
                 ResolvedFilter(
-                    key=SlotKey(axis="how", property=GraphRef(dcid=prop, label=prop), label=prop),
+                    key=SlotKey(axis="how", property=GraphRef(ref=prop, label=prop), label=prop),
                     binding_kind="value",
-                    refs=[GraphRef(dcid=dcid, label=label)],
+                    refs=[GraphRef(ref=dcid, label=label)],
                     provenance="declared_default",
                 )
                 for prop, dcid, label in [
@@ -974,19 +1006,19 @@ def _unavailable(*entities: str, **fields) -> DepartureFact:
             [
                 _unavailable(
                     asked="Africa",
-                    sets=(UnservedMembers("Africa", "Continent", 59, "Africa", ("Ghana",)),),
+                    sets=(UnservedMembers("Africa", "africa", 59, "Africa", ("Ghana",)),),
                 ),
                 _unavailable(
                     "Norway",
                     asked="Norway, Africa",
-                    sets=(UnservedMembers("Africa", "Continent", 59, "Africa", ("Ghana", "Togo")),),
+                    sets=(UnservedMembers("Africa", "africa", 59, "Africa", ("Ghana", "Togo")),),
                 ),
             ],
             [
                 _unavailable(
                     "Norway",
                     asked="Norway, Africa",
-                    sets=(UnservedMembers("Africa", "Continent", 59, "Africa", ("Ghana", "Togo")),),
+                    sets=(UnservedMembers("Africa", "africa", 59, "Africa", ("Ghana", "Togo")),),
                 )
             ],
             id="a_set_s_members_merge_under_the_set",

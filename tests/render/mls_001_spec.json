@@ -63,19 +63,19 @@
    "shape_id": "financialflow_attributedamount_measuredvalue_nominal",
    "label": "gross disbursements (nominal, official development assistance, imputed multilateral ODA)",
    "population_type": {
-    "dcid": "FinancialFlow",
+    "ref": "FinancialFlow",
     "label": "financial flow"
    },
    "measured_property": {
-    "dcid": "attributedAmount",
+    "ref": "attributedAmount",
     "label": "attributed amount"
    },
    "stat_type": {
-    "dcid": "measuredValue",
+    "ref": "measuredValue",
     "label": "measuredValue"
    },
    "measurement_qualifier": {
-    "dcid": "Nominal",
+    "ref": "Nominal",
     "label": "Nominal"
    },
    "measurement_denominator_unresolved": false,
@@ -83,7 +83,7 @@
     {
      "axis": "how",
      "property": {
-      "dcid": "crsPurpose",
+      "ref": "crsPurpose",
       "label": "CRS purpose"
      },
      "label": "sector"
@@ -91,7 +91,7 @@
     {
      "axis": "how",
      "property": {
-      "dcid": "crsTypeOfFlow",
+      "ref": "crsTypeOfFlow",
       "label": "CRS type of flow"
      },
      "label": "flow"
@@ -99,7 +99,7 @@
     {
      "axis": "how",
      "property": {
-      "dcid": "dac2aAidType",
+      "ref": "dac2aAidType",
       "label": "DAC 2a aid type"
      },
      "label": "aid type"
@@ -107,7 +107,7 @@
     {
      "axis": "how",
      "property": {
-      "dcid": "financialFlowType",
+      "ref": "financialFlowType",
       "label": "financial flow type"
      },
      "label": "financial flow type"
@@ -115,7 +115,7 @@
     {
      "axis": "how",
      "property": {
-      "dcid": "nettingBasis",
+      "ref": "nettingBasis",
       "label": "netting basis"
      },
      "label": "netting basis"
@@ -148,7 +148,7 @@
     "key": {
      "axis": "how",
      "property": {
-      "dcid": "crsPurpose",
+      "ref": "crsPurpose",
       "label": "CRS purpose"
      },
      "label": "sector"
@@ -162,7 +162,7 @@
     "key": {
      "axis": "how",
      "property": {
-      "dcid": "crsTypeOfFlow",
+      "ref": "crsTypeOfFlow",
       "label": "CRS type of flow"
      },
      "label": "flow"
@@ -171,7 +171,7 @@
      "kind": "value",
      "value": {
       "ref": {
-       "dcid": "CRSTypeOfFlow10",
+       "ref": "CRSTypeOfFlow10",
        "label": "official development assistance"
       },
       "value_kind": "enum_value"
@@ -183,7 +183,7 @@
     "key": {
      "axis": "how",
      "property": {
-      "dcid": "dac2aAidType",
+      "ref": "dac2aAidType",
       "label": "DAC 2a aid type"
      },
      "label": "aid type"
@@ -192,7 +192,7 @@
      "kind": "value",
      "value": {
       "ref": {
-       "dcid": "DAC2aAidType106",
+       "ref": "DAC2aAidType106",
        "label": "imputed multilateral ODA"
       },
       "value_kind": "enum_value"
@@ -204,7 +204,7 @@
     "key": {
      "axis": "how",
      "property": {
-      "dcid": "financialFlowType",
+      "ref": "financialFlowType",
       "label": "financial flow type"
      },
      "label": "financial flow type"
@@ -213,7 +213,7 @@
      "kind": "value",
      "value": {
       "ref": {
-       "dcid": "Disbursement",
+       "ref": "Disbursement",
        "label": "disbursement"
       },
       "value_kind": "enum_value"
@@ -225,7 +225,7 @@
     "key": {
      "axis": "how",
      "property": {
-      "dcid": "nettingBasis",
+      "ref": "nettingBasis",
       "label": "netting basis"
      },
      "label": "netting basis"
@@ -234,7 +234,7 @@
      "kind": "value",
      "value": {
       "ref": {
-       "dcid": "Gross",
+       "ref": "Gross",
        "label": "gross"
       },
       "value_kind": "enum_value"
@@ -1421,13 +1421,13 @@
   "trace": {
    "resolved_entities": [
     {
-     "dcid": "country/NOR",
+     "ref": "country/NOR",
      "label": "Norway"
     }
    ],
    "resolved_sources": [
     {
-     "dcid": "provenance/ONEImputedMultilateralSectors",
+     "ref": "provenance/ONEImputedMultilateralSectors",
      "label": "ONE Imputed Multilateral Sectors",
      "source": {
       "ref": "source/ONEData",
@@ -1444,7 +1444,7 @@
      "key": {
       "axis": "how",
       "property": {
-       "dcid": "crsPurpose",
+       "ref": "crsPurpose",
        "label": "CRS purpose"
       },
       "label": "sector"
@@ -1457,7 +1457,7 @@
      "key": {
       "axis": "how",
       "property": {
-       "dcid": "crsTypeOfFlow",
+       "ref": "crsTypeOfFlow",
        "label": "CRS type of flow"
       },
       "label": "flow"
@@ -1465,7 +1465,7 @@
      "binding_kind": "value",
      "refs": [
       {
-       "dcid": "CRSTypeOfFlow10",
+       "ref": "CRSTypeOfFlow10",
        "label": "official development assistance"
       }
      ],
@@ -1475,7 +1475,7 @@
      "key": {
       "axis": "how",
       "property": {
-       "dcid": "dac2aAidType",
+       "ref": "dac2aAidType",
        "label": "DAC 2a aid type"
       },
       "label": "aid type"
@@ -1483,7 +1483,7 @@
      "binding_kind": "value",
      "refs": [
       {
-       "dcid": "DAC2aAidType106",
+       "ref": "DAC2aAidType106",
        "label": "imputed multilateral ODA"
       }
      ],
@@ -1495,7 +1495,7 @@
      "text": "imputed multilateral",
      "named": [
       {
-       "dcid": "DAC2aAidType106",
+       "ref": "DAC2aAidType106",
        "label": "imputed multilateral ODA"
       }
      ],
@@ -1535,11 +1535,11 @@
  "sentence_facts": {
   "members": [
    {
-    "dcid": "AttributedAmount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_DAC2aAidType106_CRSPurposeCode11110_Nominal",
+    "ref": "AttributedAmount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_DAC2aAidType106_CRSPurposeCode11110_Nominal",
     "label": "Imputed multilateral ODA gross disbursements for education policy and administrative management"
    },
    {
-    "dcid": "AttributedAmount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_DAC2aAidType106_CRSPurposeCode11120_Nominal",
+    "ref": "AttributedAmount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_DAC2aAidType106_CRSPurposeCode11120_Nominal",
     "label": "Imputed multilateral ODA gross disbursements for education facility and training"
    }
   ],

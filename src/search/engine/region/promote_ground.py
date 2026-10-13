@@ -69,6 +69,7 @@ from search.engine.region.promote_materialise import _graph_labels
 from search.engine.region.promote_results import _no_data_region
 from search.engine.region.promote_state import _PromoteState
 from search.engine.region.related_read import submit_related_read
+from search.engine.region.requirements import posted_refusal_terms, settle_posted
 from search.engine.region.resubmit_request import (
     _facet_filter_from_bindings,
     _rebind_source_slot,
@@ -118,6 +119,7 @@ from search.models import (
     EntityRoleKey,
     IdentityFacetValueRequest,
     IdentityUnitRequest,
+    ResolvedQualifier,
     Spec,
     TimeWindow,
 )
@@ -568,7 +570,7 @@ def _ground_and_build_spec(
             mat_result.population.confirmed if mat_result.population is not None else None
         ),
         stat_vars_member_count_exact=(
-            mat_result.population.exact if mat_result.population is not None else True
+            mat_result.population.member_count_exact if mat_result.population is not None else True
         ),
         facet_bindings=state.inp.identity.facets,
         # No text is re-parsed during resubmit, so posted and arc-derived bindings retain
@@ -601,19 +603,33 @@ def _ground_and_build_spec(
     return spec
 
 
-def _no_data_gate_holds(state: _PromoteState, mat_result: Materialised) -> bool:
-    """Whether a no-data gate answers the resubmit with a flagged Spec (`_ground_build_gates`)."""
-    return mat_result.available_at_place is False or (
-        state.entity_dcid is None and not mat_result.has_data
+def _no_data_gate_holds(
+    state: _PromoteState, mat_result: Materialised, required: tuple[ResolvedQualifier, ...]
+) -> bool:
+    """Whether a no-data gate answers the resubmit with a flagged Spec (`_ground_build_gates`),
+    `required` being the terms its refusal on the posted values names
+    (`requirements.posted_refusal_terms`)."""
+    return (
+        bool(required)
+        or mat_result.available_at_place is False
+        or (state.entity_dcid is None and not mat_result.has_data)
     )
 
 
 def _ground_build_gates(
-    state: _PromoteState, mat_result: Materialised, spec: Spec, *, facet_checked: bool
+    state: _PromoteState,
+    mat_result: Materialised,
+    spec: Spec,
+    *,
+    required: tuple[ResolvedQualifier, ...],
+    facet_checked: bool,
 ) -> RegionResult | None:
     """Apply no-data gates, then check bound facet availability.
 
-    Return `no_observations` with a flagged Spec when no asserting member has data at the
+    Return `qualifier_not_bound` with a flagged Spec when the answer leaves a posted value
+    unapplied on a property the shape holds (`required`, `requirements.settle_posted`),
+    naming each such value once, as a term it could not bind, in place of its departure. Return
+    `no_observations` with a flagged Spec when no asserting member has data at the
     place. Return `no_matching_slice` with a flagged Spec when no place is bound and no member
     asserts every bound property. Both omit observations, after a bound source pin is checked
     against globally admissible role candidates. Otherwise raise any facet refusal
@@ -622,6 +638,16 @@ def _ground_build_gates(
     if state.source_dcids and is_role_bearing(state.shape_draft) and not facet_checked:
         _raise_facet_refusal(state, mat_result)
         facet_checked = True
+    settle_posted(state)
+    if required:
+        return _no_data_region(
+            state.variable_text,
+            "qualifier_not_bound",
+            warnings=state.refusal_warnings(),
+            flagged_match=(spec,),
+            elected_stat_vars=_elected_stat_vars(state.mat_result, state.shape_draft),
+            unbound_qualifiers=required,
+        )
 
     if mat_result.available_at_place is False:
         return _no_data_region(
@@ -734,13 +760,15 @@ def _phase_ground_build(state: _PromoteState) -> RegionResult | None:
 
     _narrow_ground_facets(state, mat_result)
     mat_result = _over_conversion_period(state, mat_result)
+    required = posted_refusal_terms(state)
 
     # Data at the place in other years only: `no_observations` for the window, with the
     # `year_unavailable` fact the carrier's gap gives, naming the years read and the span the
     # series runs. The answer carries no Spec, so it returns before one is grounded. The
     # answer reads the member held, so a member that is not its family's total warns as an answer
-    # showing it does.
-    if (gap := mat_result.window_gap) is not None:
+    # showing it does. A dropped posted value ranks first, and its refusal flags the grounded
+    # Spec (`_ground_build_gates`).
+    if (gap := mat_result.window_gap) is not None and not required:
         family = mat_result.family_total_absent
         return _no_data_region(
             state.variable_text,
@@ -768,14 +796,16 @@ def _phase_ground_build(state: _PromoteState) -> RegionResult | None:
     _derive_observation_entities(state, mat_result)
     # The conversion runs only where finalisation's bound-unit gate reads it, and after the
     # facet check, which follows both no-data gates; the gates then skip that check.
-    facet_checked = _may_convert(state, mat_result)
+    facet_checked = _may_convert(state, mat_result, required)
     if facet_checked:
         _raise_facet_refusal(state, mat_result)
         if _unit_gate_passes(state, mat_result):
             _convert_narrowed_answer(state, mat_result)
 
     spec = _ground_and_build_spec(state, mat_result, state.place.roles.roles)
-    return _ground_build_gates(state, mat_result, spec, facet_checked=facet_checked)
+    return _ground_build_gates(
+        state, mat_result, spec, required=required, facet_checked=facet_checked
+    )
 
 
 def _served_member_facts(state: _PromoteState) -> list[ArcsMemberFacts]:
@@ -817,13 +847,15 @@ def _start_related_read(state: _PromoteState) -> None:
     )
 
 
-def _may_convert(state: _PromoteState, mat_result: Materialised) -> bool:
+def _may_convert(
+    state: _PromoteState, mat_result: Materialised, required: tuple[ResolvedQualifier, ...]
+) -> bool:
     """Whether finalisation reaches its bound-unit gate: no no-data gate holds
-    (`_no_data_gate_holds`), the unit is request-form, and the narrowed plan serves a
-    point."""
+    (`_no_data_gate_holds`, `required` the terms a refusal on the posted values names), the unit is
+    request-form, and the narrowed plan serves a point."""
     plan = state.narrowed_plan
     return not (
-        _no_data_gate_holds(state, mat_result)
+        _no_data_gate_holds(state, mat_result, required)
         or not isinstance((state.inp.identity.facets or {}).get("unit"), IdentityFacetValueRequest)
         or plan is None
         or serves_nothing(plan)

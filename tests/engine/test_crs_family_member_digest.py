@@ -12,12 +12,14 @@ import rfc8785
 from code_index.shared import get_index
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.clients.graph import Facet
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from series_coverage.schema import RoleNames
 from statvar_members import FiveTuple, enumerate_members
 from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 from tests.statvar_members.conftest import FakeMemberArcReader
 
@@ -152,6 +154,8 @@ class _BindAllFourSharedAxesLLM:
     """Binds the four shared axes and leaves `crsTypeOfFlow` unbound."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         recalled_row = _real_row(_RECALLED_SV)
         return _UniversalBindOutput(
@@ -262,7 +266,7 @@ def test_stat_vars_lists_the_confirmed_subset_while_the_digest_names_the_whole_b
     result = _run(monkeypatch)
     resolved = result.specs[0].resolved
 
-    assert [item.ref.dcid for item in resolved.members] == [_EXTRA_SV]
+    assert [item.ref.ref for item in resolved.members] == [_EXTRA_SV]
     assert resolved.stat_vars.member_count == 1
 
     assert resolved.shape.member_count == 2
@@ -273,6 +277,8 @@ class _AlsoNamesASourceLLM(_BindAllFourSharedAxesLLM):
     """The same drafts, with a source-axis value the prompt never offered."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         output, usage = await super().generate_structured(
             prompt=prompt, system=system, schema=schema
         )

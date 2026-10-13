@@ -1022,10 +1022,7 @@ _COMPOSED_TERM_REASONS_AND_OUTCOMES = {
         "No match for ",
         ". Try a different wording or a related indicator.",
     ),
-    "denominator_not_available": (
-        "No per-capita data for ",
-        ". Try dropping the per-capita phrasing.",
-    ),
+    "denominator_not_available": ("No series for ", " is in the form it asks for."),
     "no_matching_slice": (
         "No published series for ",
         " matches the combination this query asks for.",

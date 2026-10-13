@@ -73,7 +73,7 @@ def _run(
         requests,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(graph, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,

@@ -53,6 +53,7 @@ from series_coverage.schema import (
     RoleNames,
     YearHorizon,
 )
+from series_coverage.summary import CoverageSummary
 
 _NO_BINDING: BoundRoles = MappingProxyType({})
 _NO_FACET_METADATA: Mapping[str, FacetMetadata] = MappingProxyType({})
@@ -511,6 +512,9 @@ class CoverageIndex:
         views = _provenance_views(self._table, self._role_names, self._facet_metadata)
         self._provenance_currencies = views.currencies
         self._provenance_shapes = views.shapes
+        self._facet_summary = CoverageSummary(
+            self._table, variable_codes=self._variable_codes, facet_metadata=self._facet_metadata
+        )
 
     @property
     def horizon(self) -> YearHorizon:
@@ -564,6 +568,13 @@ class CoverageIndex:
         means unknown, because the building job keeps only role-bearing series.
         """
         return self._provenance_shapes
+
+    @property
+    def facet_summary(self) -> CoverageSummary:
+        """Each variable's facets across the build, with their metadata, years, observation
+        counts and parties by role, built when the index loads so a reload swaps it with
+        the rows (`series_coverage.summary`)."""
+        return self._facet_summary
 
     @property
     def num_rows(self) -> int:
@@ -634,8 +645,8 @@ class CoverageIndex:
 
         A pinned facet may replace the request's current provenance scope, so validating
         that pin must see every globally admitted provenance at the bound role tuples.
-        This deliberately skips per-series source admission and DFO precedence; those
-        remain a served-read concern in :meth:`_member_rows`.
+        This deliberately skips per-series source admission, which remains a
+        served-read concern in :meth:`_member_rows`.
         """
         codes = sorted({self._variable_codes[v] for v in variables if v in self._variable_codes})
         blocks = [np.arange(*_run(self._variable_code_column, code)) for code in codes]
@@ -657,8 +668,9 @@ class CoverageIndex:
         Coverage rows are role-bearing.  A source is admitted at the grain at
         which it is served: a complete `(variable, recipient, donor)` series.
         Applying that rule after role bindings preserves a named request's
-        bound pairs while allowing DFO precedence to withhold a base facet
-        only where the matching DFO facet exists.
+        bound pairs.  Every provenance the scoped catalogue admits is kept,
+        whichever origin it comes from, and the facet election chooses between
+        DFO and base (`materialise.facets.dfo_precedence`).
         """
         if rows.num_rows == 0 or current_source_scope() is None:
             return rows
@@ -972,28 +984,67 @@ class CoverageIndex:
             counts[facet_id] = counts.get(facet_id, 0) + 1
         return counts
 
+    def union_series_count(
+        self,
+        *,
+        variable: str,
+        facet_ids: Iterable[str],
+        bound: BoundRoles = _NO_BINDING,
+        first_year: int | None = None,
+        last_year: int | None = None,
+    ) -> int:
+        """How many series of `variable` under `bound`, donor and recipient pairs, at least
+        one of `facet_ids` holds with data inside `[first_year, last_year]`: the count a
+        joined candidate ranks on (`materialise.facets.union_count`), as `series_counts`
+        counts one facet's."""
+        wanted = frozenset(facet_ids)
+        rows = self._filtered(
+            variables=[variable], bound=bound, first_year=first_year, last_year=last_year
+        )
+        return len(
+            {
+                (donor, recipient)
+                for facet_id, donor, recipient in zip(
+                    _key_values(rows[FACET_COLUMN]),
+                    _key_values(rows[DONOR_COLUMN]),
+                    _key_values(rows[RECIPIENT_COLUMN]),
+                    strict=True,
+                )
+                if facet_id in wanted
+            }
+        )
+
     def facet_spans(
         self, *, variables: Sequence[str], bound: BoundRoles = _NO_BINDING
     ) -> dict[tuple[str, str], FacetSpan]:
-        """Each `(variable, facet_id)`'s observation count and first and last years with
-        data under `bound`, over every year: the `n_obs`, `first_year` and `last_year`
-        `filter_candidates` states for the same rows with no window, read from the row
-        columns in one grouped pass that builds no year counts. A bulk election ranks a
-        facet across up to 1.6M rows by these, the values a mint ranks."""
+        """Each `(variable, facet_id)`'s observation count, first and last years with data
+        and first series' end under `bound`, over every year: the `n_obs`, `first_year`,
+        `last_year` and `first_series_end` `filter_candidates` states for the same rows with
+        no window, read from the row columns in one grouped pass that builds no year counts.
+        A bulk election ranks and continues a facet across up to 1.6M rows by these, the
+        values a mint reads (`materialise.facets.coverage_probe`)."""
         rows = self._member_rows(variables=variables, bound=bound)
         if rows.num_rows == 0:
             return {}
         grouped = rows.group_by([VARIABLE_COLUMN, FACET_COLUMN]).aggregate(
-            ((N_OBS_COLUMN, "sum"), (FIRST_YEAR_COLUMN, "min"), (LAST_YEAR_COLUMN, "max"))
+            (
+                (N_OBS_COLUMN, "sum"),
+                (FIRST_YEAR_COLUMN, "min"),
+                (LAST_YEAR_COLUMN, "max"),
+                (LAST_YEAR_COLUMN, "min"),
+            )
         )
         return {
-            (variable, facet_id): FacetSpan(n_obs=n_obs, first_year=first, last_year=last)
-            for variable, facet_id, n_obs, first, last in zip(
+            (variable, facet_id): FacetSpan(
+                n_obs=n_obs, first_year=first, last_year=last, first_series_end=series_end
+            )
+            for variable, facet_id, n_obs, first, last, series_end in zip(
                 _key_values(grouped[VARIABLE_COLUMN]),
                 _key_values(grouped[FACET_COLUMN]),
                 _int_values(grouped[f"{N_OBS_COLUMN}_sum"]),
                 _int_values(grouped[f"{FIRST_YEAR_COLUMN}_min"]),
                 _int_values(grouped[f"{LAST_YEAR_COLUMN}_max"]),
+                _int_values(grouped[f"{LAST_YEAR_COLUMN}_min"]),
                 strict=True,
             )
         }
@@ -1002,11 +1053,15 @@ class CoverageIndex:
         self, rows: pa.Table, *, role_columns: Sequence[str]
     ) -> list[tuple[tuple[str, ...], FacetCoverage]]:
         """`rows` grouped by variable, then `role_columns`, then facet, each group's masks
-        summed into one `FacetCoverage`, keyed by its variable and role dcids."""
+        summed into one `FacetCoverage`, keyed by its variable and role dcids, with the
+        earliest of its rows' last years as the end of its first series to end."""
         # A tuple preserves each aggregate function's `Literal` type for
         # pyarrow-stubs.
         grouped = rows.group_by([VARIABLE_COLUMN, *role_columns, FACET_COLUMN]).aggregate(
-            tuple((name, "list") for name in self._horizon.mask_columns)
+            (
+                *((name, "list") for name in self._horizon.mask_columns),
+                (LAST_YEAR_COLUMN, "min"),
+            )
         )
         # Arrow stubs mark `to_pylist()` values nullable. Writers populate
         # every non-nullable `YearHorizon.schema` field, as these casts record.
@@ -1016,6 +1071,7 @@ class CoverageIndex:
             cast("list[list[int]]", grouped[f"{name}_list"].to_pylist())
             for name in self._horizon.mask_columns
         ]
+        series_ends = _int_values(grouped[f"{LAST_YEAR_COLUMN}_min"])
         result: list[tuple[tuple[str, ...], FacetCoverage]] = []
         for row, facet_id in enumerate(facets_col):
             year_counts = _year_counts_from_masks(
@@ -1030,6 +1086,7 @@ class CoverageIndex:
                         first_year=min(year_counts),
                         last_year=max(year_counts),
                         year_counts=year_counts,
+                        first_series_end=series_ends[row],
                     ),
                 )
             )
@@ -1893,6 +1950,61 @@ class PairRows:
                 _decode(opposite_names, opposite_codes[order]),
                 cast("list[int]", counts[order].tolist()),
                 strict=True,
+            )
+        ]
+
+    def pair_year_counts(
+        self,
+        *,
+        variable: str,
+        facet_id: str,
+        first_year: int | None = None,
+        last_year: int | None = None,
+        member_is_donor: bool,
+        has_opposite: bool,
+    ) -> list[tuple[str, str | None, tuple[tuple[int, int], ...]]]:
+        """Each row of one (variable, facet_id) with data inside `[first_year, last_year]`
+        as well as this lookup's own window, keyed as `head_pairs` keys it, with each year
+        it holds data in and the observations there, ascending: one a row, summed over the
+        rows sharing a member when there is no opposite role, as a one-year `head_pairs`
+        window counts them. Unordered, and read in one pass over the rows' year masks."""
+        rows = self._group(variable, facet_id)
+        if rows is None:
+            return []
+        views = self._views
+        wmasks = _window_words(self._horizon, first_year=first_year, last_year=last_year)
+        words = np.stack(
+            [masks[rows] & wmask for masks, wmask in zip(views.year_masks, wmasks, strict=True)],
+            axis=1,
+        )
+        # Bit `b` of word `w` marks year `epoch_year + 64 * w + b`: little-endian bytes
+        # unpacked least significant bit first keep that order.
+        bits = np.unpackbits(words.astype("<u8").view(np.uint8), axis=1, bitorder="little")
+        held = np.flatnonzero(bits.any(axis=0))
+        counts = bits[:, held].astype(np.int64)
+        if member_is_donor:
+            member_codes, opposite_codes = views.donors[rows], views.recipients[rows]
+            member_names, opposite_names = views.donor_dictionary, views.recipient_dictionary
+        else:
+            member_codes, opposite_codes = views.recipients[rows], views.donors[rows]
+            member_names, opposite_names = views.recipient_dictionary, views.donor_dictionary
+        if not has_opposite:
+            member_codes, inverse = np.unique(member_codes, return_inverse=True)
+            summed = np.zeros((member_codes.size, held.size), dtype=np.int64)
+            np.add.at(summed, inverse, counts)
+            counts = summed
+        kept = counts.any(axis=1)
+        years = (self._horizon.epoch_year + held).tolist()
+        by_row = [
+            tuple((years[i], int(row[i])) for i in np.flatnonzero(row)) for row in counts[kept]
+        ]
+        opposites = (
+            _decode(opposite_names, opposite_codes[kept]) if has_opposite else [""] * len(by_row)
+        )
+        return [
+            (member, opposite or None, year_counts)
+            for member, opposite, year_counts in zip(
+                _decode(member_names, member_codes[kept]), opposites, by_row, strict=True
             )
         ]
 

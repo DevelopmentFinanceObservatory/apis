@@ -142,6 +142,10 @@ def test_the_spec_door_warns_of_the_place_the_un_refused(graph, places):
     assert manifest["coverage"]["rows"] == _ROWS
     (warning,) = _un_warnings(manifest)
     assert warning.endswith(_UNREAD_GREECE)
+    # The trace names the place, which the version's description states as a coverage gap.
+    assert manifest["trace"]["origin_gaps"] == [
+        {"code": "un_system_unavailable", "entities": [_GRC]}
+    ]
 
 
 @_BINDINGS

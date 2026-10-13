@@ -34,7 +34,9 @@ def test_facet_map_covers_all_three_axes_in_facet_axis_order():
     # Preserve `FacetAxis` order in the serialized payload.
     assert list(facet_map) == ["provenance", "measurementMethod", "unit"]
     assert facet_map == {
-        "provenance": SeriesFacetRef(ref="dc/base/Src", label="Source"),
+        "provenance": SeriesFacetRef(
+            ref="dc/base/Src", label="Source", documentation="/api/graph/documentation/dc/base/Src"
+        ),
         "measurementMethod": SeriesFacetRef(ref="dcAggregate/Census", label="Census"),
         "unit": SeriesFacetRef(ref="Person", label="Person (label)"),
     }
@@ -45,7 +47,11 @@ def test_facet_map_omits_axes_with_no_value():
 
     facet_map = _bulk_candidate_facet_map(candidate, {"dc/base/Src": "Source"})
 
-    assert facet_map == {"provenance": SeriesFacetRef(ref="dc/base/Src", label="Source")}
+    assert facet_map == {
+        "provenance": SeriesFacetRef(
+            ref="dc/base/Src", label="Source", documentation="/api/graph/documentation/dc/base/Src"
+        )
+    }
 
 
 def test_facet_map_provenance_prefers_the_catalogue_row(bind_catalogue):
@@ -62,6 +68,7 @@ def test_facet_map_provenance_prefers_the_catalogue_row(bind_catalogue):
             label="dc/base/Src",
             source=SourceRef(ref="dc/s/Pub", label="dc/s/Pub"),
             data_commons=DataCommonsRef(id="base", label="Data Commons by Google"),
+            documentation="/api/graph/documentation/dc/base/Src",
         )
     }
 

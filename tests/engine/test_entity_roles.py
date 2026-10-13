@@ -15,6 +15,7 @@ from search.engine.entry.parsed import (
 )
 from search.engine.entry.raw_text import _entity_roles
 from search.engine.extract import ExtractedEntity, _validate_role_spans
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region.pipeline import resolve_variable
 from search.engine.role_text import DoorRole, contradicts
 from search.models import ParsedEntity, ParsedPart, RoleAxis
@@ -26,6 +27,7 @@ from tests.engine._fake_coverage import (
     patch_coverage,
 )
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._quantity import NO_QUANTITY
 from tests.engine.test_role_bearing_pipeline_e2e import _SV_DCID, _declaring_arcs
 from tests.fixtures import FakeGraph, make_resolver
 
@@ -545,6 +547,8 @@ class TestDatasetEntriesDoorCarriesEveryOccurrence:
 
 class _FixedBindLLM:
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
 

@@ -123,7 +123,7 @@ def _readings(query_id: str, part: dict, members: dict[str, list[dict]]) -> Iter
         items = members[spec["spec_id"]]
         what = [token["text"] for token in resolved["sentence_plan"] if token.get("axis") == "what"]
         codes = [
-            value["ref"]["dcid"]
+            value["ref"]["ref"]
             for slot in resolved["slots"]
             if slot["key"]["axis"] == "how"
             for value in _binding_values(slot["binding"])
@@ -158,9 +158,9 @@ def _authored_noun(shape: dict, items: list[dict]) -> str | None:
         else {}
     )
     noun = measure_noun(
-        population_type=(shape.get("population_type") or {}).get("dcid"),
-        measured_property=(shape.get("measured_property") or {}).get("dcid"),
-        stat_type=(shape.get("stat_type") or {}).get("dcid"),
+        population_type=(shape.get("population_type") or {}).get("ref"),
+        measured_property=(shape.get("measured_property") or {}).get("ref"),
+        stat_type=(shape.get("stat_type") or {}).get("ref"),
         constraints=shared,
     )
     return noun.noun if noun else None

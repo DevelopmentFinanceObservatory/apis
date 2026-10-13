@@ -23,6 +23,7 @@ from materialise.rate_tables import RateTableCache
 from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.graph import Facet
 from search.engine.extract import DateRequest
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_spec_resubmit
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.state import EngineOptions
@@ -56,6 +57,7 @@ from tests.engine._harness import (
     walk_options,
     with_member_arcs,
 )
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 from tests.materialise.conftest import FakeGraphReader
 
@@ -115,6 +117,8 @@ class _BindLLM:
         self._also_plausible = list(also_plausible)
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return (
             _UniversalBindOutput(
@@ -230,7 +234,7 @@ def _stated_sources(spec: Spec) -> tuple[list[str], int | None, str]:
     resolved = spec.resolved
     dims = {d.label: d.count for d in resolved.coverage.dimensions or []}
     return (
-        [ref.dcid for ref in resolved.trace.resolved_sources],
+        [ref.ref for ref in resolved.trace.resolved_sources],
         dims.get("sources"),
         render_sentence(spec),
     )
@@ -741,7 +745,7 @@ def test_a_two_place_resubmit_cites_the_source_its_first_answer_cites(monkeypatc
     assert again.status == "definite", (again.status, again.no_data_reason)
     for result in (first, again):
         spec = result.specs[0]
-        assert [ref.dcid for ref in spec.resolved.trace.resolved_sources] == [_WDI]
+        assert [ref.ref for ref in spec.resolved.trace.resolved_sources] == [_WDI]
         assert render_sentence(spec).endswith(", 2010 to 2020. WDI.")
 
 
@@ -789,7 +793,7 @@ def test_a_two_place_answer_and_its_resubmit_name_their_places_in_one_order(plac
         assert result.status == "definite", (result.status, result.no_data_reason)
         spec = result.specs[0]
         (where,) = [s for s in spec.resolved.slots if s.key.axis == "where"]
-        assert [v.ref.dcid for v in where.binding.values] == [_YPSILON, _ZETA]
+        assert [v.ref.ref for v in where.binding.values] == [_YPSILON, _ZETA]
         assert [e.ref for e in spec.resolved.entities] == [_YPSILON, _ZETA]
         assert render_sentence(spec).startswith("Population in Ypsilon and Zeta, ")
     assert render_sentence(first.specs[0]) == render_sentence(again.specs[0])

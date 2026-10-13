@@ -10,7 +10,7 @@ from __future__ import annotations
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, DatasetDeclaration, IndexStamp
 from code_index.types import StatVarRow
 from datasets_api.mint_models import GroupbyOptions, MintOptions
-from datasets_api.render import _reshape
+from datasets_api.render import _RenderReads, _reshape
 from materialise.enrichment import EnrichmentLookup
 from materialise.frame_build import Frame
 from materialise.reshape import Table
@@ -102,7 +102,11 @@ def _sum(members: tuple[tuple[str, float], ...]):
         ),
         options=MintOptions(groupby=GroupbyOptions(by=["time_period"], op="sum")),
         entity_columns=_ENTITY_COLUMNS,
-        enrichment=EnrichmentLookup(FakeMintGraphReader(), type_kinds={}, parties={}),
+        reads=_RenderReads(
+            enrichment=EnrichmentLookup(FakeMintGraphReader(), parties={}),
+            known={},
+            deadline=None,
+        ),
         code_index=_INDEX,
         resolved_stat_var_refs=tuple(f"dcid:{stat_var}" for stat_var, _value in members),
         provenance_refs=(_PROVENANCE,),

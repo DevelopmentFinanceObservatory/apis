@@ -12,6 +12,7 @@ from collections.abc import Mapping, Sequence
 from dfo_spec_kit import identity as _identity
 
 from dfo_platform.named import cut
+from dfo_platform.roles import role_key_axis
 from search.engine.config import settings
 from search.engine.errors import EngineInputError
 from search.models import (
@@ -64,6 +65,29 @@ def validate_edited_identity(identity: BaseIdentity, *, pointer: str = "/input/i
             code="request_invalid",
             pointer=pointer,
         ) from exc
+
+
+def open_requested_role(identity: BaseIdentity, *, role: str) -> BaseIdentity:
+    """Return `identity` with the flow axis `role` names in `open_roles`.
+
+    An options request for a flow axis asks for that axis member by member, so the
+    population it reads is the one an edit binding that axis elects, such as the by-creditor
+    twin of an IDS total. `identity` comes back unchanged when `role` names no flow axis
+    (`observationAbout`) or when an `entities` key or an open role already names the axis.
+    Keys match by axis (`dfo_platform.roles.role_key_axis`), since they keep the caller's
+    spelling. A population whose StatVars declare no role on the axis drops the open role
+    at election, so the door's role-target check still refuses it.
+    """
+    axis = role_key_axis(role)
+    if axis is None:
+        return identity
+    named = {role_key_axis(key) for key in identity.entities} | set(identity.open_roles or ())
+    if axis in named:
+        return identity
+    return BaseIdentity.model_validate(
+        identity.model_dump(exclude_none=True)
+        | {"open_roles": [*(identity.open_roles or ()), axis]}
+    )
 
 
 def refuse_over_place_bound(

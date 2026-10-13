@@ -442,10 +442,13 @@ def test_assemble_bundle_requires_at_least_one_member():
     ("spec", "spec_ids"),
     [
         ({"schema_version": 1, "spec_id": _SPEC_ID}, ["spec_00000000000000000000000000000099"]),
-        ({"schema_version": 1, "spec_id": _SPEC_ID}, [_SPEC_ID, _SPEC_ID]),
+        (
+            {"schema_version": 1, "spec_id": _SPEC_ID},
+            [_SPEC_ID, "spec_00000000000000000000000000000099"],
+        ),
         ({"schema_version": 1}, [_SPEC_ID]),
     ],
-    ids=["standalone-mismatch", "standalone-two", "standalone-no-id"],
+    ids=["standalone-mismatch", "standalone-second-mismatch", "standalone-no-id"],
 )
 def test_assemble_bundle_refuses_identity_mismatches(spec, spec_ids):
     members = [_member(spec_id, path=f"data/{n}.csv") for n, spec_id in enumerate(spec_ids)]

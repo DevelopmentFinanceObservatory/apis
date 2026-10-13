@@ -24,6 +24,13 @@ ignored. Requests, pivot output, frames and collapse frames keep the grammar nam
 does a bare parquet file requested with `options.layout = "frame"` (`FRAME_LAYOUT`), which is
 written as reshaped, with no projection and no name read.
 
+A long CSV or XLSX keeps total rows out of its main table (`_TotalRows`). A row is a total when a
+role that can hold a total (`datasets_api.output_options.movable_totals_roles`, the rule the
+options document's `long_layout_totals` reads) holds a party the code index declares a `total`.
+A role bound to one entity makes no total row, and residuals stay with the parties. A bundle's CSV writes the totals as a second data file
+(`data/<slug>-totals.csv`), an XLSX on a second sheet (`totals`), and a bare CSV leaves them
+out. Parquet, pivot output and the frame layout keep every row.
+
 `groupby` and `pivot` read across chunks. Other reshapes stream rows to the writer. A recognised but
 disabled enrichment token raises `capability_unavailable`. Unknown tokens raise `column_unknown`.
 
@@ -42,18 +49,21 @@ import hashlib
 import itertools
 import json
 import logging
+import pickle
 import re
 import sys
+import tempfile
 import zipfile
 from collections import Counter
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import IO, cast
 from urllib.parse import urlencode
 
 import pyarrow as pa
-from dfo_frame_grammar import frame_sha256
+import pyarrow.compute as pc
+from dfo_frame_grammar import TIME_PERIOD_COLUMN, frame_sha256
 from pydantic import ValidationError
 
 from artifact_store import (
@@ -66,7 +76,7 @@ from code_index.labels import PRICES_BY_QUALIFIER, family_label
 from code_index.members import absent_member_reads_zero
 from code_index.query import CodeIndex
 from code_index.shared import get_measure_index
-from code_index.types import level_axes, summable_axes
+from code_index.types import PartyRow, level_axes, summable_axes
 from dataset_store.snapshot import StoredArtifactLocation, select_servable_locations
 from datasets_api.adapter import pinned_member_ref, shape_measurement_qualifier
 from datasets_api.artifact_delivery import (
@@ -100,12 +110,12 @@ from datasets_api.manifest_models import (
     Manifest,
 )
 from datasets_api.mint_models import MintOptions
+from datasets_api.output_options import movable_totals_roles
 from datasets_api.query_options import QueryOptionsInvalid
 from datasets_api.timings import phase
 from datasets_api.unit_labels import unit_currency, unit_label
-from datasets_api.version_store import rendering_key
+from datasets_api.version_store import recorded_frame_sha256, rendering_key
 from datasets_api.versions import ArtifactRecord
-from datasets_api.warnings import DATASETS_WARNING_CATALOGUE
 from dc_graph import GraphReadError
 from dfo_platform import Alternative
 from dfo_platform.config import PublicSiteSettings
@@ -134,12 +144,15 @@ from materialise.bundle_naming import heading, member_slugs, sources_slug
 from materialise.bundle_sources import source_provenance
 from materialise.codes import MaterialisationWarning
 from materialise.content_version import mint_version_from_digest
-from materialise.enrichment import EnrichmentLookup
+from materialise.enrichment import PARTY_KIND_FIELD, EnrichmentLookup, is_party_role
 from materialise.formats import (
+    DATA_SHEET_TITLE,
     FORMAT_COLUMN_CAPS,
     FRAME1_MEDIA_TYPE,
+    TOTALS_SHEET_TITLE,
     Frame,
     Rendering,
+    Sink,
     Table,
     WrittenArtifact,
     canonical_frame_rows,
@@ -149,7 +162,7 @@ from materialise.formats import (
     write_excel,
     write_parquet,
 )
-from materialise.frame_build import build_frame, unit_cell_for_rebuild
+from materialise.frame_build import ParquetFrameChunks, build_frame, unit_cell_for_rebuild
 from materialise.profile import OutputProfile, PivotFeasibility
 from materialise.projection import (
     LongProjection,
@@ -157,7 +170,9 @@ from materialise.projection import (
     UnitNaming,
     axis_source_column,
     long_output_selection,
+    period_grain,
     plan_long_projection,
+    split_totals,
 )
 from materialise.reshape import (
     SUPPORTED_ENRICHMENTS,
@@ -208,35 +223,6 @@ rows."""
 _STATUS_COLUMN = "status"
 """`Frame.build` reserves `status`. `_full_collapse_frame` strips it before rebuilding. The local
 constant avoids importing the grammar package for one name."""
-
-
-class StatVarsSummedWarning(MaterialisationWarning):
-    """`stat_vars_summed`'s own wider warning shape: the standard
-    `{code, severity, message}` plus `contributing_member_count`,
-    `stat_var_ref`, and `stat_var_label`, the facts `datasets_api.manifest
-    .reshape_warning_models` puts on the wire warning and names in the `message` it composes.
-    `EnrichmentUnavailableWarning` (`materialise.reshape`) gets the same treatment there.
-    `stat_var_label` is `code_index.labels.family_label` over the subject's identity, the label
-    the presentation door gives the same family ref, or `None` when it has none.
-    """
-
-    contributing_member_count: int
-    stat_var_ref: str
-    stat_var_label: str | None
-
-
-def _stat_vars_summed_warning(
-    *, contributing_member_count: int, stat_var_ref: str, stat_var_label: str | None
-) -> StatVarsSummedWarning:
-    _title, detail, _severity = DATASETS_WARNING_CATALOGUE["stat_vars_summed"]
-    return {
-        "code": "stat_vars_summed",
-        "severity": "info",
-        "message": detail,
-        "contributing_member_count": contributing_member_count,
-        "stat_var_ref": stat_var_ref,
-        "stat_var_label": stat_var_label,
-    }
 
 
 @dataclass(frozen=True)
@@ -451,7 +437,6 @@ def _reshape_groupby_collapse(
     provenance_refs: Sequence[str],
     entity_columns: Sequence[str],
     subject_id: str | None,
-    subject_label: str | None,
     frame_chunks: Iterable[Table] | None,
     warnings: list[MaterialisationWarning],
 ) -> tuple[Table, DecodePlan | None, GroupbyCollapseRendering | None]:
@@ -462,8 +447,7 @@ def _reshape_groupby_collapse(
     holds to one value. A member with no rows counts as zero when the frame's dataset declares
     it (`absent_member_reads_zero`). Appends decode and streaming warnings to `warnings` and
     returns any unconsumed decode plan. A grammar frame requires `subject_id` unless one member
-    contributed and `kept` is empty. `subject_label` labels the family ref on the
-    `stat_vars_summed` warning."""
+    contributed and `kept` is empty."""
     refuse_provenance_disagreement(provenance_refs=provenance_refs)
     decode_lookup = decode_plan.lookup if decode_plan is not None else {}
     if frame_chunks is None:
@@ -584,15 +568,6 @@ def _reshape_groupby_collapse(
                 "sole-contributor full collapse is the only one that does not need it"
             )
         stat_var_ref = f"{_STAT_VAR_REF_PREFIX}{subject_id}"
-        # Empty collapses need a family ref. `stat_vars_summed` warnings require multiple contributors.
-        if len(contributors) > 1:
-            warnings.append(
-                _stat_vars_summed_warning(
-                    contributing_member_count=len(contributors),
-                    stat_var_ref=stat_var_ref,
-                    stat_var_label=subject_label,
-                )
-            )
     # A grammar frame holds each unsummed axis to one value, so its column describes the
     # family and the frame leaves it out.
     left_out = {_STATUS_COLUMN} | {
@@ -637,7 +612,6 @@ def _reshape_groupby(
     entity_columns: Sequence[str],
     provenance_refs: Sequence[str],
     subject_id: str | None,
-    subject_label: str | None,
     frame_chunks: Iterable[Table] | None,
 ) -> _GroupbyOutcome:
     """Applies `groupby` when options and `code_index` are set. Otherwise inputs pass through.
@@ -657,8 +631,7 @@ def _reshape_groupby(
     output. The streamed path preserves whole-table refusal order. When every unsummed axis holds
     one value (`groupby.yields_grammar_frame`), the sum becomes a grammar frame: `stat_var` is
     the sole contributor's dcid on a full collapse and `dcid:{subject_id}` otherwise, and each
-    kept code axis is a role column. Multiple contributors add a
-    `stat_vars_summed` warning labelled `subject_label`. A grammar frame requires `subject_id`
+    kept code axis is a role column. A grammar frame requires `subject_id`
     unless it is a sole contributor's full collapse.
     The frame gets a version from its own content. A sole-contributor full collapse leaves the
     frame unchanged and so shares the base version.
@@ -714,7 +687,6 @@ def _reshape_groupby(
             provenance_refs=provenance_refs,
             entity_columns=entity_columns,
             subject_id=subject_id,
-            subject_label=subject_label,
             frame_chunks=frame_chunks,
             warnings=warnings,
         )
@@ -749,14 +721,16 @@ def _reshape_select_pivot_enrich(
     decode_plan: DecodePlan | None,
     options: MintOptions,
     entity_columns: Sequence[str],
-    enrichment: EnrichmentLookup,
+    reads: _RenderReads,
     pivot_max_output_cells: int,
     warnings: list[MaterialisationWarning],
     collapse: GroupbyCollapseRendering | None,
     code_index: CodeIndex | None,
 ) -> ReshapeResult:
     """Applies pending decode, `options.columns`, and `options.pivot`. Real and decoded columns take
-    precedence over enrichment tokens. Enabled `{entity}_{field}` tokens use one batched lookup.
+    precedence over enrichment tokens. Enabled `{entity}_{field}` tokens read their values through
+    `reads` (`_RenderReads.fields_of`): a party's kind from the code index, the rest in one
+    batched graph read against the render's deadline, whose failure leaves cells empty.
     Recognised disabled fields raise `CapabilityUnavailable`, and unknown tokens raise
     `ColumnUnknownError` with alternatives. Decode, selection, then pivot run in that order. A token
     list with no table or decoded column does not select, so every default column stays.
@@ -838,7 +812,8 @@ def _reshape_select_pivot_enrich(
     if parsed is not None and parsed.enrichments:
         refs = _enrichment_refs(current, enrichments=parsed.enrichments)
         enrichment_plan = EnrichmentPlan(
-            requests=parsed.enrichments, lookup=enrichment.lookup(refs)
+            requests=parsed.enrichments,
+            lookup=reads.fields_of(refs, fields={field for _, field in parsed.enrichments}),
         )
     warning_order = (
         *decoded_column_names,
@@ -885,13 +860,12 @@ def _reshape(
     *,
     options: MintOptions,
     entity_columns: Sequence[str],
-    enrichment: EnrichmentLookup,
+    reads: _RenderReads,
     pivot_max_output_cells: int,
     code_index: CodeIndex | None = None,
     resolved_stat_var_refs: Sequence[str],
     provenance_refs: Sequence[str],
     subject_id: str | None = None,
-    subject_label: str | None = None,
     frame_chunks: Iterable[Table] | None = None,
 ) -> ReshapeResult:
     """Applies decode, groupby, selection, enrichment, and pivot before rendering. Inert transforms
@@ -901,8 +875,7 @@ def _reshape(
     `None` skips decoding.
     `resolved_stat_var_refs` supplies zero-row members to groupby population checks, and
     `provenance_refs` govern its source-wide missing-as-zero rule. `subject_id` is used only for
-    the collapse frame's `stat_var`, and `subject_label` only for the `stat_vars_summed`
-    warning's family label. `frame_chunks` streams the first
+    the collapse frame's `stat_var`. `frame_chunks` streams the first
     collapse axis. `None` processes `table` in memory.
 
     Raises `ColumnUnknownError` for unknown columns, `CapabilityUnavailable` for disabled
@@ -922,7 +895,6 @@ def _reshape(
         entity_columns=entity_columns,
         provenance_refs=provenance_refs,
         subject_id=subject_id,
-        subject_label=subject_label,
         frame_chunks=frame_chunks,
     )
     return _reshape_select_pivot_enrich(
@@ -930,7 +902,7 @@ def _reshape(
         decode_plan=groupby_outcome.decode_plan,
         options=options,
         entity_columns=entity_columns,
-        enrichment=enrichment,
+        reads=reads,
         pivot_max_output_cells=pivot_max_output_cells,
         warnings=list(groupby_outcome.warnings),
         collapse=groupby_outcome.collapse,
@@ -1101,8 +1073,8 @@ def _member_provenance(
     data_path: str,
     sources: Sequence[SourceProvenance],
     scan: TableScan,
-    options: MintOptions,
     code_index: CodeIndex | None,
+    description: str | None,
 ) -> MemberProvenance:
     """One bundle member, titled by its sources and years, with each column documented from
     `scan`."""
@@ -1124,8 +1096,155 @@ def _member_provenance(
         artifact=entry,
         sources=tuple(sources),
         columns=column_docs(scan, code_system_names=code_system_names, rendering=rendering),
-        # A pivot spreads observations across columns, so only an unpivoted file holds one per row.
-        description="One row per observation." if options.pivot is None else None,
+        description=description,
+    )
+
+
+@dataclass(frozen=True)
+class _TotalsFile:
+    """A bundle's second CSV data file, holding the total rows (`_TotalRows`): its path, the
+    written file, its scan and the first table written, which types its schema."""
+
+    path: str
+    written: WrittenArtifact
+    scan: TableScan
+    frame: Table
+
+
+def _totals_path(data_path: str) -> str:
+    """The totals file beside `data_path`: `data/<slug>-totals.<format>`."""
+    stem, extension = data_path.rsplit(".", 1)
+    return f"{stem}-totals.{extension}"
+
+
+def _write_data(
+    chunks: Iterable[Table],
+    *,
+    options: MintOptions,
+    rendering: Rendering,
+    sink: Sink,
+    totals: Callable[[], Iterable[Table]] | None,
+) -> WrittenArtifact:
+    """Writes one data file in `options.format`. An XLSX file writes `totals`, called once its
+    data sheet is written, on its second sheet (`formats.write_excel`). The other writers take
+    no totals."""
+    if options.format == "xlsx":
+        return write_excel(chunks, rendering=rendering, sink=sink, totals=totals)
+    return _FORMAT_WRITERS[options.format](chunks, rendering=rendering, sink=sink)
+
+
+def _write_totals_entry(
+    zf: zipfile.ZipFile,
+    totals: _TotalRows,
+    *,
+    data_path: str,
+    rendering: Rendering,
+    scan: TableScan,
+) -> _TotalsFile | None:
+    """Writes the total rows as the CSV entry `_totals_path(data_path)` of `zf`, scanned by
+    `scan`. `None`, writing nothing, when no row is a total."""
+    if totals.first is None:
+        return None
+    path = _totals_path(data_path)
+    with zf.open(
+        zipfile.ZipInfo(path, date_time=_ZIP_FIXED_DATE_TIME), mode="w", force_zip64=True
+    ) as entry:
+        written = write_csv(scan.observe(totals.tables()), rendering=rendering, sink=entry)
+    return _TotalsFile(path=path, written=written, scan=scan, frame=totals.first)
+
+
+_OBSERVATION_DESCRIPTION = "One row per observation."
+
+
+def _members(
+    *,
+    spec_id: str,
+    written: WrittenArtifact,
+    frame: Table,
+    rendering: Rendering,
+    data_path: str,
+    sources: Sequence[SourceProvenance],
+    scan: TableScan,
+    options: MintOptions,
+    code_index: CodeIndex | None,
+    totals: _TotalRows | None,
+    totals_file: _TotalsFile | None,
+) -> tuple[MemberProvenance, ...]:
+    """The bundle's members: the data file, then the totals file when the total rows are
+    written as one (`_write_totals_entry`). Each description says where the total rows are,
+    and the data file's says when it holds no row because every row is a total. An XLSX file
+    holds both sheets, so when its data sheet holds no row the totals sheet's first table
+    types its schema."""
+    if (
+        options.format == "xlsx"
+        and not frame.rows
+        and totals is not None
+        and totals.first is not None
+    ):
+        frame = totals.first
+    main = _member_provenance(
+        spec_id=spec_id,
+        written=written,
+        frame=frame,
+        rendering=rendering,
+        data_path=data_path,
+        sources=sources,
+        scan=scan,
+        code_index=code_index,
+        description=_data_description(
+            options,
+            scan=scan,
+            totals=totals,
+            totals_path=totals_file.path if totals_file is not None else None,
+        ),
+    )
+    if totals_file is None:
+        return (main,)
+    return (
+        main,
+        _member_provenance(
+            spec_id=spec_id,
+            written=totals_file.written,
+            frame=totals_file.frame,
+            rendering=rendering,
+            data_path=totals_file.path,
+            sources=sources,
+            scan=totals_file.scan,
+            code_index=code_index,
+            description=(
+                "One row per observation of a total, a party that holds other parties' "
+                "figures, such as a regional total. Adding these rows to those of "
+                f"{data_path} counts those figures twice."
+            ),
+        ),
+    )
+
+
+def _data_description(
+    options: MintOptions, *, scan: TableScan, totals: _TotalRows | None, totals_path: str | None
+) -> str | None:
+    """What one row of the data file holds, `None` for a pivot, which spreads observations
+    across columns. With total rows set apart, it names where they are: `totals_path` for a
+    CSV, the second sheet for an XLSX, whose `scan` covers both sheets."""
+    if options.pivot is not None:
+        return None
+    if totals is None or not totals.rows:
+        return _OBSERVATION_DESCRIPTION
+    if totals_path is not None:
+        if not scan.rows:
+            return f"No rows: every observation is of a total, and the totals are in {totals_path}."
+        return (
+            "One row per observation of a party or a residual. The rows of totals are in "
+            f"{totals_path}."
+        )
+    if scan.rows == totals.rows:
+        return (
+            f"No rows on the sheet {DATA_SHEET_TITLE}: every observation is of a total, and the "
+            f"totals are on the sheet {TOTALS_SHEET_TITLE}."
+        )
+    return (
+        f"One row per observation of a party or a residual, on the sheet {DATA_SHEET_TITLE}. "
+        f"The rows of totals are on the sheet {TOTALS_SHEET_TITLE}."
     )
 
 
@@ -1154,7 +1273,7 @@ def _codes(
     citations: Mapping[str, CitationSource],
     family: tuple[str, str] | None,
     code_index: CodeIndex | None,
-    reads: _NameReads,
+    reads: _RenderReads,
 ) -> BundleCodes:
     """The codes table of the scanned files. Cited sources take their cited names, a collapsed
     family's `(ref, label)` takes its label, and an axis code takes its `code_index` label, the
@@ -1297,15 +1416,20 @@ def _commit_stored(
 def _long_output_tokens(
     columns: Sequence[str], *, table_columns: Sequence[str], entity_columns: Sequence[str]
 ) -> tuple[list[str], tuple[str, ...]]:
-    """The `options.columns` tokens a long output parses, and the roles whose name the list
-    asked for. Long output writes `status` nowhere and each role's `<role>_label` by default
-    (`materialise.projection`), so both tokens are dropped. A list that selects keeps each named
-    role's entity column, which its label sits beside."""
-    label_tokens = {
+    """The `options.columns` tokens a long output parses, and the roles whose name or kind the
+    list asked for. Long output writes `status` nowhere, and writes each role's `<role>_label`
+    and each party role's `<role>_party_kind` by default (`materialise.projection`), so those
+    tokens are dropped. A list that selects keeps each named role's entity column, which its
+    name and kind sit beside."""
+    defaults = {
         f"{role}_label": role for role in entity_columns if f"{role}_label" not in table_columns
+    } | {
+        f"{role}_{PARTY_KIND_FIELD}": role
+        for role in entity_columns
+        if is_party_role(role) and f"{role}_{PARTY_KIND_FIELD}" not in table_columns
     }
-    tokens = [token for token in columns if token != _STATUS_COLUMN and token not in label_tokens]
-    named_roles = tuple(dict.fromkeys(label_tokens[t] for t in columns if t in label_tokens))
+    tokens = [token for token in columns if token != _STATUS_COLUMN and token not in defaults]
+    named_roles = tuple(dict.fromkeys(defaults[t] for t in columns if t in defaults))
     return tokens, named_roles
 
 
@@ -1365,12 +1489,13 @@ def _native_price_basis(
 
 
 @dataclass
-class _NameReads:
-    """Where a render's names come from, shared by the data file and the bundle's codes table.
-    `known` names a cell value outright: a cited source's label, a summed family's label. Every
-    other value is named by its graph `name`, read through `enrichment` by `lookup` against one
-    absolute `deadline`, the render's. After one read fails, `lookup` refuses without reading, so a
-    graph outage costs the render at most one read's wait."""
+class _RenderReads:
+    """Where a render's names and enrichment fields come from, shared by the reshape
+    enrichment, the long layout and the bundle's codes table. `known` names a cell value
+    outright: a cited source's label, a summed family's label. Every other value is read
+    through `enrichment` by `lookup` against one absolute `deadline`, the render's. After one
+    read fails, `lookup` refuses without reading, so a graph outage costs the render at most
+    one read's wait."""
 
     enrichment: EnrichmentLookup
     known: Mapping[str, str]
@@ -1385,7 +1510,7 @@ class _NameReads:
         citations: Mapping[str, CitationSource],
         family: tuple[str, str] | None,
         deadline: float | None,
-    ) -> _NameReads:
+    ) -> _RenderReads:
         known = {ref: cited.label for ref, cited in citations.items()}
         if family is not None:
             known[family[0]] = family[1]
@@ -1406,6 +1531,163 @@ class _NameReads:
             self.failed = True
             raise
 
+    def fields_of(
+        self, nodes: Sequence[str], *, fields: Collection[str]
+    ) -> dict[str, dict[str, str]]:
+        """Each of `nodes` mapped to those of its enrichment `fields` that could be read. A
+        party's `party_kind` is the one the code index declares
+        (`EnrichmentLookup.party_kind`), read with no graph call; a party the index does not
+        list has none. One `lookup` reads the graph fields of every node, and runs only when one
+        is asked for. A read that fails, or follows a failed one, leaves those fields out. An
+        absent field's cells stay empty and count as `enrichment_unavailable`."""
+        read: dict[str, dict[str, str]] = {node: {} for node in nodes}
+        if PARTY_KIND_FIELD in fields:
+            for node, node_fields in read.items():
+                if kind := self.enrichment.party_kind(node):
+                    node_fields[PARTY_KIND_FIELD] = kind
+        graph_fields = set(fields) - {PARTY_KIND_FIELD}
+        if not graph_fields or not nodes or self.failed:
+            return read
+        try:
+            looked_up = self.lookup(nodes)
+        except GraphReadError:
+            logger.warning(
+                "download graph read failed; %d values keep empty enrichment cells",
+                len(nodes),
+                exc_info=True,
+            )
+            return read
+        for node in nodes:
+            for field_name, value in looked_up.get(node, {}).items():
+                if field_name in graph_fields and value:
+                    read[node][field_name] = value
+        return read
+
+
+_TOTALS_SPOOL_MEMORY_BYTES = 16 * 1024 * 1024
+"""Total rows held in memory before `_TotalRows` moves them to a temporary file."""
+
+_TOTALS_FORMATS = frozenset(("csv", "xlsx"))
+"""The formats whose long output keeps total rows out of its main table."""
+
+
+class _TotalRows:
+    """The total rows a long CSV or XLSX render keeps out of its main table
+    (`materialise.projection.split_totals`): the rows where one of `roles` holds a party of
+    kind `total`. `roles` are the roles that can hold a total
+    (`datasets_api.output_options.movable_totals_roles`), the ones the options document's
+    `long_layout_totals` names, read from the definition before the first chunk, since the
+    layout streams.
+
+    With `keep` set the rows are spooled, one pickled table per chunk, in memory up to
+    `_TOTALS_SPOOL_MEMORY_BYTES` and in a temporary file beyond it, so they wait out the main
+    table without holding a large share of the data in memory. A bare CSV has no place for
+    them and keeps none. `rows` counts the rows set apart either way, and `first` holds the
+    first non-empty table kept, which types the totals file's schema."""
+
+    def __init__(self, *, roles: Sequence[str], keep: bool) -> None:
+        self.roles = tuple(roles)
+        self.rows = 0
+        self.first: Table | None = None
+        # The spool outlives this call: `render_and_store` closes it once the bundle is written.
+        self._spool = (
+            tempfile.SpooledTemporaryFile(max_size=_TOTALS_SPOOL_MEMORY_BYTES)  # noqa: SIM115
+            if keep
+            else None
+        )
+
+    @classmethod
+    def for_render(
+        cls,
+        options: MintOptions,
+        *,
+        identity: object,
+        entity_columns: Sequence[str],
+        parties: Mapping[str, PartyRow],
+        datasets: Collection[str],
+    ) -> _TotalRows | None:
+        """The total rows of a render under `options`, or `None` for a format outside
+        `_TOTALS_FORMATS`, a pivot, or a definition with no role that can hold a total, read
+        over the code index's `parties` and the provenances the definition read, `datasets`."""
+        if options.format not in _TOTALS_FORMATS or options.pivot is not None:
+            return None
+        if not isinstance(identity, Mapping):
+            return None
+        roles = movable_totals_roles(
+            cast("Mapping[str, object]", identity),
+            entity_columns,
+            parties=parties,
+            datasets=datasets,
+        )
+        if not roles:
+            return None
+        return cls(roles=roles, keep=options.bundle or options.format == "xlsx")
+
+    def add(self, table: Table) -> None:
+        if not table.rows:
+            return
+        self.rows += len(table.rows)
+        if self._spool is None:
+            return
+        if self.first is None:
+            self.first = table
+        pickle.dump(table, self._spool, protocol=pickle.HIGHEST_PROTOCOL)
+
+    def tables(self) -> Iterator[Table]:
+        """The kept tables in the order they were added."""
+        if self._spool is None:
+            return
+        self._spool.seek(0)
+        while True:
+            try:
+                yield pickle.load(self._spool)
+            except EOFError:
+                return
+
+    def close(self) -> None:
+        if self._spool is not None:
+            self._spool.close()
+
+
+def _nonempty_chunks(chunks: Iterable[Table]) -> Iterator[Table]:
+    """`chunks` less its empty tables, or its last table when every one is empty, so a
+    writer's first chunk, which types its columns, holds rows whenever any chunk does. Total
+    rows leave a long output's chunks, which can empty one."""
+    last: Table | None = None
+    yielded = False
+    for chunk in chunks:
+        if chunk.rows:
+            yielded = True
+            yield chunk
+        else:
+            last = chunk
+    if not yielded and last is not None:
+        yield last
+
+
+def _frame_period_grain(frame_chunks: Callable[[], Iterator[Table]]) -> str | None:
+    """The period grain of the whole frame `frame_chunks` holds
+    (`materialise.projection.period_grain`), each distinct `time_period` read once
+    (`pc.unique`). A frame held as Parquet reads that column alone of each row group
+    (`ParquetFrameChunks.column_chunks`), an Arrow frame its table, and any other table row by
+    row."""
+
+    def periods() -> Iterator[object]:
+        if isinstance(frame_chunks, ParquetFrameChunks):
+            for column in frame_chunks.column_chunks(TIME_PERIOD_COLUMN):
+                yield from pc.unique(column).to_pylist()
+            return
+        for chunk in frame_chunks():
+            if TIME_PERIOD_COLUMN not in chunk.columns:
+                continue
+            if isinstance(chunk, Frame):
+                yield from pc.unique(chunk.table[TIME_PERIOD_COLUMN]).to_pylist()
+                continue
+            at = chunk.columns.index(TIME_PERIOD_COLUMN)
+            yield from (row[at] for row in chunk.rows)
+
+    return period_grain(periods())
+
 
 @dataclass
 class _LongLayout:
@@ -1413,11 +1695,20 @@ class _LongLayout:
     boundary. The layout is planned from the first table it sees, and every later chunk of the
     same render has the same columns.
 
-    Each chunk's names come from `reads` before it is projected, and a value is asked for once
-    per layout. A graph read that fails or runs out of time leaves the names it would have given
-    empty and stops further reads for the whole render (`_NameReads`), so the render completes
-    with those cells empty. `warnings` then counts the empty name and code cells per column as
-    `enrichment_unavailable`.
+    A party's kind is the one the code index declares (`EnrichmentLookup.party_kind`), read
+    with no graph call, so the split of totals is the same in every chunk and every render of
+    a version, whether or not a graph read succeeds. A party the index does not list has an
+    empty kind cell and stays in the main table. Each chunk's names come from one
+    `reads.fields_of` read before it is projected, the read the reshape enrichment also uses,
+    and a value is asked for once per layout. A graph read that fails or runs out of time
+    leaves the names it would have given empty and stops further reads for the whole render
+    (`_RenderReads`), so the render completes with those cells empty. `warnings` then counts
+    the empty name, kind and code cells per column as `enrichment_unavailable`.
+
+    `grain` is the whole frame's period grain (`materialise.projection.period_grain`), read by
+    `render_and_store` before the first chunk. With `year` every `time_period` cell is an
+    integer, and otherwise every cell stays text. With `totals` set, `apply` returns the rows of
+    parties and residuals and passes the total rows to `totals`.
 
     A frame-layout request (`FRAME_LAYOUT`) gets a layout with `frame` set, whose `apply`
     returns each table unchanged and reads no names, so its file holds the frame's grammar
@@ -1426,10 +1717,13 @@ class _LongLayout:
     entity_columns: Sequence[str]
     axis_codes: Mapping[str, Mapping[str, str | None]]
     unit_naming: UnitNaming
-    reads: _NameReads
+    reads: _RenderReads
+    grain: str | None = None
     frame: bool = False
+    totals: _TotalRows | None = None
     projection: LongProjection | None = None
     names: dict[str, str] = field(default_factory=dict)
+    party_kinds: dict[str, str] = field(default_factory=dict)
     asked: set[str] = field(default_factory=set)
     unavailable: Counter[str] = field(default_factory=Counter)
 
@@ -1442,7 +1736,9 @@ class _LongLayout:
         code_index: CodeIndex | None,
         resolved_stat_var_refs: Sequence[str],
         shape_qualifier: str | None,
-        reads: _NameReads,
+        reads: _RenderReads,
+        grain: str | None,
+        totals: _TotalRows | None,
     ) -> _LongLayout:
         if options.layout == FRAME_LAYOUT:
             return cls(
@@ -1469,6 +1765,8 @@ class _LongLayout:
                 label=unit_label,
             ),
             reads=reads,
+            grain=grain,
+            totals=totals,
         )
 
     def apply(self, table: Table) -> Table:
@@ -1480,11 +1778,16 @@ class _LongLayout:
                 entity_columns=self.entity_columns,
                 axis_codes=self.axis_codes,
                 unit_naming=self.unit_naming,
+                grain=self.grain,
             )
         self._read_names(self.projection.refs_to_name(table))
-        projected = self.projection.apply(table, names=self.names)
+        projected = self.projection.apply(table, names=self.names, party_kinds=self.party_kinds)
         self.unavailable.update(projected.unavailable)
-        return cast(Table, projected.table)
+        if self.totals is None:
+            return cast(Table, projected.table)
+        parties, totals = split_totals(projected.table, roles=self.totals.roles)
+        self.totals.add(cast(Table, totals))
+        return cast(Table, parties)
 
     def _read_names(self, refs: Sequence[str]) -> None:
         new = [ref for ref in refs if ref not in self.asked]
@@ -1495,22 +1798,18 @@ class _LongLayout:
                 self.names[ref] = self.reads.known[ref]
             else:
                 to_read.append(ref)
-        if not to_read or self.reads.failed:
+        if not to_read:
             return
         # StatVar cells carry the frame's `dcid:` spelling. The graph names the bare dcid.
         bare = {ref: ref.removeprefix(_STAT_VAR_REF_PREFIX) for ref in to_read}
-        try:
-            fields = self.reads.lookup(tuple(dict.fromkeys(bare.values())))
-        except GraphReadError:
-            logger.warning(
-                "download name read failed; %d values keep empty name cells",
-                len(to_read),
-                exc_info=True,
-            )
-            return
+        fields = self.reads.fields_of(
+            tuple(dict.fromkeys(bare.values())), fields=("label", PARTY_KIND_FIELD)
+        )
         for ref, node in bare.items():
-            if name := fields.get(node, {}).get("label"):
+            if name := fields[node].get("label"):
                 self.names[ref] = name
+            if kind := fields[node].get(PARTY_KIND_FIELD):
+                self.party_kinds[ref] = kind
 
     def names_complete(self) -> bool:
         """Whether every name read of the render so far answered."""
@@ -1633,7 +1932,7 @@ def _stream_bare_pivot(
     *,
     options: MintOptions,
     entity_columns: Sequence[str],
-    enrichment: EnrichmentLookup,
+    reads: _RenderReads,
     pivot_max_output_cells: int,
     code_index: CodeIndex | None,
     resolved_stat_var_refs: Sequence[str],
@@ -1648,8 +1947,9 @@ def _stream_bare_pivot(
     contributors require a decoded summable axis. This refusal runs before pivot, as in whole-table
     processing. `distinct_dcids` gathers the required refs during the fold.
 
-    Enrichment lookups collect per-ref row counts for whole-table missing-value warnings. Pivot
-    output carries the index and pivoted values.
+    The fold counts rows per enrichment ref, and one `_RenderReads.fields_of` read after it
+    gives the whole-table missing-value warnings. Pivot output carries the index and pivoted
+    values.
 
     `output_profile` describes the frame these chunks carry. Its facts for the requested pair let
     the fold refuse a cap before scanning and name the `varying` columns of a non-unique pair. A
@@ -1816,7 +2116,7 @@ def _stream_bare_pivot(
     if enrichment_entity_columns:
         assert parsed is not None
         all_refs = sorted({ref for counts in enrichment_ref_counts.values() for ref in counts})
-        lookup = enrichment.lookup(tuple(all_refs))
+        lookup = reads.fields_of(all_refs, fields={field for _, field in parsed.enrichments})
         missing_counts: dict[tuple[str, str], int] = {}
         for entity_column, field_name in parsed.enrichments:
             total_missing = enrichment_non_string_counts.get(entity_column, 0)
@@ -1862,13 +2162,14 @@ def _reshape_stream_plain(
     *,
     options: MintOptions,
     entity_columns: Sequence[str],
-    enrichment: EnrichmentLookup,
     pivot_max_output_cells: int,
     code_index: CodeIndex | None,
     resolved_stat_var_refs: Sequence[str],
     provenance_refs: Sequence[str],
     shape_qualifier: str | None,
-    name_reads: _NameReads,
+    name_reads: _RenderReads,
+    grain: str | None,
+    totals: _TotalRows | None,
 ) -> _StreamedRender:
     """Streams row-wise decode, selection, and enrichment by reshaping each chunk and putting it
     in the long layout before passing it to the writer. `_merge_enrichment_warnings` combines
@@ -1880,29 +2181,35 @@ def _reshape_stream_plain(
         resolved_stat_var_refs=resolved_stat_var_refs,
         shape_qualifier=shape_qualifier,
         reads=name_reads,
+        grain=grain,
+        totals=totals,
     )
     collected_warnings: list[MaterialisationWarning] = []
     first_reshaped_chunk: list[Table] = []
     first_warning_order: list[tuple[str, ...]] = []
 
-    def _reshaped_chunks() -> Iterator[Table]:
+    def _projected_chunks() -> Iterator[Table]:
         for raw_chunk in frame_chunks:
             chunk_result = _reshape(
                 raw_chunk,
                 options=options,
                 entity_columns=entity_columns,
-                enrichment=enrichment,
+                reads=name_reads,
                 pivot_max_output_cells=pivot_max_output_cells,
                 code_index=code_index,
                 resolved_stat_var_refs=resolved_stat_var_refs,
                 provenance_refs=provenance_refs,
             )
             collected_warnings.extend(chunk_result.warnings)
-            projected = layout.apply(chunk_result.table)
-            if not first_reshaped_chunk:
-                first_reshaped_chunk.append(projected)
+            if not first_warning_order:
                 first_warning_order.append(chunk_result.warning_order)
-            yield projected
+            yield layout.apply(chunk_result.table)
+
+    def _reshaped_chunks() -> Iterator[Table]:
+        for chunk in _nonempty_chunks(_projected_chunks()):
+            if not first_reshaped_chunk:
+                first_reshaped_chunk.append(chunk)
+            yield chunk
 
     def _finish() -> tuple[Table, tuple[MaterialisationWarning, ...]]:
         assert first_reshaped_chunk, (
@@ -1928,15 +2235,15 @@ def _reshape_stream(
     *,
     options: MintOptions,
     entity_columns: Sequence[str],
-    enrichment: EnrichmentLookup,
     pivot_max_output_cells: int,
     code_index: CodeIndex | None,
     resolved_stat_var_refs: Sequence[str],
     provenance_refs: Sequence[str],
     subject_id: str,
-    subject_label: str | None,
     shape_qualifier: str | None,
-    name_reads: _NameReads,
+    name_reads: _RenderReads,
+    grain: str | None,
+    totals: _TotalRows | None,
     output_profile: OutputProfile | None = None,
 ) -> _StreamedRender:
     """Reslices chunks, then dispatches the frame through one of four paths:
@@ -1959,13 +2266,14 @@ def _reshape_stream(
             rest_of_frame_chunks,
             options=options,
             entity_columns=entity_columns,
-            enrichment=enrichment,
             pivot_max_output_cells=pivot_max_output_cells,
             code_index=code_index,
             resolved_stat_var_refs=resolved_stat_var_refs,
             provenance_refs=provenance_refs,
             shape_qualifier=shape_qualifier,
             name_reads=name_reads,
+            grain=grain,
+            totals=totals,
         )
 
     will_stream_groupby_collapse = False
@@ -1993,13 +2301,12 @@ def _reshape_stream(
             first_chunk,
             options=options,
             entity_columns=entity_columns,
-            enrichment=enrichment,
+            reads=name_reads,
             pivot_max_output_cells=pivot_max_output_cells,
             code_index=code_index,
             resolved_stat_var_refs=resolved_stat_var_refs,
             provenance_refs=provenance_refs,
             subject_id=subject_id,
-            subject_label=subject_label,
             frame_chunks=rest_of_frame_chunks,
         )
         if options.pivot is not None:
@@ -2016,6 +2323,8 @@ def _reshape_stream(
             resolved_stat_var_refs=resolved_stat_var_refs,
             shape_qualifier=shape_qualifier,
             reads=name_reads,
+            grain=grain,
+            totals=totals,
         )
         collapsed = layout.apply(result.table)
         collapsed_warnings = layout.warnings(result.warnings)
@@ -2033,7 +2342,7 @@ def _reshape_stream(
             rest_of_frame_chunks,
             options=options,
             entity_columns=entity_columns,
-            enrichment=enrichment,
+            reads=name_reads,
             pivot_max_output_cells=pivot_max_output_cells,
             code_index=code_index,
             resolved_stat_var_refs=resolved_stat_var_refs,
@@ -2059,6 +2368,8 @@ def _reshape_stream(
         resolved_stat_var_refs=resolved_stat_var_refs,
         shape_qualifier=shape_qualifier,
         reads=name_reads,
+        grain=grain,
+        totals=totals,
     )
     collected_warnings: list[MaterialisationWarning] = []
     first_reshaped_chunk: list[Table] = []
@@ -2066,7 +2377,7 @@ def _reshape_stream(
     distinct_dcids: set[str] = set()
     stat_var_pos: list[int] = []
 
-    def _groupby_passthrough_chunks() -> Iterator[Table]:
+    def _projected_chunks() -> Iterator[Table]:
         for raw_chunk in rest_of_frame_chunks:
             if options.groupby is not None and code_index is not None:
                 if not stat_var_pos and _STAT_VAR_COLUMN in raw_chunk.columns:
@@ -2081,18 +2392,22 @@ def _reshape_stream(
                 raw_chunk,
                 options=passthrough_options,
                 entity_columns=entity_columns,
-                enrichment=enrichment,
+                reads=name_reads,
                 pivot_max_output_cells=pivot_max_output_cells,
                 code_index=code_index,
                 resolved_stat_var_refs=resolved_stat_var_refs,
                 provenance_refs=provenance_refs,
             )
             collected_warnings.extend(chunk_result.warnings)
-            projected = layout.apply(chunk_result.table)
-            if not first_reshaped_chunk:
-                first_reshaped_chunk.append(projected)
+            if not first_warning_order:
                 first_warning_order.append(chunk_result.warning_order)
-            yield projected
+            yield layout.apply(chunk_result.table)
+
+    def _groupby_passthrough_chunks() -> Iterator[Table]:
+        for chunk in _nonempty_chunks(_projected_chunks()):
+            if not first_reshaped_chunk:
+                first_reshaped_chunk.append(chunk)
+            yield chunk
 
     def _finish() -> tuple[Table, tuple[MaterialisationWarning, ...]]:
         if (
@@ -2143,7 +2458,7 @@ class RenderedDefinition:
 
 def render_and_store(
     *,
-    frame_chunks: Iterable[Table],
+    frame_chunks: Callable[[], Iterator[Table]],
     options: MintOptions,
     spec: dict[str, object],
     provenance_refs: list[str],
@@ -2162,8 +2477,10 @@ def render_and_store(
     deadline: float | None = None,
     base_frame_sha256: str | None = None,
 ) -> RenderedDefinition:
-    """Renders one definition to a stored artifact and returns its reshape warnings. It consumes
-    `frame_chunks` once in order.
+    """Renders one definition to a stored artifact and returns its reshape warnings.
+    `frame_chunks` returns a fresh pass over the materialised frame's chunks in order. Long
+    output reads the frame's period grain first (`_frame_period_grain`), which types every
+    `time_period` cell of the file alike, and every render reads one pass to write.
 
     A bundle is built from the version's facts: `citations` (the version's
     `CitationModel.sources_by_ref()`, with empty documentation and licence fields filled by
@@ -2171,7 +2488,7 @@ def render_and_store(
     is the version's first-mint instant. Its data file is `data/<sources slug>.<format>`, its
     columns are documented and its codes listed from the rows the writer streams, and the codes
     are named by one batched graph read through `enrichment`. Every graph name read of the
-    render shares `deadline`, and a failed read stops the rest (`_NameReads`). A fresh render of one
+    render shares `deadline`, and a failed read stops the rest (`_RenderReads`). A fresh render of one
     version therefore matches the artifact linked for it while the sources' documentation and
     the graph's code names are unchanged. `site` supplies the origin of every link.
 
@@ -2190,7 +2507,7 @@ def render_and_store(
     from the store, whose version may carry a token of an earlier frame grammar. Without it
     `content_version` is the token minted from `frame_chunks`, which equals the collapse's
     exactly when the frames are equal.
-    A collapse frame's `stat_vars_summed` warning labels the family with
+    The family ref a summed collapse writes in `stat_var` is labelled with
     `code_index.labels.family_label` over `spec`'s identity.
     """
     check_options_supported(options, code_index=code_index)
@@ -2205,7 +2522,7 @@ def render_and_store(
         if code_index is not None and isinstance(identity, Mapping)
         else None
     )
-    name_reads = _NameReads.for_render(
+    name_reads = _RenderReads.for_render(
         enrichment=enrichment,
         citations=citations,
         family=(
@@ -2215,25 +2532,34 @@ def render_and_store(
         ),
         deadline=deadline,
     )
+    totals = _TotalRows.for_render(
+        options,
+        identity=identity,
+        entity_columns=entity_columns,
+        parties=enrichment.parties,
+        datasets=provenance_refs,
+    )
     with phase("render"):
         rendering = Rendering()
+        long_output = options.pivot is None and options.layout is None
+        grain = _frame_period_grain(frame_chunks) if long_output else None
         streamed = _reshape_stream(
-            frame_chunks,
+            frame_chunks(),
             options=options,
             entity_columns=entity_columns,
-            enrichment=enrichment,
             pivot_max_output_cells=pivot_max_output_cells,
             code_index=code_index,
             resolved_stat_var_refs=resolved_stat_var_refs,
             provenance_refs=provenance_refs,
             subject_id=subject_id,
-            subject_label=subject_label,
             shape_qualifier=(
                 shape_measurement_qualifier(cast("Mapping[str, object]", identity))
                 if isinstance(identity, Mapping)
                 else None
             ),
             name_reads=name_reads,
+            grain=grain,
+            totals=totals,
             output_profile=output_profile,
         )
         chunks_for_writer = streamed.chunks_for_writer
@@ -2268,16 +2594,38 @@ def render_and_store(
                             mode="w",
                             force_zip64=True,
                         ) as entry:
-                            written = _FORMAT_WRITERS[options.format](
-                                scan.observe(chunks_for_writer), rendering=rendering, sink=entry
+                            written = _write_data(
+                                scan.observe(chunks_for_writer),
+                                options=options,
+                                rendering=rendering,
+                                sink=entry,
+                                totals=(
+                                    (lambda: scan.observe(totals.tables()))
+                                    if totals is not None
+                                    else None
+                                ),
                             )
                         # `streamed.finish()` runs while `sink`/`zf` are
                         # still open, so a refusal it raises (the deferred
                         # `no_summable_axis` check) still aborts this write
                         # -- see `_StreamedRender`'s own docstring.
                         table, warnings = streamed.finish()
+                        totals_file = (
+                            _write_totals_entry(
+                                zf,
+                                totals,
+                                data_path=data_path,
+                                rendering=rendering,
+                                scan=_table_scan(
+                                    entity_columns, options=options, code_index=code_index
+                                ),
+                            )
+                            if totals is not None and options.format == "csv"
+                            else None
+                        )
+                        scans = (scan,) if totals_file is None else (scan, totals_file.scan)
                         bundle_codes_read = _codes(
-                            (scan,),
+                            scans,
                             citations=citations,
                             family=_family(
                                 collapse, subject_id=subject_id, subject_label=subject_label
@@ -2289,7 +2637,7 @@ def render_and_store(
                             bundle_codes_read.label_read_complete and streamed.names_complete()
                         )
                         codes = bundle_codes_read.entries
-                        member = _member_provenance(
+                        members = _members(
                             spec_id=subject_id,
                             written=written,
                             frame=table,
@@ -2299,16 +2647,18 @@ def render_and_store(
                             scan=scan,
                             options=options,
                             code_index=code_index,
+                            totals=totals,
+                            totals_file=totals_file,
                         )
                         files = assemble_bundle(
                             spec=spec,
-                            members=(member,),
+                            members=members,
                             reproducing_call=reproducing_call,
                             context=_bundle_context(
                                 spec=spec,
                                 content_version=effective_content_version,
-                                members=(member,),
-                                scans=(scan,),
+                                members=members,
+                                scans=scans,
                                 codes=codes,
                                 options=options,
                                 prepared_at=prepared_at,
@@ -2323,8 +2673,12 @@ def render_and_store(
                             )
                     media_type = "application/zip"
                 else:
-                    written = _FORMAT_WRITERS[options.format](
-                        chunks_for_writer, rendering=rendering, sink=sink
+                    written = _write_data(
+                        chunks_for_writer,
+                        options=options,
+                        rendering=rendering,
+                        sink=sink,
+                        totals=totals.tables if totals is not None else None,
                     )
                     table, warnings = streamed.finish()
                     media_type = written.media_type
@@ -2337,6 +2691,9 @@ def render_and_store(
             exc.subject_id = subject_id
             exc.content_version = effective_content_version
             raise
+        finally:
+            if totals is not None:
+                totals.close()
 
     artifact = _commit_stored(
         stored,
@@ -2350,11 +2707,12 @@ def render_and_store(
     )
 
 
-BUNDLE_LAYOUT_VERSION = 2
+BUNDLE_LAYOUT_VERSION = 3
 """The bundle layout `rendition_token` hashes. Bump it with any change to a bundle's files or
 their contents for unchanged data and settings (a file added, renamed or reworded, a column or
 code described differently), so every version renders and links a new bundle on its next
-request while each old bundle stays listed under its own rendering key."""
+request while each old bundle stays listed under its own rendering key. Version 3 writes
+integer years and keeps total rows out of a CSV or XLSX data table (`_TotalRows`)."""
 
 RENDITION_KEY = "rendition"
 """The bundle rendering's rendition token (`rendition_token`). A bare rendering has none."""
@@ -2371,11 +2729,14 @@ METADATA_INCOMPLETE = "incomplete"
 """The `METADATA_KEY` value of an artifact rendered without its sources' documentation or
 without graph names, because the read failed."""
 
-DATA_LAYOUT_VERSION = 2
+DATA_LAYOUT_VERSION = 3
 """The column layout of a bare data file. Bump it with any change to a bare file's columns or
 cells for unchanged data and options, so a request renders a new file under a new rendering key
 and cannot match one written in the old layout. Version 2 is the long layout of
-`materialise.projection`. A rendering without `LAYOUT_KEY` predates it."""
+`materialise.projection`. Version 3 adds integer years and keeps total rows out of the main
+table (`_TotalRows`): a bundle's CSV writes them to a second file, a bare CSV drops them, and an
+XLSX moves them to a second sheet. A rendering without `LAYOUT_KEY` predates
+version 2."""
 
 FRAME_LAYOUT = "frame"
 """The `options.layout` value that asks for a bare parquet file in the frame layout: the
@@ -2515,15 +2876,8 @@ def stored_frame_sha256(
     Otherwise a frame1 document is the frame's canonical bytes, so the digest of one at
     `location` or among `locations`, the version's links the caller holds, is that hash.
     A canonical frame with neither is hashed."""
-    if recorded is not None:
-        return recorded
-    frame1 = next(
-        (linked for linked in (location, *locations) if linked.media_type == FRAME1_MEDIA_TYPE),
-        None,
-    )
-    if frame1 is not None:
-        return frame1.artifact_digest.removeprefix("sha256:")
-    return frame_sha256(cast(Frame, table))
+    held = recorded_frame_sha256(recorded, (location, *locations))
+    return held if held is not None else frame_sha256(cast(Frame, table))
 
 
 def servable_frame_location(

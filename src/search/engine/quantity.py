@@ -11,7 +11,13 @@ other denominator is a StatVar, and its own arcs say what it counts: a populatio
 property of `area` is an area, and anything else (a GNI amount) is other. `denominator_kinds`
 reads those arcs for every StatVar denominator in one batch; the schema terms need no read.
 
-`fulfils` says whether a shape serves a requirement, through `honours`.
+`serves_every_form` says whether a shape honours every form a requirement names, through
+`honours`.
+
+A question can also name the denominator itself ("debt to GDP"). The quantity read
+(`quantity_read`) picks it from the StatVar denominators the menu's shapes divide by
+(`NamedDenominator`), and
+`check_denominator` holds the elected shape to it.
 """
 
 from __future__ import annotations
@@ -21,14 +27,16 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
-from search.engine.retrieval.facts import _dcids_for
+from search.engine.function_words import FUNCTION_WORDS
+from search.engine.retrieval.facts import _dcids_for, read_name
 from search.engine.shape import ShapeDraft, measures_count
+from search.models import GraphRef, QuantityForm
 
 if TYPE_CHECKING:
     from search.engine.clients.graph import EngineGraphClient
 
 type NormalisationClass = Literal["level", "other", "series", "per_person", "per_area", "unknown"]
-type NamedNormalisation = Literal["per_person", "per_head_base", "per_area", "rate", "share"]
+type NamedNormalisation = QuantityForm
 type DenominatorKind = Literal["person", "area", "other", "unknown"]
 
 # measurementDenominator dcids of a per-person reading, and of a per-area one.
@@ -60,10 +68,30 @@ def denominator_kind_from_arcs(arcs: dict | None) -> DenominatorKind:
     return "other"
 
 
-def denominator_kinds(
+def statvar_denominators(shapes: Iterable[ShapeDraft]) -> list[str]:
+    """The distinct StatVar denominators `shapes` divide by, in shape order. Schema-term
+    denominators (`schema_denominator_kind`) and unresolved arcs are left out."""
+    resolved = (shape.meas_denom_dcid for shape in shapes if not shape.meas_denom_unresolved)
+    return [
+        denominator
+        for denominator in dict.fromkeys(resolved)
+        if denominator is not None and schema_denominator_kind(denominator) is None
+    ]
+
+
+@dataclass(frozen=True, slots=True)
+class DenominatorRead:
+    """What the graph says of one StatVar denominator: its kind and its name, `None` when
+    it gives none."""
+
+    kind: DenominatorKind
+    name: str | None
+
+
+def read_denominators(
     denominators: Iterable[str], *, graph: EngineGraphClient
-) -> dict[str, DenominatorKind]:
-    """Return the kind of each StatVar denominator, read in one `node_arcs_batch`.
+) -> dict[str, DenominatorRead]:
+    """Return the kind and name of each StatVar denominator, read in one `node_arcs_batch`.
 
     Schema-term denominators (`schema_denominator_kind`) are left out of the map and the
     read, and no read happens when no StatVar denominator remains.
@@ -76,10 +104,14 @@ def denominator_kinds(
     if not unique:
         return {}
     arcs_by_dcid = graph.node_arcs_batch(unique)
-    return {
-        denominator: denominator_kind_from_arcs(arcs_by_dcid.get(denominator))
-        for denominator in unique
-    }
+    reads: dict[str, DenominatorRead] = {}
+    for denominator in unique:
+        arcs = arcs_by_dcid.get(denominator)
+        reads[denominator] = DenominatorRead(
+            kind=denominator_kind_from_arcs(arcs),
+            name=read_name(arcs) if arcs is not None else None,
+        )
+    return reads
 
 
 # Measured properties whose plain values are amounts. A shape on one with no denominator
@@ -229,6 +261,31 @@ def query_normalisation(variable: str, *, strong: bool) -> frozenset[NamedNormal
     return frozenset(named)
 
 
+# The wording `query_normalisation` reads as a form through its patterns. Per-area wording
+# is read token by token (`_names_per_area_framing`).
+_FORM_WORDING_RES = (
+    _PER_CAPITA_FRAMING_RE,
+    PER_HEAD_RATE_BASE_RE,
+    _RATE_TERMS_RE,
+    _SHARE_TERMS_RE,
+)
+
+
+def names_only_form(text: str) -> bool:
+    """Whether `text` holds no word beyond the wording `query_normalisation` reads as a
+    form and function words (`FUNCTION_WORDS`): "ratio", "a share of", "per capita" and
+    "density" name a form and nothing it divides by, while "share of GDP" names GDP.
+    Bare "capita" is per-head wording (`_PER_CAPITA_FRAMING_RE`); bare "people" and
+    "population" are not, since only "per" before them makes a per-head base."""
+    lower = text.lower()
+    for pattern in _FORM_WORDING_RES:
+        lower = pattern.sub(" ", lower)
+    return all(
+        token in FUNCTION_WORDS or _names_per_area_framing(token, strong=False)
+        for token in _FRAMING_TOKEN_RE.findall(lower)
+    )
+
+
 _CLASS_OF_DENOMINATOR: Mapping[DenominatorKind, NormalisationClass] = {
     "person": "per_person",
     "area": "per_area",
@@ -287,10 +344,6 @@ def honours(shape: ShapeDraft, cls: NormalisationClass, named: NamedNormalisatio
     return named in ("per_person", "per_head_base", "rate")
 
 
-# The named forms that divide by a count of persons.
-PER_PERSON_FORMS: frozenset[NamedNormalisation] = frozenset({"per_person", "per_head_base"})
-
-
 @dataclass(frozen=True, slots=True)
 class QuantityRequirement:
     """The normalisation one leg names, read from its variable and each sidecar qualifier
@@ -300,10 +353,6 @@ class QuantityRequirement:
 
     named: frozenset[NamedNormalisation] = frozenset()
     framing: frozenset[NamedNormalisation] = frozenset()
-
-    def narrowed(self, forms: frozenset[NamedNormalisation]) -> QuantityRequirement:
-        """The requirement limited to `forms`."""
-        return QuantityRequirement(self.named & forms, self.framing & forms)
 
 
 # A leg that names no normalisation.
@@ -319,14 +368,79 @@ def quantity_requirement(phrases: Iterable[str]) -> QuantityRequirement:
     )
 
 
-def fulfils(
+def with_stated_form(
+    requirement: QuantityRequirement, stated: NamedNormalisation | None
+) -> QuantityRequirement:
+    """`requirement` with the form the quantity read stated (`stated`) joined, only when no
+    wording pattern named a form: a pattern's reading outranks the model's."""
+    if stated is None or requirement.named:
+        return requirement
+    return QuantityRequirement(
+        named=frozenset({stated}), framing=requirement.framing | frozenset({stated})
+    )
+
+
+def serves_every_form(
     requirement: QuantityRequirement,
     shape: ShapeDraft,
     kinds: Mapping[str, DenominatorKind] | None = None,
 ) -> bool:
-    """Whether `shape` serves `requirement`: nothing is named, or the shape's class
-    (`normalisation_class` under `kinds`) honours a named form (`honours`)."""
+    """Whether `shape`'s class (`normalisation_class` under `kinds`) honours every form
+    `requirement` names (`honours`), as the materialise gate holds the elected shape:
+    "incidence per capita" names a rate and a per-person form, and a rate that is not per
+    person serves only one of them."""
     if not requirement.named:
         return True
     cls = normalisation_class(shape, kinds=kinds)
-    return any(honours(shape, cls, named) for named in requirement.named)
+    return all(honours(shape, cls, named) for named in requirement.named)
+
+
+@dataclass(frozen=True, slots=True)
+class NamedDenominator:
+    """The denominator a question names, as the quantity read chose it from the StatVar
+    denominators the menu's shapes divide by: `ref`, or `None` when the read matched the
+    base to none of them ("none of these"), and `base_words`, the question's own words
+    for the base, which the read quoted and the phrase grounds."""
+
+    ref: GraphRef | None
+    base_words: str
+
+
+type DenominatorCheck = Literal["matches", "unverified", "refused"]
+
+
+def check_denominator(shape: ShapeDraft, named: NamedDenominator) -> DenominatorCheck:
+    """Hold `shape` to the denominator the question names.
+
+    A shape with a resolved denominator arc `matches` when the arc is the named
+    denominator and is `refused` when the read named a different listed one. Under "none
+    of these" (`named.ref` is `None`) it is `unverified`: the read matches the question's
+    words to terse graph names, and an absent match proves nothing about the arc ("total
+    government spending" against "Amount Of Economic Activity: Expenditure Activity,
+    Government" flips on one capital letter). A shape whose arc does not resolve, or that
+    has no arc and classes as `other`, as UN and WHO ratio series do, states its base only
+    in its name, so it passes `unverified`. Any other shape with no arc, such as a level,
+    divides by nothing and is `refused`: the question's grounded words name a base.
+    """
+    if shape.meas_denom_unresolved:
+        return "unverified"
+    if shape.meas_denom_dcid is not None:
+        if named.ref is None:
+            return "unverified"
+        return "matches" if named.ref.ref == shape.meas_denom_dcid else "refused"
+    return "unverified" if normalisation_class(shape) == "other" else "refused"
+
+
+def serves_quantity(
+    requirement: QuantityRequirement,
+    named: NamedDenominator | None,
+    shape: ShapeDraft,
+    kinds: Mapping[str, DenominatorKind] | None = None,
+) -> bool:
+    """Whether `shape` serves a leg's whole quantity: a class that honours every form
+    `requirement` names (`serves_every_form`) and, when the question names a denominator
+    (`named`), one `check_denominator` does not refuse. The materialise gate holds the
+    elected shape to it, and the alternate guard holds every alternate to it."""
+    if not serves_every_form(requirement, shape, kinds):
+        return False
+    return named is None or check_denominator(shape, named) != "refused"

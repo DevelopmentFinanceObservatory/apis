@@ -42,7 +42,7 @@ from assembler.errors import (
     WriteRefused,
 )
 from assembler.pipeline import get_component, write_component
-from assembler.ports import FrameStore, ReleaseRegistry, RevisionStore
+from assembler.ports import FrameStore, ReleaseRegistry, RevisionStore, VocabularySource
 from assembler.write_token import CreateRequestInvalid
 from dataset_store import LiveDatasetStore
 from dataset_store import close_shared_pool as close_dataset_pool
@@ -79,6 +79,7 @@ from presentation_api.models import ComponentReadResponse, CreateReplyResponse, 
 from presentation_api.path_params import PathParamInvalid, require_component_id
 from presentation_api.refusals import binding_invalid_spec, frame_unavailable_spec
 from presentation_api.reply import serialize_create_reply, serialize_write_reply
+from presentation_api.vocabulary import LiveVocabularySource
 from presentation_store import (
     GeneratedIdCollision,
     LivePresentationStore,
@@ -302,6 +303,8 @@ class ComponentsDeps:
     # What the render routes accept a target frame from. `None` accepts no frame by that rule.
     snapshot_reader: SnapshotReader | None = None
     recipe_reader: RecipeReader | None = None
+    # The words cards' descriptions are composed from, set in the lifespan.
+    vocabulary_source: VocabularySource | None = None
 
 
 def build_components_door(
@@ -311,6 +314,7 @@ def build_components_door(
     release_registry: ReleaseRegistry | None = None,
     snapshot_reader: SnapshotReader | None = None,
     recipe_reader: RecipeReader | None = None,
+    vocabulary_source: VocabularySource | None = None,
     live_refresh: LiveRefreshPrincipal | None = None,
     pool_size: int | None = None,
     budget: ShutdownBudget | None = None,
@@ -321,8 +325,9 @@ def build_components_door(
     `snapshot_reader` and `recipe_reader` are what the render routes accept a target frame
     from. The lifespan builds both with the live frame store when no `frame_store` is injected.
     With an injected `frame_store` they stay as given, and a missing one accepts no frame by its
-    rule. `live_refresh` is the one caller the render routes admit, and `None` refuses every
-    caller.
+    rule. `vocabulary_source` gives the words cards' descriptions are composed from, and the
+    lifespan builds a `LiveVocabularySource` when none is injected. `live_refresh` is the one
+    caller the render routes admit, and `None` refuses every caller.
     """
     _budget = budget if budget is not None else ShutdownBudget()
     effective_pool_size = (
@@ -338,6 +343,7 @@ def build_components_door(
         site=cast(PublicSiteSettings, None),
         snapshot_reader=snapshot_reader,
         recipe_reader=recipe_reader,
+        vocabulary_source=vocabulary_source,
     )
 
     @asynccontextmanager
@@ -358,6 +364,8 @@ def build_components_door(
             deps.site = PublicSiteSettings.from_env()
             if release_registry is None:
                 deps.release_registry = BakedReleaseRegistry()
+            if vocabulary_source is None:
+                deps.vocabulary_source = LiveVocabularySource()
             if revision_store is None:
                 connections = presentation_shared_pool()
                 opened_presentation_pool = True
@@ -413,6 +421,7 @@ def build_components_door(
                 frame_store=deps.frame_store,
                 revision_store=deps.revision_store,
                 release_registry=deps.release_registry,
+                vocabulary_source=deps.vocabulary_source,
             )
             return JSONResponse(serialize_create_reply(reply), status_code=201)
 
@@ -438,6 +447,7 @@ def build_components_door(
                 frame_store=deps.frame_store,
                 revision_store=deps.revision_store,
                 release_registry=deps.release_registry,
+                vocabulary_source=deps.vocabulary_source,
             )
             return JSONResponse(serialize_write_reply(reply), status_code=200)
 

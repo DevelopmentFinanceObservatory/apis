@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -19,6 +19,7 @@ from search.engine.retrieval.bound_values import (
     _fully_bound_members_facts,
     bound_values_from_bindings,
     entity_role_keys,
+    held_family_exact,
     shape_member_facts,
     shape_query,
 )
@@ -43,6 +44,7 @@ from search.engine.retrieval.read_plan import (
     serves_nothing,
     window_gap,
 )
+from search.engine.shape import is_role_bearing
 from search.models import SlotOption, SlotOptions, TimeWindow
 from statvar_members import antichain_minimal_ids
 
@@ -149,6 +151,27 @@ def _read_assertions(facts: MemberFacts, stated_values: Mapping[str, list[str]])
     )
 
 
+def family_totals(
+    member_facts: Mapping[str, MemberFacts], stated_values: Mapping[str, list[str]]
+) -> frozenset[str]:
+    """The members of `member_facts` that are the family's total under the bindings'
+    `stated_values`, by the rule `_elect_family` elects by."""
+    return _totals(
+        {sv: _read_assertions(facts, stated_values) for sv, facts in member_facts.items()}
+    )
+
+
+def _totals(read: Mapping[str, _Assertions]) -> frozenset[str]:
+    if not read:
+        return frozenset()
+    shared = set.intersection(*(set(member.open_items) for member in read.values()))
+    return frozenset(
+        sv
+        for sv, member in read.items()
+        if member.can_be_total and shared.issuperset(member.open_items)
+    )
+
+
 def _elect_family(
     svs: Sequence[str],
     member_facts: Mapping[str, MemberFacts],
@@ -182,9 +205,14 @@ def _elect_family(
     alternate or re-elected shape binds every constraint of its representative, so the
     representative is a total and the narrowing shows in the Spec's bound slots.
 
-    Kept members sort totals first, then by the recall position of the first member
-    whose unbound assertions include their own, then by how many unbound properties
-    they assert.
+    Kept members sort totals first. With no total, the member narrowing the family least
+    stands in: members with known constraints before unknown ones, then fewer asserted
+    unbound properties first, so a recall score never picks a narrower slice over a
+    broader member. Recall breaks the remaining ties, by the position of the first member
+    whose unbound assertions include the member's own. No stand-in crosses a slot that
+    partitions the family, one every member states with two or more values among them:
+    the part binds such a slot before it resolves when every member recall scored states
+    one value on it (`bind_partition_values`).
     """
     read = {sv: _read_assertions(member_facts[sv], stated_values) for sv in svs}
     # The positions of the members asserting each unbound (property, value) pair.
@@ -193,15 +221,10 @@ def _elect_family(
         for item in read[sv].open_items:
             positions.setdefault(item, set()).add(i)
 
-    totals = frozenset(
-        sv
-        for sv in svs
-        if read[sv].can_be_total
-        and all(len(positions[item]) == len(svs) for item in read[sv].open_items)
-    )
+    totals = _totals(read)
     index_of = {sv: i for i, sv in enumerate(svs)}
 
-    def rank(sv: str) -> tuple[bool, int, int]:
+    def rank(sv: str) -> tuple[bool, bool, int, int]:
         member = read[sv]
         if member.properties is None or len(member.open_items) < member.open_count:
             first = index_of[sv]
@@ -209,7 +232,7 @@ def _elect_family(
             first = min(set.intersection(*(positions[item] for item in member.open_items)))
         else:
             first = 0
-        return sv not in totals, first, member.open_count
+        return sv not in totals, member.properties is None, member.open_count, first
 
     keys = {sv: member.properties for sv, member in read.items() if member.properties is not None}
     kept = antichain_minimal_ids(keys, svs, readings=absent_readings(get_index()))
@@ -250,6 +273,61 @@ def _standard_probe_key(
     return (tuple(members), probe_entities, date_request is not None)
 
 
+class _Answering(NamedTuple):
+    """The members a resolve over admitted members probes (`_select_probe_members`),
+    whether a set binding collects several results, the family it elects among, and the
+    kept members whose scopes its facet reads union."""
+
+    probe_members: list[str]
+    multi_collect: bool
+    family: _Family
+    answering: list[str]
+
+
+def _answering(admitted: _AdmittedStandardMembers, bindings: list[SlotBindingDraft]) -> _Answering:
+    """The members `standard_resolve` reads over `admitted` under `bindings`. The family is
+    the members the datasets mint keeps (`_elect_family`): the admitted family, or for a set
+    binding the kept members matching a set value. The answering members are the kept ones
+    the probe can confirm, else every probe member."""
+    member_facts = admitted.member_facts
+    probe_members, multi_collect = _select_probe_members(
+        list(member_facts), bindings, member_facts, admitted.bound_values
+    )
+    family = (
+        _elect_family(probe_members, member_facts, _collapse_bindings(bindings))
+        if multi_collect
+        else admitted.family
+    )
+    probed = set(probe_members)
+    answering = [sv for sv in family.order if sv in probed] or probe_members
+    return _Answering(probe_members, multi_collect, family, answering)
+
+
+def default_scope_members(
+    shape: ShapeDraft, bindings: list[SlotBindingDraft], role_keys: Collection[str]
+) -> list[str]:
+    """The StatVars `standard_resolve` reads at their own default place scope for `shape`
+    under `bindings` with its places bound under `role_keys`: the family a result can name,
+    as admitted (`_admit_standard_members`) and as elected for a set binding, then the
+    members whose scopes its facet reads union (`_answering`), then the representative a
+    result names when no member confirms. A default-scope presence read over these covers
+    every scope the resolve reads. Empty when the resolve refuses before it reads."""
+    admitted = _admit_standard_members(shape, bindings, role_keys)
+    if not isinstance(admitted, _AdmittedStandardMembers):
+        return []
+    answer = _answering(admitted, bindings)
+    return list(
+        dict.fromkeys(
+            [
+                *admitted.family.order,
+                *answer.family.order,
+                *answer.answering,
+                admitted.representative_sv,
+            ]
+        )
+    )
+
+
 @dataclass(frozen=True)
 class _AdmittedStandardMembers:
     """The bound-value-filtered member population a standard-path resolve
@@ -276,8 +354,9 @@ def _admit_standard_members(
     values pass, and mismatched asserted values are filtered. Bound values that
     together exclude every member return ``BoundValuesUnrealisable``, naming each
     member's conflicting bound properties, so the caller can unbind a minimal set
-    and resolve again. ``exact`` marks a
-    complete index/recall population; capped recall is a floor. Members keep
+    and resolve again. ``exact`` marks a complete population: the index's family, an
+    exact member set, or a family the catalogue's tables hold whole (`held_family_exact`);
+    capped recall and a held family the graph may extend are floors. Members keep
     recall order, then index order for members recall did not return. The
     representative, which a result names when no member confirms, is the first
     member in election order among those asserting every bound property
@@ -324,7 +403,7 @@ def _admit_standard_members(
             )
         )
     member_facts = filtered
-    exact = index_sourced or shape.sv_arc_facts_complete
+    exact = index_sourced or shape.sv_arc_facts_complete or held_family_exact(shape)
 
     fully_bound = _fully_bound_members_facts(list(member_facts), member_facts, bound_values)
     family = _elect_family(fully_bound, member_facts, _collapse_bindings(bindings))
@@ -341,6 +420,95 @@ def _admit_standard_members(
         family=family,
         representative_sv=representative_sv,
     )
+
+
+def _recalled_partition_values(
+    shape: ShapeDraft, bindings: Sequence[SlotBindingDraft], admitted: _AdmittedStandardMembers
+) -> dict[str, str]:
+    """Each what or how slot property of `shape` that partitions the admitted family, in
+    slot-key order, with the one value recall evidences on it. A slot partitions the family
+    when `bindings` leave it open and every member states a value on it, with two or more
+    values among them; a member that states no value, or whose constraints are unknown,
+    leaves it no partition. Recall evidences a value when every member recall scored
+    (`ShapeDraft.scored_members`) that the family admits states that value; a slot whose
+    scored members state two or more values, or that no scored member reaches, is left
+    out."""
+    closed = admitted.bound_values.keys() | {
+        b.property_dcid for b in bindings if b.evidence == "requested_all"
+    }
+    constraints = {
+        sv: admitted.member_facts[sv].read_constraints() for sv in admitted.family.members
+    }
+    recalled = [constraints[sv] for sv in constraints if sv in shape.scored_members]
+    values: dict[str, str] = {}
+    for slot in shape.slot_keys:
+        prop = slot.property_dcid
+        if prop is None or slot.axis not in ("what", "how") or prop in closed:
+            continue
+        if not all(prop in member for member in constraints.values()):
+            continue
+        if len({member[prop] for member in constraints.values()}) < 2:
+            continue
+        evidenced = {member[prop] for member in recalled}
+        if len(evidenced) == 1:
+            values[prop] = evidenced.pop()
+    return values
+
+
+def bind_partition_values(
+    shape: ShapeDraft, bindings: Sequence[SlotBindingDraft], role_keys: Collection[str]
+) -> tuple[list[SlotBindingDraft], list[SlotBindingDraft]]:
+    """Bind each open slot that partitions a standard shape's family to the value recall
+    evidences on it.
+
+    A stand-in (`_elect_family`) may narrow the measure asked, but may not cross a slot
+    that partitions the family: one the bindings leave open on which every admitted
+    member states a value, with two or more values among them. Such a family has no
+    total, and any stand-in answers with one of the slot's values, changing the measure.
+    The nominal GDP family's members all state `activitySource` (gross domestic
+    production, gross or net value added, net domestic production), and the least narrow
+    of them is a gross value added series. So the part binds such a slot from recall when
+    the evidence is unanimous: every member recall scored (`ShapeDraft.scored_members`)
+    that the family admits states the same value on it. For "GDP" the one scored member is
+    nominal GDP; the gross value added members are Topic expansions. When the scored
+    members state two or more values (a female and a male member both recalled for
+    under-five mortality), the evidence picks none, and the slot stays open. Partition
+    slots bind one at a time, in slot-key order, until no open slot has unanimous
+    evidence. A slot `bindings` bind, by the model's `mentioned` value among others, or
+    leave open as `requested_all` is not open. The family is the one
+    `_admit_standard_members` admits under `bindings` and `role_keys`, for a shape whose
+    family the graph walk decides and the catalogue holds (`ShapeDraft.held_family`), so
+    its members are the family read whole. A recall sample is left alone, since the
+    family's total may be a member recall did not return. So are a family the index
+    decides, whose declarations read a row's missing property as its aggregate and bind
+    its defaults, and a role-bearing shape, which `_elect_family` never reads.
+
+    Returns the bindings with each such slot bound as a `sole_option` value, and the
+    bindings added, in the order they bound."""
+    from search.engine.bind import SlotBindingDraft
+
+    bound = list(bindings)
+    added: list[SlotBindingDraft] = []
+    if shape.held_family is None or is_role_bearing(shape):
+        return bound, added
+    axis_of = {slot.property_dcid: slot.axis for slot in shape.slot_keys}
+    while True:
+        admitted = _admit_standard_members(shape, bound, role_keys)
+        if not isinstance(admitted, _AdmittedStandardMembers):
+            return bound, added
+        values = _recalled_partition_values(shape, bound, admitted)
+        if not values:
+            return bound, added
+        prop, value = next(iter(values.items()))
+        binding = SlotBindingDraft(
+            axis=axis_of[prop],
+            property_dcid=prop,
+            kind="value",
+            value_dcids=[value],
+            evidence="sole_option",
+        )
+        bound = [b for b in bound if b.property_dcid != prop] + [binding]
+        added.append(binding)
 
 
 @dataclass(frozen=True)
@@ -537,16 +705,24 @@ def _facet_reads(svs: Sequence[str], places: Sequence[str]) -> list[list[str]]:
 
 
 def facets_at_own_places(
-    graph: EngineGraphClient, places_of: Mapping[str, Sequence[str]], *, needs_dates: bool
+    graph: EngineGraphClient,
+    places_of: Mapping[str, Sequence[str]],
+    *,
+    needs_dates: bool,
+    settled: Callable[[Mapping[str, dict[str, list[Facet]]]], bool] | None = None,
 ) -> dict[str, dict[str, list[Facet]]]:
     """Read each StatVar's facets at its own places (`places_of`), keeping only those.
 
     Of two read plans, the one with fewer POSTs runs, the per-scope plan on a tie, its reads
     one after another. The per-scope plan reads the StatVars sharing a place set
     together, in first-StatVar order; the union plan reads every StatVar at the union of
-    their places, in first-place order. Each read is chunked by `_facet_reads`. Either way a
+    their places, in `places_of` order. Each read is chunked by `_facet_reads`. Either way a
     StatVar keeps its facets at its own places alone, so both plans return the same result.
     A StatVar with no places maps to `{}` and is not read.
+
+    `settled`, given the facets read so far, says whether the caller needs no more of
+    them. The reads stop after the first read it accepts, and the StatVars no read reached
+    are left out of the result.
     """
     by_places: dict[tuple[str, ...], list[str]] = {}
     for sv, places in places_of.items():
@@ -556,19 +732,23 @@ def facets_at_own_places(
         (chunk, places) for places, svs in by_places.items() for chunk in _facet_reads(svs, places)
     ]
     union = list(dict.fromkeys(place for places in by_places for place in places))
-    read_svs = [sv for svs in by_places.values() for sv in svs]
+    read_svs = [sv for sv, places in places_of.items() if places]
     union_reads = (
         [(chunk, tuple(union)) for chunk in _facet_reads(read_svs, union)] if union else []
     )
     reads = union_reads if len(union_reads) < len(per_scope) else per_scope
 
-    facets: dict[str, dict[str, list[Facet]]] = {sv: {} for sv in places_of}
+    facets: dict[str, dict[str, list[Facet]]] = {
+        sv: {} for sv, places in places_of.items() if not places
+    }
     for chunk, places in reads:
         batch = graph.observation_facets_batch(chunk, list(places), needs_dates=needs_dates)
         for sv in chunk:
             own = set(places_of[sv])
             facets[sv] = {e: f for e, f in batch.get(sv, {}).items() if e in own}
-    return facets
+        if settled is not None and settled(facets):
+            break
+    return {sv: facets[sv] for sv in places_of if sv in facets}
 
 
 @dataclass
@@ -608,6 +788,26 @@ class FacetBatch:
         return facets
 
 
+class _Probe(NamedTuple):
+    """What `_probe_and_scan` read and found."""
+
+    # Each member read, to its facets at its own places that its elected dataset publishes.
+    facets_by_sv: dict[str, dict[str, list[Facet]]]
+    # The members read holding a point in the years read, in probe order.
+    confirmed: list[_ConfirmedMember]
+    # The members read holding data at their places in other years only.
+    outside_years: list[_ConfirmedMember]
+    # Whether every member was read, so `confirmed` counts every member holding a point.
+    read_all: bool
+
+
+def _positive_entities(
+    by_entity: Mapping[str, list[Facet]], places: Sequence[str], years: PlanYears
+) -> set[str]:
+    """The places of `places` at which `by_entity` holds a point in `years`."""
+    return {entity for entity in places if has_points(by_entity.get(entity, []), years)}
+
+
 def _probe_and_scan(
     *,
     places_of: Mapping[str, Sequence[str]],
@@ -617,31 +817,61 @@ def _probe_and_scan(
     years: PlanYears,
     datasets: ElectedDatasets,
     minted: Collection[str],
+    elects: Sequence[str] | None = None,
     facet_batch: FacetBatch | None = None,
-) -> tuple[dict[str, dict[str, list[Facet]]], list[_ConfirmedMember], list[_ConfirmedMember]]:
-    """Probe every member at its own places (`places_of`, `facets_at_own_places`), then
-    scan eligible members for points in `years`, each at its own places. With `facet_batch`
+) -> _Probe:
+    """Probe the members at their own places (`places_of`, `facets_at_own_places`), then
+    scan the members read for points in `years`, each at its own places. With `facet_batch`
     the probe is one of the reads a settling Spec shares (`FacetBatch.facets`).
 
-    Scanning is exhaustive because the reads hold every member's facets. A member's facets
-    union across its places, and it is confirmed at a place holding a point in `years` by the
-    point rule every plan and election reads (`read_plan.has_points`); only its own places
-    count, and election happens later.
+    `elects` is the election order of an answer that names one member: the first of them
+    holding a point in `years` answers. Its reads stop once they settle that member, the
+    first holding a point with every member before it read, or once they have read every one
+    of them, so a family the tables hold whole is read only as far as its answer. "Latest
+    life expectancy data" at the default scope elects the family's total from its first
+    read, where reading all 351 members of the held family takes 27 reads of 2 to 3 s each.
+    Without `elects`, as for a set binding that answers every member or a family whose
+    `minted` members carry an elected dataset, every member is read, and so is every member
+    of a `facet_batch` read.
+
+    A member's facets union across its places, and it is confirmed at a place holding a
+    point in `years` by the point rule every plan and election reads
+    (`read_plan.has_points`); only its own places count, and election happens later.
 
     A member of an index-resolved family keeps only the facets its elected dataset
     publishes (`datasets`), the ones a mint serves it from. Each member a mint of the answer
     serves (`minted`) is first checked as the mint checks it, over every facet it holds at
-    its places (`check_elected_datasets`).
+    its places (`check_elected_datasets`). A member the reads stopped before is not
+    checked, so `elects` is given only when no member of `minted` has an elected dataset.
 
-    Returns the batch facets, the confirmed members, and the members holding data at their
-    places in other years only, which make an empty answer one for the window rather than
-    the place.
+    Returns the facets of the members read, the confirmed members, the members holding data
+    at their places in other years only, which make an empty answer one for the window
+    rather than the place, and whether every member was read.
     """
+
+    def settled(read: Mapping[str, dict[str, list[Facet]]]) -> bool:
+        assert elects is not None
+        for sv in elects:
+            if sv not in read:
+                return False
+            if _positive_entities(
+                {entity: published(datasets, sv, facets) for entity, facets in read[sv].items()},
+                places_of[sv],
+                years,
+            ):
+                return True
+        return True
+
     # Each member is read at its own places, the entities its mint reads it at. A member the
     # mint serves is checked over every facet there, and each keeps the facets its elected
     # dataset publishes.
     own = (
-        facets_at_own_places(graph, places_of, needs_dates=needs_dates)
+        facets_at_own_places(
+            graph,
+            places_of,
+            needs_dates=needs_dates,
+            settled=settled if elects is not None else None,
+        )
         if facet_batch is None
         else facet_batch.facets(graph, places_of, needs_dates=needs_dates)
     )
@@ -662,17 +892,18 @@ def _probe_and_scan(
     for sv in probe_members:
         facets_by_entity = facets_by_sv_batch.get(sv, {})
         facets = [f for entity in places_of[sv] for f in facets_by_entity.get(entity, [])]
-        positive_entities = {
-            entity
-            for entity in places_of[sv]
-            if has_points(facets_by_entity.get(entity, []), years)
-        }
+        positive_entities = _positive_entities(facets_by_entity, places_of[sv], years)
         if positive_entities:
             plural = len(places_of[sv]) > 1
             confirmed.append((sv, facets, positive_entities if plural else None))
         elif any(f.obs_count > 0 for f in facets):
             outside_years.append((sv, facets, None))
-    return facets_by_sv_batch, confirmed, outside_years
+    return _Probe(
+        facets_by_sv=facets_by_sv_batch,
+        confirmed=confirmed,
+        outside_years=outside_years,
+        read_all=all(sv in own for sv in probe_members),
+    )
 
 
 def _coverage_label(
@@ -757,6 +988,8 @@ def _standard_plan(
         years=years,
         scope=scope,
         places=tuple(dict.fromkeys(entity for sv in svs for entity in places_of[sv])),
+        # The request deadline bound to the context bounds the breadth read.
+        deadline=None,
     )
     narrowed = in_elected_datasets(plan, member_facts)
     assert isinstance(narrowed, PairPlan)
@@ -892,9 +1125,12 @@ def standard_resolve(
 ) -> Materialised | NoDataDraft | MaterialisedCandidates:
     """Resolve a confirmed shape against its subject entities.
 
-    Probe every admitted member at its own places (`facets_at_own_places`), through
-    `facet_batch` when the Spec's place sets are settling (`FacetBatch`). Bindings
-    determine eligibility.
+    Probe the admitted members at their own places (`facets_at_own_places`), through
+    `facet_batch` when the Spec's place sets are settling (`FacetBatch`), in election order:
+    an answer naming one member reads them only until its election settles
+    (`_probe_and_scan`), and its confirmed count is then a floor
+    (`MemberPopulation.confirmed_exact`). A family with a kept member that has an elected
+    dataset is read whole, since the mint checks each such member. Bindings determine eligibility.
     Election reads only the members the datasets mint keeps from the eligible
     family (``_elect_family``): a ``kind="set"`` binding returns each of them with
     a point in the years read, while other bindings elect the first of them, in
@@ -933,7 +1169,6 @@ def standard_resolve(
     )
     if not isinstance(admitted, _AdmittedStandardMembers):
         return admitted
-    bound_values = admitted.bound_values
     member_facts = admitted.member_facts
     exact = admitted.exact
     representative_sv = admitted.representative_sv
@@ -941,19 +1176,7 @@ def standard_resolve(
     # `graph_confirm_resolve` does, so no answer path serves a StatVar coverage cannot date.
     refuse_declared_defaults(graph, list(member_facts))
 
-    probe_members, multi_collect = _select_probe_members(
-        list(member_facts), bindings, member_facts, bound_values
-    )
-    # The members the datasets mint keeps; a set binding's eligible members are the ones
-    # matching a set value.
-    family = (
-        _elect_family(probe_members, member_facts, _collapse_bindings(bindings))
-        if multi_collect
-        else admitted.family
-    )
-    # The kept members the probe can confirm.
-    probed = set(probe_members)
-    answering = [sv for sv in family.order if sv in probed] or probe_members
+    probe_members, multi_collect, family, answering = _answering(admitted, bindings)
     if default_presence is not None:
         if place_dcid is not None:
             raise AssertionError(
@@ -1001,8 +1224,10 @@ def standard_resolve(
         )
 
     members, probe_entities, needs_dates = probe_key
+    # Members in election order, so the reads reach the answering member first.
+    kept = set(family.order)
     places_of = _member_places(
-        members,
+        [*family.order, *(sv for sv in members if sv not in kept)],
         probe_entities,
         own_scope_members=family.order,
         presence=default_presence if scope_check.active else None,
@@ -1011,15 +1236,25 @@ def standard_resolve(
     years = plan_years(date_request)
     if default_presence is not None and scope_check.active:
         read_places = {place for places in places_of.values() for place in places}
-    facets_by_sv_batch, confirmed, outside_years = _probe_and_scan(
+    datasets = elected_datasets(member_facts)
+    probe = _probe_and_scan(
         places_of=places_of,
         probe_members=probe_members,
         needs_dates=needs_dates,
         graph=graph,
         years=years,
-        datasets=elected_datasets(member_facts),
+        datasets=datasets,
         minted=family.order,
+        # The mint checks every kept member's elected dataset, so such a family is read whole.
+        elects=None
+        if multi_collect or not datasets.keys().isdisjoint(family.order)
+        else family.order,
         facet_batch=facet_batch,
+    )
+    facets_by_sv_batch, confirmed, outside_years = (
+        probe.facets_by_sv,
+        probe.confirmed,
+        probe.outside_years,
     )
 
     population = MemberPopulation(
@@ -1027,12 +1262,12 @@ def standard_resolve(
         admitted_dcids=tuple(member_facts),
         confirmed=len(confirmed),
         exact=exact,
+        confirmed_exact=probe.read_all,
     )
     # A member is elected among those holding a point in the years read, the members the
     # plan can serve; a member holding data at the place in other years only makes an empty
     # answer one for the window. Both lists keep only the members the datasets mint keeps.
     if multi_collect:
-        kept = set(family.order)
         collected = [member for member in confirmed if member[0] in kept]
         held = [member for member in outside_years if member[0] in kept]
     else:
@@ -1199,7 +1434,7 @@ def standard_option_coverage(
     pending: list[tuple[int, SlotOptions, str, dict[str, list[str] | None]]] = []
     union_svs: set[str] = set()
     for i, so in enumerate(slot_options):
-        prop_dcid = so.key.property.dcid if so.key.property else None
+        prop_dcid = so.key.property.ref if so.key.property else None
         if prop_dcid is None:
             resolved[i] = so
             continue
@@ -1207,7 +1442,7 @@ def standard_option_coverage(
         picks = pick_members.get(prop_dcid) if pick_members is not None else None
         sv_by_option: dict[str, list[str] | None] = {}
         for opt in so.options:
-            dcid = opt.value.ref.dcid if opt.value.ref else None
+            dcid = opt.value.ref.ref if opt.value.ref else None
             if dcid is None:
                 continue
             if pick_members is not None:
@@ -1240,7 +1475,7 @@ def standard_option_coverage(
         by_option = _option_datasets(query, prop_dcid, sv_by_option)
         new_options: list[SlotOption] = []
         for opt in so.options:
-            dcid = opt.value.ref.dcid if opt.value.ref else None
+            dcid = opt.value.ref.ref if opt.value.ref else None
             svs = sv_by_option.get(dcid) if dcid else None
             option_datasets = by_option.get(dcid, datasets) if dcid else datasets
             if svs is not None and dcid in by_option:
@@ -1266,7 +1501,14 @@ def standard_option_coverage(
                     )
                 )
             }
-            plan = plan_standard(series, members=svs, years=plan_years(date_request))
+            plan = plan_standard(
+                series,
+                members=svs,
+                years=plan_years(date_request),
+                places=tuple(probe_entities),
+                # The request deadline bound to the context bounds the breadth read.
+                deadline=None,
+            )
             coverage = answer_coverage(
                 plan,
                 CoverageForm(

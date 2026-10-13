@@ -38,7 +38,7 @@ class _ProbeFailsGraph:
     def __getattr__(self, name: str):
         return getattr(self._inner, name)
 
-    def observation_facets_batch(self, stat_vars, entities, needs_dates=False):
+    def observation_facets_batch(self, stat_vars, entities, needs_dates=False, *, deadline=None):
         raise GraphInfraError("simulated transport error")
 
 
@@ -52,9 +52,11 @@ class _ProbeCountingGraph:
     def __getattr__(self, name: str):
         return getattr(self._inner, name)
 
-    def observation_facets_batch(self, stat_vars, entities, needs_dates=False):
+    def observation_facets_batch(self, stat_vars, entities, needs_dates=False, *, deadline=None):
         self.observation_facets_batch_calls += 1
-        return self._inner.observation_facets_batch(stat_vars, entities, needs_dates=needs_dates)
+        return self._inner.observation_facets_batch(
+            stat_vars, entities, needs_dates=needs_dates, deadline=deadline
+        )
 
 
 class TestAvailabilityFloor:

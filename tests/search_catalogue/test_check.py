@@ -8,8 +8,10 @@ from typing import get_args
 import pytest
 
 from search.catalogue.check import (
+    DATA_DESCRIBING_DEPARTURES,
     EMPTY_PREVIEW_REASONS,
     INFRA_FAILURES,
+    REFUSING_DEPARTURES,
     ROLE_KEYS,
     FailedRun,
     RunFailure,
@@ -19,7 +21,12 @@ from search.catalogue.check import (
 )
 from search.catalogue.examples import Example
 from search.engine.errors import EngineInputError
-from search.models import RESOLVE_RESPONSE_ADAPTER, ObservationsOmissionReason, ResolveResponse
+from search.models import (
+    RESOLVE_RESPONSE_ADAPTER,
+    DepartureCode,
+    ObservationsOmissionReason,
+    ResolveResponse,
+)
 from tests.conftest import base_response
 from tests.search_catalogue.support import (
     Elected,
@@ -38,7 +45,7 @@ _EXAMPLE = Example(
 _AID = "Amount_FinancialFlow_Gross_Disbursement_CRSPurposeCode72010_Nominal"
 
 
-def _judge(response: ResolveResponse) -> tuple[RunFailure | None, tuple[str, ...]]:
+def _judge(response: ResolveResponse) -> tuple[RunFailure | None, tuple[str, ...], str | None]:
     return judge(response, stat_var="Count_Person", place="country/KEN", role="observationAbout")
 
 
@@ -46,6 +53,7 @@ def test_a_definite_part_electing_the_pin_with_points_passes():
     assert _judge(definite("Count_Person_Female", "Count_Person")) == (
         None,
         ("Count_Person_Female", "Count_Person"),
+        None,
     )
 
 
@@ -53,6 +61,7 @@ def test_the_pin_catches_a_wrong_stat_var_with_data():
     assert _judge(definite("Count_Person_Female")) == (
         "stat_var_not_elected",
         ("Count_Person_Female",),
+        None,
     )
 
 
@@ -72,7 +81,7 @@ def test_a_preview_of_another_country_fails_even_when_the_place_resolved():
     response = serving(RESOLVE_RESPONSE_ADAPTER.validate_python(response), "Count_Person")
     assert judge(
         response, stat_var="Count_Person", place="country/GEO", role="observationAbout"
-    ) == ("preview_scope_mismatch", ("Count_Person",))
+    ) == ("preview_scope_mismatch", ("Count_Person",), None)
 
 
 def test_aid_from_a_country_fails_an_example_asking_for_aid_to_it():
@@ -98,6 +107,7 @@ def test_aid_to_the_example_country_passes():
     assert judge(answer, stat_var=_AID, place="country/GEO", role="destination") == (
         None,
         (_AID,),
+        None,
     )
 
 
@@ -124,6 +134,37 @@ def test_the_check_passes_each_run_its_own_place_and_the_example_role():
         ("country/GEO", "scope_mismatch")
     ]
     assert ROLE_KEYS == {None: "observationAbout", "donor": "origin", "recipient": "destination"}
+
+
+def _departing(*codes: DepartureCode) -> ResolveResponse:
+    response = definite("Count_Person").model_dump(mode="json")
+    response["parts"][0]["departures"] = [
+        {"code": code, "text": f"The answer departs: {code}."} for code in codes
+    ]
+    return serving(RESOLVE_RESPONSE_ADAPTER.validate_python(response), "Count_Person")
+
+
+def test_every_departure_code_is_on_one_side_of_the_departure_gate():
+    # A code added to the vocabulary fails here until someone puts it on a side.
+    assert DATA_DESCRIBING_DEPARTURES.isdisjoint(REFUSING_DEPARTURES)
+    assert set(get_args(DepartureCode)) == DATA_DESCRIBING_DEPARTURES | REFUSING_DEPARTURES
+
+
+@pytest.mark.parametrize("code", sorted(REFUSING_DEPARTURES))
+def test_an_answer_that_departs_from_the_sentence_fails_naming_the_code(code):
+    assert _judge(_departing(code)) == ("departed", ("Count_Person",), code)
+
+
+@pytest.mark.parametrize("code", sorted(DATA_DESCRIBING_DEPARTURES))
+def test_an_answer_whose_departure_describes_the_data_passes(code):
+    assert _judge(_departing(code)) == (None, ("Count_Person",), None)
+
+
+def test_a_departed_failure_names_each_refusing_code_once_in_precedence_order():
+    response = _departing(
+        "closest_match", "entity_unavailable", "entity_unavailable", "modelled_values"
+    )
+    assert _judge(response)[2] == "closest_match, entity_unavailable"
 
 
 def test_the_points_check_catches_an_empty_preview():
@@ -180,7 +221,7 @@ def test_an_answer_split_into_several_parts_fails_even_when_one_holds_the_pin():
         RESOLVE_RESPONSE_ADAPTER.validate_python(base_response(parts=[pinned, missing])),
         "Count_Person",
     )
-    assert _judge(response) == ("multiple_parts", ("Count_Person",))
+    assert _judge(response) == ("multiple_parts", ("Count_Person",), None)
 
 
 def test_test_places_run_only_where_the_stat_var_has_data():

@@ -89,7 +89,7 @@ def serving(response: ResolveResponse, *stat_vars: str) -> ResolveResponse:
     assert isinstance(response, Resolution)
     members = [
         StatVar(
-            ref=GraphRef(dcid=dcid, label=dcid),
+            ref=GraphRef(ref=dcid, label=dcid),
             shape_id="",
             slot_values=[],
             constraint_properties=[],

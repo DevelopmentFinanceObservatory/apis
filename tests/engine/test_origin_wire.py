@@ -90,6 +90,7 @@ _WDI_FACET = SeriesFacetRef(
     label="World Development Indicators",
     source=WireSourceRef(ref="dc/s/WorldBank", label="World Bank"),
     data_commons=DataCommonsRef(id="base", label="Data Commons by Google"),
+    documentation=f"/api/graph/documentation/{_WDI}",
 )
 
 
@@ -201,6 +202,7 @@ def test_resolved_provenance_carries_the_shared_series_members():
         label="World Development Indicators",
         source=_WDI_FACET.source,
         data_commons=_WDI_FACET.data_commons,
+        documentation=_WDI_FACET.documentation,
     )
 
 
@@ -256,7 +258,7 @@ class _WithheldGraph:
 
 
 def _subject(dcid: str) -> Entity:
-    return Entity(ref=GraphRef(dcid=dcid, label=dcid), role=EntityRoleSubject())
+    return Entity(ref=GraphRef(ref=dcid, label=dcid), role=EntityRoleSubject())
 
 
 def _no_data(entities: list[Entity]) -> RegionResult:
@@ -318,7 +320,7 @@ def test_a_withheld_source_no_label_names_is_left_out_of_the_departure():
 def test_withheld_warning_skips_role_bearing_answers_and_definite_parts():
     graph = _WithheldGraph()
     donor = Entity(
-        ref=GraphRef(dcid="country/USA", label="USA"),
+        ref=GraphRef(ref="country/USA", label="USA"),
         role=EntityRoleDirectional(role=gref("origin"), axis="origin"),
     )
     role_bearing = _no_data([_subject("country/KEN"), donor])
@@ -784,7 +786,7 @@ def test_a_resubmit_names_a_failed_un_part_from_its_members_with_the_un_down(mon
     read it once made went to the deployment that just failed, and failed the answer."""
     spec = conjoin_spec(shape_five_tuple("Person", "count"), "x", sv_dcid="undata/who/MORT")
     member = StatVar(
-        ref=GraphRef(dcid="undata/who/MORT", label="Mortality rate"),
+        ref=GraphRef(ref="undata/who/MORT", label="Mortality rate"),
         shape_id=spec.resolved.shape.shape_id,
         slot_values=[],
         constraint_properties=[],
@@ -824,7 +826,7 @@ def test_a_resubmit_states_the_refused_places_it_names_as_unavailable(
         "x",
         sv_dcid=sv_dcid,
         entities=[
-            Entity(ref=GraphRef(dcid="country/XYZ", label="Xyzland"), role=EntityRoleSubject()),
+            Entity(ref=GraphRef(ref="country/XYZ", label="Xyzland"), role=EntityRoleSubject()),
             _subject("country/KEN"),
         ],
     )
@@ -894,8 +896,8 @@ def test_a_streamed_read_states_the_refused_places_on_done(
         "x",
         sv_dcid=sv_dcid,
         entities=[
-            Entity(ref=GraphRef(dcid="country/KEN", label="Kenya"), role=EntityRoleSubject()),
-            Entity(ref=GraphRef(dcid="country/XYZ", label="Xyzland"), role=EntityRoleSubject()),
+            Entity(ref=GraphRef(ref="country/KEN", label="Kenya"), role=EntityRoleSubject()),
+            Entity(ref=GraphRef(ref="country/XYZ", label="Xyzland"), role=EntityRoleSubject()),
         ],
     )
     spec = spec.model_copy(update={"resolved": spec.resolved.stating_unserved(unserved)})

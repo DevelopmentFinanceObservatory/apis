@@ -453,13 +453,13 @@ def test_a_crs_bind_prompt_is_byte_identical_to_withholding_every_measure_slot()
 
 
 def _slot(prop: str, value: str | None) -> Slot:
-    key = SlotKey(axis="how", property=GraphRef(dcid=prop, label=prop), label=prop)
+    key = SlotKey(axis="how", property=GraphRef(ref=prop, label=prop), label=prop)
     if value is None:
         return Slot(key=key, binding=BindingUnbound())
     return Slot(
         key=key,
         binding=BindingValue(
-            value=SlotValue(ref=GraphRef(dcid=value, label=value), value_kind="enum_value")
+            value=SlotValue(ref=GraphRef(ref=value, label=value), value_kind="enum_value")
         ),
     )
 
@@ -692,7 +692,7 @@ def test_the_mint_sources_a_crs_identity_from_the_index():
 
 def _crs_slots_with_purpose(purpose: str) -> list[Slot]:
     return [
-        _slot(slot.key.property.dcid, purpose) if slot.key.property.dcid == "crsPurpose" else slot
+        _slot(slot.key.property.ref, purpose) if slot.key.property.ref == "crsPurpose" else slot
         for slot in _crs_identity_slots()
         if slot.key.property is not None
     ]

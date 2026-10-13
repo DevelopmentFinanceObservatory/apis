@@ -5,23 +5,28 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+from typing import Any
 
 import pytest
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 from pydantic import TypeAdapter
 
+from code_index.shared import get_index
 from dfo_apis.app import all_surfaces
 from dfo_platform.app import create_app
 from dfo_platform.build import build_commit
+from entity_resolution.membership import MembershipPolicy
 from graph_api import app as app_module
 from graph_api.app import graph_surface
-from graph_api.capabilities import build_capabilities
+from graph_api.capabilities import DataBuilds, build_capabilities
 from graph_api.deps import GRAPH_DEPS_SLOT
+from graph_api.kinds import KINDS
 from graph_api.node_models import NodeResponse
 from graph_api.resolve_models import ResolveResponse
 from graph_api.version import GRAPH_CAPABILITY_VERSION
 from graph_generation import FakeGeneration
+from origin_catalogue.service import get_catalogue_service
 
 from .conftest import FakeGraphNodeReader, make_client
 
@@ -178,6 +183,12 @@ class _InertResolver:
     """Stand-in for an injected resolver, which the lifespan does not own."""
 
 
+class _InertShared:
+    """Stand-in for the shared resolver: the lifespan publishes its membership policy."""
+
+    policy = MembershipPolicy([])
+
+
 def test_lifespan_reentry_with_injected_deps_keeps_serving(monkeypatch: pytest.MonkeyPatch):
     """Re-entering the lifespan leaves injected dependencies open and serving."""
     for var in _GRAPH_ENV_VARS:
@@ -213,7 +224,7 @@ def test_lifespan_reentry_rebuilds_and_closes_owned_deps(monkeypatch: pytest.Mon
 
     acquire_calls: list[None] = []
     release_calls: list[object] = []
-    sentinel_shared = object()
+    sentinel_shared = _InertShared()
 
     def _spy_acquire_shared():
         acquire_calls.append(None)
@@ -267,9 +278,9 @@ def test_lifespan_builds_the_real_shared_resolver_covering_both_packs(
     assert resp.status_code == 200, resp.text
     results = resp.json()["results"]
     assert results[0]["status"] == "resolved"
-    assert results[0]["entity"]["dcid"] == "country/KEN"
+    assert results[0]["entity"]["ref"] == "country/KEN"
     assert results[1]["status"] == "resolved"
-    assert results[1]["entity"]["dcid"] == "AfricanDevelopmentBank"
+    assert results[1]["entity"]["ref"] == "AfricanDevelopmentBank"
 
 
 def test_lifespan_passes_the_shared_generation_provider_to_the_entity_resolver_and_registers_it(
@@ -347,7 +358,7 @@ def test_unconfigured_generation_environment_still_serves_resolve_normally(
     assert resp.status_code == 200, resp.text
     result = resp.json()["results"][0]
     assert result["status"] == "resolved"
-    assert result["entity"]["dcid"] == "country/KEN"
+    assert result["entity"]["ref"] == "country/KEN"
 
 
 def test_openapi_titles_the_graph_resolve_request_schema_distinctly_from_search(
@@ -442,13 +453,8 @@ class TestOpenAPIResponseModels:
         spec = client.app.openapi()
         op = spec["paths"]["/api/graph/node/{dcid}"]["get"]
         body_schema = op["responses"]["200"]["content"]["application/json"]["schema"]
-        assert body_schema["discriminator"]["propertyName"] == "shape"
-        assert set(body_schema["discriminator"]["mapping"]) == {
-            "stat_var",
-            "source",
-            "entity",
-            "node",
-        }
+        assert body_schema["discriminator"]["propertyName"] == "kind"
+        assert set(body_schema["discriminator"]["mapping"]) == set(KINDS)
 
     def test_statvar_node_wire_bytes_match_a_noderesponse_rebuild(self):
         graph = FakeGraphNodeReader(
@@ -485,8 +491,14 @@ class TestOpenAPIResponseModels:
         resp = client.get("/api/graph/capabilities", headers={"accept-encoding": "identity"})
 
         assert resp.status_code == 200, resp.text
+        # No lifespan ran, so the generation and coverage builds serve null.
         rebuilt = build_capabilities(
-            capability_version=GRAPH_CAPABILITY_VERSION, build=build_commit()
+            capability_version=GRAPH_CAPABILITY_VERSION,
+            build=build_commit(),
+            data_builds=DataBuilds(
+                origin_catalogue=get_catalogue_service().snapshot().build_id,
+                code_index=get_index().stamp.content_hash,
+            ),
         ).model_dump(mode="json")
         assert resp.content == JSONResponse(rebuilt).body
 
@@ -498,9 +510,9 @@ class TestCoverageAcquisition:
         sentinel = object()
         monkeypatch.setattr(coverage_shared, "get_coverage_service", lambda: sentinel)
 
-        assert asyncio.run(app_module._acquire_coverage()) is sentinel
+        assert asyncio.run(app_module._acquire_coverage()) == (sentinel, False)
 
-    def test_unset_uri_returns_none_at_info(
+    def test_unset_uri_returns_none_at_info_and_is_not_a_failure(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ):
         import series_coverage.shared as coverage_shared
@@ -511,10 +523,10 @@ class TestCoverageAcquisition:
         monkeypatch.setattr(coverage_shared, "get_coverage_service", _missing)
 
         with caplog.at_level(logging.INFO, logger=app_module.__name__):
-            assert asyncio.run(app_module._acquire_coverage()) is None
+            assert asyncio.run(app_module._acquire_coverage()) == (None, False)
         assert [r.levelno for r in caplog.records] == [logging.INFO]
 
-    def test_unreadable_artifact_returns_none_at_warning(
+    def test_unreadable_artifact_returns_none_at_warning_and_is_a_failure(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ):
         import series_coverage.shared as coverage_shared
@@ -525,14 +537,14 @@ class TestCoverageAcquisition:
         monkeypatch.setattr(coverage_shared, "get_coverage_service", _unreadable)
 
         with caplog.at_level(logging.INFO, logger=app_module.__name__):
-            assert asyncio.run(app_module._acquire_coverage()) is None
+            assert asyncio.run(app_module._acquire_coverage()) == (None, True)
         assert [r.levelno for r in caplog.records] == [logging.WARNING]
 
     def test_missing_coverage_extra_returns_none(self, monkeypatch: pytest.MonkeyPatch):
         # A `None` entry makes the import raise `ImportError`, as a graph-only install does.
         monkeypatch.setitem(sys.modules, "series_coverage.shared", None)
 
-        assert asyncio.run(app_module._acquire_coverage()) is None
+        assert asyncio.run(app_module._acquire_coverage()) == (None, False)
 
     def test_live_lifespan_publishes_the_acquired_service(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("GRAPH_DCP_BASE_URL", "https://graph.example.org/core/api")
@@ -546,16 +558,18 @@ class TestCoverageAcquisition:
                 pass
 
         async def _fake_acquire_coverage():
-            return sentinel
+            return sentinel, False
 
         monkeypatch.setattr(app_module, "build_graph_client", _SpyGraphClient)
-        monkeypatch.setattr(app_module, "acquire_shared", lambda: object())
+        monkeypatch.setattr(app_module, "acquire_shared", _InertShared)
         monkeypatch.setattr(app_module, "release_shared", lambda shared: None)
         monkeypatch.setattr(app_module, "_acquire_coverage", _fake_acquire_coverage)
 
         app = create_app([graph_surface()])
         with TestClient(app):
-            assert getattr(app.state, GRAPH_DEPS_SLOT.name).coverage is sentinel
+            deps = getattr(app.state, GRAPH_DEPS_SLOT.name)
+            assert deps.coverage is sentinel
+            assert deps.coverage_load_failed is False
 
     def test_injected_graph_skips_acquisition(self, monkeypatch: pytest.MonkeyPatch):
         async def _refuse():
@@ -565,4 +579,141 @@ class TestCoverageAcquisition:
 
         app = create_app([graph_surface(graph=FakeGraphNodeReader(), resolver=_InertResolver())])
         with TestClient(app):
-            assert getattr(app.state, GRAPH_DEPS_SLOT.name).coverage is None
+            deps = getattr(app.state, GRAPH_DEPS_SLOT.name)
+            assert deps.coverage is None
+            assert deps.profile_cache is None
+
+
+class TestProfileWiring:
+    def test_live_lifespan_keys_the_reader_on_the_generation_and_acquires_the_shared_profiles(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The generation is acquired before the reader, which is keyed on it and reads UN
+        availability from the UN root. The surface reads facet profiles from the process's
+        shared cache, acquired over the DCP root for graph and SDMX reads, the UN root, the
+        DCP token and the generation. Teardown releases the cache, then closes the reader."""
+        monkeypatch.setenv("GRAPH_DCP_BASE_URL", "https://mixer.example.org/core/api")
+        monkeypatch.setenv("GRAPH_DCP_TOKEN", "secret")
+        monkeypatch.setenv("UN_GRAPH_BASE_URL", "https://un.example.org/core/api")
+        events: list[str] = []
+        generation = FakeGeneration(token="gen-a")
+        built: list[_SpyGraphClient] = []
+        profiles = object()
+
+        class _SpyGraphClient:
+            def __init__(self, **options: Any) -> None:
+                events.append("build_graph_client")
+                self.options = options
+                built.append(self)
+
+            def close(self) -> None:
+                events.append("close_graph_client")
+
+        class _SpySdmxClient(app_module.SdmxClient):
+            def __init__(self, **options: object) -> None:
+                super().__init__(**options)  # ty: ignore[invalid-argument-type]
+                self.options = options
+
+        class _SharedProfiles:
+            cache = profiles
+
+        def _acquire_generation(*, catalogue, expected_graph_base):
+            events.append(f"acquire_generation {expected_graph_base}")
+            return generation
+
+        def _acquire_profiles(*, source, generation):
+            events.append(f"acquire_profiles {source} {generation.stamp().token}")
+            return _SharedProfiles
+
+        monkeypatch.setattr(app_module, "build_graph_client", _SpyGraphClient)
+        monkeypatch.setattr(app_module, "SdmxClient", _SpySdmxClient)
+        monkeypatch.setattr(app_module, "acquire_shared_generation", _acquire_generation)
+        monkeypatch.setattr(app_module, "release_shared_generation", lambda shared: None)
+        monkeypatch.setattr(app_module, "acquire_shared_profiles", _acquire_profiles)
+        monkeypatch.setattr(
+            app_module,
+            "release_shared_profiles",
+            lambda shared: events.append(f"release_profiles {shared is _SharedProfiles}"),
+        )
+        monkeypatch.setattr(app_module, "acquire_shared", _InertShared)
+        monkeypatch.setattr(app_module, "release_shared", lambda shared: None)
+        monkeypatch.setattr(app_module, "EntityResolver", lambda **_kwargs: _InertResolverStats())
+
+        source = app_module.ProfileSource(
+            graph_base_url="https://mixer.example.org/core/api",
+            sdmx_base_url="https://mixer.example.org/core/api",
+            un_base_url="https://un.example.org/core/api",
+            token="secret",
+        )
+        app = create_app([graph_surface()])
+        with TestClient(app, raise_server_exceptions=True):
+            deps = getattr(app.state, GRAPH_DEPS_SLOT.name)
+            (client,) = built
+            un_availability = client.options["un_availability"]
+
+            assert events == [
+                "acquire_generation https://mixer.example.org/core/api",
+                "build_graph_client",
+                f"acquire_profiles {source} gen-a",
+            ]
+            assert client.options["generation"] is generation
+            assert client.options["un_base_url"] == "https://un.example.org/core/api"
+            assert isinstance(un_availability, _SpySdmxClient)
+            assert un_availability.options["base_url"] == "https://un.example.org/core/api"
+            assert all(client.options[key] > 0 for key in _CACHE_OPTIONS)
+            assert deps.generation is generation
+            assert deps.profile_cache is profiles
+
+        assert events[3:] == ["release_profiles True", "close_graph_client"]
+
+    def test_injected_surface_reads_profiles_through_its_own_cache_and_executor(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        for var in _GRAPH_ENV_VARS:
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr(app_module, "acquire_shared_profiles", _refuse_shared_profiles)
+        profile_graph = object()
+        availability = object()
+
+        app = create_app(
+            [
+                graph_surface(
+                    graph=FakeGraphNodeReader(),
+                    resolver=_InertResolver(),
+                    profile_graph=profile_graph,  # ty: ignore[invalid-argument-type]
+                    availability=availability,  # ty: ignore[invalid-argument-type]
+                )
+            ]
+        )
+        with TestClient(app):
+            profile_cache = getattr(app.state, GRAPH_DEPS_SLOT.name).profile_cache
+            assert profile_cache._graph is profile_graph
+            assert profile_cache._availability is availability
+            profile_executor = profile_cache._cache._executor
+            assert profile_executor.submit(lambda: "ran").result(timeout=5) == "ran"
+
+        with pytest.raises(RuntimeError):
+            profile_executor.submit(lambda: None)
+
+
+def _refuse_shared_profiles(**_kwargs: object) -> None:
+    raise AssertionError("an injected graph must not acquire the shared profile cache")
+
+
+_CACHE_OPTIONS = (
+    "label_cache_size",
+    "type_cache_size",
+    "arcs_cache_size",
+    "obs_properties_cache_size",
+    "obs_cache_size",
+)
+
+
+class _InertResolverStats:
+    """Stand-in for the live resolver: registration needs its stats and clear hooks."""
+
+    def stats(self) -> dict[str, int]:
+        return {}
+
+    def clear(self) -> None:
+        pass

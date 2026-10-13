@@ -42,7 +42,7 @@ def source_record(ref: str) -> ResolvedQualifier:
     """The unbound record of the source `ref`, under its label (`source_label`)."""
     label = source_label(ref)
     return ResolvedQualifier(
-        text=label, named=[GraphRef(dcid=ref, label=label)], slot=None, disposition="unbound"
+        text=label, named=[GraphRef(ref=ref, label=label)], slot=None, disposition="unbound"
     )
 
 
@@ -52,7 +52,7 @@ def _named_record(named: NamedSource) -> ResolvedQualifier:
     members = named.members if isinstance(named, SourceCollection) else (named,)
     return ResolvedQualifier(
         text=named.label,
-        named=[GraphRef(dcid=member.ref, label=member.label) for member in members],
+        named=[GraphRef(ref=member.ref, label=member.label) for member in members],
         slot=None,
         disposition="unbound",
     )

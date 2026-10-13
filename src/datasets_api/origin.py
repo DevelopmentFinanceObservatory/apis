@@ -20,7 +20,7 @@ re-read names an entity only where the catalogue admits none of the series' face
 - When one member's candidates leave an unbound facet axis without a default
   (`DefaultFacetUndefinedError.request`), `refuse_unserved_selection` makes the same re-read
   for that member and refuses `excluded_by_registry` in place of `default_facet_undefined`.
-- When some subject entities came back with no rows, `withheld_warning` re-reads the first such
+- When some subject entities came back with no rows, `withheld_finding` re-reads the first such
   request's variable at those entities and warns `withheld_by_registry`.
 
 In the last two a failed re-read is logged and leaves the answer as it was, since the answer
@@ -36,7 +36,8 @@ what UN observation reads could not serve. These are places the UN front door re
 reads that failed inside a read that served our variables. A facet probe made
 before the record opened carries its own record, and the materialisation that reuses the probe
 adds it to this one, so the record covers the probe at every door. `un_unavailable_warnings`
-names those places as `un_system_unavailable`. A UN member with no candidate, or with no
+names those places as `un_system_unavailable`. Each warning has an `OriginGap` beside it, the
+places it names as the manifest's trace records them. A UN member with no candidate, or with no
 default on a facet axis, refuses `upstream_error` (`UnSystemUnavailable`) at such a place,
 since its probe says nothing about data there. A member that binds no entity covers every
 country, including the few the UN front door refuses on every read, so a retry would meet the
@@ -49,7 +50,8 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
-from typing import Final, Protocol, runtime_checkable
+from dataclasses import dataclass
+from typing import Final, Literal, Protocol, runtime_checkable
 
 from datasets_api.codes_materialise import ExcludedByRegistry, UnSystemUnavailable
 from datasets_api.manifest_models import WarningModel
@@ -78,6 +80,29 @@ _STAT_VAR_REF_PREFIX: Final[str] = "dcid:"
 WITHHELD_READ_MAX_BYTES: Final[int] = 16 * 1024 * 1024
 """Caps the unfiltered re-read's response. It reads one variable's facets, without dates, at
 the entities of one request."""
+
+
+@dataclass(frozen=True)
+class OriginGap:
+    """The places an answer holds no data at for a reason the origin reads found, as the
+    manifest's trace records them (`ManifestTrace.origin_gaps`): for `withheld_by_registry`,
+    the variable, the places and the withheld provenances holding data there; for
+    `un_system_unavailable`, the places the UN could not serve."""
+
+    code: Literal["withheld_by_registry", "un_system_unavailable"]
+    entities: tuple[str, ...]
+    variable: str | None = None
+    provenances: tuple[str, ...] = ()
+
+    def as_trace_entry(self) -> dict[str, object]:
+        """`code`, `variable` and `provenances` where set, and `entities`."""
+        entry: dict[str, object] = {"code": self.code}
+        if self.variable is not None:
+            entry["variable"] = self.variable
+        entry["entities"] = list(self.entities)
+        if self.provenances:
+            entry["provenances"] = list(self.provenances)
+        return entry
 
 
 @runtime_checkable
@@ -223,6 +248,12 @@ def un_unavailable_warnings(
     )
 
 
+def un_unavailable_gaps(blocked: UnBlockedPlaces) -> tuple[OriginGap, ...]:
+    """The places `un_unavailable_warnings` names without a `request`, as an `OriginGap`."""
+    places = _un_unserved(blocked)
+    return (OriginGap(code="un_system_unavailable", entities=places),) if places else ()
+
+
 def withheld_warning(
     graph: object,
     served: Sequence[tuple[MaterialisationRequest, Coverage]],
@@ -230,9 +261,22 @@ def withheld_warning(
     default_scope: Sequence[str] = (),
     deadline: float | None,
 ) -> tuple[int, WarningModel] | None:
+    """`withheld_finding`'s request index and warning."""
+    found = withheld_finding(graph, served, default_scope=default_scope, deadline=deadline)
+    return None if found is None else (found[0], found[1])
+
+
+def withheld_finding(
+    graph: object,
+    served: Sequence[tuple[MaterialisationRequest, Coverage]],
+    *,
+    default_scope: Sequence[str] = (),
+    deadline: float | None,
+) -> tuple[int, WarningModel, OriginGap] | None:
     """`withheld_by_registry` for the first request in `served` that left a subject entity
-    without rows, with that request's index, when that entity has no admitted data and the
-    catalogue withholds a provenance holding data there. At most one facet read runs.
+    without rows, with that request's index and the places it names, when that entity has no
+    admitted data and the catalogue withholds a provenance holding data there. At most one
+    facet read runs.
 
     `served` pairs each request with the coverage of the result that served it. A request that
     binds no entity is checked at `default_scope`, the places of the default place scope its
@@ -256,7 +300,17 @@ def withheld_warning(
         if not unserved:
             continue
         withheld = _withheld_or_nothing(graph, [variable], unserved, deadline=deadline)
-        return (index, _withheld_warning(variable, withheld)) if withheld else None
+        if not withheld:
+            return None
+        gap = OriginGap(
+            code="withheld_by_registry",
+            entities=tuple(withheld),
+            variable=variable,
+            provenances=tuple(
+                dict.fromkeys(provenance for held in withheld.values() for provenance in held)
+            ),
+        )
+        return index, _withheld_warning(variable, withheld), gap
     return None
 
 
@@ -413,12 +467,15 @@ def _withheld_warning(variable: str, withheld: Mapping[str, tuple[str, ...]]) ->
 
 __all__ = [
     "WITHHELD_READ_MAX_BYTES",
+    "OriginGap",
     "WithheldReader",
     "catalogue_build_id",
     "refuse_unserved_empty_probe",
     "refuse_unserved_selection",
     "stale_warnings",
+    "un_unavailable_gaps",
     "un_unavailable_warnings",
+    "withheld_finding",
     "withheld_warning",
     "withheld_warnings",
 ]

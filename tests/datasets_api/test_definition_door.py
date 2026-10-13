@@ -19,6 +19,7 @@ from dataset_store.snapshot import LiveSnapshotReader
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from dc_sdmx import SdmxClient
+from graph_generation import FakeGeneration
 from materialise.graph import Facet
 from series_coverage.index import CoverageIndex
 from series_coverage.schema import ABSENT_ENTITY, CoverageManifest, FacetMetadata, RoleNames
@@ -77,7 +78,7 @@ _SCOPE = {
 }
 
 
-def _graph() -> FakeMintGraphReader:
+def _graph(*, generation: FakeGeneration | None = None) -> FakeMintGraphReader:
     arcs: dict[str, tuple[str, ...]] = {
         "typeOf": ("StatisticalVariable",),
         "observationProperties": ("recipient",),
@@ -88,6 +89,7 @@ def _graph() -> FakeMintGraphReader:
         # The graph facet probe keys on the bare dcid.
         facets={(_STAT_VAR, _RECIPIENT): [_FACET]},
         labels={"OECD_DAC2A": "OECD DAC2a", _RECIPIENT: "Kenya"},
+        generation=generation,
     )
 
 

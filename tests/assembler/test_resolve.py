@@ -499,7 +499,7 @@ def _unit_resolved_frame(rows):
     return ResolvedFrame(
         frame_ref=_FRAME_REF,
         frame=doc,
-        structural_view=compute_structural_view(frame=doc),
+        structural_view=compute_structural_view(frame=doc, continuation=None),
         manifest={},
         labels={},
         retrieved_on=FIXTURE_RETRIEVED_ON,
@@ -514,7 +514,7 @@ def test_group_by_coordinate_normalises_a_converted_unit_cell_for_hashing():
     groups = _group_by_coordinate(
         columns=["stat_var", "recipient", "unit", "time_period", "value"],
         rows=[["dcid:X", "country/FRA", {"currency": "USD", "prices": "current"}, "2020", 1.0]],
-        coordinate_columns=["stat_var", "recipient", "unit"],
+        continuation=None,
     )
     assert len(groups) == 1
     (coordinates,) = groups
@@ -528,7 +528,7 @@ def test_group_by_coordinate_mixing_converted_and_unconverted_unit_does_not_coll
             ["dcid:X", "country/ETH", "USDollar", "2020", 1.0],
             ["dcid:X", "country/ETH", {"currency": "USD", "prices": "current"}, "2020", 2.0],
         ],
-        coordinate_columns=["stat_var", "recipient", "unit"],
+        continuation=None,
     )
     assert len(groups) == 2
     units = {dict(coordinates)["unit"] for coordinates in groups}
@@ -554,7 +554,7 @@ def test_group_by_coordinate_two_rows_differing_only_by_base_year_are_distinct()
                 2.0,
             ],
         ],
-        coordinate_columns=["stat_var", "recipient", "unit"],
+        continuation=None,
     )
     assert len(groups) == 2
     units = {dict(coordinates)["unit"] for coordinates in groups}
@@ -604,3 +604,107 @@ def test_resolve_selectors_binds_a_converted_unit_facet_by_its_rendered_text():
     )
     assert len(series) == 1
     assert series[0].rows[0]["value"] == 2.0
+
+
+# The Zambia frame Datasets served for IMF WEO gross national saving: reported values for
+# 2015-2024 under a null method, continued by the source's estimates for 2025-2026.
+_ZAMBIA_VALUES = {
+    "2015": 40.116951,
+    "2016": 34.94189,
+    "2017": 39.320593,
+    "2018": 37.288123,
+    "2019": 39.738918,
+    "2020": 44.035811,
+    "2021": 43.267269,
+    "2022": 30.727552,
+    "2023": 28.407558,
+    "2024": 26.742426,
+    "2025": 29.551633,
+    "2026": 34.819228,
+}
+_ZAMBIA_ROWS = [
+    {
+        "stat_var": "dcid:Saving_AsAFractionOf_GDP",
+        "observationAbout": "country/ZMB",
+        "time_period": period,
+        "value": value,
+        "unit": "Percent",
+        "measurementMethod": "Estimated" if period >= "2025" else None,
+        "provenance": "provenance/IMFWorldEconomicOutlook",
+    }
+    for period, value in _ZAMBIA_VALUES.items()
+]
+_CONTINUED_MANIFEST = {
+    "schema_version": 1,
+    "trace": {
+        "continuations": [
+            {"axis": "measurementMethod", "method": "Estimated", "periods": ["2025", "2026"]}
+        ]
+    },
+}
+
+
+def _zambia_frame(*, continued: bool) -> ResolvedFrame:
+    return build_resolved_frame(
+        frame_ref=_FRAME_REF,
+        role_keys=("observationAbout",),
+        rows=_ZAMBIA_ROWS,
+        manifest=_CONTINUED_MANIFEST if continued else None,
+    )
+
+
+def _method_view(rf: ResolvedFrame) -> tuple[tuple[str, ...], bool]:
+    """The frame view's `measurementMethod` values and whether it marks the axis plural, the
+    signal the frames door gives a caller about which dimensions split series."""
+    (method,) = (one for one in rf.structural_view.dimensions if one.name == "measurementMethod")
+    return method.values, method.plural
+
+
+def _zambia_select(**bound: str) -> list[dict[str, object]]:
+    bindings = {"observationAbout": "country/ZMB", **bound}
+    return [{"bindings": [{"dimension": k, "values": [v]} for k, v in bindings.items()]}]
+
+
+def test_a_series_and_the_estimates_continuing_it_resolve_as_one_series():
+    """A frame continued by its source's estimates (`trace.continuations`) draws all twelve
+    years as one series, each row keeping its own method cell. The frame view lists
+    `Estimated` as a value a select may bind and leaves the method axis not plural, so a
+    caller is not told to bind it. Issue: the Zambia chart that drew only 2025-2026."""
+    rf = _zambia_frame(continued=True)
+    (series,) = resolve_selectors(resolved_frame=rf, selectors=_zambia_select(), window=None)
+
+    assert rf.structural_view.series_count == 1
+    assert _method_view(rf) == (("Estimated",), False)
+    assert dict(series.coordinates)["measurementMethod"] is None
+    assert [row["time_period"] for row in series.rows] == list(_ZAMBIA_VALUES)
+    assert [row["measurementMethod"] for row in series.rows] == [None] * 10 + ["Estimated"] * 2
+
+
+def test_binding_the_continuing_method_draws_the_estimates_alone():
+    rf = _zambia_frame(continued=True)
+    (series,) = resolve_selectors(
+        resolved_frame=rf, selectors=_zambia_select(measurementMethod="Estimated"), window=None
+    )
+
+    assert dict(series.coordinates)["measurementMethod"] == "Estimated"
+    assert [row["time_period"] for row in series.rows] == ["2025", "2026"]
+
+
+def test_a_frame_without_continuations_splits_on_its_methods_as_before():
+    rf = _zambia_frame(continued=False)
+
+    assert rf.structural_view.series_count == 2
+    assert _method_view(rf) == (("Estimated",), True)
+    with pytest.raises(BindingInvalid) as excinfo:
+        resolve_selectors(resolved_frame=rf, selectors=_zambia_select(), window=None)
+    assert excinfo.value.pointer == "/select/measurementMethod"
+    assert excinfo.value.legal_values == ("Estimated",)
+
+
+def test_a_continued_series_resolves_by_the_id_minted_for_it():
+    rf = _zambia_frame(continued=True)
+    (series,) = resolve_selectors(resolved_frame=rf, selectors=_zambia_select(), window=None)
+
+    (again,) = resolve_selectors(resolved_frame=rf, selectors=[{"id": series.id}], window=None)
+
+    assert again.rows == series.rows

@@ -3,6 +3,11 @@ and the card facts the catalogue job computes against the documentation page."""
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
+import pytest
+
+from graph_api.doors import sources as sources_door
 from graph_api.doors.sources import _to_wire, build_source_catalogue
 from graph_api.source_models import DatasetEntry, SourceCatalogue, SourceDocumentation
 from materialise.graph import SubjectPage
@@ -176,6 +181,55 @@ class TestRoute:
 
         assert resp.status_code == 200, resp.text
         assert all(count == 0 for count in graph.calls.values())
+
+
+class TestRouteCaching:
+    @pytest.fixture(autouse=True)
+    def _fresh_cache(self) -> Iterator[None]:
+        sources_door._frozen_source_catalogue.cache_clear()
+        yield
+        sources_door._frozen_source_catalogue.cache_clear()
+
+    @pytest.fixture
+    def builds(self, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+        """Record the catalogue build each source index is built from."""
+        built: list[str] = []
+
+        def recording(*, registry, catalogue):
+            built.append(catalogue.build_id)
+            return build_source_catalogue(registry=registry, catalogue=catalogue)
+
+        monkeypatch.setattr(sources_door, "build_source_catalogue", recording)
+        return built
+
+    def test_serves_public_gzip_with_an_etag_and_answers_304(self, serve_catalogue):
+        serve_catalogue(restrictive_catalogue(provenances=_CATALOGUE_ROWS, build_id="build-a"))
+
+        with make_client() as client:
+            first = client.get("/api/graph/sources", headers={"accept-encoding": "gzip"})
+            again = client.get(
+                "/api/graph/sources",
+                headers={"accept-encoding": "gzip", "if-none-match": first.headers["etag"]},
+            )
+
+        assert first.status_code == 200, first.text
+        assert first.headers["cache-control"] == "public, max-age=300"
+        assert first.headers["content-encoding"] == "gzip"
+        assert first.headers["etag"]
+        assert again.status_code == 304
+
+    def test_encodes_the_index_once_per_catalogue_build(self, serve_catalogue, builds):
+        serve_catalogue(restrictive_catalogue(provenances=_CATALOGUE_ROWS, build_id="build-a"))
+        with make_client() as client:
+            first = client.get("/api/graph/sources")
+            second = client.get("/api/graph/sources")
+
+        serve_catalogue(restrictive_catalogue(provenances=_CATALOGUE_ROWS[:1], build_id="build-b"))
+        with make_client() as client:
+            third = client.get("/api/graph/sources")
+
+        assert builds == ["build-a", "build-b"]
+        assert first.headers["etag"] == second.headers["etag"] != third.headers["etag"]
 
 
 _WB = "dc/s/WorldBank"

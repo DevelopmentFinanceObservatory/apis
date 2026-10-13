@@ -163,9 +163,9 @@ def test_authored_bar_chart_range_including_zero_resolves_and_validates(
     jsonschema.Draft202012Validator(release.envelope_schema, registry=registry).validate(
         record.resolved_payload
     )
-    jsonschema.Draft202012Validator(release.component_schemas["bar_chart"]).validate(
-        record.resolved_payload["component"]
-    )
+    jsonschema.Draft202012Validator(
+        release.component_schemas["bar_chart"], registry=registry
+    ).validate(record.resolved_payload["component"])
 
 
 def test_authored_line_chart_scale_and_range_containing_data_resolve_and_validate(
@@ -191,9 +191,9 @@ def test_authored_line_chart_scale_and_range_containing_data_resolve_and_validat
     jsonschema.Draft202012Validator(release.envelope_schema, registry=registry).validate(
         record.resolved_payload
     )
-    jsonschema.Draft202012Validator(release.component_schemas["line_chart"]).validate(
-        record.resolved_payload["component"]
-    )
+    jsonschema.Draft202012Validator(
+        release.component_schemas["line_chart"], registry=registry
+    ).validate(record.resolved_payload["component"])
 
 
 def test_authored_bar_chart_scale_and_range_containing_data_resolve_and_validate(
@@ -222,9 +222,9 @@ def test_authored_bar_chart_scale_and_range_containing_data_resolve_and_validate
     jsonschema.Draft202012Validator(release.envelope_schema, registry=registry).validate(
         record.resolved_payload
     )
-    jsonschema.Draft202012Validator(release.component_schemas["bar_chart"]).validate(
-        record.resolved_payload["component"]
-    )
+    jsonschema.Draft202012Validator(
+        release.component_schemas["bar_chart"], registry=registry
+    ).validate(record.resolved_payload["component"])
 
 
 @pytest.mark.parametrize(

@@ -64,26 +64,26 @@ def _family_graph_with_finance_rollup(member_rows) -> FakeGraph:
 
 def _bound_slot(prop: str, value: str) -> Slot:
     return Slot(
-        key=SlotKey(axis="how", property=GraphRef(dcid=prop, label=prop), label=prop),
+        key=SlotKey(axis="how", property=GraphRef(ref=prop, label=prop), label=prop),
         binding=BindingValue(
-            value=SlotValue(ref=GraphRef(dcid=value, label=value), value_kind="enum_value")
+            value=SlotValue(ref=GraphRef(ref=value, label=value), value_kind="enum_value")
         ),
     )
 
 
 def _unbound_slot(prop: str) -> Slot:
     return Slot(
-        key=SlotKey(axis="how", property=GraphRef(dcid=prop, label=prop), label=prop),
+        key=SlotKey(axis="how", property=GraphRef(ref=prop, label=prop), label=prop),
         binding=BindingUnbound(),
     )
 
 
 def _set_slot(prop: str, values: list[str]) -> Slot:
     return Slot(
-        key=SlotKey(axis="how", property=GraphRef(dcid=prop, label=prop), label=prop),
+        key=SlotKey(axis="how", property=GraphRef(ref=prop, label=prop), label=prop),
         binding=BindingSet(
             values=[
-                SlotValue(ref=GraphRef(dcid=v, label=v), value_kind="enum_value") for v in values
+                SlotValue(ref=GraphRef(ref=v, label=v), value_kind="enum_value") for v in values
             ]
         ),
     )
@@ -187,11 +187,11 @@ def _round_trip(*, name: str, identity, expect_label: str, monkeypatch) -> None:
     finance_slot = next(
         s
         for s in region.specs[0].resolved.slots
-        if s.key.property is not None and s.key.property.dcid == "crsTypeOfFinance"
+        if s.key.property is not None and s.key.property.ref == "crsTypeOfFinance"
     )
     assert finance_slot.binding.kind == "value", name
     assert finance_slot.binding.value.ref is not None, name
-    assert finance_slot.binding.value.ref.dcid == _FINANCE_ROLLUP, name
+    assert finance_slot.binding.value.ref.ref == _FINANCE_ROLLUP, name
 
 
 def _partition_members_for(shape, identity) -> tuple[str, ...]:
@@ -391,18 +391,18 @@ def test_narrowing_crs_type_of_finance_from_the_rollup_to_a_real_leaf_elects_tha
     )
     resolved = region.specs[0].resolved
     assert resolved.stat_vars.member_count == len(member_dcids)
-    assert {sv.ref.dcid for sv in resolved.members} <= set(member_dcids)
+    assert {sv.ref.ref for sv in resolved.members} <= set(member_dcids)
 
     # The client's edit, narrowing crsTypeOfFinance from the rollup to one real leaf, reads
     # back as that leaf, not the rollup.
     finance_slot = next(
         s
         for s in region.specs[0].resolved.slots
-        if s.key.property is not None and s.key.property.dcid == "crsTypeOfFinance"
+        if s.key.property is not None and s.key.property.ref == "crsTypeOfFinance"
     )
     assert finance_slot.binding.kind == "value"
     assert finance_slot.binding.value.ref is not None
-    assert finance_slot.binding.value.ref.dcid == leaf
+    assert finance_slot.binding.value.ref.ref == leaf
 
 
 def _set_bound_identity(leaves: list[str]):
@@ -459,10 +459,10 @@ def test_unedited_resubmit_of_a_posted_leaf_set_still_reads_as_that_set(monkeypa
     finance_slot = next(
         s
         for s in region.specs[0].resolved.slots
-        if s.key.property is not None and s.key.property.dcid == "crsTypeOfFinance"
+        if s.key.property is not None and s.key.property.ref == "crsTypeOfFinance"
     )
     assert finance_slot.binding.kind == "set"
-    assert {v.ref.dcid for v in finance_slot.binding.values if v.ref is not None} == {
+    assert {v.ref.ref for v in finance_slot.binding.values if v.ref is not None} == {
         leaf_a,
         leaf_b,
     }

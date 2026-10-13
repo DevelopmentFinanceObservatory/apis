@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import origin_catalogue.service as catalogue_service_module
-import search.engine.app as app_module
+import search.engine.schema as schema_module
 from code_index.shared import get_index
 from code_index.types import DatasetDeclaration
 from materialise.errors import UpstreamVersionChangedError
@@ -288,9 +288,9 @@ class TestPartProvenance:
             for rank in (1, 0)
         ]
         index = SimpleNamespace(datasets={dataset.provenance: dataset for dataset in declared})
-        monkeypatch.setattr(app_module, "get_index", lambda: index)
+        monkeypatch.setattr(schema_module, "get_index", lambda: index)
 
-        schema = app_module._schema_payload()["request"]
+        schema = schema_module.schema_payload()["request"]
 
         field = schema["$defs"]["ParsedPart"]["properties"]["provenance"]
         (named,) = [branch for branch in field["anyOf"] if branch.get("type") == "string"]
@@ -603,6 +603,7 @@ class TestSchemaReflectsPartsShape:
             "sources",
             "source_text",
             "provenance",
+            "source_code",
             "operations",
             "open_roles",
             "separate",

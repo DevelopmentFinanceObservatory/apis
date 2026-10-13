@@ -314,13 +314,15 @@ class CacheScope:
         entity_roles: Mapping[str, Sequence[DoorRole]],
         sources: Sequence[tuple[SourceMention, ...]],
         query_text: str | None,
+        source_codes: Sequence[str | None] = (),
         separate: Sequence[bool] = (),
         llm_usage: dict[str, int] | None = None,
     ) -> ResolveResponse | None:
         """Look up layer 2 by effective extraction and raw-text signals.
 
         `entity_roles`, `query_text`, and the parallel `variable_qualifiers`, `operations`
-        and `sources` are required to build a complete key. `separate` runs parallel to
+        and `sources` are required to build a complete key. `source_codes` runs parallel to
+        `variables` and holds the series code the query writes for each. `separate` runs parallel to
         `variables` and marks each one the raw query compares with another. This lookup
         never waits on a layer-1 lease. The first miss owns the layer-2 lease (`_acquire`).
 
@@ -342,6 +344,7 @@ class CacheScope:
             variable_qualifiers=variable_qualifiers,
             operations=operations,
             sources=sources,
+            source_codes=source_codes,
             role_contradictions=signals.role_contradictions,
             query_text_qualifier_matches=signals.query_text_qualifier_matches,
             query_text_qualifier_ties=signals.query_text_qualifier_ties,

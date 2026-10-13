@@ -13,6 +13,7 @@ from origin_catalogue.artifact import load_catalogue
 from scripts.stage_origin_catalogue_fixture import stage_fixture
 from search.engine.entry import raw_text
 from search.engine.extract import ExtractedEntity, Extraction, ExtractionResult
+from search.engine.source_code import SourceCodeRefusal
 from search.engine.source_scan import scan_sources, source_phrases
 from search.engine.source_scope import SourceDictionary, source_dictionary
 from search.models import SourceMention
@@ -318,3 +319,44 @@ def test_raw_door_keeps_publisher_exclusion_when_extracted_as_entity(catalogue: 
         )
     assert prep.entities == ["Kenya"]
     assert prep.per_variable_sources == [(_out("World Bank"),)]
+
+
+@pytest.mark.parametrize(
+    ("query", "variables", "codes", "compiled"),
+    [
+        ("debt service of Kenya", ["debt service"], [None], [None]),
+        (
+            "Kenya's debt service, dt.tds.degg.cd",
+            ["debt service dt.tds.degg.cd"],
+            ["DT.TDS.DEGG.CD"],
+            ["DT.TDS.DEGG.CD"],
+        ),
+        (
+            "DT.NFL.MIDA.CD to Kenya",
+            ["DT.NFL.MIDA.CD"],
+            ["DT.NFL.MIDA.CD"],
+            ["source_code_shares_variable"],
+        ),
+    ],
+    ids=["no-code", "held", "shares-variable"],
+)
+def test_the_raw_text_door_reads_a_series_code_the_query_writes(
+    catalogue: CatalogueSnapshot, query, variables, codes, compiled
+):
+    """The extraction names no series code. The scan finds a held one in the query, and the
+    part compiles it as a parsed part's `source_code` compiles."""
+    extraction = Extraction(
+        kind="resolution",
+        variables=variables,
+        entities=[ExtractedEntity(text="Kenya", span="Kenya")],
+    )
+    with bound_catalogue(catalogue):
+        prep = raw_text._prepare_extraction(
+            extraction, ExtractionResult(extraction=extraction, qualifiers={}), query=query
+        )
+
+    assert prep.per_variable_source_codes == codes
+    assert [
+        code.reason if isinstance(code, SourceCodeRefusal) else code and code.code
+        for code in prep.per_variable_compiled_codes
+    ] == compiled

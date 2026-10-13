@@ -4,26 +4,26 @@ description: Resolve a plain-English question into an interpretable DFO spec.
 
 # How to resolve a question
 
-Use `POST /api/search/resolve` to turn a plain-English question into one or more candidate data specifications.
+Use `POST /api/v1/search/resolve` to turn a plain-English question into one or more candidate data specifications.
 
 ## Before you start
 
 Set the development API URL.
 
 ```bash
-export DFO_API=https://dfo-dev-apis-zms5lj4zhq-nn.a.run.app
+export DFO_API=https://developmentfinance.org
 ```
 
 ## Steps
 
-1. Send a raw-text question. `GET /api/search/capabilities` reports the current query and variable limits.
+1. Send a raw-text question. `GET /api/v1/search/capabilities` reports the current query and variable limits.
 
    :::tabs
 
    ::tab{label="curl"}
 
    ```bash
-   curl -fsS -X POST "$DFO_API/api/search/resolve" \
+   curl -fsS -X POST "$DFO_API/api/v1/search/resolve" \
      -H "Content-Type: application/json" \
      -d '{"input":{"kind":"raw_text","query":"ODA disbursements from Germany to Nigeria for basic health care"}}' \
      > resolve.json
@@ -46,7 +46,7 @@ export DFO_API=https://dfo-dev-apis-zms5lj4zhq-nn.a.run.app
    import httpx
 
    response = httpx.post(
-       f"{os.environ['DFO_API']}/api/search/resolve",
+       f"{os.environ['DFO_API']}/api/v1/search/resolve",
        json={
            "input": {
                "kind": "raw_text",
@@ -82,7 +82,7 @@ export DFO_API=https://dfo-dev-apis-zms5lj4zhq-nn.a.run.app
 
    :::
 
-   Both examples print selected fields. Check `kind` before reading `parts`. A resolution has a `parts` entry for each extracted variable. Search reports `variables_clamped` when it drops variables beyond the current limit.
+   Check `kind` before reading `parts`. A resolution has a `parts` entry for each extracted variable. Search reports `variables_clamped` when it drops variables beyond the current limit.
 
 2. Branch on the answer's `kind`.
 
@@ -92,10 +92,10 @@ export DFO_API=https://dfo-dev-apis-zms5lj4zhq-nn.a.run.app
    | `catalogue` | A request to describe what DFO holds, with an optional country `scope.place`. |
    | `declined` | A question outside the available data or one that requires analysis. |
 
-   Read `GET /api/search/catalogue` for the available data and example questions. Pass `place=<country dcid>` to narrow it to one country.
+   Read `GET /api/v1/search/catalogue` for the available data and example questions. Pass `place=<country id>`, the country's graph identifier such as `country/NGA`, to narrow it to one country.
 
    ```bash
-   curl -fsS "$DFO_API/api/search/catalogue?place=country/NGA" | jq .
+   curl -fsS "$DFO_API/api/v1/search/catalogue?place=country/NGA" | jq .
    ```
 
 3. Branch on each part's `status`.
@@ -109,12 +109,12 @@ export DFO_API=https://dfo-dev-apis-zms5lj4zhq-nn.a.run.app
 
    These are successful request outcomes and arrive with HTTP `200`. Invalid requests use an application problem-details response.
 
-4. Check a definite result before using it. Read `spec.resolved.rendered_sentence`, then inspect `warnings`. For this question, check that Germany is `origin`, Nigeria is `destination`, and basic health care is `CRSPurposeCode12220`. Open dimensions can expand the result to several StatVars.
+4. Check a definite result before using it. Read `spec.resolved.rendered_sentence`, then inspect `warnings`. For this question, check that Germany fills the donor role (`origin`), Nigeria fills the recipient role (`destination`), and basic health care is `CRSPurposeCode12220`. Open dimensions can expand the result to several StatVars (measures, each with its dimensions).
 
 5. Request observation previews when you need values in the response.
 
    ```bash
-   curl -fsS -X POST "$DFO_API/api/search/resolve" \
+   curl -fsS -X POST "$DFO_API/api/v1/search/resolve" \
      -H "Content-Type: application/json" \
      -d '{
        "input":{"kind":"raw_text","query":"ODA disbursements from Germany to Nigeria for basic health care"},

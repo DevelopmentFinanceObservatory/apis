@@ -12,6 +12,7 @@ from materialise.roles import axis_for_role
 from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.graph import Facet
 from search.engine.extract import DateRequest
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.state import EngineOptions
 from search.models import TimeWindow
@@ -26,6 +27,7 @@ from tests.engine._harness import (
     build_materialise_double,
     sdmx_double,
 )
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 from tests.materialise.conftest import FakeGraphReader
 
@@ -126,6 +128,8 @@ class _FixedBindLLM:
     """Elects shape index 0 unconditionally, with no constraint bindings."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
 
@@ -256,7 +260,7 @@ def test_unit_binding_narrows_which_sources_are_cited(monkeypatch, search_settin
 
     assert result.status == "definite", result
     spec = result.specs[0]
-    resolved_source_dcids = [r.dcid for r in spec.resolved.trace.resolved_sources]
+    resolved_source_dcids = [r.ref for r in spec.resolved.trace.resolved_sources]
     assert sorted(resolved_source_dcids) == ["source/A"]
     # The narrowed role index excludes source/B from citations.
     assert "source/B" not in resolved_source_dcids
@@ -401,7 +405,7 @@ def test_unit_binding_recounts_a_provider_axis_scope(monkeypatch, search_setting
 
     assert result.status == "definite", result
     spec = result.specs[0]
-    assert sorted(r.dcid for r in spec.resolved.trace.resolved_sources) == ["source/A"]
+    assert sorted(r.ref for r in spec.resolved.trace.resolved_sources) == ["source/A"]
     dims = {d.label: d.count for d in spec.resolved.coverage.dimensions}
     assert dims["providers"] == 1
     assert dims["sources"] == 1
@@ -429,6 +433,8 @@ class _CandidatesBindLLM:
     """Elect the first shape and flag the second as also plausible."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0, bindings=[], also_plausible=[1], ask=None

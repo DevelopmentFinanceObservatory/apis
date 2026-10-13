@@ -103,7 +103,7 @@ def test_bound_hierarchical_slot_publishes_children_and_parent_not_the_rest():
     so = _slot_options(property_dcid=_PURPOSE, bound_dcid=_HEALTH, nodes=_NODES)
     assert so.truncated is False
     assert so.source == "observed"
-    by_dcid = {o.value.ref.dcid: o for o in so.options}
+    by_dcid = {o.value.ref.ref: o for o in so.options}
     assert set(by_dcid) == {*_HEALTH_CHILDREN, _HEALTH_PARENT}
     counts = get_index().value_counts(_PURPOSE)
     for dcid in _HEALTH_CHILDREN:
@@ -133,11 +133,11 @@ def test_unbound_slot_publishes_each_root_then_its_children():
 
     so = _slot_options(property_dcid=_PURPOSE, bound_dcid=None, nodes={})
     assert so.truncated is False
-    assert [(o.value.ref.dcid, o.relation, o.parent) for o in so.options] == expected
+    assert [(o.value.ref.ref, o.relation, o.parent) for o in so.options] == expected
     # Health sits under social infrastructure without a pick of its root first.
     assert (_HEALTH, "child", _HEALTH_PARENT) in expected
     for opt in so.options:
-        assert opt.member_count == counts.get(opt.value.ref.dcid, 0)
+        assert opt.member_count == counts.get(opt.value.ref.ref, 0)
 
 
 def test_flat_system_slot_publishes_all_its_values_with_no_invented_hierarchy():
@@ -156,7 +156,7 @@ def test_flat_system_slot_publishes_all_its_values_with_no_invented_hierarchy():
         bound_dcid=bound_value,
         nodes={d: {"label": labels[d]} for d in flow_dcids},
     )
-    dcids = {o.value.ref.dcid for o in so.options}
+    dcids = {o.value.ref.ref for o in so.options}
     assert dcids == set(flow_dcids)
     assert all(o.relation == "root" for o in so.options)
     assert all(o.parent is None for o in so.options)
@@ -178,7 +178,7 @@ def test_shape_event_sends_roots_only_for_an_index_sourced_hierarchical_slot():
     options = _shape_event_options(
         _shape_draft(property_dcid=_PURPOSE), {r.dcid: {"label": r.label} for r in rows}
     )
-    assert {o.value.ref.dcid for o in options} == roots
+    assert {o.value.ref.ref for o in options} == roots
     assert all(o.relation == "root" and o.parent is None for o in options)
 
 
@@ -196,5 +196,5 @@ def test_shape_event_caps_a_recall_sourced_list_at_fifteen():
         slot_taxonomy={f"how:{_PURPOSE}": values},
     )
     options = _shape_event_options(shape_draft, {d: {"label": d} for d in values})
-    assert [o.value.ref.dcid for o in options] == values[:15]
+    assert [o.value.ref.ref for o in options] == values[:15]
     assert all(o.relation is None for o in options)

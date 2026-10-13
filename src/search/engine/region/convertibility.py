@@ -62,7 +62,6 @@ from search.engine.region.facet_probe import FacetPins, facet_pins
 from search.engine.region.facets import FilteredAnswer, plan_answer
 from search.engine.retrieval.download import deflator_omissions
 from search.engine.retrieval.elected_dataset import NO_DATASETS, ElectedDatasets
-from search.engine.retrieval.facet_election import RoleBulkCandidate
 from search.engine.retrieval.read_plan import (
     BulkPlan,
     Omissions,
@@ -372,6 +371,7 @@ def decide_part_unit(
                     settle=False,
                     precomputed=probe.candidates if probe is not None else None,
                     breadth=probe.breadth_in(requested_window) if probe is not None else None,
+                    variable_breadth=probe.variable_breadth if probe is not None else None,
                     deadline=deadline,
                 )
             except (FacetNotAvailableError, DefaultFacetUndefinedError) as exc:
@@ -450,24 +450,27 @@ def _pair_rows(served: Sequence[tuple[PlanSeries, Facet, PlanYears]]) -> _Served
     return rows
 
 
-def _bulk_member_rows(best: RoleBulkCandidate, years: YearBounds, sv: str) -> _ServedRows:
-    """`sv`'s rows in a bulk read of the elected facet `best`: for each candidate and each
-    year of `years`, the years the read serves `sv` in (`BulkPlan.member_years`), that its
-    pairs hold data in, one block of the members of each role with a tuple holding data in
-    that year (`RolePairs.members_with_data`), so a member is checked in exactly the years
-    its own tuples reach.
+def _bulk_member_rows(candidates: Sequence[RoleFacetCandidate], years: YearBounds) -> _ServedRows:
+    """A member's rows in a bulk read of `candidates`, its candidates under the elected facet
+    and the facets continuing it (`BulkPlan.served_candidates`): for each candidate and each
+    year of `years`, the years the read serves the member in (`BulkPlan.member_years`), that
+    its pairs hold data in, one block of the members of each role with a tuple holding data
+    in that year (`RolePairs.members_with_data`), so a member is checked in exactly the years
+    its own tuples reach. A continuing facet's tuples are checked in every such year, which
+    includes the years the read leaves to the elected facet (`BulkPlan.continued_pairs`),
+    since telling them apart decodes the tuples.
 
     A block pairs its roles' members without stating which tuples exist, since listing
     tuples decodes the population (`RolePairs.head`), which a bulk read exists to avoid.
     The check stays exact because every conversion term is keyed on one entity or currency
     and the year (`convert._gather_terms`), so the block needs no term a served tuple does
-    not. `best` must already leave out the tuples a conversion omits (`BulkPlan.omitting`,
+    not. `candidates` must already leave out the tuples a conversion omits (`BulkPlan.omitting`,
     which `unit_coverage` applies first). A member whose tuples in a year all bound an
     omitted entity then holds no data there and is not checked, as the read never converts
     its rows."""
     first, last = years
     rows: _ServedRows = set()
-    for candidate in best.by_sv[sv]:
+    for candidate in candidates:
         span = candidate.pairs.year_span(first_year=first, last_year=last)
         if span is None:
             continue
@@ -488,14 +491,14 @@ def _served_keys(plan: ReadPlan) -> dict[str, dict[_FacetKey, Callable[[], _Serv
     A per-series read keys each served series' group facets, and under `latest` reads each
     series in the year of its StatVar's latest period alone, the one period a latest read
     serves and every served series holds (`PairPlan.served`). A bulk read keys its served
-    members under the elected facet."""
+    members under the elected facet, which the facets continuing it share."""
     if isinstance(plan, BulkPlan):
         best = plan.elected
         if best is None:
             return {}
         key: _FacetKey = (best.unit, best.provenance_id)
         return {
-            sv: {key: partial(_bulk_member_rows, best, plan.member_years(sv), sv)}
+            sv: {key: partial(_bulk_member_rows, plan.served_candidates(sv), plan.member_years(sv))}
             for sv in plan.served_members
         }
     by_sv: dict[str, dict[_FacetKey, list[tuple[PlanSeries, Facet, PlanYears]]]] = {}
@@ -831,7 +834,8 @@ def _fetched_entities(
 ) -> dict[str, dict[_FacetKey, Callable[[str], frozenset[str]]]]:
     """Each StatVar's facet keys among the rows `plan`'s read fetches before it omits any,
     each with the entities those rows bind on a graph role. A bulk read fetches its served
-    members' pairs under the elected facet, over every year under `latest`, before the
+    members' pairs under the elected facet and the facets continuing it
+    (`BulkPlan.served_candidates`), over every year under `latest`, before the
     read reduces each member to its latest period, and the member's years
     (`BulkPlan.member_years`) otherwise. A per-series read fetches its held series
     (`PairPlan.held`), every series with data under `latest`, under their group facets."""
@@ -843,7 +847,7 @@ def _fetched_entities(
         fetched: dict[str, dict[_FacetKey, Callable[[str], frozenset[str]]]] = {}
         for sv in plan.served_members:
             first, last = (None, None) if plan.years == "latest" else plan.member_years(sv)
-            fetched[sv] = {key: partial(_pair_members, best.by_sv[sv], first, last)}
+            fetched[sv] = {key: partial(_pair_members, plan.served_candidates(sv), first, last)}
         return fetched
     by_sv: dict[str, dict[_FacetKey, list[PlanSeries]]] = {}
     for series in plan.held:

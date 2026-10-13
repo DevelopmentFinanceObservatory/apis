@@ -61,12 +61,23 @@ class MemberPopulation:
     ``exact`` is true for index-sourced or complete recall populations. A capped
     recall sample gives a lower bound, and member-digest creation requires an
     exact population.
+
+    ``confirmed_exact`` is false when the probe stopped once the answer's member was
+    confirmed (`standard._probe_and_scan`), so ``confirmed`` counts only the members read.
     """
 
     admitted: int
     admitted_dcids: tuple[str, ...]
     confirmed: int
     exact: bool
+    confirmed_exact: bool = True
+
+    @property
+    def member_count_exact(self) -> bool:
+        """Whether ``confirmed`` is a true count, the Spec's
+        ``stat_vars.member_count_exact``: the population is exact and every member was
+        probed."""
+        return self.exact and self.confirmed_exact
 
 
 @dataclass(frozen=True)
@@ -186,6 +197,11 @@ class NoDataDraft:
     reason: str  # "no_observations" | "denominator_not_available" | "variable_not_resolved"
     # Confirmed SVs when identity was checked before the no-data outcome.
     sv_dcids: list[str] | None = None
+    # Role path: the flow axes the request left open that the elected members declare, as
+    # on `Materialised.open_axes`, set when confirmation finds no data
+    # (`role_resolve.graph_confirm_resolve`). A refusal that flags those members states them
+    # as its open roles. Empty everywhere else.
+    open_axes: frozenset[RoleAxis] = frozenset()
 
 
 @dataclass(frozen=True)

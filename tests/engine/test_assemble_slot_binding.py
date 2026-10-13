@@ -84,7 +84,7 @@ def _bd(kind: BindingKind, dcids: list[str]) -> SlotBindingDraft:
 
 
 def _gr(dcid: str) -> GraphRef:
-    return GraphRef(dcid=dcid, label=dcid)
+    return GraphRef(ref=dcid, label=dcid)
 
 
 def test_build_slot_value_kind_where_axis_is_entity():

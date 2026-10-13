@@ -16,8 +16,9 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
-from entity_resolution import Entity, Group, NotFound, Resolved
+from entity_resolution import Entity, Group, NotFound, Resolved, shared_membership_policy
 from entity_resolution import Resolution as EntityResolution
+from entity_resolution.membership import MembershipPolicy
 from entity_resolution.types import GraphLookup
 from search.engine.core import resolve_async, resolve_events
 from search.engine.events import DoneEvent, Event, ResponseEvent, StepEvent
@@ -81,6 +82,11 @@ class _StubResolver:
         self._error = error
         self._delay_s = delay_s
         self.calls: list[list[str]] = []
+
+    @property
+    def membership(self) -> MembershipPolicy:
+        """The shared membership policy, which says which resolved places are regions."""
+        return shared_membership_policy()
 
     async def resolve(
         self, texts: list[str], *, deadline: float | None = None
@@ -214,7 +220,7 @@ def test_the_catalogue_kind_answers_catalogue():
 @pytest.mark.parametrize(
     ("entities", "expected_reads", "expected_place"),
     [
-        (["Kenya"], ["node_arcs_many"], GraphRef(dcid="country/KEN", label="Kenya")),
+        (["Kenya"], ["node_arcs_many"], GraphRef(ref="country/KEN", label="Kenya")),
         (["Nairobi", "Zzyzx land"], ["resolve_by_arc"] * 4, None),
     ],
     ids=["country", "fallback-ladder"],
@@ -254,7 +260,7 @@ def test_the_sse_wire_carries_step_response_done_and_nothing_else():
     assert frames[0][1]["step"] == "extract"
     body = frames[1][1]["response"]
     assert body["kind"] == "catalogue"
-    assert body["scope"] == {"place": {"dcid": "country/KEN", "label": "Kenya"}}
+    assert body["scope"] == {"place": {"ref": "country/KEN", "label": "Kenya"}}
     assert "parts" not in body
 
 
@@ -266,9 +272,9 @@ def test_the_sse_wire_carries_step_response_done_and_nothing_else():
 @pytest.mark.parametrize(
     ("entities", "expected"),
     [
-        (["Kenya"], GraphRef(dcid="country/KEN", label="Kenya")),
-        (["Nairobi", "Kenya"], GraphRef(dcid="country/KEN", label="Kenya")),
-        (["Kenya", "Kenyan"], GraphRef(dcid="country/KEN", label="Kenya")),
+        (["Kenya"], GraphRef(ref="country/KEN", label="Kenya")),
+        (["Nairobi", "Kenya"], GraphRef(ref="country/KEN", label="Kenya")),
+        (["Kenya", "Kenyan"], GraphRef(ref="country/KEN", label="Kenya")),
         (["Nairobi"], None),
         (["Sahel"], None),
         (["World Bank"], None),
@@ -314,7 +320,7 @@ def test_a_resolver_failure_answers_without_a_place_and_is_not_cached():
 
     repeat = _events("What can I find on Kenya?", llm, _StubResolver(), response_cache=cache)
     assert _shape(repeat) == _SHORT_CIRCUIT_SEQUENCE, "a degraded answer is not stored"
-    assert _response(repeat).scope.place == GraphRef(dcid="country/KEN", label="Kenya")
+    assert _response(repeat).scope.place == GraphRef(ref="country/KEN", label="Kenya")
 
 
 def test_a_resolver_timeout_answers_without_a_place(search_settings):

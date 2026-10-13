@@ -20,7 +20,9 @@ from datasets_api.origin import (
     WithheldReader,
     refuse_unserved_empty_probe,
     refuse_unserved_selection,
+    un_unavailable_gaps,
     un_unavailable_warnings,
+    withheld_finding,
     withheld_warning,
     withheld_warnings,
 )
@@ -242,6 +244,20 @@ def test_an_unserved_entity_with_withheld_data_names_the_provenances():
     assert "country/NGA" in warning.message
     assert "dc/base/UN_SDG" in warning.message
     assert graph.calls == [(("Count_Person",), (_NGA,))]
+
+
+def test_a_withheld_finding_names_its_places_for_the_trace():
+    graph = _WithheldGraph(withheld=["dc/base/UN_SDG"])
+
+    found = withheld_finding(graph, [(_request(), _served(_KEN))], deadline=None)
+
+    assert found is not None
+    assert found[2].as_trace_entry() == {
+        "code": "withheld_by_registry",
+        "variable": "Count_Person",
+        "entities": [_NGA],
+        "provenances": ["dc/base/UN_SDG"],
+    }
 
 
 def test_every_entity_served_reads_nothing():
@@ -680,12 +696,16 @@ class TestEmptyProbe:
         (warning,) = un_unavailable_warnings(blocked)
         assert warning.code == "un_system_unavailable"
         assert warning.message.endswith(f"No UN data was read for {_KEN}, {_NGA}.")
+        assert [gap.as_trace_entry() for gap in un_unavailable_gaps(blocked)] == [
+            {"code": "un_system_unavailable", "entities": [_KEN, _NGA]}
+        ]
 
     def test_no_refused_place_warns_nothing(self):
         with recording_un_blocked_places() as blocked:
             pass
 
         assert un_unavailable_warnings(blocked) == ()
+        assert un_unavailable_gaps(blocked) == ()
 
     def test_a_member_warning_names_only_its_own_refused_places(self):
         with recording_un_blocked_places() as blocked:

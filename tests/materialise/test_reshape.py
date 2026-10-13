@@ -35,6 +35,7 @@ from materialise.reshape import (
     decode_columns,
     enrich_columns,
     groupby_sum,
+    groupby_sum_chunks,
     parse_column_tokens,
     pivot,
     select_columns,
@@ -60,7 +61,7 @@ def _row(
     value: float,
     *,
     unit: str = "USD",
-    method: str = "Standard",
+    method: str | None = "Standard",
     provenance: str = "OECD_DAC",
 ) -> tuple:
     return (_STAT_VAR, entity, period, value, unit, method, provenance, None)
@@ -117,6 +118,129 @@ class TestClassifyColumns:
 
         assert "measurementMethod" in classification.facet_axis_columns
         assert "measurementMethod" not in classification.non_droppable_columns
+
+
+class TestContinuedSeries:
+    """A series continued past its reported end by the same source's estimates
+    (`facets.continuation`) mixes methods across its years. Each row keeps its own method."""
+
+    _ROWS = (
+        _row("country/FRA", "2024", 1.0, method=None),
+        _row("country/FRA", "2025", 2.0, method=None),
+        _row("country/FRA", "2026", 3.0, method="Estimated"),
+        _row("country/KEN", "2024", 4.0, method=None),
+        _row("country/KEN", "2025", 5.0, method="Estimated"),
+        _row("country/KEN", "2026", 6.0, method="Estimated"),
+    )
+
+    @pytest.mark.parametrize(
+        ("index", "columns", "expected"),
+        [
+            pytest.param(
+                "entity",
+                "time_period",
+                (("country/FRA", 1.0, 2.0, 3.0), ("country/KEN", 4.0, 5.0, 6.0)),
+                id="places-by-year",
+            ),
+            pytest.param(
+                "time_period",
+                "entity",
+                (("2024", 1.0, 4.0), ("2025", 2.0, 5.0), ("2026", 3.0, 6.0)),
+                id="years-by-place",
+            ),
+        ],
+    )
+    def test_a_pivot_admits_a_series_mixing_reported_and_estimated_rows(
+        self, index, columns, expected
+    ):
+        table = Table(columns=_BASE_COLUMNS, rows=self._ROWS)
+
+        result = pivot(
+            table,
+            index=index,
+            columns=columns,
+            column_cap=10,
+            cell_cap=100,
+            classification=classify_columns(table.columns),
+        )
+
+        assert result.rows == expected
+
+    @pytest.mark.parametrize("streaming", [False, True], ids=["whole-table", "streaming"])
+    def test_a_total_containing_an_estimate_is_an_estimate(self, streaming):
+        """2025 sums France's reported value with Kenya's estimate, so its total takes the
+        estimated method. Every other year keeps its one method."""
+        table = Table(columns=_BASE_COLUMNS, rows=self._ROWS)
+
+        result = _groupby(table, streaming=streaming)
+
+        assert [(row[1], row[2], row[4]) for row in result.rows] == [
+            ("2024", 5.0, None),
+            ("2025", 7.0, "Estimated"),
+            ("2026", 9.0, "Estimated"),
+        ]
+
+    @pytest.mark.parametrize("streaming", [False, True], ids=["whole-table", "streaming"])
+    @pytest.mark.parametrize(
+        ("methods", "column"),
+        [
+            # Two estimated methods: no one method states the total.
+            pytest.param(("Estimated", "Modelled"), "measurementMethod", id="two-estimated"),
+            # No estimate in the mix.
+            pytest.param((None, "Standard"), "measurementMethod", id="no-estimate"),
+            # Two reported methods beside the estimate: more than one series and its
+            # continuation.
+            pytest.param(
+                (None, "Standard", "Estimated"),
+                "measurementMethod",
+                id="two-reported-one-estimated",
+            ),
+        ],
+    )
+    def test_other_method_mixes_still_refuse(self, streaming, methods, column):
+        places = ("country/FRA", "country/KEN", "country/ZWE")
+        table = Table(
+            columns=_BASE_COLUMNS,
+            rows=tuple(
+                _row(place, "2025", 1.0, method=method)
+                for place, method in zip(places, methods, strict=False)
+            ),
+        )
+
+        with pytest.raises(RollupNotSummableError) as excinfo:
+            _groupby(table, streaming=streaming)
+
+        assert excinfo.value.precondition == "facet_homogeneity"
+
+    @pytest.mark.parametrize("streaming", [False, True], ids=["whole-table", "streaming"])
+    def test_a_unit_mix_beside_an_estimate_still_refuses(self, streaming):
+        table = Table(
+            columns=_BASE_COLUMNS,
+            rows=(
+                _row("country/FRA", "2025", 1.0, method=None),
+                _row("country/KEN", "2025", 2.0, method="Estimated", unit="EUR"),
+            ),
+        )
+
+        with pytest.raises(RollupNotSummableError) as excinfo:
+            _groupby(table, streaming=streaming)
+
+        assert excinfo.value.precondition == "facet_homogeneity"
+
+
+def _groupby(table: Table, *, streaming: bool) -> Table:
+    """`groupby_sum` over `entity`, whole-table or through its streaming twin."""
+    classification = classify_columns(table.columns)
+    if not streaming:
+        return groupby_sum(
+            table, axis="entity", classification=classification, summable_axes=frozenset({"entity"})
+        )
+    return groupby_sum_chunks(
+        iter([table]),
+        axis="entity",
+        classification=classification,
+        summable_axes=frozenset({"entity"}),
+    )
 
 
 class TestGroupbySum:
@@ -1301,42 +1425,51 @@ class TestParseColumnTokens:
 
         assert result == ParsedColumns(select=("entity_iso3",), enrichments=())
 
-    def test_an_unknown_token_names_every_qualified_alternative(self):
+    @pytest.mark.parametrize(
+        "token",
+        [
+            pytest.param("bogus", id="unknown"),
+            # A subject role holds no party, so `party_kind` does not qualify it.
+            pytest.param("observationAbout_party_kind", id="subject-party-kind"),
+        ],
+    )
+    def test_an_unknown_token_names_every_qualified_alternative(self, token):
         with pytest.raises(ColumnUnknownError) as excinfo:
             parse_column_tokens(
-                ("bogus",),
+                (token,),
                 table_columns=self._TABLE_COLUMNS,
-                entity_columns=("entity", "donor"),
+                entity_columns=("observationAbout", "origin"),
                 supported_fields=SUPPORTED_ENRICHMENTS,
             )
 
-        assert excinfo.value.column == "bogus"
+        assert excinfo.value.code == "column_unknown"
+        assert excinfo.value.column == token
         assert excinfo.value.alternatives is not None
         assert [(a.ref, a.label) for a in excinfo.value.alternatives] == [
-            ("entity_iso2", "entity_iso2"),
-            ("entity_iso3", "entity_iso3"),
-            ("entity_kind", "entity_kind"),
-            ("entity_label", "entity_label"),
-            ("entity_type", "entity_type"),
-            ("donor_iso2", "donor_iso2"),
-            ("donor_iso3", "donor_iso3"),
-            ("donor_kind", "donor_kind"),
-            ("donor_label", "donor_label"),
-            ("donor_type", "donor_type"),
+            ("observationAbout_iso2", "observationAbout_iso2"),
+            ("observationAbout_iso3", "observationAbout_iso3"),
+            ("observationAbout_label", "observationAbout_label"),
+            ("observationAbout_type", "observationAbout_type"),
+            ("origin_iso2", "origin_iso2"),
+            ("origin_iso3", "origin_iso3"),
+            ("origin_label", "origin_label"),
+            ("origin_party_kind", "origin_party_kind"),
+            ("origin_type", "origin_type"),
         ]
 
-    def test_a_bare_field_requests_it_for_every_entity_column_once(self):
+    def test_a_bare_field_requests_it_for_every_party_role_once(self):
         # A caller asks for kinds without knowing the table's roles; a qualified token the
-        # bare one covers adds no second request.
+        # bare one covers adds no second request, and a subject role gets none.
         result = parse_column_tokens(
-            ("donor_kind", "kind", "value", "entity_kind"),
+            ("destination_party_kind", "party_kind", "value", "origin_party_kind"),
             table_columns=self._TABLE_COLUMNS,
-            entity_columns=("donor", "entity"),
+            entity_columns=("destination", "observationAbout", "origin"),
             supported_fields=SUPPORTED_ENRICHMENTS,
         )
 
         assert result == ParsedColumns(
-            select=("value",), enrichments=(("donor", "kind"), ("entity", "kind"))
+            select=("value",),
+            enrichments=(("destination", "party_kind"), ("origin", "party_kind")),
         )
 
     def test_an_entity_column_containing_an_underscore_resolves_correctly(self):

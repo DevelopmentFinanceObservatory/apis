@@ -167,7 +167,7 @@ def _present_dcids(
         materialise_sdmx=materialise_sdmx,
         coverage=empty_coverage_snapshot(),
     )
-    return {item.value.ref.dcid for item in response.options.items}
+    return {item.value.ref.ref for item in response.options.items}
 
 
 def test_request_form_unit_counts_only_the_facet_a_mint_would_elect():
@@ -451,6 +451,6 @@ def test_request_form_unit_narrows_per_stat_var_not_pooled_across_stat_vars():
         materialise_sdmx=materialise_sdmx,
         coverage=empty_coverage_snapshot(),
     )
-    present = {item.value.ref.dcid for item in response.options.items}
+    present = {item.value.ref.ref for item in response.options.items}
     assert present == {_GTM}
     assert _USA not in present

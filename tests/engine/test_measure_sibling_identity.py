@@ -52,16 +52,16 @@ _ELECTED_SHAPE = identity_shape_for(
     meas_denom_dcid=None,
 )
 _ELECTED_ENTITIES = [
-    Entity(ref=GraphRef(dcid="place/1", label="Place One"), role=EntityRoleSubject())
+    Entity(ref=GraphRef(ref="place/1", label="Place One"), role=EntityRoleSubject())
 ]
 _ELECTED_WINDOW = TimeWindow(start_year=2020, end_year=2020)
 
 
 def _slot(prop: str, value: str) -> Slot:
     return Slot(
-        key=SlotKey(axis="what", property=GraphRef(dcid=prop, label=prop), label=prop),
+        key=SlotKey(axis="what", property=GraphRef(ref=prop, label=prop), label=prop),
         binding=BindingValue(
-            value=SlotValue(ref=GraphRef(dcid=value, label=value), value_kind="enum_value")
+            value=SlotValue(ref=GraphRef(ref=value, label=value), value_kind="enum_value")
         ),
     )
 

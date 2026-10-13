@@ -23,7 +23,6 @@ from search.engine.region.arcs import (
     unresolved_slots_from_member_facts,
 )
 from search.engine.region.bound_unit_gate import bound_unit_gate_reason
-from search.engine.region.candidates import _unbound_query_qualifiers
 from search.engine.region.codes import (
     NO_MEMBER_ASSERTS_BOUND_PROPERTIES,
     NO_MEMBER_HAS_DATA_AT_PLACE,
@@ -83,7 +82,10 @@ from search.engine.region.option_coverage import (
     role_axis_facts_for_materialised,
     role_served_filter,
 )
-from search.engine.region.phase_place_materialise import _nearest_real_for
+from search.engine.region.phase_place_materialise import (
+    _nearest_real_for,
+    note_denominator_unverified,
+)
 from search.engine.region.phase_shared import (
     UNIT_CONVERSION_REFUSALS,
     _admitted_qualifier_properties,
@@ -93,6 +95,7 @@ from search.engine.region.phase_shared import (
 from search.engine.region.place_roles import request_named_groups
 from search.engine.region.related_read import start_elected_related_read, with_related
 from search.engine.region.relaunch import _relaunch_place_options, _relaunch_slot_options
+from search.engine.region.requirements import answer_terms, refusal_terms, settle_answer
 from search.engine.region.result import FacetAxisFilter, RegionResult, answered_roles
 from search.engine.region.scope import (
     build_scope,
@@ -320,12 +323,12 @@ def _install_filtered_answer(
 
 def _gate_carve_out(state: ResolveState, mat_result: Materialised) -> bool:
     """Whether a carve-out answers before the bound-unit gate is read: no member with data at
-    the place, no place and no data, or a query qualifier left unbound
-    (`_assemble_carve_outs`)."""
+    the place, no place and no data, or a requirement the answer leaves unmet
+    (`requirements.refusal_terms`, `_assemble_carve_outs`)."""
     return (
         mat_result.available_at_place is False
         or (state.destination_dcid is None and not mat_result.has_data)
-        or any(q.disposition != "bound" for q in state.query_qualifiers)
+        or bool(refusal_terms(state, state.shape_draft, state.bindings))
     )
 
 
@@ -411,8 +414,8 @@ async def _phase_ground_answer(state: ResolveState) -> RegionResult | None:
     # reads the member held, so a member that is not its family's total warns as an answer
     # showing it does. An unbound qualifier ranks first, and its refusal flags the grounded
     # Spec (`_assemble_carve_outs`).
-    if mat_result.window_gap is not None and not _unbound_query_qualifiers(
-        state.query_qualifiers, unapplied=state.unapplied_qualifier_phrases
+    if mat_result.window_gap is not None and not refusal_terms(
+        state, state.shape_draft, state.bindings
     ):
         if mat_result.family_total_absent is not None:
             state.depart(
@@ -953,6 +956,7 @@ def _build_definite_spec(
         coverage_stamp=mat_result.coverage_stamp,
         scope=scope,
         default_reading=state.default_reading,
+        stated_form=state.stated_form,
         resolved_sources=state.source_refs,
         facets=state.answer_facets,
         # The confirmed count is exact unless measured over a capped recall sample. A
@@ -961,7 +965,7 @@ def _build_definite_spec(
             mat_result.population.confirmed if mat_result.population is not None else None
         ),
         stat_vars_member_count_exact=(
-            mat_result.population.exact if mat_result.population is not None else True
+            mat_result.population.member_count_exact if mat_result.population is not None else True
         ),
         walked=state.walked,
         slot_options=coverage.slot_options,
@@ -976,7 +980,7 @@ def _build_definite_spec(
         unresolved_slots=state.unresolved_slots,
         # Use qualifier bindings after election vetting and repair.
         text_recognized_properties=_admitted_qualifier_properties(state.admitted_qualifiers),
-        query_qualifiers=state.query_qualifiers,
+        query_qualifiers=answer_terms(state, state.shape_draft, state.bindings),
         facet_bindings=setup.facet_bindings,
         # Record properties forced by measure election.
         measure_elected_properties=state.measure_elected_properties,
@@ -1018,11 +1022,10 @@ async def _assemble_carve_outs(
     Qualifier refusal precedes missing-slice and observation checks. Bound-unit availability
     is already verified by ``bound_unit_gate_reason``.
     """
-    # Refuse a recognised term with no matching final binding before any broader answer
-    # can pass as definite. The candidates path uses the same qualifier check.
-    unbound_qualifiers = _unbound_query_qualifiers(
-        state.query_qualifiers, unapplied=state.unapplied_qualifier_phrases
-    )
+    # Judge the final answer on every requirement (`requirements.settle_answer`). One it
+    # leaves unmet refuses before any broader answer can pass as definite, naming the terms
+    # its trace records. The candidates path judges its answers the same way.
+    unbound_qualifiers = settle_answer(state, state.shape_draft, state.bindings)
     if unbound_qualifiers:
         return state.no_data(
             "qualifier_not_bound",
@@ -1227,5 +1230,6 @@ async def _phase_assemble_definite(state: ResolveState) -> RegionResult:
     early = await _assemble_carve_outs(state, mat_result, definite_spec.spec)
     if early is not None:
         return early
+    note_denominator_unverified(state, state.shape_draft, spec_id=definite_spec.spec.spec_id)
 
     return await _finalize_definite_result(state, mat_result, setup, coverage, definite_spec)

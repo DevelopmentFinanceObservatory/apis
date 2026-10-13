@@ -17,7 +17,7 @@ def _ref_from_label(dcid: str, label: str | None) -> GraphRef:
     """Return a `GraphRef`, or raise `GroundingMiss` when `label` is absent."""
     if label is None:
         raise GroundingMiss(dcid)
-    return GraphRef(dcid=dcid, label=label)
+    return GraphRef(ref=dcid, label=label)
 
 
 def graphref(dcid: str, *, graph: EngineGraphClient) -> GraphRef:

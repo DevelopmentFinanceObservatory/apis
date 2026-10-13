@@ -225,7 +225,7 @@ def test_note_narration_create_pins_no_frame(frame_store, revision_store, releas
         "authorship": "model",
     }
     assert record.resolved_payload["provenance"]["inputs"] == []
-    assert record.resolved_payload["provenance"]["sources"] == []
+    assert record.resolved_payload["provenance"].get("sources", []) == []
 
     release = release_registry.pinned()
     registry = component_registry(release)

@@ -1,0 +1,12 @@
+[
+  {
+    "resolvekit_id": "groups/G7",
+    "name": "Group of Seven",
+    "dcid": "GroupOfSeven"
+  },
+  {
+    "resolvekit_id": "groups/OECD",
+    "name": "Organisation for Economic Co-operation and Development",
+    "dcid": "undata-geo/G00406000"
+  }
+]

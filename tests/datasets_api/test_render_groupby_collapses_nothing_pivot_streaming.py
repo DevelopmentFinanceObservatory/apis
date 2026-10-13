@@ -11,7 +11,7 @@ import pytest
 from code_index import CodeIndex, IndexStamp
 from code_index.types import StatVarRow
 from datasets_api.mint_models import GroupbyOptions, MintOptions, PivotOptions
-from datasets_api.render import _reshape, _stream_bare_pivot, render_and_store
+from datasets_api.render import _RenderReads, _reshape, _stream_bare_pivot, render_and_store
 from materialise.enrichment import EnrichmentLookup
 from materialise.pipeline import ConcatenatedFrameChunks
 from materialise.profile import OutputProfile, PivotFeasibility
@@ -92,7 +92,11 @@ def test_two_contributors_with_no_summable_axis_refuses_the_same_way_streamed():
             whole_table,
             options=_options(),
             entity_columns=("recipient",),
-            enrichment=EnrichmentLookup(_GRAPH, type_kinds={}, parties={}),
+            reads=_RenderReads(
+                enrichment=EnrichmentLookup(_GRAPH, parties={}),
+                known={},
+                deadline=None,
+            ),
             code_index=_INDEX_TWO_CONTRIBUTORS,
             resolved_stat_var_refs=("dcid:SV_A", "dcid:SV_B"),
             provenance_refs=("p1",),
@@ -108,7 +112,11 @@ def test_two_contributors_with_no_summable_axis_refuses_the_same_way_streamed():
                 iter(_chunks(_TWO_CONTRIBUTOR_ROWS, bounds)),
                 options=_options(),
                 entity_columns=("recipient",),
-                enrichment=EnrichmentLookup(_GRAPH, type_kinds={}, parties={}),
+                reads=_RenderReads(
+                    enrichment=EnrichmentLookup(_GRAPH, parties={}),
+                    known={},
+                    deadline=None,
+                ),
                 code_index=_INDEX_TWO_CONTRIBUTORS,
                 resolved_stat_var_refs=("dcid:SV_A", "dcid:SV_B"),
                 provenance_refs=("p1",),
@@ -147,7 +155,11 @@ def test_no_summable_axis_refuses_before_a_stored_pivot_cap_on_every_chunking(bo
             iter(_chunks(_TWO_CONTRIBUTOR_ROWS, bounds)),
             options=_options(),
             entity_columns=("recipient",),
-            enrichment=EnrichmentLookup(_GRAPH, type_kinds={}, parties={}),
+            reads=_RenderReads(
+                enrichment=EnrichmentLookup(_GRAPH, parties={}),
+                known={},
+                deadline=None,
+            ),
             code_index=_INDEX_TWO_CONTRIBUTORS,
             resolved_stat_var_refs=("dcid:SV_A", "dcid:SV_B"),
             provenance_refs=("p1",),
@@ -195,7 +207,11 @@ def test_a_duplicate_key_pivot_names_the_varying_column_with_or_without_a_groupb
             iter([Table(columns=columns, rows=rows)]),
             options=options,
             entity_columns=("recipient",),
-            enrichment=EnrichmentLookup(_GRAPH, type_kinds={}, parties={}),
+            reads=_RenderReads(
+                enrichment=EnrichmentLookup(_GRAPH, parties={}),
+                known={},
+                deadline=None,
+            ),
             code_index=_INDEX_ONE_CONTRIBUTOR,
             resolved_stat_var_refs=("dcid:SV_A",),
             provenance_refs=("p1",),
@@ -213,7 +229,9 @@ def test_one_contributor_with_no_summable_axis_pivots_successfully_and_matches_w
         whole_table,
         options=_options(),
         entity_columns=("recipient",),
-        enrichment=EnrichmentLookup(_GRAPH, type_kinds={}, parties={}),
+        reads=_RenderReads(
+            enrichment=EnrichmentLookup(_GRAPH, parties={}), known={}, deadline=None
+        ),
         code_index=_INDEX_ONE_CONTRIBUTOR,
         resolved_stat_var_refs=("dcid:SV_A",),
         provenance_refs=("p1",),
@@ -225,7 +243,11 @@ def test_one_contributor_with_no_summable_axis_pivots_successfully_and_matches_w
             iter(_chunks(_ONE_CONTRIBUTOR_ROWS, bounds)),
             options=_options(),
             entity_columns=("recipient",),
-            enrichment=EnrichmentLookup(_GRAPH, type_kinds={}, parties={}),
+            reads=_RenderReads(
+                enrichment=EnrichmentLookup(_GRAPH, parties={}),
+                known={},
+                deadline=None,
+            ),
             code_index=_INDEX_ONE_CONTRIBUTOR,
             resolved_stat_var_refs=("dcid:SV_A",),
             provenance_refs=("p1",),
@@ -249,7 +271,7 @@ def test_render_and_store_never_builds_a_concatenated_frame_chunks_for_this_comb
     monkeypatch.setattr(ConcatenatedFrameChunks, "from_chunks", _refuse)
     chunks = tuple(Table(columns=_COLUMNS, rows=(row,)) for row in _ONE_CONTRIBUTOR_ROWS)
     rendered = render_and_store(
-        frame_chunks=iter(chunks),
+        frame_chunks=lambda: iter(chunks),
         options=_options(),
         spec={"spec_id": "collapses-nothing-pivot-e2e"},
         provenance_refs=["p1"],
@@ -258,7 +280,7 @@ def test_render_and_store_never_builds_a_concatenated_frame_chunks_for_this_comb
         content_version="sha256:" + "0" * 64,
         artifact_store=FakeArtifactStore(),
         entity_columns=("recipient",),
-        enrichment=EnrichmentLookup(_GRAPH, type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(_GRAPH, parties={}),
         code_index=_INDEX_ONE_CONTRIBUTOR,
         resolved_stat_var_refs=("dcid:SV_A",),
         pivot_max_output_cells=5_000_000,

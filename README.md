@@ -4,7 +4,7 @@ The application is built with FastAPI and runs as a containerized service on Clo
 
 - **Search API**: Interprets natural-language requests with Gemini, grounds entities and variables against a Data Commons graph, resolves observation previews via the `materialise` bridge, and returns structured data specifications.
 - **Datasets API**: Mints dataset definitions, materialises observation tables to Google Cloud Storage artifacts (CSV, Parquet, Excel), manages version records, and handles pinning across storage tiers.
-- **Graph API**: Resolves free-text entity references to graph-confirmed identifiers (DCIDs) and extracts structured node metadata.
+- **Graph API**: Resolves free-text names to graph references with a kind, describes any node the graph holds under one envelope per kind (including a variable's definition and availability), lists what belongs to a node, and documents sources.
 - **Presentation API**: Assembles dataset frames into visual component specifications, persisted in PostgreSQL for downstream rendering.
 - **Skills API**: Serves the published skills catalogue and its resources.
 
@@ -111,15 +111,18 @@ Gated by `DFO_DATASETS_SURFACE=true` (or `1`). Requires PostgreSQL persistence (
 
 Gated by `DFO_GRAPH_SURFACE=true` (or `1`). Communicates directly with the Data Commons platform instance.
 
-| Method | Endpoint                          | Description                                                                                         |
-| :----- | :-------------------------------- | :-------------------------------------------------------------------------------------------------- |
-| `POST` | `/api/graph/resolve`              | Maps free-text entity names to graph-confirmed DCIDs and expands composite entities.                |
-| `GET`  | `/api/graph/node/{dcid}`          | Retrieves graph-confirmed node metadata shaped by type (`stat_var`, `source`, `entity`, or `node`). |
-| `GET`  | `/api/graph/documentation/{dcid}` | Retrieves source documentation for a Dataset or Provenance node.                                    |
-| `GET`  | `/api/graph/sources`              | Lists source DCIDs and names from the source catalogue.                                             |
-| `POST` | `/api/graph/nodes`                | Retrieves up to 50 nodes in one read, each in the GET shape or marked `not_held`.                   |
-| `GET`  | `/api/graph/healthz`              | Liveness probe returning status and capability version.                                             |
-| `GET`  | `/api/graph/capabilities`         | Graph door status, recipe classes, and input constraints.                                           |
+| Method | Endpoint                          | Description                                                                                                                                                                                |
+| :----- | :-------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST` | `/api/graph/resolve`              | Resolves free-text names to graph references. Each result is `resolved`, `ambiguous`, `not_found` or `not_held`, and a group or region carries its member count and a link to its members. |
+| `GET`  | `/api/graph/node/{dcid}`          | Describes a node under one envelope, with a detail block named for its `kind` (one of 16, such as `stat_var`, `country`, `group` or `provenance`).                                         |
+| `POST` | `/api/graph/nodes`                | Describes up to 50 nodes in one read, each as the GET body or `{ref, status: "not_held"}`.                                                                                                 |
+| `GET`  | `/api/graph/node/{dcid}/members`  | Pages the codes, children, datasets, variables, members, countries or facets of a node under a bound cursor.                                                                               |
+| `GET`  | `/api/graph/roots`                | Lists the code systems, groups, regions and sources to start listing from.                                                                                                                 |
+| `GET`  | `/api/graph/documentation/{dcid}` | Retrieves source documentation for a Dataset or Provenance node.                                                                                                                           |
+| `GET`  | `/api/graph/sources`              | Lists the sources this deployment admits, with their datasets and provenances.                                                                                                             |
+| `GET`  | `/api/graph/schema`               | JSON Schema of every request and response body.                                                                                                                                            |
+| `GET`  | `/api/graph/healthz`              | Liveness probe returning status and capability version.                                                                                                                                    |
+| `GET`  | `/api/graph/capabilities`         | Door liveness, kinds, input limits, and the data builds in use.                                                                                                                            |
 
 ### Presentation API (`/api/presentation`)
 
@@ -221,14 +224,14 @@ Configuration variables load from environment variables or `.env` at boot.
 
 ### Graph & Presentation APIs
 
-| Variable                             | Default        | Purpose                                                  |
-| :----------------------------------- | :------------- | :------------------------------------------------------- |
-| `GRAPH_DCP_BASE_URL`                 | _None_         | Upstream Data Commons instance URL for graph resolution. |
-| `GRAPH_DCP_TOKEN`                    | `""`           | Optional `x-graph-token` header for DCP graph calls.     |
-| `PRESENTATION_STORE_HOST`            | `127.0.0.1`    | PostgreSQL host for `presentation_store`.                |
-| `PRESENTATION_STORE_PORT`            | `5432`         | PostgreSQL port for `presentation_store`.                |
-| `PRESENTATION_STORE_DATABASE`        | `presentation` | PostgreSQL database name for `presentation_store`.       |
-| `PRESENTATION_STORE_RUNTIME_DB_USER` | _None_         | Runtime IAM/DB user for presentation persistence.        |
+| Variable                             | Default        | Purpose                                                                   |
+| :----------------------------------- | :------------- | :------------------------------------------------------------------------ |
+| `GRAPH_DCP_BASE_URL`                 | _None_         | Upstream Data Commons instance URL for graph reads and SDMX availability. |
+| `GRAPH_DCP_TOKEN`                    | `""`           | Optional `x-graph-token` header for DCP graph and SDMX calls.             |
+| `PRESENTATION_STORE_HOST`            | `127.0.0.1`    | PostgreSQL host for `presentation_store`.                                 |
+| `PRESENTATION_STORE_PORT`            | `5432`         | PostgreSQL port for `presentation_store`.                                 |
+| `PRESENTATION_STORE_DATABASE`        | `presentation` | PostgreSQL database name for `presentation_store`.                        |
+| `PRESENTATION_STORE_RUNTIME_DB_USER` | _None_         | Runtime IAM/DB user for presentation persistence.                         |
 
 ______________________________________________________________________
 
@@ -249,7 +252,7 @@ dfo-apis/
     ├── dataset_store/       # PostgreSQL storage layer for datasets state and migrations
     ├── datasets_api/        # FastAPI surface for datasets minting, registration, and snapshots
     ├── dfo_apis/            # Root composition module and application factory (create_app)
-    ├── graph_api/           # FastAPI surface for entity resolution and DCID inspection
+    ├── graph_api/           # FastAPI surface for name resolution, node inspection and listing
     ├── presentation_api/    # FastAPI surface for presentation frames and component authoring
     ├── presentation_store/  # PostgreSQL storage layer for presentation components
     ├── search/              # Natural-language resolution pipeline, models, and eval harness

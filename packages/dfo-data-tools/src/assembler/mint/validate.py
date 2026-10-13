@@ -11,13 +11,18 @@ from assembler.errors import SchemaInvalid, pointer_from_path
 
 
 def component_registry(release: CatalogueRelease):
-    """Resolves the envelope's component `$ref`s to member schemas by `$id`."""
+    """Resolves the envelope's `$ref`s by `$id`, to the member schemas and the release's
+    referenced schemas."""
     from referencing import Registry, Resource
     from referencing.jsonschema import DRAFT202012
 
     resources = [
         Resource.from_contents(schema, default_specification=DRAFT202012)
-        for schema in release.component_schemas.values()
+        for schema in (
+            release.envelope_schema,
+            *release.component_schemas.values(),
+            *release.referenced_schemas.values(),
+        )
     ]
     return Registry().with_resources(
         (resource.id(), resource) for resource in resources if resource.id() is not None

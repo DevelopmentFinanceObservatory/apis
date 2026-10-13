@@ -41,7 +41,7 @@ from search.models import (
 
 def gref(dcid: str, label: str | None = None) -> GraphRef:
     """A GraphRef, labeled with `dcid` itself when no `label` is given."""
-    return GraphRef(dcid=dcid, label=label or dcid)
+    return GraphRef(ref=dcid, label=label or dcid)
 
 
 def value_slot(
@@ -321,9 +321,10 @@ def materialise_alternates(
         )
         is not None
     ]
-    return _materialise_alt_shapes(
+    read = _materialise_alt_shapes(
         [alternate for alternate, _ in kept],
         places=[place for _, place in kept],
         graph=graph,
         **kwargs,
     )
+    return read.candidates, read.blocking

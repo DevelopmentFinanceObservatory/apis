@@ -82,7 +82,7 @@ def _converted_unit_resolved_frame():
     return ResolvedFrame(
         frame_ref=_converted_unit_frame_ref(),
         frame=doc,
-        structural_view=compute_structural_view(frame=doc),
+        structural_view=compute_structural_view(frame=doc, continuation=None),
         manifest={},
         labels={},
         retrieved_on=FIXTURE_RETRIEVED_ON,

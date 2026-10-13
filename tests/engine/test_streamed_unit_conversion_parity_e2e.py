@@ -16,6 +16,7 @@ from materialise.rate_tables import RateTableCache
 from materialise.recipe_bodies import RECIPE_BODIES
 from search.engine.bind import _UniversalBindOutput
 from search.engine.concurrency import scoped_concurrency
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.state import EngineOptions
 from tests.engine._fake_coverage import empty_coverage_snapshot
@@ -27,6 +28,7 @@ from tests.engine._harness import (
     _csv_row,
     _facet_from_fixture,
 )
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 from tests.materialise._rate_table_support import (
     CONVERTIBLE_STAT_VAR_ARCS,
@@ -61,6 +63,8 @@ _USD_FIXTURE = ObsFacetFixture(
 
 class _FixedBindLLM:
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
 
@@ -210,11 +214,11 @@ def test_converting_request_still_cites_dates_and_covers_the_converting_stat_var
     spec = buffered.specs[0]
 
     # The selected facet supplies the converted series' provenance citation.
-    cited_dcids = {ref.dcid for ref in spec.resolved.trace.resolved_sources}
+    cited_dcids = {ref.ref for ref in spec.resolved.trace.resolved_sources}
     assert _PROVENANCE in cited_dcids
 
     # The selected facet also supplies the StatVar's 2022 date range.
-    sv = next(item for item in spec.resolved.members if item.ref.dcid == _SV)
+    sv = next(item for item in spec.resolved.members if item.ref.ref == _SV)
     assert sv.data_date_range is not None
     assert sv.data_date_range.start == "2022"
     assert sv.data_date_range.end == "2022"

@@ -1,9 +1,12 @@
-"""Tests recalled labels, representative scores, and the confirm-slot reserve."""
+"""Tests recalled labels, representative scores, and confirmation of every candidate."""
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
+from search.engine.config import settings
 from search.engine.retrieval.derive import derive_shapes
 from search.engine.shape import STANDARD_SHAPE_LABEL, ShapeDraft
 from tests.engine._discover_fixtures import _std_sv_arcs
@@ -142,238 +145,86 @@ class TestDeriveShapesLabelScoreSplit:
         assert shape.label == "Expanded Metric Name"
 
 
-class TestDeriveShapesReserveSlots:
-    """The reserve protects high-scoring recalled candidates from wide topic expansions."""
-
-    _TOPIC = "dc/topic/Wide"
-
-    def test_reserve_rescues_boundary_candidate(self):
-        """The reserve keeps its boundary candidate ahead of a wide expansion."""
-        from search.engine.config import settings
-
-        reserve = settings().min_recall_confirm_slots
-        assert reserve >= 2, "fixture needs room for the boundary candidate plus one higher real"
-        cap = settings().max_confirm_candidates
-
-        nodes: dict = {
-            self._TOPIC: {
-                "arcs": {
-                    "relevantVariable": {
-                        "nodes": [
-                            {"dcid": f"Expand_{i}", "types": ["StatisticalVariable"]}
-                            for i in range(cap + 5)
-                        ]
-                    }
-                }
-            }
-        }
-        for i in range(cap + 5):
-            nodes[f"Expand_{i}"] = {"label": "e", "arcs": _std_sv_arcs("Country", "expanded")}
-
-        confirmed_svs = [self._TOPIC]
-        sv_scores: dict[str, float] = {self._TOPIC: 1.0}
-        sv_types: dict[str, str] = {self._TOPIC: "Topic"}
-
-        # reserve - 1 real candidates score above the expansion stamp; Target_SV
-        # is the reserve-th highest real score, just below them.
-        for i in range(reserve - 1):
-            dcid = f"HighReal_{i}"
-            nodes[dcid] = {"label": "h", "arcs": _std_sv_arcs("Country", f"high_{i}")}
-            confirmed_svs.append(dcid)
-            sv_scores[dcid] = 0.95 - i * 0.01
-        nodes["Target_SV"] = {"label": "t", "arcs": _std_sv_arcs("Country", "target")}
-        confirmed_svs.append("Target_SV")
-        sv_scores["Target_SV"] = 0.95 - reserve * 0.01
-
-        # More real candidates than the cap in total, scoring well below the
-        # stamp -- proves "more than CAP real candidates" without competing
-        # for the reserved slots.
-        for i in range(cap + 1):
-            dcid = f"LowReal_{i}"
-            nodes[dcid] = {"label": "l", "arcs": _std_sv_arcs("Household", f"low_{i}")}
-            confirmed_svs.append(dcid)
-            sv_scores[dcid] = 0.10 - i * 0.0001
-
-        graph = FakeGraph(nodes=nodes, obs={}, detect={}, resolve={})
-        shapes = derive_shapes(
-            confirmed_svs=confirmed_svs, graph=graph, sv_scores=sv_scores, sv_types=sv_types
-        )
-        all_members = {sv for s in shapes for sv in (s.sv_arc_facts or {})}
-        assert "Target_SV" in all_members
-
-    def test_reserve_disabled_a_recalled_candidate_still_survives(self, search_settings):
-        """Target_SV ranks above unscored expansions when the reserve is zero."""
-        from search.engine.config import settings
-
-        search_settings(min_recall_confirm_slots=0)
-        cap = settings().max_confirm_candidates
-
-        nodes: dict = {
-            self._TOPIC: {
-                "arcs": {
-                    "relevantVariable": {
-                        "nodes": [
-                            {"dcid": f"Expand_{i}", "types": ["StatisticalVariable"]}
-                            for i in range(cap + 5)
-                        ]
-                    }
-                }
-            }
-        }
-        for i in range(cap + 5):
-            nodes[f"Expand_{i}"] = {"label": "e", "arcs": _std_sv_arcs("Country", "expanded")}
-
-        confirmed_svs = [self._TOPIC]
-        sv_scores: dict[str, float] = {self._TOPIC: 1.0}
-        sv_types: dict[str, str] = {self._TOPIC: "Topic"}
-        nodes["Target_SV"] = {"label": "t", "arcs": _std_sv_arcs("Country", "target")}
-        confirmed_svs.append("Target_SV")
-        sv_scores["Target_SV"] = 0.50
-        for i in range(cap + 1):
-            dcid = f"LowReal_{i}"
-            nodes[dcid] = {"label": "l", "arcs": _std_sv_arcs("Household", f"low_{i}")}
-            confirmed_svs.append(dcid)
-            sv_scores[dcid] = 0.10 - i * 0.0001
-
-        graph = FakeGraph(nodes=nodes, obs={}, detect={}, resolve={})
-        shapes = derive_shapes(
-            confirmed_svs=confirmed_svs, graph=graph, sv_scores=sv_scores, sv_types=sv_types
-        )
-        all_members = {sv for s in shapes for sv in (s.sv_arc_facts or {})}
-        assert "Target_SV" in all_members
-
-    def test_reserve_changes_nothing_once_expansion_members_are_unscored(self, search_settings):
-        """Unscored expansions yield the same confirmed set with reserve enabled or disabled."""
-        from search.engine.config import settings
-
-        cap = settings().max_confirm_candidates
-
-        nodes: dict = {
-            self._TOPIC: {
-                "arcs": {
-                    "relevantVariable": {
-                        "nodes": [
-                            {"dcid": f"Expand_{i}", "types": ["StatisticalVariable"]}
-                            for i in range(cap + 5)
-                        ]
-                    }
-                }
-            }
-        }
-        for i in range(cap + 5):
-            nodes[f"Expand_{i}"] = {"label": "e", "arcs": _std_sv_arcs("Country", "expanded")}
-
-        confirmed_svs = [self._TOPIC]
-        sv_scores: dict[str, float] = {self._TOPIC: 1.0}
-        sv_types: dict[str, str] = {self._TOPIC: "Topic"}
-        for i in range(cap + 1):
-            dcid = f"Real_{i}"
-            nodes[dcid] = {"label": "r", "arcs": _std_sv_arcs("Household", f"real_{i}")}
-            confirmed_svs.append(dcid)
-            sv_scores[dcid] = 0.95 - i * 0.0001
-
-        graph = FakeGraph(nodes=nodes, obs={}, detect={}, resolve={})
-
-        def _members() -> set[str]:
-            return {
-                sv
-                for s in derive_shapes(
-                    confirmed_svs=confirmed_svs, graph=graph, sv_scores=sv_scores, sv_types=sv_types
-                )
-                for sv in (s.sv_arc_facts or {})
-            }
-
-        with_default_reserve = _members()
-        search_settings(min_recall_confirm_slots=0)
-        assert _members() == with_default_reserve
+class TestDeriveShapesConfirmsEveryCandidate:
+    """Every recalled candidate is confirmed, however many there are."""
 
     @pytest.mark.parametrize(
         "rivals",
         [
             pytest.param(0, id="no-rival"),
-            # Rivals recall added past its cut are confirmed past the cap, so the top `cap`
-            # of the other candidates stand beside them.
-            pytest.param(2, id="rivals-past-the-cap"),
+            pytest.param(2, id="rivals"),
         ],
     )
-    def test_reserve_is_noop_without_expansion(self, search_settings, rivals: int):
-        """Without expansion, the cap keeps the top-scoring candidates, and every rival."""
-        from search.engine.config import settings
-
-        cap = settings().max_confirm_candidates
-        n = cap + 5
-        nodes: dict = {}
-        confirmed_svs = []
-        sv_scores: dict[str, float] = {}
-        for i in range(n):
-            dcid = f"Real_{i}"
-            nodes[dcid] = {"label": "r", "arcs": _std_sv_arcs("Country", f"metric_{i}")}
-            confirmed_svs.append(dcid)
-            sv_scores[dcid] = 1.0 - i * 0.001
-        graph = FakeGraph(nodes=nodes, obs={}, detect={}, resolve={})
-        rival_svs = frozenset(f"Real_{i}" for i in range(rivals))
-
-        def _members() -> set[str]:
-            shapes = derive_shapes(
-                confirmed_svs=confirmed_svs,
-                graph=graph,
-                sv_scores=sv_scores,
-                rival_svs=rival_svs,
-            )
-            assert {sv for s in shapes if s.rival for sv in (s.sv_arc_facts or {})} == rival_svs
-            return {sv for s in shapes for sv in (s.sv_arc_facts or {})}
-
-        with_default_reserve = _members()
-        search_settings(min_recall_confirm_slots=0)
-        without_reserve = _members()
-
-        assert with_default_reserve == without_reserve
-        assert with_default_reserve == {f"Real_{i}" for i in range(cap + rivals)}
-
-    def test_reserve_does_not_starve_expansion(self):
-        """Expansion fills slots left after real candidates use the reserve."""
-        from search.engine.config import settings
-
-        reserve = settings().min_recall_confirm_slots
-        cap = settings().max_confirm_candidates
-        assert reserve > 0
-        n_expanded = cap - reserve + 8  # comfortably more than cap - reserve
-
+    def test_every_candidate_is_confirmed_and_probed_once_under_the_deadline(self, rivals: int):
+        """Recall's `detect_k` candidates, four of them Topics whose leaves fill the member
+        cap, and the rival rows past the cut all reach a shape, with the leaves of the
+        `topic_expand_max_roots` best Topics; a shape holding only rivals is marked as one.
+        The availability probe reads each confirmed candidate once, under the part's
+        deadline, so it reads at most `detect_k + topic_expand_max_roots *
+        topic_expand_max_members` dcids plus the rivals."""
+        config = settings()
+        topics = [f"dc/topic/T{t}" for t in range(config.topic_expand_max_roots + 1)]
+        leaves = {
+            topic: [f"Leaf_{t}_{j}" for j in range(config.topic_expand_max_members)]
+            for t, topic in enumerate(topics)
+        }
         nodes: dict = {
-            self._TOPIC: {
+            topic: {
                 "arcs": {
                     "relevantVariable": {
                         "nodes": [
-                            {"dcid": f"Expand_{i}", "types": ["StatisticalVariable"]}
-                            for i in range(n_expanded)
+                            {"dcid": leaf, "types": ["StatisticalVariable"]}
+                            for leaf in leaves[topic]
                         ]
                     }
                 }
             }
+            for topic in topics
         }
-        for i in range(n_expanded):
-            nodes[f"Expand_{i}"] = {"label": "e", "arcs": _std_sv_arcs("Country", "expanded")}
-
-        confirmed_svs = [self._TOPIC]
-        sv_scores: dict[str, float] = {self._TOPIC: 0.99}
-        sv_types: dict[str, str] = {self._TOPIC: "Topic"}
-        # Exactly `reserve` real candidates -- all get reserved, leaving none
-        # left over to compete for the remaining cap - reserve slots.
-        for i in range(reserve):
-            dcid = f"Real_{i}"
-            nodes[dcid] = {"label": "r", "arcs": _std_sv_arcs("Country", f"real_{i}")}
-            confirmed_svs.append(dcid)
-            sv_scores[dcid] = 0.70 - i * 0.01
-
+        for leaf in (leaf for found in leaves.values() for leaf in found):
+            nodes[leaf] = {"label": "l", "arcs": _std_sv_arcs("Country", f"metric_{leaf}")}
+        reals = [f"Real_{i}" for i in range(config.detect_k - len(topics) + rivals)]
+        for i, dcid in enumerate(reals):
+            nodes[dcid] = {"label": "r", "arcs": _std_sv_arcs("Country", f"metric_{i}")}
+        sv_scores = {
+            **dict.fromkeys(topics, 1.0),
+            **{d: 0.99 - i * 0.001 for i, d in enumerate(reals)},
+        }
         graph = FakeGraph(nodes=nodes, obs={}, detect={}, resolve={})
+        probe = graph.observation_facets_batch
+        probed: list[tuple[list[str], float | None]] = []
+
+        def recording(stat_vars, entities, needs_dates=False, **kwargs):
+            probed.append((list(stat_vars), kwargs.get("deadline")))
+            return probe(stat_vars, entities, needs_dates, **kwargs)
+
+        graph.observation_facets_batch = recording
+        rival_svs = frozenset(reals[len(reals) - rivals :])
+        deadline = time.monotonic() + 60
+
         shapes = derive_shapes(
-            confirmed_svs=confirmed_svs, graph=graph, sv_scores=sv_scores, sv_types=sv_types
+            confirmed_svs=[*topics, *reals],
+            graph=graph,
+            sv_scores=sv_scores,
+            sv_types=dict.fromkeys(topics, "Topic"),
+            rival_svs=rival_svs,
+            place_dcids=["country/KEN"],
+            deadline=deadline,
         )
-        expanded_shape = next(s for s in shapes if "Expand_0" in (s.sv_arc_facts or {}))
-        assert len(expanded_shape.sv_arc_facts or {}) == cap - reserve
-        real_svs = {f"Real_{i}" for i in range(reserve)}
-        all_members = {sv for s in shapes for sv in (s.sv_arc_facts or {})}
-        assert real_svs <= all_members
+
+        expanded = [
+            leaf for topic in topics[: config.topic_expand_max_roots] for leaf in leaves[topic]
+        ]
+        assert {sv for s in shapes if s.rival for sv in (s.sv_arc_facts or {})} == rival_svs
+        assert {sv for s in shapes for sv in (s.sv_arc_facts or {})} == {*reals, *expanded}
+        ((stat_vars, probe_deadline),) = probed
+        assert sorted(stat_vars) == sorted([*reals, *expanded])
+        assert len(stat_vars) <= (
+            config.detect_k
+            + config.topic_expand_max_roots * config.topic_expand_max_members
+            + rivals
+        )
+        assert probe_deadline == deadline
 
 
 class TestDeriveShapesSdgLabelUnchanged:

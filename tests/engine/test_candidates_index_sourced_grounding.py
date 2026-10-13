@@ -11,9 +11,11 @@ import asyncio
 
 from code_index.shared import get_index
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 _QUERY = "grant equivalent disbursements and financial obligation commitments to Kenya"
@@ -137,6 +139,8 @@ class _ChooseShape1AlsoPlausibleShape2LLM:
     """Elect the grantEquivalent shape, bind crsPurpose, and mark the amount shape as plausible."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0,
@@ -181,9 +185,9 @@ def test_alternate_shapes_index_only_winner_renders_its_slot_values_on_the_wire(
     alt_spec = next(
         spec
         for spec in result.specs
-        if any(sv.ref.dcid == _EXTRA_SV2 for sv in spec.resolved.members)
+        if any(sv.ref.ref == _EXTRA_SV2 for sv in spec.resolved.members)
     )
-    stat_var = next(sv for sv in alt_spec.resolved.members if sv.ref.dcid == _EXTRA_SV2)
-    rendered = {sv.key.property.dcid: sv.value.ref.dcid for sv in stat_var.slot_values}
+    stat_var = next(sv for sv in alt_spec.resolved.members if sv.ref.ref == _EXTRA_SV2)
+    rendered = {sv.key.property.ref: sv.value.ref.ref for sv in stat_var.slot_values}
     expected = {p: _recalled2_row.constraint_properties[p] for p in _SHAPE2_BOUND_PROPS}
     assert rendered == expected

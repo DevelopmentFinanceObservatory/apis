@@ -21,9 +21,11 @@ from search.eval.checks import (
     score_results,
 )
 from search.eval.checks.base import all_of, answer_result, any_of, infra_error
+from search.eval.gate import Observation, Outcome, judge
 from tests.eval.checks.conftest import make_case, panel, response_schema
 
 P, F, U, NA = (Result(v) for v in (Verdict.PASS, Verdict.FAIL, Verdict.UNVERIFIABLE, Verdict.NA))
+UNREACHED = Result(Verdict.UNREACHED)
 
 
 @pytest.mark.parametrize(
@@ -41,7 +43,7 @@ P, F, U, NA = (Result(v) for v in (Verdict.PASS, Verdict.FAIL, Verdict.UNVERIFIA
         ("parts[].unsupported.definition.identity.slots[].binding.state", True),
         ("parts[].spec.definition.identity.requested_period", False),
         ("parts[].no_data.reasons", False),
-        ("scope.place.dcid", True),
+        ("scope.place.ref", True),
     ],
 )
 def test_wire_schema_declares_paths(path, declared):
@@ -72,6 +74,10 @@ def test_read_path_raises_unverifiable_for_a_path_outside_the_schema(ctx: ScoreC
         ([P, U], Verdict.UNVERIFIABLE, Verdict.PASS),
         ([F, U], Verdict.FAIL, Verdict.UNVERIFIABLE),
         ([P, NA], Verdict.PASS, Verdict.PASS),
+        ([P, UNREACHED], Verdict.UNREACHED, Verdict.PASS),
+        ([U, UNREACHED], Verdict.UNVERIFIABLE, Verdict.UNVERIFIABLE),
+        ([F, UNREACHED], Verdict.FAIL, Verdict.FAIL),
+        ([UNREACHED, NA], Verdict.UNREACHED, Verdict.UNREACHED),
         ([NA, NA], Verdict.NA, Verdict.NA),
         ([], Verdict.NA, Verdict.NA),
     ],
@@ -81,22 +87,100 @@ def test_all_of_and_any_of(results, all_verdict, any_verdict):
     assert any_of(results).verdict == any_verdict
 
 
+def test_a_result_holds_its_parts_read_only_and_hashes():
+    held = {0: Verdict.FAIL}
+    result = Result(Verdict.FAIL, parts=held)
+    held[1] = Verdict.UNREACHED
+    assert result.parts == {0: Verdict.FAIL}
+    with pytest.raises(TypeError):
+        result.parts[1] = Verdict.UNREACHED
+    assert hash(result) == hash(Result(Verdict.FAIL, parts={0: Verdict.FAIL}))
+    assert Result(Verdict.PASS, parts={}) == P
+    assert Result(Verdict.NA, parts={0: Verdict.UNREACHED}) == NA
+
+
 @pytest.mark.parametrize(
     ("results", "known", "expected"),
     [
         ({"measure": P, "entities": F, "disposition": F}, (), Result(Verdict.FAIL, "entities")),
         ({"measure": U, "entities": F}, ("entities",), Result(Verdict.UNVERIFIABLE, "measure")),
         ({"measure": P, "skills": NA}, (), Result(Verdict.PASS)),
+        # A known disposition failure leaves the measure the base never reached to decide.
+        (
+            {"disposition": F, "measure": UNREACHED, "entities": P},
+            ("disposition",),
+            Result(Verdict.UNREACHED, "measure"),
+        ),
+        # The parts behind the verdict merge across the checks that did not pass.
+        (
+            {
+                "measure": Result(Verdict.UNREACHED, parts={1: Verdict.UNREACHED}),
+                "entities": Result(Verdict.FAIL, parts={0: Verdict.FAIL}),
+            },
+            (),
+            Result(Verdict.FAIL, "entities", parts={0: Verdict.FAIL, 1: Verdict.UNREACHED}),
+        ),
         (
             {"measure": F, "groundedness": infra_error("down")},
             (),
             Result(Verdict.FAIL, "measure", infra=True),
         ),
     ],
-    ids=["first failure", "known left out", "n/a passes", "infra carries over"],
+    ids=[
+        "first failure",
+        "known left out",
+        "n/a passes",
+        "unreached",
+        "parts merge",
+        "infra carries over",
+    ],
 )
 def test_answer_combines_the_checks_outside_the_known_failures(results, known, expected):
     assert answer_result(results, known=known) == expected
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "expected"),
+    [
+        (Verdict.FAIL, Verdict.UNVERIFIABLE, Verdict.FAIL),
+        (Verdict.UNVERIFIABLE, Verdict.FAIL, Verdict.FAIL),
+        (Verdict.FAIL, Verdict.UNREACHED, Verdict.FAIL),
+        (Verdict.UNREACHED, Verdict.FAIL, Verdict.FAIL),
+        (Verdict.UNVERIFIABLE, Verdict.UNREACHED, Verdict.UNVERIFIABLE),
+        (Verdict.UNREACHED, Verdict.UNVERIFIABLE, Verdict.UNVERIFIABLE),
+    ],
+)
+def test_answer_merges_overlapping_parts_in_verdict_order(first, second, expected):
+    results = {
+        "measure": Result(first, parts={0: first}),
+        "request": Result(second, parts={0: second, 1: Verdict.UNREACHED}),
+    }
+
+    result = answer_result(results, known=())
+
+    assert result.verdict == expected
+    assert result.parts == {0: expected, 1: Verdict.UNREACHED}
+
+
+def test_a_pre_existing_answer_failure_survives_an_unverifiable_check():
+    measure = Result(Verdict.FAIL, parts={0: Verdict.FAIL})
+    head = answer_result({"measure": measure, "request": P}, known=())
+    base = answer_result(
+        {
+            "measure": measure,
+            "request": Result(Verdict.UNVERIFIABLE, parts={0: Verdict.UNVERIFIABLE}),
+        },
+        known=(),
+    )
+
+    judgement = judge(
+        check="answer",
+        head=[Observation(head.verdict, parts=head.parts)] * 3,
+        base=[Observation(base.verdict, parts=base.parts)] * 3,
+    )
+
+    assert judgement.outcome == Outcome.PRE_EXISTING
+    assert not judgement.blocks
 
 
 def test_every_check_name_is_registered():

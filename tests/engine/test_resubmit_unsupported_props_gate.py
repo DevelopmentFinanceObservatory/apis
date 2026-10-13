@@ -117,15 +117,15 @@ class TestRatioBackedNarrowAnswersFromFullAssertingSurvivor:
         assert region.status == "definite", region.no_data_reason
         spec = region.specs[0]
 
-        resolved_svs = [sv.ref.dcid for sv in spec.resolved.members]
+        resolved_svs = [sv.ref.ref for sv in spec.resolved.members]
         assert resolved_svs == [_RATIO_INFANT_FULL_SV]
 
         gender_result = next(
-            s for s in spec.resolved.slots if s.key.property and s.key.property.dcid == "gender"
+            s for s in spec.resolved.slots if s.key.property and s.key.property.ref == "gender"
         )
         assert isinstance(gender_result.binding, BindingValue)
         assert gender_result.binding.value.ref is not None
-        assert gender_result.binding.value.ref.dcid == "Female"
+        assert gender_result.binding.value.ref.ref == "Female"
 
 
 # Construct-and-confirm uses the narrow's survivors as its seed.
@@ -208,7 +208,7 @@ class TestASetBindingElectsEveryMemberAssertingTheBoundValues:
             options=walk_options(_adult_graph()),
         )
         assert region.status == "definite", region.no_data_reason
-        resolved_svs = {sv.ref.dcid for sv in region.specs[0].resolved.members}
+        resolved_svs = {sv.ref.ref for sv in region.specs[0].resolved.members}
         assert resolved_svs == {_RURAL_FEMALE_ADULT_SV, _RURAL_MALE_ADULT_SV}
 
 
@@ -263,7 +263,9 @@ def _mv_gate_graph() -> FakeGraph:
 class TestAResidenceSetElectsTheMembersAssertingTheBoundAge:
     def test_a_residence_set_with_a_bound_age_elects_the_adult_rural_count(self):
         """Urban or rural residence, adult age: the walk elects the adult rural count. The
-        urban count asserts no age, and the peri-urban one sits outside the set."""
+        urban count asserts no age, and the peri-urban one sits outside the set. Every term
+        the identity posts is applied, refused or disclosed: no member read carries Urban,
+        so the answer reads the set and departs `measure_not_applied` naming Urban."""
         entities = [subject_entity(_IND_DCID)]
         age_slot = _value_slot("how", "age", "age", "Adult")
         residence_set_slot = _set_slot(
@@ -282,5 +284,10 @@ class TestAResidenceSetElectsTheMembersAssertingTheBoundAge:
             options=walk_options(_mv_gate_graph()),
         )
         assert region.status == "definite", region.no_data_reason
-        resolved_svs = [sv.ref.dcid for sv in region.specs[0].resolved.members]
+        resolved_svs = [sv.ref.ref for sv in region.specs[0].resolved.members]
         assert resolved_svs == [_MV_RURAL_ADULT_SV]
+        assert [
+            (fact.binding_ref, fact.asked)
+            for fact in region.departure_facts.values()
+            if fact.code == "measure_not_applied"
+        ] == [("how:placeOfResidenceClassification", "Urban")]

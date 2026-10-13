@@ -55,7 +55,7 @@ _IMPUTED_CRS_AXES = ("crsPurpose", "crsTypeOfFlow")
 
 def _summable_by_property(slots: list[Slot]) -> dict[str, bool]:
     return {
-        slot.key.property.dcid if slot.key.property else slot.key.label: slot.summable
+        slot.key.property.ref if slot.key.property else slot.key.label: slot.summable
         for slot in slots
     }
 

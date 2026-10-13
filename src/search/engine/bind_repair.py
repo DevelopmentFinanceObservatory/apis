@@ -32,6 +32,7 @@ from search.engine.qualifier_match import QualifierMatch, QualifierTie, names_pl
 from search.engine.retrieval.bound_values import (
     bound_realizable_members,
     bound_values_from_bindings,
+    shape_population_arcs,
 )
 from search.engine.retrieval.facts import read_constraints
 from search.engine.retrieval.representative import _shape_disagreement_props
@@ -152,13 +153,12 @@ def _label_negated_in_text(label: str, text: str) -> bool:
 
 
 def _unscoped_property_values(shape_draft: ShapeDraft, property_dcid: str) -> list[str]:
-    """Return distinct values across all confirmed members, including those without place data,
-    in first-occurrence order.
+    """Return distinct values across the members the shape stands for
+    (`shape_population_arcs`), including those without place data, in first-occurrence order.
     """
-    sv_arc_facts = shape_draft.sv_arc_facts or {}
     values: list[str] = []
     seen: set[str] = set()
-    for arcs in sv_arc_facts.values():
+    for arcs in shape_population_arcs(shape_draft).values():
         value = read_constraints(arcs).get(property_dcid)
         if value is not None and value not in seen:
             seen.add(value)
@@ -224,8 +224,8 @@ def restore_starved_axis_binding(
         trial = list(result)
         trial[i] = fired
         trial_bound_values = bound_values_from_bindings(trial)
-        sv_arc_facts = shape_draft.sv_arc_facts or {}
-        if not bound_realizable_members(list(sv_arc_facts), sv_arc_facts, trial_bound_values):
+        population = shape_population_arcs(shape_draft)
+        if not bound_realizable_members(list(population), population, trial_bound_values):
             continue
 
         result[i] = fired

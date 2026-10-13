@@ -4,24 +4,24 @@ description: Create, retrieve, and download a versioned DFO dataset.
 
 # How to get a dataset
 
-Use `POST /api/datasets` to create CSV, XLSX, or Parquet data from a resolved spec.
+Use `POST /api/v1/datasets` to create CSV, XLSX, or Parquet data from a resolved spec.
 
 ## Before you start
 
 Start with a definite spec from [How to resolve a question](resolve-a-question.md). Set the development API URL.
 
 ```bash
-export DFO_API=https://dfo-dev-apis-zms5lj4zhq-nn.a.run.app
+export DFO_API=https://developmentfinance.org
 ```
 
-This page stores the Search response in `resolve.json`, the mint response in `response.json`, and the completed manifest in `manifest.json`.
+This page stores the Search response in `resolve.json`, the response to the create request in `response.json`, and the completed manifest in `manifest.json`.
 
 ## Steps
 
 1. Resolve the question and save the result.
 
    ```bash
-   curl -fsS -X POST "$DFO_API/api/search/resolve" \
+   curl -fsS -X POST "$DFO_API/api/v1/search/resolve" \
      -H "Content-Type: application/json" \
      -d '{"input":{"kind":"raw_text","query":"ODA disbursements from Germany to Nigeria for basic health care"}}' \
      > resolve.json
@@ -32,7 +32,7 @@ This page stores the Search response in `resolve.json`, the mint response in `re
    }
    ```
 
-2. Create a mint request with the Search response's `spec_id` and `definition`.
+2. Build the request body from the Search response's `spec_id` and `definition`, and save it as `mint.json`.
 
    ```bash
    jq '{
@@ -45,12 +45,12 @@ This page stores the Search response in `resolve.json`, the mint response in `re
      options: {format: "parquet", bundle: true}
    }' resolve.json > mint.json
 
-   curl -fsS -X POST "$DFO_API/api/datasets" \
+   curl -fsS -X POST "$DFO_API/api/v1/datasets" \
      -H "Content-Type: application/json" \
      -d @mint.json > response.json
    ```
 
-   `schema_version` is `1`. Supported formats are `csv`, `xlsx`, and `parquet`. Check `GET /api/datasets/capabilities` for the active formats. `bundle` defaults to `true` and includes the data file, `README.md`, `SOURCES.md`, `CITATION.cff`, and `datapackage.json`. `data/codes.csv` is present when the data contains codes.
+   `schema_version` is `1`. Supported formats are `csv`, `xlsx`, and `parquet`. Check `GET /api/v1/datasets/capabilities` for the active formats. `bundle` defaults to `true` and includes the data file, `README.md`, `SOURCES.md`, `CITATION.cff`, and `datapackage.json`. `data/codes.csv` is present when the data contains codes.
 
    Supply `definition` when the Datasets API has not registered the `spec_id`. Send the Search definition unchanged so the API can confirm that it reproduces the identifier.
 
@@ -68,7 +68,7 @@ This page stores the Search response in `resolve.json`, the mint response in `re
    end' response.json
    ```
 
-   This prints selected fields. A request within the synchronous budget returns `200` and a manifest. A larger request returns `202` and an `operation` object. The initial operation response contains `operation.poll` and `retry_after_ms`.
+   A request within the synchronous budget returns `200` and a manifest. A larger request returns `202` and an `operation` object. The initial operation response contains `operation.poll` and `retry_after_ms`.
 
 4. Save a completed manifest from the response.
 
@@ -124,7 +124,7 @@ This page stores the Search response in `resolve.json`, the mint response in `re
    Path("bundle.zip").write_bytes(response.content)
    ```
 
-   Each `url` is a download link relative to the API host, `/api/datasets/{spec_id}/{content_version}/files/{artifact_digest}`, and it never expires. A request to it answers `302` with a storage URL signed for five minutes, so follow redirects (`curl -L`, or `follow_redirects=True` in httpx). Once the version is taken down, the link answers `410 snapshot_revoked`.
+   Each `url` is a download link relative to the API host, `/api/datasets/{spec_id}/{content_version}/files/{artifact_digest}`. The path carries no version prefix and works as returned. The address of the link is stable. Once the file behind it passes retention, the link renews it where it can and otherwise answers `410 artifact_expired` (see [Retention and capacity](#retention-and-capacity)). A request to it answers `302` with a storage URL signed for five minutes, so follow redirects (`curl -L`, or `follow_redirects=True` in httpx). Once the version is taken down, the link answers `410 snapshot_revoked`.
 
    A manifest can include several artifacts for one `content_version`, including a Parquet series-statistics file. Select the requested `format` and `bundle` fields inside `rendering`. Bundle renderings also carry a rendition token that can change when the archive layout changes. The statistics artifact has one row per series and is separate from the observation table.
 
@@ -135,7 +135,7 @@ This page stores the Search response in `resolve.json`, the mint response in `re
    ```bash
    spec_id="$(jq -r '.definition.spec_id' manifest.json)"
    content_version="$(jq -r '.content_version' manifest.json)"
-   curl -fsS "$DFO_API/api/datasets/$spec_id/$content_version" > snapshot.json
+   curl -fsS "$DFO_API/api/v1/datasets/$spec_id/$content_version" > snapshot.json
    jq '{content_version, artifacts: [.artifacts[] | {rendering, url}]}' snapshot.json
    ```
 
@@ -147,14 +147,14 @@ A manifest has a `content_version`, coverage, and an artifact whose rendering ma
 
 ## Retention and capacity
 
-Working-tier artifacts expire after the retention period published by `GET /api/datasets/capabilities`, measured from `stored_at`. After that, its download link renders the file again while the version's rows are pinned, and otherwise answers `410 artifact_expired`. A pinned artifact remains servable. A snapshot can return `410 artifact_expired` when no listable artifact location is servable, or `410 snapshot_revoked` for a revoked version.
+Generated artifacts are working-tier by default and expire after the retention period published by `GET /api/v1/datasets/capabilities` (30 days), measured from `stored_at`. A pinned artifact is kept indefinitely. After a working-tier artifact expires, its download link renders the file again from the version's stored frame while that frame is present, and otherwise answers `410 artifact_expired`. A snapshot can return `410 artifact_expired` when no listable artifact location is servable, or `410 snapshot_revoked` for a revoked version.
 
 Terminal operations are guaranteed pollable for the retention period in the Datasets capabilities response. An older operation can still be present. `404 operation_not_found` means the API does not know that operation.
 
-`GET /api/datasets/capabilities` publishes the synchronous budgets and background ceilings. Requests over either synchronous budget can run in the background if they fit within both background ceilings. A request beyond a background ceiling returns `422 over_ceiling`.
+`GET /api/v1/datasets/capabilities` publishes the synchronous budgets and background ceilings. Requests over either synchronous budget can run in the background if they fit within both background ceilings. A request beyond a background ceiling returns `422 over_ceiling`.
 
 ```bash
-curl -fsS "$DFO_API/api/datasets/capabilities" \
+curl -fsS "$DFO_API/api/v1/datasets/capabilities" \
   | jq '.caps | {sync_budget_rows, sync_budget_requests, async_max_rows, async_max_requests}'
 ```
 
@@ -177,7 +177,7 @@ Add this `scope` object to `input` in `mint.json`. Keep `kind`, `spec_id`, and `
 
 ## Request a bare frame
 
-Use `layout: "frame"` for a bare Parquet file in the frame layout. The request needs `format: "parquet"` and `bundle: false`. Frame layout cannot be combined with a pivot.
+Use `layout: "frame"` for a bare Parquet file in the frame layout. The request needs `format: "parquet"` and `bundle: false`. Frame layout cannot be combined with `options.pivot`, which reshapes the table from long to wide with one `index` column and one `columns` column.
 
 ```json
 {

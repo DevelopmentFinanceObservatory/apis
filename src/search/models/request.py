@@ -50,6 +50,7 @@ _PARSED_MAX_UNIT_TEXT_CHARS = 100
 _PARSED_MAX_SOURCE_TEXT_CHARS = 200
 _PARSED_MAX_SOURCE_MENTION_CHARS = 120
 _PARSED_MAX_PART_SOURCES = 8
+_PARSED_MAX_SOURCE_CODE_CHARS = 64
 _PARSED_MAX_RAW_QUERY_CHARS = 2000
 # At least extract's MAX_OPERATIONS, the most one query can carry, so every part
 # the engine echoes posts back unrefused. A test pins the relation.
@@ -184,7 +185,8 @@ class ParsedEntity(StrictModel):
             "the countries of a continent or UN subregion, or the members of a group. It "
             "has no effect on a single place. Text whose wording names members, such as "
             "'EU member states', reads as true without the flag. With a pinned `dcid` it "
-            "is honoured for a Continent or UNGeoRegion node, and refuses request_invalid "
+            "is honoured for a continent or subregion that the membership policy holds or "
+            "omits, whatever the node's graph type, and refuses request_invalid "
             "for a group's own node, whose members a pin cannot supply. One part names a "
             "set once: the same `text` posted with both values refuses request_invalid"
         ),
@@ -199,6 +201,10 @@ class ParsedEntity(StrictModel):
 
 def _is_false(value: bool) -> bool:
     return not value
+
+
+def _is_none(value: object) -> bool:
+    return value is None
 
 
 class SourceMention(StrictModel):
@@ -331,6 +337,27 @@ class ParsedPart(StrictModel):
             "opt-in flag"
         ),
     )
+    source_code: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=_PARSED_MAX_SOURCE_CODE_CHARS,
+        exclude_if=_is_none,
+        description=(
+            "a publisher's own series code for this part's variable, such as the World "
+            "Bank's DT.TDS.DEGG.CD, when the user or a skill gives one. Compared "
+            "upper-cased, it names the variables the publisher gives that code, and the "
+            "part answers from them in place of matching variable_text; variable_text, "
+            "entities and open_roles still choose among them. A code is never a "
+            "constraint and narrows nothing else. A code whose variables cannot answer "
+            "the part, because no source search serves holds it, the part's sources leave "
+            "out every source holding it, or its variables cannot answer the part as "
+            "asked, resolves no_data with source_code_not_held, its message naming the "
+            "cause; a code two of the part's sources hold resolves no_data with "
+            "source_code_ambiguous until `sources` names one; a code whose variable "
+            "another code of its source also names resolves no_data with "
+            "source_code_shares_variable, naming those codes"
+        ),
+    )
     operations: list[Operation] = Field(
         default_factory=list,
         max_length=_PARSED_MAX_PART_OPERATIONS,
@@ -363,6 +390,15 @@ class ParsedPart(StrictModel):
             "the default, folds parts that share a shape into one set answer"
         ),
     )
+
+    @field_validator("source_code", mode="before")
+    @classmethod
+    def _normalise_source_code(cls, code: object) -> object:
+        """Strip and upper-case a posted code, so both spellings of one code key, echo and
+        resolve alike; a blank code is no code."""
+        if not isinstance(code, str):
+            return code
+        return code.strip().upper() or None
 
     @model_validator(mode="after")
     def _fold_deprecated_sources(self) -> ParsedPart:

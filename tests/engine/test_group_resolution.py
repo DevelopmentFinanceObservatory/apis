@@ -17,6 +17,7 @@ from search.engine.clients.graph import Facet
 from search.engine.config import settings
 from search.engine.core import resolve_async
 from search.engine.departures import spec_departure_facts
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region.pipeline import resolve_variable
 from search.engine.role_text import DoorRole
 from search.models import EntityGroup, RawTextInput, ResolveRequest
@@ -28,6 +29,7 @@ from tests.engine._fake_coverage import (
     patch_coverage,
 )
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, FakeLLM, make_resolver
 
 _FINANCING_ROLE_NAMES = RoleNames(donor="financingProvider", recipient="financingRecipient")
@@ -64,6 +66,8 @@ class _FixedBindLLM:
     """Elects the sole shape without a recorded LLM response."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0, bindings=[], also_plausible=None, ask=None
@@ -322,7 +326,7 @@ class TestGroupRoleBearingExpansion:
         assert entities_by_ref["country/T2"] == "origin"
         assert entities_by_ref["country/KEN"] == "destination"
         group = EntityGroup(
-            dcid=group_node.dcid if group_node is not None else None,
+            ref=group_node.dcid if group_node is not None else None,
             label=label,
             entity_type=group_node.graph_type if group_node is not None else None,
         )
@@ -361,7 +365,7 @@ class TestGroupRoleBearingExpansion:
         result = _run(
             entities=["G7", "Kenya"],
             pre_resolved={
-                "G7": Group(members=self._MEMBERS, entity=None, dcid="groups/G7"),
+                "G7": Group(members=self._MEMBERS, entity=None, dcid="GroupOfSeven"),
                 "Kenya": Resolved(entity=_country("country/KEN", "Kenya")),
             },
             entity_roles={
@@ -381,10 +385,13 @@ class TestGroupRoleBearingExpansion:
         codes = [fact.code for fact in spec_departure_facts(spec, operations=())]
         assert ("group_read_as_members" in codes) is (total is None)
 
-    def test_a_region_on_a_role_that_admits_only_its_members_binds_them(self, monkeypatch):
+    def test_a_region_on_a_role_that_admits_only_its_members_binds_them(
+        self, monkeypatch, declare_regions
+    ):
         """The recipient role admits countries and refuses a continent. The series holds
         rows to the continent's node and to one member, and the Spec binds the members."""
         region = Entity(dcid="testonia", name="Testonia", kind="continent", graph_type="Continent")
+        declare_regions({region.dcid: ["country/T1", "country/T2"]})
         coverage = patch_coverage(
             monkeypatch,
             [
@@ -417,7 +424,7 @@ class TestGroupRoleBearingExpansion:
             "destination": ["country/T1", "country/T2"],
         }
         assert spec.resolved.entity_groups == {
-            "destination": EntityGroup(dcid="testonia", label="Testonia", entity_type="Continent")
+            "destination": EntityGroup(ref="testonia", label="Testonia", entity_type="Continent")
         }
 
 

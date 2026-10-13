@@ -49,8 +49,9 @@ def test_kenya_resolves_to_country_ken_and_the_response_carries_it():
 
 
 def test_africa_resolves_and_expands_to_its_member_countries():
-    """Africa resolves to `africa`, whose node holds no observation, so the Spec binds its
-    member countries and its coverage counts those that hold data."""
+    """Africa resolves to `africa`, whose node holds no observation, so the Spec binds the
+    54 countries the membership policy holds for it, and none its graph containment alone
+    holds, such as Réunion. Its coverage counts those that hold data."""
     obs = {
         f"{_GDP_SV}|country/KEN": [
             {"earliestDate": "2020", "latestDate": "2020", "obsCount": 1, "provenanceId": _SOURCE}
@@ -65,7 +66,9 @@ def test_africa_resolves_and_expands_to_its_member_countries():
         detect={"gdp": {"svs": [_GDP_SV], "cosine_scores": [0.95]}},
         resolve={},
         places={},
-        children={"africa": {"Country": ["country/KEN", "country/UGA", "country/NGA"]}},
+        children={
+            "africa": {"Country": ["country/KEN", "country/UGA", "country/NGA", "country/REU"]}
+        },
     )
     result: RegionResult = asyncio.run(
         resolve_variable(
@@ -85,7 +88,13 @@ def test_africa_resolves_and_expands_to_its_member_countries():
     )
     assert result.status == "definite"
     spec = result.specs[0]
-    assert [e.ref for e in spec.resolved.entities] == ["country/KEN", "country/NGA", "country/UGA"]
+    bound = [e.ref for e in spec.resolved.entities]
+    held = make_resolver(graph).membership.members("africa").members
+    assert isinstance(held, tuple)
+    assert bound == list(held)
+    assert len(bound) == 54
+    assert {"country/KEN", "country/NGA", "country/UGA"} <= set(bound)
+    assert "country/REU" not in bound
     assert isinstance(spec.resolved.coverage, CoverageExact)
     assert spec.resolved.coverage.dimensions is not None
     countries_dim = next(d for d in spec.resolved.coverage.dimensions if d.label == "countries")

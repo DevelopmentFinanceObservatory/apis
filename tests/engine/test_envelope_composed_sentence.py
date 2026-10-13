@@ -118,7 +118,7 @@ def _gdp_resubmit_request() -> dict:
                                     "key": {
                                         "axis": "how",
                                         "property": {
-                                            "dcid": "activitySource",
+                                            "ref": "activitySource",
                                             "label": "activity source",
                                         },
                                         "label": "activity source",
@@ -345,7 +345,7 @@ def _india_gdp_identity_entry() -> ResubmitIdentityEntry:
                 {
                     "key": {
                         "axis": "how",
-                        "property": {"dcid": "activitySource", "label": "activity source"},
+                        "property": {"ref": "activitySource", "label": "activity source"},
                         "label": "activity source",
                     },
                     "binding": {"kind": "unbound"},

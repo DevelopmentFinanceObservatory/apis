@@ -11,6 +11,7 @@ import threading
 import pytest
 
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import phase_answer, resolve_variable
 from search.engine.region.codes import (
     ELECTED_SHAPE_NO_DATA,
@@ -23,6 +24,7 @@ from tests.datasets_api._graph_doubles import FakeMintGraphReader
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import offline_resolve
+from tests.engine._quantity import NO_QUANTITY
 from tests.engine.test_dataset_resubmit import _identity_entry_from_spec
 from tests.fixtures import FakeGraph, make_resolver
 
@@ -144,6 +146,8 @@ class _NoAmbiguityBindLLM:
         self._also_plausible = also_plausible
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=self._chosen_shape_index,
@@ -226,7 +230,7 @@ def test_a_reelected_sibling_is_walked_before_it_answers():
     )
 
     assert result.status == "definite"
-    assert [sv.ref.dcid for sv in result.specs[0].resolved.members] == [_SIBLING_SV]
+    assert [sv.ref.ref for sv in result.specs[0].resolved.members] == [_SIBLING_SV]
     assert sorted(walk.get("measurementQualifier") or "" for walk in readers[0].walked) == [
         "",
         "Estimated",
@@ -261,7 +265,7 @@ def test_single_sibling_within_margin_reelects_to_definite():
         obs={f"{_SIBLING_SV}|country/KEN": _KEN_OBS},
     )
     assert result.status == "definite"
-    sv_dcids = [sv.ref.dcid for sv in result.specs[0].resolved.members]
+    sv_dcids = [sv.ref.ref for sv in result.specs[0].resolved.members]
     assert sv_dcids == [_SIBLING_SV]
 
 
@@ -289,7 +293,7 @@ def test_two_siblings_within_margin_become_candidates():
     )
     assert result.status == "candidates"
     assert len(result.specs) == 2
-    sv_dcids = {sv.ref.dcid for spec in result.specs for sv in spec.resolved.members}
+    sv_dcids = {sv.ref.ref for spec in result.specs for sv in spec.resolved.members}
     assert sv_dcids == {_SIBLING_SV, _SIBLING_SV_2}
 
 
@@ -493,7 +497,7 @@ def test_stat_type_distinct_sibling_reelects_to_definite():
         obs={f"{_BARE_STAT_TYPE_SIBLING_SV}|country/GHA": _GHA_OBS},
     )
     assert result.status == "definite"
-    sv_dcids = [sv.ref.dcid for sv in result.specs[0].resolved.members]
+    sv_dcids = [sv.ref.ref for sv in result.specs[0].resolved.members]
     assert sv_dcids == [_BARE_STAT_TYPE_SIBLING_SV]
     assert any(w.code == ELECTED_SHAPE_NO_DATA for w in result.warnings)
 
@@ -739,6 +743,8 @@ class _BindsActivityLLM:
     """Elects shape 0 and binds its activity source, as the model does for a named measure."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0,
@@ -808,7 +814,7 @@ def test_a_qualifier_variant_holding_the_bound_values_is_elected():
     )
 
     assert result.status == "definite"
-    assert [sv.ref.dcid for sv in result.specs[0].resolved.members] == [_NOMINAL_GDP_SV]
+    assert [sv.ref.ref for sv in result.specs[0].resolved.members] == [_NOMINAL_GDP_SV]
     assert not any(w.code == ELECTED_SHAPE_NO_DATA for w in result.warnings)
 
 
@@ -920,7 +926,7 @@ def test_placeless_sibling_reelects_over_its_own_default_scope(monkeypatch):
 
     assert result.status == "definite", result
     (spec,) = result.specs
-    assert [sv.ref.dcid for sv in spec.resolved.members] == [_SIBLING_SV]
+    assert [sv.ref.ref for sv in spec.resolved.members] == [_SIBLING_SV]
     codes = [w.code for w in result.warnings]
     assert codes.count(PLACE_SCOPE_DEFAULTED) == 1, codes
     assert [w.severity for w in result.warnings if w.code == PLACE_SCOPE_DEFAULTED] == ["warn"]
@@ -971,7 +977,7 @@ def test_adopted_placeless_sibling_reads_observations_over_its_own_default_scope
     )
 
     assert result.status == "definite", result
-    assert [sv.ref.dcid for sv in result.specs[0].resolved.members] == [_SIBLING_SV]
+    assert [sv.ref.ref for sv in result.specs[0].resolved.members] == [_SIBLING_SV]
     assert [
         (call["variables"], call["places"], call["facet_ids"])
         for call in sdmx.subject_observations_calls
@@ -980,14 +986,14 @@ def test_adopted_placeless_sibling_reads_observations_over_its_own_default_scope
 
 def _observation_counts(result) -> dict[str, int]:
     return {
-        spec.resolved.members[0].ref.dcid: spec.resolved.coverage.observation_count
+        spec.resolved.members[0].ref.ref: spec.resolved.coverage.observation_count
         for spec in result.specs
     }
 
 
 def _country_counts(result) -> dict[str, int | None]:
     return {
-        spec.resolved.members[0].ref.dcid: next(
+        spec.resolved.members[0].ref.ref: next(
             (dim.count for dim in spec.resolved.coverage.dimensions or [] if dim.label == "places"),
             None,
         )
@@ -1068,3 +1074,166 @@ def test_flagged_alternate_beside_an_adopted_placeless_sibling_keeps_its_own_dat
             replay.spec.resolved.coverage.observation_count
             == spec.resolved.coverage.observation_count
         )
+
+
+_LITERACY_QUERY = "female literacy rate"
+_LITERACY_SVS = (
+    "Count_Person_Female_LiterateZeroObsGuard",
+    "Count_Person_Male_LiterateZeroObsGuard",
+)
+_FEMALE_LITERACY_SV, _MALE_LITERACY_SV = _LITERACY_SVS
+_ESTIMATED_FEMALE_LITERACY_SV = "Count_Person_Female_Literate_EstimatedZeroObsGuard"
+_PROJECTED_FEMALE_LITERACY_SV = "Count_Person_Female_Literate_ProjectedZeroObsGuard"
+_LITERACY_NO_GENDER_SV = "Count_Person_Literate_AdultZeroObsGuard"
+
+
+def _literacy_arcs(
+    label: str, gender: str | None, meas_qual: str | None, denom: str = "Count_Person"
+) -> dict:
+    arcs = {
+        **_arcs(label, pop_type="Person", meas_prop="count", denom=denom, meas_qual=meas_qual),
+        "constraintProperties": {"nodes": [{"dcid": "literacyStatus"}]},
+        "literacyStatus": {"nodes": [{"dcid": "Literate"}]},
+    }
+    if gender is not None:
+        arcs["constraintProperties"] = {"nodes": [{"dcid": "gender"}, {"dcid": "literacyStatus"}]}
+        arcs["gender"] = {"nodes": [{"dcid": gender}]}
+    return arcs
+
+
+def _literacy_node(
+    label: str, gender: str | None, meas_qual: str | None = None, denom: str = "Count_Person"
+) -> dict:
+    return {
+        "label": label,
+        "type": "StatisticalVariable",
+        "arcs": _literacy_arcs(label, gender, meas_qual, denom),
+    }
+
+
+_LITERACY_NODES = {
+    "country/BGD": {"label": "Bangladesh", "type": "Country"},
+    "Female": {"label": "Female", "type": "GenderType"},
+    "Male": {"label": "Male", "type": "GenderType"},
+    "Literate": {"label": "Literate", "type": "LiteracyStatusEnum"},
+    _FEMALE_LITERACY_SV: _literacy_node("Female literacy rate", "Female"),
+    _MALE_LITERACY_SV: _literacy_node("Male literacy rate", "Male"),
+    _ESTIMATED_FEMALE_LITERACY_SV: _literacy_node(
+        "Estimated female literacy rate", "Female", "Estimated"
+    ),
+    _PROJECTED_FEMALE_LITERACY_SV: _literacy_node(
+        "Projected female literacy rate", "Female", "Projected"
+    ),
+    # Over another denominator, so it is a shape of its own with no gender slot.
+    _LITERACY_NO_GENDER_SV: _literacy_node(
+        "Adult literacy rate", None, denom="Count_Person_15OrMoreYears"
+    ),
+}
+
+
+def _unmet_value_outcome(result) -> tuple:
+    """The part's status and no-data reason, the unmet value terms each answer's trace
+    records (a refusal's flagged match for a miss), by its first member, and what departs
+    `measure_not_applied`."""
+    answers = result.flagged_match or () if result.status == "no_data" else result.specs
+    return (
+        result.status,
+        result.no_data_reason,
+        {
+            spec.resolved.members[0].ref.ref: [
+                q.text
+                for q in spec.resolved.trace.query_qualifiers
+                if q.disposition == "no_vocabulary"
+            ]
+            for spec in answers
+        },
+        sorted(
+            fact.asked
+            for fact in result.departure_facts.values()
+            if fact.code == "measure_not_applied"
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("svs", "scores", "with_data", "also_plausible", "outcome"),
+    [
+        # The bind leaves the elected literacy rate's gender slot open, so that answer would
+        # hold every gender, and it has no data. Re-election adopts its estimated sibling,
+        # whose one member holds Female, so "female" is met and the part is definite.
+        pytest.param(
+            [*_LITERACY_SVS, _ESTIMATED_FEMALE_LITERACY_SV],
+            [0.90, 0.90, 0.85],
+            [_ESTIMATED_FEMALE_LITERACY_SV],
+            None,
+            ("definite", None, {_ESTIMATED_FEMALE_LITERACY_SV: []}, []),
+            id="reelected-sibling",
+        ),
+        # Two such siblings hold data, so they answer as a candidate set. Each applies
+        # Female, so the set departs nothing for "female", though the elected shape leaves
+        # it unmet.
+        pytest.param(
+            [*_LITERACY_SVS, _ESTIMATED_FEMALE_LITERACY_SV, _PROJECTED_FEMALE_LITERACY_SV],
+            [0.90, 0.90, 0.85, 0.84],
+            [_ESTIMATED_FEMALE_LITERACY_SV, _PROJECTED_FEMALE_LITERACY_SV],
+            None,
+            (
+                "candidates",
+                None,
+                {_ESTIMATED_FEMALE_LITERACY_SV: [], _PROJECTED_FEMALE_LITERACY_SV: []},
+                [],
+            ),
+            id="sibling-set-applies-it",
+        ),
+        # The elected female literacy rate applies Female, and a flagged alternate with no
+        # gender slot answers beside it. The alternate leaves "female" unmet, so its trace
+        # records it and the set departs it.
+        pytest.param(
+            [_FEMALE_LITERACY_SV, _LITERACY_NO_GENDER_SV],
+            [0.90, 0.85],
+            [_FEMALE_LITERACY_SV, _LITERACY_NO_GENDER_SV],
+            [1],
+            (
+                "candidates",
+                None,
+                {_FEMALE_LITERACY_SV: [], _LITERACY_NO_GENDER_SV: ["female"]},
+                ["female"],
+            ),
+            id="alternate-in-a-set-leaves-it-unmet",
+        ),
+    ],
+)
+def test_each_answer_is_judged_on_the_requested_value(
+    svs, scores, with_data, also_plausible, outcome
+):
+    """ "female literacy rate in Bangladesh": the value "female" is judged on each answer's
+    own shape and bindings, a re-elected sibling, each member of a candidate set and a
+    surviving alternate, and each answer's trace records it when that answer leaves it
+    unmet."""
+    graph = FakeGraph(
+        nodes=_LITERACY_NODES,
+        detect={_LITERACY_QUERY: {"svs": svs, "cosine_scores": scores}},
+        resolve={"Bangladesh": "country/BGD"},
+        obs={f"{sv}|country/BGD": _KEN_OBS for sv in with_data},
+    )
+    result = asyncio.run(
+        resolve_variable(
+            _LITERACY_QUERY,
+            entities=["Bangladesh"],
+            date_request=None,
+            detect_query=_LITERACY_QUERY,
+            role_query=_LITERACY_QUERY,
+            pac=True,
+            graph=graph,
+            resolver=make_resolver(graph),
+            llm=_NoAmbiguityBindLLM(0, also_plausible),
+            base_timing={},
+            sdmx=FakeSdmxClient(
+                observations={}, availability={}, scope_availability=graph.scope_availability
+            ),
+            coverage=empty_coverage_snapshot(),
+            options=EngineOptions(),
+        )
+    )
+
+    assert _unmet_value_outcome(result) == outcome

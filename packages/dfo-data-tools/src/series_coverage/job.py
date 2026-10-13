@@ -88,6 +88,7 @@ from artifact_publication.jobs import (
     AliasOnlySettings,
     BigQueryReader,
     Fingerprint,
+    Ingestion,
     LiveBigQuery,
     emit,
     lock_held,
@@ -1050,10 +1051,13 @@ def publish(
     role_names: Mapping[str, RoleNames],
     facet_metadata: Mapping[str, FacetMetadata],
     source: str,
+    ingestion: Ingestion,
     expected_generation: str | None,
 ) -> bool:
     """Writes files to a new build directory, then conditionally commits
-    `current.json` using `expected_generation`. Build files are create-only.
+    `current.json` using `expected_generation`. The manifest records
+    `ingestion`, the `IngestionHistory` row the build's fingerprint read.
+    Build files are create-only.
     An existing file raises `CoverageBuildError`. Returns whether the pointer
     write landed. A lost race leaves an unreferenced build for pruning.
     """
@@ -1079,6 +1083,7 @@ def publish(
                 "facets": "facets.json",
             },
             horizon=horizon,
+            ingestion=ingestion,
         )
         write_manifest(manifest, local / "manifest.json")
 
@@ -1282,6 +1287,7 @@ def run(
         role_names=role_names,
         facet_metadata=facet_metadata,
         source="series_coverage.job",
+        ingestion=fingerprint.ingestion,
         expected_generation=published_generation,
     )
     if not committed:

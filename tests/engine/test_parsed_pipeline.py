@@ -26,6 +26,7 @@ from search.engine.entry.parsed import (
 )
 from search.engine.errors import EngineInputError, GraphInfraError
 from search.engine.interpret import PinnedResolved
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import RegionResult
 from search.engine.unit.base_year import TABLE_PROVENANCES
 from search.models import (
@@ -45,6 +46,7 @@ from tests.engine._harness import (
     materialise_double_from_obs,
     offline_resolve,
 )
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, FakeLLM, _load_json, make_resolver
 from tests.materialise._rate_table_support import (
     CONVERTIBLE_STAT_VAR_ARCS,
@@ -616,7 +618,7 @@ class TestUnitFacetNarrowsResponseMetadata:
         assert resolved.coverage.observation_count == 3
 
         # The source list contains the USD facet's provenance.
-        sources = {s.dcid for s in resolved.trace.resolved_sources}
+        sources = {s.ref for s in resolved.trace.resolved_sources}
         assert sources == {"dc/base/UsdSource"}
 
         # The date range follows the USD facet's 2018-2020 span.
@@ -639,7 +641,7 @@ class TestUnitFacetNarrowsResponseMetadata:
 
         assert resolved.coverage.observation_count == 3
 
-        sources = [s.dcid for s in resolved.trace.resolved_sources]
+        sources = [s.ref for s in resolved.trace.resolved_sources]
         assert sources == ["dc/base/UsdSource"]
 
         date_range = resolved.members[0].data_date_range
@@ -1026,6 +1028,8 @@ class _FixedBindLLM:
     """Elects shape 0 with no bindings for the unrecorded role-bearing fixture."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
 

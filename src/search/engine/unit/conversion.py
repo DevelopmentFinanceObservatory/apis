@@ -74,7 +74,6 @@ from search.engine.unit.conversion_catalogue import (
     conversion_catalogue_unavailable,
     current_conversion_catalogue,
 )
-from search.heading.currency_nouns import currency_noun
 from search.models import (
     ConversionCurrency,
     EntityRoleKey,
@@ -86,6 +85,7 @@ from search.models import (
     UnitConversion,
     Warning,
 )
+from unit_words.currency_nouns import currency_noun
 
 type PriceBasis = Literal["current", "constant"]
 type YearRun = tuple[int, int]
@@ -626,7 +626,7 @@ def _provenances(spec: Spec) -> list[str]:
     provenance = spec.resolved.facets.get("provenance")
     if provenance is not None and provenance.ref is not None:
         return [provenance.ref]
-    return [source.dcid for source in spec.resolved.trace.resolved_sources]
+    return [source.ref for source in spec.resolved.trace.resolved_sources]
 
 
 def _role_currencies(

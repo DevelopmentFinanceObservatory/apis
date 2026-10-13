@@ -8,12 +8,13 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import ConfigDict
 
+from dfo_platform.wire import ResponseModel
 from origin_catalogue import DataCommons, SourceRef
 
 
-class DataCommonsRef(BaseModel):
+class DataCommonsRef(ResponseModel):
     """The Data Commons that serves a fact. `id` is the wire enum; `label` its display name."""
 
     model_config = ConfigDict(title="GraphDataCommonsRef")
@@ -26,7 +27,7 @@ class DataCommonsRef(BaseModel):
         return cls(id=origin.id, label=origin.label)
 
 
-class SourceNodeRef(BaseModel):
+class SourceNodeRef(ResponseModel):
     """A Data Commons `Source` node (`dc/s/*`). On the UN System Data Commons, where every
     agency sits under one source, it is the agency provenance (`undata/p/*`)."""
 

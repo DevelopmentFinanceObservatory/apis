@@ -86,7 +86,7 @@ def _deps(version_store: FakeVersionRecordDatasetStore) -> DefinitionDeps:
         ceiling=1_000_000,
         member_concurrency=4,
         enumerator=MemberEnumerator(),
-        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(graph, parties={}),
         code_index=get_index(),
         rate_cache=RateTableCache(),
         coverage=_coverage_service(),

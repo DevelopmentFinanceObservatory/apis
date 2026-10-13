@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.region.codes import (
     NO_MEMBER_ASSERTS_BOUND_PROPERTIES,
@@ -16,6 +17,7 @@ from search.engine.region.codes import (
 from tests.engine._builders import sv_arcs as _sv_arcs
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 _QUERY = "female test incidence in Kenya"
@@ -72,6 +74,8 @@ class _GenderBindLLM:
     """Drafts a `gender=Female` value binding."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0,
@@ -119,7 +123,7 @@ def test_silent_sibling_only_has_data_returns_no_data_with_flagged_match():
     assert result.no_data_reason == "no_observations"
     assert result.flagged_match is not None
     flagged_spec = result.flagged_match[0]
-    assert [sv.ref.dcid for sv in flagged_spec.resolved.members] == [_SV_FEMALE]
+    assert [sv.ref.ref for sv in flagged_spec.resolved.members] == [_SV_FEMALE]
     assert flagged_spec.resolved.available_at_place is False
     assert flagged_spec.resolved.confidence == "low"
     assert result.gate == NO_MEMBER_HAS_DATA_AT_PLACE
@@ -134,11 +138,11 @@ def test_asserting_member_has_data_returns_definite_with_binding_intact():
 
     assert result.status == "definite"
     spec = result.specs[0]
-    assert [sv.ref.dcid for sv in spec.resolved.members] == [_SV_FEMALE]
+    assert [sv.ref.ref for sv in spec.resolved.members] == [_SV_FEMALE]
     gender_slot = next(
         s
         for s in spec.resolved.slots
-        if s.key.property is not None and s.key.property.dcid == _PROP_GENDER
+        if s.key.property is not None and s.key.property.ref == _PROP_GENDER
     )
     assert gender_slot.binding.kind == "value"
 
@@ -155,7 +159,7 @@ def test_both_have_data_asserting_member_wins():
 
     assert result.status == "definite"
     spec = result.specs[0]
-    assert [sv.ref.dcid for sv in spec.resolved.members] == [_SV_FEMALE]
+    assert [sv.ref.ref for sv in spec.resolved.members] == [_SV_FEMALE]
 
 
 def test_coherence_invariant_bound_slot_never_inapplicable():
@@ -236,6 +240,8 @@ class _SplitOwnershipBindLLM:
     """Drafts gender and residence bindings split across the two siblings."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0,
@@ -339,4 +345,4 @@ def test_split_ownership_no_entity_neither_partial_asserter_wins():
     # The representative is the best partial asserter (_bind_aware_order over
     # the full member set): both SVs tie at match-count 1, so insertion order
     # (gender-only inserted first) decides.
-    assert flagged_spec.resolved.members[0].ref.dcid == _SV_A
+    assert flagged_spec.resolved.members[0].ref.ref == _SV_A

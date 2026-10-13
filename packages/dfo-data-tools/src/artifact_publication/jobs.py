@@ -15,7 +15,7 @@ import json
 import logging
 import secrets
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -63,9 +63,13 @@ class AliasOnlySettings(BaseSettings):
 
 
 class BigQueryReader(Protocol):
-    """Runs SQL to completion and returns rows as plain dictionaries."""
+    """Runs SQL to completion and returns rows as plain dictionaries:
+    `query` all at once, `stream` as the result's pages arrive, so a caller
+    that keeps less than each row holds one page of rows at a time."""
 
     def query(self, sql: str) -> list[dict[str, Any]]: ...
+
+    def stream(self, sql: str) -> Iterator[dict[str, Any]]: ...
 
 
 class LiveBigQuery:
@@ -80,7 +84,11 @@ class LiveBigQuery:
         self._client = bigquery.Client(project=project)
 
     def query(self, sql: str) -> list[dict[str, Any]]:
-        return [dict(row) for row in self._client.query(sql).result()]
+        return list(self.stream(sql))
+
+    def stream(self, sql: str) -> Iterator[dict[str, Any]]:
+        for row in self._client.query(sql).result():
+            yield dict(row)
 
 
 def lock_held(bq: BigQueryReader, *, connection: str) -> bool:
@@ -94,6 +102,33 @@ def lock_held(bq: BigQueryReader, *, connection: str) -> bool:
     )
     rows = bq.query(sql)
     return any(row.get("LockOwner") for row in rows)
+
+
+@dataclass(frozen=True, slots=True)
+class Ingestion:
+    """The latest successful `IngestionHistory` row a build read, raw. Two
+    artifacts built from one ingestion record equal values, so a reader can
+    tell whether a pair it loaded agree."""
+
+    workflow_execution_id: str
+    creation_timestamp: str
+
+    def to_json(self) -> dict[str, str]:
+        return {
+            "workflow_execution_id": self.workflow_execution_id,
+            "creation_timestamp": self.creation_timestamp,
+        }
+
+    @classmethod
+    def from_json(cls, payload: Any) -> Ingestion:
+        """Raises `KeyError` naming a missing field and `ValueError` for a
+        non-object or a non-string value."""
+        if not isinstance(payload, dict):
+            raise ValueError(f"ingestion is not a JSON object: {payload!r}")
+        execution, created = payload["workflow_execution_id"], payload["creation_timestamp"]
+        if not isinstance(execution, str) or not isinstance(created, str):
+            raise ValueError(f"ingestion fields are not strings: {payload!r}")
+        return cls(workflow_execution_id=execution, creation_timestamp=created)
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +153,13 @@ class Fingerprint:
             )
         )
         return hashlib.sha256(digest_input.encode("utf-8")).hexdigest()[:32]
+
+    @property
+    def ingestion(self) -> Ingestion:
+        return Ingestion(
+            workflow_execution_id=self.workflow_execution_id,
+            creation_timestamp=self.creation_timestamp,
+        )
 
 
 def observation_stats_sql(connection: str) -> str:
@@ -350,6 +392,7 @@ __all__ = [
     "AliasOnlySettings",
     "BigQueryReader",
     "Fingerprint",
+    "Ingestion",
     "Lease",
     "LiveBigQuery",
     "acquire_lease",

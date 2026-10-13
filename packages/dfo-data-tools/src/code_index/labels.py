@@ -10,6 +10,7 @@ from typing import Literal, cast
 from code_index.members import elected_pins, identity_family_query
 from code_index.query import CodeIndex, IndexFamily
 from code_index.types import MeasureIndex, MeasureValueRow, PartitionLabelMatch, label_for_pairs
+from dfo_platform.roles import RoleAxis, RoleWording
 
 PRICE_BASIS_AXIS = "measurementQualifier"
 """The measure axis holding a StatVar's native price basis (`Nominal`). Unit conversion reads
@@ -24,6 +25,133 @@ PRICES_BY_QUALIFIER: Mapping[str, PricesKind] = MappingProxyType(
 """The `PRICE_BASIS_AXIS` values that state a price basis, and the prices each states. Another
 value on that axis (`Adjusted`) is no price basis. No measure label states a price basis,
 because the answer's unit phrase does."""
+
+
+_ADJECTIVAL_PROPERTIES = (
+    "gender",
+    "age",
+    "race",
+    "maritalStatus",
+    "nativity",
+    "residenceType",
+    "veteranStatus",
+    "armedForcesStatus",
+    "employment",
+    "educationalAttainment",
+    "povertyStatus",
+    "healthInsurance",
+    "disabilityStatus",
+)
+_PLACE_CATEGORY_PROPERTIES = (
+    "placeOfBirth",
+    "placeOfResidenceClassification",
+    "placeOfWork",
+    "placeCategory",
+    "locationType",
+    "jurisdiction",
+    "computerUsageLocation",
+    "internetUsageLocation",
+)
+
+HOW_CONNECTIVES: Mapping[str, str] = MappingProxyType(
+    {
+        **dict.fromkeys(_ADJECTIVAL_PROPERTIES, ""),
+        **dict.fromkeys(_PLACE_CATEGORY_PROPERTIES, " of "),
+        "crsPurpose": " for ",
+        "crsTypeOfFinance": " as ",
+        "crsCooperationModality": " through ",
+    }
+)
+"""The connective before a bound or agreed how value, by constraint property, with its
+surrounding spaces. Demographic properties modify the noun directly (""), place
+categories read "of", a sector "for", a finance type "as" ("as grants"), and a
+cooperation modality "through" ("through sector budget support"). A property not
+listed reads `DEFAULT_HOW_CONNECTIVE`, and one in `ROLE_CLASS_PROPERTIES` its role's
+preposition (`how_connective`). Search's heading and the description composer's title read
+it."""
+
+DEFAULT_HOW_CONNECTIVE = " for "
+"""The connective before a how value whose property `HOW_CONNECTIVES` does not list."""
+
+
+ROLE_CLASS_PROPERTIES: Mapping[str, RoleAxis] = MappingProxyType({"idsCreditorType": "origin"})
+"""How properties whose values name a class of one flow role's entities. The graph
+describes `idsCreditorType` as "the class of lender an amount is owed to", so its value
+reads as the creditor role in the family's wording: "owed to bilateral creditors"."""
+
+
+def how_connective(prop_dcid: str | None, wording: RoleWording) -> str:
+    """Return a property's connective with its surrounding spaces (`HOW_CONNECTIVES`)."""
+    if prop_dcid is None:
+        return DEFAULT_HOW_CONNECTIVE
+    if (axis := ROLE_CLASS_PROPERTIES.get(prop_dcid)) is not None:
+        return f" {wording.noun(axis).preposition} "
+    return HOW_CONNECTIVES.get(prop_dcid, DEFAULT_HOW_CONNECTIVE)
+
+
+def role_class_text(label: str, prop_dcid: str | None, wording: RoleWording) -> str:
+    """Name a role-class value as that role's entities: the label, then the role's plural
+    noun unless the label already ends in a plural ("bilateral" reads "bilateral
+    creditors", "bondholders" stays). Matching the final "s" is a text rule. The ten IDS
+    creditor-type labels it reads are pinned in tests/render/test_render_heading_words.py."""
+    axis = ROLE_CLASS_PROPERTIES.get(prop_dcid) if prop_dcid is not None else None
+    if axis is None or label.endswith("s"):
+        return label
+    return f"{label} {wording.noun(axis).plural}"
+
+
+HOW_PHRASE_LEADS_WITH_PREPOSITION = frozenset(
+    {
+        "with",
+        "without",
+        "in",
+        "on",
+        "at",
+        "by",
+        "for",
+        "from",
+        "of",
+        "to",
+        "under",
+        "over",
+        "among",
+        "per",
+    }
+)
+"""The prepositions a value phrase can open with, which then needs no connective of its own
+("with conditions" in place of "for with conditions")."""
+
+
+def connective_for_phrase(prop_dcid: str | None, phrase: str, wording: RoleWording) -> str:
+    """Return the connective for a value phrase after the noun, or a bare space when the
+    phrase starts with a preposition. An adjectival property's value that follows the
+    noun (an open axis's agreed value) reads `DEFAULT_HOW_CONNECTIVE`."""
+    first_word = phrase.split(" ", 1)[0].lower()
+    if first_word in HOW_PHRASE_LEADS_WITH_PREPOSITION:
+        return " "
+    return how_connective(prop_dcid, wording) or DEFAULT_HOW_CONNECTIVE
+
+
+def how_value_text(
+    dcid: str, label: str, *, prop: str | None, property_label: str | None, index: CodeIndex
+) -> str:
+    """A code's text after its property's connective (`HOW_CONNECTIVES`): its short name
+    (`CodeRow.short_name`, "standard grants" for `CRSTypeOfFinance110`) when its code row
+    belongs to `prop`, else `label` without the property suffix (`without_property_suffix`).
+    Search's heading and the description composer's title read it."""
+    row = index.code_by_dcid(dcid)
+    if row is not None and row.short_name and row.code_system == prop:
+        return row.short_name
+    return without_property_suffix(label, property_label)
+
+
+def without_property_suffix(label: str, property_label: str | None) -> str:
+    """Drop a trailing bracketed property name the graph adds to tell code lists apart:
+    "bilateral (IDS creditor type)" reads "bilateral"."""
+    if not property_label:
+        return label
+    suffix = f" ({property_label})"
+    return label[: -len(suffix)] if label.lower().endswith(suffix.lower()) else label
 
 
 def is_price_basis(axis: str, value: str | None) -> bool:

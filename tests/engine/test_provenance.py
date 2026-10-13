@@ -48,7 +48,7 @@ class TestBuildSourceRefs:
         ]
         refs = _build_source_refs(facets, graph)
         assert len(refs) == 1
-        assert refs[0].dcid == "dc/base/HumanCRS"
+        assert refs[0].ref == "dc/base/HumanCRS"
         assert refs[0].label == "Human CRS"
 
     def test_unresolvable_provenance_id_omitted(self):
@@ -86,7 +86,7 @@ class TestBuildSourceRefs:
         ]
         refs = _build_source_refs(facets, graph)
         assert len(refs) == 1
-        assert refs[0].dcid == "dc/base/HumanCRS"
+        assert refs[0].ref == "dc/base/HumanCRS"
 
     def test_deduplication_multiple_facets_same_source(self):
         """Multiple facets pointing to the same provenanceId yield exactly one ref."""
@@ -109,7 +109,7 @@ class TestBuildSourceRefs:
         ]
         refs = _build_source_refs(facets, graph)
         assert len(refs) == 1
-        assert refs[0].dcid == "dc/base/HumanCRS"
+        assert refs[0].ref == "dc/base/HumanCRS"
 
     def test_empty_facets_returns_empty(self):
         """No facets yields no refs."""
@@ -141,9 +141,9 @@ class TestResolvedSourcesEndToEnd:
         assert inner.status == "definite"
         sources = inner.spec.resolved.trace.resolved_sources
         assert len(sources) >= 1
-        dcids = {s.dcid for s in sources}
+        dcids = {s.ref for s in sources}
         assert "dc/base/WorldDevelopmentIndicators" in dcids
-        labels = {s.dcid: s.label for s in sources}
+        labels = {s.ref: s.label for s in sources}
         assert labels["dc/base/WorldDevelopmentIndicators"] == "WorldDevelopmentIndicators"
 
 
@@ -190,12 +190,16 @@ class TestCatalogueRows:
 
         assert refs == [
             ProvenanceRef(
-                dcid="dc/base/HumanCRS",
+                ref="dc/base/HumanCRS",
                 label="Human CRS dataset",
                 source=WireSourceRef(ref="dc/s/OECD", label="OECD"),
                 data_commons=DataCommonsRef(id="base", label="Data Commons by Google"),
             ),
-            ProvenanceRef(dcid="dc/base/Other", label="Other import"),
+            ProvenanceRef(ref="dc/base/Other", label="Other import"),
+        ]
+        assert [ref.model_dump(mode="json")["documentation"] for ref in refs] == [
+            "/api/graph/documentation/dc/base/HumanCRS",
+            "/api/graph/documentation/dc/base/Other",
         ]
         assert graph.label_reads == [["dc/base/Other"]]
 
@@ -206,7 +210,7 @@ class TestCatalogueRows:
         (ref,) = _build_source_refs([_facet("undata/p/WHO")], graph)
 
         assert ref.source is not None
-        assert ref.source.ref == ref.dcid
+        assert ref.source.ref == ref.ref
         assert ref.data_commons == DataCommonsRef(id="un_system", label="UN System Data Commons")
         assert graph.label_reads == []
 

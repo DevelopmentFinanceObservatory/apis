@@ -17,7 +17,10 @@ parse, schema, or `--max-passes` failures leave that pass unwritten.
 Pytest passes only on exit 0, or exit 1 when every failure is a `MissingFixtureError` for a key
 in the harvest file or followed a miss logged during that test (an app test turns a miss into a
 500). Any other failure stops collection before any live LLM call, and the error lists every
-such test. `--pytest-args "--deselect <id>"` steps past an unrelated broken test.
+such test. A module that fails to import counts as such a failure, serially and under xdist. A
+run that reports fewer tests than it collected also stops collection, because the tests that
+never ran requested no keys. `--pytest-args "--deselect <id>"` steps past an unrelated broken
+test.
 
 The pytest collector runs offline under the suite's own configuration: `_collector_env` removes
 credentials and `LANGFUSE_*` variables, and `tests/conftest.py` supplies the offline graph base,
@@ -25,6 +28,12 @@ coverage index and catalogue. Pytest imports the `-p` outcome plugin before that
 `tests/_harvest_outcome_plugin.py` imports no engine code. Only the harvest process needs
 `GEMINI_API_KEY`. The harvest process sets the same placeholder graph base for its own
 engine imports when none is set.
+
+The pytest collector runs under pytest-xdist with `--workers` processes (default `auto`). Each
+worker classifies its own failures and logs FakeLLM calls to its own harvest file; the pass merges
+those files before reading them. Set `SEARCH_RECORD_REQUESTS`, `SEARCH_RECORD_SCENARIOS` or
+`SEARCH_RECORD_BASELINE_DEPTH` to 1 and the collector runs serially, because those recording
+modes fail under xdist.
 
 Before collection, a key whose schema fingerprint (the part before the colon) belongs to none of
 the recorded schemas is dropped, because no prompt can request it again and the key-shape test in
@@ -41,6 +50,7 @@ resolved during this run, or a drop over 90%. The bound always applies. Measured
 Usage:
     uv run python scripts/harvest_llm_fixtures.py
     uv run python scripts/harvest_llm_fixtures.py --max-passes 5
+    uv run python scripts/harvest_llm_fixtures.py --workers 4
     uv run python scripts/harvest_llm_fixtures.py --pytest-args "-k engine"
 """
 
@@ -74,6 +84,7 @@ if __name__ == "__main__":
 
 from tests._harvest_outcome_plugin import (  # noqa: E402
     OUTCOME_PATH_ENV,
+    worker_harvest_paths,
 )
 from tests._harvest_outcome_plugin import (  # noqa: E402
     SCHEMA_VERSION as OUTCOME_SCHEMA_VERSION,
@@ -194,11 +205,13 @@ def _parse_requested_keys(harvest_file: Path, lines: Iterable[str]) -> frozenset
     return frozenset(keys)
 
 
-_RECORDED_SCHEMA_NAMES = ("Extraction", "_UniversalBindOutput")
+_RECORDED_SCHEMA_NAMES = ("Extraction", "_UniversalBindOutput", "QuantityOutput")
 
 
-def _schema_and_stage(schema_name: str) -> tuple[type[BaseModel], Literal["extract", "bind"]]:
-    """Map `Extraction` and `_UniversalBindOutput` to a schema and stage.
+def _schema_and_stage(
+    schema_name: str,
+) -> tuple[type[BaseModel], Literal["extract", "bind", "quantity"]]:
+    """Map `Extraction`, `_UniversalBindOutput` and `QuantityOutput` to a schema and stage.
 
     Unknown names raise `HarvestError`.
     """
@@ -210,6 +223,10 @@ def _schema_and_stage(schema_name: str) -> tuple[type[BaseModel], Literal["extra
         from search.engine.bind import _UniversalBindOutput
 
         return _UniversalBindOutput, "bind"
+    if schema_name == "QuantityOutput":
+        from search.engine.quantity_read import QuantityOutput
+
+        return QuantityOutput, "quantity"
     raise HarvestError(
         f"no schema registered for schema_name={schema_name!r}; add it to "
         f"_schema_and_stage in {Path(__file__).name} before harvesting"
@@ -381,7 +398,8 @@ def _check_pytest_outcome(
 
     A failure traces to a miss when it is a `MissingFixtureError` whose key appears in
     `harvest_file`, or when the plugin saw a miss logged while that test ran
-    (`misses_during`). Other exits, malformed summaries, unrelated failures, and missing keys
+    (`misses_during`). Other exits, malformed summaries, unrelated failures (a module that failed
+    to collect among them), missing keys, and a run that reported fewer tests than it collected
     raise `HarvestError` before any LLM call. One error lists every unrelated failure.
     """
     # Validate the summary for both accepted exit codes.
@@ -397,6 +415,20 @@ def _check_pytest_outcome(
         raise HarvestError(
             f"{where}: pytest outcome summary at {outcome_path} carries no `failures` list; "
             "the pass's outcome cannot be established"
+        )
+    collected = summary.get("collected")
+    reported = summary.get("reported")
+    if not isinstance(collected, int) or not isinstance(reported, int):
+        raise HarvestError(
+            f"{where}: pytest outcome summary at {outcome_path} carries no integer `collected` "
+            "and `reported` counts; whether every collected test ran cannot be established"
+        )
+    if reported < collected:
+        raise HarvestError(
+            f"{where}: pytest collected {collected} test(s) but only {reported} reported an "
+            "outcome; the run stopped before the rest ran (xdist shuts down after "
+            "--max-worker-restart worker crashes), so their fixture keys were never requested "
+            "and the pass is not read as converged"
         )
     if returncode == 0:
         if failures:
@@ -446,24 +478,20 @@ def _check_pytest_outcome(
         )
 
 
-_XDIST_OPTIONS = ("-n", "--numprocesses", "--dist")
-"""Every pytest option that turns a run into an xdist run."""
+_SERIAL_RECORDING_ENV_VARS = (
+    "SEARCH_RECORD_REQUESTS",
+    "SEARCH_RECORD_SCENARIOS",
+    "SEARCH_RECORD_BASELINE_DEPTH",
+)
+"""Recording modes in `tests/engine` that fail a test run under xdist; set to 1, the collector
+runs serially."""
 
 
-def _refuse_xdist(pytest_args: Sequence[str]) -> None:
-    """Reject xdist arguments because the outcome plugin needs per-test exceptions.
-
-    Xdist's controller reports omit `excinfo`, hiding fixture misses from the summary.
-    """
-    for arg in pytest_args:
-        name = arg.split("=", 1)[0]
-        if name in _XDIST_OPTIONS or (name.startswith("-n") and name != "-n"):
-            raise HarvestError(
-                f"`--pytest-args` contains {arg!r}, which asks for pytest-xdist; the "
-                "pytest collector runs with `-p no:xdist` because xdist's controller "
-                "summary records no failing test, which would abort the harvest on a "
-                "run that missed fixtures. Drop the flag (the pass is serial)."
-            )
+def _parallel_args(env: Mapping[str, str], *, workers: str) -> list[str]:
+    """Return the pytest arguments that run the collector under xdist, or serially when recording."""
+    if any(env.get(var) == "1" for var in _SERIAL_RECORDING_ENV_VARS):
+        return ["-p", "no:xdist"]
+    return ["-n", workers]
 
 
 _PYTEST_COLLECTION_ENV_VARS = ("PYTEST_ADDOPTS", "PYTEST_PLUGINS")
@@ -472,8 +500,7 @@ any CLI argument, that can narrow or otherwise change which tests are
 collected. `main()`'s decision to skip pruning trusts `--pytest-args` alone
 to know whether a run was narrowed (see the prune gate at the bottom of
 `main()`), so an inherited value for any of these would let a run look
-unfiltered while the collector actually ran a subset -- the same hazard
-`_refuse_xdist` guards against for an explicit flag. Stripped from the
+unfiltered while the collector actually ran a subset. Stripped from the
 collector subprocess's environment in `_live_collect_pass`, not from this
 process's own `os.environ`, so the harvest keeps behaving the same
 regardless of what the invoking shell set.
@@ -514,24 +541,35 @@ def _collector_env(*, harvest_path: Path) -> dict[str, str]:
     return env
 
 
-def _live_collect_pass(*, harvest_path: Path, pytest_args: Sequence[str]) -> PassObservations:
+def _merge_worker_harvest_files(harvest_path: Path) -> None:
+    """Append every xdist worker's harvest file to `harvest_path` and delete it."""
+    with harvest_path.open("a", encoding="utf-8") as merged:
+        for worker_path in worker_harvest_paths(harvest_path):
+            merged.write(worker_path.read_text(encoding="utf-8"))
+            worker_path.unlink()
+
+
+def _live_collect_pass(
+    *, harvest_path: Path, pytest_args: Sequence[str], workers: str = "auto"
+) -> PassObservations:
     """Run the pytest and direction-query collectors into a fresh harvest file.
 
-    Pytest runs serially under `_collector_env` with the outcome plugin, and its summary is
-    validated before the direction collector or any LLM call. Explicit xdist args are refused and
-    inherited collection overrides are stripped.
+    Pytest runs under `_collector_env` with the outcome plugin, on `workers` xdist processes unless
+    a recording mode needs a serial run. Inherited collection overrides are stripped. The workers'
+    harvest files merge into `harvest_path`, and the summary is validated before the direction
+    collector or any LLM call.
 
-    Return deduplicated misses and every requested key from the shared file.
+    Return deduplicated misses and every requested key from the merged file.
     """
-    _refuse_xdist(pytest_args)
     harvest_path.write_text("")
+    for stale in worker_harvest_paths(harvest_path):
+        stale.unlink()
     env = _collector_env(harvest_path=harvest_path)
     _strip_pytest_collection_env(env)
     outcome_path = harvest_path.with_name("pytest_outcome.json")
     outcome_path.unlink(missing_ok=True)
     pytest_run = _run_pass_subprocess(
         # `python -m pytest` puts the repo root on `sys.path` before plugin arguments resolve.
-        # Disable xdist so the outcome plugin records failures in the test process.
         cmd=[
             "uv",
             "run",
@@ -539,8 +577,7 @@ def _live_collect_pass(*, harvest_path: Path, pytest_args: Sequence[str]) -> Pas
             "-m",
             "pytest",
             "-q",
-            "-p",
-            "no:xdist",
+            *_parallel_args(env, workers=workers),
             "-p",
             "tests._harvest_outcome_plugin",
             *pytest_args,
@@ -548,6 +585,7 @@ def _live_collect_pass(*, harvest_path: Path, pytest_args: Sequence[str]) -> Pas
         env={**env, OUTCOME_PATH_ENV: str(outcome_path)},
         ok_returncodes=(0, 1),
     )
+    _merge_worker_harvest_files(harvest_path)
     _check_pytest_outcome(
         returncode=pytest_run.returncode,
         outcome_path=outcome_path,
@@ -741,12 +779,21 @@ def main() -> None:
             "but skips pruning -- run without --pytest-args to prune."
         ),
     )
+    parser.add_argument(
+        "--workers",
+        default="auto",
+        help=(
+            "pytest-xdist worker count for the pytest collector (default: auto). The collector "
+            "runs serially when SEARCH_RECORD_REQUESTS, SEARCH_RECORD_SCENARIOS or "
+            "SEARCH_RECORD_BASELINE_DEPTH is 1."
+        ),
+    )
     args = parser.parse_args()
 
     recorded = json.loads(_BANK_PATH.read_text())
     existing = _drop_stale_fingerprints(recorded, bank_path=_BANK_PATH)
     live_llm = LLM()
-    # Preserve quoted arguments as single argv entries for pytest and `_refuse_xdist`.
+    # Preserve quoted arguments as single argv entries for pytest.
     pytest_args = shlex.split(args.pytest_args) if args.pytest_args else []
 
     print(
@@ -758,7 +805,9 @@ def main() -> None:
         harvest_path = Path(tmp_dir) / "misses.jsonl"
 
         def collect_pass() -> PassObservations:
-            return _live_collect_pass(harvest_path=harvest_path, pytest_args=pytest_args)
+            return _live_collect_pass(
+                harvest_path=harvest_path, pytest_args=pytest_args, workers=args.workers
+            )
 
         try:
             result = asyncio.run(

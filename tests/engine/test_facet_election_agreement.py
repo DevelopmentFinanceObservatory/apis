@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from types import MappingProxyType
 
 import httpx
@@ -18,20 +19,28 @@ import pytest
 from code_index.types import StatVarRow
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from dc_sdmx import SdmxObservation
-from materialise import MaterialisationRequest
+from materialise import MaterialisationRequest, materialise_preview
 from materialise.facets import probe_facets
 from materialise.generation import _select_member_facets
 from materialise.graph import Facet as MaterialiseFacet
 from materialise.window import RequestedWindow
 from origin_catalogue import BASE, DFO, Catalogue
 from search.engine.clients.graph import Facet
+from search.engine.departures import spec_departure_facts
 from search.engine.extract import DateRequest
 from search.engine.region import resolve_variable
 from search.engine.region.codes import OBSERVATIONS_SCOPE_PARTIAL
 from search.engine.region.state import EngineOptions
 from search.engine.retrieval import role_resolve
 from search.engine.retrieval.member_facts import IndexMemberFacts
-from search.engine.retrieval.read_plan import PairPlan, PlanSeries, in_elected_datasets, plan_pairs
+from search.engine.retrieval.read_plan import (
+    PairPlan,
+    PlanSeries,
+    in_elected_datasets,
+    plan_pairs,
+    serves_continuation,
+)
+from search.heading.departure_fact import DepartureFact
 from search.models import Spec, TimeWindow
 from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from tests.engine import test_latest_projection_facet as latest_projection
@@ -326,16 +335,18 @@ def _role_metadata(
 def _role_materialise_sdmx(
     role_facets: _RoleFacets, provenances: Mapping[str, str] = MappingProxyType({})
 ) -> MaterialiseSdmxClient:
-    """Serve each dispatched facet's rows for the bound debtor, or its latest row under
+    """Serve each dispatched facet's rows for the bound debtors, or its latest row under
     `LATEST`, as the service does."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         params = request.url.params
         body = _csv_header(["debtor"])
-        recipient = params.get("c[debtor]", "")
+        recipients = params.get("c[debtor]", "").split(",")
         facet_ids = params.get("c[facetId]")
         latest = params.get("c[TIME_PERIOD]") == "LATEST"
-        for facet_id, years, method in role_facets.get(recipient, []):
+        for recipient, (facet_id, years, method) in (
+            (bound, facet) for bound in recipients for facet in role_facets.get(bound, [])
+        ):
             if facet_ids is not None and facet_id not in facet_ids.split(","):
                 continue
             fixture = ObsFacetFixture(
@@ -366,10 +377,12 @@ def _role_answer(
     role_facets: _RoleFacets = _ROLE_FACETS,
     discovered: bool = False,
     provenances: Mapping[str, str] | None = None,
+    date_request: DateRequest | None = None,
+    include_observations: bool = True,
 ) -> Spec:
-    """Kenya's and Norway's latest debt flows, named as destinations, or with `discovered`
-    found on the open destination axis. `provenances` names a facet's source where it is not
-    the base one."""
+    """Kenya's and Norway's debt flows in `date_request`'s years (by default their latest),
+    named as destinations, or with `discovered` found on the open destination axis.
+    `provenances` names a facet's source where it is not the base one."""
     provenances = provenances or {}
     search_settings(obs_preview_max_pairs=max_pairs)
     rows = [
@@ -410,10 +423,10 @@ def _role_answer(
         sv_score=0.9,
         role_query="debt flows" if discovered else "debt flows to Kenya and Norway",
         sdmx=sdmx,
-        include_observations=True,
+        include_observations=include_observations,
         materialise_graph=FakeGraphReader(),
         materialise_sdmx=_role_materialise_sdmx(role_facets, provenances),
-        date_request=DateRequest(window=None, latest=True),
+        date_request=date_request or DateRequest(window=None, latest=True),
         coverage=FakeCoverageService(index).snapshot(),
     )
     assert result.status == "definite", result
@@ -499,6 +512,117 @@ def test_role_bulk_path_names_the_served_facets_pairs(monkeypatch, search_settin
     spec = _role_answer(monkeypatch, search_settings, max_pairs=1)
 
     _assert_dated_by_served_points(spec)
+
+
+# Kenya's recorded `f-rec` runs to 2024 and Norway's to 2022, and an `Estimated` facet of the
+# same source projects both to 2032 from the year each record ends.
+_CONTINUED_FACETS: _RoleFacets = {
+    _KEN: [("f-rec", range(2010, 2025), None), ("f-est", range(2024, 2033), "Estimated")],
+    _NOR: [("f-rec", range(2010, 2023), None), ("f-est", range(2022, 2033), "Estimated")],
+}
+
+
+def _minted_periods(role_facets: _RoleFacets, *, start: int, end: int) -> dict[str, list[str]]:
+    """The periods a mint of Kenya's and Norway's debt flows from `start` to `end` serves
+    at each debtor, over the coverage and SDMX doubles a Search answer reads."""
+    index = build_coverage_index(
+        [
+            _role_row(recipient, facet_id, years)
+            for recipient, facets in role_facets.items()
+            for facet_id, years, _method in facets
+        ],
+        role_names={role_bearing._SV_DCID: RoleNames(donor=None, recipient="debtor")},
+        facet_metadata=_role_metadata(role_facets),
+    )
+    result = materialise_preview(
+        MaterialisationRequest(
+            stat_var=f"dcid:{role_bearing._SV_DCID}",
+            role_bindings={"debtor": [_KEN, _NOR]},
+            declared_roles=("debtor",),
+            facet_bindings={},
+            window=RequestedWindow(kind="range", start_year=start, end_year=end),
+        ),
+        sdmx=_role_materialise_sdmx(role_facets),
+        graph=FakeGraphReader(),
+        limit=1000,
+        coverage=index,
+    )
+    debtor, period = result.frame.columns.index("debtor"), result.frame.columns.index("time_period")
+    minted: dict[str, list[str]] = {}
+    for row in result.frame.rows:
+        minted.setdefault(str(row[debtor]), []).append(str(row[period]))
+    return {place: sorted(periods) for place, periods in minted.items()}
+
+
+_CONTINUED_WINDOWS = pytest.mark.parametrize(
+    ("start", "end", "estimated"),
+    [
+        pytest.param(2020, 2027, {_KEN, _NOR}, id="past-every-series"),
+        # Kenya's recorded series reaches 2024 and Norway's ends in 2022, so only Norway's
+        # 2023 and 2024 come from the estimates.
+        pytest.param(2020, 2024, {_NOR}, id="past-one-series"),
+        # Norway's recorded series ends before the window opens, and still ends the
+        # selection's first series, as the mint reads every year.
+        pytest.param(2023, 2024, {_NOR}, id="window-opens-after-one-series-ends"),
+        pytest.param(2020, 2022, set(), id="control-every-series-reaches-the-end"),
+    ],
+)
+
+
+@_CONTINUED_WINDOWS
+@pytest.mark.parametrize("max_pairs", [120, 1], ids=["per-pair", "bulk"])
+def test_search_serves_the_periods_a_mint_of_its_spec_continues(
+    monkeypatch, search_settings, max_pairs, start, end, estimated
+):
+    """An answer elects the recorded `f-rec` joined to its estimates on the per-pair and
+    the bulk role path wherever the window runs past a debtor's recorded series, and serves
+    at each debtor the recorded years, then the estimates after them: the periods a mint of
+    the same request serves. A series holding estimates states `modelled_values`."""
+    spec = _role_answer(
+        monkeypatch,
+        search_settings,
+        max_pairs=max_pairs,
+        role_facets=_CONTINUED_FACETS,
+        date_request=DateRequest(window=TimeWindow(start_year=start, end_year=end), latest=False),
+    )
+
+    observations = spec.resolved.observations
+    assert observations is not None
+    served = {
+        next(e.ref for e in s.entities if e.role == "destination"): [p.date for p in s.points]
+        for s in observations.series
+    }
+    years = [str(year) for year in range(start, end + 1)]
+    assert served == {_KEN: years, _NOR: years}
+    assert served == _minted_periods(_CONTINUED_FACETS, start=start, end=end)
+    assert {
+        next(e.ref for e in s.entities if e.role == "destination")
+        for s in observations.series
+        if s.holds_estimates
+    } == estimated
+
+
+@_CONTINUED_WINDOWS
+@pytest.mark.parametrize("max_pairs", [120, 1], ids=["per-pair", "bulk"])
+def test_an_answer_without_observations_marks_its_continued_estimates(
+    monkeypatch, search_settings, max_pairs, start, end, estimated
+):
+    """An answer reading coverage alone states `modelled_values` as partial wherever it
+    serves estimates continuing a debtor's recorded series, on the per-pair and the bulk
+    role path, and nothing where every recorded series reaches the window's end."""
+    spec = _role_answer(
+        monkeypatch,
+        search_settings,
+        max_pairs=max_pairs,
+        role_facets=_CONTINUED_FACETS,
+        date_request=DateRequest(window=TimeWindow(start_year=start, end_year=end), latest=False),
+        include_observations=False,
+    )
+
+    assert spec.resolved.observations is None
+    modelled = [f for f in spec_departure_facts(spec, operations=()) if f.code == "modelled_values"]
+    expected = DepartureFact(code="modelled_values", binding_ref=None, partial=True)
+    assert modelled == ([expected] if estimated else [])
 
 
 # ---------------------------------------------------------------------------
@@ -608,3 +732,177 @@ def test_a_role_answer_serves_an_index_member_from_its_elected_dataset(
 
         ranked = answer(None, max_pairs=max_pairs, discovered=discovered)
         assert ranked.resolved.facets["provenance"].ref == _OTHER
+
+
+@pytest.mark.parametrize(
+    ("end_year", "continued_by"),
+    [
+        pytest.param(2030, "Estimated", id="past-every-series"),
+        # France's and Ecuador's reported series reach 2025, Kenya's and Zimbabwe's end in
+        # 2024, so the estimates continue those two.
+        pytest.param(2025, "Estimated", id="past-some-series"),
+        pytest.param(2024, None, id="control-every-series-reaches-the-end"),
+    ],
+)
+@pytest.mark.parametrize("scope", [False, True], ids=["per-series", "scope"])
+def test_a_plan_and_a_mint_continue_a_series_with_its_estimates_alike(
+    scope, end_year, continued_by
+):
+    """A GDP answer from 2016 at four places (`tests.materialise._weo_recorded`) dispatches
+    the IMF's reported US dollar facet and, when the window runs past any place's last
+    reported year, the IMF's estimates in US dollars: the group a mint over the same probe
+    dispatches, whether each series is read on its own or one facet serves the whole scope.
+    Each series' group leads with the reported facet, so the answer states the elected
+    method."""
+    from materialise.facets import joint_dispatch_facet_ids
+    from tests.materialise import _weo_recorded as weo
+
+    facets_by_place = weo.recorded_facets()
+    plan = plan_pairs(
+        [
+            PlanSeries(
+                stat_var=weo.GDP,
+                role_tuple=(("observationAbout", place),),
+                candidates=tuple(facets_by_place[place]),
+            )
+            for place in weo.PLACES
+        ],
+        members=[weo.GDP],
+        years=TimeWindow(start_year=2016, end_year=end_year),
+        scope=scope,
+    )
+    window = RequestedWindow(kind="range", start_year=2016, end_year=end_year)
+    probe = plan.probes[weo.GDP]
+    request = MaterialisationRequest(
+        stat_var=f"dcid:{weo.GDP}",
+        role_bindings={"observationAbout": list(weo.PLACES)},
+        declared_roles=("observationAbout",),
+        facet_bindings={},
+        window=window,
+    )
+    election = _select_member_facets(
+        request, probe.candidates, graph=FakeGraphReader(), breadth=probe.breadth_in(window)
+    )
+
+    assert election.selections["measurementMethod"].continued_by == continued_by
+    assert serves_continuation(plan) == (continued_by is not None)
+    planned = {f.facet_id for s in plan.served for f in s.group if f.facet_id}
+    assert tuple(sorted(planned)) == joint_dispatch_facet_ids(probe.candidates, election, member=0)
+    for s in plan.served:
+        assert [(f.unit, f.measurement_method) for f in s.group] == [
+            ("CurrencyUSD", None),
+            *([("CurrencyUSD", continued_by)] if continued_by else []),
+        ]
+
+
+_REVISED = "TESTFIXTURE/WeoRevisedUsd"
+"""A second reported US dollar facet under the IMF's provenance, so a mint serves it beside
+the elected one."""
+
+
+def _with_revised(
+    revised: Mapping[str, Mapping[str, float]],
+    *,
+    estimates: Mapping[str, Mapping[str, float]] | None = None,
+    without_lead: tuple[str, ...] = (),
+):
+    """The recorded WEO facets and values with `_REVISED` holding `revised`'s years at each
+    place, the reported US dollar facet dropped at `without_lead`, and the US dollar
+    estimates extended by `estimates`' years at each place."""
+    from tests.materialise import _weo_recorded as weo
+
+    lead = weo.facet_id(weo.KENYA, unit="CurrencyUSD", method=None)
+    estimated = weo.facet_id(weo.KENYA, unit="CurrencyUSD", method=weo.ESTIMATED)
+    facets = {
+        place: [f for f in found if not (place in without_lead and f.facet_id == lead)]
+        for place, found in weo.recorded_facets().items()
+    }
+    values = {
+        key: series
+        for key, series in weo.recorded_values().items()
+        if not (key[0] in without_lead and key[1] == lead)
+    }
+    for place, years in (estimates or {}).items():
+        values[(place, estimated)] = {**years, **values[(place, estimated)]}
+        facets[place] = [
+            replace(f, earliest_date=min(years), obs_count=f.obs_count + len(years))
+            if f.facet_id == estimated
+            else f
+            for f in facets[place]
+        ]
+    for place, years in revised.items():
+        values[(place, _REVISED)] = dict(years)
+        facets[place].append(
+            MaterialiseFacet(
+                facet_id=_REVISED,
+                provenance_id=weo.WEO,
+                measurement_method=None,
+                unit="CurrencyUSD",
+                obs_count=len(years),
+                earliest_date=min(years),
+                latest_date=max(years),
+            )
+        )
+    return facets, values
+
+
+@pytest.mark.parametrize(
+    ("revised", "estimates", "without_lead", "end_year", "continued"),
+    [
+        # Kenya's and Zimbabwe's reported series end in 2024, and the second reported facet
+        # holds their 2025, so a mint keeps none of the estimates.
+        pytest.param(
+            {"country/KEN": {"2025": 1.0}, "country/ZWE": {"2025": 1.0}},
+            None,
+            (),
+            2025,
+            False,
+            id="second-facet-covers-the-leads-final-years",
+        ),
+        # Kenya holds the second reported facet alone, to 2022, and its estimates from 2023,
+        # while every series of the elected facet reaches 2024.
+        pytest.param(
+            {"country/KEN": {str(year): 1.0 for year in range(2016, 2023)}},
+            {"country/KEN": {"2023": 1.0, "2024": 1.0}},
+            ("country/KEN",),
+            2024,
+            True,
+            id="second-facet-ends-before-the-window",
+        ),
+    ],
+)
+@pytest.mark.parametrize("scope", [False, True], ids=["per-series", "scope"])
+def test_a_plan_continues_the_whole_selection_a_mint_serves(
+    scope, revised, estimates, without_lead, end_year, continued
+):
+    """A mint serves every facet sharing the elected facet's provenance, method, unit and
+    cadence, and continues the series they hold together. A plan states continued estimates
+    exactly when the mint's frame holds an estimated row, whether each series is read on its
+    own or one facet serves the whole scope."""
+    from tests.materialise import _weo_recorded as weo
+
+    facets_by_place, values = _with_revised(revised, estimates=estimates, without_lead=without_lead)
+    plan = plan_pairs(
+        [
+            PlanSeries(
+                stat_var=weo.GDP,
+                role_tuple=(("observationAbout", place),),
+                candidates=tuple(facets_by_place[place]),
+            )
+            for place in weo.PLACES
+        ],
+        members=[weo.GDP],
+        years=TimeWindow(start_year=2016, end_year=end_year),
+        scope=scope,
+    )
+    minted = weo.rows(
+        weo.mint(
+            weo.PLACES,
+            window=RequestedWindow(kind="range", start_year=2016, end_year=end_year),
+            facets_by_place=facets_by_place,
+            values=values,
+        )
+    )
+
+    assert any(row["measurementMethod"] == weo.ESTIMATED for row in minted) == continued
+    assert serves_continuation(plan) == continued

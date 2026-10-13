@@ -194,7 +194,7 @@ def test_resubmit_door_response_validates_against_schema(response_schema):
                                         "key": {
                                             "axis": "how",
                                             "property": {
-                                                "dcid": "activitySource",
+                                                "ref": "activitySource",
                                                 "label": "activity source",
                                             },
                                             "label": "activity source",

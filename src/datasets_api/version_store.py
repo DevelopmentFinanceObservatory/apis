@@ -5,7 +5,11 @@ facts go in their own columns (`dataset_store.snapshot.VERSION_FACT_COLUMNS`), a
 holds the body those facts encode (`datasets_api.manifest.version_body`). Nothing in this image
 reads the column; the writer keeps filling it for any image that decodes version bodies from it.
 Version inserts use `ON CONFLICT DO NOTHING`, so records are immutable and retries are idempotent.
-Store errors become `DatasetsStoreUnavailable` after the transaction exits.
+Every version insert goes through `_insert_version`, which also writes the version's description
+record (`datasets.description_record`) in the same transaction when the record carries a
+`VersionDescriber` (`_record_description`), so a failed record insert rolls the version row back.
+Store errors become `DatasetsStoreUnavailable` after the transaction exits, except a describer's
+`DescriptionDiverges`, which propagates as raised.
 
 `record_version` uses `RETURNING` to report whether its insert created the
 row. Concurrent first writes have one winner, without a racy existence read.
@@ -51,7 +55,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import cast
 
@@ -61,25 +66,37 @@ from dataset_store import DatasetStore, Transaction
 from dataset_store.snapshot import (
     VERSION_FACT_COLUMNS,
     WORKING_TIER_RETENTION,
+    StoredArtifactLocation,
     VersionState,
     version_fact_values,
     version_state_in,
+)
+from datasets_api.description_store import (
+    fill_late_fields,
+    insert_description,
+    read_description,
 )
 from datasets_api.manifest import version_body
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.versions import (
     RENDERED_FACT_FIELDS,
     ArtifactRecord,
+    DescriptionDiverges,
     HeadFence,
     HeadFenceLost,
+    LateFields,
     ListedVersion,
     MaterialisationRecord,
     SubjectHead,
+    VersionDescriber,
     VersionRecord,
     VersionWrite,
     WrittenVersion,
+    log_description_build_failure,
 )
+from description.facts import DescriptionRecord
 from dfo_platform.store_errors import extract_sqlstate, safe_diagnostics
+from materialise.formats import FRAME1_MEDIA_TYPE
 
 Clock = Callable[[], datetime]
 
@@ -91,6 +108,21 @@ def utc_now() -> datetime:
 def rendering_key(rendering: Mapping[str, object]) -> str:
     canonical = json.dumps(dict(rendering), sort_keys=True, default=str)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def recorded_frame_sha256(
+    recorded: str | None, locations: Sequence[StoredArtifactLocation]
+) -> str | None:
+    """The frame hash (`dfo_frame_grammar.frame_sha256`) a stored version holds without reading
+    its frame: `recorded`, the hash on its record (`StoredVersion.frame_sha256`), else the
+    digest of the frame1 document among `locations`, its links, since a frame1 document is the
+    frame's canonical bytes. `None` when it holds neither, as a version linking only a
+    canonical frame recorded before frame hashes does: a Parquet digest depends on its
+    encoding."""
+    if recorded is not None:
+        return recorded
+    frame1 = next((loc for loc in locations if loc.media_type == FRAME1_MEDIA_TYPE), None)
+    return None if frame1 is None else frame1.artifact_digest.removeprefix("sha256:")
 
 
 # Two-key advisory locks live apart from the one-key space `operation_store` uses.
@@ -202,7 +234,109 @@ def _insert_version(
             artifact=artifact,
             now=now,
         )
-    return inserted_row is not None
+    created = inserted_row is not None
+    if record.describer is not None:
+        _record_description(tx, record, created=created, now=now)
+    return created
+
+
+def _record_description(
+    tx: Transaction, record: VersionRecord, *, created: bool, now: datetime
+) -> None:
+    """Write the version's description record once, and settle the one it holds.
+
+    A version without a record gets the one `record.describer` builds from the version as
+    stored, so a write that found the row already there describes the stored facts and frame,
+    the frame named by its hash as `recorded_frame_sha256` reads it in this transaction, the
+    rule the publish door matched it by. A version holding a record, including one a concurrent
+    writer inserted first, gets the late fields the describer settles, and, when they fill any
+    member, the continuations they carry on its version row (`LateFields.continuations`). A
+    describer that raises anything but `DescriptionDiverges` has a
+    defect: it is logged and the version is stored without touching its record, before any
+    record statement runs, so the transaction stays sound. When a concurrent writer filled them first, the describer
+    settles again against what it filled, so a contradiction still raises.
+
+    A stored row that fails validation reads as no record (`read_description`), so the version
+    gets the record its describer builds, which replaces the row (`insert_description`). A row
+    of a later schema version, a later image's, reads as no record too, and stands. Late
+    fields that would leave the stored record invalid are a describer defect too: the
+    `ValueError` `fill_late_fields` raises comes before its `UPDATE`, so it is logged and the
+    record is left as it was. `DescriptionDiverges` still propagates: a stored record that
+    states other step facts than the posted ones refuses the write, as a diverging lineage
+    does.
+    """
+    try:
+        _write_description(tx, record, created=created, now=now)
+    except ValueError:
+        log_description_build_failure(record)
+
+
+def _write_description(
+    tx: Transaction, record: VersionRecord, *, created: bool, now: datetime
+) -> None:
+    describer = record.describer
+    assert describer is not None
+    key = {"id": record.subject_id, "content_version": record.content_version}
+    stored = None if created else read_description(tx, **key)
+    if created:
+        version = record
+    else:
+        state = _state(tx, record)
+        version = replace(
+            record,
+            facts=state.version.facts,
+            frame_sha256=recorded_frame_sha256(state.version.frame_sha256, state.locations),
+        )
+    if stored is None:
+        base = (
+            None
+            if record.base_content_version is None
+            else read_description(
+                tx, id=record.subject_id, content_version=record.base_content_version
+            )
+        )
+        try:
+            built = describer.describe(version, base=base)
+        except Exception:
+            log_description_build_failure(version)
+            return
+        if built is None or insert_description(tx, built, recorded_at=now):
+            return
+        # A concurrent writer recorded the version first, or a later image holds a record of
+        # a later schema version, which this image neither reads nor settles.
+        stored = read_description(tx, **key)
+        if stored is None:
+            return
+    late = _settled(describer, stored, version=version)
+    if late is None:
+        return
+    filled = fill_late_fields(
+        tx, **key, values=late.values, derived=late.derived, arrived=now, basis=late.basis
+    )
+    if filled and late.continuations is not None:
+        tx.execute(
+            "UPDATE datasets.version_record SET continuations = %s "
+            "WHERE subject_id = %s AND content_version = %s",
+            (json.dumps(list(late.continuations)), record.subject_id, record.content_version),
+        )
+    if not filled:
+        refilled = read_description(tx, **key)
+        assert refilled is not None
+        _settled(describer, refilled, version=version)
+
+
+def _settled(
+    describer: VersionDescriber, stored: DescriptionRecord, *, version: VersionRecord
+) -> LateFields | None:
+    """`describer.settle`, with a defect logged and treated as nothing to fill.
+    `DescriptionDiverges` propagates."""
+    try:
+        return describer.settle(stored, version=version)
+    except DescriptionDiverges:
+        raise
+    except Exception:
+        log_description_build_failure(version)
+        return None
 
 
 def _state(tx: Transaction, record: VersionRecord) -> VersionState:
@@ -235,6 +369,8 @@ class LiveVersionRecordWriter:
         try:
             with self._store.transaction() as tx:
                 created = _insert_version(tx, record, trace_id=trace_id, now=recorded_at)
+        except DescriptionDiverges:
+            raise
         except Exception as exc:
             # Save only safe diagnostics, then raise after leaving this exception handler.
             failure = (
@@ -276,6 +412,8 @@ class LiveVersionRecordWriter:
         except ArtifactRecordConflictError as exc:
             exc.subject_id = record.subject_id
             exc.content_version = record.content_version
+            raise
+        except DescriptionDiverges:
             raise
         except Exception as exc:
             failure = (

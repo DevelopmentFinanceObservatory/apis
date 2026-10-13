@@ -94,9 +94,9 @@ class Detection:
     candidates: tuple[DetectedSV, ...]
     un: Future[tuple[DetectedSV, ...] | None]
     # Our resolve's hits inside the cut, under their own dcids, superseded ones included
-    # (`cut_hits`), and the rival rows past it. The confirm cap counts the hits inside the
-    # cut, as it counted them when the superseded provenance was admitted, and confirms the
-    # rival rows past it (`derive.derive_shapes`). `None` reads as `candidates`.
+    # (`cut_hits`), and the rival rows past it. Derivation confirms the hits inside the cut
+    # and the rival rows in one arc read (`derive.derive_shapes`). `None` reads as
+    # `candidates`.
     hits: tuple[DetectedSV, ...] | None = None
 
 
@@ -182,7 +182,7 @@ def with_rival_families(
     its roles.
 
     A row added here is marked `DetectedSV.rival`. It adds to what the cut yields and
-    displaces none of it: derivation confirms it past the confirm cap, and its shape
+    displaces none of it: derivation confirms it beside every recalled hit, and its shape
     displaces only shapes of its own five-tuple (`without_unasked_axes`). The query did not
     recall it, so it holds no claim against a table of another five-tuple.
 

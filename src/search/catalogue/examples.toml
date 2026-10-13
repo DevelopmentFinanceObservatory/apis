@@ -14,10 +14,15 @@
 # The job runs each template through the search engine at its default place,
 # and at Tuvalu and Georgia where the StatVar has data there. A line passes
 # when every run returns a definite part whose StatVars include `stat_var`
-# and whose observations preview has points.
+# and whose observations preview has points, and the answer carries no
+# departure that says it answers another question than the sentence asked
+# (`search.catalogue.check.REFUSING_DEPARTURES`). A sentence that names a
+# measure, direction or breakdown the engine drops, or a place without values,
+# does not pass; the data-describing departures (modelled values, a group read
+# as its members) do.
 
 [[example]]
-template = "Net bilateral ODA for education to {place}"
+template = "Net ODA for education to {place}"
 stat_var = "Amount_FinancialFlow_Net_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSPurposeCode11110_Nominal"
 role = "recipient"
 place = "country/KEN"
@@ -46,6 +51,12 @@ stat_var = "GrowthRate_Amount_EconomicActivity_GrossDomesticProduction"
 place = "country/NGA"
 
 [[example]]
-template = "Inward remittances to {place}"
-stat_var = "Amount_Remittance_InwardRemittance"
-place = "country/ZAF"
+template = "Life expectancy in {place}"
+stat_var = "LifeExpectancy_Person"
+place = "country/KEN"
+
+[[example]]
+template = "Gross ODA disbursements for health to {place}"
+stat_var = "Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSPurposeCode12110_Nominal"
+role = "recipient"
+place = "country/KEN"

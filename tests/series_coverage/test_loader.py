@@ -316,6 +316,17 @@ def test_load_coverage_reads_facets_json_written_without_observation_period(
     assert loaded.index.facet_metadata[FACET_ACTUALS].unit == "CurrencyUSD"
 
 
+def test_load_coverage_reads_a_manifest_written_without_its_ingestion(tmp_path: Path) -> None:
+    # Builds published before manifests recorded the IngestionHistory row have no such key.
+    uri = build_test_artifact(tmp_path / "coverage")
+    path = build_dir(tmp_path / "coverage", "test-coverage-stamp-build") / "manifest.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    del payload["ingestion"]
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert load_coverage(uri).manifest.ingestion is None
+
+
 def test_load_coverage_raises_when_manifest_has_no_facets_entry(tmp_path: Path) -> None:
     base = tmp_path / "coverage"
     prefix = _point_at(base)

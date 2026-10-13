@@ -95,7 +95,7 @@ def _crs_purpose_options(shape_draft: ShapeDraft):
         open_axes=frozenset(),
     )
     slot_options = result[7]
-    (so,) = [o for o in slot_options if o.key.property.dcid == _PURPOSE]
+    (so,) = [o for o in slot_options if o.key.property.ref == _PURPOSE]
     return so
 
 
@@ -112,8 +112,8 @@ def test_fresh_and_noop_resubmit_shapes_publish_the_same_level_scoped_options():
 
     assert fresh.truncated is False
     assert resubmit.truncated is False
-    assert [(o.relation, o.value.ref.dcid, o.member_count) for o in fresh.options] == [
-        (o.relation, o.value.ref.dcid, o.member_count) for o in resubmit.options
+    assert [(o.relation, o.value.ref.ref, o.member_count) for o in fresh.options] == [
+        (o.relation, o.value.ref.ref, o.member_count) for o in resubmit.options
     ]
-    assert {o.value.ref.dcid for o in resubmit.options} == {_PRIMARY_EDUCATION_PARENT}
+    assert {o.value.ref.ref for o in resubmit.options} == {_PRIMARY_EDUCATION_PARENT}
     assert all(o.relation == "parent" for o in resubmit.options)

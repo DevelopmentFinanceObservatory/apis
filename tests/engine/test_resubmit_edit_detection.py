@@ -176,11 +176,11 @@ class TestNoOpAndCoveredEdits:
         purpose_slot = next(
             s
             for s in region.specs[0].resolved.slots
-            if s.key.property is not None and s.key.property.dcid == "crsPurpose"
+            if s.key.property is not None and s.key.property.ref == "crsPurpose"
         )
         assert purpose_slot.binding.kind == "value"
         assert purpose_slot.binding.value.ref is not None
-        assert purpose_slot.binding.value.ref.dcid == _PURPOSE_ROLLUP
+        assert purpose_slot.binding.value.ref.ref == _PURPOSE_ROLLUP
 
     def test_window_only_edit_over_the_same_rollup_binding_resolves(self, monkeypatch):
         """Narrowing the requested window alone, with `crsPurpose` re-posted
@@ -284,15 +284,15 @@ class TestRollupLeafEditDetectionBothDirections:
         assert region.status == "definite", (
             region.no_data_reason if region.status != "definite" else None
         )
-        assert {sv.ref.dcid for sv in region.specs[0].resolved.members} == set(member_dcids)
+        assert {sv.ref.ref for sv in region.specs[0].resolved.members} == set(member_dcids)
         purpose_slot = next(
             s
             for s in region.specs[0].resolved.slots
-            if s.key.property is not None and s.key.property.dcid == "crsPurpose"
+            if s.key.property is not None and s.key.property.ref == "crsPurpose"
         )
         assert purpose_slot.binding.kind == "value"
         assert purpose_slot.binding.value.ref is not None
-        assert purpose_slot.binding.value.ref.dcid == _PURPOSE_LEAF
+        assert purpose_slot.binding.value.ref.ref == _PURPOSE_LEAF
 
     def test_leaf_to_rollup_edit_is_detected_and_widens_to_the_rollup_members(self, monkeypatch):
         """Changing a leaf to its rollup elects the rollup's full member set,
@@ -322,13 +322,13 @@ class TestRollupLeafEditDetectionBothDirections:
         assert region.status == "definite", (
             region.no_data_reason if region.status != "definite" else None
         )
-        assert {sv.ref.dcid for sv in region.specs[0].resolved.members} <= set(member_dcids)
+        assert {sv.ref.ref for sv in region.specs[0].resolved.members} <= set(member_dcids)
         assert region.specs[0].resolved.stat_vars.member_count == len(member_dcids)
         purpose_slot = next(
             s
             for s in region.specs[0].resolved.slots
-            if s.key.property is not None and s.key.property.dcid == "crsPurpose"
+            if s.key.property is not None and s.key.property.ref == "crsPurpose"
         )
         assert purpose_slot.binding.kind == "value"
         assert purpose_slot.binding.value.ref is not None
-        assert purpose_slot.binding.value.ref.dcid == _PURPOSE_ROLLUP
+        assert purpose_slot.binding.value.ref.ref == _PURPOSE_ROLLUP

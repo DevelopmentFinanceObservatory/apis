@@ -23,10 +23,22 @@ def test_matches_regardless_of_case(code_index: CodeIndex):
     assert lookup(code_index, "OdA") == (exact,)
 
 
-def test_exact_lookup_stays_case_sensitive(code_index: CodeIndex):
-    # Exact lookup remains case-sensitive.
-    assert code_index.codes_by_text("oda") == ()
-    assert len(code_index.codes_by_text("ODA")) == 1
+@pytest.mark.parametrize(
+    ("text", "dcids"),
+    [
+        ("ODA", ["CRSTypeOfFlow10"]),
+        ("oda", ["CRSTypeOfFlow10"]),
+        ("  Basic   Health Care ", ["CRSPurposeCode12220"]),
+        # The label and a synonym of 600 fold alike, and the row appears once.
+        ("ACTION RELATING TO DEBT", ["CRSPurposeCode600", "CRSPurposeCode60010"]),
+        # Whole-text lookup reads no separator away.
+        ("basic health, care", []),
+    ],
+)
+def test_whole_text_lookup_folds_case_and_whitespace(
+    code_index: CodeIndex, text: str, dcids: list[str]
+):
+    assert [row.dcid for row in code_index.codes_by_text(text)] == dcids
 
 
 def test_ignores_surrounding_whitespace(code_index: CodeIndex):

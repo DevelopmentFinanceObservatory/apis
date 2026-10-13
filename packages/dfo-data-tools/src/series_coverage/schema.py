@@ -21,6 +21,7 @@ from typing import Final
 import pyarrow as pa
 
 from artifact_publication import POINTER_FILE, VERSIONS_PREFIX
+from artifact_publication.jobs import Ingestion
 
 COVERAGE_FORMAT_VERSION: Final[int] = 3
 """The artifact's on-disk shape: the Parquet schema, the bit-packing
@@ -243,7 +244,10 @@ class CoverageManifest:
     """Manifest for one artifact build.
 
     `files` maps `coverage`, `role_names`, and `facets` to paths relative to
-    the build directory. `format_version` defaults to the current format.
+    the build directory. `ingestion` is the `IngestionHistory` row the
+    build's fingerprint read, which the origin catalogue's manifest records
+    too, and `None` for a build written before manifests recorded it.
+    `format_version` defaults to the current format.
     """
 
     stamp: str
@@ -253,6 +257,7 @@ class CoverageManifest:
     row_counts: dict[str, int]
     files: dict[str, str]
     horizon: YearHorizon
+    ingestion: Ingestion | None = None
     format_version: int = COVERAGE_FORMAT_VERSION
 
 

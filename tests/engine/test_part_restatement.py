@@ -100,7 +100,7 @@ def _sdmx_with_rate_anchor(obs: dict) -> MaterialiseSdmxClient:
 
 
 def _gr(dcid: str) -> GraphRef:
-    return GraphRef(dcid=dcid, label=dcid)
+    return GraphRef(ref=dcid, label=dcid)
 
 
 def _subject_entity(dcid: str) -> Entity:

@@ -294,7 +294,13 @@ class FrameDimensionSummary(BaseModel):
     values: list[str] = Field(description="this dimension's own values, capped")
     total_count: int = Field(description="this dimension's own value count before capping")
     truncated: bool = Field(description="whether this dimension's values list was capped")
-    plural: bool = Field(description="whether this dimension carries more than one value")
+    plural: bool = Field(
+        description=(
+            "whether this frame's series hold more than one value of this dimension, a null "
+            "counting as one; the estimates continuing a series hold its method, so they "
+            "leave measurementMethod not plural"
+        )
+    )
 
 
 class FrameDimensionMatch(BaseModel):

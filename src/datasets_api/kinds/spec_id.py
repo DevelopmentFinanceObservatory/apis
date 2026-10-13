@@ -45,10 +45,13 @@ from datasets_api.adapter import (
     verify_sidecar_definition,
 )
 from datasets_api.admission import (
+    elected_provenances,
+    identity_role_keys,
     refuse_excel_over_estimate,
     sync_estimate,
     under_current_coverage,
     within_sync_budget,
+    xlsx_splits_totals,
 )
 from datasets_api.codes_materialise import (
     CurrencyRoleUndeclared,
@@ -432,7 +435,17 @@ def serve_mint(
             estimate = sync_estimate(
                 requests, index=coverage_snapshot.index, member_concurrency=deps.member_concurrency
             )
-            refuse_excel_over_estimate(estimate, format=options.format)
+            refuse_excel_over_estimate(
+                estimate,
+                format=options.format,
+                splits_totals=xlsx_splits_totals(
+                    options,
+                    identity=stored.identity,
+                    role_columns=identity_role_keys(stored.identity),
+                    parties=definition_deps.code_index.parties,
+                    datasets=elected_provenances(requests),
+                ),
+            )
         submit_over_budget(
             subject_id=stored.spec_id,
             options=options,

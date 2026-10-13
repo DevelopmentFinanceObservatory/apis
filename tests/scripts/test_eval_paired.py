@@ -27,7 +27,9 @@ from starlette.routing import Route
 import scripts.eval_paired as m
 from origin_catalogue import current_catalogue
 from search.engine.errors import GraphReadFailure
-from search.eval.gate import BLOCKING
+from search.eval.cases import Case, asserted_checks, load_cases
+from search.eval.checks import ANSWER, Result, Verdict, answer_result
+from search.eval.gate import BLOCKING, Outcome
 from search.eval.runner import run_cases
 from search.models import RESOLVE_RESPONSE_ADAPTER
 from tests.conftest import _build_worked_example_response
@@ -539,3 +541,38 @@ def test_a_head_run_with_one_failed_sample_passes_on_the_samples_that_answered(c
     }
     assert head_posts[REGRESSING] == 3
     assert not base_posts
+
+
+def _known_disposition_sample(case: Case, asserted: Verdict) -> m.SampleScore:
+    """A sample of ``case`` on which `disposition`, its known failure, fails, every other
+    check the case asserts reads ``asserted``, and the rest are n/a."""
+    others = asserted_checks(case) - m.known_checks(case)
+
+    def verdict(name: str) -> Verdict:
+        if name == "disposition":
+            return Verdict.FAIL
+        return asserted if name in others else Verdict.NA
+
+    results = {name: Result(verdict(name)) for name in m._checks()}
+    results[ANSWER] = answer_result(results, known=m.known_checks(case))
+    return m.SampleScore(sample=None, results=results, modal=True)
+
+
+@pytest.mark.parametrize(("first", "more"), [(Verdict.UNREACHED, True), (Verdict.PASS, False)])
+def test_a_first_head_sample_that_reaches_no_asserted_check_takes_more_samples(first, more):
+    """dq-crs-015 lists `disposition` as a known failure, so a first answer in a status it
+    does not accept leaves every other asserted check unreached. That settles nothing: the
+    later samples may reach the checks and fail them."""
+    case = next(c for c in load_cases() if c.id == "dq-crs-015")
+    others = asserted_checks(case) - m.known_checks(case)
+    assert others
+    state = m.CaseState(case=case, file="crs", new_case=False)
+    state.rounds["head"] = [_known_disposition_sample(case, first)]
+    state.judge()
+    assert state.wants_more_samples() is more
+    if not more:
+        return
+
+    state.rounds["head"] += [_known_disposition_sample(case, Verdict.FAIL)] * 2
+    state.judge()
+    assert {state.judgements[c].outcome for c in {*others, ANSWER}} == {Outcome.NEEDS_BASE}

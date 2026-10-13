@@ -298,14 +298,24 @@ def test_a_role_names_at_most_three_entities(donors, groups, expected: str):
     plan = render_sentence_plan(spec)
     assert sentence_from_plan(plan) == expected
     origin = next(t for t in plan if t.role == "origin")
-    assert origin.entity_refs == [e.ref.dcid for e in donors]
+    assert origin.entity_refs == [e.ref.ref for e in donors]
 
 
-@pytest.mark.parametrize("entity_type", ["Continent", "UNGeoRegion"])
-def test_a_region_group_reads_as_the_places_in_it(entity_type: str):
-    """A group whose node is a Continent or a UNGeoRegion reads by its size and name as
-    the places in it, since a place in a region is no member of it."""
-    region = EntityGroup(dcid="africa", label="Africa", entity_type=entity_type)
+@pytest.mark.parametrize(
+    ("dcid", "label", "entity_type"),
+    [
+        ("africa", "Africa", "Continent"),
+        ("WesternAfrica", "Western Africa", "UNGeoRegion"),
+        ("undata-geo/G00134000", "Americas", "GeoRegion"),
+        # A posted `entity_type` is informational: the reading keys on the `dcid`.
+        ("EasternAfrica", "Eastern Africa", "Country"),
+    ],
+)
+def test_a_region_group_reads_as_the_places_in_it(dcid: str, label: str, entity_type: str):
+    """A group whose node is a region the membership policy holds reads by its size and
+    name as the places in it, since a place in a region is no member of it. The policy
+    decides, whatever the node's graph type: dev types the Americas a `GeoRegion`."""
+    region = EntityGroup(ref=dcid, label=label, entity_type=entity_type)
     spec = _aid(entities=[_entity_to("country/ETH", "Ethiopia"), *_DONORS])
     spec = _with(spec, entity_groups={"origin": region})
 
@@ -313,9 +323,9 @@ def test_a_region_group_reads_as_the_places_in_it(entity_type: str):
 
     origin = next(t for t in plan if t.role == "origin")
     assert "4" in origin.text.split()
-    assert origin.text.endswith("in Africa")
+    assert origin.text.endswith(f"in {label}")
     assert "members" not in sentence_from_plan(plan)
-    assert origin.entity_refs == [e.ref.dcid for e in _DONORS]
+    assert origin.entity_refs == [e.ref.ref for e in _DONORS]
 
 
 @pytest.mark.parametrize(
@@ -357,7 +367,7 @@ def _options(prop: str, *, values: int, truncated: bool) -> SlotOptions:
         key=_slot_key("how", prop, prop, prop),
         options=[
             SlotOption(
-                value=SlotValue(ref=GraphRef(dcid=f"v{i}", label=f"v{i}"), value_kind="enum_value")
+                value=SlotValue(ref=GraphRef(ref=f"v{i}", label=f"v{i}"), value_kind="enum_value")
             )
             for i in range(values)
         ],

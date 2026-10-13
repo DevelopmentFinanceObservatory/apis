@@ -78,7 +78,7 @@ class TestUnresolvedDenominatorPromote:
             "an unresolved-denominator five-tuple's own minted shape_id must promote "
             f"cleanly, not degrade; got status={region.status!r}"
         )
-        assert [sv.ref.dcid for sv in region.specs[0].resolved.members] == [_UNRESOLVED_SV_DCID]
+        assert [sv.ref.ref for sv in region.specs[0].resolved.members] == [_UNRESOLVED_SV_DCID]
         assert region.specs[0].resolved.shape.shape_id == _UNRESOLVED_SHAPE_ID
 
 

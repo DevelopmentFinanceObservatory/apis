@@ -62,7 +62,7 @@ def _entity_labels(binding: Binding) -> list[str]:
     labels: list[str] = []
     for value in _binding_values(binding):
         if value.ref is not None:
-            labels.append(_entity_name(value.ref.dcid, value.ref.label))
+            labels.append(_entity_name(value.ref.ref, value.ref.label))
         elif value.literal:
             labels.append(value.literal)
     return labels
@@ -146,7 +146,7 @@ def _entity_name(dcid: str, label: str | None) -> str:
 
 def _humanize(ref: GraphRef) -> str:
     """Return a GraphRef's display label or humanised dcid fallback."""
-    return _humanize_ref(ref.dcid, ref.label)
+    return _humanize_ref(ref.ref, ref.label)
 
 
 # Match any trailing parenthetical. Used for label sentence-casing and to
@@ -166,7 +166,7 @@ def axis_ref(prop_dcid: str, slots: Sequence[Slot]) -> str:
     """The ref a token states for how axis ``prop_dcid``: the how slot's key when the
     shape declares one, else ``axis:<prop_dcid>``."""
     for slot in slots:
-        if slot.key.axis == "how" and slot.key.property and slot.key.property.dcid == prop_dcid:
+        if slot.key.axis == "how" and slot.key.property and slot.key.property.ref == prop_dcid:
             return slot.key.as_ref()
     return f"{MEASURE_AXIS_REF_PREFIX}{prop_dcid}"
 
@@ -198,7 +198,7 @@ def _slot_token(
         return SentenceToken(
             kind="slot", text=text, axis=axis, role=role, states=token_states(text, None, states)
         )
-    prop_dcid = slot.key.property.dcid if slot.key.property else None
+    prop_dcid = slot.key.property.ref if slot.key.property else None
     binding_ref = slot.key.as_ref()
     return SentenceToken(
         kind="slot",
@@ -260,15 +260,22 @@ _MEMBER_NOUNS = frozenset(
 )
 
 
-# Graph types of a node that names an area. The places inside one are said to be in it.
-_REGION_TYPES = frozenset({"Continent", "UNGeoRegion"})
+def _is_region(dcid: str | None) -> bool:
+    """Whether the group node `dcid` is a continent or subregion by the membership policy
+    (`MembershipPolicy.holds_region`), whatever its graph type. The places inside one are said
+    to be in it."""
+    # Imported here: Datasets imports `search.render` through `search.models` without the
+    # engine extra, which carries resolvekit.
+    from entity_resolution import shared_membership_policy
+
+    return dcid is not None and shared_membership_policy().holds_region(dcid)
 
 
-def group_members_text(entity_type: str | None) -> str:
-    """Refer back to the members of a group just named: "its members", and for a group
-    whose node is a region (`_REGION_TYPES`) "the countries and territories in it"."""
-    if entity_type in _REGION_TYPES:
-        return "the countries and territories in it"
+def group_members_text(dcid: str | None) -> str:
+    """Refer back to the members of a group just named, whose node is `dcid`: "its members",
+    and for a region (`_is_region`) "the countries in it"."""
+    if _is_region(dcid):
+        return "the countries in it"
     return "its members"
 
 
@@ -276,16 +283,16 @@ def group_text(count: int, group: EntityGroup) -> str:
     """Name a group of ``count`` entities: "the {n} {label} members" ("the 27 European
     Union members").
 
-    A group whose node is a region (`EntityGroup.entity_type` in `_REGION_TYPES`) reads as
-    the places in it: "the 59 countries and territories in Africa".
+    A group whose node is a region (`EntityGroup.ref`, `_is_region`) reads as the countries
+    the membership policy holds for it: "the 54 countries in Africa".
 
     A label whose last word already names the members keeps its own noun ("the 32 DAC
     donors", "the 27 EU member states"). That word is one of `_MEMBER_NOUNS`, compared as
     text. The heading and the `entity_unavailable` and `group_read_as_members` departures
     all read this.
     """
-    if group.entity_type in _REGION_TYPES:
-        return f"the {count} countries and territories in {group.label}"
+    if _is_region(group.ref):
+        return f"the {count} countries in {group.label}"
     last_word = group.label.rsplit(" ", 1)[-1].lower()
     noun = "" if last_word in _MEMBER_NOUNS else " members"
     return f"the {count} {group.label}{noun}"

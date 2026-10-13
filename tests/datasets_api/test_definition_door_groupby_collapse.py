@@ -18,9 +18,7 @@ from dfo_frame_grammar import frame_sha256
 import datasets_api.current as current_module
 import datasets_api.render as render_module
 from artifact_store import LiveArtifactInventory, Tier
-from assembler.ports import FrameRef
 from code_index import CodeIndex
-from dataset_store.snapshot import LiveSnapshotReader
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.render import CANONICAL_FRAME_RENDERING
 from datasets_api.version_store import rendering_key
@@ -32,21 +30,17 @@ from materialise.formats import (
     read_canonical_frame,
     write_frame1,
 )
-from presentation_store.frame_store import LiveFrameStore
 from series_coverage.schema import FacetMetadata, RoleNames
 from spec_registry.identity import recompute_identity
-from spec_registry.reader import LiveSpecReader
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 
 from ._frame_doubles import link_frame1_only
 from ._graph_doubles import FakeMintGraphReader
 from ._legacy_conversion_trace import MIGRATED_CONVERSION
 from ._version_record_store import FakeVersionRecordDatasetStore
-from .conftest import FakeDatasetStore
 from .test_definition_door import _client
 from .test_definition_door_currency import _FakeHeadStore, _RenderableArtifactStore
 from .test_download_links import _RenewingArtifactStore
-from .test_pin_door import FakeArtifactReferenceWriter
 from .test_serve_groupby_collapse import (
     _CSV_BODY,
     _CSV_HEADER,
@@ -148,39 +142,10 @@ def test_head_hit_mints_the_same_collapsed_content_version_and_bytes_as_the_fres
     assert served["artifacts"][0]["artifact_digest"] == fresh["artifacts"][0]["artifact_digest"]
     assert served["artifacts"][0]["bytes"] == fresh["artifacts"][0]["bytes"]
 
-    # The head-hit collapse mints the same `stat_vars_summed` disclosure
-    # the fresh path did.
-    assert "stat_vars_summed" in {w["code"] for w in fresh["warnings"]}
-    assert "stat_vars_summed" in {w["code"] for w in served["warnings"]}
-
-
-def test_a_snapshot_of_the_collapsed_version_still_reports_stat_vars_summed():
-    """The warning rides `Manifest.warnings` into the recorded version's `warnings` fact
-    (`datasets_api.manifest.manifest_facts`), so a later
-    `GET /api/datasets/{id}/{content_version}` against the collapsed identity assembles it
-    back unchanged -- the same persistence `deflator_projected` already relies on.
-    """
-    version_store = FakeVersionRecordDatasetStore()
-    client = _client(
-        graph=_graph(),
-        sdmx_transport=_sdmx_transport(),
-        version_store=version_store,
-        head_writer=_FakeHeadStore(),
-        artifact_store=_RenderableArtifactStore(
-            inventory=LiveArtifactInventory(store=version_store)
-        ),
-        code_index=_code_index(),
-        coverage=_coverage_service(),
-    )
-    spec_id, sidecar = _spec_id_and_sidecar()
-
-    fresh = _mint(client, spec_id=spec_id, sidecar=sidecar, options=_GROUPBY_OPTIONS)
-
-    snapshot_resp = client.get(f"/api/datasets/{spec_id}/{fresh['content_version']}")
-    assert snapshot_resp.status_code == 200, snapshot_resp.text
-    snapshot = snapshot_resp.json()
-
-    assert "stat_vars_summed" in {w["code"] for w in snapshot["warnings"]}
+    # Neither path reports the sum as a warning: it is a step of the collapsed version's
+    # description record.
+    assert "stat_vars_summed" not in {w["code"] for w in fresh["warnings"]}
+    assert "stat_vars_summed" not in {w["code"] for w in served["warnings"]}
 
 
 def test_head_hit_with_a_converted_base_mints_the_same_collapsed_content_version():
@@ -303,7 +268,6 @@ def test_a_groupby_head_hit_renders_from_a_migrated_trace_conversion():
     served = got.json()
     assert served["trace"]["served_from"] == "head"
     assert served["trace"]["conversion"] == MIGRATED_CONVERSION
-    assert "stat_vars_summed" in {w["code"] for w in served["warnings"]}
 
 
 def test_a_repeated_head_hit_keeps_minting_the_same_collapsed_content_version():
@@ -375,131 +339,13 @@ def test_a_collapsed_mint_never_moves_subject_head_to_the_collapsed_version():
 _FAMILY_LABEL = "Axis value A/Axis value B"
 
 
-def _summed_warning(manifest: dict) -> dict:
-    return next(w for w in manifest["warnings"] if w["code"] == "stat_vars_summed")
-
-
-def test_the_summed_warning_carries_its_structured_fields_on_fresh_head_hit_and_snapshot():
-    version_store = FakeVersionRecordDatasetStore()
-    client = _client(
-        graph=_graph(),
-        sdmx_transport=_sdmx_transport(),
-        version_store=version_store,
-        head_writer=_FakeHeadStore(),
-        artifact_store=_RenderableArtifactStore(
-            inventory=LiveArtifactInventory(store=version_store)
-        ),
-        code_index=_code_index(),
-        coverage=_coverage_service(),
-    )
-    spec_id, sidecar = _spec_id_and_sidecar()
-
-    fresh = _mint(client, spec_id=spec_id, sidecar=sidecar, options=_GROUPBY_OPTIONS)
-    head_hit = client.get(f"/api/datasets/{spec_id}?{_GROUPBY_QUERY}")
-    assert head_hit.status_code == 200, head_hit.text
-    assert head_hit.json()["trace"]["served_from"] == "head"
-    snapshot = client.get(f"/api/datasets/{spec_id}/{fresh['content_version']}")
-    assert snapshot.status_code == 200, snapshot.text
-
-    for manifest in (fresh, head_hit.json(), snapshot.json()):
-        warning = _summed_warning(manifest)
-        assert warning["contributing_member_count"] == 2
-        assert warning["stat_var_ref"] == f"dcid:{spec_id}"
-        assert warning["stat_var_label"] == _FAMILY_LABEL
-        for other in manifest["warnings"]:
-            if other["code"] != "stat_vars_summed":
-                assert set(other) == {"code", "severity", "message"}
-
-
-def test_the_summed_warning_label_is_the_presentation_door_label_for_the_collapsed_version():
-    store = FakeDatasetStore()
-    version_store = FakeVersionRecordDatasetStore()
-    artifact_store = _RenderableArtifactStore(inventory=LiveArtifactInventory(store=version_store))
-    client = _client(
-        graph=_graph(),
-        store=store,
-        sdmx_transport=_sdmx_transport(),
-        version_store=version_store,
-        head_writer=_FakeHeadStore(),
-        artifact_store=artifact_store,
-        code_index=_code_index(),
-        coverage=_coverage_service(),
-    )
-    spec_id, sidecar = _spec_id_and_sidecar()
-    collapsed = _mint(client, spec_id=spec_id, sidecar=sidecar, options=_GROUPBY_OPTIONS)
-    warning = _summed_warning(collapsed)
-
-    frame_store = LiveFrameStore(
-        snapshots=LiveSnapshotReader(store=version_store),
-        artifacts=artifact_store,
-        graph=None,
-        reference_writer=FakeArtifactReferenceWriter(),
-        spec_reader=LiveSpecReader(store=store),
-        code_index=_code_index(),
-    )
-    resolved = frame_store.load(
-        frame_ref=FrameRef(spec_id=spec_id, content_version=collapsed["content_version"])
-    )
-
-    assert resolved.labels[warning["stat_var_ref"]] == warning["stat_var_label"] == _FAMILY_LABEL
-
-
-def _relabelled_code_index() -> CodeIndex:
-    """`_code_index` with every code relabelled, as after a code-index re-export."""
-    base = _code_index()
-    return CodeIndex(
-        stamp=base.stamp,
-        declarations=tuple(base.declarations.values()),
-        codes=tuple(replace(code, label=f"Renamed {code.code}") for code in base.codes),
-        statvars=base.statvars,
-    )
-
-
-def test_every_door_returns_the_recorded_summed_label_after_a_code_index_relabel():
-    """A collapsed version recorded under one code-index label keeps that label on a head-hit
-    GET, a snapshot GET, and a repeat mint served under a relabelled index."""
-    store = FakeDatasetStore()
-    version_store = FakeVersionRecordDatasetStore()
-    head_store = _FakeHeadStore()
-    artifact_store = _RenderableArtifactStore(inventory=LiveArtifactInventory(store=version_store))
-
-    def _client_with(code_index: CodeIndex):
-        return _client(
-            graph=_graph(),
-            store=store,
-            sdmx_transport=_sdmx_transport(),
-            version_store=version_store,
-            head_writer=head_store,
-            artifact_store=artifact_store,
-            code_index=code_index,
-            coverage=_coverage_service(),
-        )
-
-    spec_id, sidecar = _spec_id_and_sidecar()
-    recorded = _mint(
-        _client_with(_code_index()), spec_id=spec_id, sidecar=sidecar, options=_GROUPBY_OPTIONS
-    )
-    assert _summed_warning(recorded)["stat_var_label"] == _FAMILY_LABEL
-
-    relabelled = _client_with(_relabelled_code_index())
-    head_hit = relabelled.get(f"/api/datasets/{spec_id}?{_GROUPBY_QUERY}")
-    assert head_hit.status_code == 200, head_hit.text
-    assert head_hit.json()["trace"]["served_from"] == "head"
-    snapshot = relabelled.get(f"/api/datasets/{spec_id}/{recorded['content_version']}")
-    assert snapshot.status_code == 200, snapshot.text
-    repeat = _mint(relabelled, spec_id=spec_id, sidecar=sidecar, options=_GROUPBY_OPTIONS)
-
-    for manifest in (head_hit.json(), snapshot.json(), repeat):
-        assert manifest["content_version"] == recorded["content_version"]
-        assert [w for w in manifest["warnings"] if w["code"] == "stat_vars_summed"] == [
-            _summed_warning(recorded)
-        ]
-    assert head_hit.json()["warnings"] == snapshot.json()["warnings"]
-
-
-def test_a_head_hit_returns_a_stored_summed_warning_recorded_without_structured_fields():
-    """A collapsed version whose stored `stat_vars_summed` entry predates the structured fields
-    returns that entry unchanged, once, on a head-hit GET."""
+@pytest.mark.parametrize("structured", [True, False], ids=["structured", "without_fields"])
+def test_a_stored_summed_warning_is_served_unchanged_on_a_head_hit_and_a_snapshot(
+    structured: bool,
+):
+    """A collapsed version minted while collapses reported their sum as a warning stores a
+    `stat_vars_summed` entry, with the structured fields or, earlier, without them. A head-hit
+    GET and a snapshot GET return that entry unchanged, once."""
     version_store = FakeVersionRecordDatasetStore()
     client = _client(
         graph=_graph(),
@@ -516,6 +362,17 @@ def test_a_head_hit_returns_a_stored_summed_warning_recorded_without_structured_
     content_version = _mint(client, spec_id=spec_id, sidecar=sidecar, options=_GROUPBY_OPTIONS)[
         "content_version"
     ]
+    stored: dict[str, object] = {
+        "code": "stat_vars_summed",
+        "severity": "info",
+        "message": "The series sums observations from more than one StatVar.",
+    }
+    if structured:
+        stored |= {
+            "contributing_member_count": 2,
+            "stat_var_ref": f"dcid:{spec_id}",
+            "stat_var_label": "Axis value A/Axis value B",
+        }
     with version_store.transaction() as tx:
         row = tx.fetch_one(
             "SELECT warnings FROM datasets.version_record "
@@ -523,26 +380,21 @@ def test_a_head_hit_returns_a_stored_summed_warning_recorded_without_structured_
             (spec_id, content_version),
         )
         assert row is not None
-        warnings = [
-            {key: w[key] for key in ("code", "severity", "message")}
-            if w["code"] == "stat_vars_summed"
-            else w
-            for w in cast(list, row["warnings"])
-        ]
         tx.execute(
             "UPDATE datasets.version_record SET warnings = %s "
             "WHERE subject_id = %s AND content_version = %s",
-            (json.dumps(warnings), spec_id, content_version),
+            (json.dumps([stored, *cast(list, row["warnings"])]), spec_id, content_version),
         )
-    (legacy,) = [w for w in warnings if w["code"] == "stat_vars_summed"]
 
     head_hit = client.get(f"/api/datasets/{spec_id}?{_GROUPBY_QUERY}")
     assert head_hit.status_code == 200, head_hit.text
-    served = head_hit.json()
+    assert head_hit.json()["trace"]["served_from"] == "head"
+    snapshot = client.get(f"/api/datasets/{spec_id}/{content_version}")
+    assert snapshot.status_code == 200, snapshot.text
 
-    assert served["trace"]["served_from"] == "head"
-    assert served["content_version"] == content_version
-    assert [w for w in served["warnings"] if w["code"] == "stat_vars_summed"] == [legacy]
+    for served in (head_hit.json(), snapshot.json()):
+        assert served["content_version"] == content_version
+        assert [w for w in served["warnings"] if w["code"] == "stat_vars_summed"] == [stored]
 
 
 _LEVEL_OPTIONS = {

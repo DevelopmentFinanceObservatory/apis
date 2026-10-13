@@ -69,7 +69,8 @@ def test_observation_series_facet_map_omits_an_axis_with_no_data():
 
 
 def test_observation_series_facet_map_provenance_agrees_with_source_refs():
-    """The facet map and `source_refs` use the same provenance precedence."""
+    """The facet map and `source_refs` use the same provenance precedence, and both carry
+    the route of the provenance's document; other axes carry none."""
     materialise_graph, materialise_sdmx = _facet_axis_materialise_double()
     observations, warn = build_observations_planned(
         [_MULTI_AXIS_SV],
@@ -83,7 +84,12 @@ def test_observation_series_facet_map_provenance_agrees_with_source_refs():
     assert observations is not None
     series = observations.series[0]
     assert series.source_refs
-    assert series.facet["provenance"].ref == series.source_refs[0].dcid
+    assert series.facet["provenance"].ref == series.source_refs[0].ref
+    assert series.facet["provenance"].documentation == series.source_refs[0].documentation
+    assert series.facet["provenance"].documentation == (
+        f"/api/graph/documentation/{series.facet['provenance'].ref}"
+    )
+    assert series.facet["measurementMethod"].documentation is None
 
 
 def test_open_axis_with_differing_data_selects_per_series():
@@ -280,7 +286,7 @@ def test_facet_options_ranks_by_in_window_count_desc_then_ref_asc():
         deadline=None,
     )
     by_axis = {fo.axis: fo for fo in options}
-    unit_refs = [opt.value.ref.dcid for opt in by_axis["unit"].options]
+    unit_refs = [opt.value.ref.ref for opt in by_axis["unit"].options]
     assert unit_refs == expected_unit_order
 
 
@@ -314,7 +320,7 @@ def test_a_method_option_label_drops_its_trailing_full_stop():
         deadline=None,
     )
     labels = {
-        (fo.axis, opt.value.ref.dcid): opt.value.ref.label
+        (fo.axis, opt.value.ref.ref): opt.value.ref.label
         for fo in options
         for opt in fo.options
         if opt.value.ref is not None
@@ -406,7 +412,7 @@ def test_facet_options_unaffected_by_a_narrowing_binding():
         deadline=None,
     )
     by_axis = {fo.axis: fo for fo in options}
-    method_refs = {opt.value.ref.dcid for opt in by_axis["measurementMethod"].options}
+    method_refs = {opt.value.ref.ref for opt in by_axis["measurementMethod"].options}
     assert method_refs == {"GrossDisbursement", "Commitment", "GrantEquivalent"}
 
 
@@ -512,7 +518,7 @@ def test_facet_options_list_only_values_with_observations_in_the_window(
         deadline=None,
     )
     by_axis = {
-        fo.axis: [opt.value.ref.dcid if opt.value.ref else None for opt in fo.options]
+        fo.axis: [opt.value.ref.ref if opt.value.ref else None for opt in fo.options]
         for fo in options
     }
 
@@ -558,7 +564,7 @@ def test_facet_options_offer_a_facet_whose_dates_came_back_short(monkeypatch):
         coverage=_NO_COVERAGE,
         deadline=None,
     )
-    by_axis = {fo.axis: [opt.value.ref.dcid for opt in fo.options] for fo in options}
+    by_axis = {fo.axis: [opt.value.ref.ref for opt in fo.options] for fo in options}
 
     assert by_axis["measurementMethod"] == ["Recorded"]
 

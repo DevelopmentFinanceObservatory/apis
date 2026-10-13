@@ -3,16 +3,7 @@
 
 from __future__ import annotations
 
-from types import MappingProxyType
-
-from dfo_platform.problem import Refusal
-
-# Seconds a client waits before retrying a full instance. A materialise permit wait ends at
-# `materialise_wait_seconds` (30), so a mint refused for want of a permit has already waited
-# out the capacity, and its retry queues for a permit again. Every other door refuses at once,
-# and a read, a head hit or a work thread frees within a request. One second is the shortest
-# `Retry-After` and matches the operation backlog's.
-BACKPRESSURE_RETRY_AFTER_SECONDS = 1
+from dfo_platform.problem import BACKPRESSURE_HEADERS, Refusal
 
 
 class Backpressure(Refusal):
@@ -20,4 +11,7 @@ class Backpressure(Refusal):
     `Retry-After`; the base names no code of its own, so it is no refusal by itself."""
 
     retryable = True
-    headers = MappingProxyType({"Retry-After": str(BACKPRESSURE_RETRY_AFTER_SECONDS)})
+    # A materialise permit wait ends at `materialise_wait_seconds` (30), so a mint refused for
+    # want of a permit has already waited out the capacity, and its retry queues for a permit
+    # again. One second matches the operation backlog's `Retry-After`.
+    headers = BACKPRESSURE_HEADERS

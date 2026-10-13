@@ -21,7 +21,9 @@ class CodeRow:
     `synonyms` comes from `alternateName` without the label. `parent` is the
     same-system `specializationOf` dcid, or `None` for roots and flat systems.
     `short_name` is the graph `shortName` arc when the code has one, else the
-    name the export authors, else `None`.
+    name the export authors, else `None`. `definition` is the graph `description`
+    arc, the sentence that says what the code means, or `None` when the graph
+    holds none.
     """
 
     dcid: str
@@ -31,6 +33,7 @@ class CodeRow:
     synonyms: tuple[str, ...]
     parent: str | None
     short_name: str | None = None
+    definition: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +132,10 @@ class CodeSystemDeclaration:
     `summable` says sibling values can reconstruct a parent total. `absent_reading`
     defines how missing constraints read, `plain_name` supplies the axis
     noun, and `default` defines an open-slot default or is `None`.
+
+    `enum_dcid` is the system's graph id, the enumeration its codes are `typeOf`
+    (`CRSPurposeCodeEnum` for `crsPurpose`). Every exported declaration carries
+    one; a declaration built in memory may name none.
     """
 
     code_system: str
@@ -138,6 +145,7 @@ class CodeSystemDeclaration:
     absent_reading: AbsentReading
     plain_name: str
     default: DeclaredDefault | None = None
+    enum_dcid: str | None = None
 
 
 def summable_axes(declarations: Mapping[str, CodeSystemDeclaration]) -> frozenset[str]:
@@ -239,11 +247,11 @@ class DatasetDeclaration:
 PartyKind = Literal["party", "total", "residual"]
 """What one party of a flow is beside the other parties on its side.
 
-A `party` holds figures of its own: a country, a territory, an organisation. A `total`
-holds other parties' figures: DAC2A publishes "Africa, Total" (`DACAfrica`) and DAC1 the
-G7 (`GroupOfSeven`) beside the countries they hold, so a sum across a flow role that
-counts a total counts its members twice. A `residual` holds figures no other party does
-("Africa, unallocated by country", `DACAfricaUnallocated`), so it adds to the parties.
+A `party` is a country, a territory or an organisation. A `total` holds other parties'
+figures: DAC2A publishes "Africa, Total" (`DACAfrica`) and DAC1 the G7 (`GroupOfSeven`)
+beside the countries they hold, so a sum across a flow role that counts a total counts its
+members twice. A `residual` holds figures no other party does ("Africa, unallocated by
+country", `DACAfricaUnallocated`).
 """
 
 PARTY_KINDS: frozenset[str] = frozenset(get_args(PartyKind))
@@ -274,7 +282,7 @@ class PartyRow:
     """One party a declared dataset publishes, as donor or recipient, and its kind.
 
     `totals` is the group a total holds, as search names the group: a graph place
-    (`africa`, `Caribbean`) or a resolver group (`groups/G7`). A total holds every member
+    (`africa`, `Caribbean`) or a resolver group (`GroupOfSeven`). A total holds every member
     of its group plus `residuals`, the residuals it counts beside them ("Africa, unallocated
     by country"), sorted. `totals` is `None` and `residuals` empty for a party or a residual,
     and for a total no group matches (`DACAllRecipients`, or "lower middle-income
@@ -292,6 +300,20 @@ class PartyRow:
     label: str | None = None
     datasets: tuple[str, ...] = ()
     axes: tuple[RoleAxis, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class SourceCodeRow:
+    """The StatVars a publisher's series code names under one provenance.
+
+    `code` is the publisher's series code as its `sourceIndicatorCode` arcs carry it,
+    upper-cased ("DT.TDS.DEGG.CD"). `dcids` are the StatVar rows carrying the code under
+    `provenance`, sorted. An IDS code names the aggregate series and, where the World Bank
+    publishes one, its by-creditor variant. One StatVar can carry several codes."""
+
+    provenance: str
+    code: str
+    dcids: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -371,12 +393,15 @@ class MeasureAxis:
     """One measure-family dimension. `axis` names a shape field or constraint property.
     `prefer` orders its values, with axis declarations composed
     lexicographically to choose the default partition when all axes are open.
+    `label` is the lowercase noun phrase a sentence names the axis by ("flow type"
+    for `financialFlowType`), or `None` where the export authors none.
     """
 
     axis: str
     kind: MeasureAxisKind
     role: MeasureAxisRole
     prefer: tuple[str, ...]
+    label: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -391,6 +416,8 @@ class MeasureValueRow:
     spells one reading with two dcids (`InflationAdjusted` reads as `RealValue`),
     or is `None` for a canonical value. Query text naming an alias resolves to
     its canonical value, and an alias ranks inside its canonical value's reading.
+
+    `definition` is the graph `description` arc, or `None` when the graph holds none.
     """
 
     dcid: str
@@ -400,6 +427,7 @@ class MeasureValueRow:
     short_name: str | None
     matchable: bool
     same_reading_as: str | None = None
+    definition: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -413,21 +441,27 @@ class MeasurePartitionLabel:
     label's text names: "imputed multilateral ODA" names `dac2aAidType = DAC2aAidType106`
     and `crsTypeOfFlow = CRSTypeOfFlow10`. A series carrying such a value reads it in the
     label alone, so no other phrase repeats it.
+
+    `definition` is the authored sentence that says what the measure counts, taken from the
+    publisher's glossary or methodology, or `None` where the export authors none.
     """
 
     axis_values: tuple[tuple[str, str], ...]
     label: str
     named_values: tuple[tuple[str, str], ...] = ()
+    definition: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class PartitionLabelMatch:
     """A matched authored label, the input pairs its key left uncovered, in caller order,
-    and the code pairs its text names (`MeasurePartitionLabel.named_values`)."""
+    the code pairs its text names (`MeasurePartitionLabel.named_values`), and its authored
+    definition (`MeasurePartitionLabel.definition`)."""
 
     label: str
     uncovered: tuple[tuple[str, str], ...]
     named_values: tuple[tuple[str, str], ...] = ()
+    definition: str | None = None
 
 
 def label_for_pairs(
@@ -465,7 +499,10 @@ def label_for_pairs(
     covered = frozenset(winner.axis_values)
     uncovered = tuple(pair for pair in known if pair not in covered)
     return PartitionLabelMatch(
-        label=winner.label, uncovered=uncovered, named_values=winner.named_values
+        label=winner.label,
+        uncovered=uncovered,
+        named_values=winner.named_values,
+        definition=winner.definition,
     )
 
 

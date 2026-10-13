@@ -168,7 +168,7 @@ def _named_values(resolved: dict[str, Any]) -> list[list[str]]:
     its `measure_axis_values` match in the measure index (`label_for_pairs`)."""
     if resolved.get("measure_label") is None:
         return []
-    pairs = [(entry["axis"], entry["value"]["dcid"]) for entry in resolved["measure_axis_values"]]
+    pairs = [(entry["axis"], entry["value"]["ref"]) for entry in resolved["measure_axis_values"]]
     match = label_for_pairs(pairs, get_measure_index().partition_labels)
     return [list(pair) for pair in match.named_values] if match is not None else []
 

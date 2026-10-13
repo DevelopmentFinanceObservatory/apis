@@ -35,7 +35,7 @@ def _stored_resolved_frame(
     return ResolvedFrame(
         frame_ref=frame_ref,
         frame=doc,
-        structural_view=compute_structural_view(frame=doc),
+        structural_view=compute_structural_view(frame=doc, continuation=None),
         manifest={"schema_version": 1},
         labels=labels or {},
         retrieved_on=FIXTURE_RETRIEVED_ON,

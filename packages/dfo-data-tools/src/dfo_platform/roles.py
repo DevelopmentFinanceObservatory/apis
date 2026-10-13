@@ -26,7 +26,7 @@ type FlowFamily = Literal["aid", "debt_service", "debt_stock", "debt_lending"]
 - `debt_stock`: debt a debtor holds at a point in time (outstanding debt, arrears).
 - `debt_lending`: lending from creditors to a debtor (disbursements, undisbursed debt).
 
-`search.heading.flow_family.flow_family` computes it from the account a code-index series'
+`code_index.flow_family.flow_family` computes it from the account a code-index series'
 datasets declare, and from the constraint values of a series outside the index.
 """
 

@@ -6,7 +6,7 @@ The graph supplies `iso3` for Kenya alone. Uganda and Togo each contribute one u
 from __future__ import annotations
 
 from datasets_api.mint_models import MintOptions, PivotOptions
-from datasets_api.render import _reshape, _stream_bare_pivot
+from datasets_api.render import _RenderReads, _reshape, _stream_bare_pivot
 from materialise.enrichment import EnrichmentLookup
 from materialise.reshape import Table
 
@@ -44,7 +44,9 @@ def _whole():
         whole_table,
         options=_options(),
         entity_columns=("recipient",),
-        enrichment=EnrichmentLookup(_GRAPH, type_kinds={}, parties={}),
+        reads=_RenderReads(
+            enrichment=EnrichmentLookup(_GRAPH, parties={}), known={}, deadline=None
+        ),
         code_index=None,
         resolved_stat_var_refs=(),
         provenance_refs=(),
@@ -57,7 +59,9 @@ def _streamed(bounds: list[int]):
         iter(_chunks(bounds)),
         options=_options(),
         entity_columns=("recipient",),
-        enrichment=EnrichmentLookup(_GRAPH, type_kinds={}, parties={}),
+        reads=_RenderReads(
+            enrichment=EnrichmentLookup(_GRAPH, parties={}), known={}, deadline=None
+        ),
         code_index=None,
         resolved_stat_var_refs=(),
         provenance_refs=(),

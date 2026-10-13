@@ -22,6 +22,7 @@ from search.engine.clients.graph_client import LiveGraphClient
 from search.engine.clients.materialise_bridge import build_materialise_sdmx_client
 from search.engine.concurrency import scoped_concurrency
 from search.engine.config import settings
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region.codes import _ObsProbeResult
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.result import RegionResult
@@ -29,6 +30,7 @@ from search.engine.region.state import EngineOptions
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import build_observations_planned
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 from tests.materialise.un_deployment import (
     OURS_API,
@@ -133,6 +135,8 @@ def _sv_node(dcid: str) -> dict:
 
 class _ElectFirstLLM:
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         usage = {"input_tokens": 1, "output_tokens": 1, "cached_tokens": 0}
         return _UniversalBindOutput(chosen_shape_index=0, bindings=[], ask=None), usage
 
@@ -197,7 +201,7 @@ def test_the_buffered_gap_fill_embeds_un_rows_read_through_the_served_reader(
 
     assert result.status == "definite"
     (spec,) = result.specs
-    assert [sv.ref.dcid for sv in spec.resolved.members] == [UN_VARIABLE]
+    assert [sv.ref.ref for sv in spec.resolved.members] == [UN_VARIABLE]
     assert spec.resolved.observations is not None
     (series,) = spec.resolved.observations.series
     assert [p.value for p in series.points] == [value for _, value in UN_SERIES[_KEN]]

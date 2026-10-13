@@ -78,6 +78,12 @@ Both directions raise the identical `option_target_invalid` (422, pointer
 Deriving `role_names_by_axis` costs no graph read: it is already implied by
 the population this module derives, regardless of which role the request
 names.
+
+The population is derived from the identity with the requested flow axis open
+(`identity_edit.open_requested_role`), the identity an edit binding that axis posts.
+An IDS total asked for `origin` therefore reads its by-creditor twin, which declares
+the creditor role, while a population with no StatVar declaring the axis drops the
+open role at election and still refuses.
 """
 
 from __future__ import annotations
@@ -93,6 +99,7 @@ from search.engine.clients.graph import EngineGraphClient
 from search.engine.errors import EngineInputError
 from search.engine.identity_edit import (
     check_described_arm,
+    open_requested_role,
     refuse_over_place_bound,
     validate_edited_identity,
 )
@@ -229,12 +236,15 @@ def _check_role_target(req: OptionsRequest, role_names_by_axis: dict[RoleAxis, s
 class ResolvedOptionsTarget:
     """Resolved inputs required to build one role's option surface.
 
+    `identity` is the posted identity, canonicalised, with the requested flow axis open
+    (`identity_edit.open_requested_role`). The population is the one it elects.
     `population` supplies StatVars; `anchors` are typed entities from one
     `node_types_batch` call. `facets` and `requested_window` pass through the
     identity, with the window translated to engine form. `role_names_by_axis`
     maps declared flow axes to role names; it is empty for subject-only data.
     """
 
+    identity: BaseIdentity
     population: OptionsPopulation
     anchors: tuple[ResolvedEntity, ...]
     facets: dict[str, IdentityFacetBinding] | None
@@ -304,6 +314,9 @@ def resolve_options_target(
     refuse_over_place_bound(identity.entities, pointer="/identity/entities")
     # A pin posted bound and one posted unbound denote one population.
     identity = canonicalise_identity(identity)
+    # The door enumerates the requested flow axis member by member, so it reads the
+    # population an edit binding that axis elects, not the posted total's.
+    identity = open_requested_role(identity, role=req.for_.role)
     # A named dataset that does not publish the five-tuple refuses here as it does at the
     # mint and the resubmit.
     refuse_source_outside_family(identity, pointer="/identity/facets/provenance")
@@ -331,6 +344,7 @@ def resolve_options_target(
     _check_role_target(req, role_names_by_axis)
 
     return ResolvedOptionsTarget(
+        identity=identity,
         population=population,
         anchors=anchors,
         facets=identity.facets,

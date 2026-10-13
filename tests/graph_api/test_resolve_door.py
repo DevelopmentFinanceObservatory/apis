@@ -1,5 +1,5 @@
 """Resolve-door tests use the shared resolver and an in-memory graph reader.
-The same fake serves entity confirmation and region expansion.
+The same fake serves entity confirmation and the names of expanded region members.
 """
 
 from __future__ import annotations
@@ -12,72 +12,98 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from entity_resolution import EntityResolutionError, NotFound, Resolution
+from entity_resolution import EntityResolutionError, Matched, NotFound, Resolution, Resolved
+from entity_resolution.membership import DEFAULT_PROJECTION
 from graph_api.deps import GraphDeps
 from graph_api.doors import resolve as resolve_door
+from graph_api.doors.node import NODE_MEMBERSHIP_SLOT
 from graph_api.doors.sources import new_provenance_doc_cache
+from graph_api.kinds import KINDS
+from graph_api.resolve_models import ResolveRequest
 from materialise.graph import GraphDeadlineExceededError, GraphReadError
 
-from .conftest import FakeGraphNodeReader, make_client, make_resolver, send_past_a_full_pool
+from .conftest import (
+    FakeGraphNodeReader,
+    make_client,
+    make_resolver,
+    send_past_a_full_pool,
+)
+
+
+def _post(shared_resolver, graph, body: dict, *, policy: bool = False):
+    """Post `body` to the resolve door over `graph`. `policy` publishes the shared membership
+    policy on the app, as the surface's lifespan does."""
+    client = make_client(graph=graph, resolver=make_resolver(shared_resolver, graph=graph))
+    if policy:
+        NODE_MEMBERSHIP_SLOT.set(client.app, shared_resolver.policy)
+    with client:
+        return client.post("/api/graph/resolve", json=body)
+
+
+def _result(shared_resolver, graph, text: str, *, policy: bool = False, **body) -> dict:
+    resp = _post(shared_resolver, graph, {"texts": [text], **body}, policy=policy)
+    assert resp.status_code == 200, resp.text
+    (result,) = resp.json()["results"]
+    return result
+
+
+def _unused(**fields) -> dict:
+    """A result's fields with every field its status leaves unused set to null."""
+    empty = dict.fromkeys(
+        (
+            "entity",
+            "matched",
+            "reading",
+            "projection",
+            "member_count",
+            "members",
+            "candidates",
+            "near_matches",
+        )
+    )
+    return {**empty, **fields}
 
 
 def test_kenya_resolved_and_confirmed(shared_resolver):
     graph = FakeGraphNodeReader(nodes={"country/KEN": {"typeOf": ("Country",), "name": ("Kenya",)}})
-    client = make_client(graph=graph, resolver=make_resolver(shared_resolver, graph=graph))
 
-    with client:
-        resp = client.post("/api/graph/resolve", json={"texts": ["Kenya"]})
+    result = _result(shared_resolver, graph, "Kenya")
 
-    assert resp.status_code == 200, resp.text
-    result = resp.json()["results"][0]
     assert result == {
+        "input": "Kenya",
         "status": "resolved",
-        "entity": {
-            "dcid": "country/KEN",
-            "name": "Kenya",
-            "entity_type": "Country",
-            "kind": "country",
-        },
+        **_unused(
+            entity={"ref": "country/KEN", "label": "Kenya", "kind": "country"},
+            matched={"text": "Kenya", "as": "name"},
+            reading="entity",
+        ),
     }
 
 
 def test_kenya_resolved_but_not_held_reports_not_held(shared_resolver):
-    graph = FakeGraphNodeReader(nodes={})
-    client = make_client(graph=graph, resolver=make_resolver(shared_resolver, graph=graph))
+    result = _result(shared_resolver, FakeGraphNodeReader(nodes={}), "Kenya")
 
-    with client:
-        resp = client.post("/api/graph/resolve", json={"texts": ["Kenya"]})
-
-    assert resp.status_code == 200, resp.text
-    result = resp.json()["results"][0]
-    assert result == {"status": "not_held", "name": "Kenya", "dcid": "country/KEN"}
+    assert result == {
+        "input": "Kenya",
+        "status": "not_held",
+        **_unused(entity={"ref": "country/KEN", "label": "Kenya", "kind": None}),
+    }
 
 
 def test_below_confidence_name_refuses_as_not_found_with_near_matches(shared_resolver):
-    """Cash falls below the match threshold and returns the rejected names as near matches."""
-    graph = FakeGraphNodeReader(nodes={})
-    client = make_client(graph=graph, resolver=make_resolver(shared_resolver, graph=graph))
+    """Cash falls below the match threshold and returns the rejected candidates as near
+    matches, each a reference with its kind."""
+    result = _result(shared_resolver, FakeGraphNodeReader(nodes={}), "Cash")
 
-    with client:
-        resp = client.post("/api/graph/resolve", json={"texts": ["Cash"]})
-
-    assert resp.status_code == 200, resp.text
-    result = resp.json()["results"][0]
     assert result["status"] == "not_found"
     assert result["near_matches"], "expected near matches for 'Cash'"
-    assert all(isinstance(name, str) and name for name in result["near_matches"])
+    assert all(match["ref"] and match["label"] for match in result["near_matches"])
 
 
 def test_nonsense_text_refuses_as_not_found_with_no_near_matches(shared_resolver):
-    graph = FakeGraphNodeReader(nodes={})
-    client = make_client(graph=graph, resolver=make_resolver(shared_resolver, graph=graph))
+    result = _result(shared_resolver, FakeGraphNodeReader(nodes={}), "zzqqxv")
 
-    with client:
-        resp = client.post("/api/graph/resolve", json={"texts": ["zzqqxv"]})
-
-    assert resp.status_code == 200, resp.text
-    result = resp.json()["results"][0]
-    assert result == {"status": "not_found", "near_matches": []}
+    assert result == {"input": "zzqqxv", "status": "not_found", **_unused(near_matches=[])}
 
 
 def test_congo_ambiguous_when_graph_holds_both_candidates(shared_resolver):
@@ -87,76 +113,55 @@ def test_congo_ambiguous_when_graph_holds_both_candidates(shared_resolver):
             "country/COG": {"typeOf": ("Country",), "name": ("Congo [Republic]",)},
         }
     )
-    client = make_client(graph=graph, resolver=make_resolver(shared_resolver, graph=graph))
 
-    with client:
-        resp = client.post("/api/graph/resolve", json={"texts": ["Congo"]})
+    result = _result(shared_resolver, graph, "Congo")
 
-    assert resp.status_code == 200, resp.text
-    result = resp.json()["results"][0]
     assert result["status"] == "ambiguous"
-    by_dcid = {c["dcid"]: c for c in result["candidates"]}
-    assert set(by_dcid) == {"country/COD", "country/COG"}
-    assert by_dcid["country/COD"]["kind"] == "country"
-    assert by_dcid["country/COD"]["entity_type"] == "Country"
+    assert result["entity"] is None
+    assert {c["ref"]: c["kind"] for c in result["candidates"]} == {
+        "country/COD": "country",
+        "country/COG": "country",
+    }
 
 
 def test_congo_resolves_when_graph_holds_exactly_one_candidate(shared_resolver):
     graph = FakeGraphNodeReader(
         nodes={"country/COD": {"typeOf": ("Country",), "name": ("Congo [DRC]",)}}
     )
-    client = make_client(graph=graph, resolver=make_resolver(shared_resolver, graph=graph))
 
-    with client:
-        resp = client.post("/api/graph/resolve", json={"texts": ["Congo"]})
+    result = _result(shared_resolver, graph, "Congo")
 
-    assert resp.status_code == 200, resp.text
-    result = resp.json()["results"][0]
     assert result["status"] == "resolved"
-    assert result["entity"]["dcid"] == "country/COD"
+    assert result["entity"]["ref"] == "country/COD"
 
 
 def test_congo_not_held_when_graph_holds_neither_candidate(shared_resolver):
-    graph = FakeGraphNodeReader(nodes={})
-    client = make_client(graph=graph, resolver=make_resolver(shared_resolver, graph=graph))
-
-    with client:
-        resp = client.post("/api/graph/resolve", json={"texts": ["Congo"]})
+    resp = _post(shared_resolver, FakeGraphNodeReader(nodes={}), {"texts": ["Congo"]})
 
     assert resp.status_code == 200, resp.text
-    result = resp.json()["results"][0]
+    (result,) = resp.json()["results"]
     assert result["status"] == "not_held"
-    assert result["dcid"] == "country/COD"
+    assert result["entity"]["ref"] == "country/COD"
     assert "country/COG" not in resp.text
 
 
-def test_spelling_corrected_winner_demotes_to_not_found_with_correction_as_near_match(
-    shared_resolver,
+@pytest.mark.parametrize(
+    ("text", "nodes", "near_match"),
+    [
+        # One-edit spelling correction maps Lagos to Laos; the listed-name gate rejects it.
+        ("Lagos", {"country/LAO": {"typeOf": ("Country",)}}, "country/LAO"),
+        ("Nigria", {"country/NGA": {"typeOf": ("Country",)}}, "country/NGA"),
+    ],
+)
+def test_a_corrected_winner_demotes_to_not_found_with_the_correction_as_near_match(
+    shared_resolver, text: str, nodes: dict, near_match: str
 ):
-    """One-edit spelling correction maps Lagos to Laos, then the listed-name
-    gate returns NotFound with Laos as a near match.
-    """
-    graph = FakeGraphNodeReader(nodes={"country/LAO": {"typeOf": ("Country",)}})
-    client = make_client(graph=graph, resolver=make_resolver(shared_resolver, graph=graph))
+    result = _result(shared_resolver, FakeGraphNodeReader(nodes=nodes), text)
 
-    with client:
-        resp = client.post("/api/graph/resolve", json={"texts": ["Lagos"]})
-
-    assert resp.status_code == 200, resp.text
-    result = resp.json()["results"][0]
-    assert result == {"status": "not_found", "near_matches": ["Laos"]}
-
-
-def test_typo_corrected_winner_demotes_to_not_found_with_correction_as_near_match(shared_resolver):
-    graph = FakeGraphNodeReader(nodes={"country/NGA": {"typeOf": ("Country",)}})
-    client = make_client(graph=graph, resolver=make_resolver(shared_resolver, graph=graph))
-
-    with client:
-        resp = client.post("/api/graph/resolve", json={"texts": ["Nigria"]})
-
-    assert resp.status_code == 200, resp.text
-    result = resp.json()["results"][0]
-    assert result == {"status": "not_found", "near_matches": ["Nigeria"]}
+    assert result["status"] == "not_found"
+    assert result["entity"] is None
+    assert [match["ref"] for match in result["near_matches"]] == [near_match]
+    assert result["near_matches"][0]["kind"] == "country"
 
 
 @pytest.mark.parametrize(
@@ -174,19 +179,15 @@ def test_typo_corrected_winner_demotes_to_not_found_with_correction_as_near_matc
 def test_listed_alias_or_code_stays_resolved(text: str, dcid: str, shared_resolver):
     """Aliases, country codes, and canonical names resolve directly."""
     graph = FakeGraphNodeReader(nodes={dcid: {"typeOf": ("Country",)}})
-    client = make_client(graph=graph, resolver=make_resolver(shared_resolver, graph=graph))
 
-    with client:
-        resp = client.post("/api/graph/resolve", json={"texts": [text]})
+    result = _result(shared_resolver, graph, text)
 
-    assert resp.status_code == 200, resp.text
-    result = resp.json()["results"][0]
     assert result["status"] == "resolved", (text, result)
-    assert result["entity"]["dcid"] == dcid
+    assert result["entity"]["ref"] == dcid
 
 
 @pytest.mark.parametrize(
-    ("text", "name", "dcid", "entity_type", "kind"),
+    ("text", "label", "dcid", "graph_type", "kind"),
     [
         (
             "African Development Bank",
@@ -219,20 +220,15 @@ def test_listed_alias_or_code_stays_resolved(text: str, dcid: str, shared_resolv
     ],
 )
 def test_organisation_or_aggregate_resolves_with_kind(
-    text: str, name: str, dcid: str, entity_type: str, kind: str, shared_resolver
+    text: str, label: str, dcid: str, graph_type: str, kind: str, shared_resolver
 ):
-    graph = FakeGraphNodeReader(nodes={dcid: {"typeOf": (entity_type,), "name": (name,)}})
-    client = make_client(graph=graph, resolver=make_resolver(shared_resolver, graph=graph))
+    graph = FakeGraphNodeReader(nodes={dcid: {"typeOf": (graph_type,), "name": (label,)}})
 
-    with client:
-        resp = client.post("/api/graph/resolve", json={"texts": [text]})
+    result = _result(shared_resolver, graph, text)
 
-    assert resp.status_code == 200, resp.text
-    result = resp.json()["results"][0]
-    assert result == {
-        "status": "resolved",
-        "entity": {"dcid": dcid, "name": name, "entity_type": entity_type, "kind": kind},
-    }
+    assert result["status"] == "resolved"
+    assert result["entity"] == {"ref": dcid, "label": label, "kind": kind}
+    assert result["members"] is None
 
 
 def test_world_bank_curated_ambiguity_names_ibrd_and_ida(shared_resolver):
@@ -243,149 +239,135 @@ def test_world_bank_curated_ambiguity_names_ibrd_and_ida(shared_resolver):
             "InternationalDevelopmentAssociation": {"typeOf": ("Organization",)},
         }
     )
-    client = make_client(graph=graph, resolver=make_resolver(shared_resolver, graph=graph))
 
-    with client:
-        resp = client.post("/api/graph/resolve", json={"texts": ["World Bank"]})
+    result = _result(shared_resolver, graph, "World Bank")
 
-    assert resp.status_code == 200, resp.text
-    result = resp.json()["results"][0]
     assert result["status"] == "ambiguous"
-    assert {c["dcid"] for c in result["candidates"]} == {
+    assert {c["ref"] for c in result["candidates"]} == {
         "InternationalBankForReconstructionAndDevelopment",
         "InternationalDevelopmentAssociation",
     }
     assert all(c["kind"] == "organisation" for c in result["candidates"])
 
 
-def _members_of_on_shared_thread(resolver, group: str) -> list[str]:
-    return resolver.members_of(group)
-
-
-@pytest.mark.parametrize("text", ["OECD", "G7"])
-def test_oecd_and_g7_resolve_as_group_with_no_entity_reading(text: str, shared_resolver):
-    """OECD and G7 resolve to group ids absent from the graph. Their held
-    member countries return as `resolved_group` with `entity: null`. Member
-    ids come from the shared resolver's `members_of` lookup.
-    """
-    member_ids = shared_resolver.run(
-        _members_of_on_shared_thread, shared_resolver.resolver, text
-    ).result()
-    assert member_ids
-    graph = FakeGraphNodeReader(
-        nodes={dcid: {"typeOf": ("Country",), "name": (dcid,)} for dcid in member_ids}
-    )
-    client = make_client(graph=graph, resolver=make_resolver(shared_resolver, graph=graph))
-
-    with client:
-        resp = client.post("/api/graph/resolve", json={"texts": [text]})
-
-    assert resp.status_code == 200, resp.text
-    result = resp.json()["results"][0]
-    assert result["status"] == "resolved_group"
-    assert result["entity"] is None
-    assert {member["dcid"] for member in result["members"]} == set(member_ids)
-    assert all(member["kind"] == "country" for member in result["members"])
-
-
-def test_eu_resolves_as_group_with_both_entity_and_members(shared_resolver):
-    """The held `EuropeanUnion` node and all 27 member countries appear in
-    the result. This door has no aid role to choose between them.
-    """
-    member_ids = shared_resolver.run(
-        _members_of_on_shared_thread, shared_resolver.resolver, "EU"
-    ).result()
-    assert member_ids
-    nodes = {dcid: {"typeOf": ("Country",), "name": (dcid,)} for dcid in member_ids}
-    nodes["EuropeanUnion"] = {"typeOf": ("ContinentalUnion",), "name": ("European Union",)}
-    graph = FakeGraphNodeReader(nodes=nodes)
-    client = make_client(graph=graph, resolver=make_resolver(shared_resolver, graph=graph))
-
-    with client:
-        resp = client.post("/api/graph/resolve", json={"texts": ["EU"]})
-
-    assert resp.status_code == 200, resp.text
-    result = resp.json()["results"][0]
-    assert result["status"] == "resolved_group"
-    assert result["entity"] == {
-        "dcid": "EuropeanUnion",
-        "name": "European Union",
-        "entity_type": "ContinentalUnion",
-        "kind": "continental_union",
-    }
-    assert {member["dcid"] for member in result["members"]} == set(member_ids)
-
-
-def test_group_with_no_confirmed_member_and_no_entity_is_not_held(shared_resolver):
-    """An unheld group with no held members returns `not_held` for its group id."""
-    graph = FakeGraphNodeReader(nodes={})
-    client = make_client(graph=graph, resolver=make_resolver(shared_resolver, graph=graph))
-
-    with client:
-        resp = client.post("/api/graph/resolve", json={"texts": ["G7"]})
-
-    assert resp.status_code == 200, resp.text
-    result = resp.json()["results"][0]
-    assert result == {"status": "not_held", "name": "Group of Seven", "dcid": "groups/G7"}
-
-
-def test_sub_saharan_africa_and_africa_expand_through_containment_in_one_mixed_batch(
-    shared_resolver,
+@pytest.mark.parametrize(
+    ("text", "ref", "member_count"),
+    [("G7", "GroupOfSeven", 7), ("OECD", "undata-geo/G00406000", 38), ("EU", "EuropeanUnion", 27)],
+)
+def test_a_group_resolves_from_the_registry_when_the_graph_holds_none_of_it(
+    shared_resolver, text: str, ref: str, member_count: int
 ):
-    """A mixed request expands Sub-Saharan Africa and Africa in one containment
-    call. Unlabelled member `country/BEN` uses its dcid as the display name.
-    """
+    """The membership registry confirms a group and its members, so a graph holding no node
+    still resolves the group with its count and a link, and no graph read names a member."""
+    graph = FakeGraphNodeReader(nodes={})
+
+    result = _result(shared_resolver, graph, text)
+
+    assert result["status"] == "resolved"
+    assert result["entity"]["ref"] == ref
+    assert result["entity"]["kind"] == "group"
+    assert result["projection"] == "countries"
+    assert result["member_count"] == member_count
+    assert result["members"] == (
+        f"/api/graph/node/{ref}/members?relation=members&projection=countries"
+    )
+    assert graph.calls["node_names_many"] == 0
+
+
+def test_the_eu_resolves_as_a_group_when_the_graph_holds_its_node(shared_resolver):
+    """The group, not its graph node, is the entity: the node's `ContinentalUnion` type does not
+    change the kind."""
+    graph = FakeGraphNodeReader(
+        nodes={"EuropeanUnion": {"typeOf": ("ContinentalUnion",), "name": ("European Union",)}}
+    )
+
+    result = _result(shared_resolver, graph, "EU")
+
+    assert result["entity"]["ref"] == "EuropeanUnion"
+    assert result["entity"]["kind"] == "group"
+    assert result["member_count"] == 27
+
+
+def test_expand_members_inlines_a_groups_registry_members(shared_resolver):
+    graph = FakeGraphNodeReader(nodes={})
+
+    result = _result(shared_resolver, graph, "G7", expand=["members"])
+
+    refs = [member["ref"] for member in result["members"]]
+    assert len(refs) == result["member_count"] == 7
+    assert refs == sorted(refs)
+    assert "country/JPN" in refs
+    assert all(member["label"] for member in result["members"])
+    assert graph.calls["node_names_many"] == 0
+
+
+@pytest.mark.parametrize(
+    ("text", "ref", "kind", "member_count"),
+    [
+        ("Africa", "africa", "continent", 54),
+        ("Sub-Saharan Africa", "SubSaharanAfrica", "subregion", 48),
+    ],
+)
+def test_a_region_takes_its_count_and_link_from_the_membership_policy(
+    shared_resolver, text: str, ref: str, kind: str, member_count: int
+):
+    """Graph containment is not read: the fake graph's containment would give one member."""
+    graph = FakeGraphNodeReader(
+        nodes={ref: {"typeOf": ("Continent" if kind == "continent" else "UNGeoRegion",)}},
+        contained={(ref, "Country"): ["country/AGO"]},
+    )
+
+    result = _result(shared_resolver, graph, text, policy=True)
+
+    assert result["status"] == "resolved"
+    assert result["entity"]["kind"] == kind
+    assert result["projection"] == "countries"
+    assert result["member_count"] == member_count
+    assert result["members"] == (
+        f"/api/graph/node/{ref}/members?relation=countries&projection=countries"
+    )
+    assert graph.calls["child_places_batch"] == 0
+    assert graph.calls["node_names_many"] == 0
+
+
+def test_a_region_carries_no_membership_where_no_policy_is_published(shared_resolver):
+    graph = FakeGraphNodeReader(nodes={"africa": {"typeOf": ("Continent",)}})
+
+    result = _result(shared_resolver, graph, "Africa")
+
+    assert result["entity"]["kind"] == "continent"
+    assert (result["projection"], result["member_count"], result["members"]) == (None, None, None)
+
+
+def test_expand_members_labels_a_regions_members_from_its_policy(shared_resolver):
+    """A batch expanding two regions labels each region and its members with the policy's
+    canonical names, with no graph read, whatever the graph names them; a territory the policy
+    files outside `countries` is absent."""
     graph = FakeGraphNodeReader(
         nodes={
-            "SubSaharanAfrica": {"typeOf": ("UNGeoRegion",)},
-            "africa": {"typeOf": ("Continent",)},
-            "country/KEN": {"typeOf": ("Country",)},
+            "africa": {"typeOf": ("Continent",), "name": ("Graph name",)},
+            "MiddleAfrica": {"typeOf": ("UNGeoRegion",)},
             "country/AGO": {"typeOf": ("Country",), "name": ("Angola",)},
         },
-        contained={
-            ("SubSaharanAfrica", "Country"): ["country/AGO", "country/BEN"],
-            ("africa", "Country"): ["country/AGO"],
-        },
     )
-    client = make_client(graph=graph, resolver=make_resolver(shared_resolver, graph=graph))
-
-    with client:
-        resp = client.post(
-            "/api/graph/resolve", json={"texts": ["Sub-Saharan Africa", "Kenya", "Africa"]}
-        )
+    resp = _post(
+        shared_resolver,
+        graph,
+        {"texts": ["Africa", "Middle Africa"], "expand": ["members"]},
+        policy=True,
+    )
 
     assert resp.status_code == 200, resp.text
-    assert "m49/" not in resp.text
-    assert "wikidataId/" not in resp.text
-    results = resp.json()["results"]
-    assert len(results) == 3
-
-    assert results[0] == {
-        "status": "resolved_region",
-        "region": {
-            "dcid": "SubSaharanAfrica",
-            "name": "Sub-Saharan Africa",
-            "entity_type": "UNGeoRegion",
-            "kind": "subregion",
-        },
-        "members": [
-            {"dcid": "country/AGO", "name": "Angola"},
-            {"dcid": "country/BEN", "name": "country/BEN"},
-        ],
-    }
-    assert results[1]["status"] == "resolved"
-    assert results[1]["entity"]["dcid"] == "country/KEN"
-    assert results[2] == {
-        "status": "resolved_region",
-        "region": {
-            "dcid": "africa",
-            "name": "Africa",
-            "entity_type": "Continent",
-            "kind": "continent",
-        },
-        "members": [{"dcid": "country/AGO", "name": "Angola"}],
-    }
-    assert graph.calls["child_places_batch"] == 1
+    africa, middle = resp.json()["results"]
+    by_ref = {member["ref"]: member["label"] for member in africa["members"]}
+    assert len(africa["members"]) == len(by_ref) == africa["member_count"] == 54
+    # The region, like its members, takes the policy's name, as the node route labels it.
+    assert africa["entity"]["label"] == shared_resolver.policy.get("africa").label
+    assert (by_ref["country/AGO"], by_ref["country/KEN"]) == ("Angola", "Kenya")
+    assert None not in by_ref.values()
+    assert "country/ESH" not in by_ref
+    assert len(middle["members"]) == middle["member_count"] == 9
+    assert graph.calls["node_names_many"] == 0
 
 
 def test_resolving_a_subregion_and_a_continent_leaks_no_internal_dcid_prefix(shared_resolver):
@@ -396,46 +378,127 @@ def test_resolving_a_subregion_and_a_continent_leaks_no_internal_dcid_prefix(sha
         nodes={
             "SubSaharanAfrica": {"typeOf": ("UNGeoRegion",)},
             "africa": {"typeOf": ("Continent",)},
-            "country/AGO": {"typeOf": ("Country",), "name": ("Angola",)},
-        },
-        contained={
-            ("SubSaharanAfrica", "Country"): ["country/AGO"],
-            ("africa", "Country"): ["country/AGO"],
         },
     )
-    client = make_client(graph=graph, resolver=make_resolver(shared_resolver, graph=graph))
-
-    with client:
-        resp = client.post("/api/graph/resolve", json={"texts": ["Sub-Saharan Africa", "Africa"]})
+    resp = _post(
+        shared_resolver,
+        graph,
+        {"texts": ["Sub-Saharan Africa", "Africa"], "expand": ["members"]},
+        policy=True,
+    )
 
     assert resp.status_code == 200, resp.text
     assert "m49/" not in resp.text
     assert "wikidataId/" not in resp.text
 
 
-def test_sub_saharan_africa_not_held_when_the_region_itself_is_not_confirmed(shared_resolver):
-    """Confirmation precedes expansion. An unconfirmed region returns
-    `not_held`, and the containment call count remains zero.
-    """
-    graph = FakeGraphNodeReader(nodes={})
-    client = make_client(graph=graph, resolver=make_resolver(shared_resolver, graph=graph))
+def test_a_region_the_policy_holds_resolves_when_the_graph_holds_no_node_for_it(
+    shared_resolver,
+):
+    """The membership policy vouches for a region as for a group: with no graph node it
+    resolves with the policy's kind and count."""
+    result = _result(
+        shared_resolver, FakeGraphNodeReader(nodes={}), "Sub-Saharan Africa", policy=True
+    )
 
-    with client:
-        resp = client.post("/api/graph/resolve", json={"texts": ["Sub-Saharan Africa"]})
+    count = shared_resolver.policy.get("SubSaharanAfrica").member_count(DEFAULT_PROJECTION)
+    assert (result["status"], result["entity"]["kind"]) == ("resolved", "subregion"), result
+    assert result["entity"]["ref"] == "SubSaharanAfrica"
+    assert result["member_count"] == count
+
+
+def test_every_result_echoes_its_input_in_request_order(shared_resolver):
+    graph = FakeGraphNodeReader(nodes={"country/KEN": {"typeOf": ("Country",)}})
+    texts = ["  Kenya ", "zzqqxv", "G7"]
+
+    resp = _post(shared_resolver, graph, {"texts": texts})
 
     assert resp.status_code == 200, resp.text
-    result = resp.json()["results"][0]
-    assert result == {
-        "status": "not_held",
-        "name": "Sub-Saharan Africa",
-        "dcid": "SubSaharanAfrica",
+    assert [r["input"] for r in resp.json()["results"]] == ["Kenya", "zzqqxv", "G7"]
+
+
+_CODE_GRAPH = FakeGraphNodeReader(
+    nodes={"CRSPurposeCode12220": {"typeOf": ("CRSPurposeCodeEnum",), "name": ("x",)}}
+)
+
+
+@pytest.mark.parametrize(
+    ("text", "code_system", "matched"),
+    [
+        ("basic health care", None, {"text": "basic health care", "as": "name"}),
+        ("PHC", None, {"text": "PHC", "as": "alias"}),
+        ("basic health care", "CRSPurposeCodeEnum", {"text": "basic health care", "as": "name"}),
+        # A code matches casefolded, with whitespace collapsed, and names the text it lists.
+        ("Basic  Health Care", None, {"text": "basic health care", "as": "name"}),
+        ("phc", None, {"text": "PHC", "as": "alias"}),
+    ],
+)
+def test_a_code_resolves_by_its_label_or_synonym(
+    shared_resolver, text: str, code_system: str | None, matched: dict
+):
+    resp = _post(
+        shared_resolver,
+        _CODE_GRAPH,
+        {"texts": [text], "kinds": ["code"], "code_system": code_system},
+    )
+
+    assert resp.status_code == 200, resp.text
+    (result,) = resp.json()["results"]
+    assert result["status"] == "resolved"
+    assert result["entity"] == {
+        "ref": "CRSPurposeCode12220",
+        "label": "basic health care",
+        "kind": "code",
     }
-    assert graph.calls["child_places_batch"] == 0
+    assert result["matched"] == matched
+
+
+@pytest.mark.parametrize(
+    "texts",
+    [("Basic health care", "basic health care"), ("basic health care", "BASIC HEALTH CARE")],
+)
+def test_two_casings_of_a_code_give_one_answer_whichever_comes_first(shared_resolver, texts):
+    """The resolver caches by the folded text, so the second casing reads the first's entry."""
+    resolver = make_resolver(shared_resolver, graph=_CODE_GRAPH)
+
+    async def resolve_each() -> list[Resolution]:
+        return [(await resolver.resolve([text], kinds=["code"]))[0] for text in texts]
+
+    first, second = asyncio.run(resolve_each())
+
+    assert first == second
+    assert isinstance(first, Resolved), first
+    assert first.matched == Matched(text="basic health care", matched_as="name")
+
+
+def test_code_system_leaves_out_the_codes_of_every_other_system(shared_resolver):
+    resp = _post(
+        shared_resolver,
+        _CODE_GRAPH,
+        {"texts": ["basic health care"], "kinds": ["code"], "code_system": "DAC1AidTypeEnum"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    (result,) = resp.json()["results"]
+    assert result["status"] == "not_found"
+    assert result["near_matches"] == []
+
+
+def test_capabilities_publish_the_kind_list_and_the_kinds_resolve_accepts():
+    with make_client() as client:
+        capabilities = client.get("/api/graph/capabilities").json()
+
+    assert capabilities["kinds"] == list(KINDS)
+    assert set(capabilities["resolve_kinds"]) < set(KINDS)
+    assert {"group", "code", "country"} <= set(capabilities["resolve_kinds"])
+    assert "stat_var" not in capabilities["resolve_kinds"]
 
 
 class TestGraphHoldingNothingNeverConfirms:
     """An empty reader returns `not_held` for listed entities and `not_found`
-    for text with no listed candidate.
+    for text with no listed candidate. Groups and regions, which the membership policy holds,
+    are covered by `test_a_group_resolves_from_the_registry_when_the_graph_holds_none_of_it`
+    and `test_a_region_the_policy_holds_resolves_when_the_graph_holds_no_node_for_it`.
     """
 
     @pytest.mark.parametrize(
@@ -445,23 +508,12 @@ class TestGraphHoldingNothingNeverConfirms:
             "Cash",
             "zzqqxv",
             "Congo",
-            "Sub-Saharan Africa",
-            "Africa",
             "World Bank",
-            "OECD",
-            "G7",
-            "EU",
         ],
     )
     def test_never_resolves(self, text: str, shared_resolver):
-        graph = FakeGraphNodeReader(nodes={})
-        client = make_client(graph=graph, resolver=make_resolver(shared_resolver, graph=graph))
+        status = _result(shared_resolver, FakeGraphNodeReader(nodes={}), text)["status"]
 
-        with client:
-            resp = client.post("/api/graph/resolve", json={"texts": [text]})
-
-        assert resp.status_code == 200, resp.text
-        status = resp.json()["results"][0]["status"]
         assert status in {"not_held", "not_found"}, (text, status)
 
 
@@ -498,10 +550,28 @@ class TestValidation:
         assert resp.status_code == 400, resp.text
         assert resp.json()["code"] == "request_invalid"
 
+    @pytest.mark.parametrize(
+        ("body", "pointer"),
+        [
+            ({"kinds": []}, "/kinds"),
+            # `stat_var` is on the shared kind list, but resolve never returns one.
+            ({"kinds": ["stat_var"]}, "/kinds/0"),
+            ({"expand": ["candidates"]}, "/expand/0"),
+            # The default kinds leave out `code`.
+            ({"code_system": "CRSPurposeCodeEnum"}, "/code_system"),
+        ],
+    )
+    def test_a_filter_resolve_cannot_apply_refuses_at_its_member(self, body: dict, pointer: str):
+        with make_client() as client:
+            resp = client.post("/api/graph/resolve", json={"texts": ["Kenya"], **body})
+        assert resp.status_code == 400, resp.text
+        assert resp.json()["code"] == "request_invalid"
+        assert resp.json()["pointer"] == pointer
+
 
 class _BlockingGraphNodeReader:
-    """Block `child_places_batch`, the region read the door runs on the DCP-read executor,
-    until the test releases it. Count the reads that reach it."""
+    """Block `node_arcs_many` until the test releases it, so a node read holds the shared
+    DCP-read worker. Count the reads that reach it."""
 
     def __init__(self, delegate: FakeGraphNodeReader) -> None:
         self._delegate = delegate
@@ -511,31 +581,16 @@ class _BlockingGraphNodeReader:
         self.calls = delegate.calls
 
     def node_arcs_many(self, dcids, *, properties, deadline=None):
+        self.entries += 1
+        self.entered.set()
+        self.release.wait(timeout=5.0)
         return self._delegate.node_arcs_many(dcids, properties=properties, deadline=deadline)
 
     def resolve_by_arc(self, names, *, arc, deadline=None):
         return self._delegate.resolve_by_arc(names, arc=arc, deadline=deadline)
 
-    def child_places_batch(self, parent_dcids, *, child_type, deadline=None):
-        self.entries += 1
-        self.entered.set()
-        self.release.wait(timeout=5.0)
-        return self._delegate.child_places_batch(
-            parent_dcids, child_type=child_type, deadline=deadline
-        )
-
     def node_names_many(self, dcids, *, deadline=None):
         return self._delegate.node_names_many(dcids, deadline=deadline)
-
-
-def _africa_graph() -> FakeGraphNodeReader:
-    return FakeGraphNodeReader(
-        nodes={
-            "africa": {"typeOf": ("Continent",)},
-            "country/AGO": {"typeOf": ("Country",), "name": ("Angola",)},
-        },
-        contained={("africa", "Country"): ["country/AGO"]},
-    )
 
 
 class _DeadlineBoundedGraphNodeReader:
@@ -570,65 +625,40 @@ class _DeadlineBoundedGraphNodeReader:
     def resolve_by_arc(self, names, *, arc, deadline=None):
         return self._delegate.resolve_by_arc(names, arc=arc, deadline=deadline)
 
-    def child_places_batch(self, parent_dcids, *, child_type, deadline=None):
-        return self._delegate.child_places_batch(
-            parent_dcids, child_type=child_type, deadline=deadline
-        )
-
     def node_names_many(self, dcids, *, deadline=None):
         return self._delegate.node_names_many(dcids, deadline=deadline)
 
 
-def test_a_read_past_the_pool_size_queues_and_succeeds(
-    shared_resolver, caplog: pytest.LogCaptureFixture
-):
-    graph = _BlockingGraphNodeReader(_africa_graph())
-    client = make_client(
-        graph=graph, resolver=make_resolver(shared_resolver, graph=graph), node_pool_size=1
+def test_a_resolve_while_another_doors_read_holds_the_pool_is_refused_at_once():
+    """A resolve runs its confirmation read on the DCP-read executor the node door shares, so
+    while a node read holds the one worker it answers retryable 503 without reaching the
+    reader. A resolve after the node read returns succeeds."""
+    delegate = FakeGraphNodeReader(
+        nodes={"country/KEN": {"typeOf": ("Country",), "name": ("Kenya",)}}
     )
-
-    with client, caplog.at_level(logging.WARNING, logger="dfo_platform.executor"):
-        responses = send_past_a_full_pool(
-            client,
-            lambda: client.post("/api/graph/resolve", json={"texts": ["Africa"]}),
-            entered=graph.entered,
-            release=graph.release,
-        )
-
-    assert [response.status_code for response in responses] == [200, 200], [
-        response.text for response in responses
-    ]
-    assert all(
-        response.json()["results"][0]["members"] == [{"dcid": "country/AGO", "name": "Angola"}]
-        for response in responses
-    )
-    assert any("graph-dcp saturated" in record.message for record in caplog.records)
-
-
-def test_a_read_queued_past_its_deadline_times_out_and_never_runs(
-    shared_resolver, monkeypatch: pytest.MonkeyPatch
-):
-    """A region read that times out while queued behind a worker that outlived its own door
-    timeout returns 504 and never reaches the reader. The next read runs once that worker
-    returns."""
-    monkeypatch.setattr(resolve_door, "GRAPH_RESOLVE_TIMEOUT_SECONDS", 0.5)
-    graph = _BlockingGraphNodeReader(_africa_graph())
-    client = make_client(
-        graph=graph, resolver=make_resolver(shared_resolver, graph=graph), node_pool_size=1
+    graph = _BlockingGraphNodeReader(delegate)
+    # The lifespan's own resolver confirms on the surface's DCP-read executor.
+    client = make_client(graph=graph, node_pool_size=1)
+    sends = iter(
+        [
+            lambda: client.get("/api/graph/node/country/KEN"),
+            lambda: client.post("/api/graph/resolve", json={"texts": ["Kenya"]}),
+        ]
     )
 
     with client:
-        running = client.post("/api/graph/resolve", json={"texts": ["Africa"]})
-        assert graph.entered.wait(timeout=5.0), "the first region read never started"
-        queued = client.post("/api/graph/resolve", json={"texts": ["Africa"]})
-        graph.release.set()
-        recovered = client.post("/api/graph/resolve", json={"texts": ["Africa"]})
+        responses = send_past_a_full_pool(
+            client, lambda: next(sends)(), entered=graph.entered, release=graph.release
+        )
+        after = client.post("/api/graph/resolve", json={"texts": ["Kenya"]})
 
-    assert running.status_code == 504, running.text
-    assert queued.status_code == 504, queued.text
-    assert queued.json()["code"] == "timeout"
-    assert queued.json()["retryable"] is True
-    assert recovered.status_code == 200, recovered.text
+    node, refused = responses
+    assert node.status_code == 200, node.text
+    assert refused.status_code == 503, refused.text
+    assert refused.json()["code"] == "service_unavailable"
+    assert refused.json()["retryable"] is True
+    assert after.status_code == 200, after.text
+    assert after.json()["results"][0]["entity"]["ref"] == "country/KEN"
     assert graph.entries == 2
 
 
@@ -662,17 +692,9 @@ def test_timed_out_request_returns_the_read_at_its_deadline_and_frees_capacity(
 
         second = client.post("/api/graph/resolve", json={"texts": ["Kenya"]})
         assert second.status_code == 200, second.text
-        assert second.json()["results"] == [
-            {
-                "status": "resolved",
-                "entity": {
-                    "dcid": "country/KEN",
-                    "name": "Kenya",
-                    "entity_type": "Country",
-                    "kind": "country",
-                },
-            }
-        ]
+        (result,) = second.json()["results"]
+        assert result["status"] == "resolved"
+        assert result["entity"] == {"ref": "country/KEN", "label": "Kenya", "kind": "country"}
 
 
 class TestGraphReadErrorClassification:
@@ -750,7 +772,7 @@ def test_graph_read_error_end_to_end_maps_to_503_without_upstream_status(shared_
 class _StubErrorResolver:
     """Stub that raises `EntityResolutionError` to test the door's 500 response."""
 
-    async def resolve(self, texts: list[str], *, deadline: float | None = None) -> list[Resolution]:
+    async def resolve(self, texts: list[str], **_: object) -> list[Resolution]:
         raise EntityResolutionError("resolvekit reported an internal error")
 
 
@@ -767,7 +789,7 @@ def test_resolvekit_error_status_raises_and_defaults_to_500_internal_error():
 class _StubNotFoundResolver:
     """Stub returning `NotFound` for every input."""
 
-    async def resolve(self, texts: list[str], *, deadline: float | None = None) -> list[Resolution]:
+    async def resolve(self, texts: list[str], **_: object) -> list[Resolution]:
         return [NotFound() for _ in texts]
 
 
@@ -788,7 +810,9 @@ def test_run_resolve_refreshes_the_generation_once():
         provenance_docs=new_provenance_doc_cache(executor=executor, generation=generation),
     )
 
-    response = asyncio.run(resolve_door._run_resolve(deps, ["Kenya"]))
+    response = asyncio.run(
+        resolve_door._run_resolve(deps, ResolveRequest(texts=["Kenya"]), policy=None)
+    )
 
     assert calls == [None]
     assert response.results[0].status == "not_found"

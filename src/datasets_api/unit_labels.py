@@ -2,7 +2,7 @@
 
 A currency reads as its price basis and plural noun, the byline's unit token in sentence case:
 "Current US dollars", "Constant 2023 US dollars". The nouns are Search's
-(`search.heading.currency_nouns`), so a download names a currency as the answer above it does.
+(`unit_words.currency_nouns`), so a download names a currency as the answer above it does.
 Any other unit reads as its graph name, else as `UNNAMED_UNIT_LABELS` for the units the graph
 leaves unnamed, else stays empty.
 """
@@ -15,10 +15,10 @@ from typing import Final
 
 from materialise.facets import native_currency_iso
 from materialise.projection import NativeCurrency, UnitParts
-from search.currency_codes import ISO_4217_CODES
-from search.heading.currency_nouns import currency_noun
-from search.heading.price_basis import PriceBasis, price_basis_phrase
-from search.heading.unit_class import classify_unit
+from unit_words.currency_codes import ISO_4217_CODES
+from unit_words.currency_nouns import currency_noun
+from unit_words.price_basis import PriceBasis, price_basis_phrase
+from unit_words.unit_class import classify_unit
 
 UNNAMED_UNIT_LABELS: Final[Mapping[str, str]] = MappingProxyType(
     {"Percent": "Percent", "SDG_PERCENT": "Percent"}

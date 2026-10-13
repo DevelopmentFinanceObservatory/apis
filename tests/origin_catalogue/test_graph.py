@@ -35,6 +35,7 @@ from origin_catalogue import (
     bound_catalogue,
     recording_un_blocked_places,
 )
+from origin_catalogue.arc_tables import EMPTY_ARC_TABLES, ArcTables
 from origin_catalogue.graph import (
     OriginGraphClient,
     UnGeneration,
@@ -43,6 +44,7 @@ from origin_catalogue.graph import (
 )
 from origin_catalogue.topic_walk import walk_topics
 from tests.origin_catalogue.fake_catalogue import restrictive_catalogue, un_mirror, un_variable
+from tests.origin_catalogue.support import build_arc_tables
 
 _OURS_HOST = "graph.example.org"
 _UN_HOST = "un.example.org"
@@ -81,6 +83,54 @@ _UN_TABLES = un_mirror(
     superseded_by=_CRS,
 )
 
+_OUR_TOPIC = "dc/topic/Economy"
+_UNLISTED = "Count_Person_Female"
+_HOUSEHOLDS = "Count_Household"
+_RECIPIENT = "financingRecipient"
+_FLOW = "FinancialFlow"
+_AMOUNT = "amount"
+_STATVAR = {"dcid": "StatisticalVariable", "name": "StatisticalVariable", "types": ["Class"]}
+
+_ARCS = build_arc_tables(
+    dfo={
+        _CRS_VARIABLE: {
+            "typeOf": {"nodes": [_STATVAR, _STATVAR]},
+            "name": {"nodes": [{"value": "Gross ODA disbursements"}]},
+            "constraintProperties": {
+                "nodes": [
+                    {"dcid": _RECIPIENT, "name": "Financing recipient", "types": ["Property"]},
+                    {"dcid": "sourceIndicatorCode", "types": ["Property"]},
+                ]
+            },
+            "observationProperties": {"nodes": [{"dcid": _RECIPIENT, "types": ["Property"]}]},
+            "populationType": {"nodes": [{"dcid": _FLOW, "name": "Financial flow"}]},
+            "measuredProperty": {"nodes": [{"dcid": _AMOUNT, "types": ["Property", "Thing"]}]},
+            "measurementDenominator": {"nodes": [{"dcid": _HOUSEHOLDS}]},
+            "statType": {"nodes": [{"dcid": "measuredValue", "types": ["Property"]}]},
+        }
+    },
+    base={
+        _GDP: {
+            "typeOf": {"nodes": [_STATVAR]},
+            "name": {"nodes": [{"value": "GDP"}, {"value": "Gross domestic product"}]},
+            "alternateName": {"nodes": [{"value": "Economic output"}]},
+        },
+        _POPULATION: None,
+    },
+    schema={
+        _HOUSEHOLDS: {"typeOf": {"nodes": [_STATVAR]}},
+        _RECIPIENT: {
+            "name": {"nodes": [{"value": "Financing recipient"}]},
+            "rangeIncludes": {"nodes": [{"dcid": "Country", "types": ["Class"]}]},
+        },
+        "Country": {"subClassOf": {"nodes": [{"dcid": "Place", "types": ["Class"]}]}},
+        "Place": {},
+    },
+)
+"""DFO's CRS variable, two `typeOf` arcs a redeclaring import repeats, an import-added
+constraint property and a denominator; GDP's names; the population variable held empty;
+and the schema the CRS variable's role and denominator depend on."""
+
 _URLS = {
     _CRS: "https://data-explorer.oecd.org/crs",
     _WDI: "https://datatopics.worldbank.org/wdi",
@@ -107,18 +157,22 @@ def _catalogue(
     build_id: str = "build-a",
     un_blocked_places: tuple[str, ...] = (),
     overlaps: tuple[str, ...] = (),
+    arcs: ArcTables = EMPTY_ARC_TABLES,
 ) -> CatalogueSnapshot:
     """Admits CRS (DFO), WDI (base) and WHO (UN). The US Census provenance is not admitted.
     `_GDP` holds data at KEN; KEN and USA are scan places, `geoId/06` is not. `overlaps` are
     base variables DFO also holds. The UN tables hold `_UN_MORTALITY`, its by-sex variant
-    and a topic reaching both, and exclude `_UN_AID`."""
+    and a topic reaching both, and exclude `_UN_AID`. The topic table holds `_OUR_TOPIC`.
+    `arcs` are the arc tables, none by default."""
     return restrictive_catalogue(
         provenances=[_row(_CRS, DFO), _row(_WDI, BASE), _row(_UN_WHO, UN_SYSTEM, segment="who")],
         dfo_variables=[_CRS_VARIABLE, *overlaps],
         base_variables={_GDP: ([_WDI], ["country/KEN"]), _POPULATION: ([_WDI], ["country/USA"])},
+        topics={_OUR_TOPIC: (_GDP, _POPULATION, _UNLISTED)},
         scan_places=["country/KEN", "country/USA"],
         un_blocked_places=un_blocked_places,
         un_mirror=_UN_TABLES,
+        arcs=arcs,
         un_system_enabled=un_system_enabled,
         build_id=build_id,
     )
@@ -662,10 +716,171 @@ def test_with_the_un_off_the_un_tables_answer_nothing(
     assert graph.on(_UN_HOST) == []
 
 
+# -- DFO and base node facts from the arc tables --
+
+
+def test_our_nodes_facts_come_from_the_arc_tables_with_no_request(
+    graph: _Graph, client: OriginGraphClient, bind_catalogue
+) -> None:
+    """Table answers reach neither backend nor its caches: the counters do not move."""
+    bind_catalogue(_catalogue(arcs=_ARCS))
+    before = client.stats()
+
+    arcs = client.node_arcs_batch([_CRS_VARIABLE, _GDP])
+
+    assert parse_arcs(
+        arcs[_CRS_VARIABLE] or {},
+        ["typeOf", "constraintProperties", "populationType", "measurementDenominator"],
+    ) == {
+        "typeOf": ("StatisticalVariable",),
+        "constraintProperties": (_RECIPIENT,),
+        "populationType": (_FLOW,),
+        "measurementDenominator": (_HOUSEHOLDS,),
+    }
+    assert [node["dcid"] for node in arcs[_CRS_VARIABLE]["constraintProperties"]["nodes"]] == [
+        _RECIPIENT
+    ]
+    assert client.node_arcs(_GDP) == arcs[_GDP]
+    assert client.node_labels_batch([_CRS_VARIABLE, _GDP, _RECIPIENT, _FLOW]) == {
+        _CRS_VARIABLE: "Gross ODA disbursements",
+        _GDP: "Gross domestic product",
+        _RECIPIENT: "Financing recipient",
+        _FLOW: "Financial flow",
+    }
+    assert client.node_label(_FLOW) == "Financial flow"
+    # The recipient role is held with no `typeOf` arc, so it has no type to read.
+    assert client.node_types_batch(
+        [_CRS_VARIABLE, _HOUSEHOLDS, _RECIPIENT, "measuredValue", _OUR_TOPIC]
+    ) == {
+        _CRS_VARIABLE: "StatisticalVariable",
+        _HOUSEHOLDS: "StatisticalVariable",
+        "measuredValue": "Property",
+        _OUR_TOPIC: "Topic",
+    }
+    assert client.node_type(_GDP) == "StatisticalVariable"
+    assert client.node_names_many([_GDP]) == {
+        _GDP: ("GDP", "Gross domestic product", "Economic output")
+    }
+    assert client.node_observation_properties_batch([_CRS_VARIABLE, _GDP]) == {
+        _CRS_VARIABLE: (_RECIPIENT,),
+        _GDP: (),
+    }
+    assert client.node_arcs_many(
+        [_RECIPIENT, "Country"], properties=["rangeIncludes", "subClassOf"]
+    ) == {
+        _RECIPIENT: {"rangeIncludes": ("Country",), "subClassOf": ()},
+        "Country": {"rangeIncludes": (), "subClassOf": ("Place",)},
+    }
+    assert client.node_arc_values(_CRS_VARIABLE, properties=["measuredProperty", "unit"]) == {
+        "measuredProperty": (_AMOUNT,),
+        "unit": (),
+    }
+    assert client.exists(_HOUSEHOLDS)
+    assert client.exists_batch([_CRS_VARIABLE, _GDP, "Place", _OUR_TOPIC]) == {
+        _CRS_VARIABLE,
+        _GDP,
+        _OUR_TOPIC,
+    }
+    assert graph.requests == []
+    assert client.stats() == before
+
+
+def test_a_node_an_arc_names_takes_its_label_from_the_labels_and_keeps_its_arc_name(
+    graph: _Graph, client: OriginGraphClient, bind_catalogue
+) -> None:
+    """The graph's `->*` read names a nameless node by its dcid and a node of several names
+    by its first, and `node_label` gives the first no label and the second its last name.
+    The tables answer each read as the graph does, with no request."""
+    age, alcohol = "Years0", "Alcohol"
+    arcs = build_arc_tables(
+        dfo={
+            _CRS_VARIABLE: {
+                "constraintProperties": {
+                    "nodes": [
+                        {"dcid": age, "name": age, "types": ["Quantity"]},
+                        {"dcid": alcohol, "name": "Alcohol", "types": ["Substance"]},
+                    ]
+                }
+            }
+        },
+        base={},
+        schema={},
+        labels={age: None, alcohol: "Alcoholic beverages"},
+    )
+    bind_catalogue(_catalogue(arcs=arcs))
+
+    labels = client.node_labels_batch([age, alcohol])
+    nodes = client.node_arcs_batch([_CRS_VARIABLE])[_CRS_VARIABLE] or {}
+
+    assert labels == {alcohol: "Alcoholic beverages"}
+    assert client.node_label(age) is None
+    assert {node["dcid"]: node["name"] for node in nodes["constraintProperties"]["nodes"]} == {
+        age: age,
+        alcohol: "Alcohol",
+    }
+    assert graph.requests == []
+
+
+def test_a_node_the_arc_tables_hold_empty_reads_as_absent_with_no_request(
+    graph: _Graph, client: OriginGraphClient, bind_catalogue
+) -> None:
+    """A listed variable with no arcs is a confirmed absence, whatever the graph would say."""
+    graph.labels[_POPULATION] = "Population"
+    bind_catalogue(_catalogue(arcs=_ARCS))
+
+    assert client.node_arcs_batch([_POPULATION]) == {_POPULATION: None}
+    assert client.node_arcs(_POPULATION) is None
+    assert client.node_arcs_many([_POPULATION], properties=["name"]) == {_POPULATION: None}
+    assert client.node_arc_values(_POPULATION, properties=["name"]) == {"name": ()}
+    assert client.node_labels_batch([_POPULATION]) == {}
+    assert client.node_label(_POPULATION) is None
+    assert client.node_types_batch([_POPULATION]) == {}
+    assert client.node_names_many([_POPULATION]) == {_POPULATION: ()}
+    assert client.node_observation_properties_batch([_POPULATION]) == {_POPULATION: ()}
+    assert not client.exists(_POPULATION)
+    assert client.exists_batch([_POPULATION]) == set()
+    assert graph.requests == []
+
+
+def test_a_dcid_outside_the_arc_tables_is_read_live_and_alone(
+    graph: _Graph, client: OriginGraphClient, bind_catalogue
+) -> None:
+    """An unlisted variable is out of the tables' scope, not absent, so it reads from our
+    mixer, and a batch sends only it. A node an arc names with several types reads its type
+    live, since the arc gives them in no order the graph's `typeOf` read shares."""
+    graph.labels[_UNLISTED] = "Female population"
+    bind_catalogue(_catalogue(arcs=_ARCS))
+
+    arcs = client.node_arcs_batch([_GDP, _UNLISTED, _CRS_VARIABLE])
+    labels = client.node_labels_batch([_GDP, _UNLISTED])
+    client.node_types_batch([_RECIPIENT, _AMOUNT])
+
+    assert list(arcs) == [_GDP, _UNLISTED, _CRS_VARIABLE]
+    assert parse_arcs(arcs[_UNLISTED] or {}, ["name"]) == {"name": ("Female population",)}
+    assert labels == {_GDP: "Gross domestic product", _UNLISTED: "Female population"}
+    assert graph.dcids_sent(_OURS_HOST) == [_UNLISTED, _UNLISTED, _AMOUNT]
+    assert graph.on(_UN_HOST) == []
+
+
+def test_our_topic_walks_to_its_table_leaves_with_no_request(
+    graph: _Graph, client: OriginGraphClient, bind_catalogue
+) -> None:
+    """The walk keeps every leaf the topic table holds, those the tables hold no arcs for
+    too, and its admission filter applies as on a live walk."""
+    bind_catalogue(_catalogue(arcs=_ARCS))
+
+    walked = walk_topics([_OUR_TOPIC], graph=client)
+    admitted = walk_topics([_OUR_TOPIC], graph=client, admit=lambda dcid: dcid != _UNLISTED)
+
+    assert walked == {_OUR_TOPIC: [_GDP, _POPULATION, _UNLISTED]}
+    assert admitted == {_OUR_TOPIC: [_GDP, _POPULATION]}
+    assert graph.requests == []
+
+
 # -- admission and the domain filter --
 
 
-def test_facets_are_admitted_with_dfo_precedence_per_place(
+def test_facets_are_admitted_per_place_from_every_origin(
     client: OriginGraphClient, bind_catalogue
 ) -> None:
     bind_catalogue(_catalogue())
@@ -675,7 +890,7 @@ def test_facets_are_admitted_with_dfo_precedence_per_place(
     )
 
     assert _providers(facets[_POPULATION]) == {
-        "country/KEN": [_CRS],
+        "country/KEN": [_CRS, _WDI],
         "country/USA": [_WDI],
         "geoId/06": [],
     }
@@ -933,7 +1148,7 @@ def test_a_mixed_facet_read_serves_ours_and_records_the_un_failure(
     with recording_un_blocked_places() as record:
         facets = client.observation_facets_batch([_POPULATION, _UN_MORTALITY], places)
 
-    assert _providers(facets[_POPULATION]) == {"country/KEN": [_CRS], "country/USA": [_WDI]}
+    assert _providers(facets[_POPULATION]) == {"country/KEN": [_CRS, _WDI], "country/USA": [_WDI]}
     assert facets[_UN_MORTALITY] == {"country/KEN": [], "country/USA": []}
     [failure] = record.failures()
     assert (failure.variables, failure.places) == ((_UN_MORTALITY,), tuple(places))
@@ -1098,7 +1313,7 @@ def test_places_the_un_front_door_refuses_are_served_empty_and_exposed(
     )
 
     assert _providers(facets[_UN_MORTALITY]) == {"country/KEN": [_UN_WHO], "country/USA": []}
-    assert _providers(facets[_POPULATION]) == {"country/KEN": [_CRS], "country/USA": [_WDI]}
+    assert _providers(facets[_POPULATION]) == {"country/KEN": [_CRS, _WDI], "country/USA": [_WDI]}
     assert client.un_blocked_places() == {"country/USA"}
 
 

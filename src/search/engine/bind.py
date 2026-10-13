@@ -307,21 +307,30 @@ def _display_taxonomy_values(shape: ShapeDraft, values: list[str]) -> list[str]:
 
 
 def _taxonomy_labels_line(shape: ShapeDraft, displayed_values: list[str]) -> str | None:
-    """Render graph labels for displayed dcids on a separate prompt line.
+    """Render labels for displayed dcids on a separate prompt line.
 
-    Return ``None`` for recall-sourced shapes or when the index has no matching rows.
-    Codes remain the bind values; labels guide selection. The prompt skips this line for
-    fixed qualifiers and tied alternatives because a covering-root
-    label could bias the model away from the named descendant.
+    An index-sourced shape reads each label from its code row. Any other shape reads it
+    from `ShapeDraft.value_labels`, the graph labels derive fetched for its values, and
+    skips a label that only repeats the dcid. Return ``None`` when no displayed dcid has a
+    label. Codes remain the bind values; labels guide selection. The prompt skips this line
+    for fixed qualifiers and tied alternatives because a covering-root label could bias the
+    model away from the named descendant.
     """
-    if not shape.slot_taxonomy_index_sourced:
-        return None
-    index = get_index()
-    parts = []
-    for dcid in displayed_values:
-        row = index.code_by_dcid(dcid)
-        if row is not None:
-            parts.append(f"{dcid} = {row.label}")
+    if shape.slot_taxonomy_index_sourced:
+        index = get_index()
+        labels = {
+            dcid: row.label
+            for dcid in displayed_values
+            if (row := index.code_by_dcid(dcid)) is not None
+        }
+    else:
+        value_labels = shape.value_labels or {}
+        labels = {
+            dcid: value_labels[dcid]
+            for dcid in displayed_values
+            if value_labels.get(dcid, dcid) != dcid
+        }
+    parts = [f"{dcid} = {label}" for dcid, label in labels.items()]
     return "labels: " + "; ".join(parts) if parts else None
 
 
@@ -461,8 +470,9 @@ def _build_universal_bind_prompt(
     when a shape lists a menu, so a prompt with none is unchanged.
 
     Empty qualifier, tie, withheld-axis, dropped-phrase and menu inputs leave
-    recall-sourced prompts unchanged. Index-sourced slots show labels on a separate line.
-    Slots named by fixed context, a tie or a candidate menu use no label line.
+    recall-sourced prompts unchanged. Each slot shows its values' labels on a separate line
+    (`_taxonomy_labels_line`). Slots named by fixed context, a tie or a candidate menu use
+    no label line.
     """
     menus = [
         _qualifier_menu(
@@ -626,7 +636,9 @@ async def bind_universal(
     text, never other raw user text.
 
     Returns the structured output and token usage, or ``None`` when usage is unavailable. A
-    source-axis draft comes back unbound, whatever the model wrote (`_without_source_values`).
+    source-axis draft comes back unbound, whatever the model wrote (`_without_source_values`),
+    and each value on the chosen shape is grounded in its slot's taxonomy
+    (`_grounded_in_taxonomy`).
     """
     prompt = _build_universal_bind_prompt(
         variable,
@@ -643,7 +655,10 @@ async def bind_universal(
         system=_UNIVERSAL_BIND_SYSTEM_PROMPT,
         schema=_UniversalBindOutput,
     )
-    return output.model_copy(update={"bindings": _without_source_values(output.bindings)}), usage
+    bindings = _without_source_values(output.bindings)
+    if 0 <= output.chosen_shape_index < len(shapes):
+        bindings = _grounded_in_taxonomy(bindings, shapes[output.chosen_shape_index])
+    return output.model_copy(update={"bindings": bindings}), usage
 
 
 def _without_source_values(bindings: list[SlotBindingDraft]) -> list[SlotBindingDraft]:
@@ -659,3 +674,53 @@ def _without_source_values(bindings: list[SlotBindingDraft]) -> list[SlotBinding
         else draft
         for draft in bindings
     ]
+
+
+def _grounded_in_taxonomy(
+    bindings: list[SlotBindingDraft], shape: ShapeDraft
+) -> list[SlotBindingDraft]:
+    """Return the model's drafts with each value grounded in `shape`'s slot taxonomy.
+
+    A value the slot's taxonomy holds, or a code the index knows (a covering root, a
+    candidate menu row), binds as written. Any other value binds the one taxonomy value it
+    equals once both are lowercased and stripped of every non-alphanumeric character, so
+    ``undataAGE-Y0T4`` binds ``undata/AGE-Y0T4``. A value equal to two taxonomy values that
+    way leaves its whole slot unbound, and the chosen shape stays elected. A value equal to
+    none binds as written: it is a value no member holds, which materialise refuses as
+    `BoundValuesUnrealisable` and `region.unrealisable` unbinds, refusing on it when the
+    request named it. A draft on a slot with no taxonomy entry, or of a kind other than
+    value or set, passes through.
+    """
+    taxonomy = shape.slot_taxonomy or {}
+    index = get_index()
+    grounded: list[SlotBindingDraft] = []
+    for draft in bindings:
+        options = taxonomy.get(f"{draft.axis}:{draft.property_dcid}")
+        if draft.kind in ("value", "set") and options:
+            values = [
+                value
+                if value in options or index.code_by_dcid(value) is not None
+                else _normalised_match(value, options)
+                for value in draft.value_dcids
+            ]
+            if None in values:
+                draft = draft.model_copy(
+                    update={"kind": "unbound", "value_dcids": [], "evidence": "mentioned"}
+                )
+            elif values != draft.value_dcids:
+                draft = draft.model_copy(update={"value_dcids": values})
+        grounded.append(draft)
+    return grounded
+
+
+def _normalised_match(value: str, options: list[str]) -> str | None:
+    """The one option equal to `value` once both are lowercased and keep only alphanumeric
+    characters, `value` itself when no option is, and ``None`` when two are."""
+
+    def key(text: str) -> str:
+        return "".join(char for char in text.lower() if char.isalnum())
+
+    matches = {option for option in options if key(option) == key(value)}
+    if not matches:
+        return value
+    return matches.pop() if len(matches) == 1 else None

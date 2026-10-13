@@ -9,12 +9,12 @@ from __future__ import annotations
 import gzip
 import importlib.resources
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from importlib.resources.abc import Traversable
 from pathlib import Path
 from typing import get_args
 
-from code_index.query import CodeIndex
+from code_index.query import CodeIndex, DuplicateDcid
 from code_index.types import (
     PARTY_KINDS,
     AbsentObservation,
@@ -29,6 +29,7 @@ from code_index.types import (
     MeasureValueRow,
     PartyKind,
     PartyRow,
+    SourceCodeRow,
     StatVarRow,
     invalid_when_named_entry,
 )
@@ -68,10 +69,15 @@ def parse_index(payload: Mapping, *, source: object = "<document>") -> CodeIndex
     outside the declaring system or `when_bound_under` names a missing or
     same-system code.
 
-    The `party_types`, `parties` and `listed_statvars` blocks are optional: an index without
-    the first two declares no party kind, and one without the third lists no StatVar outside
-    its code systems (`CodeIndex.listed_statvars`). A kind outside `PartyKind`, a type declared twice, or a `totals` on a
-    party that is not a total raises `IndexFormatError`."""
+    The `party_types`, `parties`, `listed_statvars`, `source_codes` and `value_parents` blocks
+    are optional: an index without the first two declares no party kind, one without the third
+    lists no StatVar outside its code systems (`CodeIndex.listed_statvars`), one without the
+    fourth holds no series code, and one without the fifth no value parent. A value that two
+    `value_parents` rows name raises `DuplicateDcid`, and a parent chain that cycles
+    `CyclicParent`. A `source_codes` row the StatVar rows contradict raises `IndexFormatError`
+    (`_check_source_codes`). A kind outside `PartyKind`, a type declared twice, or a `totals` on a
+    party that is not a total raises `IndexFormatError`. A code row without a `definition`
+    carries none, as does a measure value or measure label in `parse_measure_axes`."""
     try:
         stamp = _parse_stamp(payload["stamp"])
         declarations = [_parse_declaration(row) for row in payload["declarations"]]
@@ -81,9 +87,12 @@ def parse_index(payload: Mapping, *, source: object = "<document>") -> CodeIndex
         party_types = _parse_party_types(payload.get("party_types", ()))
         parties = [_parse_party(row) for row in payload.get("parties", ())]
         listed_statvars = [_parse_statvar(row) for row in payload.get("listed_statvars", ())]
+        source_codes = [_parse_source_code(row) for row in payload.get("source_codes", ())]
+        value_parents = _parse_value_parents(payload.get("value_parents", ()))
     except (KeyError, TypeError) as exc:
         raise IndexFormatError(f"malformed code_index export at {source!r}: {exc}") from exc
     _check_datasets(datasets, statvars)
+    _check_source_codes(source_codes, [*statvars, *listed_statvars])
     return CodeIndex(
         stamp=stamp,
         declarations=declarations,
@@ -93,6 +102,8 @@ def parse_index(payload: Mapping, *, source: object = "<document>") -> CodeIndex
         party_types=party_types,
         parties=parties,
         listed_statvars=listed_statvars,
+        source_codes=source_codes,
+        value_parents=value_parents,
     )
 
 
@@ -208,6 +219,7 @@ def _parse_declaration(payload: Mapping) -> CodeSystemDeclaration:
         absent_reading=payload["absent_reading"],
         plain_name=payload["plain_name"],
         default=_parse_declared_default(payload["default"]),
+        enum_dcid=payload["enum_dcid"],
     )
 
 
@@ -316,6 +328,7 @@ def _parse_code(payload: Mapping) -> CodeRow:
         synonyms=tuple(payload["synonyms"]),
         short_name=payload["short_name"],
         parent=payload["parent"],
+        definition=payload.get("definition"),
     )
 
 
@@ -333,12 +346,67 @@ def _parse_statvar(payload: Mapping) -> StatVarRow:
     )
 
 
+def _parse_source_code(payload: Mapping) -> SourceCodeRow:
+    return SourceCodeRow(
+        provenance=payload["provenance"],
+        code=payload["code"],
+        dcids=tuple(payload["dcids"]),
+    )
+
+
+def _parse_value_parents(rows: Iterable[Mapping]) -> dict[str, str]:
+    parents: dict[str, str] = {}
+    for row in rows:
+        if row["dcid"] in parents:
+            raise DuplicateDcid(f"value parent dcid {row['dcid']!r} appears more than once")
+        parents[row["dcid"]] = row["parent"]
+    return parents
+
+
+def _check_source_codes(rows: Sequence[SourceCodeRow], statvars: Sequence[StatVarRow]) -> None:
+    """Checks the `source_codes` rows against the StatVar rows.
+
+    Raises `IndexFormatError` for a code that is empty or not upper-cased and stripped, a
+    `(provenance, code)` pair on two rows, a row naming no StatVar, and a dcid that is no
+    StatVar row of the index or whose row does not carry the code's provenance.
+    Search answers a code with these rows, so each must be a StatVar it serves from that source."""
+    provenances = {row.dcid: row.provenances for row in statvars}
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        if not row.code or row.code != row.code.strip().upper():
+            raise IndexFormatError(
+                f"source code {row.code!r} under {row.provenance!r} is not a non-empty, "
+                "stripped, upper-case code"
+            )
+        if (row.provenance, row.code) in seen:
+            raise IndexFormatError(
+                f"source code {row.code!r} under {row.provenance!r} appears more than once"
+            )
+        seen.add((row.provenance, row.code))
+        if not row.dcids:
+            raise IndexFormatError(
+                f"source code {row.code!r} under {row.provenance!r} names no StatVar"
+            )
+        for dcid in row.dcids:
+            if dcid not in provenances:
+                raise IndexFormatError(
+                    f"source code {row.code!r} under {row.provenance!r} names {dcid!r}, which "
+                    "is no StatVar row of the index"
+                )
+            if row.provenance not in provenances[dcid]:
+                raise IndexFormatError(
+                    f"source code {row.code!r} under {row.provenance!r} names {dcid!r}, whose "
+                    f"row carries provenances {list(provenances[dcid])!r}"
+                )
+
+
 def _parse_measure_axis(payload: Mapping) -> MeasureAxis:
     return MeasureAxis(
         axis=payload["axis"],
         kind=payload["kind"],
         role=payload["role"],
         prefer=tuple(payload["prefer"]),
+        label=payload["label"],
     )
 
 
@@ -351,6 +419,7 @@ def _parse_measure_value(payload: Mapping) -> MeasureValueRow:
         short_name=payload["short_name"],
         matchable=payload["matchable"],
         same_reading_as=payload["same_reading_as"],
+        definition=payload.get("definition"),
     )
 
 
@@ -359,6 +428,7 @@ def _parse_measure_partition_label(payload: Mapping) -> MeasurePartitionLabel:
         axis_values=tuple((axis, value) for axis, value in payload["axis_values"]),
         label=payload["label"],
         named_values=tuple((prop, value) for prop, value in payload.get("named_values", ())),
+        definition=payload.get("definition"),
     )
 
 

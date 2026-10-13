@@ -12,6 +12,7 @@ from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.clients.graph import Facet
 from search.engine.conjoin import _build_part
 from search.engine.extract import DateRequest
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import candidate_grounding as candidate_grounding_module
 from search.engine.region import candidates as candidates_module
 from search.engine.region import materialise_step as materialise_step_module
@@ -46,6 +47,7 @@ from tests.engine._harness import (
     door_roles_for_test_query,
     sdmx_double,
 )
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 from tests.materialise.conftest import FakeGraphReader
 
@@ -118,6 +120,8 @@ class _FixedBindLLM:
     """Elects shape index 0 unconditionally, with no constraint bindings."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
 
@@ -126,6 +130,8 @@ class _CandidatesBindLLM:
     """Elects the first shape while returning the second as plausible."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(chosen_shape_index=0, bindings=[], also_plausible=[1]), None
 
@@ -245,7 +251,7 @@ def test_origin_wording_resolves_on_the_origin_axis(monkeypatch):
     assert result.status == "definite", result
     assert sdmx.series_calls == []
     where_slot = next(slot for slot in result.specs[0].resolved.slots if slot.key.axis == "where")
-    assert where_slot.binding.value.ref.dcid == _KEN
+    assert where_slot.binding.value.ref.ref == _KEN
     assert result.specs[0].definition.identity.entities == {
         "origin": [_NOR],
         "destination": [_KEN],
@@ -539,11 +545,9 @@ def test_unplaceable_declared_role_still_refuses_role_incompatible():
     assert result.status == "no_data"
     assert result.no_data_reason == "role_incompatible"
     assert result.flagged_match is not None
-    assert [sv.ref.dcid for sv in result.flagged_match[0].resolved.members] == [
-        _UNPLACEABLE_SV_DCID
-    ]
+    assert [sv.ref.ref for sv in result.flagged_match[0].resolved.members] == [_UNPLACEABLE_SV_DCID]
     assert result.elected_stat_vars is not None
-    assert [ref.dcid for ref in result.elected_stat_vars] == [_UNPLACEABLE_SV_DCID]
+    assert [ref.ref for ref in result.elected_stat_vars] == [_UNPLACEABLE_SV_DCID]
 
     # The same identity survives the region -> Part assembly the wire serves.
     part = _build_part(
@@ -558,7 +562,7 @@ def test_unplaceable_declared_role_still_refuses_role_incompatible():
     )
     assert part.status == "no_data"
     assert part.no_data.flagged_match is not None
-    assert [sv.ref.dcid for sv in part.no_data.flagged_match.resolved.members] == [
+    assert [sv.ref.ref for sv in part.no_data.flagged_match.resolved.members] == [
         _UNPLACEABLE_SV_DCID
     ]
     assert part.no_data.elected_count == 1
@@ -670,6 +674,8 @@ class _BindLLMWithConstraint:
     _suggest_nearest_real's relaxation runs on."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         binding = SlotBindingDraft(
             axis="what",
@@ -973,7 +979,7 @@ def test_a_named_source_removes_a_broader_role_coverage_series(monkeypatch):
     )
 
     assert result.status == "definite", result
-    assert [ref.dcid for ref in result.specs[0].resolved.trace.resolved_sources] == ["source/B"]
+    assert [ref.ref for ref in result.specs[0].resolved.trace.resolved_sources] == ["source/B"]
     assert result.specs[0].resolved.coverage.observation_count == 1
 
 
@@ -1009,7 +1015,7 @@ def test_discovered_scope_cites_the_one_source_its_variable_serves(monkeypatch):
 
     assert result.status == "definite", result
     spec = result.specs[0]
-    assert [ref.dcid for ref in spec.resolved.trace.resolved_sources] == ["source/A"]
+    assert [ref.ref for ref in spec.resolved.trace.resolved_sources] == ["source/A"]
     assert spec.resolved.scope is not None
     assert [member.ref for member in spec.resolved.scope.members] == [_KEN]
 
@@ -1083,7 +1089,7 @@ def test_narrowing_a_discovered_scope_drops_sources_and_citations_together(
 
     assert result.status == "definite", result
     spec = result.specs[0]
-    resolved_source_dcids = [r.dcid for r in spec.resolved.trace.resolved_sources]
+    resolved_source_dcids = [r.ref for r in spec.resolved.trace.resolved_sources]
     assert resolved_source_dcids == ["source/A"]
     assert "source/B" not in resolved_source_dcids
     dims = {d.label: d.count for d in spec.resolved.coverage.dimensions}
@@ -1134,9 +1140,9 @@ def test_zero_observation_resolve_returns_an_editable_flagged_carrier(monkeypatc
     assert len(result.flagged_match) == 1
     flagged = result.flagged_match[0]
     assert flagged.resolved.available_at_place is False
-    assert [sv.ref.dcid for sv in flagged.resolved.members] == [_SV_DCID]
+    assert [sv.ref.ref for sv in flagged.resolved.members] == [_SV_DCID]
     assert result.elected_stat_vars is not None
-    assert [ref.dcid for ref in result.elected_stat_vars] == [_SV_DCID]
+    assert [ref.ref for ref in result.elected_stat_vars] == [_SV_DCID]
 
 
 def test_bound_destination_open_origin_warns_about_the_open_origin_axis(monkeypatch):

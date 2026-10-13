@@ -64,6 +64,7 @@ from search.engine.bind import _UniversalBindOutput
 from search.engine.clients import materialise_bridge
 from search.engine.conjoin import assemble_region
 from search.engine.envelope import now_ms
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import (
     candidate_grounding,
     phase_answer,
@@ -81,6 +82,7 @@ from tests.engine._facet_option_builds import wrap_facet_option_builds
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query
+from tests.engine._quantity import NO_QUANTITY
 from tests.engine._request_log import _plain, _RequestLog
 from tests.engine._virtual_clock import VirtualRequests
 from tests.fixtures import FakeGraph, make_resolver
@@ -315,6 +317,12 @@ _CHILDREN = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _regions(declare_regions):
+    """Search reads Africa's members from the membership policy."""
+    declare_regions({_AFRICA: _CHILDREN[_AFRICA]["Country"]})
+
+
 def _facets(*, count: int = 5, start: str = "2015", end: str = "2022") -> list[dict]:
     return [{"earliestDate": start, "latestDate": end, "obsCount": count, "provenanceId": _SOURCE}]
 
@@ -357,6 +365,8 @@ class _Bind:
         self._also_plausible = list(also_plausible)
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=self._chosen,
@@ -1025,7 +1035,7 @@ def _projection(result: RegionResult) -> dict[str, Any]:
         if result.alternate_match is None
         else _spec(result.alternate_match),
         "nearest_real": [spec.spec_id for spec in result.nearest_real or ()],
-        "elected_stat_vars": [ref.dcid for ref in result.elected_stat_vars or ()],
+        "elected_stat_vars": [ref.ref for ref in result.elected_stat_vars or ()],
         "no_data_role_axis": result.no_data_role_axis,
         "no_data_bound_role_dcids": {
             role: list(dcids) for role, dcids in result.no_data_bound_role_dcids.items()
@@ -1127,7 +1137,7 @@ def _answer_record(result: RegionResult) -> dict[str, str]:
         resolved = spec.resolved.model_dump(mode="json")
         served.append(
             {
-                "stat_vars": [stat_var.ref.dcid for stat_var in spec.resolved.members],
+                "stat_vars": [stat_var.ref.ref for stat_var in spec.resolved.members],
                 "identity_entities": _plain(spec.definition.identity.entities),
                 "entities": resolved["entities"],
                 "scope": resolved["scope"],
@@ -1438,7 +1448,7 @@ def test_a_placeless_one_role_question_discovers_its_recipients_from_coverage(
 
     result = _resolve(scenario)
 
-    assert [[sv.ref.dcid for sv in spec.resolved.members] for spec in result.specs] == offered
+    assert [[sv.ref.ref for sv in spec.resolved.members] for spec in result.specs] == offered
     ids_spec = result.specs[0]
     assert ids_spec.resolved.scope is not None
     assert ids_spec.resolved.scope.axis == "destination"
@@ -1544,7 +1554,7 @@ def test_a_shape_the_walk_makes_subject_only_takes_the_default_scope_of_its_own_
     assert result.status == status, result
     assert [
         (
-            [sv.ref.dcid for sv in spec.resolved.members],
+            [sv.ref.ref for sv in spec.resolved.members],
             spec.resolved.scope and [member.ref for member in spec.resolved.scope.members],
         )
         for spec in result.specs
@@ -1584,7 +1594,7 @@ def test_a_bound_recipient_keeps_the_recipient_only_shape_beside_a_subject_only_
     result = _resolve(scenario)
 
     assert result.status == "definite", result
-    assert [sv.ref.dcid for sv in result.specs[0].resolved.members] == [_IDS]
+    assert [sv.ref.ref for sv in result.specs[0].resolved.members] == [_IDS]
 
 
 @pytest.mark.parametrize("scenario_id", _ANSWERS_AS_THE_BASELINE_BESIDE_AN_INDEX_SOURCED_SHAPE)

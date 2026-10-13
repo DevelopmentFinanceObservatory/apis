@@ -20,6 +20,7 @@ from origin_catalogue import (
     UnTables,
 )
 from origin_catalogue.catalogue import BaseVariable, CardFacts
+from origin_catalogue.families import FamilyKey, FamilySummary
 from origin_catalogue.topic_walk import TOPIC_EXPAND_MAX_MEMBERS
 from tests.origin_catalogue.fake_catalogue import (
     FakeCatalogue,
@@ -44,6 +45,7 @@ from tests.origin_catalogue.support import (
     UN_VARIABLE_FEMALE,
     UN_WHO,
     WDI,
+    build_arc_tables,
     sample_tables,
     sample_un_mirror,
 )
@@ -117,9 +119,10 @@ def test_admit_series_withholds_unadmitted_provenances_in_order() -> None:
     )
 
 
-def test_admit_series_gives_dfo_precedence_at_a_place_it_covers() -> None:
+def test_admit_series_keeps_every_origin_at_a_place_dfo_covers() -> None:
+    """The facet election, not admission, chooses between DFO and base (#1271)."""
     admission = _snapshot(un_system_enabled=True).admit_series([WDI, CRS, UN_WHO, _NOT_ADMITTED])
-    assert admission == SeriesAdmission(admitted=(CRS,), withheld=(WDI, UN_WHO, _NOT_ADMITTED))
+    assert admission == SeriesAdmission(admitted=(WDI, CRS, UN_WHO), withheld=(_NOT_ADMITTED,))
 
 
 def test_admit_series_with_no_facets_admits_nothing() -> None:
@@ -129,7 +132,6 @@ def test_admit_series_with_no_facets_admits_nothing() -> None:
 @pytest.mark.parametrize(
     ("allowed", "admission"),
     [
-        # Excluding the DFO table lets the base provenance serve where DFO holds data.
         (
             {WDI, UN_WHO, _NOT_ADMITTED},
             SeriesAdmission(admitted=(WDI, UN_WHO), withheld=(_NOT_ADMITTED,)),
@@ -141,7 +143,7 @@ def test_admit_series_with_no_facets_admits_nothing() -> None:
         (set(), SeriesAdmission(admitted=(), withheld=())),
     ],
 )
-def test_admit_series_filters_by_scope_before_admission_and_dfo_precedence(
+def test_admit_series_filters_by_scope_before_admission(
     allowed: set[str], admission: SeriesAdmission
 ) -> None:
     scoped = _snapshot(un_system_enabled=True).scoped(frozenset(allowed))
@@ -546,3 +548,85 @@ def test_a_cross_agency_un_topic_the_tables_hold_is_admitted_with_the_un_origin_
     )
 
     assert catalogue.admit_candidate(topic) == expected
+
+
+def _family_variable(
+    qualifier: dict | None, *, name: str | None = None, constraints: dict[str, str] | None = None
+) -> dict:
+    """A `->*` answer of a variable of population `Debt`, measured property `amount`,
+    with `qualifier` as its `measurementQualifier` target, or none, `name` as its name and
+    `constraints` mapping each constraint property to its value."""
+    arcs: dict = {
+        "populationType": {"nodes": [{"dcid": "Debt", "types": ["Class"]}]},
+        "measuredProperty": {"nodes": [{"dcid": "amount", "types": ["Property"]}]},
+        "statType": {"nodes": [{"dcid": "measuredValue", "types": ["StatType"]}]},
+    }
+    if qualifier is not None:
+        arcs["measurementQualifier"] = {"nodes": [qualifier]}
+    if name is not None:
+        arcs["name"] = {"nodes": [{"value": name}]}
+    if constraints:
+        arcs["constraintProperties"] = {
+            "nodes": [{"dcid": prop, "types": ["Property"]} for prop in constraints]
+        }
+        for prop, value in constraints.items():
+            arcs[prop] = {"nodes": [{"dcid": value, "types": ["Thing"]}]}
+    return arcs
+
+
+_DEBT = FamilyKey("Debt", "amount", "measuredValue", None, None, False, False)
+_UN_MORTALITY = FamilyKey(UN_SERIES, "value", "", None, None, False, False)
+
+
+def test_a_snapshot_reads_each_family_summary_the_job_computed_from_its_tables() -> None:
+    """A DFO and a base variable whose only difference is a qualifier typed only
+    ProvisionalNode, which search reads as none, share a family, summarised once; a real
+    qualifier makes another. A node held empty belongs to none. The UN family reads from
+    the UN tables, and with the UN origin off it is not held."""
+    dfo, base, qualified, empty = "Debt_Dfo", "Debt_Base", "Debt_Real", "Debt_Empty"
+    snapshot = restrictive_catalogue(
+        provenances=[provenance_row(WDI, BASE)],
+        dfo_variables=[dfo],
+        base_variables={base: ([WDI], []), qualified: ([WDI], []), empty: ([WDI], [])},
+        un_mirror=sample_un_mirror(),
+        arcs=build_arc_tables(
+            dfo={
+                dfo: _family_variable(
+                    {"dcid": "dangling", "types": ["ProvisionalNode"]}, name="Debt"
+                )
+            },
+            base={
+                base: _family_variable(None, name="Debt owed", constraints={"creditor": "IMF"}),
+                qualified: _family_variable({"dcid": "Real", "types": ["Qualifier"]}),
+                empty: None,
+            },
+            schema={},
+        ),
+    )
+
+    assert snapshot.held_family(_DEBT) == FamilySummary(
+        members=(dfo, base),
+        values={"creditor": ("IMF",)},
+        shared={},
+        total=dfo,
+        total_name="Debt",
+        un_only=False,
+    )
+    assert snapshot.held_family(_DEBT._replace(measurement_qualifier="Real")) == FamilySummary(
+        members=(qualified,),
+        values={},
+        shared={},
+        total=None,
+        total_name=None,
+        un_only=False,
+    )
+    assert snapshot.held_family(_DEBT._replace(role_bearing=True)) is None
+    assert snapshot.held_family(_UN_MORTALITY) == FamilySummary(
+        members=(UN_VARIABLE, UN_VARIABLE_FEMALE),
+        values={"undataSex": ("undata/SEX-F",)},
+        shared={},
+        total=UN_VARIABLE,
+        total_name="Under-five mortality rate",
+        un_only=True,
+    )
+    assert replace(snapshot, un_system_enabled=False).held_family(_UN_MORTALITY) is None

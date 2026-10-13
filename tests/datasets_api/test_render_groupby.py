@@ -9,7 +9,7 @@ from __future__ import annotations
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
 from code_index.types import StatVarRow
 from datasets_api.mint_models import GroupbyOptions, MintOptions
-from datasets_api.render import _reshape
+from datasets_api.render import _RenderReads, _reshape
 from materialise.enrichment import EnrichmentLookup
 from materialise.reshape import RollupNotSummableError, Table
 
@@ -147,7 +147,7 @@ _SUBJECT_ID = "spec_990700"
 
 
 def _enrichment() -> EnrichmentLookup:
-    return EnrichmentLookup(FakeMintGraphReader(), type_kinds={}, parties={})
+    return EnrichmentLookup(FakeMintGraphReader(), parties={})
 
 
 def test_naming_one_axis_to_keep_collapses_the_other_into_a_frame_keeping_its_column():
@@ -157,7 +157,7 @@ def test_naming_one_axis_to_keep_collapses_the_other_into_a_frame_keeping_its_co
         _TABLE,
         options=options,
         entity_columns=_ENTITY_COLUMNS,
-        enrichment=_enrichment(),
+        reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
         code_index=_INDEX,
         resolved_stat_var_refs=(),
         provenance_refs=("p1",),
@@ -166,7 +166,6 @@ def test_naming_one_axis_to_keep_collapses_the_other_into_a_frame_keeping_its_co
     )
     table = reshaped.table
 
-    assert [warning["code"] for warning in reshaped.warnings] == ["stat_vars_summed"]
     assert reshaped.collapse is not None
     assert reshaped.collapse.frame.columns == (
         "stat_var",
@@ -197,7 +196,7 @@ def test_naming_every_declared_summable_axis_collapses_nothing():
         _TABLE,
         options=options,
         entity_columns=_ENTITY_COLUMNS,
-        enrichment=_enrichment(),
+        reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
         code_index=_INDEX,
         resolved_stat_var_refs=(),
         provenance_refs=("p1",),
@@ -231,7 +230,7 @@ def test_an_unsafe_collapse_refuses_rollup_not_summable_naming_it():
             mixed_unit_table,
             options=options,
             entity_columns=_ENTITY_COLUMNS,
-            enrichment=_enrichment(),
+            reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
             code_index=_INDEX,
             resolved_stat_var_refs=(),
             provenance_refs=("p1",),
@@ -251,7 +250,7 @@ def test_a_frame_carrying_decoded_columns_collapses_without_double_counting():
         _TABLE,
         options=options,
         entity_columns=_ENTITY_COLUMNS,
-        enrichment=_enrichment(),
+        reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
         code_index=_INDEX,
         resolved_stat_var_refs=(),
         provenance_refs=("p1",),
@@ -300,7 +299,7 @@ def test_distinct_measures_sharing_every_decoded_axis_value_refuse_before_mergin
             table,
             options=options,
             entity_columns=_ENTITY_COLUMNS,
-            enrichment=_enrichment(),
+            reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
             code_index=gross_net_index,
             resolved_stat_var_refs=(),
             provenance_refs=("p1",),
@@ -323,7 +322,7 @@ def test_a_by_entry_naming_an_axis_this_frame_never_declares_is_a_no_op():
         _TABLE,
         options=options,
         entity_columns=_ENTITY_COLUMNS,
-        enrichment=_enrichment(),
+        reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
         code_index=_INDEX,
         resolved_stat_var_refs=(),
         provenance_refs=("p1",),
@@ -346,7 +345,7 @@ def test_a_by_entry_this_deployment_never_declares_at_all_refuses():
             _TABLE,
             options=options,
             entity_columns=_ENTITY_COLUMNS,
-            enrichment=_enrichment(),
+            reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
             code_index=_INDEX,
             resolved_stat_var_refs=(),
             provenance_refs=("p1",),

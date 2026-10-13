@@ -117,6 +117,7 @@ def _layer2_key(
     declared_default_trigger_words: list[dict[str, str]] | None = None,
     declared_default_slots_named: list[str] | None = None,
     scope: dict | None = None,
+    source_codes: list[str | None] | None = None,
     separate: list[bool] | None = None,
 ) -> str:
     """`layer2_key` with every raw-text signal defaulting to empty, for a
@@ -157,6 +158,7 @@ def _layer2_key(
             declared_default_slots_named if declared_default_slots_named is not None else []
         ),
         scope=scope if scope is not None else _scope(),
+        source_codes=source_codes if source_codes is not None else (),
         separate=separate if separate is not None else (),
     )
 
@@ -565,6 +567,27 @@ def test_a_separate_variable_changes_layer2_key() -> None:
     second = _layer2_key(variables=variables, separate=[False, True])
     assert len({unmarked, second, _layer2_key(variables=variables, separate=[True, False])}) == 3
     assert unmarked == _layer2_key(variables=variables, separate=[False, False])
+
+
+def test_a_series_code_changes_layer2_key() -> None:
+    """A code the query writes names the variable's StatVars, so a variable with one keys
+    apart from the same variable without, and a code on another variable keys apart too.
+    Writing none keys as an extraction without the field."""
+    variables = ["debt service", "population"]
+    plain = _layer2_key(variables=variables)
+    first = _layer2_key(variables=variables, source_codes=["DT.TDS.DEGG.CD", None])
+    second = _layer2_key(variables=variables, source_codes=[None, "DT.TDS.DEGG.CD"])
+    assert len({plain, first, second}) == 3
+    assert plain == _layer2_key(variables=variables, source_codes=[None, None])
+
+
+def test_both_spellings_of_a_series_code_share_the_parsed_key() -> None:
+    def key(code: str | None) -> str:
+        part = ParsedPart(variable_text="debt service", source_code=code)
+        return parsed_key(parsed=ParsedInput(parts=[part]), scope=_scope())
+
+    assert key(" dt.tds.degg.cd") == key("DT.TDS.DEGG.CD") != key(None)
+    assert key(" ") == key(None)
 
 
 def test_a_separate_part_changes_the_parsed_key() -> None:

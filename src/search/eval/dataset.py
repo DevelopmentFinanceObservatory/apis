@@ -58,12 +58,12 @@ def resubmit_identity(resubmit: Resubmit) -> BaseIdentity:
     entities: list[Entity] = []
     if not resubmit.origin_dcids:
         entities.extend(
-            Entity(ref=GraphRef(dcid=dcid, label=dcid), role=EntityRoleSubject())
+            Entity(ref=GraphRef(ref=dcid, label=dcid), role=EntityRoleSubject())
             for dcid in resubmit.entity_dcids or []
         )
     else:
         entities.extend(
-            Entity(ref=GraphRef(dcid=dcid, label=dcid), role=_directional(axis))
+            Entity(ref=GraphRef(ref=dcid, label=dcid), role=_directional(axis))
             for axis, dcids in (
                 ("destination", resubmit.entity_dcids or []),
                 ("origin", resubmit.origin_dcids),
@@ -88,7 +88,7 @@ def resubmit_identity(resubmit: Resubmit) -> BaseIdentity:
 
 def _directional(axis: Literal["destination", "origin"]) -> EntityRoleDirectional:
     """A directional role named by its own axis, as legacy cases carry no role names."""
-    return EntityRoleDirectional(role=GraphRef(dcid=axis, label=axis), axis=axis)
+    return EntityRoleDirectional(role=GraphRef(ref=axis, label=axis), axis=axis)
 
 
 def _legacy_slots_with_provenance(
@@ -116,11 +116,11 @@ def _legacy_slots_with_provenance(
 
     if isinstance(provenance, IdentityBindingValue):
         values = [
-            SlotValue(ref=GraphRef(dcid=provenance.ref, label=provenance.ref), value_kind="source")
+            SlotValue(ref=GraphRef(ref=provenance.ref, label=provenance.ref), value_kind="source")
         ]
     elif isinstance(provenance, IdentityBindingSet):
         values = [
-            SlotValue(ref=GraphRef(dcid=dcid, label=dcid), value_kind="source")
+            SlotValue(ref=GraphRef(ref=dcid, label=dcid), value_kind="source")
             for dcid in provenance.refs
         ]
     else:  # IdentityFacetBinding excludes unbound and request-form provenance.

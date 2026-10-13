@@ -12,7 +12,6 @@ from materialise import GraphReader
 from materialise.facets import native_currency_iso
 from materialise.rate_tables import RateTableCache
 from search.engine.clients.graph import Facet
-from search.engine.departures import measure_not_applied, qualifier_property
 from search.engine.envelope import _emit_step, now_ms
 from search.engine.reading_coverage import covers
 from search.engine.region.bound_unit_gate import bound_unit_gate_reason
@@ -40,7 +39,7 @@ from search.engine.region.candidate_options import (
     depart_to_measure_sibling,
 )
 
-# _UNIT_CHECK_NOT_PROBED/_unbound_query_qualifiers live in region/candidates.py,
+# _UNIT_CHECK_NOT_PROBED and _Candidate live in region/candidates.py,
 # which imports assemble_candidates (this module) locally, inside
 # resolve_candidates' own body, to avoid the cycle a module-level import
 # would make here: by the time resolve_candidates first runs and takes
@@ -49,12 +48,10 @@ from search.engine.region.candidate_options import (
 from search.engine.region.candidates import (
     _UNIT_CHECK_NOT_PROBED,
     _Candidate,
-    _unbound_query_qualifiers,
 )
 from search.engine.region.codes import (
     NO_MEMBER_HAS_DATA_AT_PLACE,
     ONLY_ALTERNATE_HAS_DATA,
-    QUERY_QUALIFIER_DROPPED,
     _elect_no_data_reason,
 )
 from search.engine.region.convertibility import UnitCoverage
@@ -64,6 +61,11 @@ from search.engine.region.observations.dispatch import (
     _resolve_spec_observations,
 )
 from search.engine.region.observations.fetch import _build_observations
+from search.engine.region.phase_place_materialise import (
+    note_denominator_unverified,
+    refuse_unserved_quantity,
+    serves_leg_quantity,
+)
 from search.engine.region.phase_shared import (
     UNIT_CONVERSION_REFUSALS,
     UnitConversionRefusal,
@@ -79,6 +81,11 @@ from search.engine.region.related_read import (
     with_related,
 )
 from search.engine.region.relaunch import _relaunch_place_options
+from search.engine.region.requirements import (
+    settle_answer,
+    settle_candidate_set,
+    settle_flagged,
+)
 from search.engine.region.result import RegionResult
 from search.engine.region.sentence_events import _build_definite_sentence_event
 from search.engine.region.state import ResolveState, raised_facts
@@ -88,7 +95,6 @@ from search.engine.unit.bind import with_unit_lexicon_version
 from search.models import (
     IdentityUnitRequest,
     Spec,
-    Warning,
 )
 
 
@@ -204,6 +210,7 @@ def _handle_sparse_survivors(
     if len(unique_specs) == 1 and unique_specs[0].resolved.available_at_place is False:
         # Flagged-unavailable carriers belong in no-data responses.
         _offer_place_warnings(state, grounded, unique_specs)
+        _settle_lone_survivor(state, grounded, unique_specs[0])
         return state.no_data(
             "no_observations",
             flagged_match=(unique_specs[0],),
@@ -241,6 +248,7 @@ def _handle_sparse_survivors(
             grounded_near_match=True,
         )
         _offer_place_warnings(state, grounded, unique_specs)
+        _settle_lone_survivor(state, grounded, unique_specs[0])
         return state.no_data(
             _elected_reason,
             alternate_match=unique_specs[0],
@@ -248,6 +256,13 @@ def _handle_sparse_survivors(
             llm_usage=state.var_usage,
         )
     return None
+
+
+def _settle_lone_survivor(state: ResolveState, grounded: _GroundedCandidates, spec: Spec) -> None:
+    """Judge the lone survivor a refusal carries on its own shape and bindings, the ones its
+    trace records (`requirements.settle_flagged`)."""
+    candidate = grounded.cand_candidates[spec.spec_id]
+    settle_flagged(state, candidate.shape, candidate.bindings)
 
 
 def _in_currency(facets: list[Facet], currency: str | None) -> bool:
@@ -413,22 +428,27 @@ async def _assemble_definite(
     grounded: _GroundedCandidates,
     rate_cache: RateTableCache | None,
 ) -> RegionResult:
-    """Build the definite response for one surviving candidate. An unbound query qualifier returns
-    no-data. A no-data elected shape reaches here only through measure-sibling or registry-twin
-    substitution.
+    """Build the definite response for one surviving candidate. A requirement it leaves
+    unmet returns no-data. A no-data elected shape reaches here only through measure-sibling
+    or registry-twin substitution.
     A survivor from an alternate answers over its own place context, so its place warnings
-    become the answer's own (`install_place_warnings`).
+    become the answer's own (`install_place_warnings`). The survivor is judged on every
+    requirement on its own shape and bindings (`requirements.settle_answer`), since an
+    alternate or a measure sibling binds its values from its own representative and can
+    hold a code the elected shape dropped, bind another code on the same property, or, as a
+    sibling every member of which holds Female, apply "female". Its refusal names the terms
+    its flagged match's trace records (`requirements.answer_terms`): the elected reading's
+    unbound query terms, which no answer is shown to apply, and each code and value
+    requirement its own answer leaves unmet.
     """
+    _survivor = grounded.cand_candidates[unique_specs[0].spec_id]
     if unique_specs[0].spec_id != grounded.elected_spec_id:
         install_place_warnings(
             state.warnings,
             grounded.cand_places[unique_specs[0].spec_id],
             departure_facts=state.departure_facts,
         )
-    # Qualifier binding is computed against the elected shape's declared properties.
-    _survivor_unbound_qualifiers = _unbound_query_qualifiers(
-        state.query_qualifiers, unapplied=state.unapplied_qualifier_phrases
-    )
+    _survivor_unbound_qualifiers = settle_answer(state, _survivor.shape, _survivor.bindings)
     if _survivor_unbound_qualifiers:
         return state.no_data(
             "qualifier_not_bound",
@@ -441,6 +461,7 @@ async def _assemble_definite(
     if not unique_specs[0].resolved.members:
         return state.no_data("no_observations", llm_usage=state.var_usage)
     _survivor_spec = unique_specs[0]
+    note_denominator_unverified(state, _survivor.shape, spec_id=_survivor_spec.spec_id)
     if (omitted := grounded.cand_unit_omitted.get(_survivor_spec.spec_id)) is not None:
         state.warnings.append(omitted)
     _obs_svs, _obs_entities = grounded.cand_obs_entities.get(_survivor_spec.spec_id, ([], {}))
@@ -576,27 +597,25 @@ async def _assemble_candidate_set(
 ) -> RegionResult:
     """Build a candidate response from two or more distinct survivors. When the elected shape has no
     data, add a warning describing its failure; assembly states its `closest_match`
-    departure (`assemble._with_readings_substituted`).
+    departure (`assemble._with_readings_substituted`). Each candidate the search could not
+    check against the denominator the question names warns under its own spec_id
+    (`note_denominator_unverified`).
     """
     _offer_place_warnings(state, grounded, unique_specs)
     if not state.elected_has_data:
         state.warnings.append(_elected_no_data_warning(state, unique_specs))
-    # Plural answers disclose each unbound qualifier with `QUERY_QUALIFIER_DROPPED`. The client
-    # chooses among specs and can weigh the omission.
-    # The shared warning form supports deduplication.
-    for _unbound in _unbound_query_qualifiers(
-        state.query_qualifiers, unapplied=state.unapplied_qualifier_phrases
-    ):
-        state.depart(
-            Warning(
-                code=QUERY_QUALIFIER_DROPPED,
-                severity="degraded",
-                message=f'The requested qualifier "{_unbound.text}" was not applied.',
-            ),
-            measure_not_applied(
-                asked=_unbound.text, property_dcid=qualifier_property(_unbound.named)
-            ),
-        )
+    # Each survivor is judged on its own shape and bindings, and a requirement departs
+    # unless every survivor meets it (`requirements.settle_candidate_set`).
+    settle_candidate_set(
+        state,
+        [
+            (
+                grounded.cand_candidates[spec.spec_id].shape,
+                grounded.cand_candidates[spec.spec_id].bindings,
+            )
+            for spec in unique_specs
+        ],
+    )
     # State each candidate's unit lexicon version. Its identity already carries the binding,
     # and the outcome's warnings were merged earlier.
     if state.bound_unit_outcome is not None:
@@ -610,6 +629,10 @@ async def _assemble_candidate_set(
         )
     )
     _candidate_specs = await _attach_candidate_facet_options(state, grounded, unique_specs)
+    for spec in _candidate_specs:
+        note_denominator_unverified(
+            state, grounded.cand_candidates[spec.spec_id].shape, spec_id=spec.spec_id
+        )
     state.warnings.extend(
         omitted
         for spec in _candidate_specs
@@ -729,6 +752,16 @@ async def assemble_candidates(
     unique_specs, near_neighbor_fired_spec_id, _served_twin_id = _apply_twin_diversion(
         state, unique_specs, grounded, grounded.near_neighbor_fired_spec_id
     )
+    if state.quantity_refusal is not None:
+        # The elected shape does not serve the quantity, so the part offers only the readings
+        # that do, and refuses when none survived.
+        unique_specs = [
+            s
+            for s in unique_specs
+            if serves_leg_quantity(state, grounded.cand_candidates[s.spec_id].shape)
+        ]
+        if not unique_specs:
+            return await refuse_unserved_quantity(state)
     _sparse = _handle_sparse_survivors(state, unique_specs, grounded, _served_twin_id)
     if _sparse is not None:
         return _sparse

@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 import search.engine.clients.graph_client as graph_module
 import skills_index.shared as skills_shared_module
+from entity_resolution import release_shared
 from graph_generation import FakeGeneration
 from materialise.rate_tables import RateTableCache
 from search.engine.app import create_app, search_surface
@@ -144,10 +145,12 @@ class TestResolveAsyncLifecycle:
 
         assert len(closed_instances) == 1
 
-    def test_both_self_built_clients_close_once_when_pipeline_raises(self, monkeypatch):
-        """Cleanup when both clients are self-built and the pipeline raises:
-        the branch a reordering of the two close() calls, or an early return
-        added ahead of them, would silently break."""
+    @pytest.mark.parametrize("raising", ["pipeline", "coverage_snapshot"])
+    def test_both_self_built_clients_close_once_when_pipeline_raises(self, monkeypatch, raising):
+        """Cleanup when both clients are self-built and the pipeline, or the coverage
+        snapshot read before it, raises: the branch a reordering of the two close() calls,
+        or an early return or read added ahead of them, would silently break. The shared
+        resolvekit is released once too."""
         graph_closes: list[bool] = []
         sdmx_closes: list[bool] = []
 
@@ -166,7 +169,21 @@ class TestResolveAsyncLifecycle:
             raise RuntimeError("simulated pipeline failure")
             yield  # pragma: no cover — makes this an async generator function
 
-        monkeypatch.setattr("search.engine.core._resolve_pipeline_events", _raising_pipeline)
+        class _RaisingCoverage:
+            def snapshot(self):
+                raise RuntimeError("simulated pipeline failure")
+
+        if raising == "pipeline":
+            monkeypatch.setattr("search.engine.core._resolve_pipeline_events", _raising_pipeline)
+        else:
+            monkeypatch.setattr("search.engine.core.get_coverage_service", _RaisingCoverage)
+        released: list[object] = []
+
+        def _release(shared):
+            released.append(shared)
+            release_shared(shared)
+
+        monkeypatch.setattr("search.engine.core.release_shared", _release)
 
         class _FakeLiveGraphClientClass:
             @staticmethod
@@ -182,6 +199,7 @@ class TestResolveAsyncLifecycle:
 
         assert graph_closes == [True]
         assert sdmx_closes == [True]
+        assert len(released) == 1
 
 
 def test_lifespan_leaves_the_search_logger_to_propagate_to_root():
@@ -490,8 +508,8 @@ class TestGenerationLifespanWiring:
     def test_injected_generation_reaches_every_lifespan_built_cache_and_registers_it(
         self, monkeypatch
     ):
-        """Seven caches, the response cache and its part memo share the injected generation
-        provider, and the default place scope's process-wide memo and the conversion
+        """Seven caches, the response cache, its part memo and the process's facet profile
+        cache share the injected generation provider, and the default place scope's process-wide memo and the conversion
         catalogue's reload register on it. All eleven registrations clear when the lifespan
         exits."""
         fake = FakeGeneration(token="gen-a")
@@ -538,6 +556,20 @@ class TestGenerationLifespanWiring:
             return built
 
         monkeypatch.setattr(app_module, "build_materialise_sdmx_client", _spy_materialise_sdmx)
+        acquire_shared_profiles = app_module.acquire_shared_profiles
+        release_shared_profiles = app_module.release_shared_profiles
+        released: list[object] = []
+
+        def _spy_profiles(**kwargs):
+            captured["profiles"] = held = acquire_shared_profiles(**kwargs)
+            return held
+
+        def _spy_release(held) -> None:
+            released.append(held)
+            release_shared_profiles(held)
+
+        monkeypatch.setattr(app_module, "acquire_shared_profiles", _spy_profiles)
+        monkeypatch.setattr(app_module, "release_shared_profiles", _spy_release)
 
         surface = search_surface(
             llm=FakeLLM(),
@@ -557,6 +589,7 @@ class TestGenerationLifespanWiring:
                     "options_population_memo",
                     "entity_resolver",
                     "admission",
+                    "profiles",
                 }
                 for name, built in captured.items():
                     if name == "sdmx":
@@ -571,12 +604,17 @@ class TestGenerationLifespanWiring:
                         # the inner `SingleFlightCache` store.
                         assert built._cache._generation is fake, name
                         continue
+                    if name == "profiles":
+                        # The process's shared profile cache, acquired under this generation.
+                        assert built.generation is fake, name
+                        continue
                     assert built._generation is fake, name
                 assert fake.registered_names() == self._EXPECTED_REGISTERED_NAMES
             # Every registration is closed on lifespan exit. A forgotten
             # unregister would leave a later, unrelated lifespan colliding
             # on these same stable names against this same shared fake.
             assert fake.registered_names() == ()
+            assert released == [captured["profiles"]]
 
         asyncio.run(_body())
 

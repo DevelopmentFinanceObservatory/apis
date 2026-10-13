@@ -10,6 +10,7 @@ import asyncio
 from search.engine.bind import _UniversalBindOutput
 from search.engine.core import resolve_async
 from search.engine.extract import ExtractedEntity, Extraction
+from search.engine.quantity_read import QuantityOutput
 from search.models import (
     DefinitePart,
     NoDataPart,
@@ -19,6 +20,7 @@ from search.models import (
 )
 from tests.engine._harness import EMPTY_SDMX, offline_resolve
 from tests.engine._harness import make_request as _req
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph
 
 # std-01 resolves Count_Person for India.
@@ -37,15 +39,15 @@ class TestStd01TotalPopulationIndia:
         assert isinstance(inner, DefinitePart)
         spec = inner.spec
         shape = spec.resolved.shape
-        assert shape.population_type and shape.population_type.dcid == "Person"
-        assert shape.measured_property and shape.measured_property.dcid == "count"
-        assert shape.stat_type and shape.stat_type.dcid == "measuredValue"
+        assert shape.population_type and shape.population_type.ref == "Person"
+        assert shape.measured_property and shape.measured_property.ref == "count"
+        assert shape.stat_type and shape.stat_type.ref == "measuredValue"
 
     def test_sv_is_count_person(self):
         result = offline_resolve(_req("total population India"))
         inner = result.parts[0]
         assert isinstance(inner, DefinitePart)
-        sv_dcids = [sv.ref.dcid for sv in inner.spec.resolved.members]
+        sv_dcids = [sv.ref.ref for sv in inner.spec.resolved.members]
         assert "Count_Person" in sv_dcids
 
     def test_entity_is_india(self):
@@ -132,6 +134,8 @@ class _ExtractOnlyLLM:
                 also_plausible=None,
                 ask=None,
             ), None
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         raise AssertionError(f"unexpected schema {schema.__name__!r}")
 
 
@@ -213,7 +217,7 @@ class TestPartialFiveTupleResolves:
     def test_sparse_sv_is_returned(self):
         inner = self._run().parts[0]
         assert isinstance(inner, DefinitePart)
-        assert [sv.ref.dcid for sv in inner.spec.resolved.members] == [_SPARSE_SV]
+        assert [sv.ref.ref for sv in inner.spec.resolved.members] == [_SPARSE_SV]
 
     def test_measured_property_is_none(self):
         inner = self._run().parts[0]
@@ -221,7 +225,7 @@ class TestPartialFiveTupleResolves:
         shape = inner.spec.resolved.shape
         assert shape.measured_property is None
         assert shape.population_type is not None  # populationType is grounded from its arc.
-        assert shape.population_type.dcid == "currentHealthExpenditure"
+        assert shape.population_type.ref == "currentHealthExpenditure"
 
 
 class TestPartialFiveTupleBeatsLowerScoredComplete:
@@ -236,7 +240,7 @@ class TestPartialFiveTupleBeatsLowerScoredComplete:
     def test_sparse_sv_wins_on_score(self):
         inner = self._run().parts[0]
         assert isinstance(inner, DefinitePart)
-        assert [sv.ref.dcid for sv in inner.spec.resolved.members] == [_SPARSE_SV]
+        assert [sv.ref.ref for sv in inner.spec.resolved.members] == [_SPARSE_SV]
 
 
 class TestPartialFiveTupleNoObservations:
@@ -298,7 +302,7 @@ class TestStd01SlotValuesArcDerived:
         inapplicable_props = set(spec.resolved.inapplicable_slots)
 
         realised_props = {
-            sv_val.key.property.dcid
+            sv_val.key.property.ref
             for sv in spec.resolved.members
             for sv_val in sv.slot_values
             if sv_val.key.property is not None
@@ -317,7 +321,7 @@ class TestStd01SlotValuesArcDerived:
         assert inapplicable_props, "expected at least one inapplicable property"
 
         slot_by_property = {
-            slot.key.property.dcid: slot
+            slot.key.property.ref: slot
             for slot in spec.resolved.slots
             if slot.key.property is not None
         }

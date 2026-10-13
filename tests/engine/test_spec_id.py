@@ -50,7 +50,7 @@ from tests.engine._base_identity import DECLARING_SHAPE, shape_for
 def _slot_key(axis: Axis, prop_dcid: str | None, label: str = "") -> SlotKey:
     return SlotKey(
         axis=axis,
-        property=GraphRef(dcid=prop_dcid, label=label) if prop_dcid else None,
+        property=GraphRef(ref=prop_dcid, label=label) if prop_dcid else None,
         label=label or prop_dcid or axis,
     )
 
@@ -60,7 +60,7 @@ def _value_slot(axis: Axis, prop_dcid: str | None, value_dcid: str) -> Slot:
         key=_slot_key(axis, prop_dcid),
         binding=BindingValue(
             value=SlotValue(
-                ref=GraphRef(dcid=value_dcid, label=value_dcid),
+                ref=GraphRef(ref=value_dcid, label=value_dcid),
                 value_kind="enum_value",
             )
         ),
@@ -72,7 +72,7 @@ def _set_slot(axis: Axis, prop_dcid: str | None, value_dcids: list[str]) -> Slot
         key=_slot_key(axis, prop_dcid),
         binding=BindingSet(
             values=[
-                SlotValue(ref=GraphRef(dcid=d, label=d), value_kind="enum_value")
+                SlotValue(ref=GraphRef(ref=d, label=d), value_kind="enum_value")
                 for d in value_dcids
             ]
         ),
@@ -101,15 +101,15 @@ def _when_slot_value(start: int | None, end: int | None) -> Slot:
 
 
 def _subject_entity(dcid: str) -> Entity:
-    return Entity(ref=GraphRef(dcid=dcid, label=dcid), entity_type=None, role=EntityRoleSubject())
+    return Entity(ref=GraphRef(ref=dcid, label=dcid), entity_type=None, role=EntityRoleSubject())
 
 
 def _directional_entity(dcid: str, axis: RoleAxis, role_dcid: str = "irrelevant") -> Entity:
     """The role property is provenance; the axis determines identity."""
     return Entity(
-        ref=GraphRef(dcid=dcid, label=dcid),
+        ref=GraphRef(ref=dcid, label=dcid),
         entity_type=None,
-        role=EntityRoleDirectional(role=GraphRef(dcid=role_dcid, label=role_dcid), axis=axis),
+        role=EntityRoleDirectional(role=GraphRef(ref=role_dcid, label=role_dcid), axis=axis),
     )
 
 
@@ -461,7 +461,7 @@ class TestWhereSlotNeverAffectsIdentity:
                 key=SlotKey(axis="where", property=None, label="place"),
                 binding=BindingValue(
                     value=SlotValue(
-                        ref=GraphRef(dcid="country/IND", label="India"), value_kind="entity"
+                        ref=GraphRef(ref="country/IND", label="India"), value_kind="entity"
                     )
                 ),
             ),
@@ -746,7 +746,7 @@ class TestFailLoudOnMalformedInput:
             key=_slot_key("how", "SomeProp"),
             binding=BindingSet(
                 values=[
-                    SlotValue(ref=GraphRef(dcid="a", label="a"), value_kind="enum_value"),
+                    SlotValue(ref=GraphRef(ref="a", label="a"), value_kind="enum_value"),
                     SlotValue(ref=None, value_kind="literal", literal="b"),
                 ]
             ),

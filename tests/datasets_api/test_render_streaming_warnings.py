@@ -45,7 +45,7 @@ def _options() -> MintOptions:
 
 def _render(chunks: tuple[Table, ...]) -> tuple:
     rendered = render_and_store(
-        frame_chunks=iter(chunks),
+        frame_chunks=lambda: iter(chunks),
         options=_options(),
         spec={"spec_id": "streaming-warnings-test"},
         provenance_refs=[],
@@ -54,7 +54,7 @@ def _render(chunks: tuple[Table, ...]) -> tuple:
         content_version="sha256:" + "0" * 64,
         artifact_store=FakeArtifactStore(),
         entity_columns=("recipient",),
-        enrichment=EnrichmentLookup(_GRAPH, type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(_GRAPH, parties={}),
         resolved_stat_var_refs=(),
         pivot_max_output_cells=5_000_000,
         prepared_at=PREPARED_AT,
@@ -73,11 +73,13 @@ def test_enrichment_warnings_merge_across_chunks_to_the_whole_table_answer():
     one_chunk_enrichment = [w for w in one_chunk_warnings if w["code"] == "enrichment_unavailable"]
     two_chunk_enrichment = [w for w in two_chunk_warnings if w["code"] == "enrichment_unavailable"]
 
-    # The graph names nothing, so the default name columns miss on every row.
+    # The graph names and kinds nothing, so the default name and kind columns miss on every
+    # row.
     assert [(w["column"], w["count"]) for w in one_chunk_enrichment] == [
         ("recipient_iso3", 2),
         ("stat_var_label", 4),
         ("recipient_label", 4),
+        ("recipient_party_kind", 4),
     ]
     assert two_chunk_enrichment == one_chunk_enrichment
 
@@ -118,7 +120,7 @@ _TWO_COLUMN_ROWS_BY_CHUNK = (
 
 def _render_two_columns(chunks: tuple[Table, ...]) -> tuple:
     rendered = render_and_store(
-        frame_chunks=iter(chunks),
+        frame_chunks=lambda: iter(chunks),
         options=MintOptions(format="csv", bundle=False, columns=list(_TWO_COLUMN_OPTIONS_COLUMNS)),
         spec={"spec_id": "streaming-warnings-order-test"},
         provenance_refs=[],
@@ -127,7 +129,7 @@ def _render_two_columns(chunks: tuple[Table, ...]) -> tuple:
         content_version="sha256:" + "0" * 64,
         artifact_store=FakeArtifactStore(),
         entity_columns=("recipient",),
-        enrichment=EnrichmentLookup(_TWO_COLUMN_GRAPH, type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(_TWO_COLUMN_GRAPH, parties={}),
         resolved_stat_var_refs=(),
         pivot_max_output_cells=5_000_000,
         prepared_at=PREPARED_AT,
@@ -158,5 +160,6 @@ def test_streamed_warning_order_matches_whole_table_order_across_two_columns():
         "recipient_iso3",
         "stat_var_label",
         "recipient_label",
+        "recipient_party_kind",
     ]
     assert streamed_enrichment == whole_table_enrichment

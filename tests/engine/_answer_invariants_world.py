@@ -44,6 +44,7 @@ from search.engine.conjoin import assemble_region
 from search.engine.errors import EngineInputError
 from search.engine.events import SentenceEvent
 from search.engine.extract import DateRequest
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import (
     grounding,
     phase_answer,
@@ -74,6 +75,7 @@ from tests.engine._harness import (
     _csv_row,
     door_roles_for_test_query,
 )
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 from tests.materialise._rate_table_support import conversion_arcs, recipe_table_bodies
 from tests.materialise.conftest import FakeGraphReader
@@ -717,6 +719,8 @@ class _Bind:
         self._also_plausible, self._bindings = list(also_plausible), list(bindings)
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         return (
             _UniversalBindOutput(
                 chosen_shape_index=0, bindings=self._bindings, also_plausible=self._also_plausible

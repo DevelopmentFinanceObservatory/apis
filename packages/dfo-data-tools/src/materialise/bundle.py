@@ -26,6 +26,7 @@ from datetime import UTC, datetime
 from typing import cast
 
 from dfo_platform.codes import CodeCatalogue
+from dfo_platform.publisher import DFO_NAME
 from materialise.bundle_citation import build_citation_cff
 from materialise.bundle_docs import blank_to_none, build_readme, build_sources, site_path
 from materialise.cell_safety import spreadsheet_safe
@@ -37,9 +38,6 @@ DATAPACKAGE_PROFILE_URL = "https://datapackage.org/profiles/2.0/datapackage.json
 legacy `profile` keyword. CRAN frictionless 1.3.0 requires resource-level
 `profile: "tabular-data-resource"`. Every resource carries that field alongside v2 `type`.
 """
-
-DFO_NAME = "Development Finance Observatory"
-"""The DFO's name as a contributor, CFF author and contact."""
 
 DFO_EMAIL = "data@one.org"
 """The DFO's contact address."""
@@ -316,7 +314,7 @@ def assemble_bundle(
     Raises `MaterialisationUsageError` for no members, an identity mismatch, a column
     description naming no schema field, colliding resource names or paths, an invalid slug, a
     naive `prepared_at`, a code listed twice with different entries, or a code a spreadsheet
-    would read as a formula. The spec must match its single member."""
+    would read as a formula. Every member must carry the spec's `spec_id`."""
     if not members:
         raise MaterialisationUsageError("assemble_bundle requires at least one member")
     _validate_identity(spec, members)
@@ -421,21 +419,19 @@ def _assemble(
 
 
 def _validate_identity(spec: Mapping[str, object], members: Sequence[MemberProvenance]) -> None:
-    """Raises `MaterialisationUsageError` unless the spec's `spec_id` matches its one member."""
-    if len(members) != 1:
-        raise MaterialisationUsageError(
-            f"a standalone spec requires exactly one member; got {len(members)}"
-        )
+    """Raises `MaterialisationUsageError` unless every member's `spec_id` matches the spec's.
+    A spec's data can fill several files, as a long CSV writes its total rows to a second one."""
     if "spec_id" not in spec:
         raise MaterialisationUsageError(
             "a standalone spec requires a spec_id key to validate "
-            f"against its member's spec_id ({members[0].spec_id!r})"
+            f"against its members' spec_id ({members[0].spec_id!r})"
         )
-    if members[0].spec_id != spec["spec_id"]:
-        raise MaterialisationUsageError(
-            f"member spec_id {members[0].spec_id!r} does not match "
-            f"spec's spec_id {spec['spec_id']!r}"
-        )
+    for member in members:
+        if member.spec_id != spec["spec_id"]:
+            raise MaterialisationUsageError(
+                f"member spec_id {member.spec_id!r} does not match "
+                f"spec's spec_id {spec['spec_id']!r}"
+            )
 
 
 def _rfc3339(moment: datetime) -> str:

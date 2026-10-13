@@ -8,9 +8,11 @@ from __future__ import annotations
 import asyncio
 
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region.pipeline import resolve_variable
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._quantity import NO_QUANTITY
 from tests.engine.test_candidates_member_count_ordering import (
     _MEAS_PROP_1,
     _MEAS_QUAL_1,
@@ -78,6 +80,8 @@ class _ElectShape0AlsoPlausibleShape1LLM:
     """
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0,
@@ -98,6 +102,8 @@ class _ExplicitBindNoAdmissionLLM:
     """Draft the same values directly, without qualifier admission."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0,
@@ -153,7 +159,7 @@ def _run(query: str, llm):
 
 def _spec_for(specs, sv_dcid: str):
     return next(
-        spec for spec in specs if any(sv.ref.dcid == sv_dcid for sv in spec.resolved.members)
+        spec for spec in specs if any(sv.ref.ref == sv_dcid for sv in spec.resolved.members)
     )
 
 
@@ -161,7 +167,7 @@ def _filter_for(spec, prop: str):
     return next(
         f
         for f in spec.resolved.trace.slot_filters
-        if f.key.property is not None and f.key.property.dcid == prop
+        if f.key.property is not None and f.key.property.ref == prop
     )
 
 
@@ -182,7 +188,7 @@ def test_elected_candidate_carries_text_recognized_alt_carries_binder():
 
     alt_finance = _filter_for(alt, "crsTypeOfFinance")
     assert alt_finance.provenance == "binder"
-    assert alt_finance.refs and alt_finance.refs[0].dcid == "CRSTypeOfFinance110"
+    assert alt_finance.refs and alt_finance.refs[0].ref == "CRSTypeOfFinance110"
 
 
 def test_elected_candidate_carries_measure_elected_alt_does_not():
