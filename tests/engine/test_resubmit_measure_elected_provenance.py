@@ -9,8 +9,10 @@ from code_index.shared import get_index
 from search.engine.clients.graph import Facet
 from search.engine.region import resolve_spec_resubmit
 from search.engine.region.state import EngineOptions
+from search.engine.retrieval.bound_values import _expand_values
 from search.engine.shape import identity_shape_for
 from search.models import (
+    BindingSet,
     BindingUnbound,
     BindingValue,
     GraphRef,
@@ -22,15 +24,18 @@ from search.models import (
 from series_coverage.schema import RoleNames
 from tests.engine._axis_doubles import axis_confirming_reader
 from tests.engine._base_identity import destination_entity, make_base, make_identity
+from tests.engine._builders import binding_set_slot
 from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import walk_options
 from tests.engine.test_candidates_measure_alternatives import _ROLE_RECIPIENT, _ROLES
 from tests.engine.test_resubmit_alternative_measure_round_trip import (
     _KEN,
+    _arcs_for_row,
     _family_graph,
     _sibling_sdmx,
 )
+from tests.fixtures import FakeGraph
 
 _CRS_PURPOSE = "CRSPurposeCode51010"
 _FORCED_FLOW_TYPE_VALUE = "Disbursement"
@@ -45,16 +50,16 @@ _ROLE_NAMES = RoleNames(donor=_ROLES[0], recipient=_ROLES[1])
 
 def _bound_slot(prop: str, value: str) -> Slot:
     return Slot(
-        key=SlotKey(axis="how", property=GraphRef(dcid=prop, label=prop), label=prop),
+        key=SlotKey(axis="how", property=GraphRef(ref=prop, label=prop), label=prop),
         binding=BindingValue(
-            value=SlotValue(ref=GraphRef(dcid=value, label=value), value_kind="enum_value")
+            value=SlotValue(ref=GraphRef(ref=value, label=value), value_kind="enum_value")
         ),
     )
 
 
 def _unbound_slot(prop: str) -> Slot:
     return Slot(
-        key=SlotKey(axis="how", property=GraphRef(dcid=prop, label=prop), label=prop),
+        key=SlotKey(axis="how", property=GraphRef(ref=prop, label=prop), label=prop),
         binding=BindingUnbound(),
     )
 
@@ -87,7 +92,7 @@ def _filter_for(spec, prop: str):
     return next(
         f
         for f in spec.resolved.trace.slot_filters
-        if f.key.property is not None and f.key.property.dcid == prop
+        if f.key.property is not None and f.key.property.ref == prop
     )
 
 
@@ -134,7 +139,7 @@ def test_named_family_election_reads_measure_elected_on_resubmit(monkeypatch):
     flow_type_filter = _filter_for(spec, "financialFlowType")
     assert flow_type_filter.provenance == "measure_elected"
     assert flow_type_filter.binding_kind == "value"
-    assert flow_type_filter.refs and flow_type_filter.refs[0].dcid == _FORCED_FLOW_TYPE_VALUE
+    assert flow_type_filter.refs and flow_type_filter.refs[0].ref == _FORCED_FLOW_TYPE_VALUE
 
     purpose_filter = _filter_for(spec, "crsPurpose")
     assert purpose_filter.provenance == "binder"
@@ -199,9 +204,7 @@ def test_edited_slot_reads_binder_even_on_the_forceable_family(monkeypatch):
 
     cooperation_filter = _filter_for(spec, "crsCooperationModality")
     assert cooperation_filter.provenance == "binder"
-    assert (
-        cooperation_filter.refs and cooperation_filter.refs[0].dcid == "CRSCooperationModalityA01"
-    )
+    assert cooperation_filter.refs and cooperation_filter.refs[0].ref == "CRSCooperationModalityA01"
 
     flow_type_filter = _filter_for(spec, "financialFlowType")
     assert flow_type_filter.provenance == "measure_elected"
@@ -258,5 +261,192 @@ def test_widening_a_base_bound_axis_still_reads_unbound_on_the_no_seed_path(monk
 
     flow_type_filter = _filter_for(spec, "financialFlowType")
     assert flow_type_filter.binding_kind == "value"
-    assert flow_type_filter.refs and flow_type_filter.refs[0].dcid == _FORCED_FLOW_TYPE_VALUE
+    assert flow_type_filter.refs and flow_type_filter.refs[0].ref == _FORCED_FLOW_TYPE_VALUE
     assert flow_type_filter.provenance == "measure_elected"
+
+
+def _resubmit_with_a01_drifted(monkeypatch, modality: Slot):
+    """Resubmit the 51010 grant-equivalent identity posting `modality` on
+    `crsCooperationModality`, over a graph that gives every member the packaged index holds
+    under A01 the value C01 instead, so no elected member carries A01."""
+    member_rows = _member_rows()
+    seed_dcids = [row.dcid for row in member_rows]
+    _auto_coverage_index_1 = patch_coverage(
+        monkeypatch,
+        [(dcid, "f1", "country/USA", _KEN, [2018, 2019, 2020]) for dcid in seed_dcids],
+        role_names=dict.fromkeys(seed_dcids, _ROLE_NAMES),
+    )
+    posted_slots = [
+        modality,
+        _bound_slot("crsPurpose", _CRS_PURPOSE),
+        _unbound_slot("crsTypeOfFinance"),
+        _unbound_slot("crsTypeOfFlow"),
+        _unbound_slot("financialFlowType"),
+    ]
+    _, posted_identity = make_base(_shape(), posted_slots, entities=[destination_entity(_KEN)])
+
+    nodes: dict = {_KEN: {"label": "Kenya", "type": "Country"}}
+    drifted = 0
+    for row in member_rows:
+        arcs = _arcs_for_row(row)
+        if row.constraint_properties.get("crsCooperationModality") == "CRSCooperationModalityA01":
+            arcs["crsCooperationModality"] = {"nodes": [{"dcid": "CRSCooperationModalityC01"}]}
+            drifted += 1
+        nodes[row.dcid] = {"label": row.dcid, "type": "StatisticalVariable", "arcs": arcs}
+    assert drifted, "fixture drift: expected index rows carrying CRSCooperationModalityA01"
+    graph = FakeGraph(nodes=nodes, obs={})
+    observations = {
+        sv: {
+            ((_ROLE_RECIPIENT, _KEN),): [
+                Facet(
+                    earliest_date="2020",
+                    latest_date="2020",
+                    obs_count=3,
+                    dates=["2020"],
+                    values=[0.0],
+                    facet_id="f1",
+                )
+            ]
+        }
+        for sv in seed_dcids
+    }
+    return resolve_spec_resubmit(
+        inp=ResubmitIdentityPayload(identity=posted_identity),
+        graph=graph,
+        sdmx=FakeSdmxClient(observations=observations, availability={}),
+        coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
+        options=walk_options(
+            graph,
+            EngineOptions(materialise_graph=axis_confirming_reader(*seed_dcids, graph=graph)),
+        ),
+    )
+
+
+def test_a_posted_value_no_elected_member_carries_refuses(monkeypatch):
+    """The measure-family election reads the packaged index, where the A01 members carry
+    the posted `crsCooperationModality`, but the graph, which the resubmit re-reads, gives
+    them C01. No elected member carries A01, so the narrow keeps none and the elected
+    members stand. The representative's own C01 is not the value posted, so the resubmit
+    refuses `qualifier_not_bound` on A01 and flags the read without it, where it answered
+    definite under C01."""
+    region = _resubmit_with_a01_drifted(
+        monkeypatch, _bound_slot("crsCooperationModality", "CRSCooperationModalityA01")
+    )
+
+    assert (region.status, region.no_data_reason) == ("no_data", "qualifier_not_bound")
+    (term,) = region.unbound_qualifiers
+    assert term.slot == "crsCooperationModality"
+    assert [ref.ref for ref in term.named] == ["CRSCooperationModalityA01"]
+    (flagged,) = region.flagged_match or ()
+    assert _filter_for(flagged, "crsCooperationModality").binding_kind == "unbound"
+
+
+def test_a_posted_set_value_no_elected_member_carries_departs(monkeypatch):
+    """The same drift under a posted A01/C01 set. Every member's C01 lies inside the set,
+    so no edit is detected and the answer reads the set. Every term the identity posts is
+    applied, refused or disclosed, so the answer departs `measure_not_applied` on the
+    modality slot naming A01, where it answered definite with nothing disclosed."""
+    region = _resubmit_with_a01_drifted(
+        monkeypatch,
+        binding_set_slot(
+            "how",
+            "crsCooperationModality",
+            "crsCooperationModality",
+            ["CRSCooperationModalityA01", "CRSCooperationModalityC01"],
+        ),
+    )
+
+    assert region.status == "definite", (region.no_data_reason, region.unbound_qualifiers)
+    assert [
+        (fact.binding_ref, fact.asked)
+        for fact in region.departure_facts.values()
+        if fact.code == "measure_not_applied"
+    ] == [("how:crsCooperationModality", "general budget support")]
+
+
+_PARENT_PURPOSES = ("CRSPurposeCode120", "CRSPurposeCode110")
+
+
+def test_a_posted_set_of_parent_codes_is_carried_by_members_holding_their_children(monkeypatch):
+    """A resubmit posts `crsPurpose` as the parent codes 120 (health) and 110 (education).
+    The elected members carry only five-digit codes below them, but the graph the resubmit
+    re-reads gives three of them 51010, so the purpose is an edit and the narrow keeps the
+    members below a parent. Each posted parent is carried by a surviving member holding a
+    descendant, so the answer binds both, where it refused `qualifier_not_bound` on both."""
+    index = get_index()
+    below = {parent: set(_expand_values(index, [parent])) - {parent} for parent in _PARENT_PURPOSES}
+    member_rows = [
+        row
+        for row in index.statvars
+        if row.population_type == "FinancialFlow"
+        and row.measured_property == "grantEquivalent"
+        and row.measurement_qualifier == "Nominal"
+        and row.constraint_properties.get("crsCooperationModality") == "CRSCooperationModalityC01"
+        and any(row.constraint_properties.get("crsPurpose") in codes for codes in below.values())
+    ]
+    assert all(
+        sum(row.constraint_properties["crsPurpose"] in below[p] for row in member_rows) > 3
+        for p in _PARENT_PURPOSES
+    ), "fixture drift: expected members below each parent purpose"
+    seed_dcids = [row.dcid for row in member_rows]
+    _auto_coverage_index_1 = patch_coverage(
+        monkeypatch,
+        [(dcid, "f1", "country/USA", _KEN, [2018, 2019, 2020]) for dcid in seed_dcids],
+        role_names=dict.fromkeys(seed_dcids, _ROLE_NAMES),
+    )
+    purpose = Slot(
+        key=SlotKey(
+            axis="how", property=GraphRef(ref="crsPurpose", label="crsPurpose"), label="purpose"
+        ),
+        binding=BindingSet(
+            values=[
+                SlotValue(ref=GraphRef(ref=code, label=code), value_kind="enum_value")
+                for code in _PARENT_PURPOSES
+            ]
+        ),
+    )
+    posted_slots = [
+        _bound_slot("crsCooperationModality", "CRSCooperationModalityC01"),
+        purpose,
+        _unbound_slot("crsTypeOfFinance"),
+        _unbound_slot("crsTypeOfFlow"),
+        _unbound_slot("financialFlowType"),
+    ]
+    _, posted_identity = make_base(_shape(), posted_slots, entities=[destination_entity(_KEN)])
+    nodes: dict = {_KEN: {"label": "Kenya", "type": "Country"}}
+    for drifted, row in enumerate(member_rows):
+        arcs = _arcs_for_row(row)
+        if drifted < 3:
+            arcs["crsPurpose"] = {"nodes": [{"dcid": _CRS_PURPOSE}]}
+        nodes[row.dcid] = {"label": row.dcid, "type": "StatisticalVariable", "arcs": arcs}
+    graph = FakeGraph(nodes=nodes, obs={})
+    observations = {
+        sv: {
+            ((_ROLE_RECIPIENT, _KEN),): [
+                Facet(
+                    earliest_date="2020",
+                    latest_date="2020",
+                    obs_count=3,
+                    dates=["2020"],
+                    values=[0.0],
+                    facet_id="f1",
+                )
+            ]
+        }
+        for sv in seed_dcids
+    }
+    region = resolve_spec_resubmit(
+        inp=ResubmitIdentityPayload(identity=posted_identity),
+        graph=graph,
+        sdmx=FakeSdmxClient(observations=observations, availability={}),
+        coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
+        options=walk_options(
+            graph,
+            EngineOptions(materialise_graph=axis_confirming_reader(*seed_dcids, graph=graph)),
+        ),
+    )
+
+    assert region.status == "definite", (region.no_data_reason, region.unbound_qualifiers)
+    purpose_filter = _filter_for(region.specs[0], "crsPurpose")
+    assert purpose_filter.binding_kind == "set"
+    assert sorted(ref.ref for ref in purpose_filter.refs) == sorted(_PARENT_PURPOSES)

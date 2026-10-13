@@ -83,11 +83,11 @@ def five_tuple_key(
     """
     sh = spec.resolved.shape
     return (
-        sh.population_type.dcid if sh.population_type else None,
-        sh.measured_property.dcid if sh.measured_property else None,
-        sh.stat_type.dcid if sh.stat_type else None,
-        sh.measurement_qualifier.dcid if sh.measurement_qualifier else None,
-        sh.measurement_denominator.dcid if sh.measurement_denominator else None,
+        sh.population_type.ref if sh.population_type else None,
+        sh.measured_property.ref if sh.measured_property else None,
+        sh.stat_type.ref if sh.stat_type else None,
+        sh.measurement_qualifier.ref if sh.measurement_qualifier else None,
+        sh.measurement_denominator.ref if sh.measurement_denominator else None,
         sh.measurement_denominator_unresolved,
     )
 
@@ -107,7 +107,7 @@ def fold_key(region: RegionResult) -> tuple[object, ...]:
 
 def _slot_key_t(slot) -> tuple[str, str | None]:
     """Return a slot's axis/property key for Slot or SlotOptions."""
-    return (slot.key.axis, slot.key.property.dcid if slot.key.property else None)
+    return (slot.key.axis, slot.key.property.ref if slot.key.property else None)
 
 
 def _slot_signature(slots_by_key: Mapping, key: tuple[str, str | None]) -> tuple[str | None, ...]:
@@ -121,8 +121,8 @@ def _slot_signature(slots_by_key: Mapping, key: tuple[str, str | None]) -> tuple
         return ("unbound",)
     if s.binding.kind == "value":
         ref = s.binding.value.ref
-        return ("value", ref.dcid if ref else None)
-    return ("set", *sorted(v.ref.dcid for v in s.binding.values if v.ref))
+        return ("value", ref.ref if ref else None)
+    return ("set", *sorted(v.ref.ref for v in s.binding.values if v.ref))
 
 
 def _union_slot_options(
@@ -145,13 +145,13 @@ def _union_slot_options(
             key = _slot_key_t(so)
             if key not in by_key:
                 by_key[key] = so
-                seen_dcids[key] = {o.value.ref.dcid for o in so.options if o.value.ref}
+                seen_dcids[key] = {o.value.ref.ref for o in so.options if o.value.ref}
                 continue
             existing = by_key[key]
             seen = seen_dcids[key]
             merged_options = list(existing.options)
             for o in so.options:
-                dcid = o.value.ref.dcid if o.value.ref else None
+                dcid = o.value.ref.ref if o.value.ref else None
                 if dcid is not None and dcid not in seen:
                     seen.add(dcid)
                     merged_options.append(o)
@@ -165,7 +165,7 @@ def _union_slot_options(
     covered = {fact.property for fact in facts}
     unioned = [
         so
-        if so.key.property is not None and so.key.property.dcid in covered
+        if so.key.property is not None and so.key.property.ref in covered
         else so.model_copy(
             update={
                 "options": [
@@ -275,7 +275,7 @@ def _union_query_qualifiers(group: list[RegionResult]) -> list[ResolvedQualifier
     merged: list[ResolvedQualifier] = []
     for r in group:
         for q in r.spec.resolved.trace.query_qualifiers:
-            key = (q.text, q.start, q.end, q.operation, tuple(ref.dcid for ref in q.selected))
+            key = (q.text, q.start, q.end, q.operation, tuple(ref.ref for ref in q.selected))
             if key not in seen:
                 seen.add(key)
                 merged.append(q)
@@ -294,10 +294,10 @@ def _simplify_merged_union(refs: list[GraphRef]) -> list[GraphRef]:
     nested = {
         descendant
         for ref in refs
-        for descendant in index.descendants(ref.dcid)
-        if descendant != ref.dcid
+        for descendant in index.descendants(ref.ref)
+        if descendant != ref.ref
     }
-    return [ref for ref in refs if ref.dcid not in nested]
+    return [ref for ref in refs if ref.ref not in nested]
 
 
 def _union_open_axis_facts(group: list[RegionResult]) -> tuple[OpenAxisFact, ...]:
@@ -338,7 +338,7 @@ def _served_member_dcids(region: RegionResult) -> list[str]:
     """
     if region.open_axis_facts:
         return list(region.open_axis_facts[0].member_values)
-    return [sv.ref.dcid for sv in region.spec.resolved.members]
+    return [sv.ref.ref for sv in region.spec.resolved.members]
 
 
 def _merge_option_dcids(opts: Sequence[EntityOptions]) -> tuple[list, set[str]]:
@@ -347,7 +347,7 @@ def _merge_option_dcids(opts: Sequence[EntityOptions]) -> tuple[list, set[str]]:
     merged: list = []
     for eo in opts:
         for o in eo.options:
-            dcid = o.value.ref.dcid if o.value.ref else None
+            dcid = o.value.ref.ref if o.value.ref else None
             if dcid is not None and dcid not in seen:
                 seen.add(dcid)
                 merged.append(o)
@@ -479,6 +479,7 @@ def _merge_resolved_facets(
                 label=shared.label,
                 source=shared.source,
                 data_commons=shared.data_commons,
+                documentation=shared.documentation,
                 currency=shared.currency,
                 account=shared.account,
             )
@@ -509,7 +510,7 @@ def _union_sources(group: list[RegionResult]) -> list[ProvenanceRef]:
     sources: dict[str, ProvenanceRef] = {}
     for r in group:
         for source in r.spec.resolved.trace.resolved_sources:
-            sources.setdefault(source.dcid, source)
+            sources.setdefault(source.ref, source)
     return list(sources.values())
 
 
@@ -757,8 +758,8 @@ def _build_merged_slots(
         s = next(sl for sl in r.spec.resolved.slots if _slot_key_t(sl) == diff_key)
         assert isinstance(s.binding, BindingValue)
         ref = s.binding.value.ref
-        if ref and ref.dcid not in seen_dcids:
-            seen_dcids.add(ref.dcid)
+        if ref and ref.ref not in seen_dcids:
+            seen_dcids.add(ref.ref)
             diff_refs.append(ref)
     if len(diff_refs) < 2:
         raise _RefuseMerge
@@ -775,7 +776,7 @@ def _build_merged_slots(
     else:
         merged_set_ref: GraphRef | None = None
         if diff_key[0] in ("what", "how") and set_ref_for is not None:
-            merged_set_ref = set_ref_for([r.dcid for r in diff_refs])
+            merged_set_ref = set_ref_for([r.ref for r in diff_refs])
         binding = BindingSet(values=values, set_ref=merged_set_ref)
     return [
         sl.model_copy(update={"binding": binding}) if _slot_key_t(sl) == diff_key else sl
@@ -802,8 +803,8 @@ def _merge_stat_vars(
     seen_sv_dcids: set[str] = set()
     for r in group:
         for sv in r.spec.resolved.members:
-            if sv.ref.dcid not in seen_sv_dcids:
-                seen_sv_dcids.add(sv.ref.dcid)
+            if sv.ref.ref not in seen_sv_dcids:
+                seen_sv_dcids.add(sv.ref.ref)
                 all_stat_vars.append(sv)
 
     if is_where:
@@ -887,7 +888,7 @@ def _merge_slot_flags(
         merged_inapplicable &= set(r.spec.resolved.inapplicable_slots)
 
     merged_bound_props = {
-        sl.key.property.dcid
+        sl.key.property.ref
         for sl in merged_slots
         if sl.key.axis in ("what", "how")
         and sl.key.property is not None
@@ -930,14 +931,14 @@ def _merge_slot_filter_properties(
     requires.
     """
     text_recognized = frozenset(
-        sf.key.property.dcid
+        sf.key.property.ref
         for r in group
         for sf in r.spec.resolved.trace.slot_filters
         if sf.provenance == "text_recognized" and sf.key.property is not None
     )
     measure_elected = (
         frozenset(
-            sf.key.property.dcid
+            sf.key.property.ref
             for r in group
             for sf in r.spec.resolved.trace.slot_filters
             if sf.provenance == "measure_elected" and sf.key.property is not None
@@ -946,7 +947,7 @@ def _merge_slot_filter_properties(
     )
     defaulted = (
         frozenset(
-            sf.key.property.dcid
+            sf.key.property.ref
             for r in group
             for sf in r.spec.resolved.trace.slot_filters
             if sf.provenance == "declared_default" and sf.key.property is not None
@@ -1182,9 +1183,9 @@ def _merge_group(
     merged_spec = with_unit_conversion(merged_spec, members=served_members, plans=served_plans)
     merged_spec = merged_spec.model_copy(
         update={
-            "resolved": merged_spec.resolved.stating_unserved(
-                _merged_unserved(group, merged_spec)
-            ).stating_data_years(_merged_data_years(group))
+            "resolved": merged_spec.resolved.stating_unserved(_merged_unserved(group, merged_spec))
+            .stating_data_years(_merged_data_years(group))
+            .stating_continued(any(region.spec.resolved.continued for region in group))
         }
     )
 

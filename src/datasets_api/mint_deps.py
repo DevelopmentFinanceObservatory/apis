@@ -26,6 +26,7 @@ from datasets_api.versions import (
 )
 from dc_sdmx import SdmxClient
 from materialise import EnrichmentLookup
+from materialise.facets import VariableBreadthReader
 from materialise.graph import GraphReader
 from materialise.rate_tables import RateTableCache
 from series_coverage.shared import CoverageService
@@ -75,6 +76,9 @@ class MintDeps:
     # definition and refresh doors.
     now: Clock = utc_now
     rebuilds: RebuildFlights = field(default_factory=RebuildFlights)
+    # Bound around each materialisation, so a mint binding one place breaks a facet tie on each
+    # facet's places across the whole variable. None leaves the tie to the unit's name.
+    variable_breadth: VariableBreadthReader | None = None
 
     def to_definition_deps(self) -> DefinitionDeps:
         """The `current.serve_current` view of this bundle. The head recheck interval and
@@ -106,4 +110,5 @@ class MintDeps:
             task_client=self.task_client,
             settings=self.settings,
             rebuilds=self.rebuilds,
+            variable_breadth=self.variable_breadth,
         )

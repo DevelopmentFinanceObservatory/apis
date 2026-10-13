@@ -8,7 +8,6 @@ from collections.abc import Callable
 
 from search.engine.closest_match import substituted_measure_fact
 from search.engine.concurrency import create_owned_task
-from search.engine.departures import warning_key
 from search.engine.region.candidate_grounding import _GroundedCandidates
 from search.engine.region.codes import ELECTED_SHAPE_NO_DATA, _OptionProbeResult
 from search.engine.region.convertibility import option_pins
@@ -164,22 +163,9 @@ def depart_to_measure_sibling(state: ResolveState, served: Spec) -> None:
     """Record on `state` that the region answers with `served`, a Spec on the elected
     shape's measure sibling. The record holds the `elected_shape_no_data` warning naming its
     `measure_label` and the `closest_match` departure it discloses, which states the
-    measure noun its heading shows. A `measure_not_applied` departure on a property `served`
-    binds goes with its warning, since the sibling applies what the elected shape dropped."""
+    measure noun its heading shows. Definite assembly judges the sibling on the request's
+    requirements (`candidate_collapse._assemble_definite`)."""
     assert served.resolved.measure_label is not None, "a measure sibling carries its label"
-    applied = {
-        f"how:{slot.key.property.dcid}"
-        for slot in served.resolved.slots
-        if slot.key.property is not None and slot.binding.kind != "unbound"
-    }
-    retracted = {
-        key
-        for key, fact in state.departure_facts.items()
-        if fact.code == "measure_not_applied" and fact.binding_ref in applied
-    }
-    state.warnings[:] = [w for w in state.warnings if warning_key(w) not in retracted]
-    for key in retracted:
-        del state.departure_facts[key]
     state.depart(
         _elected_no_data_measure_substituted_warning(state, served.resolved.measure_label),
         substituted_measure_fact(

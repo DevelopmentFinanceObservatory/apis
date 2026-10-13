@@ -41,6 +41,12 @@ class ListedRolePairs:
         """Role-pair counts carry no years, so the span is unknown."""
         return None
 
+    def year_counts(
+        self, *, first_year: int | None, last_year: int | None
+    ) -> list[tuple[RoleTuple, tuple[tuple[int, int], ...]]]:
+        """Role-pair counts carry no years, so no tuple holds a known one."""
+        return []
+
     def members_with_data(
         self, *, first_year: int | None, last_year: int | None, role: str | None = None
     ) -> frozenset[str]:
@@ -73,6 +79,7 @@ def role_candidate(
     measurement_method: str | None = None,
     unit: str | None = None,
     scaling_factor: str | None = None,
+    observation_period: str | None = None,
 ) -> RoleFacetCandidate:
     """Build a candidate, counting each tuple once unless counts are supplied, whose latest
     point falls on `latest_date`."""
@@ -93,4 +100,5 @@ def role_candidate(
         measurement_method=measurement_method,
         unit=unit,
         scaling_factor=scaling_factor,
+        observation_period=observation_period,
     )

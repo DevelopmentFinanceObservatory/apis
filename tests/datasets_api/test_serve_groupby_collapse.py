@@ -243,13 +243,8 @@ def test_a_full_collapse_mints_its_own_content_version_and_records_both():
     assert collapsed["content_version"] != base["content_version"]
     assert collapsed["definition"]["spec_id"] == spec_id == base["definition"]["spec_id"]
 
-    # A `stat_vars_summed` warning discloses that this value sums more
-    # than one StatVar's own series into the family ref.
-    warning_codes = {w["code"] for w in collapsed["warnings"]}
-    assert "stat_vars_summed" in warning_codes
-    summed_warning = next(w for w in collapsed["warnings"] if w["code"] == "stat_vars_summed")
-    assert f"dcid:{spec_id}" in summed_warning["message"]
-    assert "2" in summed_warning["message"]
+    # The sum is a step of the collapsed version's description record, not a warning.
+    assert "stat_vars_summed" not in {w["code"] for w in collapsed["warnings"]}
 
     # The collapse changes output identity. Materialisation resolves the same two members.
     assert len(collapsed["trace"]["resolved_stat_vars"]) == 2
@@ -268,11 +263,11 @@ def test_a_full_collapse_mints_its_own_content_version_and_records_both():
     assert recorded_versions == {base["content_version"], collapsed["content_version"]}
 
 
-def test_a_repeat_collapsed_mint_returns_the_recorded_summed_warning_once(
+def test_a_repeat_collapsed_mint_answers_from_the_recorded_version(
     monkeypatch: pytest.MonkeyPatch,
 ):
     """The second mint finds the collapsed version on record and answers from its stored facts,
-    which keeps the warning's structured fields and gains no second copy of it."""
+    with the warnings the first mint returned."""
     persisted_versions: list[str] = []
     persisted_response = serve_module.persisted_response
 
@@ -296,29 +291,33 @@ def test_a_repeat_collapsed_mint_returns_the_recorded_summed_warning_once(
     second = _mint(client, spec_id=spec_id, sidecar=sidecar, options=options)
 
     assert persisted_versions == [first["content_version"]]
-    summed = [w for w in second["warnings"] if w["code"] == "stat_vars_summed"]
-    assert len(summed) == 1
-    assert summed[0]["contributing_member_count"] == 2
-    assert summed[0]["stat_var_ref"] == f"dcid:{spec_id}"
-    assert summed[0]["stat_var_label"] == "Axis value A/Axis value B"
     assert second["warnings"] == first["warnings"]
 
 
-def _without_structured_fields(warning: dict) -> dict:
-    return {key: warning[key] for key in ("code", "severity", "message")}
+_STORED_SUMMED = {
+    "code": "stat_vars_summed",
+    "severity": "info",
+    "message": "The series sums observations from more than one StatVar.",
+}
 
 
-def _relabelled(warning: dict) -> dict:
-    return {**warning, "stat_var_label": "Label recorded before a code-index re-export"}
-
-
-@pytest.mark.parametrize("stored_warning", [_without_structured_fields, _relabelled])
-def test_a_repeat_collapsed_mint_keeps_the_stored_summed_warning_when_this_call_differs(
-    stored_warning,
-):
-    """A stored `stat_vars_summed` entry that differs from this call's (recorded without the
-    structured fields, or under an earlier code-index label) is the one the re-mint returns, once,
-    and the re-mint equals a snapshot read of the same version."""
+@pytest.mark.parametrize(
+    "stored",
+    [
+        _STORED_SUMMED,
+        {
+            **_STORED_SUMMED,
+            "contributing_member_count": 2,
+            "stat_var_ref": "dcid:spec_recorded",
+            "stat_var_label": "Label recorded before a code-index re-export",
+        },
+    ],
+    ids=["without_structured_fields", "structured"],
+)
+def test_a_repeat_collapsed_mint_keeps_a_stored_summed_warning(stored: dict):
+    """A collapsed version minted while collapses reported their sum as a warning stores a
+    `stat_vars_summed` entry, with or without the structured fields. The re-mint returns it
+    unchanged, once, and equals a snapshot read of the same version."""
     version_store = FakeVersionRecordDatasetStore()
     client = _client(
         graph=_graph(),
@@ -339,16 +338,11 @@ def test_a_repeat_collapsed_mint_keeps_the_stored_summed_warning_when_this_call_
             (spec_id, content_version),
         )
         assert row is not None
-        warnings = [
-            stored_warning(w) if w["code"] == "stat_vars_summed" else w
-            for w in cast(list, row["warnings"])
-        ]
         tx.execute(
             "UPDATE datasets.version_record SET warnings = %s "
             "WHERE subject_id = %s AND content_version = %s",
-            (json.dumps(warnings), spec_id, content_version),
+            (json.dumps([stored, *cast(list, row["warnings"])]), spec_id, content_version),
         )
-    (stored,) = [w for w in warnings if w["code"] == "stat_vars_summed"]
 
     second = _mint(client, spec_id=spec_id, sidecar=sidecar, options=options)
     snapshot = client.get(f"/api/datasets/{spec_id}/{content_version}")

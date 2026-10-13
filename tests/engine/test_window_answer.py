@@ -14,6 +14,7 @@ from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.graph import Facet
 from search.engine.conjoin import _build_part
 from search.engine.extract import DateRequest
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.region.result import RegionResult
 from search.engine.retrieval.read_plan import plan_standard
@@ -27,6 +28,7 @@ from tests.engine import test_place_scope_default as place_scope_default
 from tests.engine import test_role_bearing_pipeline_e2e as role_bearing
 from tests.engine._fake_coverage import FakeCoverageService, empty_coverage_snapshot, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 _PERSON = "Count_Person"
@@ -84,6 +86,8 @@ class _BindLLM:
         self.also = also
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         return _UniversalBindOutput(
             chosen_shape_index=0, bindings=[], also_plausible=self.also, ask=None
         ), None

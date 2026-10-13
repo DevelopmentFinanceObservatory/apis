@@ -26,6 +26,7 @@ from code_index.shared import get_index, get_measure_index
 from code_index.types import CodeRow, CodeSystemDeclaration
 from datasets_api.adapter import resolve_definition_members
 from entity_resolution import Admission
+from origin_catalogue import BASE
 from search.engine import core as search_core
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.departures import warning_key
@@ -34,6 +35,7 @@ from search.engine.errors import EngineInputError, FamilyNotResolvableError, Rol
 from search.engine.fanout import _FanOutResult, _run_variables_streaming, _success_directional
 from search.engine.options.population_memo import _population_key
 from search.engine.qualifier_match import QualifierMatch, read_by_vocabulary
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import (
     candidate_collapse,
     promote_materialise,
@@ -62,6 +64,7 @@ from search.engine.retrieval.bound_values import (
     query_phrases_read,
     shape_five_tuple,
     shape_member_facts,
+    shape_population_arcs,
     shape_query,
 )
 from search.engine.retrieval.derive import derive_shapes
@@ -101,10 +104,14 @@ from tests.engine._fake_coverage import (
 )
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import offline_resolve
+from tests.engine._quantity import NO_QUANTITY
 from tests.engine.test_bind_slot_reserve import _state as _prune_state
 from tests.engine.test_two_ended_menu import _index_row_node
 from tests.fixtures import FakeGraph, make_resolver
+from tests.origin_catalogue.fake_catalogue import provenance_row, restrictive_catalogue
+from tests.origin_catalogue.support import build_arc_tables
 
+_WDI = "dc/base/WorldDevelopmentIndicators"
 _RECIPIENT = ["financingRecipient"]
 _PAIR = ["financingProvider", "financingRecipient"]
 
@@ -235,6 +242,8 @@ def test_a_question_naming_no_place_offers_a_one_role_shape_to_the_election():
 
     class _RecordingLLM:
         async def generate_structured(self, *, prompt, system, schema):
+            if schema is QuantityOutput:
+                return NO_QUANTITY
             offered.append(
                 [
                     label
@@ -308,6 +317,35 @@ def test_a_shape_of_one_role_set_is_returned_as_it_is():
     shape = _debt_shape(_BY_CREDITOR, _BY_CREDITOR_GUARANTEED)
 
     assert _narrowed(shape, "destination") is shape
+
+
+def test_a_held_family_elects_its_role_class_among_every_member_it_holds(bind_catalogue):
+    """Recall finds the by-creditor members alone, of one role set. The catalogue holds the
+    whole family, so the shape declares the family's roles, the creditor optional, and a
+    bound recipient elects the recipient-only class among its members, as the mint does, and the shape answers through its least-constrained member, the total,
+    under the family's label."""
+    bind_catalogue(
+        restrictive_catalogue(
+            provenances=[provenance_row(_WDI, BASE)],
+            base_variables={dcid: ([_WDI], []) for dcid in _DEBT_NODES},
+            arcs=build_arc_tables(
+                dfo={},
+                base={dcid: node["arcs"] for dcid, node in _DEBT_NODES.items()},
+                schema={},
+            ),
+        )
+    )
+    shape = _debt_shape(_BY_CREDITOR, _BY_CREDITOR_GUARANTEED)
+
+    narrowed = _narrowed(shape, "destination")
+
+    assert set(shape.declared_roles or ()) == {"financingProvider", "financingRecipient"}
+    assert required_role_names(shape) == ("financingRecipient",)
+    assert narrowed.declared_roles == ("financingRecipient",)
+    assert list(narrowed.sv_arc_facts or {}) == [_TOTAL]
+    assert list(shape_population_arcs(narrowed)) == [_TOTAL, _TOTAL_GUARANTEED]
+    assert narrowed.label == shape.label
+    assert narrowed.held_family == shape.held_family is not None
 
 
 def test_the_member_facts_of_a_recalled_shape_are_the_elected_role_class():
@@ -622,7 +660,7 @@ def test_a_resubmit_of_a_recipient_only_identity_answers_the_mints_family():
     region = _resubmit(first.specs[0].definition.identity)
 
     assert region.status == "definite"
-    assert [sv.ref.dcid for sv in region.specs[0].resolved.members] == [_TOTAL]
+    assert [sv.ref.ref for sv in region.specs[0].resolved.members] == [_TOTAL]
 
 
 def _guaranteed_debt_of_kenya(nodes: dict, *, obs: dict | None = None):
@@ -667,7 +705,7 @@ def test_a_place_whose_walk_finds_a_total_of_another_constraint_value_answers_th
     result = _guaranteed_debt_of_kenya(_NESTED_NODES, obs={"Tie_Total_Arrears|country/KEN": _OBS})
 
     assert result.status == "definite"
-    assert [sv.ref.dcid for sv in result.specs[0].resolved.members] == ["Tie_Total_Arrears"]
+    assert [sv.ref.ref for sv in result.specs[0].resolved.members] == ["Tie_Total_Arrears"]
     assert result.specs[0].definition.identity.entities == {"destination": ["country/KEN"]}
 
 
@@ -801,7 +839,7 @@ def test_a_recalled_index_row_does_not_take_the_debt_shapes_family():
     assert result.status == "definite"
     spec = result.specs[0]
     assert spec.resolved.shape.label == "Debt service"
-    assert [sv.ref.dcid for sv in spec.resolved.members] == [_SERVICE]
+    assert [sv.ref.ref for sv in spec.resolved.members] == [_SERVICE]
     assert spec.definition.identity.entities == {"destination": ["country/KEN"]}
     assert {
         slot.property: getattr(slot.binding, "ref", None) for slot in spec.definition.identity.slots
@@ -869,6 +907,8 @@ _OBS = [{"earliestDate": "2015", "latestDate": "2022", "obsCount": 8}]
 
 class _BindLLM:
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0, bindings=[], also_plausible=None, ask=None
@@ -941,7 +981,7 @@ def test_an_open_creditor_answers_with_the_by_creditor_members():
 
     assert result.status == "definite"
     spec = result.specs[0]
-    assert [sv.ref.dcid for sv in spec.resolved.members] == [_BY_CREDITOR]
+    assert [sv.ref.ref for sv in spec.resolved.members] == [_BY_CREDITOR]
     assert spec.definition.identity.entities == {"destination": ["country/KEN"]}
     assert spec.definition.identity.open_roles == ["origin"]
 
@@ -1006,7 +1046,7 @@ def test_a_rank_over_creditors_on_a_twin_family_keeps_the_operation_and_the_open
 
     assert region.status == "definite"
     spec = region.specs[0]
-    assert [sv.ref.dcid for sv in spec.resolved.members] == [_BY_CREDITOR]
+    assert [sv.ref.ref for sv in spec.resolved.members] == [_BY_CREDITOR]
     assert spec.definition.identity.entities == {"destination": ["country/KEN"]}
     assert spec.definition.identity.open_roles == ["origin"]
     assert region.operations == (_RANK_CREDITORS,)
@@ -1108,7 +1148,7 @@ def test_an_open_creditor_elects_the_index_familys_twin_that_recall_missed(monke
 
     assert region.status == "definite"
     spec = region.specs[0]
-    assert [sv.ref.dcid for sv in spec.resolved.members] == [_BY_CREDITOR]
+    assert [sv.ref.ref for sv in spec.resolved.members] == [_BY_CREDITOR]
     assert spec.definition.identity.open_roles == ["origin"]
     assert region.operations == (_RANK_CREDITORS,)
     assert not [w for w in region.warnings if w.code == "query_qualifier_dropped"]
@@ -1131,7 +1171,7 @@ def test_an_open_creditor_on_an_index_family_with_no_twin_answers_the_total_and_
 
     assert region.status == "definite"
     spec = region.specs[0]
-    assert [sv.ref.dcid for sv in spec.resolved.members] == [_TOTAL]
+    assert [sv.ref.ref for sv in spec.resolved.members] == [_TOTAL]
     assert spec.definition.identity.open_roles is None
     assert [w.code for w in region.warnings if w.code == "query_qualifier_dropped"] == [
         "query_qualifier_dropped"
@@ -1147,7 +1187,7 @@ def test_a_resubmitted_open_creditor_identity_keeps_its_open_role_and_spec_id():
     assert region.status == "definite"
     assert region.spec.definition.identity.open_roles == ["origin"]
     assert region.spec.spec_id == spec.spec_id
-    assert [sv.ref.dcid for sv in region.spec.resolved.members] == [_BY_CREDITOR]
+    assert [sv.ref.ref for sv in region.spec.resolved.members] == [_BY_CREDITOR]
 
 
 def test_an_open_creditor_identity_states_the_members_the_mint_resolves_for_it():
@@ -1476,7 +1516,7 @@ def test_a_place_named_without_a_direction_answers_with_the_recipient_only_membe
 
     assert result.status == "definite"
     spec = result.specs[0]
-    assert [sv.ref.dcid for sv in spec.resolved.members] == [_TOTAL]
+    assert [sv.ref.ref for sv in spec.resolved.members] == [_TOTAL]
     assert spec.definition.identity.entities == {"destination": ["country/KEN"]}
 
 
@@ -1564,7 +1604,7 @@ def test_a_creditor_only_series_is_confirmed_at_its_creditor(directed):
     )
 
     assert (result.status, result.no_data_reason) == ("definite", None)
-    assert [sv.ref.dcid for sv in result.specs[0].resolved.members] == [_OWED_TO_CREDITOR]
+    assert [sv.ref.ref for sv in result.specs[0].resolved.members] == [_OWED_TO_CREDITOR]
 
 
 def test_a_one_role_series_the_coverage_index_names_is_confirmed_there():
@@ -1674,6 +1714,8 @@ def test_a_subject_only_candidate_beside_a_role_bearing_election_binds_its_place
 
     class _TwoReadingsLLM:
         async def generate_structured(self, *, prompt, system, schema):
+            if schema is QuantityOutput:
+                return NO_QUANTITY
             return _UniversalBindOutput(
                 chosen_shape_index=0, bindings=[], also_plausible=[1], ask=None
             ), None
@@ -1706,8 +1748,7 @@ def test_a_subject_only_candidate_beside_a_role_bearing_election_binds_its_place
 
     assert result.status == "candidates"
     entities_by_member = {
-        spec.resolved.members[0].ref.dcid: spec.definition.identity.entities
-        for spec in result.specs
+        spec.resolved.members[0].ref.ref: spec.definition.identity.entities for spec in result.specs
     }
     assert entities_by_member == {
         _GNI_RECEIVED: {"destination": ["country/KEN"]},
@@ -1762,7 +1803,7 @@ def test_a_rank_over_creditors_is_left_off_a_recipient_only_answer_with_a_warnin
     )
 
     assert stamped.status == "definite"
-    assert {sv.ref.dcid for sv in stamped.specs[0].resolved.members} == {_TOTAL}
+    assert {sv.ref.ref for sv in stamped.specs[0].resolved.members} == {_TOTAL}
     assert stamped.specs[0].definition.identity.open_roles is None
     assert stamped.answered_roles == ("financingRecipient",)
     assert stamped.operations == (_GROWTH,)
@@ -1890,6 +1931,8 @@ def test_a_role_bearing_candidate_beside_a_subject_only_election_answers_its_own
 
     class _SubjectFirstLLM:
         async def generate_structured(self, *, prompt, system, schema):
+            if schema is QuantityOutput:
+                return NO_QUANTITY
             return _UniversalBindOutput(
                 chosen_shape_index=0, bindings=[], also_plausible=[1], ask=None
             ), None
@@ -1922,8 +1965,7 @@ def test_a_role_bearing_candidate_beside_a_subject_only_election_answers_its_own
 
     assert result.status == "candidates"
     assert {
-        spec.resolved.members[0].ref.dcid: spec.definition.identity.entities
-        for spec in result.specs
+        spec.resolved.members[0].ref.ref: spec.definition.identity.entities for spec in result.specs
     } == {
         _GNI_PPP: {"observationAbout": ["country/KEN"]},
         _GNI_RECEIVED: {"destination": ["country/KEN"]},
@@ -2188,6 +2230,8 @@ class _ElectFirstLLM:
         self._also_plausible = also_plausible
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         return _UniversalBindOutput(
             chosen_shape_index=0, bindings=[], also_plausible=self._also_plausible, ask=None
         ), None
@@ -2247,7 +2291,7 @@ def test_a_candidate_set_answers_under_the_roles_of_its_candidates():
     result = _run_beside_by_creditor(obs={}, also_plausible=[1])
 
     assert result.status == "candidates"
-    assert {spec.resolved.members[0].ref.dcid for spec in result.specs} == {
+    assert {spec.resolved.members[0].ref.ref for spec in result.specs} == {
         _LOANS_BY_CREDITOR,
         _GRANTS_BY_CREDITOR,
     }
@@ -2272,9 +2316,40 @@ def test_a_definite_answer_from_an_alternate_answers_under_the_alternates_roles(
     result = _run_beside_by_creditor(obs={f"{_RECEIVED}|country/KEN": _OBS}, also_plausible=[1])
 
     assert result.status == "definite"
-    assert [sv.ref.dcid for sv in result.specs[0].resolved.members] == [_GRANTS_BY_CREDITOR]
+    assert [sv.ref.ref for sv in result.specs[0].resolved.members] == [_GRANTS_BY_CREDITOR]
     assert result.answered_roles == tuple(_PAIR)
     stamped = with_runnable_operations(result, (_RANK_CREDITORS,))
     assert stamped.operations == (_RANK_CREDITORS,)
     assert not [w for w in stamped.warnings if w.code == "query_qualifier_dropped"]
     assert _success_directional(result, role_query="top creditors of external debt of Kenya")
+
+
+@pytest.mark.parametrize(
+    ("entities", "coverage", "bound"),
+    [
+        (["Kenya"], _twin_coverage, {"destination": ["country/KEN"]}),
+        (["Kenya"], lambda: _one_role_coverage(_DEBT_NODES, {}), {"destination": ["country/KEN"]}),
+        ([], lambda: _one_role_coverage(_DEBT_NODES, {}), {}),
+    ],
+    ids=["data-at-kenya", "no-data-at-kenya", "no-data-anywhere"],
+)
+def test_a_per_capita_refusal_keeps_the_open_creditor_on_its_flagged_match(
+    entities, coverage, bound
+):
+    """External debt per capita by every creditor. No debt series divides by people, so
+    the quantity gate refuses after materialise, and the flagged definition keeps the
+    creditor axis the elected members confirmed open, as the definite answer would. It does
+    so over the zero-observation carrier at Kenya and over the role path's no-data outcome,
+    where discovery finds no series at any place (`NoDataDraft.open_axes`)."""
+    result = _run(
+        entities=entities,
+        obs={},
+        query="external debt stocks per capita of Kenya",
+        open_axes=frozenset({"origin"}),
+        coverage=coverage(),
+    )
+
+    assert (result.status, result.no_data_reason) == ("no_data", "denominator_not_available")
+    (flagged,) = result.flagged_match or ()
+    assert flagged.definition.identity.entities == bound
+    assert flagged.definition.identity.open_roles == ["origin"]

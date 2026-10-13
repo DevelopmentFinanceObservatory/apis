@@ -48,12 +48,14 @@ from materialise.errors import (
     CollectionProbeCeilingExceededError,
     DatasetDisagreementError,
     DefaultFacetUndefinedError,
+    FacetBindingUnsupportedError,
     FacetNotAvailableError,
     MembersNotHeldError,
     MixedGrainError,
     OverCeilingError,
     UpstreamResponseError,
     UpstreamVersionChangedError,
+    VariableBreadthUnreadError,
 )
 from materialise.formats import ExcelIllegalCharacterError, ExcelLimitError, ParquetSizeBoundError
 from materialise.graph import GraphDeadlineExceededError, GraphReadError
@@ -88,6 +90,7 @@ MINT_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
     RecipeNotDeclaredError,
     RateCoverageGapError,
     NonCurrencyUnitError,
+    FacetBindingUnsupportedError,
     RateTableInvalidError,
     ExcludedByRegistry,
     UnSystemUnavailable,
@@ -110,6 +113,7 @@ MINT_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
     ColumnUnknownError,
     UpstreamVersionChangedError,
     MintBackpressure,
+    VariableBreadthUnreadError,
     # A mint over the inline budget submits an operation, which a full backlog refuses.
     OperationBacklogFull,
     GraphDeadlineExceededError,
@@ -152,6 +156,7 @@ MINT_EXCEPTION_EXEMPLARS: tuple[BaseException, ...] = (
     RecipeNotDeclaredError("exemplar", cause="recipe_undeclared"),
     RateCoverageGapError("exemplar", cause="currency_unmapped", entities=("CurrencyExemplar",)),
     NonCurrencyUnitError("exemplar", unit="Exemplar"),
+    FacetBindingUnsupportedError("exemplar"),
     RateTableInvalidError("exemplar"),
     ExcludedByRegistry(variables=("Exemplar",), provenances=("dc/base/Exemplar",)),
     UnSystemUnavailable(variable="undata/exemplar/Exemplar", places=("country/Exemplar",)),
@@ -182,6 +187,8 @@ MINT_EXCEPTION_EXEMPLARS: tuple[BaseException, ...] = (
     ColumnUnknownError("exemplar", column="exemplar"),
     UpstreamVersionChangedError("exemplar"),
     MintBackpressure(),
+    VariableBreadthUnreadError(["fExemplarA", "fExemplarB"]),
+    VariableBreadthUnreadError(["fExemplarA", "fExemplarB"], transient=False),
     OperationBacklogFull(in_flight=1, limit=1),
     GraphDeadlineExceededError("exemplar"),
     MemberReadDeadline(five_tuple=FiveTuple(), candidates_considered=0, candidate_cap=1),

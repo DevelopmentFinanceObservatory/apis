@@ -51,7 +51,7 @@ def member_labels(specs: Iterable[Spec]) -> dict[str, str]:
     """Each served member's graph name over `specs`, by dcid, `""` for a member whose label
     echoes its dcid because the graph holds no name for it."""
     return {
-        member.ref.dcid: member.ref.label if member.ref.label != member.ref.dcid else ""
+        member.ref.ref: member.ref.label if member.ref.label != member.ref.ref else ""
         for spec in specs
         for member in spec.resolved.members
     }
@@ -143,7 +143,7 @@ def refused_places_fact(
 
 def _reads_only_un(spec: Spec) -> bool:
     """Whether every StatVar `spec` reads lives on the UN deployment."""
-    return all(is_un_dcid(stat_var.ref.dcid) for stat_var in spec.resolved.members)
+    return all(is_un_dcid(stat_var.ref.ref) for stat_var in spec.resolved.members)
 
 
 __all__ = [

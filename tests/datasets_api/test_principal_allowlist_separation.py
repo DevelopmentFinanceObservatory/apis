@@ -50,7 +50,7 @@ def _publish_body() -> dict[str, object]:
                 "recipient": "country/KEN",
             }
         ],
-        "input_content_versions": ["cv_abc123"],
+        "input_content_versions": ["cv_00000000000000000000000000abc123"],
     }
 
 

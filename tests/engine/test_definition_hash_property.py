@@ -197,7 +197,7 @@ def _served_definitions(node: object) -> list[dict]:
             _group_graph,
             "gdp",
             "European Union",
-            {"dcid": "EuropeanUnion", "label": "European Union", "entity_type": "Place"},
+            {"ref": "EuropeanUnion", "label": "European Union", "entity_type": "Place"},
             False,
         ),
         (_group_graph, "gdp", "G7", {"label": "G7"}, False),
@@ -296,7 +296,7 @@ def test_resubmitted_identity_with_a_group_beside_it_hashes_whole_to_its_spec_id
         client,
         {
             "identity": first["definition"]["identity"],
-            "entity_groups": {"observationAbout": {"dcid": _G7_NODE, "label": "G7"}},
+            "entity_groups": {"observationAbout": {"ref": _G7_NODE, "label": "G7"}},
         },
     )
 
@@ -306,7 +306,7 @@ def test_resubmitted_identity_with_a_group_beside_it_hashes_whole_to_its_spec_id
     assert part["status"] == "definite", part
     assert part["spec"]["spec_id"] == first["spec_id"]
     assert part["spec"]["resolved"]["entity_groups"] == {
-        "observationAbout": {"dcid": _G7_NODE, "label": "Group of Seven"}
+        "observationAbout": {"ref": _G7_NODE, "label": "Group of Seven"}
     }
     definitions = _served_definitions(body)
     assert definitions

@@ -6,6 +6,8 @@ import dataclasses
 from collections.abc import Mapping, Sequence
 
 from materialise.graph import UNRESOLVED_NODE
+from origin_catalogue import current_catalogue
+from origin_catalogue.families import FamilyKey
 from search.engine.config import settings
 from search.engine.envelope import now_ms
 from search.engine.errors import (
@@ -19,13 +21,17 @@ from search.engine.region.grounding import _shape_with_taxonomy, membership_unve
 from search.engine.region.promote_results import _no_data_region, _scope_too_broad_region
 from search.engine.region.promote_state import _PromoteState
 from search.engine.region.result import RegionResult
-from search.engine.retrieval.bound_values import elected_role_class_shape, identity_query
-from search.engine.retrieval.derive import index_shape_label
+from search.engine.retrieval.bound_values import (
+    elected_role_class_shape,
+    identity_query,
+    walked_family_label,
+)
+from search.engine.retrieval.derive import index_shape_label, member_group_class
 from search.engine.retrieval.facts import (
     FiveTuple,
     group_roles,
     read_constraints,
-    read_name,
+    read_five_tuple,
 )
 from search.engine.shape import STANDARD_SHAPE_LABEL, shape_draft_from
 from statvar_members import five_tuple_arcs_match, five_tuple_reverse_filters
@@ -177,11 +183,27 @@ def _phase_build_shape(state: _PromoteState) -> RegionResult | None:
 
         constraint_props = list(prop_observed_values.keys())
 
+        # The family the catalogue's tables hold, keyed as derive keys the representative's
+        # group, names a shape the index does not decide (`walked_family_label`).
+        held = None
+        if state.index_family is None:
+            rep_arcs = state.resolved_arcs[state.rep_sv]
+            five_tuple = read_five_tuple(rep_arcs)
+            role_bearing, _family = member_group_class(state.rep_sv, five_tuple, rep_arcs)
+            held = current_catalogue().held_family(FamilyKey(*five_tuple, role_bearing))
+
         # Read slot-property labels from the graph, with the population type's when the
-        # index family labels the shape.
+        # index family labels the shape, and with the population type's and the shared
+        # values' when a held family without a total may read as them.
         label_dcids = constraint_props.copy()
         if state.index_family is not None:
             label_dcids.append(state.ft.pop_type_dcid)
+        elif held is not None and held.total_name is None:
+            label_dcids.extend(
+                dcid
+                for dcid in (state.ft.pop_type_dcid, *held.shared, *held.shared.values())
+                if dcid not in label_dcids
+            )
         prop_label_map = state.graph.node_labels_batch(label_dcids) if label_dcids else {}
         prop_labels = {p: prop_label_map.get(p, p) for p in constraint_props}
 
@@ -199,16 +221,26 @@ def _phase_build_shape(state: _PromoteState) -> RegionResult | None:
                 state.variable_text, "role_signature_incompatible", warnings=tuple(warnings)
             )
 
-        # Label an index shape as derive does, else by the representative's name arc with the
-        # standard label as fallback. The shape id carries identity; `_shape_with_taxonomy`
-        # supplies slot options.
+        # Label a shape as derive does: an index shape by its family's rows, any other by
+        # its family (`walked_family_label`), the representative's name first among the
+        # resolved members', with the standard label as fallback. The shape id carries
+        # identity; `_shape_with_taxonomy` supplies slot options.
+        pop_type = state.ft.pop_type_dcid
         if state.index_family is not None:
-            pop_type = state.ft.pop_type_dcid
             shape_label = index_shape_label(
                 state.index_family, population_type_label=prop_label_map.get(pop_type, pop_type)
             )
         else:
-            shape_label = read_name(sv_arc_facts[state.rep_sv]) or STANDARD_SHAPE_LABEL
+            shape_label = (
+                walked_family_label(
+                    sv_arc_facts,
+                    held=held,
+                    population_type_label=prop_label_map.get(pop_type),
+                    prop_labels=prop_label_map,
+                    value_labels=prop_label_map,
+                )
+                or STANDARD_SHAPE_LABEL
+            )
 
         state.shape_draft = _shape_with_taxonomy(
             shape_draft_from(

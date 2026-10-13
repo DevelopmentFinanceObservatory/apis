@@ -24,7 +24,9 @@ class FacetCandidate:
 
     Coverage guarantees `facet_id`, `n_obs`, `first_year`, and `last_year`; `years` lists the
     years with data, from the rows' year masks, and is empty when the coverage carries no
-    per-year counts. Metadata may be absent when the caller's map lacks that facet.
+    per-year counts. `first_series_end` is the year its first series to end ends
+    (`FacetCoverage.first_series_end`). Metadata may be absent when the caller's map lacks
+    that facet.
     """
 
     facet_id: str
@@ -32,6 +34,7 @@ class FacetCandidate:
     first_year: int
     last_year: int
     years: tuple[int, ...] = ()
+    first_series_end: int | None = None
     provenance_id: str | None = None
     measurement_method: str | None = None
     unit: str | None = None
@@ -52,6 +55,7 @@ def facet_candidates(
             first_year=f.first_year,
             last_year=f.last_year,
             years=tuple(sorted(year for year, count in f.year_counts.items() if count)),
+            first_series_end=f.first_series_end,
             provenance_id=metadata.get(f.facet_id, _NO_METADATA).provenance_id,
             measurement_method=metadata.get(f.facet_id, _NO_METADATA).measurement_method,
             unit=metadata.get(f.facet_id, _NO_METADATA).unit,

@@ -1,8 +1,8 @@
 """Compare a fresh export of the live graph with the committed code index.
 It compares every block the graph and the authored config determine: declarations, datasets, codes,
-StatVars and listed StatVars without their provenances, measure axes, values, and partition labels,
-and party types, plus the stamp's counts and content hash. The fresh export lists the StatVars the
-committed index lists.
+StatVars and listed StatVars without their provenances, the listed StatVars' series codes and
+value parents, measure axes, values, and partition labels, and party types, plus the stamp's
+counts and content hash. The fresh export lists the StatVars the committed index lists.
 The run time and graph endpoint vary, so the check excludes them. Each StatVar's provenances, the
 parties, the coverage build id, and the count of StatVars without coverage come from the coverage
 build, which `python -m series_coverage.verify_index` checks at deploy.
@@ -64,7 +64,14 @@ def test_export_matches_committed_index():
         reader.close()
 
     assert set(fresh) == set(committed) - {"stamp", "parties"}
-    for block in ("declarations", "datasets", "codes", "party_types"):
+    for block in (
+        "declarations",
+        "datasets",
+        "codes",
+        "source_codes",
+        "value_parents",
+        "party_types",
+    ):
         assert fresh[block] == committed[block], block
     for block in ("measure_axes", "measure_values", "measure_partition_labels", "measure_nouns"):
         assert fresh[block] == committed[block], block

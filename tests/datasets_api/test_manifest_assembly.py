@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import io
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -21,6 +21,7 @@ from datasets_api.config import DatasetsBuildSettings
 from datasets_api.manifest import (
     assemble_manifest,
     build_citation,
+    collapsed_head_manifest,
     coverage_model,
     definition_version_record,
     healed_citation,
@@ -30,6 +31,7 @@ from datasets_api.manifest import (
     stored_series_conversions,
 )
 from datasets_api.manifest_models import (
+    ArtifactEntryModel,
     CitationModel,
     CitationSource,
     CitedDataCommons,
@@ -41,6 +43,7 @@ from datasets_api.manifest_models import (
     TransformationStepModel,
 )
 from datasets_api.versions import VersionRecord
+from description.citation import citation_line
 from materialise import (
     EnrichmentLookup,
     MaterialisationResult,
@@ -84,6 +87,7 @@ _PREPARED_AT = datetime(2026, 10, 4, 12, 0, tzinfo=UTC)
 _STAT_VAR_A = "GrantA"
 _STAT_VAR_B = "GrantB"
 _REF_A = f"dcid:{_STAT_VAR_A}"
+_RETRIEVED = date(2026, 9, 28)
 _REF_B = f"dcid:{_STAT_VAR_B}"
 _BASE_URL = "https://datacommons.one.org/core/api"
 
@@ -303,21 +307,24 @@ def test_change_absolute_overflow_serves_200_with_a_null_change_in_the_statistic
 def test_build_citation_keeps_one_entry_per_ref_and_processing_level_pair():
     """Citation entries deduplicate by `(ref, processing_level)`, not by `ref` alone."""
     citation, _warnings = build_citation(
+        processed=False,
         provenance_refs=["OECD_DAC2A", "OECD_DAC2A", "OECD_DAC2A"],
         processing_levels=["minor", "minor", "significant"],
         source_citations={},
+        retrieved=_RETRIEVED,
     )
 
     assert len(citation.sources) == 2
     by_level = {source.processing_level: source for source in citation.sources}
     assert set(by_level) == {"minor", "significant"}
     assert all(source.ref == "OECD_DAC2A" for source in citation.sources)
+    assert citation.text == citation_line(retrieved=_RETRIEVED, sources=["OECD_DAC2A"])
 
 
 def test_build_citation_names_a_catalogued_source_from_the_provenance_table():
     """A Provenance the origin catalogue lists takes its label, url, source, Data Commons and
     licence, as a display label, its dcid and its terms page, from the provenance table.
-    `citation.text` joins the labels."""
+    `citation.text` is the citation line over the label."""
     wdi = "dc/base/WorldDevelopmentIndicators"
     graph = FakeMintGraphReader()
     row = ProvenanceRow(
@@ -335,14 +342,16 @@ def test_build_citation_names_a_catalogued_source_from_the_provenance_table():
     refs = [wdi]
 
     citation, _warnings = build_citation(
+        processed=False,
         provenance_refs=refs,
         source_citations=read_source_citations(
             graph, refs, catalogue=restrictive_catalogue(provenances=[row])
         ),
+        retrieved=_RETRIEVED,
     )
 
     assert citation == CitationModel(
-        text="World Development Indicators",
+        text=citation_line(retrieved=_RETRIEVED, sources=["World Development Indicators"]),
         sources=[
             CitationSource(
                 ref=wdi,
@@ -382,14 +391,18 @@ def test_build_citation_snapshots_each_source_s_documentation():
     )
 
     documented, _ = build_citation(
+        processed=False,
         provenance_refs=[crs],
         source_citations=read_source_citations(
             graph, [crs], catalogue=restrictive_catalogue(), documented=True
         ),
+        retrieved=_RETRIEVED,
     )
     undocumented, _ = build_citation(
+        processed=False,
         provenance_refs=[crs],
         source_citations=read_source_citations(graph, [crs], catalogue=restrictive_catalogue()),
+        retrieved=_RETRIEVED,
     )
 
     assert documented.sources[0].documentation == CitedDocumentation(
@@ -423,8 +436,10 @@ def test_build_citation_names_an_unlisted_source_after_its_graph_dataset():
     refs = ["dc/base/SomeImport"]
 
     citation, _warnings = build_citation(
+        processed=False,
         provenance_refs=refs,
         source_citations=read_source_citations(graph, refs, catalogue=restrictive_catalogue()),
+        retrieved=_RETRIEVED,
     )
 
     (source,) = citation.sources
@@ -432,12 +447,29 @@ def test_build_citation_names_an_unlisted_source_after_its_graph_dataset():
 
 
 def test_build_citation_falls_back_to_the_ref_for_a_source_with_no_resolved_entry():
-    citation, _warnings = build_citation(provenance_refs=["dc/base/NotHeld"], source_citations={})
+    citation, _warnings = build_citation(
+        processed=False,
+        provenance_refs=["dc/base/NotHeld"],
+        source_citations={},
+        retrieved=_RETRIEVED,
+    )
 
     assert citation.sources == [
         CitationSource(ref="dc/base/NotHeld", label="dc/base/NotHeld", license=None, url=None)
     ]
-    assert citation.text == "dc/base/NotHeld"
+    assert citation.text == citation_line(retrieved=_RETRIEVED, sources=["dc/base/NotHeld"])
+
+
+def test_build_citation_names_every_source_in_one_line_in_first_seen_order():
+    """Two sources read as one citation line, in the order the refs arrive."""
+    citation, _warnings = build_citation(
+        processed=False,
+        provenance_refs=["dc/base/B", "dc/base/A"],
+        source_citations={},
+        retrieved=_RETRIEVED,
+    )
+
+    assert citation.text == citation_line(retrieved=_RETRIEVED, sources=["dc/base/B", "dc/base/A"])
 
 
 _WDI = "dc/base/WorldDevelopmentIndicators"
@@ -481,8 +513,10 @@ def test_healed_citation_fills_an_old_body_with_what_a_fresh_mint_stores():
     graph = FakeMintGraphReader()
     catalogue = _documented_wdi()
     fresh, _ = build_citation(
+        processed=False,
         provenance_refs=[_WDI],
         source_citations=read_source_citations(graph, [_WDI], catalogue=catalogue, documented=True),
+        retrieved=_RETRIEVED,
     )
     stored = fresh.model_copy(
         update={
@@ -511,8 +545,10 @@ def test_healed_citation_reads_nothing_for_a_fully_populated_body():
     graph = FakeMintGraphReader()
     catalogue = _documented_wdi()
     stored, _ = build_citation(
+        processed=False,
         provenance_refs=[_WDI],
         source_citations=read_source_citations(graph, [_WDI], catalogue=catalogue, documented=True),
+        retrieved=_RETRIEVED,
     )
     reads_before = dict(graph.calls)
 
@@ -670,6 +706,7 @@ def test_a_first_mint_s_catalogued_citation_is_the_wire_the_graph_reads_gave():
     catalogue = _catalogue_built_from(graph)
 
     citation, _warnings = build_citation(
+        processed=False,
         provenance_refs=_CATALOGUED_REFS,
         source_citations=read_source_citations(
             graph,
@@ -678,6 +715,7 @@ def test_a_first_mint_s_catalogued_citation_is_the_wire_the_graph_reads_gave():
             documented=True,
             coverage_facts_of=_provenances_as_currencies,
         ),
+        retrieved=_RETRIEVED,
     )
 
     assert citation.model_dump_json(indent=2) + "\n" == _CATALOGUED_CITATION.read_text()
@@ -740,7 +778,7 @@ def _statistics_file(frame):
     """Builds the production `series-statistics/1` artifact.
     These tests cover manifest wiring.
     """
-    sink = SeriesStatisticsSink()
+    sink = SeriesStatisticsSink(continuing=())
     sink.write(compute_series_statistics_table(frame))
     return sink.finish()
 
@@ -768,7 +806,7 @@ def _statistics_fixture_result(frame) -> MaterialisationResult:
         output_profile=compute_output_profile(
             frame,
             role_columns=("recipient",),
-            enrichment=EnrichmentLookup(FakeMintGraphReader(), type_kinds={}, parties={}),
+            enrichment=EnrichmentLookup(FakeMintGraphReader(), parties={}),
         ),
         conversion_record=None,
         member_conversion_records={_REF_A: None},
@@ -863,13 +901,14 @@ def test_assemble_manifest_records_the_request_s_origin_catalogue_build(bind_cat
     assert "origin_catalogue_stale" not in {warning.code for warning in manifest.warnings}
 
 
-def test_assemble_manifest_warns_when_the_origin_catalogue_is_stale(bind_catalogue):
+def test_assemble_manifest_reports_a_stale_origin_catalogue_as_a_diagnostic(bind_catalogue):
     built_at = datetime.now(UTC) - timedelta(days=15)
     bind_catalogue(restrictive_catalogue(build_id="old-build", built_at=built_at))
 
     manifest = _assemble_fixture_manifest()
 
-    (stale,) = [w for w in manifest.warnings if w.code == "origin_catalogue_stale"]
+    assert "origin_catalogue_stale" not in [w.code for w in manifest.warnings]
+    (stale,) = [d for d in manifest.diagnostics if d.code == "origin_catalogue_stale"]
     assert stale.severity == "warn"
     assert "old-build" in stale.message
 
@@ -924,11 +963,86 @@ def test_assemble_manifest_derives_output_options_and_writes_nothing():
         settings=DatasetsBuildSettings(),
     )
 
+    assert manifest.citation.text == citation_line(
+        retrieved=_PREPARED_AT.date(), sources=["OECD_DAC2A"], processed=False
+    )
     assert manifest.output_options is not None
     assert manifest.output_options.capability_version == "dset_test"
     assert [c.name for c in manifest.output_options.columns] == [
         c.name for c in result.output_profile.columns
     ]
+
+
+_ARTIFACT_ENTRY = ArtifactEntryModel(
+    artifact_digest="sha256:" + "ab" * 32,
+    rendering={"format": "csv"},
+    bytes=12,
+    media_type="text/csv",
+    created_at="2026-10-04T12:00:00Z",
+    tier="working",
+    url="https://example.test/a.csv",
+)
+
+_CONVERSION_ENTRY = {
+    "recipe": "ConversionRecipeDAC",
+    "rate_table_version": "ab" * 32,
+    "members": [{"stat_var": _REF_A, "native_unit": "CurrencyEUR"}],
+}
+
+
+@pytest.mark.parametrize(
+    ("version", "route"),
+    [
+        pytest.param("plain", "via", id="plain"),
+        pytest.param("converted", "processed by", id="converted"),
+        pytest.param("collapsed", "processed by", id="collapsed"),
+        pytest.param("unbuildable", "via", id="unbuildable-steps"),
+    ],
+)
+def test_a_manifest_citation_routes_through_the_dfo_as_the_version_s_steps_do(
+    version: str, route: str, monkeypatch: pytest.MonkeyPatch
+):
+    """The manifest's line reads "processed by" the DFO where the version's description
+    record holds a step that changes figures: a conversion, or a collapse's sum of variables.
+    A version that passes its source's figures through reads "via", as does a converted
+    version whose steps cannot be built. The mint still goes on."""
+    frame = _statistics_fixture_frame()
+    result = _statistics_fixture_result(frame)
+    if version in {"converted", "unbuildable"}:
+        result = replace(result, trace=replace(result.trace, conversion=(_CONVERSION_ENTRY,)))
+    if version == "unbuildable":
+
+        def unbuildable(**_: object) -> list[object]:
+            raise ValueError("a trace the step models refuse")
+
+        monkeypatch.setattr("datasets_api.manifest.mint_steps", unbuildable)
+    manifest = assemble_manifest(
+        stored=_fixture_stored_definition(spec_id="spec_fixture", identity_digest="sha256:f"),
+        materialisation=result,
+        artifacts=[],
+        provenance_refs=["OECD_DAC2A"],
+        source_citations={},
+        prepared_at=_PREPARED_AT,
+        capability_version="dset_test",
+        materialiser_build="test-build",
+        code_index=get_index(),
+        settings=DatasetsBuildSettings(),
+    )
+    if version == "collapsed":
+        assert manifest.output_options is not None
+        manifest = collapsed_head_manifest(
+            manifest=manifest,
+            collapse_frame=frame,
+            artifact=_ARTIFACT_ENTRY,
+            statistics_artifact=_ARTIFACT_ENTRY,
+            series_count=1,
+            content_version="cv_fixture_collapsed",
+            output_options=manifest.output_options,
+        )
+
+    assert (
+        manifest.citation.text == f"OECD_DAC2A (2026), {route} the Development Finance Observatory"
+    )
 
 
 _SERIES_CONVERSIONS = {

@@ -15,6 +15,7 @@ from search.engine.clients.graph import Facet
 from search.engine.config import settings
 from search.engine.errors import EngineInputError
 from search.engine.identity_edit import refuse_over_place_bound
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_spec_resubmit
 from search.engine.region.codes import NO_MEMBER_HAS_DATA_AT_PLACE
 from search.engine.region.pipeline import resolve_variable
@@ -43,6 +44,7 @@ from tests.engine._fake_coverage import (
 )
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import walk_options
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 _SV_DCID = "TESTFIXTURE/ResubmitDonorRoleE2E/Flow"
@@ -110,6 +112,8 @@ class _FixedBindLLM:
     """Elects shape index 0 unconditionally, with no constraint bindings."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
 
@@ -290,7 +294,7 @@ def test_resubmit_promote_discovered_scope_populates_entity_options(monkeypatch)
     entity_options_by_role = {eo.role: eo for eo in spec.resolved.entity_options}
     assert "destination" in entity_options_by_role
     eo = entity_options_by_role["destination"]
-    assert {o.value.ref.dcid for o in eo.options if o.value.ref} == {_KEN}
+    assert {o.value.ref.ref for o in eo.options if o.value.ref} == {_KEN}
     assert "options" in region.timing_by_step
 
 
@@ -910,7 +914,7 @@ def test_zero_observation_bilateral_resubmit_carries_a_flagged_match(monkeypatch
     assert region.flagged_match is not None
     assert len(region.flagged_match) == 1
     assert region.flagged_match[0].resolved.available_at_place is False
-    assert [sv.ref.dcid for sv in region.flagged_match[0].resolved.members] == [_SV_DCID]
+    assert [sv.ref.ref for sv in region.flagged_match[0].resolved.members] == [_SV_DCID]
 
 
 def test_bound_recipient_open_donor_resubmit_warns_about_the_open_origin_axis(monkeypatch):

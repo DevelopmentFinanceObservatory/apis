@@ -7,12 +7,17 @@ from __future__ import annotations
 import asyncio
 
 from search.engine.bind import _UniversalBindOutput
+from search.engine.departures import warning_key
 from search.engine.extract import DateRequest
+from search.engine.quantity_read import QuantityOutput
+from search.engine.region import DIRECTION_DISCARDED
 from search.engine.region.pipeline import resolve_variable
+from search.heading.departure_fact import DepartureFact
 from search.models import TimeWindow
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 
@@ -43,6 +48,8 @@ class _FixedBindLLM:
     """Elects shape index 0 unconditionally, with no constraint bindings."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
 
@@ -98,8 +105,8 @@ def _assert_pre_materialise_role_refusal(result, *, sv_dcid: str, window: TimeWi
     assert result.flagged_match is not None
     assert result.elected_stat_vars is not None
     flagged = result.flagged_match[0]
-    assert [stat_var.ref.dcid for stat_var in flagged.resolved.members] == [sv_dcid]
-    assert [stat_var.dcid for stat_var in result.elected_stat_vars] == [sv_dcid]
+    assert [stat_var.ref.ref for stat_var in flagged.resolved.members] == [sv_dcid]
+    assert [stat_var.ref for stat_var in result.elected_stat_vars] == [sv_dcid]
     assert flagged.resolved.coverage.kind == "bare"
     assert flagged.resolved.coverage.has_data is False
     assert flagged.resolved.coverage.window == window
@@ -115,35 +122,38 @@ def _assert_pre_materialise_role_refusal(result, *, sv_dcid: str, window: TimeWi
     assert flagged.resolved.observations is None
 
 
-def test_directional_query_on_a_declaring_recall_below_the_floor_keeps_the_elected_shape(
-    monkeypatch,
-):
-    """A plain elected shape refuses directional roles when its declaring sibling, a
-    role-bearing shape the index does not carry, scores below the relevance floor. The
-    refusal flags the plain shape's identity."""
+def test_directional_query_on_a_declaring_recall_below_the_floor_answers_as_subjects():
+    """A declaring sibling, a role-bearing shape the index does not carry, scoring below
+    the relevance floor outranks nothing, so the plain shape is elected and answers both
+    places as its subjects. Each flow end the request named is disclosed as a discarded
+    direction."""
     graph_nodes = {
         _FRA: {"label": "France", "type": "Country"},
         _KEN: {"label": "Kenya", "type": "Country"},
         _PLAIN_SV: {"label": "Plain population count", "arcs": _plain_arcs()},
         _DECLARING_SV: {"label": "Creditor/debtor flow", "arcs": _declaring_arcs()},
     }
-
-    def _materialise_was_not_called(*args, **kwargs):
-        raise AssertionError("role_incompatible must not materialise or probe availability")
-
-    monkeypatch.setattr(
-        "search.engine.region.materialise_step.materialise", _materialise_was_not_called
-    )
-    window = TimeWindow(start_year=2015, end_year=2020)
+    facet = [{"earliestDate": "2015", "latestDate": "2020", "obsCount": 5}]
     result = _run(
         detect_svs=[_PLAIN_SV, _DECLARING_SV],
         sv_scores={_PLAIN_SV: 0.9, _DECLARING_SV: 0.5},
         graph_nodes=graph_nodes,
-        obs={},
+        obs={f"{_PLAIN_SV}|{place}": facet for place in (_FRA, _KEN)},
         role_query="aid from France to Kenya",
-        date_request=DateRequest(window=window, latest=False),
     )
-    _assert_pre_materialise_role_refusal(result, sv_dcid=_PLAIN_SV, window=window)
+    assert result.status == "definite", result
+    (spec,) = result.specs
+    assert [stat_var.ref.ref for stat_var in spec.resolved.members] == [_PLAIN_SV]
+    assert spec.definition.identity.entities == {"observationAbout": [_FRA, _KEN]}
+    warnings = [w for w in result.warnings if w.code == DIRECTION_DISCARDED]
+    assert [result.departure_facts[warning_key(w)] for w in warnings] == [
+        DepartureFact(
+            code="direction_discarded", binding_ref="where:", asked="France", over="origin"
+        ),
+        DepartureFact(
+            code="direction_discarded", binding_ref="where:", asked="Kenya", over="destination"
+        ),
+    ]
 
 
 def test_directional_query_on_a_declaring_recall_elects_the_declaring_shape():
@@ -169,7 +179,7 @@ def test_directional_query_on_a_declaring_recall_elects_the_declaring_shape():
     assert result.status == "no_data"
     assert result.no_data_reason == "no_observations"
     assert result.elected_stat_vars is not None
-    assert [stat_var.dcid for stat_var in result.elected_stat_vars] == [_DECLARING_SV]
+    assert [stat_var.ref for stat_var in result.elected_stat_vars] == [_DECLARING_SV]
     assert result.flagged_match is not None
     assert result.flagged_match[0].definition.identity.entities == {
         "origin": [_FRA],
@@ -258,7 +268,7 @@ def test_single_anchor_destination_on_a_declaring_recall_answers_as_subject():
     )
     assert result.status == "definite"
     assert len(result.specs) == 1
-    assert {sv.ref.dcid for sv in result.specs[0].resolved.members} == {_PLAIN_SV}
+    assert {sv.ref.ref for sv in result.specs[0].resolved.members} == {_PLAIN_SV}
 
 
 def test_single_anchor_source_on_a_declaring_recall_answers_as_subject():
@@ -299,7 +309,7 @@ def test_single_anchor_source_on_a_declaring_recall_answers_as_subject():
     )
     assert result.status == "definite"
     assert len(result.specs) == 1
-    assert {sv.ref.dcid for sv in result.specs[0].resolved.members} == {_PLAIN_SV}
+    assert {sv.ref.ref for sv in result.specs[0].resolved.members} == {_PLAIN_SV}
 
 
 def test_no_confirmed_statvar_returns_variable_not_resolved():

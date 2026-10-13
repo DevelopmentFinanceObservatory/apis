@@ -9,12 +9,15 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 import dc_graph
-from entity_resolution import Resolution
+from entity_resolution import Group, Resolution, Resolved
+from entity_resolution.membership import MembershipPolicy
 from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.graph_client import LiveGraphClient
 from search.engine.core import resolve_async
+from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.extract import ExtractedEntity, Extraction, ExtractionResult
-from search.engine.place import expand_place, expand_places
+from search.engine.place import PlaceExpansion, expand_places
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import RegionResult, resolve_variable
 from search.engine.retrieval.retrieve import Materialised, materialise
 from search.engine.shape import ShapeDraft
@@ -32,7 +35,8 @@ from search.render.no_data import no_data_phrase
 from tests.engine._builders import bound_place_context, subject_place_roles
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.fixtures import FakeGraph, FakeLLM, make_resolver
+from tests.engine._quantity import NO_QUANTITY
+from tests.fixtures import FakeGraph, FakeLLM, make_resolver, with_regions
 
 _FAKE_LLM = FakeLLM()
 
@@ -45,6 +49,8 @@ class _FixedBindLLM:
     """Elects shape 0 without bindings."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0,
@@ -66,7 +72,7 @@ def _set_binding_dcids(binding: BindingSet) -> list[str]:
     dcids = []
     for v in binding.values:
         assert v.ref is not None
-        dcids.append(v.ref.dcid)
+        dcids.append(v.ref.ref)
     return dcids
 
 
@@ -121,14 +127,14 @@ class TestDonorFallback:
         assert inner.status in ("definite", "no_data")
         if inner.status == "definite":
             spec = inner.spec
-            slot_map = {s.key.property.dcid: s for s in spec.resolved.slots if s.key.property}
+            slot_map = {s.key.property.ref: s for s in spec.resolved.slots if s.key.property}
             recipient_slot = slot_map.get("DevelopmentFinanceRecipient")
             assert recipient_slot is not None
             binding = recipient_slot.binding
             assert isinstance(binding, BindingValue)
             ref = binding.value.ref
             assert ref is not None
-            assert ref.dcid == "country/KEN"
+            assert ref.ref == "country/KEN"
 
 
 class TestPreResolvedDedup:
@@ -245,95 +251,45 @@ class TestPreResolvedDedup:
         assert resolve_calls == [["Kenya", "Uganda"]]
 
 
-class TestExpandPlace:
-    """Tests expansion of one resolved place-set."""
+class TestExpandPlaces:
+    """A region's members come from the membership policy."""
 
-    def test_expand_place_returns_country_set(self):
-        g = FakeGraph(
-            children={"testonia": {"Country": ["country/T1", "country/T2", "country/T3"]}}
-        )
-        expansion = expand_place("testonia", "Continent", graph=g)
-        assert expansion is not None
-        assert expansion.children == ["country/T1", "country/T2", "country/T3"]
+    _POLICY = with_regions(
+        MembershipPolicy([]),
+        {
+            "testonia": ["country/T1", "country/T2", "country/T3"],
+            "boreal": ["country/B1"],
+        },
+    )
 
-    def test_non_place_set_type_returns_none(self):
-        g = FakeGraph()
-        assert expand_place("country/KEN", "Country", graph=g) is None
-
-    def test_place_set_with_no_children_returns_empty_expansion_not_none(self):
-        # A covered type with no members returns an empty expansion.
-        g = FakeGraph(children={"testonia": {"Country": []}})
-        expansion = expand_place("testonia", "Continent", graph=g)
-        assert expansion is not None
-        assert expansion.children == []
+    def test_each_region_takes_the_policys_countries(self):
+        results = expand_places(["testonia", "boreal"], membership=self._POLICY)
+        assert results == {
+            "testonia": PlaceExpansion(
+                children=["country/T1", "country/T2", "country/T3"], child_type="Country"
+            ),
+            "boreal": PlaceExpansion(children=["country/B1"], child_type="Country"),
+        }
 
     def test_returns_every_member_past_the_place_bound(self, search_settings):
         """Expansion truncates nothing. The bound on the places a Spec binds refuses the
         shape that reads them (`place_context`)."""
         search_settings(max_child_places=2)
-        g = FakeGraph(
-            children={"testonia": {"Country": ["country/T1", "country/T2", "country/T3"]}}
-        )
-        expansion = expand_place("testonia", "Continent", graph=g)
+        expansion = expand_places(["testonia"], membership=self._POLICY)["testonia"]
         assert expansion is not None
         assert expansion.children == ["country/T1", "country/T2", "country/T3"]
 
+    def test_a_region_the_policy_omits_reads_as_its_node_alone(self):
+        """A region the policy omits holds no country, so it reads as its node alone; graph
+        containment is not read in its place, and the answer is not degraded."""
+        policy = MembershipPolicy(list(self._POLICY), omitted_regions={"antarctica"})
+        with recording_degraded_reads() as lost:
+            results = expand_places(["antarctica"], membership=policy)
+        assert results == {"antarctica": None}
+        assert lost.reads == []
 
-class _CountingChildPlacesGraph(FakeGraph):
-    """Records arguments for each ``child_places_batch`` call."""
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.child_places_batch_calls: list[tuple[list[str], str]] = []
-
-    def child_places_batch(
-        self,
-        parent_dcids: list[str],
-        child_type: str,
-        *,
-        deadline: float | None = None,
-    ) -> dict[str, list[str]]:
-        self.child_places_batch_calls.append((list(parent_dcids), child_type))
-        return super().child_places_batch(parent_dcids, child_type)
-
-
-class TestExpandPlacesBatch:
-    """Place sets of one child type share a ``child_places_batch`` call."""
-
-    def test_two_place_sets_issue_one_call(self):
-        g = _CountingChildPlacesGraph(
-            children={
-                "africa": {"Country": ["country/A1", "country/A2"]},
-                "asia": {"Country": ["country/S1", "country/S2", "country/S3"]},
-            }
-        )
-        results = expand_places([("africa", "Continent"), ("asia", "Continent")], graph=g)
-        assert len(g.child_places_batch_calls) == 1
-        called_parents, called_child_type = g.child_places_batch_calls[0]
-        assert set(called_parents) == {"africa", "asia"}
-        assert called_child_type == "Country"
-        assert results["africa"] is not None
-        assert results["asia"] is not None
-        assert results["africa"].children == ["country/A1", "country/A2"]
-        assert results["asia"].children == ["country/S1", "country/S2", "country/S3"]
-
-    def test_unknown_type_returns_none_and_empty_children_returns_empty_expansion(self):
-        # Unknown types return None. Covered types can return an empty expansion.
-        g = _CountingChildPlacesGraph(children={"empty-continent": {"Country": []}})
-        results = expand_places(
-            [("country/KEN", "Country"), ("empty-continent", "Continent")], graph=g
-        )
-        assert results["country/KEN"] is None
-        assert results["empty-continent"] is not None
-        assert results["empty-continent"].children == []
-        # Only the Continent group reaches child-place lookup.
-        assert len(g.child_places_batch_calls) == 1
-        assert g.child_places_batch_calls[0][0] == ["empty-continent"]
-
-    def test_empty_input_makes_no_call(self):
-        g = _CountingChildPlacesGraph()
-        assert expand_places([], graph=g) == {}
-        assert g.child_places_batch_calls == []
+    def test_empty_input_expands_nothing(self):
+        assert expand_places([], membership=self._POLICY) == {}
 
 
 # Packaged GDP arcs exercise the normal five-tuple derivation path.
@@ -362,6 +318,10 @@ class TestPlaceExpansionEndToEnd:
     """Place-set members are probed in one batched call."""
 
     _COUNTRIES: ClassVar[list[str]] = ["country/T1", "country/T2", "country/T3"]
+
+    @pytest.fixture(autouse=True)
+    def _regions(self, declare_regions):
+        declare_regions({"testonia": self._COUNTRIES})
 
     def _graph(self, obs: dict) -> FakeGraph:
         return FakeGraph(
@@ -414,7 +374,7 @@ class TestPlaceExpansionEndToEnd:
 
         assert result.status == "definite"
         spec = result.specs[0]
-        assert spec.resolved.members[0].ref.dcid == _GDP_SV
+        assert spec.resolved.members[0].ref.ref == _GDP_SV
         # The region's node holds no observation, so the Spec binds its member countries,
         # and coverage counts those that hold data.
         assert [e.ref for e in spec.resolved.entities] == self._COUNTRIES
@@ -556,10 +516,10 @@ class TestPlaceExpansionEndToEnd:
             result: RegionResult = asyncio.run(
                 resolve_variable(
                     "gdp",
-                    entities=["Least Developed Countries"],
+                    entities=["Republic of Zedonia"],
                     date_request=None,
                     detect_query="gdp",
-                    role_query="gdp Least Developed Countries",
+                    role_query="gdp Republic of Zedonia",
                     pac=True,
                     graph=graph,
                     resolver=make_resolver(graph),
@@ -573,7 +533,7 @@ class TestPlaceExpansionEndToEnd:
 
         assert result.status == "no_data"
         assert result.no_data_reason == "entity_not_resolved"
-        assert result.unresolved_entity_names == ("Least Developed Countries",)
+        assert result.unresolved_entity_names == ("Republic of Zedonia",)
         assert result.source_scope == source_scope
         assert result.settled_dataset is None
         bind_call.assert_not_called()
@@ -581,6 +541,42 @@ class TestPlaceExpansionEndToEnd:
         assert not any(warning.code == "query_qualifier_dropped" for warning in result.warnings)
         assert "shape" not in result.timing_by_step
         assert "bind" not in result.timing_by_step
+
+    @pytest.mark.parametrize(
+        ("dcid", "graph_type"),
+        [("DACAfrica", "DACGroup"), ("qqq/IncomeGroup", "WorldBankIncomeGroup")],
+    )
+    def test_a_total_or_residual_party_the_graph_confirms_resolves_as_an_aggregate(
+        self, dcid: str, graph_type: str
+    ):
+        """Search's resolver reads the code index production passes, so a party the index
+        lists as a total, by its row or by its graph type, is an `aggregate` where its graph
+        type alone would class it `other`."""
+        graph = FakeGraph(
+            nodes={dcid: {"type": graph_type, "label": "Qqq party"}},
+            obs={},
+            detect={},
+            resolve={},
+            places={},
+            resolve_any={"Qqq party": dcid},
+        )
+
+        (resolution,) = asyncio.run(make_resolver(graph).resolve(["Qqq party"]))
+
+        assert isinstance(resolution, Resolved), resolution
+        assert resolution.entity.dcid == dcid
+        assert resolution.entity.kind == "aggregate"
+
+    def test_least_developed_countries_resolve_from_the_registry_with_no_member_held(self):
+        """The membership registry, not the graph, confirms a group and its members, so a
+        graph holding none of the Least Developed Countries still resolves the group."""
+        graph = FakeGraph(nodes={}, obs={}, detect={}, resolve={}, places={})
+
+        (resolution,) = asyncio.run(make_resolver(graph).resolve(["Least Developed Countries"]))
+
+        assert isinstance(resolution, Group), resolution
+        assert resolution.dcid == "groups/UN.LDC"
+        assert resolution.member_count == 44
 
     def test_empty_entity_list_still_reaches_default_scope_and_materialise(self):
         """No named entity reaches default scope and materialisation."""
@@ -643,10 +639,10 @@ class TestPlaceExpansionEndToEnd:
         assert result.no_data_reason == "entity_not_resolved"
 
     def test_ungeoregion_name_resolves_and_expands_end_to_end(self):
-        """A ``UNGeoRegion`` resolves and, holding no observation at its node, binds its
-        member countries."""
+        """A ``UNGeoRegion`` resolves and, holding no observation at its node, binds the
+        countries the membership policy holds for it, whatever its graph children are."""
         obs = {
-            f"{_GDP_SV}|country/T1": [
+            f"{_GDP_SV}|country/ZAF": [
                 {
                     "earliestDate": "2020",
                     "latestDate": "2020",
@@ -684,7 +680,13 @@ class TestPlaceExpansionEndToEnd:
         )
         assert result.status == "definite"
         spec = result.specs[0]
-        assert [e.ref for e in spec.resolved.entities] == self._COUNTRIES
+        assert [e.ref for e in spec.resolved.entities] == [
+            "country/BWA",
+            "country/LSO",
+            "country/NAM",
+            "country/SWZ",
+            "country/ZAF",
+        ]
 
     def test_partial_entity_resolution_names_only_unresolved_ordered_and_deduped(self):
         """Unresolved names appear once each in query order."""
@@ -734,9 +736,15 @@ class TestPlaceExpansionEndToEnd:
         assert result.no_data_reason == "entity_not_resolved"
         assert result.unresolved_entity_names == ("Republic of Zedonia", "Republic of Atlantis")
 
-    def test_continentalunion_name_confirmed_not_held_lands_entity_not_resolved(self):
-        """A resolved continental union absent from the graph returns ``entity_not_resolved``."""
+    def test_european_union_absent_from_the_graph_resolves_to_its_registry_group(self):
+        """The European Union is a group the membership registry confirms, so a graph holding
+        nothing still resolves it, and the request fails on its variable, not its entity."""
         graph = FakeGraph(nodes={}, obs={}, detect={}, resolve={}, places={})
+
+        (resolution,) = asyncio.run(make_resolver(graph).resolve(["European Union"]))
+
+        assert isinstance(resolution, Group), resolution
+        assert resolution.dcid == "EuropeanUnion"
         result: RegionResult = asyncio.run(
             resolve_variable(
                 "gdp",
@@ -754,7 +762,7 @@ class TestPlaceExpansionEndToEnd:
             )
         )
         assert result.status == "no_data"
-        assert result.no_data_reason == "entity_not_resolved"
+        assert result.no_data_reason == "variable_not_resolved"
 
     def test_bare_arc_match_to_a_non_place_node_counts_as_resolved_in_this_slice(self):
         """A named non-place node counts as resolved.
@@ -844,11 +852,36 @@ class TestPlaceExpansionEndToEnd:
         assert result.no_data_reason != "entity_not_resolved"
 
 
-class TestMultiPlaceSetBatching:
-    """Multiple named place sets expand in one batched call."""
+class _CountingChildPlacesGraph(FakeGraph):
+    """Records arguments for each ``child_places_batch`` call."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.child_places_batch_calls: list[tuple[list[str], str]] = []
+
+    def child_places_batch(
+        self,
+        parent_dcids: list[str],
+        child_type: str,
+        *,
+        deadline: float | None = None,
+    ) -> dict[str, list[str]]:
+        self.child_places_batch_calls.append((list(parent_dcids), child_type))
+        return super().child_places_batch(parent_dcids, child_type)
+
+
+class TestMultiPlaceSetExpansion:
+    """Named place sets take their members from the membership policy, and no graph
+    containment is read for them."""
 
     _TESTONIA_COUNTRIES: ClassVar[list[str]] = ["country/T1", "country/T2"]
     _TESTLANDIA_COUNTRIES: ClassVar[list[str]] = ["country/L1", "country/L2"]
+
+    @pytest.fixture(autouse=True)
+    def _regions(self, declare_regions):
+        declare_regions(
+            {"testonia": self._TESTONIA_COUNTRIES, "testlandia": self._TESTLANDIA_COUNTRIES}
+        )
 
     def _graph(self, **kwargs) -> _CountingChildPlacesGraph:
         defaults = {
@@ -872,7 +905,7 @@ class TestMultiPlaceSetBatching:
         defaults.update(kwargs)
         return _CountingChildPlacesGraph(**defaults)
 
-    def test_two_regions_named_in_one_query_issue_one_batched_call(self):
+    def test_two_regions_named_in_one_query_read_no_graph_containment(self):
         graph = self._graph()
         asyncio.run(
             resolve_variable(
@@ -890,13 +923,10 @@ class TestMultiPlaceSetBatching:
                 coverage=empty_coverage_snapshot(),
             )
         )
-        assert len(graph.child_places_batch_calls) == 1
-        called_parents, called_child_type = graph.child_places_batch_calls[0]
-        assert set(called_parents) == {"testonia", "testlandia"}
-        assert called_child_type == "Country"
+        assert graph.child_places_batch_calls == []
 
-    def test_mixed_resolved_and_unresolved_names_only_batches_the_region(self):
-        # Kenya resolves as a country. Testlandia reaches place-set expansion.
+    def test_a_country_and_a_region_read_no_graph_containment(self):
+        # Kenya resolves as a country. Testlandia expands through the membership policy.
         graph = self._graph(resolve={"Kenya": "country/KEN"})
         result: RegionResult = asyncio.run(
             resolve_variable(
@@ -915,10 +945,7 @@ class TestMultiPlaceSetBatching:
             )
         )
         assert result.status in ("definite", "no_data")
-        assert len(graph.child_places_batch_calls) == 1
-        called_parents, called_child_type = graph.child_places_batch_calls[0]
-        assert called_parents == ["testlandia"]
-        assert called_child_type == "Country"
+        assert graph.child_places_batch_calls == []
 
     def test_two_place_query_binds_a_set_in_query_order(self):
         """The where set holds Kenya and the members of Testlandia, whose node holds no
@@ -1012,8 +1039,8 @@ class TestMultiPlaceSetBatching:
         assert _set_binding_dcids(where_slot.binding) == ["country/KEN", "country/L1", "country/L2"]
 
     def test_regions_over_the_place_bound_answer_entity_set_too_large(self, search_settings):
-        """Two regions whose members exceed the bound are expanded in one batch and
-        refused whole, and no member list is truncated."""
+        """Two regions whose members exceed the bound are expanded from the membership
+        policy and refused whole, and no member list is truncated."""
         search_settings(max_child_places=2)
         graph = self._graph()
         result: RegionResult = asyncio.run(
@@ -1032,7 +1059,7 @@ class TestMultiPlaceSetBatching:
                 coverage=empty_coverage_snapshot(),
             )
         )
-        assert len(graph.child_places_batch_calls) == 1
+        assert graph.child_places_batch_calls == []
         assert result.status == "no_data"
         assert result.no_data_reason == "entity_set_too_large"
         assert result.specs == ()
@@ -1046,7 +1073,7 @@ class _CountingCachingGraph(FakeGraph):
         self._probe_cache: dict[tuple[str, str, bool], list] = {}
         self.post_count = 0
 
-    def observation_facets_batch(self, stat_vars, entities, needs_dates=False):
+    def observation_facets_batch(self, stat_vars, entities, needs_dates=False, *, deadline=None):
         result: dict[str, dict[str, list]] = {sv: {} for sv in stat_vars}
         miss_pairs: set[tuple[str, str]] = set()
         for sv in stat_vars:

@@ -14,7 +14,7 @@ import pytest
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
 from code_index.types import StatVarRow
 from datasets_api.mint_models import MintOptions, PivotOptions
-from datasets_api.render import _reshape, _stream_bare_pivot
+from datasets_api.render import _RenderReads, _reshape, _stream_bare_pivot
 from materialise.enrichment import EnrichmentLookup
 from materialise.reshape import ColumnUnknownError, Table
 
@@ -85,7 +85,9 @@ def _whole(columns: list[str]):
     return _reshape(
         Table(columns=_COLUMNS, rows=_ROWS),
         options=MintOptions(format="csv", bundle=False, columns=columns),
-        enrichment=EnrichmentLookup(_GRAPH, type_kinds={}, parties={}),
+        reads=_RenderReads(
+            enrichment=EnrichmentLookup(_GRAPH, parties={}), known={}, deadline=None
+        ),
         provenance_refs=(),
         **_COMMON,
     )
@@ -107,7 +109,9 @@ def _streamed(columns: list[str], *, chunk_size: int):
     return _stream_bare_pivot(
         chunks,
         options=_pivot_options(columns),
-        enrichment=EnrichmentLookup(_GRAPH, type_kinds={}, parties={}),
+        reads=_RenderReads(
+            enrichment=EnrichmentLookup(_GRAPH, parties={}), known={}, deadline=None
+        ),
         provenance_refs=(),
         subject_id="enrichment-only-columns-test",
         **_COMMON,
@@ -140,7 +144,9 @@ def test_an_enrichment_only_list_keeps_the_decoded_column_a_streamed_pivot_names
     whole = _reshape(
         Table(columns=_COLUMNS, rows=_ROWS[:2]),
         options=_pivot_options(["observationAbout_type"]),
-        enrichment=EnrichmentLookup(_GRAPH, type_kinds={}, parties={}),
+        reads=_RenderReads(
+            enrichment=EnrichmentLookup(_GRAPH, parties={}), known={}, deadline=None
+        ),
         provenance_refs=(),
         **_COMMON,
     )

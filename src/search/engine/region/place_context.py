@@ -281,7 +281,9 @@ def direction_discarded_warnings(roles: PlaceRoles) -> tuple[Warning, ...]:
 def cannot_take_default_scope(shape: ShapeDraft) -> bool:
     """Whether `shape` is subject-only with a population the code index sources. Such a shape
     is probed over members its `sv_arc_facts` may not hold, which a default-scope presence
-    read would not cover, so it takes no default scope."""
+    read would not cover, so it takes no default scope. A shape standing for a family the
+    catalogue holds (`ShapeDraft.held_family`) does take one: the read covers the members a
+    mint serves for it under its bindings (`phase_place_materialise._group_stat_vars`)."""
     # Whether the index decides the population reads no binding and no role key.
     return not is_role_bearing(shape) and shape_member_facts(shape, shape_query(shape, (), ()))[1]
 

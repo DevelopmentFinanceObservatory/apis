@@ -30,7 +30,7 @@ def _rows(*, periods, recipient="country/ETH"):
 
 def test_dimensions_are_stat_var_roles_then_facets_in_column_order():
     doc = build_frame_doc(role_keys=("recipient",), rows=_rows(periods=["2020"]))
-    view = compute_structural_view(frame=doc)
+    view = compute_structural_view(frame=doc, continuation=None)
     assert [d.name for d in view.dimensions] == [
         "stat_var",
         "recipient",
@@ -42,7 +42,7 @@ def test_dimensions_are_stat_var_roles_then_facets_in_column_order():
 
 def test_single_value_dimension_is_not_plural():
     doc = build_frame_doc(role_keys=("recipient",), rows=_rows(periods=["2020", "2021"]))
-    view = compute_structural_view(frame=doc)
+    view = compute_structural_view(frame=doc, continuation=None)
     by_name = {d.name: d for d in view.dimensions}
     assert by_name["recipient"].plural is False
     assert by_name["recipient"].total_count == 1
@@ -51,7 +51,7 @@ def test_single_value_dimension_is_not_plural():
 
 def test_all_null_facet_has_zero_total_count_and_is_not_plural():
     doc = build_frame_doc(role_keys=("recipient",), rows=_rows(periods=["2020"]))
-    view = compute_structural_view(frame=doc)
+    view = compute_structural_view(frame=doc, continuation=None)
     by_name = {d.name: d for d in view.dimensions}
     assert by_name["unit"].total_count == 0
     assert by_name["unit"].values == ()
@@ -63,7 +63,7 @@ def test_a_null_beside_one_value_makes_the_dimension_plural_but_is_not_listed():
         {**row, "unit": "USDollar"} for row in _rows(periods=["2020"], recipient="country/GHA")
     ]
     doc = build_frame_doc(role_keys=("recipient",), rows=rows)
-    view = compute_structural_view(frame=doc)
+    view = compute_structural_view(frame=doc, continuation=None)
     unit = next(d for d in view.dimensions if d.name == "unit")
     assert unit.plural is True
     assert unit.values == ("USDollar",)
@@ -76,7 +76,7 @@ def test_multi_value_dimension_is_plural():
         periods=["2020"], recipient="country/GHA"
     )
     doc = build_frame_doc(role_keys=("recipient",), rows=rows)
-    view = compute_structural_view(frame=doc)
+    view = compute_structural_view(frame=doc, continuation=None)
     by_name = {d.name: d for d in view.dimensions}
     assert by_name["recipient"].plural is True
     assert by_name["recipient"].total_count == 2
@@ -86,7 +86,7 @@ def test_multi_value_dimension_is_plural():
 def test_truncation_keeps_true_count_and_sets_truncated_flag():
     rows = [row for i in range(60) for row in _rows(periods=["2020"], recipient=f"country/{i:03d}")]
     doc = build_frame_doc(role_keys=("recipient",), rows=rows)
-    view = compute_structural_view(frame=doc)
+    view = compute_structural_view(frame=doc, continuation=None)
     by_name = {d.name: d for d in view.dimensions}
     recipient = by_name["recipient"]
     assert recipient.total_count == 60
@@ -106,7 +106,7 @@ def test_truncation_keeps_true_count_and_sets_truncated_flag():
 )
 def test_period_grain_year_month_day(period, expected_grain):
     doc = build_frame_doc(role_keys=("recipient",), rows=_rows(periods=[period]))
-    view = compute_structural_view(frame=doc)
+    view = compute_structural_view(frame=doc, continuation=None)
     assert view.period_grain == expected_grain
     assert view.coverage == (period, period)
 
@@ -117,7 +117,7 @@ def test_period_grain_year_month_day(period, expected_grain):
 def test_a_span_beside_any_other_period_refuses_binding_invalid(periods):
     doc = build_frame_doc(role_keys=("recipient",), rows=_rows(periods=periods))
     with pytest.raises(BindingInvalid) as excinfo:
-        compute_structural_view(frame=doc)
+        compute_structural_view(frame=doc, continuation=None)
     assert excinfo.value.pointer == "/frame_ref"
 
 
@@ -134,7 +134,7 @@ def test_a_span_beside_any_other_period_refuses_binding_invalid(periods):
 def test_points_of_different_grains_refuse_binding_invalid(periods):
     doc = build_frame_doc(role_keys=("recipient",), rows=_rows(periods=periods))
     with pytest.raises(BindingInvalid) as excinfo:
-        compute_structural_view(frame=doc)
+        compute_structural_view(frame=doc, continuation=None)
     assert excinfo.value.pointer == "/frame_ref"
     assert "mixes" in excinfo.value.detail
 
@@ -144,7 +144,7 @@ def test_a_mixed_grain_refusal_names_each_grains_first_period():
         role_keys=("recipient",), rows=_rows(periods=["2019", "2019-01", "2022", "2022-10"])
     )
     with pytest.raises(BindingInvalid) as excinfo:
-        compute_structural_view(frame=doc)
+        compute_structural_view(frame=doc, continuation=None)
     assert excinfo.value.detail == (
         "this frame mixes year and month periods, first '2019', '2019-01'; a frame binds "
         "periods at one grain"
@@ -153,7 +153,7 @@ def test_a_mixed_grain_refusal_names_each_grains_first_period():
 
 def test_coverage_and_series_count():
     doc = build_frame_doc(role_keys=("recipient",), rows=_rows(periods=["2015", "2018", "2024"]))
-    view = compute_structural_view(frame=doc)
+    view = compute_structural_view(frame=doc, continuation=None)
     assert view.coverage == ("2015", "2024")
     assert view.series_count == 1  # one coordinate combination, three periods
 
@@ -163,13 +163,13 @@ def test_series_count_counts_distinct_coordinates_not_rows():
         periods=["2020"], recipient="country/GHA"
     )
     doc = build_frame_doc(role_keys=("recipient",), rows=rows)
-    view = compute_structural_view(frame=doc)
+    view = compute_structural_view(frame=doc, continuation=None)
     assert view.series_count == 2
 
 
 def test_empty_frame_has_no_coverage_and_default_grain():
     doc = build_frame_doc(role_keys=("recipient",), rows=[])
-    view = compute_structural_view(frame=doc)
+    view = compute_structural_view(frame=doc, continuation=None)
     assert view.coverage is None
     assert view.series_count == 0
     assert view.period_grain == "year"
@@ -224,7 +224,7 @@ def test_converted_unit_dimension_renders_as_currency_prices_base_year():
             ],
         ]
     )
-    view = compute_structural_view(frame=doc)
+    view = compute_structural_view(frame=doc, continuation=None)
     unit = next(d for d in view.dimensions if d.name == "unit")
     assert unit.values == ("USD/constant/2015",)
     assert unit.plural is False
@@ -239,7 +239,7 @@ def test_unit_dimension_mixes_none_bare_string_and_converted_unit():
             ["dcid:X", "country/KEN", "2022", {"currency": "USD", "prices": "current"}, 3.0],
         ]
     )
-    view = compute_structural_view(frame=doc)
+    view = compute_structural_view(frame=doc, continuation=None)
     unit = next(d for d in view.dimensions if d.name == "unit")
     # `None` is not listed; bare and rendered unit strings share one sorted listing.
     assert unit.total_count == 2
@@ -266,7 +266,7 @@ def test_series_count_counts_two_rows_differing_only_by_converted_unit_as_two_se
             ],
         ]
     )
-    view = compute_structural_view(frame=doc)
+    view = compute_structural_view(frame=doc, continuation=None)
     assert view.series_count == 2
 
 
@@ -285,11 +285,11 @@ def test_converted_unit_dimension_ordering_is_total_and_stable():
             ["dcid:X", "country/KEN", "2023", None, 4.0],
         ]
     )
-    view = compute_structural_view(frame=doc)
+    view = compute_structural_view(frame=doc, continuation=None)
     unit = next(d for d in view.dimensions if d.name == "unit")
     assert unit.values == ("EUR/constant/2010", "USD/current", "USDollar")
     # Recomputing from the same document preserves the ordering across set iteration.
-    view_again = compute_structural_view(frame=doc)
+    view_again = compute_structural_view(frame=doc, continuation=None)
     assert view_again.dimensions == view.dimensions
 
 
@@ -335,7 +335,7 @@ def test_a_unit_ref_spelling_a_structured_unit_s_key_refuses_binding_invalid(str
         ]
     )
     with pytest.raises(BindingInvalid) as excinfo:
-        compute_structural_view(frame=doc)
+        compute_structural_view(frame=doc, continuation=None)
     assert excinfo.value.pointer == "/frame_ref"
 
 
@@ -354,7 +354,7 @@ def test_unit_dimension_mixes_all_four_unit_forms():
             ["dcid:X", "country/KEN", "2020", converted_per_person, 6.0],
         ]
     )
-    view = compute_structural_view(frame=doc)
+    view = compute_structural_view(frame=doc, continuation=None)
     unit = next(d for d in view.dimensions if d.name == "unit")
     assert unit.values == (
         "USD/current",

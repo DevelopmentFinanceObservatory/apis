@@ -5,28 +5,45 @@ shape (`retrieve.BoundValuesUnrealisable`), naming each member's conflicting pro
 The elected shape's door then unbinds a minimal set, one member's conflicts chosen by
 `BoundValuesUnrealisable.relaxation`, and resolves again. The values the request named
 weigh first, so a declared default or the elected measure partition gives way before
-them; the engine-chosen values go silently and each request-named one departs
-`measure_not_applied`. A resubmit binds only values its request posted, so every value
-counts as request-named and each one unbound departs under its name (`unbind_posted`),
-and an old share link keeps answering. The Spec, its heading and `spec_id`, a resubmit
-of it and the datasets mint then all describe the bindings that were read.
+them; the engine-chosen values go silently, and each request-named one is recorded as a
+code requirement (`region.state.Requirement`) on a property the shape holds, so the answer
+read without it refuses `qualifier_not_bound` with that answer as its flagged match, and
+a candidate set departs it `measure_not_applied` unless every answer applies it
+(`region.requirements.judge`). A resubmit binds only values its request posted, so every
+value counts as request-named: each one unbound is recorded under its name
+(`unbind_posted`), and the resubmit refuses on it by the same rule
+(`requirements.settle_posted`). A refusal names a dropped value no name exists for by
+its dcid, and its departure names its slot, so no dcid reaches prose. The Spec, its heading and
+`spec_id`, a resubmit of it and the datasets mint then all describe the bindings that
+were read.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Mapping, Sequence
 
 from code_index.shared import get_index
 from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import EngineGraphClient
-from search.engine.departures import measure_not_applied
-from search.engine.qualifier_match import _normalize
-from search.engine.region.phase_election import _qualifier_dropped_warning
+from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
+from search.engine.region.materialise_step import Departed
 from search.engine.region.phase_rank_bind import _resolve_query_qualifiers
 from search.engine.region.promote_state import _PromoteState
-from search.engine.region.state import ResolveState
+from search.engine.region.requirements import record_reading
+from search.engine.region.state import (
+    Requirement,
+    ResolveState,
+    code_requirement,
+    unapplied_departure,
+    unjudged_requirement,
+    with_requirement,
+)
 from search.engine.retrieval.bound_values import without_values
 from search.engine.retrieval.retrieve import BoundValuesUnrealisable
+from search.engine.shape import ShapeDraft, SlotKeyDraft
+from search.engine.spec_build import slot_label
+from search.heading.departure_fact import DepartureFact
+from search.models import GraphRef, ResolvedQualifier, Warning
 
 
 def unbind_unrealisable(state: ResolveState, unrealisable: BoundValuesUnrealisable) -> None:
@@ -34,81 +51,223 @@ def unbind_unrealisable(state: ResolveState, unrealisable: BoundValuesUnrealisab
 
     The set is `unrealisable.relaxation` with the engine-chosen properties (a declared
     default, the elected measure partition) weighed after the request-named ones. Its
-    engine-chosen properties go silently. Each request-named one departs
-    `measure_not_applied` per term the request named for it (`binding_ref`
-    `how:<property>`, `asked` the term's text). A value the request named in no recorded
-    term departs under its name (`_asked_terms`). One nothing names departs nothing, so no
-    dcid reaches prose. The qualifier records are read again over the remaining bindings,
-    and the terms dropped here are kept out of the qualifier refusal
-    (`unapplied_qualifier_phrases`).
+    engine-chosen properties go silently. Each term the request named for a request-named
+    one becomes a code requirement on the codes it names (`_asked_terms`), departing
+    `measure_not_applied` (`binding_ref` `how:<property>`, `asked` the term's text) if the
+    final answer leaves it unapplied. The values the request named in no recorded term
+    share one departure under their joined names. Each such value, and each value of a term
+    naming no code, becomes a requirement of its own (`_value_requirements`), so binding one
+    does not meet another. A value with no name departs under its slot's name
+    (`_unnamed_departure`), so no dcid reaches prose. The qualifier records are read again
+    over the remaining bindings
+    (`requirements.record_reading`), and a record of a phrase unbinding now requires adds
+    nothing.
     """
     engine_chosen = state.measure_elected_properties | state.defaulted_properties
     properties = unrealisable.relaxation(engine_chosen=engine_chosen)
-    dropped_phrases: set[str] = set()
     for prop in sorted(properties - engine_chosen):
-        for asked in _asked_terms(state, prop):
-            dropped_phrases.add(_normalize(asked))
-            state.depart(
-                _qualifier_dropped_warning(asked),
-                measure_not_applied(asked=asked, property_dcid=prop),
+        values = _bound_values(state.bindings, prop)
+        terms = _asked_terms(state, prop)
+        if not terms:
+            labels = _value_labels(values, graph=state.graph)
+            names = dict.fromkeys(labels[value] for value in values if value in labels)
+            departure = _unapplied(" and ".join(names), prop) if names else None
+            _require(
+                state,
+                _value_requirements(
+                    prop,
+                    values,
+                    labels,
+                    departure,
+                    unnamed=_unnamed_departure(_slot_name(state.shape_draft, prop), prop),
+                    named_only=True,
+                ),
             )
-    state.unapplied_qualifier_phrases |= dropped_phrases
+        for asked, codes in terms:
+            departure = _unapplied(asked, prop)
+            named = tuple(state.codes_named(asked, prop))
+            if all_codes := tuple(dict.fromkeys((*codes, *(ref.ref for ref in named)))):
+                requirements = [
+                    code_requirement(
+                        property_dcid=prop,
+                        codes=all_codes,
+                        asked=asked,
+                        named=named,
+                        departure=departure,
+                        origin="unbinding",
+                    )
+                ]
+            else:
+                labels = _value_labels(values, graph=state.graph)
+                requirements = _value_requirements(
+                    prop,
+                    values,
+                    labels,
+                    departure,
+                    unnamed=_unnamed_departure(_slot_name(state.shape_draft, prop), prop),
+                    named_only=False,
+                )
+            _require(state, requirements)
     state.bindings = without_values(state.bindings, properties)
     state.measure_elected_properties -= properties
     state.defaulted_properties -= properties
     state.admitted_qualifiers = tuple(
         match for match in state.admitted_qualifiers if match.code_system not in properties
     )
-    state.query_qualifiers = _resolve_query_qualifiers(state)
+    record_reading(state, _resolve_query_qualifiers(state))
+
+
+def _unapplied(asked: str, prop: str) -> Departed:
+    """The `measure_not_applied` departure for `asked`, the request's words, on `prop`."""
+    return unapplied_departure(asked, asked=asked, property_dcid=prop)
+
+
+def _unnamed_departure(slot: str, prop: str) -> Departed:
+    """The departure of a value on `prop` no name exists for, naming it by `slot`, its
+    slot's name: the `query_qualifier_dropped` warning and the `measure_not_applied` fact,
+    which states it among the values left out (`DepartureFact.values`), as nothing the
+    request worded names it."""
+    value = f"a requested {slot} value"
+    return (
+        Warning(
+            code=QUERY_QUALIFIER_DROPPED,
+            severity="degraded",
+            message=f"{value[0].upper()}{value[1:]} was not applied.",
+        ),
+        DepartureFact(code="measure_not_applied", binding_ref=f"how:{prop}", values=(value,)),
+    )
+
+
+def _slot_name(shape: ShapeDraft, prop: str) -> str:
+    """The label `shape`'s slot for `prop` carries (`spec_build.slot_label`)."""
+    key = next(
+        (key for key in shape.slot_keys if key.property_dcid == prop),
+        SlotKeyDraft(axis="how", property_dcid=prop, label=prop),
+    )
+    return slot_label(key)
+
+
+def _value_requirements(
+    prop: str,
+    values: Sequence[str],
+    labels: Mapping[str, str],
+    departure: Departed | None,
+    *,
+    unnamed: Departed,
+    named_only: bool,
+) -> list[Requirement]:
+    """One code requirement per value in `values` on `prop`, asked under its name in
+    `labels`, else nameless, so a refusal names it by dcid. `departure` discloses them all,
+    or with `named_only` the named values, whose names it joins; `None` when it names none.
+    A named value's own departure discloses it alone. A nameless value departs `unnamed`,
+    which names its slot and no value (`Requirement.generic`)."""
+    requirements = []
+    for value in values:
+        label = labels.get(value)
+        shared = departure if label is not None or not named_only else None
+        own = _unapplied(label, prop) if label is not None else None
+        requirements.append(
+            code_requirement(
+                property_dcid=prop,
+                codes=(value,),
+                asked=label,
+                named=(GraphRef(ref=value, label=label),) if label is not None else (),
+                departure=shared or own,
+                origin="unbinding",
+                alone=own if shared else None,
+                generic=unnamed if label is None else None,
+            )
+        )
+    return requirements
+
+
+def _require(state: ResolveState, requirements: Iterable[Requirement]) -> None:
+    for requirement in requirements:
+        state.requirements = with_requirement(state.requirements, requirement)
 
 
 def unbind_posted(state: _PromoteState, unrealisable: BoundValuesUnrealisable) -> None:
     """Unbind a minimal set of the values of `unrealisable` from a resubmit's
     `state.bindings` (`BoundValuesUnrealisable.relaxation`, every posted property
-    request-named). Each value the request posted on an unbound property departs
-    `measure_not_applied` under its name (`bound_value_names`, `binding_ref`
-    `how:<property>`), so the Refine action reaches its token."""
+    request-named), each dropped as `drop_posted_values` drops it."""
     properties = unrealisable.relaxation()
     for prop in sorted(properties):
-        for asked in bound_value_names(state.bindings, prop, graph=state.graph):
-            state.warnings.append(
-                state.depart(
-                    _qualifier_dropped_warning(asked),
-                    measure_not_applied(asked=asked, property_dcid=prop),
-                )
-            )
+        drop_posted_values(state, prop, _bound_values(state.bindings, prop))
     state.bindings = without_values(state.bindings, properties)
 
 
-def _asked_terms(state: ResolveState, prop: str) -> list[str]:
-    """The request's words for the values bound on `prop`. They are the words of each admitted
-    qualifier match on it (a phrase the extractor dropped and the raw text bound), else the
-    text of each term a final binding on it covers, else the bound values' names, by the
-    code index (short name, else label) or the graph, leaving out a value neither names."""
-    terms = [
-        match.matched_text for match in state.admitted_qualifiers if match.code_system == prop
-    ] or [
-        qualifier.text
-        for qualifier in state.query_qualifiers
-        if qualifier.slot == prop and qualifier.disposition == "bound"
-    ]
-    if terms:
-        return list(dict.fromkeys(terms))
-    return bound_value_names(state.bindings, prop, graph=state.graph)
+def drop_posted_values(state: _PromoteState, prop: str, values: Sequence[str]) -> None:
+    """Record that the resubmit's answer cannot apply the `values` posted on `prop`, as a
+    code requirement on them (`_PromoteState.requirements`), so it refuses on them
+    (`requirements.settle_posted`). The values with a name depart `measure_not_applied`
+    under it (`binding_ref` `how:<property>`) if the answer leaves them unapplied; the
+    refusal names the rest by dcid."""
+    labels = _value_labels(values, graph=state.graph)
+    names = [name for value in values if (name := labels.get(value))]
+    asked = " and ".join(dict.fromkeys(names)) if names else None
+    state.requirements = with_requirement(
+        state.requirements,
+        code_requirement(
+            property_dcid=prop,
+            codes=tuple(values),
+            asked=asked,
+            named=tuple(GraphRef(ref=dcid, label=label) for dcid, label in labels.items()),
+            departure=_unapplied(asked, prop) if asked is not None else None,
+            origin="posted",
+        ),
+    )
 
 
-def bound_value_names(
-    bindings: Sequence[SlotBindingDraft], prop: str, *, graph: EngineGraphClient
-) -> list[str]:
-    """The names of the values `bindings` bind on `prop`, joined in one term, by the code
-    index (short name, else label) or the graph, leaving out a value neither names, so no
-    dcid reaches prose. Empty when none is named."""
-    values = [
+def disclose_posted_values(state: _PromoteState, prop: str, values: Sequence[str]) -> None:
+    """Record that no member the resubmit reads carries the `values` posted on `prop`, as
+    a requirement no answer is judged on (`unjudged_requirement`) for each, so the answer
+    reads what its members hold and departs `measure_not_applied` under each value's name. A value with no name departs under its slot's name
+    (`_unnamed_departure`)."""
+    labels = _value_labels(values, graph=state.graph)
+    for value in values:
+        label = labels.get(value)
+        requirement = (
+            unjudged_requirement(label, asked=label, property_dcid=prop, origin="posted")
+            if label is not None
+            else Requirement(
+                term=ResolvedQualifier(text=value, named=[], disposition="unbound"),
+                origin="posted",
+                generic=_unnamed_departure(_slot_name(state.shape_draft, prop), prop),
+            )
+        )
+        state.requirements = with_requirement(state.requirements, requirement)
+
+
+def _asked_terms(state: ResolveState, prop: str) -> list[tuple[str, tuple[str, ...]]]:
+    """The request's words for the values bound on `prop`, each with the codes they ask
+    for: the words of each admitted qualifier match on it (a phrase the extractor dropped
+    and the raw text bound) with the codes it matched, else the text of each term a final
+    binding on it covers with the codes it names. Empty when no recorded term names the
+    values."""
+    terms: dict[str, list[str]] = {}
+    for match in state.admitted_qualifiers:
+        if match.code_system == prop:
+            terms.setdefault(match.matched_text, []).append(match.code_dcid)
+    if not terms:
+        for qualifier in state.query_qualifiers:
+            if qualifier.slot == prop and qualifier.disposition == "bound":
+                terms.setdefault(qualifier.text, []).extend(ref.ref for ref in qualifier.named)
+    return [(asked, tuple(dict.fromkeys(codes))) for asked, codes in terms.items()]
+
+
+def _bound_values(bindings: Sequence[SlotBindingDraft], prop: str) -> tuple[str, ...]:
+    """The values `bindings` bind on `prop`, in binding order."""
+    return tuple(
         dcid
         for binding in bindings
         if binding.property_dcid == prop
         for dcid in binding.value_dcids
-    ]
+    )
+
+
+def _value_labels(values: Sequence[str], *, graph: EngineGraphClient) -> dict[str, str]:
+    """The name of each of `values` that has one, by the code index (short name, else
+    label) or the graph, in the order of `values`."""
     index = get_index()
     indexed = {
         dcid: row.short_name or row.label
@@ -117,5 +276,4 @@ def bound_value_names(
     }
     unindexed = [dcid for dcid in values if dcid not in indexed]
     graph_labels = graph.node_labels_batch(unindexed) if unindexed else {}
-    names = [name for dcid in values if (name := indexed.get(dcid) or graph_labels.get(dcid))]
-    return [" and ".join(dict.fromkeys(names))] if names else []
+    return {dcid: name for dcid in values if (name := indexed.get(dcid) or graph_labels.get(dcid))}

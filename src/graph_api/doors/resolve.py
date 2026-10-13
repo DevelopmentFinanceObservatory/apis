@@ -1,19 +1,18 @@
 """Resolve text through `entity_resolution` and map its results to the Graph API.
 
-The shared component handles matching, listed-name checks, group membership,
-and entity confirmation. This door expands continents and subregions through
-containment, using at most two batched DCP reads for the request. Group
-members are already confirmed. Group results expose both the group entity
-and members for the client to choose.
+The shared resolver handles matching, the listed-name gate, the `kinds` filter, codes, group
+membership and graph confirmation. A group comes from the membership registry, which confirms
+the group and its members without a graph read; its count and inline members are the
+resolver's answer under the `countries` projection. A continent or subregion, and a group
+resolved as a single node beside other candidates, takes its count, link and inline members
+from the membership policy the surface publishes (`NODE_MEMBERSHIP_SLOT`), never from graph
+containment. It takes the policy's canonical name, as the node route labels it, and its inline
+members take theirs (`Membership.member_labels`), as the members route labels them.
 
-All six result statuses return HTTP 200. The resolver's confirmation reads
-and the region reads each queue on the shared DCP-read executor, so a busy
-executor delays a request without refusing it. One absolute monotonic
-deadline covers every DCP hop. When `GRAPH_RESOLVE_TIMEOUT_SECONDS` passes,
-`wait_for` cancels the request and returns 504. A read still queued is
-cancelled before it runs, and a running read keeps its worker until it
-returns. Resolvekit matching uses its own single-worker store executor,
-outside the DCP deadline.
+All four statuses return HTTP 200. The resolver's confirmation read queues on the shared
+DCP-read executor. One absolute monotonic deadline covers every DCP hop and the resolvekit job. When `GRAPH_RESOLVE_TIMEOUT_SECONDS` passes, `wait_for` cancels the request
+and returns 504. A read still queued is cancelled before it runs, and a running read keeps its
+worker until it returns.
 """
 
 from __future__ import annotations
@@ -21,13 +20,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Sequence
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from dfo_platform import ProblemSpec
-from dfo_platform.doors import DoorContribution
+from dfo_platform.doors import DoorContribution, route_registry_endpoints
 from dfo_platform.refusal import TIMEOUT_DEFAULT
 from entity_resolution import (
     Ambiguous,
@@ -39,18 +37,21 @@ from entity_resolution import (
     Resolution,
     Resolved,
 )
+from entity_resolution.membership import (
+    DEFAULT_PROJECTION,
+    Membership,
+    MembershipPolicy,
+    NotRecorded,
+)
 from graph_api.config import GRAPH_RESOLVE_TIMEOUT_SECONDS
-from graph_api.deps import GraphDeps, GraphDepsDep, run_dcp_read
-from graph_api.reader import NodeArcsByDcid
+from graph_api.deps import GraphDeps, GraphDepsDep
+from graph_api.doors.node import published_membership
+from graph_api.node_models import LinkRelation, members_link
+from graph_api.refs import NodeRef
 from graph_api.resolve_models import (
-    AmbiguousResult,
+    MAX_INLINE_MEMBERS,
     EntityRef,
-    NotFoundResult,
-    NotHeldResult,
-    RegionMember,
-    ResolvedGroupResult,
-    ResolvedRegionResult,
-    ResolvedResult,
+    Matched,
     ResolveRequest,
     ResolveResponse,
     ResolveResult,
@@ -59,108 +60,145 @@ from materialise.graph import GraphDeadlineExceededError, GraphReadError
 
 logger = logging.getLogger(__name__)
 
-_REGION_KINDS = frozenset({"continent", "subregion"})
-_REGION_CHILD_TYPE = "Country"
+# The relation a held group's or region's link names, by the kind the policy gives it.
+_RELATION_BY_KIND: dict[str, LinkRelation] = {
+    "group": "members",
+    "continent": "countries",
+    "subregion": "countries",
+}
 
 
 def _entity_ref(entity: Entity) -> EntityRef:
-    return EntityRef(
-        dcid=entity.dcid, name=entity.name, entity_type=entity.graph_type, kind=entity.kind
-    )
+    return EntityRef(ref=entity.dcid, label=entity.name, kind=entity.kind)
 
 
-def _member_name(names_by_dcid: NodeArcsByDcid, dcid: str) -> str:
-    arcs = names_by_dcid.get(dcid) or {}
-    values = arcs.get("name", ())
-    return values[0] if values else dcid
+def _matched(resolution: Resolved | Group) -> Matched | None:
+    matched = resolution.matched
+    return None if matched is None else Matched(text=matched.text, as_=matched.matched_as)
 
 
-async def _region_members(
-    deps: GraphDeps, resolutions: Sequence[Resolution], *, deadline: float
-) -> tuple[dict[str, list[str]], NodeArcsByDcid]:
-    """Batch region children, then member names. Return region-to-member dcids and name
-    arcs, or two empty maps when no region resolves. Pass the absolute deadline to both reads.
-    """
-    graph = deps.graph
-    region_dcids: dict[str, None] = {}
-    for resolution in resolutions:
-        if isinstance(resolution, Resolved) and resolution.entity.kind in _REGION_KINDS:
-            region_dcids.setdefault(resolution.entity.dcid, None)
-    if not region_dcids:
-        return {}, {}
+def _near_matches(resolution: NotFound) -> list[EntityRef]:
+    """The candidates a `kinds` filter removed, then the gate's rejected hints, one per ref. A
+    removed candidate keeps its graph-confirmed kind over a hint for the same ref."""
+    unique: dict[str, Entity] = {}
+    for entity in (*resolution.removed, *resolution.near_matches):
+        unique.setdefault(entity.dcid, entity)
+    return [_entity_ref(entity) for entity in unique.values()]
 
-    members_by_dcid = await run_dcp_read(
-        deps.dcp_executor,
-        graph.child_places_batch,
-        list(region_dcids),
-        child_type=_REGION_CHILD_TYPE,
-        deadline=deadline,
-    )
-    member_dcids: dict[str, None] = {}
-    for members in members_by_dcid.values():
-        for member in members:
-            member_dcids.setdefault(member, None)
 
-    names_by_dcid: NodeArcsByDcid = {}
-    if member_dcids:
-        names_by_dcid = await run_dcp_read(
-            deps.dcp_executor,
-            graph.node_arcs_many,
-            list(member_dcids),
-            properties=("name",),
-            deadline=deadline,
-        )
-    return members_by_dcid, names_by_dcid
+def _held_relation(entity: Entity, policy: MembershipPolicy | None) -> LinkRelation | None:
+    """The relation of the group or region `entity` names when the policy holds it, else
+    `None`."""
+    if policy is None or entity.dcid not in policy:
+        return None
+    return _RELATION_BY_KIND.get(entity.kind)
+
+
+def _policy_members(membership: Membership) -> list[NodeRef]:
+    """A group's or region's first `MAX_INLINE_MEMBERS` members under the default projection,
+    each with the policy's canonical name."""
+    members = membership.members(DEFAULT_PROJECTION)
+    recorded = () if isinstance(members, NotRecorded) else members
+    return [
+        NodeRef(ref=m, label=membership.member_labels.get(m)) for m in recorded[:MAX_INLINE_MEMBERS]
+    ]
 
 
 def _assemble(
-    resolution: Resolution, members_by_dcid: dict[str, list[str]], names_by_dcid: NodeArcsByDcid
+    text: str, resolution: Resolution, *, policy: MembershipPolicy | None, expand: bool
 ) -> ResolveResult:
-    if isinstance(resolution, Resolved):
-        entity = resolution.entity
-        if entity.kind in _REGION_KINDS:
-            members = [
-                RegionMember(dcid=member, name=_member_name(names_by_dcid, member))
-                for member in members_by_dcid.get(entity.dcid, [])
-            ]
-            return ResolvedRegionResult(region=_entity_ref(entity), members=members)
-        return ResolvedResult(entity=_entity_ref(entity))
     if isinstance(resolution, Group):
-        return ResolvedGroupResult(
-            entity=_entity_ref(resolution.entity) if resolution.entity is not None else None,
-            members=[_entity_ref(member) for member in resolution.members],
+        assert resolution.dcid is not None and resolution.label is not None, "a registry group"
+        return ResolveResult(
+            input=text,
+            status="resolved",
+            entity=EntityRef(ref=resolution.dcid, label=resolution.label, kind="group"),
+            matched=_matched(resolution),
+            reading=resolution.reading,
+            projection=DEFAULT_PROJECTION,
+            member_count=resolution.member_count,
+            members=(
+                [NodeRef(ref=m.dcid, label=m.name) for m in resolution.members[:MAX_INLINE_MEMBERS]]
+                if expand
+                else members_link(resolution.dcid, "members")
+            ),
+        )
+    if isinstance(resolution, Resolved):
+        result = ResolveResult(
+            input=text,
+            status="resolved",
+            entity=_entity_ref(resolution.entity),
+            matched=_matched(resolution),
+            reading=resolution.reading,
+        )
+        relation = _held_relation(resolution.entity, policy)
+        if relation is None:
+            return result
+        assert policy is not None
+        membership = policy.get(resolution.entity.dcid)
+        count = membership.member_count(DEFAULT_PROJECTION)
+        return result.model_copy(
+            update={
+                "entity": _entity_ref(resolution.entity).model_copy(
+                    update={"label": membership.label}
+                ),
+                "projection": DEFAULT_PROJECTION,
+                "member_count": None if isinstance(count, NotRecorded) else count,
+                "members": (
+                    _policy_members(membership)
+                    if expand
+                    else members_link(membership.ref, relation)
+                ),
+            }
         )
     if isinstance(resolution, Ambiguous):
-        return AmbiguousResult(candidates=[_entity_ref(e) for e in resolution.candidates])
+        return ResolveResult(
+            input=text,
+            status="ambiguous",
+            candidates=[_entity_ref(e) for e in resolution.candidates],
+        )
     if isinstance(resolution, NotHeld):
-        return NotHeldResult(name=resolution.name, dcid=resolution.dcid)
+        return ResolveResult(
+            input=text,
+            status="not_held",
+            entity=EntityRef(ref=resolution.dcid, label=resolution.name, kind=None),
+        )
     assert isinstance(resolution, NotFound)
-    return NotFoundResult(near_matches=list(resolution.near_matches))
+    return ResolveResult(
+        input=text,
+        status="not_found",
+        near_matches=_near_matches(resolution),
+    )
 
 
-async def _run_resolve(deps: GraphDeps, texts: list[str]) -> ResolveResponse:
-    """Refresh the generation before setting the deadline.
-    This ensures `resolver.resolve` sees a fresh stamp after an idle gap.
+async def _run_resolve(
+    deps: GraphDeps, body: ResolveRequest, *, policy: MembershipPolicy | None
+) -> ResolveResponse:
+    """Refresh the generation before setting the deadline, so `resolver.resolve` sees a fresh
+    stamp after an idle gap.
 
-    The resolver and region reads share one absolute deadline, set before
-    their first submission so executor queue time counts against it.
+    The resolver's reads share one absolute deadline, set before their first submission so
+    executor queue time counts against it.
     """
     await deps.generation.refresh_if_stale()
 
     deadline = time.monotonic() + GRAPH_RESOLVE_TIMEOUT_SECONDS
-    resolutions = await deps.resolver.resolve(texts, deadline=deadline)
-    members_by_dcid, names_by_dcid = await _region_members(deps, resolutions, deadline=deadline)
-
+    resolutions = await deps.resolver.resolve(
+        body.texts, kinds=body.kinds, code_system=body.code_system, deadline=deadline
+    )
+    expand = "members" in body.expand
     return ResolveResponse(
-        results=[_assemble(r, members_by_dcid, names_by_dcid) for r in resolutions]
+        results=[
+            _assemble(text, r, policy=policy, expand=expand)
+            for text, r in zip(body.texts, resolutions, strict=True)
+        ]
     )
 
 
 def classify_resolve_exception(exc: BaseException) -> ProblemSpec | None:
-    """Classify shared graph-read failures as well as resolve failures. `EntityResolutionError`
-    falls through to the platform's 500 handler. `GraphDeadlineExceededError` subclasses
-    `GraphReadError`, so its 504 branch must come first. Classifiers run across all doors.
-    This one is registered first and handles deadline errors from node and sources too.
+    """Classify the resolve route's graph-read failures. `EntityResolutionError` falls through
+    to the platform's 500 handler. `GraphDeadlineExceededError` subclasses `GraphReadError`, so
+    its 504 branch must come first.
     """
     if isinstance(exc, GraphDeadlineExceededError):
         # `GraphDeadlineExceededError` subclasses `GraphReadError`. Map it first to 504.
@@ -179,9 +217,12 @@ def classify_resolve_exception(exc: BaseException) -> ProblemSpec | None:
     return None
 
 
-async def resolve_endpoint(body: ResolveRequest, deps: GraphDepsDep) -> JSONResponse:
+async def resolve_endpoint(
+    body: ResolveRequest, deps: GraphDepsDep, request: Request
+) -> JSONResponse:
     response = await asyncio.wait_for(
-        _run_resolve(deps, body.texts), timeout=GRAPH_RESOLVE_TIMEOUT_SECONDS
+        _run_resolve(deps, body, policy=published_membership(request)),
+        timeout=GRAPH_RESOLVE_TIMEOUT_SECONDS,
     )
     return JSONResponse(response.model_dump(mode="json"))
 
@@ -197,6 +238,7 @@ def build_resolve_door() -> DoorContribution:
     )
     return DoorContribution(
         router=router,
+        registry_endpoints=route_registry_endpoints(router, "graph.resolve"),
         classify=classify_resolve_exception,
         exception_types=(
             GraphDeadlineExceededError,

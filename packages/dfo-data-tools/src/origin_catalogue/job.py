@@ -10,7 +10,8 @@ A run:
    the ISO week, the artifact format version and a hash of the job's own
    modules (`JOB_MODULES`), and skips when `current.json` already carries
    it, unless that build carried its UN stage forward, in which case the
-   run retries the UN and publishes only if the UN answers;
+   run retries the UN stage first, over that build's scan places, and goes
+   on to build and publish only if the UN answers;
 3. takes the create-only lease `lease.json` at the format root, so
    overlapping scheduler executions do not both build, and skips while
    another run holds an unexpired one;
@@ -20,13 +21,27 @@ A run:
    through our mixer (keeping `typeOf: Provenance`, minus DFO's and each
    entry's exclusions), each row's licence, and each row's source-index
    entry's card facts and documentation facts (`origin_catalogue.card_facts`);
-6. copies the base variable, withheld variable and topic tables forward
-   from the published build when (format version, enumeration code hash, registry hash,
-   admitted base provenance set, DFO provenance set, ISO week) is unchanged, and builds them with
-   `origin_catalogue.enumerate.build_base_tables` otherwise;
-7. refuses to publish on any `Refusal`, naming each in the log and exiting
+6. copies the base variable, withheld variable and topic tables and the
+   base arc table forward from the published build when (format version,
+   enumeration code hash, registry hash, admitted base provenance set, DFO
+   provenance set, ISO week) is unchanged, and builds them with
+   `origin_catalogue.enumerate.build_base_tables` otherwise. The base arc
+   table, and the subjects of our resolver index the published build holds
+   absent, are read again when `BASE_ARC_MODULES`' code hash differs from
+   the published build's, while the other tables carry;
+7. reads the arc tables (`origin_catalogue.arc_reads`): every DFO
+   variable's arcs from Spanner's `Edge` and `Node` through BigQuery, the
+   arcs of every base variable the carried table does not hold from our
+   mixer, the `->typeOf` of every subject of our resolver index the build
+   neither lists nor carries as absent, and the schema nodes their arcs
+   depend on from our mixer. A
+   variable with observations that Spanner declares no node for, such as
+   `Count_Person`, stays a DFO variable, since Spanner holds its
+   observations, and its arcs are base Data Commons' node's, which the
+   `base` table holds;
+8. refuses to publish on any `Refusal`, naming each in the log and exiting
    non-zero, so the execution shows failed;
-8. reads the UN stage: a row per registered agency, read from the UN
+9. reads the UN stage: a row per registered agency, read from the UN
    deployment together with its root group `undata/g/<segment>`, the
    scan-set countries the UN front door refuses to have named in an
    observation GET, so the origin client never pays to find them, and the
@@ -47,14 +62,16 @@ A run:
    an excluded series the agency does not hold and a carried table that
    disagrees with the registry on excluded series or agencies refuse the
    build, as any refusal does;
-9. derives the superseded variable table (`origin_catalogue.successors`)
+10. derives the superseded variable table (`origin_catalogue.successors`)
    from the withheld variables and the UN tables the build publishes,
    enumerated, copied or carried forward: each withheld variable of a base
    provenance a UN agency supersedes, with the UN variable standing for it
    where one does. A successor the UN tables do not admit refuses the
    build;
-10. discards the build if the lock or the fingerprint moved while it ran,
-   and otherwise publishes it with a conditional `current.json` write.
+11. discards the build if the lock or the fingerprint moved while it ran,
+   and otherwise publishes it with a conditional `current.json` write. The
+   manifest records the `IngestionHistory` row the fingerprint read, as the
+   coverage manifest does.
 
 Every run prunes old builds. `origin_catalogue_publish_stale` is logged
 once an identity has gone unpublished for more than one cycle (reason
@@ -74,7 +91,10 @@ and serving read one UN deployment. `UN_SITE_BASE_URL`, the UN site root that se
 to `UN_GRAPH_BASE_URL` without its `/core/api`. `DATASETS_GRAPH_TOKEN` is optional.
 `ORIGIN_CATALOGUE_BQ_PROJECT` defaults to the connection's project, `ORIGIN_CATALOGUE_GRAPH_TIMEOUT_SECONDS` to 120
 and `ORIGIN_CATALOGUE_CYCLE_SECONDS` to 900. `--local-dir PATH` publishes
-under a local directory in place of `ORIGIN_CATALOGUE_URI`.
+under a local directory in place of `ORIGIN_CATALOGUE_URI`. `--carry-un-from
+DIR` carries the UN stage of the build directory `DIR`, of any format and
+any ISO week, into the build in place of reading the UN deployment, and is
+refused unless the build publishes under a `file://` URI.
 """
 
 from __future__ import annotations
@@ -114,12 +134,22 @@ from artifact_publication.jobs import (
 )
 from artifact_publication.uri import join_uri, read_uri_bytes_and_generation
 from dc_graph import UNRESOLVED_NODE, Facet, GraphClient, GraphReadError, SubjectPage
+from origin_catalogue.arc_reads import (
+    ResolverIndex,
+    iter_base_index,
+    read_catalogue_arcs,
+    read_index_subjects,
+    resolver_base_variables,
+)
+from origin_catalogue.arc_tables import ArcTables, ArcTablesError
 from origin_catalogue.artifact import (
     CatalogueArtifactError,
     encode_build,
     format_root,
     load_tables,
     publish_build,
+    read_arc_tables,
+    read_build_un_tables,
     read_manifest,
     read_un_mirror,
 )
@@ -177,6 +207,7 @@ from origin_catalogue.schema import (
 from origin_catalogue.successors import Successors, derive_successors, unheld_successors
 from origin_catalogue.un_mirror import (
     EMPTY_UN_MIRROR,
+    UnArc,
     UnGroupCounts,
     UnMirror,
     UnMirrorFaultKind,
@@ -210,6 +241,20 @@ _UN_STAGE_RESERVE_SECONDS: Final[float] = 1800.0
 """Time kept back from the base-table deadline for the UN stage, which
 enumerates every agency in about 7 minutes and waits up to 100 seconds on
 each read the UN front door rate-limits."""
+
+_ARC_STAGE_RESERVE_SECONDS: Final[float] = 1500.0
+"""Time kept back from the base-table deadline for the arc stage. A build
+that rebuilds the base tables carries nothing of the arc tables forward, so
+its arc stage reads every base variable's arcs (about 3,400 mixer requests)
+and the `->typeOf` of every subject of our resolver index it does not list:
+on dev 45,877 subjects, 45,876 of them with no `Edge` row, read 500 a
+request in 10 seconds. That arc stage took 632 seconds locally (build
+`20261012T075628Z-865e8558`, base tables 554 seconds). The last measured
+Cloud Run base-table build took 963 seconds, 2.3 times the local one, and
+the reserve covers an arc stage that much slower, while leaving the base
+tables 3,000 seconds from the start of the run. A build that carries the
+base tables carries the absent subjects too and builds no base tables, so
+this reserve does not bound it."""
 
 _MAX_SOURCE_SUBJECTS: Final[int] = 5000
 """The most nodes a registered source's `<-source` read may return. A
@@ -245,6 +290,14 @@ and a Dataset's `isPartOf`, which names its publisher."""
 _DOCUMENTATION_PROPERTIES: Final[tuple[str, ...]] = ("name", *DOCUMENT_PROPERTIES)
 """The publisher's `name` and a sole child's documents, read in one batch."""
 
+BASE_INDEX_URI: Final[str] = (
+    "https://storage.googleapis.com/datcom-nl-models/"
+    "base_uae_mem_2025_11_03_07_10_42/embeddings.csv"
+)
+"""The base Data Commons embeddings index base Data Commons answers the base side of
+`/v2/resolve` from: the `base_uae_mem` index `deploy/helm_charts/dc_website/nl/catalog.yaml`
+of datacommonsorg/website pins for its prod environment."""
+
 
 class CatalogueBuildError(Exception):
     """An input the catalogue cannot represent: no successful ingestion to
@@ -275,6 +328,9 @@ class JobSettings(AliasOnlySettings):
     graph_token: str | None = Field(default=None, alias="DATASETS_GRAPH_TOKEN")
     un_base_url: str = Field(default=UN_BASE_URL, min_length=1, alias=UN_BASE_URL_ENV)
     un_site_url: str = Field(default="", alias="UN_SITE_BASE_URL")
+    base_index_uri: str = Field(
+        default=BASE_INDEX_URI, min_length=1, alias="ORIGIN_CATALOGUE_BASE_INDEX_URI"
+    )
     graph_timeout_seconds: float = Field(
         default=120.0, alias="ORIGIN_CATALOGUE_GRAPH_TIMEOUT_SECONDS"
     )
@@ -374,13 +430,24 @@ class BaseTablesBuilder(Protocol):
     ) -> BaseTables: ...
 
 
+class BaseIndexReader(Protocol):
+    """Reads the dcids of the base resolver index at a URI, as
+    `arc_reads.iter_base_index` does."""
+
+    def __call__(self, uri: str) -> Iterable[str]: ...
+
+
 # --- Identity ----------------------------------------------------------------
 
 JOB_MODULES: Final[tuple[str, ...]] = (
+    "arc_reads.py",
+    "arc_tables.py",
     "artifact.py",
     "card_facts.py",
     "enumerate.py",
+    "families.py",
     "job.py",
+    "node_reads.py",
     "origins.py",
     "registry.py",
     "schema.py",
@@ -389,19 +456,28 @@ JOB_MODULES: Final[tuple[str, ...]] = (
     "un_mirror.py",
 )
 """The `origin_catalogue` modules whose code shapes a build: the job, what it
-enumerates and encodes with, the card-fact derivation, and the ids and
-registry it writes. A change to
+enumerates and encodes with, the card-fact derivation, the family summaries,
+and the ids and registry it writes. A change to
 any of them changes the build identity. The serving modules (`catalogue`,
 `context`, `graph`, `service`) are left out, so a serving change triggers
 no build."""
 
 ENUMERATION_MODULES: Final[tuple[str, ...]] = ("enumerate.py", "topic_walk.py")
 """The modules that build the base variable, withheld variable and topic
-tables. A change to either rebuilds them, where an unchanged build carries them forward."""
+tables. A change to any of them rebuilds them, where an unchanged build
+carries them forward."""
 
-UN_MIRROR_MODULES: Final[tuple[str, ...]] = ("topic_walk.py", "un_mirror.py")
-"""The modules that enumerate the UN tables. A change to either enumerates
-them again, where an unchanged build copies them from the published one."""
+BASE_ARC_MODULES: Final[tuple[str, ...]] = ("arc_reads.py", "arc_tables.py", "node_reads.py")
+"""The modules that read the base variables' arcs and shape them into rows.
+A change to any of them reads every base variable's arcs again, where an
+unchanged build carries the published base arc table forward. The UN
+enumeration (`un_mirror.py`) is not among them, so a change to it keeps the
+carried base arcs."""
+
+UN_MIRROR_MODULES: Final[tuple[str, ...]] = ("node_reads.py", "topic_walk.py", "un_mirror.py")
+"""The modules that enumerate the UN tables. A change to any of them
+enumerates them again, where an unchanged build copies them from the
+published one."""
 
 
 def iso_week(at: datetime) -> str:
@@ -430,20 +506,26 @@ def identity_inputs(
     week: str,
     job_code: str,
     enumeration_code: str,
+    base_arc_code: str,
     un_mirror_code: str,
+    base_index: str,
 ) -> dict[str, str]:
     """What a build's identity hashes. A registry edit, an ingestion, a new
-    ISO week and a change to `JOB_MODULES` each change it, so each produces
-    a new build. `enumeration_code` and `un_mirror_code` are recorded so the
-    next build can recompute this one's `base_tables_key` and `un_mirror_key`."""
+    ISO week, a change to `JOB_MODULES` and another base resolver index URI
+    each change it, so each produces a new build. `enumeration_code`, `base_arc_code` and `un_mirror_code`
+    are recorded so the next build can recompute this one's
+    `base_tables_key` and `un_mirror_key` and tell whether its base arc
+    table was read by the same code."""
     return {
         "format_version": str(CATALOGUE_FORMAT_VERSION),
         "job_code": job_code,
         "enumeration_code": enumeration_code,
+        "base_arc_code": base_arc_code,
         "un_mirror_code": un_mirror_code,
         "registry": registry_digest,
         "dfo_fingerprint": dfo_stamp,
         "iso_week": week,
+        "base_index": base_index,
     }
 
 
@@ -1313,39 +1395,99 @@ class _CarriedUn:
         )
 
 
-def _published_carry(base_uri: str, *, key: str) -> tuple[BaseTables | None, _CarriedUn | None]:
-    """What the published build can carry forward: its base tables when
-    their carry-forward key equals `key`, and its UN rows, refused places
-    and UN tables. Only these outlive the call, and the UN tables are read
-    and decoded when a build takes them and not before, so a base-table
-    build does not hold the whole
-    published build in memory. Carried tables are re-encoded into
-    the new build directory, so the new build does not reference the old
-    one, which a later prune deletes."""
+@dataclass(frozen=True, slots=True)
+class _CarriedArcs:
+    """What a build takes from the published arc tables: the base arc table
+    (`base`), and the subjects of our resolver index the `dfo` table holds
+    empty (`absent`), which `held_by_mixer` found the mixer does not hold."""
+
+    base: Mapping[str, tuple[UnArc, ...]]
+    absent: frozenset[str]
+
+
+_NO_CARRIED_ARCS: Final = _CarriedArcs(base={}, absent=frozenset())
+
+
+@dataclass(frozen=True, slots=True)
+class _CarriedBase:
+    """The published build's base tables, a reader of its arc tables, and
+    whether `BASE_ARC_MODULES` read those tables as they read now."""
+
+    tables: BaseTables
+    read_arcs: Callable[[], ArcTables]
+    arcs_current: bool
+
+    def arcs(self) -> _CarriedArcs:
+        """The published base arc table and absent index subjects, or
+        nothing when other code read them or the tables are unreadable, so
+        every base variable's arcs and every index subject's presence are
+        read again. Both carry under the base tables' key, which holds the
+        ISO week, so a subject that gains a node mid-week is read once the
+        week turns."""
+        if not self.arcs_current:
+            return _NO_CARRIED_ARCS
+        try:
+            arcs = self.read_arcs()
+        except CatalogueArtifactError as exc:
+            logger.warning("origin_catalogue: published arc tables unreadable, reading: %s", exc)
+            return _NO_CARRIED_ARCS
+        return _CarriedArcs(
+            base=arcs.base, absent=frozenset(node for node, rows in arcs.dfo.items() if not rows)
+        )
+
+
+def _load_published(base_uri: str) -> tuple[CatalogueManifest, CatalogueTables] | None:
+    """The published build's manifest and tables, or `None` when they are
+    unreadable, so the build starts afresh. The arc and UN tables are not
+    read here: `_carried_base` and `_carried_un` read and decode them when a
+    build takes them, so a base-table build does not hold the whole
+    published build in memory."""
     try:
-        manifest, tables = load_tables(base_uri)
+        return load_tables(base_uri)
     except CatalogueArtifactError as exc:
         logger.warning("origin_catalogue: published build unreadable, building afresh: %s", exc)
-        return None, None
-    base = None
-    if _published_base_tables_key(manifest, tables) == key:
-        base = BaseTables(
+        return None
+
+
+def _carried_base(
+    base_uri: str,
+    manifest: CatalogueManifest,
+    tables: CatalogueTables,
+    *,
+    key: str,
+    base_arc_code: str,
+) -> _CarriedBase | None:
+    """The published build's base tables when their carry-forward key equals
+    `key`, with its base arc table when that build also recorded
+    `base_arc_code`. Carried tables are re-encoded into the new build
+    directory, so the new build does not reference the old one, which a
+    later prune deletes."""
+    if _published_base_tables_key(manifest, tables) != key:
+        return None
+    return _CarriedBase(
+        tables=BaseTables(
             base_variables=tables.base_variables,
             provenance_places=tables.provenance_places,
             withheld_variables=tables.withheld_variables,
             topics=tables.topics,
             scan_places=tables.scan_places,
             scan_levels=tables.scan_levels,
-        )
+        ),
+        read_arcs=lambda: read_arc_tables(base_uri, manifest),
+        arcs_current=manifest.identity_inputs.get("base_arc_code") == base_arc_code,
+    )
+
+
+def _carried_un(base_uri: str, manifest: CatalogueManifest, tables: CatalogueTables) -> _CarriedUn:
+    """The published build's UN rows, refused places and UN tables."""
     earlier = manifest.un_carried_forward
-    un = _CarriedUn(
+    return _CarriedUn(
         rows={pid: row for pid, row in tables.provenances.items() if row.data_commons == UN_SYSTEM},
         blocked_places=tables.un_blocked_places,
         read_mirror=lambda: read_un_mirror(base_uri, manifest),
         mirror_key=_published_un_mirror_key(manifest),
         from_build=manifest.build_id if earlier is None else earlier.from_build,
     )
-    return base, un
 
 
 def prune_old_versions(base_uri: str, *, now: Callable[[], float] = time.time) -> tuple[str, ...]:
@@ -1483,6 +1625,28 @@ def _un_stage_or_carried(
         return carried.stage(registry, reason=str(exc), refusals=refusals)
 
 
+def _carried_from_build(build_uri: str) -> tuple[_CarriedUn, str]:
+    """The UN stage of the build directory at `build_uri`, of any format,
+    to carry forward whole, and the reason the manifest records for it: the
+    build id and format, without the local path, which means nothing beside
+    the published build. Neither the build's format nor its ISO week is
+    checked, so a local build can reuse UN tables without reading the UN
+    deployment."""
+    try:
+        found = read_build_un_tables(build_uri)
+    except CatalogueArtifactError as exc:
+        raise CatalogueBuildError(f"--carry-un-from {build_uri!r}: {exc}") from exc
+    carried = _CarriedUn(
+        rows=found.rows,
+        blocked_places=found.blocked_places,
+        read_mirror=lambda: found.mirror,
+        mirror_key=None,
+        from_build=found.build_id,
+    )
+    reason = f"--carry-un-from build {found.build_id}, format {found.format_version}"
+    return carried, reason
+
+
 def _published_carries_un(base_uri: str, build_id: str) -> bool:
     """Whether the published build carried its UN stage forward, so a run
     with its identity must retry the UN. An unreadable manifest counts as
@@ -1494,6 +1658,21 @@ def _published_carries_un(base_uri: str, build_id: str) -> bool:
         return True
 
 
+def _emit_un_carried(un: UnStage, *, retrying: bool, identity: str, build_id: str) -> None:
+    """Logs a UN stage carried forward, as a failed retry when `retrying`."""
+    assert un.carried_forward is not None
+    emit(
+        "origin_catalogue_job_un_retry_failed"
+        if retrying
+        else "origin_catalogue_job_un_carried_forward",
+        severity="WARNING",
+        identity=identity,
+        build_id=build_id,
+        from_build=un.carried_forward.from_build,
+        reason=un.carried_forward.reason,
+    )
+
+
 def run(
     settings: JobSettings,
     *,
@@ -1502,13 +1681,23 @@ def run(
     un_graph: UnGraph,
     un_group_counts: UnGroupCounts,
     build_base_tables: BaseTablesBuilder,
+    read_base_index: BaseIndexReader,
     registry_raw: bytes,
     clock: Callable[[], float] = time.time,
+    carry_un_from: str | None = None,
 ) -> None:
-    """One job run over `registry_raw`, the registry file's bytes. Raises
+    """One job run over `registry_raw`, the registry file's bytes.
+    `read_base_index` reads the base resolver index at
+    `settings.base_index_uri`. Raises
     `CatalogueRefusedError` after logging a refused build. A skip, a discard
     or a lost publish race returns, since a later run publishes. A run that
-    returns logs its heartbeat last (`_heartbeat`)."""
+    returns logs its heartbeat last (`_heartbeat`).
+
+    `carry_un_from` names a build directory, of any format, whose UN stage
+    the build carries forward whole (`_carried_from_build`) in place of
+    reading the UN deployment. It serves local runs only, and a
+    `settings.artifact_uri` that is not `file://` raises
+    `CatalogueBuildError` before any read."""
     _build(
         settings,
         bq=bq,
@@ -1516,8 +1705,10 @@ def run(
         un_graph=un_graph,
         un_group_counts=un_group_counts,
         build_base_tables=build_base_tables,
+        read_base_index=read_base_index,
         registry_raw=registry_raw,
         clock=clock,
+        carry_un_from=carry_un_from,
     )
     _heartbeat(settings, clock=clock)
 
@@ -1530,10 +1721,17 @@ def _build(
     un_graph: UnGraph,
     un_group_counts: UnGroupCounts,
     build_base_tables: BaseTablesBuilder,
+    read_base_index: BaseIndexReader,
     registry_raw: bytes,
     clock: Callable[[], float],
+    carry_un_from: str | None,
 ) -> None:
     """`run` without the heartbeat."""
+    if carry_un_from is not None and urlsplit(settings.artifact_uri).scheme != "file":
+        raise CatalogueBuildError(
+            f"--carry-un-from serves local builds only, and the catalogue URI "
+            f"{settings.artifact_uri!r} is not file://"
+        )
     connection = settings.bq_connection
     if lock_held(bq, connection=connection):
         emit("origin_catalogue_job_skipped", reason="ingestion_lock_held")
@@ -1552,6 +1750,7 @@ def _build(
         )
     week = iso_week(datetime.fromtimestamp(clock(), UTC))
     enumeration_code = source_digest(ENUMERATION_MODULES)
+    base_arc_code = source_digest(BASE_ARC_MODULES)
     un_mirror_code = source_digest(UN_MIRROR_MODULES)
     inputs = identity_inputs(
         registry_digest=registry_digest,
@@ -1559,7 +1758,9 @@ def _build(
         week=week,
         job_code=source_digest(JOB_MODULES),
         enumeration_code=enumeration_code,
+        base_arc_code=base_arc_code,
         un_mirror_code=un_mirror_code,
+        base_index=settings.base_index_uri,
     )
     identity = identity_key(inputs)
 
@@ -1582,6 +1783,42 @@ def _build(
         return
     started = time.monotonic()
     try:
+        un_deadline = started + _MAX_RUN_SECONDS - _PUBLISH_RESERVE_SECONDS
+        arc_deadline = un_deadline - _UN_STAGE_RESERVE_SECONDS
+        published_build = _load_published(settings.artifact_uri) if published else None
+        carried_un = (
+            _carried_un(settings.artifact_uri, *published_build) if published_build else None
+        )
+        un_refusals: list[Refusal] = []
+
+        def read_un(scan_places: Sequence[str]) -> UnStage:
+            if carry_un_from is not None:
+                from_build, reason = _carried_from_build(carry_un_from)
+                return from_build.stage(registry, reason=reason, refusals=un_refusals)
+            return _un_stage_or_carried(
+                registry,
+                un_graph=un_graph,
+                un_group_counts=un_group_counts,
+                scan_places=scan_places,
+                carried=carried_un,
+                mirror_key=un_mirror_key(
+                    registry_digest=registry_digest, week=week, un_mirror_code=un_mirror_code
+                ),
+                refusals=un_refusals,
+                deadline=un_deadline,
+            )
+
+        # A retry reads the UN first, over the published build's scan places, so a
+        # UN still down costs no DFO, provenance, base or arc read.
+        un: UnStage | None = None
+        un_scan_places: tuple[str, ...] | None = None
+        if retrying_un and published_build is not None:
+            un_scan_places = published_build[1].scan_places
+            un = read_un(un_scan_places)
+            if un.carried_forward is not None:
+                _emit_un_carried(un, retrying=True, identity=identity, build_id=build_id)
+                return
+
         dfo = read_dfo_holdings(bq, connection=connection)
         stage = build_provenance_table(
             registry=registry, dfo_provenances=dfo.provenances, graph=graph
@@ -1594,36 +1831,54 @@ def _build(
             week=week,
             enumeration_code=enumeration_code,
         )
-        base, carried_un = (
-            _published_carry(settings.artifact_uri, key=key) if published else (None, None)
+        carried_base = (
+            _carried_base(
+                settings.artifact_uri, *published_build, key=key, base_arc_code=base_arc_code
+            )
+            if published_build
+            else None
         )
-        carried = base is not None
-        if base is None:
+        # The published tables can go before the base tables are built.
+        del published_build
+        if carried_base is None:
             base = build_base_tables(
                 graph=graph,
                 registry=registry,
                 admitted_base_provenances=base_rows,
                 dfo_provenances=stage.dfo_ids,
-                deadline=(
-                    started
-                    + _MAX_RUN_SECONDS
-                    - _PUBLISH_RESERVE_SECONDS
-                    - _UN_STAGE_RESERVE_SECONDS
-                ),
+                deadline=arc_deadline - _ARC_STAGE_RESERVE_SECONDS,
             )
-        refusals = list(stage.refusals)
-        un = _un_stage_or_carried(
-            registry,
-            un_graph=un_graph,
-            un_group_counts=un_group_counts,
-            scan_places=base.scan_places,
-            carried=carried_un,
-            mirror_key=un_mirror_key(
-                registry_digest=registry_digest, week=week, un_mirror_code=un_mirror_code
+        else:
+            base = carried_base.tables
+        index_subjects = read_index_subjects(bq, connection=connection)
+        resolver_index = ResolverIndex(
+            ours=index_subjects.subjects,
+            unedged=index_subjects.unedged,
+            base=resolver_base_variables(
+                read_base_index(settings.base_index_uri),
+                topics=base.topics,
             ),
-            refusals=refusals,
-            deadline=started + _MAX_RUN_SECONDS - _PUBLISH_RESERVE_SECONDS,
         )
+        carried_arcs = carried_base.arcs() if carried_base is not None else _NO_CARRIED_ARCS
+        arcs = read_catalogue_arcs(
+            bq,
+            connection=connection,
+            observed=dfo.variables,
+            base_variables=base.base_variables,
+            resolver_index=resolver_index,
+            carried_base=carried_arcs.base,
+            carried_absent=carried_arcs.absent,
+            withheld=base.withheld_variables,
+            graph=graph,
+            deadline=arc_deadline,
+        )
+        # The new tables share the carried rows; the decoded published tables can go.
+        del carried_arcs
+        if un is None or un_scan_places != base.scan_places:
+            # The UN stage probes the scan places the build publishes.
+            un_refusals.clear()
+            un = read_un(base.scan_places)
+        refusals = [*stage.refusals, *un_refusals]
         refusals.extend(
             un_registry_refusals(registry, dfo_provenances=dfo.provenances, un_rows=un.rows)
         )
@@ -1644,16 +1899,7 @@ def _build(
             )
             raise CatalogueRefusedError(refusals)
         if un.carried_forward is not None:
-            emit(
-                "origin_catalogue_job_un_retry_failed"
-                if retrying_un
-                else "origin_catalogue_job_un_carried_forward",
-                severity="WARNING",
-                identity=identity,
-                build_id=build_id,
-                from_build=un.carried_forward.from_build,
-                reason=un.carried_forward.reason,
-            )
+            _emit_un_carried(un, retrying=retrying_un, identity=identity, build_id=build_id)
             if retrying_un:
                 # The published build already carries this UN stage.
                 return
@@ -1699,6 +1945,9 @@ def _build(
             registry_hash=registry_digest,
             un_carried_forward=un.carried_forward,
             un_mirror=un.mirror,
+            arcs=arcs.tables,
+            index_presence=arcs.index_presence,
+            ingestion=fingerprint.ingestion,
         )
         if not publish_build(
             settings.artifact_uri, build, expected_generation=published_generation
@@ -1714,9 +1963,20 @@ def _build(
             "origin_catalogue_job_published",
             identity=identity,
             build_id=build_id,
-            base_tables="carried" if carried else "built",
+            base_tables="carried" if carried_base is not None else "built",
             row_counts=dict(build.manifest.row_counts),
             dfo_pairs=dfo.pairs,
+            dfo_variables_without_node=sorted(arcs.dfo.without_node),
+            arc_row_counts=dict(build.manifest.arc_tables.row_counts),
+            arc_resident_bytes=build.manifest.arc_tables.resident_bytes,
+            base_arcs_read=arcs.base_read,
+            base_arcs_carried=arcs.base_carried,
+            arc_target_labels_read=arcs.labels_read,
+            resolver_index_absent=arcs.index_absent,
+            resolver_index_held_by_mixer=arcs.index_held_by_mixer,
+            resolver_index_base=arcs.index_base,
+            resolver_index_carried=arcs.index_presence.carried,
+            resolver_index_read=arcs.index_presence.read,
             un_blocked_places=sorted(un.blocked_places),
             un_carried_from=(
                 un.carried_forward.from_build if un.carried_forward is not None else None
@@ -1724,6 +1984,8 @@ def _build(
             un_mirror=un.mirror_source,
             un_row_counts=dict(build.manifest.un_mirror.row_counts),
             un_resident_bytes=build.manifest.un_mirror.resident_bytes,
+            family_row_counts=dict(build.manifest.families.row_counts),
+            family_resident_bytes=build.manifest.families.resident_bytes,
             successors={
                 name: count
                 for name, count in asdict(successors).items()
@@ -1745,6 +2007,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--local-dir",
         type=Path,
         help="publish under this local directory in place of ORIGIN_CATALOGUE_URI",
+    )
+    parser.add_argument(
+        "--carry-un-from",
+        type=Path,
+        help=(
+            "carry the UN rows, refused places and UN tables of this build directory, of any "
+            "format, into the build in place of reading the UN deployment; local builds only"
+        ),
     )
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO)
@@ -1778,9 +2048,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 un_graph=un_graph,
                 un_group_counts=un_site,
                 build_base_tables=build_base_tables,
+                read_base_index=iter_base_index,
                 registry_raw=packaged_registry().read_bytes(),
+                carry_un_from=(
+                    args.carry_un_from.resolve().as_uri() if args.carry_un_from else None
+                ),
             )
         except (
+            ArcTablesError,
             CatalogueBuildError,
             CataloguePointerReadError,
             CatalogueTableError,
@@ -1802,9 +2077,12 @@ if __name__ == "__main__":
 
 
 __all__ = [
+    "BASE_ARC_MODULES",
+    "BASE_INDEX_URI",
     "ENUMERATION_MODULES",
     "JOB_MODULES",
     "UN_MIRROR_MODULES",
+    "BaseIndexReader",
     "BaseTablesBuilder",
     "CatalogueBuildError",
     "CatalogueGraph",

@@ -1,9 +1,10 @@
 """A role-bearing answer serves only members that assert every bound property.
 
 The IDS debt-service family on the dev graph: the public or publicly guaranteed (PPG)
-total asserts `guaranteeStatus`, while the creditor-type breakdowns of public-sector debt
-leave it off. A query binding `guaranteeStatus=PublicOrPubliclyGuaranteed` must serve the
-PPG total alone, as the code index, the mint and the resubmit already require.
+total asserts `guaranteeStatus`, while the public-sector debtor total and the creditor-type
+breakdowns of public-sector debt leave it off. A query binding
+`guaranteeStatus=PublicOrPubliclyGuaranteed` must serve the PPG total alone, as the code
+index, the mint and the resubmit already require.
 """
 
 from __future__ import annotations
@@ -20,9 +21,7 @@ from tests.fixtures import FakeGraph
 _KEN = "country/KEN"
 _PPG = "PublicOrPubliclyGuaranteed"
 _PPG_TOTAL = "Amount_FinancialFlow_ServicingPayment_PublicOrPubliclyGuaranteed_Nominal"
-_PPG_PUBLIC_SECTOR = (
-    "Amount_FinancialFlow_ServicingPayment_PublicOrPubliclyGuaranteed_IDSDebtorTypePS_Nominal"
-)
+_PUBLIC_SECTOR = "Amount_FinancialFlow_ServicingPayment_IDSDebtorTypePS_Nominal"
 _BONDS_PUBLIC_SECTOR = (
     "Amount_FinancialFlow_ServicingPayment_IDSCreditorTypePBND_IDSDebtorTypePS_Nominal"
 )
@@ -49,9 +48,7 @@ def _arcs(indicator: str, constraints: dict[str, str]) -> dict:
 
 _MEMBERS = {
     _PPG_TOTAL: _arcs("DT.TDS.DPPG.CD", {"guaranteeStatus": _PPG}),
-    _PPG_PUBLIC_SECTOR: _arcs(
-        "DT.TDS.DEPS.CD", {"guaranteeStatus": _PPG, "idsDebtorType": "IDSDebtorTypePS"}
-    ),
+    _PUBLIC_SECTOR: _arcs("DT.TDS.DEPS.CD", {"idsDebtorType": "IDSDebtorTypePS"}),
     _BONDS_PUBLIC_SECTOR: _arcs(
         "DT.TDS.PBND.PS.CD",
         {"idsCreditorType": "IDSCreditorTypePBND", "idsDebtorType": "IDSDebtorTypePS"},
@@ -105,7 +102,7 @@ def test_ppg_debt_service_serves_the_ppg_total_alone():
     assert isinstance(result, Materialised)
     assert result.sv_dcids == [_PPG_TOTAL]
     assert result.population is not None
-    assert set(result.population.admitted_dcids) == {_PPG_TOTAL, _PPG_PUBLIC_SECTOR}
+    assert set(result.population.admitted_dcids) == {_PPG_TOTAL}
 
 
 def test_members_silent_on_every_bound_value_leave_binding_mismatch():
@@ -117,10 +114,11 @@ def test_members_silent_on_every_bound_value_leave_binding_mismatch():
     assert result.reason == "binding_mismatch"
 
 
-def test_an_unbound_guarantee_status_still_serves_the_breakdowns():
+def test_an_unbound_guarantee_status_still_serves_a_member_silent_on_it():
     """Control: the rule reads bound properties only."""
     result = _resolve(_MEMBERS, [_binding("financialFlowType", "ServicingPayment")])
 
     assert isinstance(result, Materialised)
-    assert _BONDS_PUBLIC_SECTOR in result.sv_dcids
-    assert _PRIVATE_GENERAL_GOVERNMENT in result.sv_dcids
+    assert _PUBLIC_SECTOR in result.sv_dcids
+    assert result.population is not None
+    assert set(result.population.admitted_dcids) == set(_MEMBERS)

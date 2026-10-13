@@ -8,8 +8,9 @@ only. A 2xx ends a delivery. Other statuses retry. Cloud Run concurrency 1 allow
 instance.
 
 The lifespan builds one `DefinitionDeps` per process: one artifact store, one graph client, one
-SDMX client, and one materialise semaphore with a single permit, which every operation's
-materialisation takes. Materialisation runs in a worker thread.
+SDMX client, the whole-variable breadth reader over the process's facet profile cache
+(`datasets_api.profile_breadth`), and one materialise semaphore with a single permit, which every
+operation's materialisation takes. Materialisation runs in a worker thread.
 
 The route verifies the OIDC token and claims the row (`OperationStore.claim`) for the task's
 submission, with a static lease of `LEASE_SECONDS`, under Cloud Tasks' 1,800-second dispatch
@@ -59,12 +60,14 @@ from datasets_api.operations.worker import (
     OperationTransientFailure,
     run_operation,
 )
+from datasets_api.profile_breadth import open_profile_breadth
 from datasets_api.publish_models import MAX_ROWS as _MATERIALISE_RAW_FETCH_GUARD_ROWS
 from datasets_api.version import DATASETS_CAPABILITY_VERSION
 from datasets_api.version_store import LiveHeadStore, LiveVersionRecordWriter
 from dc_sdmx import SdmxClient
 from dfo_platform.build import build_commit
 from materialise import EnrichmentLookup
+from materialise.facets import VariableBreadthReader
 from materialise.graph import GraphReader
 from materialise.rate_tables import RateTableCache
 from origin_catalogue import bound_catalogue
@@ -92,6 +95,7 @@ def _build_live_definition_deps(
     code_index: CodeIndex,
     coverage: CoverageService,
     materialise_semaphore: MaterialisePermits,
+    variable_breadth: VariableBreadthReader | None = None,
     settings: DatasetsBuildSettings | None = None,
 ) -> DefinitionDeps:
     """Assembles dependencies without I/O.
@@ -101,7 +105,9 @@ def _build_live_definition_deps(
     under the release that produced it. The snapshot reader reads the same store, so a worker
     render serves as the synchronous path does: a version on record keeps its stored citation and
     `prepared_at`, the response lists the artifact already linked under each rendering key, and
-    `run_operation` checks that the request's rendering is servable before completing.
+    `run_operation` checks that the request's rendering is servable before completing. A
+    run breaks a single-place facet tie on `variable_breadth`, as a sync mint of the spec does,
+    so both elect one facet.
     """
     _settings = settings if settings is not None else DatasetsBuildSettings.from_env()
     return DefinitionDeps(
@@ -115,9 +121,7 @@ def _build_live_definition_deps(
         ceiling=_MATERIALISE_RAW_FETCH_GUARD_ROWS,
         member_concurrency=_settings.mint_member_max_concurrency,
         enumerator=shared_enumerator(),
-        enrichment=EnrichmentLookup(
-            graph, type_kinds=code_index.party_types, parties=code_index.parties
-        ),
+        enrichment=EnrichmentLookup(graph, parties=code_index.parties),
         code_index=code_index,
         rate_cache=RateTableCache(),
         coverage=coverage,
@@ -127,6 +131,7 @@ def _build_live_definition_deps(
         materialise_semaphore=materialise_semaphore,
         head_recheck_interval=timedelta(seconds=_settings.head_recheck_seconds),
         head_max_age=timedelta(seconds=_settings.head_max_age_seconds),
+        variable_breadth=variable_breadth,
         settings=_settings,
     )
 
@@ -304,6 +309,13 @@ def build_worker_app(
                         code_index=code_index,
                         coverage=coverage,
                         materialise_semaphore=materialise_semaphore,
+                        variable_breadth=open_profile_breadth(
+                            stack,
+                            settings=_settings,
+                            live_settings=live_settings,
+                            generation=generation,
+                            coverage=coverage,
+                        ),
                         settings=_settings,
                     )
                 if _operation_store is None:

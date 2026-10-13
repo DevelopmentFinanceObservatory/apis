@@ -33,11 +33,18 @@ def test_stamp_and_declarations_round_trip(code_index: CodeIndex):
     }
 
 
-def test_declarations_carry_the_plain_name_the_export_stamped(code_index: CodeIndex):
-    assert code_index.declarations["crsPurpose"].plain_name == "sector"
-    assert code_index.declarations["crsTypeOfFinance"].plain_name == "instrument"
-    assert code_index.declarations["crsCooperationModality"].plain_name == "modality"
-    assert code_index.declarations["crsTypeOfFlow"].plain_name == "flow"
+def test_declarations_carry_the_plain_name_and_graph_id_the_export_stamped(
+    code_index: CodeIndex,
+):
+    assert {
+        code_system: (declaration.plain_name, declaration.enum_dcid)
+        for code_system, declaration in code_index.declarations.items()
+    } == {
+        "crsPurpose": ("sector", "CRSPurposeCodeEnum"),
+        "crsTypeOfFinance": ("instrument", "CRSTypeOfFinanceEnum"),
+        "crsCooperationModality": ("modality", "CRSCooperationModalityEnum"),
+        "crsTypeOfFlow": ("flow", "CRSTypeOfFlowEnum"),
+    }
 
 
 def test_default_index_path_points_inside_the_package_tree():
@@ -45,10 +52,31 @@ def test_default_index_path_points_inside_the_package_tree():
     assert str(path).endswith("data/index.json.gz")
 
 
-def test_the_packaged_index_declares_a_plain_name_for_every_code_system():
+def test_the_packaged_index_declares_a_plain_name_and_graph_id_for_every_code_system():
     index = load_index(default_index_path())
     for declaration in index.declarations.values():
         assert declaration.plain_name
+        assert declaration.enum_dcid
+    assert index.declarations["crsPurpose"].enum_dcid == "CRSPurposeCodeEnum"
+
+
+def test_the_packaged_index_labels_the_flow_type_and_netting_basis_axes():
+    labels = {axis.axis: axis.label for axis in load_measure_axes(default_index_path()).axes}
+    assert labels["financialFlowType"] == "flow type"
+    assert labels["nettingBasis"] == "netting basis"
+
+
+def test_the_packaged_index_defines_every_measure_label_and_noun_and_reads_code_definitions():
+    measure_index = load_measure_axes(default_index_path())
+    undefined = [
+        label.label
+        for label in (*measure_index.partition_labels, *measure_index.nouns)
+        if not label.definition
+    ]
+    assert undefined == []
+    grant = load_index(default_index_path()).code_by_dcid("CRSTypeOfFinance110")
+    assert grant is not None
+    assert grant.definition
 
 
 def test_the_packaged_index_loads_and_agrees_with_its_own_stamp():
@@ -89,9 +117,13 @@ def test_reads_a_gzipped_export_whose_name_does_not_say_so(tmp_path):
     assert len(load_index(misnamed).codes) == 398
 
 
-def test_refuses_a_document_missing_a_required_key(tmp_path):
+@pytest.mark.parametrize(
+    ("block", "key"), [("stamp", "content_hash"), ("declarations", "enum_dcid")]
+)
+def test_refuses_a_document_missing_a_required_key(tmp_path, block, key):
     payload = json.loads(FIXTURE_PATH.read_text())
-    del payload["stamp"]["content_hash"]
+    rows = payload[block] if isinstance(payload[block], list) else [payload[block]]
+    del rows[0][key]
     broken = tmp_path / "broken.json"
     broken.write_text(json.dumps(payload))
     with pytest.raises(IndexFormatError):
@@ -410,6 +442,7 @@ def _price_basis_document(*values: dict) -> dict:
                 "kind": "shape",
                 "role": "free",
                 "prefer": ["Nominal", "RealValue", "PurchasingPowerParity"],
+                "label": None,
             }
         ],
         "measure_values": list(values),

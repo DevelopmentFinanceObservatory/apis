@@ -16,12 +16,14 @@ import pytest
 
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.extract import ExtractedEntity, Extraction
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
 from search.engine.region.pipeline import resolve_variable
 from search.models import UNIT_REF
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import make_request, offline_resolve
+from tests.engine._quantity import NO_QUANTITY
 from tests.engine.test_bind import (
     _RESOLVE_DETECT_QUERY,
     _RESOLVE_NODES,
@@ -55,6 +57,8 @@ class _FlowRequestedAllLLM:
         self._property_dcid = property_dcid
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0,
@@ -248,6 +252,8 @@ class _TwoLegLLM:
                 dates=[],
                 dropped_qualifiers=[_BREADTH_PHRASE],
             ), None
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         variable = next(
             line.removeprefix("Variable phrase: ")
@@ -319,7 +325,7 @@ def test_two_variable_query_broadcasts_dropped_qualifiers_to_every_leg():
             (
                 f
                 for f in part.spec.resolved.trace.slot_filters
-                if f.key.property is not None and f.key.property.dcid == "crsTypeOfFlow"
+                if f.key.property is not None and f.key.property.ref == "crsTypeOfFlow"
             ),
             None,
         )

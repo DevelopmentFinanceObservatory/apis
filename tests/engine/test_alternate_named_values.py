@@ -12,11 +12,13 @@ import asyncio
 
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.quantity import quantity_requirement
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.region.alternate_guard import offered_alternates, query_pins
 from search.engine.retrieval.derive import derive_shapes
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 _QUERY = "GDP in Kenya"
@@ -73,6 +75,8 @@ class _NamesGdpLLM:
         self._evidence = evidence
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0,
@@ -116,7 +120,7 @@ def _run(svs: list[str], *, llm=None):
 
 
 def _served(result) -> list[list[str]]:
-    return [[sv.ref.dcid for sv in spec.resolved.members] for spec in result.specs]
+    return [[sv.ref.ref for sv in spec.resolved.members] for spec in result.specs]
 
 
 def test_an_alternate_of_another_measure_is_not_a_candidate():

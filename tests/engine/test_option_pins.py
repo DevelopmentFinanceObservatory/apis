@@ -85,7 +85,7 @@ def _offered_provenances(probe: FacetProbe) -> list[str | None]:
         deadline=None,
     )
     return [
-        o.value.ref.dcid if o.value.ref is not None else None
+        o.value.ref.ref if o.value.ref is not None else None
         for fo in options
         if fo.axis == "provenance"
         for o in fo.options

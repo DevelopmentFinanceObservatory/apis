@@ -260,7 +260,7 @@ def _search(graph: LiveGraphClient) -> Spec:
 
 
 def _served(spec: Spec) -> list[str]:
-    return [member.ref.dcid for member in spec.resolved.members]
+    return [member.ref.ref for member in spec.resolved.members]
 
 
 def _resubmit(graph: LiveGraphClient, spec: Spec) -> RegionResult:
@@ -373,8 +373,8 @@ def test_a_successor_shape_holds_the_successors_of_the_recalled_variants(
     wire: _Wire, live: LiveGraphClient, bind_catalogue
 ) -> None:
     """Our resolver recalls two superseded age variants. The series holds a third age the
-    recall did not find, and the shape leaves it out, with no node read on the UN
-    deployment."""
+    recall did not find: the shape's members leave it out and its taxonomy offers it, the
+    recalled ages first, with no node read on the UN deployment."""
     series, stem = "undata/who/SERIES-WIDE", "undata/who/WIDE"
     ages = ("Y0T4", "Y5T14", "Y15T24")
     successors = {f"sdg/WIDE.AGE--{age}": f"{stem}.AGE--{age}" for age in ages[:2]}
@@ -409,6 +409,7 @@ def test_a_successor_shape_holds_the_successors_of_the_recalled_variants(
     assert (shape.slot_taxonomy or {}).get("how:undataAge") == [
         "undata/AGE-Y0T4",
         "undata/AGE-Y5T14",
+        "undata/AGE-Y15T24",
     ]
     assert wire.un_node_reads() == []
 

@@ -10,9 +10,11 @@ from __future__ import annotations
 import asyncio
 
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 _QUERY = "domestic government health spending in Kenya"
@@ -104,6 +106,8 @@ class _AbsentMisclassifyLLM:
     """Drafts two absent bindings and a mismatched ageGroup value."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0,
@@ -153,14 +157,14 @@ def test_selected_statvar_asserts_the_property_so_it_is_not_inapplicable():
     assert result.no_data_reason == "no_observations"
     assert result.flagged_match is not None
     spec = result.flagged_match[0]
-    assert [sv.ref.dcid for sv in spec.resolved.members] == [_SV_DOMESTIC_GOVT]
+    assert [sv.ref.ref for sv in spec.resolved.members] == [_SV_DOMESTIC_GOVT]
     assert _PROP_FIN_SOURCE not in spec.resolved.inapplicable_slots
     # Still unbound on the wire (the query never named a financing source) --
     # this is "unbound, and not inapplicable", not a bound slot.
     fin_source_slot = next(
         s
         for s in spec.resolved.slots
-        if s.key.property is not None and s.key.property.dcid == _PROP_FIN_SOURCE
+        if s.key.property is not None and s.key.property.ref == _PROP_FIN_SOURCE
     )
     assert fin_source_slot.binding.kind == "unbound"
 
@@ -189,7 +193,7 @@ def test_bound_slot_is_never_reported_inapplicable_even_if_drafted_oddly():
     age_slot = next(
         s
         for s in spec.resolved.slots
-        if s.key.property is not None and s.key.property.dcid == _PROP_AGE
+        if s.key.property is not None and s.key.property.ref == _PROP_AGE
     )
     assert age_slot.binding.kind == "value"
     assert _PROP_AGE not in spec.resolved.inapplicable_slots
@@ -204,7 +208,7 @@ def test_no_property_is_both_bound_and_inapplicable():
     assert result.flagged_match is not None
     spec = result.flagged_match[0]
     bound_props = {
-        s.key.property.dcid
+        s.key.property.ref
         for s in spec.resolved.slots
         if s.key.property is not None and s.binding.kind != "unbound"
     }

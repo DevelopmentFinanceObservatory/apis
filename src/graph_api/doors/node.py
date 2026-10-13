@@ -1,60 +1,121 @@
-"""Serve `GET /api/graph/node/{dcid}` and `POST /api/graph/nodes` from an allowlisted DCP read.
+"""Serve `GET /api/graph/node/{dcid}` and `POST /api/graph/nodes` as one envelope per node.
 
-Both routes make one job on the shared DCP-read executor: the allowlisted
-arc read, then one batched name read for every held node's label targets,
-skipped when none has a target. A busy executor queues the job.
-`GRAPH_NODE_TIMEOUT_SECONDS` bounds the client wait, queue time included,
-and the deadline both reads share; a job still queued when the door times
-out is cancelled before it reads. The GET route checks `DCID_MAX_LENGTH`
-before reading and returns 400 for longer ids; the batch request model
-applies the same ceiling and caps the list at `NODES_MAX_DCIDS`. A missing
-node returns 404 on the GET route and a `not_held` entry in a batch. The
-allowlist excludes multi-kilobyte `geoJson` arcs.
+Both routes make one job on the shared DCP-read executor: the allowlisted arc read, then the
+classification of every held node (`graph_api.kinds.classify`, over the code index and the
+membership policy), then one batched name read for the label targets the kinds show, skipped
+when none has a target. `GRAPH_NODE_TIMEOUT_SECONDS` bounds the client wait and the deadline
+both reads share; every worker busy refuses the read at once. The GET route checks
+`DCID_MAX_LENGTH` before reading and returns 400 for longer ids; the batch request model applies
+the same ceiling and caps the list at `NODES_MAX_DCIDS`. The allowlist excludes multi-kilobyte
+`geoJson` arcs.
 
-Shape precedence is StatVar, source, place-family entity, then generic
-node. Labels skip names equal to the target dcid. Source labels prefer the
-parent Dataset. A StatVar's and a source's `data_commons` come from the
-request's origin catalogue, with no graph read. Entity containment and
-source publisher/Dataset labels come from the name read. The StatVar
-`facets`, `sources`, and `processing_level` fields remain null.
+The single read is a batch of one: a missing node answers 404 `node_not_held`, and in a batch
+it is `{ref, status: "not_held"}`. A group or region the membership policy holds opens with or
+without a graph node, since the membership authority vouches for it until the graph carries it,
+as the members route and resolve hold it.
+
+Labels skip names equal to the target dcid. A Provenance's label prefers its parent Dataset's
+name. A group, and a region the membership policy holds, take the membership authority's
+canonical name, as resolve labels them. The code index fills the code system and code blocks, the membership policy the group
+block and a region's membership, `unit_words` the unit block, and the origin catalogue a
+source family's `data_commons`. An organisation's or aggregate's roles come from the role
+ranges the graph declares (`entity_resolution.admission.Admission`), over the role properties
+the code index's variables declare, under the deadline the availability read takes; that read
+failing, refused by a busy or shut DCP-read executor, or due after the deadline leaves `roles`
+null with a transient gap.
+
+A variable's block holds its `definition`, built in the same job from the code index, the
+measure index and at most two more batched reads (`graph_api.card_definition`), and its
+`availability` (`graph_api.availability`). After the job, every variable in the request takes
+one facet profile read awaited on the event loop, then one read of the names and place types its
+folds need and, once per graph generation, the national currencies (`graph_api.card_reads`),
+waiting until just before the request's deadline while those reads run on and fill their
+caches. A failed profile read, or a coverage index that failed to load, leaves `availability`
+null with a transient gap; a surface with no profile cache or no coverage index configured
+leaves it null with the permanent gap `stat_var.availability.not_served`.
+
+`as_of` on the GET route dates a group's or region's membership. On an undated membership it
+refuses 400 `request_invalid` at `/as_of`; any other kind ignores it.
+
+The GET route answers `public, max-age=300` with an `ETag` when every gap is permanent, and
+`no-store` when a gap comes from a failed read (`gapped_public_json`). The batch is a POST and
+is not cached over HTTP.
 """
 
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import time
+from dataclasses import dataclass, field
+from datetime import date
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, TypeAdapter
 
+from code_index.query import CodeIndex
+from code_index.shared import get_index, get_measure_index
+from code_index.types import MeasureIndex
 from dfo_platform import ProblemSpec
 from dfo_platform.doors import DoorContribution
 from dfo_platform.refusal import TIMEOUT_DEFAULT
+from dfo_platform.state import StateNotSet, StateSlot
+from dfo_platform.static_response import gapped_public_json
+from entity_resolution.admission import Admission
+from entity_resolution.membership import (
+    AsOfNotRecorded,
+    Membership,
+    MembershipPolicy,
+    NotRecorded,
+    Projection,
+)
 from graph_api import routing
+from graph_api.availability import NOT_SERVED, UNAVAILABLE, AvailabilityRead
+from graph_api.card_definition import CardDefinition, build_definitions
+from graph_api.card_reads import read_availability, read_profiles
 from graph_api.config import GRAPH_NODE_TIMEOUT_SECONDS
-from graph_api.deps import GraphDeps, GraphDepsDep, run_dcp_read
+from graph_api.deps import (
+    DcpExecutorSaturated,
+    DcpExecutorShutDown,
+    GraphDeps,
+    GraphDepsDep,
+    run_dcp_read,
+)
+from graph_api.kinds import PLACE_KINDS, Kind, classify, code_system_of
 from graph_api.node_models import (
-    ContainedInPlace,
-    EntityNode,
+    Authority,
+    BuiltFromTable,
+    CodeBlock,
+    CodeSystemBlock,
+    CodeSystemDeclarations,
     Freshness,
-    GenericNode,
+    LinkRelation,
+    MembershipBlock,
     NodeResponse,
     NodesEntry,
     NodesRequest,
     NodesResponse,
-    NotHeldNode,
-    ParentDataset,
-    Publisher,
-    SourceNode,
-    StatVarNode,
+    NotHeldEntry,
+    PartyBlock,
+    PlaceBlock,
+    PriceBasisWords,
+    ProjectionCount,
+    SourceBlock,
+    StatVarBlock,
+    UnitBlock,
+    members_link,
 )
 from graph_api.origin_models import DataCommonsRef
 from graph_api.reader import GraphNodeReader, NodeArcsByDcid
+from graph_api.refs import DOCUMENTATION_PATH, NodeRef, first_name, first_value
 from materialise.cadence import cadence_label
 from materialise.graph import GraphDeadlineExceededError, GraphReadError
-from materialise.roles import DegenerateObservationProperties, declared_roles
 from origin_catalogue import current_catalogue
+from unit_words.currency_nouns import currency_noun
+from unit_words.price_basis import price_basis
+from unit_words.unit_class import classify_unit
 
 logger = logging.getLogger(__name__)
 
@@ -84,30 +145,26 @@ _ALLOWLIST: tuple[str, ...] = (
     "isPartOf",
     "provenanceCategory",
     "containedInPlace",
-)
-
-# `types` (the `node` shape's own field) covers `typeOf`, and `label`
-# (every shape's own field) covers `name`, so neither belongs in `node`'s
-# own `properties` map too.
-_DEDICATED_FIELDS = frozenset({"typeOf", "name"})
-
-_STAT_VAR_TYPE = "StatisticalVariable"
-_SOURCE_TYPES = frozenset({"Provenance", "Source"})
-_PLACE_FAMILY_TYPES = frozenset(
-    {
-        "Country",
-        "Continent",
-        "ContinentalUnion",
-        "UNGeoRegion",
-        "State",
-        "County",
-        "City",
-        "Town",
-        "Village",
-    }
+    "iso4217AlphaCode",
 )
 
 _LABEL_PROPERTY = "name"
+_SOURCE_FAMILY: frozenset[Kind] = frozenset({"source", "dataset", "provenance"})
+# The base Data Commons names a `Currency` member by its ISO 4217 code (`INR`) and gives it no
+# `iso4217AlphaCode` arc, as `dc_graph.GraphClient.currency_units` reads it.
+_CURRENCY_TYPE = "Currency"
+
+_ADMISSION_STATE = "graph_node_admission"
+# A card stops waiting for its availability and role reads this long before the door's own
+# timeout, so it answers with their gaps instead of timing out.
+_ANSWER_MARGIN_SECONDS = 0.5
+_NODE_ADAPTER: TypeAdapter[NodeResponse] = TypeAdapter(NodeResponse)
+
+type Arcs = dict[str, tuple[str, ...]]
+
+NODE_MEMBERSHIP_SLOT: StateSlot[MembershipPolicy] = StateSlot("graph_node_membership")
+"""The membership policy the node routes classify groups and regions by. The surface's lifespan
+sets it; while it is unset no node is a group or region."""
 
 
 class NodeNotHeld(Exception):
@@ -130,200 +187,506 @@ class DcidTooLong(Exception):
         )
 
 
-def _label(arcs: dict[str, tuple[str, ...]], dcid: str) -> str | None:
-    """Return the first name unequal to `dcid`. Some imports add a self-referential arc."""
-    for value in arcs.get(_LABEL_PROPERTY, ()):
-        if value != dcid:
-            return value
-    return None
+def _label(arcs: Arcs, dcid: str) -> str | None:
+    return first_name(arcs.get(_LABEL_PROPERTY, ()), dcid)
 
 
-def _classify_shape(type_of: tuple[str, ...]) -> str:
-    if _STAT_VAR_TYPE in type_of:
-        return "stat_var"
-    if any(t in _SOURCE_TYPES for t in type_of):
-        return "source"
-    if any(t in _PLACE_FAMILY_TYPES for t in type_of):
-        return "entity"
-    return "node"
+@dataclass(frozen=True, slots=True)
+class _Tables:
+    """The in-process tables one read classifies and builds against, captured once."""
+
+    code_index: CodeIndex
+    measure_index: MeasureIndex
+    membership: MembershipPolicy | None
+
+    def held_membership(self, dcid: str) -> Membership | None:
+        if self.membership is None or dcid not in self.membership:
+            return None
+        return self.membership.get(dcid)
 
 
-def _label_targets(arcs: dict[str, tuple[str, ...]]) -> tuple[str, ...]:
-    """Return the second-hop dcids whose names a node's shape shows: a source's publisher and
-    parent Dataset, or an entity's `containedInPlace` targets. Other shapes need none."""
-    shape = _classify_shape(arcs.get("typeOf", ()))
-    if shape == "source":
-        return tuple(values[0] for prop in ("source", "isPartOf") if (values := arcs.get(prop, ())))
-    if shape == "entity":
+@dataclass(frozen=True, slots=True)
+class _Read:
+    """The arcs of every node the read holds, its kind, the names of its label targets, and
+    each variable's definition. A group or region the membership policy holds without a graph
+    node has empty arcs."""
+
+    arcs: dict[str, Arcs]
+    kinds: dict[str, Kind]
+    labels: NodeArcsByDcid
+    definitions: dict[str, CardDefinition]
+
+    @property
+    def stat_vars(self) -> list[str]:
+        return [dcid for dcid, kind in self.kinds.items() if kind == "stat_var"]
+
+
+def _label_targets(kind: Kind, dcid: str, arcs: Arcs, tables: _Tables) -> tuple[str, ...]:
+    """The second-hop dcids whose names a node's block shows: a source family's publisher and
+    parent, a place's containing places, or a code's system node."""
+    if kind in _SOURCE_FAMILY:
+        return tuple(v[0] for prop in ("source", "isPartOf") if (v := arcs.get(prop, ())))
+    if kind in PLACE_KINDS:
         return arcs.get("containedInPlace", ())
+    if kind == "code":
+        row = tables.code_index.code_by_dcid(dcid)
+        declaration = tables.code_index.declarations.get(row.code_system) if row else None
+        if declaration is not None and declaration.enum_dcid is not None:
+            return (declaration.enum_dcid,)
     return ()
 
 
 def _read_nodes_sync(
-    graph: GraphNodeReader, dcids: list[str], *, deadline: float
-) -> tuple[NodeArcsByDcid, NodeArcsByDcid]:
-    """Read the allowlisted arcs of `dcids`, then the names of every held node's label
-    targets in one batched second read, skipped when no node has a target. Runs on the DCP
-    executor, so both reads share one worker and one deadline."""
+    graph: GraphNodeReader, dcids: list[str], tables: _Tables, *, deadline: float
+) -> _Read:
+    """Read the allowlisted arcs of `dcids`, classify every held node, read the names of their
+    label targets in one batched second read, skipped when no node has a target, then build
+    every variable's definition (`card_definition.build_definitions`). Runs on the DCP
+    executor, so every read shares one worker and one deadline."""
     confirmed = graph.node_arcs_many(dcids, properties=_ALLOWLIST, deadline=deadline)
-    targets = dict.fromkeys(
-        target for arcs in confirmed.values() if arcs is not None for target in _label_targets(arcs)
-    )
-    if not targets:
-        return confirmed, {}
-    labels = graph.node_arcs_many(list(targets), properties=(_LABEL_PROPERTY,), deadline=deadline)
-    return confirmed, labels
-
-
-async def _read_nodes(deps: GraphDeps, dcids: list[str]) -> tuple[NodeArcsByDcid, NodeArcsByDcid]:
-    """Run `_read_nodes_sync` as one job on the shared DCP-read executor.
-
-    Compute the deadline before submission so queue time counts against it.
-    """
-    deadline = time.monotonic() + GRAPH_NODE_TIMEOUT_SECONDS
-    return await run_dcp_read(
-        deps.dcp_executor, _read_nodes_sync, deps.graph, dcids, deadline=deadline
-    )
-
-
-def _stat_var_shape(dcid: str, arcs: dict[str, tuple[str, ...]]) -> StatVarNode:
-    definition_values = arcs.get("definition", ())
-    description_values = arcs.get("description", ())
-    observation_properties = arcs.get("observationProperties", ())
-    try:
-        roles = list(declared_roles(observation_properties))
-    except DegenerateObservationProperties:
-        # Report the graph declaration as-is. The mint path rejects it.
-        roles = list(observation_properties)
-    population_values = arcs.get("populationType", ())
-    population_type = population_values[0] if population_values else None
-    return StatVarNode(
-        dcid=dcid,
-        label=_label(arcs, dcid),
-        definition=definition_values[0] if definition_values else None,
-        description=description_values[0] if description_values else None,
-        roles=roles,
-        population_type=population_type,
-        source_indicator_codes=list(arcs.get("sourceIndicatorCode", ())),
-        data_commons=[
-            DataCommonsRef.of(origin) for origin in current_catalogue().data_commons(dcid)
-        ],
-    )
-
-
-def _source_shape(
-    dcid: str, arcs: dict[str, tuple[str, ...]], labels: NodeArcsByDcid
-) -> SourceNode:
-    """`publisher` (the `source` arc's target) and `dataset` (the `isPartOf` arc's target)
-    take their labels from `labels`, the batched second-hop name read `_read_nodes_sync`
-    makes. `label` prefers `dataset`'s own label, falling back to this node's own `name`
-    arc when there is no parent Dataset, or that Dataset carries no name of its own (see
-    `SourceNode`'s own docstring).
-    """
-
-    def first(prop: str) -> str | None:
-        values = arcs.get(prop, ())
-        return values[0] if values else None
-
-    source_dcid = first("source")
-    dataset_dcid = first("isPartOf")
-
-    publisher = (
-        Publisher(dcid=source_dcid, label=_label(labels.get(source_dcid) or {}, source_dcid))
-        if source_dcid is not None
-        else None
-    )
-
-    dataset_label = (
-        _label(labels.get(dataset_dcid) or {}, dataset_dcid) if dataset_dcid is not None else None
-    )
-    dataset = (
-        ParentDataset(dcid=dataset_dcid, label=dataset_label) if dataset_dcid is not None else None
-    )
-
-    label = dataset_label if dataset_label is not None else _label(arcs, dcid)
-    release_frequency = first("sourceReleaseFrequency")
-    catalogue = current_catalogue()
-    row = catalogue.provenance(dcid) if catalogue.is_admitted(dcid) else None
-
-    return SourceNode(
-        dcid=dcid,
-        label=label,
-        license=first("license"),
-        license_type=first("licenseType"),
-        description=first("description"),
-        url=first("url"),
-        source_data_url=first("sourceDataUrl"),
-        description_url=first("descriptionUrl"),
-        transformation_logic_url=first("dataTransformationLogic"),
-        last_data_refresh_date=first("lastDataRefreshDate"),
-        next_data_refresh_date=first("nextDataRefreshDate"),
-        earliest_observation_date=first("earliestObservationDate"),
-        latest_observation_date=first("latestObservationDate"),
-        publisher=publisher,
-        dataset=dataset,
-        freshness=Freshness(
-            release_frequency=release_frequency,
-            release_frequency_label=cadence_label(release_frequency),
-            refresh_type=first("automaticRefreshType"),
-        ),
-        data_commons=DataCommonsRef.of(row.data_commons) if row is not None else None,
-    )
-
-
-def _entity_shape(
-    dcid: str, arcs: dict[str, tuple[str, ...]], labels: NodeArcsByDcid
-) -> EntityNode:
-    type_of = arcs.get("typeOf", ())
-    entity_type = next((t for t in type_of if t in _PLACE_FAMILY_TYPES), None)
-    contained_in_dcids = arcs.get("containedInPlace", ())
-    contained_in = [
-        ContainedInPlace(dcid=target, label=_label(labels.get(target) or {}, target))
-        for target in contained_in_dcids
-    ]
-    return EntityNode(
-        dcid=dcid, label=_label(arcs, dcid), entity_type=entity_type, contained_in=contained_in
-    )
-
-
-def _generic_shape(dcid: str, arcs: dict[str, tuple[str, ...]]) -> GenericNode:
-    types = list(arcs.get("typeOf", ()))
-    properties = {
-        prop: list(values)
-        for prop, values in arcs.items()
-        if prop not in _DEDICATED_FIELDS and values
-    }
-    return GenericNode(dcid=dcid, label=_label(arcs, dcid), types=types, properties=properties)
-
-
-def _node_shape(
-    dcid: str, arcs: dict[str, tuple[str, ...]], labels: NodeArcsByDcid
-) -> NodeResponse:
-    shape = _classify_shape(arcs.get("typeOf", ()))
-    if shape == "stat_var":
-        return _stat_var_shape(dcid, arcs)
-    if shape == "source":
-        return _source_shape(dcid, arcs, labels)
-    if shape == "entity":
-        return _entity_shape(dcid, arcs, labels)
-    return _generic_shape(dcid, arcs)
-
-
-async def _build_response(deps: GraphDeps, dcid: str) -> NodeResponse:
-    confirmed, labels = await _read_nodes(deps, [dcid])
-    arcs = confirmed.get(dcid)
-    if arcs is None:
-        raise NodeNotHeld(dcid)
-    return _node_shape(dcid, arcs, labels)
-
-
-async def _build_batch_response(deps: GraphDeps, dcids: list[str]) -> NodesResponse:
-    confirmed, labels = await _read_nodes(deps, list(dict.fromkeys(dcids)))
-    nodes: list[NodesEntry] = []
+    arcs: dict[str, Arcs] = {}
+    kinds: dict[str, Kind] = {}
     for dcid in dcids:
-        arcs = confirmed.get(dcid)
-        nodes.append(NotHeldNode(dcid=dcid) if arcs is None else _node_shape(dcid, arcs, labels))
-    return NodesResponse(nodes=nodes)
+        node_arcs = confirmed.get(dcid)
+        if node_arcs is None:
+            if tables.held_membership(dcid) is None:
+                continue
+            node_arcs = {}
+        arcs[dcid] = node_arcs
+        kinds[dcid] = classify(
+            dcid=dcid,
+            types=node_arcs.get("typeOf", ()),
+            code_index=tables.code_index,
+            membership=tables.membership,
+        )
+    targets = dict.fromkeys(
+        target
+        for dcid, kind in kinds.items()
+        for target in _label_targets(kind, dcid, arcs[dcid], tables)
+    )
+    labels = (
+        graph.node_arcs_many(list(targets), properties=(_LABEL_PROPERTY,), deadline=deadline)
+        if targets
+        else {}
+    )
+    variables = {dcid: arcs[dcid] for dcid, kind in kinds.items() if kind == "stat_var"}
+    definitions = (
+        build_definitions(
+            variables,
+            graph=graph,
+            code_index=tables.code_index,
+            measure_index=tables.measure_index,
+            deadline=deadline,
+        )
+        if variables
+        else {}
+    )
+    return _Read(arcs=arcs, kinds=kinds, labels=labels, definitions=definitions)
+
+
+@dataclass(slots=True)
+class _Built:
+    """What a block builder adds to the envelope beside its block."""
+
+    links: dict[LinkRelation, str] = field(default_factory=dict)
+    gaps: list[str] = field(default_factory=list)
+    built_from: dict[BuiltFromTable, str] = field(default_factory=dict)
+    transient: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _Availability:
+    """Each variable's availability in one response, and the builds it read. A variable with
+    no entry has none (`availability.UNAVAILABLE`)."""
+
+    reads: dict[str, AvailabilityRead] = field(default_factory=dict)
+    built_from: dict[BuiltFromTable, str] = field(default_factory=dict)
+
+
+class _NodeBuilder:
+    """Builds envelopes for one request from its read, its tables and its `as_of` date."""
+
+    def __init__(
+        self,
+        *,
+        read: _Read,
+        tables: _Tables,
+        admission: Admission,
+        role_properties: tuple[str, ...],
+        as_of: date | None,
+        availability: _Availability,
+        deadline: float,
+    ) -> None:
+        self._read = read
+        self._tables = tables
+        self._admission = admission
+        self._role_properties = role_properties
+        self._as_of = as_of
+        self._availability = availability
+        self._deadline = deadline
+
+    def _ref(self, dcid: str) -> NodeRef:
+        return NodeRef(ref=dcid, label=_label(self._read.labels.get(dcid) or {}, dcid))
+
+    async def build(self, dcid: str) -> tuple[NodeResponse, bool]:
+        """The envelope for a held `dcid`, and whether any of its gaps is transient."""
+        arcs = self._read.arcs[dcid]
+        kind = self._read.kinds[dcid]
+        built = _Built(built_from={"code_index": self._tables.code_index.stamp.content_hash})
+        label = _label(arcs, dcid)
+        block: BaseModel | None
+        match kind:
+            case "stat_var":
+                built.links["facets"] = members_link(dcid, "facets")
+                block = self._stat_var(dcid, built)
+            case "code_system":
+                built.links["codes"] = members_link(dcid, "codes")
+                block = self._code_system(dcid)
+            case "code":
+                block = self._code(dcid, built)
+            case "group":
+                membership = self._membership(dcid)
+                built.links["members"] = members_link(dcid, "members", as_of=self._as_of)
+                block = self._membership_block(membership, "group", built)
+                label = membership.label
+            case "country" | "continent" | "subregion" | "continental_union" | "place_other":
+                block = self._place(kind, dcid, arcs, built)
+                region = self._tables.held_membership(dcid)
+                if region is not None and region.kind == "region":
+                    label = region.label
+            case "organisation" | "aggregate":
+                block = await self._party(kind, arcs, built)
+            case "unit":
+                block = self._unit(dcid, arcs, label)
+            case "source" | "dataset" | "provenance":
+                block = self._source_family(kind, dcid, arcs, built)
+                label = block.parent.label if block.parent is not None else None
+                label = label if label is not None else _label(arcs, dcid)
+            case "other":
+                block = None
+        if label is None:
+            built.gaps.insert(0, "label")
+        fields: dict[str, object] = {
+            "ref": dcid,
+            "label": label,
+            "kind": kind,
+            "types": list(arcs.get("typeOf", ())),
+            "description": first_value(arcs, "description"),
+            "links": built.links,
+            "gaps": built.gaps,
+            "built_from": built.built_from,
+        }
+        if block is not None:
+            fields[kind] = block
+        return _NODE_ADAPTER.validate_python(fields), built.transient
+
+    def _stat_var(self, dcid: str, built: _Built) -> StatVarBlock:
+        definition = self._read.definitions[dcid]
+        availability = self._availability.reads.get(dcid, UNAVAILABLE)
+        built.gaps.extend((*definition.gaps, *availability.gaps))
+        built.transient = built.transient or definition.transient or availability.transient
+        built.built_from.update(self._availability.built_from)
+        return StatVarBlock(
+            definition=definition.definition, availability=availability.availability
+        )
+
+    def _code_system(self, dcid: str) -> CodeSystemBlock:
+        index = self._tables.code_index
+        declaration = code_system_of(index, dcid)
+        assert declaration is not None, "classify names code_system only for a declared system"
+        return CodeSystemBlock(
+            property=declaration.code_system,
+            plain_name=declaration.plain_name,
+            declarations=CodeSystemDeclarations(
+                hierarchical=declaration.hierarchical,
+                disjoint_from_children=declaration.disjoint_from_children,
+                summable=declaration.summable,
+                absent_reading=declaration.absent_reading,
+            ),
+            code_count=len(index.codes_by_system.get(declaration.code_system, ())),
+        )
+
+    def _code(self, dcid: str, built: _Built) -> CodeBlock:
+        index = self._tables.code_index
+        row = index.code_by_dcid(dcid)
+        assert row is not None, "classify names code only for a code row"
+        declaration = index.declarations.get(row.code_system)
+        enum_dcid = declaration.enum_dcid if declaration is not None else None
+        if enum_dcid is None:
+            built.gaps.append("code.code_system")
+        if index.has_children(dcid):
+            built.links["children"] = members_link(dcid, "children")
+        parent = index.code_by_dcid(row.parent) if row.parent is not None else None
+        return CodeBlock(
+            code_system=self._ref(enum_dcid) if enum_dcid is not None else None,
+            property=row.code_system,
+            code=row.code,
+            parent=(
+                NodeRef(ref=row.parent, label=parent.label if parent is not None else None)
+                if row.parent is not None
+                else None
+            ),
+            synonyms=list(row.synonyms),
+        )
+
+    def _membership(self, dcid: str) -> Membership:
+        membership = self._tables.held_membership(dcid)
+        assert membership is not None, "classify names group or region only for a held ref"
+        return membership
+
+    def _membership_block(
+        self, membership: Membership, path: str, built: _Built
+    ) -> MembershipBlock:
+        """The membership at the read's `as_of`. Raises `AsOfNotRecorded` for `as_of` on an
+        undated membership."""
+        effective_date = membership.effective_date(self._as_of)
+        if effective_date is None:
+            built.gaps.append(f"{path}.effective_date")
+        projections: list[ProjectionCount] = []
+        for projection in Projection:
+            found = membership.member_count(projection, self._as_of)
+            count = None if isinstance(found, NotRecorded) else found
+            if count is None:
+                built.gaps.append(f"{path}.projections.{projection.value}")
+            projections.append(
+                ProjectionCount(
+                    projection=projection,
+                    count=count,
+                    complete=count is not None and membership.gap(projection) is None,
+                )
+            )
+        built.built_from["membership"] = membership.authority.version
+        return MembershipBlock(
+            authority=Authority(
+                name=membership.authority.name, version=membership.authority.version
+            ),
+            as_of=self._as_of,
+            effective_date=effective_date,
+            projections=projections,
+        )
+
+    def _place(self, kind: Kind, dcid: str, arcs: Arcs, built: _Built) -> PlaceBlock:
+        region = self._tables.held_membership(dcid)
+        membership = None
+        if region is not None and region.kind == "region":
+            built.links["countries"] = members_link(dcid, "countries", as_of=self._as_of)
+            membership = self._membership_block(region, f"{kind}.membership", built)
+        return PlaceBlock(
+            contained_in=[self._ref(target) for target in arcs.get("containedInPlace", ())],
+            membership=membership,
+        )
+
+    async def _party(self, kind: Kind, arcs: Arcs, built: _Built) -> PartyBlock:
+        """The role properties any of the node's types can fill. A range read that fails, is
+        refused by the DCP-read executor, or is due after the deadline leaves `roles` null
+        with a transient gap."""
+        types = arcs.get("typeOf", ())
+        roles: list[str] = []
+        try:
+            for role in self._role_properties:
+                for graph_type in types:
+                    if await self._admission.admits(role, graph_type, deadline=self._deadline):
+                        roles.append(role)
+                        break
+        except (GraphReadError, DcpExecutorSaturated, DcpExecutorShutDown):
+            logger.warning("Graph node door's role-range read failed", exc_info=True)
+            built.gaps.append(f"{kind}.roles")
+            built.transient = True
+            return PartyBlock(roles=None)
+        return PartyBlock(roles=roles)
+
+    def _unit(self, dcid: str, arcs: Arcs, label: str | None) -> UnitBlock:
+        iso = first_value(arcs, "iso4217AlphaCode")
+        if iso is None and _CURRENCY_TYPE in arcs.get("typeOf", ()) and _is_iso_code(dcid):
+            iso = dcid
+        unit_class = classify_unit(
+            unit=dcid, denominator=None, currency_units={dcid: iso} if iso else {}
+        )
+        basis = price_basis(requested=None, unit_class=unit_class, measurement_qualifier=None)
+        return UnitBlock(
+            unit_class=unit_class.kind,
+            currency=unit_class.currency,
+            currency_noun=(
+                currency_noun(unit_class.currency, label=label)
+                if unit_class.currency is not None
+                else None
+            ),
+            price_basis=(
+                PriceBasisWords(prices=basis.prices, base_year=basis.base_year)
+                if basis is not None
+                else None
+            ),
+            changes_magnitude=unit_class.changes_magnitude,
+        )
+
+    def _source_family(self, kind: Kind, dcid: str, arcs: Arcs, built: _Built) -> SourceBlock:
+        """`publisher` (the `source` arc's target) and `parent` (the `isPartOf` arc's target)
+        take their labels from the second-hop name read."""
+        publisher_dcid = first_value(arcs, "source")
+        parent_dcid = first_value(arcs, "isPartOf")
+        catalogue = current_catalogue()
+        built.built_from["origin_catalogue"] = catalogue.build_id
+        row = catalogue.provenance(dcid) if catalogue.is_admitted(dcid) else None
+        release_frequency = first_value(arcs, "sourceReleaseFrequency")
+        if kind == "source":
+            built.links["datasets"] = members_link(dcid, "datasets")
+        else:
+            built.links["variables"] = members_link(dcid, "variables")
+        return SourceBlock(
+            publisher=self._ref(publisher_dcid) if publisher_dcid is not None else None,
+            parent=self._ref(parent_dcid) if parent_dcid is not None else None,
+            license=first_value(arcs, "license"),
+            license_type=first_value(arcs, "licenseType"),
+            url=first_value(arcs, "url"),
+            source_data_url=first_value(arcs, "sourceDataUrl"),
+            description_url=first_value(arcs, "descriptionUrl"),
+            transformation_logic_url=first_value(arcs, "dataTransformationLogic"),
+            last_data_refresh_date=first_value(arcs, "lastDataRefreshDate"),
+            next_data_refresh_date=first_value(arcs, "nextDataRefreshDate"),
+            earliest_observation_date=first_value(arcs, "earliestObservationDate"),
+            latest_observation_date=first_value(arcs, "latestObservationDate"),
+            freshness=Freshness(
+                release_frequency=release_frequency,
+                release_frequency_label=cadence_label(release_frequency),
+                refresh_type=first_value(arcs, "automaticRefreshType"),
+            ),
+            data_commons=DataCommonsRef.of(row.data_commons) if row is not None else None,
+            documentation=DOCUMENTATION_PATH.format(ref=dcid),
+        )
+
+
+def _is_iso_code(dcid: str) -> bool:
+    return len(dcid) == 3 and dcid.isascii() and dcid.isalpha() and dcid.isupper()
+
+
+@functools.cache
+def _role_properties(code_index: CodeIndex) -> tuple[str, ...]:
+    """The role properties the code index's variables declare, sorted."""
+    return tuple(
+        sorted(
+            {
+                role
+                for row in (*code_index.statvars, *code_index.listed_statvars)
+                for role in row.observation_properties
+            }
+        )
+    )
+
+
+def published_membership(request: Request) -> MembershipPolicy | None:
+    """The membership policy the surface's lifespan published, or `None` where none is."""
+    try:
+        return NODE_MEMBERSHIP_SLOT(request)
+    except StateNotSet:
+        return None
+
+
+def _admission(request: Request, deps: GraphDeps) -> Admission:
+    """One `Admission` per surface lifespan, kept on the app beside the deps it reads through,
+    so its generation-keyed range cache outlives a request."""
+    held: tuple[GraphDeps, Admission] | None = getattr(request.app.state, _ADMISSION_STATE, None)
+    if held is None or held[0] is not deps:
+        held = (
+            deps,
+            Admission(deps.graph, graph_executor=deps.dcp_executor, generation=deps.generation),
+        )
+        setattr(request.app.state, _ADMISSION_STATE, held)
+    return held[1]
+
+
+async def _read_held(
+    request: Request, deps: GraphDeps, dcids: list[str]
+) -> tuple[_Read, _Tables, float]:
+    """Run `_read_nodes_sync` as one job on the shared DCP-read executor, and return the read,
+    the tables it classified against and its deadline.
+
+    Compute the deadline before submission so queue time counts against it."""
+    tables = _Tables(
+        code_index=get_index(),
+        measure_index=get_measure_index(),
+        membership=published_membership(request),
+    )
+    deadline = time.monotonic() + GRAPH_NODE_TIMEOUT_SECONDS
+    read = await run_dcp_read(
+        deps.dcp_executor, _read_nodes_sync, deps.graph, dcids, tables, deadline=deadline
+    )
+    return read, tables, deadline
+
+
+async def holds_node(request: Request, deps: GraphDeps, dcid: str) -> bool:
+    """Whether the deployment holds `dcid`: a node the graph holds, or a group or region the
+    membership policy holds with or without a graph node."""
+    membership = published_membership(request)
+    if membership is not None and dcid in membership:
+        return True
+    read, _, _ = await _read_held(request, deps, [dcid])
+    return dcid in read.kinds
+
+
+async def _read(
+    request: Request, deps: GraphDeps, dcids: list[str], *, as_of: date | None
+) -> tuple[_Read, _NodeBuilder]:
+    """The batch's hold read (`_read_held`) and a builder over it."""
+    read, tables, deadline = await _read_held(request, deps, dcids)
+    code_index = tables.code_index
+    answer_deadline = deadline - _ANSWER_MARGIN_SECONDS
+    builder = _NodeBuilder(
+        read=read,
+        tables=tables,
+        admission=_admission(request, deps),
+        role_properties=_role_properties(code_index),
+        as_of=as_of,
+        availability=await _availability(deps, read.stat_vars, tables, deadline=answer_deadline),
+        deadline=answer_deadline,
+    )
+    return read, builder
+
+
+async def _availability(
+    deps: GraphDeps, stat_vars: list[str], tables: _Tables, *, deadline: float
+) -> _Availability:
+    """Every variable's availability in one profile read and one read of its inputs."""
+    if not stat_vars:
+        return _Availability()
+    profiles = await read_profiles(deps, stat_vars, deadline=deadline)
+    if profiles is None:
+        # A coverage index that failed to load can load after a restart; none configured cannot.
+        if deps.coverage_load_failed:
+            return _Availability()
+        return _Availability(reads=dict.fromkeys(stat_vars, NOT_SERVED))
+    reads = await read_availability(
+        profiles, code_index=tables.code_index, membership=tables.membership, deadline=deadline
+    )
+    return _Availability(
+        reads=reads,
+        built_from={
+            "origin_catalogue": profiles.catalogue.build_id,
+            "coverage_index": profiles.coverage_build,
+        },
+    )
+
+
+async def _build_response(
+    request: Request, deps: GraphDeps, dcid: str, as_of: date | None
+) -> tuple[NodeResponse, bool]:
+    read, builder = await _read(request, deps, [dcid], as_of=as_of)
+    if dcid not in read.kinds:
+        raise NodeNotHeld(dcid)
+    return await builder.build(dcid)
+
+
+async def _build_batch_response(
+    request: Request, deps: GraphDeps, dcids: list[str]
+) -> NodesResponse:
+    unique = list(dict.fromkeys(dcids))
+    read, builder = await _read(request, deps, unique, as_of=None)
+    entries: dict[str, NodesEntry] = {}
+    for dcid in unique:
+        if dcid in read.kinds:
+            entries[dcid], _ = await builder.build(dcid)
+        else:
+            entries[dcid] = NotHeldEntry(ref=dcid)
+    return NodesResponse(nodes=[entries[dcid] for dcid in dcids])
 
 
 def classify_node_exception(exc: BaseException) -> ProblemSpec | None:
@@ -337,6 +700,10 @@ def classify_node_exception(exc: BaseException) -> ProblemSpec | None:
             ),
             pointer="/dcid",
             retryable=False,
+        )
+    if isinstance(exc, AsOfNotRecorded):
+        return ProblemSpec(
+            status=400, code="request_invalid", detail=str(exc), pointer="/as_of", retryable=False
         )
     if isinstance(exc, NodeNotHeld):
         return ProblemSpec(
@@ -352,32 +719,42 @@ def classify_node_exception(exc: BaseException) -> ProblemSpec | None:
         )
     if isinstance(exc, GraphReadError):
         logger.error("Graph node door's DCP read failed: %s", exc, exc_info=exc)
-        upstream_status = exc.upstream_status
-        if isinstance(upstream_status, int) and 400 <= upstream_status < 500:
-            return ProblemSpec(status=502, code="upstream_error", retryable=True)
-        return ProblemSpec(status=503, code="service_unavailable", retryable=True)
+        return graph_read_problem(exc)
     return None
 
 
-async def node_endpoint(dcid: str, deps: GraphDepsDep) -> JSONResponse:
+def graph_read_problem(exc: GraphReadError) -> ProblemSpec:
+    """Refuse a failed graph read short of its deadline: 502 `upstream_error` where the graph
+    answered 4xx, 503 `service_unavailable` otherwise."""
+    upstream_status = exc.upstream_status
+    if isinstance(upstream_status, int) and 400 <= upstream_status < 500:
+        return ProblemSpec(status=502, code="upstream_error", retryable=True)
+    return ProblemSpec(status=503, code="service_unavailable", retryable=True)
+
+
+async def node_endpoint(
+    dcid: str, deps: GraphDepsDep, request: Request, as_of: date | None = None
+) -> Response:
     if len(dcid) > routing.DCID_MAX_LENGTH:
         raise DcidTooLong(len(dcid))
-    response = await asyncio.wait_for(
-        _build_response(deps, dcid), timeout=GRAPH_NODE_TIMEOUT_SECONDS
+    node, transient_gap = await asyncio.wait_for(
+        _build_response(request, deps, dcid, as_of), timeout=GRAPH_NODE_TIMEOUT_SECONDS
     )
-    return JSONResponse(response.model_dump(mode="json"))
+    return gapped_public_json(node.model_dump(mode="json"), request, transient_gap=transient_gap)
 
 
-async def nodes_endpoint(body: NodesRequest, deps: GraphDepsDep) -> JSONResponse:
+async def nodes_endpoint(body: NodesRequest, deps: GraphDepsDep, request: Request) -> JSONResponse:
     response = await asyncio.wait_for(
-        _build_batch_response(deps, body.dcids), timeout=GRAPH_NODE_TIMEOUT_SECONDS
+        _build_batch_response(request, deps, body.dcids), timeout=GRAPH_NODE_TIMEOUT_SECONDS
     )
     return JSONResponse(response.model_dump(mode="json"))
 
 
 def build_node_door() -> DoorContribution:
+    # Load the code index now, so the first node request does not parse it.
+    _role_properties(get_index())
     router = APIRouter()
-    # `response_model` documents the union in OpenAPI. JSONResponse passes through unchanged.
+    # `response_model` documents the union in OpenAPI. The handlers' responses pass through.
     router.add_api_route(
         "/api/graph/node/{dcid:dcid}",
         node_endpoint,
@@ -392,15 +769,21 @@ def build_node_door() -> DoorContribution:
     )
     return DoorContribution(
         router=router,
+        registry_endpoints={
+            "/api/graph/node/{dcid:dcid}": "graph.node",
+            "/api/graph/nodes": "graph.nodes",
+        },
         classify=classify_node_exception,
         exception_types=(
             DcidTooLong,
+            AsOfNotRecorded,
             NodeNotHeld,
             GraphDeadlineExceededError,
             GraphReadError,
         ),
         exception_exemplars=(
             DcidTooLong(routing.DCID_MAX_LENGTH + 1),
+            AsOfNotRecorded("exemplar/dcid"),
             NodeNotHeld("exemplar/dcid"),
             GraphDeadlineExceededError("exemplar"),
             GraphReadError("exemplar", upstream_status=502),

@@ -653,6 +653,7 @@ def test_empty_table_builds_an_index_that_answers_nothing() -> None:
     assert idx.num_rows == 0
     assert idx.pair_rows(variables=[_WINDOW_SV]).groups() == []
     assert idx.filter_candidates(variables=[_WINDOW_SV]) == []
+    assert idx.facet_summary.variable(_WINDOW_SV) is None
 
 
 _FLOW_ROLES = RoleNames(donor="financingProvider", recipient="financingRecipient")
@@ -1176,6 +1177,47 @@ def test_head_pairs_ranks_like_sorting_the_decoded_pairs(
             assert rows.n_obs(
                 variable=variable, facet_id=facet_id, first_year=first_year, last_year=last_year
             ) == sum(totals.values())
+
+
+@pytest.mark.parametrize(("first_year", "last_year"), [(None, None), (2003, 2040)])
+@pytest.mark.parametrize("member_is_donor", [True, False])
+@pytest.mark.parametrize("has_opposite", [True, False])
+def test_pair_year_counts_hold_what_head_pairs_counts_one_year_at_a_time(
+    first_year: int | None, last_year: int | None, member_is_donor: bool, has_opposite: bool
+) -> None:
+    """Each row's years and observations, read across both mask words, are what a one-year
+    `head_pairs` window counts for it, so rows a one-role read sums add their observations
+    in each year."""
+    rows_with_late_years = [
+        (variable, facet_id, donor, recipient, [*years, 2035 + i % 2])
+        for i, (variable, facet_id, donor, recipient, years) in enumerate(_GROUPED_ROWS)
+    ]
+    table, horizon = coverage_table(rows_with_late_years)
+    assert horizon.mask_words == 2
+    rows = CoverageIndex(table, _GROUPED_ROLE_NAMES, horizon=horizon).pair_rows(
+        variables=list(_GROUPED_VARIABLES)
+    )
+    key = {"member_is_donor": member_is_donor, "has_opposite": has_opposite}
+    for variable in _GROUPED_VARIABLES:
+        for facet_id in _GROUPED_FACETS:
+            group = {"variable": variable, "facet_id": facet_id}
+            expected: dict[tuple[str, str | None], list[tuple[int, int]]] = {}
+            for year in range(2000, 2040):
+                if (first_year is not None and year < first_year) or (
+                    last_year is not None and year > last_year
+                ):
+                    continue
+                for member, opposite, n in rows.head_pairs(
+                    **group, **key, limit=1000, first_year=year, last_year=year, with_data=True
+                ):
+                    expected.setdefault((member, opposite), []).append((year, n))
+            found = rows.pair_year_counts(
+                **group, **key, first_year=first_year, last_year=last_year
+            )
+            assert {(m, o): list(counts) for m, o, counts in found} == expected
+            if not has_opposite:
+                assert any(n > 1 for _m, _o, counts in found for _year, n in counts)
+            assert len(found) == len(expected)
 
 
 def test_group_reads_miss_cleanly() -> None:

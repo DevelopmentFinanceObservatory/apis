@@ -96,5 +96,5 @@ def test_an_elected_member_absent_from_the_live_graph_is_dropped_not_fatal(monke
     assert region.status == "definite", (
         region.no_data_reason if region.status != "definite" else None
     )
-    served_refs = {sv.ref.dcid for sv in region.specs[0].resolved.members}
+    served_refs = {sv.ref.ref for sv in region.specs[0].resolved.members}
     assert absent_dcid not in served_refs

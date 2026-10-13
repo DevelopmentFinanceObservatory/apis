@@ -16,7 +16,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import cast
 
-from dfo_frame_grammar import STAT_VAR_COLUMN, UNIT_COLUMN
+from dfo_frame_grammar import STAT_VAR_COLUMN, TIME_PERIOD_COLUMN, UNIT_COLUMN, VALUE_COLUMN
 
 from assembler.bind import BoundSeries, role_columns, series_label_parts
 from assembler.errors import BindingInvalid, ConstraintViolation
@@ -25,6 +25,7 @@ from assembler.limits import LABEL_MAX, joined_label
 from assembler.ports import ResolvedFrame
 from assembler.resolve import ResolvedSeries
 from assembler.select import has_arrayed_dimension
+from dfo_platform.columns import column_title
 from materialise.unit_cells import composed_unit_words
 
 _TITLE_MAX = 200
@@ -505,10 +506,12 @@ def _build_table(
     )
     title_text = cast(str | None, merged_intent.get("title")) or ", ".join(selected_names)
 
-    columns = [
-        {"key": name, "label": resolved_frame.labels.get(name, name)[:LABEL_MAX]}
-        for name in dimension_names
-    ] + [{"key": "period", "label": "Period"}, {"key": "value", "label": "Value"}]
+    # A header names its column by noun (`dfo_platform.columns`), as the card's download does;
+    # `resolved_frame.labels` names cell values only.
+    columns = [{"key": name, "label": column_title(name)} for name in dimension_names] + [
+        {"key": "period", "label": column_title(TIME_PERIOD_COLUMN)},
+        {"key": "value", "label": column_title(VALUE_COLUMN)},
+    ]
 
     # Every entity-role dimension contributes to a row's label, including
     # constant unselected roles. Their values appear in `dimensions`.
@@ -536,10 +539,21 @@ def _build_table(
             if value is not None:
                 dimensions[name] = _coordinate_label(labels=resolved_frame.labels, value=value)
         source_ref = source_id_by_raw_ref[bound.source_ref]
+        cells_by_period = {cells[TIME_PERIOD_COLUMN]: cells for cells in resolved.rows}
         for point in bound.points:
+            # A series continued by its source's estimates holds rows under two methods, so a
+            # row labels a dimension by its own cell where that differs from the series'.
+            cells = cells_by_period.get(point["period"], {})
+            own = {
+                name: _coordinate_label(
+                    labels=resolved_frame.labels, value=cast("str | None", cells[name])
+                )
+                for name in dimension_names
+                if name != UNIT_COLUMN and name in cells and cells[name] != coordinates.get(name)
+            }
             row: dict[str, object] = {
                 "series_id": bound.id,
-                "dimensions": dimensions,
+                "dimensions": {**dimensions, **own} if own else dimensions,
                 "period": point["period"],
                 "source_ref": source_ref,
                 # Tables can mix stat_vars with different units, so each row carries its

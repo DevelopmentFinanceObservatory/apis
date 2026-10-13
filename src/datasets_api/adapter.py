@@ -43,6 +43,7 @@ from datasets_api.codes_materialise import (
 )
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.mint_models import (
+    FacetNationalCurrencyBinding,
     FacetRefBinding,
     FacetUnitRequestBinding,
     Scope,
@@ -60,7 +61,7 @@ from materialise.errors import (
     FacetNotAvailableError,
     OverCeilingError,
 )
-from materialise.facets import ElectedDataset, FacetBinding, UnitRequest
+from materialise.facets import ElectedDataset, FacetBinding, NationalCurrency, UnitRequest
 from materialise.graph import GraphReader
 from materialise.recipes import (
     RecipeNotDeclaredError,
@@ -322,15 +323,21 @@ def _identity_facets(scope: Scope | None) -> dict[str, object]:
 
 
 def facets_to_identity(
-    facets: Mapping[str, FacetRefBinding | FacetUnitRequestBinding],
+    facets: Mapping[str, FacetRefBinding | FacetUnitRequestBinding | FacetNationalCurrencyBinding],
 ) -> dict[str, object]:
-    """Convert facet bindings to identity form: unit requests use `request`, others use `ref`."""
-    return {
-        axis: _unit_request_to_identity(binding)
-        if isinstance(binding, UnitRequestBindingBase)
-        else {"state": "value", "ref": binding.ref}
-        for axis, binding in facets.items()
-    }
+    """Convert facet bindings to identity form: unit requests use `request`, a
+    national-currency binding `national_currency`, and others `ref`."""
+    return {axis: _facet_to_identity(binding) for axis, binding in facets.items()}
+
+
+def _facet_to_identity(
+    binding: FacetRefBinding | FacetUnitRequestBinding | FacetNationalCurrencyBinding,
+) -> dict[str, object]:
+    if isinstance(binding, UnitRequestBindingBase):
+        return _unit_request_to_identity(binding)
+    if isinstance(binding, FacetNationalCurrencyBinding):
+        return {"state": "value", "national_currency": {"role": binding.national_currency.role}}
+    return {"state": "value", "ref": binding.ref}
 
 
 def _unit_request_to_identity(binding: UnitRequestBindingBase) -> dict[str, object]:
@@ -387,12 +394,21 @@ def to_materialisation_request(
             continue
         has_ref = "ref" in binding
         has_request = "request" in binding
-        if has_ref and has_request:
+        has_national_currency = "national_currency" in binding
+        if has_ref + has_request + has_national_currency > 1:
             raise IdentityError(
                 "invalid_binding_shape",
-                f"{axis} facet binding cannot carry both 'ref' and 'request'",
+                f"{axis} facet binding carries more than one of 'ref', 'request' and "
+                "'national_currency'",
             )
-        if has_request:
+        if has_national_currency:
+            role = cast("Mapping[str, object]", binding["national_currency"])["role"]
+            _require_currency_role(cast(str, role), shape=shape)
+            facet_bindings[axis] = FacetBinding(
+                state="national_currency",
+                national_currency=NationalCurrency(role=cast("SpecRole", role)),
+            )
+        elif has_request:
             facet_bindings[axis] = FacetBinding(
                 state="request",
                 request=_unit_request_from_identity(
@@ -407,7 +423,8 @@ def to_materialisation_request(
             )
         else:
             raise IdentityError(
-                "schema_violation", f"{axis} facet binding requires 'ref' or 'request'"
+                "schema_violation",
+                f"{axis} facet binding requires 'ref', 'request' or 'national_currency'",
             )
     window = _requested_window(
         cast("Mapping[str, object]", identity.get("requested_window", {"kind": "all"}))
@@ -470,31 +487,8 @@ def _unit_request_from_identity(
     """
     currency_value = request["currency"]
     if isinstance(currency_value, Mapping):
-        role = cast(str, cast("Mapping[str, object]", currency_value)["role"])
-        try:
-            graph_role_for_spec_role(
-                spec_role=cast("SpecRole", role), declared_roles=shape.declared_roles
-            )
-        except RoleAxisConflictError as exc:
-            # Name both roles because the alias maps to their shared axis.
-            axis_roles = [
-                declared for declared in shape.declared_roles if axis_for_role(declared) == role
-            ]
-            raise CurrencyRoleUndeclared(
-                stat_var=shape.stat_var,
-                role=role,
-                declared_roles=shape.declared_roles,
-                message=(
-                    f"stat_var {shape.stat_var!r} declares two roles, {axis_roles[0]!r} and "
-                    f"{axis_roles[1]!r}, on the {role!r} axis named by a unit request's "
-                    "role-shaped currency; no single role can serve it"
-                ),
-            ) from exc
-        except RecipeNotDeclaredError as exc:
-            raise CurrencyRoleUndeclared(
-                stat_var=shape.stat_var, role=role, declared_roles=shape.declared_roles
-            ) from exc
-        currency = role
+        currency = cast(str, cast("Mapping[str, object]", currency_value)["role"])
+        _require_currency_role(currency, shape=shape)
     else:
         currency = cast(str, currency_value)
     return UnitRequest(
@@ -502,6 +496,35 @@ def _unit_request_from_identity(
         prices=cast('Literal["current", "constant"]', request["prices"]),
         base_year=cast("int | None", request.get("base_year")),
     )
+
+
+def _require_currency_role(role: str, *, shape: StatVarShape) -> None:
+    """Raise `CurrencyRoleUndeclared` unless `role`, the role a unit binding takes each
+    entity's currency from, names exactly one role `shape` declares. An ambiguous role
+    names both."""
+    try:
+        graph_role_for_spec_role(
+            spec_role=cast("SpecRole", role), declared_roles=shape.declared_roles
+        )
+    except RoleAxisConflictError as exc:
+        # Name both roles because the alias maps to their shared axis.
+        axis_roles = [
+            declared for declared in shape.declared_roles if axis_for_role(declared) == role
+        ]
+        raise CurrencyRoleUndeclared(
+            stat_var=shape.stat_var,
+            role=role,
+            declared_roles=shape.declared_roles,
+            message=(
+                f"stat_var {shape.stat_var!r} declares two roles, {axis_roles[0]!r} and "
+                f"{axis_roles[1]!r}, on the {role!r} axis named by a unit binding's "
+                "currency role; no single role can serve it"
+            ),
+        ) from exc
+    except RecipeNotDeclaredError as exc:
+        raise CurrencyRoleUndeclared(
+            stat_var=shape.stat_var, role=role, declared_roles=shape.declared_roles
+        ) from exc
 
 
 def _requested_window(window: Mapping[str, object]) -> RequestedWindow:

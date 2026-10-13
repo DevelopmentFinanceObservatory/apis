@@ -17,8 +17,8 @@ from pathlib import Path
 
 import pytest
 
+from code_index.labels import role_class_text, without_property_suffix
 from dfo_platform.roles import role_wording
-from search.render.how import _role_class_text, _without_property_suffix
 from search.render.plan import render_sentence_plan, sentence_from_plan
 from tests.render._helpers import recorded_spec
 
@@ -203,5 +203,5 @@ def test_every_ids_creditor_type_names_its_creditors(label: str, phrase: str):
     """The creditor-type rule matches a final "s" as text, so each of the ten graph
     names is pinned."""
     wording = role_wording("debt_service")
-    bare = _without_property_suffix(label, "IDS creditor type")
-    assert _role_class_text(bare, "idsCreditorType", wording) == phrase
+    bare = without_property_suffix(label, "IDS creditor type")
+    assert role_class_text(bare, "idsCreditorType", wording) == phrase

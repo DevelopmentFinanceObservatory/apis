@@ -263,11 +263,11 @@ def test_a_member_declaring_the_origin_role_alone_is_dropped() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Index-sourced population past the read cap: no read is issued at all
+# Index-sourced population of any size: its declared roles are refreshed
 # ---------------------------------------------------------------------------
 
-# A small cap keeps the wide populations these tests build cheap.
-_CAP = 40
+# CRS creditor families exceed 5,000 members, and one refresh reads every member.
+_WIDE_MEMBERS = 5001
 
 
 def _wide_index(*, members: int) -> CodeIndex:
@@ -325,9 +325,7 @@ def _wide_nodes(members: int) -> dict:
 
 
 class _RecordingWideGraph(FakeGraph):
-    """A FakeGraph that records every declared-role refresh call, so a test
-    can assert the read was never issued rather than merely that its result
-    was ignored."""
+    """A FakeGraph that records every declared-role refresh call."""
 
     def __init__(self, *, nodes: dict) -> None:
         super().__init__(nodes=nodes, obs={}, detect={}, resolve={})
@@ -338,44 +336,9 @@ class _RecordingWideGraph(FakeGraph):
         return super().node_observation_properties_batch(dcids)
 
 
-def test_a_population_one_over_the_cap_issues_no_refresh_read(monkeypatch, search_settings) -> None:
-    """At 41 members, the 40-member cap suppresses the read and marks the result unverified."""
-    members = _CAP + 1
-    search_settings(role_refresh_max_members=_CAP)
-    monkeypatch.setattr(
-        bound_values_module,
-        "get_index",
-        lambda: _wide_index(members=members),
-    )
-    shape = _wide_shape(members)
-    _auto_coverage_index_1 = patch_coverage(
-        monkeypatch,
-        [(f"{_SV_INDEX}/0", "f1", _ORIGIN, _DESTINATION, _YEARS)],
-        role_names={f"{_SV_INDEX}/0": _FINANCING_ROLE_NAMES},
-    )
-    sdmx = _sdmx(*[f"{_SV_INDEX}/{i}" for i in range(members)])
-    graph = _RecordingWideGraph(nodes=_wide_nodes(members))
-
-    result = _resolve(
-        shape,
-        graph=graph,
-        sdmx=sdmx,
-        coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
-    )
-
-    assert isinstance(result, Materialised)
-    assert result.has_data is True
-    assert result.role_declaration_unverified is True
-    assert graph.observation_properties_calls == [], (
-        "a population past the read cap must never issue the batch call; got "
-        f"{graph.observation_properties_calls}"
-    )
-
-
-def test_a_population_exactly_at_the_cap_still_refreshes(monkeypatch, search_settings) -> None:
-    """The inclusive 40-member limit still refreshes and verifies the population."""
-    members = _CAP
-    search_settings(role_refresh_max_members=_CAP)
+def test_a_population_over_five_thousand_members_refreshes_its_roles(monkeypatch) -> None:
+    """A family past 5,000 members refreshes in one read and stays verified."""
+    members = _WIDE_MEMBERS
     monkeypatch.setattr(
         bound_values_module,
         "get_index",

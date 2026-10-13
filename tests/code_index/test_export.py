@@ -1,7 +1,7 @@
 """Offline tests for scripts/export_code_index.py. Drives a small in-memory
-fake reader (`_FakeGraph`) implementing only the `GraphReader` surface the
-export actually calls -- `node_subjects` and `node_arcs_many`. Nothing here
-opens a socket.
+fake reader (`_FakeGraph`) implementing only the `ExportReader` surface the
+export actually calls (`node_subjects`, `node_arcs_many` and `node_arcs_batch`).
+Nothing here opens a socket.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from code_index.loader import (
     load_index,
     load_measure_axes,
     parse_index,
+    parse_measure_axes,
 )
 from code_index.shared import get_index
 from code_index.types import (
@@ -63,7 +64,9 @@ from scripts.export_code_index import (
     export_graph_blocks,
     export_index,
     export_measure_values,
+    export_source_codes,
     export_statvars,
+    export_value_parents,
     load_coverage_join,
     stamp_counts,
     strip_system_suffix,
@@ -80,7 +83,8 @@ class _FakeGraph:
     `page_size` returns a sorted truncated sample like the live graph. `truncate` forces that
     result at any size; `not_advancing` raises on oversized reads, and `read_error` always raises.
     `unreadable` nodes appear in reverse reads but their forward read returns no node.
-    `calls` records each reverse read and its filters.
+    `calls` records each reverse read and its filters. `wire_arcs` holds the full forward reads
+    `node_arcs_batch` returns, in the graph's wire shape, whose values carry their provenance.
     """
 
     forward_arcs: dict[str, dict[str, tuple[str, ...]]]
@@ -90,6 +94,10 @@ class _FakeGraph:
     read_error: frozenset[tuple[str, str]] = field(default_factory=frozenset)
     unreadable: frozenset[str] = field(default_factory=frozenset)
     calls: list[tuple[str, str, tuple[tuple[str, str], ...] | None]] = field(default_factory=list)
+    wire_arcs: dict[str, dict] = field(default_factory=dict)
+
+    def node_arcs_batch(self, dcids):
+        return {dcid: self.wire_arcs.get(dcid) for dcid in dcids}
 
     def node_subjects(self, dcid, *, property, filters=None, max_results):
         key = (dcid, property)
@@ -1142,6 +1150,37 @@ def test_code_row_short_name_is_the_graph_arc_else_the_authored_name(
     assert rows[0]["short_name"] == expected
 
 
+@pytest.mark.parametrize(
+    ("descriptions", "expected"),
+    [(("A flow of official aid.",), "A flow of official aid."), ((), None)],
+)
+def test_code_row_definition_is_the_graph_description(
+    descriptions: tuple[str, ...], expected: str | None
+):
+    graph = _FakeGraph(
+        forward_arcs={
+            "CRSTypeOfFlow10": {
+                "typeOf": ("SysHierEnum",),
+                "classificationCode": ("10",),
+                "name": ("a flow (CRS Hier)",),
+                "description": descriptions,
+            },
+        }
+    )
+    config = CodeSystemConfig(
+        code_system="sysHier",
+        enum_dcid="SysHierEnum",
+        expected_hierarchical=False,
+        disjoint_from_children=True,
+        summable=True,
+        absent_reading="not_declared",
+        declared_by_every_statvar_of=(_TEST_PROVENANCE,),
+        plain_name="hier",
+    )
+    _, rows = export_code_system(graph, config)
+    assert rows[0]["definition"] == expected
+
+
 # --- content_hash stability ---
 
 
@@ -1211,7 +1250,13 @@ _MEASURE_AXES_FOR_TEST = (
     MeasureAxis(
         axis="measurementQualifier", kind="shape", role="free", prefer=("Nominal", "RealValue")
     ),
-    MeasureAxis(axis="financialFlowType", kind="constraint", role="free", prefer=("Disbursement",)),
+    MeasureAxis(
+        axis="financialFlowType",
+        kind="constraint",
+        role="free",
+        prefer=("Disbursement",),
+        label="flow type",
+    ),
     MeasureAxis(
         axis="financialObligationType", kind="constraint", role="free", prefer=("Commitment",)
     ),
@@ -1246,6 +1291,7 @@ _MEASURE_PARTITION_LABELS_FOR_TEST = (
         ),
         label="gross disbursements",
         named_values=(("sysFlat", "SysFlatA"),),
+        definition="The total amount released before any repayments are subtracted.",
     ),
 )
 _MEASURE_NOUNS_FOR_TEST = (
@@ -1254,6 +1300,9 @@ _MEASURE_NOUNS_FOR_TEST = (
         label="GDP",
     ),
 )
+
+
+_GROSS_DEFINITION = "An amount counted in full, with nothing offset."
 
 
 def _measure_label_nodes(*, include_net: bool = True) -> dict[str, dict[str, tuple[str, ...]]]:
@@ -1270,7 +1319,7 @@ def _measure_label_nodes(*, include_net: bool = True) -> dict[str, dict[str, tup
         "InflationAdjusted": {"name": ("InflationAdjusted",)},
         "PurchasingPowerParity": {"name": ("PurchasingPowerParity",)},
         "Disbursement": {"name": ("disbursement",)},
-        "Gross": {"name": ("gross",)},
+        "Gross": {"name": ("gross",), "description": (_GROSS_DEFINITION,)},
         "Commitment": {"name": ("commitment",)},
     }
     if include_net:
@@ -1324,6 +1373,8 @@ def test_export_measure_values_carries_stripped_label_and_synonyms():
     assert gross["label"] == "gross"
     assert gross["synonyms"] == []
     assert gross["short_name"] is None
+    assert gross["definition"] == _GROSS_DEFINITION
+    assert by_dcid["Disbursement"]["definition"] is None
 
 
 def test_export_measure_values_stamps_matchable_from_the_authored_table():
@@ -1457,28 +1508,45 @@ def test_export_index_wires_measure_axes_into_the_document(tmp_path):
             "kind": "shape",
             "role": "free",
             "prefer": ["FinancialFlow", "FinancialObligation"],
+            "label": None,
         },
-        {"axis": "measuredProperty", "kind": "shape", "role": "basis", "prefer": ["amount"]},
+        {
+            "axis": "measuredProperty",
+            "kind": "shape",
+            "role": "basis",
+            "prefer": ["amount"],
+            "label": None,
+        },
         {
             "axis": "measurementQualifier",
             "kind": "shape",
             "role": "free",
             "prefer": ["Nominal", "RealValue"],
+            "label": None,
         },
         {
             "axis": "financialFlowType",
             "kind": "constraint",
             "role": "free",
             "prefer": ["Disbursement"],
+            "label": "flow type",
         },
         {
             "axis": "financialObligationType",
             "kind": "constraint",
             "role": "free",
             "prefer": ["Commitment"],
+            "label": None,
         },
-        {"axis": "nettingBasis", "kind": "constraint", "role": "free", "prefer": ["Gross", "Net"]},
+        {
+            "axis": "nettingBasis",
+            "kind": "constraint",
+            "role": "free",
+            "prefer": ["Gross", "Net"],
+            "label": None,
+        },
     ]
+    assert parse_measure_axes(document).axes == _MEASURE_AXES_FOR_TEST
     assert {row["dcid"] for row in document["measure_values"]} >= {"FinancialFlow", "Gross"}
     assert document["measure_partition_labels"] == [
         {
@@ -1489,6 +1557,7 @@ def test_export_index_wires_measure_axes_into_the_document(tmp_path):
             ],
             "label": "commitments",
             "named_values": [],
+            "definition": None,
         },
         {
             "axis_values": [
@@ -1498,6 +1567,7 @@ def test_export_index_wires_measure_axes_into_the_document(tmp_path):
             ],
             "label": "disbursements",
             "named_values": [],
+            "definition": None,
         },
         {
             "axis_values": [
@@ -1508,6 +1578,7 @@ def test_export_index_wires_measure_axes_into_the_document(tmp_path):
             ],
             "label": "gross disbursements",
             "named_values": [["sysFlat", "SysFlatA"]],
+            "definition": "The total amount released before any repayments are subtracted.",
         },
     ]
     assert document["measure_nouns"] == [
@@ -1518,6 +1589,7 @@ def test_export_index_wires_measure_axes_into_the_document(tmp_path):
             ],
             "label": "GDP",
             "named_values": [],
+            "definition": None,
         }
     ]
     # The loader reads both blocks back into the authored values.
@@ -1526,6 +1598,9 @@ def test_export_index_wires_measure_axes_into_the_document(tmp_path):
     measure_index = load_measure_axes(path)
     assert measure_index.partition_labels == _MEASURE_PARTITION_LABELS_FOR_TEST
     assert measure_index.nouns == _MEASURE_NOUNS_FOR_TEST
+    assert {row.dcid: row.definition for row in measure_index.values}["Gross"] == (
+        _GROSS_DEFINITION
+    )
 
 
 def test_export_strips_the_measure_words_a_code_synonym_would_take():
@@ -1776,10 +1851,10 @@ def test_a_measure_label_named_value_no_partition_row_carries_aborts_the_export(
         _verify_measure_label_named_values([row], codes, _MEASURE_AXES_FOR_TEST, [wrong])
 
 
-# --- plain_name flows from the code-system table into the declaration row ---
+# --- plain_name and enum_dcid flow from the code-system table into the declaration row ---
 
 
-def test_export_index_stamps_plain_name_from_the_code_system_table():
+def test_export_index_stamps_plain_name_and_enum_dcid_from_the_code_system_table():
     # The configured names are `hier` and `flat`.
     graph = _two_system_graph()
     document = export_index(
@@ -1796,6 +1871,11 @@ def test_export_index_stamps_plain_name_from_the_code_system_table():
     by_system = {row["code_system"]: row for row in document["declarations"]}
     assert by_system["sysHier"]["plain_name"] == _HIERARCHICAL.plain_name
     assert by_system["sysFlat"]["plain_name"] == _FLAT.plain_name
+    assert by_system["sysHier"]["enum_dcid"] == "SysHierEnum"
+    assert {
+        code_system: declaration.enum_dcid
+        for code_system, declaration in parse_index(document).declarations.items()
+    } == {"sysHier": "SysHierEnum", "sysFlat": "SysFlatEnum"}
 
 
 # --- CodeSystemDeclaration.default (issue #968) ---
@@ -2228,11 +2308,23 @@ def test_export_index_refuses_a_declared_dataset_with_no_row():
 _LISTED_PROVENANCE = "provenance/ListedDataset"
 
 
+def _code_arcs(*values: tuple[str, str]) -> dict:
+    """A full forward read holding the `sourceIndicatorCode` values `values`, each a
+    `(provenance, code)` pair, as the graph sends it."""
+    return {
+        "sourceIndicatorCode": {
+            "nodes": [{"provenanceId": provenance, "value": code} for provenance, code in values]
+        }
+    }
+
+
 def _graph_with_listed(*extra: str) -> _FakeGraph:
     """The two-system graph plus StatVars on a CRS-like row's five-tuple that declare no code
-    system, as IDS series do: `SV_Listed_Disbursement` and each of `extra`."""
+    system, as IDS series do: `SV_Listed_Disbursement` and each of `extra`, each carrying the
+    series code `LST.DISB` under the listed dataset."""
     graph = _two_system_graph()
     for dcid in ("SV_Listed_Disbursement", *extra):
+        graph.wire_arcs[dcid] = _code_arcs((_LISTED_PROVENANCE, "LST.DISB"))
         graph.forward_arcs[dcid] = {
             "typeOf": ("StatisticalVariable",),
             "constraintProperties": ("financialFlowType",),
@@ -2291,6 +2383,93 @@ def test_export_index_refuses_a_statvar_of_a_listed_five_tuple_it_neither_export
 def test_export_index_refuses_a_listed_dataset_the_build_holds_no_statvar_of():
     with pytest.raises(SystemExit, match=r"provenance/ListedDataset.*no StatVar"):
         _export_with_listed(_graph_with_listed(), {})
+
+
+def test_export_index_writes_each_listed_statvar_s_series_codes_upper_cased():
+    graph = _graph_with_listed()
+    graph.wire_arcs["SV_Listed_Disbursement"] = _code_arcs(
+        (_LISTED_PROVENANCE, "lst.disb"), (_LISTED_PROVENANCE, " LST.OTHER ")
+    )
+    document = _export_with_listed(graph, {"SV_Listed_Disbursement": (_LISTED_PROVENANCE,)})
+
+    assert document["source_codes"] == [
+        {"provenance": _LISTED_PROVENANCE, "code": "LST.DISB", "dcids": ["SV_Listed_Disbursement"]},
+        {
+            "provenance": _LISTED_PROVENANCE,
+            "code": "LST.OTHER",
+            "dcids": ["SV_Listed_Disbursement"],
+        },
+    ]
+    assert parse_index(document).source_code_members("lst.disb") == {
+        _LISTED_PROVENANCE: ("SV_Listed_Disbursement",)
+    }
+
+
+def test_export_index_refuses_a_listed_statvar_with_no_series_code():
+    graph = _graph_with_listed()
+    graph.wire_arcs["SV_Listed_Disbursement"] = {}
+    with pytest.raises(SystemExit, match=r"1 listed StatVar.*SV_Listed_Disbursement"):
+        _export_with_listed(graph, {"SV_Listed_Disbursement": (_LISTED_PROVENANCE,)})
+
+
+def test_export_index_refuses_a_code_whose_arc_provenance_the_coverage_build_does_not_give():
+    graph = _graph_with_listed()
+    graph.wire_arcs["SV_Listed_Disbursement"] = _code_arcs(("provenance/Elsewhere", "LST.DISB"))
+    with pytest.raises(SystemExit, match=r"does not load.*provenance/Elsewhere"):
+        _export_with_listed(graph, {"SV_Listed_Disbursement": (_LISTED_PROVENANCE,)})
+
+
+def test_export_source_codes_keys_a_recorded_ids_read_on_its_arc_provenance():
+    """`source_code_arcs.json` holds the `sourceIndicatorCode` arc of the two dev-graph IDS
+    StatVars of `DT.TDS.DEGG.CD`, cut from their full forward reads."""
+    recorded = json.loads(
+        (Path(__file__).parent / "fixtures" / "source_code_arcs.json").read_text()
+    )
+    graph = _FakeGraph(forward_arcs={}, wire_arcs=recorded)
+
+    assert export_source_codes(graph, sorted(recorded)) == [
+        {
+            "provenance": "provenance/WorldBankInternationalDebtStatistics",
+            "code": "DT.TDS.DEGG.CD",
+            "dcids": sorted(recorded),
+        }
+    ]
+
+
+def test_export_index_writes_the_parent_of_each_listed_constraint_value_that_has_one():
+    graph = _graph_with_listed()
+    graph.forward_arcs["Disbursement"] = {
+        **graph.forward_arcs["Disbursement"],
+        "specializationOf": ("FinancialFlowAny",),
+    }
+    document = _export_with_listed(graph, {"SV_Listed_Disbursement": (_LISTED_PROVENANCE,)})
+
+    assert document["value_parents"] == [{"dcid": "Disbursement", "parent": "FinancialFlowAny"}]
+    assert parse_index(document).value_ancestors("Disbursement") == ("FinancialFlowAny",)
+
+
+def test_export_value_parents_writes_each_chain_and_refuses_two_parents_or_a_cycle():
+    statvars = [{"constraint_properties": {"idsDebtorType": "Child", "guaranteeStatus": "Flat"}}]
+    graph = _FakeGraph(
+        forward_arcs={
+            "Child": {"specializationOf": ("Parent",)},
+            "Parent": {"specializationOf": ("Root",)},
+            "Root": {},
+            "Flat": {},
+        }
+    )
+    assert export_value_parents(graph, statvars) == [
+        {"dcid": "Child", "parent": "Parent"},
+        {"dcid": "Parent", "parent": "Root"},
+    ]
+
+    graph.forward_arcs["Root"] = {"specializationOf": ("Child",)}
+    with pytest.raises(SystemExit, match="chain of Child returns to Child"):
+        export_value_parents(graph, statvars)
+
+    graph.forward_arcs["Child"] = {"specializationOf": ("Parent", "Other")}
+    with pytest.raises(SystemExit, match="Child's 'specializationOf'"):
+        export_value_parents(graph, statvars)
 
 
 def test_export_index_refuses_a_provenance_no_dataset_declares():
@@ -2827,7 +3006,7 @@ _REVIEWED_TOTAL_GROUPS = {
     "DACOceania": TotalGroup("oceania", _OCEANIA_RESIDUALS),
     "DACPolynesia": TotalGroup("Polynesia", ("DACPolynesiaUnallocated",)),
     "DACSouthernAfrica": TotalGroup("SouthernAfrica", ("DACSouthernAfricaUnallocated",)),
-    "GroupOfSeven": TotalGroup("groups/G7"),
+    "GroupOfSeven": TotalGroup("GroupOfSeven"),
     "UNLandlockedDevelopingCountries": TotalGroup("groups/UN.LLDC"),
     "UNLeastDevelopedCountries": TotalGroup("groups/UN.LDC"),
     "WorldBankHighIncome": TotalGroup("groups/WB.IncomeGroup.High"),

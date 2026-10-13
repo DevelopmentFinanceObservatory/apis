@@ -1,7 +1,7 @@
 """``entry_path``: a parsed or dataset_resubmit request skips extraction, and says so.
 
 Reads ``query_echo.extract_skipped``, which must be true. A raw_text case, and a problem
-document (``disposition.problem_code``), are n/a.
+document (``base.problem_code``), are n/a.
 """
 
 from __future__ import annotations
@@ -16,10 +16,10 @@ from search.eval.checks.base import (
     Result,
     ScoreContext,
     fail,
+    problem_code,
     read_path,
     register,
 )
-from search.eval.checks.disposition import problem_code
 
 
 @register("entry_path")

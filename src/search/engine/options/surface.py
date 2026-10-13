@@ -13,9 +13,12 @@ import logging
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, cast
 
+from code_index.shared import get_index
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from dfo_platform.build import build_commit
+from entity_resolution import shared_membership_policy
 from materialise import GraphReader
+from materialise.enrichment import read_party_kinds
 from materialise.errors import DefaultFacetUndefinedError, FacetNotAvailableError
 from materialise.recipes import (
     NonCurrencyUnitError,
@@ -42,6 +45,7 @@ from search.engine.facet_refusals import (
     facet_satisfies_bindings,
     facets_satisfy_bindings,
 )
+from search.engine.place import REGION_MEMBER_TYPE, expand_places
 from search.engine.region import OPTION_COVERAGE_PROBE_FAILED
 from search.engine.region.convertibility import (
     BoundFacetCombinationsCeilingExceededError,
@@ -146,7 +150,7 @@ def _entities_with_role(entities: list[ResolvedEntity], role: str) -> list[Resol
 
 def _resolve_scope_target(req: OptionsRequest, target: ResolvedOptionsTarget) -> tuple[str, str]:
     """Resolve an observationAbout options request's own (parent_dcid,
-    child_type) pair from req.for_.scope ("peers" or "children") and the
+    child_type) from req.for_.scope ("peers" or "children") and the
     request's bound observationAbout anchors.
 
     "peers" enumerates the anchor's own typeOf under Earth (or Country, the
@@ -155,7 +159,10 @@ def _resolve_scope_target(req: OptionsRequest, target: ResolvedOptionsTarget) ->
     sharing one type yield the identical candidate universe regardless of
     posting order. "children" descends one level from exactly one bound
     anchor via _CHILD_TYPES; unlike "peers" there is no anchor-free default,
-    since computing a place's children requires already knowing the place.
+    since computing a place's children requires already knowing the place. A
+    continent or subregion by the membership policy
+    (`MembershipPolicy.holds_region`) has countries as children whatever
+    its graph type.
 
     Raises EngineInputError for every anchor shape either scope does not
     support: mixed anchor types under "peers" (mixed_peers_anchor_types), an
@@ -209,6 +216,8 @@ def _resolve_scope_target(req: OptionsRequest, target: ResolvedOptionsTarget) ->
             pointer="/identity/entities/observationAbout",
         )
     anchor = anchors[0]
+    if shared_membership_policy().holds_region(anchor.ref):
+        return anchor.ref, REGION_MEMBER_TYPE
     resolved_child_type = _CHILD_TYPES.get(anchor.entity_type or "")
     if resolved_child_type is None:
         raise EngineInputError(
@@ -222,12 +231,21 @@ def _resolve_scope_target(req: OptionsRequest, target: ResolvedOptionsTarget) ->
 def _fetch_candidates(
     graph: EngineGraphClient, parent_dcid: str, child_type: str
 ) -> tuple[list[str], bool]:
-    """Return (candidates, candidates_truncated): parent_dcid's own children
-    of child_type via graph.child_places_batch, capped to
-    settings().max_options.
+    """Return (candidates, candidates_truncated), capped to settings().max_options.
+
+    A region's candidates are the countries the membership policy holds for it, sorted
+    (`place.expand_places`), the members an answer binds for it; a region the policy omits
+    has none. The policy decides what is a region (`MembershipPolicy.holds_region`), whatever
+    the node's graph type. Any other parent's are its own children of child_type via
+    graph.child_places_batch, the World among them.
     """
-    children_by_parent = graph.child_places_batch([parent_dcid], child_type)
-    candidates = children_by_parent.get(parent_dcid, [])
+    membership = shared_membership_policy()
+    if membership.holds_region(parent_dcid):
+        expansion = expand_places([parent_dcid], membership=membership)
+        found = expansion[parent_dcid]
+        candidates = [] if found is None else found.children
+    else:
+        candidates = graph.child_places_batch([parent_dcid], child_type).get(parent_dcid, [])
     candidates_truncated = len(candidates) > settings().max_options
     if candidates_truncated:
         candidates = candidates[: settings().max_options]
@@ -511,12 +529,14 @@ def _build_observation_about_options(
                     series,
                     members=sv_dcids,
                     years=plan_years(date_request),
+                    places=(dcid,),
+                    deadline=deadline,
                 ),
                 CoverageForm(facet_label="sources", obs_label="years"),
             )
         items.append(
             SlotOption(
-                value=SlotValue(ref=GraphRef(dcid=dcid, label=label), value_kind="entity"),
+                value=SlotValue(ref=GraphRef(ref=dcid, label=label), value_kind="entity"),
                 coverage=coverage,
             )
         )
@@ -536,7 +556,7 @@ def _observation_about_options_set(
 ) -> tuple[OptionsSet, Warning | None]:
     """Enumerate places, keep those with data for any population member, and label them.
 
-    Candidate order follows `child_places_batch`, then the order-preserving
+    Candidate order follows `_fetch_candidates`, then the order-preserving
     presence and facet filters; labels do not reorder results. A relevant
     facet binding requires at least one StatVar's own facet list to satisfy
     every bound axis. Coverage pools facets across StatVars and counts those
@@ -689,8 +709,9 @@ def _directional_options_set(
 
     Coverage already contains members with data, so no separate presence
     probe is needed. Sort members before labelling for deterministic output;
-    omit dcids without labels. No network cap applies to this local lookup, so the
-    set is never truncated.
+    omit dcids without labels. Each item carries the party kind the code index lists for it
+    (`materialise.enrichment.read_party_kinds`). No network cap applies to this local lookup,
+    so the set is never truncated.
     """
     sv_dcids = list(target.population.stat_var_dcids)
     coverage_index = coverage_snapshot.index
@@ -708,8 +729,14 @@ def _directional_options_set(
         return OptionsSet(items=[], truncated=False)
 
     labels = graph.node_labels_batch(members)
+    kinds = read_party_kinds(
+        ((axis, dcid) for dcid in members if dcid in labels), parties=get_index().parties
+    )
     items = [
-        SlotOption(value=SlotValue(ref=GraphRef(dcid=dcid, label=label), value_kind="entity"))
+        SlotOption(
+            value=SlotValue(ref=GraphRef(ref=dcid, label=label), value_kind="entity"),
+            party_kind=kinds.get((axis, dcid)),
+        )
         for dcid in members
         if (label := labels.get(dcid)) is not None
     ]

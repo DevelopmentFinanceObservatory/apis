@@ -11,6 +11,7 @@ from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.graph import Facet
 from search.engine.concurrency import scoped_concurrency
 from search.engine.extract import DateRequest
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import materialise_step as materialise_step_module
 from search.engine.region import observations as _observations_pkg  # noqa: F401
 from search.engine.region import resolve_spec_resubmit
@@ -26,6 +27,7 @@ from tests.engine._fake_coverage import (
 )
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query, walk_options
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 _SV_DCID = "TESTFIXTURE/RoleScopePipelineE2E/Flow"
@@ -102,6 +104,8 @@ class _FixedBindLLM:
     """Elects shape index 0 unconditionally, with no constraint bindings."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
 
@@ -1144,6 +1148,8 @@ class _RoleBearingCandidateBindLLM:
     applied here to a role-bearing elected shape."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0, bindings=[], also_plausible=[1], ask=None

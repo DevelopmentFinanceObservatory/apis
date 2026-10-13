@@ -13,12 +13,14 @@ import asyncio
 from code_index.shared import get_index
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.clients.graph import Facet
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.region.codes import ELECTED_SHAPE_NO_DATA
 from series_coverage.schema import RoleNames
 from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 _QUERY = "grant equivalent flows or gross disbursements to Kenya"
@@ -125,6 +127,8 @@ _COVERAGE_ROWS_ELECTED_HAS_NO_DATA = [
 
 class _ElectRecalledAlsoPlausibleAltLLM:
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0,
@@ -169,7 +173,7 @@ def test_no_measure_partition_neither_candidate_folds(monkeypatch):
     result = _run(monkeypatch)
     assert result.status == "candidates"
     assert len(result.specs) == 2
-    served_svs = {sv.ref.dcid for spec in result.specs for sv in spec.resolved.members}
+    served_svs = {sv.ref.ref for spec in result.specs for sv in spec.resolved.members}
     assert served_svs == {_RECALLED_SV, _ALT_SV}
     for spec in result.specs:
         assert not spec.resolved.alternative_measures

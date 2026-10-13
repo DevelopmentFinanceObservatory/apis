@@ -12,7 +12,9 @@ P, F, U, NA = Verdict.PASS, Verdict.FAIL, Verdict.UNVERIFIABLE, Verdict.NA
 # One letter per sample: P pass, F fail, U unverifiable, N n/a, I a check whose graph or
 # coverage read failed, T a run that got no answer after its retries, R a pass on a sample
 # the app refused as a malformed request, X a head run that failed, scored n/a on a check
-# other than `task_outcome`.
+# other than `task_outcome`, ~ a check the expectation asserts that the sample's status
+# left unscored, on the whole answer. On a case with two expected parts: 0 and 1 a sample that failed only that
+# part, a a sample that reached and passed part 0 and never reached part 1.
 _SAMPLE = {
     "P": Observation(P),
     "F": Observation(F),
@@ -22,6 +24,10 @@ _SAMPLE = {
     "T": Observation(U, infra="run"),
     "R": Observation(P, request_rejected=True),
     "X": Observation(NA, run_failed=True),
+    "~": Observation(Verdict.UNREACHED),
+    "0": Observation(F, parts={0: F}),
+    "1": Observation(F, parts={1: F}),
+    "a": Observation(Verdict.UNREACHED, parts={1: Verdict.UNREACHED}),
 }
 
 
@@ -77,6 +83,70 @@ ROWS = [
     # Edge rows.
     row("FFU at head", Outcome.PRE_EXISTING, head="FFU", base="FFF"),
     row("n/a counts as pass", Outcome.PASS, head="NFF"),
+    row("n/a at base counts as pass", Outcome.NEEDS_CONFIRM, head="FFF", base="NNN"),
+    # An unreached sample is no evidence: each side votes over the samples that reached
+    # the check.
+    row("unreached on every head sample", Outcome.PASS, head="~~~"),
+    row("head votes over reached samples", Outcome.NEEDS_CONFIRM, head="~FF", base="PPP"),
+    row(
+        "reached head samples all fail",
+        Outcome.REGRESSION,
+        head="~FF",
+        base="PPP",
+        confirm="FP",
+        blocks=True,
+    ),
+    row("unreached on every base sample", Outcome.PRE_EXISTING, head="FFF", base="~~~"),
+    row("base votes over reached samples", Outcome.NEEDS_CONFIRM, head="FFF", base="PP~"),
+    row(
+        "reached base samples all pass",
+        Outcome.REGRESSION,
+        head="FFF",
+        base="PP~",
+        confirm="FP",
+        blocks=True,
+    ),
+    row("unreached in the confirm base", Outcome.UNSTABLE, head="FFF", base="PPP", confirm="F~"),
+    row("base passed a part a head sample failed", Outcome.NEEDS_CONFIRM, head="011", base="aaa"),
+    # A head failure on the whole answer: a base sample that missed a part is unreached.
+    row(
+        "whole-answer head failure, base missed a part",
+        Outcome.PRE_EXISTING,
+        head="FFF",
+        base="aaa",
+    ),
+    row(
+        "whole-answer confirm head failure, confirm base missed a part",
+        Outcome.UNSTABLE,
+        head="FFF",
+        base="PPP",
+        confirm="Fa",
+    ),
+    row(
+        "confirm base passed the part the confirm head failed",
+        Outcome.REGRESSION,
+        head="000",
+        base="aaa",
+        confirm="0a",
+        blocks=True,
+    ),
+    row(
+        "confirm base never reached the part the confirm head failed",
+        Outcome.UNSTABLE,
+        head="000",
+        base="aaa",
+        confirm="1a",
+    ),
+    # A base sample that failed another part passed the part the head failed.
+    row("base failed only another part", Outcome.NEEDS_CONFIRM, head="000", base="111"),
+    row(
+        "confirm base failed only another part",
+        Outcome.REGRESSION,
+        head="000",
+        base="111",
+        confirm="01",
+        blocks=True,
+    ),
     row("rejected at base is U", Outcome.UNVERIFIABLE_AT_BASE, head="FFF", base="PPR", blocks=True),
     row("rejected at head is scored", Outcome.PASS, head="RRR"),
     row("infra outranks a known failure", Outcome.INFRA, head="I", known=True),
@@ -147,14 +217,38 @@ def test_rule_table(check, head, base, confirm, known, task, new_case, outcome, 
     assert judgement.blocks is blocks
 
 
+def test_an_observation_holds_its_parts_read_only_and_hashes():
+    held = {0: F}
+    observation = Observation(F, parts=held)
+    held[1] = Verdict.UNREACHED
+    assert observation.parts == {0: F}
+    with pytest.raises(TypeError):
+        observation.parts[1] = Verdict.UNREACHED
+    assert hash(observation) == hash(Observation(F, parts={0: F}))
+    assert Observation(P, parts={}) == Observation(P)
+    assert Observation(NA, parts={0: Verdict.UNREACHED}) == Observation(NA)
+
+
 def test_unstable_pass_is_reported():
     assert judge(check="measure", head=obs("PFP")).unstable is True
     assert judge(check="measure", head=obs("PUP")).unstable is False
 
 
+@pytest.mark.parametrize(("head", "reached"), [("~~~", False), ("~P~", True), ("N", True)])
+def test_a_pass_says_whether_a_head_sample_reached_the_check(head, reached):
+    judgement = judge(check="measure", head=obs(head))
+    assert (judgement.outcome, judgement.reached) == (Outcome.PASS, reached)
+
+
 @pytest.mark.parametrize(
     ("head", "fixed"),
-    [(obs("PNP"), True), (obs("PFP"), False), (obs("FFF"), False), (obs("PPX"), False)],
+    [
+        (obs("PNP"), True),
+        (obs("PFP"), False),
+        (obs("FFF"), False),
+        (obs("PPX"), False),
+        (obs("~~~"), False),
+    ],
 )
 def test_known_failure_passing_on_every_head_sample_is_fixed(head, fixed):
     judgement = judge(check="measure", head=head, known_failure=True)

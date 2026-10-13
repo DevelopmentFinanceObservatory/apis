@@ -3,7 +3,7 @@
 The places: the continent Africa with five member countries, one of them (Saint Helena)
 holding no data; the continent Asia with three; the subregion Sub-Saharan Africa with
 three of Africa's; the European Union, a resolver group whose node the graph holds, with
-three members; the African Union, a resolver group with no node, with four. Africa's node
+its 27 members; the African Union, a resolver group with no node, with its 54. Africa's node
 also contains a subregion and a city directly, so its single-hop containment differs from
 its expansion to countries.
 
@@ -43,6 +43,7 @@ from search.engine.core import resolve_async
 from search.engine.departures import spec_departure_facts
 from search.engine.errors import GraphInfraError
 from search.engine.extract import ExtractedEntity, ExtractedOperation, Extraction
+from search.engine.quantity_read import QuantityOutput
 from search.engine.spec_id import mint_identity
 from search.models import (
     BaseIdentity,
@@ -74,7 +75,8 @@ from tests.datasets_api.test_pin_door import FakeArtifactReferenceWriter
 from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import run_pinned
-from tests.fixtures import FakeGraph, make_resolver
+from tests.engine._quantity import NO_QUANTITY
+from tests.fixtures import FakeGraph, declare_regions, make_resolver
 
 # Places.
 AFRICA, ASIA, SUB_SAHARAN, EU = "africa", "asia", "SubSaharanAfrica", "EuropeanUnion"
@@ -89,17 +91,37 @@ DEU, FRA, ITA = "country/DEU", "country/FRA", "country/ITA"
 IDN, IND, JPN = "country/IDN", "country/IND", "country/JPN"
 _CITY = "PlaceSetCity"
 
-# What each set expands to: a region's `Country` children, and for the European Union the
-# members of the resolver's group that the graph holds.
+# The members the resolver's group registry holds for each group under the `countries`
+# projection (`test_place_set_invariants` checks them against the registry). The world's
+# series cover Germany, France and Italy among the European Union's, and Ghana, Kenya, Nigeria
+# and Tanzania among the African Union's.
+EU_MEMBERS = tuple(
+    f"country/{iso}"
+    for iso in (
+        *("AUT", "BEL", "BGR", "CYP", "CZE", "DEU", "DNK", "ESP", "EST", "FIN", "FRA", "GRC"),
+        *("HRV", "HUN", "IRL", "ITA", "LTU", "LUX", "LVA", "MLT", "NLD", "POL", "PRT", "ROU"),
+        *("SVK", "SVN", "SWE"),
+    )
+)
+# The graph holds no node for the African Union.
+AFRICAN_UNION = tuple(
+    f"country/{iso}"
+    for iso in (
+        *("AGO", "BDI", "BEN", "BFA", "BWA", "CAF", "CIV", "CMR", "COD", "COG", "COM", "CPV"),
+        *("DJI", "DZA", "EGY", "ERI", "ETH", "GAB", "GHA", "GIN", "GMB", "GNB", "GNQ", "KEN"),
+        *("LBR", "LBY", "LSO", "MAR", "MDG", "MLI", "MOZ", "MRT", "MUS", "MWI", "NAM", "NER"),
+        *("NGA", "RWA", "SDN", "SEN", "SLE", "SOM", "SSD", "STP", "SWZ", "SYC", "TCD", "TGO"),
+        *("TUN", "TZA", "UGA", "ZAF", "ZMB", "ZWE"),
+    )
+)
+# What each set expands to. A region's members are the countries `Doors` declares to the
+# membership policy (`tests.fixtures.declare_regions`); the European Union's are the registry's.
 EXPANSION: Mapping[str, tuple[str, ...]] = {
     AFRICA: (GHA, KEN, NGA, SHN, TZA),
     ASIA: (IDN, IND, JPN),
     SUB_SAHARAN: (GHA, KEN, TZA),
-    EU: (DEU, FRA, ITA),
+    EU: EU_MEMBERS,
 }
-# The members of the resolver's African Union group that the graph holds. The graph holds
-# no node for the group.
-AFRICAN_UNION = (GHA, KEN, NGA, TZA)
 NODE_TYPE: Mapping[str, str] = {
     AFRICA: "Continent",
     ASIA: "Continent",
@@ -230,7 +252,7 @@ def _place(dcid: str) -> dict:
 
 
 _NODES: dict = {
-    **{dcid: _place(dcid) for dcid in (*LABEL, _CITY)},
+    **{dcid: _place(dcid) for dcid in (*LABEL, _CITY, *EU_MEMBERS, *AFRICAN_UNION)},
     WDI: _statvar(WDI, "Health spending"),
     WHO: _statvar(WHO, "Government health spending"),
     DEBT: _statvar(DEBT, "External debt stocks", (RECIPIENT,)),
@@ -529,6 +551,8 @@ class _Bind:
         self._also_plausible = list(also_plausible) or None
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0, bindings=[], also_plausible=self._also_plausible, ask=None
@@ -572,6 +596,9 @@ class Doors:
     """The three doors over one set of doubles, with every observation read each made."""
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        declare_regions(
+            monkeypatch, {node: EXPANSION[node] for node in (AFRICA, ASIA, SUB_SAHARAN)}
+        )
         self._recorder = _Recorder()
         self._graph = self.graph = _Graph(self._recorder)
         self._sdmx = _Sdmx(self._recorder, self._graph)
@@ -1109,5 +1136,5 @@ def check_groups(spec: Spec) -> None:
     """Each group `spec` serves with a dcid names a set whose members are the dcids its
     role binds."""
     for role, served in (spec.resolved.entity_groups or {}).items():
-        if served.dcid is not None:
-            assert bound(spec)[role] == sorted(EXPANSION[served.dcid]), (role, served)
+        if served.ref is not None:
+            assert bound(spec)[role] == sorted(EXPANSION[served.ref]), (role, served)

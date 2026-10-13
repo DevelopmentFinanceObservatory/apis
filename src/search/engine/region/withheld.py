@@ -96,7 +96,7 @@ def elected_series(result: RegionResult) -> tuple[list[str], list[str]] | None:
     places = list(dict.fromkeys(entity.ref for entity in entities))
     if not places:
         return None
-    return [ref.dcid for ref in result.elected_stat_vars], places
+    return [ref.ref for ref in result.elected_stat_vars], places
 
 
 async def with_withheld_warning(

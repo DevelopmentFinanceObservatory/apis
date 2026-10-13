@@ -116,12 +116,20 @@ class ManifestFacts:
 
 @dataclass(frozen=True)
 class FrameLineage:
-    """The facts a published derived frame stores: the versions it was derived from, and the
-    composed StatVars its rows name (`datasets_api.publish_models`), `None` when the publish
-    described none."""
+    """The facts a published derived frame stores: the versions it was derived from, the
+    composed StatVars its stored body described, `None` when it described none, and the
+    continuations of its series. The publish door stores no composed StatVars; the description
+    record reads the stored entries (`datasets_api.description_record.composed_variables`).
+
+    `continuations` holds the entries the publish door derived from the versions the frame was
+    computed from (`datasets_api.lineage_continuations`), each a
+    `materialise.continued_series.ContinuedSeries.as_entry`, empty when nothing continues its
+    series, and `None` on a version recorded before versions stored them, until the
+    `backfill-descriptions` task fills it."""
 
     input_content_versions: Sequence[str]
     composed_stat_vars: Sequence[Mapping[str, object]] | None = None
+    continuations: Sequence[Mapping[str, object]] | None = None
 
 
 type VersionFacts = ManifestFacts | FrameLineage
@@ -142,6 +150,7 @@ VERSION_FACT_COLUMNS = (
     "default_scope_plural",
     "input_content_versions",
     "composed_stat_vars",
+    "continuations",
 )
 
 
@@ -157,6 +166,7 @@ def version_fact_values(facts: VersionFacts) -> tuple[object, ...]:
             *(None,) * 11,
             _json(list(facts.input_content_versions)),
             _json(None if facts.composed_stat_vars is None else list(facts.composed_stat_vars)),
+            _json(None if facts.continuations is None else list(facts.continuations)),
         )
     return (
         facts.prepared_at,
@@ -170,6 +180,7 @@ def version_fact_values(facts: VersionFacts) -> tuple[object, ...]:
         _json(None if facts.output_profile is None else dict(facts.output_profile)),
         _json(None if facts.series_conversions is None else list(facts.series_conversions)),
         facts.default_scope_plural,
+        None,
         None,
         None,
     )
@@ -220,6 +231,7 @@ def _version_facts(
         return FrameLineage(
             input_content_versions=input_content_versions,
             composed_stat_vars=cast("list[Mapping[str, object]] | None", row["composed_stat_vars"]),
+            continuations=cast("list[Mapping[str, object]] | None", row["continuations"]),
         )
     raise VersionFactsMissing(subject_id=subject_id, content_version=content_version)
 
@@ -307,6 +319,12 @@ class SnapshotReader(Protocol):
         A revocation of the version or its base version under `subject_id` or any id in
         `revoked_under` withdraws it, so a door that answers one version under several ids
         honours a revocation recorded under any of them."""
+        ...
+
+    def read_versions_of(self, content_versions: Sequence[str]) -> list[StoredVersion]:
+        """Every version recorded at one of `content_versions`, under any subject, read in one
+        transaction, in no set order. Raise `VersionFactsMissing` for a record holding no
+        facts."""
         ...
 
 
@@ -409,6 +427,27 @@ class LiveSnapshotReader:
                 (artifact_digest,),
             )
         return row is not None
+
+    def read_versions_of(self, content_versions: Sequence[str]) -> list[StoredVersion]:
+        requested = list(dict.fromkeys(content_versions))
+        if not requested:
+            return []
+        with self._store.transaction() as tx:
+            rows = tx.fetch_all(
+                "SELECT subject_id, content_version, subject_kind, schema_version, "
+                f"base_content_version, frame_sha256, {', '.join(VERSION_FACT_COLUMNS)} "
+                "FROM datasets.version_record "
+                f"WHERE content_version IN ({', '.join(['%s'] * len(requested))})",
+                tuple(requested),
+            )
+        return [
+            _stored_version(
+                row,
+                subject_id=cast(str, row["subject_id"]),
+                content_version=cast(str, row["content_version"]),
+            )
+            for row in rows
+        ]
 
     def read_version_state(
         self, subject_id: str, content_version: str, *, revoked_under: Sequence[str] = ()

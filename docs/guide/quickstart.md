@@ -21,12 +21,12 @@ The result is a ZIP archive containing a Parquet data file, citation metadata, a
 You need `curl`, `jq`, and `unzip`. The Python version also needs [uv](https://docs.astral.sh/uv/). Set the API base URL once.
 
 ```bash
-export DFO_API=https://dfo-dev-apis-zms5lj4zhq-nn.a.run.app
+export DFO_API=https://developmentfinance.org
 ```
 
-The development deployment accepts requests without an API key.
+The API accepts requests without an API key.
 
-## Step 1: resolve the question
+## Resolve the question
 
 Send a question with explicit donor and recipient roles. The confirmation sentence is the first check on the resulting data.
 
@@ -42,7 +42,7 @@ An example response contains these selected fields. The date range depends on th
 ```
 
 ```bash
-curl -fsS -X POST "$DFO_API/api/search/resolve" \
+curl -fsS -X POST "$DFO_API/api/v1/search/resolve" \
   -H "Content-Type: application/json" \
   -d '{"input":{"kind":"raw_text","query":"ODA disbursements from Germany to Nigeria for basic health care"}}' \
   > resolve.json
@@ -58,9 +58,9 @@ jq 'if .kind == "resolution" then
     end' resolve.json
 ```
 
-The command prints selected fields from a resolution answer. Check `kind` before reading `parts`.
+Check `kind` before reading `parts`.
 
-## Step 2: create the dataset
+## Create the dataset
 
 Create a Parquet bundle from the `spec_id` and definition returned by Search. A successful synchronous response is a manifest with a `content_version`, coverage, and artifacts. A background response has an `operation` object.
 
@@ -80,7 +80,7 @@ jq '{
   options: {format: "parquet"}
 }' resolve.json > mint.json
 
-if ! curl -fsS -X POST "$DFO_API/api/datasets" \
+if ! curl -fsS -X POST "$DFO_API/api/v1/datasets" \
   -H "Content-Type: application/json" \
   -d @mint.json > response.json; then
   echo "Dataset request failed" >&2
@@ -112,13 +112,13 @@ jq '{
 }' manifest.json
 ```
 
-The command prints selected fields from the manifest. The poll URL is saved from the initial response because a completed operation no longer includes it. A failed poll stops the command before it reads the response as a completed operation.
+The poll URL is saved from the initial response because a completed operation omits it. A failed poll stops the command before it reads the response as a completed operation.
 
 `content_version` identifies the stored result. Keep it with the `spec_id` when you need to retrieve that same version later.
 
-## Step 3: download the Parquet bundle
+## Download the Parquet bundle
 
-Select the requested bundle by its rendering and download it. Each artifact's `url` is a download link relative to the API host that never expires. It answers `302` with a storage URL signed for five minutes, which `-L` follows.
+Select the requested bundle by its rendering and download it. Each artifact's `url` is a stable download link relative to the API host. It answers `302` with a storage URL signed for five minutes, which `-L` follows.
 
 ```bash
 bundle_url="$(jq -r 'first(.artifacts[] | select(.rendering.format == "parquet" and .rendering.bundle == true)) | .url' manifest.json)"
@@ -152,7 +152,7 @@ question = "ODA disbursements from Germany to Nigeria for basic health care"
 
 with httpx.Client(base_url=DFO_API, timeout=120) as client:
     response = client.post(
-        "/api/search/resolve",
+        "/api/v1/search/resolve",
         json={"input": {"kind": "raw_text", "query": question}},
     )
     response.raise_for_status()
@@ -165,7 +165,7 @@ with httpx.Client(base_url=DFO_API, timeout=120) as client:
 
     spec = part["spec"]
     response = client.post(
-        "/api/datasets",
+        "/api/v1/datasets",
         json={
             "schema_version": 1,
             "input": {
@@ -215,12 +215,6 @@ Run the script.
 ```bash
 uv run --with httpx --with pandas --with pyarrow python quickstart.py
 ```
-
-The script prints the confirmation sentence followed by the first five rows of the Parquet table.
-
-## What you learned
-
-You resolved a question, checked its interpretation, created a Parquet bundle, and read the downloaded data. You can use either the curl path or the Python path to do it.
 
 ## Next
 

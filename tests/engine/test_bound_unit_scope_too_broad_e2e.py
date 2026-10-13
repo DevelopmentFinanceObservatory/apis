@@ -17,6 +17,7 @@ from materialise import UpstreamResponseError
 from materialise.graph import SubjectPage
 from materialise.rate_tables import RateTableCache
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.region.codes import (
     OBSERVATIONS_PROBE_FAILED,
@@ -34,6 +35,7 @@ from tests.engine._harness import (
     _csv_row,
     materialise_double_from_obs,
 )
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 _SDMX_CSV_CONTENT_TYPE = "application/vnd.sdmx.data+csv;version=2.0.0"
@@ -90,6 +92,8 @@ def _member_arcs(node_arcs: dict) -> dict[str, tuple[str, ...]]:
 def _set_bind_llm() -> object:
     class _SetBindLLM:
         async def generate_structured(self, *, prompt, system, schema):
+            if schema is QuantityOutput:
+                return NO_QUANTITY
             assert schema.__name__ == "_UniversalBindOutput"
             return _UniversalBindOutput(
                 chosen_shape_index=0,

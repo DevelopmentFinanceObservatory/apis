@@ -16,6 +16,7 @@ import pytest
 from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.graph import Facet
 from search.engine.errors import EngineInputError
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_spec_resubmit
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.state import EngineOptions
@@ -29,6 +30,7 @@ from series_coverage.schema import FacetMetadata, RoleNames
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import walk_options
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 _SV_PROJECTED = "TESTFIXTURE/BoundRoleFacetPins/Projected"
@@ -110,6 +112,8 @@ def _graph() -> FakeGraph:
 
 class _FixedBindLLM:
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
 
@@ -134,7 +138,7 @@ def _fresh():
     )
     assert result.status == "definite", result.no_data_reason
     spec = result.specs[0]
-    assert sorted(sv.ref.dcid for sv in spec.resolved.members) == sorted(_svs())
+    assert sorted(sv.ref.ref for sv in spec.resolved.members) == sorted(_svs())
     return spec
 
 
@@ -178,7 +182,7 @@ def test_a_pin_every_statvar_carries_is_served(facets):
     result = _resubmit(facets)
 
     assert result.status == "definite", result.no_data_reason
-    assert sorted(sv.ref.dcid for sv in result.spec.resolved.members) == sorted(_svs())
+    assert sorted(sv.ref.ref for sv in result.spec.resolved.members) == sorted(_svs())
 
 
 def test_a_null_method_pin_constrains_the_provenance_pin_beside_it():
@@ -203,7 +207,7 @@ def test_a_null_method_pin_constrains_the_provenance_pin_beside_it():
 
 def _offered(result) -> dict[str, list[str | None]]:
     return {
-        fo.axis: [o.value.ref.dcid if o.value.ref is not None else None for o in fo.options]
+        fo.axis: [o.value.ref.ref if o.value.ref is not None else None for o in fo.options]
         for fo in result.spec.resolved.facet_options
     }
 

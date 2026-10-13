@@ -10,9 +10,14 @@ from materialise.projection import (
     NativeCurrency,
     UnitNaming,
     UnitParts,
+    long_layout_default_enrichments,
     long_output_selection,
+    period_cell,
+    period_grain,
     plan_long_projection,
+    split_totals,
     split_unit,
+    totals_roles,
 )
 from materialise.reshape import Table
 
@@ -40,6 +45,8 @@ _NAMES = {
     "m1": "Method one",
     "p1": "Source one",
 }
+
+_PARTY_KINDS = {"country/USA": "party", "country/KEN": "party"}
 
 # Reshape's own order: frame columns, then decoded axes, then enrichments.
 _SOURCE = Table(
@@ -90,13 +97,28 @@ _SOURCE = Table(
 )
 
 
-def _project(source: Table = _SOURCE, *, names=_NAMES, axis_codes=_AXIS_CODES):
+def _project(
+    source: Table = _SOURCE,
+    *,
+    names=_NAMES,
+    party_kinds=_PARTY_KINDS,
+    axis_codes=_AXIS_CODES,
+    entity_columns=("financingProvider", "financingRecipient"),
+):
     return plan_long_projection(
         source.columns,
-        entity_columns=("financingProvider", "financingRecipient"),
+        entity_columns=entity_columns,
         axis_codes=axis_codes,
         unit_naming=_UNIT_NAMING,
-    ).apply(source, names=names)
+        grain=period_grain(_periods(source)),
+    ).apply(source, names=names, party_kinds=party_kinds)
+
+
+def _periods(source: Table) -> tuple[object, ...]:
+    if "time_period" not in source.columns:
+        return ()
+    at = source.columns.index("time_period")
+    return tuple(row[at] for row in source.rows)
 
 
 def _row(table: Table, index: int) -> dict[str, object]:
@@ -110,8 +132,10 @@ def test_a_long_table_takes_the_canonical_column_order_and_drops_status():
         "stat_var",
         "financingProvider",
         "financingProvider_label",
+        "financingProvider_party_kind",
         "financingRecipient",
         "financingRecipient_label",
+        "financingRecipient_party_kind",
         "financingRecipient_iso3",
         "crsPurpose",
         "crsPurpose_label",
@@ -133,14 +157,16 @@ def test_a_long_table_takes_the_canonical_column_order_and_drops_status():
         "dcid:SV_A",
         "country/USA",
         "United States",
+        "party",
         "country/KEN",
         "Kenya",
+        "party",
         "KEN",
         "dcid:CRSPurposeCode122",
         "Basic health care",
         "dcid:CRSTypeOfFinanceCode110",
         "Standard grant",
-        "2022",
+        2022,
         10.0,
         "CurrencyUSD",
         "current USD",
@@ -185,12 +211,69 @@ def test_a_label_two_codes_share_leaves_the_code_cell_empty_and_counts_a_miss():
     assert projected.unavailable == {"crsTypeOfFinance": 1}
 
 
-def test_a_value_without_a_name_leaves_the_name_cell_empty_and_counts_a_miss():
-    projected = _project(names={"country/USA": "United States", "p1": "Source one"})
+def test_a_value_without_a_name_or_kind_leaves_its_cell_empty_and_counts_a_miss():
+    projected = _project(
+        names={"country/USA": "United States", "p1": "Source one"},
+        party_kinds={"country/USA": "total"},
+    )
 
-    assert [_row(projected.table, i)["financingRecipient_label"] for i in (0, 1)] == [None, None]
+    assert [
+        (row["financingRecipient_label"], row["financingRecipient_party_kind"])
+        for row in (_row(projected.table, i) for i in (0, 1))
+    ] == [(None, None), (None, None)]
+    assert _row(projected.table, 0)["financingProvider_party_kind"] == "total"
     # `m1` has no name either, and an unnamed method is not a miss.
-    assert projected.unavailable == {"financingRecipient_label": 2}
+    assert projected.unavailable == {
+        "financingRecipient_label": 2,
+        "financingRecipient_party_kind": 2,
+    }
+
+
+def test_a_party_kind_column_the_table_carries_takes_the_default_columns_place_once():
+    # An explicit `party_kind` token enriches every entity column, the subject's included, so
+    # the table carries the kind columns before the layout plans; a subject role gets none by
+    # default.
+    source = Table(
+        columns=(
+            "observationAbout",
+            "financingRecipient",
+            "value",
+            "observationAbout_party_kind",
+            "financingRecipient_party_kind",
+        ),
+        rows=(("country/USA", "country/KEN", 1.0, "party", "residual"),),
+    )
+
+    projected = _project(
+        source,
+        entity_columns=("observationAbout", "financingRecipient"),
+        party_kinds={"country/KEN": "party"},
+    )
+
+    assert projected.table.columns == (
+        "observationAbout",
+        "observationAbout_label",
+        "observationAbout_party_kind",
+        "financingRecipient",
+        "financingRecipient_label",
+        "financingRecipient_party_kind",
+        "value",
+    )
+    assert projected.table.rows == (
+        ("country/USA", "United States", "party", "country/KEN", "Kenya", "residual", 1.0),
+    )
+    without_token = _project(
+        Table(columns=source.columns[:3], rows=(source.rows[0][:3],)),
+        entity_columns=("observationAbout", "financingRecipient"),
+    )
+    assert without_token.table.columns == (
+        "observationAbout",
+        "observationAbout_label",
+        "financingRecipient",
+        "financingRecipient_label",
+        "financingRecipient_party_kind",
+        "value",
+    )
 
 
 def test_stat_var_label_follows_stat_var_only_when_no_axis_is_decoded():
@@ -209,6 +292,7 @@ def test_the_values_to_name_are_the_name_columns_distinct_non_empty_cells():
         entity_columns=("financingProvider", "financingRecipient"),
         axis_codes=_AXIS_CODES,
         unit_naming=_UNIT_NAMING,
+        grain="year",
     )
 
     # Axes decode, so `stat_var` has no name column. A converted unit cell names no node.
@@ -278,13 +362,29 @@ def test_a_column_outside_the_layout_follows_it_in_table_order():
     assert projected.table.rows == (("s", "S", 1.0, 2, 1),)
 
 
+def test_the_default_enrichments_are_every_roles_name_and_each_party_roles_kind():
+    assert long_layout_default_enrichments(
+        ("observationAbout", "financingProvider", "creditor")
+    ) == (
+        "observationAbout_label",
+        "financingProvider_label",
+        "financingProvider_party_kind",
+        "creditor_label",
+        "creditor_party_kind",
+    )
+
+
 def test_a_layout_refuses_a_table_with_other_columns():
     projection = plan_long_projection(
-        ("stat_var", "value"), entity_columns=(), axis_codes={}, unit_naming=_UNIT_NAMING
+        ("stat_var", "value"),
+        entity_columns=(),
+        axis_codes={},
+        unit_naming=_UNIT_NAMING,
+        grain=None,
     )
 
     with pytest.raises(MaterialisationUsageError):
-        projection.apply(Table(columns=("value", "stat_var"), rows=()), names={})
+        projection.apply(Table(columns=("value", "stat_var"), rows=()), names={}, party_kinds={})
 
 
 @pytest.mark.parametrize(
@@ -310,3 +410,73 @@ def test_a_selection_keeps_the_axes_stat_var_brings(select, expected):
         )
         == expected
     )
+
+
+@pytest.mark.parametrize(
+    ("periods", "grain", "written"),
+    [
+        pytest.param(("2022", "2023"), "year", (2022, 2023), id="year-points-are-integers"),
+        pytest.param(("2022-03",), "month", ("2022-03",), id="a-month-stays-text"),
+        pytest.param(("2019/2021",), None, ("2019/2021",), id="a-span-stays-text"),
+        pytest.param(("2022", "2019/2021"), None, ("2022", "2019/2021"), id="a-later-span"),
+        pytest.param(("2019/2021", "2022"), None, ("2019/2021", "2022"), id="an-earlier-span"),
+        pytest.param((), None, (), id="no-rows"),
+    ],
+)
+def test_year_points_are_written_as_integers(periods, grain, written):
+    source = Table(columns=("time_period", "value"), rows=tuple((p, 1.0) for p in periods))
+
+    assert period_grain(periods) == grain
+    assert tuple(period_cell(grain, period) for period in periods) == written
+    assert tuple(row[0] for row in _project(source, entity_columns=()).table.rows) == written
+
+
+@pytest.mark.parametrize(
+    ("identity", "expected"),
+    [
+        pytest.param(
+            {"entities": {"origin": ["country/GBR"]}, "open_roles": ["destination"]},
+            ("financingRecipient",),
+            id="an-open-role",
+        ),
+        pytest.param(
+            {"entities": {"origin": ["country/GBR"], "destination": ["DACDevelopingCountries"]}},
+            (),
+            id="a-role-bound-to-one-total-sets-nothing-apart",
+        ),
+        pytest.param(
+            {"entities": {"recipient": ["country/KEN", "africa"]}},
+            ("financingRecipient",),
+            id="a-role-bound-to-several-in-the-callers-spelling",
+        ),
+        pytest.param(
+            {"entities": {"observationAbout": ["country/KEN", "country/UGA"]}},
+            (),
+            id="a-subject-role-is-no-party-role",
+        ),
+        pytest.param({"entities": {}}, (), id="a-role-asked-as-its-total"),
+    ],
+)
+def test_totals_come_from_roles_the_identity_leaves_open_or_binds_to_several(identity, expected):
+    entity_columns = ("observationAbout", "financingProvider", "financingRecipient")
+
+    assert totals_roles(identity, entity_columns) == expected
+
+
+def test_a_row_is_a_total_when_a_split_role_holds_a_total_and_residuals_stay():
+    columns = ("financingProvider_party_kind", "financingRecipient_party_kind", "value")
+    table = Table(
+        columns=columns,
+        rows=(
+            ("party", "party", 1.0),
+            ("party", "residual", 2.0),
+            ("party", "total", 3.0),
+            ("total", "party", 4.0),
+        ),
+    )
+
+    parties, totals = split_totals(table, roles=("financingRecipient", "observationAbout"))
+
+    assert (parties.columns, totals.columns) == (columns, columns)
+    assert [row[2] for row in parties.rows] == [1.0, 2.0, 4.0]
+    assert [row[2] for row in totals.rows] == [3.0]

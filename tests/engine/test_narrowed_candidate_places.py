@@ -17,10 +17,12 @@ import asyncio
 import pytest
 
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region.pipeline import resolve_variable
 from series_coverage.schema import RoleNames
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._quantity import NO_QUANTITY
 from tests.engine.test_candidate_place_roles import _GNI_PPP
 from tests.engine.test_candidate_place_roles import _NODES as _GNI_NODES
 from tests.engine.test_role_class_shapes import (
@@ -70,6 +72,8 @@ class _BindLLM:
         self._bindings = [_GUARANTEED] if bind_guarantee else []
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         return (
             _UniversalBindOutput(
                 chosen_shape_index=0, bindings=self._bindings, also_plausible=[1], ask=None
@@ -137,7 +141,7 @@ def test_a_narrowed_candidate_answers_under_its_admitted_places(
 
     assert result.status == "candidates"
     by_member = {
-        tuple(sv.ref.dcid for sv in spec.resolved.members): spec.definition.identity.entities
+        tuple(sv.ref.ref for sv in spec.resolved.members): spec.definition.identity.entities
         for spec in result.specs
     }
     assert by_member == {
@@ -194,7 +198,7 @@ def test_a_two_role_alternate_binds_the_place_where_the_elected_shape_bound_it()
 
     assert result.status == "candidates"
     assert {
-        tuple(sv.ref.dcid for sv in spec.resolved.members): spec.definition.identity.entities
+        tuple(sv.ref.ref for sv in spec.resolved.members): spec.definition.identity.entities
         for spec in result.specs
     } == {
         (_BY_CREDITOR_GUARANTEED,): {"destination": [_KEN]},

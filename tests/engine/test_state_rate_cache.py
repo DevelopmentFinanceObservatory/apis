@@ -7,12 +7,14 @@ from unittest.mock import patch
 
 from materialise.rate_tables import RateTableCache
 from search.engine.bind import _UniversalBindOutput
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import phase_answer as region_phase_answer
 from search.engine.region import resolve_variable
 from search.engine.region.state import EngineOptions
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import materialise_double_from_obs
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 
@@ -20,6 +22,8 @@ class _SoleShapeLLM:
     """Elects the sole (unconstrained) candidate shape, no bindings needed."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return (
             _UniversalBindOutput(chosen_shape_index=0, bindings=[], also_plausible=None, ask=None),

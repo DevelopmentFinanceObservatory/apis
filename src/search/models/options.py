@@ -12,7 +12,7 @@ from pydantic import (
 from .base import StrictModel
 from .coverage import Coverage
 from .grammar import SlotKey, SlotValue
-from .vocab import RoleAxis, SlotOptionRelation
+from .vocab import PartyKind, RoleAxis, SlotOptionRelation
 
 # ---------------------------------------------------------------------------
 # SlotOptions: the taxonomy a slot was bound against, surfaced to the client
@@ -101,6 +101,17 @@ class SlotOption(StrictModel):
             "whose facets carry no complete date list. Null exactly when served_rows is null"
         ),
     )
+    party_kind: PartyKind | None = Field(
+        default=None,
+        description=(
+            "on an origin or destination entity option, what the party is beside the others "
+            "on its side: 'party' (a country, territory or organisation), 'total' (other "
+            "parties' figures, so a "
+            "sum across the role that counts it counts its members twice) or 'residual' "
+            "(figures no other party holds), as the code index lists it. Absent for a party "
+            "the index does not list, and on every other option"
+        ),
+    )
 
     @model_serializer(mode="wrap")
     def _serialize(
@@ -128,7 +139,7 @@ class SlotOptions(StrictModel):
     The taxonomy the binder chose from and the options a client can offer the user
     are the same artifact; this is that artifact, surfaced per slot. ``key`` matches
     the ``SlotKey`` of the corresponding entry in ``Spec.resolved.slots`` (join on axis and
-    ``property.dcid``).
+    ``property.ref``).
     """
 
     key: SlotKey = Field(description="the slot identity this option set belongs to")
@@ -149,9 +160,9 @@ class SlotOptions(StrictModel):
             "false when options is the full known set for this slot at its "
             "current level (a curated seed taxonomy, a level-scoped taxonomy "
             "sourced from the packaged code index, or an observed taxonomy from "
-            "the same source, rather than a confirm-capped sample); true when "
+            "the same source, rather than the recalled candidates); true when "
             "options is only the values observed among the resolved candidates "
-            "(bounded by retrieval/confirm caps, not exhaustive)"
+            "(bounded by the recall cut, not exhaustive)"
         )
     )
     source: SlotOptionsSource = Field(

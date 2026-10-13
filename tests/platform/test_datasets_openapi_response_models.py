@@ -79,6 +79,8 @@ def test_every_datasets_path_is_present(app: FastAPI):
         "/api/datasets/{id}/{content_version}/pin",
         "/api/datasets/{id}/{content_version}/observations",
         "/api/datasets/{id}/{content_version}/files/{digest}",
+        "/api/datasets/{id}/{content_version}/description",
+        "/api/datasets/{id}/{content_version}/description/values",
         "/api/datasets/frames/publish",
         "/api/datasets/frames/refresh",
         "/api/datasets/frames/{spec_id}/{content_version}/recipe",

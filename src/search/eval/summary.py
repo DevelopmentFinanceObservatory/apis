@@ -18,7 +18,10 @@ _FOLD_AFTER = 15
 # Table cells keep this many characters of a check's detail.
 _CELL_CHARS = 300
 
-_LETTER = {"pass": "P", "fail": "F", "unverifiable": "U", "n/a": "-"}
+_LETTER = {"pass": "P", "fail": "F", "unverifiable": "U", "unreached": "~", "n/a": "-"}
+# Head verdicts the gate reads as a pass: an unreached check's sample already fails
+# `disposition`.
+_CLEAN = frozenset({"pass", "unreached", "n/a"})
 _FAILED = frozenset({"new_case_failure", "structural_failure"})
 
 type Report = Mapping[str, Any]
@@ -88,8 +91,8 @@ def single_text(report: Report) -> str:
     """Every case with a check that did not pass on every sample, for a terminal.
 
     Each check line shows its label, name, one letter per sample (P pass, F fail, U
-    unverifiable, - n/a, . not run on that sample) and each distinct detail. FAIL marks a
-    check that passed on no sample and is not a known failure of its case.
+    unverifiable, ~ unreached, - n/a, . not run on that sample) and each distinct detail.
+    FAIL marks a check that passed on no sample and is not a known failure of its case.
     """
     cases: Mapping[str, Any] = report["cases"]
     out: list[str] = []
@@ -195,17 +198,17 @@ def _rounds(entry: Mapping[str, Any]) -> Iterator[Mapping[str, Any] | None]:
 
 def _detail(entry: Mapping[str, Any]) -> str:
     """The entry's own detail when the driver wrote one, as for ``answer``, otherwise the
-    first detail of a sample that did not pass, head samples first."""
+    first detail of a sample that did not pass, head samples first, a failed or unverifiable
+    sample before an unreached or n/a one."""
     if detail := entry.get("detail"):
         return detail
-    return next(
-        (r["detail"] for r in _rounds(entry) if r and r["verdict"] != "pass" and r["detail"]),
-        "",
-    )
+    seen = [r for r in _rounds(entry) if r and r["verdict"] != "pass" and r["detail"]]
+    seen.sort(key=lambda r: r["verdict"] in _CLEAN)
+    return seen[0]["detail"] if seen else ""
 
 
 def _distinct_details(results: Iterable[Mapping[str, Any] | None]) -> list[str]:
-    seen = (r["detail"] for r in results if r and r["verdict"] not in ("pass", "n/a"))
+    seen = (r["detail"] for r in results if r and r["verdict"] not in _CLEAN)
     return list(dict.fromkeys(d for d in seen if d))
 
 
@@ -215,7 +218,7 @@ def _letters(entry: Mapping[str, Any], round_: str) -> str:
 
 def _not_clean(entry: Mapping[str, Any]) -> bool:
     return entry["verdict"] == "infra" or any(
-        r and r["verdict"] not in ("pass", "n/a") for r in entry["head"]
+        r and r["verdict"] not in _CLEAN for r in entry["head"]
     )
 
 

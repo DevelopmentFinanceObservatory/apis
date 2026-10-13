@@ -7,7 +7,7 @@ import pytest
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
 from code_index.types import StatVarRow
 from datasets_api.mint_models import MintOptions
-from datasets_api.render import _reshape
+from datasets_api.render import _RenderReads, _reshape
 from materialise.enrichment import EnrichmentLookup
 from materialise.reshape import ColumnUnknownError, Table
 
@@ -72,7 +72,7 @@ _TABLE = Table(
 
 
 def _enrichment() -> EnrichmentLookup:
-    return EnrichmentLookup(FakeMintGraphReader(), type_kinds={}, parties={})
+    return EnrichmentLookup(FakeMintGraphReader(), parties={})
 
 
 def test_code_index_none_skips_decoding_entirely():
@@ -80,7 +80,7 @@ def test_code_index_none_skips_decoding_entirely():
         _TABLE,
         options=MintOptions(columns=None, pivot=None),
         entity_columns=("financingProvider", "financingRecipient"),
-        enrichment=_enrichment(),
+        reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
         code_index=None,
         resolved_stat_var_refs=(),
         provenance_refs=(),
@@ -96,7 +96,7 @@ def test_a_supplied_code_index_decodes_unconditionally_even_with_no_columns_requ
         _TABLE,
         options=MintOptions(columns=None, pivot=None),
         entity_columns=("financingProvider", "financingRecipient"),
-        enrichment=_enrichment(),
+        reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
         code_index=_index(),
         resolved_stat_var_refs=(),
         provenance_refs=(),
@@ -118,7 +118,7 @@ def test_columns_naming_a_decoded_column_parses_against_the_post_decode_column_s
         _TABLE,
         options=MintOptions(columns=[*_TABLE_COLUMNS, "stat_var_crsPurpose"], pivot=None),
         entity_columns=("financingProvider", "financingRecipient"),
-        enrichment=_enrichment(),
+        reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
         code_index=_index(),
         resolved_stat_var_refs=(),
         provenance_refs=(),
@@ -135,7 +135,7 @@ def test_a_decoded_column_named_in_columns_without_a_code_index_still_refuses_co
             _TABLE,
             options=MintOptions(columns=["stat_var_crsPurpose"], pivot=None),
             entity_columns=("financingProvider", "financingRecipient"),
-            enrichment=_enrichment(),
+            reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
             code_index=None,
             resolved_stat_var_refs=(),
             provenance_refs=(),
@@ -150,7 +150,7 @@ def test_a_long_selection_naming_no_decoded_column_keeps_the_decoded_columns():
         _TABLE,
         options=MintOptions(columns=list(_TABLE_COLUMNS), pivot=None),
         entity_columns=("financingProvider", "financingRecipient"),
-        enrichment=_enrichment(),
+        reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
         code_index=_index(),
         resolved_stat_var_refs=(),
         provenance_refs=(),

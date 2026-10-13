@@ -59,7 +59,7 @@ class TestStandardWhereSlot:
         assert where.key.property is None
         assert isinstance(where.binding, BindingValue)
         assert where.binding.value.ref is not None
-        assert where.binding.value.ref.dcid == "country/IND"
+        assert where.binding.value.ref.ref == "country/IND"
 
     def test_round_trip_without_entity_dcids_fully_rematerialises(self):
         """The posted where slot supplies the entity when the base identity omits it."""
@@ -84,7 +84,7 @@ class TestStandardWhereSlot:
         where = _where_slot(spec.resolved.slots)
         assert where is not None
         assert isinstance(where.binding, BindingValue)
-        assert where.binding.value.ref.dcid == _ENTITY_DCID
+        assert where.binding.value.ref.ref == _ENTITY_DCID
 
 
 class TestWhereSlotDoesNotPerturbIdentity:

@@ -67,7 +67,8 @@ class ManifestTrace:
     # joined, then `members` (each member's
     # bare StatVar ref and native unit, sorted by StatVar), and the members'
     # fallback/projected counts with sorted, deduplicated examples capped at
-    # 10. One entry per recipe and table-version pair.
+    # 10, and `left_out` when the conversion left data out: one `{reason, count, of}` per
+    # reason and counted kind. One entry per recipe and table-version pair.
     frame_grammar_version: str  # Semver label, e.g. "1.0.0".
     materialiser_build: str
     capability_version: str
@@ -81,6 +82,25 @@ class ManifestTrace:
     family: MemberFamily | None = None
     # The population the definition's identity admits, from the request. `None` when the
     # resolver could not state the whole of it, and on a trace that describes no one family.
+    coverage_gaps: tuple[dict[str, object], ...] = ()
+    # The places a national-currency unit binding serves no row at, one entry per role and
+    # reason (`national_currency.CoverageGap.as_trace_entry`): `role`, `reason` and the
+    # `entities` in dcid order. Omitted from `to_dict()` when empty.
+    choices: tuple[dict[str, object], ...] = ()
+    # Each axis the deployment's default policy chose a value on over disagreeing candidates
+    # (`facets.FacetSelection.choice_entry`): `axis`, `ranking`, and `candidates` in rank
+    # order, the chosen value first, each with the `places`, `years` and `observations` the
+    # ranking read. Omitted from `to_dict()` when empty.
+    continuations: tuple[dict[str, object], ...] = ()
+    # Each selection whose series the same source's estimates continue past its last period
+    # (`facets.FacetSelection.continued_by`): `axis`, the continuing `method`, and `periods`,
+    # the first and last period that method's rows supply in the served frame. Omitted from
+    # `to_dict()` when empty.
+    origin_gaps: tuple[dict[str, object], ...] = ()
+    # The places the origin reads found the answer holds no data at, attached by
+    # `datasets_api.serve` (`datasets_api.origin.OriginGap.as_trace_entry`): `code`
+    # (`withheld_by_registry` or `un_system_unavailable`), `variable` and `provenances` for a
+    # registry withholding, and `entities`. Omitted from `to_dict()` when empty.
 
     def to_dict(self) -> dict[str, object]:
         """Returns the wire shape. Optional fields are omitted when `None`.
@@ -105,6 +125,14 @@ class ManifestTrace:
         result["normalisations"] = list(self.normalisations)
         if self.conversion is not None:
             result["conversion"] = list(self.conversion)
+        if self.coverage_gaps:
+            result["coverage_gaps"] = list(self.coverage_gaps)
+        if self.choices:
+            result["choices"] = list(self.choices)
+        if self.continuations:
+            result["continuations"] = list(self.continuations)
+        if self.origin_gaps:
+            result["origin_gaps"] = list(self.origin_gaps)
         result["frame_grammar_version"] = self.frame_grammar_version
         result["materialiser_build"] = self.materialiser_build
         result["capability_version"] = self.capability_version

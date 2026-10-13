@@ -244,16 +244,16 @@ def test_a_group_agreeing_on_an_open_axis_names_it_but_never_a_varying_one():
     assert "syntheticValueOne" not in label
     assert "syntheticValueTwo" not in label
     # Each axis carries its value, the declared default netting basis included.
-    assert [(v.axis, v.value.dcid) for v in spec.resolved.measure_axis_values] == [
+    assert [(v.axis, v.value.ref) for v in spec.resolved.measure_axis_values] == [
         (axis, value) for axis, value in gross_partition.values if value is not None
     ]
     assert ("nettingBasis", "Gross") in [
-        (v.axis, v.value.dcid) for v in spec.resolved.measure_axis_values
+        (v.axis, v.value.ref) for v in spec.resolved.measure_axis_values
     ]
     assert all(v.value.label for v in spec.resolved.measure_axis_values)
     (alternative,) = spec.resolved.alternative_measures or []
     assert ("nettingBasis", "Net") in [
-        (v.axis, v.value.dcid) for v in alternative.measure_axis_values
+        (v.axis, v.value.ref) for v in alternative.measure_axis_values
     ]
 
 

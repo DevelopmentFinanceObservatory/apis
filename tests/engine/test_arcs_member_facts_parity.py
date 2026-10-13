@@ -41,7 +41,7 @@ def _slot(prop_dcid: str, *, axis: str = "how") -> Slot:
     from search.models import BindingUnbound
 
     return Slot(
-        key=SlotKey(axis=axis, property=GraphRef(dcid=prop_dcid, label=prop_dcid), label=prop_dcid),
+        key=SlotKey(axis=axis, property=GraphRef(ref=prop_dcid, label=prop_dcid), label=prop_dcid),
         binding=BindingUnbound(),
         expansion=None,
     )
@@ -94,16 +94,16 @@ def test_build_stat_vars_agrees_between_arcs_and_member_facts_forms():
 
     bound_slot = Slot(
         key=SlotKey(
-            axis="how", property=GraphRef(dcid=_PROP_RESOLVED, label=_PROP_RESOLVED), label="p"
+            axis="how", property=GraphRef(ref=_PROP_RESOLVED, label=_PROP_RESOLVED), label="p"
         ),
         binding=BindingValue(
             value=SlotValue(
-                ref=GraphRef(dcid=_VAL_RESOLVED, label=_VAL_RESOLVED), value_kind="enum_value"
+                ref=GraphRef(ref=_VAL_RESOLVED, label=_VAL_RESOLVED), value_kind="enum_value"
             )
         ),
         expansion=None,
     )
-    sv_refs = [GraphRef(dcid=_SV_FULL, label=_SV_FULL)]
+    sv_refs = [GraphRef(ref=_SV_FULL, label=_SV_FULL)]
 
     from_arcs = build_stat_vars(sv_refs, "test_shape", [bound_slot], arcs_by_sv=_ARCS_BY_SV)
     from_member_facts = build_stat_vars(
@@ -112,12 +112,12 @@ def test_build_stat_vars_agrees_between_arcs_and_member_facts_forms():
 
     assert from_arcs == from_member_facts
     assert len(from_arcs[0].slot_values) == 1
-    assert from_arcs[0].slot_values[0].value.ref.dcid == _VAL_RESOLVED
+    assert from_arcs[0].slot_values[0].value.ref.ref == _VAL_RESOLVED
     assert from_arcs[0].constraint_properties == [_PROP_RESOLVED, _PROP_UNRESOLVED]
 
 
 def test_build_stat_vars_requires_exactly_one_source():
-    sv_refs = [GraphRef(dcid=_SV_FULL, label=_SV_FULL)]
+    sv_refs = [GraphRef(ref=_SV_FULL, label=_SV_FULL)]
     with pytest.raises(ValueError, match="exactly one"):
         build_stat_vars(sv_refs, "test_shape", [])
     with pytest.raises(ValueError, match="exactly one"):

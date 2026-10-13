@@ -3,7 +3,6 @@
 import pytest
 
 from search.engine.errors import GraphInfraError
-from search.engine.place import expand_place
 from tests.fixtures import FakeGraph
 
 
@@ -150,27 +149,25 @@ def test_resolve_by_arc_bare_arc_unknown_name_returns_empty_list() -> None:
     assert g.resolve_by_arc(["Republic of Atlantis"], arc=_BARE_ARC) == {"Republic of Atlantis": []}
 
 
-def test_expand_place_ungeoregion_from_shared_fixture() -> None:
-    """expand_place resolves SouthernAfrica's real member countries."""
+def test_child_places_ungeoregion_from_shared_fixture() -> None:
+    """The shared fixture holds SouthernAfrica's real `Country` children."""
     g = FakeGraph()
-    expansion = expand_place("SouthernAfrica", "UNGeoRegion", graph=g)
-    assert expansion is not None
-    assert expansion.children == [
-        "country/BWA",
-        "country/LSO",
-        "country/NAM",
-        "country/SWZ",
-        "country/ZAF",
-    ]
+    assert g.child_places_batch(["SouthernAfrica"], "Country") == {
+        "SouthernAfrica": [
+            "country/BWA",
+            "country/LSO",
+            "country/NAM",
+            "country/SWZ",
+            "country/ZAF",
+        ]
+    }
 
 
-def test_expand_place_mapped_type_empty_membership_from_shared_fixture() -> None:
-    """A covered type with no members returns an empty `PlaceExpansion`."""
+def test_child_places_of_a_region_with_no_children_from_shared_fixture() -> None:
+    """A region the shared fixture gives no `Country` child lists none."""
     g = FakeGraph()
     (dcid,) = g.resolve_by_arc(["Empty Region"], arc=_UNGEOREGION_ARC)["Empty Region"]
-    expansion = expand_place(dcid, "UNGeoRegion", graph=g)
-    assert expansion is not None
-    assert expansion.children == []
+    assert g.child_places_batch([dcid], "Country") == {dcid: []}
 
 
 @pytest.mark.parametrize(

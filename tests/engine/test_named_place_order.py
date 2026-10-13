@@ -17,6 +17,7 @@ import pytest
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.graph import EngineGraphClient, Facet
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.result import RegionResult
 from search.engine.region.state import EngineOptions
@@ -34,6 +35,7 @@ from tests.engine._harness import (
     door_roles_for_test_query,
     materialise_double_from_obs,
 )
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 from tests.materialise.conftest import FakeGraphReader
 
@@ -100,6 +102,8 @@ def _at_kenya(*stat_vars: str) -> dict[str, list[dict]]:
 
 class _Bind:
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         return _UniversalBindOutput(
             chosen_shape_index=0, bindings=[], also_plausible=[], ask=None
         ), None

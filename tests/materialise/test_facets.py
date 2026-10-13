@@ -52,6 +52,7 @@ from materialise.facets import (
     probe_facets,
     rank_candidates,
     select_facet,
+    served_facets,
 )
 from materialise.graph import Facet, FacetDefaultPolicy
 from materialise.pipeline import MaterialisationRequest
@@ -947,6 +948,15 @@ def test_unbound_no_policy_disagreement_binds_top_ranked_candidates_value():
     assert selection.basis == "deployment_fallback"
     assert selection.selection_reason == "most_observations_over_disagreement"
     assert selection.dispatch_facet_id == "facet1"
+    # The trace names both values in rank order, with the figures the ranking read; no window
+    # and no breadth leave `years` and `places` unread.
+    assert selection.choice_entry() == {
+        "axis": "provenance",
+        "candidates": [
+            {"ref": "OECD_DAC2A", "places": None, "years": None, "observations": 402},
+            {"ref": "IMF_WEO", "places": None, "years": None, "observations": 10},
+        ],
+    }
 
 
 def test_unbound_no_policy_axis_absent_on_top_ranked_facet_binds_null_not_a_refusal():
@@ -1244,6 +1254,190 @@ def test_rank_candidates_puts_overlapping_candidates_first_then_the_usual_order(
 
     assert ranked == (_ESTIMATED, later_small, _RECORDED)
     assert rank_candidates([_ESTIMATED, _RECORDED], window=None) == (_RECORDED, _ESTIMATED)
+
+
+_OTHER_SOURCE = replace(_RECORDED, facet_id="fOther", provenance_id="OtherSource", obs_count=80)
+"""Another source's recorded facet, covering the same 9 years of a 2016 to 2030 window as
+`_RECORDED` with more observations, so it outranks `_RECORDED` alone."""
+
+_RECORDED_LATER = replace(
+    _RECORDED, facet_id="fRecordedLater", obs_count=2, earliest_date="2025", latest_date="2026"
+)
+"""`_RECORDED`'s provenance, method, unit and cadence in another facet, reaching 2026: an
+election of either serves both, so their series runs to 2026."""
+
+_ESTIMATED_TO_2025 = replace(_ESTIMATED, obs_count=6, earliest_date="2020", latest_date="2025")
+"""Estimates reaching 2025, past `_RECORDED` alone but short of `_RECORDED_LATER`."""
+
+_ESTIMATED_TO_2024 = replace(_ESTIMATED, obs_count=5, earliest_date="2020", latest_date="2024")
+"""Estimates reaching 2024, past neither `_RECORDED` nor `_RECORDED_LATER`."""
+
+
+@pytest.mark.parametrize(
+    ("candidates", "window", "expected"),
+    [
+        # The estimates cover more of the window than the series they continue, and follow
+        # it as one candidate.
+        pytest.param(
+            [_ESTIMATED, _RECORDED], _range(2022, 2030), (_RECORDED, _ESTIMATED), id="joined"
+        ),
+        # Joined, the recorded series and its estimates span 2016 to 2030 and outrank another
+        # source's 2016 to 2024 series.
+        pytest.param(
+            [_OTHER_SOURCE, _ESTIMATED, _RECORDED],
+            _range(2016, 2030),
+            (_RECORDED, _ESTIMATED, _OTHER_SOURCE),
+            id="joined-span-outranks-another-source",
+        ),
+        # Estimates a dispatch of the recorded series would not serve rank alone: monthly
+        # ones sit at another cadence, and ones that start after 2030 hold no point in it.
+        pytest.param(
+            [_OTHER_SOURCE, replace(_ESTIMATED, observation_period="P1M"), _RECORDED],
+            _range(2016, 2030),
+            (_OTHER_SOURCE, _RECORDED, replace(_ESTIMATED, observation_period="P1M")),
+            id="estimates-at-another-cadence-rank-alone",
+        ),
+        pytest.param(
+            [_OTHER_SOURCE, replace(_ESTIMATED, earliest_date="2031"), _RECORDED],
+            _range(2016, 2030),
+            (_OTHER_SOURCE, _RECORDED, replace(_ESTIMATED, earliest_date="2031")),
+            id="estimates-past-the-window-rank-alone",
+        ),
+        # Nothing continues under these windows, so the usual order stands.
+        pytest.param(
+            [_ESTIMATED, _RECORDED], None, (_RECORDED, _ESTIMATED), id="control-no-window"
+        ),
+        pytest.param(
+            [_ESTIMATED, _RECORDED],
+            _range(2026, 2030),
+            (_ESTIMATED, _RECORDED),
+            id="control-recorded-series-misses-the-window",
+        ),
+        pytest.param(
+            [_OTHER_SOURCE, _RECORDED],
+            _range(2016, 2030),
+            (_OTHER_SOURCE, _RECORDED),
+            id="control-no-estimates",
+        ),
+        # Each series continues past its own end, as a dispatch serving the selection does:
+        # estimates ending 2025 continue `_RECORDED`, which ends in 2024, though
+        # `_RECORDED_LATER` reaches 2026, and joined they lead.
+        pytest.param(
+            [_OTHER_SOURCE, _RECORDED, _RECORDED_LATER, _ESTIMATED_TO_2025],
+            _range(2016, 2030),
+            (_RECORDED, _ESTIMATED_TO_2025, _OTHER_SOURCE, _RECORDED_LATER),
+            id="estimates-past-one-series-of-the-selection-join",
+        ),
+        # Estimates ending 2024 reach past no series of the selection, so rank alone and the
+        # other source leads.
+        pytest.param(
+            [_OTHER_SOURCE, _RECORDED, _RECORDED_LATER, _ESTIMATED_TO_2024],
+            _range(2016, 2030),
+            (_OTHER_SOURCE, _RECORDED, _ESTIMATED_TO_2024, _RECORDED_LATER),
+            id="estimates-short-of-every-series-of-the-selection-rank-alone",
+        ),
+        pytest.param(
+            [_OTHER_SOURCE, _RECORDED, _ESTIMATED_TO_2025],
+            _range(2016, 2030),
+            (_RECORDED, _ESTIMATED_TO_2025, _OTHER_SOURCE),
+            id="control-estimates-past-the-selections-last-year-join",
+        ),
+        pytest.param(
+            [replace(_ESTIMATED, unit="Euro", obs_count=80), _RECORDED],
+            _range(2022, 2030),
+            (replace(_ESTIMATED, unit="Euro", obs_count=80), _RECORDED),
+            id="control-estimates-in-another-unit-rank-alone",
+        ),
+        # On a full tie, a method classed estimated ranks after no method, which sorts last
+        # among unclassed methods.
+        pytest.param(
+            [replace(_RECORDED, facet_id="fE", measurement_method="Estimated"), _RECORDED],
+            None,
+            (_RECORDED, replace(_RECORDED, facet_id="fE", measurement_method="Estimated")),
+            id="tie-estimated-method-after-no-method",
+        ),
+        # The same tie across two sources: the estimates rank after the other source's
+        # reported series, though their source's name sorts first.
+        pytest.param(
+            [
+                replace(
+                    _RECORDED,
+                    facet_id="fE",
+                    provenance_id="AlphaSource",
+                    measurement_method="Estimated",
+                ),
+                _RECORDED,
+            ],
+            None,
+            (
+                _RECORDED,
+                replace(
+                    _RECORDED,
+                    facet_id="fE",
+                    provenance_id="AlphaSource",
+                    measurement_method="Estimated",
+                ),
+            ),
+            id="tie-estimated-method-after-another-sources-reported-series",
+        ),
+    ],
+)
+def test_a_series_and_the_estimates_continuing_it_rank_as_one_candidate(
+    candidates, window, expected
+):
+    assert rank_candidates(candidates, window=window) == expected
+
+
+@pytest.mark.parametrize(
+    ("candidates", "served"),
+    [
+        pytest.param(
+            [_OTHER_SOURCE, _RECORDED, _RECORDED_LATER, _ESTIMATED_TO_2025],
+            (_RECORDED, _RECORDED_LATER, _ESTIMATED_TO_2025),
+            id="estimates-past-one-series-of-the-selection",
+        ),
+        pytest.param(
+            [_OTHER_SOURCE, _RECORDED, _RECORDED_LATER, _ESTIMATED_TO_2024],
+            (_OTHER_SOURCE,),
+            id="estimates-short-of-every-series-of-the-selection",
+        ),
+        pytest.param(
+            [_OTHER_SOURCE, _RECORDED, _ESTIMATED_TO_2025],
+            (_RECORDED, _ESTIMATED_TO_2025),
+            id="control-estimates-past-the-selections-last-year",
+        ),
+    ],
+)
+def test_a_dispatch_serves_the_series_and_estimates_the_ranking_credited(candidates, served):
+    """The ranking credits a series with the estimates its dispatch serves, so the
+    election is never won on estimates the version then leaves out."""
+    assert served_facets(candidates, stat_vars=[_STAT_VAR], window=_range(2016, 2030)) == served
+
+
+def test_estimates_continuing_two_selections_leave_the_election_to_their_own_series():
+    """Two methods of one source, one reported to 2023 and one to 2022, and estimates from
+    2024 that continue either. Each selection is credited with the estimates its own
+    dispatch would serve, so the series reaching 2023 wins in every candidate order."""
+    longer = replace(
+        _RECORDED, facet_id="fLonger", obs_count=4, earliest_date="2020", latest_date="2023"
+    )
+    shorter = replace(
+        _RECORDED,
+        facet_id="fShorter",
+        measurement_method="Standard",
+        obs_count=3,
+        earliest_date="2020",
+        latest_date="2022",
+    )
+    estimates = replace(_ESTIMATED, obs_count=7, earliest_date="2024", latest_date="2030")
+    window = _range(2020, 2030)
+
+    for order in itertools.permutations([longer, shorter, estimates]):
+        assert served_facets(order, stat_vars=[_STAT_VAR], window=window) == (
+            longer,
+            estimates,
+        ), [f.facet_id for f in order]
+        assert rank_candidates(order, window=window)[0] == longer
 
 
 def test_unknown_earliest_date_overlaps_when_latest_date_reaches_the_window_start():
@@ -1963,11 +2157,14 @@ def _merge_pair(existing: Facet, other: Facet) -> Facet:
         return facet.dates_complete and (bool(facet.dates) or facet.obs_count == 0)
 
     dates = existing.dates + other.dates
+    latest = latest_date(existing.latest_date, other.latest_date)
+    series_end = earliest_date(existing.earliest_series_end, other.earliest_series_end)
     return replace(
         existing,
         obs_count=existing.obs_count + other.obs_count,
         earliest_date=earliest_date(existing.earliest_date, other.earliest_date),
-        latest_date=latest_date(existing.latest_date, other.latest_date),
+        latest_date=latest,
+        first_series_end=None if series_end == latest else series_end,
         dates=dates,
         values=existing.values + other.values,
         dates_complete=(

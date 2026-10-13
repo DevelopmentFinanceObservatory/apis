@@ -94,7 +94,7 @@ def _graph_without_facet_reads(monkeypatch: pytest.MonkeyPatch) -> FakeGraph:
 
 def _refs(options: list[FacetOptions]) -> dict[str, list[str | None]]:
     return {
-        fo.axis: [o.value.ref.dcid if o.value.ref is not None else None for o in fo.options]
+        fo.axis: [o.value.ref.ref if o.value.ref is not None else None for o in fo.options]
         for fo in options
     }
 
@@ -238,7 +238,7 @@ def test_pinning_each_offered_value_serves_only_its_facets(monkeypatch):
     for fo in options:
         for option in fo.options:
             wire_option = json.loads(option.model_dump_json(exclude_none=True))
-            ref = wire_option["value"]["ref"]["dcid"] if "ref" in wire_option["value"] else None
+            ref = wire_option["value"]["ref"]["ref"] if "ref" in wire_option["value"] else None
             pin = binding.validate_json(json.dumps({"state": "value", "ref": ref}))
             assert json.loads(binding.dump_json(pin, exclude_none=True)) == {
                 "state": "value",

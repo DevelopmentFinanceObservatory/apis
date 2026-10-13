@@ -16,17 +16,27 @@ The rule, per StatVar:
    (`GenerationStamp.key`), the backends its reads take (each reader's `source_key`) and the
    request's source scope (`Catalogue.scope`) takes it from the process-wide memo with no read.
 2. Otherwise its unfiltered availability read runs on the module's settle pool
-   (`AVAILABILITY_WORKERS` threads), single-flight per stamp key, backends and StatVar, for at
-   most `SETTLE_SECONDS` from when it holds its GET slot, capped at `MAX_EVERY_PLACE` values
-   and `MAX_EVERY_PLACE_BYTES`, and for at most `SETTLE_DEADLINE_SECONDS` from its submission,
+   (`AVAILABILITY_WORKERS` threads), single-flight per stamp key, backends and StatVar. Each
+   `read_default_presence` call queues its reads in its own lane, and each free settle
+   thread takes the next read of the next lane in turn, a new lane first. A lone call uses
+   every thread, and a call arriving beside one that queued hundreds of reads, as a held
+   family's presence read does, has its read taken at the next free thread. A call that
+   wants a StatVar whose read waits in another call's lane puts that flight in its own lane
+   too, and the first lane to reach it runs it, so the call never waits behind another
+   call's backlog. A read runs for at most `SETTLE_SECONDS` from when it holds its GET slot,
+   capped at `MAX_EVERY_PLACE` values and `MAX_EVERY_PLACE_BYTES`, and for at most `SETTLE_DEADLINE_SECONDS` from its submission,
    slot waits included. The request waits for it for `EVERY_PLACE_SECONDS`. The read
-   settles whether or not the request still waits, detached from the starting request's
-   bound deadline (`submit_detached`), and its outcome is memoised when it is
+   settles whether or not the request still waits, in the context of the call that queued
+   it, detached from that call's bound deadline (`detached_context`), so its logs and
+   request timings land on that call's request. Its outcome is memoised when it is
    definite: a list within the caps, a value or byte cap, or an HTTP 5xx other than 502, 503
    and 504. A gateway status or a read past either time bound is not memoised.
 3. A list is checked against the graph: one batched `typeOf` read (`node_arcs_many`) over the
-   places of every list the request holds, for at most `PLACE_CHECK_SECONDS`. A place with no
-   node leaves the scope, and the checked scope is memoised. Availability lists data keys the
+   places of every list the request holds that no earlier check answered, for at most
+   `PLACE_CHECK_SECONDS`. A place with no node leaves the scope, and the checked scope is
+   memoised. Each place's answer is memoised too, under the generation stamp key and the graph
+   client's backends, and a place another check is reading waits for that read, so concurrent
+   requests and a batch of variables read each place once. Availability lists data keys the
    graph holds no node for: on dev `LifeExpectancy_Person_Female` lists `country/SouthAfrica`
    beside `country/ZAF`.
 4. Every other StatVar takes its countries with data, from one `entities_with_data_by_variable`
@@ -34,10 +44,10 @@ The rule, per StatVar:
    else nothing. That scope is memoised when availability's answer was definite. A StatVar
    whose read is still running after `EVERY_PLACE_SECONDS`, whose read ended in a gateway
    status or at either time bound, whose node check ran past its window or failed on the
-   server, that arrives while every settle thread is busy, or that passes
+   server, that arrives while every settle thread runs a read, or that passes
    `MAX_COLD_READS_PER_REQUEST`, takes its countries for that request only and is listed in
-   `DefaultPresence.unsettled`. A read not yet started is queued to settle while fewer than
-   `MAX_QUEUED_SETTLES` wait, and is dropped past that.
+   `DefaultPresence.unsettled`. A read not yet started is queued in the call's lane to
+   settle while fewer than `MAX_QUEUED_SETTLES` wait in lanes, and is dropped past that.
 5. The request's deadline bounds every wait and graph read. A wait or read it ends raises
    `PlaceScopeDeadlineError`, which both doors answer 504 `timeout`.
 6. Any other failed availability read raises `PlaceScopeReadError`, a `GraphReadError` carrying
@@ -73,11 +83,13 @@ countries fallback counts admitted facets only.
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import hashlib
 import logging
 import sys
 import threading
 import time
+from collections import deque
 from collections.abc import Iterable, Mapping, Sequence
 from concurrent.futures import Future, InvalidStateError, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
@@ -88,7 +100,7 @@ from cachetools import TLRUCache
 
 from dc_graph import GraphDeadlineExceededError, GraphReadError
 from dc_sdmx import EntityFilter, SdmxCapExceededError, SdmxClientError
-from dfo_platform.request_deadline import submit_detached
+from dfo_platform.request_deadline import detached_context
 from graph_generation import GenerationStamp
 from graph_generation.stamp import ttu_from_stamp_key
 from materialise.errors import MaterialisationUsageError
@@ -144,18 +156,30 @@ It matches Search's SDMX GET cap (`SDMX_TOTAL_SEMAPHORE`). On dev 100 light read
 16 at once and 2.9 to 3.4 s 8 at once."""
 
 MAX_QUEUED_SETTLES: Final = 1_000
-"""The most reads waiting for a settle thread. At the dev rate of 100 light reads in 1.7 s a
+"""The most reads waiting in calls' lanes for a settle thread. At the dev rate of 100 light reads in 1.7 s a
 full queue drains in about 17 s. A read arriving past it is dropped and starts when a later
 request needs it."""
 
 MAX_COLD_READS_PER_REQUEST: Final = 100
-"""The most availability reads one request starts and waits for. A request reading more
-StatVars takes their countries for the rest and queues their reads to settle. On dev 100 light
-reads take 1.7 s 16 at once, inside `EVERY_PLACE_SECONDS`."""
+"""The most availability reads one request starts and waits for, counted across the calls
+that share its presence (`known`). A request reading more StatVars takes their countries for
+the rest and queues their reads to settle. One call waits only for reads that start at once,
+at most `AVAILABILITY_WORKERS` on an idle pool, so the cap binds a request whose calls read
+more than that in turn. On dev 100 light reads take 1.7 s 16 at once."""
 
 MEMO_MAX_PLACES: Final = 2_000_000
 """The memo's bound in memoised places, a fallback marker counting one. Listed places are
 interned, so an entry costs a pointer a place: about 16 MB at the bound."""
+
+CHECKED_MAX_PLACES: Final = 200_000
+"""The most places whose node check one generation stamp key and graph backend keep. Past it
+their answers are dropped and later checks read again. A place's answer costs about 40 bytes
+over its interned dcid, so about 8 MB at the bound; a cold batch of 50 variables on dev
+checks about 6,000 places."""
+
+CHECKED_MAX_SOURCES: Final = 4
+"""The most generation stamp keys and graph backends whose place answers the process keeps,
+least recently used first out."""
 
 _SUBJECT_ROLE: Final = "observationAbout"
 _NODE_PROBE: Final = ("typeOf",)
@@ -391,14 +415,46 @@ list awaiting its node check, or `_Fallback.DEFINITE` awaiting its countries. Gu
 `_lock`."""
 _flights: dict[_MemoKey, Future[_Outcome]] = {}
 """Availability reads registered and not finished, one per key. Guarded by `_lock`."""
+_on_pool: set[Future[_Outcome]] = set()
+"""The flights of `_flights` submitted to `_pool`, at most `AVAILABILITY_WORKERS`, so each
+holds a settle thread. The rest wait in a lane of `_lanes`. Guarded by `_lock`."""
+_lanes: deque[deque[_Read]] = deque()
+"""The calls' lanes holding reads not yet submitted, in the order free threads take them.
+Guarded by `_lock`."""
 _pool = ThreadPoolExecutor(max_workers=AVAILABILITY_WORKERS, thread_name_prefix="place-scope")
 
 
+class _ChecksKey(NamedTuple):
+    """The key of one source's place answers. `stamp` leads, as `ttu_from_stamp_key` reads it
+    first, and `graph` is the graph client's `source_key`."""
+
+    stamp: str
+    graph: str
+
+
+@dataclass(slots=True)
+class _PlaceChecks:
+    """One source's place answers: `held` maps each checked place to whether the graph holds a
+    node for it, and `reading` each place a check is reading to the future of that read, which
+    resolves to the held places among the places it reads."""
+
+    held: dict[str, bool] = field(default_factory=dict)
+    reading: dict[str, Future[frozenset[str]]] = field(default_factory=dict)
+
+
+_checks: TLRUCache[_ChecksKey, _PlaceChecks] = TLRUCache(
+    maxsize=CHECKED_MAX_SOURCES, ttu=ttu_from_stamp_key
+)
+"""Place answers by source. Guarded by `_lock`."""
+
+
 def clear_memo() -> None:
-    """Drop every memoised scope. A generation provider calls it on a token or catalogue change
-    (`GenerationProvider.register`). Reads still running memoise under their own, older key."""
+    """Drop every memoised scope and place answer. A generation provider calls it on a token or
+    catalogue change (`GenerationProvider.register`). Reads still running memoise under their
+    own, older key."""
     with _lock:
         _memo.clear()
+        _checks.clear()
 
 
 def memo_stats() -> Mapping[str, int]:
@@ -444,11 +500,12 @@ def read_default_presence(
         for sv, reader in readers.items()
     }
     cold_read = set(known.cold_read) if known is not None else set()
+    context = detached_context()
 
     settled: dict[str, DefaultPlaceScope] = {}
     outcomes: dict[str, _Outcome] = {}
     waiting: dict[str, Future[_Outcome]] = {}
-    started: list[tuple[_MemoKey, AvailabilityReader, Future[_Outcome]]] = []
+    lane: deque[_Read] = deque()
     with _lock:
         for sv in missing:
             key = keys[sv]
@@ -459,24 +516,30 @@ def read_default_presence(
                 outcomes[sv] = memoised
             elif (flight := _flights.get(key)) is not None:
                 waiting[sv] = flight
+                if flight not in _on_pool:
+                    lane.append(_Read(key, readers[sv], flight, context))
             elif settle or (
-                len(cold_read) < MAX_COLD_READS_PER_REQUEST and len(_flights) < AVAILABILITY_WORKERS
+                len(cold_read) < MAX_COLD_READS_PER_REQUEST
+                and len(_on_pool) + len(lane) < AVAILABILITY_WORKERS
             ):
                 waiting[sv] = _register(key)
-                started.append((key, readers[sv], waiting[sv]))
+                lane.append(_Read(key, readers[sv], waiting[sv], context))
                 cold_read.add(sv)
             else:
-                if len(_flights) < AVAILABILITY_WORKERS + MAX_QUEUED_SETTLES:
-                    started.append((key, readers[sv], _register(key)))
+                if len(_flights) - len(_on_pool) < MAX_QUEUED_SETTLES:
+                    lane.append(_Read(key, readers[sv], _register(key), context))
                 outcomes[sv] = _Fallback.TRANSIENT
-    for key, reader, flight in started:
-        _submit(key, reader, flight)
+        if lane:
+            _lanes.appendleft(lane)
+    _dispatch()
 
     window = SETTLE_DEADLINE_SECONDS if settle else EVERY_PLACE_SECONDS
     outcomes |= _await(waiting, window=window, deadline=deadline)
     listed = {sv: out.places for sv, out in outcomes.items() if isinstance(out, _Listed)}
     if listed:
-        known_places = _graph_places(listed, graph=graph, deadline=deadline)
+        known_places = _graph_places(
+            listed, graph=graph, key=_ChecksKey(stamp_key, graph_source), deadline=deadline
+        )
         for sv, places in listed.items():
             if known_places is None:
                 outcomes[sv] = _Fallback.TRANSIENT
@@ -559,6 +622,49 @@ def is_worldwide(places: Sequence[str]) -> bool:
     return tuple(places) == (DEFAULT_SCOPE_PARENT,)
 
 
+class _Read(NamedTuple):
+    """A registered flight, the read that resolves it, and the queuing call's context, which
+    the read runs in whichever thread submits it."""
+
+    key: _MemoKey
+    reader: AvailabilityReader
+    flight: Future[_Outcome]
+    context: contextvars.Context
+
+
+def _dispatch() -> None:
+    """Submit lane reads while a settle thread is free, one read from each lane in turn: a
+    lane that gave a read goes to the back of `_lanes`, and a new lane enters at the front, so
+    it takes the next free thread. Runs when a call queues its lane and when a submitted read
+    ends. A lane entry is taken only while its flight is still the key's registered flight,
+    unfinished and off the pool. `_end_flight` removes it from `_flights` under `_lock` before
+    it resolves, so a read cancelled while it waited, or one another lane holding the same
+    flight already ran or is running, is skipped. A read that ends at its submission, failed
+    or run inline, frees its thread at once, so the loop goes on rather than nest."""
+    while True:
+        with _lock:
+            read = None
+            while read is None and _lanes and len(_on_pool) < AVAILABILITY_WORKERS:
+                lane = _lanes.popleft()
+                while lane and read is None:
+                    candidate = lane.popleft()
+                    flight = candidate.flight
+                    if (
+                        _flights.get(candidate.key) is flight
+                        and not flight.done()
+                        and flight not in _on_pool
+                    ):
+                        read = candidate
+                if lane:
+                    _lanes.append(lane)
+            if read is None:
+                return
+            _on_pool.add(read.flight)
+        _submit(read)
+        if not read.flight.done():
+            read.flight.add_done_callback(lambda _: _dispatch())
+
+
 def _register(key: _MemoKey) -> Future[_Outcome]:
     """A new single flight for `key`, which `_submit` starts. The caller holds `_lock`. A
     flight leaves `_flights` on every end: resolved by `_settle`, failed to submit, its pool
@@ -576,14 +682,16 @@ def _on_cancel(key: _MemoKey, flight: Future[_Outcome]) -> None:
     _end_flight(key, flight)
 
 
-def _submit(key: _MemoKey, reader: AvailabilityReader, flight: Future[_Outcome]) -> None:
-    """Submit `flight`'s read to `_pool`, under a deadline `SETTLE_DEADLINE_SECONDS` from now.
-    The caller does not hold `_lock`, so an executor that runs the read inline cannot deadlock
-    on it. A failed submission ends the flight with its error, and a pool task cancelled before
-    it runs, as a pool shutdown cancels queued tasks, cancels the flight."""
+def _submit(read: _Read) -> None:
+    """Submit `read` to `_pool` in a copy of its context, as reads of one lane run at once,
+    under a deadline `SETTLE_DEADLINE_SECONDS` from now. The caller does not hold `_lock`, so
+    an executor that runs the read inline cannot deadlock on it. A failed submission ends the
+    flight with its error, and a pool task cancelled before it runs, as a pool shutdown cancels
+    queued tasks, cancels the flight."""
+    key, reader, flight, context = read
     deadline = time.monotonic() + SETTLE_DEADLINE_SECONDS
     try:
-        task = submit_detached(_pool, _settle, key, reader, flight, deadline=deadline)
+        task = _pool.submit(context.copy().run, _settle, key, reader, flight, deadline=deadline)
     except BaseException as exc:
         _end_flight(key, flight)
         with contextlib.suppress(InvalidStateError):
@@ -623,8 +731,10 @@ def _settle(
 def _end_flight(
     key: _MemoKey, flight: Future[_Outcome], *, outcome: _Outcome | None = None
 ) -> None:
-    """Remove `flight` from `_flights` and memoise its definite `outcome`, under `_lock`."""
+    """Remove `flight` from `_flights` and `_on_pool` and memoise its definite `outcome`, under
+    `_lock`."""
     with _lock:
+        _on_pool.discard(flight)
         if _flights.get(key) is flight:
             del _flights[key]
         if outcome is not None and outcome is not _Fallback.TRANSIENT and key not in _memo:
@@ -702,25 +812,37 @@ def _await(
 
 
 def _graph_places(
-    listed: Mapping[str, Sequence[str]], *, graph: PresenceReader, deadline: float | None
+    listed: Mapping[str, Sequence[str]],
+    *,
+    graph: PresenceReader,
+    key: _ChecksKey,
+    deadline: float | None,
 ) -> frozenset[str] | None:
-    """The places of `listed` the graph holds a node for, from one batched `typeOf` read that
-    runs for at most `PLACE_CHECK_SECONDS` under the request's `deadline`. `None` when that
-    read runs past its own window or fails with an HTTP status of 500 or more, which logs a
-    warning naming the StatVars of `listed`. A read the request's deadline ends raises
-    `PlaceScopeDeadlineError`. Any other error propagates."""
+    """The places of `listed` the graph holds a node for: the answers memoised under `key`, the
+    reads of the places another check is reading, and one batched `typeOf` read of the rest,
+    waited on for at most `PLACE_CHECK_SECONDS` under the request's `deadline`. A read this
+    check waited on that its own check's deadline ended leaves its places to this check, which
+    claims and reads them once under its own bound (`_check_places`). `None` when a read this
+    check reads or waits on runs past that window or fails with an HTTP status of 500 or more,
+    which logs a warning naming the StatVars of `listed`. A wait or read the request's deadline
+    ends raises `PlaceScopeDeadlineError`. Any other error propagates."""
     distinct = list(dict.fromkeys(place for places in listed.values() for place in places))
     if not distinct:
         return frozenset()
     if _past(deadline):
         raise PlaceScopeDeadlineError(list(listed))
     window = time.monotonic() + PLACE_CHECK_SECONDS
+    bound = window if deadline is None else min(window, deadline)
     try:
-        arcs = graph.node_arcs_many(
-            distinct,
-            properties=_NODE_PROBE,
-            deadline=window if deadline is None else min(window, deadline),
-        )
+        held, expired = _check_places(key, distinct, graph=graph, bound=bound)
+        if expired:
+            # Another check's deadline ended the read of `expired`; this check's bound may not.
+            if _past(bound):
+                raise expired[0]
+            again, expired_again = _check_places(key, expired[1], graph=graph, bound=bound)
+            if expired_again:
+                raise expired_again[0]
+            held |= again
     except GraphDeadlineExceededError as exc:
         if _past(deadline):
             raise PlaceScopeDeadlineError(list(listed)) from exc
@@ -731,7 +853,114 @@ def _graph_places(
             raise
         _check_fallback(listed, places=len(distinct), cause=exc)
         return None
-    return frozenset(place for place in distinct if arcs.get(place) is not None)
+    return frozenset(place for place in distinct if place in held)
+
+
+type _Expired = tuple[GraphDeadlineExceededError, list[str]]
+
+
+def _check_places(
+    key: _ChecksKey, places: Sequence[str], *, graph: PresenceReader, bound: float
+) -> tuple[set[str], _Expired | None]:
+    """The held places among `places`, from the answers memoised under `key`, the reads
+    another check has in flight, waited on until `bound`, and one read of the rest bounded by
+    `bound`, and the places whose waited read its owner's deadline ended with that error. A
+    wait `bound` ends raises `GraphDeadlineExceededError`, and any other failed read its
+    error."""
+    held, waiting, unread = _claim_places(key, places)
+    if unread is not None:
+        held |= _read_places(key, unread, graph=graph, deadline=bound)
+    if not waiting:
+        return held, None
+    _done, running = wait(waiting, timeout=max(0.0, bound - time.monotonic()))
+    if running:
+        raise GraphDeadlineExceededError(
+            "the node check of places another check is reading ran past its window"
+        )
+    expired: list[str] = []
+    error: GraphDeadlineExceededError | None = None
+    for read, its_places in waiting.items():
+        try:
+            held |= read.result()
+        except GraphDeadlineExceededError as exc:
+            error = exc
+            expired.extend(its_places)
+    return held, None if error is None else (error, expired)
+
+
+type _Unread = tuple[list[str], Future[frozenset[str]]]
+
+
+def _claim_places(
+    key: _ChecksKey, places: Sequence[str]
+) -> tuple[set[str], dict[Future[frozenset[str]], list[str]], _Unread | None]:
+    """The held places among `places` an earlier check answered, each read another check has
+    in flight with the places of `places` it reads, and the places no check answers with the
+    future this caller's read resolves, registered as their read."""
+    held: set[str] = set()
+    waiting: dict[Future[frozenset[str]], list[str]] = {}
+    unread: list[str] = []
+    with _lock:
+        checks = _checks.get(key)
+        if checks is None:
+            checks = _checks[key] = _PlaceChecks()
+        for place in places:
+            answer = checks.held.get(place)
+            if answer is not None:
+                if answer:
+                    held.add(place)
+            elif (read := checks.reading.get(place)) is not None:
+                waiting.setdefault(read, []).append(place)
+            else:
+                unread.append(place)
+        if not unread:
+            return held, waiting, None
+        own: Future[frozenset[str]] = Future()
+        own.set_running_or_notify_cancel()
+        checks.reading.update(dict.fromkeys(unread, own))
+    return held, waiting, (unread, own)
+
+
+def _read_places(
+    key: _ChecksKey, unread: _Unread, *, graph: PresenceReader, deadline: float
+) -> frozenset[str]:
+    """The held places among `unread`'s places, from one `typeOf` read bounded by `deadline`.
+    The answers are memoised under `key` and resolve `unread`'s future, and a failed read
+    fails it, so a check waiting on it falls back as this one does."""
+    places, own = unread
+    try:
+        arcs = graph.node_arcs_many(places, properties=_NODE_PROBE, deadline=deadline)
+    except BaseException as exc:
+        _settle_places(key, places, own, answers={})
+        own.set_exception(exc)
+        raise
+    answers = {place: arcs.get(place) is not None for place in places}
+    _settle_places(key, places, own, answers=answers)
+    held = frozenset(place for place, is_held in answers.items() if is_held)
+    own.set_result(held)
+    return held
+
+
+def _settle_places(
+    key: _ChecksKey,
+    places: Sequence[str],
+    own: Future[frozenset[str]],
+    *,
+    answers: Mapping[str, bool],
+) -> None:
+    """Unregister `own` as the read of `places` and memoise `answers` under `key`, dropping the
+    source's answers first when they would pass `CHECKED_MAX_PLACES`. A source the cache has
+    dropped meanwhile keeps nothing."""
+    with _lock:
+        checks = _checks.get(key)
+        if checks is None:
+            return
+        for place in places:
+            if checks.reading.get(place) is own:
+                del checks.reading[place]
+        if len(checks.held) + len(answers) > CHECKED_MAX_PLACES:
+            checks.held.clear()
+        checks.held.update(answers)
 
 
 def _check_fallback(listed: Mapping[str, Sequence[str]], *, places: int, cause: Exception) -> None:

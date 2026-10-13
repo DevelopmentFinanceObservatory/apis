@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from search.engine.bind import _UniversalBindOutput
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import (
     NO_MEMBER_HAS_DATA_AT_PLACE,
     PLACE_SCOPE_DEFAULTED,
@@ -19,6 +22,7 @@ from search.engine.region.state import EngineOptions
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import sdmx_double
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 from tests.materialise.conftest import FakeGraphReader
 
@@ -56,16 +60,25 @@ _DETECT: dict = {_DETECT_QUERY: {"svs": [_SV_A, _SV_B], "cosine_scores": [0.9, 0
 
 
 class _CandidatesBindLLM:
-    """Elect shape 0 and send shape 1 through the candidates path."""
+    """Elect shape 0 and send shape 1 through the candidates path, leaving `unplaced` out."""
+
+    def __init__(self, unplaced: list[str]) -> None:
+        self.unplaced = unplaced
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=[], also_plausible=[1], ask=None
+            chosen_shape_index=0,
+            bindings=[],
+            also_plausible=[1],
+            ask=None,
+            unplaced=self.unplaced,
         ), None
 
 
-def _run():
+def _run(unplaced: list[str]):
     graph = FakeGraph(
         nodes=_NODES,
         detect=_DETECT,
@@ -83,7 +96,7 @@ def _run():
             pac=True,
             graph=graph,
             resolver=make_resolver(graph),
-            llm=_CandidatesBindLLM(),
+            llm=_CandidatesBindLLM(unplaced),
             base_timing={},
             sdmx=FakeSdmxClient(observations={}, availability={}),
             unit_text="USD",
@@ -97,11 +110,29 @@ def _run():
     )
 
 
-def test_the_flagged_unavailable_carrier_still_reports_no_member_has_data_at_place():
-    """The bound-unit filter must preserve the unavailable carrier so its specific refusal fires."""
-    result = _run()
+@pytest.mark.parametrize(
+    ("unplaced", "trace", "departed"),
+    [
+        ([], [], []),
+        (["scope"], [("scope", "no_vocabulary")], [("measure_not_applied", "scope")]),
+    ],
+    ids=["every-word-placed", "unplaced-word"],
+)
+def test_the_flagged_unavailable_carrier_still_reports_no_member_has_data_at_place(
+    unplaced, trace, departed
+):
+    """The bound-unit filter must preserve the unavailable carrier so its specific refusal
+    fires. The refusal is judged on the carrier: a word its trace leaves unmet departs once."""
+    result = _run(unplaced)
     assert result.status == "no_data", result
     assert result.no_data_reason == "no_observations"
     assert result.gate == NO_MEMBER_HAS_DATA_AT_PLACE
     assert result.flagged_match is not None and len(result.flagged_match) == 1
     assert any(w.code == PLACE_SCOPE_DEFAULTED for w in result.warnings)
+    (carrier,) = result.flagged_match
+    assert [(q.text, q.disposition) for q in carrier.resolved.trace.query_qualifiers] == trace
+    assert [
+        (fact.code, fact.asked)
+        for fact in result.departure_facts.values()
+        if fact.code == "measure_not_applied"
+    ] == departed

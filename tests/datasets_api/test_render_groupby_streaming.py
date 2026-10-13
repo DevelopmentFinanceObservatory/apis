@@ -12,7 +12,7 @@ import pytest
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
 from code_index.types import StatVarRow
 from datasets_api.mint_models import GroupbyOptions, MintOptions
-from datasets_api.render import _reshape
+from datasets_api.render import _RenderReads, _reshape
 from materialise.enrichment import EnrichmentLookup
 from materialise.reshape import RollupNotSummableError, Table
 
@@ -122,7 +122,7 @@ _RESOLVED_STAT_VAR_REFS = ("dcid:SV_A", "dcid:SV_B", "dcid:SV_C")
 
 
 def _enrichment() -> EnrichmentLookup:
-    return EnrichmentLookup(FakeMintGraphReader(), type_kinds={}, parties={})
+    return EnrichmentLookup(FakeMintGraphReader(), parties={})
 
 
 def _chunked(bounds: list[int]) -> list[Table]:
@@ -143,7 +143,7 @@ def test_a_collapse_group_spanning_a_chunk_boundary_matches_the_whole_table_resu
         whole_table,
         options=options,
         entity_columns=_ENTITY_COLUMNS,
-        enrichment=_enrichment(),
+        reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
         code_index=_INDEX,
         resolved_stat_var_refs=_RESOLVED_STAT_VAR_REFS,
         provenance_refs=("p1",),
@@ -154,7 +154,7 @@ def test_a_collapse_group_spanning_a_chunk_boundary_matches_the_whole_table_resu
         _chunked([0, 1, 2, 3])[0],
         options=options,
         entity_columns=_ENTITY_COLUMNS,
-        enrichment=_enrichment(),
+        reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
         code_index=_INDEX,
         resolved_stat_var_refs=_RESOLVED_STAT_VAR_REFS,
         provenance_refs=("p1",),
@@ -184,7 +184,7 @@ def test_a_full_collapse_across_chunks_restores_the_family_dcid_the_same_way():
         whole_table,
         options=options,
         entity_columns=_ENTITY_COLUMNS,
-        enrichment=_enrichment(),
+        reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
         code_index=_INDEX,
         resolved_stat_var_refs=_RESOLVED_STAT_VAR_REFS,
         provenance_refs=("p1",),
@@ -195,7 +195,7 @@ def test_a_full_collapse_across_chunks_restores_the_family_dcid_the_same_way():
         _chunked([0, 2, 3])[0],
         options=options,
         entity_columns=_ENTITY_COLUMNS,
-        enrichment=_enrichment(),
+        reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
         code_index=_INDEX,
         resolved_stat_var_refs=_RESOLVED_STAT_VAR_REFS,
         provenance_refs=("p1",),
@@ -265,7 +265,7 @@ def test_distinct_measures_sharing_every_decoded_axis_value_still_refuse_when_st
             chunks[0],
             options=options,
             entity_columns=_ENTITY_COLUMNS,
-            enrichment=_enrichment(),
+            reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
             code_index=gross_net_index,
             resolved_stat_var_refs=("dcid:SV_gross", "dcid:SV_net"),
             provenance_refs=("p1",),

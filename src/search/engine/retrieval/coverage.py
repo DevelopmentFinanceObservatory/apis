@@ -230,13 +230,7 @@ def _bulk_coverage(plan: BulkPlan, form: CoverageForm) -> CoverageExact | Covera
             ],
         )
     observation_count = plan.observation_count
-    obs_dim_count = max(
-        (
-            c.pairs.max_n_obs(first_year=first, last_year=last)
-            for _sv, c, (first, last) in plan.member_pairs()
-        ),
-        default=0,
-    )
+    obs_dim_count = plan.max_pair_observations
     return CoverageExact(
         kind="exact",
         has_data=observation_count > 0,
@@ -249,13 +243,15 @@ def _bulk_coverage(plan: BulkPlan, form: CoverageForm) -> CoverageExact | Covera
 
 def served_rows(plan: ReadPlan) -> frozenset[ServedRow]:
     """The coverage rows `plan` serves: each served series' group facets at its recipient
-    and donor (`None` on a role it does not declare), or in bulk the elected facet at every
-    pair of every member it serves (`BulkPlan.served_members`)."""
+    and donor (`None` on a role it does not declare), or in bulk the elected facet and the
+    facets continuing it at every pair of every member it serves
+    (`BulkPlan.served_candidates`)."""
     if isinstance(plan, BulkPlan):
-        best = plan.elected
-        if best is None:
-            return frozenset()
-        return frozenset((sv, best.facet_id, None, None) for sv in plan.served_members)
+        return frozenset(
+            (sv, c.facet_id, None, None)
+            for sv in plan.served_members
+            for c in plan.served_candidates(sv)
+        )
     return frozenset(
         (s.stat_var, facet_id, *(s.rows or (None, None)))
         for s in plan.served

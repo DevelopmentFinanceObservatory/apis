@@ -70,6 +70,16 @@ un.itu_mobile_ownership:
   origin: un_system
   dataset: undata/p/ITU
   shape: {population_type: undata/itu/SERIES-HHU271OWN, measured_property: value, stat_type: measuredValue}
+un.sdg_renewable_energy_share:
+  origin: un_system
+  dataset: undata/p/SDG
+  shape:
+    population_type: undata/sdg/SERIES-EG_FEC_RNEW
+    measured_property: value
+    stat_type: measuredValue
+    measurement_qualifier: null
+    measurement_denominator: null
+  stat_vars: [undata/sdg/EG_FEC_RNEW]
 un.sdg_completion_rate:
   origin: un_system
   dataset: undata/p/SDG

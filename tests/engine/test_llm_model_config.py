@@ -242,7 +242,11 @@ class TestForStageWiring:
 
         recorder = _RecordingLLM()
         offline_resolve(make_request("total population India"), llm=recorder)
-        assert recorder.calls == [("Extraction", None), ("_UniversalBindOutput", "minimal")]
+        assert recorder.calls == [
+            ("Extraction", None),
+            ("_UniversalBindOutput", "minimal"),
+            ("QuantityOutput", "minimal"),
+        ]
 
 
 class TestConfigSeedAndThinkingLevelEnvBinding:

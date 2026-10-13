@@ -38,7 +38,7 @@ def test_a_widened_axis_the_served_member_still_declares_is_reported_open():
     activity_slot = next(
         s
         for s in spec.resolved.slots
-        if s.key.property is not None and s.key.property.dcid == "activitySource"
+        if s.key.property is not None and s.key.property.ref == "activitySource"
     )
     assert activity_slot.binding.kind == "unbound"
 
@@ -50,7 +50,7 @@ def test_a_widened_axis_the_served_member_still_declares_is_reported_open():
     # One served member, one declared value: the agreed value and the
     # served breadth both publish. No label is fetched for it, so it
     # falls back to the dcid, same as _tuple_ref's own dcid-as-label rule.
-    assert fact.value == GraphRef(dcid="GrossDomesticProduction", label="GrossDomesticProduction")
+    assert fact.value == GraphRef(ref="GrossDomesticProduction", label="GrossDomesticProduction")
     assert fact.distinct_count == 1
 
     # The domain read survives on the region too, not just the wire Spec --

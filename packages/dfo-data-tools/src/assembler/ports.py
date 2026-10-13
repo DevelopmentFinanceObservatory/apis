@@ -1,4 +1,4 @@
-"""Protocols for frame access, revision writes, and catalogue releases.
+"""Protocols for frame access, revision writes, catalogue releases, and a card's words.
 
 Live frame and revision stores live in `presentation_store`.
 The baked release registry is in `assembler.catalogue`."""
@@ -8,10 +8,13 @@ from __future__ import annotations
 import datetime
 from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
 from assembler.catalogue import CatalogueRelease
+from description.facts import DescriptionRecord
+from description.vocabulary import SourceDocumentFacts, Vocabulary
+from materialise.continued_series import ContinuedSeries
 
 __all__ = [
     "CompositionAppend",
@@ -30,6 +33,7 @@ __all__ = [
     "RevisionStore",
     "RollingAnchor",
     "StructuralView",
+    "VocabularySource",
     "WriteContext",
     "WriteSubjectKind",
     "WriteTokenInUse",
@@ -85,6 +89,15 @@ class LeftOutSeries:
 
 
 @dataclass(frozen=True)
+class NamedSeries:
+    """A series a card names without drawing it: its display `label`, and the `coordinates`
+    that identify it, each dimension it is known by mapped to its value."""
+
+    label: str
+    coordinates: Mapping[str, str]
+
+
+@dataclass(frozen=True)
 class RollingAnchor:
     """The period "latest" names on a derived frame, as its recipe records it.
 
@@ -98,6 +111,16 @@ class RollingAnchor:
 
 
 @dataclass(frozen=True)
+class Continuation:
+    """How a frame's series continue past their last period with the same source's
+    estimates: each entry names the continuing method and the method and source of the series
+    it continues (`materialise.continued_series.ContinuedSeries`). A row an entry admits
+    extends the series that holds the same cells under the method it continues."""
+
+    series: tuple[ContinuedSeries, ...]
+
+
+@dataclass(frozen=True)
 class ResolvedFrame:
     """`manifest` is the stored Datasets version document the frame was minted under
     (`datasets_api.manifest.version_document`). `retrieved_on` is the UTC date the platform first
@@ -106,6 +129,27 @@ class ResolvedFrame:
     rolling anchor a derived frame's recipe records, and `None` for a dataset frame or a recipe
     without one. An intent's relative periods count from `anchor.period` when it is set, and from
     the newest period half of the component's own series hold otherwise (`assembler.rolling`).
+    `description_record` is the version's description record, and `None` for a version that
+    holds none yet or whose record could not be read. `replay_key` is the key a derived frame's
+    recipe replays it under, and `None` for a dataset frame or a frame with no recipe yet.
+    `graph_generation` is the graph generation token the store's label read started under, and
+    `catalogue_build` the build id of the origin catalogue that load was bound to; both are
+    `None` for a store that reads no graph, and `graph_generation` is `None` when the generation
+    was unknown. A card's vocabulary revision hashes both (`assembler.mint.card_description`).
+    `source_documents` holds what each cited source's document says today, by provenance dcid,
+    as the store's citation read found it: the publisher, the last download and the next
+    release. A source the read did not document has no entry. `input_records` holds the
+    records of the versions a computed version was computed from, in the order its record lists
+    them, read with `description_record`; an input without an id or a record has none, and the
+    tuple is empty for a dataset version or where the read failed. `labels` then holds, by bare
+    dcid, the labels of the refs each input's title names, so a card names each input by its
+    title (`description.compose.version_title`). `continuation` is the continuation
+    `assembler.frame_view.frame_continuation` reads from `manifest`, the
+    one `structural_view` counts series under and selectors resolve under, and `None` when
+    nothing continues the frame's series. `descriptions` holds the graph `description` of the
+    one variable the version's definition resolved to, by bare dcid, when that variable is a
+    World Development Indicators variable, and defines the version's measure
+    (`description.world_bank`); it is empty otherwise.
     """
 
     frame_ref: FrameRef
@@ -115,6 +159,14 @@ class ResolvedFrame:
     labels: Mapping[str, str]
     retrieved_on: datetime.date
     anchor: RollingAnchor | None = None
+    description_record: DescriptionRecord | None = None
+    replay_key: str | None = None
+    graph_generation: str | None = None
+    catalogue_build: str | None = None
+    source_documents: Mapping[str, SourceDocumentFacts] = field(default_factory=dict)
+    input_records: Sequence[DescriptionRecord] = ()
+    continuation: Continuation | None = None
+    descriptions: Mapping[str, str] = field(default_factory=dict)
 
 
 class FrameUnavailable(Exception):
@@ -284,3 +336,14 @@ class CompositionAppend:
 
 class ReleaseRegistry(Protocol):
     def pinned(self) -> CatalogueRelease: ...  # this deployment's mint-side release
+
+
+class VocabularySource(Protocol):
+    """Today's words a card's description is worded from.
+
+    `current` gives the words no frame holds: the code index, the measure index and the
+    publisher short names. The assembler adds the labels and source documents of the frame a
+    card draws, and revises the vocabulary's revision with the graph generation and catalogue
+    build they were read under (`assembler.mint.card_description`)."""
+
+    def current(self) -> Vocabulary: ...

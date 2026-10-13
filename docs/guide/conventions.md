@@ -8,19 +8,21 @@ These conventions apply to the Search, Datasets, and Graph APIs in this guide.
 
 ## Base URL
 
-The examples use the development deployment.
+The API is served from the DFO website's address, and every route sits under `/api/v1`.
 
 ```text
-https://dfo-dev-apis-zms5lj4zhq-nn.a.run.app
+https://developmentfinance.org
 ```
+
+The same routes also answer at `/api` without the version. Links that the API returns in a response use that form.
 
 Use JSON request bodies and send `Content-Type: application/json` for requests with a body.
 
 ## Versioning
 
-Datasets requests and responses use `schema_version: 1`. Search responses also carry `schema_version: 1`. The Graph API has its own response shapes and does not carry a shared `schema_version` field.
+Datasets requests and responses use `schema_version: 1`. Search responses also carry `schema_version: 1`. The Graph API has its own response shapes, which `GET /api/v1/graph/schema` publishes.
 
-`GET /api/datasets/capabilities` reports live Datasets formats, input kinds, feature flags, limits, and a capability version. Treat capability values as deployment data.
+`GET /api/v1/datasets/capabilities` reports live Datasets formats, input kinds, feature flags, limits, and a capability version. Treat capability values as deployment data.
 
 When the graph does not declare a facet default, the Datasets API uses `dfo/facet-policy/most-observations` version `1` as its deployment fallback.
 
@@ -30,10 +32,11 @@ When the graph does not declare a facet default, the Datasets API uses `dfo/face
 | --- | --- |
 | `GET /api/{search,datasets,graph}/healthz` | Check that an API is available and identify its build. |
 | `GET /api/{search,datasets,graph}/capabilities` | Read deployment capabilities and limits. |
-| `GET /api/search/schema` | Read Search request and response schemas. |
-| `GET /api/search/catalogue` | Read available data and example questions. |
-| `GET /api/datasets/schema` | Read Datasets request and response schemas. |
-| `POST /api/graph/nodes` | Read several graph nodes in one request. |
+| `GET /api/v1/search/schema` | Read Search request and response schemas. |
+| `GET /api/v1/search/catalogue` | Read available data and example questions. |
+| `GET /api/v1/datasets/schema` | Read Datasets request and response schemas. |
+| `GET /api/v1/graph/schema` | Read Graph request and response schemas. |
+| `POST /api/v1/graph/nodes` | Read several graph nodes in one request. |
 | `GET /codes/{code}` | Read the registry entry for a problem code. |
 | `GET /openapi.json` | Read the OpenAPI document. |
 | `GET /docs` | Open the interactive API documentation. |
@@ -80,7 +83,7 @@ A Datasets `503` that reports a full instance carries `Retry-After` in seconds. 
 
 ## Graph limits
 
-`GET /api/graph/capabilities` reports the current Graph request and identifier limits. Read it before generating large resolver or node batches.
+`GET /api/v1/graph/capabilities` reports the current Graph request and identifier limits. Read it before generating large resolver or node batches.
 
 ## Next
 

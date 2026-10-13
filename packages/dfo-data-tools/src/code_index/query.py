@@ -11,6 +11,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from fractions import Fraction
+from types import MappingProxyType
 
 from code_index.tokens import Token, TokenLookup, word_tokens
 from code_index.types import (
@@ -25,7 +26,9 @@ from code_index.types import (
     LevelOption,
     PartyKind,
     PartyRow,
+    SourceCodeRow,
     StatVarRow,
+    party_kind,
 )
 from statvar_members import FiveTuple
 
@@ -36,10 +39,11 @@ class DuplicateDcid(ValueError):
 
 
 class CyclicParent(ValueError):
-    """A code row's `parent` chain revisits a row already in that chain --
-    a self-parent or a longer cycle. `descendants`'s breadth-first walk
-    follows this same relation, so a cycle here would otherwise grow its
-    result without bound."""
+    """A code row's `parent` chain, or a `value_parents` chain, revisits a
+    dcid already in that chain, as a self-parent or a longer cycle does.
+    `descendants`'s breadth-first walk and `value_ancestors` follow these
+    relations, so a cycle here would otherwise grow their result without
+    bound."""
 
 
 class CrossSystemParent(ValueError):
@@ -212,12 +216,13 @@ def _check_consistent_parents(codes_by_dcid: dict[str, CodeRow]) -> None:
             )
 
 
-def _check_acyclic_parents(codes_by_dcid: dict[str, CodeRow]) -> None:
-    """Raises `CyclicParent` when a chain revisits a dcid. Each row has at most one parent.
+def _check_acyclic_parents(parent_of: Mapping[str, str | None], *, relation: str) -> None:
+    """Raises `CyclicParent` when a chain of `parent_of` revisits a dcid. Each dcid has at
+    most one parent. `relation` names the relation in the error.
 
-    Chains reaching a resolved dcid or missing row terminate."""
+    Chains reaching a resolved dcid or one `parent_of` does not hold terminate."""
     resolved: set[str] = set()
-    for start_dcid in codes_by_dcid:
+    for start_dcid in parent_of:
         if start_dcid in resolved:
             continue
         chain: list[str] = []
@@ -225,10 +230,9 @@ def _check_acyclic_parents(codes_by_dcid: dict[str, CodeRow]) -> None:
         while node is not None and node not in resolved:
             if node in chain:
                 cycle = [*chain[chain.index(node) :], node]
-                raise CyclicParent(f"code parent relation forms a cycle: {' -> '.join(cycle)}")
+                raise CyclicParent(f"{relation} relation forms a cycle: {' -> '.join(cycle)}")
             chain.append(node)
-            row = codes_by_dcid.get(node)
-            node = row.parent if row is not None else None
+            node = parent_of.get(node)
         resolved.update(chain)
 
 
@@ -288,6 +292,12 @@ def _fold(word: str) -> str:
     return folded[:-1] if len(folded) > 2 and folded.endswith("s") else folded
 
 
+def fold_text(text: str) -> str:
+    """`text` casefolded, with its whitespace runs collapsed to one space and stripped: the
+    fold `CodeIndex.codes_by_text` compares a query and a code's texts under."""
+    return " ".join(text.casefold().split())
+
+
 def dedupe_first_seen(groups: Iterable[Iterable[str]]) -> tuple[str, ...]:
     """Flattens resolved groups, keeping each dcid's first occurrence.
 
@@ -313,8 +323,12 @@ class CodeIndex:
         "_codes_by_text",
         "_codes_by_tokens",
         "_codes_by_word",
+        "_members_by_source_code",
+        "_source_codes_by_dcid",
+        "_statvars_by_dcid",
         "_words_by_code",
         "codes",
+        "codes_by_system",
         "dataset_pins",
         "datasets",
         "datasets_by_five_tuple",
@@ -325,9 +339,13 @@ class CodeIndex:
         "listed_statvars",
         "parties",
         "party_types",
+        "source_code_provenances",
+        "source_codes",
         "stamp",
         "statvars",
         "totals_by_group",
+        "value_parents",
+        "variables_by_provenance",
     )
 
     def __init__(
@@ -341,6 +359,8 @@ class CodeIndex:
         party_types: Mapping[str, PartyKind | None] | None = None,
         parties: Iterable[PartyRow] = (),
         listed_statvars: Iterable[StatVarRow] = (),
+        source_codes: Iterable[SourceCodeRow] = (),
+        value_parents: Mapping[str, str] | None = None,
     ) -> None:
         self.stamp = stamp
         self.codes = tuple(codes)
@@ -351,6 +371,18 @@ class CodeIndex:
         member rows alone: no family, dataset election, measure axis or shape reads them,
         and `code_index.members.listed_group` elects members over them in place of the
         graph walk."""
+        self.source_codes = tuple(source_codes)
+        """The StatVars each publisher's series code names under each provenance holding it
+        (`SourceCodeRow`). The export reads them from the `sourceIndicatorCode` arcs of
+        `listed_statvars`."""
+        self.source_code_provenances: frozenset[str] = frozenset(
+            row.provenance for row in self.source_codes
+        )
+        """The provenances under which this index holds a series code."""
+        self.value_parents: dict[str, str] = dict(value_parents or {})
+        """The `specializationOf` parent of each constraint value a listed StatVar holds, for
+        the values with one (`IDSDebtorTypeGG` to `IDSDebtorTypePS`)."""
+        _check_acyclic_parents(self.value_parents, relation="value parent")
         self.declarations: dict[str, CodeSystemDeclaration] = {
             d.code_system: d for d in declarations
         }
@@ -377,7 +409,7 @@ class CodeIndex:
         codes_by_dcid: dict[str, CodeRow] = {}
         codes_by_system_code: dict[tuple[str, str], CodeRow] = {}
         children_by_parent: dict[str, list[str]] = defaultdict(list)
-        text_index: dict[str, list[CodeRow]] = defaultdict(list)
+        text_index: dict[str, dict[str, CodeRow]] = defaultdict(dict)
         for row in self.codes:
             if row.dcid in codes_by_dcid:
                 raise DuplicateDcid(f"code dcid {row.dcid!r} appears more than once")
@@ -391,18 +423,30 @@ class CodeIndex:
             if row.parent is not None:
                 children_by_parent[row.parent].append(row.dcid)
             for text in (row.label, *row.synonyms):
-                text_index[text].append(row)
+                text_index[fold_text(text)][row.dcid] = row
 
         _check_consistent_parents(codes_by_dcid)
-        _check_acyclic_parents(codes_by_dcid)
+        _check_acyclic_parents(
+            {dcid: row.parent for dcid, row in codes_by_dcid.items()}, relation="code parent"
+        )
         _check_declared_defaults(self.declarations, codes_by_dcid)
 
-        seen_statvar_dcids: set[str] = set()
+        statvars_by_dcid: dict[str, StatVarRow] = {}
+        variables_by_provenance: dict[str, list[str]] = defaultdict(list)
         listed_by_five_tuple: dict[FiveTuple, list[StatVarRow]] = defaultdict(list)
         for row in self.statvars + self.listed_statvars:
-            if row.dcid in seen_statvar_dcids:
+            if row.dcid in statvars_by_dcid:
                 raise DuplicateDcid(f"StatVar dcid {row.dcid!r} appears more than once")
-            seen_statvar_dcids.add(row.dcid)
+            statvars_by_dcid[row.dcid] = row
+            for provenance in row.provenances:
+                variables_by_provenance[provenance].append(row.dcid)
+        self.variables_by_provenance: dict[str, tuple[str, ...]] = {
+            provenance: tuple(sorted(dcids))
+            for provenance, dcids in sorted(variables_by_provenance.items())
+        }
+        """The dcids of the StatVars, `statvars` and `listed_statvars` alike, whose
+        `StatVarRow.provenances` name each provenance, sorted. A provenance no row names is
+        absent."""
         for row in self.listed_statvars:
             listed_by_five_tuple[row_five_tuple(row)].append(row)
         self.listed_by_five_tuple: dict[FiveTuple, tuple[StatVarRow, ...]] = {
@@ -437,10 +481,23 @@ class CodeIndex:
         dataset's rows of the five-tuple all carry with one value, mapped to that value. An
         identity whose family that dataset serves binds it."""
 
+        self.codes_by_system: dict[str, tuple[CodeRow, ...]] = {
+            code_system: tuple(
+                sorted(
+                    (row for row in self.codes if row.code_system == code_system),
+                    key=lambda row: row.code,
+                )
+            )
+            for code_system in sorted({row.code_system for row in self.codes})
+        }
+        """Each code system's rows, ordered by `CodeRow.code` as a string, so a hierarchy
+        such as `crsPurpose` reads parent before child ("100", "110", "111", "11110")."""
+
+        self._statvars_by_dcid = statvars_by_dcid
         self._codes_by_dcid = codes_by_dcid
         self._codes_by_system_code = codes_by_system_code
         self._children_by_parent = {k: tuple(v) for k, v in children_by_parent.items()}
-        self._codes_by_text = {k: tuple(v) for k, v in text_index.items()}
+        self._codes_by_text = {k: tuple(v.values()) for k, v in text_index.items()}
         self._codes_by_tokens = TokenLookup(
             (text, row) for row in self.codes for text in (row.label, *row.synonyms)
         )
@@ -453,6 +510,20 @@ class CodeIndex:
                     words_by_code[row.dcid].add(_fold(word.text))
         self._codes_by_word = {word: tuple(dcids) for word, dcids in codes_by_word.items()}
         self._words_by_code = {dcid: frozenset(words) for dcid, words in words_by_code.items()}
+
+        members_by_source_code: dict[str, dict[str, tuple[str, ...]]] = defaultdict(dict)
+        source_codes_by_dcid: dict[str, list[tuple[str, str]]] = defaultdict(list)
+        for row in self.source_codes:
+            members_by_source_code[row.code][row.provenance] = row.dcids
+            for dcid in row.dcids:
+                source_codes_by_dcid[dcid].append((row.provenance, row.code))
+        self._members_by_source_code = {
+            code: MappingProxyType(dict(sorted(members.items())))
+            for code, members in members_by_source_code.items()
+        }
+        self._source_codes_by_dcid = {
+            dcid: tuple(sorted(pairs)) for dcid, pairs in source_codes_by_dcid.items()
+        }
 
     # --- Lookup ---
 
@@ -490,18 +561,32 @@ class CodeIndex:
         row."""
         return self._codes_by_dcid.get(dcid)
 
+    def is_code_system(self, dcid: str) -> bool:
+        """Whether `dcid` is a code system's graph id (`CodeSystemDeclaration.enum_dcid`)."""
+        return any(d.enum_dcid == dcid for d in self.declarations.values())
+
+    def party_kind_of(self, dcid: str, types: Iterable[str]) -> PartyKind | None:
+        """The kind of the party `dcid` whose graph types are `types`: its row's kind when
+        `parties` lists it, else the kind its types give (`code_index.types.party_kind`)."""
+        party = self.parties.get(dcid)
+        return party.kind if party is not None else party_kind(types, self.party_types)
+
+    def statvar_by_dcid(self, dcid: str) -> StatVarRow | None:
+        """The StatVar row for `dcid`, from `statvars` or `listed_statvars`, or `None` if
+        this index holds no such row."""
+        return self._statvars_by_dcid.get(dcid)
+
     def code_by_code(self, code_system: str, code: str) -> CodeRow | None:
         """Returns the row for `code` in `code_system`. Code strings may recur across systems,
         so pass both fields to identify the row."""
         return self._codes_by_system_code.get((code_system, code))
 
     def codes_by_text(self, text: str) -> tuple[CodeRow, ...]:
-        """Every code row whose label or synonym exactly matches `text`,
-        across every code system this index carries. Each row appears at
-        most once per distinct text it carries, and the same text naming
-        codes in different systems returns more than one row. The caller
-        disambiguates. This method performs lookup only."""
-        return self._codes_by_text.get(text, ())
+        """Every code row whose label or synonym equals `text` under `fold_text`, across
+        every code system this index carries, in index order. A row appears once, however
+        many of its texts match, and the same text naming codes in different systems returns
+        more than one row. The caller disambiguates. This method performs lookup only."""
+        return self._codes_by_text.get(fold_text(text), ())
 
     def codes_by_tokens(self, tokens: Sequence[Token]) -> tuple[CodeRow, ...]:
         """Every code row whose label or synonym matches the query span `tokens`
@@ -572,6 +657,49 @@ class CodeIndex:
         held = self._words_by_code.get(dcid, frozenset())
         return frozenset(folded for word in words if (folded := _fold(word)) in held)
 
+    # --- Source codes ---
+
+    def source_code_members(self, code: str) -> Mapping[str, tuple[str, ...]]:
+        """The StatVars the series code `code` names, by the provenance holding it, each
+        sorted, and provenances in order. `code` compares upper-cased. Empty when no
+        provenance holds the code."""
+        return self._members_by_source_code.get(code.upper(), MappingProxyType({}))
+
+    def source_codes_of(self, dcid: str) -> tuple[tuple[str, str], ...]:
+        """The `(provenance, code)` pairs naming the StatVar `dcid`, sorted. Empty for a
+        StatVar no code names."""
+        return self._source_codes_by_dcid.get(dcid, ())
+
+    def shared_codes(self, provenance: str, code: str) -> tuple[str, ...]:
+        """The other codes `provenance` gives a StatVar the code `code` names there, sorted.
+        Such a StatVar answers either code, so it cannot stand for `code` alone. IDS gives
+        one net-flow StatVar both `DT.NFL.IMFC.CD` and `DT.NFL.MIDA.CD`. `code` compares
+        upper-cased. Empty for a code no StatVar shares, and for one `provenance` does not
+        hold."""
+        code = code.upper()
+        return tuple(
+            sorted(
+                {
+                    other
+                    for dcid in self.source_code_members(code).get(provenance, ())
+                    for held_by, other in self._source_codes_by_dcid[dcid]
+                    if held_by == provenance and other != code
+                }
+            )
+        )
+
+    # --- Value parents ---
+
+    def value_ancestors(self, dcid: str) -> tuple[str, ...]:
+        """The `value_parents` chain above the constraint value `dcid`, nearest first. Empty
+        for a value with no parent and for one the index does not hold."""
+        ancestors: list[str] = []
+        node = self.value_parents.get(dcid)
+        while node is not None:
+            ancestors.append(node)
+            node = self.value_parents.get(node)
+        return tuple(ancestors)
+
     # --- Dataset declarations ---
 
     def absent_observation(self, provenance: str) -> AbsentObservation:
@@ -581,6 +709,20 @@ class CodeIndex:
         return dataset.absent_observation if dataset is not None else "unknown"
 
     # --- Descendants ---
+
+    def has_children(self, dcid: str) -> bool:
+        """Whether any row has `dcid` as its `parent`."""
+        return bool(self._children_by_parent.get(dcid))
+
+    def children(self, dcid: str) -> tuple[CodeRow, ...]:
+        """The rows whose `parent` is `dcid`, ordered by `CodeRow.code` as a string. Empty
+        for a leaf, a code of a flat system, and an unknown dcid."""
+        return tuple(
+            sorted(
+                (self._codes_by_dcid[child] for child in self._children_by_parent.get(dcid, ())),
+                key=lambda row: row.code,
+            )
+        )
 
     def expansion(self, dcid: str) -> tuple[str, ...]:
         """The codes a binding of `dcid` reads: `dcid` and its descendants (`descendants`)

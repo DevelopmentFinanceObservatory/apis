@@ -11,11 +11,13 @@ import asyncio
 from code_index.shared import get_index
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.clients.graph import Facet
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from series_coverage.schema import RoleNames
 from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 _QUERY = "grant equivalent flows to Kenya"
@@ -132,6 +134,8 @@ class _BindPurposeToExtraLLM:
     """Binds `crsPurpose` to `_EXTRA_SV`, leaving other constraint slots open."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0,
@@ -179,7 +183,7 @@ def test_dropped_axis_absent_from_slot_keys_still_reaches_inapplicable_slots(mon
     spec = result.specs[0]
     assert _PROP_OBLIGATION_TYPE in spec.resolved.inapplicable_slots
     assert all(
-        s.key.property is None or s.key.property.dcid != _PROP_OBLIGATION_TYPE
+        s.key.property is None or s.key.property.ref != _PROP_OBLIGATION_TYPE
         for s in spec.resolved.slots
     )
 
@@ -201,10 +205,10 @@ def test_forced_axis_is_never_reported_inapplicable(monkeypatch):
     flow_type_slot = next(
         s
         for s in spec.resolved.slots
-        if s.key.property is not None and s.key.property.dcid == _PROP_FLOW_TYPE
+        if s.key.property is not None and s.key.property.ref == _PROP_FLOW_TYPE
     )
     assert flow_type_slot.binding.kind == "value"
-    assert flow_type_slot.binding.value.ref.dcid == _FORCED_FLOW_TYPE_VALUE
+    assert flow_type_slot.binding.value.ref.ref == _FORCED_FLOW_TYPE_VALUE
 
 
 def test_inapplicable_slots_order_is_stable_across_runs(monkeypatch):

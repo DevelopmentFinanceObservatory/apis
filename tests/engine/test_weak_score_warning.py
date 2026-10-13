@@ -8,9 +8,11 @@ from __future__ import annotations
 import asyncio
 
 from search.engine.bind import _UniversalBindOutput
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import RETRIEVAL_SCORE_WEAK, RegionResult, resolve_variable
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 
@@ -18,6 +20,8 @@ class _FixedBindLLM:
     """Elects the sole candidate shape with no constraint bindings, unconditionally."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0,

@@ -7,9 +7,12 @@ import hashlib
 import io
 import json
 import logging
+import threading
 import time
-from collections.abc import Callable, Generator, Sequence
+from collections.abc import Callable, Generator, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from contextvars import copy_context
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta, timezone
 from typing import cast
@@ -25,8 +28,17 @@ from artifact_store.errors import (
 )
 from artifact_store.store import ArtifactSink, StoredArtifact, Tier
 from assembler.fakes import FakeReleaseRegistry, FakeRevisionStore
+from assembler.limits import LABEL_MAX
 from assembler.pipeline import write_component
-from assembler.ports import FrameRef, FrameUnavailable, LeftOutSeries, RollingAnchor
+from assembler.ports import (
+    Continuation,
+    FrameRef,
+    FrameUnavailable,
+    LeftOutSeries,
+    ResolvedFrame,
+    RollingAnchor,
+)
+from assembler.resolve import resolve_selectors
 from assembler.testing import (
     build_frame_doc,
     malaria_ethiopia_frame_ref,
@@ -50,12 +62,30 @@ from dataset_store.snapshot import (
 from datasets_api.manifest import version_document
 from datasets_api.recipe_store import RecipeRecord
 from datasets_api.reference_store import ReferenceWrite
+from datasets_api.store_errors import DatasetsStoreUnavailable
+from description.citation import citation_line
+from description.facts import (
+    Builds,
+    ComposedVariable,
+    ComputedFacts,
+    DescriptionRecord,
+    Evidence,
+    FixedValue,
+    InputVersion,
+    SeriesFacts,
+    StatusCounts,
+    VariableFacts,
+)
+from description.steps import Step
+from description.vocabulary import SourceDocumentFacts
+from dfo_platform.timings import PhaseTimings, collecting
+from graph_generation import FakeGeneration, GenerationStamp
 from materialise import provenance_doc
+from materialise.continued_series import ContinuedSeries
 from materialise.formats import CANONICAL_FRAME_MEDIA_TYPE
 from materialise.graph import GraphReadError
 from materialise.provenance_doc import SourceDocumentNotFound
 from presentation_store import frame_store
-from presentation_store.composed_stat_vars import COMPOSED_STAT_VAR_UNREADABLE_MARKER
 from presentation_store.frame_store import (
     FRAME1_MEDIA_TYPE,
     PRESENTATION_PIN_REFERENCE_KIND,
@@ -71,7 +101,11 @@ from spec_registry.errors import (
 )
 from spec_registry.reader import StoredDefinition
 from tests.code_index.aid_identity import IMPUTED_PROVENANCE, imputed_education_aid_identity
-from tests.materialise._canonical_frame import canonical_frame_parquet
+from tests.materialise._canonical_frame import (
+    canonical_frame_parquet,
+    stored_canonical_frame_959f8bc,
+)
+from tests.origin_catalogue.fake_catalogue import FakeCatalogue
 
 _NOW = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -230,8 +264,10 @@ class _FakeArtifactStore:
 
 
 class _FakeGraphReader:
-    """Record batched node reads and optionally fail the whole batch. A dcid in `arcs`
-    answers with those arcs, any other with its `labels` entry as its `name`."""
+    """Record batched node reads and optionally fail the whole batch: one holding a dcid in
+    `raise_for`, or one asking for exactly `raise_for_properties`. A dcid in `arcs` answers
+    with those arcs, any other with its `labels` entry as its `name`. Its generation stamp is
+    `generation`'s, unknown by default."""
 
     def __init__(
         self,
@@ -239,15 +275,22 @@ class _FakeGraphReader:
         labels: dict[str, str] | None = None,
         arcs: dict[str, dict[str, tuple[str, ...]]] | None = None,
         raise_for: frozenset[str] = frozenset(),
+        raise_for_properties: tuple[str, ...] | None = None,
+        generation: FakeGeneration | None = None,
     ) -> None:
         self._labels = labels or {}
         self._arcs = arcs or {}
+        self._generation = generation if generation is not None else FakeGeneration()
         self.raise_for = raise_for
+        self.raise_for_properties = raise_for_properties
         self.calls = 0
         self.node_arcs_many_calls: list[tuple[str, ...]] = []
         self.node_arcs_many_requests: list[
             tuple[tuple[str, ...], tuple[str, ...], float | None]
         ] = []
+
+    def generation_stamp(self) -> GenerationStamp:
+        return self._generation.stamp()
 
     def node_label(self, dcid: str) -> str | None:
         raise NotImplementedError("not exercised by LiveFrameStore")
@@ -278,7 +321,9 @@ class _FakeGraphReader:
         dcids = tuple(dcids)
         self.node_arcs_many_calls.append(dcids)
         self.node_arcs_many_requests.append((dcids, tuple(properties), deadline))
-        if any(dcid in self.raise_for for dcid in dcids):
+        if any(dcid in self.raise_for for dcid in dcids) or (
+            tuple(properties) == self.raise_for_properties
+        ):
             raise GraphReadError(f"transport error looking up batch {dcids!r}")
         result: dict[str, dict[str, tuple[str, ...]] | None] = {}
         for dcid in dcids:
@@ -514,12 +559,27 @@ def _collapsed_version(frame_ref: FrameRef, *, base_content_version: str) -> Sto
     )
 
 
+@dataclass
+class _Clock:
+    """A store's clock, which a test moves past the wait before a description record that is
+    not final is read again."""
+
+    now: datetime = _NOW
+
+    def __call__(self) -> datetime:
+        return self.now
+
+    def pass_recheck(self) -> None:
+        self.now += frame_store._RECHECK
+
+
 def _store(
     *,
     snapshots: _FakeSnapshotReader | None = None,
     artifacts: _FakeArtifactStore | None = None,
     graph=None,
     reference_writer: _FakeReferenceWriter | None = None,
+    now: Callable[[], datetime] = lambda: _NOW,
     **kwargs,
 ) -> LiveFrameStore:
     return LiveFrameStore(
@@ -529,7 +589,7 @@ def _store(
         reference_writer=reference_writer
         if reference_writer is not None
         else _FakeReferenceWriter(),
-        now=lambda: _NOW,
+        now=now,
         **kwargs,
     )
 
@@ -609,10 +669,18 @@ def test_load_reads_a_version_s_canonical_frame_ahead_of_its_frame1_document():
 
 def _canonical_frame_fixture() -> tuple[_FakeSnapshotReader, _FakeArtifactStore, FrameRef, Frame]:
     """A version whose only stored frame is the canonical frame of the malaria rows."""
-    frame_ref = malaria_ethiopia_frame_ref()
     frame = Frame.build(role_keys=("recipient",), rows=malaria_ethiopia_rows())
+    snapshots, artifacts, frame_ref = _canonical_frame_version(canonical_frame_parquet((frame,)))
+    return snapshots, artifacts, frame_ref, frame
+
+
+def _canonical_frame_version(
+    data: bytes,
+) -> tuple[_FakeSnapshotReader, _FakeArtifactStore, FrameRef]:
+    """A version whose only stored frame is the canonical frame `data`."""
+    frame_ref = malaria_ethiopia_frame_ref()
     artifacts = _FakeArtifactStore()
-    canonical = artifacts.seed(tier=Tier.working, data=canonical_frame_parquet((frame,)))
+    canonical = artifacts.seed(tier=Tier.working, data=data)
     snapshots = _FakeSnapshotReader(
         versions={(frame_ref.spec_id, frame_ref.content_version): _version(frame_ref)},
         locations={
@@ -627,7 +695,7 @@ def _canonical_frame_fixture() -> tuple[_FakeSnapshotReader, _FakeArtifactStore,
             ]
         },
     )
-    return snapshots, artifacts, frame_ref, frame
+    return snapshots, artifacts, frame_ref
 
 
 def test_load_refuses_a_canonical_frame_over_the_row_bound_from_its_footer(monkeypatch):
@@ -679,16 +747,29 @@ def test_load_decodes_a_canonical_frame_at_the_row_bound():
     assert store.load(frame_ref=frame_ref).frame == json.loads(canonical_frame_bytes(frame))
 
 
-def test_load_resolves_a_frame_with_view_manifest_and_labels():
+def test_load_reads_a_canonical_frame_stored_before_unit_recipes():
+    """A canonical frame stored under frame grammar kit 959f8bc, whose unit `request` has no
+    `recipe`, loads as the frame1 document its release read from it."""
+    data, _frame_sha256, document = stored_canonical_frame_959f8bc()
+    snapshots, artifacts, frame_ref = _canonical_frame_version(data)
+
+    assert _store(snapshots=snapshots, artifacts=artifacts).load(frame_ref=frame_ref).frame == (
+        document
+    )
+
+
+def test_load_resolves_a_frame_with_view_manifest_and_labels(bind_catalogue):
     snapshots, artifacts, frame_ref, _digest = _happy_path_fixture()
     graph = _FakeGraphReader(
         labels={
             "MalariaGrantDisbursements": "Malaria Grant Disbursements",
             "country/ETH": "Ethiopia",
             "src_oecd_dac": "OECD DAC",
-        }
+        },
+        generation=FakeGeneration(token="gen-1"),
     )
     store = _store(snapshots=snapshots, artifacts=artifacts, graph=graph)
+    bind_catalogue(FakeCatalogue(build_id="build-1"))
 
     resolved = store.load(frame_ref=frame_ref)
 
@@ -703,6 +784,407 @@ def test_load_resolves_a_frame_with_view_manifest_and_labels():
     assert sorted(graph.node_arcs_many_calls[0]) == sorted(
         ["MalariaGrantDisbursements", "country/ETH", "src_oecd_dac"]
     )
+    assert (resolved.graph_generation, resolved.catalogue_build) == ("gen-1", "build-1")
+
+
+_WDI_GDP = "worldBank/NY_GDP_MKTP_CD"
+
+
+def _world_bank_fixture() -> tuple[_FakeSnapshotReader, _FakeArtifactStore, FrameRef]:
+    """`_happy_path_fixture` over a frame whose rows hold one World Development Indicators
+    variable."""
+    snapshots, artifacts, frame_ref, _digest = _happy_path_fixture()
+    rows = [{**row, "stat_var": f"dcid:{_WDI_GDP}"} for row in malaria_ethiopia_rows()]
+    digest = artifacts.seed(
+        tier=Tier.working,
+        data=json.dumps(build_frame_doc(role_keys=("recipient",), rows=rows)).encode("utf-8"),
+    )
+    snapshots.locations[(frame_ref.spec_id, frame_ref.content_version)] = [
+        _location(digest=digest, tier=Tier.working.value)
+    ]
+    return snapshots, artifacts, frame_ref
+
+
+def _world_bank_record(frame_ref: FrameRef, *, variable: str | None) -> _RecordReader:
+    """A reader answering a dataset version's record whose definition resolved to
+    `variable`, or to several variables when it is `None`."""
+    record = _input_record(
+        (frame_ref.spec_id, frame_ref.content_version), variable=_WDI_GDP, recipient="country/ETH"
+    )
+    assert record.variables is not None
+    return _RecordReader(
+        record.model_copy(
+            update={"variables": record.variables.model_copy(update={"variable": variable})}
+        )
+    )
+
+
+def test_load_reads_the_description_of_the_versions_one_world_bank_variable():
+    """The description of the World Development Indicators variable a version resolved to
+    defines its measure, so the load reads that one variable's description, by bare dcid."""
+    snapshots, artifacts, frame_ref = _world_bank_fixture()
+    graph = _FakeGraphReader(
+        arcs={_WDI_GDP: {"name": ("GDP (current US$)",), "description": ("GDP is output.",)}}
+    )
+    store = _store(
+        snapshots=snapshots,
+        artifacts=artifacts,
+        graph=graph,
+        description_reader=_world_bank_record(frame_ref, variable=_WDI_GDP),
+    )
+
+    resolved = store.load(frame_ref=frame_ref)
+
+    assert resolved.descriptions == {_WDI_GDP: "GDP is output."}
+    assert [(dcids, properties) for dcids, properties, _ in graph.node_arcs_many_requests][-1] == (
+        (_WDI_GDP,),
+        ("description",),
+    )
+
+
+@pytest.mark.parametrize(
+    "variable",
+    [
+        pytest.param(None, id="version-of-several-variables"),
+        pytest.param("Amount_Oda", id="version-of-another-variable"),
+    ],
+)
+def test_load_reads_no_description_unless_the_version_resolved_to_one_world_bank_variable(
+    variable: str | None,
+):
+    """A frame holding a World Development Indicators variable reads no description when its
+    version's measure is not that one variable."""
+    snapshots, artifacts, frame_ref = _world_bank_fixture()
+    graph = _FakeGraphReader(arcs={_WDI_GDP: {"name": ("GDP",), "description": ("GDP.",)}})
+    store = _store(
+        snapshots=snapshots,
+        artifacts=artifacts,
+        graph=graph,
+        description_reader=_world_bank_record(frame_ref, variable=variable),
+    )
+
+    resolved = store.load(frame_ref=frame_ref)
+
+    assert resolved.descriptions == {}
+    assert [properties for _, properties, _ in graph.node_arcs_many_requests] == [("name",)]
+
+
+def test_a_failed_description_read_is_logged_not_cached_and_read_again(caplog):
+    """Only the description read fails. The labels resolve, the failure is logged with the
+    variable, and the next load reads the frame and its description again."""
+    snapshots, artifacts, frame_ref = _world_bank_fixture()
+    graph = _FakeGraphReader(
+        arcs={_WDI_GDP: {"name": ("GDP",), "description": ("GDP is output.",)}},
+        raise_for_properties=("description",),
+    )
+    store = _store(
+        snapshots=snapshots,
+        artifacts=artifacts,
+        graph=graph,
+        description_reader=_world_bank_record(frame_ref, variable=_WDI_GDP),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="presentation_store.frame_store"):
+        first = store.load(frame_ref=frame_ref)
+    graph.raise_for_properties = None
+    second = store.load(frame_ref=frame_ref)
+
+    [logged] = [r for r in caplog.records if r.name == "presentation_store.frame_store"]
+    assert _WDI_GDP in logged.getMessage()
+    assert first.labels[f"dcid:{_WDI_GDP}"] == "GDP"
+    assert first.descriptions == {}
+    assert second is not first
+    assert second.descriptions == {_WDI_GDP: "GDP is output."}
+
+
+@pytest.mark.parametrize(
+    ("change", "reread"),
+    [
+        pytest.param("none", False, id="same-stamps-within-a-day"),
+        pytest.param("catalogue", True, id="catalogue-build-changed"),
+        pytest.param("generation", True, id="graph-generation-changed"),
+        pytest.param("age", True, id="a-day-old"),
+    ],
+)
+def test_a_cached_frame_rereads_its_words_once_its_stamps_change_or_age(
+    bind_catalogue, change, reread
+):
+    """A cached frame serves its labels, citation and source documents while the graph
+    generation and catalogue build they were read under hold and they are younger than that
+    generation's cache lifetime. A new build, a new generation or a day's age re-reads them
+    from the cached bytes, so a card composed after a source's refresh dates change shows the
+    new dates, under the stamps of the read they came from."""
+    snapshots, artifacts, frame_ref, digest = _full_spec_fixture()
+    generation = FakeGeneration(token="gen-1")
+    graph = _documenting_graph()
+    graph._generation = generation
+    clock = _Clock()
+    store = _store(
+        snapshots=snapshots,
+        artifacts=artifacts,
+        graph=graph,
+        description_reader=_RecordReader(
+            DescriptionRecord.model_construct(computed=None, variables=None)
+        ),
+        now=clock,
+    )
+    bind_catalogue(FakeCatalogue(build_id="build-1"))
+    first = store.load(frame_ref=frame_ref)
+    graph._arcs["src_oecd_dac"] |= {
+        "lastDataRefreshDate": ("2026-11-02",),
+        "nextDataRefreshDate": ("2027-03",),
+    }
+    if change == "catalogue":
+        bind_catalogue(FakeCatalogue(build_id="build-2"))
+    elif change == "generation":
+        generation.advance("gen-2")
+    elif change == "age":
+        clock.now += timedelta(days=1)
+    calls = graph.calls
+
+    second = store.load(frame_ref=frame_ref)
+
+    dates = second.source_documents["src_oecd_dac"]
+    assert first.source_documents["src_oecd_dac"].next_release == "2026-12"
+    assert (dates.last_downloaded, dates.next_release) == (
+        ("2026-11-02", "2027-03") if reread else ("2026-10-08", "2026-12")
+    )
+    assert (second is first) is not reread
+    assert (graph.calls > calls) is reread
+    assert (second.graph_generation, second.catalogue_build) == {
+        "none": ("gen-1", "build-1"),
+        "catalogue": ("gen-1", "build-2"),
+        "generation": ("gen-2", "build-1"),
+        "age": ("gen-1", "build-1"),
+    }[change]
+    assert artifacts.calls.count(("get", Tier.working, digest)) == 1
+
+
+@pytest.mark.parametrize("failing", ["label-read", "documentation-read"])
+def test_a_failed_refresh_of_stale_words_keeps_the_cached_words_until_a_later_retry(
+    monkeypatch: pytest.MonkeyPatch, failing: str
+):
+    """After a generation change, a refresh whose label or documentation read fails serves the
+    cached labels, source dates and stamps, and caches no fallback. A load within the retry
+    wait reads nothing; the first load past it, once the reads recover, takes the new words."""
+    snapshots, artifacts, frame_ref, digest = _full_spec_fixture()
+    generation = FakeGeneration(token="gen-1")
+    graph = _documenting_graph()
+    graph._generation = generation
+    graph._labels["country/ETH"] = "Ethiopia"
+    clock = _Clock()
+    store = _store(
+        snapshots=snapshots,
+        artifacts=artifacts,
+        graph=graph,
+        description_reader=_RecordReader(
+            DescriptionRecord.model_construct(computed=None, variables=None)
+        ),
+        now=clock,
+    )
+    first = store.load(frame_ref=frame_ref)
+    graph._labels["country/ETH"] = "Federal Democratic Republic of Ethiopia"
+    graph._arcs["src_oecd_dac"] |= {"nextDataRefreshDate": ("2027-03",)}
+    generation.advance("gen-2")
+    if failing == "label-read":
+        graph.raise_for = frozenset({"country/ETH"})
+    else:
+
+        def read(*_args, **_kwargs):
+            raise GraphReadError("transport")
+
+        monkeypatch.setattr(provenance_doc, "read_provenance_doc", read)
+
+    failed = store.load(frame_ref=frame_ref)
+    graph.raise_for = frozenset()
+    monkeypatch.undo()
+    calls = graph.calls
+    within = store.load(frame_ref=frame_ref)
+    calls_within = graph.calls - calls
+    clock.pass_recheck()
+    recovered = store.load(frame_ref=frame_ref)
+
+    assert failed is first
+    assert failed.labels["country/ETH"] == "Ethiopia"
+    assert failed.source_documents["src_oecd_dac"].next_release == "2026-12"
+    assert failed.graph_generation == "gen-1"
+    assert within is first
+    assert calls_within == 0
+    assert recovered.labels["country/ETH"] == "Federal Democratic Republic of Ethiopia"
+    assert recovered.source_documents["src_oecd_dac"].next_release == "2027-03"
+    assert recovered.graph_generation == "gen-2"
+    assert artifacts.calls.count(("get", Tier.working, digest)) == 1
+
+
+def test_a_failed_refresh_keeps_its_retry_wait_through_a_citation_retry(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A frame whose documentation read failed retries its citation on each load. After a
+    generation change during a graph outage, the failed label refresh is not run again by the
+    loads that retry only the citation before the retry wait passes."""
+    snapshots, artifacts, frame_ref, _ = _full_spec_fixture()
+    generation = FakeGeneration(token="gen-1")
+    graph = _documenting_graph()
+    graph._generation = generation
+    graph._labels["country/ETH"] = "Ethiopia"
+    store = _store(
+        snapshots=snapshots,
+        artifacts=artifacts,
+        graph=graph,
+        description_reader=_RecordReader(
+            DescriptionRecord.model_construct(computed=None, variables=None)
+        ),
+        now=_Clock(),
+    )
+
+    def read(*_args, **_kwargs):
+        raise GraphReadError("transport")
+
+    monkeypatch.setattr(provenance_doc, "read_provenance_doc", read)
+    first = store.load(frame_ref=frame_ref)
+    generation.advance("gen-2")
+    graph.raise_for = frozenset({"country/ETH"})
+
+    def label_reads() -> int:
+        return sum(properties == ("name",) for _, properties, _ in graph.node_arcs_many_requests)
+
+    before = label_reads()
+    loads = [store.load(frame_ref=frame_ref) for _ in range(4)]
+
+    assert label_reads() - before == 1
+    assert all(load.labels["country/ETH"] == "Ethiopia" for load in loads)
+    assert first.graph_generation == "gen-1"
+
+
+def _stale_words_store(
+    *, failing: bool
+) -> tuple[LiveFrameStore, FrameRef, _FakeGraphReader, ResolvedFrame]:
+    """A store holding a frame loaded under generation `gen-1`, whose words the generation's
+    move to `gen-2` leaves stale, and whose label read fails from then on when `failing`."""
+    snapshots, artifacts, frame_ref, _ = _full_spec_fixture()
+    generation = FakeGeneration(token="gen-1")
+    graph = _documenting_graph()
+    graph._generation = generation
+    graph._labels["country/ETH"] = "Ethiopia"
+    store = _store(
+        snapshots=snapshots,
+        artifacts=artifacts,
+        graph=graph,
+        description_reader=_RecordReader(
+            DescriptionRecord.model_construct(computed=None, variables=None)
+        ),
+        now=_Clock(),
+    )
+    first = store.load(frame_ref=frame_ref)
+    generation.advance("gen-2")
+    if failing:
+        graph.raise_for = frozenset({"country/ETH"})
+    return store, frame_ref, graph, first
+
+
+def _gate_graph_reads(graph: _FakeGraphReader) -> tuple[threading.Event, threading.Event]:
+    """Hold every graph read of `graph` until the returned release event is set; the entered
+    event is set once a read is held."""
+    entered, release = threading.Event(), threading.Event()
+    read = graph.node_arcs_many
+
+    def gated(*args, **kwargs):
+        entered.set()
+        release.wait(5)
+        return read(*args, **kwargs)
+
+    graph.node_arcs_many = gated
+    return entered, release
+
+
+@pytest.mark.parametrize("failing", [False, True], ids=["refresh-succeeds", "refresh-fails"])
+def test_concurrent_loads_of_a_stale_frame_refresh_it_once(failing: bool):
+    """Four loads that find a frame's words stale at once refresh it once: the first refreshes
+    while the others wait, then serve what it cached, so they read the graph as often as one
+    load does. A refresh that fails leaves every load the cached words and their stamps, and
+    a refresh that succeeds leaves the cache its words, never the words it replaced. The test
+    waits a fifth of a second for the waiting loads to reach the refresh."""
+    single, frame_ref, graph, _ = _stale_words_store(failing=failing)
+    calls = graph.calls
+    single.load(frame_ref=frame_ref)
+    one_refresh = graph.calls - calls
+
+    store, frame_ref, graph, first = _stale_words_store(failing=failing)
+    entered, release = _gate_graph_reads(graph)
+    calls = graph.calls
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        loads = [pool.submit(copy_context().run, store.load, frame_ref=frame_ref) for _ in range(4)]
+        assert entered.wait(5)
+        time.sleep(0.2)
+        release.set()
+        served = [load.result(timeout=5) for load in loads]
+    after = store.load(frame_ref=frame_ref)
+
+    assert graph.calls - calls == one_refresh
+    assert all(frame is served[0] for frame in served)
+    assert after is served[0]
+    assert (served[0] is first) is failing
+    assert after.graph_generation == ("gen-1" if failing else "gen-2")
+
+
+def test_a_load_waiting_on_a_refresh_past_its_deadline_serves_the_cached_words():
+    """A load that waits on another load's refresh of the same frame until its door deadline
+    passes serves the cached words, reading nothing."""
+    store, frame_ref, graph, first = _stale_words_store(failing=False)
+    entered, release = _gate_graph_reads(graph)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        refresh = pool.submit(copy_context().run, store.load, frame_ref=frame_ref)
+        assert entered.wait(5)
+        calls = graph.calls
+        with frame_reads_bounded_by(timeout_seconds=0.2):
+            waited = store.load(frame_ref=frame_ref)
+        reads_while_waiting = graph.calls - calls
+        release.set()
+        refreshed = refresh.result(timeout=5)
+
+    assert waited is first
+    assert reads_while_waiting == 0
+    assert refreshed.graph_generation == "gen-2"
+    assert store.load(frame_ref=frame_ref) is refreshed
+
+
+def test_a_load_caches_its_frame_only_over_the_entry_it_read():
+    """A first load whose frame bytes arrive after another load cached the frame, and a refresh
+    re-read its words, leaves the cache the refreshed entry."""
+    snapshots, artifacts, frame_ref, _ = _full_spec_fixture()
+    generation = FakeGeneration(token="gen-1")
+    graph = _documenting_graph()
+    graph._generation = generation
+    store = _store(
+        snapshots=snapshots,
+        artifacts=artifacts,
+        graph=graph,
+        description_reader=_RecordReader(
+            DescriptionRecord.model_construct(computed=None, variables=None)
+        ),
+        now=_Clock(),
+    )
+    entered, release = threading.Event(), threading.Event()
+    get = artifacts.get
+
+    def gated(**kwargs):
+        if not entered.is_set():
+            entered.set()
+            release.wait(5)
+        return get(**kwargs)
+
+    artifacts.get = gated
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        late = pool.submit(copy_context().run, store.load, frame_ref=frame_ref)
+        assert entered.wait(5)
+        store.load(frame_ref=frame_ref)
+        generation.advance("gen-2")
+        refreshed = store.load(frame_ref=frame_ref)
+        release.set()
+        late_frame = late.result(timeout=5)
+
+    assert late_frame is not refreshed
+    assert store.load(frame_ref=frame_ref) is refreshed
 
 
 def test_load_dates_the_frame_by_its_canonical_artifact_s_first_storage_in_utc():
@@ -794,6 +1276,7 @@ def test_load_with_no_graph_returns_no_labels():
     resolved = store.load(frame_ref=frame_ref)
 
     assert resolved.labels == {}
+    assert (resolved.graph_generation, resolved.catalogue_build) == (None, None)
 
 
 type _LabelFailure = tuple[LiveFrameStore, FrameRef, Callable[[], None], dict[str, str]]
@@ -1061,39 +1544,120 @@ def test_load_labels_each_side_of_a_composed_unit(monkeypatch, caps, graph_refs,
 
 
 _FAMILY_ON_A_SIDE = "spec_" + "c" * 32
-_SUM_ENTRY = {
-    "stat_var": "dcid:ops_sum",
-    "relation": "sum",
-    "first": [f"dcid:{_FAMILY_ON_A_SIDE}"],
-    "second": ["dcid:Count_Person"],
-}
-_QUOTIENT_ENTRY = {
-    "stat_var": "dcid:ops_quotient",
-    "relation": "quotient",
-    "first": ["dcid:ops_sum"],
-    "second": ["dcid:Count_Person"],
-}
+_SUM_ENTRY = ComposedVariable(
+    variable="ops_sum", relation="sum", first=[_FAMILY_ON_A_SIDE], second=["Count_Person"]
+)
+_QUOTIENT_ENTRY = ComposedVariable(
+    variable="ops_quotient", relation="quotient", first=["ops_sum"], second=["Count_Person"]
+)
 _SUM_LABEL = "Education plus Total population"
 _QUOTIENT_LABEL = f"{_SUM_LABEL} per Total population"
 
 
-def _composed_stat_var_store(
-    *, composed_stat_vars: object, raise_for: frozenset[str] = frozenset()
-) -> tuple[LiveFrameStore, FrameRef, _FakeGraphReader]:
-    """A store over one frame whose rows sit under `dcid:ops_quotient`, in a unit counted in
-    `dcid:ops_sum`, with `composed_stat_vars` stored on its version."""
-    frame_ref = malaria_ethiopia_frame_ref()
-    unit = {"numerator": "USDollar", "denominator": {"stat_var": "dcid:ops_sum"}}
+def _computed_record(
+    frame_ref: FrameRef,
+    *,
+    composed: list[ComposedVariable] | None = None,
+    steps: list[dict[str, object]] | None = None,
+) -> DescriptionRecord:
+    """A computed version's record holding `composed` and `steps`."""
+    return DescriptionRecord(
+        id=frame_ref.spec_id,
+        content_version=frame_ref.content_version,
+        schema_version=1,
+        basis="publish",
+        index_stamp=None,
+        variables=None,
+        computed=ComputedFacts(
+            inputs=[InputVersion(id=None, content_version="cv_" + "d" * 32)], composed=composed
+        ),
+        series=SeriesFacts(
+            series=1,
+            rows=1,
+            periods=1,
+            span=None,
+            grain="year",
+            latest_period="2015",
+            series_reaching_latest=1,
+            entities_by_role=None,
+            by_source_unit=None,
+            status=StatusCounts(estimated=None, provisional=None),
+        ),
+        steps=None if steps is None else [Step.model_validate(step) for step in steps],
+        caveats=[],
+        evidence=Evidence(
+            prepared=date(2026, 9, 28),
+            title=None,
+            sources=[],
+            source_release=None,
+            labels=[],
+            membership=None,
+            builds=Builds(
+                origin_catalogue=None, code_index=None, coverage=None, method_status=None
+            ),
+        ),
+        late_fields=[],
+    )
+
+
+class _RecordReader:
+    """Returns one record for every version, and `inputs` for a batched read, which it notes
+    in `batches` and fails with `DatasetsStoreUnavailable` while `failing_batches` is above 0."""
+
+    def __init__(self, record: DescriptionRecord | None) -> None:
+        self.record = record
+        self.inputs: dict[tuple[str, str], DescriptionRecord] = {}
+        self.batches: list[list[tuple[str, str]]] = []
+        self.failing_batches = 0
+
+    def read_description(self, *, id: str, content_version: str) -> DescriptionRecord | None:
+        return self.record
+
+    def read_descriptions(
+        self, *, versions: Sequence[tuple[str, str]]
+    ) -> dict[tuple[str, str], DescriptionRecord]:
+        self.batches.append(list(versions))
+        if self.failing_batches:
+            self.failing_batches -= 1
+            raise DatasetsStoreUnavailable("reading descriptions failed", sqlstate="08006")
+        return {version: self.inputs[version] for version in versions if version in self.inputs}
+
+
+_COMPUTED_COLUMNS = ["stat_var", "recipient", "time_period", "value", "unit", "provenance"]
+
+
+def _computed_frame_store(
+    *,
+    rows: list[list[object]],
+    columns: list[str] = _COMPUTED_COLUMNS,
+    composed: list[ComposedVariable] | None = None,
+    steps: list[dict[str, object]] | None = None,
+    raise_for: frozenset[str] = frozenset(),
+    graph_labels: Mapping[str, str] | None = None,
+    generation: FakeGeneration | None = None,
+    clock: _Clock | None = None,
+    stored_composed: list[object] | None = None,
+    continuations: list[dict[str, object]] | None = None,
+) -> tuple[LiveFrameStore, FrameRef, _FakeGraphReader, _RecordReader]:
+    """A store over one computed frame of `rows` under `columns`, whose version's record holds
+    `composed` and `steps` and whose stored lineage holds `stored_composed` and
+    `continuations`, over a graph that also names `graph_labels` and stamps `generation`'s
+    token, on `clock`."""
+    frame_ref = FrameRef(spec_id="ops_" + "a" * 32, content_version="ocv_" + "b" * 32)
     doc = {
         "frame_version": "frame1",
-        "columns": ["stat_var", "recipient", "time_period", "value", "unit", "provenance"],
-        "rows": [["dcid:ops_quotient", "country/ETH", "2015", 1.0, unit, "src_oecd_dac"]],
+        "columns": columns,
+        "rows": rows,
     }
     artifacts = _FakeArtifactStore()
     digest = artifacts.seed(tier=Tier.working, data=json.dumps(doc).encode("utf-8"))
     version = dataclasses.replace(
         _version(frame_ref),
-        facts=FrameLineage(input_content_versions=[], composed_stat_vars=composed_stat_vars),
+        facts=FrameLineage(
+            input_content_versions=["cv_" + "d" * 32],
+            composed_stat_vars=cast("list[Mapping[str, object]] | None", stored_composed),
+            continuations=continuations,
+        ),
     )
     snapshots = _FakeSnapshotReader(
         versions={(frame_ref.spec_id, frame_ref.content_version): version},
@@ -1104,8 +1668,13 @@ def _composed_stat_var_store(
         },
     )
     graph = _FakeGraphReader(
-        labels={"Count_Person": "Total population", "country/ETH": "Ethiopia"},
+        labels={
+            "Count_Person": "Total population",
+            "country/ETH": "Ethiopia",
+            **(graph_labels or {}),
+        },
         raise_for=raise_for,
+        generation=generation,
     )
     spec_reader = _FakeSpecReader(
         definitions={
@@ -1120,14 +1689,527 @@ def _composed_stat_var_store(
             )
         }
     )
+    reader = _RecordReader(_computed_record(frame_ref, composed=composed, steps=steps))
     store = _store(
         snapshots=snapshots,
         artifacts=artifacts,
         graph=graph,
         spec_reader=spec_reader,
         code_index=_code_index([_EDUCATION_ROW]),
+        description_reader=reader,
+        now=clock if clock is not None else _Clock(),
     )
-    return store, frame_ref, graph
+    return store, frame_ref, graph, reader
+
+
+_COMPOSED_ROWS: list[list[object]] = [
+    [
+        "dcid:ops_quotient",
+        "country/ETH",
+        "2015",
+        1.0,
+        {"numerator": "USDollar", "denominator": {"stat_var": "dcid:ops_sum"}},
+        "src_oecd_dac",
+    ]
+]
+
+
+def _version_input(label: str, digit: str) -> dict[str, object]:
+    return {"id": "spec_" + digit * 32, "content_version": "cv_" + digit * 32, "label": label}
+
+
+_RETRIEVE_AID = {
+    "id": "s1",
+    "op": "retrieve",
+    "input": _version_input("Gross ODA disbursements", "1"),
+}
+_RETRIEVE_INCOME = {
+    "id": "s2",
+    "op": "retrieve",
+    "input": _version_input("Gross national income", "2"),
+}
+_RETRIEVE_POPULATION = {"id": "s4", "op": "retrieve", "input": _version_input("Population", "4")}
+
+
+_AID_VERSION = ("spec_" + "1" * 32, "cv_" + "1" * 32)
+_INCOME_VERSION = ("spec_" + "2" * 32, "cv_" + "2" * 32)
+
+
+def _input_record(version: tuple[str, str], *, variable: str, recipient: str) -> DescriptionRecord:
+    """A dataset version's record whose title names `variable` and the fixed `recipient`."""
+    return DescriptionRecord(
+        id=version[0],
+        content_version=version[1],
+        schema_version=1,
+        basis="mint",
+        index_stamp=None,
+        variables=VariableFacts(
+            shape=[],
+            variable=variable,
+            fixed=[FixedValue(property="financingRecipient", value=recipient)],
+            dimensions=None,
+            admitted_at_mint=1,
+            admitted_from="resolved_variables",
+            with_data=1,
+        ),
+        computed=None,
+        series=SeriesFacts(
+            series=1,
+            rows=1,
+            periods=1,
+            span=None,
+            grain="year",
+            latest_period="2015",
+            series_reaching_latest=1,
+            entities_by_role=None,
+            by_source_unit=None,
+            status=StatusCounts(estimated=None, provisional=None),
+        ),
+        steps=[],
+        caveats=[],
+        evidence=Evidence(
+            prepared=date(2026, 9, 28),
+            title=None,
+            sources=[],
+            source_release=None,
+            labels=[],
+            membership=None,
+            builds=Builds(
+                origin_catalogue=None, code_index=None, coverage=None, method_status=None
+            ),
+        ),
+        late_fields=[],
+    )
+
+
+def _quotient_of_inputs_store(
+    *, failing_batches: int = 0, clock: _Clock | None = None
+) -> tuple[
+    LiveFrameStore, FrameRef, _FakeGraphReader, _RecordReader, tuple[DescriptionRecord, ...]
+]:
+    """A store over a quotient of the aid and income versions, whose records the reader holds
+    and whose title refs the graph names; its first `failing_batches` input reads fail."""
+    steps: list[dict[str, object]] = [
+        _RETRIEVE_AID,
+        _RETRIEVE_INCOME,
+        {
+            "id": "s3",
+            "op": "quotient",
+            "inputs": {"numerator": "s1", "denominator": "s2"},
+            "stat_var": "ops_quotient",
+        },
+    ]
+    store, frame_ref, graph, reader = _computed_frame_store(
+        rows=[["dcid:ops_quotient", "country/ETH", "2015", 1.0, None, "src_oecd_dac"]],
+        steps=steps,
+        graph_labels={"Amount_Oda": "Gross ODA", "GNI": "Gross national income"},
+        clock=clock,
+    )
+    record = reader.record
+    assert record is not None and record.computed is not None
+    reader.record = record.model_copy(
+        update={
+            "computed": record.computed.model_copy(
+                update={
+                    "inputs": [
+                        InputVersion(id=_AID_VERSION[0], content_version=_AID_VERSION[1]),
+                        InputVersion(id=_INCOME_VERSION[0], content_version=_INCOME_VERSION[1]),
+                    ]
+                }
+            )
+        }
+    )
+    inputs = (
+        _input_record(_AID_VERSION, variable="Amount_Oda", recipient="country/ETH"),
+        _input_record(_INCOME_VERSION, variable="GNI", recipient="country/ETH"),
+    )
+    reader.inputs = {(held.id, held.content_version): held for held in inputs}
+    reader.failing_batches = failing_batches
+    return store, frame_ref, graph, reader, inputs
+
+
+@pytest.mark.parametrize(
+    ("cap", "label_read", "quotient_label"),
+    [
+        pytest.param(
+            None,
+            ("Amount_Oda", "GNI", "country/ETH", "src_oecd_dac"),
+            "Gross ODA to Ethiopia per gross national income to Ethiopia",
+            id="every-ref-labelled",
+        ),
+        pytest.param(
+            2,
+            ("Amount_Oda", "GNI"),
+            "Gross ODA disbursements per gross national income",
+            id="title-refs-count-under-the-cap",
+        ),
+    ],
+)
+def test_load_reads_a_computed_versions_inputs_in_one_batch_with_their_title_labels(
+    monkeypatch, cap, label_read, quotient_label
+):
+    """The load that reads a computed version's record reads its inputs' records in one batch,
+    and the refs their titles name lead the frame's one label read, within its cap. The
+    variable a step writes is named from the inputs' titles, as the card's description names
+    them; an input whose title today's words cannot compose keeps the label stored with its
+    step. A cache hit reads neither again."""
+    if cap is not None:
+        monkeypatch.setattr(frame_store, "_LABEL_RESOLUTION_CAP", cap)
+    store, frame_ref, graph, reader, inputs = _quotient_of_inputs_store()
+
+    first = store.load(frame_ref=frame_ref)
+    graph_reads = list(graph.node_arcs_many_calls)
+    second = store.load(frame_ref=frame_ref)
+
+    assert first.input_records == inputs
+    assert reader.batches == [[_AID_VERSION, _INCOME_VERSION]]
+    assert graph_reads[0] == label_read
+    assert first.labels["Amount_Oda"] == "Gross ODA"
+    assert first.labels["GNI"] == "Gross national income"
+    assert first.labels["dcid:ops_quotient"] == quotient_label
+    assert second is first
+    assert reader.batches == [[_AID_VERSION, _INCOME_VERSION]]
+    assert graph.node_arcs_many_calls == graph_reads
+
+
+def test_a_failed_input_read_fails_the_load_and_the_next_load_reads_again():
+    """A failed input read raises, so no frame loads naming its inputs by id; the next load
+    reads the inputs and labels their titles, and the load after is a hit."""
+    store, frame_ref, _, reader, inputs = _quotient_of_inputs_store(failing_batches=1)
+
+    with pytest.raises(DatasetsStoreUnavailable):
+        store.load(frame_ref=frame_ref)
+    retried = store.load(frame_ref=frame_ref)
+    cached = store.load(frame_ref=frame_ref)
+
+    assert retried.input_records == inputs
+    assert retried.labels["Amount_Oda"] == "Gross ODA"
+    assert len(reader.batches) == 2
+    assert cached is retried
+
+
+def test_a_failed_input_read_on_a_cached_frame_fails_the_load_and_keeps_the_cache():
+    """A failed input read on the re-read of a cached frame whose record is not final raises,
+    spends no graph read and leaves the cached frame, which the next load reads again."""
+    clock = _Clock()
+    store, frame_ref, graph, reader, inputs = _quotient_of_inputs_store(clock=clock)
+    assert reader.record is not None
+    reader.record = reader.record.model_copy(update={"steps": None})
+
+    first = store.load(frame_ref=frame_ref)
+    graph_reads = list(graph.node_arcs_many_calls)
+    clock.pass_recheck()
+    reader.failing_batches = 1
+    with pytest.raises(DatasetsStoreUnavailable):
+        store.load(frame_ref=frame_ref)
+    retried = store.load(frame_ref=frame_ref)
+
+    assert first.input_records == inputs
+    assert retried is first
+    assert graph.node_arcs_many_calls == graph_reads
+    assert len(reader.batches) == 3
+
+
+@pytest.mark.parametrize("late", ["no-record", "steps-null"])
+def test_an_input_not_final_yet_is_read_again(late: str):
+    """An input whose record is not written yet, or a computed input whose record holds
+    `steps: null`, leaves the frame's record not final, so a load past the recheck wait reads
+    the inputs again and takes the late record; the load after is a hit."""
+    clock = _Clock()
+    store, frame_ref, _, reader, inputs = _quotient_of_inputs_store(clock=clock)
+    aid, income = inputs
+    unsettled = income.model_copy(
+        update={
+            "computed": ComputedFacts(
+                inputs=[InputVersion(id=None, content_version="cv_" + "e" * 32)], composed=None
+            ),
+            "steps": None,
+        }
+    )
+    reader.inputs = (
+        {_AID_VERSION: aid}
+        if late == "no-record"
+        else {_AID_VERSION: aid, _INCOME_VERSION: unsettled}
+    )
+
+    first = store.load(frame_ref=frame_ref)
+    reader.inputs = {_AID_VERSION: aid, _INCOME_VERSION: income}
+    clock.pass_recheck()
+    second = store.load(frame_ref=frame_ref)
+    third = store.load(frame_ref=frame_ref)
+
+    assert first.input_records == ((aid,) if late == "no-record" else (aid, unsettled))
+    if late == "no-record":
+        assert "GNI" not in first.labels
+    assert second.input_records == inputs
+    assert second.labels["GNI"] == "Gross national income"
+    assert len(reader.batches) == 2
+    assert third is second
+
+
+_ZAMBIA_VERSION = ("spec_" + "5" * 32, "cv_" + "5" * 32)
+# Growth of IMF WEO gross national saving in Zambia: the root reports 2015-2024 under a null
+# method and its source's estimates continue it for 2025-2026, so the growth rows keep the
+# root rows' methods.
+_ZAMBIA_GROWTH_ROWS: list[list[object]] = [
+    [
+        "dcid:ops_growth",
+        "country/ZMB",
+        str(year),
+        float(year - 2015),
+        "Percent",
+        "Estimated" if year >= 2025 else None,
+        "provenance/IMFWorldEconomicOutlook",
+    ]
+    for year in range(2016, 2027)
+]
+
+
+# The continuation the Zambia growth version stores, inherited from its root: the null-method
+# series of IMF WEO continued by its estimates.
+_ZAMBIA_CONTINUATION = ContinuedSeries(
+    method="Estimated", continues=None, provenance="provenance/IMFWorldEconomicOutlook"
+)
+
+
+def _zambia_growth_store(
+    *, clock: _Clock, continuations: list[dict[str, object]] | None
+) -> tuple[LiveFrameStore, FrameRef, _RecordReader]:
+    store, frame_ref, _, reader = _computed_frame_store(
+        rows=_ZAMBIA_GROWTH_ROWS,
+        columns=[
+            "stat_var",
+            "observationAbout",
+            "time_period",
+            "value",
+            "unit",
+            "measurementMethod",
+            "provenance",
+        ],
+        steps=[
+            {"id": "s1", "op": "retrieve", "input": _version_input("Gross saving", "5")},
+            {"id": "s2", "op": "growth", "input": "s1", "stat_var": "ops_growth"},
+        ],
+        clock=clock,
+        continuations=continuations,
+    )
+    record = reader.record
+    assert record is not None and record.computed is not None
+    reader.record = record.model_copy(
+        update={
+            "computed": record.computed.model_copy(
+                update={
+                    "inputs": [
+                        InputVersion(id=_ZAMBIA_VERSION[0], content_version=_ZAMBIA_VERSION[1])
+                    ]
+                }
+            )
+        }
+    )
+    return store, frame_ref, reader
+
+
+def _zambia_root(params: object) -> DescriptionRecord:
+    """The root's record, holding a `continue_series` step with `params`, built unvalidated
+    as a record stored before the publish door checked them."""
+    root = _input_record(_ZAMBIA_VERSION, variable="GrossSaving", recipient="country/ZMB")
+    step = Step.model_validate(
+        {"id": "s1", "op": "continue_series", "policy": "continue_with_source_estimates"}
+    )
+    return root.model_copy(update={"steps": [step.model_copy(update={"params": params})]})
+
+
+@pytest.mark.parametrize(
+    "root_params",
+    [
+        pytest.param({"method": "Estimated", "periods": ["2025", "2026"]}, id="well-formed"),
+        pytest.param({}, id="params-without-method"),
+        pytest.param({"method": []}, id="a-method-that-is-no-string"),
+    ],
+)
+def test_a_derived_frame_over_a_continued_series_groups_it_as_its_root_does(
+    root_params: object,
+) -> None:
+    """A derived frame keeps its root's method cells and stores the continuation it inherited,
+    so it holds one series from its first load, the view leaves `measurementMethod` not
+    plural, and an unbound select draws every year. The root's record arriving later, whatever
+    its `continue_series` step holds, changes nothing. Issue: the Zambia chart that drew only
+    2025-2026."""
+    clock = _Clock()
+    store, frame_ref, reader = _zambia_growth_store(
+        clock=clock, continuations=[_ZAMBIA_CONTINUATION.as_entry()]
+    )
+    select = [{"bindings": [{"dimension": "observationAbout", "values": ["country/ZMB"]}]}]
+
+    first = store.load(frame_ref=frame_ref)
+    reader.inputs = {_ZAMBIA_VERSION: _zambia_root(root_params)}
+    clock.pass_recheck()
+    after = store.load(frame_ref=frame_ref)
+
+    for frame in (first, after):
+        assert frame.continuation == Continuation(series=(_ZAMBIA_CONTINUATION,))
+        assert frame.structural_view.series_count == 1
+        (method,) = (
+            one for one in frame.structural_view.dimensions if one.name == "measurementMethod"
+        )
+        assert (method.values, method.plural) == (("Estimated",), False)
+        (series,) = resolve_selectors(resolved_frame=frame, selectors=select, window=None)
+        assert [row["time_period"] for row in series.rows] == [
+            str(year) for year in range(2016, 2027)
+        ]
+    assert after.input_records == (reader.inputs[_ZAMBIA_VERSION],)
+
+
+@pytest.mark.parametrize(
+    ("stored", "steps_late"),
+    [
+        # A version published without steps stores the continuations its lineage gives, here
+        # none; the publish filling its steps replaces them with its root's.
+        pytest.param([], True, id="late-steps"),
+        # A version recorded before versions stored continuations, whose record is final,
+        # holds them as unknown until the backfill fills them.
+        pytest.param(None, False, id="backfilled"),
+    ],
+)
+def test_a_cached_frame_regroups_once_its_stored_continuations_arrive(
+    stored: list[dict[str, object]] | None, steps_late: bool
+) -> None:
+    """A computed frame whose stored continuations are none yet or unknown loads ungrouped and
+    is not final; once its root's continuation is stored, the next load past the recheck wait
+    groups the cached frame as one series."""
+    clock = _Clock()
+    store, frame_ref, reader = _zambia_growth_store(clock=clock, continuations=stored)
+    reader.inputs = {
+        _ZAMBIA_VERSION: _input_record(_ZAMBIA_VERSION, variable="GrossSaving", recipient="ZMB")
+    }
+    filled = reader.record
+    assert filled is not None
+    if steps_late:
+        reader.record = filled.model_copy(update={"steps": None})
+    snapshots = cast("_FakeSnapshotReader", store._snapshots)
+    key = (frame_ref.spec_id, frame_ref.content_version)
+
+    first = store.load(frame_ref=frame_ref)
+    version = snapshots.versions[key]
+    assert isinstance(version.facts, FrameLineage)
+    snapshots.versions[key] = dataclasses.replace(
+        version,
+        facts=dataclasses.replace(version.facts, continuations=[_ZAMBIA_CONTINUATION.as_entry()]),
+    )
+    reader.record = filled
+    clock.pass_recheck()
+    after = store.load(frame_ref=frame_ref)
+
+    assert (first.continuation, first.structural_view.series_count) == (None, 2)
+    assert after.continuation == Continuation(series=(_ZAMBIA_CONTINUATION,))
+    assert after.structural_view.series_count == 1
+
+
+@pytest.mark.parametrize(
+    ("continuations", "series_count"),
+    [
+        pytest.param(None, 2, id="recorded-before-continuations"),
+        pytest.param([], 2, id="nothing-continues"),
+        pytest.param(
+            [
+                ContinuedSeries(
+                    method="Estimated", continues=None, provenance="provenance/OtherSource"
+                ).as_entry()
+            ],
+            2,
+            id="another-sources-continuation",
+        ),
+        pytest.param(
+            [ContinuedSeries(method="Estimated", continues="Reported", provenance=None).as_entry()],
+            2,
+            id="a-continuation-of-another-method",
+        ),
+        pytest.param([_ZAMBIA_CONTINUATION.as_entry()], 1, id="its-roots-continuation"),
+    ],
+)
+def test_a_derived_frame_groups_only_the_series_its_stored_continuation_names(
+    continuations: list[dict[str, object]] | None, series_count: int
+) -> None:
+    """A stored continuation joins the estimates only to the series of the method and source
+    it continued in its root; a version storing none splits on method."""
+    store, frame_ref, _ = _zambia_growth_store(clock=_Clock(), continuations=continuations)
+
+    frame = store.load(frame_ref=frame_ref)
+
+    assert frame.structural_view.series_count == series_count
+
+
+def test_load_names_each_variable_of_a_join_of_two_quotients_from_the_step_that_wrote_it():
+    """Each quotient's variable takes the name of that quotient's output, and the graph read
+    leaves both out."""
+    rows: list[list[object]] = [
+        [stat_var, "country/ETH", "2015", 1.0, None, "src_oecd_dac"]
+        for stat_var in ("dcid:ops_per_income", "dcid:ops_per_person")
+    ]
+    steps: list[dict[str, object]] = [
+        _RETRIEVE_AID,
+        _RETRIEVE_INCOME,
+        {
+            "id": "s3",
+            "op": "quotient",
+            "inputs": {"numerator": "s1", "denominator": "s2"},
+            "stat_var": "ops_per_income",
+        },
+        _RETRIEVE_POPULATION,
+        {
+            "id": "s5",
+            "op": "quotient",
+            "inputs": {"numerator": "s1", "denominator": "s4"},
+            "stat_var": "ops_per_person",
+        },
+        {"id": "s6", "op": "join", "inputs": {"left": "s3", "right": "s5"}},
+    ]
+    store, frame_ref, graph, _ = _computed_frame_store(rows=rows, steps=steps)
+
+    resolved = store.load(frame_ref=frame_ref)
+
+    assert resolved.labels == {
+        "dcid:ops_per_income": "Gross ODA disbursements per gross national income",
+        "dcid:ops_per_person": "Gross ODA disbursements per population",
+        "country/ETH": "Ethiopia",
+    }
+    assert graph.node_arcs_many_calls[0] == ("country/ETH", "src_oecd_dac")
+
+
+def test_load_names_a_comparison_of_one_variable_by_the_entities_its_sides_hold():
+    """A compare frame holds no entity column, so the label read takes the entities from the
+    step's sides, and the variable reads in the order compare subtracts."""
+    rows: list[list[object]] = [["dcid:ops_difference", None, "2015", 1.0, None, "src_oecd_dac"]]
+    steps: list[dict[str, object]] = [
+        _RETRIEVE_AID,
+        {**_RETRIEVE_AID, "id": "s2"},
+        {
+            "id": "s3",
+            "op": "compare",
+            "inputs": {"left": "s1", "right": "s2"},
+            "sides": {
+                "left": {"donor": "dcid:country/GBR"},
+                "right": {"donor": "dcid:country/FRA"},
+            },
+            "stat_var": "ops_difference",
+        },
+    ]
+    store, frame_ref, _, _ = _computed_frame_store(
+        rows=rows,
+        steps=steps,
+        graph_labels={"country/GBR": "United Kingdom", "country/FRA": "France"},
+    )
+
+    assert store.load(frame_ref=frame_ref).labels["dcid:ops_difference"] == (
+        "Gross ODA disbursements, France minus United Kingdom"
+    )
+
+
+_STEPS_WITHOUT_STAT_VAR: list[dict[str, object]] = [
+    _RETRIEVE_AID,
+    _RETRIEVE_INCOME,
+    {"id": "s3", "op": "quotient", "inputs": {"numerator": "s1", "denominator": "s2"}},
+]
 
 
 @pytest.mark.parametrize(
@@ -1158,103 +2240,206 @@ def _composed_stat_var_store(
         ),
     ],
 )
-def test_load_words_a_composed_stat_var_from_its_stored_entry(
-    monkeypatch, cap, graph_refs, expected_labels
+@pytest.mark.parametrize(
+    "steps",
+    [None, _STEPS_WITHOUT_STAT_VAR],
+    ids=["no-steps", "steps-naming-no-variable"],
+)
+def test_load_words_a_variable_no_step_names_from_its_composed_entry(
+    monkeypatch, cap, graph_refs, expected_labels, steps
 ):
-    """The version body's entries name the frame's own StatVar and the StatVar its unit counts.
-    Their side refs join the label read ahead of the column refs, a family ref on a side takes
-    its stored definition, and a ref an entry describes is left out of the read."""
-    import presentation_store.frame_store as frame_store_module
-
+    """A record whose steps name no variable, or that holds none, words each composed entry
+    from its sides. The sides join the label read ahead of the column refs, a family ref on a
+    side takes its stored definition, and a variable an entry names is left out of the read."""
     if cap is not None:
-        monkeypatch.setattr(frame_store_module, "_LABEL_RESOLUTION_CAP", cap)
-    store, frame_ref, graph = _composed_stat_var_store(
-        composed_stat_vars=[_SUM_ENTRY, _QUOTIENT_ENTRY]
+        monkeypatch.setattr(frame_store, "_LABEL_RESOLUTION_CAP", cap)
+    store, frame_ref, graph, _ = _computed_frame_store(
+        rows=_COMPOSED_ROWS, composed=[_SUM_ENTRY, _QUOTIENT_ENTRY], steps=steps
     )
 
     resolved = store.load(frame_ref=frame_ref)
 
-    assert graph.node_arcs_many_calls == [graph_refs]
+    assert graph.node_arcs_many_calls[0] == graph_refs
     assert resolved.labels == expected_labels
 
 
-def test_load_words_a_composed_stat_var_from_bare_refs_when_the_graph_read_fails():
+_STORED_COMPOSED: list[object] = [
+    {
+        "stat_var": "dcid:ops_sum",
+        "relation": "sum",
+        "first": [f"dcid:{_FAMILY_ON_A_SIDE}"],
+        "second": ["dcid:Count_Person"],
+    },
+    {
+        "stat_var": "dcid:ops_quotient",
+        "relation": "quotient",
+        "first": ["dcid:ops_sum"],
+        "second": ["dcid:Count_Person"],
+    },
+]
+
+
+@pytest.mark.parametrize(
+    ("stored_composed", "expected"),
+    [
+        pytest.param(
+            _STORED_COMPOSED,
+            {"dcid:ops_sum": _SUM_LABEL, "dcid:ops_quotient": _QUOTIENT_LABEL},
+            id="stored-lineage-names-them",
+        ),
+        pytest.param([{"stat_var": "dcid:ops_sum"}], {}, id="unreadable-lineage-keeps-refs"),
+    ],
+)
+def test_a_version_with_no_record_names_its_composed_variables_from_its_stored_lineage(
+    stored_composed, expected
+):
+    """A computed version that holds no record yet, as before the backfill describes it or
+    after its publish could not, words its composed variables from the list its stored lineage
+    holds, as its record would. A list that does not read keeps the refs and loads."""
+    store, frame_ref, _, reader = _computed_frame_store(
+        rows=_COMPOSED_ROWS, stored_composed=stored_composed
+    )
+    reader.record = None
+
+    labels = store.load(frame_ref=frame_ref).labels
+
+    assert {ref: labels[ref] for ref in ("dcid:ops_sum", "dcid:ops_quotient") if ref in labels} == (
+        expected
+    )
+
+
+def test_load_words_a_composed_entry_from_bare_refs_when_the_graph_read_fails():
     """A failed graph read leaves the graph side as its bare dcid and the load uncached, so
     the next load reads again."""
-    store, frame_ref, graph = _composed_stat_var_store(
-        composed_stat_vars=[_SUM_ENTRY], raise_for=frozenset({"Count_Person"})
+    store, frame_ref, graph, _ = _computed_frame_store(
+        rows=_COMPOSED_ROWS, composed=[_SUM_ENTRY], raise_for=frozenset({"Count_Person"})
     )
 
     labels = store.load(frame_ref=frame_ref).labels
     store.load(frame_ref=frame_ref)
 
     assert labels["dcid:ops_sum"] == "Education plus Count_Person"
-    assert graph.calls == 2
+    assert sum("Count_Person" in call for call in graph.node_arcs_many_calls) == 2
+
+
+def test_load_leaves_a_variable_no_step_and_no_entry_names_with_its_ref():
+    """An entry whose relation has no wording, and a variable the record does not name, keep
+    their refs."""
+    store, frame_ref, _, _ = _computed_frame_store(
+        rows=_COMPOSED_ROWS,
+        composed=[_SUM_ENTRY.model_copy(update={"relation": "product"})],
+        steps=_STEPS_WITHOUT_STAT_VAR,
+    )
+
+    labels = store.load(frame_ref=frame_ref).labels
+
+    assert "dcid:ops_sum" not in labels
+    assert "dcid:ops_quotient" not in labels
+
+
+_LONG_LABELS = {"LongA": "A" * 150, "LongB": "B" * 150, "GDP": "Nominal GDP", "Longer": "B" * 250}
 
 
 @pytest.mark.parametrize(
-    "unreadable",
+    ("composed", "steps", "expected"),
     [
-        {**_SUM_ENTRY, "stat_var": "dcid:ops_other", "relation": "difference"},
-        {key: value for key, value in _QUOTIENT_ENTRY.items() if key != "second"},
-        {key: value for key, value in _QUOTIENT_ENTRY.items() if key != "relation"},
-        {key: value for key, value in _QUOTIENT_ENTRY.items() if key != "stat_var"},
-        {**_QUOTIENT_ENTRY, "second": None},
-        {**_QUOTIENT_ENTRY, "first": []},
-        {**_QUOTIENT_ENTRY, "first": [1]},
-        {**_QUOTIENT_ENTRY, "stat_var": 7},
-        "dcid:ops_quotient",
-        None,
-    ],
-    ids=[
-        "unknown-relation",
-        "missing-side",
-        "missing-relation",
-        "missing-stat-var",
-        "null-side",
-        "empty-side",
-        "ref-not-a-string",
-        "stat-var-not-a-string",
-        "entry-not-a-mapping",
-        "null-entry",
+        pytest.param(
+            [
+                ComposedVariable(
+                    variable="ops_a", relation="quotient", first=["LongA"], second=["LongB"]
+                )
+            ],
+            None,
+            "A" * 97 + " per " + "B" * 98,
+            id="two-long-sides-take-half-each",
+        ),
+        pytest.param(
+            [
+                ComposedVariable(
+                    variable="ops_a", relation="quotient", first=["GDP"], second=["Longer"]
+                )
+            ],
+            None,
+            "Nominal GDP per " + "B" * 184,
+            id="a-short-side-keeps-its-text",
+        ),
+        pytest.param(
+            None,
+            [
+                {"id": "s1", "op": "retrieve", "input": _version_input("A" * 150, "1")},
+                {"id": "s2", "op": "retrieve", "input": _version_input("B" * 150, "2")},
+                {
+                    "id": "s3",
+                    "op": "quotient",
+                    "inputs": {"numerator": "s1", "denominator": "s2"},
+                    "stat_var": "ops_a",
+                },
+            ],
+            "A" * 97 + " per " + "B" * 98,
+            id="a-step-name-of-two-long-sides-takes-half-each",
+        ),
     ],
 )
-def test_load_skips_a_stored_entry_it_cannot_read_and_words_the_rest(unreadable, caplog):
-    """A label is best-effort: the frame loads, the readable entry is worded, the other
-    StatVar keeps its ref, and one warning names the frame and the entry's position."""
-    store, frame_ref, _ = _composed_stat_var_store(composed_stat_vars=[_SUM_ENTRY, unreadable])
-
-    with caplog.at_level(logging.WARNING, logger="presentation_store.composed_stat_vars"):
-        resolved = store.load(frame_ref=frame_ref)
-
-    assert resolved.labels["dcid:ops_sum"] == _SUM_LABEL
-    assert "dcid:ops_quotient" not in resolved.labels
-    assert "dcid:ops_other" not in resolved.labels
-    (record,) = caplog.records
-    assert record.args == (
-        COMPOSED_STAT_VAR_UNREADABLE_MARKER,
-        frame_ref.spec_id,
-        frame_ref.content_version,
-        1,
+def test_load_keeps_both_sides_of_a_long_name_within_label_max(composed, steps, expected):
+    """A name of two sides shortens the longer sides to fit `LABEL_MAX`, so both sides and the
+    word between them stay."""
+    rows: list[list[object]] = [["dcid:ops_a", "country/ETH", "2015", 1.0, None, None]]
+    store, frame_ref, _, _ = _computed_frame_store(
+        rows=rows, composed=composed, steps=steps, graph_labels=_LONG_LABELS
     )
 
+    label = store.load(frame_ref=frame_ref).labels["dcid:ops_a"]
 
-@pytest.mark.parametrize(
-    "stored", [{"0": _SUM_ENTRY}, "dcid:ops_sum", 3], ids=["mapping", "text", "number"]
-)
-def test_load_reads_a_stored_value_that_is_no_list_as_no_entries(stored, caplog):
-    store, frame_ref, _ = _composed_stat_var_store(composed_stat_vars=stored)
+    assert label == expected
+    assert len(label) <= LABEL_MAX
 
-    with caplog.at_level(logging.WARNING, logger="presentation_store.composed_stat_vars"):
-        resolved = store.load(frame_ref=frame_ref)
 
-    assert resolved.labels == {"country/ETH": "Ethiopia"}
-    (record,) = caplog.records
-    assert record.args[:3] == (
-        COMPOSED_STAT_VAR_UNREADABLE_MARKER,
-        frame_ref.spec_id,
-        frame_ref.content_version,
+def test_load_names_a_variable_once_a_record_written_after_the_first_load_arrives(
+    bind_catalogue,
+):
+    """A frame cached before its record existed takes the step names on the load that reads
+    the record. That load alone re-reads the frame's labels, in one read stamped with the
+    generation and build it runs under; a cache hit around it reads no labels."""
+    rows: list[list[object]] = [["dcid:ops_per_income", "country/ETH", "2015", 1.0, None, None]]
+    steps: list[dict[str, object]] = [
+        *_STEPS_WITHOUT_STAT_VAR[:2],
+        {**_STEPS_WITHOUT_STAT_VAR[2], "stat_var": "ops_per_income"},
+    ]
+    generation = FakeGeneration(token="gen-1")
+    clock = _Clock()
+    store, frame_ref, graph, reader = _computed_frame_store(
+        rows=rows, steps=steps, generation=generation, clock=clock
     )
+    record, reader.record = reader.record, None
+
+    def label_reads() -> int:
+        return sum(properties == ("name",) for _, properties, _ in graph.node_arcs_many_requests)
+
+    bind_catalogue(FakeCatalogue(build_id="build-1"))
+    first = store.load(frame_ref=frame_ref)
+    before_record = label_reads()
+    store.load(frame_ref=frame_ref)
+    reads_without_record = label_reads() - before_record
+
+    generation.advance("gen-2")
+    bind_catalogue(FakeCatalogue(build_id="build-2"))
+    reader.record = record
+    clock.pass_recheck()
+    second = store.load(frame_ref=frame_ref)
+    reads_on_arrival = label_reads() - before_record
+
+    cached = store.load(frame_ref=frame_ref)
+
+    assert "dcid:ops_per_income" not in first.labels
+    assert (first.graph_generation, first.catalogue_build) == ("gen-1", "build-1")
+    assert second.labels["dcid:ops_per_income"] == (
+        "Gross ODA disbursements per gross national income"
+    )
+    assert second.labels["country/ETH"] == "Ethiopia"
+    assert (second.graph_generation, second.catalogue_build) == ("gen-2", "build-2")
+    assert (reads_without_record, reads_on_arrival) == (0, 1)
+    assert label_reads() - before_record == 1
+    assert cached == second
 
 
 # -- load(): family-ref labels ----------------------------------------------
@@ -1628,7 +2813,7 @@ def _citing_graph() -> _FakeGraphReader:
 
 
 _OECD_CITATION = {
-    "text": "OECD Creditor Reporting System",
+    "text": citation_line(retrieved=_NOW.date(), sources=["OECD Creditor Reporting System"]),
     "sources": [
         {
             "ref": "src_oecd_dac",
@@ -1658,6 +2843,15 @@ _OECD_CITATION = {
 }
 
 
+_OPS_CITATION = {
+    **_OECD_CITATION,
+    "text": citation_line(
+        retrieved=_NOW.date(), sources=["OECD Creditor Reporting System"], processed=True
+    ),
+}
+"""`_OECD_CITATION` as a computed version cites it, as processed by the DFO."""
+
+
 def test_load_cites_the_distinct_upstream_provenances_of_a_published_ops_frame():
     """Nine rows sharing one provenance ref give one cited source, beside the lineage body."""
     snapshots, artifacts, frame_ref, _ = _ops_happy_path_fixture()
@@ -1667,7 +2861,7 @@ def test_load_cites_the_distinct_upstream_provenances_of_a_published_ops_frame()
 
     assert resolved.manifest == {
         **version_document(_version(frame_ref)),
-        "citation": _OECD_CITATION,
+        "citation": _OPS_CITATION,
     }
 
 
@@ -1681,7 +2875,7 @@ def test_load_caches_an_ops_frame_s_citation_with_the_frame():
 
     resolved = store.load(frame_ref=frame_ref)
 
-    assert resolved.manifest["citation"] == _OECD_CITATION
+    assert resolved.manifest["citation"] == _OPS_CITATION
     assert graph.calls == reads_after_first_load
 
 
@@ -1703,7 +2897,94 @@ def test_load_leaves_an_ops_citation_out_when_the_graph_fails_and_reads_it_next_
     assert frame_ref.spec_id in record.getMessage()
     assert frame_ref.content_version in record.getMessage()
     assert "citation" not in first.manifest
-    assert second.manifest["citation"] == _OECD_CITATION
+    assert second.manifest["citation"] == _OPS_CITATION
+
+
+class _FailingOnceDescriptionReader:
+    """Raises `raise_first()` on its first read and returns `record` after."""
+
+    def __init__(self, record: DescriptionRecord, *, raise_first: Callable[[], None]) -> None:
+        self.record = record
+        self.raise_first = raise_first
+        self.reads = 0
+
+    def read_description(self, *, id: str, content_version: str) -> DescriptionRecord | None:
+        self.reads += 1
+        if self.reads == 1:
+            self.raise_first()
+        return self.record
+
+
+def _store_unavailable() -> None:
+    raise DatasetsStoreUnavailable("reading description failed", sqlstate="08006")
+
+
+def _invalid_stored_record() -> None:
+    DescriptionRecord.model_validate({"schema_version": 2})
+
+
+def test_a_failed_record_read_fails_the_load_before_the_frame_is_fetched():
+    """A store outage on the record read raises, so no frame loads without the record its
+    version holds; the next load reads the record and fetches the frame once."""
+    snapshots, artifacts, frame_ref, digest = _happy_path_fixture()
+    record = DescriptionRecord.model_construct(computed=None, variables=None)
+    reader = _FailingOnceDescriptionReader(record, raise_first=_store_unavailable)
+    store = _store(snapshots=snapshots, artifacts=artifacts, description_reader=reader)
+
+    with pytest.raises(DatasetsStoreUnavailable):
+        store.load(frame_ref=frame_ref)
+    second = store.load(frame_ref=frame_ref)
+
+    assert second.description_record is record
+    assert reader.reads == 2
+    assert artifacts.calls.count(("get", Tier.working, digest)) == 1
+
+
+def test_load_caches_a_frame_with_no_record_when_its_stored_record_fails_validation(caplog):
+    """A stored record that fails validation is logged once as an error, and the frame loads
+    and is cached with none, since reading it again returns the same record."""
+    snapshots, artifacts, frame_ref, _ = _happy_path_fixture()
+    record = DescriptionRecord.model_construct(computed=None, variables=None)
+    reader = _FailingOnceDescriptionReader(record, raise_first=_invalid_stored_record)
+    store = _store(snapshots=snapshots, artifacts=artifacts, description_reader=reader)
+
+    with caplog.at_level(logging.WARNING, logger="presentation_store.frame_store"):
+        first = store.load(frame_ref=frame_ref)
+    second = store.load(frame_ref=frame_ref)
+
+    [logged] = [r for r in caplog.records if r.name == "presentation_store.frame_store"]
+    assert logged.levelno == logging.ERROR
+    assert frame_ref.spec_id in logged.getMessage()
+    assert frame_ref.content_version in logged.getMessage()
+    assert first.description_record is None
+    assert second is first
+    assert reader.reads == 1
+
+
+def test_a_failed_record_read_on_a_cached_unsettled_frame_fails_the_load_and_keeps_the_cache():
+    """A computed record holding `steps: null` is read again once the recheck wait passes. A
+    store outage on that read raises without a label read and leaves the cached frame, so the
+    next load reads the record again and serves the cached record and composed labels."""
+    clock = _Clock()
+    store, frame_ref, graph, reader = _computed_frame_store(
+        rows=_COMPOSED_ROWS, composed=[_SUM_ENTRY, _QUOTIENT_ENTRY], clock=clock
+    )
+    first = store.load(frame_ref=frame_ref)
+    label_reads = len(graph.node_arcs_many_calls)
+    record = reader.record
+    assert record is not None
+    failing = _FailingOnceDescriptionReader(record, raise_first=_store_unavailable)
+    reader.read_description = failing.read_description
+
+    clock.pass_recheck()
+    with pytest.raises(DatasetsStoreUnavailable):
+        store.load(frame_ref=frame_ref)
+    retried = store.load(frame_ref=frame_ref)
+
+    assert retried is first
+    assert retried.labels["dcid:ops_quotient"] == _QUOTIENT_LABEL
+    assert len(graph.node_arcs_many_calls) == label_reads
+    assert failing.reads == 2
 
 
 @pytest.mark.parametrize(
@@ -1715,10 +2996,11 @@ def test_load_caches_an_ops_frame_unless_a_documentation_read_failed(
     monkeypatch: pytest.MonkeyPatch, raised: Exception, cached: bool
 ):
     """A source the graph documents nothing for is a lasting answer and caches; a failed
-    documentation read is read again on the next load."""
+    documentation read is read again on the first load past the retry wait."""
     snapshots, artifacts, frame_ref, _ = _ops_happy_path_fixture()
     graph = _citing_graph()
-    store = _store(snapshots=snapshots, artifacts=artifacts, graph=graph)
+    clock = _Clock()
+    store = _store(snapshots=snapshots, artifacts=artifacts, graph=graph, now=clock)
 
     def read(*_args, **_kwargs):
         raise raised
@@ -1726,14 +3008,15 @@ def test_load_caches_an_ops_frame_unless_a_documentation_read_failed(
     monkeypatch.setattr(provenance_doc, "read_provenance_doc", read)
     first = store.load(frame_ref=frame_ref)
     monkeypatch.undo()
+    clock.pass_recheck()
     reads_after_first_load = graph.calls
     second = store.load(frame_ref=frame_ref)
 
-    undocumented = json.loads(json.dumps(_OECD_CITATION))
+    undocumented = json.loads(json.dumps(_OPS_CITATION))
     undocumented["sources"][0]["documentation"] = None
     assert first.manifest["citation"] == undocumented
     assert (graph.calls == reads_after_first_load) is cached
-    assert second.manifest["citation"] == (undocumented if cached else _OECD_CITATION)
+    assert second.manifest["citation"] == (undocumented if cached else _OPS_CITATION)
 
 
 def _thin_spec_fixture() -> tuple[_FakeSnapshotReader, _FakeArtifactStore, FrameRef, dict]:
@@ -1757,6 +3040,43 @@ _HEALED_THIN_CITATION = {
 }
 
 
+def _documenting_graph() -> _FakeGraphReader:
+    """`_citing_graph`, with the pipeline's last and next refresh dates on `src_oecd_dac`."""
+    graph = _citing_graph()
+    graph._arcs["src_oecd_dac"] |= {
+        "lastDataRefreshDate": ("2026-10-08",),
+        "nextDataRefreshDate": ("2026-12",),
+    }
+    return graph
+
+
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        pytest.param(_thin_spec_fixture, id="dataset-version"),
+        pytest.param(_ops_happy_path_fixture, id="computed-version"),
+    ],
+)
+def test_load_carries_what_each_cited_source_s_document_says_and_caches_it(fixture):
+    """The citation read documents each source once, and the frame carries the source's last
+    download and next release with its cached citation."""
+    snapshots, artifacts, frame_ref, _ = fixture()
+    graph = _documenting_graph()
+    store = _store(snapshots=snapshots, artifacts=artifacts, graph=graph)
+
+    first = store.load(frame_ref=frame_ref)
+    reads_after_first_load = graph.calls
+    second = store.load(frame_ref=frame_ref)
+
+    assert first.source_documents == {
+        "src_oecd_dac": SourceDocumentFacts(
+            publisher=None, last_downloaded="2026-10-08", next_release="2026-12"
+        )
+    }
+    assert second is first
+    assert graph.calls == reads_after_first_load
+
+
 def test_load_fills_a_root_frame_s_empty_citation_fields_from_the_graph():
     """A card export cites the stored citation with its null licence type and documentation
     filled live; the stored label stands, and the filled citation caches with the frame."""
@@ -1773,6 +3093,57 @@ def test_load_fills_a_root_frame_s_empty_citation_fields_from_the_graph():
     assert graph.calls == reads_after_first_load
     stored = snapshots.versions[(frame_ref.spec_id, frame_ref.content_version)]
     assert stored.facts.citation == thin
+
+
+def _full_spec_fixture() -> tuple[_FakeSnapshotReader, _FakeArtifactStore, FrameRef, str]:
+    """A root frame whose stored citation sets every field a live read fills, and cites its one
+    source at two processing levels."""
+    snapshots, artifacts, frame_ref, digest = _happy_path_fixture()
+    full = json.loads(json.dumps(_OECD_CITATION))
+    source = full["sources"][0]
+    source.update(
+        license_url="https://example.org/licence",
+        source={"ref": "src_oecd", "label": "OECD"},
+        data_commons={"id": "dfo", "label": "DFO"},
+    )
+    full["sources"].append({**source, "processing_level": "derived"})
+    version = _version(frame_ref)
+    snapshots.versions[(frame_ref.spec_id, frame_ref.content_version)] = replace(
+        version, facts=replace(version.facts, citation=full)
+    )
+    return snapshots, artifacts, frame_ref, digest
+
+
+def test_a_root_frame_s_full_citation_is_read_only_once_the_frame_holds_a_record():
+    """A stored citation with every field set reads nothing while the frame holds no record.
+    A record arriving on the cached frame re-runs the citation read, which documents each
+    distinct source once, under the call's `citation` phase, so a described card words what
+    its document says."""
+    snapshots, artifacts, frame_ref, _ = _full_spec_fixture()
+    graph = _documenting_graph()
+    reader = _RecordReader(None)
+    clock = _Clock()
+    store = _store(
+        snapshots=snapshots,
+        artifacts=artifacts,
+        graph=graph,
+        description_reader=reader,
+        now=clock,
+    )
+
+    undescribed = store.load(frame_ref=frame_ref)
+    reads_undescribed = list(_citation_requests(graph))
+    reader.record = DescriptionRecord.model_construct(computed=None, variables=None)
+    clock.pass_recheck()
+    timings = PhaseTimings()
+    with collecting(timings):
+        described = store.load(frame_ref=frame_ref)
+
+    assert reads_undescribed == []
+    assert undescribed.source_documents == {}
+    assert {dcids for dcids, _ in _citation_requests(graph)} == {("src_oecd_dac",)}
+    assert "citation" in timings.snapshot()
+    assert described.source_documents["src_oecd_dac"].next_release == "2026-12"
 
 
 def test_load_keeps_a_root_frame_s_stored_citation_when_the_read_fails_and_reads_it_next_load():
@@ -1792,11 +3163,14 @@ def test_load_keeps_a_root_frame_s_stored_citation_when_the_read_fails_and_reads
 def test_a_failed_documentation_read_caches_the_frame_and_retries_only_the_fill(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """The labels answer but the documentation read fails: later loads fetch no artifact and
-    retry only the citation fill, until one answers and the frame serves from the cache."""
+    """The labels answer but the documentation read fails: the frame caches with the citation
+    that read left, and loads within the retry wait serve it with no citation read. Each load
+    past the wait retries only the citation fill, fetching no artifact, until one answers and
+    the frame serves from the cache."""
     snapshots, artifacts, frame_ref, _ = _thin_spec_fixture()
     graph = _citing_graph()
-    store = _store(snapshots=snapshots, artifacts=artifacts, graph=graph)
+    clock = _Clock()
+    store = _store(snapshots=snapshots, artifacts=artifacts, graph=graph, now=clock)
     read_documentation = provenance_doc.read_provenance_doc
     attempts: list[str] = []
 
@@ -1806,13 +3180,20 @@ def test_a_failed_documentation_read_caches_the_frame_and_retries_only_the_fill(
 
     monkeypatch.setattr(provenance_doc, "read_provenance_doc", failing)
     first = store.load(frame_ref=frame_ref)
+    graph_calls_after_first = graph.calls
+    within = [store.load(frame_ref=frame_ref) for _ in range(3)]
+    graph_calls_within = graph.calls - graph_calls_after_first
+    clock.pass_recheck()
     second = store.load(frame_ref=frame_ref)
     failed_attempts = len(attempts)
     monkeypatch.setattr(provenance_doc, "read_provenance_doc", read_documentation)
+    clock.pass_recheck()
     third = store.load(frame_ref=frame_ref)
     graph_calls_after_third = graph.calls
     fourth = store.load(frame_ref=frame_ref)
 
+    assert all(load is first for load in within)
+    assert graph_calls_within == 0
     assert first.manifest["citation"] == second.manifest["citation"]
     assert first.manifest["citation"] != _HEALED_THIN_CITATION
     assert third.manifest["citation"] == fourth.manifest["citation"] == _HEALED_THIN_CITATION
@@ -1866,7 +3247,11 @@ def test_load_reads_citations_for_capped_refs_and_cites_the_rest_by_ref(monkeypa
     assert "src_oecd_dac" in requested
     assert "src_imf" not in requested
     assert resolved.manifest["citation"] == {
-        "text": "OECD Creditor Reporting System; src_imf",
+        "text": citation_line(
+            retrieved=_NOW.date(),
+            sources=["OECD Creditor Reporting System", "src_imf"],
+            processed=True,
+        ),
         "sources": [
             *_OECD_CITATION["sources"],
             {
@@ -1883,6 +3268,41 @@ def test_load_reads_citations_for_capped_refs_and_cites_the_rest_by_ref(monkeypa
             },
         ],
     }
+
+
+def test_load_reads_a_root_frame_s_capped_sources_and_keeps_the_rest_as_stored(monkeypatch):
+    """A root frame's stored sources past the cap are never read, neither their citation nor
+    their documentation, and stand as stored; the sources within it are filled."""
+    import presentation_store.frame_store as frame_store_module
+
+    monkeypatch.setattr(frame_store_module, "_CITATION_READ_CAP", 1)
+    snapshots, artifacts, frame_ref, thin = _thin_spec_fixture()
+    imf = {**thin["sources"][0], "ref": "src_imf", "label": "src_imf"}
+    thin["sources"].append(imf)
+    version = snapshots.versions[(frame_ref.spec_id, frame_ref.content_version)]
+    snapshots.versions[(frame_ref.spec_id, frame_ref.content_version)] = replace(
+        version, facts=replace(version.facts, citation=thin)
+    )
+    read_documentation = provenance_doc.read_provenance_doc
+    documented: list[str] = []
+
+    def recording(graph, dcid, **kwargs):
+        documented.append(dcid)
+        return read_documentation(graph, dcid, **kwargs)
+
+    monkeypatch.setattr(provenance_doc, "read_provenance_doc", recording)
+    graph = _citing_graph()
+    store = _store(snapshots=snapshots, artifacts=artifacts, graph=graph)
+
+    resolved = store.load(frame_ref=frame_ref)
+
+    requested = {dcid for dcids, _ in _citation_requests(graph) for dcid in dcids}
+    assert requested == {"src_oecd_dac"}
+    assert documented == ["src_oecd_dac"]
+    assert resolved.manifest["citation"]["sources"] == [
+        *_HEALED_THIN_CITATION["sources"],
+        imf,
+    ]
 
 
 def test_load_bounds_its_label_and_citation_reads_by_its_read_budget_less_grace():
@@ -2187,8 +3607,14 @@ def test_cache_put_does_not_double_count_bytes_on_a_same_key_overwrite():
     store._cache_put(
         cache_key,
         _CachedFrame(
-            size_bytes=1_000, resolved=resolved, citation_complete=True, anchor_final=True
+            size_bytes=1_000,
+            resolved=resolved,
+            citation_retry_at=None,
+            anchor_final=True,
+            description_recheck_at=None,
+            words_read_at=_NOW,
         ),
+        expected=store._cache[cache_key],
     )
 
     assert store._cache_bytes == sum(entry.size_bytes for entry in store._cache.values())
@@ -2327,10 +3753,15 @@ def test_load_reads_the_left_out_labels_again_after_a_failed_graph_read():
     assert [one.label for one in retried.anchor.left_out] == ["Chad", "country/MLI"]
 
 
-@pytest.mark.parametrize("anchor_recorded", [True, False], ids=["null-anchor", "no-recipe"])
+@pytest.mark.parametrize(
+    ("anchor_recorded", "replay_key"),
+    [(True, "rpk_" + "2" * 32), (False, None)],
+    ids=["null-anchor", "no-recipe"],
+)
 def test_a_derived_frame_without_an_anchor_loads_as_it_does_with_no_recipe_reader(
-    anchor_recorded,
+    anchor_recorded, replay_key
 ):
+    """A recipe with a null anchor still names the frame's replay key."""
     snapshots, artifacts, frame_ref, _ = _ops_happy_path_fixture()
     recipes = _FakeRecipeReader()
     if anchor_recorded:
@@ -2340,7 +3771,9 @@ def test_a_derived_frame_without_an_anchor_loads_as_it_does_with_no_recipe_reade
         snapshots=snapshots, artifacts=artifacts, graph=_citing_graph(), recipe_reader=recipes
     )
 
-    assert store.load(frame_ref=frame_ref) == plain.load(frame_ref=frame_ref)
+    assert store.load(frame_ref=frame_ref) == replace(
+        plain.load(frame_ref=frame_ref), replay_key=replay_key
+    )
 
 
 def test_a_frame_cached_before_its_recipe_was_written_gains_the_anchor_without_a_refetch():
@@ -2361,7 +3794,8 @@ def test_a_frame_cached_before_its_recipe_was_written_gains_the_anchor_without_a
 def test_a_rolling_card_on_a_derived_frame_is_created_at_the_recipe_s_anchor():
     """The frame's newest period is 2024 and its recipe anchors `latest` at 2023, so the create
     reads the anchor through `load`: the card's period is 2023 and it names Chad as left out.
-    The select names only the StatVar, so it admits Chad's series."""
+    The select names only the StatVar, so it admits Chad's series. Its provenance names the
+    recipe's replay key as `execution_ref`."""
     snapshots, artifacts, frame_ref, _ = _ops_happy_path_fixture()
     recipes = _FakeRecipeReader()
     recipes.put(
@@ -2391,6 +3825,7 @@ def test_a_rolling_card_on_a_derived_frame_is_created_at_the_recipe_s_anchor():
 
     payload = created.resolved_payload
     assert payload["component"]["period"] == "2023"
+    assert payload["provenance"]["execution_ref"] == "rpk_" + "2" * 32
     assert payload["provenance"]["warnings"][0] == {
         "kind": "coverage_gap",
         "detail": "1 series has no 2023 value: Chad",

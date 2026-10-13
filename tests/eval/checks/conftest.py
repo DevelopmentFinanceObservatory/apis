@@ -129,7 +129,7 @@ _BUILT_MEMBERS: dict[str, list[str]] = {}
 @functools.cache
 def _recorded_members() -> dict[str, list[str]]:
     return {
-        spec["spec_id"]: [member["dcid"] for member in spec["sentence_facts"]["members"]]
+        spec["spec_id"]: [member["ref"] for member in spec["sentence_facts"]["members"]]
         for row in _panel_rows().values()
         for part in row["parts"]
         for spec in spec_dicts(part)

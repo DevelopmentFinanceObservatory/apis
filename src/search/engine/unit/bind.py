@@ -64,13 +64,13 @@ from dfo_spec_kit import identity
 
 from code_index.labels import PricesKind
 from materialise.roles import axis_noun
-from search.currency_codes import ISO_4217_CODES
 from search.models import (
     EntityRoleKey,
     IdentityCurrency,
     IdentityCurrencyRole,
     Spec,
 )
+from unit_words.currency_codes import ISO_4217_CODES
 
 from .lexicon import (
     AMBIGUOUS_CURRENCY_NAMES,

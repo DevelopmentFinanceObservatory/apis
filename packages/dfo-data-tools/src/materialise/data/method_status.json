@@ -1,0 +1,9 @@
+{
+  "methods": {
+    "Estimated": "estimated",
+    "Modelled": "estimated"
+  },
+  "reported_provenances": [
+    "provenance/IMFWorldEconomicOutlook"
+  ]
+}

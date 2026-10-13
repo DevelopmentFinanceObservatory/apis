@@ -457,6 +457,7 @@ _CANONICAL_SELECTION = [
     "stat_var_label",
     "recipient",
     "recipient_label",
+    "recipient_party_kind",
     "time_period",
     "value",
     "unit",
@@ -468,7 +469,7 @@ _CANONICAL_SELECTION = [
     "provenance_label",
 ]
 """`_SELECTION_KEEP` in the long layout's order (`materialise.projection`), each kept code
-column followed by its name and `unit` by its split."""
+column followed by its name, a party role's by its party kind too, and `unit` by its split."""
 _SELECTION_KEEP = ["value", "time_period", "recipient", "stat_var", "unit", "provenance"]
 """A selection naming its columns out of the frame's order."""
 
@@ -706,8 +707,8 @@ def test_a_bare_enrichment_field_name_refuses_column_unknown_with_qualified_alte
     qualified_tokens = {
         "recipient_iso2",
         "recipient_iso3",
-        "recipient_kind",
         "recipient_label",
+        "recipient_party_kind",
         "recipient_type",
     }
     assert {a["ref"] for a in problem["alternatives"]} == real_columns | qualified_tokens
@@ -766,7 +767,11 @@ def test_recipient_iso3_enriches_the_render_with_the_graph_declared_alpha3_code(
     fetched = artifact_store.fetch(artifact["url"])
     rows = list(csv.reader(io.StringIO(fetched.decode("utf-8"))))
     position = rows[0].index("recipient_iso3")
-    assert rows[0][position - 2 : position] == ["recipient", "recipient_label"]
+    assert rows[0][position - 3 : position] == [
+        "recipient",
+        "recipient_label",
+        "recipient_party_kind",
+    ]
     assert all(row[position] == "KEN" for row in rows[1:])
 
 
@@ -817,7 +822,11 @@ def test_recipient_type_enriches_the_render_with_the_place_type():
     artifact = resp.json()["artifacts"][0]
     rows = list(csv.reader(io.StringIO(artifact_store.fetch(artifact["url"]).decode("utf-8"))))
     position = rows[0].index("recipient_type")
-    assert rows[0][position - 2 : position] == ["recipient", "recipient_label"]
+    assert rows[0][position - 3 : position] == [
+        "recipient",
+        "recipient_label",
+        "recipient_party_kind",
+    ]
     assert all(row[position] == "Country" for row in rows[1:])
 
 
@@ -1083,9 +1092,11 @@ def test_two_entity_columns_each_enrich_with_their_own_field_in_one_request():
         "stat_var_label",
         "recipient",
         "recipient_label",
+        "recipient_party_kind",
         "recipient_iso3",
         "provider",
         "provider_label",
+        "provider_party_kind",
         "time_period",
         "value",
         "unit",
@@ -1178,6 +1189,7 @@ def test_a_genuine_label_role_column_selects_rather_than_colliding_with_the_enri
         "stat_var_label",
         "recipient",
         "recipient_label",
+        "recipient_party_kind",
         "label",
         "label_label",
         "time_period",

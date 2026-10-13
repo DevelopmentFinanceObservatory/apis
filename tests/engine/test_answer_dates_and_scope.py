@@ -224,6 +224,9 @@ _STANDARD_FIRST = [
     "observation_facets_batch",
     "node_labels_batch",
     *["node_arcs_many"] * 3,
+    # The menu's StatVar denominators, read for bind's list and the quantity gate
+    # (`phase_rank_bind._read_denominators`).
+    "node_arcs_batch",
     "node_labels_batch",
     *["default_facet_policy"] * 3,
     "observation_facets_batch",
@@ -450,7 +453,7 @@ def test_a_source_pin_dates_the_answer_from_the_pinned_source(monkeypatch, searc
 
     assert pinned.status == "definite", (pinned.status, pinned.no_data_reason)
     spec = pinned.specs[0]
-    assert [ref.dcid for ref in spec.resolved.trace.resolved_sources] == [_ALT]
+    assert [ref.ref for ref in spec.resolved.trace.resolved_sources] == [_ALT]
     assert _dates(spec) == [DateRange(start="2016", end="2018")]
 
 
@@ -552,7 +555,7 @@ def test_a_source_pin_lists_the_scope_members_the_pinned_source_serves(
     assert resolved.scope is not None
     assert [m.ref for m in resolved.scope.members] == [_CLAND]
     assert {d.label: d.count for d in resolved.coverage.dimensions}["recipients"] == 1
-    assert [ref.dcid for ref in resolved.trace.resolved_sources] == [_ALT]
+    assert [ref.ref for ref in resolved.trace.resolved_sources] == [_ALT]
     # The warning counts the one member, in the place the materialised warning held.
     assert [(w.code, w.message) for w in pinned.warnings if w.code == "role_scope_defaulted"] == [
         (
@@ -622,7 +625,7 @@ def test_candidates_serving_different_scopes_share_a_warning_without_a_count(
         assert {d.label: d.count for d in resolved.coverage.dimensions}["recipients"] == len(
             members
         )
-        scopes[resolved.members[0].ref.dcid] = members
+        scopes[resolved.members[0].ref.ref] = members
     assert scopes == {_FLOW: [_ALAND], cited_sources._ALT_FLOW: [_ALAND, _BLAND]}
     warnings = [w.message for w in result.warnings if w.code == "role_scope_defaulted"]
     assert warnings[0] == (

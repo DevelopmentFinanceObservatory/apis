@@ -25,6 +25,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from types import MappingProxyType
 from typing import Final
 
+from code_index.labels import HOW_PHRASE_LEADS_WITH_PREPOSITION
 from dfo_platform.roles import GENERIC_ROLE_WORDING, FlowFamily, role_wording
 from search.heading.departure_fact import DepartureFact, ordered_facts
 from search.models import (
@@ -36,7 +37,6 @@ from search.models import (
     SentenceToken,
 )
 
-from .how import _HOW_PHRASE_LEADS_WITH_PREPOSITION
 from .labels import _join_labels, group_members_text, group_text
 
 _OPERATION_NOUNS: Final[Mapping[OperationVerb, tuple[str, str]]] = MappingProxyType(
@@ -126,8 +126,9 @@ def _closest_match(fact: DepartureFact, _family: FlowFamily | None, shows_data: 
 
 def _measure_not_applied(fact: DepartureFact, _family: FlowFamily | None, shows_data: bool) -> str:
     """A price basis (the unit token's ref) is stated without its leading preposition. Any
-    other dropped phrase is the user's own words, quoted. A door that holds none (a
-    resubmit, `asked` is `None`) names the posted values left out (`DepartureFact.values`)."""
+    other dropped phrase is the user's own words, quoted. With no words (`asked` `None`: a
+    resubmit, or a value no name exists for) it names what was left out
+    (`DepartureFact.values`)."""
     if fact.binding_ref == UNIT_REF:
         if fact.shown is None:
             raise ValueError("a price basis departure needs the price basis shown")
@@ -149,7 +150,7 @@ def _measure_not_applied(fact: DepartureFact, _family: FlowFamily | None, shows_
 def _without_preposition(phrase: str) -> str:
     """`phrase` without one leading preposition ("in constant 2022 dollars")."""
     first, _, rest = phrase.partition(" ")
-    return rest if rest and first.lower() in _HOW_PHRASE_LEADS_WITH_PREPOSITION else phrase
+    return rest if rest and first.lower() in HOW_PHRASE_LEADS_WITH_PREPOSITION else phrase
 
 
 def _operation_not_applied(
@@ -193,7 +194,7 @@ def _entity_unavailable(fact: DepartureFact, _family: FlowFamily | None, _shows_
     pronoun = "it" if unserved == 1 else "them"
     sentences: list[str] = []
     if fact.group is not None and fact.group_size is not None:
-        group = EntityGroup(label=fact.group, entity_type=fact.group_type)
+        group = EntityGroup(ref=fact.group_dcid, label=fact.group)
         members = group_text(fact.group_size, group)
         sentences.append(f"The data holds no values{period} for {len(fact.entities)} of {members}.")
     elif fact.entities:
@@ -205,9 +206,7 @@ def _entity_unavailable(fact: DepartureFact, _family: FlowFamily | None, _shows_
     if fact.sets:
         counts = [
             f"{len(members.entities)} of "
-            + group_text(
-                members.size, EntityGroup(label=members.label, entity_type=members.entity_type)
-            )
+            + group_text(members.size, EntityGroup(ref=members.dcid, label=members.label))
             for members in fact.sets
         ]
         if not fact.entities and fact.asked is not None:
@@ -380,11 +379,11 @@ def _group_read_as_members(
         else ""
     )
     if fact.asked is not None:
-        members = group_members_text(fact.group_type)
+        members = group_members_text(fact.group_dcid)
         return f"You asked for {_asked(fact)}. This {verb} {members}, each on its own{left_out}."
     if fact.group is None or fact.group_size is None:
         raise ValueError("group_read_as_members with nothing asked needs the group shown")
-    group = EntityGroup(label=fact.group, entity_type=fact.group_type)
+    group = EntityGroup(ref=fact.group_dcid, label=fact.group)
     members = group_text(fact.group_size, group)
     return f"This {verb} {members}, each on its own{left_out}."
 

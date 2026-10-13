@@ -44,7 +44,7 @@ def _make_coverage(has_data: bool = True) -> CoverageBare:
 
 def _make_entity(dcid: str, label: str) -> Entity:
     return Entity(
-        ref=GraphRef(dcid=dcid, label=label),
+        ref=GraphRef(ref=dcid, label=label),
         entity_type=None,
         role=EntityRoleSubject(),
     )
@@ -57,9 +57,9 @@ _STAT_TYPE_DCID = "measuredValue"
 
 def _make_five_tuple_refs() -> dict[str, GraphRef]:
     return {
-        _POP_TYPE_DCID: GraphRef(dcid=_POP_TYPE_DCID, label="Test Population Type"),
-        _MEAS_PROP_DCID: GraphRef(dcid=_MEAS_PROP_DCID, label="Test Measured Property"),
-        _STAT_TYPE_DCID: GraphRef(dcid=_STAT_TYPE_DCID, label="Measured Value"),
+        _POP_TYPE_DCID: GraphRef(ref=_POP_TYPE_DCID, label="Test Population Type"),
+        _MEAS_PROP_DCID: GraphRef(ref=_MEAS_PROP_DCID, label="Test Measured Property"),
+        _STAT_TYPE_DCID: GraphRef(ref=_STAT_TYPE_DCID, label="Measured Value"),
     }
 
 
@@ -120,9 +120,9 @@ def _make_spec(
         value_dcids=[place_dcid],
     )
 
-    scheme_ref = GraphRef(dcid="ODAGrants", label="ODA Grants")
-    purpose_ref = GraphRef(dcid=purpose_dcid, label=purpose_dcid)
-    place_ref = GraphRef(dcid=place_dcid, label=place_dcid)
+    scheme_ref = GraphRef(ref="ODAGrants", label="ODA Grants")
+    purpose_ref = GraphRef(ref=purpose_dcid, label=purpose_dcid)
+    place_ref = GraphRef(ref=place_dcid, label=place_dcid)
 
     slot_key_models = []
     slots = []
@@ -133,7 +133,7 @@ def _make_spec(
     ]:
         prop_dcid = slot_draft_key.property_dcid
         assert prop_dcid is not None
-        prop_ref = GraphRef(dcid=prop_dcid, label=prop_dcid)
+        prop_ref = GraphRef(ref=prop_dcid, label=prop_dcid)
         slot = build_slot(slot_draft_key, binding_draft, grounded, property_ref=prop_ref)
         slots.append(slot)
         slot_key_models.append(slot.key)
@@ -146,7 +146,7 @@ def _make_spec(
         members=[sv_dcid],
     )
 
-    sv_ref = GraphRef(dcid=sv_dcid, label=sv_dcid)
+    sv_ref = GraphRef(ref=sv_dcid, label=sv_dcid)
     stat_vars = [
         StatVar(ref=sv_ref, shape_id=shape_draft.shape_id, slot_values=[], constraint_properties=[])
     ]
@@ -192,8 +192,8 @@ def _make_promoting_spec(purpose_dcid: str | None, place_dcid: str):
         kind="value",
         value_dcids=[place_dcid],
     )
-    purpose_grounded = [GraphRef(dcid=purpose_dcid, label=purpose_dcid)] if purpose_dcid else []
-    place_ref = GraphRef(dcid=place_dcid, label=place_dcid)
+    purpose_grounded = [GraphRef(ref=purpose_dcid, label=purpose_dcid)] if purpose_dcid else []
+    place_ref = GraphRef(ref=place_dcid, label=place_dcid)
 
     slot_key_models = []
     slots = []
@@ -204,7 +204,7 @@ def _make_promoting_spec(purpose_dcid: str | None, place_dcid: str):
     ]:
         prop_dcid = slot_draft_key.property_dcid
         assert prop_dcid is not None
-        prop_ref = GraphRef(dcid=prop_dcid, label=prop_dcid)
+        prop_ref = GraphRef(ref=prop_dcid, label=prop_dcid)
         slot = build_slot(slot_draft_key, binding_draft, grounded, property_ref=prop_ref)
         slots.append(slot)
         slot_key_models.append(slot.key)
@@ -217,7 +217,7 @@ def _make_promoting_spec(purpose_dcid: str | None, place_dcid: str):
         members=[_PROMOTING_SV_DCID],
     )
 
-    sv_ref = GraphRef(dcid=_PROMOTING_SV_DCID, label=_PROMOTING_SV_NAME)
+    sv_ref = GraphRef(ref=_PROMOTING_SV_DCID, label=_PROMOTING_SV_NAME)
     stat_vars = [
         StatVar(ref=sv_ref, shape_id=shape_draft.shape_id, slot_values=[], constraint_properties=[])
     ]
@@ -235,11 +235,11 @@ def _make_promoting_spec(purpose_dcid: str | None, place_dcid: str):
 
 def _directional_entity(dcid: str, axis: str, label: str | None = None) -> Entity:
     return Entity(
-        ref=GraphRef(dcid=dcid, label=label or dcid),
+        ref=GraphRef(ref=dcid, label=label or dcid),
         entity_type=None,
         role=EntityRoleDirectional(
             kind="directional",
-            role=GraphRef(dcid="irrelevant", label="irrelevant"),
+            role=GraphRef(ref="irrelevant", label="irrelevant"),
             axis=axis,
         ),
     )

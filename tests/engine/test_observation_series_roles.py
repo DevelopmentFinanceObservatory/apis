@@ -18,6 +18,7 @@ from materialise import (
 )
 from search.engine.bind import _UniversalBindOutput
 from search.engine.errors import GraphCapExceededError
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_spec_resubmit, resolve_variable
 from search.engine.region.codes import OBSERVATIONS_NO_POINTS, OBSERVATIONS_PROBE_FAILED
 from search.engine.region.observations import fetch as region_fetch
@@ -43,6 +44,7 @@ from tests.engine._harness import (
     stub_preview_result,
     walk_options,
 )
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 from tests.materialise.conftest import FakeGraphReader
 
@@ -76,8 +78,8 @@ def test_observation_series_round_trips_role_tuple_shape():
         "label": "ODA basic drinking water",
     }
     assert dumped["entities"] == [
-        {"role": "origin", "ref": "country/USA", "label": "United States"},
-        {"role": "destination", "ref": "country/KEN", "label": "Kenya"},
+        {"role": "origin", "ref": "country/USA", "label": "United States", "party_kind": None},
+        {"role": "destination", "ref": "country/KEN", "label": "Kenya", "party_kind": None},
     ]
     assert dumped["total_obs"] == 1
     assert ObservationSeries.model_validate(dumped) == series
@@ -490,6 +492,8 @@ class _TextDoorFixedBindLLM:
     """Elects the sole candidate shape with no constraint bindings, unconditionally."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
 
 

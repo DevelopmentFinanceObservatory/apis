@@ -104,6 +104,15 @@ class FacetNotAvailableError(MaterialisationError):
         self.alternatives_truncated = alternatives_truncated
 
 
+class FacetBindingUnsupportedError(MaterialisationError):
+    """422 `facet_binding_unsupported`. Raised when a recognised facet binding cannot be
+    served for the request's shape, as a national-currency unit binding on a group of
+    variables or on a role-bearing variable."""
+
+    code = "facet_binding_unsupported"
+    status = 422
+
+
 class OverCeilingError(MaterialisationError):
     """422 `over_ceiling`. Raised by row, byte, member-cardinality, and candidate-window checks.
 
@@ -213,3 +222,26 @@ class UpstreamResponseError(Exception):
     row's `variableMeasured` differs from the requested StatVar. Generation raises when
     response roles differ from declared roles, which can drift between resolution and fetch.
     This marks upstream data breakage for a valid request."""
+
+
+class VariableBreadthUnreadError(Exception):
+    """A single-place election's facets tie on every key before whole-variable breadth, the
+    order the breadth would give them decides the axes or the cadence the election serves, and
+    the breadth could not be read (`facets.rank_candidates`, `facets.dispatch_cadence`). Only a
+    caller that stores its election refuses on an unread breadth
+    (`facets.bound_variable_breadth(refuse_unread=True)`), rather than record another facet.
+
+    `transient` is true when the read failed in a way a later read can answer
+    (`facets.BreadthUnread.UNREAD`), so a Datasets mint answers 503 and a retry reads again,
+    and false when the variable's own profile raised for another reason
+    (`facets.BreadthUnread.DEFECT`), a defect a retry would meet again, so it answers 500. Not
+    a `MaterialisationError`, so per-axis aggregation does not fold it into a facet refusal."""
+
+    def __init__(self, candidates: Sequence[str], *, transient: bool = True) -> None:
+        self.candidates = tuple(candidates)
+        self.transient = transient
+        cause = "could not be read; retry" if transient else "could not be built"
+        super().__init__(
+            f"facets {list(self.candidates)!r} tie at one place and their whole-variable "
+            f"breadth {cause}"
+        )

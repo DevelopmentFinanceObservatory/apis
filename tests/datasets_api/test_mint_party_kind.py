@@ -1,5 +1,7 @@
 """A DAC2A mint of France's aid serves each party's kind from the packaged index's party
-declaration: a bare `kind` token fills `financingProvider_kind` and `financingRecipient_kind`."""
+declaration: a long-layout file writes `financingProvider_party_kind` and
+`financingRecipient_party_kind` by default, and a frame-layout file on a bare `party_kind`
+token."""
 
 from __future__ import annotations
 
@@ -7,6 +9,7 @@ import io
 
 import httpx
 import pyarrow.parquet as pq
+import pytest
 
 from dc_sdmx import SdmxClient
 from materialise.graph import Facet
@@ -100,7 +103,17 @@ def _client(store: FakeDatasetStore, artifact_store: FakeArtifactStore):
     )
 
 
-def test_a_dac2a_mint_serves_each_partys_kind_for_every_role_from_a_bare_kind_token():
+@pytest.mark.parametrize(
+    "options",
+    [
+        pytest.param({"format": "parquet", "bundle": False}, id="long-layout-default"),
+        pytest.param(
+            {"format": "parquet", "bundle": False, "layout": "frame", "columns": ["party_kind"]},
+            id="frame-layout-bare-token",
+        ),
+    ],
+)
+def test_a_dac2a_mint_serves_each_partys_kind_for_every_role(options):
     artifact_store = FakeArtifactStore()
     client = _client(FakeDatasetStore(), artifact_store)
     body = {
@@ -120,20 +133,24 @@ def test_a_dac2a_mint_serves_each_partys_kind_for_every_role_from_a_bare_kind_to
                 },
             },
         },
-        "options": {"format": "parquet", "bundle": False, "layout": "frame", "columns": ["kind"]},
+        "options": options,
     }
 
     resp = client.post("/api/datasets", json=body)
 
     assert resp.status_code == 200, resp.text
     manifest = resp.json()
-    assert not any(w["code"] == "enrichment_unavailable" for w in manifest["warnings"])
+    # The recipients have no graph name, so only their label columns can warn.
+    assert not any(
+        w["code"] == "enrichment_unavailable" and w.get("column", "").endswith("_party_kind")
+        for w in manifest["warnings"]
+    )
     table = pq.read_table(io.BytesIO(artifact_store.fetch(manifest["artifacts"][0]["url"])))
     rows = sorted(
         zip(
             table.column("financingRecipient").to_pylist(),
-            table.column("financingRecipient_kind").to_pylist(),
-            table.column("financingProvider_kind").to_pylist(),
+            table.column("financingRecipient_party_kind").to_pylist(),
+            table.column("financingProvider_party_kind").to_pylist(),
             strict=True,
         )
     )

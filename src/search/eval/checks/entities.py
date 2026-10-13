@@ -37,7 +37,7 @@ def _group(entity: ExpectedEntity, answer: Answer, ctx: ScoreContext) -> Result:
     role = str(entity.role)
     recorded = answer.read("resolved.entity_groups", ctx) if answer.is_spec else None
     group = (recorded or {}).get(role) or {}
-    dcid = group.get("dcid")
+    dcid = group.get("ref")
     if entity.label is not None:
         name = entity.label
         label = group.get("label")

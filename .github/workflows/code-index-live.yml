@@ -136,13 +136,10 @@ jobs:
         github.event.pull_request.head.repo.full_name == github.repository) ||
        (github.event_name == 'schedule' && github.event.schedule == '23 6 * * 1-5'))
     runs-on: ubuntu-latest
-    # The exporter's own concurrency fix cut this from 14m31s (sequential
-    # /v2/node POSTs) to ~3m10s wall clock against the dev deployment,
-    # measured locally with `uv run --env-file .env python
-    # scripts/export_code_index.py`. 12 minutes leaves roughly 4x headroom
-    # over that for checkout, uv sync, and CI-runner-to-Cloud-Run latency
-    # that a workstation run doesn't see.
-    timeout-minutes: 12
+    # The drift test alone takes 9 to 12 minutes against the dev deployment
+    # (701 s and 722 s on two runs), so 25 minutes leaves about 2x headroom
+    # for checkout, uv sync and a slow graph.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
 

@@ -5,10 +5,11 @@ card shows a value for: each valued point of a line or bar chart series, each va
 and a stat card's headline period plus both of its change basis periods. Series ids map to frame
 coordinates through the revision's `series_coordinates`. The frame loads through
 `FrameStore.load`, which rechecks revocation and expiry, and a frame row is kept when its
-coordinates, normalised with `hashable_cell` as `resolve_selectors` groups them, and its period
-name a shown pair. Every shown pair must match exactly one row, observed and holding the value
-the card shows, or the export raises `ComponentExportMismatch` and serves nothing. A table's
-rows are traced by their `series_id`. A table revision stored before rows carried it raises
+period and either of its `frame_view.series_keys` keys, its own cells or its key under the
+frame's continuation (`ResolvedFrame.continuation`), as `resolve_selectors` groups them, name a shown pair. Every shown pair
+must match exactly one row, observed and holding the value the card shows, or the export
+raises `ComponentExportMismatch` and serves nothing. A table's rows are traced by their
+`series_id`. A table revision stored before rows carried it raises
 `ComponentPredatesRowIdentities`, and one whose rows carry it on only some rows, or carry a
 non-string or empty one, raises `ComponentExportMismatch`.
 
@@ -60,7 +61,7 @@ from dfo_frame_grammar import STAT_VAR_COLUMN, STATUS_COLUMN, TIME_PERIOD_COLUMN
 from dfo_frame_grammar.grammar import unit_cell_from_json
 
 from assembler.bind import role_columns
-from assembler.frame_view import dimension_columns, hashable_cell
+from assembler.frame_view import series_keys
 from assembler.mint.provenance import _UNATTRIBUTED_SOURCE_NAME, _citation_sources_by_ref
 from assembler.pipeline.render import render_on_frame
 from assembler.pipeline.stored_revision import read_stored_revision
@@ -96,6 +97,7 @@ from materialise.formats import (
     write_excel,
     write_parquet,
 )
+from materialise.projection import period_cell, period_grain
 
 __all__ = [
     "ComponentExportFile",
@@ -467,22 +469,23 @@ def _export_table(
     columns = tuple(cast("Sequence[str]", resolved_frame.frame["columns"]))
     rows = cast("Sequence[Sequence[object]]", resolved_frame.frame["rows"])
     index = {column: position for position, column in enumerate(columns)}
-    coordinate_columns = dimension_columns(columns=columns)
+    cell_keys = series_keys(columns=columns, rows=rows, continuation=None)
+    continued_keys = series_keys(
+        columns=columns, rows=rows, continuation=resolved_frame.continuation
+    )
 
     wanted = {(point.coordinates, point.period): point for point in shown}
     if len(wanted) != len(shown):
         raise mismatch("the card shows the same series and period twice")
     matched: dict[tuple[_CoordinateKey, str], Sequence[object]] = {}
-    for row in rows:
-        key = (
-            tuple(sorted((name, hashable_cell(row[index[name]])) for name in coordinate_columns)),
-            cast(str, row[index[TIME_PERIOD_COLUMN]]),
-        )
-        if key not in wanted:
-            continue
-        if key in matched:
-            raise mismatch(f"the frame holds two rows for period {key[1]} of one series")
-        matched[key] = row
+    for row, own, continued in zip(rows, cell_keys, continued_keys, strict=True):
+        period = cast(str, row[index[TIME_PERIOD_COLUMN]])
+        for key in {(own, period), (continued, period)}:
+            if key not in wanted:
+                continue
+            if key in matched:
+                raise mismatch(f"the frame holds two rows for period {period} of one series")
+            matched[key] = row
 
     for key, point in wanted.items():
         row = matched.get(key)
@@ -510,12 +513,13 @@ def _export_table(
             out_columns.append(label_column)
 
     labels = resolved_frame.labels
+    grain = period_grain(matched[key][index[TIME_PERIOD_COLUMN]] for key in wanted)
     out_rows: list[tuple[object, ...]] = []
     for key, point in wanted.items():
         row = matched[key]
         cells: list[object] = [point.series_label]
         for column, cell in zip(columns, row, strict=True):
-            cells.append(_export_cell(column=column, cell=cell))
+            cells.append(_export_cell(column=column, cell=cell, grain=grain))
             if column in labelled:
                 cells.append(labels.get(cast(str, cell), cell) if cell is not None else None)
         out_rows.append(tuple(cells))
@@ -541,12 +545,15 @@ def _free_name(base: str, *, taken: set[str]) -> str:
     return name
 
 
-def _export_cell(*, column: str, cell: object) -> object:
-    """Give a cell the type the Datasets downloads give it: a float value, and a converted or
-    composed unit as a `UnitRequest` or `ComposedUnit`, which the writers render as its
+def _export_cell(*, column: str, cell: object, grain: str | None) -> object:
+    """Give a cell the type the Datasets downloads give it: a float value, a year point of a
+    frame at year `grain` as an `int` (`materialise.projection.period_cell`), and a converted
+    or composed unit as a `UnitRequest` or `ComposedUnit`, which the writers render as its
     canonical JSON."""
     if column == VALUE_COLUMN and isinstance(cell, int) and not isinstance(cell, bool):
         return float(cell)
+    if column == TIME_PERIOD_COLUMN:
+        return period_cell(grain, cell)
     if isinstance(cell, Mapping):
         return unit_cell_from_json(cell)
     return cell

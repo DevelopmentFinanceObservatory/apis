@@ -7,6 +7,7 @@ import json
 import pytest
 
 from code_index import CodeIndex
+from code_index.types import CodeRow, CodeSystemDeclaration, IndexStamp, StatVarRow
 
 from .conftest import FIXTURE_PATH
 
@@ -80,3 +81,91 @@ def test_a_label_shared_across_code_systems_resolves_to_every_row_that_carries_i
 
 def test_unmatched_text_returns_no_rows(code_index: CodeIndex):
     assert code_index.codes_by_text("no code carries this text") == ()
+
+
+# --- Variables by dcid and by provenance, codes by system and children, in code order ---
+
+_STAMP = IndexStamp(
+    graph_endpoint="test",
+    exported_at="2026-01-01T00:00:00Z",
+    code_counts={},
+    statvar_shape_counts={},
+    content_hash="test",
+)
+
+
+def _code(dcid: str, code: str, parent: str | None = None) -> CodeRow:
+    return CodeRow(dcid=dcid, code_system="sys", code=code, label=dcid, synonyms=(), parent=parent)
+
+
+def _statvar(dcid: str, *provenances: str) -> StatVarRow:
+    return StatVarRow(
+        dcid=dcid,
+        population_type="FinancialFlow",
+        measured_property="amount",
+        stat_type=None,
+        measurement_qualifier=None,
+        measurement_denominator=None,
+        observation_properties=(),
+        constraint_properties={},
+        provenances=provenances,
+    )
+
+
+def _ordering_index() -> CodeIndex:
+    # Index order runs against code order, and two siblings differ in code length.
+    return CodeIndex(
+        stamp=_STAMP,
+        declarations=[
+            CodeSystemDeclaration(
+                code_system="sys",
+                hierarchical=True,
+                disjoint_from_children=True,
+                summable=True,
+                absent_reading="not_declared",
+                plain_name="thing",
+            )
+        ],
+        codes=[
+            _code("Sys2", "2"),
+            _code("Sys1020", "1020", parent="Sys2"),
+            _code("Sys200", "200", parent="Sys2"),
+            _code("Sys1", "1"),
+        ],
+        statvars=[
+            _statvar("B", "provenance/One"),
+            _statvar("A", "provenance/One", "provenance/Two"),
+        ],
+        listed_statvars=[_statvar("C", "provenance/Two"), _statvar("D")],
+    )
+
+
+def test_a_system_lists_its_codes_and_a_code_its_children_in_code_order():
+    index = _ordering_index()
+
+    assert [row.code for row in index.codes_by_system["sys"]] == ["1", "1020", "2", "200"]
+    assert [row.dcid for row in index.children("Sys2")] == ["Sys1020", "Sys200"]
+    assert index.children("Sys1020") == ()
+    assert index.children("NotACode") == ()
+    assert [index.has_children(dcid) for dcid in ("Sys2", "Sys1020", "NotACode")] == [
+        True,
+        False,
+        False,
+    ]
+    # Descendants keep their breadth-first index order.
+    assert index.descendants("Sys2") == ("Sys2", "Sys1020", "Sys200")
+
+
+def test_a_variable_resolves_by_dcid_whether_indexed_or_listed():
+    index = _ordering_index()
+
+    assert index.statvar_by_dcid("A") is index.statvars[1]
+    assert index.statvar_by_dcid("C") is index.listed_statvars[0]
+    assert index.statvar_by_dcid("NotAStatVar") is None
+
+
+def test_a_provenance_maps_to_the_sorted_dcids_of_its_indexed_and_listed_variables():
+    assert _ordering_index().variables_by_provenance == {
+        "provenance/One": ("A", "B"),
+        "provenance/Two": ("A", "C"),
+    }

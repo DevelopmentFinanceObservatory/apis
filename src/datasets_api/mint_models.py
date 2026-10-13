@@ -71,9 +71,9 @@ WindowScope = Annotated[WindowAll | WindowLatest | WindowRange, Field(discrimina
 class FacetRefBinding(BaseModel):
     """A facet axis bound to a specific ref. Every axis accepts this form;
     the unit axis alone also accepts `FacetUnitRequestBinding`, the
-    conversion-request form (`currency`/`prices`/`base_year`). A null `ref`
-    binds the facets that declare no value on the axis, and only
-    `NULL_REF_FACET_AXES` accept it.
+    conversion-request form (`currency`/`prices`/`base_year`), and
+    `FacetNationalCurrencyBinding`. A null `ref` binds the facets that declare
+    no value on the axis, and only `NULL_REF_FACET_AXES` accept it.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -125,18 +125,39 @@ FacetUnitRequestBinding = Annotated[
 ]
 
 
+class FacetNationalCurrencyBinding(BaseModel):
+    """The unit axis bound to each entity's own currency: at each entity `role`
+    binds, the facets whose unit is the one currency the graph's
+    `nationalCurrencyOf` names for it, served as published and never converted.
+    The conversion request naming the same role (`UnitCurrencyRole`) converts
+    each row into that currency instead.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    national_currency: UnitCurrencyRole
+
+
 def _facet_binding_discriminator(value: object) -> str:
-    """Tags a value as `ref` when it has that key, otherwise `request`.
+    """Tags a value by its key: `ref`, `national_currency`, otherwise `request`.
 
     Shape-based tagging preserves the relevant validation error for malformed bindings.
     """
     if isinstance(value, Mapping):
-        return "ref" if "ref" in value else "request"
-    return "ref" if isinstance(value, FacetRefBinding) else "request"
+        for tag in ("ref", "national_currency"):
+            if tag in value:
+                return tag
+        return "request"
+    if isinstance(value, FacetRefBinding):
+        return "ref"
+    if isinstance(value, FacetNationalCurrencyBinding):
+        return "national_currency"
+    return "request"
 
 
 FacetBinding = Annotated[
-    Annotated[FacetRefBinding, Tag("ref")] | Annotated[FacetUnitRequestBinding, Tag("request")],
+    Annotated[FacetRefBinding, Tag("ref")]
+    | Annotated[FacetUnitRequestBinding, Tag("request")]
+    | Annotated[FacetNationalCurrencyBinding, Tag("national_currency")],
     Discriminator(_facet_binding_discriminator),
 ]
 
@@ -149,7 +170,8 @@ class Scope(BaseModel):
     must not contain `+` or `,`). `facets` binds a known axis
     (`provenance`, `measurementMethod`, `unit`) to a specific ref, or
     `measurementMethod` or `unit` to a null ref. The `unit` axis alone may
-    instead carry a conversion request (`FacetUnitRequestBinding`).
+    instead carry a conversion request (`FacetUnitRequestBinding`) or ask for
+    each entity's own currency (`FacetNationalCurrencyBinding`).
     """
 
     # Validate roles and values against the SDMX client's filter rules before resolution. Empty
@@ -195,6 +217,11 @@ class Scope(BaseModel):
                     raise ValueError(
                         f"facet axis {axis!r} accepts only the ref-binding form, not a "
                         "conversion request"
+                    )
+                if axis != "unit" and isinstance(binding, FacetNationalCurrencyBinding):
+                    raise ValueError(
+                        f"facet axis {axis!r} accepts only the ref-binding form, not a "
+                        "national-currency binding"
                     )
         return self
 

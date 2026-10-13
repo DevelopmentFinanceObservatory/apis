@@ -59,7 +59,8 @@ name: Deploy
 # every deploy runs both rather than trying to detect whether any is needed.
 # The datasets maintenance job is pointed at the new image after both
 # migrations and left to its Scheduler, and runs `settle` once the apis
-# service has moved (see those steps). The environment must set
+# service has moved and `backfill-descriptions` after the code index record,
+# as the last step (see those steps). The environment must set
 # vars.JOB_DATASETS_MAINTENANCE; the upfront variable check refuses the
 # deploy when it is missing.
 # The coverage and origin catalogue jobs are pointed at the new image on
@@ -510,12 +511,13 @@ jobs:
       # pin reference holding the raw shared secret, the shape migration 0026
       # converted. `datasets-maintenance settle` repeats that migration's
       # statements, which touch only rows still in the old shape, so a repeat
-      # run changes nothing. A version row the previous image writes with
-      # only immutable_body needs no repair: the insert trigger of migration
-      # 0030 fills its facts, also for a request an old revision finishes
-      # after this step. settle counts the version rows holding no facts and
-      # the pin references still raw, and fails the step when either count is
-      # above 0. It runs as an execution of the maintenance job, whose
+      # run changes nothing. A version row the previous image writes needs no
+      # repair, also for a request an old revision finishes after this step:
+      # the insert trigger of migration 0030 fills the facts of a row written
+      # with only immutable_body, and that of migration 0033 renames the
+      # party-kind enrichment `kind` to `party_kind`. settle counts the version
+      # rows holding no facts, those still naming `kind` and the pin references
+      # still raw, and fails the step when any count is above 0. It runs as an execution of the maintenance job, whose
       # container command is `datasets-maintenance`, with the task as its
       # args. The step must run on every deploy: a raw pin reference matches
       # no caller's label.
@@ -547,3 +549,31 @@ jobs:
             --project="${{ vars.PROJECT_ID }}" \
             --wait \
             --args=-m,series_coverage.record_serving_index
+
+      # A version row holds a description record from the image that writes
+      # records onward. `datasets-maintenance backfill-descriptions` writes one,
+      # with basis `backfill`, for every version row holding none: those made
+      # before records existed, those the previous image wrote until the
+      # apis service moved, and those whose stored record fails validation,
+      # which it replaces. It runs soon after every deploy, while the series
+      # statistics of recent versions are still in the working tier. Each
+      # insert is ON CONFLICT DO NOTHING, so a record a mint or publish wrote
+      # first stands and a repeat run writes nothing. A version it cannot
+      # backfill is logged by id with its traceback and skipped, and is tried
+      # again on the next deploy. The step fails when the store is unreachable,
+      # or when the task read no version and at least one failed because the
+      # store or artifact store was unreachable, timed out or was overloaded,
+      # so versions that can never be described never fail a deploy. The
+      # task starts no version after 45 minutes, within the Job's
+      # 3600-second timeout, and the next deploy carries on from the versions
+      # still without a record. It runs last, so no failure of it holds back
+      # the code index record above.
+      - name: Backfill description records
+        if: steps.decide.outputs.deploy == 'true'
+        run: |
+          set -euo pipefail
+          gcloud run jobs execute "${{ vars.JOB_DATASETS_MAINTENANCE }}" \
+            --region="${{ vars.REGION }}" \
+            --project="${{ vars.PROJECT_ID }}" \
+            --wait \
+            --args=backfill-descriptions

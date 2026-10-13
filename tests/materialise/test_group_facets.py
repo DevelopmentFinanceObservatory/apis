@@ -199,7 +199,7 @@ def test_group_selection_ranks_by_summed_obs_count_not_a_single_members_local_ma
         requests,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(graph, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         deadline=deadline,
@@ -300,7 +300,7 @@ def test_group_honours_graph_declared_policy_agreed_across_members():
         requests,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(graph, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -362,7 +362,7 @@ def test_empty_facet_id_intersection_refuses_with_alternatives_unioned_across_me
             group_requests,
             sdmx=sdmx,
             graph=graph,
-            enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
+            enrichment=EnrichmentLookup(graph, parties={}),
             materialiser_build="build-123",
             capability_version="cap-v1",
             coverage=coverage,
@@ -431,7 +431,7 @@ def test_member_missing_bound_axis_refuses_with_its_own_alternatives_and_pointer
             [request_a, request_b],
             sdmx=sdmx,
             graph=graph,
-            enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
+            enrichment=EnrichmentLookup(graph, parties={}),
             materialiser_build="build-123",
             capability_version="cap-v1",
             coverage=coverage,
@@ -513,7 +513,7 @@ def test_axis_absent_from_chosen_facet_is_none_in_trace_and_omitted_from_preimag
         requests,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(graph, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -571,7 +571,7 @@ def test_provenance_absent_from_chosen_facet_raises_default_facet_undefined():
             group_requests,
             sdmx=sdmx,
             graph=graph,
-            enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
+            enrichment=EnrichmentLookup(graph, parties={}),
             materialiser_build="build-123",
             capability_version="cap-v1",
             coverage=coverage,
@@ -627,7 +627,7 @@ def test_one_member_with_no_bound_entity_mints_every_covered_series_beside_a_bou
         [request_a, request_b],
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(graph, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -660,7 +660,7 @@ def test_two_members_with_no_bound_entity_share_one_exhaustive_fetch():
         [request_a, request_b],
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(graph, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -691,7 +691,7 @@ def test_members_with_no_bound_entity_and_no_coverage_are_the_empty_result():
         [request_a, request_b],
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(graph, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -738,7 +738,7 @@ def test_role_bearing_members_with_no_bound_entity_mint_across_every_entity():
         group_requests,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(graph, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -795,6 +795,62 @@ def test_group_selection_narrows_the_shared_pool_to_the_requested_window():
     assert windowed["measurementMethod"].ref == "Estimated"
     assert windowed["provenance"].dispatch_facet_id == "facetEstimated"
     assert windowed["provenance"].selection_reason == "sole_candidate"
+
+
+@pytest.mark.parametrize(
+    ("window", "continued_by", "dispatched"),
+    [
+        # The window runs past the recorded series, so the group takes its estimates for
+        # the later years, as a member's election does.
+        pytest.param(
+            RequestedWindow(kind="range", start_year=2016, end_year=2030),
+            "Estimated",
+            ("facetEstimated", "facetRecorded"),
+            id="window-past-the-series-continues",
+        ),
+        pytest.param(
+            RequestedWindow(kind="range", start_year=2016, end_year=2020),
+            None,
+            ("facetRecorded",),
+            id="control-window-within-the-series",
+        ),
+    ],
+)
+def test_a_group_continues_its_series_with_the_same_sources_estimates(
+    window, continued_by, dispatched
+):
+    recorded = Facet(
+        facet_id="facetRecorded",
+        provenance_id="PROV_SHARED",
+        measurement_method=None,
+        unit="UNIT_SHARED",
+        obs_count=55,
+        earliest_date="1970",
+        latest_date="2024",
+    )
+    estimated = dataclasses.replace(
+        recorded,
+        facet_id="facetEstimated",
+        measurement_method="Estimated",
+        obs_count=8,
+        earliest_date="2025",
+        latest_date="2032",
+    )
+    candidates = [[recorded, estimated], [recorded, estimated]]
+
+    election = select_group_facets(
+        [
+            _request(stat_var=_STAT_VAR_A, facet_bindings={}, window=window),
+            _request(stat_var=_STAT_VAR_B, facet_bindings={}, window=window),
+        ],
+        candidates,
+        graph=FakeGraphReader(),
+    )
+
+    assert election.selections["measurementMethod"].ref is None
+    assert election.selections["measurementMethod"].continued_by == continued_by
+    for member, member_candidates in enumerate(candidates):
+        assert joint_dispatch_facet_ids(member_candidates, election, member=member) == dispatched
 
 
 # --- Unit-axis `state="request"` group selection --------------------------
@@ -953,6 +1009,10 @@ def test_group_request_narrows_provenance_and_measurement_method_to_the_currency
     assert (
         selections_unbound["provenance"].selection_reason == "most_observations_over_disagreement"
     )
+    # The group's choice names both values in rank order, each with its merged count.
+    assert [
+        (value.ref, value.observations) for value in selections_unbound["provenance"].ranked_values
+    ] == [("P2", 2000), ("P1", 2)]
 
     # A currency-native unit request narrows the shared pool to the sole
     # USD-carrying facet first, so these axes follow that narrower pool to
@@ -1366,7 +1426,7 @@ def test_index_sourced_group_materialises_both_members_rows_despite_differing_me
         requests,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(graph, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -1422,7 +1482,7 @@ def test_group_materialise_with_one_empty_and_one_populated_member_serves_the_po
         [request_a, request_b],
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(graph, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -1507,7 +1567,7 @@ def test_group_materialise_member_with_empty_probe_reports_zero_rows_despite_a_m
         [request_a, request_b],
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(graph, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,

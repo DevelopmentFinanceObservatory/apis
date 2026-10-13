@@ -1,8 +1,10 @@
 """Fetch role-bearing previews when the pair product exceeds the per-pair cap.
 
-The read plan (`read_plan.BulkPlan`) names the one facet the read serves and its years. One
-`sdmx.role_series` call reads the points. Coverage counts the rows the answer keeps before
-any read (`BulkPlan.observation_count`). When they fit `role_bulk_rank_max_rows`, the call
+The read plan (`read_plan.BulkPlan`) names the one facet the read serves, the facets
+continuing it past its last year, and its years. One `sdmx.role_series` call reads the
+points, and each pair serves a continuing facet's points only after its last elected one
+(`_served_points`), as a mint of the answer's Spec does. Coverage counts the rows the answer
+keeps before any read (`BulkPlan.observation_count`). When they fit `role_bulk_rank_max_rows`, the call
 reads every series with the open role left unfiltered (or, with every role open, filtered
 on the population's own values of its narrowest role), and the preview shows the first
 `role_bulk_series_max` by `search.observations.series_rank` (`ranked`). Above the gate, or
@@ -21,7 +23,9 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
+from code_index.shared import get_index
 from dc_sdmx import SdmxCapExceededError
+from materialise.method_status import status_of
 from materialise.window import latest_periods
 from search.engine.clients.graph import EngineGraphClient, Facet
 from search.engine.clients.sdmx import (
@@ -56,7 +60,7 @@ from search.engine.region.result import FacetAxisFilter
 from search.engine.retrieval.facet_election import (
     RoleBulkCandidate,
 )
-from search.engine.retrieval.read_plan import BulkPlan, YearBounds
+from search.engine.retrieval.read_plan import BulkPlan
 from search.models import (
     PreviewOrder,
     SpecObservations,
@@ -110,56 +114,86 @@ def _bulk_fetch_timed_out(
 
 
 def _points_from_facets(facets: list[Facet]) -> list[tuple[str, float | None]]:
-    """Return all date-value points. `role_series` normally supplies one facet."""
+    """Return all date-value points of `facets`."""
     return [(d, v) for f in facets for d, v in zip(f.dates, f.values, strict=True)]
 
 
+def _served_points(
+    facets: list[Facet], *, lead: str, estimated: frozenset[str]
+) -> tuple[list[tuple[str, float | None]], bool]:
+    """One pair's points from the facets the read returned for it: those of the elected
+    facet `lead`, then those of the facets continuing it dated after the last of them, or
+    all of theirs where `lead` holds none, as `materialise.columnar.continuation_mask`
+    keeps a mint's rows. Also whether a served point comes from one of the `estimated`
+    facet ids."""
+    led = [f for f in facets if f.facet_id == lead]
+    points = _points_from_facets(led)
+    last = max((date for date, _value in points), default=None)
+    held = {f.facet_id for f in led if f.dates}
+    for f in facets:
+        if f.facet_id == lead:
+            continue
+        kept = [(d, v) for d, v in zip(f.dates, f.values, strict=True) if last is None or d > last]
+        if kept:
+            points.extend(kept)
+            held.add(f.facet_id)
+    return points, not held.isdisjoint(estimated)
+
+
 def _preview_pairs(
-    candidate: RoleBulkCandidate,
-    limit: int,
-    *,
-    years: Callable[[str], YearBounds],
-    member_year: Callable[[str], int | None],
+    plan: BulkPlan, limit: int, *, member_year: Callable[[str], int | None]
 ) -> list[tuple[tuple[str, RoleTuple], int]]:
-    """The first `limit` (sv, role_tuple) pairs of `candidate` with data inside their
-    StatVar's `years`, in `search.observations.fixed_selection` order, each with its
-    coverage observation count there.
+    """The first `limit` (sv, role_tuple) pairs `plan` serves with data inside their
+    StatVar's years (`BulkPlan.member_years`), in `search.observations.fixed_selection`
+    order, each with its coverage observation count there.
 
     StatVars go newest `member_year` first (`member_year_order`), each holding its role
     tuples in sorted order, and are taken round-robin. Only the first `limit` StatVars can
     contribute, and each reads at most `limit` of its own role tuples (RolePairs.head), so
-    the population beyond the preview is never turned into Python objects."""
+    the population beyond the preview is never turned into Python objects. A plan whose
+    elected facet a continuation joins counts each tuple's rows across both
+    (`BulkPlan.continued_pairs`), which has decoded them already."""
     columns: list[list[tuple[tuple[str, RoleTuple], int]]] = []
-    ordered = member_year_order({sv: member_year(sv) for sv in candidate.by_sv})
+    ordered = member_year_order({sv: member_year(sv) for sv in plan.served_members})
     for sv in ordered[:limit]:
-        first_year, last_year = years(sv)
+        first_year, last_year = plan.member_years(sv)
         counted: dict[RoleTuple, int] = {}
-        for c in candidate.by_sv[sv]:
-            for role_tuple, n_obs in c.pairs.head(
-                limit, first_year=first_year, last_year=last_year, with_data=True
-            ):
-                counted.setdefault(role_tuple, n_obs)
+        if plan.continuing:
+            counted.update(plan.continued_pairs[sv])
+        else:
+            for c in plan.served_candidates(sv):
+                for role_tuple, n_obs in c.pairs.head(
+                    limit, first_year=first_year, last_year=last_year, with_data=True
+                ):
+                    counted.setdefault(role_tuple, n_obs)
         columns.append([((sv, rt), n) for rt, n in sorted(counted.items())[:limit]])
     return fixed_selection(columns, limit)
 
 
 def _newest_year_with_data(plan: BulkPlan, sv: str) -> int | None:
-    """The newest year `sv` holds an observation in its member's years under the elected
-    facet (`BulkPlan.member_years`), the year the Datasets observations door orders a
-    snapshot's StatVars by. None when it holds none there."""
-    best = plan.elected
+    """The newest year `sv` holds an observation in its member's years under the facets the
+    read dispatches (`BulkPlan.served_candidates`, `BulkPlan.member_years`), the year the
+    Datasets observations door orders a snapshot's StatVars by. None when it holds none
+    there."""
     first_year, last_year = plan.member_years(sv)
     spans = (
         c.pairs.year_span(first_year=first_year, last_year=last_year)
-        for c in (best.by_sv.get(sv, ()) if best is not None else ())
+        for c in plan.served_candidates(sv)
     )
     return max((span[1] for span in spans if span is not None), default=None)
 
 
 def _population_pairs(plan: BulkPlan) -> list[tuple[tuple[str, RoleTuple], int]]:
     """Every (sv, role_tuple) pair of `plan` with data in its member's years
-    (`BulkPlan.member_pairs`), each with its coverage observation count there: the
-    population `BulkPlan.population` counts."""
+    (`BulkPlan.member_pairs`, or `BulkPlan.continued_pairs` when a continuation joins the
+    elected facet), each with its coverage observation count there: the population
+    `BulkPlan.population` counts."""
+    if plan.continuing:
+        return [
+            ((sv, role_tuple), n_obs)
+            for sv, counts in plan.continued_pairs.items()
+            for role_tuple, n_obs in counts.items()
+        ]
     pairs: dict[tuple[str, RoleTuple], int] = {}
     for sv, c, (first_year, last_year) in plan.member_pairs():
         n_with_data = c.pairs.n_with_data(first_year=first_year, last_year=last_year)
@@ -193,10 +227,10 @@ class _RoleBulkFetchPlan:
 
 
 def _plan_role_bulk_fetch(
-    plan: BulkPlan, best: RoleBulkCandidate, *, converts_to_role_currency: bool = False
+    plan: BulkPlan, *, converts_to_role_currency: bool = False
 ) -> _RoleBulkFetchPlan:
-    """Choose the pairs `_bulk_role_series` reads from `best`'s coverage-confirmed
-    population in each member's years (`BulkPlan.member_years`), under
+    """Choose the pairs `_bulk_role_series` reads from the coverage-confirmed population of
+    the facets `plan` dispatches in each member's years (`BulkPlan.member_years`), under
     `search.observations.role_bulk_order` of the rows the answer keeps
     (`BulkPlan.observation_count`), the count the Datasets observations door gates its
     frame's rows on.
@@ -221,9 +255,8 @@ def _plan_role_bulk_fetch(
         _population_pairs(plan)
         if ranked
         else _preview_pairs(
-            best,
+            plan,
             observation_settings().role_bulk_series_max,
-            years=plan.member_years,
             member_year=lambda sv: _newest_year_with_data(plan, sv),
         )
     )
@@ -290,8 +323,10 @@ def _assemble_role_bulk_series(
     graph: EngineGraphClient,
     converted: ConvertedPairs | None = None,
     target_unit_ref: str | None = None,
+    estimated: frozenset[tuple[str, RoleTuple]] = frozenset(),
 ) -> tuple[SpecObservations, Warning | None]:
-    """Build series from the dispatched pairs and return any warning.
+    """Build series from the dispatched pairs and return any warning. The pairs in
+    `estimated` serve a point of an estimated method (`SeriesRead.holds_estimates`).
 
     `converted` holds each converted pair's conversion: its series states the conversion
     and is in `target_unit_ref`, or states no unit for a conversion into each entity's own
@@ -331,12 +366,14 @@ def _assemble_role_bulk_series(
             total_rows=len(points),
             facets=facets,
             conversion=conversions.get(pair),
+            holds_estimates=pair in estimated,
         )
         for pair, points in pair_points.items()
     }
     observations = assemble_role_bulk(
         reads,
         label_source=graph,
+        index=get_index(),
         member_constraints=member_constraints or {},
         order=plan.order,
         unread_obs=plan.population_n_obs - plan.preview_n_obs,
@@ -371,7 +408,8 @@ def _bulk_role_series(
     member_constraints: Mapping[str, Mapping[str, str]] | None = None,
     conversion: BulkConversion | None = None,
 ) -> tuple[SpecObservations, Warning | None]:
-    """Serve the facet `plan` elected across its pairs, in one `role_series` call for every
+    """Serve the facet `plan` elected across its pairs, continued past each pair's last
+    point by the facets `plan` names (`BulkPlan.continuing`), in one `role_series` call for every
     pair (`ranked`) or for at most `observation_settings().role_bulk_series_max` pairs
     (`fixed`, `_plan_role_bulk_fetch`), convert the points under a unit request
     (`conversion`, `bulk_conversion.convert_pairs`), then assemble the result. Each read logs
@@ -417,7 +455,6 @@ def _bulk_role_series(
     started = time.monotonic()
     fetch_plan = _plan_role_bulk_fetch(
         plan,
-        best,
         converts_to_role_currency=conversion is not None and conversion.target_unit_ref is None,
     )
     try:
@@ -473,7 +510,7 @@ def _read_and_assemble(
         series_by_variable = sdmx.role_series(
             variables=fetch_plan.facet_svs,
             entities=fetch_plan.entities_for_series,
-            facet_ids={best.facet_id},
+            facet_ids={best.facet_id, *plan.continuing},
             time_period=(
                 "LATEST"
                 if latest
@@ -506,13 +543,24 @@ def _read_and_assemble(
         # narrowed series read crossed this call's shared deadline.
         return _bulk_fetch_timed_out(sv_dcids, "series", facet_id=best.facet_id)
 
-    pair_points = {
-        (sv, role_tuple): points
-        for sv in fetch_plan.facet_svs
-        for role_tuple, facets in series_by_variable.get(sv, {}).items()
-        if (sv, role_tuple) in dispatched_pairs
-        if (points := _points_from_facets(facets))
-    }
+    estimated_ids = frozenset(
+        c.facet_id
+        for c in (best, *(plan.candidates[facet_id] for facet_id in plan.continuing))
+        if status_of(c.measurement_method, c.provenance_id) == "estimated"
+    )
+    pair_points: dict[tuple[str, RoleTuple], list[tuple[str, float | None]]] = {}
+    estimated: set[tuple[str, RoleTuple]] = set()
+    for sv in fetch_plan.facet_svs:
+        for role_tuple, facets in series_by_variable.get(sv, {}).items():
+            if (sv, role_tuple) not in dispatched_pairs:
+                continue
+            points, holds_estimates = _served_points(
+                facets, lead=best.facet_id, estimated=estimated_ids
+            )
+            if points:
+                pair_points[(sv, role_tuple)] = points
+                if holds_estimates:
+                    estimated.add((sv, role_tuple))
     if latest:
         at_latest = _at_member_latest(plan, pair_points)
         if short := sorted(pair_points.keys() - at_latest.keys()):
@@ -541,6 +589,7 @@ def _read_and_assemble(
         graph=graph,
         converted=converted,
         target_unit_ref=conversion.target_unit_ref if conversion is not None else None,
+        estimated=frozenset(estimated),
     )
 
 

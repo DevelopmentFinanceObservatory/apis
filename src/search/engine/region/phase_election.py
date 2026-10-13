@@ -18,7 +18,6 @@ from search.engine.bind_repair import (
     restore_starved_axis_binding,
 )
 from search.engine.config import settings
-from search.engine.departures import measure_not_applied
 from search.engine.extract import slot_default_answers
 from search.engine.qualifier_match import (
     QualifierMatch,
@@ -31,7 +30,6 @@ from search.engine.region.candidate_options import _elected_sibling_warning
 from search.engine.region.codes import (
     DEGENERATE_BINDING_DETECTED,
     NEAR_NEIGHBOR_AMBIGUOUS,
-    QUERY_QUALIFIER_DROPPED,
     REDUNDANT_BINDING_DROPPED,
     RETRIEVAL_SCORE_WEAK,
     SLOT_DEFAULTED,
@@ -59,6 +57,8 @@ from search.engine.region.phase_rank_bind import (
     _validate_requested_all_bindings,
     _validate_sole_option_bindings,
     _withheld_qualifiers,
+    judge_value_requirements,
+    value_requirements,
 )
 from search.engine.region.place_roles import bind_place_roles
 from search.engine.region.qualifier_readings import (
@@ -66,24 +66,33 @@ from search.engine.region.qualifier_readings import (
     reading_for_shape,
     shape_carries_measure_match,
 )
+from search.engine.region.requirements import record_reading
 from search.engine.region.result import RegionResult
 from search.engine.region.source_choice import source_record
-from search.engine.region.state import ResolveState, for_shape
+from search.engine.region.state import (
+    ResolveState,
+    for_shape,
+    unjudged_requirement,
+    with_requirement,
+)
 from search.engine.retrieval.bound_values import (
     PartNotServed,
     RoleKeys,
+    bind_member_values,
     bind_shared_values,
     canonical_pin_bindings,
     elect_measure_family,
     named_scope,
     part_source,
+    read_held_families,
     shape_datasets,
     shape_for_part,
     shape_invariants,
+    shape_population_arcs,
     shape_query,
 )
+from search.engine.retrieval.standard import bind_partition_values
 from search.engine.shape import ShapeDraft
-from search.heading.departure_fact import DepartureFact
 from search.models import ResolvedQualifier, Warning
 
 logger = logging.getLogger(__name__)
@@ -110,18 +119,19 @@ async def _phase_vet_election(state: ResolveState) -> RegionResult | None:
     names (`ShapeDraft.named_dataset`) binds the source (`with_named_source`): the one
     dataset the part's scope leaves it, or the one opt-in dataset that alone may answer
     the shape. The near-neighbour gate supplements model alternates.
-    Invalid ``requested_all`` claims are demoted, and on a shape whose option sets the index
-    supplies a ``sole_option`` claim on a slot that offers two or more values leaves the
-    slot unbound. Only validated phrases suppress defaults
+    Invalid ``requested_all`` claims are demoted, and a ``sole_option`` claim on a value
+    the shape's population shows the slot a reading without leaves the slot unbound
+    (`_validate_sole_option_bindings`). Only validated phrases suppress defaults
     and dropped-qualifier warnings.
     An operation over a category slot opens that slot as a valid claim whether or not
     bind made one.
     """
     bind_result = state.bind_result
     state.shape_draft = state.capped_shapes[bind_result.chosen_shape_index]
+    await read_held_families((state.shape_draft,))
     # Every decision on the part's dataset, and every refusal, reads the final bindings
     # settled here: the model's drafts, vetted, with the query's forced codes.
-    tie_departures, readings = _settle_bindings(state, state.shape_draft)
+    unresolved_ties, readings = _settle_bindings(state, state.shape_draft)
     # Binding repair can still change the codes, so a part no table serves under these
     # bindings is refused once the repair has run (`_settle_served_dataset`).
     with suppress(PartNotServed):
@@ -204,8 +214,10 @@ async def _phase_vet_election(state: ResolveState) -> RegionResult | None:
             )
             state.warnings.append(near_neighbor_warning)
 
-    for warning, fact in tie_departures:
-        state.depart(warning, fact)
+    # Each tie the bindings leave unresolved is a requirement every final answer is judged
+    # against; it departs only if the final answer leaves it unapplied.
+    for phrase, asked, prop in unresolved_ties:
+        state.require_unapplied(phrase, asked=asked, property_dcid=prop, origin="tie")
 
     # The dataset the part names.
     bind_result.bindings = with_named_source(bind_result.bindings, shape_draft)
@@ -239,12 +251,11 @@ async def _phase_vet_election(state: ResolveState) -> RegionResult | None:
     state.satisfied_measure_phrases = frozenset(satisfied_phrases)
     for phrase in sorted(unsatisfied.keys() & state.variable_matched_qualifier_phrases):
         match = unsatisfied[phrase]
-        state.depart(
-            _qualifier_dropped_warning(phrase),
-            measure_not_applied(
-                asked=match.matched_text if match is not None else phrase,
-                property_dcid=match.code_system if match is not None else None,
-            ),
+        state.require_unapplied(
+            phrase,
+            asked=match.matched_text if match is not None else phrase,
+            property_dcid=match.code_system if match is not None else None,
+            origin="bind",
         )
 
     return None
@@ -252,16 +263,18 @@ async def _phase_vet_election(state: ResolveState) -> RegionResult | None:
 
 def _settle_bindings(
     state: ResolveState, shape_draft: ShapeDraft
-) -> tuple[list[tuple[Warning, DepartureFact]], dict[QualifierReadings, QualifierMatch | None]]:
+) -> tuple[list[tuple[str, str, str | None]], dict[QualifierReadings, QualifierMatch | None]]:
     """Settle the elected shape's final bindings in `state.bind_result`, against the shape
-    the model bound from. Return the departures of the tie phrases they leave unbound, for
-    the caller to state in order, and the reading the shape keeps of each two-reading span
+    the model bound from. Return each tie phrase they leave unresolved, as its normalised
+    phrase, its words and the one property its rows name (`None` for several), for the
+    caller to record as a requirement in order (`ResolveState.require_unapplied`), and the
+    reading the shape keeps of each two-reading span
     (`reading_for_shape`), which admission read.
 
     The source drafts leave, invalid
-    ``requested_all`` claims are demoted, and on a shape whose option sets the index
-    supplies a ``sole_option`` claim on a slot that offers two or more values leaves the
-    slot unbound. An operation over a category slot opens that slot. Model tie choices are
+    ``requested_all`` claims are demoted, and a ``sole_option`` claim on a value the
+    shape's population shows the slot a reading without leaves the slot unbound.
+    An operation over a category slot opens that slot. Model tie choices are
     vetted against the model's own bindings, and the query's qualifier matches the elected
     shape admits, with the codes the model chose from a phrase's candidate menu, are
     forced into the bindings (`_force_qualifier_bindings`).
@@ -295,7 +308,7 @@ def _settle_bindings(
         b.property_dcid: b for b in bind_result.bindings if b.property_dcid is not None
     }
     elected_tie_phrases: set[str] = set()
-    departures: list[tuple[Warning, DepartureFact]] = []
+    unresolved: list[tuple[str, str, str | None]] = []
     tie_dropped: dict[str, QualifierTie] = {}
     properties_to_unbind: set[str] = set()
     for tie in state.admitted_ties:
@@ -326,15 +339,7 @@ def _settle_bindings(
     for phrase in sorted(tie_dropped.keys() & state.variable_matched_qualifier_phrases):
         tie = tie_dropped[phrase]
         systems = {row.code_system for row in tie.rows}
-        departures.append(
-            (
-                _qualifier_dropped_warning(phrase),
-                measure_not_applied(
-                    asked=tie.matched_text,
-                    property_dcid=systems.pop() if len(systems) == 1 else None,
-                ),
-            )
-        )
+        unresolved.append((phrase, tie.matched_text, systems.pop() if len(systems) == 1 else None))
 
     # Keep only the qualifier matches the elected shape's own vocabulary reads and admits. A
     # two-reading span admits its code reading only when the elected shape carries that
@@ -359,17 +364,7 @@ def _settle_bindings(
         )
         _log_admitted_qualifiers(admitted_qualifiers)
 
-    return departures, readings
-
-
-def _qualifier_dropped_warning(phrase: str) -> Warning:
-    """The `query_qualifier_dropped` warning for a qualifier phrase the answer does not
-    apply."""
-    return Warning(
-        code=QUERY_QUALIFIER_DROPPED,
-        severity="degraded",
-        message=f'The requested qualifier "{phrase}" was not applied.',
-    )
+    return unresolved, readings
 
 
 def _name_served_dataset(
@@ -465,12 +460,16 @@ async def _phase_repair_bindings(state: ResolveState) -> RegionResult | None:
     In order, detect degenerate values, repair drafts, restore starved axes, bind the
     values an unexported family shares, force open measure axes, apply declared defaults
     (none on a slot an invariant of the dataset the part names fixes), apply the shape's slot
-    defaults, then put the bindings in canonical form: each invariant slot of the dataset
-    the part names that they leave open bound to its value (`canonical_pin_bindings`).
-    The dataset the part is served from is then settled under those bindings, and a part
-    no table serves under them refuses ``qualifier_not_bound`` (`_settle_served_dataset`).
-    Place binding reads the result.
+    defaults, bind each open slot that partitions a standard family to the one value its
+    scored members state (`bind_partition_values`), then put the bindings in canonical
+    form: each invariant slot of the dataset the part names that they leave open bound to
+    its value (`canonical_pin_bindings`). The dataset the part is served from is then settled under
+    those bindings, and a part no table serves under them refuses ``qualifier_not_bound``
+    (`_settle_served_dataset`).
+    Place binding reads the result. The held families of the bind menu and the elected
+    shape are read first, off the event loop (`read_held_families`).
     """
+    await read_held_families((*state.capped_shapes, state.shape_draft))
     bindings: list[SlotBindingDraft] = list(state.bind_result.bindings)
     state.bindings = bindings
 
@@ -494,10 +493,13 @@ async def _phase_repair_bindings(state: ResolveState) -> RegionResult | None:
 
     # Drop redundant single-member aliases so an answer using the family's other spelling
     # an answer using the family's other spelling.
+    # The repair judges the bindings over the members the shape stands for, the family its
+    # taxonomy offered the options from.
+    population = shape_population_arcs(state.shape_draft)
     bindings, _dropped_bindings = repair_draft_bindings(
         bindings,
-        list(state.shape_draft.sv_arc_facts or {}),
-        state.shape_draft.sv_arc_facts or {},
+        list(population),
+        population,
         state.shape_draft.slot_taxonomy or {},
     )
     state.bindings = bindings
@@ -539,6 +541,17 @@ async def _phase_repair_bindings(state: ResolveState) -> RegionResult | None:
     # members share, so its identity resolves apart from the exported family.
     bindings, _shared_bindings = bind_shared_values(state.shape_draft, bindings)
     state.bindings = bindings
+
+    # A part's series code names its StatVars, so each value they all share binds, and the
+    # identity minted from the bindings elects those StatVars alone. A slot the query asked
+    # to see in full that they hold one value on is a part the code cannot answer.
+    if state.source_code is not None:
+        bindings, _asked_in_full = bind_member_values(
+            state.shape_draft, bindings, state.source_code.dcids
+        )
+        state.bindings = bindings
+        if _asked_in_full:
+            return state.no_data("variable_not_resolved", llm_usage=state.var_usage)
 
     # The role keys the minted identity binds its places under. With the bindings, they
     # elect the dataset the measure vote reads. A slot an invariant of the named dataset
@@ -655,6 +668,13 @@ async def _phase_repair_bindings(state: ResolveState) -> RegionResult | None:
             b.property_dcid for b in _shape_defaulted_bindings if b.property_dcid is not None
         )
 
+    # Bind each open slot that partitions a standard family to the one value its scored
+    # members state, so no stand-in answers across it. The Spec's bound slot states it.
+    bindings, _partition_bindings = bind_partition_values(
+        state.shape_draft, bindings, role_keys.bound
+    )
+    state.bindings = bindings
+
     # Bind each invariant slot of the dataset the part names that the bindings leave open.
     # Every identity minted from here on, a refusal's flagged one included, is canonical,
     # and qualifier dispositions read the invariants as bound.
@@ -666,43 +686,53 @@ async def _phase_repair_bindings(state: ResolveState) -> RegionResult | None:
     if refused is not None:
         return refused
 
-    # Resolve query qualifiers against the final bindings. In "refuse" coverage mode an
-    # uncovered word beside a recognised code is a record and the part refuses on it. In
-    # log mode the record is logged once here, outside `unrealisable.unbind_unrealisable`'s
-    # re-read, and a word of a qualifier term the elected shape's own reading leaves unread
-    # departs as not applied (`_unread_qualifier_phrases`). In refuse mode a record already
+    # Resolve query qualifiers against the final bindings, each one no binding covers a
+    # requirement (`requirements.record_reading`). In "refuse" coverage mode an uncovered
+    # word beside a recognised code is a record and the part refuses on it. In log mode the
+    # record is logged once here, outside `unrealisable.unbind_unrealisable`'s re-read, and
+    # a word of a qualifier term the elected shape's own reading leaves unread is a term
+    # no answer is judged on (`_unread_qualifier_phrases`). In refuse mode a record already
     # covers that word. In log mode a term of a part naming no dataset that names only codes
-    # no shape can bind is withheld (`_withheld_qualifiers`), logged here alike, and
-    # departs as not applied.
-    state.query_qualifiers = _resolve_query_qualifiers(state)
+    # no shape can bind is withheld (`_withheld_qualifiers`), logged here alike, and is a
+    # term no answer is judged on, whatever its property. Each value the request names by
+    # its graph label is recorded once as a requirement (`value_requirements`) in refuse
+    # mode, and in log mode the elected answer's unmet ones are logged here by the same
+    # rule (`judge_value_requirements`). Every requirement departs only if the final
+    # answer leaves it unapplied (`requirements.with_requirement_departures`).
+    record_reading(state, _resolve_query_qualifiers(state))
     withheld = _withheld_qualifiers(state)
-    if settings().qualifier_coverage == "log":
-        for record in (
-            *withheld,
-            *_coverage_records(state, (*state.query_qualifiers, *withheld)),
-        ):
+    log_mode = settings().qualifier_coverage == "log"
+    recorded = (*state.query_qualifiers, *withheld)
+    coverage = _coverage_records(state, recorded) if log_mode else []
+    values = value_requirements(state, (*recorded, *coverage))
+    if log_mode:
+        unmet = judge_value_requirements(values, state.shape_draft, state.bindings)
+        for record in (*withheld, *coverage, *(requirement.term for requirement in unmet)):
             logger.info(
                 "qualifier_coverage would_refuse phrase=%s codes=%s",
                 record.text,
-                ",".join(ref.dcid for ref in record.named),
+                ",".join(ref.ref for ref in record.named),
             )
+    else:
+        for requirement in values:
+            state.requirements = with_requirement(state.requirements, requirement)
     index = get_index()
     for record in withheld:
         systems = {
             row.code_system
             for ref in record.named
-            if (row := index.code_by_dcid(ref.dcid)) is not None
+            if (row := index.code_by_dcid(ref.ref)) is not None
         }
-        state.depart(
-            _qualifier_dropped_warning(_normalize(record.text)),
-            measure_not_applied(
-                asked=record.text, property_dcid=systems.pop() if len(systems) == 1 else None
+        state.requirements = with_requirement(
+            state.requirements,
+            unjudged_requirement(
+                _normalize(record.text),
+                asked=record.text,
+                property_dcid=systems.pop() if len(systems) == 1 else None,
+                origin="bind",
             ),
         )
     for phrase in _unread_qualifier_phrases(state, withheld):
-        state.depart(
-            _qualifier_dropped_warning(phrase),
-            measure_not_applied(asked=phrase, property_dcid=None),
-        )
+        state.require_unapplied(phrase, asked=phrase, property_dcid=None, origin="bind")
 
     return None

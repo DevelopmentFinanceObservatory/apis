@@ -16,6 +16,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import presentation_api.doors.render as render_door
+from assembler.catalogue import load_release
 from assembler.errors import (
     BindingInvalid,
     ConstraintViolation,
@@ -34,6 +35,7 @@ from datasets_api.live_refresh import LiveRefreshPrincipal
 from datasets_api.recipe_store import RecipeRecord
 from dfo_platform.app import create_app
 from presentation_api.app import presentation_surface
+from tests.assembler.test_accept_card_descriptions import _record as _description_record
 from tests.datasets_api._snapshot_doubles import FakeSnapshotReader, _location, _version
 
 _PRINCIPAL = "live-refresh-principal"
@@ -332,6 +334,51 @@ def test_render_answers_a_component_read_drawn_on_the_target_and_appends_nothing
     assert client.get(f"/api/presentation/components/{component_id}").json() == read
     assert len(revision_store._revisions[component_id]) == 1
     assert frame_store.pins.count((_TARGET, component_id)) == 1
+
+
+def test_create_stores_a_description_and_render_composes_one_live(
+    frame_store: FakeFrameStore,
+    revision_store: FakeRevisionStore,
+    snapshots: FakeSnapshotReader,
+    recipes: _Recipes,
+):
+    """The stored and target frames' versions hold description records. Under the installed
+    catalogue, as a deployment runs, the create route stores a description worded from the
+    surface's own vocabulary source, and the render route answers one marked live, on the
+    target frame, under the same vocabulary revision."""
+    for ref in (_STORED, _TARGET):
+        frame = frame_store.load(frame_ref=ref)
+        frame_store.put(
+            resolved_frame=dataclasses.replace(frame, description_record=_description_record(frame))
+        )
+    app = _app(
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=FakeReleaseRegistry(release=load_release()),
+        snapshot_reader=snapshots,
+        recipe_reader=recipes,
+        live_refresh=LiveRefreshPrincipal(header="x-dfo-principal", principal=_PRINCIPAL),
+    )
+    with TestClient(app, raise_server_exceptions=False) as client:
+        component_id = _create(client)
+        rendered = _render(client, component_id, _TARGET).json()["resolved_payload"]
+
+    stored = revision_store.read_revision(component_id=component_id, revision=1)
+    assert stored is not None
+    issued = stored.resolved_payload["description"]
+    live = rendered["description"]
+    assert issued["describes"] == {
+        "kind": "card_revision",
+        "component_id": component_id,
+        "revision": 1,
+    }
+    assert "rendering" not in issued
+    assert (live["rendering"], live["frame"]) == (
+        "live",
+        {"id": _TARGET.spec_id, "content_version": _TARGET.content_version},
+    )
+    assert issued["built_from"]["vocabulary"].startswith("voc_")
+    assert live["built_from"]["vocabulary"] == issued["built_from"]["vocabulary"]
 
 
 def test_a_source_card_renders_with_the_target_frame_s_sources(

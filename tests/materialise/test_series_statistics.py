@@ -7,9 +7,24 @@ from __future__ import annotations
 
 import json
 import math
+from typing import get_args
+
+import pytest
 
 from materialise.frame_build import build_frame
-from materialise.statistics import SERIES_STATISTICS_SCHEMA, compute_series_statistics_table
+from materialise.statistics import (
+    SERIES_STATISTICS_SCHEMA,
+    EntityFigure,
+    RoleFigure,
+    SeriesFigures,
+    SeriesStatisticsSink,
+    SourceUnitFigure,
+    StatusClass,
+    StatusFigures,
+    compute_series_statistics_table,
+    count_statuses,
+    method_status_classes,
+)
 
 _STAT_VAR = "dcid:MalariaGrantDisbursements"
 
@@ -662,3 +677,218 @@ def test_multi_role_frame_orders_entities_in_frame_column_order():
         if {"role": "financingProvider", "ref": "dcid:country/FRA"} in row["entities"]
     )
     assert fra["observations"] == 1
+
+
+def _row(recipient: str, period: str, **facet: object) -> dict[str, object]:
+    return {
+        "stat_var": _STAT_VAR,
+        "recipient": recipient,
+        "time_period": period,
+        "value": 1.0,
+        **facet,
+    }
+
+
+def _figures(*chunks: list[dict[str, object]]) -> SeriesFigures:
+    sink = SeriesStatisticsSink(continuing=())
+    for rows in chunks:
+        sink.write(
+            compute_series_statistics_table(build_frame(role_keys=("recipient",), rows=rows))
+        )
+    return sink.finish().figures
+
+
+def test_every_packaged_method_names_a_status_class():
+    classes = method_status_classes()
+
+    assert classes
+    assert set(classes.values()) <= set(get_args(StatusClass))
+
+
+@pytest.mark.parametrize(
+    ("methods", "expected"),
+    [
+        pytest.param(("Estimated", "Modelled", "Estimated"), StatusFigures(3, 0), id="all-classed"),
+        pytest.param(("Estimated", None, "Modelled"), StatusFigures(None, None), id="one-missing"),
+        pytest.param(
+            ("Estimated", "WikidataPopulation"), StatusFigures(None, None), id="one-unclassed"
+        ),
+    ],
+)
+def test_status_counts_are_known_only_when_every_method_is_classed(methods, expected):
+    rows = [
+        _row(f"dcid:country/C{index}", "2020", measurementMethod=method)
+        for index, method in enumerate(methods)
+    ]
+
+    assert _figures(rows).status == expected
+
+
+_LISTED = "provenance/Listed"
+_UNLISTED = "provenance/Unlisted"
+
+
+@pytest.mark.parametrize(
+    ("values_by_facet", "expected"),
+    [
+        pytest.param(
+            {("Draft", _UNLISTED): 2, ("Survey", _UNLISTED): 5, ("Model", _UNLISTED): 1},
+            StatusFigures(1, 2),
+            id="classed",
+        ),
+        pytest.param(
+            {("Survey", _UNLISTED): 5}, StatusFigures(0, 0), id="reported-only-is-a-known-zero"
+        ),
+        pytest.param({}, StatusFigures(0, 0), id="no-values"),
+        pytest.param(
+            {("Survey", _UNLISTED): 5, (None, _UNLISTED): 1},
+            StatusFigures(None, None),
+            id="missing-under-an-unlisted-provenance",
+        ),
+        pytest.param(
+            {("Model", _LISTED): 3, (None, _LISTED): 4},
+            StatusFigures(3, 0),
+            id="missing-under-a-listed-provenance-is-reported",
+        ),
+        pytest.param(
+            {(None, _LISTED): 4, (None, _UNLISTED): 1},
+            StatusFigures(None, None),
+            id="one-unlisted-missing-makes-both-unknown",
+        ),
+        pytest.param(
+            {("Survey", _UNLISTED): 5, ("Other", _UNLISTED): 1},
+            StatusFigures(None, None),
+            id="unclassed",
+        ),
+    ],
+)
+def test_count_statuses_sums_values_per_class(values_by_facet, expected):
+    classes: dict[str, StatusClass] = {
+        "Draft": "provisional",
+        "Survey": "reported",
+        "Model": "estimated",
+    }
+
+    assert (
+        count_statuses(values_by_facet, classes=classes, reported=frozenset({_LISTED})) == expected
+    )
+
+
+@pytest.mark.parametrize(
+    ("chunks", "span", "grain", "reaching"),
+    [
+        pytest.param(
+            [
+                [
+                    _row("dcid:country/TGO", "2015"),
+                    _row("dcid:country/TGO", "2020"),
+                    _row("dcid:country/KEN", "2018"),
+                ],
+                [_row("dcid:country/GHA", "2016"), _row("dcid:country/GHA", "2020")],
+            ],
+            ("2015", "2020"),
+            "year",
+            2,
+            id="two-of-three-reach-across-chunks",
+        ),
+        pytest.param(
+            [[_row("dcid:country/TGO", "2019/2021"), _row("dcid:country/KEN", "2021")]],
+            ("2019", "2021"),
+            "year",
+            2,
+            id="an-interval-reaches-by-its-end",
+        ),
+        pytest.param(
+            [[_row("dcid:country/TGO", "2020"), _row("dcid:country/KEN", "2020-06")]],
+            None,
+            None,
+            None,
+            id="mixed-grains-do-not-order",
+        ),
+        pytest.param([[]], None, None, None, id="no-series"),
+    ],
+)
+def test_latest_period_span_and_grain(chunks, span, grain, reaching):
+    figures = _figures(*chunks)
+
+    assert (figures.span, figures.grain) == (span, grain)
+    assert figures.latest_period == (span[1] if span else None)
+    assert figures.series_reaching_latest == reaching
+
+
+def test_series_group_by_source_and_unit():
+    converted = {"currency": "USD", "prices": "constant", "base_year": 2022}
+    rows = [
+        _row("dcid:country/TGO", "2020", provenance="provenance/CRS", unit="USDollar"),
+        _row("dcid:country/KEN", "2020", provenance="provenance/CRS", unit="USDollar"),
+        _row("dcid:country/TGO", "2020", provenance="provenance/CRS", unit=converted),
+        _row("dcid:country/TGO", "2020", provenance="provenance/IDS", unit="USDollar"),
+        _row("dcid:country/GHA", "2020", provenance="provenance/IDS"),
+    ]
+
+    assert sorted(_figures(rows[:3], rows[3:]).by_source_unit, key=repr) == sorted(
+        [
+            SourceUnitFigure(source="provenance/CRS", unit="USDollar", series=2),
+            SourceUnitFigure(source="provenance/CRS", unit=converted, series=1),
+            SourceUnitFigure(source="provenance/IDS", unit="USDollar", series=1),
+            SourceUnitFigure(source="provenance/IDS", unit=None, series=1),
+        ],
+        key=repr,
+    )
+
+
+def test_entities_per_role_count_distinct_refs_across_chunks():
+    figures = _figures(
+        [_row("dcid:country/TGO", "2020"), _row("dcid:country/KEN", "2020")],
+        [_row("dcid:country/TGO", "2020", measurementMethod="Estimated")],
+    )
+
+    assert figures.series == 3
+    assert [(figure.role, figure.entities) for figure in figures.entities_by_role] == [
+        ("recipient", 2)
+    ]
+
+
+def test_each_roles_entities_count_the_distinct_variables_holding_them_across_chunks():
+    roles = ("financingProvider", "financingRecipient")
+
+    def row(stat_var: str, provider: str, recipient: str, **facet: object) -> dict[str, object]:
+        return {
+            "stat_var": stat_var,
+            "financingProvider": provider,
+            "financingRecipient": recipient,
+            "time_period": "2020",
+            "value": 1.0,
+            **facet,
+        }
+
+    sink = SeriesStatisticsSink(continuing=())
+    for rows in (
+        [
+            row("dcid:A", "dcid:P1", "dcid:country/TGO"),
+            # A second series of the same variable and entities counts the variable once.
+            row("dcid:A", "dcid:P1", "dcid:country/TGO", measurementMethod="Estimated"),
+            row("dcid:A", "dcid:P2", "dcid:country/KEN"),
+        ],
+        [row("dcid:B", "dcid:P1", "dcid:country/KEN")],
+    ):
+        sink.write(compute_series_statistics_table(build_frame(role_keys=roles, rows=rows)))
+    figures = sink.finish().figures
+
+    assert figures.series == 4
+    assert figures.entities_by_role == (
+        RoleFigure(
+            role="financingProvider",
+            values=(
+                EntityFigure(ref="dcid:P1", variables=2),
+                EntityFigure(ref="dcid:P2", variables=1),
+            ),
+        ),
+        RoleFigure(
+            role="financingRecipient",
+            values=(
+                EntityFigure(ref="dcid:country/TGO", variables=1),
+                EntityFigure(ref="dcid:country/KEN", variables=2),
+            ),
+        ),
+    )

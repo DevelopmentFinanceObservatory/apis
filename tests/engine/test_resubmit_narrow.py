@@ -208,7 +208,7 @@ class TestPureNarrow:
             options=walk_options(graph),
         )
         assert region.status == "definite"
-        assert [sv.ref.dcid for sv in region.specs[0].resolved.members] == [_PERSON_MALE_SV]
+        assert [sv.ref.ref for sv in region.specs[0].resolved.members] == [_PERSON_MALE_SV]
         # The elected member's arcs are read once; no sibling confirmation follows.
         assert graph.node_arcs_batch_calls == [[_PERSON_MALE_SV]]
 
@@ -228,15 +228,15 @@ class TestPureNarrow:
             options=walk_options(graph),
         )
         assert region.status == "definite"
-        dcids = {sv.ref.dcid for sv in region.specs[0].resolved.members}
+        dcids = {sv.ref.ref for sv in region.specs[0].resolved.members}
         assert dcids == {_PERSON_FEMALE_SV, _PERSON_MALE_SV}
         gender_slot = next(
             s
             for s in region.specs[0].resolved.slots
-            if s.key.property is not None and s.key.property.dcid == "gender"
+            if s.key.property is not None and s.key.property.ref == "gender"
         )
         assert gender_slot.binding.kind == "set"
-        assert {v.ref.dcid for v in gender_slot.binding.values if v.ref is not None} == {
+        assert {v.ref.ref for v in gender_slot.binding.values if v.ref is not None} == {
             "Female",
             "Male",
         }
@@ -261,7 +261,7 @@ class TestPureNarrow:
             options=walk_options(graph),
         )
         assert region.status == "definite"
-        assert [sv.ref.dcid for sv in region.specs[0].resolved.members] == [_PERSON_FEMALE_SV]
+        assert [sv.ref.ref for sv in region.specs[0].resolved.members] == [_PERSON_FEMALE_SV]
         assert graph.node_arcs_batch_calls == [[_PERSON_FEMALE_SV]]
 
     def test_mixed_edit_with_any_out_of_set_value_elects_the_edited_family(self):
@@ -339,15 +339,15 @@ class TestUnchangedSetSurvives:
             options=walk_options(graph),
         )
         assert region.status == "definite"
-        dcids = {sv.ref.dcid for sv in region.specs[0].resolved.members}
+        dcids = {sv.ref.ref for sv in region.specs[0].resolved.members}
         assert dcids == {_PERSON_FEMALE_SV, _PERSON_MALE_SV}
         gender_slot = next(
             s
             for s in region.specs[0].resolved.slots
-            if s.key.property is not None and s.key.property.dcid == "gender"
+            if s.key.property is not None and s.key.property.ref == "gender"
         )
         assert gender_slot.binding.kind == "set"
-        assert {v.ref.dcid for v in gender_slot.binding.values if v.ref is not None} == {
+        assert {v.ref.ref for v in gender_slot.binding.values if v.ref is not None} == {
             "Female",
             "Male",
         }
@@ -369,12 +369,12 @@ class TestUnchangedSetSurvives:
             options=walk_options(graph),
         )
         assert region.status == "definite"
-        dcids = {sv.ref.dcid for sv in region.specs[0].resolved.members}
+        dcids = {sv.ref.ref for sv in region.specs[0].resolved.members}
         assert dcids == {_PERSON_FEMALE_SV, _PERSON_MALE_SV}
         gender_slot = next(
             s
             for s in region.specs[0].resolved.slots
-            if s.key.property is not None and s.key.property.dcid == "gender"
+            if s.key.property is not None and s.key.property.ref == "gender"
         )
         assert gender_slot.binding.kind == "set"
 
@@ -396,7 +396,7 @@ class TestUnchangedSetSurvives:
             (
                 s
                 for s in region.specs[0].resolved.slots
-                if s.key.property is not None and s.key.property.dcid == "gender"
+                if s.key.property is not None and s.key.property.ref == "gender"
             ),
             None,
         )
@@ -421,7 +421,7 @@ class TestUnchangedSetSurvives:
         gender_slot = next(
             s
             for s in region.specs[0].resolved.slots
-            if s.key.property is not None and s.key.property.dcid == "gender"
+            if s.key.property is not None and s.key.property.ref == "gender"
         )
         assert gender_slot.binding.kind == "value"
 

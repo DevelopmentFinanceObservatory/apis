@@ -1,4 +1,5 @@
-"""Registers the case-sensitive `spec_` path convertor and fallback routes for malformed IDs.
+"""Registers the case-sensitive `spec_` path convertor, the `spec_`-or-`ops_` convertor of the
+description routes, and fallback routes for malformed IDs.
 Each fallback excludes literals reserved by its route shape, then returns a grammar-naming 404 for
 every HTTP method. Starlette's dispatcher treats this like any other routing 404. Import this module
 before building routes. Repeat registration uses the same process-global keys.
@@ -23,6 +24,22 @@ class SpecIdConvertor(Convertor[str]):
 
 
 register_url_convertor("dfo_spec_id", SpecIdConvertor())
+
+
+class VersionSubjectIdConvertor(Convertor[str]):
+    """Matches one `spec_`- or `ops_`-prefixed path segment, verbatim: a dataset's id or a
+    published frame's."""
+
+    regex = r"(?:spec|ops)_[^/]+"
+
+    def convert(self, value: str) -> str:
+        return value
+
+    def to_string(self, value: str) -> str:
+        return value
+
+
+register_url_convertor("dfo_version_subject_id", VersionSubjectIdConvertor())
 
 
 class MalformedSubjectIdConvertor(Convertor[str]):

@@ -15,6 +15,7 @@ from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
 from code_index.shared import get_index
 from search.engine.bind import SlotBindingDraft, _build_universal_bind_prompt, _UniversalBindOutput
 from search.engine.qualifier_match import QualifierMatch, QualifierTie
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.region.codes import REDUNDANT_BINDING_DROPPED
 from search.engine.retrieval.derive import derive_shapes
@@ -22,6 +23,7 @@ from tests.engine._discover_fixtures import PROP_PURPOSE as _DEMO_PROP_PURPOSE
 from tests.engine._discover_fixtures import _fake_graph_with_svs, _three_constraint_arcs
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 _POP_TYPE = "FinancialFlow"
@@ -367,6 +369,8 @@ class _BindPurposeMentionedFlowSoleOption:
     """Bind `crsPurpose` as mentioned and model `crsTypeOfFlow` as a sole option."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0,
@@ -425,13 +429,13 @@ def test_a_sole_option_claim_over_an_index_widened_axis_leaves_the_slot_open():
     flow_slot = next(
         s
         for s in spec.resolved.slots
-        if s.key.property is not None and s.key.property.dcid == _PROP_FLOW
+        if s.key.property is not None and s.key.property.ref == _PROP_FLOW
     )
     assert flow_slot.binding.kind == "unbound"
     purpose_slot = next(
         s
         for s in spec.resolved.slots
-        if s.key.property is not None and s.key.property.dcid == _PROP_PURPOSE
+        if s.key.property is not None and s.key.property.ref == _PROP_PURPOSE
     )
     assert purpose_slot.binding.kind == "value"
 
@@ -445,7 +449,7 @@ def test_slot_options_truncated_is_false_for_the_index_sourced_axis():
     flow_options = next(
         so
         for so in spec.resolved.slot_options
-        if so.key.property is not None and so.key.property.dcid == _PROP_FLOW
+        if so.key.property is not None and so.key.property.ref == _PROP_FLOW
     )
     assert flow_options.truncated is False
     assert flow_options.source == "observed"

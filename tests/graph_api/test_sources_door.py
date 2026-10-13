@@ -317,7 +317,7 @@ class TestRouting:
             resp = client.get("/api/graph/node/dc/d/WorldBank_WorldDevelopmentIndicators")
 
         assert resp.status_code == 200, resp.text
-        assert resp.json()["dcid"] == "dc/d/WorldBank_WorldDevelopmentIndicators"
+        assert resp.json()["ref"] == "dc/d/WorldBank_WorldDevelopmentIndicators"
 
 
 class TestRefusals:
@@ -465,7 +465,9 @@ _TWO_ORPHANS = {
 }
 
 
-def test_a_read_past_the_pool_size_queues_and_succeeds(caplog: pytest.LogCaptureFixture):
+def test_a_read_past_the_pool_size_is_refused_at_once():
+    """With every worker busy a read answers retryable 503 without reaching the reader. The
+    in-pool read and a read after it succeed, and the refusal left nothing cached."""
     graph = _BlockingGraphNodeReader(FakeGraphNodeReader(nodes=_TWO_ORPHANS))
     client = make_client(graph=graph, node_pool_size=1)
     # Two sources, since two requests for one source share one read and never queue.
@@ -476,24 +478,29 @@ def test_a_read_past_the_pool_size_queues_and_succeeds(caplog: pytest.LogCapture
         ]
     )
 
-    with client, caplog.at_level(logging.WARNING, logger="dfo_platform.executor"):
+    with client:
         responses = send_past_a_full_pool(
             client,
             lambda: client.get(next(paths)),
             entered=graph.entered,
             release=graph.release,
         )
+        after = client.get("/api/graph/documentation/provenance/OtherOrphan")
 
-    assert [response.status_code for response in responses] == [200, 200], [
-        response.text for response in responses
-    ]
-    assert any("graph-dcp saturated" in record.message for record in caplog.records)
+    in_pool, refused = responses
+    assert in_pool.status_code == 200, in_pool.text
+    assert refused.status_code == 503, refused.text
+    assert refused.json()["code"] == "service_unavailable"
+    assert refused.json()["retryable"] is True
+    assert after.status_code == 200, after.text
+    assert len(graph.read_deadlines) == 2
 
 
-def test_a_read_queued_past_its_deadline_times_out_and_never_runs(monkeypatch):
-    """A read that times out while queued behind a worker that outlived its own door timeout
-    returns 504 and never reaches the reader. The next read runs once that worker returns, and
-    the read that ended past its deadline left nothing cached."""
+def test_a_read_while_a_timed_out_read_holds_the_worker_is_refused_at_once(monkeypatch):
+    """A read that outlives its door timeout answers 504 and keeps its worker until it
+    returns, so a read sent meanwhile answers retryable 503 without reaching the reader. The
+    next read runs once that worker returns, and the read that ended past its deadline left
+    nothing cached."""
     monkeypatch.setattr(sources_door, "GRAPH_NODE_TIMEOUT_SECONDS", 0.2)
     graph = _BlockingGraphNodeReader(FakeGraphNodeReader(nodes=_TWO_ORPHANS))
     client = make_client(graph=graph, node_pool_size=1)
@@ -501,14 +508,15 @@ def test_a_read_queued_past_its_deadline_times_out_and_never_runs(monkeypatch):
     with client:
         running = client.get("/api/graph/documentation/provenance/Orphan")
         assert graph.entered.wait(timeout=5.0), "the first read never started"
-        queued = client.get("/api/graph/documentation/provenance/OtherOrphan")
+        refused = client.get("/api/graph/documentation/provenance/OtherOrphan")
         graph.release.set()
+        wait_until(lambda: client.app.state.graph_deps.dcp_executor._in_flight == 0)
         recovered = client.get("/api/graph/documentation/provenance/Orphan")
 
     assert running.status_code == 504, running.text
-    assert queued.status_code == 504, queued.text
-    assert queued.json()["code"] == "timeout"
-    assert queued.json()["retryable"] is True
+    assert refused.status_code == 503, refused.text
+    assert refused.json()["code"] == "service_unavailable"
+    assert refused.json()["retryable"] is True
     assert recovered.status_code == 200, recovered.text
     assert len(graph.read_deadlines) == 2
 
@@ -1164,6 +1172,70 @@ class TestCurrency:
         # unknown.
         assert resp.json()["scope_and_units"]["granularity"] is None
         assert "scope_and_units.granularity" in resp.json()["gaps"]
+
+
+def _documentation_response(coverage: object | None, headers: dict[str, str] | None = None):
+    with make_client(graph=_two_child_dataset(), coverage=coverage) as client:
+        return client.get("/api/graph/documentation/dc/d/Dataset1", headers=headers)
+
+
+class TestCachePolicy:
+    def test_permanent_gaps_serve_public_with_an_etag(self):
+        resp = _documentation_response(_FakeCoverage({}))
+
+        assert resp.status_code == 200, resp.text
+        # An empty coverage index is a permanent answer, though it gaps the path.
+        assert "scope_and_units.currencies" in resp.json()["gaps"]
+        assert resp.headers["cache-control"] == "public, max-age=300"
+        assert resp.headers["etag"]
+
+    def test_a_matching_etag_answers_304(self):
+        etag = _documentation_response(_FakeCoverage({})).headers["etag"]
+
+        resp = _documentation_response(_FakeCoverage({}), {"if-none-match": etag})
+
+        assert resp.status_code == 304
+
+    @pytest.mark.parametrize(
+        ("coverage", "load_failed"),
+        [
+            pytest.param(None, True, id="failed-to-load"),
+            pytest.param(_FakeCoverage(None), False, id="unreadable"),
+        ],
+    )
+    def test_a_coverage_gap_from_a_failed_or_unreadable_index_serves_no_store(
+        self, coverage, load_failed
+    ):
+        with make_client(graph=_two_child_dataset(), coverage=coverage) as client:
+            deps = client.app.state.graph_deps
+            client.app.state.graph_deps = replace(deps, coverage_load_failed=load_failed)
+            resp = client.get("/api/graph/documentation/dc/d/Dataset1")
+
+        assert resp.status_code == 200, resp.text
+        assert resp.headers["cache-control"] == "no-store"
+        assert "etag" not in resp.headers
+
+    def test_unconfigured_coverage_is_a_permanent_gap_and_serves_public(self):
+        resp = _documentation_response(None)
+
+        assert resp.status_code == 200, resp.text
+        assert "scope_and_units.currencies" in resp.json()["gaps"]
+        assert resp.headers["cache-control"] == "public, max-age=300"
+        assert resp.headers["etag"]
+
+    def test_the_policy_follows_the_coverage_state_across_a_source_document_cache_hit(self):
+        with make_client(graph=_two_child_dataset()) as client:
+            deps = client.app.state.graph_deps
+            client.app.state.graph_deps = replace(deps, coverage_load_failed=True)
+            first = client.get("/api/graph/documentation/dc/d/Dataset1")
+            client.app.state.graph_deps = replace(
+                deps, coverage=_FakeCoverage({}), coverage_load_failed=False
+            )
+            second = client.get("/api/graph/documentation/dc/d/Dataset1")
+
+        assert first.headers["cache-control"] == "no-store"
+        assert second.headers["cache-control"] == "public, max-age=300"
+        assert second.headers["etag"]
 
 
 _BOTH_AXES = frozenset({"origin", "destination"})

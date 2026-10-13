@@ -215,11 +215,12 @@ def test_app_builds_a_shared_memoised_llm_and_a_repeat_costs_no_gemini_call(wire
 
     second = _body(_resolve(client, sse=False))
 
-    # One extract and one bind, on the first request only.
-    assert calls_after_first == ["Extraction", "_UniversalBindOutput"]
+    # One extract, one bind and one quantity read, on the first request only.
+    assert calls_after_first == ["Extraction", "_UniversalBindOutput", "QuantityOutput"]
     assert replay_client.models.calls == calls_after_first
     assert "LLM memo hit: schema=Extraction" in capture.messages
     assert "LLM memo hit: schema=_UniversalBindOutput" in capture.messages
+    assert "LLM memo hit: schema=QuantityOutput" in capture.messages
 
     # The repeat's own answer, with observations recomputed live: every graph
     # and SDMX probe the first request made runs again.
@@ -252,7 +253,7 @@ def test_sse_transport_shares_the_same_memo(wired):
     assert response.status_code == 200, response.text
     frames = parse_sse(response.text)
     assert replay_client.models.calls == calls_after_first
-    assert calls_after_first == ["Extraction", "_UniversalBindOutput"]
+    assert calls_after_first == ["Extraction", "_UniversalBindOutput", "QuantityOutput"]
 
     event_types = [event for event, _ in frames]
     response_idx = event_types.index("response")
@@ -300,8 +301,10 @@ def test_an_injected_llm_without_a_memo_still_calls_the_model(wired, monkeypatch
     assert replay_client.models.calls == [
         "Extraction",
         "_UniversalBindOutput",
+        "QuantityOutput",
         "Extraction",
         "_UniversalBindOutput",
+        "QuantityOutput",
     ]
 
 
@@ -312,11 +315,11 @@ def test_a_live_answer_without_usage_metadata_is_not_logged_as_a_memo_hit(wired)
     replay_client.models.generate_content = _no_usage_generate(replay_client)
 
     _body(_resolve(client, sse=False))
-    assert replay_client.models.calls == ["Extraction", "_UniversalBindOutput"]
+    assert replay_client.models.calls == ["Extraction", "_UniversalBindOutput", "QuantityOutput"]
     assert "LLM memo hit" not in capture.messages
 
     _body(_resolve(client, sse=False))
-    assert replay_client.models.calls == ["Extraction", "_UniversalBindOutput"]
+    assert replay_client.models.calls == ["Extraction", "_UniversalBindOutput", "QuantityOutput"]
     assert "LLM memo hit: schema=Extraction" in capture.messages
 
 

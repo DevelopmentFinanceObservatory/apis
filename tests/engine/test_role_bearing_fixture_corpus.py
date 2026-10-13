@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from search.engine.config import settings
 from search.engine.retrieval.derive import derive_shapes
 from search.engine.retrieval.facts import _dcids_for
 from search.engine.shape import is_role_bearing
@@ -38,7 +37,7 @@ def _stat_variable_dcids(nodes: dict) -> list[str]:
 
 
 def test_derive_shapes_yields_a_role_bearing_shape():
-    """Chunked derivation yields a role-bearing shape using declared fixture roles."""
+    """Derivation yields a role-bearing shape using declared fixture roles."""
     nodes = _load_json("graph_nodes.json")
     declared_role_names = {
         role for roles in _role_declaring_dcids(nodes).values() for role in roles
@@ -47,11 +46,8 @@ def test_derive_shapes_yields_a_role_bearing_shape():
     assert sv_dcids, "fixture corpus carries no StatisticalVariable nodes to derive shapes from"
 
     graph = FakeGraph()
-    role_bearing_shapes = []
-    for start in range(0, len(sv_dcids), settings().max_confirm_candidates):
-        chunk = sv_dcids[start : start + settings().max_confirm_candidates]
-        shapes = derive_shapes(confirmed_svs=chunk, graph=graph)
-        role_bearing_shapes.extend(shape for shape in shapes if is_role_bearing(shape))
+    shapes = derive_shapes(confirmed_svs=sv_dcids, graph=graph)
+    role_bearing_shapes = [shape for shape in shapes if is_role_bearing(shape)]
 
     assert role_bearing_shapes, "derive_shapes built no role-bearing shape from the fixture corpus"
     for shape in role_bearing_shapes:

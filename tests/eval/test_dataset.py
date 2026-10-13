@@ -27,13 +27,13 @@ _RESUBMIT_CASE = {
             {
                 "key": {
                     "axis": "how",
-                    "property": {"dcid": "financialFlowType", "label": "financial flow type"},
+                    "property": {"ref": "financialFlowType", "label": "financial flow type"},
                     "label": "financial flow type",
                 },
                 "binding": {
                     "kind": "value",
                     "value": {
-                        "ref": {"dcid": "Disbursement", "label": "disbursement"},
+                        "ref": {"ref": "Disbursement", "label": "disbursement"},
                         "value_kind": "enum_value",
                     },
                 },
@@ -103,7 +103,7 @@ def _source_slot(dcid: str) -> Slot:
     return Slot(
         key=SlotKey(axis="source", property=None, label="data source"),
         binding=BindingValue(
-            value=SlotValue(ref=GraphRef(dcid=dcid, label=dcid), value_kind="source")
+            value=SlotValue(ref=GraphRef(ref=dcid, label=dcid), value_kind="source")
         ),
     )
 

@@ -464,3 +464,66 @@ def test_both_plans_give_the_same_answer(monkeypatch) -> None:
     assert sorted(union_facets[_FEMALE]) == [_KEN]
     assert union_facets == scope_facets
     assert _place_facts(union_mat) == _place_facts(scope_mat)
+
+
+# A family of a total and six breakdowns, each with data in three countries. Under a bound
+# of 6 pairs one read holds two StatVars, so reading the whole family takes 4 POSTs.
+_BREAKDOWNS = [f"Count_Death_Breakdown{i}DefaultScope" for i in range(6)]
+_THREE = (_GHA, _KEN, _TZA)
+
+
+@pytest.mark.parametrize(
+    ("total_has_data", "sv_dcids"),
+    [
+        pytest.param(True, [_TOTAL], id="the-total-answers"),
+        pytest.param(False, [_TOTAL], id="the-total-has-no-data"),
+    ],
+)
+def test_an_answer_naming_one_member_reads_the_family_only_until_its_election_settles(
+    monkeypatch, total_has_data: bool, sv_dcids: list[str]
+) -> None:
+    """ "Latest life expectancy data" leaves every slot of the 351-member family open, so the
+    total answers alone. The reads run in election order, the total first, and stop once the
+    total is read, with or without data: no breakdown can be elected over it. The confirmed
+    count is then a floor."""
+    monkeypatch.setattr(standard, "_FACET_PROBE_MAX_PAIRS_PER_POST", 6)
+    members = [_TOTAL, *_BREAKDOWNS]
+    obs = {
+        key: facets
+        for sv in members
+        if sv != _TOTAL or total_has_data
+        for key, facets in _at(sv, *_THREE).items()
+    }
+    graph = _BatchRecordingGraph(obs)
+    shape = ShapeDraft(
+        shape_id="death_count_default_scope",
+        label="Deaths",
+        pop_type_dcid="MortalityEvent",
+        meas_prop_dcid="count",
+        stat_type_dcid="measuredValue",
+        meas_qual_dcid=None,
+        meas_denom_dcid=None,
+        slot_keys=(),
+        sv_arc_facts={
+            _TOTAL: _arcs(None),
+            **{sv: _arcs(f"Breakdown{i}") for i, sv in enumerate(_BREAKDOWNS)},
+        },
+        sv_arc_facts_complete=True,
+        representative_score=0.9,
+    )
+
+    result = standard_resolve(
+        shape=shape,
+        bindings=[],
+        entities={},
+        graph=graph,
+        default_presence=_presence(dict.fromkeys(members, _THREE)),
+    )
+
+    assert [stat_vars for stat_vars, _places in graph.batches] == [[_TOTAL, _BREAKDOWNS[0]]]
+    assert result.sv_dcids == sv_dcids
+    assert result.population is not None
+    assert (result.population.confirmed, result.population.member_count_exact) == (
+        int(total_has_data) + 1,
+        False,
+    )

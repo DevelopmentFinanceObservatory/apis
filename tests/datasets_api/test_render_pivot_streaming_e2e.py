@@ -38,7 +38,7 @@ def _render(
 ):
     artifact_store = FakeArtifactStore()
     rendered = render_and_store(
-        frame_chunks=iter(chunks),
+        frame_chunks=lambda: iter(chunks),
         options=options,
         spec={"spec_id": "pivot-streaming-e2e"},
         provenance_refs=["p1"],
@@ -47,7 +47,7 @@ def _render(
         content_version=_CONTENT_VERSION,
         artifact_store=artifact_store,
         entity_columns=("recipient",),
-        enrichment=EnrichmentLookup(_GRAPH, type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(_GRAPH, parties={}),
         code_index=code_index,
         resolved_stat_var_refs=(),
         pivot_max_output_cells=pivot_max_output_cells,
@@ -111,7 +111,7 @@ def _profile(rows: tuple[tuple[object, ...], ...]) -> OutputProfile:
     return compute_output_profile(
         Table(columns=_BARE_COLUMNS, rows=rows),
         role_columns=("recipient",),
-        enrichment=EnrichmentLookup(_GRAPH, type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(_GRAPH, parties={}),
     )
 
 
@@ -265,7 +265,7 @@ _GROUPBY_RESOLVED_REFS = ("dcid:SV_A", "dcid:SV_B", "dcid:SV_C")
 def _render_groupby_pivot(chunks: tuple[Table, ...]):
     artifact_store = FakeArtifactStore()
     rendered = render_and_store(
-        frame_chunks=iter(chunks),
+        frame_chunks=lambda: iter(chunks),
         options=MintOptions(
             format="csv",
             bundle=False,
@@ -279,7 +279,7 @@ def _render_groupby_pivot(chunks: tuple[Table, ...]):
         content_version=_CONTENT_VERSION,
         artifact_store=artifact_store,
         entity_columns=("recipient",),
-        enrichment=EnrichmentLookup(_GRAPH, type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(_GRAPH, parties={}),
         code_index=_INDEX,
         resolved_stat_var_refs=_GROUPBY_RESOLVED_REFS,
         pivot_max_output_cells=5_000_000,

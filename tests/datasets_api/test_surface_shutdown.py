@@ -21,6 +21,7 @@ from datasets_api.shutdown import SHUTDOWN_BUDGET_SECONDS
 from datasets_api.versions import NullHeadWriter, NullVersionRecordWriter
 from dfo_platform.app import create_app
 from graph_generation.fake import FakeGeneration
+from materialise import facet_profile, shared_profiles
 from spec_registry import LiveSpecRegistry
 from spec_registry.identity import recompute_identity
 
@@ -80,8 +81,10 @@ def _build_fully_live_app(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr("dataset_store.connection.connect", lambda **kwargs: _FakeConnection())
     for var, value in _SETTINGS_ENV.items():
         monkeypatch.setenv(var, value)
-    monkeypatch.setattr(deps_module, "build_graph_client", _RecordingGraphReader)
-    monkeypatch.setattr(deps_module, "SdmxClient", _RecordingSdmxClient)
+    # The process's profile cache builds its own graph and SDMX clients.
+    for module in (deps_module, shared_profiles):
+        monkeypatch.setattr(module, "build_graph_client", _RecordingGraphReader)
+        monkeypatch.setattr(module, "SdmxClient", _RecordingSdmxClient)
     monkeypatch.setattr(deps_module, "LiveArtifactStore", RecordingArtifactStore)
     # The Cloud Tasks constructor requires credentials unavailable to this offline test.
     monkeypatch.setattr(
@@ -139,6 +142,30 @@ def test_the_surface_registers_the_default_scope_memo_on_the_shared_generation(
 
     assert serving == (generation_module.PLACE_SCOPE_MEMO_NAME,)
     assert shared.registered_names() == ()
+
+
+def test_the_surface_acquires_one_facet_profile_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One Datasets process holds one profile cache, the process's shared one acquired with the
+    surface's dependencies, so a mint and a definition rebuild of one spec share its reads and
+    its memory bound."""
+    built: list[facet_profile.FacetProfileCache] = []
+    real_cache = facet_profile.FacetProfileCache
+
+    def recording_cache(**kwargs) -> facet_profile.FacetProfileCache:
+        built.append(real_cache(**kwargs))
+        return built[-1]
+
+    monkeypatch.setattr(shared_profiles, "FacetProfileCache", recording_cache)
+    monkeypatch.setattr(generation_module, "acquire_shared", lambda **_kwargs: FakeGeneration())
+    monkeypatch.setattr(generation_module, "release_shared", lambda _generation: None)
+    app = _build_fully_live_app(monkeypatch)
+
+    with TestClient(app):
+        pass
+
+    assert len(built) == 1
 
 
 def test_composed_surface_shutdown_fits_the_shared_budget(

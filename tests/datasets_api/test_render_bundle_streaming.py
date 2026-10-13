@@ -36,7 +36,7 @@ def _mint_bundle(
     """Return one bundled CSV's bytes and digest from a fresh fake store."""
     artifact_store = FakeArtifactStore()
     rendered = render_and_store(
-        frame_chunks=iter((_TABLE,)),
+        frame_chunks=lambda: iter((_TABLE,)),
         options=MintOptions(format="csv", bundle=True),
         spec={"spec_id": spec_id},
         provenance_refs=list(provenance_refs),
@@ -45,7 +45,7 @@ def _mint_bundle(
         content_version="sha256:" + "0" * 64,
         artifact_store=artifact_store,
         entity_columns=("recipient",),
-        enrichment=EnrichmentLookup(_GRAPH, type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(_GRAPH, parties={}),
         resolved_stat_var_refs=(),
         pivot_max_output_cells=5_000_000,
         prepared_at=PREPARED_AT,
@@ -76,7 +76,7 @@ def test_bundle_zip_streamed_via_open_put_is_a_valid_archive_with_the_expected_m
     # ZIP_STORED preserves the CSV bytes the bare rendering writes.
     artifact_store = FakeArtifactStore()
     bare = render_and_store(
-        frame_chunks=iter((_TABLE,)),
+        frame_chunks=lambda: iter((_TABLE,)),
         options=MintOptions(format="csv", bundle=False),
         spec={"spec_id": "bundle-streaming-test"},
         provenance_refs=[],
@@ -85,7 +85,7 @@ def test_bundle_zip_streamed_via_open_put_is_a_valid_archive_with_the_expected_m
         content_version="sha256:" + "0" * 64,
         artifact_store=artifact_store,
         entity_columns=("recipient",),
-        enrichment=EnrichmentLookup(_GRAPH, type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(_GRAPH, parties={}),
         resolved_stat_var_refs=(),
         pivot_max_output_cells=5_000_000,
         prepared_at=PREPARED_AT,

@@ -13,11 +13,13 @@ import threading
 from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.graph import Facet, _force_full_facets
 from search.engine.extract import DateRequest
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.region.phase_intake import _FLOOR_PROBE_FULL_FACETS_MAX_CANDIDATES
 from search.engine.region.state import EngineOptions
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 _SV = "sv/gdp"
@@ -101,6 +103,7 @@ class _PostCountingGraph(FakeGraph):
         needs_dates: bool = False,
         *,
         max_bytes: int | None = None,
+        deadline: float | None = None,
     ) -> dict[str, dict[str, list[Facet]]]:
         needs_dates = needs_dates or _force_full_facets.get()
         self.calls.append((len(stat_vars), needs_dates))
@@ -129,9 +132,12 @@ class _PostCountingGraph(FakeGraph):
 
 
 class _UnusedLLM:
-    """Placeholder while bind_universal is patched in the test."""
+    """Placeholder while bind_universal is patched in the test; it answers only the
+    quantity read, which runs beside bind."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         raise AssertionError("bind_universal was replaced by a spy; the LLM must not be called")
 
 

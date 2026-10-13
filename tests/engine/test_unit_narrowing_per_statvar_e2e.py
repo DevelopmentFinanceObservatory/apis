@@ -14,6 +14,7 @@ from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from materialise.rate_tables import RateTableCache
 from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.graph import Facet
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import convertibility as convertibility_module
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.state import EngineOptions
@@ -27,6 +28,7 @@ from tests.engine._harness import (
     _csv_row,
     _facet_from_fixture,
 )
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 from tests.materialise._rate_table_support import (
     CONVERTIBLE_STAT_VAR_ARCS,
@@ -94,6 +96,8 @@ class _FixedBindLLM:
     """Elect shape 0 without narrowing either StatVar."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
 
@@ -250,7 +254,7 @@ def _run(monkeypatch):
 def _date_range_ends(result) -> dict[str, str | None]:
     spec = result.specs[0]
     return {
-        sv.ref.dcid: (sv.data_date_range.end if sv.data_date_range is not None else None)
+        sv.ref.ref: (sv.data_date_range.end if sv.data_date_range is not None else None)
         for sv in spec.resolved.members
     }
 

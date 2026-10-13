@@ -121,10 +121,10 @@ def _graph_labels(state: _PromoteState, dcids: Sequence[str]) -> list[str]:
 
 
 def _draft_grounded_values(binding: SlotBindingDraft | None) -> list[GraphRef]:
-    """Use dcids as labels; identity projection reads only `.ref.dcid`."""
+    """Use dcids as labels; identity projection reads only `.ref`."""
     if binding is None or binding.kind not in ("value", "set"):
         return []
-    return [GraphRef(dcid=d, label=d) for d in binding.value_dcids]
+    return [GraphRef(ref=d, label=d) for d in binding.value_dcids]
 
 
 def _resubmit_unsupported_definition(
@@ -143,7 +143,7 @@ def _resubmit_unsupported_definition(
             binding,
             _draft_grounded_values(binding),
             property_ref=(
-                GraphRef(dcid=slot_draft.property_dcid, label=slot_draft.property_dcid)
+                GraphRef(ref=slot_draft.property_dcid, label=slot_draft.property_dcid)
                 if slot_draft.property_dcid
                 else None
             ),
@@ -151,7 +151,7 @@ def _resubmit_unsupported_definition(
         for slot_draft, binding in pair_slot_drafts(state.shape_draft.slot_keys, state.bindings)
     ]
     id_entities = [
-        _build_entity(role, GraphRef(dcid=dcid, label=dcid), None, {})
+        _build_entity(role, GraphRef(ref=dcid, label=dcid), None, {})
         for dcid, role in role_bindings(roles)
     ]
     return build_unsupported_definition(
@@ -216,7 +216,8 @@ def _phase_materialise(state: _PromoteState) -> RegionResult | None:
     `run_materialise` reads the shape and bindings over the place context. Bound values that
     together match no member (`retrieve.BoundValuesUnrealisable`) lose a minimal set, each
     value unbound departing under its name, and the shape is read again
-    (`unrealisable.unbind_posted`), as a fresh request does. A discovered role scope's own
+    (`unrealisable.unbind_posted`), as a fresh request does; grounding then refuses
+    `qualifier_not_bound` on each such value (`promote_ground._ground_build_gates`). A discovered role scope's own
     refusal returns an `unsupported` part, and a no-data outcome or a candidate-only result
     returns `no_data`. A `Materialised` answer derives the source refs and facet filter
     (`_bound_facet_filter`), then settles the place context (`PlaceContext.settled`) and the

@@ -102,6 +102,14 @@ class RolePairs(Protocol):
         """The earliest and latest years any tuple has an observation inside the window."""
         ...
 
+    def year_counts(
+        self, *, first_year: int | None, last_year: int | None
+    ) -> list[tuple[RoleTuple, tuple[tuple[int, int], ...]]]:
+        """Each tuple with an observation inside the window, with each year it has one in
+        and the observations it holds there, as a one-year window of `head` counts them,
+        ascending, in no set tuple order."""
+        ...
+
     def members_with_data(
         self, *, first_year: int | None, last_year: int | None, role: str | None = None
     ) -> frozenset[str]:
@@ -126,8 +134,8 @@ class RoleFacetCandidate:
     and ``pairs`` reads them on demand. ``latest_date`` is the latest of the tuples' latest
     observations.
 
-    Provenance, method, unit, and scaling factor are shared by every tuple
-    under a facet id because the coverage artifact keys metadata by that id.
+    Provenance, method, unit, scaling factor and observation period are shared by every
+    tuple under a facet id because the coverage artifact keys metadata by that id.
     """
 
     facet_id: str
@@ -139,6 +147,7 @@ class RoleFacetCandidate:
     measurement_method: str | None = None
     unit: str | None = None
     scaling_factor: str | None = None
+    observation_period: str | None = None
 
 
 # {variable: [RoleFacetCandidate, ...]}, one candidate per distinct facet_id

@@ -14,6 +14,7 @@ import httpx
 from materialise.rate_tables import RateTableCache
 from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.sdmx import EngineSdmxClient
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.state import EngineOptions
 from search.models import IdentityCurrencyRole
@@ -27,6 +28,7 @@ from tests.engine._harness import (
     _facet_from_fixture,
     door_roles_for_test_query,
 )
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 from tests.materialise._rate_table_support import (
     CONVERTIBLE_STAT_VAR_ARCS,
@@ -105,6 +107,8 @@ class _FixedBindLLM:
     """Elects shape index 0 unconditionally, with no constraint bindings."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
 

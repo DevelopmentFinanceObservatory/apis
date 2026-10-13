@@ -120,7 +120,7 @@ def test_bind_stage_sentence_carries_the_group_the_query_named(monkeypatch, name
     monkeypatch.setattr(sentence_events, "heading_from_parts", _spy)
     _run_with_events(monkeypatch)
 
-    expected = {"destination": EntityGroup(dcid=None, label="the test group")} if named else {}
+    expected = {"destination": EntityGroup(ref=None, label="the test group")} if named else {}
     assert groups_rendered == [expected]
 
 
@@ -143,12 +143,12 @@ def test_bind_stage_slots_carry_the_summable_flag_of_the_final_spec(monkeypatch)
     result, events = _run_with_events(monkeypatch)
     bind_stage = next(e for e in events if isinstance(e, SentenceEvent))
     bind_purpose = next(
-        s for s in bind_stage.slots if s.key.property and s.key.property.dcid == _PROP_PURPOSE
+        s for s in bind_stage.slots if s.key.property and s.key.property.ref == _PROP_PURPOSE
     )
     final_purpose = next(
         s
         for s in result.specs[0].resolved.slots
-        if s.key.property and s.key.property.dcid == _PROP_PURPOSE
+        if s.key.property and s.key.property.ref == _PROP_PURPOSE
     )
     assert bind_purpose.summable is True
     assert final_purpose.summable is True
@@ -159,12 +159,12 @@ def test_bind_stage_text_is_a_prefix_of_the_final_text_when_only_materialise_fie
     how_slot = Slot(
         key=SlotKey(
             axis="how",
-            property=GraphRef(dcid=_PROP_FLOW_TYPE, label=_PROP_FLOW_TYPE),
+            property=GraphRef(ref=_PROP_FLOW_TYPE, label=_PROP_FLOW_TYPE),
             label=_PROP_FLOW_TYPE,
         ),
         binding=BindingValue(
             value=SlotValue(
-                ref=GraphRef(dcid="Disbursement", label="Disbursement"), value_kind="enum_value"
+                ref=GraphRef(ref="Disbursement", label="Disbursement"), value_kind="enum_value"
             )
         ),
     )

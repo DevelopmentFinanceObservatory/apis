@@ -22,6 +22,10 @@ class FacetCoverage:
     `year_counts` counts active rows per year, so two pairs in one year count
     twice. Its values sum to `n_obs`, and keys fall within the year bounds.
     Directly constructed test values may leave it empty.
+
+    `first_series_end` is the earliest of the rows' last years with data: the year the
+    donor/recipient series that ends first ends. Directly constructed test values may leave
+    it `None`, which reads as `last_year`.
     """
 
     facet_id: str
@@ -29,17 +33,19 @@ class FacetCoverage:
     first_year: int
     last_year: int
     year_counts: Mapping[int, int] = field(default_factory=dict)
+    first_series_end: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class FacetSpan:
     """One `facet_id`'s observation count and first and last years with data, summed across
-    surviving donor/recipient rows: `FacetCoverage`'s `n_obs`, `first_year` and `last_year`
-    without its year counts."""
+    surviving donor/recipient rows: `FacetCoverage`'s `n_obs`, `first_year`, `last_year` and
+    `first_series_end` without its year counts."""
 
     n_obs: int
     first_year: int
     last_year: int
+    first_series_end: int
 
 
 @dataclass(frozen=True, slots=True)

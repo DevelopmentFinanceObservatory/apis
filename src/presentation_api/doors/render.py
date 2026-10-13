@@ -323,6 +323,7 @@ def build_render_router(
                     frame_store=deps.frame_store,
                     revision_store=deps.revision_store,
                     release_registry=deps.release_registry,
+                    vocabulary_source=deps.vocabulary_source,
                 )
             return JSONResponse(
                 {

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import threading
 from pathlib import Path
 
@@ -14,10 +13,10 @@ from graph_api.doors import node as node_door
 from graph_api.node_models import NODES_MAX_DCIDS
 from graph_api.version import GRAPH_CAPABILITY_VERSION
 from materialise.graph import GraphDeadlineExceededError, GraphReadError, parse_arcs
-from origin_catalogue import BASE, DFO
+from origin_catalogue import DFO
 from tests.origin_catalogue.fake_catalogue import provenance_row, restrictive_catalogue
 
-from .conftest import FakeGraphNodeReader, make_client, send_past_a_full_pool
+from .conftest import FakeGraphNodeReader, make_client, send_past_a_full_pool, wait_until
 
 _FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -30,7 +29,7 @@ def _wire_arcs(fixture_name: str, dcid: str) -> dict[str, tuple[str, ...]]:
 
 
 class TestStatVarShape:
-    def test_statvar_with_two_declared_roles_keeps_definition_and_description_apart(self):
+    def test_statvar_with_two_declared_roles_carries_its_definition_and_description(self):
         graph = FakeGraphNodeReader(
             nodes={
                 "dc/base/BilateralFlow_Grants": {
@@ -50,17 +49,37 @@ class TestStatVarShape:
 
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        assert body["shape"] == "stat_var"
-        assert body["dcid"] == "dc/base/BilateralFlow_Grants"
+        assert body["kind"] == "stat_var"
+        assert body["ref"] == "dc/base/BilateralFlow_Grants"
         assert body["label"] == "Bilateral flow (grants)"
-        assert body["definition"] == "mq=Nominal,mp=amount,pt=BilateralFlow"
+        assert body["types"] == ["StatisticalVariable"]
         assert body["description"] == "Grants between a provider and a recipient"
-        assert body["roles"] == ["provider", "recipient"]
-        assert body["population_type"] == "BilateralFlow"
-        assert body["facets"] is None
-        assert body["processing_level"] is None
-        assert body["sources"] is None
-        assert graph.calls["node_arcs_many"] == 1
+        stat_var = body["stat_var"]
+        assert set(stat_var) == {"definition", "availability"}
+        definition = stat_var["definition"]
+        assert definition["roles"] == ["provider", "recipient"]
+        assert definition["population_type"] == {"ref": "BilateralFlow", "label": None}
+        assert definition["definitions"] == [
+            {
+                "of": {"ref": "dc/base/BilateralFlow_Grants", "label": "Bilateral flow (grants)"},
+                "text": "Grants between a provider and a recipient",
+            }
+        ]
+        # A surface with no profile cache reads no availability.
+        assert stat_var["availability"] is None
+        assert body["links"] == {
+            "facets": "/api/graph/node/dc/base/BilateralFlow_Grants/members?relation=facets"
+        }
+        assert body["gaps"] == [
+            "stat_var.definition.population_type.label",
+            "stat_var.definition.measured_property",
+            "stat_var.definition.stat_type",
+            "stat_var.definition.measure",
+            "stat_var.availability.not_served",
+        ]
+        assert resp.headers["cache-control"] == "public, max-age=300"
+        # The arc read, then the definition's shape read and its word read.
+        assert graph.calls["node_arcs_many"] == 3
 
     def test_statvar_with_one_declared_role(self):
         graph = FakeGraphNodeReader(
@@ -80,8 +99,8 @@ class TestStatVarShape:
 
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        assert body["shape"] == "stat_var"
-        assert body["roles"] == ["recipient"]
+        assert body["kind"] == "stat_var"
+        assert body["stat_var"]["definition"]["roles"] == ["recipient"]
 
     def test_public_dc_statvar_without_observation_properties_defaults_to_observation_about(self):
         graph = FakeGraphNodeReader(
@@ -101,10 +120,10 @@ class TestStatVarShape:
 
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        assert body["shape"] == "stat_var"
-        assert body["roles"] == ["observationAbout"]
-        assert body["population_type"] == "Person"
-        assert body["definition"] is None
+        assert body["kind"] == "stat_var"
+        definition = body["stat_var"]["definition"]
+        assert definition["roles"] == ["observationAbout"]
+        assert definition["population_type"]["ref"] == "Person"
         assert body["description"] == "Population count"
 
     def test_statvar_with_no_populationtype_arc_reports_null(self):
@@ -124,10 +143,11 @@ class TestStatVarShape:
 
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        assert body["roles"] == ["observationAbout"]
-        assert body["population_type"] is None
+        definition = body["stat_var"]["definition"]
+        assert definition["roles"] == ["observationAbout"]
+        assert definition["population_type"] is None
         assert body["description"] is None
-        assert body["source_indicator_codes"] == []
+        assert definition["source_indicator_codes"] == []
 
     def test_statvar_lists_every_source_indicator_code(self):
         dcid = (
@@ -151,7 +171,7 @@ class TestStatVarShape:
             resp = client.get(f"/api/graph/node/{dcid}")
 
         assert resp.status_code == 200, resp.text
-        assert resp.json()["source_indicator_codes"] == ["NGDP", "NGDPD"]
+        assert resp.json()["stat_var"]["definition"]["source_indicator_codes"] == ["NGDP", "NGDPD"]
 
     def test_degenerate_observation_properties_ships_declared_values_verbatim(self):
         graph = FakeGraphNodeReader(
@@ -170,8 +190,8 @@ class TestStatVarShape:
 
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        assert body["shape"] == "stat_var"
-        assert body["roles"] == ["observationAbout", "provider"]
+        assert body["kind"] == "stat_var"
+        assert body["stat_var"]["definition"]["roles"] == ["observationAbout", "provider"]
 
 
 class TestSourceShape:
@@ -197,18 +217,23 @@ class TestSourceShape:
 
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        assert body["shape"] == "source"
-        assert body["license"] == "CC-BY-4.0"
-        assert body["license_type"] == "open"
+        assert body["kind"] == "provenance"
+        provenance = body["provenance"]
+        assert provenance["license"] == "CC-BY-4.0"
+        assert provenance["license_type"] == "open"
         assert body["description"] == "WHO data provenance"
-        assert body["url"] == "https://who.int"
-        assert body["freshness"] == {
+        assert provenance["url"] == "https://who.int"
+        assert provenance["freshness"] == {
             "release_frequency": "P1Y",
             "release_frequency_label": "Annual",
             "refresh_type": "GCPCloudRunAutomaticRefresh",
         }
-        assert body["publisher"] is None
-        assert body["dataset"] is None
+        assert provenance["publisher"] is None
+        assert provenance["parent"] is None
+        assert provenance["documentation"] == "/api/graph/documentation/dc/base/WHO"
+        assert body["links"] == {
+            "variables": "/api/graph/node/dc/base/WHO/members?relation=variables"
+        }
         assert graph.calls["node_arcs_many"] == 1
 
     def test_bis_style_source_lacks_release_frequency(self):
@@ -229,10 +254,13 @@ class TestSourceShape:
 
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        assert body["shape"] == "source"
-        assert body["freshness"]["release_frequency"] is None
-        assert body["freshness"]["release_frequency_label"] is None
-        assert body["freshness"]["refresh_type"] == "P3M"
+        assert body["kind"] == "source"
+        assert body["source"]["freshness"]["release_frequency"] is None
+        assert body["source"]["freshness"]["release_frequency_label"] is None
+        assert body["source"]["freshness"]["refresh_type"] == "P3M"
+        assert body["links"] == {
+            "datasets": "/api/graph/node/dc/base/BIS/members?relation=datasets"
+        }
 
     def test_widened_fields_surface_from_the_allowlist(self):
         graph = FakeGraphNodeReader(
@@ -256,14 +284,14 @@ class TestSourceShape:
             resp = client.get("/api/graph/node/dc/base/Wide")
 
         assert resp.status_code == 200, resp.text
-        body = resp.json()
-        assert body["source_data_url"] == "https://example.org/data.csv"
-        assert body["description_url"] == "https://example.org/catalog"
-        assert body["transformation_logic_url"] == "https://github.com/example/scripts"
-        assert body["last_data_refresh_date"] == "2024-05-08"
-        assert body["next_data_refresh_date"] == "2025-05-08"
-        assert body["earliest_observation_date"] == "1973"
-        assert body["latest_observation_date"] == "2024"
+        provenance = resp.json()["provenance"]
+        assert provenance["source_data_url"] == "https://example.org/data.csv"
+        assert provenance["description_url"] == "https://example.org/catalog"
+        assert provenance["transformation_logic_url"] == "https://github.com/example/scripts"
+        assert provenance["last_data_refresh_date"] == "2024-05-08"
+        assert provenance["next_data_refresh_date"] == "2025-05-08"
+        assert provenance["earliest_observation_date"] == "1973"
+        assert provenance["latest_observation_date"] == "2024"
 
     def test_publisher_and_dataset_resolve_via_one_batched_second_call(self):
         graph = FakeGraphNodeReader(
@@ -285,9 +313,9 @@ class TestSourceShape:
 
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        assert body["publisher"] == {"dcid": "dc/s/WorldBank", "label": "World Bank"}
-        assert body["dataset"] == {
-            "dcid": "dc/d/WorldBank_WDI",
+        assert body["provenance"]["publisher"] == {"ref": "dc/s/WorldBank", "label": "World Bank"}
+        assert body["provenance"]["parent"] == {
+            "ref": "dc/d/WorldBank_WDI",
             "label": "World Development Indicators",
         }
         # The parent Dataset's own name is preferred over the provenance's
@@ -312,7 +340,7 @@ class TestSourceShape:
         assert resp.status_code == 200, resp.text
         body = resp.json()
         assert body["label"] == "Orphan Provenance"
-        assert body["dataset"] is None
+        assert body["provenance"]["parent"] is None
         assert graph.calls["node_arcs_many"] == 1
 
     def test_publisher_label_rejects_a_name_value_equal_to_its_own_dcid(self):
@@ -341,8 +369,8 @@ class TestSourceShape:
 
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        assert body["publisher"] == {
-            "dcid": "dc/s/OrganisationForEconomicCo-operationAndDevelopmentOecd",
+        assert body["provenance"]["publisher"] == {
+            "ref": "dc/s/OrganisationForEconomicCo-operationAndDevelopmentOecd",
             "label": "Organisation for Economic Co-operation and Development (OECD)",
         }
 
@@ -372,30 +400,34 @@ class TestSourceShapeLiveFixtures:
 
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        assert body["shape"] == "source"
+        assert body["kind"] == "provenance"
+        provenance = body["provenance"]
         # The parent Dataset supplies the display label.
         assert body["label"] == "World Development Indicators"
         assert body["description"] == (
             "The primary World Bank collection of development indicators "
             "encompassing global economic and social data."
         )
-        assert body["url"] == "https://datatopics.worldbank.org/world-development-indicators/"
+        assert provenance["url"] == "https://datatopics.worldbank.org/world-development-indicators/"
         assert (
-            body["source_data_url"]
+            provenance["source_data_url"]
             == "http://api.worldbank.org/v2/en/country/AFG?downloadformat=csv"
         )
-        assert body["description_url"] == "https://datacatalog.worldbank.org/search/dataset/0037712"
-        assert body["transformation_logic_url"] == (
+        assert (
+            provenance["description_url"]
+            == "https://datacatalog.worldbank.org/search/dataset/0037712"
+        )
+        assert provenance["transformation_logic_url"] == (
             "https://github.com/datacommonsorg/data/tree/master/scripts/world_bank/wdi/"
         )
-        assert body["last_data_refresh_date"] is None
-        assert body["earliest_observation_date"] is None
-        assert body["publisher"] == {"dcid": "dc/s/WorldBank", "label": "World Bank"}
-        assert body["dataset"] == {
-            "dcid": "dc/d/WorldBank_WorldDevelopmentIndicators",
+        assert provenance["last_data_refresh_date"] is None
+        assert provenance["earliest_observation_date"] is None
+        assert provenance["publisher"] == {"ref": "dc/s/WorldBank", "label": "World Bank"}
+        assert provenance["parent"] == {
+            "ref": "dc/d/WorldBank_WorldDevelopmentIndicators",
             "label": "World Development Indicators",
         }
-        assert body["freshness"] == {
+        assert provenance["freshness"] == {
             "release_frequency": "P1M",
             "release_frequency_label": "Monthly",
             "refresh_type": "GCPCloudRunAutomaticRefresh",
@@ -423,72 +455,31 @@ class TestSourceShapeLiveFixtures:
 
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        assert body["shape"] == "source"
+        assert body["kind"] == "provenance"
+        provenance = body["provenance"]
         assert body["description"] is None
-        assert body["license_type"] is None
-        assert body["dataset"] is None
+        assert provenance["license_type"] is None
+        assert provenance["parent"] is None
         # No parent Dataset, so the label falls back to the provenance's
         # own name.
         assert body["label"] == "OECD Creditor Reporting System"
-        assert body["earliest_observation_date"] == "1973"
-        assert body["latest_observation_date"] == "2024"
-        assert body["freshness"]["release_frequency"] == "P1Y"
-        assert body["freshness"]["release_frequency_label"] == "Annual"
-        assert body["freshness"]["refresh_type"] is None
+        assert provenance["earliest_observation_date"] == "1973"
+        assert provenance["latest_observation_date"] == "2024"
+        assert provenance["freshness"]["release_frequency"] == "P1Y"
+        assert provenance["freshness"]["release_frequency_label"] == "Annual"
+        assert provenance["freshness"]["refresh_type"] is None
         # The contested-name rejection: two name values on the publisher's
         # own Source node, the bad one (equal to its own dcid) ordered
         # first.
-        assert body["publisher"] == {
-            "dcid": "dc/s/OrganisationForEconomicCo-operationAndDevelopmentOecd",
+        assert provenance["publisher"] == {
+            "ref": "dc/s/OrganisationForEconomicCo-operationAndDevelopmentOecd",
             "label": "Organisation for Economic Co-operation and Development (OECD)",
         }
         assert graph.calls["node_arcs_many"] == 2
 
 
 class TestDataCommons:
-    """StatVars and admitted provenances name their Data Commons from the request's catalogue."""
-
-    def test_a_statvar_lists_every_origin_holding_it(self, serve_catalogue):
-        serve_catalogue(
-            restrictive_catalogue(
-                provenances=[provenance_row("dc/base/WDI", BASE)],
-                dfo_variables=["Count_Person"],
-                base_variables={"Count_Person": (["dc/base/WDI"], [])},
-            )
-        )
-        graph = FakeGraphNodeReader(
-            nodes={"Count_Person": {"typeOf": ("StatisticalVariable",), "name": ("Population",)}}
-        )
-        client = make_client(graph=graph)
-
-        with client:
-            resp = client.get("/api/graph/node/Count_Person")
-
-        assert resp.status_code == 200, resp.text
-        assert resp.json()["data_commons"] == [
-            {"id": "dfo", "label": "Development Finance Observatory"},
-            {"id": "base", "label": "Data Commons by Google"},
-        ]
-
-    def test_a_statvar_the_catalogue_withholds_lists_none(self, serve_catalogue):
-        serve_catalogue(restrictive_catalogue(withheld_variables=["Withheld_Var"]))
-        graph = FakeGraphNodeReader(nodes={"Withheld_Var": {"typeOf": ("StatisticalVariable",)}})
-        client = make_client(graph=graph)
-
-        with client:
-            resp = client.get("/api/graph/node/Withheld_Var")
-
-        assert resp.json()["data_commons"] == []
-
-    def test_a_statvar_no_table_lists_is_base_as_search_admits_it(self, serve_catalogue):
-        serve_catalogue(restrictive_catalogue())
-        graph = FakeGraphNodeReader(nodes={"Unlisted_Var": {"typeOf": ("StatisticalVariable",)}})
-        client = make_client(graph=graph)
-
-        with client:
-            resp = client.get("/api/graph/node/Unlisted_Var")
-
-        assert resp.json()["data_commons"] == [{"id": "base", "label": "Data Commons by Google"}]
+    """Admitted provenances name their Data Commons from the request's catalogue."""
 
     def test_an_admitted_provenance_names_its_data_commons(self, serve_catalogue):
         serve_catalogue(
@@ -505,8 +496,8 @@ class TestDataCommons:
             resp = client.get("/api/graph/node/provenance/OECDCreditorReportingSystem")
 
         assert resp.status_code == 200, resp.text
-        assert resp.json()["shape"] == "source"
-        assert resp.json()["data_commons"] == {
+        assert resp.json()["kind"] == "provenance"
+        assert resp.json()["provenance"]["data_commons"] == {
             "id": "dfo",
             "label": "Development Finance Observatory",
         }
@@ -519,10 +510,10 @@ class TestDataCommons:
         with client:
             resp = client.get("/api/graph/node/dc/s/WorldBank")
 
-        assert resp.json()["data_commons"] is None
+        assert resp.json()["source"]["data_commons"] is None
 
 
-class TestEntityShape:
+class TestPlaceKinds:
     def test_country_entity_resolves_contained_in_labels_via_second_call(self):
         graph = FakeGraphNodeReader(
             nodes={
@@ -541,13 +532,13 @@ class TestEntityShape:
 
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        assert body["shape"] == "entity"
-        assert body["entity_type"] == "Country"
-        by_dcid = {c["dcid"]: c["label"] for c in body["contained_in"]}
+        assert body["kind"] == "country"
+        assert body["types"] == ["Country"]
+        by_dcid = {c["ref"]: c["label"] for c in body["country"]["contained_in"]}
         assert by_dcid == {"africa": "Africa", "worldbank/region1": None}
         assert graph.calls["node_arcs_many"] == 2
 
-    def test_continental_union_classifies_as_entity(self):
+    def test_continental_union_classifies_as_its_own_place_kind(self):
         graph = FakeGraphNodeReader(
             nodes={
                 "europeanunion/EU": {
@@ -563,18 +554,18 @@ class TestEntityShape:
 
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        assert body["shape"] == "entity"
-        assert body["entity_type"] == "ContinentalUnion"
-        assert body["contained_in"] == []
+        assert body["kind"] == "continental_union"
+        assert body["continental_union"] == {"contained_in": [], "membership": None}
 
 
-class TestGenericShape:
-    def test_plain_node_reports_types_and_remaining_properties(self):
+class TestOtherKind:
+    def test_an_unclassified_node_carries_its_types_and_description_and_no_block(self):
         graph = FakeGraphNodeReader(
             nodes={
                 "dc/base/Foo": {
                     "typeOf": ("SomeOtherType",),
                     "name": ("Some Node",),
+                    "description": ("A node of some other type",),
                     "isPartOf": ("dc/base/Parent",),
                     "provenanceCategory": ("Category1",),
                 }
@@ -587,42 +578,22 @@ class TestGenericShape:
 
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        assert body["shape"] == "node"
+        assert body["kind"] == "other"
         assert body["label"] == "Some Node"
         assert body["types"] == ["SomeOtherType"]
-        assert body["properties"] == {
-            "isPartOf": ["dc/base/Parent"],
-            "provenanceCategory": ["Category1"],
+        assert body["description"] == "A node of some other type"
+        assert body["links"] == {}
+        assert set(body) == {
+            "ref",
+            "label",
+            "kind",
+            "types",
+            "description",
+            "links",
+            "gaps",
+            "built_from",
         }
-        assert "typeOf" not in body["properties"]
-        assert "name" not in body["properties"]
         assert graph.calls["node_arcs_many"] == 1
-
-    def test_widened_allowlist_arcs_reach_a_generic_node_properties_map(self):
-        """Generic nodes expose newly allowlisted arcs outside dedicated shape fields."""
-        graph = FakeGraphNodeReader(
-            nodes={
-                "dc/base/Bar": {
-                    "typeOf": ("SomeOtherType",),
-                    "lastDataRefreshDate": ("2024-05-08",),
-                    "sourceDataUrl": ("https://example.org/bar.csv",),
-                    "earliestObservationDate": ("1973",),
-                }
-            }
-        )
-        client = make_client(graph=graph)
-
-        with client:
-            resp = client.get("/api/graph/node/dc/base/Bar")
-
-        assert resp.status_code == 200, resp.text
-        body = resp.json()
-        assert body["shape"] == "node"
-        assert body["properties"] == {
-            "lastDataRefreshDate": ["2024-05-08"],
-            "sourceDataUrl": ["https://example.org/bar.csv"],
-            "earliestObservationDate": ["1973"],
-        }
 
     def test_label_rejects_a_name_value_equal_to_its_own_dcid(self):
         """A `name` value equal to its node dcid is rejected for every shape."""
@@ -765,7 +736,7 @@ class TestRouting:
             for dcid in ("country/KEN", "dc/base/Foo", "a/b/c"):
                 resp = client.get(f"/api/graph/node/{dcid}")
                 assert resp.status_code == 200, resp.text
-                assert resp.json()["dcid"] == dcid
+                assert resp.json()["ref"] == dcid
 
     def test_empty_dcid_falls_through_to_routing_404(self):
         client = make_client()
@@ -831,24 +802,25 @@ class TestNodesBatch:
         with client:
             resp = client.post("/api/graph/nodes", json={"dcids": dcids})
             assert resp.status_code == 200, resp.text
-            assert graph.calls["node_arcs_many"] == 2
+            # The arc read, the label targets' name read, and the variable's definition read.
+            assert graph.calls["node_arcs_many"] == 3
             entries = resp.json()["nodes"]
             singles = [client.get(f"/api/graph/node/{dcid}") for dcid in dcids]
 
-        assert [entry["dcid"] for entry in entries] == dcids
+        assert [entry["ref"] for entry in entries] == dcids
         for entry, single in zip(entries, singles, strict=True):
             if single.status_code == 404:
-                assert entry == {"shape": "not_held", "dcid": entry["dcid"]}
+                assert entry == {"ref": entry["ref"], "status": "not_held"}
             else:
                 assert single.status_code == 200, single.text
                 assert entry == single.json()
-        assert [entry["shape"] for entry in entries] == [
+        assert [entry.get("kind", entry.get("status")) for entry in entries] == [
             "stat_var",
-            "source",
+            "provenance",
             "not_held",
-            "entity",
-            "node",
-            "source",
+            "country",
+            "other",
+            "provenance",
         ]
         assert entries[0]["description"] == "Grants between a provider and a recipient"
 
@@ -858,7 +830,7 @@ class TestNodesBatch:
 
         with client:
             resp = client.post(
-                "/api/graph/nodes", json={"dcids": ["dc/base/BilateralFlow_Grants", "dc/base/Foo"]}
+                "/api/graph/nodes", json={"dcids": ["dc/base/Foo", "dc/base/Nowhere"]}
             )
 
         assert resp.status_code == 200, resp.text
@@ -950,28 +922,36 @@ class _BlockingGraphNodeReader:
         return self._delegate.node_names_many(dcids)
 
 
-def test_a_read_past_the_pool_size_queues_and_succeeds(caplog: pytest.LogCaptureFixture):
+def test_a_read_past_the_pool_size_is_refused_at_once():
+    """With every worker busy a read answers retryable 503 without reaching the reader. The
+    in-pool read and a read after it succeed."""
     delegate = FakeGraphNodeReader(nodes={"country/KEN": {"typeOf": ("Country",)}})
     graph = _BlockingGraphNodeReader(delegate)
     client = make_client(graph=graph, node_pool_size=1)
 
-    with client, caplog.at_level(logging.WARNING, logger="dfo_platform.executor"):
+    with client:
         responses = send_past_a_full_pool(
             client,
             lambda: client.get("/api/graph/node/country/KEN"),
             entered=graph.entered,
             release=graph.release,
         )
+        after = client.get("/api/graph/node/country/KEN")
 
-    assert [response.status_code for response in responses] == [200, 200], [
-        response.text for response in responses
-    ]
-    assert any("graph-dcp saturated" in record.message for record in caplog.records)
+    in_pool, refused = responses
+    assert in_pool.status_code == 200, in_pool.text
+    assert refused.status_code == 503, refused.text
+    assert refused.json()["code"] == "service_unavailable"
+    assert refused.json()["retryable"] is True
+    assert refused.headers["retry-after"] == "1"
+    assert after.status_code == 200, after.text
+    assert graph.entries == 2
 
 
-def test_a_read_queued_past_its_deadline_times_out_and_never_runs(monkeypatch):
-    """A read that times out while queued behind a worker that outlived its own door timeout
-    returns 504 and never reaches the reader. The next read runs once that worker returns."""
+def test_a_read_while_a_timed_out_read_holds_the_worker_is_refused_at_once(monkeypatch):
+    """A read that outlives its door timeout answers 504 and keeps its worker until it
+    returns, so a read sent meanwhile answers retryable 503 without reaching the reader. The
+    next read runs once that worker returns."""
     monkeypatch.setattr(node_door, "GRAPH_NODE_TIMEOUT_SECONDS", 0.2)
     delegate = FakeGraphNodeReader(nodes={"country/KEN": {"typeOf": ("Country",)}})
     graph = _BlockingGraphNodeReader(delegate)
@@ -980,14 +960,17 @@ def test_a_read_queued_past_its_deadline_times_out_and_never_runs(monkeypatch):
     with client:
         running = client.get("/api/graph/node/country/KEN")
         assert graph.entered.wait(timeout=5.0), "the first read never started"
-        queued = client.get("/api/graph/node/country/KEN")
+        refused = client.get("/api/graph/node/country/KEN")
         graph.release.set()
+        wait_until(lambda: client.app.state.graph_deps.dcp_executor._in_flight == 0)
         recovered = client.get("/api/graph/node/country/KEN")
 
     assert running.status_code == 504, running.text
-    assert queued.status_code == 504, queued.text
-    assert queued.json()["code"] == "timeout"
-    assert queued.json()["retryable"] is True
+    assert "retry-after" not in running.headers
+    assert refused.status_code == 503, refused.text
+    assert refused.headers["retry-after"] == "1"
+    assert refused.json()["code"] == "service_unavailable"
+    assert refused.json()["retryable"] is True
     assert recovered.status_code == 200, recovered.text
     assert graph.entries == 2
 

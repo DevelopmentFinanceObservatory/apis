@@ -1,4 +1,5 @@
-"""I10: the Datasets surface builds one client of each kind per process.
+"""I10: the Datasets surface builds one client of each kind per process, and the process's shared
+facet profile cache one graph client and SDMX pair of its own.
 
 The surface is composed with no injected dependency, as `deployed_surfaces()` composes it, over a
 fake database connection, a stub storage client, a stub Cloud Tasks client and a fake graph
@@ -104,10 +105,12 @@ def test_the_surface_builds_one_client_of_each_kind_across_a_lifespan_serving_se
         ):
             client.get(path)
 
+    # The second graph client and SDMX pair are the process's shared facet profile cache's
+    # (`materialise.shared_profiles`), which the surface acquires once with its own clients.
     assert counts == {
         "LiveArtifactStore": 1,
-        "OriginGraphClient": 1,
+        "OriginGraphClient": 2,
         "LiveTaskClient": 1,
-        f"SdmxClient {_SDMX_BASE}": 1,
-        f"SdmxClient {UN_BASE_URL}": 1,
+        f"SdmxClient {_SDMX_BASE}": 2,
+        f"SdmxClient {UN_BASE_URL}": 2,
     }

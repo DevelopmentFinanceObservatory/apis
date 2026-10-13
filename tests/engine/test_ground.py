@@ -15,7 +15,7 @@ class TestGraphref:
         graph = FakeGraph()
         ref = graphref("country/ETH", graph=graph)
         assert isinstance(ref, GraphRef)
-        assert ref.dcid == "country/ETH"
+        assert ref.ref == "country/ETH"
         assert ref.label == "Ethiopia"
 
     def test_absent_node_raises_grounding_miss(self):
@@ -40,7 +40,7 @@ class TestGraphref:
             ),
         ]:
             ref = graphref(dcid, graph=graph)
-            assert ref.dcid == dcid
+            assert ref.ref == dcid
             assert ref.label == expected_label
 
 
@@ -49,14 +49,14 @@ class TestGraphrefs:
         graph = FakeGraph()
         refs = graphrefs(["country/ETH", "country/KEN"], graph=graph)
         assert len(refs) == 2
-        dcids = {r.dcid for r in refs}
+        dcids = {r.ref for r in refs}
         assert dcids == {"country/ETH", "country/KEN"}
 
     def test_absent_node_dropped(self):
         graph = FakeGraph()
         refs = graphrefs(["country/ETH", "country/MISSING", "country/KEN"], graph=graph)
         assert len(refs) == 2
-        assert all(r.dcid != "country/MISSING" for r in refs)
+        assert all(r.ref != "country/MISSING" for r in refs)
 
     def test_all_absent(self):
         graph = FakeGraph()

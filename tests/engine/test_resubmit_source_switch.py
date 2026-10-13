@@ -169,11 +169,11 @@ class TestStandardPromoteSourceSwitch:
         spec = region.specs[0]
         source_slot = _find_source_slot(spec.resolved.slots)
         assert isinstance(source_slot.binding, BindingValue)
-        assert source_slot.binding.value.ref.dcid == _SOURCE_WDI
+        assert source_slot.binding.value.ref.ref == _SOURCE_WDI
         series = spec.resolved.observations.series[0]
         assert [p.date for p in series.points] == ["2020"]
         assert series.source_refs == [
-            ProvenanceRef(dcid=_SOURCE_WDI, label="WorldDevelopmentIndicators"),
+            ProvenanceRef(ref=_SOURCE_WDI, label="WorldDevelopmentIndicators"),
         ]
 
     def test_posted_source_dates_and_counts_the_bound_source(self):
@@ -195,11 +195,11 @@ class TestStandardPromoteSourceSwitch:
         same definition with no pin serves and lists the unrelated source."""
         graph = FakeGraph(obs=_GDP_TWO_SOURCE_OBS)
         region = _resolve_standard(_source_slot_value(_SOURCE_WDI), graph)
-        sources = [s.dcid for s in region.specs[0].resolved.trace.resolved_sources]
+        sources = [s.ref for s in region.specs[0].resolved.trace.resolved_sources]
         assert sources == [_SOURCE_WDI]
 
         unpinned = _resolve_standard(None, graph)
-        sources = [s.dcid for s in unpinned.specs[0].resolved.trace.resolved_sources]
+        sources = [s.ref for s in unpinned.specs[0].resolved.trace.resolved_sources]
         assert sources == [_SOURCE_UNRELATED]
 
     @pytest.mark.parametrize(
@@ -243,7 +243,7 @@ class TestStandardPromoteSourceSwitchStreaming:
         series = events[0].observations.series[0]
         assert [p.date for p in series.points] == ["2020"]
         assert series.source_refs == [
-            ProvenanceRef(dcid=_SOURCE_WDI, label="WorldDevelopmentIndicators")
+            ProvenanceRef(ref=_SOURCE_WDI, label="WorldDevelopmentIndicators")
         ]
 
     def test_stream_no_source_posted_is_byte_identical_to_before_this_feature(self):

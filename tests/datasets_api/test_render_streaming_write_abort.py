@@ -1,9 +1,9 @@
 """Streaming writes abort without recording an artifact when rendering fails mid-write.
 
 Tests use `LiveArtifactStore` with fake GCS and inventory, and set the spill threshold to
-8 bytes to exercise staged uploads. Failures come from the chunk iterator, CSV writer, or a
-deferred `no_summable_axis` refusal; the iterator case writes too little to open a staging
-writer because `TextIOWrapper` buffers the row.
+8 bytes to exercise staged uploads. Failures come from the chunk iterator, during the long
+output's period-grain pass or partway through its write, the CSV writer, or a deferred
+`no_summable_axis` refusal.
 """
 
 from __future__ import annotations
@@ -53,22 +53,37 @@ def _assert_nothing_landed(client: FakeGCSClient, inventory: RecordingArtifactIn
     assert inventory.calls == [], "no inventory row should have been recorded"
 
 
-def test_render_and_store_streaming_write_aborts_when_the_chunk_iterator_raises(monkeypatch):
+_ROW = ("dcid:MalariaGrantDisbursements", "country/KEN", "2020", 1.0, "USD")
+
+
+@pytest.mark.parametrize(
+    ("failing_pass", "rows", "staged"),
+    [
+        # Enough rows to pass `TextIOWrapper`'s buffer, so the write pass opens a staging writer
+        # and writes to it before the iterator raises.
+        pytest.param(2, 2_000, True, id="write-pass"),
+        # Long output reads the frame once for its period grain before writing anything.
+        pytest.param(1, 1, False, id="grain-pre-pass"),
+    ],
+)
+def test_render_and_store_streaming_write_aborts_when_the_chunk_iterator_raises(
+    monkeypatch, failing_pass, rows, staged
+):
     store, client, inventory = _live_store(monkeypatch)
+    passes: list[int] = []
 
     class _UpstreamFailure(Exception):
         pass
 
     def _chunks() -> Iterator[Table]:
-        yield Table(
-            columns=_COLUMNS,
-            rows=(("dcid:MalariaGrantDisbursements", "country/KEN", "2020", 1.0, "USD"),),
-        )
-        raise _UpstreamFailure("fetch died mid-stream")
+        passes.append(len(passes) + 1)
+        yield Table(columns=_COLUMNS, rows=(_ROW,) * rows)
+        if len(passes) == failing_pass:
+            raise _UpstreamFailure("fetch died mid-stream")
 
     with pytest.raises(_UpstreamFailure):
         render_and_store(
-            frame_chunks=_chunks(),
+            frame_chunks=_chunks,
             options=MintOptions(format="csv", bundle=False),
             spec={"spec_id": "streaming-write-abort"},
             provenance_refs=[],
@@ -77,13 +92,14 @@ def test_render_and_store_streaming_write_aborts_when_the_chunk_iterator_raises(
             content_version="sha256:" + "0" * 64,
             artifact_store=store,
             entity_columns=("recipient",),
-            enrichment=EnrichmentLookup(_GRAPH, type_kinds={}, parties={}),
+            enrichment=EnrichmentLookup(_GRAPH, parties={}),
             resolved_stat_var_refs=(),
             pivot_max_output_cells=5_000_000,
             prepared_at=PREPARED_AT,
             site=SITE,
         )
 
-    # `TextIOWrapper` buffers this row, so the iterator raises before `ArtifactSink` opens a
-    # staging writer.
+    assert passes == list(range(1, failing_pass + 1))
+    writers = [bucket.last_writer for bucket in client.buckets.values() if bucket.last_writer]
+    assert [writer.terminated for writer in writers] == ([True] if staged else [])
     _assert_nothing_landed(client, inventory)

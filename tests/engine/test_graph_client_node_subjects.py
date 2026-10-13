@@ -176,7 +176,7 @@ def test_a_warm_resubmit_reads_no_group_members(monkeypatch) -> None:
     from search.models import EntityGroup, ResubmitIdentityPayload
     from tests.engine._base_identity import PERSON_COUNT_SHAPE, subject_entity
 
-    group = EntityGroup(dcid="complete/LEAD", label="posted label")
+    group = EntityGroup(ref="complete/LEAD", label="posted label")
     _spec_id, identity = build_spec_identity(
         PERSON_COUNT_SHAPE,
         [],
@@ -202,8 +202,9 @@ def test_a_warm_resubmit_reads_no_group_members(monkeypatch) -> None:
 
 class _GroupGraph:
     """A types, members and labels stand-in that records each labels read. The node has
-    the graph type `node_type`, the `<-containedInPlace` subjects `members` and the
-    `Country` children `expansion`. `fail` names the read that raises `GraphInfraError`."""
+    the graph type `node_type` and the `<-containedInPlace` subjects `members`. `fail` names
+    the read that raises `GraphInfraError`. A region's members come from the membership
+    policy, so reading its `Country` children fails the test."""
 
     def __init__(
         self,
@@ -211,11 +212,10 @@ class _GroupGraph:
         *,
         fail: str | None = None,
         node_type: str = "Thing",
-        expansion: tuple[str, ...] = (),
         coverage: SubjectsCoverage = SubjectsCoverage.complete,
     ) -> None:
         self.members, self.fail, self.coverage = members, fail, coverage
-        self.node_type, self.expansion = node_type, expansion
+        self.node_type = node_type
         self.label_reads: list[list[str]] = []
 
     def node_types_batch(self, dcids):
@@ -229,9 +229,7 @@ class _GroupGraph:
         return {d: SubjectsPage(dcids=self.members, coverage=self.coverage) for d in dcids}
 
     def child_places_batch(self, parent_dcids, child_type, *, deadline=None):
-        if self.fail == "members":
-            raise GraphInfraError("members read failed")
-        return {d: list(self.expansion) for d in parent_dcids}
+        raise AssertionError("a region's members come from the membership policy")
 
     def node_labels_batch(self, dcids):
         self.label_reads.append(list(dcids))
@@ -240,9 +238,10 @@ class _GroupGraph:
         return dict.fromkeys(dcids, "graph label")
 
 
-_REGION = {"node_type": "Continent"}
-# The members read of a node of each graph type.
-_MEMBERS_READ = {"Thing": "node_subjects_many", "Continent": "child_places_batch"}
+_CONTINENT = "Continent"
+# The graph's members read of a node of each graph type. The membership policy answers a
+# region's members with no read.
+_MEMBERS_READ = {"Thing": ["node_subjects_many"], _CONTINENT: []}
 
 
 def _group_payload():
@@ -258,26 +257,33 @@ def _group_payload():
         entities=[subject_entity("a")],
         open_roles=(),
     )
-    posted = EntityGroup(dcid="complete/LEAD", label="posted label", entity_type="PostedType")
+    posted = EntityGroup(ref="complete/LEAD", label="posted label", entity_type="PostedType")
     return ResubmitIdentityPayload(identity=identity, entity_groups={"observationAbout": posted})
 
 
 @pytest.mark.parametrize(
-    ("graph", "groups", "degraded"),
+    ("graph", "held", "groups", "degraded"),
     [
-        (_GroupGraph(("a",)), [("complete/LEAD", "graph label", "Thing")], 0),
-        (_GroupGraph(("a",), fail="labels"), [], 1),
-        (_GroupGraph(("a",), fail="members"), [], 1),
-        (_GroupGraph(("a",), fail="types"), [], 1),
-        (_GroupGraph(("a", "b")), [], 0),
-        (_GroupGraph(("a",), coverage=SubjectsCoverage.capped), [], 0),
+        (_GroupGraph(("a",)), None, [("complete/LEAD", "graph label", "Thing")], 0),
+        (_GroupGraph(("a",), fail="labels"), None, [], 1),
+        (_GroupGraph(("a",), fail="members"), None, [], 1),
+        (_GroupGraph(("a",), fail="types"), None, [], 1),
+        (_GroupGraph(("a", "b")), None, [], 0),
+        (_GroupGraph(("a",), coverage=SubjectsCoverage.capped), None, [], 0),
         (
-            _GroupGraph(("a", "b"), expansion=("a",), **_REGION),
+            _GroupGraph(("a", "b"), node_type=_CONTINENT),
+            ("a",),
             [("complete/LEAD", "graph label", "Continent")],
             0,
         ),
-        (_GroupGraph(("a",), expansion=("a", "b"), **_REGION), [], 0),
-        (_GroupGraph(("a",), expansion=("a",), fail="members", **_REGION), [], 1),
+        (_GroupGraph(("a",), node_type=_CONTINENT), ("a", "b"), [], 0),
+        (
+            _GroupGraph(("a",), node_type=_CONTINENT),
+            None,
+            [("complete/LEAD", "graph label", "Continent")],
+            0,
+        ),
+        (_GroupGraph(("a",), node_type=_CONTINENT), "omitted", [], 0),
     ],
     ids=[
         "confirmed",
@@ -286,18 +292,28 @@ def _group_payload():
         "types-fail",
         "members-differ",
         "members-page-capped",
-        "region-confirmed-by-its-expansion",
-        "region-expansion-differs",
-        "region-expansion-fails",
+        "region-confirmed-by-the-policy",
+        "region-policy-members-differ",
+        "continent-the-policy-does-not-hold-reads-containment",
+        "region-the-policy-omits-has-no-members",
     ],
 )
-def test_resubmit_groups_keep_only_groups_the_graph_confirms(graph, groups, degraded) -> None:
-    """A group is kept only when its graph members match the role's entities, and a kept
-    group states the graph's label and type, whatever the posted ones say. A members page cut
-    off at its cap holds only part of the node's members, so its group is dropped. A continent's members
-    are its expansion, whatever its `<-containedInPlace` subjects are. A failed types,
-    members or labels read drops the group, says the answer is degraded, and the resubmit
-    still answers."""
+def test_resubmit_groups_keep_only_groups_the_graph_confirms(
+    declare_regions, graph, held, groups, degraded
+) -> None:
+    """A group is kept only when its members match the role's entities, and a kept group
+    states the graph's label and type, whatever the posted ones say. A members page cut off
+    at its cap holds only part of the node's members, so its group is dropped. A continent's
+    members are the ones the membership policy holds (`held`), whatever its
+    `<-containedInPlace` subjects are. A region the policy omits has no members, so its group
+    drops, with no containment read and no degraded note. A node the policy neither holds nor
+    omits is no region, whatever its graph type, so its members are its `<-containedInPlace`
+    subjects like any other node's. A failed types, members or labels read drops the
+    group, says the answer is degraded, and the resubmit still answers."""
+    if held == "omitted":
+        declare_regions({}, omitted=("complete/LEAD",))
+    elif held is not None:
+        declare_regions({"complete/LEAD": held})
     with recording_degraded_reads() as lost:
         result = resubmit_named_groups(_group_payload(), graph=graph, deadline=None)
 
@@ -307,13 +323,18 @@ def test_resubmit_groups_keep_only_groups_the_graph_confirms(graph, groups, degr
 
 
 @pytest.mark.parametrize(
-    "graph",
-    [_GroupGraph(("a",)), _GroupGraph(("a", "b"), expansion=("a",), **_REGION)],
+    ("graph", "depth"),
+    [(_GroupGraph(("a",)), 2), (_GroupGraph(("a", "b"), node_type=_CONTINENT), 1)],
     ids=["group", "region"],
 )
-def test_resubmit_groups_read_in_two_serial_steps(monkeypatch, graph) -> None:
+def test_resubmit_groups_read_in_two_serial_steps(
+    monkeypatch, declare_regions, graph, depth
+) -> None:
     """The posted nodes' labels are read beside their types, so a resubmit posting a group
-    reads its types and labels in one step and its members in the next."""
+    reads its types and labels in one step and its members in the next. The membership
+    policy answers a region's members with no read, so a region takes the first step alone."""
+    if graph.node_type == _CONTINENT:
+        declare_regions({"complete/LEAD": ("a",)})
     requests = VirtualRequests()
     requests.install(monkeypatch, doubles=(_GroupGraph,), pools=(resubmit_request,))
 
@@ -324,9 +345,9 @@ def test_resubmit_groups_read_in_two_serial_steps(monkeypatch, graph) -> None:
 
     assert group.label == "graph label"
     assert sorted(name for name, *_ in requests.spans) == sorted(
-        ["node_types_batch", "node_labels_batch", _MEMBERS_READ[graph.node_type]]
+        ["node_types_batch", "node_labels_batch", *_MEMBERS_READ[graph.node_type]]
     )
-    assert requests.serial_depth() == 2
+    assert requests.serial_depth() == depth
 
 
 def test_resubmit_groups_drop_a_group_naming_no_graph_node() -> None:

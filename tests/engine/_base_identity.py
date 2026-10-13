@@ -101,15 +101,15 @@ def make_identity(
 
 def subject_entity(dcid: str, label: str | None = None) -> Entity:
     """An observationAbout-role Entity, for a standard shape's base_identity.entities."""
-    return Entity(ref=GraphRef(dcid=dcid, label=label or dcid), role=EntityRoleSubject())
+    return Entity(ref=GraphRef(ref=dcid, label=label or dcid), role=EntityRoleSubject())
 
 
 def destination_entity(dcid: str, label: str | None = None) -> Entity:
     """A destination-axis (recipient)-role Entity, for a dev-finance base_identity.entities."""
     return Entity(
-        ref=GraphRef(dcid=dcid, label=label or dcid),
+        ref=GraphRef(ref=dcid, label=label or dcid),
         role=EntityRoleDirectional(
-            role=GraphRef(dcid=_RECIPIENT_ROLE_DCID, label="recipient"), axis="destination"
+            role=GraphRef(ref=_RECIPIENT_ROLE_DCID, label="recipient"), axis="destination"
         ),
     )
 
@@ -133,7 +133,7 @@ def where_slots_for(entities: list[Entity] | None) -> list[Slot]:
         if role == "destination":
             key = SlotKey(
                 axis="where",
-                property=GraphRef(dcid=_RECIPIENT_ROLE_DCID, label="recipient"),
+                property=GraphRef(ref=_RECIPIENT_ROLE_DCID, label="recipient"),
                 label="recipient",
             )
         elif role == "observationAbout":
@@ -151,8 +151,8 @@ def where_slots_for(entities: list[Entity] | None) -> list[Slot]:
 def origin_entity(dcid: str, label: str | None = None) -> Entity:
     """An origin-axis (provider/donor)-role Entity, for a dev-finance base_identity.entities."""
     return Entity(
-        ref=GraphRef(dcid=dcid, label=label or dcid),
+        ref=GraphRef(ref=dcid, label=label or dcid),
         role=EntityRoleDirectional(
-            role=GraphRef(dcid=_DONOR_ROLE_DCID, label="donor"), axis="origin"
+            role=GraphRef(ref=_DONOR_ROLE_DCID, label="donor"), axis="origin"
         ),
     )

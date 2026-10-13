@@ -27,6 +27,7 @@ from materialise.recipes import NonCurrencyUnitError, RateCoverageGapError, Reci
 from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.graph import Facet
 from search.engine.errors import EngineInputError
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import candidate_grounding as candidate_grounding_module
 from search.engine.region import candidate_unit_election as candidate_unit_election_module
 from search.engine.region import convertibility as convertibility_module
@@ -58,6 +59,7 @@ from tests.engine._harness import (
     walk_options,
     with_member_arcs,
 )
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 from tests.materialise._rate_table_support import (
     CONVERTIBLE_STAT_VAR_ARCS,
@@ -107,6 +109,8 @@ class _FixedBindLLM:
         self.also_plausible = [] if alone else [1]
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0, bindings=[], also_plausible=self.also_plausible, ask=None
@@ -264,14 +268,14 @@ def _run(*, materialise_graph: FakeGraphReader | None = None):
 
 def _spec_by_sv(result, sv: str):
     for spec in result.specs:
-        if any(item.ref.dcid == sv for item in spec.resolved.members):
+        if any(item.ref.ref == sv for item in spec.resolved.members):
             return spec
     raise AssertionError(f"{sv!r} not found in any surviving candidate spec")
 
 
 def _date_range_ends(result) -> dict[str, str | None]:
     return {
-        sv.ref.dcid: (sv.data_date_range.end if sv.data_date_range is not None else None)
+        sv.ref.ref: (sv.data_date_range.end if sv.data_date_range is not None else None)
         for spec in result.specs
         for sv in spec.resolved.members
     }
@@ -319,7 +323,7 @@ def test_a_literal_only_election_would_have_dropped_the_converting_candidate(mon
 
     monkeypatch.setattr(candidate_grounding_module, "_candidate_unit_elections", _literal_only)
     result = _run()
-    survivors = {item.ref.dcid for spec in result.specs for item in spec.resolved.members}
+    survivors = {item.ref.ref for spec in result.specs for item in spec.resolved.members}
     assert _SV_B not in survivors, (
         f"expected the literal-only perturbation to drop {_SV_B!r} (its own native GBP "
         f"facet is never a literal USD match); got status={result.status!r}, "
@@ -520,7 +524,7 @@ def test_an_alternates_dataset_disagreement_drops_it_and_the_elected_answer_stan
     _refuse_by_statvar(monkeypatch, {_SV_B: _dataset_disagreement(_SV_B)})
     result = _run()
     assert result.status == "definite", result
-    assert [item.ref.dcid for spec in result.specs for item in spec.resolved.members] == [_SV_A]
+    assert [item.ref.ref for spec in result.specs for item in spec.resolved.members] == [_SV_A]
 
 
 def test_the_elected_shapes_dataset_disagreement_still_fails_the_request(monkeypatch):
@@ -577,7 +581,7 @@ def test_mixed_refusals_answer_with_the_first_candidates_refusal(monkeypatch):
     assert result.cause is not None
     assert result.cause.code == "rate_missing"
     assert result.cause.entities == ["KES"]
-    assert [ref.dcid for ref in result.elected_stat_vars or []] == [_SV_A]
+    assert [ref.ref for ref in result.elected_stat_vars or []] == [_SV_A]
 
 
 def test_rate_gap_from_a_later_candidate_names_that_candidates_statvars(monkeypatch):
@@ -591,7 +595,7 @@ def test_rate_gap_from_a_later_candidate_names_that_candidates_statvars(monkeypa
     assert result.no_data_reason == "rate_coverage_gap"
     assert result.cause is not None
     assert result.cause.code == "rate_missing"
-    assert result.elected_stat_vars == [GraphRef(dcid=_SV_B, label="Amount B")]
+    assert result.elected_stat_vars == [GraphRef(ref=_SV_B, label="Amount B")]
 
 
 @pytest.mark.parametrize(
@@ -774,7 +778,7 @@ def test_a_sparse_candidate_survives_the_candidates_door():
     refusing, so it stays beside the first candidate."""
     result = _sparse_resolve(svs=(_SV_A, _SV_B), include_observations=False)
     assert result.status == "candidates", result
-    survivors = {item.ref.dcid for spec in result.specs for item in spec.resolved.members}
+    survivors = {item.ref.ref for spec in result.specs for item in spec.resolved.members}
     assert survivors == {_SV_A, _SV_B}
 
 

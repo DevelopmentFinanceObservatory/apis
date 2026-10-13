@@ -364,7 +364,7 @@ def test_note_narration_create(client: TestClient, revision_store: FakeRevisionS
     assert envelope["component"]["type"] == "note_narration"
     assert envelope["component"]["authorship"] == "model"
     assert envelope["provenance"]["inputs"] == []
-    assert envelope["provenance"]["sources"] == []
+    assert envelope["provenance"].get("sources", []) == []
 
 
 def test_source_card_create(client: TestClient, revision_store: FakeRevisionStore):

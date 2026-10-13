@@ -115,7 +115,7 @@ class TestDatasetResubmitDiscrimination:
         }
 
 
-_AFRICA = {"dcid": "africa", "label": "Africa", "entity_type": "Continent"}
+_AFRICA = {"ref": "africa", "label": "Africa", "entity_type": "Continent"}
 
 
 class TestEntityGroup:
@@ -131,7 +131,7 @@ class TestEntityGroup:
         schema = EntityGroup.model_json_schema()
 
         properties = schema["properties"]
-        assert properties["entity_type"]["anyOf"] == properties["dcid"]["anyOf"]
+        assert properties["entity_type"]["anyOf"] == properties["ref"]["anyOf"]
         assert properties["entity_type"]["default"] is None
         assert schema["required"] == ["label"]
         with pytest.raises(ValidationError):

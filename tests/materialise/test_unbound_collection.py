@@ -240,7 +240,7 @@ def _group_of_country_and_world_members(*, probe=None):
         [_subject_only(_BARE_B), _subject_only(_BARE_C)],
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(graph, parties={}),
         precomputed_probe=probe,
         **_SERVICE,
     )
@@ -278,7 +278,7 @@ def _mint(mint, requests):
         requests,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(graph, parties={}),
         **_SERVICE,
     )
 
@@ -340,7 +340,7 @@ def _wide_mint(graph: FakeGraphReader) -> tuple[str, dict[str, int]]:
         [_subject_only(bare) for bare in _WIDE],
         sdmx=_wide_sdmx(),
         graph=graph,
-        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(graph, parties={}),
         **_SERVICE,
     )
     return result.content_version, {

@@ -5,8 +5,14 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
+from code_index.labels import (
+    HOW_CONNECTIVES,
+    connective_for_phrase,
+    how_value_text,
+    role_class_text,
+)
 from code_index.shared import get_index
-from dfo_platform.roles import GENERIC_ROLE_WORDING, RoleAxis, RoleWording
+from dfo_platform.roles import GENERIC_ROLE_WORDING, RoleWording
 from search.models import OpenConstraintAxisFact, Slot, SlotValue
 
 from .labels import (
@@ -16,78 +22,35 @@ from .labels import (
     _join_labels,
 )
 
-_ADJECTIVAL_PROPERTIES = (
-    "gender",
-    "age",
-    "race",
-    "maritalStatus",
-    "nativity",
-    "residenceType",
-    "veteranStatus",
-    "armedForcesStatus",
-    "employment",
-    "educationalAttainment",
-    "povertyStatus",
-    "healthInsurance",
-    "disabilityStatus",
-)
-_PLACE_CATEGORY_PROPERTIES = (
-    "placeOfBirth",
-    "placeOfResidenceClassification",
-    "placeOfWork",
-    "placeCategory",
-    "locationType",
-    "jurisdiction",
-    "computerUsageLocation",
-    "internetUsageLocation",
-)
-
-_HOW_CONNECTIVES: Mapping[str, str] = {
-    **dict.fromkeys(_ADJECTIVAL_PROPERTIES, ""),
-    **dict.fromkeys(_PLACE_CATEGORY_PROPERTIES, " of "),
-    "crsPurpose": " for ",
-    "crsTypeOfFinance": " as ",
-    "crsCooperationModality": " through ",
-}
-"""The connective before a bound or agreed how value, by constraint property, with its
-surrounding spaces. Demographic properties modify the noun directly (""), place
-categories read "of", a sector "for", a finance type "as" ("as grants"), and a
-cooperation modality "through" ("through sector budget support"). A property not
-listed reads `_DEFAULT_HOW_CONNECTIVE`. One in `_ROLE_CLASS_PROPERTIES` reads its role's
-preposition."""
-
-_DEFAULT_HOW_CONNECTIVE = " for "
-
-_ROLE_CLASS_PROPERTIES: Mapping[str, RoleAxis] = {"idsCreditorType": "origin"}
-"""How properties whose values name a class of one flow role's entities. The graph
-describes `idsCreditorType` as "the class of lender an amount is owed to", so its value
-reads as the creditor role in the family's wording: "owed to bilateral creditors"."""
+# A public-sector debtor's debt is public, so "public or publicly guaranteed" says nothing
+# beside one. The graph says which debtor types are public-sector: `IDSDebtorTypePS` and the
+# values whose `specializationOf` chain reaches it (`CodeIndex.value_ancestors`).
+_DEBTOR_TYPE = "idsDebtorType"
+_PUBLIC_SECTOR_DEBTOR = "IDSDebtorTypePS"
+_GUARANTEE_STATUS = "guaranteeStatus"
+_PUBLIC_OR_PUBLICLY_GUARANTEED = "PublicOrPubliclyGuaranteed"
 
 
-def _how_connective(prop_dcid: str | None, wording: RoleWording) -> str:
-    """Return a property's connective with its surrounding spaces (`_HOW_CONNECTIVES`)."""
-    if prop_dcid is None:
-        return _DEFAULT_HOW_CONNECTIVE
-    if (axis := _ROLE_CLASS_PROPERTIES.get(prop_dcid)) is not None:
-        return f" {wording.noun(axis).preposition} "
-    return _HOW_CONNECTIVES.get(prop_dcid, _DEFAULT_HOW_CONNECTIVE)
+def _implied_properties(
+    slots: list[Slot], open_axis_facts: Sequence[OpenConstraintAxisFact]
+) -> frozenset[str]:
+    """The how properties whose one shared value another shared value implies, so the
+    sentence omits it: the guarantee status "public or publicly guaranteed" beside a
+    public-sector debtor type."""
+    shared = _shared_constraint_values(slots, open_axis_facts)
+    debtor = shared.get(_DEBTOR_TYPE)
+    if debtor is None or shared.get(_GUARANTEE_STATUS) != _PUBLIC_OR_PUBLICLY_GUARANTEED:
+        return frozenset()
+    public = debtor == _PUBLIC_SECTOR_DEBTOR or _PUBLIC_SECTOR_DEBTOR in (
+        get_index().value_ancestors(debtor)
+    )
+    return frozenset({_GUARANTEE_STATUS}) if public else frozenset()
 
 
 def _is_adjectival(slot: Slot) -> bool:
     """Whether a how-slot's constraint property reads as a pre-noun modifier."""
-    prop_dcid = slot.key.property.dcid if slot.key.property else None
-    return prop_dcid is not None and _HOW_CONNECTIVES.get(prop_dcid) == ""
-
-
-def _role_class_text(label: str, prop_dcid: str | None, wording: RoleWording) -> str:
-    """Name a role-class value as that role's entities: the label, then the role's plural
-    noun unless the label already ends in a plural ("bilateral" reads "bilateral
-    creditors", "bondholders" stays). Matching the final "s" is a text rule. The ten IDS
-    creditor-type labels it reads are pinned in tests/render/test_render_heading_words.py."""
-    axis = _ROLE_CLASS_PROPERTIES.get(prop_dcid) if prop_dcid is not None else None
-    if axis is None or label.endswith("s"):
-        return label
-    return f"{label} {wording.noun(axis).plural}"
+    prop_dcid = slot.key.property.ref if slot.key.property else None
+    return prop_dcid is not None and HOW_CONNECTIVES.get(prop_dcid) == ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,20 +109,23 @@ def how_values(
 
     Boolean members are omitted, except kept booleans. Adjectival folds disappear if any
     member is omitted. Post-noun values keep and join surviving members. Each property's
-    connective is declared once (`_how_connective`). A silent value the noun says instead
+    connective is declared once (`how_connective`). A silent value the noun says instead
     (a named or settled axis, a StatVar name's fold, or every member already in the
     graph name) is marked `HowValue.named_by_noun`. A value of a role-class property
     reads as that role's entities in ``wording`` ("owed to bilateral creditors",
-    `_role_class_text`). A value label ending in its property's name in brackets
-    ("bilateral (IDS creditor type)") reads without it.
+    `role_class_text`). A value label ending in its property's name in brackets
+    ("bilateral (IDS creditor type)") reads without it. A value another shared value
+    implies (`_implied_properties`) is silent in its place unless ``keep_how_properties``
+    names its property.
     """
     declarations = axis_declarations or {}
     order_index = {dcid: i for i, dcid in enumerate(declarations)}
     facts_by_property = {fact.property: fact for fact in open_axis_facts}
     how_slots = [slot for slot in slots if slot.key.axis == "how"]
     slots_by_property: dict[str | None, Slot] = {
-        (slot.key.property.dcid if slot.key.property else None): slot for slot in how_slots
+        (slot.key.property.ref if slot.key.property else None): slot for slot in how_slots
     }
+    implied = _implied_properties(slots, open_axis_facts) - keep_how_properties
 
     pre: list[HowValue] = []
     # Sort post-noun values by origin, declaration order, then property dcid.
@@ -167,7 +133,7 @@ def how_values(
     unresolved_props: list[str | None] = []
 
     for slot in how_slots:
-        prop_dcid = slot.key.property.dcid if slot.key.property else None
+        prop_dcid = slot.key.property.ref if slot.key.property else None
         values = _binding_values(slot.binding)
         if not values:
             unresolved_props.append(prop_dcid)
@@ -175,6 +141,10 @@ def how_values(
         is_kept = prop_dcid in keep_how_properties
         silent = prop_dcid in named_axes or (used_sv_name and not is_kept)
         property_label = slot.key.property.label if slot.key.property else None
+        sort_key = (0, order_index.get(prop_dcid, len(order_index)), prop_dcid or "")
+        if prop_dcid in implied and not silent:
+            entries.append((sort_key, HowValue(prop_dcid, "", "", slot)))
+            continue
         if _is_adjectival(slot):
             text = (
                 "" if silent else _adjectival_fold_text(values, graph_name, bypass_boolean=is_kept)
@@ -187,7 +157,7 @@ def how_values(
         value = HowValue(prop_dcid, "", "", slot, named_by_noun=silent)
         if not silent:
             member_texts = [
-                _role_class_text(text, prop_dcid, wording)
+                role_class_text(text, prop_dcid, wording)
                 for v in values
                 if (
                     text := _how_member_text(
@@ -202,7 +172,7 @@ def how_values(
             ]
             if member_texts:
                 phrase = _join_labels(member_texts)
-                connective = _connective_for_phrase(prop_dcid, phrase, wording)
+                connective = connective_for_phrase(prop_dcid, phrase, wording)
                 value = HowValue(prop_dcid, phrase, connective, slot)
             else:
                 named = _named_by_graph_name(
@@ -213,7 +183,7 @@ def how_values(
                     property_label=property_label,
                 )
                 value = HowValue(prop_dcid, "", "", slot, named_by_noun=named)
-        entries.append(((0, order_index.get(prop_dcid, len(order_index)), prop_dcid or ""), value))
+        entries.append((sort_key, value))
 
     # Include properties represented only by open-axis facts.
     for prop_dcid in facts_by_property:
@@ -226,6 +196,10 @@ def how_values(
         sort_key = (1, order_index.get(prop_dcid, len(order_index)), prop_dcid or "")
         named_by_stat_var = used_sv_name and prop_dcid not in keep_how_properties
         agreed = fact is not None and not fact.varies and fact.value is not None
+        if prop_dcid in implied and not named_by_stat_var:
+            if slot is not None:
+                entries.append((sort_key, HowValue(prop_dcid, "", "", slot)))
+            continue
         if (
             fact is not None
             and not fact.varies
@@ -233,12 +207,12 @@ def how_values(
             and not named_by_stat_var
         ):
             property_label = slot.key.property.label if slot and slot.key.property else None
-            value_text = _role_class_text(
-                _how_value_text(fact.value.dcid, fact.value.label, prop_dcid, property_label),
+            value_text = role_class_text(
+                _how_value_text(fact.value.ref, fact.value.label, prop_dcid, property_label),
                 prop_dcid,
                 wording,
             )
-            connective = _connective_for_phrase(prop_dcid, value_text, wording)
+            connective = connective_for_phrase(prop_dcid, value_text, wording)
             entries.append((sort_key, HowValue(prop_dcid, value_text, connective, slot)))
         elif slot is not None:
             named = (
@@ -262,7 +236,7 @@ def _is_boolean_member(value: SlotValue) -> bool:
     if value.literal is not None:
         return value.literal.strip().lower() in _BOOLEAN_MEMBER_TEXT
     if value.ref is not None:
-        return value.ref.dcid.rsplit("/", 1)[-1].lower() in _BOOLEAN_MEMBER_TEXT
+        return value.ref.ref.rsplit("/", 1)[-1].lower() in _BOOLEAN_MEMBER_TEXT
     return False
 
 
@@ -285,7 +259,7 @@ def _how_member_text(
     if not bypass_boolean and _is_boolean_member(value):
         return None
     if value.ref is not None:
-        label = _how_value_text(value.ref.dcid, value.ref.label, prop_dcid, property_label)
+        label = _how_value_text(value.ref.ref, value.ref.label, prop_dcid, property_label)
     elif value.literal:
         label = value.literal
     else:
@@ -321,22 +295,15 @@ def _named_by_graph_name(
 def _how_value_text(
     dcid: str, label: str | None, prop_dcid: str | None, property_label: str | None
 ) -> str:
-    """A how value's text: its code's short name (`CodeRow.short_name`, "grants" for
-    `CRSTypeOfFinance100`) when its code row belongs to ``prop_dcid``, else its label
-    without the property suffix (`_without_property_suffix`)."""
-    row = get_index().code_by_dcid(dcid)
-    if row is not None and row.short_name and row.code_system == prop_dcid:
-        return row.short_name
-    return _without_property_suffix(_humanize_ref(dcid, label), property_label)
-
-
-def _without_property_suffix(label: str, property_label: str | None) -> str:
-    """Drop a trailing bracketed property name the graph adds to tell code lists apart:
-    "bilateral (IDS creditor type)" reads "bilateral"."""
-    if not property_label:
-        return label
-    suffix = f" ({property_label})"
-    return label[: -len(suffix)] if label.lower().endswith(suffix.lower()) else label
+    """A how value's text (`code_index.labels.how_value_text`), over its label or, without
+    one, its humanised dcid."""
+    return how_value_text(
+        dcid,
+        _humanize_ref(dcid, label),
+        prop=prop_dcid,
+        property_label=property_label,
+        index=get_index(),
+    )
 
 
 def _adjectival_fold_text(
@@ -350,37 +317,6 @@ def _adjectival_fold_text(
             return ""
         labels.append(text)
     return _join_labels(labels)
-
-
-# Avoid doubling a preposition already present in the value phrase.
-_HOW_PHRASE_LEADS_WITH_PREPOSITION = frozenset(
-    {
-        "with",
-        "without",
-        "in",
-        "on",
-        "at",
-        "by",
-        "for",
-        "from",
-        "of",
-        "to",
-        "under",
-        "over",
-        "among",
-        "per",
-    }
-)
-
-
-def _connective_for_phrase(prop_dcid: str | None, phrase: str, wording: RoleWording) -> str:
-    """Return the connective for a value phrase after the noun, or a bare space when the
-    phrase starts with a preposition. An adjectival property's value that follows the
-    noun (an open axis's agreed value) reads `_DEFAULT_HOW_CONNECTIVE`."""
-    first_word = phrase.split(" ", 1)[0].lower()
-    if first_word in _HOW_PHRASE_LEADS_WITH_PREPOSITION:
-        return " "
-    return _how_connective(prop_dcid, wording) or _DEFAULT_HOW_CONNECTIVE
 
 
 def _shared_constraint_values(
@@ -398,8 +334,8 @@ def _shared_constraint_values(
         if slot.key.axis == "how" and slot.key.property and len(values) == 1:
             ref = values[0].ref
             if ref is not None:
-                shared[slot.key.property.dcid] = ref.dcid
+                shared[slot.key.property.ref] = ref.ref
     for fact in open_axis_facts:
         if not fact.varies and fact.value is not None:
-            shared.setdefault(fact.property, fact.value.dcid)
+            shared.setdefault(fact.property, fact.value.ref)
     return shared

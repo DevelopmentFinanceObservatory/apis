@@ -1,10 +1,12 @@
 """Test process-wide `get_index` caching and the `reset_index` rebuild hook.
-The autouse fixture clears cached state between tests."""
+The autouse fixture runs each test on an empty index and restores the process's own after it,
+so a later test in the worker does not parse the index again inside its own deadline."""
 
 from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -17,10 +19,9 @@ from .conftest import FIXTURE_PATH
 
 
 @pytest.fixture(autouse=True)
-def _reset_around() -> None:
-    reset_index()
-    yield
-    reset_index()
+def _isolated_index() -> Iterator[None]:
+    with shared_module._singleton.isolated():
+        yield
 
 
 def test_returns_the_same_object_on_repeated_calls():

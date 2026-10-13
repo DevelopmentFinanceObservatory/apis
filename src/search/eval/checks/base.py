@@ -11,13 +11,24 @@ Two kinds of check register here. A case check (``register``) scores a whole res
 part check (``register_part``) scores one response part against the status block that
 applies to it; registering one also registers a case check that runs it over every part
 (``over_parts``), and the ``parts`` check runs every part check on each part in order.
+
+``expected_parts`` pairs each expected part with the response in one pass, and every check
+reads the pairing from it. A part whose status the expectation does not accept pairs with
+no block, and so does an expected part the response did not return: one past the last part
+returned, or any part of an answer whose kind the case does not accept. No check scores an
+unpaired part. A check reads UNREACHED for it when a block the expectation holds for that
+part asserts the check (``cases.assertion_checks``), and n/a when none does. The declined
+reason, which no status block holds, reads UNREACHED when the answer leaves every expected
+part unpaired (``refusal``). With ``expect.parts`` the result names the parts behind it
+(``Result.parts``), so the gate can tell a failure on one part from an unreached part
+elsewhere.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Collection, Iterable, Mapping
 from collections.abc import Set as AbstractSet
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, Protocol, get_args
@@ -35,6 +46,7 @@ from search.eval.cases import (
     PartExpect,
     StatusExpect,
     StatusKey,
+    assertion_checks,
 )
 from series_coverage.loader import CoverageArtifactError
 
@@ -51,6 +63,9 @@ class Verdict(StrEnum):
     PASS = "pass"
     FAIL = "fail"
     UNVERIFIABLE = "unverifiable"
+    UNREACHED = "unreached"
+    """The expectation asserts the check, but the response's status or kind is one the case
+    does not accept, or an expected part is missing, so the check never ran."""
     NA = "n/a"
 
 
@@ -63,13 +78,23 @@ class Result:
     infra: bool = False
     """The check could not read the graph or coverage it scores against (``infra_error``).
     The verdict is UNVERIFIABLE, and the driver reports the sample as infrastructure."""
+    parts: Mapping[int, Verdict] | None = field(default=None, hash=False)
+    """On a case with ``expect.parts``, the verdict of each expected part that did not pass,
+    by position, as a read-only copy. None when the verdict concerns the whole answer, and
+    on a pass or n/a. Hashing leaves it out, so equal results still hash alike."""
+
+    def __post_init__(self) -> None:
+        if self.parts is None:
+            return
+        held = None if self.verdict in (Verdict.PASS, Verdict.NA) else dict(self.parts)
+        object.__setattr__(self, "parts", None if held is None else MappingProxyType(held))
 
     def at(self, prefix: str) -> Result:
         """The same verdict with ``prefix`` leading the detail of a failure."""
         if self.verdict in (Verdict.PASS, Verdict.NA):
             return self
         detail = f"{prefix}: {self.detail}" if self.detail else prefix
-        return Result(self.verdict, detail, self.infra)
+        return replace(self, detail=detail)
 
 
 PASS = Result(Verdict.PASS)
@@ -100,10 +125,10 @@ and lets anything else propagate, so a bug in a check stops the run."""
 
 
 def all_of(results: Iterable[Result]) -> Result:
-    """Every assertion must hold: the first failure, else the first unverifiable, else a
-    pass when anything passed, else n/a."""
+    """Every assertion must hold: the first failure, else the first unverifiable, else the
+    first unreached, else a pass when anything passed, else n/a."""
     collected = list(results)
-    for verdict in (Verdict.FAIL, Verdict.UNVERIFIABLE):
+    for verdict in (Verdict.FAIL, Verdict.UNVERIFIABLE, Verdict.UNREACHED):
         found = next((r for r in collected if r.verdict == verdict), None)
         if found is not None:
             return found
@@ -112,9 +137,9 @@ def all_of(results: Iterable[Result]) -> Result:
 
 def any_of(results: Iterable[Result]) -> Result:
     """One alternative must hold: a pass, else the first unverifiable (it may pass), else
-    the first failure, else n/a."""
+    the first failure, else the first unreached, else n/a."""
     collected = list(results)
-    for verdict in (Verdict.PASS, Verdict.UNVERIFIABLE, Verdict.FAIL):
+    for verdict in (Verdict.PASS, Verdict.UNVERIFIABLE, Verdict.FAIL, Verdict.UNREACHED):
         found = next((r for r in collected if r.verdict == verdict), None)
         if found is not None:
             return found
@@ -366,7 +391,7 @@ def register_part(
             raise ValueError(f"part check {name} is already registered")
         _PART_CHECKS[name] = fn
         if case_check:
-            register(name)(over_parts(fn))
+            register(name)(over_parts(fn, name=name))
         return fn
 
     return decorate
@@ -383,27 +408,104 @@ def response_parts(response: Mapping[str, Any], ctx: ScoreContext) -> list[PartV
     ]
 
 
-def part_pairs(
-    case: Case, response: Mapping[str, Any], ctx: ScoreContext
-) -> list[tuple[StatusExpect, PartView]]:
-    """Each response part with the status block that applies to it.
+def problem_code(response: Mapping[str, Any]) -> str | None:
+    """The registry code of a problem document, or None for any other body."""
+    code = response.get("code")
+    if "kind" in response or not isinstance(code, str):
+        return None
+    return code if isinstance(response.get("status"), int) else None
 
-    Without ``expect.parts``, the block for the root status applies to every part, so a
-    ``mixed`` block applies to each part of a mixed answer. With ``expect.parts``, each
-    expected part pairs with the response part at its position. A part whose status the
-    expectation does not accept pairs with nothing: ``disposition`` and ``parts`` fail it.
-    """
-    parts = response_parts(response, ctx)
+
+def answer_kind(response: Mapping[str, Any], ctx: ScoreContext) -> object:
+    """The root ``kind``, or ``problem`` for a problem document (``problem_code``)."""
+    return "problem" if problem_code(response) is not None else read_path(response, "kind", ctx)
+
+
+@dataclass(frozen=True)
+class ExpectedPart:
+    """One expected part paired with the response: the expectation that applies to it, its
+    position, the response part there, and the status block that part's status picks."""
+
+    expectation: Expect | PartExpect
+    index: int
+    part: PartView | None
+    block: StatusExpect | None
+    """None when the part pairs with no block, for the reason ``missed`` gives."""
+    missed: str = ""
+    """Why the part pairs with no block: ``kind: got 'problem'`` for an answer of a kind the
+    case does not accept, else the status the response returned or the part it did not."""
+
+
+def expected_parts(
+    case: Case, response: Mapping[str, Any], ctx: ScoreContext
+) -> list[ExpectedPart]:
+    """Each expected part paired with the response, in one pass.
+
+    Without ``expect.parts``, each response part reads the root status against the case's
+    expectation, so a ``mixed`` block applies to each part of a mixed answer; with them,
+    each expected part reads the part at its position. An answer of another kind the case
+    accepts has no expected part. One the case does not accept leaves every expected part
+    unpaired."""
     expect = case.expect
+    kind = answer_kind(response, ctx)
+    if kind != "resolution":
+        expected = [] if kind in expect.kinds else (expect.parts or [expect])
+        missed = f"kind: got {kind!r}"
+        return [ExpectedPart(e, i, None, None, missed) for i, e in enumerate(expected)]
+    parts = response_parts(response, ctx)
     if expect.parts is None:
-        block = status_block(expect, read_path(response, "status", ctx)) if parts else None
-        return [(block, part) for part in parts] if block is not None else []
-    pairs = []
-    for part_expect, part in zip(expect.parts, parts, strict=False):
-        block = status_block(part_expect, part.status)
-        if block is not None:
-            pairs.append((block, part))
-    return pairs
+        status = read_path(response, "status", ctx)
+        block = status_block(expect, status)
+        missed = "" if block is not None else f"status: got {status!r}"
+        return [ExpectedPart(expect, part.index, part, block, missed) for part in parts]
+    return [
+        _at_position(e, i, parts[i] if i < len(parts) else None) for i, e in enumerate(expect.parts)
+    ]
+
+
+def _at_position(expectation: PartExpect, index: int, part: PartView | None) -> ExpectedPart:
+    if part is None:
+        return ExpectedPart(expectation, index, None, None, f"parts[{index}]: not returned")
+    block = status_block(expectation, part.status)
+    missed = "" if block is not None else f"parts[{index}] status: got {part.status!r}"
+    return ExpectedPart(expectation, index, part, block, missed)
+
+
+def part_pairs(expected: Iterable[ExpectedPart]) -> list[tuple[StatusExpect, PartView]]:
+    """Each response part with the status block that applies to it, leaving out the parts
+    that pair with none: ``disposition`` and ``parts`` fail those."""
+    return [(e.block, e.part) for e in expected if e.block is not None and e.part is not None]
+
+
+def asserted(expectation: Expect | PartExpect, check: CheckName) -> bool:
+    """Whether a block ``expectation`` holds for an accepted status asserts ``check``."""
+    blocks = (expectation.for_status(s) for s in expectation.accepted_statuses)
+    return any(block is not None and check in assertion_checks(block) for block in blocks)
+
+
+def unreached(case: Case, expected: Iterable[ExpectedPart], *, check: CheckName) -> Result:
+    """UNREACHED when an expected part pairs with no block while a block the expectation
+    holds for it asserts ``check``, else n/a. The detail says why the first such part
+    missed, and with ``expect.parts`` the result names them all."""
+    missed = {
+        e.index: e.missed for e in expected if e.block is None and asserted(e.expectation, check)
+    }
+    if not missed:
+        return NA
+    detail = next(iter(missed.values()))
+    named = dict.fromkeys(missed, Verdict.UNREACHED) if case.expect.parts is not None else None
+    return Result(Verdict.UNREACHED, detail, parts=named)
+
+
+def by_part(case: Case, scored: Iterable[tuple[int, Result]], missed: Result) -> Result:
+    """``all_of`` over each scored part's result and the ``unreached`` result, naming the
+    parts that did not pass when the case has ``expect.parts``."""
+    scored = list(scored)
+    combined = all_of([*(result for _index, result in scored), missed])
+    if case.expect.parts is None:
+        return combined
+    parts = {i: r.verdict for i, r in scored if r.verdict not in (Verdict.PASS, Verdict.NA)}
+    return replace(combined, parts={**parts, **(missed.parts or {})})
 
 
 def status_block(expectation: Expect | PartExpect, status: object) -> StatusExpect | None:
@@ -413,14 +515,18 @@ def status_block(expectation: Expect | PartExpect, status: object) -> StatusExpe
     return expectation.for_status(key) if key is not None else None
 
 
-def over_parts(fn: PartCheckFn) -> CheckFn:
-    """The case check running ``fn`` on every part that has a status block."""
+def over_parts(fn: PartCheckFn, *, name: CheckName) -> CheckFn:
+    """The case check running ``fn``, registered as ``name``, on every part that has a status
+    block, and reading UNREACHED for a part that has none where a block it could have
+    asserts ``name``."""
 
     def check(case: Case, response: Mapping[str, Any], ctx: ScoreContext) -> Result:
-        return all_of(
-            run_part(fn, block, part, response, ctx)
-            for block, part in part_pairs(case, response, ctx)
+        expected = expected_parts(case, response, ctx)
+        scored = (
+            (part.index, run_part(fn, block, part, response, ctx))
+            for block, part in part_pairs(expected)
         )
+        return by_part(case, scored, unreached(case, expected, check=name))
 
     check.__doc__ = fn.__doc__
     return check
@@ -466,16 +572,30 @@ def answer_result(results: Mapping[str, Result], *, known: Collection[str]) -> R
     """The derived ``answer`` check on one sample, from the check results it holds.
 
     Leaving out the checks in ``known``: a failure when any fails, else unverifiable when
-    any is, else a pass. n/a counts as a pass. The detail names the first check behind the
-    verdict, and the result is infra when any check's read failed.
+    any is, else unreached when any is, else a pass. n/a counts as a pass. The detail names
+    the first check behind the verdict, and the result is infra when any check's read failed.
+    The parts behind it are those the checks that did not pass name, or None when one of
+    them concerns the whole answer.
     """
     counted = {name: r for name, r in results.items() if name not in known}
     infra = any(r.infra for r in counted.values())
-    for verdict in (Verdict.FAIL, Verdict.UNVERIFIABLE):
+    for verdict in (Verdict.FAIL, Verdict.UNVERIFIABLE, Verdict.UNREACHED):
         first = next((name for name, r in counted.items() if r.verdict == verdict), None)
         if first is not None:
-            return Result(verdict, first, infra=infra)
+            return Result(verdict, first, infra=infra, parts=_merged_parts(counted.values()))
     return Result(Verdict.PASS, infra=infra)
+
+
+def _merged_parts(results: Iterable[Result]) -> Mapping[int, Verdict] | None:
+    merged: dict[int, Verdict] = {}
+    for result in results:
+        if result.verdict in (Verdict.PASS, Verdict.NA):
+            continue
+        if result.parts is None:
+            return None
+        for index, verdict in result.parts.items():
+            merged[index] = all_of((Result(merged.get(index, Verdict.NA)), Result(verdict))).verdict
+    return merged
 
 
 def score_with_answer(

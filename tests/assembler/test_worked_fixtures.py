@@ -49,6 +49,6 @@ def test_worked_payload_validates_against_envelope_and_component_schema(
 
     registry = component_registry(release)
     jsonschema.Draft202012Validator(release.envelope_schema, registry=registry).validate(payload)
-    jsonschema.Draft202012Validator(release.component_schemas[member]).validate(
+    jsonschema.Draft202012Validator(release.component_schemas[member], registry=registry).validate(
         payload["component"]
     )

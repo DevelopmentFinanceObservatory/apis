@@ -1,16 +1,25 @@
 """Check role admission against `rangeIncludes` and its classes' `subClassOf` closure.
 
-Reads use generation-keyed caches. Missing graph nodes contribute no parent or range arcs."""
+Both arcs are read through the graph lookup's `node_arcs_many`. Through the origin client
+(`origin_catalogue.graph.OriginGraphClient`), a role property and the classes its range reaches
+are answered from the request's catalogue, whose arc tables hold every role property with its
+`rangeIncludes` and the `subClassOf` chain of each class in that range; a class outside them,
+such as an entity's own type below the range, is read from the graph. Reads use
+generation-keyed caches. Missing graph nodes contribute no parent or range arcs. A read takes
+the caller's absolute monotonic deadline, and one due after it has passed raises
+`GraphDeadlineExceededError` without reading."""
 
 from __future__ import annotations
 
 import functools
 import threading
+import time
 from collections.abc import Mapping, Sequence
 from concurrent.futures import Executor
 
 from cachetools import TLRUCache
 
+from dc_graph.errors import GraphDeadlineExceededError
 from dfo_platform.executor import run_in_executor_with_context
 from entity_resolution.types import GraphLookup
 from graph_generation import UNKNOWN_GENERATION, GenerationProvider, GenerationStamp
@@ -64,15 +73,22 @@ class Admission:
             self._range_cache.clear()
             self._parents_cache.clear()
 
-    async def admits(self, role_property: str, graph_type: str) -> bool:
+    async def admits(
+        self, role_property: str, graph_type: str, *, deadline: float | None = None
+    ) -> bool:
         """`role_property` is a graph property dcid such as `observationAbout`.
 
-        `graph_type` is the entity's `typeOf` value. Return `False` when it is empty."""
+        `graph_type` is the entity's `typeOf` value. Return `False` when it is empty. Every
+        read takes the absolute monotonic `deadline`; `None` leaves them unbounded.
+
+        Raises:
+            GraphDeadlineExceededError: a read was due after `deadline`.
+        """
         if not graph_type:
             return False
         # Capture before lookups and outside the cache lock so this call uses one stamp.
         stamp = self._generation.stamp()
-        range_classes = await self._range_includes(role_property, stamp)
+        range_classes = await self._range_includes(role_property, stamp, deadline)
         if not range_classes:
             return False
         if graph_type in range_classes:
@@ -80,7 +96,7 @@ class Admission:
         visited: set[str] = {graph_type}
         frontier: list[str] = [graph_type]
         while frontier:
-            parents_by_node = await self._subclass_parents_many(frontier, stamp)
+            parents_by_node = await self._subclass_parents_many(frontier, stamp, deadline)
             next_frontier: list[str] = []
             for node in frontier:
                 for parent in parents_by_node[node]:
@@ -92,20 +108,24 @@ class Admission:
             frontier = next_frontier
         return False
 
-    async def _range_includes(self, role_property: str, stamp: GenerationStamp) -> frozenset[str]:
+    async def _range_includes(
+        self, role_property: str, stamp: GenerationStamp, deadline: float | None
+    ) -> frozenset[str]:
         key = (stamp.key, role_property)
         with self._cache_lock:
             cached = self._range_cache.get(key)
         if cached is not None:
             return cached
-        fetched = await self._node_arcs_many((role_property,), properties=("rangeIncludes",))
+        fetched = await self._node_arcs_many(
+            (role_property,), properties=("rangeIncludes",), deadline=deadline
+        )
         values = frozenset((fetched.get(role_property) or {}).get("rangeIncludes", ()))
         with self._cache_lock:
             self._range_cache[key] = values
         return values
 
     async def _subclass_parents_many(
-        self, dcids: Sequence[str], stamp: GenerationStamp
+        self, dcids: Sequence[str], stamp: GenerationStamp, deadline: float | None
     ) -> dict[str, tuple[str, ...]]:
         """Return cached and fetched parents without re-reading after fetch.
 
@@ -120,7 +140,9 @@ class Admission:
                 else:
                     uncached.append(dcid)
         if uncached:
-            fetched = await self._node_arcs_many(uncached, properties=("subClassOf",))
+            fetched = await self._node_arcs_many(
+                uncached, properties=("subClassOf",), deadline=deadline
+            )
             with self._cache_lock:
                 for dcid in uncached:
                     arcs = fetched.get(dcid) or {}
@@ -130,7 +152,11 @@ class Admission:
         return result
 
     async def _node_arcs_many(
-        self, dcids: Sequence[str], *, properties: Sequence[str]
+        self, dcids: Sequence[str], *, properties: Sequence[str], deadline: float | None
     ) -> dict[str, dict[str, tuple[str, ...]] | None]:
-        fetch = functools.partial(self._graph.node_arcs_many, properties=properties)
+        if deadline is not None and time.monotonic() >= deadline:
+            raise GraphDeadlineExceededError("the request's deadline passed before a role read")
+        fetch = functools.partial(
+            self._graph.node_arcs_many, properties=properties, deadline=deadline
+        )
         return await run_in_executor_with_context(self._graph_executor, fetch, dcids)

@@ -106,9 +106,11 @@ def test_build_observations_window_years_decide_between_facets_that_both_reach_t
 
 
 def _recorded_and_estimated_obs() -> dict:
-    """Recorded values to 2024 with no method, and projections to 2032 in an `Estimated` facet."""
+    """Recorded values to 2024 with no method, and projections from 2024 to 2032 in an
+    `Estimated` facet. Each projection is its year plus 0.5, so a point shows which facet
+    served it, and both facets hold 2024."""
     recorded_years = range(1970, 2025)
-    estimated_years = range(2025, 2033)
+    estimated_years = range(2024, 2033)
     return {
         "Count_Person|country/KEN": [
             {
@@ -119,12 +121,12 @@ def _recorded_and_estimated_obs() -> dict:
                 "observations": [{"date": str(y), "value": float(y)} for y in recorded_years],
             },
             {
-                "earliestDate": "2025",
+                "earliestDate": "2024",
                 "latestDate": "2032",
                 "obsCount": len(estimated_years),
                 "provenanceId": "dc/base/WorldBankIDS",
                 "measurementMethod": "Estimated",
-                "observations": [{"date": str(y), "value": float(y)} for y in estimated_years],
+                "observations": [{"date": str(y), "value": y + 0.5} for y in estimated_years],
             },
         ],
     }
@@ -151,8 +153,10 @@ def test_build_observations_window_reaching_only_projections_serves_the_estimate
     assert series.facet["measurementMethod"].ref == "Estimated"
 
 
-def test_build_observations_window_overlapping_recorded_years_serves_the_recorded_facet():
-    """A 2020-2027 window overlaps both facets, so the recorded facet wins on count."""
+def test_build_observations_window_past_the_recorded_years_continues_with_the_estimates():
+    """A 2020-2027 window runs past the recorded series' last year, so the recorded facet
+    serves 2020 to 2024 and the `Estimated` facet continuing it serves 2025 to 2027. The
+    recorded value wins 2024, which both hold, and the series carries the recorded facet."""
     materialise_graph, materialise_sdmx = materialise_double_from_obs(_recorded_and_estimated_obs())
 
     observations, warn = build_observations_planned(
@@ -168,7 +172,16 @@ def test_build_observations_window_overlapping_recorded_years_serves_the_recorde
     assert warn is None
     assert observations is not None
     series = observations.series[0]
-    assert [p.date for p in series.points] == ["2020", "2021", "2022", "2023", "2024"]
+    assert [(p.date, p.value) for p in series.points] == [
+        ("2020", 2020.0),
+        ("2021", 2021.0),
+        ("2022", 2022.0),
+        ("2023", 2023.0),
+        ("2024", 2024.0),
+        ("2025", 2025.5),
+        ("2026", 2026.5),
+        ("2027", 2027.5),
+    ]
     assert "measurementMethod" not in series.facet
 
 

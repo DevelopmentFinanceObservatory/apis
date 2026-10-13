@@ -261,7 +261,7 @@ def test_the_answer_and_its_emitted_identity_mint_the_same_members():
         slot for slot in spec.definition.identity.slots if slot.property == "guarantee"
     )
     assert guarantee.binding.state == "unbound"
-    answered = [sv.ref.dcid for sv in spec.resolved.members]
+    answered = [sv.ref.ref for sv in spec.resolved.members]
     assert answered == _minted_members(
         spec.definition.identity.model_dump(mode="json", exclude_none=True)
     )
@@ -585,10 +585,11 @@ def test_a_resubmits_walk_is_named_by_the_posted_identitys_spec_id(
 
 
 def test_a_resubmit_dropping_a_group_for_a_failed_read_is_degraded():
-    """A named group whose members read fails drops, and the answer says it stands on less
-    than it read (`RegionResult.degraded`), so no cache keeps it."""
+    """A named group the membership policy does not hold, whose members read fails, drops,
+    and the answer says it stands on less than it read (`RegionResult.degraded`), so no cache
+    keeps it."""
     identity = _run([_TOTAL], member_graph=_walk_reader(_DEBT_NODES)).specs[0].definition.identity
-    groups = {"destination": EntityGroup(dcid="africa", label="Africa")}
+    groups = {"destination": EntityGroup(ref="testonia", label="Testonia")}
 
     class _GroupReadFails(FakeGraph):
         def node_subjects_many(self, *args, **kwargs):
@@ -629,7 +630,7 @@ def test_a_resubmit_leaving_the_guarantee_open_answers_the_total_the_mint_serves
     assert result.status == "definite"
     (spec,) = result.specs
     assert spec.definition.identity == identity
-    answered = [sv.ref.dcid for sv in spec.resolved.members]
+    answered = [sv.ref.ref for sv in spec.resolved.members]
     assert answered == _minted_members(identity.model_dump(mode="json", exclude_none=True))
     assert answered == [_TOTAL]
     assert MEMBERSHIP_UNVERIFIED not in _codes(result)
@@ -720,7 +721,7 @@ def test_a_subject_only_answer_whose_walk_settles_nothing_answers_its_recall_and
     )
 
     assert result.status == "definite"
-    assert [sv.ref.dcid for sv in result.specs[0].resolved.members] == [_POPULATION_FEMALE]
+    assert [sv.ref.ref for sv in result.specs[0].resolved.members] == [_POPULATION_FEMALE]
     assert MEMBERSHIP_UNVERIFIED in _codes(result)
 
 

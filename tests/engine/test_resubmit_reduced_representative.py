@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_spec_resubmit, resolve_variable
 from search.engine.region.state import EngineOptions
 from search.engine.retrieval.facts import read_constraints
@@ -48,6 +49,7 @@ from tests.engine._builders import (
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import walk_options
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 _ENTITY_DCID = "country/IND"
@@ -171,7 +173,7 @@ class TestReducedRepresentativeShapeReconstruction:
         axis_slot = next(
             s
             for s in spec.resolved.slots
-            if s.key.property is not None and s.key.property.dcid == axis_property
+            if s.key.property is not None and s.key.property.ref == axis_property
         )
         assert axis_slot.binding.kind == "unbound"
         assert axis_property in spec.resolved.inapplicable_slots
@@ -243,7 +245,7 @@ class TestReducedRepresentativeShapeReconstruction:
         age_slot = next(
             s
             for s in spec.resolved.slots
-            if s.key.property is not None and s.key.property.dcid == "age"
+            if s.key.property is not None and s.key.property.ref == "age"
         )
         assert age_slot.binding.kind == "unbound"
         assert "age" in spec.resolved.inapplicable_slots
@@ -372,15 +374,15 @@ class TestNarrowLeavesUntouchedAxisIntact:
         spec = region.specs[0]
 
         # Only the Rural_Female_Years18Onwards survivor asserts the retained age binding.
-        resolved_svs = [sv.ref.dcid for sv in spec.resolved.members]
+        resolved_svs = [sv.ref.ref for sv in spec.resolved.members]
         assert resolved_svs == [_RURAL_ADULT_SV]
 
         age_result = next(
-            s for s in spec.resolved.slots if s.key.property and s.key.property.dcid == "age"
+            s for s in spec.resolved.slots if s.key.property and s.key.property.ref == "age"
         )
         assert isinstance(age_result.binding, BindingValue)
         assert age_result.binding.value.ref is not None
-        assert age_result.binding.value.ref.dcid == "Years18Onwards"
+        assert age_result.binding.value.ref.ref == "Years18Onwards"
         assert "age" not in spec.resolved.inapplicable_slots
 
         age_identity_slot = next(s for s in spec.definition.identity.slots if s.property == "age")
@@ -431,14 +433,14 @@ class TestMixedPresenceSurvivorProbeCannotServeANonAsserter:
 
         if region.status == "definite":
             spec = region.specs[0]
-            resolved_svs = [sv.ref.dcid for sv in spec.resolved.members]
+            resolved_svs = [sv.ref.ref for sv in spec.resolved.members]
             # A definite response must serve members that support its age binding.
             assert _RURAL_SV not in resolved_svs
             age_result = next(
-                s for s in spec.resolved.slots if s.key.property and s.key.property.dcid == "age"
+                s for s in spec.resolved.slots if s.key.property and s.key.property.ref == "age"
             )
             if isinstance(age_result.binding, BindingValue) and age_result.binding.value.ref:
-                claimed_age = age_result.binding.value.ref.dcid
+                claimed_age = age_result.binding.value.ref.ref
                 served_arcs = graph.node_arcs_batch(resolved_svs)
                 asserted_ages = {
                     read_constraints(arcs).get("age")
@@ -631,15 +633,15 @@ class TestNarrowWithNoSurvivingAsserterRoutesThroughRefine:
         region = _elect(inp, _zero_asserter_narrow_graph(include_sibling=True))
         assert region.status == "definite", region.no_data_reason
         spec = region.specs[0]
-        resolved_svs = [sv.ref.dcid for sv in spec.resolved.members]
+        resolved_svs = [sv.ref.ref for sv in spec.resolved.members]
         assert resolved_svs == [_RURAL_ADULT_STANDARD_SV]
 
         age_result = next(
-            s for s in spec.resolved.slots if s.key.property and s.key.property.dcid == "age"
+            s for s in spec.resolved.slots if s.key.property and s.key.property.ref == "age"
         )
         assert isinstance(age_result.binding, BindingValue)
         assert age_result.binding.value.ref is not None
-        assert age_result.binding.value.ref.dcid == "Years18Onwards"
+        assert age_result.binding.value.ref.ref == "Years18Onwards"
         assert "age" not in spec.resolved.inapplicable_slots
 
     @pytest.mark.parametrize(
@@ -781,16 +783,16 @@ class TestASetAxisTheFamilyAssertsInFullStands:
         assert region.status == "definite", region.no_data_reason
         spec = region.specs[0]
 
-        resolved_svs = [sv.ref.dcid for sv in spec.resolved.members]
+        resolved_svs = [sv.ref.ref for sv in spec.resolved.members]
         assert resolved_svs == [_URBAN_SV]
 
         # The family asserts both genders at Urban, the male count holding no data, so the
         # gender set stands as posted.
         gender_result = next(
-            s for s in spec.resolved.slots if s.key.property and s.key.property.dcid == "gender"
+            s for s in spec.resolved.slots if s.key.property and s.key.property.ref == "gender"
         )
         assert isinstance(gender_result.binding, BindingSet)
-        assert {v.ref.dcid for v in gender_result.binding.values if v.ref is not None} == {
+        assert {v.ref.ref for v in gender_result.binding.values if v.ref is not None} == {
             "Female",
             "Male",
         }
@@ -884,6 +886,8 @@ class _SelectedAxisBindLLM:
     """Bind the source axis. Leave function and age absent for promotion."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0,
@@ -929,7 +933,7 @@ class TestFreshVsResubmitRoundTrip:
         )
         assert fresh_result.status == "definite"
         fresh_spec = fresh_result.specs[0]
-        assert [sv.ref.dcid for sv in fresh_spec.resolved.members] == [_SV_DOMESTIC_GOVT]
+        assert [sv.ref.ref for sv in fresh_spec.resolved.members] == [_SV_DOMESTIC_GOVT]
 
         base_identity = fresh_spec.definition.identity
         inp = ResubmitIdentityPayload(

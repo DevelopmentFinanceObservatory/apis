@@ -48,6 +48,11 @@ from .conftest import FakeGraphLookup
 _UNUSED_GRAPH_NAME = ("graph-name-should-not-be-used",)
 
 
+def _labels(result: NotFound) -> tuple[str, ...]:
+    """A `NotFound`'s near matches by name, as a person reads them."""
+    return tuple(entity.name for entity in result.near_matches)
+
+
 def _run(coro):
     return asyncio.run(coro)
 
@@ -151,7 +156,7 @@ def test_central_african_republic_still_resolves_country(shared_resolver):
         ("Southern Africa", "SouthernAfrica", "subregion"),
         ("South Asia", "SouthernAsia", "subregion"),
         ("Southeast Asia", "SouthEasternAsia", "subregion"),
-        ("Central America", "CentralAmericaExceptMexico", "subregion"),
+        ("Central America", "CentralAmerica", "subregion"),
         ("Latin America", "LatinAmericaAndCaribbean", "subregion"),
         ("Middle East", "WesternAsia", "subregion"),
         ("Caribbean", "Caribbean", "subregion"),
@@ -354,9 +359,9 @@ def test_gate_invariant_no_listed_survivor_falls_to_fallback_ladder(shared_resol
     assert lagos.entity.kind == "place_other"
     assert lagos.entity.name == "Lagos State"
     assert isinstance(nigria, NotFound)
-    assert nigria.near_matches == ("Nigeria",)
+    assert _labels(nigria) == ("Nigeria",)
     assert isinstance(guinea_bissau, NotFound)
-    assert guinea_bissau.near_matches == ("Guinea-Bissau",)
+    assert _labels(guinea_bissau) == ("Guinea-Bissau",)
 
 
 def test_trailing_period_typo_recovers_via_the_article_and_punctuation_retry(shared_resolver):
@@ -391,7 +396,7 @@ def test_gate_invariant_near_match_reported_but_never_wins(
     (result,) = _run(resolver.resolve([text]))
 
     assert isinstance(result, NotFound)
-    assert result.near_matches == near_matches
+    assert _labels(result) == near_matches
 
 
 def test_every_stored_name_keeps_its_owner_past_the_gate(shared_resolver):
@@ -410,7 +415,7 @@ def test_every_stored_name_keeps_its_owner_past_the_gate(shared_resolver):
     assert pairs
 
     outcomes = shared_resolver.run(
-        _resolve_batch_job, shared_resolver, [name for name, _ in pairs]
+        _resolve_batch_job, shared_resolver, None, [name for name, _ in pairs]
     ).result()
 
     unreachable = [
@@ -458,7 +463,8 @@ def test_european_union_falls_back_to_the_organisation_storing_the_alias(shared_
 
 @pytest.mark.parametrize("text", ["OECD", "G7"])
 def test_geo_organization_grouping_resolves_group(shared_resolver, text: str):
-    """The geo pack returns a group id. Graph-held member countries produce its Group result.
+    """The geo pack returns a group id, and the registry confirms the group and its members:
+    a graph holding none of them still yields the Group, and no graph read names a member.
 
     Member ids come from resolvekit's offline members_of lookup.
     """
@@ -466,9 +472,7 @@ def test_geo_organization_grouping_resolves_group(shared_resolver, text: str):
         _members_of_on_shared_thread, shared_resolver.resolver, text
     ).result()
     assert member_ids
-    graph = FakeGraphLookup(
-        nodes={dcid: {"typeOf": ("Country",), "name": _UNUSED_GRAPH_NAME} for dcid in member_ids}
-    )
+    graph = FakeGraphLookup()
     resolver = EntityResolver(graph=graph, shared=shared_resolver)
 
     (result,) = _run(resolver.resolve([text]))
@@ -477,6 +481,8 @@ def test_geo_organization_grouping_resolves_group(shared_resolver, text: str):
     assert result.entity is None
     assert [e.dcid for e in result.members] == sorted(member_ids)
     assert all(e.kind == "country" for e in result.members)
+    read = {dcid for dcids, _ in graph.node_arcs_many_calls for dcid in dcids}
+    assert not read & set(member_ids)
 
 
 def _parse_group_survivors_on_shared_thread(resolver, text: str):
@@ -486,22 +492,22 @@ def _parse_group_survivors_on_shared_thread(resolver, text: str):
 
 
 @pytest.mark.parametrize(
-    ("text", "group_name", "names_members"),
+    ("text", "group_name", "reading"),
     [
-        ("G7 countries", "G7", False),
-        ("the G7 countries", "G7", False),
-        ("G20 countries", "G20", False),
-        ("OECD countries", "OECD", False),
-        ("European Union", "European Union", False),
-        ("EU countries", "European Union", True),
-        ("EU member states", "European Union", True),
-        ("European Union member states", "European Union", True),
-        ("the EU member states.", "European Union", True),
-        ("DAC members", "OECD Development Assistance Committee", True),
+        ("G7 countries", "G7", "entity"),
+        ("the G7 countries", "G7", "entity"),
+        ("G20 countries", "G20", "members"),
+        ("OECD countries", "OECD", "entity"),
+        ("European Union", "European Union", "entity"),
+        ("EU countries", "European Union", "members"),
+        ("EU member states", "European Union", "members"),
+        ("European Union member states", "European Union", "members"),
+        ("the EU member states.", "European Union", "members"),
+        ("DAC members", "OECD Development Assistance Committee", "members"),
     ],
 )
 def test_group_phrase_recovers_the_bare_groups_membership(
-    shared_resolver, text: str, group_name: str, names_members: bool
+    shared_resolver, text: str, group_name: str, reading: str
 ):
     """Long group phrases recover the bare group's membership.
 
@@ -521,12 +527,12 @@ def test_group_phrase_recovers_the_bare_groups_membership(
 
     assert isinstance(result, Group), (text, result)
     assert [e.dcid for e in result.members] == sorted(member_ids)
-    assert result.names_members is names_members
+    assert result.reading == reading
 
 
 def test_an_alias_that_declares_no_members_resolves_as_the_whole(shared_resolver):
     """ "Central Africa" resolves through an alias row with no `members`, so the result
-    does not say its text names members."""
+    reads as the entity."""
     graph = FakeGraphLookup(
         nodes={"MiddleAfrica": {"typeOf": ("UNGeoRegion",), "name": _UNUSED_GRAPH_NAME}}
     )
@@ -536,7 +542,7 @@ def test_an_alias_that_declares_no_members_resolves_as_the_whole(shared_resolver
 
     assert isinstance(result, Resolved), result
     assert result.entity.dcid == "MiddleAfrica"
-    assert result.names_members is False
+    assert result.reading == "entity"
 
 
 def test_group_node_dcids_are_the_nodes_a_group_resolves_to(shared_resolver):
@@ -687,7 +693,7 @@ def test_ambiguous_candidates_ordered_by_dcid_not_entity_id(shared_resolver, mon
         entity_id="dfo_graph/ZZZOrg", confidence=0.9, canonical_name="ZZZ Org", pack_id="org"
     )
 
-    def fake_batch_job(resolver, texts):
+    def fake_batch_job(resolver, code_index, texts):
         return [_GateOutcome(survivors=(country, org), near_matches=())]
 
     monkeypatch.setattr(resolver_module, "_resolve_batch_job", fake_batch_job)
@@ -778,7 +784,7 @@ def test_fallback_not_found_when_neither_named_dcid_confirms(shared_resolver):
     (result,) = _run(resolver.resolve(["Nigria"]))
 
     assert isinstance(result, NotFound)
-    assert result.near_matches == ("Nigeria",)
+    assert _labels(result) == ("Nigeria",)
 
 
 def test_fallback_drops_a_description_match_and_keeps_the_listed_spelling(shared_resolver):
@@ -795,7 +801,7 @@ def test_fallback_drops_a_description_match_and_keeps_the_listed_spelling(shared
     typo, listed = _run(resolver.resolve(["Nigria", "Nigeria"]))
 
     assert isinstance(typo, NotFound)
-    assert typo.near_matches == ("Nigeria",)
+    assert _labels(typo) == ("Nigeria",)
     assert isinstance(listed, Resolved)
     assert listed.entity.dcid == "country/NGA"
 
@@ -863,7 +869,7 @@ def test_fallback_resolves_only_the_spelling_the_answering_node_lists(shared_res
     spaced, hyphenated = _run(resolver.resolve(["Guinea Bissau", "Guinea-Bissau"]))
 
     assert isinstance(spaced, NotFound)
-    assert spaced.near_matches == ("Guinea-Bissau",)
+    assert _labels(spaced) == ("Guinea-Bissau",)
     assert isinstance(hyphenated, Resolved)
     assert hyphenated.entity.dcid == "country/GNB"
 
@@ -874,9 +880,9 @@ def test_lru_avoids_a_second_resolvekit_job_for_a_cached_text(shared_resolver, m
     calls: list[list[str]] = []
     original = resolver_module._resolve_batch_job
 
-    def counting(resolver, texts):
+    def counting(resolver, code_index, texts):
         calls.append(list(texts))
-        return original(resolver, texts)
+        return original(resolver, code_index, texts)
 
     monkeypatch.setattr(resolver_module, "_resolve_batch_job", counting)
 
@@ -1031,9 +1037,9 @@ def _counting_resolve_batch_job(monkeypatch: pytest.MonkeyPatch) -> list[list[st
     calls: list[list[str]] = []
     original = resolver_module._resolve_batch_job
 
-    def counting(resolver, texts):
+    def counting(resolver, code_index, texts):
         calls.append(list(texts))
-        return original(resolver, texts)
+        return original(resolver, code_index, texts)
 
     monkeypatch.setattr(resolver_module, "_resolve_batch_job", counting)
     return calls

@@ -33,7 +33,7 @@ _NULL_INSTANCES: dict[type[BaseModel], BaseModel] = {
     IdentityFacetValueAbsent: IdentityFacetValueAbsent(ref=None),
     RoleAxisFact: RoleAxisFact(role="destination", member_count=None, members_available=False),
     StatVar: StatVar(
-        ref=GraphRef(dcid="Count_Person", label="Population"),
+        ref=GraphRef(ref="Count_Person", label="Population"),
         shape_id="shape",
         slot_values=[],
         constraint_properties=None,

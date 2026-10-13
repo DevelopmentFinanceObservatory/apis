@@ -113,7 +113,7 @@ _RESOLVED_STAT_VAR_REFS = ("dcid:SV_A", "dcid:SV_B", "dcid:SV_C")
 def _render(chunks: tuple[Table, ...]):
     artifact_store = FakeArtifactStore()
     rendered = render_and_store(
-        frame_chunks=iter(chunks),
+        frame_chunks=lambda: iter(chunks),
         options=MintOptions(
             format="csv", bundle=False, groupby=GroupbyOptions(by=["crsPurpose"], op="sum")
         ),
@@ -124,7 +124,7 @@ def _render(chunks: tuple[Table, ...]):
         content_version="sha256:" + "0" * 64,
         artifact_store=artifact_store,
         entity_columns=("recipient",),
-        enrichment=EnrichmentLookup(_GRAPH, type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(_GRAPH, parties={}),
         code_index=_INDEX,
         resolved_stat_var_refs=_RESOLVED_STAT_VAR_REFS,
         pivot_max_output_cells=5_000_000,

@@ -2,7 +2,13 @@
 
 The window must contain an observation for at least one resolved series. Series come
 back in selector order, and within a selector in the order its binding lists name the
-values. Series the lists leave unordered keep frame row order."""
+values. Series the lists leave unordered keep frame row order.
+
+A series is the rows sharing a `frame_view.series_keys` key, so the estimates continuing a
+series resolve with it, each row keeping its own method cell. The frame's continuation is
+`ResolvedFrame.continuation`. A selector that binds `measurementMethod` resolves rows by their
+own cells, so binding the continuing method draws
+the estimates alone."""
 
 from __future__ import annotations
 
@@ -13,10 +19,11 @@ from typing import cast
 from dfo_frame_grammar import TIME_PERIOD_COLUMN
 
 from assembler.errors import BindingInvalid, ResourceExhausted, escape_pointer_segment
-from assembler.frame_view import dimension_columns, facet_dimension_names, hashable_cell
+from assembler.frame_view import dimension_columns, facet_dimension_names, series_keys
 from assembler.limits import MAX_SELECTORS, MAX_SERIES_PER_COMPONENT, PER_DIMENSION_LISTING_CAP
-from assembler.ports import DimensionView, ResolvedFrame, StructuralView
+from assembler.ports import Continuation, DimensionView, ResolvedFrame, StructuralView
 from assembler.series_id import Coordinates, mint_series_ids
+from materialise.bundle_columns import MEASUREMENT_METHOD_COLUMN
 
 __all__ = ["ResolvedSeries", "resolve_selectors"]
 
@@ -67,15 +74,19 @@ def resolve_selectors(
         dimension_by_name=dimension_by_name,
     )
 
-    groups = _group_by_coordinate(
-        columns=columns, rows=raw_rows, coordinate_columns=coordinate_columns
+    continuation = resolved_frame.continuation
+    groups = _group_by_coordinate(columns=columns, rows=raw_rows, continuation=continuation)
+    cell_groups = (
+        groups
+        if continuation is None
+        else _group_by_coordinate(columns=columns, rows=raw_rows, continuation=None)
     )
     # Full legal-value sets support membership checks. Display listings expose
     # only the capped subset.
     legal_values = {
         column: frozenset(
             value
-            for coordinates in groups
+            for coordinates in cell_groups
             for name, value in coordinates
             if name == column and value is not None
         )
@@ -89,7 +100,7 @@ def resolve_selectors(
                 _resolve_by_id(
                     selector_index=selector_index,
                     target_id=str(selector["id"]),
-                    groups=groups,
+                    groups={**cell_groups, **groups},
                 )
             )
             continue
@@ -102,7 +113,9 @@ def resolve_selectors(
                 facet_names=facet_names,
                 dimension_by_name=dimension_by_name,
                 legal_values=legal_values,
-                groups=groups,
+                groups=cell_groups
+                if _binds_axis(selector=selector, continuation=continuation)
+                else groups,
                 structural_view=resolved_frame.structural_view,
                 labels=resolved_frame.labels,
             )
@@ -128,22 +141,28 @@ def resolve_selectors(
 
 
 def _group_by_coordinate(
-    *, columns: Sequence[str], rows: Sequence[Sequence[object]], coordinate_columns: Sequence[str]
+    *,
+    columns: Sequence[str],
+    rows: Sequence[Sequence[object]],
+    continuation: Continuation | None,
 ) -> dict[Coordinates, tuple[Row, ...]]:
-    """Groups rows by normalized coordinate keys, rendering structured units for hashing.
+    """Groups rows by their `series_keys` key under `continuation`, rendering structured
+    units for hashing.
 
     Returned rows retain raw cells so binding preserves the original unit."""
-    indices = {column: columns.index(column) for column in coordinate_columns}
     groups: dict[Coordinates, list[Row]] = {}
-    for row in rows:
-        coordinates = cast(
-            "Coordinates",
-            tuple(sorted((name, hashable_cell(row[index])) for name, index in indices.items())),
-        )
-        if coordinates not in groups:
-            groups[coordinates] = []
-        groups[coordinates].append(dict(zip(columns, row, strict=True)))
+    for coordinates, row in zip(
+        series_keys(columns=columns, rows=rows, continuation=continuation), rows, strict=True
+    ):
+        groups.setdefault(coordinates, []).append(dict(zip(columns, row, strict=True)))
     return {coordinates: tuple(group_rows) for coordinates, group_rows in groups.items()}
+
+
+def _binds_axis(*, selector: Mapping[str, object], continuation: Continuation | None) -> bool:
+    """Whether `selector` binds `measurementMethod` on a frame with a continuation."""
+    return continuation is not None and any(
+        str(binding["dimension"]) == MEASUREMENT_METHOD_COLUMN for binding in _bindings(selector)
+    )
 
 
 def _check_series_estimate(

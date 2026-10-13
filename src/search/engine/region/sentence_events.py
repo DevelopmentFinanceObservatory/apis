@@ -35,6 +35,7 @@ from search.engine.retrieval.bound_values import (
     apply_slot_summability,
     shape_part_datasets,
     shape_pins,
+    shape_population_arcs,
     shape_query,
 )
 from search.engine.shape import ShapeDraft, identity_shape_for
@@ -67,6 +68,14 @@ from search.render.tokens import plan_tokens
 # Values shown per slot in the shape-skeleton event's slot_options, same order
 # of magnitude as the bind prompt's own _MAX_TAXONOMY_VALUES_SHOWN (bind.py).
 _SHAPE_EVENT_TAXONOMY_CAP = 15
+
+
+async def _member_count(shape_draft: ShapeDraft) -> int:
+    """The number of members `shape_draft` stands for (`shape_population_arcs`), the
+    population the answer reads from. A held family's members are read off the event loop."""
+    if shape_draft.held_family is None:
+        return len(shape_draft.sv_arc_facts or {})
+    return len(await asyncio.to_thread(shape_population_arcs, shape_draft))
 
 
 def _empty_slots_for(slot_keys: list[SlotKey]) -> list[Slot]:
@@ -120,7 +129,7 @@ async def _build_shape_event(
     slot_keys: list[SlotKey] = []
     slot_options: list[SlotOptions] = []
     for skd in shape_draft.slot_keys:
-        prop_ref = GraphRef(dcid=skd.property_dcid, label=skd.label) if skd.property_dcid else None
+        prop_ref = GraphRef(ref=skd.property_dcid, label=skd.label) if skd.property_dcid else None
         slot_label = (
             _humanize_ref(skd.property_dcid, skd.label)
             if skd.property_dcid is not None
@@ -136,7 +145,7 @@ async def _build_shape_event(
             options = [
                 SlotOption(
                     value=SlotValue(
-                        ref=GraphRef(dcid=o.dcid, label=labels[o.dcid]), value_kind=value_kind
+                        ref=GraphRef(ref=o.dcid, label=labels[o.dcid]), value_kind=value_kind
                     ),
                     relation=o.relation,
                     member_count=o.member_count,
@@ -148,7 +157,7 @@ async def _build_shape_event(
             dcids = taxonomy.get(key, [])[:_SHAPE_EVENT_TAXONOMY_CAP]
             options = [
                 SlotOption(
-                    value=SlotValue(ref=GraphRef(dcid=d, label=labels[d]), value_kind=value_kind)
+                    value=SlotValue(ref=GraphRef(ref=d, label=labels[d]), value_kind=value_kind)
                 )
                 for d in dcids
                 if d in labels
@@ -164,6 +173,7 @@ async def _build_shape_event(
             )
 
     slots = _empty_slots_for(slot_keys)
+    member_count = await _member_count(shape_draft)
     # Pre-bind: no confirmed five-tuple ref lookup has run yet. Do not project
     # an unresolved population-type dcid into the sentence plan: it can otherwise
     # be split and title-cased as if it were a confirmed label. Other five-tuple
@@ -173,7 +183,7 @@ async def _build_shape_event(
         shape_draft,
         slot_keys,
         five_tuple_refs={},
-        member_count=len(shape_draft.sv_arc_facts or {}),
+        member_count=member_count,
         members=None,
         suppress_unresolved_population_type_ref=True,
     )
@@ -253,11 +263,12 @@ async def _build_sentence_event(
         _,  # warnings: discarded, SentenceEvent has no warnings field
         _labels,
     ) = grounding
+    member_count = await _member_count(shape_draft)
     shape_model = build_shape_model(
         shape_draft,
         slot_key_models,
         five_tuple_refs,
-        member_count=len(shape_draft.sv_arc_facts or {}),
+        member_count=member_count,
         members=None,
     )
     entities = [_build_entity(rd, er, etr, _role_refs) for rd, er, etr in entity_data]

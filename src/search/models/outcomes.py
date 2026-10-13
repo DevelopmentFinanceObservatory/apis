@@ -10,6 +10,7 @@ from pydantic import (
 from dfo_platform import Cause
 
 from .base import StrictModel
+from .grammar import GraphRef
 from .identity import IdentityCurrency
 from .request import ParsedInput
 from .spec import NearestRealSpec, Spec
@@ -21,6 +22,12 @@ from .vocab import (
     NoDataReason,
     Ordering,
     SourceRefKind,
+)
+
+# Refusals whose flagged_match records the elected spec without a gate: each refuses before,
+# or regardless of, an availability verdict.
+_UNGATED_FLAGGED_MATCH_REASONS: frozenset[NoDataReason] = frozenset(
+    {"role_incompatible", "qualifier_not_bound", "denominator_not_available"}
 )
 
 # ---------------------------------------------------------------------------
@@ -89,7 +96,7 @@ class AmbiguousEntityCandidate(StrictModel):
     dataclass's `name` (this contract's own vocabulary for a display
     string, matching ResolvedEntity.label)."""
 
-    dcid: str = Field(description="the candidate's own dcid")
+    ref: str = Field(description="the candidate's own dcid")
     label: str = Field(description="the candidate's display name")
     kind: str = Field(
         description=(
@@ -139,7 +146,10 @@ class AmbiguousSourceGroup(StrictModel):
     the sources it could name -- one entry of NoData.ambiguous_sources."""
 
     text: str = Field(
-        description="the ambiguous wording; equals some restatement.sources[i].text on the part"
+        description=(
+            "the ambiguous wording; equals some restatement.sources[i].text on the part, or "
+            "its restatement.source_code for source_code_ambiguous"
+        )
     )
     candidates: list[AmbiguousSourceCandidate] = Field(
         description=(
@@ -161,6 +171,28 @@ class UnitAlternative(StrictModel):
         )
     )
     label: str = Field(description="the currency's display name, or the role's reader-facing noun")
+
+
+class NoDataDenominator(StrictModel):
+    """The denominators a denominator_not_available refusal compared: the one the question
+    named and the one its flagged match divides by -- NoData.denominator."""
+
+    asked: GraphRef | None = Field(
+        default=None,
+        description=(
+            "the denominator the question named, as the search read it from the bases "
+            "the candidate series divide by; null when the question named none, or named "
+            "one that no candidate series divides by"
+        ),
+    )
+    found: GraphRef | None = Field(
+        default=None,
+        description=(
+            "the denominator the flagged match divides by; null when it states none "
+            "(a level such as an amount in US dollars, or a series whose name alone "
+            "gives its base)"
+        ),
+    )
 
 
 class NoData(StrictModel):
@@ -202,15 +234,23 @@ class NoData(StrictModel):
             'published at all) and "variable_not_resolved" (no StatVar matched '
             "at all); "
             '"denominator_not_available" means the '
-            "query asks for a normalised form and no denominator-bearing variable "
-            'exists; "no_observations" means a StatVar WAS confirmed to exist but '
+            "query asks for a normalised form (per person, per area, a rate or a share) "
+            "or names a denominator, and the matched series is not in that form or "
+            'divides by another base; "no_observations" means a StatVar WAS confirmed to exist but '
             "has no observation at the resolved entity (it exists, but not data "
             'here); "facet_not_available" means observations exist at the entity, '
             'none under the requested facet values; "role_incompatible" means the '
             "role is real, and the StatVar does not declare it; "
             '"role_signature_incompatible" means the resolved StatVars carry '
             "incompatible role signatures and no partition into candidates was "
-            'possible; "qualifier_not_bound" means the variable resolved to a '
+            'possible; "source_code_not_held" means no variable held under the part\'s '
+            "source_code by a source search serves can answer the part: no served source "
+            "holds the code, the part's sources exclude every source that does, or the "
+            "code's variables cannot answer the part as asked; "
+            '"source_code_ambiguous" means two of the part\'s sources hold its source_code; '
+            '"source_code_shares_variable" means the source_code\'s variables answer other '
+            "codes of its source too, so search cannot serve the code alone; "
+            '"qualifier_not_bound" means the variable resolved to a '
             "series family, but a narrowing term the request's text named "
             "bound no constraint slot: no code system in the packaged index "
             "carries it, or its registered rows landed in no binding"
@@ -230,7 +270,9 @@ class NoData(StrictModel):
             "derived from reason, never independently settable: "
             '"entity_not_resolved", "entity_ambiguous", "entity_set_too_large", '
             '"entity_role_not_admitted", "variable_not_resolved", "role_not_resolved", '
-            '"source_not_resolved", "source_ambiguous", and "unit_not_resolved" are '
+            '"source_not_resolved", "source_ambiguous", "source_code_not_held", '
+            '"source_code_ambiguous", "source_code_shares_variable", and '
+            '"unit_not_resolved" are '
             '"unresolved" (the request could not be read into the graph); every other '
             'code is "absent" (the read request names a place holding nothing)'
         ),
@@ -267,9 +309,11 @@ class NoData(StrictModel):
             "exactly when flagged_match or alternate_match is present, except a "
             "role_incompatible refusal before or during materialise whose flagged_match "
             "records the confirmed elected identity without a gate (role incompatibility "
-            "prevents an availability verdict), or a qualifier_not_bound refusal, whose "
+            "prevents an availability verdict), a qualifier_not_bound refusal, whose "
             "flagged_match records the graph-confirmed elected spec without a gate "
-            "because the qualifier guard refuses before an availability verdict exists. "
+            "because the qualifier guard refuses before an availability verdict exists, "
+            "or a denominator_not_available refusal, whose flagged_match records the "
+            "elected spec the form or denominator check refused. "
             "Absent on every other no_data outcome. At most one of "
             "flagged_match and alternate_match is present at a time."
         ),
@@ -278,10 +322,11 @@ class NoData(StrictModel):
         default=None,
         description=(
             "optional; the elected variable's own Spec, present whenever gate fired and a "
-            "groundable identity exists for the elected shape, or for a role_incompatible "
-            "or qualifier_not_bound refusal that records its graph-confirmed identity "
-            "without a gate: role incompatibility prevents an availability verdict, and "
-            "the qualifier guard refuses before one exists. "
+            "groundable identity exists for the elected shape, or for a role_incompatible, "
+            "qualifier_not_bound or denominator_not_available refusal that records its "
+            "graph-confirmed identity without a gate: role incompatibility prevents an "
+            "availability verdict, the qualifier guard refuses before one exists, and the "
+            "denominator check refuses the series for its form, not its data. "
             "See gate for which check failed. "
             "available_at_place is False and confidence is low on "
             "gate=no_member_has_data_at_place; both stay at their not-assessed default "
@@ -350,8 +395,9 @@ class NoData(StrictModel):
             "the source wordings responsible for a source-resolution outcome, in query "
             "order: every included wording that matched no admitted source for "
             "source_not_resolved, "
-            "every ambiguous wording for source_ambiguous. Empty for every other no_data "
-            "reason. rendered_sentence may quote the same wording for people, but clients "
+            "every ambiguous wording for source_ambiguous, and the part's source_code for "
+            "source_code_not_held, source_code_ambiguous and source_code_shares_variable. "
+            "Empty for every other no_data reason. rendered_sentence may quote the same wording for people, but clients "
             "must not parse it."
         ),
     )
@@ -359,9 +405,11 @@ class NoData(StrictModel):
         default_factory=list,
         description=(
             "every ambiguous source wording responsible for a source_ambiguous outcome, in "
-            "query order, each paired with the admitted sources it could name. Empty for "
-            "every other no_data reason. A client posts the chosen candidate's ref on "
-            "that mention of data_query and posts the part back."
+            "query order, each paired with the admitted sources it could name, and for "
+            "source_code_ambiguous the part's source_code paired with the provenances "
+            "holding it. Empty for every other no_data reason. A client posts the chosen "
+            "candidate's ref on that mention of data_query, or for a source code as a new "
+            "mention in its sources, and posts the part back."
         ),
     )
     unit_alternatives: list[UnitAlternative] | None = Field(
@@ -392,17 +440,29 @@ class NoData(StrictModel):
             "must not parse it."
         ),
     )
+    denominator: NoDataDenominator | None = Field(
+        default=None,
+        description=(
+            "the denominator the question named and the one the flagged match divides "
+            "by, set on every denominator_not_available refusal the engine returns "
+            "after electing a series; null for every other no_data reason. A client "
+            "can offer the flagged match, or fetch its nearest_real level and the "
+            "denominator asked and divide them"
+        ),
+    )
     data_query: ParsedInput | None = Field(
         default=None,
         description=(
             "the parsed form of this part, one part long, set when reason is "
-            "entity_ambiguous or source_ambiguous: its variable text, entities with "
+            "entity_ambiguous, source_ambiguous or source_code_ambiguous: its variable "
+            "text, entities with "
             "role_text, time, unit, sources, and operations. On entity_ambiguous every "
             "entity that resolved to one graph node is pinned to its dcid and each "
             "ambiguous wording left unpinned. A named group stays unpinned too, so it "
             "resolves to the same members again. On source_ambiguous every source "
             "mention that resolved carries its ref and each ambiguous wording carries "
-            "none. A client pins the candidate the user picks from ambiguous_entities or "
+            "none. On source_code_ambiguous it carries the code and the part's mentions. "
+            "A client pins the candidate the user picks from ambiguous_entities or "
             "ambiguous_sources and posts the part back, through the parsed door "
             "or as a dataset_resubmit parsed entry. It is set when the part has no "
             "restatement too: an entity whose direction the question leaves unnamed "
@@ -423,6 +483,12 @@ class NoData(StrictModel):
         return self
 
     @model_validator(mode="after")
+    def _validate_denominator(self) -> NoData:
+        if self.denominator is not None and self.reason != "denominator_not_available":
+            raise ValueError("denominator belongs to reason='denominator_not_available' only")
+        return self
+
+    @model_validator(mode="after")
     def _validate_gate(self) -> NoData:
         if self.gate == "only_alternate_has_data":
             if self.alternate_match is None or self.flagged_match is not None:
@@ -431,7 +497,7 @@ class NoData(StrictModel):
             if self.flagged_match is None or self.alternate_match is not None:
                 raise ValueError(f"{self.gate} requires flagged_match")
         elif (
-            self.reason not in ("role_incompatible", "qualifier_not_bound")
+            self.reason not in _UNGATED_FLAGGED_MATCH_REASONS
             or self.flagged_match is None
             or self.alternate_match is not None
         ) and (self.flagged_match is not None or self.alternate_match is not None):

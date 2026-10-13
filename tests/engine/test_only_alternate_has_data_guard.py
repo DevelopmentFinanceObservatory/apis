@@ -6,8 +6,12 @@ A lone alternate yields `no_data` with `ONLY_ALTERNATE_HAS_DATA`; two alternates
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
+
+import pytest
 
 from search.engine.bind import _UniversalBindOutput
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.region.codes import ELECTED_SHAPE_NO_DATA, ONLY_ALTERNATE_HAS_DATA
 from search.engine.region.state import _elected_stat_vars
@@ -17,6 +21,7 @@ from search.models import GraphRef
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 _ELECTED_SV = "Count_Person_HighAltitude"
@@ -53,11 +58,16 @@ _ELECTED_NODE = {
 class _GuardBindLLM:
     """Elects the data-empty shape and marks the standard alternatives as plausible."""
 
-    def __init__(self, also_plausible: list[int], *, chosen_shape_index: int):
+    def __init__(
+        self, also_plausible: list[int], *, chosen_shape_index: int, unplaced: Sequence[str] = ()
+    ):
         self._also_plausible = also_plausible
         self._chosen_shape_index = chosen_shape_index
+        self._unplaced = list(unplaced)
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=self._chosen_shape_index,
@@ -67,6 +77,7 @@ class _GuardBindLLM:
             bindings=[],
             also_plausible=self._also_plausible,
             ask=None,
+            unplaced=self._unplaced,
         ), None
 
 
@@ -77,6 +88,7 @@ def _run(
     obs: dict,
     also_plausible: list[int],
     chosen_shape_index: int,
+    unplaced: list[str] | None = None,
 ):
     graph = FakeGraph(nodes=nodes, detect=detect, resolve={"Kenya": "country/KEN"}, obs=obs)
     return asyncio.run(
@@ -89,7 +101,9 @@ def _run(
             pac=True,
             graph=graph,
             resolver=make_resolver(graph),
-            llm=_GuardBindLLM(also_plausible, chosen_shape_index=chosen_shape_index),
+            llm=_GuardBindLLM(
+                also_plausible, chosen_shape_index=chosen_shape_index, unplaced=unplaced or ()
+            ),
             base_timing={},
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
@@ -132,7 +146,7 @@ _ONE_ALT_OBS = {
 }
 
 
-def _run_one_alt_scenario():
+def _run_one_alt_scenario(*, unplaced: list[str] | None = None):
     # 2 shapes ranked by score: STD_SV(0.85) index 0, ELECTED_SV(0.82) index 1.
     return _run(
         nodes=_ONE_ALT_NODES,
@@ -140,6 +154,7 @@ def _run_one_alt_scenario():
         obs=_ONE_ALT_OBS,
         also_plausible=[0],
         chosen_shape_index=1,
+        unplaced=unplaced,
     )
 
 
@@ -165,7 +180,7 @@ def test_one_alt_survivor_carried_as_alternate_match():
     assert result.specs == ()
     assert result.flagged_match is None
     assert result.alternate_match is not None
-    sv_dcids = [sv.ref.dcid for sv in result.alternate_match.resolved.members]
+    sv_dcids = [sv.ref.ref for sv in result.alternate_match.resolved.members]
     assert sv_dcids == [_STD_SV]
 
 
@@ -175,11 +190,25 @@ def test_one_alt_survivor_carries_only_alternate_has_data_gate():
     assert result.gate == ONLY_ALTERNATE_HAS_DATA
 
 
+@pytest.mark.parametrize("unplaced", [[], ["altitude"]], ids=["every-word-placed", "unplaced-word"])
+def test_one_alt_survivor_departs_each_word_its_trace_leaves_unmet(unplaced):
+    """The refusal names no term, so each word the alternate's trace leaves unmet departs
+    once, judged on the alternate itself."""
+    result = _run_one_alt_scenario(unplaced=unplaced)
+    assert result.gate == ONLY_ALTERNATE_HAS_DATA
+    assert result.alternate_match is not None
+    trace = result.alternate_match.resolved.trace.query_qualifiers
+    assert [q.text for q in trace] == unplaced
+    assert [(f.code, f.asked) for f in result.departure_facts.values()] == [
+        ("measure_not_applied", word) for word in unplaced
+    ]
+
+
 def test_one_alt_survivor_elected_stat_vars_names_the_elected_shape():
     """`elected_stat_vars` names the structurally confirmed, data-empty elected shape."""
     result = _run_one_alt_scenario()
     assert result.elected_stat_vars == [
-        GraphRef(dcid=_ELECTED_SV, label="Count of people at high altitude")
+        GraphRef(ref=_ELECTED_SV, label="Count of people at high altitude")
     ]
 
 
@@ -204,16 +233,22 @@ def test_elected_stat_vars_none_when_mat_result_is_no_data_draft():
 # ---------------------------------------------------------------------------
 
 _ROLE_SV = "TESTFIXTURE/OnlyAlternateHasDataGuard/RoleBearingFlow"
-# The subject-only alternate shares population and stat type with _ROLE_SV.
-# Its denominator and entity roles distinguish it after five-tuple grouping. The query
-# names a share, which the alternate honours, so the guard admits it beside the level.
+# The subject-only alternate shares population, stat type and denominator with _ROLE_SV.
+# Its entity roles distinguish it after five-tuple grouping. The query names a share,
+# which both honour, so the elected flow passes the materialise quantity gate and the
+# guard admits the alternate beside it.
 _AID_SV = "AidReceivedAsFractionOfGDP"
 _ROLE_NODE = {
     _ROLE_SV: {
         "label": "aid flow",
         "type": "StatisticalVariable",
         "arcs": {
-            **_std_arcs("aid flow", pop_type="EconomicActivity", meas_prop="amount"),
+            **_std_arcs(
+                "aid flow",
+                pop_type="EconomicActivity",
+                meas_prop="amount",
+                denom="GrossDomesticProduction",
+            ),
             "observationProperties": {"nodes": [{"dcid": "creditor"}, {"dcid": "debtor"}]},
         },
     },
@@ -279,7 +314,7 @@ def test_role_bearing_elected_shape_no_observations_elects_stat_vars():
     assert result.flagged_match is None
     assert result.alternate_match is not None
     assert result.gate == ONLY_ALTERNATE_HAS_DATA
-    assert result.elected_stat_vars == [GraphRef(dcid=_ROLE_SV, label="aid flow")]
+    assert result.elected_stat_vars == [GraphRef(ref=_ROLE_SV, label="aid flow")]
 
 
 # ---------------------------------------------------------------------------

@@ -37,7 +37,7 @@ from dfo_frame_grammar import (
 from assembler.bind import _label
 from assembler.errors import BindingInvalid
 from assembler.frame_view import dimension_columns, facet_dimension_names, hashable_cell
-from assembler.ports import LeftOutSeries, ResolvedFrame, RollingAnchor
+from assembler.ports import LeftOutSeries, NamedSeries, ResolvedFrame, RollingAnchor
 from assembler.resolve import resolve_selectors
 
 __all__ = [
@@ -85,16 +85,16 @@ class ResolvedRolling:
 
     `intent` is the merged intent with each relative period replaced by its label.
     `selectors` are the intent's selectors without the values in `absent`. `anchor` is the
-    period "latest" names. `left_out` holds the display labels of the series with no row at
-    `anchor` that the select admits, in the component's series order, and `absent` those of
-    the select values the frame holds no row for. `window_end_relative` says the intent's
+    period "latest" names. `left_out` names the series with no row at `anchor` that the
+    select admits, in the component's series order, and `absent` the select values the frame
+    holds no row for, each by its dimension and value. `window_end_relative` says the intent's
     `window.end` was relative."""
 
     intent: Mapping[str, object]
     selectors: Sequence[Mapping[str, object]]
     anchor: str
-    left_out: tuple[str, ...]
-    absent: tuple[str, ...]
+    left_out: tuple[NamedSeries, ...]
+    absent: tuple[NamedSeries, ...]
     window_end_relative: bool
 
 
@@ -244,8 +244,8 @@ def _anchor_of_selection(
     resolved_frame: ResolvedFrame,
     selectors: Sequence[Mapping[str, object]],
     pointer: str,
-) -> tuple[str, tuple[str, ...]]:
-    """The anchor over the selected series, and the labels of those with no row at it."""
+) -> tuple[str, tuple[NamedSeries, ...]]:
+    """The anchor over the selected series, and those with no row at it."""
     series = resolve_selectors(resolved_frame=resolved_frame, selectors=selectors, window=None)
     population = {
         one.id: [
@@ -257,19 +257,27 @@ def _anchor_of_selection(
         found = latest_anchor([population])
     except (RollingError, FrameError) as exc:
         raise _refusal(exc, pointer=pointer) from exc
-    label_by_id = {
-        one.id: _label(resolved_frame=resolved_frame, coordinates=dict(one.coordinates))
+    named_by_id = {
+        one.id: NamedSeries(
+            label=_label(resolved_frame=resolved_frame, coordinates=dict(one.coordinates)),
+            coordinates={name: value for name, value in one.coordinates if isinstance(value, str)},
+        )
         for one in series
     }
-    return found.period, tuple(label_by_id[series_id] for _population, series_id in found.left_out)
+    return found.period, tuple(named_by_id[series_id] for _population, series_id in found.left_out)
 
 
-def admitted_left_out(*, anchor: RollingAnchor, select: Mapping[str, object]) -> tuple[str, ...]:
-    """The labels of `anchor.left_out` that `select` admits, in their order.
+def admitted_left_out(
+    *, anchor: RollingAnchor, select: Mapping[str, object]
+) -> tuple[NamedSeries, ...]:
+    """The series of `anchor.left_out` that `select` admits, in their order.
 
     An entry is left unnamed when its coordinates hold a value for a dimension `select`
     binds and the binding does not name that value."""
-    return tuple(one.label for one in _admitted(anchor=anchor, select=select))
+    return tuple(
+        NamedSeries(label=one.label, coordinates=one.coordinates)
+        for one in _admitted(anchor=anchor, select=select)
+    )
 
 
 def _admitted(*, anchor: RollingAnchor, select: Mapping[str, object]) -> tuple[LeftOutSeries, ...]:
@@ -294,10 +302,10 @@ def _without_absent_values(
     selectors: Sequence[Mapping[str, object]],
     select: Mapping[str, object],
     stored_select: StoredSelect | None = None,
-) -> tuple[list[Mapping[str, object]], tuple[str, ...]]:
+) -> tuple[list[Mapping[str, object]], tuple[NamedSeries, ...]]:
     """`selectors`, normalised from `select`, without the bound values the frame holds no
-    row for, and the labels of those values the frame anchor's left-out series that `select`
-    admits do not already name.
+    row for, and those values the frame anchor's left-out series that `select` admits do not
+    already name, each by its label, dimension and value.
 
     A binding keeps its values when the frame holds none of them or lacks its dimension, so
     `resolve_selectors` refuses it as it refuses any selection. With `stored_select` each
@@ -306,7 +314,7 @@ def _without_absent_values(
     dimensions = dimension_columns(columns=columns)
     anchor = resolved_frame.anchor
     named = _admitted(anchor=anchor, select=select) if anchor is not None else ()
-    absent: list[str] = []
+    absent: dict[str, str] = {}
     kept_selectors: list[Mapping[str, object]] = []
     for selector in selectors:
         bindings: list[Mapping[str, object]] = []
@@ -321,11 +329,9 @@ def _without_absent_values(
                     scalar=not isinstance(select.get(name), list),
                     stored_select=stored_select,
                 )
-                absent.extend(
-                    value
-                    for value in dropped
-                    if not any(one.coordinates.get(name) == value for one in named)
-                )
+                for value in dropped:
+                    if not any(one.coordinates.get(name) == value for one in named):
+                        absent.setdefault(value, name)
                 if bound != values:
                     binding = {**binding, "values": bound}
             bindings.append(binding)
@@ -334,7 +340,10 @@ def _without_absent_values(
     if absent and stored_select is not None and (stored_frame := stored_select.load_frame()):
         # A value rule 2 names may be one only the stored frame labels.
         labels = {**stored_frame.labels, **labels}
-    return kept_selectors, tuple(labels.get(value, value) for value in dict.fromkeys(absent))
+    return kept_selectors, tuple(
+        NamedSeries(label=labels.get(value, value), coordinates={name: value})
+        for value, name in absent.items()
+    )
 
 
 def _bound_values(

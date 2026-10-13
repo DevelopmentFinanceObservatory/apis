@@ -24,8 +24,9 @@ from __future__ import annotations
 
 import functools
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
+from typing import cast
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
@@ -54,7 +55,12 @@ from datasets_api.codes_snapshot import ArtifactExpired, SpecNotFound
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.deps import DepsCell
 from datasets_api.headers import no_store_headers
-from datasets_api.manifest import stored_manifest, stored_manifest_facts, stored_output_profile
+from datasets_api.manifest import (
+    provenance_refs_of,
+    stored_manifest,
+    stored_manifest_facts,
+    stored_output_profile,
+)
 from datasets_api.manifest_models import Manifest
 from datasets_api.output_options import derive_output_options
 from datasets_api.refusals import classify_datasets_refusal
@@ -103,11 +109,20 @@ def _stored_snapshot_manifest(
         declarations=get_index().declarations,
         settings=settings,
     )
-    profile = stored_output_profile(stored_manifest_facts(stored_version))
+    facts = stored_manifest_facts(stored_version)
+    profile = stored_output_profile(facts)
     return stored_manifest(
         stored_version,
         output_options=(
-            derive_output_options(profile, capabilities=capabilities)
+            derive_output_options(
+                profile,
+                identity=cast("Mapping[str, object]", facts.definition.get("identity", {})),
+                capabilities=capabilities,
+                parties=get_index().parties,
+                datasets=provenance_refs_of(
+                    cast("list[dict[str, object]]", facts.trace.get("facets", []))
+                ),
+            )
             if profile is not None
             else None
         ),

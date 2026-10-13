@@ -14,6 +14,7 @@ from contextlib import aclosing
 
 from pydantic import ValidationError
 
+from code_index.shared import get_index
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from dfo_platform.build import build_commit
 from dfo_platform.named import cut
@@ -61,6 +62,7 @@ from search.engine.role_text import (
     DoorRole,
     role_axis_for_text,
 )
+from search.engine.source_code import PartCode, compile_part_code, without_code_words
 from search.engine.source_scope import (
     SourceRefusal,
     SourceScope,
@@ -243,6 +245,7 @@ class PartsInterpretation:
     open_axes: list[frozenset[RoleAxis]]
     separate: list[bool]
     source_scopes: list[SourceScope | SourceRefusal | None]
+    source_codes: list[PartCode | None]
     warnings: list[list[Warning]]
     restatements: list[ParsedPart | None]
 
@@ -280,8 +283,11 @@ def interpret_parts(
     refuses, point into its part's entry of `pointer_prefixes`. Each part's
     `source_scopes` entry is its compiled sources against the request's catalogue:
     `None` when it names none, a `SourceRefusal` when its words resolve to no source or
-    to several. A part's variable text leaves out the words of each source its scope
-    resolved (`source_scope.without_source_words`), and its restatement states the rest.
+    to several. Each part's `source_codes` entry is its series code compiled against its
+    scope (`source_code.compile_part_code`): `None` when it names none, the StatVars the code
+    names, or a `SourceCodeRefusal`. A part's variable text leaves out the words of each
+    source its scope resolved (`source_scope.without_source_words`) and of its code
+    (`source_code.without_code_words`), and its restatement states the rest.
     """
     source_scopes = [
         compile_part_sources(p, catalogue=current_catalogue(), pointer_prefix=prefix)
@@ -297,13 +303,28 @@ def interpret_parts(
         _member_entities_for_part(p, pointer_prefix=prefix)
         for p, prefix in zip(parts, pointer_prefixes, strict=True)
     ]
-    # Words a mention reads as a source are not the measure's too.
-    variable_texts = [
-        without_source_words(p.variable_text.strip(), scope)
-        if isinstance(scope, SourceScope)
-        else p.variable_text.strip()
+    # A code compiles within the sources the part allows. A part whose sources refuse
+    # refuses on them first.
+    source_codes: list[PartCode | None] = [
+        compile_part_code(
+            p.source_code,
+            scope=scope if isinstance(scope, SourceScope) else None,
+            index=get_index(),
+        )
+        if p.source_code is not None
+        else None
         for p, scope in zip(parts, source_scopes, strict=True)
     ]
+    # Words a mention reads as a source, or that write the part's code, are not the
+    # measure's too.
+    variable_texts = []
+    for p, scope in zip(parts, source_scopes, strict=True):
+        text = p.variable_text.strip()
+        if isinstance(scope, SourceScope):
+            text = without_source_words(text, scope)
+        if p.source_code is not None:
+            text = without_code_words(text, p.source_code)
+        variable_texts.append(text)
     dates_and_warnings = [_time_for_part(p) for p in parts]
     role_queries_and_warnings = [_role_query_for_part(p) for p in parts]
     return PartsInterpretation(
@@ -319,6 +340,7 @@ def interpret_parts(
         open_axes=open_axes,
         separate=[p.separate for p in parts],
         source_scopes=source_scopes,
+        source_codes=source_codes,
         warnings=_per_part_warnings(parts, dates_and_warnings, role_queries_and_warnings),
         restatements=[
             _part_restatement(p, variable_text=v)
@@ -342,6 +364,7 @@ def _part_restatement(part: ParsedPart, *, variable_text: str) -> ParsedPart | N
             time_text=part.time_text,
             unit_text=part.unit_text,
             sources=part.sources,
+            source_code=part.source_code,
             operations=part.operations,
             open_roles=part.open_roles,
             separate=part.separate,
@@ -355,7 +378,7 @@ def _dedupe_parts_with_indices(parts: list[ParsedPart]) -> list[tuple[int, Parse
 
     Equality includes variable text, entities with role text, dcid pins and the members
     flag, time, unit, source mentions (the deprecated `provenance` and `source_text`
-    folded in), operations, open roles, and `separate`. Parts sharing only variable text
+    folded in), series code, operations, open roles, and `separate`. Parts sharing only variable text
     remain distinct. Original indices keep refusal pointers aligned with the client's
     posted `/input/parts/{i}`.
     """
@@ -367,6 +390,7 @@ def _dedupe_parts_with_indices(parts: list[ParsedPart]) -> list[tuple[int, Parse
             part.time_text,
             part.unit_text,
             tuple((m.text, m.ref, m.polarity) for m in part.sources),
+            part.source_code,
             tuple((o.verb, o.phrase, o.over, o.target_year) for o in part.operations),
             tuple(part.open_roles or ()),
             part.separate,
@@ -477,7 +501,7 @@ async def confirm_part_pins(
                 entity=Entity(
                     dcid=dcid,
                     name=label_by_dcid.get(dcid, dcid),
-                    kind=entity_kind(type_by_dcid[dcid]),
+                    kind=entity_kind((type_by_dcid[dcid],)),
                     graph_type=type_by_dcid[dcid],
                 )
             )
@@ -599,6 +623,7 @@ async def handle(
             per_variable_member_entities=interpretation.member_entities,
             per_variable_unit_texts=interpretation.unit_texts,
             per_variable_source_scopes=interpretation.source_scopes,
+            per_variable_source_codes=interpretation.source_codes,
             per_variable_operations=interpretation.operations,
             per_variable_open_axes=interpretation.open_axes,
             per_variable_separate=interpretation.separate,
@@ -684,6 +709,7 @@ async def handle(
         per_variable_member_entities=interpretation.member_entities,
         per_variable_unit_texts=interpretation.unit_texts,
         per_variable_source_scopes=interpretation.source_scopes,
+        per_variable_source_codes=interpretation.source_codes,
         per_variable_pre_resolved=per_variable_pre_resolved,
         per_variable_operations=interpretation.operations,
         per_variable_open_axes=interpretation.open_axes,

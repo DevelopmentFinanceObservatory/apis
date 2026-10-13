@@ -4,8 +4,8 @@
 count, which columns hold any cell, each coded column's distinct cells and the years
 `time_period` spans. From one scan per data file:
 
-- `column_docs` gives each column a title and a description, naming roles with the nouns of
-  `materialise.roles` (a role's camelCase graph name stays out of prose).
+- `column_docs` gives each column a title and a description, naming roles and reserved columns
+  with the nouns of `dfo_platform.columns` (a role's camelCase graph name stays out of prose).
 - `bundle_codes` builds the codes table: every distinct cell of every coded column, and each
   heading of a pivot that spread a coded column, labelled.
 - `summary_line` and `year_window` give the coverage facts a bundle heads with.
@@ -40,11 +40,11 @@ from dfo_frame_grammar import (
 )
 
 from dc_graph import GraphReadError
+from dfo_platform.columns import column_noun, column_title, role_noun
 from materialise.bundle import CODES_PATH, CodeEntry, ColumnDoc
 from materialise.bundle_naming import years_text
 from materialise.cell_safety import spreadsheet_safe
 from materialise.formats import Rendering, written_header
-from materialise.roles import axis_for_role, axis_noun
 
 if TYPE_CHECKING:
     from materialise.formats import Table
@@ -53,7 +53,6 @@ logger = logging.getLogger(__name__)
 
 MEASUREMENT_METHOD_COLUMN = "measurementMethod"
 PROVENANCE_COLUMN = "provenance"
-OBSERVATION_ABOUT = "observationAbout"
 
 VARIABLE_KIND = "variable"
 PLACE_KIND = "place"
@@ -81,28 +80,42 @@ _COLUMN_KINDS: Mapping[str, str] = {
 _DCID_PREFIX = "dcid:"
 
 _FIXED_COLUMNS: Mapping[str, tuple[str, str]] = {
-    STAT_VAR_COLUMN: ("Variable", "The variable measured."),
-    "stat_var_label": ("Variable name", "The name of the variable."),
-    TIME_PERIOD_COLUMN: ("Period", "The period the value refers to."),
-    UNIT_COLUMN: ("Unit", "The unit of `value`."),
-    "unit_label": ("Unit name", 'The name of the unit, such as "Constant 2023 US dollars".'),
+    STAT_VAR_COLUMN: (column_title(STAT_VAR_COLUMN), "The variable measured."),
+    "stat_var_label": (f"{column_title(STAT_VAR_COLUMN)} name", "The name of the variable."),
+    TIME_PERIOD_COLUMN: (column_title(TIME_PERIOD_COLUMN), "The period the value refers to."),
+    UNIT_COLUMN: (column_title(UNIT_COLUMN), "The unit of `value`."),
+    "unit_label": (
+        f"{column_title(UNIT_COLUMN)} name",
+        'The name of the unit, such as "Constant 2023 US dollars".',
+    ),
     "currency": ("Currency", "The ISO 4217 code of the currency `value` is in."),
     "price_basis": ("Price basis", "Whether `value` is in `current` or `constant` prices."),
     "base_year": ("Base year", "The year whose prices a `constant` value is in."),
-    MEASUREMENT_METHOD_COLUMN: ("Measurement method", "How the source measured the value."),
+    MEASUREMENT_METHOD_COLUMN: (
+        column_title(MEASUREMENT_METHOD_COLUMN),
+        "How the source measured the value.",
+    ),
     "measurementMethod_label": (
-        "Measurement method name",
+        f"{column_title(MEASUREMENT_METHOD_COLUMN)} name",
         "The name of the measurement method, empty when the graph holds no name beyond the "
         "method's code.",
     ),
-    PROVENANCE_COLUMN: ("Source dataset", "The source dataset of the row."),
-    "provenance_label": ("Source dataset name", "The name of the source dataset."),
-    STATUS_COLUMN: ("Status", "The source's flag on the value, such as provisional."),
+    PROVENANCE_COLUMN: (column_title(PROVENANCE_COLUMN), "The source dataset of the row."),
+    "provenance_label": (
+        f"{column_title(PROVENANCE_COLUMN)} name",
+        "The name of the source dataset.",
+    ),
+    STATUS_COLUMN: (
+        column_title(STATUS_COLUMN),
+        "The source's flag on the value, such as provisional.",
+    ),
 }
 
 _ROLE_DESCRIPTIONS: Mapping[str, str] = {
     "provider": "The provider the value flows from.",
     "recipient": "The recipient the value flows to.",
+    "creditor": "The creditor the debt is owed to or lent by.",
+    "debtor": "The debtor that owes or borrows the debt.",
     "place": "The place the value describes.",
     "entity": "An entity the value refers to.",
 }
@@ -111,6 +124,14 @@ _ENRICHMENT_COLUMNS: Mapping[str, tuple[str, str]] = {
     "iso3": ("ISO3 code", "The ISO 3166-1 alpha-3 code of the {noun}."),
     "iso2": ("ISO2 code", "The ISO 3166-1 alpha-2 code of the {noun}."),
     "label": ("name", "The name of the {noun}."),
+    "party_kind": (
+        "kind",
+        "Whether the {noun} is a `party` (a country, territory or organisation), a `total` "
+        "that holds other {noun}s' figures, or a `residual` no other {noun} holds. A sum over "
+        "{noun}s that includes a total counts its members twice. Leaving totals out does not "
+        "make every sum exact: two parties can report the same money, such as a fund and the "
+        "organisation that runs it.",
+    ),
     "type": ("type", "The graph types of the {noun}, comma-separated."),
 }
 
@@ -119,15 +140,6 @@ _LABEL_SUFFIX = "_label"
 _MIDDLE_DOT = "\u00b7"
 
 _PLURALS: Mapping[str, str] = {"entity": "entities"}
-
-
-def role_noun(role: str) -> str:
-    """The plain noun for a role column: `provider` or `recipient` for a role on a flow axis,
-    `place` for `observationAbout`, else `entity`."""
-    if role == OBSERVATION_ABOUT:
-        return "place"
-    axis = axis_for_role(role)
-    return axis_noun(axis) if axis is not None else "entity"
 
 
 class TableScan:
@@ -325,8 +337,8 @@ def _column_meaning(
         return noun.capitalize(), _ROLE_DESCRIPTIONS[noun]
     if column == VALUE_COLUMN:
         if has_unit:
-            return "Value", "The observed value, in the unit named in `unit`."
-        return "Value", "The observed value."
+            return column_title(column), "The observed value, in the unit named in `unit`."
+        return column_title(column), "The observed value."
     if column in _FIXED_COLUMNS:
         return _FIXED_COLUMNS[column]
     if (plain := code_system_names.get(column)) is not None:
@@ -357,12 +369,8 @@ def _heading_description(scan: TableScan) -> str:
 
 
 def _pivot_noun(column: str, *, role_columns: Sequence[str]) -> str:
-    if column in role_columns:
-        return role_noun(column)
-    if column == STAT_VAR_COLUMN:
-        return "variable"
-    if column == TIME_PERIOD_COLUMN:
-        return "period"
+    if column in role_columns or column in (STAT_VAR_COLUMN, TIME_PERIOD_COLUMN):
+        return column_noun(column)
     return "entry"
 
 

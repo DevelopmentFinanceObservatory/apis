@@ -2,7 +2,7 @@
 
 ``LEXICON_VERSION`` identifies this snapshot. Lookup keys are lowercase, with
 multi-word phrases space-joined to match ``unit.bind`` normalisation. The ISO 4217 code set
-the binder matches bare codes against lives in ``search.currency_codes``.
+the binder matches bare codes against lives in ``unit_words.currency_codes``.
 """
 
 from __future__ import annotations

@@ -6,8 +6,10 @@ operations on those axes, and where structure is silent the bind model's nominat
 stands:
 
 - pin: the query names values on the axis, the alternate honours none of them, and its
-  value differs from the elected reading's or, on normalisation, the elected reading
-  honours one;
+  value differs from the elected reading's; on normalisation, the alternate fails the
+  materialise gate's rule (`quantity.serves_quantity`): it does not honour every form the
+  query names, or divides by another denominator than the one the query names, and the
+  elected reading serves the rule or is of another class;
 - specialisation: the alternate holds a value on an axis the elected reading leaves open,
   and the query named nothing the alternate honours;
 - concept: both hold values on a concept axis and the alternate's lies outside the
@@ -16,9 +18,10 @@ stands:
   order, the query named none, and the elected shape has data.
 
 `inadmissible_reason` applies them in that order, after the equivalent-series twin
-exemption and before the cross-population check, behind every entry point: nominated
-alternates (`inadmissible_alternates`), availability substitutes, re-election siblings and
-candidate admission. Residence and constraint properties are judged per member, and an
+exemption, which a twin failing the normalisation pin does not get, and before the
+cross-population check, behind every entry point: nominated alternates
+(`inadmissible_alternates`), availability substitutes, re-election siblings and candidate
+admission. Residence and constraint properties are judged per member, and an
 admitted alternate is offered through its passing members (`offered_alternates`). An
 `AlternateJudge` holds one elected reading under one leg's pins, and every caller judging
 several sets of alternates under them reuses one.
@@ -29,7 +32,6 @@ and the retrieval layer's bound-value and member-fact readers.
 
 from __future__ import annotations
 
-import dataclasses
 import functools
 import re
 import weakref
@@ -38,7 +40,6 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 from code_index.shared import get_index, get_measure_index
-from search.currency_codes import ISO_4217_CODES
 from search.engine.extract import _words
 from search.engine.function_words import FUNCTION_WORDS
 from search.engine.qualifier_match import (
@@ -50,25 +51,31 @@ from search.engine.qualifier_match import (
 )
 from search.engine.quantity import (
     DenominatorKind,
+    NamedDenominator,
     NamedNormalisation,
     QuantityRequirement,
-    fulfils,
+    check_denominator,
     honours,
     normalisation_class,
+    serves_every_form,
+    serves_quantity,
 )
 from search.engine.region.equivalent_series import CLUSTER_BY_MEMBER, EquivalentCluster
 from search.engine.region.qualifier_readings import reading_for_shape
 from search.engine.retrieval.bound_values import (
     RoleKeys,
     bound_values_from_bindings,
+    narrowed_to,
     serving_member_rows,
     shape_five_tuple,
+    shape_population_arcs,
     shape_query,
 )
 from search.engine.retrieval.facts import read_name
 from search.engine.retrieval.member_facts import ArcsMemberFacts, IndexMemberFacts
 from search.engine.shape import ShapeDraft, _declared_role_names, is_role_bearing
 from search.engine.unit.lexicon import AMBIGUOUS_CURRENCY_NAMES, CURRENCY_ALIASES
+from unit_words.currency_codes import ISO_4217_CODES
 
 if TYPE_CHECKING:
     from code_index import CodeIndex
@@ -237,7 +244,9 @@ class QueryPins:
     the elected reading, and a property in `engine_authored` (a measure election, a
     declared default) narrows it and counts as unnamed. `unread_price_basis` and
     `elected_has_data` gate the default operation. `denominator_kinds` classifies the
-    StatVar denominators of the shapes judged (`normalisation_class`).
+    StatVar denominators of the shapes judged (`normalisation_class`), and
+    `named_denominator` is the denominator the question names, as the quantity read chose
+    it, `None` when it names none or no bind has run.
     """
 
     normalisation: frozenset[NamedNormalisation] = frozenset()
@@ -251,6 +260,7 @@ class QueryPins:
     unread_price_basis: bool = False
     elected_has_data: bool = False
     denominator_kinds: Mapping[str, DenominatorKind] = field(default_factory=dict)
+    named_denominator: NamedDenominator | None = None
 
 
 def query_pins(
@@ -263,11 +273,13 @@ def query_pins(
     unread_price_basis: bool = False,
     elected_has_data: bool = False,
     denominator_kinds: Mapping[str, DenominatorKind] | None = None,
+    named_denominator: NamedDenominator | None = None,
     quantity: QuantityRequirement,
 ) -> QueryPins:
     """Read the pins of one leg from its phrase, bindings, qualifier matches and
     two-reading spans. The normalisation pins are the leg's `quantity`
-    (`ResolveState.quantity_requirement`)."""
+    (`ResolveState.quantity_requirement`), and `named_denominator` the denominator bind
+    chose (`ResolveState.named_denominator`)."""
     index, measure_index = get_index(), get_measure_index()
     qualifiers: set[str] = set()
     constraint_matches: dict[str, set[str]] = {}
@@ -290,6 +302,7 @@ def query_pins(
         unread_price_basis=unread_price_basis,
         elected_has_data=elected_has_data,
         denominator_kinds=denominator_kinds or {},
+        named_denominator=named_denominator,
     )
 
 
@@ -497,11 +510,15 @@ class AlternateJudge:
             for dcid in get_measure_index().reading_set(readings.measure.code_dcid)
         )
         self.normalisation = normalisation_class(elected, kinds=pins.denominator_kinds)
-        # Whether the elected shape is a reading of the normalisation the query names. When
-        # it is, an alternate is compared with the request alone; when not, an alternate
-        # of the elected class is no further from the request than the election.
-        self.elected_fulfils = fulfils(
-            QuantityRequirement(pins.normalisation), elected, pins.denominator_kinds
+        # Whether the elected shape serves the query's quantity by the materialise gate's
+        # rule. When it does, an alternate is held to the request alone; when not, an
+        # alternate of the elected class is no further from the request than the election,
+        # and the gate refuses any answer that rests on such readings alone.
+        self.elected_serves = serves_quantity(
+            QuantityRequirement(pins.normalisation),
+            pins.named_denominator,
+            elected,
+            pins.denominator_kinds,
         )
         self.residence = frozenset().union(*(member.residence for member in self.served))
         self.holds = frozenset(prop for member in self.served for prop in member.properties)
@@ -540,8 +557,9 @@ class AlternateJudge:
 
     def members(self, shape: ShapeDraft) -> tuple[tuple[_Member, ...], bool]:
         """The shape's members, from the index rows of the dataset that serves it
-        (`serving_member_rows`) when the index carries it, with whether they came from the
-        index. A shape with no member facts reads as one stand-in.
+        (`serving_member_rows`) when the index carries it, else every member it stands for
+        (`shape_population_arcs`), with whether they came from the index. A shape with no
+        member facts reads as one stand-in.
 
         A lone member reads its residence label from the shape's label. A member of a
         larger shape reads its own name, since the shape is labelled from whichever member
@@ -551,7 +569,7 @@ class AlternateJudge:
         if key not in self._members:
             index = get_index()
             datasets, rows = serving_member_rows(shape, index, self._serving_query(shape))
-            arcs = shape.sv_arc_facts or {}
+            arcs = shape_population_arcs(shape)
             count = len(rows) if rows else len(arcs)
 
             def label(dcid: str) -> str:
@@ -596,10 +614,12 @@ class AlternateJudge:
 
     def _judge(self, alternate: ShapeDraft) -> _Verdict:
         members, _ = self.members(alternate)
-        # A twin passes for diversion through its twin members alone, so its representative
-        # and its offered series are the registered encoding of the elected reading.
+        quantity = self._quantity_refusal(alternate)
+        # A twin that serves the quantity passes for diversion through its twin members
+        # alone, so its representative and its offered series are the registered encoding of
+        # the elected reading.
         twins = _registry_twins(self.served_dcids, alternate)
-        if twins:
+        if twins and quantity is None:
             return _Verdict(None, tuple(m for m in members if m.dcid in twins))
         same_family = _family(alternate) == _family(self.elected)
         failures = [self._member_refusal(member, same_family=same_family) for member in members]
@@ -607,6 +627,7 @@ class AlternateJudge:
         refusals = [
             refusal
             for refusal in (
+                quantity,
                 self._normalisation_refusal(alternate),
                 self._qualifier_pin(alternate),
                 self._stat_type_concept(alternate),
@@ -618,17 +639,42 @@ class AlternateJudge:
         ]
         return _Verdict(min(refusals)[2] if refusals else None, passing)
 
-    def _normalisation_refusal(self, alternate: ShapeDraft) -> _Refusal | None:
+    def _quantity_refusal(self, alternate: ShapeDraft) -> _Refusal | None:
+        """The materialise gate's rule (`quantity.serves_quantity`), as a pin: the
+        alternate must honour every form the query names, and divide by the denominator it
+        names unless its arc leaves the base unverified (`quantity.check_denominator`).
+        Beside an election that fails the rule, an alternate of the elected class passes
+        (`elected_serves`)."""
         named = self.pins.normalisation
-        cls = normalisation_class(alternate, kinds=self.pins.denominator_kinds)
-        honoured = any(honours(alternate, cls, n) for n in self.pins.normalisation_framing)
-        if named and not honoured and (self.elected_fulfils or cls != self.normalisation):
+        kinds = self.pins.denominator_kinds
+        cls = normalisation_class(alternate, kinds=kinds)
+        if not self.elected_serves and cls == self.normalisation:
+            return None
+        if not serves_every_form(QuantityRequirement(named), alternate, kinds):
             return (
                 _PIN,
                 _NORMALISATION,
-                f"pin:normalisation: the query names {sorted(named)}, which a {cls} "
-                f"alternate beside a {self.normalisation} election does not honour",
+                f"pin:normalisation: the query names {sorted(named)}, and a {cls} "
+                "alternate does not honour every one",
             )
+        denominator = self.pins.named_denominator
+        if denominator is not None and check_denominator(alternate, denominator) == "refused":
+            asked = (
+                denominator.ref.ref
+                if denominator.ref is not None
+                else f'"{denominator.base_words}"'
+            )
+            return (
+                _PIN,
+                _NORMALISATION,
+                f"pin:normalisation: the query names the denominator {asked}, and the "
+                f"alternate divides by {alternate.meas_denom_dcid or 'nothing'}",
+            )
+        return None
+
+    def _normalisation_refusal(self, alternate: ShapeDraft) -> _Refusal | None:
+        cls = normalisation_class(alternate, kinds=self.pins.denominator_kinds)
+        honoured = any(honours(alternate, cls, n) for n in self.pins.normalisation_framing)
         # Any denominator arc makes the alternate a quotient of the elected level, and a
         # `series` ratio is one only when its numerator measures that level: the same
         # population type, and a measured property that is the elected one or shares the
@@ -778,12 +824,13 @@ class AlternateJudge:
         )
 
     def offered(self, alternate: ShapeDraft) -> ShapeDraft:
-        """The alternate narrowed to its passing members: those whose constraint map equals
-        one a member of the elected reading holds first, then member order. An alternate
-        the index carries is judged on its index rows and offered whole, as is one with no
-        member facts."""
+        """The alternate narrowed to its passing members among every member it stands for
+        (`shape_population_arcs`): those whose constraint map equals one a member of the
+        elected reading holds first, then member order. An alternate the index carries is
+        judged on its index rows and offered whole, as is one with no member facts. A
+        narrowed alternate stands for its passing members alone (`narrowed_to`)."""
         _, index_sourced = self.members(alternate)
-        facts = alternate.sv_arc_facts
+        facts = shape_population_arcs(alternate)
         if index_sourced or not facts:
             return alternate
         passing = self.verdict(alternate).passing
@@ -792,7 +839,7 @@ class AlternateJudge:
         narrowed = {m.dcid: facts[m.dcid] for m in ordered if m.dcid is not None}
         if list(narrowed) == list(facts):
             return alternate
-        return dataclasses.replace(alternate, sv_arc_facts=narrowed)
+        return narrowed_to(alternate, narrowed)
 
     def inadmissible(self, alternates: Sequence[tuple[int, ShapeDraft]]) -> dict[int, str]:
         """Refused alternate indices mapped to their reasons (`inadmissible_reason`)."""

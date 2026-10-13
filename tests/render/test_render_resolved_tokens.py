@@ -274,7 +274,7 @@ def test_resolved_when_and_source_tokens_never_carry_the_observation_value():
                     entities=[SeriesEntityRef(role="observationAbout", ref="country/KEN")],
                     points=[ObservationPoint(date="2019", value=distinctive_value)],
                     total_obs=1,
-                    source_refs=[ProvenanceRef(dcid="worldBank/WDI", label="World Bank WDI")],
+                    source_refs=[ProvenanceRef(ref="worldBank/WDI", label="World Bank WDI")],
                 )
             ],
             total_obs=1,

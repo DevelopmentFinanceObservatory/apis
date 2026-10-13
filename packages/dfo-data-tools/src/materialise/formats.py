@@ -23,11 +23,12 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
+import itertools
 import json
 import re
 import shutil
 import zipfile
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -67,6 +68,7 @@ if TYPE_CHECKING:
     from typing import IO
 
     from _typeshed import ReadableBuffer
+    from openpyxl.worksheet._write_only import WriteOnlyWorksheet
 
 
 class Table(Protocol):
@@ -388,27 +390,41 @@ _FIXED_MODIFIED_XML = rb"\g<1>1980-01-01T00:00:00Z\g<2>"
 
 
 _CORE_XML_NAME = "docProps/core.xml"
-_SHEET_XML_NAME = "xl/worksheets/sheet1.xml"
 _SHEET_PR_END = b"</sheetPr>"
+
+DATA_SHEET_TITLE = "data"
+"""The title of an XLSX file's first sheet, which holds the data."""
+
+TOTALS_SHEET_TITLE = "totals"
+"""The title of the second sheet a long-layout XLSX file carries when some rows are totals."""
 
 _ZIP_STREAM_CHUNK_BYTES = 1 << 20
 """1 MiB copy buffer for streaming large archive members without holding them in memory."""
 
 
-def _finish_workbook(data: bytes, *, dimension: str) -> bytes:
+def _sheet_xml_name(position: int) -> str:
+    """The archive member of the workbook's `position`th sheet, counting from 1."""
+    return f"xl/worksheets/sheet{position}.xml"
+
+
+def _finish_workbook(data: bytes, *, dimensions: Sequence[str]) -> bytes:
     """Fixes ZIP member timestamps and `docProps/core.xml`'s `dcterms:modified`, which
     `openpyxl` stamps with the current time during save. It honours `properties.created`.
     Preserves member order, compression, and attributes.
 
-    Also gives the sheet the `<dimension ref="...">` write-only mode leaves out, `dimension`
-    being its used range such as `A1:C3`. Write-only mode omits empty cells, and without the
-    range a reader that streams rows, as frictionless does through openpyxl, reads a row
-    ending in empty cells as short.
+    Also gives each sheet the `<dimension ref="...">` write-only mode leaves out, `dimensions`
+    being each sheet's used range in sheet order, such as `A1:C3`. Write-only mode omits empty
+    cells, and without the range a reader that streams rows, as frictionless does through
+    openpyxl, reads a row ending in empty cells as short.
 
     Streams every member except `docProps/core.xml` in `_ZIP_STREAM_CHUNK_BYTES` chunks.
     The core file is a few hundred bytes and is read in full to replace `dcterms:modified`.
-    The sheet's first chunk takes the dimension after its `<sheetPr>`, which `openpyxl` writes
+    A sheet's first chunk takes the dimension after its `<sheetPr>`, which `openpyxl` writes
     in its first few hundred bytes. Other contents stay bounded to one copy chunk."""
+    sheet_dimensions = {
+        _sheet_xml_name(position): dimension
+        for position, dimension in enumerate(dimensions, start=1)
+    }
     src = zipfile.ZipFile(io.BytesIO(data))
     out = io.BytesIO()
     with zipfile.ZipFile(out, "w") as dst:
@@ -422,19 +438,19 @@ def _finish_workbook(data: bytes, *, dimension: str) -> bytes:
                 dst.writestr(frozen, member_data)
                 continue
             with src.open(info.filename) as member_in, dst.open(frozen, mode="w") as member_out:
-                if info.filename == _SHEET_XML_NAME:
+                if (dimension := sheet_dimensions.get(info.filename)) is not None:
                     head = member_in.read(_ZIP_STREAM_CHUNK_BYTES)
-                    member_out.write(_with_dimension(head, dimension))
+                    member_out.write(_with_dimension(head, dimension, sheet=info.filename))
                 shutil.copyfileobj(member_in, member_out, length=_ZIP_STREAM_CHUNK_BYTES)
     return out.getvalue()
 
 
-def _with_dimension(head: bytes, dimension: str) -> bytes:
-    """The sheet XML's first chunk with `<dimension ref="...">` after `</sheetPr>`, its place in
-    the schema's element order."""
+def _with_dimension(head: bytes, dimension: str, *, sheet: str) -> bytes:
+    """The XML of `sheet`'s first chunk with `<dimension ref="...">` after `</sheetPr>`, its
+    place in the schema's element order."""
     end = head.find(_SHEET_PR_END)
     if end < 0:
-        raise RuntimeError(f"{_SHEET_XML_NAME} opens without a <sheetPr> to place its dimension")
+        raise RuntimeError(f"{sheet} opens without a <sheetPr> to place its dimension")
     end += len(_SHEET_PR_END)
     return head[:end] + f'<dimension ref="{dimension}" />'.encode() + head[end:]
 
@@ -463,15 +479,25 @@ def _normalize_excel_cell(value: object) -> object:
     return _cell_text(value)
 
 
-def write_excel(chunks: Iterable[Table], *, rendering: Rendering, sink: Sink) -> WrittenArtifact:
+def write_excel(
+    chunks: Iterable[Table],
+    *,
+    rendering: Rendering,
+    sink: Sink,
+    totals: Callable[[], Iterable[Table]] | None = None,
+) -> WrittenArtifact:
     """Writes literal text and number cells, sanitising formula triggers before openpyxl
     receives strings. Unsupported cell types are stringified first.
     Cell contents are preserved without truncation.
 
+    `chunks` fill the sheet `DATA_SHEET_TITLE`. `totals`, called once that sheet is written,
+    gives the rows of a second sheet, `TOTALS_SHEET_TITLE`, with its own header. The sheet is
+    left out when `totals` gives no row.
+
     Write-only mode avoids an in-memory cell graph that measured 2.29 GB at 462,720 rows
-    (3.6 times the source data). Checks the column limit before writing, then row count
-    (including the header), cell length, and XML characters as each row is appended. A
-    refusal writes no bytes to `sink`.
+    (3.6 times the source data). Checks the column limit before writing, then each sheet's
+    row count (including the header), cell length, and XML characters as each row is
+    appended. A refusal writes no bytes to `sink`.
 
     The finished archive stays in memory for timestamp fixing, then goes to `sink` in one
     write. `openpyxl` timestamps ZIP entries and resets `properties.modified` at save time.
@@ -487,39 +513,57 @@ def write_excel(chunks: Iterable[Table], *, rendering: Rendering, sink: Sink) ->
 
     workbook = Workbook(write_only=True)
     workbook.properties.created = _FIXED_DOCUMENT_TIMESTAMP
-    sheet = workbook.create_sheet()
+    sheets = [workbook.create_sheet(DATA_SHEET_TITLE)]
 
     # `sheet.append` leaves a write-only XML generator open until save.
-    # Close it on refusal before GC can resume it after the output file closes.
+    # Close each on refusal before GC can resume it after the output file closes.
     try:
-        for column_index, cell in enumerate(headers):
-            _check_excel_cell(cell, row_index=0, column_index=column_index)
-        sheet.append(headers)
-        total_rows = 1  # the header row already written
-
-        for chunk in stream:
-            for row in iter_rows(chunk):
-                total_rows += 1
-                check_excel_rows(total_rows)
-                sanitized_row = [_sanitize_csv_cell(_normalize_excel_cell(cell)) for cell in row]
-                for column_index, cell in enumerate(sanitized_row):
-                    _check_excel_cell(cell, row_index=total_rows - 1, column_index=column_index)
-                sheet.append(sanitized_row)
-
+        dimensions = [_append_sheet(sheets[0], headers=headers, chunks=stream)]
+        if totals is not None:
+            total_chunks = iter(totals())
+            if (first_total := next(total_chunks, None)) is not None:
+                sheets.append(workbook.create_sheet(TOTALS_SHEET_TITLE))
+                dimensions.append(
+                    _append_sheet(
+                        sheets[1],
+                        headers=list(_headers_for(first_total, rendering=rendering)),
+                        chunks=itertools.chain((first_total,), total_chunks),
+                    )
+                )
         buf = io.BytesIO()
         workbook.save(buf)
     except BaseException:
-        if not sheet.closed:
-            sheet.close()
+        for sheet in sheets:
+            if not sheet.closed:
+                sheet.close()
         raise
-    dimension = f"A1:{get_column_letter(n_cols)}{total_rows}" if n_cols else "A1"
-    data = _finish_workbook(buf.getvalue(), dimension=dimension)
+    data = _finish_workbook(buf.getvalue(), dimensions=dimensions)
     sink.write(data)
     return WrittenArtifact(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         digest=_digest(data),
         size_bytes=len(data),
     )
+
+
+def _append_sheet(sheet: WriteOnlyWorksheet, *, headers: list[str], chunks: Iterable[Table]) -> str:
+    """Appends `headers` and every row of `chunks` to `sheet`, checking each row and cell
+    against Excel's limits, and returns the sheet's used range, such as `A1:C3`."""
+    for column_index, cell in enumerate(headers):
+        _check_excel_cell(cell, row_index=0, column_index=column_index)
+    sheet.append(headers)
+    total_rows = 1  # the header row already written
+
+    for chunk in chunks:
+        for row in iter_rows(chunk):
+            total_rows += 1
+            check_excel_rows(total_rows)
+            sanitized_row = [_sanitize_csv_cell(_normalize_excel_cell(cell)) for cell in row]
+            for column_index, cell in enumerate(sanitized_row):
+                _check_excel_cell(cell, row_index=total_rows - 1, column_index=column_index)
+            sheet.append(sanitized_row)
+    n_cols = len(headers)
+    return f"A1:{get_column_letter(n_cols)}{total_rows}" if n_cols else "A1"
 
 
 def _cell_kind(value: object) -> str:

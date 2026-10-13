@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from search.engine.retrieval.bound_values import shape_population_arcs
 from search.engine.retrieval.facts import read_constraints, read_unresolved_constraints
 from search.engine.shape import ShapeDraft
 
@@ -9,13 +10,12 @@ from search.engine.shape import ShapeDraft
 def _shape_disagreement_props(shape_draft: ShapeDraft) -> set[str]:
     """Return constraint properties with multiple values across all members.
 
-    Use the full group in ``sv_arc_facts``; place-scoped taxonomy can omit a
-    member that carries a distinct value. Shared single values are fixed facts,
+    Use every member the shape stands for (`shape_population_arcs`); place-scoped taxonomy
+    can omit a member that carries a distinct value. Shared single values are fixed facts,
     while only properties with multiple values are open disagreement axes.
     """
-    sv_arc_facts = shape_draft.sv_arc_facts or {}
     observed: dict[str, set[str]] = {}
-    for arcs in sv_arc_facts.values():
+    for arcs in shape_population_arcs(shape_draft).values():
         for prop_dcid, value_dcid in read_constraints(arcs).items():
             observed.setdefault(prop_dcid, set()).add(value_dcid)
     return {
@@ -56,15 +56,15 @@ def shape_bare_representative(shape_draft: ShapeDraft) -> str | None:
     when no bind call ran for an alternative shape. Empty member groups also
     return ``None``.
     """
-    sv_arc_facts = shape_draft.sv_arc_facts or {}
-    if not sv_arc_facts:
+    population = shape_population_arcs(shape_draft)
+    if not population:
         return None
 
     disagreement_props = _shape_disagreement_props(shape_draft)
     if not disagreement_props:
-        return next(iter(sv_arc_facts))
+        return next(iter(population))
 
-    for sv_dcid, arcs in sv_arc_facts.items():
+    for sv_dcid, arcs in population.items():
         if _is_honest_representative(
             read_constraints(arcs), disagreement_props, {}, read_unresolved_constraints(arcs)
         ):
@@ -84,17 +84,17 @@ def shape_agreement_representative(
     ``None`` if the shape has no honest bare member. This also handles sibling
     shapes whose value domains differ from the elected shape's.
     """
-    sv_arc_facts = shape_draft.sv_arc_facts or {}
-    if not sv_arc_facts:
+    population = shape_population_arcs(shape_draft)
+    if not population:
         return None
 
     disagreement_props = _shape_disagreement_props(shape_draft)
     if not disagreement_props:
-        return next(iter(sv_arc_facts))
+        return next(iter(population))
 
     shared = disagreement_props & set(elected_bound_values)
     if shared:
-        for sv_dcid, arcs in sv_arc_facts.items():
+        for sv_dcid, arcs in population.items():
             constraints = read_constraints(arcs)
             if shared & set(constraints) and _is_honest_representative(
                 constraints,
@@ -104,7 +104,7 @@ def shape_agreement_representative(
             ):
                 return sv_dcid
 
-    for sv_dcid, arcs in sv_arc_facts.items():
+    for sv_dcid, arcs in population.items():
         if _is_honest_representative(
             read_constraints(arcs), disagreement_props, {}, read_unresolved_constraints(arcs)
         ):

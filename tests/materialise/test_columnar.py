@@ -8,6 +8,7 @@ from __future__ import annotations
 import math
 import random
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 
 import pyarrow as pa
 import pytest
@@ -366,6 +367,88 @@ def test_selection_mask_no_axes_matches_every_row():
     mask = columnar.selection_mask(_table(rows), selections={}).to_pylist()
 
     assert mask == [True, True]
+
+
+# ---------------------------------------------------------------------------
+# A continued method: selection_mask admits it, continuation_mask keeps it past the
+# served series.
+# ---------------------------------------------------------------------------
+
+
+def _continued(**overrides: object) -> FacetSelection:
+    return replace(
+        _selection(axis="measurementMethod", ref=None), continued_by="Estimated", **overrides
+    )
+
+
+def _gdp(place: str, year: str, method: str | None) -> SdmxObservation:
+    return _row(
+        role_values={"recipient": place},
+        time_period=year,
+        value="1",
+        measurement_method=method,
+        provenance="provenance/IMFWorldEconomicOutlook",
+    )
+
+
+def test_selection_mask_admits_the_continuing_method_beside_the_ref():
+    rows = (
+        _gdp("country/KEN", "2024", None),
+        _gdp("country/KEN", "2025", "Estimated"),
+        _gdp("country/KEN", "2025", "Modelled"),
+    )
+
+    mask = columnar.selection_mask(_table(rows), selections={"measurementMethod": _continued()})
+
+    assert mask.to_pylist() == [True, True, False]
+
+
+@pytest.mark.parametrize(
+    ("rows", "kept"),
+    [
+        # Each place's estimates serve only the years after its own reported series ends.
+        pytest.param(
+            (
+                _gdp("country/KEN", "2024", None),
+                _gdp("country/KEN", "2025", "Estimated"),
+                _gdp("country/FRA", "2025", None),
+                _gdp("country/FRA", "2025", "Estimated"),
+                _gdp("country/FRA", "2026", "Estimated"),
+            ),
+            [True, True, True, False, True],
+            id="reported-wins-a-year-both-hold",
+        ),
+        # An estimate before the reported series' last year fills no gap in it.
+        pytest.param(
+            (
+                _gdp("country/KEN", "2020", None),
+                _gdp("country/KEN", "2021", "Estimated"),
+                _gdp("country/KEN", "2022", None),
+                _gdp("country/KEN", "2023", "Estimated"),
+            ),
+            [True, False, True, True],
+            id="no-estimate-inside-the-reported-span",
+        ),
+        # A place with no reported row in the read keeps every estimate.
+        pytest.param(
+            (_gdp("country/KEN", "2025", "Estimated"), _gdp("country/KEN", "2026", "Estimated")),
+            [True, True],
+            id="estimates-only",
+        ),
+    ],
+)
+def test_continuation_mask_keeps_estimates_past_each_series_reported_end(rows, kept):
+    table = _table(rows)
+
+    assert (
+        columnar.continuation_mask(
+            table, selections={"measurementMethod": _continued()}
+        ).to_pylist()
+        == kept
+    )
+    # Without a continuation every row passes.
+    plain = {"measurementMethod": _selection(axis="measurementMethod", ref=None)}
+    assert columnar.continuation_mask(table, selections=plain).to_pylist() == [True] * len(rows)
 
 
 # ---------------------------------------------------------------------------

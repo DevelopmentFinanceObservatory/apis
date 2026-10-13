@@ -3,7 +3,9 @@
 A no-data part reads ``parts[].no_data.{reason,category,gate}`` against the case's
 ``no_data`` block (``reason`` may list accepted reasons), an unsupported part reads
 ``parts[].unsupported.code``, and a declined answer reads the root ``reason``. Each applies
-only when that status or kind returns.
+only when that status or kind returns. Each is unreached when the answer pairs with no
+block the case accepts (``base.expected_parts``) while the block it would have read asserts
+it.
 """
 
 from __future__ import annotations
@@ -18,7 +20,10 @@ from search.eval.checks.base import (
     PartView,
     Result,
     ScoreContext,
+    Verdict,
     all_of,
+    answer_kind,
+    expected_parts,
     fail,
     over_parts,
     read_path,
@@ -61,16 +66,24 @@ def part_refusal(
 
 
 def _declined(case: Case, response: Mapping[str, Any], ctx: ScoreContext) -> Result:
+    """The declined reason; unreached when the answer pairs with no block the case accepts,
+    whether its kind or every part's status is one the case does not accept, and n/a when
+    it is another accepted answer."""
     expected = case.expect.declined
-    if expected is None or read_path(response, "kind", ctx) != "declined":
+    if expected is None:
         return NA
-    reason = read_path(response, "reason", ctx)
-    if reason != expected.reason:
-        return fail(f"declined reason: got {reason!r}, expected {expected.reason!r}")
-    return PASS
+    if answer_kind(response, ctx) == "declined":
+        reason = read_path(response, "reason", ctx)
+        if reason != expected.reason:
+            return fail(f"declined reason: got {reason!r}, expected {expected.reason!r}")
+        return PASS
+    parts = expected_parts(case, response, ctx)
+    if parts and all(part.block is None for part in parts):
+        return Result(Verdict.UNREACHED, parts[0].missed)
+    return NA
 
 
-_parts_refusal = over_parts(part_refusal)
+_parts_refusal = over_parts(part_refusal, name="refusal")
 
 
 @register("refusal")

@@ -5,9 +5,11 @@ observations preview on, and passes when the answer is a resolution of one
 definite part whose resolved StatVars include the example's StatVar, whose
 resolved entities in the place's role are that place alone, and whose
 preview has points, every series with points observing that place in that
-role. The pin catches a wrong variable with real data; the scope checks
-catch data for another place or the reverse direction; the points check
-catches an answer with nothing to show. A run the engine
+role, and whose answer departs from the sentence in no way that changes what
+it shows. The pin catches a wrong variable with real data. The scope checks
+catch data for another place or the reverse direction. The points check
+catches an answer with nothing to show. The departure check catches an answer
+for a different question than the sentence asked. A run the engine
 raised on, cut short at its soft deadline, or answered with a preview whose
 read failed is tried once more, since that failure says nothing about the
 example. A run the engine refused as input fails the example: the refusal is
@@ -24,6 +26,7 @@ from typing import Final, Literal
 from search.catalogue.examples import Example
 from search.models import (
     DefinitePart,
+    DepartureCode,
     EntityRoleKey,
     ObservationsOmissionReason,
     Resolution,
@@ -58,11 +61,37 @@ type RunFailure = Literal[
     "no_definite_part",
     "stat_var_not_elected",
     "scope_mismatch",
+    "departed",
     "preview_failed",
     "preview_empty",
     "preview_scope_mismatch",
 ]
 
+
+DATA_DESCRIBING_DEPARTURES: Final[frozenset[DepartureCode]] = frozenset(
+    {"modelled_values", "group_read_as_members", "scope_limited"}
+)
+"""Departures that describe the data the answer shows without changing what
+was asked: the values are modelled, a named group was read as its members, a
+check covered only some values. An example may carry them."""
+
+REFUSING_DEPARTURES: Final[frozenset[DepartureCode]] = frozenset(
+    {
+        "closest_match",
+        "measure_not_applied",
+        "operation_not_applied",
+        "breakdown_not_applied",
+        "entity_unavailable",
+        "year_unavailable",
+        "direction_discarded",
+    }
+)
+"""Departures that say the answer is for a different question than the
+sentence asked: another measure, no operation, no breakdown, a place or year
+without values, a dropped direction. An answer carrying one fails the example
+(`departed`). Together with `DATA_DESCRIBING_DEPARTURES` this is every
+`DepartureCode`, so a code added to the vocabulary fails a test until it is
+put on a side."""
 
 INFRA_FAILURES: Final[frozenset[RunFailure]] = frozenset(
     {"engine_error", "timed_out", "preview_failed"}
@@ -156,39 +185,48 @@ async def _attempt(
         return FailedRun(place=place, text=text, reason="engine_error", detail=repr(exc))
     if response.diagnostics.timed_out:
         return FailedRun(place=place, text=text, reason="timed_out")
-    reason, stat_vars = judge(
+    reason, stat_vars, detail = judge(
         response, stat_var=example.stat_var, place=place, role=ROLE_KEYS[example.role]
     )
     if reason is None:
         return None
-    return FailedRun(place=place, text=text, reason=reason, stat_vars=stat_vars)
+    return FailedRun(place=place, text=text, reason=reason, stat_vars=stat_vars, detail=detail)
 
 
 def judge(
     response: ResolveResponse, *, stat_var: str, place: str, role: EntityRoleKey
-) -> tuple[RunFailure | None, tuple[str, ...]]:
+) -> tuple[RunFailure | None, tuple[str, ...], str | None]:
     """Why `response` fails the check for `stat_var` at `place` in `role`,
-    or `None` when it passes, with the StatVars its definite parts resolved.
+    or `None` when it passes, with the StatVars its definite parts resolved
+    and a detail naming the departure codes of a `departed` failure.
     An example's sentence asks for one variable at one place, so an answer
     split into several parts fails, as does one resolving another place in
-    `role` (`scope_mismatch`) or previewing a series that does not observe
-    `place` in `role` (`preview_scope_mismatch`)."""
+    `role` (`scope_mismatch`), one departing from the sentence in any way in
+    `REFUSING_DEPARTURES` (`departed`), or one previewing a series that does
+    not observe `place` in `role` (`preview_scope_mismatch`)."""
     if not isinstance(response, Resolution):
-        return "not_a_resolution", ()
+        return "not_a_resolution", (), None
     definite = [part for part in response.parts if isinstance(part, DefinitePart)]
     elected = tuple(
-        dict.fromkeys(sv.ref.dcid for part in definite for sv in part.spec.resolved.members)
+        dict.fromkeys(sv.ref.ref for part in definite for sv in part.spec.resolved.members)
     )
     if len(response.parts) > 1:
-        return "multiple_parts", elected
+        return "multiple_parts", elected, None
     if not definite:
-        return "no_definite_part", elected
+        return "no_definite_part", elected, None
     if stat_var not in elected:
-        return "stat_var_not_elected", elected
+        return "stat_var_not_elected", elected, None
     resolved = definite[0].spec.resolved
     if {entity.ref for entity in resolved.entities if entity.role == role} != {place}:
-        return "scope_mismatch", elected
-    return _preview_failure(resolved.observations, place=place, role=role), elected
+        return "scope_mismatch", elected, None
+    departed = dict.fromkeys(
+        departure.code
+        for departure in definite[0].departures
+        if departure.code in REFUSING_DEPARTURES
+    )
+    if departed:
+        return "departed", elected, ", ".join(departed)
+    return _preview_failure(resolved.observations, place=place, role=role), elected, None
 
 
 def _preview_failure(
@@ -212,8 +250,10 @@ def _preview_failure(
 
 
 __all__ = [
+    "DATA_DESCRIBING_DEPARTURES",
     "EMPTY_PREVIEW_REASONS",
     "INFRA_FAILURES",
+    "REFUSING_DEPARTURES",
     "ROLE_KEYS",
     "TEST_PLACES",
     "FailedRun",

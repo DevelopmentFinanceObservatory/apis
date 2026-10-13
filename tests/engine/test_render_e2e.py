@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from search.engine.bind import _UniversalBindOutput
+from search.engine.quantity_read import QuantityOutput
 from search.models import (
     CandidatesPart,
     DatasetResubmitInput,
@@ -22,6 +23,7 @@ from search.render.tokens import sentence_from_plan
 from tests.engine._base_identity import GDP_SHAPE, make_identity, subject_entity
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import offline_resolve
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph
 from tests.render._helpers import assert_round_trip
 
@@ -150,6 +152,8 @@ class _FixedBindLLM:
     """Elects shape index 0 unconditionally, with no constraint bindings."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
 
@@ -253,7 +257,7 @@ def test_no_data_sentence_names_ambiguous_entity_candidates():
     # Each candidate carries its dcid, label, and kind.
     assert [g.text for g in r.no_data.ambiguous_entities] == ["Congo"]
     group = r.no_data.ambiguous_entities[0]
-    assert {c.dcid for c in group.candidates} == {"country/COD", "country/COG"}
+    assert {c.ref for c in group.candidates} == {"country/COD", "country/COG"}
     assert {c.label for c in group.candidates} == {"Congo [DRC]", "Congo [Republic]"}
     assert all(c.kind == "country" for c in group.candidates)
 
@@ -290,7 +294,7 @@ def test_no_data_restatement_for_directional_ambiguous_entity():
     assert r.restatement.entities[0].role_text == "to"
     restated_texts = {e.text for e in r.restatement.entities}
     assert all(g.text in restated_texts for g in r.no_data.ambiguous_entities)
-    assert {c.dcid for c in r.no_data.ambiguous_entities[0].candidates} == {
+    assert {c.ref for c in r.no_data.ambiguous_entities[0].candidates} == {
         "country/COD",
         "country/COG",
     }

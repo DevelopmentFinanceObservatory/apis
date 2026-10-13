@@ -4,12 +4,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from typing import cast
 
 import pyarrow as pa
 import pyarrow.compute as pc
 
 from dc_sdmx.errors import SdmxResponseError
-from dc_sdmx.results import VALUE_COLUMN, VARIABLE_COLUMN
+from dc_sdmx.results import ATTRIBUTE_COLUMNS, VALUE_COLUMN, VARIABLE_COLUMN
 from materialise.facets import CoverageAdmission, FacetSelection, PlaceAdmission, RowAdmission
 from materialise.window import (
     AppliedWindow,
@@ -38,6 +39,12 @@ _FACET_ID_COLUMN = "facetId"
 _NUMERIC_RE = r"^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$|^[+-]?(nan|inf|infinity)$"
 
 _EMPTY_STRING_SCALAR = pa.scalar("", type=pa.string())
+
+# The columns that vary within one series: its period and value, and the facet's own
+# method and attributes, which a continued series changes at its last served period.
+_NOT_SERIES_KEYS = frozenset(
+    {_TIME_PERIOD_COLUMN, VALUE_COLUMN, "measurementMethod", *ATTRIBUTE_COLUMNS}
+)
 _FALSE_SCALAR = pa.scalar(False, type=pa.bool_())
 _TRUE_SCALAR = pa.scalar(True, type=pa.bool_())
 
@@ -169,23 +176,68 @@ def selection_mask(table: pa.Table, *, selections: Mapping[str, FacetSelection])
     """For every axis in `selections`, the row's cell in that axis's own
     column (`provenance`, `measurementMethod`, or `unit`, the axis name is
     already the contract column name, see `materialise.facets.FACET_AXES`)
-    equals `selection.ref`, a null cell equal to a `None` ref. All given axes
-    must agree (an AND across axes). No axes given means every row matches.
+    equals `selection.ref`, a null cell equal to a `None` ref, or the selection's
+    `continued_by`. A national-currency selection matches every row on its axis, since the
+    probe's place admission (`admission_mask`) holds each place to its own currency. All
+    given axes must agree (an AND across axes). No axes given means every row matches.
     """
     mask: pa.BooleanArray | None = None
     for axis, selection in selections.items():
+        if selection.national_currency is not None:
+            continue
         column = table[axis]
-        if selection.ref is None:
-            axis_mask = pc.is_null(column)
-        else:
-            matches = _as_boolean_array(
-                pc.equal(column, pa.scalar(selection.ref, type=pa.string()))
+        axis_mask = _equal_mask(column, selection.ref)
+        if selection.continued_by is not None:
+            axis_mask = _as_boolean_array(
+                pc.or_(axis_mask, _equal_mask(column, selection.continued_by))
             )
-            axis_mask = _as_boolean_array(pc.fill_null(matches, _FALSE_SCALAR))
-        mask = axis_mask if mask is None else pc.and_(mask, axis_mask)
+        mask = axis_mask if mask is None else _as_boolean_array(pc.and_(mask, axis_mask))
     if mask is None:
         return pa.array([True] * table.num_rows, type=pa.bool_())
     return mask
+
+
+def _equal_mask(column: pa.ChunkedArray, ref: str | None) -> pa.BooleanArray:
+    """Whether each cell equals `ref`, a null cell equal to a `None` ref."""
+    if ref is None:
+        return pc.is_null(column)
+    matches = _as_boolean_array(pc.equal(column, pa.scalar(ref, type=pa.string())))
+    return _as_boolean_array(pc.fill_null(matches, _FALSE_SCALAR))
+
+
+def continuation_mask(
+    table: pa.Table, *, selections: Mapping[str, FacetSelection]
+) -> pa.BooleanArray:
+    """Keeps every row, except that a row of a selection's `continued_by` method is kept
+    only when its period is later than the last period its series holds under the selected
+    method. A series is the rows sharing every column but the period, the value, the
+    method and the facet's own attributes. A series holding no row under the selected
+    method keeps all its continuing rows. So the served value wins any period both methods
+    hold, and the continuing method serves only the periods after the served series ends.
+    Periods compare as strings, which orders periods of one grain; a frame mixing grains is
+    refused later (`errors.MixedGrainError`)."""
+    selection = next((one for one in selections.values() if one.continued_by is not None), None)
+    if selection is None or table.num_rows == 0:
+        return pa.array([True] * table.num_rows, type=pa.bool_())
+    method = table[selection.axis]
+    continuing = cast("list[bool]", _equal_mask(method, selection.continued_by).to_pylist())
+    served = cast("list[bool]", _equal_mask(method, selection.ref).to_pylist())
+    periods = cast("list[str | None]", table[_TIME_PERIOD_COLUMN].to_pylist())
+    key_columns = [
+        table[name].to_pylist() for name in table.column_names if name not in _NOT_SERIES_KEYS
+    ]
+    keys = list(zip(*key_columns, strict=True)) if key_columns else [()] * table.num_rows
+    last: dict[tuple[object, ...], str] = {}
+    for key, period, is_served in zip(keys, periods, served, strict=True):
+        if is_served and period is not None and (key not in last or period > last[key]):
+            last[key] = period
+    return pa.array(
+        [
+            not is_continuing or key not in last or (period is not None and period > last[key])
+            for key, period, is_continuing in zip(keys, periods, continuing, strict=True)
+        ],
+        type=pa.bool_(),
+    )
 
 
 def admission_mask(table: pa.Table, *, admission: RowAdmission) -> pa.BooleanArray:

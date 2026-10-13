@@ -11,7 +11,6 @@ import random
 import pytest
 from dfo_spec_kit import identity
 
-from search.currency_codes import ISO_4217_CODES
 from search.engine.unit.bind import (
     BoundUnitRequest,
     CurrencyAlternative,
@@ -39,6 +38,7 @@ from search.engine.unit.lexicon import (
 )
 from search.models import IdentityCurrencyRole
 from tests.engine._assemble_fixtures import _make_spec
+from unit_words.currency_codes import ISO_4217_CODES
 
 # The base year the conversion tables declare in these tests.
 _DECLARED_BASE_YEAR = 2024

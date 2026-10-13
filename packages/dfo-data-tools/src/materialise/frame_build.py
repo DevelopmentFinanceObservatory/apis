@@ -7,10 +7,12 @@ minting lives in `content_version.py`, and FRAME1 serialisation in `formats.py`.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from dataclasses import dataclass
 
 import pyarrow as pa
 import pyarrow.compute as pc
+import pyarrow.parquet as pq
 from dfo_frame_grammar import TIME_PERIOD_COLUMN, Frame, parse_time_period
 from dfo_frame_grammar.arrow import build_frame_from_arrow
 from dfo_frame_grammar.grammar import ComposedUnit, UnitRequest, unit_cell_to_json
@@ -22,6 +24,7 @@ from materialise.errors import MaterialisationUsageError, UpstreamResponseError
 
 # Mirrors the grammar's internal StatVar prefix. `test_frame_build.py` checks it.
 _STAT_VAR_REF_PREFIX = "dcid:"
+_MEASUREMENT_METHOD_COLUMN = "measurementMethod"
 
 
 def _canonicalize_stat_var_ref(value: str) -> str:
@@ -34,6 +37,28 @@ def _canonicalize_stat_var_ref(value: str) -> str:
 def build_frame(*, role_keys: Iterable[str], rows: Iterable[Mapping[str, object]]) -> Frame:
     """Wraps `Frame.build`. An empty `rows` iterable yields a columns-only `Frame`."""
     return Frame.build(role_keys=role_keys, rows=rows)
+
+
+@dataclass(frozen=True)
+class ParquetFrameChunks:
+    """A fresh pass over a canonical frame held as Parquet bytes, one `Frame` per row group, on
+    each call. Each pass opens a new `ParquetFile` over a zero-copy `BufferReader`, so repeated
+    passes copy nothing and hold at most one row group's rows. `column_chunks` reads one column
+    without decoding the others."""
+
+    parquet_bytes: bytes | memoryview
+    columns: tuple[str, ...]
+
+    def __call__(self) -> Iterator[Frame]:
+        reader = pq.ParquetFile(pa.BufferReader(self.parquet_bytes))
+        for row_group_index in range(reader.num_row_groups):
+            yield Frame(columns=self.columns, table=reader.read_row_group(row_group_index))
+
+    def column_chunks(self, column: str) -> Iterator[pa.ChunkedArray]:
+        """`column` of each row group in order."""
+        reader = pq.ParquetFile(pa.BufferReader(self.parquet_bytes))
+        for row_group_index in range(reader.num_row_groups):
+            yield reader.read_row_group(row_group_index, columns=[column])[column]
 
 
 def unit_cell_for_rebuild(value: object) -> object:
@@ -166,6 +191,29 @@ def period_grains(frame: Frame) -> dict[str, str]:
     for period in sorted(str(period) for period in periods if period is not None):
         grains.setdefault(parse_time_period(period).grain, period)
     return grains
+
+
+def fold_method_periods(held: dict[str, tuple[str, str]], frame: Frame) -> None:
+    """Widens `held`, each `measurementMethod` mapped to the earliest and latest period its
+    rows hold, by `frame`'s rows. Rows with no method are left out. Periods compare as
+    strings, which orders the periods of one grain, as `columnar.continuation_mask` does."""
+    table = frame.table
+    if table.num_rows == 0:
+        return
+    bounds = table.group_by(_MEASUREMENT_METHOD_COLUMN).aggregate(
+        ((TIME_PERIOD_COLUMN, "min"), (TIME_PERIOD_COLUMN, "max"))
+    )
+    for method, first, last in zip(
+        bounds[_MEASUREMENT_METHOD_COLUMN].to_pylist(),
+        bounds[f"{TIME_PERIOD_COLUMN}_min"].to_pylist(),
+        bounds[f"{TIME_PERIOD_COLUMN}_max"].to_pylist(),
+        strict=True,
+    ):
+        if method is None or first is None or last is None:
+            continue
+        if (earlier := held.get(method)) is not None:
+            first, last = min(earlier[0], first), max(earlier[1], last)
+        held[method] = (first, last)
 
 
 def declared_roles(result: SdmxDataResult) -> tuple[str, ...]:

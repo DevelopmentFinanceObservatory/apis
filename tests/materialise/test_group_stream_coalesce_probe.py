@@ -130,7 +130,7 @@ def _run(
         _requests_in_shuffled_order(),
         sdmx=sdmx,
         graph=_graph(),
-        enrichment=EnrichmentLookup(_graph(), type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(_graph(), parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         member_concurrency=member_concurrency,

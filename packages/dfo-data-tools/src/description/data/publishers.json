@@ -1,0 +1,22 @@
+{
+  "dc/s/BankForInternationalSettlementsBis": "BIS",
+  "dc/s/EuropeanUnionEuEurostat": "Eurostat",
+  "dc/s/FoodAndAgricultureOrganizationFaoOfTheUnitedNations": "FAO",
+  "dc/s/OrganisationForEconomicCo-operationAndDevelopmentOecd": "OECD",
+  "dc/s/UnitedNationsOfficeForTheCoordinationOfHumanitarianAffairsUnOcha": "UN OCHA",
+  "dc/s/UnitedNationsUn": "UN",
+  "dc/s/UsBureauOfEconomicAnalysisBea": "BEA",
+  "dc/s/UsBureauOfLaborStatisticsBls": "BLS",
+  "dc/s/WorldHealthOrganizationWho": "WHO",
+  "undata/p/ECLAC": "ECLAC",
+  "undata/p/ILO": "ILO",
+  "undata/p/ITU": "ITU",
+  "undata/p/UNAIDS": "UNAIDS",
+  "undata/p/UNESCO": "UNESCO",
+  "undata/p/UNFPA": "UNFPA",
+  "undata/p/UNHCR": "UNHCR",
+  "undata/p/UNICEF": "UNICEF",
+  "undata/p/UNIDO": "UNIDO",
+  "undata/p/UNODC": "UNODC",
+  "undata/p/WHO": "WHO"
+}

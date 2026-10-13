@@ -2,16 +2,17 @@
 
 Warnings appear in 200 manifests. The refusal registry handles errors. The capability
 version hashes this catalogue, so wording and severity changes affect it.
-This package reserves `enrichment_unavailable`, `deflator_projected`, `currency_unmapped_omitted`
-and `deflator_missing_omitted` without raising them here. Only the stored manifests of versions
-minted before `content_version` hashed the frame alone carry `revision_unavailable`, and a snapshot
-read replays them.
 
-`facet_default_selected` is built from the completed materialisation trace.
+A new manifest raises `enrichment_unavailable`, `withheld_by_registry`, `un_system_unavailable`,
+`currency_unmapped_omitted` and `deflator_missing_omitted` (the last two from `materialise`).
+`origin_catalogue_stale` goes to the manifest's `diagnostics`. `facet_default_selected`,
+`stat_vars_summed` and `deflator_projected` are steps and caveats of the version's description
+record (`datasets_api.description_record`), and nothing raises `revision_unavailable`. Those
+four stay catalogued because stored manifests serve them: a snapshot read replays the warnings
+a version was minted with.
+
 The `materialise` package keeps its warning catalogue independent, except that
 `enrichment_unavailable` takes its title and detail from `materialise.reshape`, which raises it.
-`stat_vars_summed` reports the contributing-member count and family reference after a groupby
-collapse sums multiple member series.
 """
 
 from __future__ import annotations

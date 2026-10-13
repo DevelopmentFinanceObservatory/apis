@@ -2,7 +2,7 @@
 counts per tier, `age-operations` fails abandoned operations and deletes terminal ones past
 the published retention, `backfill-frame1` converts pinned frame1 documents to canonical
 frames, and `settle` repeats migration 0026's statements and counts the version rows holding
-no facts, each reporting structured log lines."""
+no facts or the enrichment `kind`, each reporting structured log lines."""
 
 from __future__ import annotations
 
@@ -277,8 +277,9 @@ class _RecordingTransaction:
 def test_settle_runs_from_the_job_environment_alone_and_fails_on_rows_left_unsettled(
     monkeypatch, capsys, left, exit_code, severity
 ):
-    """A version row holding no facts fails every read of it and a raw pin principal matches
-    no caller, so the deploy step running settle fails on either."""
+    """A version row holding no facts fails every read of it, a raw pin principal matches no
+    caller, and a profile naming the enrichment `kind` loses it from the options document, so
+    the deploy step running settle fails on any of them."""
     store = _RecordingStore(count=left)
     closed: list[bool] = []
     monkeypatch.setattr(maintenance, "LiveDatasetStore", lambda connections: store)
@@ -291,10 +292,15 @@ def test_settle_runs_from_the_job_environment_alone_and_fails_on_rows_left_unset
     assert statements[: len(maintenance.SETTLE_STATEMENTS)] == list(maintenance.SETTLE_STATEMENTS)
     lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert [
-        (line["severity"], line["factless_versions"], line["raw_pin_principals"])
+        (
+            line["severity"],
+            line["factless_versions"],
+            line["raw_pin_principals"],
+            line["legacy_party_kind_profiles"],
+        )
         for line in lines
         if line["event"] == "datasets_settled"
-    ] == [(severity, left, left)]
+    ] == [(severity, left, left, left)]
     assert closed == [True]
 
 
@@ -304,9 +310,10 @@ def _statements(sql: str) -> list[str]:
     return [" ".join(statement.split()) for statement in code.split(";") if statement.strip()]
 
 
-def test_settle_repeats_the_statements_of_0026_verbatim_and_writes_no_version_row():
-    """Each settle statement is a statement of migration 0026, whose window it closes, so the
-    two cannot drift apart. Version rows are counted only: migration 0030's trigger fills them."""
+def test_settle_repeats_the_statements_of_0026_verbatim():
+    """Each settle statement is a statement of migration 0026, whose window it closes, so they
+    cannot drift apart. Version facts and the enrichment `kind` are counted only: the insert
+    triggers of migrations 0030 and 0033 repair them."""
     expected = _statements(
         (MIGRATIONS_DIR / "0026_artifact_reference_principal_label.sql").read_text()
     )

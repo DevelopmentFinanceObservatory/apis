@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Mapping
 from typing import cast
 
@@ -31,15 +32,14 @@ from search.engine.region.result import (
 )
 from search.engine.region.state import ResolveState
 from search.engine.retrieval.derive import derive_shapes
-from search.engine.shape import ShapeDraft, is_role_bearing, role_names_by_axis
+from search.engine.shape import ShapeDraft, role_names_by_axis
 from search.models import EntityRoleKey, RoleAxis
+
+logger = logging.getLogger(__name__)
 
 # Full-facet probing is capped at 6 candidates. This phase checks raw recall count before
 # expansion. derive_shapes checks the confirmed count to bound the actual read.
 _FLOOR_PROBE_FULL_FACETS_MAX_CANDIDATES = 6
-
-# The resolver kinds of a place that has member countries.
-_REGION_KINDS = ("continent", "subregion")
 
 
 async def _phase_recall(state: ResolveState) -> None:
@@ -52,6 +52,7 @@ async def _phase_recall(state: ResolveState) -> None:
         resolver=state.resolver,
         raw_query=state.detect_query,
         pre_resolved=state.pre_resolved,
+        members=None if state.source_code is None else state.source_code.dcids,
     )
     state.rcl = rcl
     state.timing["recall"] = now_ms() - t0
@@ -68,13 +69,16 @@ async def _phase_resolve_places(state: ResolveState) -> None:
 
     A group is a set of its resolver-confirmed members, with the group's own node when the
     resolver returned one. An empty or oversized group gets no set, so its name stays
-    unresolved and is refused later. A continent or subregion is a set of its node and the
-    members one batched expansion gives. A group or region a flow dataset publishes a total for
-    carries that total (`PlaceSet.total`), found by the group's id or the region's node. Every
+    unresolved and is refused later. A continent or subregion by the membership policy
+    (`MembershipPolicy.holds_region`), whatever the node's graph type, is a set of its node and
+    the countries the policy holds for it (`place.expand_places`); one the policy omits is a set
+    of its node alone. A group or region a flow
+    dataset publishes a total for carries that total (`PlaceSet.total`), found by the group's
+    id or the region's node. Every
     other resolved name is a set of its node alone. The node of a group or region carries the
-    graph's label for it, read in one batch beside the expansion. A set takes the members reading when the door asks for the
-    name's members (`ResolveState.member_entities`) or the resolver read the name as its
-    members (`names_members`). Recall's country dcids are snapshotted for the availability
+    graph's label for it, read in one batch. A set takes the members reading when the door
+    asks for the name's members (`ResolveState.member_entities`) or the resolver read the name
+    as its members (`reading`). Recall's country dcids are snapshotted for the availability
     floor.
     """
     # The type checker narrows locals, while state attributes need this explicit cast.
@@ -94,7 +98,8 @@ async def _phase_resolve_places(state: ResolveState) -> None:
         for name, resolution in rcl.resolutions.items()
         if isinstance(resolution, Resolved)
     }
-    regions = [entity for entity in resolved.values() if entity.kind in _REGION_KINDS]
+    membership = state.resolver.membership
+    regions = [entity for entity in resolved.values() if membership.holds_region(entity.dcid)]
 
     # Preserve recall's country set for derive_shapes' availability floor. Groups and
     # regions stay off it. Their nodes and members enter the later sibling probe sample.
@@ -108,20 +113,14 @@ async def _phase_resolve_places(state: ResolveState) -> None:
         {g.entity.dcid for g in groups.values() if g.entity is not None}
         | {entity.dcid for entity in regions}
     )
-    labels, expansions = await asyncio.gather(
-        asyncio.to_thread(state.graph.node_labels_batch, labelled) if labelled else _nothing(),
-        asyncio.to_thread(
-            expand_places,
-            [(entity.dcid, entity.graph_type) for entity in regions],
-            graph=state.graph,
-        )
-        if regions
-        else _nothing(),
+    labels = await asyncio.to_thread(state.graph.node_labels_batch, labelled) if labelled else {}
+    expansions = (
+        expand_places((entity.dcid for entity in regions), membership=membership) if regions else {}
     )
 
     def reading(name: str) -> PlaceReading:
         resolution = cast(Resolved | Group, rcl.resolutions[name])
-        asked = name in state.member_entities or resolution.names_members
+        asked = name in state.member_entities or resolution.reading == "members"
         return "members" if asked else "default"
 
     totals = get_index().totals_by_group
@@ -146,7 +145,7 @@ async def _phase_resolve_places(state: ResolveState) -> None:
             total=total(group.dcid or (None if node is None else node.dcid)),
         )
     for name, entity in resolved.items():
-        region = entity.kind in _REGION_KINDS
+        region = membership.holds_region(entity.dcid)
         expansion = expansions.get(entity.dcid) if region else None
         place_sets[name] = PlaceSet(
             name=name,
@@ -159,11 +158,6 @@ async def _phase_resolve_places(state: ResolveState) -> None:
             total=total(entity.dcid) if expansion is not None else None,
         )
     state.place_sets = place_sets
-
-
-async def _nothing() -> dict:
-    """The result of a batched read that names no node."""
-    return {}
 
 
 def _sole_axis(state: ResolveState, name: str) -> RoleAxis | None:
@@ -374,15 +368,18 @@ async def _phase_derive_shapes(state: ResolveState) -> RegionResult | None:
     """Confirm recall candidates and derive role-compatible shapes.
 
     Return ``role_signature_incompatible`` or ``variable_not_resolved`` when derivation
-    fails, and ``entity_role_not_admitted`` when all shapes fail role checks. Surviving
+    fails, and ``entity_role_not_admitted`` when all shapes fail role checks. A part whose
+    series code named its candidates (`ResolveState.source_code`) and derives no shape from
+    them refuses ``source_code_not_held`` in place of ``variable_not_resolved``
+    (`ResolveState.no_data`). Surviving
     shapes proceed to ranking. A shape whose id ``state.excluded_shapes`` names and whose
     members are all among the members recorded there is dropped as soon as it is derived.
     It holds only members the first pass read and found empty.
     """
     rcl = cast(Recall, state.rcl)
-    # The first pass derives from our resolve's hits under their own dcids, so the confirm
-    # cap counts a superseded hit as it did while its provenance was admitted; derivation
-    # reads each as its successor (`derive_shapes`).
+    # The first pass derives from our resolve's hits under their own dcids, superseded ones
+    # included, and ranks them under those dcids; derivation reads each as its successor
+    # (`derive_shapes`).
     if state.pool == "ours":
         pool = rcl.candidates if rcl.hits is None else rcl.hits
     else:
@@ -412,6 +409,7 @@ async def _phase_derive_shapes(state: ResolveState) -> RegionResult | None:
                 # Use recall's country snapshot. Place sets and Group members stay off the floor.
                 place_dcids=state.recall_only_place_dcids,
                 full_facets_max_candidates=_FLOOR_PROBE_FULL_FACETS_MAX_CANDIDATES,
+                deadline=state.deadline,
             )
             shapes_found = [s for s in shapes_found if not _found_empty(state, s)]
             state.shapes_found = shapes_found
@@ -435,6 +433,12 @@ async def _phase_derive_shapes(state: ResolveState) -> RegionResult | None:
             "shape",
             ms=state.timing["shape"],
         )
+        if state.source_code is not None:
+            logger.info(
+                "source code %s: no shape derives from its StatVars %s",
+                state.source_code.code,
+                state.source_code.dcids,
+            )
         return state.no_data("variable_not_resolved")
 
     # Prune before ranking so every later count sees only compatible shapes.
@@ -452,6 +456,4 @@ async def _phase_derive_shapes(state: ResolveState) -> RegionResult | None:
             "entity_role_not_admitted", role_not_admitted_entities=tuple(never_admitted)
         )
 
-    # Detect role-bearing families across the full set before election.
-    state.role_bearing_recalled = any(is_role_bearing(s) for s in shapes_found)
     return None

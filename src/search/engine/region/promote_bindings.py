@@ -11,7 +11,13 @@ from search.engine.region.resubmit_request import (
     _date_request_for_resubmit,
     _reject_reversed_resubmit_window,
 )
-from search.engine.retrieval.bound_values import _expand_values, identity_query, source_binding
+from search.engine.region.unrealisable import disclose_posted_values, drop_posted_values
+from search.engine.retrieval.bound_values import (
+    _expand_values,
+    identity_query,
+    members_by_value,
+    source_binding,
+)
 from search.engine.retrieval.facts import read_constraints
 
 
@@ -68,8 +74,10 @@ def _phase_build_bindings(state: _PromoteState) -> None:
             standard_bindings_from_arcs(shape=state.shape_draft, rep_sv_dcid=state.rep_sv)
         )
 
-        # Multi-value edits use requested order, filtered to values asserted by final survivors.
-        # Other constraints are reconstructed from those survivors' own arcs below.
+        # Multi-value edits use requested order, filtered to values final survivors assert
+        # themselves or below (a posted rollup's members carry its leaves, as the narrow
+        # admits them). Other constraints are reconstructed from those survivors' own arcs.
+        index = get_index()
         resolved_constraints_by_sv = {
             sv: read_constraints(state.resolved_arcs[sv]) for sv in state.resolved_stat_var_dcids
         }
@@ -84,18 +92,42 @@ def _phase_build_bindings(state: _PromoteState) -> None:
                             b.property_dcid,
                         )
                     )
-                    # Preserve requested order and keep only values backed by final survivors.
-                    filtered_vals = [v for v in multi_value_edits[b.property_dcid] if v in asserted]
+                    posted = multi_value_edits[b.property_dcid]
+                    filtered_vals = [
+                        v for v in posted if not asserted.isdisjoint(_expand_values(index, [v]))
+                    ]
+                    if uncarried := [v for v in posted if v not in filtered_vals]:
+                        drop_posted_values(state, b.property_dcid, uncarried)
                     if len(filtered_vals) >= 2:
                         b.kind = "set"
                         b.value_dcids = filtered_vals
                     else:
-                        b.kind = "value"
+                        b.kind = "value" if filtered_vals else "unbound"
                         b.value_dcids = filtered_vals
+
+        # A single edited value is bound from the representative's own arcs, which hold
+        # the posted value, a value below it, or another value when the elected members
+        # stood without a narrow (`promote_survivors._narrowed_members`). A draft holding
+        # anything else goes unbound, and the resubmit refuses on the posted value with
+        # this relaxed read flagged (`unrealisable.drop_posted_values`).
+        for prop, vals in state.edits.items():
+            if len(vals) != 1:
+                continue
+            posted_or_below = {*vals, *_expand_values(index, vals)}
+            drafts = [b for b in bindings if b.property_dcid == prop]
+            if all(b.value_dcids and set(b.value_dcids) <= posted_or_below for b in drafts):
+                continue
+            drop_posted_values(state, prop, vals)
+            for b in drafts:
+                b.kind = "unbound"
+                b.value_dcids = []
 
         # Rebuild unedited constraints from final survivors; correlated axes can lose values
         # after a narrow. Members assert rollup leaves, so preserve a posted rollup only when
-        # survivors assert its full value set and descendants cover those values.
+        # survivors assert its full value set and descendants cover those values. A posted
+        # value no survivor carries, itself or below (`members_by_value`), departs: every
+        # value the members do carry lies inside the posted set, so edit detection saw
+        # nothing, and the answer reads the others (`unrealisable.disclose_posted_values`).
         for b in bindings:
             prop = b.property_dcid
             if prop is None or prop in state.edits:
@@ -104,6 +136,12 @@ def _phase_build_bindings(state: _PromoteState) -> None:
                 state.resolved_stat_var_dcids, resolved_constraints_by_sv, prop
             )
             posted = state.posted_bound_values.get(prop)
+            if posted is not None:
+                carrying = members_by_value(
+                    {sv: c.get(prop) for sv, c in resolved_constraints_by_sv.items()}, posted
+                )
+                if uncarried := [v for v in posted if not carrying[v]]:
+                    disclose_posted_values(state, prop, uncarried)
             if (
                 posted is not None
                 and set(vals) == state.union_constraints.get(prop, set())

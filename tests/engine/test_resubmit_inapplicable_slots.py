@@ -132,7 +132,7 @@ class TestMechanismDirect:
 def _assert_never_bound_and_inapplicable(spec) -> None:
     """Assert that no inapplicable property has a bound slot."""
     bound_props = {
-        s.key.property.dcid
+        s.key.property.ref
         for s in spec.resolved.slots
         if s.key.property is not None and s.binding.kind != "unbound"
     }
@@ -184,7 +184,7 @@ class TestEndToEndResubmit:
         activity_slot = next(
             s
             for s in spec.resolved.slots
-            if s.key.property is not None and s.key.property.dcid == "activitySource"
+            if s.key.property is not None and s.key.property.ref == "activitySource"
         )
         assert activity_slot.binding.kind == "unbound"
         assert "activitySource" not in spec.resolved.inapplicable_slots
@@ -250,7 +250,7 @@ class TestHashNeutrality:
             Slot(
                 key=SlotKey(
                     axis="how",
-                    property=GraphRef(dcid="activitySource", label="activity source"),
+                    property=GraphRef(ref="activitySource", label="activity source"),
                     label="activity source",
                 ),
                 binding=BindingUnbound(),
@@ -258,7 +258,7 @@ class TestHashNeutrality:
         ]
         reference_entities = [
             Entity(
-                ref=GraphRef(dcid=_GDP_ENTITY_DCID, label=_GDP_ENTITY_DCID),
+                ref=GraphRef(ref=_GDP_ENTITY_DCID, label=_GDP_ENTITY_DCID),
                 entity_type=None,
                 role=EntityRoleSubject(),
             )

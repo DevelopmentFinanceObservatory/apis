@@ -19,6 +19,7 @@ than `value` or `set` names nothing.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import threading
@@ -30,11 +31,15 @@ from collections.abc import (
     Collection,
     Hashable,
     Iterable,
+    Iterator,
     Mapping,
     MutableMapping,
     Sequence,
 )
 from collections.abc import Set as AbstractSet
+from concurrent.futures import Future
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING, Literal, NamedTuple, cast
@@ -64,11 +69,12 @@ from code_index.members import (
     invariant_bindings,
     is_opt_in,
     listed_group,
+    prepare_member_views,
     query_family,
     shared_pins,
 )
 from code_index.query import IndexFamily, row_five_tuple
-from code_index.shared import get_index
+from code_index.shared import get_index, get_measure_index
 from code_index.types import (
     Bound,
     BoundSet,
@@ -79,9 +85,13 @@ from code_index.types import (
     label_for_pairs,
     summable_axes,
 )
-from dc_graph import GraphDeadlineExceededError, GraphReadError
+from dc_graph import GraphDeadlineExceededError, GraphReadError, parse_arcs
 from dfo_platform.named import cut, named_capped
 from materialise.roles import DegenerateObservationProperties, axis_for_role, declared_role_for
+from origin_catalogue import current_catalogue
+from origin_catalogue.families import FamilyKey
+from origin_catalogue.graph import mirrored_arcs
+from origin_catalogue.origins import UN_ID_PREFIX
 from search.engine.degraded_reads import note_degraded_read
 from search.engine.errors import (
     EngineInputError,
@@ -91,7 +101,14 @@ from search.engine.errors import (
     RoleSignatureError,
 )
 from search.engine.reading_coverage import covers
-from search.engine.retrieval.facts import FiveTuple, _dcids_for, read_name, read_slot_taxonomy
+from search.engine.retrieval.facts import (
+    FiveTuple,
+    _dcids_for,
+    read_constraints,
+    read_declared_roles,
+    read_name,
+    read_slot_taxonomy,
+)
 from search.engine.retrieval.member_facts import (
     ArcsMemberFacts,
     IndexMemberFacts,
@@ -102,6 +119,7 @@ from search.engine.shape import (
     ShapeDraft,
     _declared_role_names,
     declares_shape_roles,
+    family_label,
     identity_shape_for,
     is_role_bearing,
 )
@@ -127,6 +145,7 @@ from statvar_members import (
     NotAStatisticalVariable,
     SlotBinding,
     elect_role_class,
+    group_of_arcs,
     member_digest,
     shared_enumerator,
 )
@@ -135,6 +154,8 @@ if TYPE_CHECKING:
     from code_index import CodeIndex
     from code_index.types import MeasureIndex, StatVarRow
     from materialise.graph import GraphReader
+    from origin_catalogue.catalogue import Catalogue
+    from origin_catalogue.families import FamilySummary
     from search.engine.bind import SlotBindingDraft
     from search.engine.clients.graph import EngineGraphClient
     from search.engine.qualifier_match import QualifierMatch, QualifierTie
@@ -454,7 +475,8 @@ def _member_reading(arcs: dict) -> tuple[object, ...]:
 
 def _narrowed(shape: ShapeDraft, removed: Collection[str]) -> ShapeDraft:
     """`shape` without the `removed` members, its taxonomy read over the rest as
-    `derive_shapes` reads it: over the members with data at a probed place, else all."""
+    `derive_shapes` reads it: over the members with data at a probed place, else all. It
+    stands for those members alone, so it holds no family (`ShapeDraft.held_family`)."""
     arcs = {sv: a for sv, a in (shape.sv_arc_facts or {}).items() if sv not in removed}
     coverage = shape.member_coverage
     if coverage is not None:
@@ -476,6 +498,7 @@ def _narrowed(shape: ShapeDraft, removed: Collection[str]) -> ShapeDraft:
         member_coverage=coverage,
         slot_taxonomy=taxonomy,
         place_available=bool(available) if coverage is not None else shape.place_available,
+        held_family=None,
     )
 
 
@@ -1586,7 +1609,7 @@ def slot_expansions(bindings: Sequence[SlotBindingDraft]) -> dict[str, Expansion
         expansions[prop] = Expansion(
             added=[
                 GraphRef(
-                    dcid=dcid,
+                    ref=dcid,
                     label=row.label if (row := index.code_by_dcid(dcid)) else dcid,
                 )
                 for dcid in added_dcids
@@ -1838,6 +1861,35 @@ def _identity_family(identity: BaseIdentity) -> DatasetFamily | None:
         return _resolved_family(get_index(), query)
     except SourceNotInFamily:
         return None
+
+
+def listed_family(identity: BaseIdentity) -> frozenset[str] | None:
+    """The StatVars the Datasets mint elects for `identity` from the index's listed rows
+    (`code_index.members.listed_group` over its `identity_query`), before antichain
+    reduction. `None` for a pinned identity and when no listed row is among them, so the
+    graph walk decides them. Raises the election's own refusal (`MemberEnumerationTooLarge`,
+    `MemberRoleDisagreement`, `MemberDegenerateObservationProperties`) when it refuses."""
+    if not isinstance(identity.shape, IdentityShapeSchema):
+        return None
+    group = listed_group(
+        get_index(), identity_query(identity), member_cap=shared_enumerator().member_cap
+    )
+    return None if group is None else frozenset(group.family)
+
+
+def elects_within(identity: BaseIdentity, dcids: Collection[str]) -> bool:
+    """Whether the StatVars the Datasets mint elects for `identity` (`listed_family`) are
+    known and all among `dcids`. False for a family the graph walk decides and for an
+    election that refuses, so a mint of `identity` may serve a StatVar outside `dcids`."""
+    try:
+        family = listed_family(identity)
+    except (
+        MemberEnumerationTooLarge,
+        MemberRoleDisagreement,
+        MemberDegenerateObservationProperties,
+    ):
+        return False
+    return family is not None and family <= set(dcids)
 
 
 def refuse_source_outside_family(identity: BaseIdentity, *, pointer: str) -> None:
@@ -2149,7 +2201,7 @@ def apply_slot_expansions(slots: list[Slot], expansions: dict[str, Expansion]) -
     result = []
     for slot in slots:
         prop = slot.key.property
-        if prop is not None and (expansion := expansions.get(prop.dcid)) is not None:
+        if prop is not None and (expansion := expansions.get(prop.ref)) is not None:
             slot = slot.model_copy(update={"expansion": expansion})
         result.append(slot)
     return result
@@ -2179,9 +2231,7 @@ def apply_slot_summability(slots: list[Slot], identity: BaseIdentity) -> list[Sl
     )
     return [
         slot.model_copy(
-            update={
-                "summable": slot.key.property is not None and slot.key.property.dcid in summable
-            }
+            update={"summable": slot.key.property is not None and slot.key.property.ref in summable}
         )
         for slot in slots
     ]
@@ -2267,12 +2317,14 @@ def five_tuple_member_facts(shape: ShapeDraft) -> tuple[dict[str, MemberFacts], 
     (`shape_family`): a property only one of its datasets' rows carry stays a slot of the
     identity whichever of them serves it, and a property only another family of the
     five-tuple carries is no slot. `shape_member_facts` is the post-bind reader and keeps one
-    dataset's members.
+    dataset's members. A shape the index does not carry reads the members it stands for
+    (`shape_population_arcs`): the family the catalogue holds for it beside its recalled
+    members, else those alone.
     """
     rows = part_member_rows(shape, get_index())
     if rows:
         return {row.dcid: IndexMemberFacts(row=row) for row in rows}, True
-    return {sv: ArcsMemberFacts(arcs=a) for sv, a in (shape.sv_arc_facts or {}).items()}, False
+    return {sv: ArcsMemberFacts(arcs=a) for sv, a in shape_population_arcs(shape).items()}, False
 
 
 def _exact_member_facts(shape: ShapeDraft, query: FamilyQuery) -> dict[str, MemberFacts]:
@@ -2302,8 +2354,9 @@ def shape_member_facts(
     shape: ShapeDraft, query: FamilyQuery
 ) -> tuple[dict[str, MemberFacts], bool]:
     """The member population of `shape` that `query` asks for: the family the code index
-    resolves, else the shape's own recall-sourced ``sv_arc_facts``. Returns
-    (member_facts_by_sv, index_sourced).
+    resolves, else the family the catalogue's tables hold for the shape
+    (`ShapeDraft.held_family`) beside the shape's own recall-sourced ``sv_arc_facts``, else
+    those alone. Returns (member_facts_by_sv, index_sourced).
 
     `query` is the shape's `shape_query` or an identity's `identity_query`. The family is
     `code_index.members.index_family`'s, the function the Datasets mint resolves an
@@ -2321,14 +2374,15 @@ def shape_member_facts(
     empty population with `index_sourced=True`: the mint refuses the same identity, so no
     recall member stands in for the family.
 
-    A recall sample the index does not decide is returned narrowed to the role class the
+    A population the index does not decide is returned narrowed to the role class the
     query's role keys elect (`_recall_role_class`), with `index_sourced=False`. This
     covers a five-tuple the index does not carry and an unresolved denominator, which no
-    exported row has.
+    exported row has. The population is the members the shape stands for
+    (`shape_population_arcs`): for a shape stamped with a held family, the recalled members
+    and then every other member of that family, so its members are the population its slot
+    taxonomy describes, exact when the tables hold the family whole (`held_family_exact`)
+    and a floor otherwise. Any other is the recall sample.
     """
-    recall: dict[str, MemberFacts] = {
-        sv: ArcsMemberFacts(arcs=a) for sv, a in (shape.sv_arc_facts or {}).items()
-    }
     if shape.sv_arc_facts_complete:
         return _exact_member_facts(shape, query), False
     index = get_index()
@@ -2341,7 +2395,241 @@ def shape_member_facts(
         return {
             row.dcid: IndexMemberFacts(row=row, dataset=family.provenance) for row in family.rows
         }, True
+    recall: dict[str, MemberFacts] = {
+        sv: ArcsMemberFacts(arcs=a) for sv, a in shape_population_arcs(shape).items()
+    }
     return _recall_role_class(recall, query), False
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True)
+class _HeldMembers:
+    """The members of a family the catalogue holds, as `_held_members` reads them. Weakly
+    referable, so `_held_decodes` shares one decode while a request holds it."""
+
+    arcs: dict[str, dict]
+    """Each member's arcs, in table order."""
+    roles: dict[str, frozenset[str] | None]
+    """Each member's declared roles (`facts.read_declared_roles`), None for a degenerate
+    declaration. Empty for a subject-only family, which no role-class election narrows."""
+    groups: dict[WalkKey, Future[MemberGroup | _HeldRefusal]] = field(default_factory=dict)
+    """The group each query elects over this family when the tables hold it whole, or the
+    refusal it meets (`_held_family_group`), by walk key, held as long as the decode is.
+    Guarded by `_held_lock`."""
+
+
+# One request's held-family members (`_held_members`), keyed by catalogue build and
+# family, bound by `held_family_memo` for the request's life. A plain answer reads its
+# population three times, and option coverage and repair read each held shape of the menu
+# again. On the recorded dev build the largest held families are three BLS families of
+# 8,248 members, whose arcs take 196 to 236 ms and 45 to 46 MB to read (5.5 KB a member),
+# and the UNHCR family of 8,182. A process memo holding four such families would pin about
+# 185 MB in a container whose loaded build leaves about 1.7 GiB for everything else, and a
+# smaller one evicts a family a menu reads beside another. A request holds each family it
+# reads until it ends, and requests share one decode through `_held_decodes`, so six
+# concurrent BLS questions hold one copy of each family where they would otherwise hold six,
+# about 830 MB. A family no request holds is freed.
+_held_family_memo: ContextVar[dict[tuple[str, FamilyKey], _HeldMembers] | None] = ContextVar(
+    "search_held_family_memo", default=None
+)
+
+_held_lock = threading.Lock()
+_held_decodes: weakref.WeakValueDictionary[tuple[str, FamilyKey], _HeldMembers] = (
+    weakref.WeakValueDictionary()
+)
+"""Each held family some request still holds, by catalogue build and family. Guarded by
+`_held_lock`."""
+_held_flights: dict[tuple[str, FamilyKey], Future[_HeldMembers]] = {}
+"""Each held family being decoded, so a second reader waits for the first decode. Guarded by
+`_held_lock`."""
+
+
+@contextmanager
+def held_family_memo() -> Iterator[None]:
+    """Bind a fresh held-family member memo (`_held_members`) for one request, or keep the
+    one bound: `core.resolve_events` binds one for the request and `resolve_variable` for a
+    part, which shares the request's."""
+    if _held_family_memo.get() is not None:
+        yield
+        return
+    token = _held_family_memo.set({})
+    try:
+        yield
+    finally:
+        _held_family_memo.reset(token)
+
+
+def shape_population_arcs(shape: ShapeDraft) -> dict[str, dict]:
+    """The arcs of the members `shape` stands for: its own members (`sv_arc_facts`), then,
+    for a shape stamped with a family the catalogue holds (`ShapeDraft.held_family`), every
+    other member of that family, of the role set the role-class election narrowed it to
+    when one did (`ShapeDraft.held_roles`). Every reader of a shape's members reads them
+    here, so the members agree with the slot taxonomy derive read from the same family."""
+    own = shape.sv_arc_facts or {}
+    if shape.held_family is None:
+        return dict(own)
+    held = _held_members(shape.held_family)
+    return {
+        **own,
+        **{
+            sv: arcs
+            for sv, arcs in held.arcs.items()
+            if sv not in own and (shape.held_roles is None or held.roles[sv] == shape.held_roles)
+        },
+    }
+
+
+def narrowed_to(shape: ShapeDraft, members: dict[str, dict]) -> ShapeDraft:
+    """`shape` standing for `members` alone, some of the members it stands for
+    (`shape_population_arcs`). It holds no catalogue family (`ShapeDraft.held_family`). A
+    shape narrowed from a held family's members is seeded, when walked, with the members
+    among them it held before (`ShapeDraft.walk_seeds`), so the family widens what it
+    stands for and never what a walk reads. A shape that held no family stood for its own
+    members alone, and keeps its seeds."""
+    if shape.held_family is None:
+        return replace(shape, sv_arc_facts=members)
+    own = shape.sv_arc_facts or {}
+    return replace(
+        shape,
+        sv_arc_facts=members,
+        held_family=None,
+        walk_seeds=frozenset(
+            sv
+            for sv in members
+            if sv in own and (shape.walk_seeds is None or sv in shape.walk_seeds)
+        ),
+    )
+
+
+def shape_constraint_values(shape: ShapeDraft) -> list[tuple[str, str]]:
+    """Each (property, value) pair some member `shape` stands for asserts
+    (`shape_population_arcs`), its own members' first in member order, then, for a held
+    shape, its family's (`FamilySummary.values`), which the catalogue job read with the same
+    reader. Reads no member's arcs beyond the shape's own."""
+    pairs = dict.fromkeys(
+        (prop, value)
+        for arcs in (shape.sv_arc_facts or {}).values()
+        for prop, value in read_constraints(arcs).items()
+    )
+    if shape.held_family is not None:
+        family = current_catalogue().held_family(shape.held_family)
+        if family is not None:
+            pairs.update(
+                dict.fromkeys(
+                    (prop, value) for prop, found in family.values.items() for value in found
+                )
+            )
+    return list(pairs)
+
+
+def held_family_exact(shape: ShapeDraft) -> bool:
+    """Whether the family the catalogue holds for `shape` (`ShapeDraft.held_family`) is every
+    member a walk of it can elect, so its population is exact rather than a floor.
+
+    True for a family of UN variables alone (`FamilySummary.un_only`): the UN tables hold
+    every admitted variable of each series, and the origin graph client reads a variable of an
+    excluded series as absent, so a walk confirms none outside them. False for a family with
+    a DFO or base member. The arc tables hold every DFO variable but only the base variables
+    a resolver index or a topic names, and the mint's walk enumerates the five-tuple over the
+    whole graph, where base Data Commons can hold further members: on the recorded dev
+    build 5 of the 31 families holding DFO members alone share a population type with a base
+    family, and one family holds both. Such a family is a floor a walk may extend."""
+    if shape.held_family is None:
+        return False
+    family = current_catalogue().held_family(shape.held_family)
+    return family is not None and family.un_only
+
+
+async def read_held_families(shapes: Iterable[ShapeDraft]) -> None:
+    """Read the family each of `shapes` stands for (`ShapeDraft.held_family`) into the
+    request's memo (`held_family_memo`) off the event loop, so a reader that runs on it
+    finds the family read. The phases call it before their first on-loop reader: the
+    raw-count prune before it reads its shapes, and binding repair over the bind menu and
+    the elected shape, which candidate admission, the alternates' walks and refusals read
+    after it. Reads nothing with no memo bound or every family already read."""
+    memo = _held_family_memo.get()
+    if memo is None:
+        return
+    build_id = current_catalogue().build_id
+    keys = list(
+        dict.fromkeys(
+            shape.held_family
+            for shape in shapes
+            if shape.held_family is not None and (build_id, shape.held_family) not in memo
+        )
+    )
+    if keys:
+        await asyncio.to_thread(lambda: [_held_members(key) for key in keys])
+
+
+def _held_members(key: FamilyKey) -> _HeldMembers:
+    """Every member of family `key` the bound catalogue's tables hold, in table order, with
+    the arcs the tables hold for it (`origin_catalogue.graph.mirrored_arcs`), read once a
+    request (`held_family_memo`) and shared by every request holding it (`_held_decodes`),
+    with one decode at a time per family. Reads no graph. Empty when the tables hold no
+    member."""
+    catalogue = current_catalogue()
+    memo = _held_family_memo.get()
+    memo_key = (catalogue.build_id, key)
+    if memo is not None and (cached := memo.get(memo_key)) is not None:
+        return cached
+    held = _shared_held_members(memo_key, catalogue)
+    if memo is not None:
+        held = memo.setdefault(memo_key, held)
+    return held
+
+
+def _shared_held_members(memo_key: tuple[str, FamilyKey], catalogue: Catalogue) -> _HeldMembers:
+    """The decode of `memo_key`'s family some request holds, else one decode: the first
+    reader decodes and every reader arriving meanwhile waits for it."""
+    with _held_lock:
+        if (held := _held_decodes.get(memo_key)) is not None:
+            return held
+        flight = _held_flights.get(memo_key)
+        if flight is None:
+            flight = _held_flights[memo_key] = Future()
+            decoding = True
+        else:
+            decoding = False
+    if not decoding:
+        return flight.result()
+    try:
+        held = _decode_held_members(memo_key[1], catalogue)
+    except BaseException as exc:
+        with _held_lock:
+            del _held_flights[memo_key]
+        flight.set_exception(exc)
+        raise
+    with _held_lock:
+        _held_decodes[memo_key] = held
+        del _held_flights[memo_key]
+    flight.set_result(held)
+    return held
+
+
+def _decode_held_members(key: FamilyKey, catalogue: Catalogue) -> _HeldMembers:
+    family = catalogue.held_family(key)
+    arcs = (
+        {}
+        if family is None
+        else {
+            sv: found
+            for sv in family.members
+            if (found := mirrored_arcs(sv, catalogue=catalogue)) is not None
+        }
+    )
+    return _HeldMembers(
+        arcs=arcs,
+        roles={sv: _declared_or_none(found) for sv, found in arcs.items()}
+        if key.role_bearing
+        else {},
+    )
+
+
+def _declared_or_none(arcs: dict) -> frozenset[str] | None:
+    try:
+        return frozenset(read_declared_roles(arcs))
+    except DegenerateObservationProperties:
+        return None
 
 
 def index_open_role_keys(query: FamilyQuery) -> frozenset[str] | None:
@@ -2363,9 +2651,10 @@ def query_members(shape: ShapeDraft, query: FamilyQuery) -> tuple[dict[str, Memb
     and whether the code index decided them.
 
     The index's family when it decides `query` (an exact member set is read past, as a
-    resubmit of `query` reads the index's family). Otherwise the shape's own members that
-    the mint's graph walk confirms for `query`'s slots (`_matches_query_slots`): the family
-    a walk settled for the answer, or its recall when no walk settled one.
+    resubmit of `query` reads the index's family). Otherwise the members of the population
+    `shape_member_facts` reads that the mint's graph walk confirms for `query`'s slots
+    (`_matches_query_slots`): the family a walk settled for the answer, the catalogue's
+    held family beside the shape's recall when no walk settled one, or its recall alone.
     """
     members, index_sourced = shape_member_facts(replace(shape, sv_arc_facts_complete=False), query)
     if index_sourced:
@@ -2461,7 +2750,8 @@ class MembershipAuthority(StrEnum):
     """
 
     AUTHORITATIVE = "authoritative"
-    """The code index decides the members, or the mint's walk read every candidate."""
+    """The code index decides the members, the catalogue's tables hold the five-tuple whole
+    (`_tables_hold_five_tuple`), or the mint's walk read every candidate."""
     PROVEN = "proven"
     """The mint's walk hit its candidate window and proved that no unread candidate
     changes its members (`MemberGroup.proven_complete`)."""
@@ -2687,6 +2977,94 @@ class RoleClassWalks:
         )
 
 
+class _HeldRefusal(NamedTuple):
+    """A refusal `_elect_held_family` returns, which follows from the tables and the query
+    alone. Kept as a record and raised afresh by each reader (`elected_role_class_shape`),
+    since an exception shared across requests would pin each reader's frames in its
+    traceback."""
+
+    error: type[RoleSignatureError | FamilyNotResolvableError] | None
+    """The error each reader raises, or None past the mint's member cap, which settles
+    nothing."""
+    message: str
+
+
+def _held_family_group(key: FamilyKey, query: FamilyQuery) -> MemberGroup | _HeldRefusal:
+    """The group the mint's walk resolves for `query` over family `key`, whose five-tuple
+    the catalogue's tables hold whole (`_tables_hold_five_tuple`), elected from the tables'
+    arcs with no graph read (`_elect_held_family`). Elected once per catalogue build, family and walk
+    key, and shared with every request holding the family's decode
+    (`_HeldMembers.groups`): the first reader elects and every reader arriving meanwhile
+    waits for it. On the recorded eval build the largest family, UNHCR's 8,182 members,
+    elects in about 0.23 s, so the phases call it off the event loop.
+
+    A refusal the walk would make (`_HeldRefusal`) is the entry's result, so every later
+    reader reads it; any other failure clears the entry, so the next reader elects again."""
+    groups = _held_members(key).groups
+    walk = walk_key(query)
+    with _held_lock:
+        flight = groups.get(walk)
+        electing = flight is None
+        if flight is None:
+            flight = groups[walk] = Future()
+    if not electing:
+        return flight.result()
+    try:
+        group = _elect_held_family(key, query)
+    except BaseException as exc:
+        with _held_lock:
+            del groups[walk]
+        flight.set_exception(exc)
+        raise
+    flight.set_result(group)
+    return group
+
+
+def _tables_hold_five_tuple(key: FamilyKey) -> bool:
+    """Whether the catalogue's tables hold every variable of family `key`'s five-tuple a
+    walk can elect: `key`'s family is UN variables alone (`held_family_exact`), and so is
+    the family of the other role class when the tables hold one. A walk reads both
+    classes, and a class with a DFO or base member is a floor it may extend."""
+    catalogue = current_catalogue()
+    own = catalogue.held_family(key)
+    other = catalogue.held_family(key._replace(role_bearing=not key.role_bearing))
+    return own is not None and own.un_only and (other is None or other.un_only)
+
+
+def _elect_held_family(key: FamilyKey, query: FamilyQuery) -> MemberGroup | _HeldRefusal:
+    """One election of `_held_family_group` through the walk's admission and election
+    (`statvar_members.group_of_arcs`). The walk reads every variable of the five-tuple, so
+    the family of the other role class joins when the tables hold one. Returns the refusal
+    the walk would make, as `RoleClassWalks._walk` maps it: past the member cap, role sets
+    the election cannot order (`RoleSignatureError`), and a member at fault
+    (`FamilyNotResolvableError`)."""
+    arcs = {
+        sv: parse_arcs(found, tuple(found), mark_unresolved=True)
+        for role_bearing in (False, True)
+        for sv, found in _held_members(key._replace(role_bearing=role_bearing)).arcs.items()
+    }
+    try:
+        return group_of_arcs(
+            query.five_tuple,
+            arcs,
+            slots=query.slots,
+            readings=absent_readings(get_index()),
+            member_cap=shared_enumerator().member_cap,
+            role_keys=query.role_keys,
+            open_role_keys=query.open_role_keys,
+        )
+    except MemberEnumerationTooLarge as exc:
+        return _HeldRefusal(None, str(exc))
+    except MemberRoleDisagreement as exc:
+        return _HeldRefusal(RoleSignatureError, str(exc))
+    except (
+        MemberDegenerateObservationProperties,
+        MultiValuedConstraint,
+        NotAStatisticalVariable,
+    ) as exc:
+        return _HeldRefusal(FamilyNotResolvableError, str(exc))
+
+
 def elected_role_class_shape(
     shape: ShapeDraft,
     query: FamilyQuery,
@@ -2711,17 +3089,25 @@ def elected_role_class_shape(
     `arcs_graph` are given (`RoleClassWalks.family`). A settled shape holds the walked
     family exactly: when the family differs from the shape's members, it replaces them,
     the arcs of a member the shape lacks are read through `arcs_graph` under the walk's
-    bound, and the shape takes the name of the family's least-constrained member. A member
-    the walk does not confirm is dropped, so no later reader of the shape's members
-    answers it. An exact shape (`ShapeDraft.sv_arc_facts_complete`) stays exact, holding
-    the family in place of its members. A failed read of the members' arcs notes a
-    degraded read (`degraded_reads.note_degraded_read`).
+    bound, and a settled shape is named by `_walked_label`. A member the walk does not
+    confirm is dropped, so no later reader of the shape's members answers it, and a settled
+    shape holds no catalogue family (`ShapeDraft.held_family`). An exact shape
+    (`ShapeDraft.sv_arc_facts_complete`) stays exact, holding the family in place of its
+    members. A failed read of the members' arcs notes a degraded read
+    (`degraded_reads.note_degraded_read`).
 
-    The authority is `AUTHORITATIVE` when the index decides the shape, and the walk's own
-    authority when the walk settles the members. Otherwise the shape's members answer:
-    `SAMPLED` when no walk runs and `FAILED` when the walk, or the read of its members'
-    arcs, settles nothing. A resolution the walk settled states what the mint states of
-    the walked members (`MembershipResolution.walked`).
+    The authority is `AUTHORITATIVE` when the index decides the shape, and when the
+    catalogue's tables hold its five-tuple whole (`_tables_hold_five_tuple`), which no walk
+    could extend: no walk runs, and the tables elect the family as the walk would
+    (`_held_family_group`). That election settles nothing (`FAILED`) where the walk's would
+    not: past the member cap or with no member. It also settles nothing when it elects a
+    member the shape does not stand for (`shape_population_arcs`), since the answer could
+    then not serve what it states. Otherwise it is the walk's own authority when the walk
+    settles the members, and the shape's members answer: `SAMPLED` when no walk runs and
+    `FAILED` when the walk, or the read of its members' arcs, settles nothing. A resolution
+    the walk or the tables settled states what the mint states of the members
+    (`MembershipResolution.walked`). The walk is seeded with the shape's recalled members
+    (`ShapeDraft.walk_seeds`).
 
     Raises `RoleSignatureError` when the walk meets role sets the election cannot order,
     and `FamilyNotResolvableError` when it meets a member at fault: the mint refuses that
@@ -2729,15 +3115,40 @@ def elected_role_class_shape(
     narrowed = _recalled_role_class_shape(shape, query)
     if index_decides(get_index(), query):
         return MembershipResolution(narrowed, MembershipAuthority.AUTHORITATIVE)
+    if narrowed.held_family is not None and _tables_hold_five_tuple(narrowed.held_family):
+        held_group = _held_family_group(narrowed.held_family, query)
+        if isinstance(held_group, _HeldRefusal):
+            if held_group.error is None:
+                return MembershipResolution(narrowed, MembershipAuthority.FAILED)
+            raise held_group.error(held_group.message)
+        if not held_group.members or not set(held_group.family) <= (
+            shape_population_arcs(narrowed).keys()
+        ):
+            return MembershipResolution(narrowed, MembershipAuthority.FAILED)
+        return MembershipResolution(
+            narrowed, MembershipAuthority.AUTHORITATIVE, WalkedMembers.of(query, held_group)
+        )
     if walks is None or arcs_graph is None or not narrowed.sv_arc_facts:
         return MembershipResolution(narrowed, MembershipAuthority.SAMPLED)
-    walked = walks.family(query, tuple(narrowed.sv_arc_facts), deadline=deadline)
+    seeds = tuple(
+        sv
+        for sv in narrowed.sv_arc_facts
+        if narrowed.walk_seeds is None or sv in narrowed.walk_seeds
+    )
+    walked = walks.family(query, seeds, deadline=deadline)
     if walked.value is None:
         return MembershipResolution(narrowed, walked.authority)
     group = walked.value.group
     recalled = narrowed.sv_arc_facts or {}
     settled = WalkedMembers.of(query, group)
     if set(recalled) == set(group.family):
+        label = _walked_label(narrowed, group, recalled)
+        if (
+            narrowed.held_family is not None
+            or narrowed.walk_seeds is not None
+            or label != narrowed.label
+        ):
+            narrowed = replace(narrowed, held_family=None, walk_seeds=None, label=label)
         return MembershipResolution(narrowed, walked.authority, settled)
     unread = [sv for sv in group.family if sv not in recalled]
     arcs_by_dcid: Mapping[str, dict | None] = {}
@@ -2757,20 +3168,15 @@ def elected_role_class_shape(
     }
     if len(members) != len(group.family):
         return MembershipResolution(narrowed, MembershipAuthority.FAILED)
-    label = next(
-        (
-            name
-            for member in group.members
-            if (name := read_name(members.get(member.stat_var, {}))) is not None
-        ),
-        narrowed.label,
-    )
+    label = _walked_label(narrowed, group, members)
     return MembershipResolution(
         replace(
             narrowed,
             declared_roles=group.members[0].declared_roles,
             optional_roles=frozenset(),
             sv_arc_facts=members,
+            held_family=None,
+            walk_seeds=None,
             label=label,
         ),
         walked.authority,
@@ -2778,21 +3184,97 @@ def elected_role_class_shape(
     )
 
 
+def walked_family_label(
+    members: Mapping[str, dict],
+    *,
+    held: FamilySummary | None,
+    population_type_label: str | None,
+    prop_labels: Mapping[str, str],
+    value_labels: Mapping[str, str],
+) -> str | None:
+    """The label of a shape whose membership the graph walk decides, the one rule derive,
+    the mint's walk (`elected_role_class_shape`) and a resubmit
+    (`promote_shape._phase_build_shape`) name such a shape by, so one shape id carries one
+    label.
+
+    `held` is the shape's family as the catalogue's tables hold it (`Catalogue.held_family`),
+    and `members` maps the shape's members to their arcs in the caller's order. A member's
+    name spells out its own constraint values, which an unbound slot spans, so a family reads
+    as its total's name (`FamilySummary.total_name`), the member asserting no constraint, and
+    a multi-member UN family with no total as its population type and the values every member
+    shares (`shape.family_label`), given `population_type_label`. Without a held family,
+    several UN members read that way over their own values. Otherwise the shape reads as the
+    first of `members` with a name. None when none has one."""
+    if held is not None and held.total_name is not None:
+        return held.total_name
+    un_family = (
+        len(held.members) > 1 and held.un_only
+        if held is not None
+        else len(members) > 1 and all(sv.startswith(UN_ID_PREFIX) for sv in members)
+    )
+    if un_family and population_type_label is not None:
+        return family_label(
+            population_type_label=population_type_label,
+            member_constraints=(
+                [held.shared]
+                if held is not None
+                else [read_constraints(arcs) for arcs in members.values()]
+            ),
+            prop_labels=prop_labels,
+            value_labels=value_labels,
+        )
+    return next((name for arcs in members.values() if (name := read_name(arcs)) is not None), None)
+
+
+def _shape_held_family(shape: ShapeDraft) -> FamilySummary | None:
+    """The family of `shape`'s five-tuple and role class as the bound catalogue's tables
+    hold it (`Catalogue.held_family`), or None when they hold none of its members."""
+    return current_catalogue().held_family(
+        FamilyKey(*shape_five_tuple(shape), is_role_bearing(shape))
+    )
+
+
+def _walked_label(shape: ShapeDraft, group: MemberGroup, members: Mapping[str, dict]) -> str:
+    """The label of `shape` once the walk settles `group`, whose arcs `members` holds. A
+    family the catalogue's tables hold keeps the label derive or a resubmit gave it by
+    `walked_family_label`, which reads the family alone; any other reads as the first
+    member of `group`, least constrained first, with a name, else `shape`'s label."""
+    if _shape_held_family(shape) is not None:
+        return shape.label
+    return (
+        walked_family_label(
+            {m.stat_var: members[m.stat_var] for m in group.members if m.stat_var in members},
+            held=None,
+            population_type_label=None,
+            prop_labels={},
+            value_labels={},
+        )
+        or shape.label
+    )
+
+
 def _recalled_role_class_shape(shape: ShapeDraft, query: FamilyQuery) -> ShapeDraft:
-    """Return `shape` narrowed to the role class `query` elects among its recalled members.
+    """Return `shape` narrowed to the role class `query` elects among the members it stands
+    for (`shape_population_arcs`): its recalled members, beside the family the catalogue
+    holds for it when it holds one.
 
     A role-bearing shape can hold members of several role sets and declares their union
     (`retrieval.facts.group_roles`). Once the bound roles are known, the members that answer are
-    one role set (`shape_member_facts`). The narrowed shape holds those members, declares
-    their roles, and takes the name of the least-constrained one, the member the mint
-    serves, so every later reader sees one role signature. `shape` is returned unchanged
-    when the index decides the query's membership and when the election decides nothing
+    one role set (`shape_member_facts`). The narrowed shape holds its own members of that set,
+    declares their roles, and takes the name of the least-constrained one, the member the
+    mint serves, so every later reader sees one role signature. A shape standing for a held
+    family keeps the family's label (`walked_family_label`) and its stamp, and records the
+    elected role set (`ShapeDraft.held_roles`), so its population is the family's members of
+    that set; when none of its own members is of that set it
+    holds the set's least-constrained member. `shape` is returned unchanged when the index
+    decides the query's membership and when the election decides nothing
     (`_recall_role_election`)."""
     members = shape.sv_arc_facts
     if shape.sv_arc_facts_complete or not members or index_decides(get_index(), query):
         return shape
+    population = shape_population_arcs(shape)
     recall: dict[str, MemberFacts] = {
-        sv: ArcsMemberFacts(arcs=arcs) for sv, arcs in members.items()
+        sv: ArcsMemberFacts(arcs=arcs) for sv, arcs in population.items()
     }
     elected = _recall_role_election(recall, query)
     if elected is None:
@@ -2802,16 +3284,22 @@ def _recalled_role_class_shape(shape: ShapeDraft, query: FamilyQuery) -> ShapeDr
         sv: arcs
         for sv, arcs in members.items()
         if frozenset(recall[sv].read_declared_roles()) == role_set
-    }
+    } or {least_constrained[0]: population[least_constrained[0]]}
+    label = (
+        shape.label
+        if shape.held_family is not None
+        else next(
+            (name for sv in least_constrained if (name := read_name(population[sv])) is not None),
+            shape.label,
+        )
+    )
     return replace(
         shape,
         declared_roles=recall[least_constrained[0]].read_declared_roles(),
         optional_roles=frozenset(),
         sv_arc_facts=kept,
-        label=next(
-            (name for sv in least_constrained if (name := read_name(members[sv])) is not None),
-            shape.label,
-        ),
+        label=label,
+        held_roles=role_set if shape.held_family is not None else None,
     )
 
 
@@ -2878,10 +3366,17 @@ def _unexported_shared_values(
         prop = slot.property_dcid
         if prop is None or prop in closed or prop not in exported:
             continue
-        values = {member.get(prop) for member in constraints}
-        if len(values) == 1 and (value := next(iter(values))) is not None:
+        if (value := sole_shared_value(constraints, prop)) is not None:
             shared[prop] = value
     return shared
+
+
+def sole_shared_value(constraints: Sequence[Mapping[str, str]], prop: str) -> str | None:
+    """The one value every member's constraints (`read_constraints`) assert on `prop`, else
+    None. A member asserting nothing on `prop`, as a family's total does, or two members
+    asserting different values leave the property without a forced value."""
+    values = {member.get(prop) for member in constraints}
+    return next(iter(values)) if len(values) == 1 else None
 
 
 def bind_shared_values(
@@ -2903,6 +3398,43 @@ def bind_shared_values(
     Returns the bindings with each such slot bound as a `sole_option` value, and the
     bindings added. Both follow slot-key order."""
     return _bind_sole_options(shape, bindings, _unexported_shared_values(shape, bindings))
+
+
+def bind_member_values(
+    shape: ShapeDraft, bindings: Sequence[SlotBindingDraft], members: Collection[str]
+) -> tuple[list[SlotBindingDraft], list[SlotBindingDraft]]:
+    """`bindings` with each what or how slot of `shape` on which every StatVar of `members`
+    holds one value, by its index row, bound to that value as a `sole_option` draft, in
+    place of what `bindings` drafted there, and the drafts of `bindings` that ask to see
+    such a slot in full (`requested_all`).
+
+    A part's series code names its StatVars (`ResolveState.source_code`), so the identity
+    minted from the result elects those StatVars and no broader family: DT.TDS.DEGG.CD binds
+    `idsDebtorType` to `IDSDebtorTypeGG`, where an open slot would elect total debt service
+    over every debtor. The code's value replaces a value drafted from the part's words, since
+    the code is exact. A member the index holds no row for binds nothing.
+
+    A slot asked in full that the members hold one value on is a request they cannot
+    answer: "across all debtor types" beside DT.TDS.DEGG.CD. `bindings` then return as
+    drafted beside those drafts, for the caller to refuse the part."""
+    index = get_index()
+    rows = [index.statvar_by_dcid(dcid) for dcid in members]
+    if not rows or any(row is None for row in rows):
+        return list(bindings), []
+    first, *rest = (row.constraint_properties for row in rows if row is not None)
+    shared = {
+        prop: value for prop, value in first.items() if all(c.get(prop) == value for c in rest)
+    }
+    bound, added = _bind_sole_options(shape, bindings, shared)
+    fixed = {binding.property_dcid for binding in added}
+    asked_in_full = [
+        binding
+        for binding in bindings
+        if binding.evidence == "requested_all" and binding.property_dcid in fixed
+    ]
+    if asked_in_full:
+        return list(bindings), asked_in_full
+    return bound, []
 
 
 def canonical_pin_bindings(
@@ -2983,6 +3515,17 @@ def five_tuple_families(
     """The index families of `five_tuple` (`CodeIndex.families_by_five_tuple`), in serving
     order. Empty for a five-tuple the index does not carry."""
     return (index or get_index()).families_by_five_tuple.get(_member_five_tuple(five_tuple), ())
+
+
+def prepare_index_views() -> None:
+    """Loads the packaged code index and measure index and builds the views of the index
+    that search reads on every resolve: its five-tuples (`index_carries_five_tuple`) and
+    the member views (`code_index.members.prepare_member_views`). Each is otherwise built
+    by the first request that reads it, about 135 ms on the packaged index."""
+    index = get_index()
+    get_measure_index()
+    _index_five_tuples(index)
+    prepare_member_views(index)
 
 
 def index_carries_five_tuple(five_tuple: FiveTuple, index: CodeIndex | None = None) -> bool:

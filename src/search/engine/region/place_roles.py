@@ -195,13 +195,13 @@ def _undirected_place_axis(
 def subject_shapes_refused(state: ResolveState) -> bool:
     """Whether every subject-only shape refuses ``role_incompatible`` for this query.
 
-    True when role-bearing shapes were recalled and the query's resolved places name both
-    flow ends. A subject-only shape has one subject slot, so it cannot hold an origin and a
+    True when a role-bearing eligible shape outranks the subject-only ones
+    (`ResolveState.role_bearing_outranks`) and the query's resolved places name both flow
+    ends. A subject-only shape has one subject slot, so it cannot hold an origin and a
     destination at once. `bind_place_roles` refuses subject-only shapes on this predicate,
-    and `_phase_prune_and_rank` drops them from election on it once a role-bearing shape
-    survives the score floor.
+    and `_phase_prune_and_rank` drops them from election on it.
     """
-    if not state.role_bearing_recalled:
+    if not state.role_bearing_outranks:
         return False
     query_directions = {
         role.axis

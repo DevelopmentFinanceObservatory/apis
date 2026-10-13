@@ -272,8 +272,10 @@ def test_role_facet_candidates_keep_known_provenance_less_method_and_unit():
     ] == [(None, "Reported", "CurrencyUSD")]
 
 
-def test_scoped_role_coverage_applies_dfo_precedence_per_pair_everywhere_it_is_read():
-    """A DFO/base overlap with one base-only pair stays pair-specific for probes and plans."""
+def test_scoped_role_coverage_admits_every_origin_per_pair_everywhere_it_is_read():
+    """A DFO/base overlap with one base-only pair stays pair-specific for probes and plans, and
+    the base facet is admitted at the pair DFO also holds: the election chooses the origin
+    (#1271)."""
     dfo, base = "provenance/DFO", "provenance/Base"
     coverage = build_coverage_index(
         [
@@ -299,7 +301,7 @@ def test_scoped_role_coverage_applies_dfo_precedence_per_pair_everywhere_it_is_r
     assert probe.admission == CoverageAdmission(
         pairs_by_facet={
             "f-dfo": frozenset({("country/NOR", _ENTITY)}),
-            "f-base": frozenset({("country/USA", _ENTITY)}),
+            "f-base": frozenset({("country/NOR", _ENTITY), ("country/USA", _ENTITY)}),
         },
         role_names=RoleNames(donor="donor", recipient="recipient"),
     )

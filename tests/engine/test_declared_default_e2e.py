@@ -9,10 +9,12 @@ import asyncio
 
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.extract import ExtractedEntity, Extraction
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region.pipeline import resolve_variable
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import make_request, offline_resolve
+from tests.engine._quantity import NO_QUANTITY
 from tests.engine.test_qualifier_suppression_and_provenance import _e2e_graph_for
 from tests.fixtures import make_resolver
 
@@ -25,6 +27,8 @@ class _FlowOpenLLM:
     ``crsTypeOfFinance`` is eligible for text recognition."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0,
@@ -42,7 +46,7 @@ def _filter_for(spec, prop: str):
     return next(
         f
         for f in spec.resolved.trace.slot_filters
-        if f.key.property is not None and f.key.property.dcid == prop
+        if f.key.property is not None and f.key.property.ref == prop
     )
 
 
@@ -72,7 +76,7 @@ def test_grants_question_with_no_flow_type_defaults_crs_type_of_flow_to_oda():
     # The default provenance is carried on the flow filter.
     flow_filter = _filter_for(spec, "crsTypeOfFlow")
     assert flow_filter.binding_kind == "value"
-    assert [ref.dcid for ref in flow_filter.refs] == ["CRSTypeOfFlow10"]
+    assert [ref.ref for ref in flow_filter.refs] == ["CRSTypeOfFlow10"]
     assert flow_filter.provenance == "declared_default"
 
     # The default leaves text-recognised finance provenance unchanged.
@@ -171,7 +175,7 @@ def test_single_variable_raw_query_naming_aid_defaults_the_flow_type():
     assert response.status == "definite"
     [flow_filter] = _flow_filters(response)
     assert flow_filter.provenance == "declared_default"
-    assert [ref.dcid for ref in flow_filter.refs] == ["CRSTypeOfFlow10"]
+    assert [ref.ref for ref in flow_filter.refs] == ["CRSTypeOfFlow10"]
 
 
 def test_two_variable_raw_query_naming_aid_leaves_the_flow_type_open():

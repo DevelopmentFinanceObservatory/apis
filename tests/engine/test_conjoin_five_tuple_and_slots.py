@@ -511,7 +511,7 @@ def test_collapse_same_shape_folds_absent_vs_unbound_slot_roster():
     merged_slots = effective[0].spec.resolved.slots
     # No slot became a BindingSet -- nothing actually differed.
     assert all(not isinstance(sl.binding, BindingSet) for sl in merged_slots)
-    merged_keys = {(sl.key.axis, sl.key.property.dcid) for sl in merged_slots}
+    merged_keys = {(sl.key.axis, sl.key.property.ref) for sl in merged_slots}
     assert ("what", "incomeStatus") in merged_keys
     assert ("what", "maritalStatus") in merged_keys
 

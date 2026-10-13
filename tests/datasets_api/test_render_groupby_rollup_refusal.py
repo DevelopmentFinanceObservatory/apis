@@ -7,7 +7,7 @@ from __future__ import annotations
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
 from code_index.types import StatVarRow
 from datasets_api.mint_models import GroupbyOptions, MintOptions
-from datasets_api.render import _reshape
+from datasets_api.render import _RenderReads, _reshape
 from materialise.enrichment import EnrichmentLookup
 from materialise.reshape import RollupNotSummableError, Table
 
@@ -94,7 +94,7 @@ _SOLE_CONTRIBUTOR_TABLE = Table(
 
 
 def _enrichment() -> EnrichmentLookup:
-    return EnrichmentLookup(FakeMintGraphReader(), type_kinds={}, parties={})
+    return EnrichmentLookup(FakeMintGraphReader(), parties={})
 
 
 def test_by_omitting_stat_var_refuses_when_no_summable_axis_and_multiple_contributors():
@@ -105,7 +105,7 @@ def test_by_omitting_stat_var_refuses_when_no_summable_axis_and_multiple_contrib
             _TWO_CONTRIBUTOR_TABLE,
             options=options,
             entity_columns=_ENTITY_COLUMNS,
-            enrichment=_enrichment(),
+            reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
             code_index=_NO_SUMMABLE_AXIS_INDEX,
             resolved_stat_var_refs=(),
             provenance_refs=("p1",),
@@ -127,7 +127,7 @@ def test_a_sole_contributor_with_no_summable_axis_stays_a_no_op():
         _SOLE_CONTRIBUTOR_TABLE,
         options=options,
         entity_columns=_ENTITY_COLUMNS,
-        enrichment=_enrichment(),
+        reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
         code_index=_NO_SUMMABLE_AXIS_INDEX,
         resolved_stat_var_refs=(),
         provenance_refs=("p1",),
@@ -149,7 +149,7 @@ def test_by_naming_stat_var_explicitly_never_refuses_even_with_multiple_contribu
         _TWO_CONTRIBUTOR_TABLE,
         options=options,
         entity_columns=_ENTITY_COLUMNS,
-        enrichment=_enrichment(),
+        reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
         code_index=_NO_SUMMABLE_AXIS_INDEX,
         resolved_stat_var_refs=(),
         provenance_refs=("p1",),
@@ -185,7 +185,7 @@ def test_a_decoded_summable_axis_still_collapses_instead_of_refusing():
         _TWO_CONTRIBUTOR_TABLE,
         options=options,
         entity_columns=_ENTITY_COLUMNS,
-        enrichment=_enrichment(),
+        reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
         code_index=declared_index,
         resolved_stat_var_refs=(),
         provenance_refs=("p1",),

@@ -8,7 +8,7 @@ import httpx
 import pytest
 
 from dc_graph import GraphReadError
-from origin_catalogue import un_mirror
+from origin_catalogue import node_reads, un_mirror
 from origin_catalogue.registry import Registry, parse_registry
 from origin_catalogue.schema import UnAgencyCounts
 from origin_catalogue.un_mirror import UnMirror, UnMirrorBuild, UnSiteClient, UnVariable
@@ -41,7 +41,7 @@ CRS = "provenance/OECDCreditorReportingSystem"
 
 @pytest.fixture(autouse=True)
 def _no_wait_before_a_repeated_page(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(un_mirror, "_REPEATED_PAGE_WAITS_SECONDS", (0.0, 0.0, 0.0))
+    monkeypatch.setattr(node_reads, "_REPEATED_PAGE_WAITS_SECONDS", (0.0, 0.0, 0.0))
 
 
 def registry(*excluded: str) -> Registry:
@@ -110,6 +110,16 @@ def test_a_complete_enumeration_copies_every_variable_and_its_arcs(batches_repea
     assert (stats.segment, stats.series, stats.variables, stats.counted) == ("who", 2, 4, 4)
     assert stats.requests > 0
     assert un.count_reads == [WHO_ROOT]
+
+
+def test_a_variable_a_read_naming_several_leaves_out_is_read_again_alone():
+    un = FakeUn()
+    un.omitting = {ODA: 1}
+
+    found = mirror(un)
+
+    assert found.variables[ODA].wire_arcs() == _without_provenance(un.nodes[ODA])
+    assert {"nodes": [ODA], "property": "->*"} in un.requests
 
 
 def test_the_topic_table_holds_what_the_topic_walk_reaches():
@@ -252,10 +262,16 @@ def _variable_without_series(un: FakeUn) -> None:
     un.nodes[ODA] = variable(name="Aid for health", series=None, member_of=ODA_GROUP)
 
 
+def _variable_always_omitted(un: FakeUn) -> None:
+    # Left out of the four-variable read and of the read naming it alone.
+    un.omitting = {ODA: 2}
+
+
 @pytest.mark.parametrize(
     ("hazard", "kind", "subject"),
     [
         (_stalled, "un_enumeration_stalled", MORT_BY_SEX),
+        (_variable_always_omitted, "un_node_omitted", ODA),
         (_repeated_token, "un_enumeration_stalled", MORT_BY_SEX),
         (_truncated_member_list, "un_variable_count_mismatch", WHO),
         (_truncated_group_list, "un_variable_count_mismatch", WHO),

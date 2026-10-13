@@ -69,7 +69,7 @@ def _how_axis_property_dcids(specs: Sequence[Spec]) -> set[str]:
     for spec in specs:
         for slot in spec.resolved.slots:
             if slot.key.axis == "how" and slot.key.property is not None:
-                dcids.add(slot.key.property.dcid)
+                dcids.add(slot.key.property.ref)
         for fact in spec.resolved.open_axis_facts or ():
             dcids.add(fact.property)
     return dcids
@@ -82,7 +82,7 @@ def _how_axis_slot(spec: Spec, prop_dcid: str) -> Slot | None:
             for slot in spec.resolved.slots
             if slot.key.axis == "how"
             and slot.key.property is not None
-            and slot.key.property.dcid == prop_dcid
+            and slot.key.property.ref == prop_dcid
         ),
         None,
     )
@@ -109,7 +109,7 @@ def _how_axis_signature(spec: Spec, prop_dcid: str) -> frozenset[str] | None:
     if fact.varies:
         return frozenset({f"{_HOW_AXIS_VARIES_PREFIX}{fact.distinct_count}"})
     if fact.value is not None:
-        return frozenset({fact.value.dcid})
+        return frozenset({fact.value.ref})
     return _HOW_AXIS_SILENT
 
 
@@ -309,9 +309,9 @@ def _identifying_names(spec: Spec) -> tuple[str | None, ...]:
         shape.measurement_denominator,
     )
     members = spec.resolved.sentence_facts.members
-    stat_vars = [name for member in members if (name := _graph_name(member.dcid, member.label))]
+    stat_vars = [name for member in members if (name := _graph_name(member.ref, member.label))]
     return (
-        *(_graph_name(ref.dcid, ref.label) if ref is not None else None for ref in refs),
+        *(_graph_name(ref.ref, ref.label) if ref is not None else None for ref in refs),
         ", ".join(stat_vars) if stat_vars and len(stat_vars) == len(members) else None,
     )
 

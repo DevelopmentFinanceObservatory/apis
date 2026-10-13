@@ -15,6 +15,7 @@ from search.engine.bind import _UniversalBindOutput
 from search.engine.conjoin import assemble_region
 from search.engine.envelope import now_ms
 from search.engine.extract import DateRequest
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.region.codes import FAMILY_TOTAL_ABSENT, ONLY_ALTERNATE_HAS_DATA
 from search.engine.retrieval import standard
@@ -23,6 +24,7 @@ from tests.engine import test_equivalent_readings_divert as twins
 from tests.engine import test_zero_observation_election as reelection
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 _KEN = "country/KEN"
@@ -46,6 +48,8 @@ class _BindLLM:
         self._also_plausible = also_plausible
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0, bindings=[], also_plausible=self._also_plausible, ask=None
@@ -102,7 +106,7 @@ def _sentence(result, query: str) -> str:
 
 
 def _stat_vars(spec) -> list[str]:
-    return [sv.ref.dcid for sv in spec.resolved.members]
+    return [sv.ref.ref for sv in spec.resolved.members]
 
 
 @pytest.fixture
@@ -232,7 +236,7 @@ def test_a_no_data_part_warns_for_the_alternate_it_holds_and_not_for_the_elected
     assert result.gate == ONLY_ALTERNATE_HAS_DATA
     assert result.alternate_match is not None
     assert _stat_vars(result.alternate_match) == [_RATE_DISABLED]
-    assert [ref.dcid for ref in result.elected_stat_vars or []] == ["EL_M"]
+    assert [ref.ref for ref in result.elected_stat_vars or []] == ["EL_M"]
     assert _family_notes(result) == [_RATE_NOTE]
 
 

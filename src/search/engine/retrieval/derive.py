@@ -8,24 +8,23 @@ index decides and members whose family the graph walk decides are separate shape
 authorities decide, and members of two index families of one five-tuple, such as CRS and
 DAC1 flows, are separate shapes.
 
-Each shape carries confirmed member arcs and a slot taxonomy sourced from its
-recall pool or the index, so bind needs no further graph reads.
+Each shape carries confirmed member arcs and a slot taxonomy sourced from the index, the
+family members the catalogue's tables hold, or its recall pool, so bind needs no further
+graph reads.
 """
 
 from __future__ import annotations
 
 import contextlib
 import dataclasses
-import functools
 import hashlib
 import logging
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
-from code_index import CodeIndex
 from code_index.labels import index_family_label
-from code_index.query import IndexFamily, row_five_tuple
+from code_index.query import IndexFamily
 from code_index.shared import get_index, get_measure_index
 from materialise.recipe_bodies import RECIPE_BODIES
 from materialise.roles import DegenerateObservationProperties, declared_roles
@@ -35,16 +34,19 @@ from origin_catalogue import (
     SourceRef,
     current_catalogue,
 )
-from origin_catalogue.origins import UN_ID_PREFIX
+from origin_catalogue.families import FamilyKey, FamilySummary
+from origin_catalogue.graph import arcs_mirrored
 from search.engine.clients.graph import EngineGraphClient, force_full_facets, stand_in
 from search.engine.config import settings
 from search.engine.degraded_reads import note_degraded_read
 from search.engine.errors import GraphCapExceededError, RoleSignatureError
 from search.engine.reading_coverage import ReadingCoverage, observed_years
 from search.engine.retrieval.bound_values import (
+    _held_members,
     five_tuple_families,
     five_tuple_member_facts,
     member_family,
+    walked_family_label,
 )
 from search.engine.retrieval.facts import (
     FiveTuple,
@@ -54,7 +56,6 @@ from search.engine.retrieval.facts import (
     read_constraints,
     read_declared_roles,
     read_five_tuple,
-    read_name,
     read_slot_taxonomy,
     standard_shape_id_for,
 )
@@ -64,13 +65,11 @@ from search.engine.shape import (
     STANDARD_SHAPE_LABEL,
     ShapeDraft,
     UpstreamSource,
-    family_label,
     identity_shape_for,
     is_role_bearing,
     shape_draft_from,
 )
 from search.heading.measure_noun import denominator_noun
-from statvar_members import FiveTuple as MemberFiveTuple
 
 logger = logging.getLogger(__name__)
 
@@ -87,18 +86,9 @@ CONVERSION_TABLE_STAT_VARS: frozenset[str] = frozenset(
 # a topic-expansion-only member's expansion rank (see _split_and_expand_topics
 # below). It keeps an expanded member ordered strictly below the best
 # recalled candidate, so a tie-cluster of expanded leaves can never outrank
-# the genuine candidate that set that ceiling under the
-# settings().max_confirm_candidates cap sort or the bind menu's top-K cap.
+# the genuine candidate that set that ceiling in the pool's rank order or under
+# the bind menu's top-K cap.
 _EXPANSION_RANK_EPSILON = 1e-4
-
-# The members of one index family group an over-cap pool ranks at their score
-# (`_family_spread`). One confirmed member builds the group's shape, since the index
-# supplies the family's other rows (`five_tuple_member_facts`).
-_FAMILY_CONFIRM_MEMBERS = 1
-
-# An index row's derive group: its five-tuple, the properties of its index family, and
-# whether it declares a role.
-type _IndexGroupKey = tuple[MemberFiveTuple, frozenset[str], bool]
 
 # A group of confirmed members: their five-tuple, whether they are role-bearing, and the
 # properties of the index family they belong to, or None when the graph walk decides it.
@@ -137,9 +127,9 @@ def upstream_source(variables: Iterable[str]) -> UpstreamSource | None:
 
 
 def _is_role_bearing_candidate(observation_properties: tuple[str, ...]) -> bool:
-    """Classify a candidate's roles for the cap's role-bearing/standard split.
+    """Whether a candidate's raw `observationProperties` arc declares a role.
 
-    This runs before grouping, from the raw `observationProperties` arc. A
+    A
     degenerate arc counts as role-bearing here; `group_roles` later
     skips the member as unanswerable.
     """
@@ -173,7 +163,6 @@ def _split_and_expand_topics(
     Topics lack the five-tuple arcs confirmation needs. Some, such as dev-finance
     Scheme x Sector rollups, fan out to 1,700 to 5,200+ StatVars; mixing them into a
     `node_arcs_batch` with leaf StatVars can raise latency from ~200 ms to 3-5+ s.
-    Excluding Topics from that read also frees confirm-cap slots.
 
     Expand roots within `topic_expand_margin` of the best pool score, up to
     `topic_expand_max_roots`; `topic_leaves` limits each root's size. The pool
@@ -258,148 +247,21 @@ def _rank_candidate_pool(
     )
 
 
-def _select_capped_candidates(
+def _stand_pool(
     candidate_pool: list[str],
-    *,
-    sv_scores: dict[str, float],
-    recall_svs: set[str],
-    graph: EngineGraphClient,
-) -> set[str]:
-    """Select candidates within `max_confirm_candidates`.
-
-    If the pool exceeds the cap, reserve the top `min_recall_confirm_slots`
-    recalled candidates, then up to `min_shape_class_confirm_slots` scored
-    members from each role-bearing and standard class. Class reserves require
-    scores at or above `unknown_score_threshold`; they use only remaining cap
-    space. Fill any remaining slots by pool rank.
-    Topic expansions have no score and receive no class reserve.
-    """
-    pool_exceeds_cap = len(candidate_pool) > settings().max_confirm_candidates
-    role_bearing_by_sv: dict[str, bool] = {}
-    if pool_exceeds_cap:
-        # Classify only scored members above threshold; the roles-only batch is
-        # cheaper than the full-arc confirm read, and Topics are already excluded.
-        viable_pool = [
-            sv
-            for sv in candidate_pool
-            if sv in sv_scores and sv_scores[sv] >= settings().unknown_score_threshold
-        ]
-        roles_by_dcid = graph.node_observation_properties_batch(viable_pool)
-        for sv in viable_pool:
-            role_bearing_by_sv[sv] = _is_role_bearing_candidate(roles_by_dcid[sv])
-
-    # Filter the ranked pool to preserve the insertion order used by downstream probes.
-    reserve = min(settings().min_recall_confirm_slots, settings().max_confirm_candidates)
-    reserved: set[str] = set()
-    for sv in candidate_pool:
-        if len(reserved) >= reserve:
-            break
-        if sv in recall_svs:
-            reserved.add(sv)
-
-    if pool_exceeds_cap:
-        class_floor = min(
-            settings().min_shape_class_confirm_slots, settings().max_confirm_candidates
-        )
-        for want_role_bearing in (True, False):
-            room = settings().max_confirm_candidates - len(reserved)
-            if room <= 0:
-                break
-            class_members = [
-                sv
-                for sv in candidate_pool
-                if sv in sv_scores
-                and sv_scores[sv] >= settings().unknown_score_threshold
-                and role_bearing_by_sv[sv] is want_role_bearing
-            ]
-            new_members = [sv for sv in class_members[:class_floor] if sv not in reserved]
-            reserved.update(new_members[:room])
-
-    selected = set(reserved)
-    for sv in candidate_pool:
-        if len(selected) >= settings().max_confirm_candidates:
-            break
-        selected.add(sv)
-
-    if pool_exceeds_cap:
-        naive_top = set(candidate_pool[: settings().max_confirm_candidates])
-        claimed = reserved - naive_top
-        if claimed:
-            displaced = naive_top - selected
-            logger.debug(
-                "derive_shapes: capped %d candidates to %d (settings().max_confirm_candidates); "
-                "reserve claimed %d slot(s), displacing %d rank-eligible candidate(s)",
-                len(candidate_pool),
-                settings().max_confirm_candidates,
-                len(claimed),
-                len(displaced),
-            )
-        else:
-            logger.debug(
-                "derive_shapes: capped %d candidates to %d (settings().max_confirm_candidates)",
-                len(candidate_pool),
-                settings().max_confirm_candidates,
-            )
-
-    return selected
-
-
-@functools.lru_cache(maxsize=1)
-def _index_group_keys(index: CodeIndex) -> dict[str, _IndexGroupKey]:
-    """The derive group of each row of `index`, by StatVar dcid: the row's five-tuple, the
-    properties of the family it belongs to (`CodeIndex.family_by_dcid`, as
-    `bound_values.member_family` reads it), and whether it declares a role
-    (`_is_role_bearing_candidate`). These are the parts of `_GroupKey` that `derive_shapes`
-    reads from a confirmed member's arcs."""
-    return {
-        row.dcid: (
-            row_five_tuple(row),
-            index.family_by_dcid[row.dcid].properties,
-            _is_role_bearing_candidate(row.observation_properties),
-        )
-        for row in index.statvars
-    }
-
-
-def _family_spread(candidate_pool: list[str]) -> list[str]:
-    """Return `candidate_pool` with the members of each index family group beyond its first
-    `_FAMILY_CONFIRM_MEMBERS` moved after every other candidate, rank order kept within both
-    parts.
-
-    A shape the index carries reads its slot keys and taxonomy from every row of its family
-    (`five_tuple_member_facts`), so its further members would only spend confirm slots that
-    other shapes need. StatVars the index does not decide keep their rank."""
-    group_keys = _index_group_keys(get_index())
-    taken: dict[_IndexGroupKey, int] = defaultdict(int)
-    leading: list[str] = []
-    surplus: list[str] = []
-    for sv in candidate_pool:
-        key = group_keys.get(sv)
-        if key is not None and taken[key] >= _FAMILY_CONFIRM_MEMBERS:
-            surplus.append(sv)
-            continue
-        if key is not None:
-            taken[key] += 1
-        leading.append(sv)
-    return leading + surplus
-
-
-def _stand_selection(
-    candidate_pool: list[str],
-    selected: set[str],
     *,
     sv_scores: dict[str, float],
     recall_svs: set[str],
     expansion_rank: dict[str, float],
     expansion_root_score: dict[str, float],
-) -> tuple[list[str], set[str]]:
-    """The ranked pool and the selection as the variables they stand as (`stand_in`), in the
-    pool's order. The score, expansion rank and root score maps and `recall_svs` gain each
+) -> list[str]:
+    """The ranked pool as the variables its members stand as (`stand_in`), in the pool's
+    order. The score, expansion rank and root score maps and `recall_svs` gain each
     successor under the best value of the variables standing as it, in place."""
     catalogue = current_catalogue()
     standing = {sv: stand_in(sv, catalogue=catalogue) for sv in candidate_pool}
     if all(standing[sv] == sv for sv in candidate_pool):
-        return candidate_pool, selected
+        return candidate_pool
     for sv in candidate_pool:
         dcid = standing[sv]
         if dcid is None or dcid == sv:
@@ -409,39 +271,31 @@ def _stand_selection(
                 values[dcid] = values[sv]
         if sv in recall_svs:
             recall_svs.add(dcid)
-    pool = list(dict.fromkeys(d for sv in candidate_pool if (d := standing[sv]) is not None))
-    return pool, {d for sv in selected if (d := standing[sv]) is not None}
+    return list(dict.fromkeys(d for sv in candidate_pool if (d := standing[sv]) is not None))
 
 
-def _confirm_with_backfill(
-    candidate_pool: list[str],
-    selected: set[str],
-    *,
-    graph: EngineGraphClient,
-) -> tuple[list[str], dict[str, dict | None]]:
-    """Read full arcs for selected candidates, with one backfill batch for missing results.
+def _read_candidate_arcs(
+    candidates: list[str], *, graph: EngineGraphClient
+) -> tuple[dict[str, dict | None], int]:
+    """Every candidate's `->*` arcs in one `node_arcs_batch`, and how many of the
+    candidates the catalogue's tables answered.
 
-    Fill each lost slot from the next unselected candidates in pool order.
-    Backfill runs once; missing arcs in that batch leave slots empty. Mutates
-    `selected` and returns confirmed candidates in pool order with their arcs.
-    """
-    candidates = [sv for sv in candidate_pool if sv in selected]
-    arcs_by_dcid = graph.node_arcs_batch(candidates)
+    The origin client answers each candidate the catalogue's arc tables hold from them and
+    reads only the rest live, in the graph client's arc-batch chunks under the request's
+    deadline."""
+    catalogue = current_catalogue()
+    table_answered = sum(1 for sv in candidates if arcs_mirrored(sv, catalogue=catalogue))
+    return graph.node_arcs_batch(candidates), table_answered
 
-    dropped = [sv for sv in candidates if arcs_by_dcid.get(sv) is None]
-    if dropped:
-        unselected_pool = [sv for sv in candidate_pool if sv not in selected]
-        backfill_pool = unselected_pool[: len(dropped)]
-        if backfill_pool:
-            backfill_arcs = graph.node_arcs_batch(backfill_pool)
-            for sv in backfill_pool:
-                arcs = backfill_arcs.get(sv)
-                if arcs is not None:
-                    selected.add(sv)
-                    arcs_by_dcid[sv] = arcs
-            candidates = [sv for sv in candidate_pool if sv in selected]
 
-    return candidates, arcs_by_dcid
+def held_family(five_tuple: FiveTuple, *, role_bearing: bool) -> FamilySummary | None:
+    """The family of `five_tuple` whose role class is `role_bearing`, as the catalogue's
+    tables hold it (`Catalogue.held_family`), or None when they hold no member of it.
+
+    The catalogue job summarised the family when it built the tables, so this reads one
+    row. The caller asks only for a five-tuple the code index does not carry, whose members
+    belong to no index family (`member_group_class`)."""
+    return current_catalogue().held_family(FamilyKey(*five_tuple, role_bearing))
 
 
 def _build_sv_facts(candidates: list[str], arcs_by_dcid: dict[str, dict | None]) -> dict[str, dict]:
@@ -485,8 +339,10 @@ def _probe_place_availability(
     place_dcids: list[str] | None,
     full_facets_max_candidates: int | None,
     graph: EngineGraphClient,
+    deadline: float | None,
 ) -> _PlaceProbe | None:
-    """Probe all confirmed candidates for observations at `place_dcids` in one batch.
+    """Probe all confirmed candidates for observations at `place_dcids` in one batch, under
+    the monotonic `deadline` (None for no bound).
 
     Return `None` when no place is known or the optional probe fails; otherwise
     each dcid's units and per-place year spans (`_PlaceProbe`). A dated request can widen
@@ -494,8 +350,8 @@ def _probe_place_availability(
     `full_facets_max_candidates` because Topic expansion follows the caller's
     raw-count check; above the bound, `force_full_facets(False)` keeps this
     probe from fetching full history. Within the bound, the widened read shares
-    the dated observation request's cache key. Graph errors fail open, and a failed probe
-    is noted as a lost read (`degraded_reads.note_degraded_read`).
+    the dated observation request's cache key. Graph errors and a read past `deadline` fail
+    open, and a failed probe is noted as a lost read (`degraded_reads.note_degraded_read`).
     """
     if not place_dcids:
         return None
@@ -513,7 +369,7 @@ def _probe_place_availability(
     try:
         with narrow_scope:
             probe = graph.observation_facets_batch(
-                list(sv_facts.keys()), list(dict.fromkeys(place_dcids)), False
+                list(sv_facts.keys()), list(dict.fromkeys(place_dcids)), False, deadline=deadline
             )
     except GraphCapExceededError as exc:
         logger.warning(
@@ -564,9 +420,13 @@ def _probe_place_availability(
 
 
 def _fetch_constraint_labels(
-    sv_facts: dict[str, dict], *, graph: EngineGraphClient
+    sv_facts: dict[str, dict],
+    *,
+    graph: EngineGraphClient,
+    families: Iterable[FamilySummary] = (),
 ) -> tuple[dict[str, str], dict[str, str]]:
-    """Fetch property, value and population-type labels in one graph call.
+    """Fetch property, value and population-type labels in one graph call, for the
+    confirmed members and the held `families`.
 
     Return raw graph labels and value labels. For indexed values, use the
     code-index label without its code-system suffix so ordinary query wording
@@ -574,9 +434,14 @@ def _fetch_constraint_labels(
     labelled by its population type (`_build_group_shape`), and every shape
     carries its population type's name (`ShapeDraft.pop_type_name`).
     """
-    all_constraint_props = list({p for facts in sv_facts.values() for p in facts["constraints"]})
+    families = list(families)
+    all_constraint_props = list(
+        {p for facts in sv_facts.values() for p in facts["constraints"]}
+        | {p for family in families for p in family.values}
+    )
     all_constraint_values = list(
         {v for facts in sv_facts.values() for v in facts["constraints"].values()}
+        | {v for family in families for values in family.values.values() for v in values}
     )
     population_types = list(
         {
@@ -638,10 +503,8 @@ def _shape_draft_for_group(
         prop_labels=prop_labels,
         prop_observed_values=dict(prop_observed_values),
         sv_arc_facts=group_arc_facts,
-        # This is the settings().max_confirm_candidates-bounded confirm
-        # fetch's own group, a recall sample by construction, regardless
-        # of how many members it actually returned. See
-        # ShapeDraft.sv_arc_facts_complete.
+        # The group's recalled and Topic-expanded members, a recall sample by
+        # construction however many it holds. See ShapeDraft.sv_arc_facts_complete.
         sv_arc_facts_complete=False,
         representative_score=rep_score,
         expansion_rank_score=expansion_rank_score,
@@ -707,6 +570,17 @@ def index_shape_label(family: IndexFamily, *, population_type_label: str) -> str
     )
 
 
+def _group_roles(
+    group_arc_facts: Mapping[str, dict], held_role_arcs: Mapping[str, dict] | None
+) -> GroupRoles:
+    """The roles a group declares: its held family's when `held_role_arcs` gives them a
+    single axis mapping, else its confirmed members' (`facts.group_roles`)."""
+    if held_role_arcs:
+        with contextlib.suppress(RoleSignatureError, DegenerateObservationProperties):
+            return group_roles({**group_arc_facts, **held_role_arcs})
+    return group_roles(group_arc_facts)
+
+
 def _build_group_shape(
     five_tuple: FiveTuple,
     group_svs: list[str],
@@ -721,9 +595,21 @@ def _build_group_shape(
     place_probe: _PlaceProbe | None,
     prop_labels_raw: dict[str, str],
     value_labels: dict[str, str],
+    held: FamilySummary | None = None,
+    held_role_arcs: Mapping[str, dict] | None = None,
 ) -> tuple[ShapeDraft | None, bool, bool]:
     """Build one ShapeDraft for a confirmed group: the subject-only or the role-bearing
     members of one five-tuple that one authority decides the membership of.
+
+    `held` is the group's family as the catalogue's tables hold it (`held_family`), or
+    None when they hold none of its members. Given it, the slot keys, the label and, for a
+    five-tuple the code index does not carry, the slot taxonomy read the whole family, the
+    confirmed members' values first, and the taxonomy is not narrowed to the probed place.
+    Without it they read the confirmed members. `held_role_arcs` holds the arcs of every
+    member of a held role-bearing family that declares a role set: the shape declares the
+    roles of the whole family (`facts.group_roles`), as the role-class election reads it,
+    unless the family's roles have no single axis mapping, when it declares its confirmed
+    members' roles.
 
     Return `(None, unusable_roles, zero_member)` when no single axis mapping
     covers the members' roles or the tuple has no schema member; otherwise
@@ -756,7 +642,7 @@ def _build_group_shape(
     # Members must share one axis mapping. Mismatches are quiet; a degenerate arc
     # is a graph integrity fault, so log the offending members before skipping.
     try:
-        roles = group_roles(group_arc_facts)
+        roles = _group_roles(group_arc_facts, held_role_arcs)
     except RoleSignatureError:
         return None, True, False
     except DegenerateObservationProperties:
@@ -788,13 +674,17 @@ def _build_group_shape(
         # Unknown means the probe did not establish that the place lacks data.
         place_available = None
 
-    # Slot keys use every confirmed member, independent of place availability;
+    # Slot keys use every member, independent of place availability;
     # otherwise unavailable members could hide a property that should be unbound.
     prop_observed_values: dict[str, list[str]] = defaultdict(list)
     for sv_dcid in group_svs:
-        facts = sv_facts[sv_dcid]
-        for prop_dcid, value_dcid in facts["constraints"].items():
+        for prop_dcid, value_dcid in sv_facts[sv_dcid]["constraints"].items():
             prop_observed_values[prop_dcid].append(value_dcid)
+    if held is not None:
+        for prop_dcid, values in held.values.items():
+            observed = prop_observed_values[prop_dcid]
+            recalled = set(observed)
+            observed.extend(value for value in values if value not in recalled)
 
     constraint_props = list(prop_observed_values.keys())
     prop_labels: dict[str, str] = {p: prop_labels_raw.get(p, p) for p in constraint_props}
@@ -804,33 +694,23 @@ def _build_group_shape(
     rep_sv_dcid = next((sv for sv in group_svs if sv in sv_scores), group_svs[0])
     label_sv_dcid = next((sv for sv in group_svs if sv in recall_svs), rep_sv_dcid)
     pop_type_name = prop_labels_raw.get(five_tuple.pop_type_dcid, five_tuple.pop_type_dcid)
-    # A member's name spells out its own constraint values, which an unbound slot spans, so
-    # an index family reads as what all its rows share and a multi-member UN family as its
-    # population type.
-    population_type_label = (
-        prop_labels_raw.get(five_tuple.pop_type_dcid)
-        if len(group_svs) > 1 and all(sv.startswith(UN_ID_PREFIX) for sv in group_svs)
-        else None
-    )
+    # An index family reads as what all its rows share. Any other group reads as its family
+    # does (`walked_family_label`), its recalled member's name first among its own.
     if family is not None:
         shape_label = index_shape_label(family, population_type_label=pop_type_name)
-    elif population_type_label is not None:
-        shape_label = family_label(
-            population_type_label=population_type_label,
-            member_constraints=[sv_facts[sv]["constraints"] for sv in group_svs],
-            prop_labels=prop_labels,
-            value_labels=value_labels,
-        )
     else:
-        # Prefer the recalled member's name, then other members, then the fallback
-        # label; all arcs are already fetched.
-        shape_label = next(
-            (
-                name
-                for sv in (label_sv_dcid, *(s for s in group_svs if s != label_sv_dcid))
-                if (name := read_name(group_arc_facts[sv])) is not None
-            ),
-            STANDARD_SHAPE_LABEL,
+        shape_label = (
+            walked_family_label(
+                {
+                    sv: group_arc_facts[sv]
+                    for sv in (label_sv_dcid, *(s for s in group_svs if s != label_sv_dcid))
+                },
+                held=held,
+                population_type_label=prop_labels_raw.get(five_tuple.pop_type_dcid),
+                prop_labels=prop_labels,
+                value_labels=value_labels,
+            )
+            or STANDARD_SHAPE_LABEL
         )
     # Topic-only groups have no measured recall score.
     rep_score = sv_scores.get(rep_sv_dcid)
@@ -852,7 +732,7 @@ def _build_group_shape(
             default=None,
         )
     )
-    # True for non-Topic recall members, including backfill; false for expansion-only groups.
+    # True for non-Topic recall members; false for expansion-only groups.
     group_recalled = any(sv in recall_svs for sv in group_svs)
 
     shape = _shape_draft_for_group(
@@ -876,7 +756,8 @@ def _build_group_shape(
 
     # Read every index row of the five-tuple, across datasets, so the slot keys
     # stay those of the whole five-tuple; index options are unscoped because the
-    # code index carries no place data.
+    # code index carries no place data, and so are a held family's, whose members
+    # outside the confirmed ones the probe did not read.
     #
     # Starved-axis repair cannot match index-only values against sampled labels.
     member_facts, index_sourced = five_tuple_member_facts(shape)
@@ -919,7 +800,16 @@ def _build_group_shape(
                 value_labels=value_labels,
             )
 
-    taxonomy = read_slot_taxonomy(slot_keys=shape.slot_keys, member_facts=member_facts)
+    taxonomy = (
+        {
+            f"{slot.axis}:{slot.property_dcid}": list(dict.fromkeys(observed))
+            for slot in shape.slot_keys
+            if slot.property_dcid is not None
+            and (observed := prop_observed_values.get(slot.property_dcid))
+        }
+        if held is not None and not index_sourced
+        else read_slot_taxonomy(slot_keys=shape.slot_keys, member_facts=member_facts)
+    )
     # The probe reads subject facets, so a role-bearing member's coverage is unknown.
     member_coverage = (
         {sv: place_probe.coverage.get(sv, {}) for sv in group_svs}
@@ -931,8 +821,19 @@ def _build_group_shape(
         slot_taxonomy=taxonomy,
         slot_taxonomy_index_sourced=index_sourced,
         member_coverage=member_coverage,
+        scored_members=frozenset(sv for sv in group_svs if sv in recall_svs),
     )
     return shape, False, False
+
+
+def _held_role_arcs(five_tuple: FiveTuple, role_bearing: bool) -> dict[str, dict] | None:
+    """The arcs of each member of a held role-bearing family whose declared roles read
+    (`bound_values._held_members`), None for a subject-only family, whose members all
+    declare ``observationAbout``. Reads the family's arcs, once a request."""
+    if not role_bearing:
+        return None
+    held = _held_members(FamilyKey(*five_tuple, role_bearing))
+    return {sv: arcs for sv, arcs in held.arcs.items() if held.roles[sv] is not None}
 
 
 def derive_shapes(
@@ -944,35 +845,38 @@ def derive_shapes(
     rival_svs: frozenset[str] = frozenset(),
     place_dcids: list[str] | None = None,
     full_facets_max_candidates: int | None = None,
+    deadline: float | None = None,
 ) -> list[ShapeDraft]:
     """Confirm recall candidates and build one shape per five-tuple and role class.
 
-    Topic roots expand before capped full-arc confirmation. The cap reserves
-    recalled candidates and both role classes; one backfill batch replaces
-    unconfirmable members. Over the cap, each index family group confirms its top
-    member before any of its others (`_family_spread`). Index-backed groups add
-    properties beyond the sample.
+    Topic roots expand first, then every candidate is confirmed in one full-arc read
+    (`_read_candidate_arcs`): the catalogue's arc tables answer the variables they hold,
+    and only the rest are read live. Index-backed groups add properties beyond the sample,
+    and every other group whose members the tables hold reads its slot keys, label and
+    taxonomy from every member of its family the tables hold (`held_family`), and is
+    stamped with that family (`ShapeDraft.held_family`), whose members
+    `bound_values.shape_member_facts` reads.
 
     `confirmed_svs` and the Topic leaves (`topic_leaves`) enter under their own dcids,
-    superseded ones included, so ranking and the confirm cap count each base variable once,
-    as they did while its provenance was admitted. Only then does each selected variable
-    stand as what Search reads (`clients.graph.stand_in`): a superseded one as its successor,
-    read once however many selected variables stand as it, and one with no successor has
-    none of its arcs or observations read. Its slot is spent either way, so supersession brings no candidate past the
-    cap that would have stopped short of it. A successor takes the best score, expansion
-    rank and recall standing of the variables standing as it.
+    superseded ones included, and rank under them. Each then stands as what Search reads
+    (`clients.graph.stand_in`): a superseded one as its successor, read once however many
+    candidates stand as it, and one with no successor has none of its arcs or observations
+    read. A successor takes the best score, expansion rank and recall standing of the
+    variables standing as it.
 
     `rival_svs` are the rows recall added past its cut (`clients.graph.with_rival_families`).
-    They are confirmed past the cap, which counts the other candidates alone, so a rival
-    takes no candidate's slot, and a shape whose members are all rivals is marked
-    `ShapeDraft.rival`.
+    They are confirmed with the other candidates, and a shape whose members are all rivals
+    is marked `ShapeDraft.rival`.
 
     `sv_scores` supplies measured recall scores; expansion-only groups retain
     no score and carry a separate ordering rank. `sv_types` identifies Topic
     roots. `place_dcids` scopes taxonomy values, while slot keys use every group
     member. `full_facets_max_candidates` is re-checked against the confirmed count, which topic
     expansion can inflate past the caller's raw-count check; above it the probe narrows to
-    `needs_dates=False`. `None` leaves the ambient facet scope unchanged.
+    `needs_dates=False`. `None` leaves the ambient facet scope unchanged. `deadline`, the
+    part's monotonic soft deadline, bounds the availability probe, which reads every
+    confirmed candidate: at most recall's `detect_k` candidates, `topic_expand_max_roots`
+    roots of `topic_expand_max_members` leaves each, and the rival rows.
 
     Return one shape per group: the members of one five-tuple that are subject-only or
     role-bearing, and whose family the packaged code index decides or does not
@@ -1001,20 +905,8 @@ def derive_shapes(
         expansion_rank=expansion_rank,
     )
 
-    # Over the cap, an index family group's surplus members rank last, for the capped
-    # selection and its backfill alike. Rivals sit outside the cap.
-    capped_pool = [sv for sv in candidate_pool if sv not in rival_svs]
-    if len(capped_pool) > settings().max_confirm_candidates:
-        candidate_pool = _family_spread(candidate_pool)
-        capped_pool = [sv for sv in candidate_pool if sv not in rival_svs]
-
-    selected = _select_capped_candidates(
-        capped_pool, sv_scores=sv_scores, recall_svs=recall_svs, graph=graph
-    )
-    selected.update(sv for sv in candidate_pool if sv in rival_svs)
-    candidate_pool, selected = _stand_selection(
+    candidate_pool = _stand_pool(
         candidate_pool,
-        selected,
         sv_scores=sv_scores,
         recall_svs=recall_svs,
         expansion_rank=expansion_rank,
@@ -1022,9 +914,9 @@ def derive_shapes(
     )
 
     # Full arcs supply five-tuples, constraints, and member facts; the roles-only read is insufficient.
-    candidates, arcs_by_dcid = _confirm_with_backfill(candidate_pool, selected, graph=graph)
+    arcs_by_dcid, table_answered = _read_candidate_arcs(candidate_pool, graph=graph)
 
-    sv_facts = _build_sv_facts(candidates, arcs_by_dcid)
+    sv_facts = _build_sv_facts(candidate_pool, arcs_by_dcid)
     if not sv_facts:
         return []
 
@@ -1033,9 +925,8 @@ def derive_shapes(
         place_dcids=place_dcids,
         full_facets_max_candidates=full_facets_max_candidates,
         graph=graph,
+        deadline=deadline,
     )
-
-    prop_labels_raw, value_labels = _fetch_constraint_labels(sv_facts, graph=graph)
 
     # A degenerate arc reads as role-bearing, and `group_roles` refuses its group.
     groups: dict[_GroupKey, list[str]] = defaultdict(list)
@@ -1046,6 +937,39 @@ def derive_shapes(
         key = (five_tuple, role_bearing, family.properties if family is not None else None)
         groups[key].append(sv_dcid)
         group_families[key] = family
+
+    # A five-tuple the code index carries reads its slot values from the index.
+    walked = [key for key in groups if key[2] is None and not five_tuple_families(key[0])]
+    held_families: dict[_GroupKey, FamilySummary] = {}
+    for key in walked:
+        five_tuple, role_bearing, _properties = key
+        if (found := held_family(five_tuple, role_bearing=role_bearing)) is not None:
+            held_families[key] = found
+    family_members = sum(len(family.members) for family in held_families.values())
+    walked_groups = len(walked)
+    logger.info(
+        "derive_shapes: read arcs for %d candidate(s), %d from the catalogue's tables and %d "
+        "live; %d of %d graph-walked group(s) read their family from the tables (%d member(s) "
+        "in all), %d read their confirmed members alone",
+        len(candidate_pool),
+        table_answered,
+        len(candidate_pool) - table_answered,
+        len(held_families),
+        walked_groups,
+        family_members,
+        walked_groups - len(held_families),
+        extra={
+            "table_answered": table_answered,
+            "live_read": len(candidate_pool) - table_answered,
+            "families_held": len(held_families),
+            "families_sampled": walked_groups - len(held_families),
+            "family_members": family_members,
+        },
+    )
+
+    prop_labels_raw, value_labels = _fetch_constraint_labels(
+        sv_facts, graph=graph, families=held_families.values()
+    )
 
     shapes: list[ShapeDraft] = []
     unusable_role_groups = 0
@@ -1066,6 +990,10 @@ def derive_shapes(
             place_probe=place_probe,
             prop_labels_raw=prop_labels_raw,
             value_labels=value_labels,
+            held=held_families.get(key),
+            held_role_arcs=_held_role_arcs(five_tuple, role_bearing)
+            if key in held_families
+            else None,
         )
         if zero_member:
             zero_member_groups += 1
@@ -1074,6 +1002,8 @@ def derive_shapes(
             unusable_role_groups += 1
             continue
         assert shape is not None
+        if key in held_families:
+            shape = dataclasses.replace(shape, held_family=FamilyKey(*five_tuple, role_bearing))
         if rival_svs.issuperset(group_svs):
             shape = dataclasses.replace(shape, rival=True)
         shapes.append(shape)

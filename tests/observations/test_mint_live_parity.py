@@ -44,6 +44,7 @@ from materialise.rate_tables import RateTableCache
 from origin_catalogue import BASE, Catalogue
 from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.graph import Facet as EngineFacet
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.state import EngineOptions
 from search.models import Spec
@@ -60,6 +61,7 @@ from tests.datasets_api.test_snapshot_lifecycle import _InventoryRecordingArtifa
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 from tests.materialise._rate_table_support import (
     RateTableServer,
@@ -413,6 +415,8 @@ class _FixedBindLLM:
         self._also_plausible = also_plausible
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0, bindings=[], also_plausible=self._also_plausible

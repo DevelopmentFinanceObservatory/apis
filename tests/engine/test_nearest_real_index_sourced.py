@@ -115,7 +115,7 @@ def test_relaxed_probe_confirms_an_index_only_member():
     suggestions, warnings, _reads, _presence = _run()
     assert warnings == []
     assert len(suggestions) == 1
-    assert [sv.ref.dcid for sv in suggestions[0].resolved.members] == [_EXTRA_SV]
+    assert [sv.ref.ref for sv in suggestions[0].resolved.members] == [_EXTRA_SV]
 
 
 def test_relaxed_index_only_member_is_not_reported_inapplicable():
@@ -127,7 +127,7 @@ def test_relaxed_index_only_member_is_not_reported_inapplicable():
     purpose_slot = next(
         s
         for s in resolved.slots
-        if s.key.property is not None and s.key.property.dcid == _PROP_PURPOSE
+        if s.key.property is not None and s.key.property.ref == _PROP_PURPOSE
     )
     assert purpose_slot.binding.kind == "unbound"
     assert _PROP_PURPOSE not in resolved.inapplicable_slots
