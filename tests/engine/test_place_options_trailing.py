@@ -148,7 +148,7 @@ class TestPlaceOptionsPipelineLaunch:
 
         # Peers is non-trivial: several Country-under-Earth peers carry
         # FertilityRate_Person_Female data in the shared graph_obs.json fixture.
-        peer_dcids = {opt["value"]["ref"]["dcid"] for opt in by_scope["peers"]["options"]}
+        peer_dcids = {opt["value"]["ref"]["ref"] for opt in by_scope["peers"]["options"]}
         assert _KENYA in peer_dcids
         assert len(peer_dcids) > 1
 
@@ -259,7 +259,7 @@ class TestPlaceOptionsResubmitLaunch:
             assert payload["role"] == "observationAbout"
             assert payload["anchor_ref"] == _KENYA
 
-        peer_dcids = {opt["value"]["ref"]["dcid"] for opt in by_scope["peers"]["options"]}
+        peer_dcids = {opt["value"]["ref"]["ref"] for opt in by_scope["peers"]["options"]}
         assert _KENYA in peer_dcids
         assert len(peer_dcids) > 1
 

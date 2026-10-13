@@ -14,7 +14,16 @@ but have distinct `constraint_id` values.
 
 The version stores `input_content_versions` as the derivation trace
 (`dataset_store.snapshot.FrameLineage`). Derived frames use their own
-reference as the sole provenance input.
+reference as the sole provenance input. Beside it the version stores the
+continuations of its series, derived before the write from the stored facts
+of the versions its `retrieve` steps name, or without steps the versions its
+`input_content_versions` name (`lineage_continuations.derived_continuations`),
+so a series its roots' estimates continue is one series from the first read.
+A failed read of those versions fails the publish as a store outage. A
+repeat publish that fills the steps of a version published without them
+replaces its stored continuations with those its retrieved versions give, in
+the write that fills the steps, and its record's series facts with those
+counted under them; any other repeat publish leaves them as they are.
 
 A repeat publish succeeds with `created=False` only when the stored frame and
 `input_content_versions` both match. Frames match by `frame_sha256`, the hash of
@@ -57,12 +66,14 @@ A frame in which a unit ref spells the key text of a converted or composed unit
 (`materialise.unit_cells.shared_unit_key`) is refused `request_invalid` at `/rows`
 and not stored, since Presentation refuses to open one.
 
-`composed_stat_vars` describes each StatVar an analysis sum, quotient or share wrote
-its rows under, as `{stat_var, relation, first, second}` (`publish_models`). The door
-stores the list as the version's `composed_stat_vars`, NULL for an empty list, and
-`LiveFrameStore` words each entry as its label. The list is written with the pair's
-first publish and sits outside its lineage. A repeat publish compares the frame and
-`input_content_versions`, and the stored list stands.
+`steps` are the frame's step records (`publish_models`), which the door checks for shape,
+structure and the kit's bounds (`MAX_STEPS`, `MAX_STEPS_BYTES`) and refuses as `request_invalid`
+(400) with a pointer into `steps` before anything is written. They go to the version's
+description record (`datasets.description_record`), which the version row's transaction writes
+once. A republish of a pair whose record holds `steps: null` fills them once. A republish whose
+steps state other facts than the recorded ones (inputs, operations, policies, parameters, units
+or counts, leaving labels aside) refuses as a lineage divergence, `publish_conflict` (409) with
+pointer `/steps`, and a republish without steps changes nothing.
 Other layers set row, column, and string-length limits. Accepted frames are
 permanent and eligible for pinned-tier retention.
 
@@ -114,7 +125,7 @@ import logging
 import zlib
 from collections.abc import Callable, Coroutine, Mapping, Sequence
 from concurrent.futures import BrokenExecutor, Future
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from dfo_frame_grammar import (
@@ -148,10 +159,14 @@ from dataset_store.snapshot import (
 from datasets_api.backpressure import Backpressure
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.deps import DepsCell
+from datasets_api.description_record import computed_inputs
 from datasets_api.door_executor import DoorExecutor
+from datasets_api.lineage_continuations import derived_continuations, lineage_inputs
 from datasets_api.principals import Grant, Principal, Principals, PublishNotPermitted
 from datasets_api.publish_models import (
     MAX_ECHO_CHARS,
+    MAX_RECIPE_BYTES,
+    MAX_STEPS_BYTES,
     PublishedFrameCoordinates,
     PublishFrameRequest,
     PublishFrameResponse,
@@ -167,13 +182,16 @@ from datasets_api.refusals import classify_datasets_refusal
 from datasets_api.render import render_and_store_canonical_frame
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.timings import PhaseTimings, door_call, phase, run_with_timings
-from datasets_api.versions import VersionRecord, VersionRecordWriter
+from datasets_api.version_descriptions import publish_describer
+from datasets_api.version_store import recorded_frame_sha256
+from datasets_api.versions import DescriptionDiverges, VersionRecord, VersionRecordWriter
+from description.steps import Step
 from dfo_platform import ProblemSpec
 from dfo_platform.doors import DoorContribution, route_registry_endpoints
 from dfo_platform.problem import Refusal
 from dfo_platform.trace import get_trace_id
+from materialise import EnrichmentLookup
 from materialise.errors import OverCeilingError
-from materialise.formats import FRAME1_MEDIA_TYPE
 from materialise.frame_build import build_frame
 from materialise.unit_cells import shared_unit_key
 
@@ -190,13 +208,16 @@ PUBLISH_MAX_ROWS = 250_000
 # benchmark body, with two role keys and synthetic keys, is 54,470,651 bytes of
 # JSON, 218 bytes a row. Real DCIDs and StatVar names are longer, and 512 bytes
 # a row is about 2.3 times the measured row. The 1,000,000 bytes cover metadata
-# and JSON punctuation. At 250,000 rows the bound is 129,000,000 bytes, about
-# 123 MiB. The door adds about 12 times the body size in RSS (645 MiB for the
+# and JSON punctuation, and are the recipe's own allowance (`MAX_RECIPE_BYTES`). Step
+# records add `MAX_STEPS_BYTES` (65,536) of their own. At 250,000 rows the bound is
+# 129,065,536 bytes, about 123 MiB. The door adds about 12 times the body size in RSS (645 MiB for the
 # 54.5 MB body), so a body at the bound adds about 1.5 GiB. Cloud Run caps an
 # HTTP/1 request at 32 MiB on the wire, so there only a gzip body can reach the
 # bound.
 _ADMISSION_ROW_BYTES = 512
-MAX_PUBLISH_BODY_BYTES = PUBLISH_MAX_ROWS * _ADMISSION_ROW_BYTES + 1_000_000
+MAX_PUBLISH_BODY_BYTES = (
+    PUBLISH_MAX_ROWS * _ADMISSION_ROW_BYTES + MAX_RECIPE_BYTES + MAX_STEPS_BYTES
+)
 
 # Most decoded bytes one `decompress` call returns, so inflating a gzip body
 # allocates at most this much past `MAX_PUBLISH_BODY_BYTES` before refusing.
@@ -306,7 +327,8 @@ class PublishBytesDiverge(Refusal):
 
 class PublishLineageDiverge(Refusal):
     """This pair holds identical frame bytes but a different
-    `input_content_versions` trace. Because `ocv_` identifies a recipe,
+    `input_content_versions` trace, or step records whose facts differ from the posted
+    `steps` (`steps_message`, with `pointer` `/steps`). Because `ocv_` identifies a recipe,
     reporting success would discard the new lineage. Maps to non-retryable
     `publish_conflict` (409), distinguished from byte conflicts by `constraint_id`.
     """
@@ -314,9 +336,24 @@ class PublishLineageDiverge(Refusal):
     code = "publish_conflict"
     constraint_id = "publish_requires_matching_input_content_versions"
 
-    def __init__(self, *, spec_id: str, content_version: str) -> None:
+    def __init__(
+        self,
+        *,
+        spec_id: str,
+        content_version: str,
+        steps_message: str | None = None,
+        pointer: str | None = None,
+    ) -> None:
         self.spec_id = spec_id
         self.content_version = content_version
+        self.pointer = pointer
+        if steps_message is not None:
+            super().__init__(
+                f"{steps_message}; refusing to report success for step records that were not "
+                "recorded under this pair. Publish the steps already held under this id, or "
+                "mint a new content_version for the other derivation"
+            )
+            return
         super().__init__(
             f"spec_id {spec_id!r} content_version {content_version!r} already holds a "
             "stored frame with this publish call's content but a different input_content_versions "
@@ -386,17 +423,11 @@ class PublishResult:
 
 
 def frame_lineage(
-    *,
-    input_content_versions: Sequence[str],
-    composed_stat_vars: Sequence[Mapping[str, object]],
+    *, input_content_versions: Sequence[str], continuations: Sequence[Mapping[str, object]] = ()
 ) -> FrameLineage:
-    """The facts a derived frame stores: its lineage, with the composed StatVars the request
-    describes when it describes any."""
+    """The facts a derived frame stores: its lineage and the continuations of its series."""
     return FrameLineage(
-        input_content_versions=list(input_content_versions),
-        composed_stat_vars=(
-            [dict(entry) for entry in composed_stat_vars] if composed_stat_vars else None
-        ),
+        input_content_versions=list(input_content_versions), continuations=list(continuations)
     )
 
 
@@ -434,11 +465,12 @@ def publish_frame(
     artifact_store: ArtifactStore,
     snapshot_reader: SnapshotReader,
     version_writer: VersionRecordWriter,
-    composed_stat_vars: Sequence[Mapping[str, object]] = (),
     trace_id: str | None = None,
     ceiling: int = PUBLISH_MAX_ROWS,
     recipe: Recipe | None = None,
     recipe_store: RecipeStore | None = None,
+    steps: Sequence[Step] | None = None,
+    enrichment: EnrichmentLookup | None = None,
 ) -> PublishResult:
     """Publish one frame synchronously and verify the stored version.
 
@@ -458,9 +490,13 @@ def publish_frame(
     comparison. A `recipe` with no `recipe_store` raises
     `PublishRecipeStoreMissing` before any write.
 
-    `composed_stat_vars` is stored with the first publish of a pair and is no part of its
-    lineage: a repeat publish with a matching frame and lineage succeeds whether or not it
-    carries the list, and the stored list stands.
+    `steps` go to the version's description record, written in the version row's transaction
+    (`version_descriptions.publish_describer`), `None` when the publish carried none. A pair
+    already recorded gets its record when it holds none, and a record holding `steps: null`
+    takes the posted steps once. Posted steps whose facts differ from the recorded ones raise
+    `PublishLineageDiverge` at `/steps` before anything is linked, and a publish without steps
+    leaves recorded steps as they are. `enrichment` reads the labels the record names; `None`
+    reads none.
     """
     if recipe is not None and recipe_store is None:
         raise PublishRecipeStoreMissing(spec_id=spec_id, content_version=content_version)
@@ -510,9 +546,43 @@ def publish_frame(
     )
 
     published_frame_sha256 = frame_sha256(frame)
+    with phase("lineage"):
+        continuations = derived_continuations(
+            lineage_inputs(
+                steps_inputs=None if steps is None else computed_inputs(steps),
+                lineage=FrameLineage(input_content_versions=input_content_versions),
+            ),
+            reader=snapshot_reader,
+        )
     requested = frame_lineage(
-        input_content_versions=input_content_versions, composed_stat_vars=composed_stat_vars
+        input_content_versions=input_content_versions, continuations=continuations
     )
+    version = VersionRecord(
+        subject_id=spec_id,
+        subject_kind="spec",
+        content_version=content_version,
+        schema_version=1,
+        facts=requested,
+        artifacts=(artifact,),
+        frame_sha256=published_frame_sha256,
+    )
+    described = replace(
+        version,
+        describer=publish_describer(version, steps=steps, frame=frame, enrichment=enrichment),
+    )
+
+    def _record_described(record: VersionRecord) -> bool:
+        """Record `record` with its description, refusing steps the stored record
+        contradicts."""
+        try:
+            return version_writer.record_version(record, trace_id=trace_id)
+        except DescriptionDiverges as exc:
+            raise PublishLineageDiverge(
+                spec_id=spec_id,
+                content_version=content_version,
+                steps_message=str(exc),
+                pointer=exc.pointer,
+            ) from exc
 
     def _recorded_frame_matches(
         stored: StoredVersion, locations: Sequence[StoredArtifactLocation] | None = None
@@ -520,12 +590,10 @@ def publish_frame(
         """Whether `stored` holds this call's frame: by the frame hash it records, else by the
         digest of the pair's frame1 document, the same hash. `locations` are the pair's when
         the caller holds them, else they are read. No stored object is read."""
-        if stored.frame_sha256 is not None:
-            return stored.frame_sha256 == published_frame_sha256
-        if locations is None:
+        if stored.frame_sha256 is None and locations is None:
             locations = snapshot_reader.read_artifact_locations(spec_id, content_version)
-        frame1 = [loc for loc in locations if loc.media_type == FRAME1_MEDIA_TYPE]
-        return bool(frame1) and frame1[0].artifact_digest == f"sha256:{published_frame_sha256}"
+        recorded = recorded_frame_sha256(stored.frame_sha256, locations or ())
+        return recorded == published_frame_sha256
 
     def _raise_if_diverges(stored: StoredVersion) -> None:
         """Compare stored lineage after the caller confirms the frame bytes match."""
@@ -555,6 +623,9 @@ def publish_frame(
             if not _recorded_frame_matches(existing_version):
                 raise PublishBytesDiverge(spec_id=spec_id, content_version=content_version)
             _raise_if_diverges(existing_version)
+            # The version row stands; this writes or settles its description record only.
+            with phase("record"):
+                _record_described(replace(described, artifacts=()))
             # The link is kept while the pair's canonical frame has a servable location.
             with phase("record"):
                 linked_digest = version_writer.record_artifact(
@@ -572,18 +643,7 @@ def publish_frame(
             )
 
     with phase("record"):
-        created = version_writer.record_version(
-            VersionRecord(
-                subject_id=spec_id,
-                subject_kind="spec",
-                content_version=content_version,
-                schema_version=1,
-                facts=requested,
-                artifacts=(artifact,),
-                frame_sha256=published_frame_sha256,
-            ),
-            trace_id=trace_id,
-        )
+        created = _record_described(described)
 
     with phase("verify"):
         recorded = snapshot_reader.read_version_state(spec_id, content_version)
@@ -845,7 +905,6 @@ async def _post_publish_impl(
             role_keys=body.role_keys,
             rows=body.rows,
             input_content_versions=body.input_content_versions,
-            composed_stat_vars=[entry.model_dump() for entry in body.composed_stat_vars],
             artifact_store=deps.artifact_store,
             snapshot_reader=deps.snapshot_reader,
             version_writer=deps.version_writer,
@@ -853,6 +912,8 @@ async def _post_publish_impl(
             ceiling=state.ceiling,
             recipe=body.recipe,
             recipe_store=deps.recipe_store,
+            steps=body.steps,
+            enrichment=deps.enrichment,
         )
     response = PublishFrameResponse(
         published=PublishedFrameCoordinates(

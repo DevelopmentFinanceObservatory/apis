@@ -6,6 +6,7 @@ fixtures to replace the object and every caller to see the same settings.
 This module makes no LLM or graph calls.
 """
 
+import functools
 import hashlib
 import json
 import math
@@ -18,6 +19,7 @@ from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from dfo_platform.flags import lenient_bool
+from dfo_platform.schema_annotations import strip_schema_annotations
 from materialise.recipe_bodies import RECIPE_CLASSES as _MATERIALISE_RECIPE_CLASSES
 from origin_catalogue.graph import (
     ARCS_CACHE_SIZE,
@@ -27,9 +29,9 @@ from origin_catalogue.graph import (
     UN_BASE_URL_ENV,
 )
 from origin_catalogue.topic_walk import TOPIC_EXPAND_MAX_DEPTH, TOPIC_EXPAND_MAX_MEMBERS
-from search.currency_codes import ISO_4217_CODES
 from search.observations import observation_settings
 from statvar_members import DEFAULT_SUBJECT_CEILING
+from unit_words.currency_codes import ISO_4217_CODES
 
 # Accepted values for SEARCH boolean flags. Whitespace is significant.
 _SEARCH_BOOL_TRUTHY = frozenset({"1", "true", "yes"})
@@ -105,9 +107,11 @@ class SearchSettings(BaseSettings):
     Constructed once at import (`_SETTINGS` below); every consumer reads a
     field off `settings()`'s return value at the point of use. Field names
     are the `SEARCH_` env var name lowercased with that prefix stripped
-    (e.g. `SEARCH_MAX_VARIABLES` -> `max_variables`); `gemini_api_key` is the
-    one exception, aliased to the unprefixed `GEMINI_API_KEY` that every
-    other Gemini-touching tool in this ecosystem already expects.
+    (e.g. `SEARCH_MAX_VARIABLES` -> `max_variables`). Two fields are aliased:
+    `gemini_api_key` to the unprefixed `GEMINI_API_KEY` that every other
+    Gemini-touching tool in this ecosystem already expects, and
+    `capability_version_override` to `SEARCH_CAPABILITY_VERSION`, which sets the
+    `capability_version` property.
 
     Cross-field invariants (a concurrency total that must dominate its own
     per-call width, a cache that must not evict what a full-cap read just
@@ -186,12 +190,6 @@ class SearchSettings(BaseSettings):
     # The options candidate probe passes its StatVar set to the facet read.
     region_max_members: int = 700
 
-    # Maximum members refreshed before a role-bearing verdict. In dev, 2,637 members add
-    # about 6 s. 5,000 add about 11 s of the 45-s request budget.
-    # The 13,090-member CRS family would cost about 30 s and uses packaged roles
-    # with role_declaration_unverified.
-    # The per-process arc cache holds a full refresh (validated against this cap).
-    role_refresh_max_members: int = 5000
     scope_min_year: int = 1960
     scope_max_window_years: int = 80
 
@@ -247,18 +245,6 @@ class SearchSettings(BaseSettings):
     max_query_chars: int = 2000
 
     # -- Shape discovery ------------------------------------------------------
-    # Candidate SVs confirmed per batched node_arcs call. A larger pool adds no round trips.
-    max_confirm_candidates: int = 40
-
-    # Reserve this many top-scoring direct recalls before topic-expanded candidates fill the cap.
-    # Applied before shape-class floors and clamped to max_confirm_candidates.
-    min_recall_confirm_slots: int = 8
-
-    # Per-class reserve for role-bearing and standard candidates, applied in that order after
-    # min_recall_confirm_slots. Each reserve takes the highest scores above unknown_score_threshold
-    # and shrinks to the room left under max_confirm_candidates.
-    min_shape_class_confirm_slots: int = 8
-
     # /v2/resolve scope, passed verbatim as the request body's "target" field.
     # "base_only" searches core Data Commons only, "custom_only" searches ONE's custom
     # data only, "base_and_custom" searches both. The accepted set is exactly the
@@ -289,7 +275,6 @@ class SearchSettings(BaseSettings):
     # Kenya 0.7493, India 0.7628, GDP 0.9084, Spain 0.8226 (resolved), Brazil forest area
     # 0.8230 versus 0.8184 (margin 0.0046).
     # Scores below 0.65 are dropped. A query with no eligible shape returns variable_not_resolved.
-    # Confirm-cap reserves and role classification also use this floor.
     unknown_score_threshold: float = 0.65
 
     # Minimum score for a recalled SV to be treated as confident (non-weak).
@@ -403,7 +388,7 @@ class SearchSettings(BaseSettings):
     arcs_cache_size: int = ARCS_CACHE_SIZE
 
     # LRU entries for node_observation_properties_batch, separate from the full-arc cache.
-    # Must cover role_refresh_max_members so a full refresh keeps its entries for repeat reads.
+    # It holds only live reads: the catalogue's arc tables answer the variables they hold.
     obs_properties_cache_size: int = OBS_PROPERTIES_CACHE_SIZE
 
     # -- Response cache (process-wide, shared across requests) ------------------
@@ -488,9 +473,10 @@ class SearchSettings(BaseSettings):
     # Eval fingerprint for comparing runs. Diagnostics expose the image commit separately.
     engine_build: str = "search-engine-dev"
 
-    # Capability token in problem details and capabilities. It differs from schema_version.
-    # SEARCH_CAPABILITY_VERSION overrides it. Otherwise the deterministic hash uses ``cap_``.
-    capability_version: str = ""
+    # SEARCH_CAPABILITY_VERSION overrides `capability_version`. Empty derives it.
+    capability_version_override: str = Field(
+        default="", validation_alias="SEARCH_CAPABILITY_VERSION"
+    )
 
     @field_validator("llm_seed", mode="before")
     @classmethod
@@ -528,7 +514,7 @@ class SearchSettings(BaseSettings):
             )
         return value
 
-    @field_validator("capability_version", mode="before")
+    @field_validator("capability_version_override", mode="before")
     @classmethod
     def _capability_version_stripped(cls, value: object) -> object:
         return value.strip() if isinstance(value, str) else value
@@ -538,12 +524,25 @@ class SearchSettings(BaseSettings):
         """Set dependent field defaults before ``_validate_bounds`` checks them."""
         if self.max_entity_occurrences == _UNSET_DERIVED_DEFAULT:
             self.max_entity_occurrences = self.max_entities * 4
-        if not self.capability_version:
-            self.capability_version = self._compute_capability_version()
         return self
 
+    @functools.cached_property
+    def capability_version(self) -> str:
+        """Capability token in problem details and capabilities, distinct from
+        `schema_version`: `SEARCH_CAPABILITY_VERSION` where set, otherwise the ``cap_`` hash
+        (`_compute_capability_version`). The hash reads the served schema and so the code
+        index, so it is computed on first read, once per settings object."""
+        return self.capability_version_override or self._compute_capability_version()
+
     def _capability_version_payload(self) -> dict:
+        # Imported here: the schema module reads the models and the code index, which load
+        # after this module's settings.
+        from search.engine import schema
+
         return {
+            # The served schema without its prose: a field's name, type, `enum`, `const` or
+            # `default` moves the token, a reworded description does not.
+            "wire_schema": strip_schema_annotations(schema.schema_payload()),
             "doors": {
                 door: door not in SEARCH_UNIMPLEMENTED_DOORS for door in SEARCH_RESOLVE_DOORS
             },
@@ -577,7 +576,9 @@ class SearchSettings(BaseSettings):
     def _compute_capability_version(self) -> str:
         """Deterministic `capability_version` token: a short content hash over
         this deployment's stable capability fields (per-door liveness, the
-        place-as-constraint default, and the published caps), so a config
+        place-as-constraint default, and the published caps) and the schema
+        `GET /api/search/schema` serves (`search.engine.schema.schema_payload`,
+        without annotations), so a wire change or a config
         change mints a new token while repeated boots of the identical config
         agree on the same one. The running image's own commit sha is excluded
         from this hash, so a rebuild with no behaviour change mints no new
@@ -593,7 +594,7 @@ class SearchSettings(BaseSettings):
     def _validate_bounds(self) -> "SearchSettings":
         """Startup validation: raises ValueError at import, before the port binds."""
         self._validate_retrieval_and_scope_bounds()
-        self._validate_confirm_and_candidate_bounds()
+        self._validate_score_and_candidate_bounds()
         self._validate_bind_and_cache_bounds()
         self._validate_topic_and_place_bounds()
         self._validate_timeout_and_preview_bounds()
@@ -602,12 +603,8 @@ class SearchSettings(BaseSettings):
         return self
 
     def _validate_retrieval_and_scope_bounds(self) -> None:
-        """Confirm-candidate count, SDMX read caps, observation-preview caps,
-        role/region member caps, and the scope window."""
-        if self.max_confirm_candidates < 1:
-            raise ValueError(
-                f"SEARCH_MAX_CONFIRM_CANDIDATES must be >= 1; got {self.max_confirm_candidates!r}"
-            )
+        """SDMX read caps, observation-preview caps, the region member cap, and the
+        scope window."""
         if self.sdmx_max_rows < 1:
             raise ValueError(f"SEARCH_SDMX_MAX_ROWS must be >= 1; got {self.sdmx_max_rows!r}")
         if self.sdmx_max_bytes < 1:
@@ -639,11 +636,6 @@ class SearchSettings(BaseSettings):
             raise ValueError(
                 f"SEARCH_OBS_PREVIEW_MAX_ROWS must be >= 1; got {self.obs_preview_max_rows!r}"
             )
-        if self.role_refresh_max_members < 1:
-            raise ValueError(
-                "SEARCH_ROLE_REFRESH_MAX_MEMBERS must be >= 1; got "
-                f"{self.role_refresh_max_members!r}"
-            )
         if self.region_max_members < 1:
             raise ValueError(
                 f"SEARCH_REGION_MAX_MEMBERS must be >= 1; got {self.region_max_members!r}"
@@ -655,19 +647,8 @@ class SearchSettings(BaseSettings):
                 f"SEARCH_SCOPE_MAX_WINDOW_YEARS must be >= 1; got {self.scope_max_window_years!r}"
             )
 
-    def _validate_confirm_and_candidate_bounds(self) -> None:
-        """Recall, shape-class and origin confirm-slot reserves, score thresholds, and
-        the resolved-StatVar/candidate/variable/entity ceilings."""
-        if self.min_recall_confirm_slots < 0:
-            raise ValueError(
-                "SEARCH_MIN_RECALL_CONFIRM_SLOTS must be >= 0; got "
-                f"{self.min_recall_confirm_slots!r}"
-            )
-        if self.min_shape_class_confirm_slots < 0:
-            raise ValueError(
-                "SEARCH_MIN_SHAPE_CLASS_CONFIRM_SLOTS must be >= 0; got "
-                f"{self.min_shape_class_confirm_slots!r}"
-            )
+    def _validate_score_and_candidate_bounds(self) -> None:
+        """Score thresholds and the resolved-StatVar/candidate/variable/entity ceilings."""
         if not (0 < self.relevance_threshold <= 1):
             raise ValueError(
                 f"SEARCH_RELEVANCE_THRESHOLD must be in (0, 1]; got {self.relevance_threshold!r}"
@@ -721,14 +702,6 @@ class SearchSettings(BaseSettings):
             raise ValueError(
                 "SEARCH_OBS_PROPERTIES_CACHE_SIZE must be >= 1; got "
                 f"{self.obs_properties_cache_size!r}"
-            )
-        if self.obs_properties_cache_size < self.role_refresh_max_members:
-            raise ValueError(
-                "SEARCH_OBS_PROPERTIES_CACHE_SIZE must be >= SEARCH_ROLE_REFRESH_MAX_MEMBERS, "
-                "so a declared-role refresh at the full member cap never evicts an entry it "
-                f"just wrote; got SEARCH_OBS_PROPERTIES_CACHE_SIZE="
-                f"{self.obs_properties_cache_size!r} against SEARCH_ROLE_REFRESH_MAX_MEMBERS="
-                f"{self.role_refresh_max_members!r}"
             )
 
     def _validate_topic_and_place_bounds(self) -> None:

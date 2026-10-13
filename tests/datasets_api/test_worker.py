@@ -15,10 +15,15 @@ from types import SimpleNamespace
 import pytest
 
 from dataset_store.snapshot import SnapshotRevoked, StoredArtifactLocation
+from datasets_api import current as current_module
 from datasets_api import serve as serve_module
 from datasets_api.adapter import MemberReadBounds
 from datasets_api.config import DatasetsBuildSettings
-from datasets_api.doors.definition import DefinitionDeps, classify_definition_exception
+from datasets_api.doors.definition import (
+    DefinitionDeps,
+    SpecNotFound,
+    classify_definition_exception,
+)
 from datasets_api.mint_models import MintOptions
 from datasets_api.operation_store import LiveOperationStore, Operation
 from datasets_api.operations import worker as worker_module
@@ -31,6 +36,8 @@ from datasets_api.render import artifact_rendering
 from datasets_api.serve import WorkDeadlinePassed
 from datasets_api.version_store import rendering_key
 from datasets_api.versions import HeadFence, HeadFenceLost, SubjectHead
+from materialise.errors import VariableBreadthUnreadError
+from materialise.facets import read_variable_breadths
 from series_coverage.index import Estimate
 from series_coverage.shared import CoverageService
 from tests.series_coverage.support import build_test_artifact, index_for, pointer_path
@@ -253,12 +260,27 @@ def test_a_run_past_its_work_deadline_releases_before_it_renders_or_uploads(
     assert (stored.state, stored.claimed_at) == ("pending", None)
 
 
-def test_final_attempt_transient_failure_marks_failed_with_internal_error():
+@pytest.mark.parametrize(
+    ("failure", "code"),
+    [
+        pytest.param(
+            ConnectionError("upstream SDMX call failed"), "internal_error", id="unclassified"
+        ),
+        # A single-place tie its unread whole-variable breadth would decide: the run stores no
+        # other facet and stays retryable.
+        pytest.param(
+            VariableBreadthUnreadError(["fEUR", "fUSD"]),
+            "service_unavailable",
+            id="breadth-unread",
+        ),
+    ],
+)
+def test_final_attempt_transient_failure_marks_failed_retryable(failure, code):
     operation_store = _operation_store()
     operation = _claimed_operation(operation_store)
 
     def _raise_transient(*, spec_id, deps):
-        raise ConnectionError("upstream SDMX call failed")
+        raise failure
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(worker_module, "_resolve_spec_requests", _raise_transient)
@@ -272,7 +294,7 @@ def test_final_attempt_transient_failure_marks_failed_with_internal_error():
     stored = operation_store.get(operation.id)
     assert stored is not None
     assert stored.state == "failed"
-    assert stored.refusal_code == "internal_error"
+    assert stored.refusal_code == code
     # The transient failure remains retryable on resubmission despite exhausting this task's attempts.
     assert stored.retryable is True
 
@@ -326,18 +348,29 @@ def test_run_operation_takes_one_coverage_snapshot_and_forwards_its_stamp_and_in
     assert captured["coverage_index"] is snapshot.index
 
 
-def test_deterministic_failure_fails_regardless_of_final_attempt():
+@pytest.mark.parametrize(
+    ("failure", "code"),
+    [
+        pytest.param(lambda: SpecNotFound(id=_SUBJECT_ID), "spec_not_found", id="spec-not-found"),
+        # A single-place tie whose whole-variable breadth failed to build for a defect: a
+        # retry would fail alike.
+        pytest.param(
+            lambda: VariableBreadthUnreadError(["fEUR", "fUSD"], transient=False),
+            "internal_error",
+            id="breadth-defect",
+        ),
+    ],
+)
+def test_deterministic_failure_fails_regardless_of_final_attempt(failure, code):
     """A deterministic (non-retryable) classification fails the operation
     the same way whether or not this is the last Cloud Tasks attempt.
     `is_final_attempt` only changes the TRANSIENT branch.
     """
-    from datasets_api.doors.definition import SpecNotFound
-
     operation_store = _operation_store()
     operation = _claimed_operation(operation_store)
 
     def _raise_deterministic(*, spec_id, deps):
-        raise SpecNotFound(id=spec_id)
+        raise failure()
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(worker_module, "_resolve_spec_requests", _raise_deterministic)
@@ -351,11 +384,11 @@ def test_deterministic_failure_fails_regardless_of_final_attempt():
     stored = operation_store.get(operation.id)
     assert stored is not None
     assert stored.state == "failed"
-    assert stored.refusal_code == "spec_not_found"
+    assert stored.refusal_code == code
     # Resubmitting the identical request repeats this deterministic failure.
     assert stored.retryable is False
     # The row stores the refusal the synchronous door classifies for the same exception.
-    classified = classify_definition_exception(SpecNotFound(id=_SUBJECT_ID))
+    classified = classify_definition_exception(failure())
     assert classified is not None
     assert stored.refusal == classified
 
@@ -1047,3 +1080,46 @@ def test_run_completes_only_when_the_requests_rendering_is_servable(
     assert row.retryable == retryable
     assert row.content_version == (completed.content_version if state == "done" else None)
     assert row.confirmed_at == (_CONFIRMED_AT if state == "done" else None)
+
+
+def test_a_worker_run_at_one_place_reads_the_breadth_a_sync_mint_reads():
+    """`serve_current`, which the worker and the mint both serve through, binds the deps'
+    breadth reader around materialisation, so a probe of one place reads its variable's whole
+    breadth there."""
+    operation_store = _operation_store()
+    operation = _claimed_operation(operation_store)
+    reads: list[tuple[str, ...]] = []
+
+    def reader(stat_vars, *, deadline):
+        reads.append(tuple(stat_vars))
+        return {sv: {"fUSD": 197, "fEUR": 25} for sv in stat_vars}
+
+    deps = dataclasses.replace(_deps(), variable_breadth=reader)
+    probed: dict[str, object] = {}
+
+    def _resolve_served(*, spec_id, deps):
+        return SimpleNamespace(spec_id=spec_id), []
+
+    def _probing_serve_definition(**_kwargs):
+        # What `facets.probe_facets` reads for a subject-only request binding one place.
+        pending = read_variable_breadths(
+            ["dcid:Count_Person"], places=["country/FRA"], deadline=None
+        )
+        probed.update((sv, breadth.resolve()) for sv, breadth in pending.items())
+        return SimpleNamespace(
+            manifest=_stub_manifest(), head=SimpleNamespace(confirmed_at=datetime.now(UTC))
+        )
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(worker_module, "_resolve_spec_requests", _resolve_served)
+        mp.setattr(current_module, "serve_definition", _probing_serve_definition)
+        # The stub manifest carries no trace to stamp or label.
+        mp.setattr(current_module, "stamp_trace", lambda manifest, **_: manifest)
+        mp.setattr(current_module, "_labelled", lambda manifest, **_: manifest)
+        run_operation(operation=operation, deps=deps, operation_store=operation_store)
+
+    assert reads == [("Count_Person",)]
+    assert probed == {"Count_Person": {"fUSD": 197, "fEUR": 25}}
+    stored = operation_store.get(operation.id)
+    assert stored is not None
+    assert stored.state == "done"

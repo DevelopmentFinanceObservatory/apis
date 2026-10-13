@@ -11,8 +11,8 @@ from code_index.labels import PRICE_BASIS_AXIS, is_price_basis
 from code_index.shared import get_index
 from search.heading.measure_noun import MeasureNoun as AuthoredNoun
 from search.heading.measure_noun import denominator_noun, measure_noun
-from search.heading.unit_class import classify_unit
 from search.models import ResolvedFacet, Slot
+from unit_words.unit_class import classify_unit
 
 from .how import _is_adjectival
 from .labels import (
@@ -223,8 +223,8 @@ def _fallback_what(
     """
     measured_property = shape.measured_property
     has_property = measured_property is not None and (
-        measured_property.dcid.lower() not in _STOPWORD_MEASURED_PROPS
-        and not _is_unsplittable_allcaps_dcid(measured_property.dcid, measured_property.label)
+        measured_property.ref.lower() not in _STOPWORD_MEASURED_PROPS
+        and not _is_unsplittable_allcaps_dcid(measured_property.ref, measured_property.label)
     )
     if has_property:
         property_text = _normalize_what_label(_humanize(measured_property))
@@ -242,7 +242,7 @@ def _fallback_what(
     if shape.population_type is not None:
         return _normalize_what_label(_humanize(shape.population_type)), False
     if measured_property is not None and not _is_unsplittable_allcaps_dcid(
-        measured_property.dcid, measured_property.label
+        measured_property.ref, measured_property.label
     ):
         return _normalize_what_label(_humanize(measured_property)), False
     return shape.label, False
@@ -259,10 +259,10 @@ def _measure_extras(shape: ShapeLike) -> list[str]:
     """
     extras: list[str] = []
     stat_type = shape.stat_type
-    if stat_type is not None and stat_type.dcid != "measuredValue":
+    if stat_type is not None and stat_type.ref != "measuredValue":
         extras.append(_normalize_what_label(_humanize(stat_type)))
     qualifier = shape.measurement_qualifier
-    if qualifier is not None and not is_price_basis(PRICE_BASIS_AXIS, qualifier.dcid):
+    if qualifier is not None and not is_price_basis(PRICE_BASIS_AXIS, qualifier.ref):
         extras.append(_normalize_what_label(_humanize(qualifier)))
     return extras
 
@@ -287,9 +287,9 @@ def _flow_short_names(constraints: Mapping[str, str]) -> list[tuple[str, str]]:
 def _authored_measure_noun(shape: ShapeLike, constraints: Mapping[str, str]) -> AuthoredNoun | None:
     """Return the authored IDS or WEO noun (`measure_noun`) for the shape, or None."""
     return measure_noun(
-        population_type=shape.population_type.dcid if shape.population_type else None,
-        measured_property=shape.measured_property.dcid if shape.measured_property else None,
-        stat_type=shape.stat_type.dcid if shape.stat_type else None,
+        population_type=shape.population_type.ref if shape.population_type else None,
+        measured_property=shape.measured_property.ref if shape.measured_property else None,
+        stat_type=shape.stat_type.ref if shape.stat_type else None,
         constraints=constraints,
     )
 
@@ -403,7 +403,7 @@ def _unit_heading_phrase(
     denominator = shape.measurement_denominator
     unit_class = classify_unit(
         unit=unit.ref if unit is not None else None,
-        denominator=denominator.dcid if denominator is not None else None,
+        denominator=denominator.ref if denominator is not None else None,
         currency_units=facet_currency_units(unit),
     )
     phrases: list[str] = []
@@ -414,7 +414,7 @@ def _unit_heading_phrase(
     names_unit = False
     names_ratio = _graph_text_names_any(graph_heading_text, _RATIO_WORDS)
     if denominator is not None and unit_class.ratio_denominator is not None and not names_ratio:
-        base = denominator_noun(denominator.dcid) or _recase_words(
+        base = denominator_noun(denominator.ref) or _recase_words(
             _normalize_what_label(_humanize(denominator))
         )
         is_percent = unit_class.kind == "percent"

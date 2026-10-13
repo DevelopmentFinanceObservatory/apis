@@ -10,9 +10,11 @@ import asyncio
 
 from code_index.shared import get_index
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 _QUERY = (
@@ -183,6 +185,8 @@ class _ChooseShape0AlsoPlausibleShapes12LLM:
     rather than through this bind call at all."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0,
@@ -221,7 +225,7 @@ def _run():
 
 def _spec_for(specs, sv_dcid: str):
     return next(
-        spec for spec in specs if any(sv.ref.dcid == sv_dcid for sv in spec.resolved.members)
+        spec for spec in specs if any(sv.ref.ref == sv_dcid for sv in spec.resolved.members)
     )
 
 

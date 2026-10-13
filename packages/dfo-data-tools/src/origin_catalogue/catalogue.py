@@ -27,8 +27,9 @@ variable. With the UN origin on, a leaf with a successor counts toward a
 base Topic's admission as an admitted leaf does, so search can expand the
 Topic and replace its leaves.
 
-Where a DFO facet is present for a variable and place, every other facet
-there is withheld, so DFO's data wins over an upstream copy.
+Where a DFO facet and a base facet are both present for a variable and
+place, both are admitted; the facet election picks one origin for the whole
+request (`materialise.facets.dfo_precedence`).
 
 A search candidate in `withheld_variables` is refused unless DFO holds it:
 its data at the scan places is known to sit under provenances the catalogue
@@ -46,6 +47,14 @@ from datetime import UTC, datetime, timedelta
 from typing import Final, Protocol
 from urllib.parse import urlsplit
 
+from artifact_publication.jobs import Ingestion
+from origin_catalogue.arc_tables import EMPTY_ARC_TABLES, ArcTables
+from origin_catalogue.families import (
+    EMPTY_FAMILY_TABLES,
+    FamilyKey,
+    FamilySummary,
+    FamilyTables,
+)
 from origin_catalogue.origins import BASE, DFO, UN_ID_PREFIX, UN_SYSTEM, DataCommons
 from origin_catalogue.schema import CatalogueManifest, ScanLevel
 from origin_catalogue.topic_walk import TOPIC_EXPAND_MAX_MEMBERS
@@ -459,6 +468,12 @@ class Catalogue(Protocol):
     def built_at(self) -> datetime: ...
 
     @property
+    def ingestion(self) -> Ingestion | None:
+        """The `IngestionHistory` row the build's DFO tables read, which a coverage build
+        records too, or `None` for a build made outside the job."""
+        ...
+
+    @property
     def un_system_enabled(self) -> bool:
         """Whether the UN origin is served. With it off, UN dcids are read nowhere."""
         ...
@@ -504,7 +519,7 @@ class Catalogue(Protocol):
     @property
     def scope(self) -> frozenset[str] | None:
         """The provenances a request allows (a source scope), or `None` for every one.
-        `admit_series` drops a provenance outside it before admission and DFO precedence.
+        `admit_series` drops a provenance outside it before admission.
         Every other answer of the catalogue ignores it."""
         ...
 
@@ -516,8 +531,10 @@ class Catalogue(Protocol):
     def is_admitted(self, provenance_id: str) -> bool: ...
 
     def admit_series(self, provenance_ids: Iterable[str]) -> SeriesAdmission:
-        """Admission for the facets of one variable at one place, with DFO precedence. A
-        provenance outside `scope` is left out of both `admitted` and `withheld`."""
+        """Admission for the facets of one variable at one place: every admitted provenance
+        (`is_admitted`) in `scope`, whichever origin it comes from. The facet election chooses
+        between DFO and base (`materialise.facets.dfo_precedence`). A provenance outside
+        `scope` is left out of both `admitted` and `withheld`."""
         ...
 
     def admit_candidate(self, dcid: str) -> DataCommons | None:
@@ -567,6 +584,38 @@ class Catalogue(Protocol):
         UN origin off."""
         ...
 
+    def held_arcs(self, dcid: str) -> tuple[UnArc, ...] | None:
+        """The `->*` arcs of a DFO variable, a base variable or a schema node
+        the arc tables hold (`arc_tables.ArcTables.arcs`): empty for a node
+        held and empty, which the graph does not have, and `None` for a dcid
+        the tables do not hold, which is read from the graph."""
+        ...
+
+    def held_family(self, key: FamilyKey) -> FamilySummary | None:
+        """The summary of every variable of family `key` the arc tables or, with the UN
+        origin on, the UN tables hold (`families.FamilyTables.family`), as the catalogue
+        job computed it. `None` when they hold none."""
+        ...
+
+    def arc_target(self, dcid: str) -> UnArc | None:
+        """An arc row naming `dcid` that some node the arc tables hold has,
+        which carries the name and types the graph gave `dcid` on that arc
+        (`arc_tables.ArcTables.targets`). `None` for any other dcid."""
+        ...
+
+    def arc_label(self, dcid: str) -> str | None:
+        """The label `GraphClient.node_label` gives a node an arc the arc
+        tables hold names (`arc_tables.ArcTables.labels`). `None` for such a
+        node with no name and for any other dcid."""
+        ...
+
+    def mixer_topic_leaves(self, topic: str) -> tuple[str, ...] | None:
+        """Every leaf variable the topic walk reaches from a Topic of our
+        mixer, in walk order and uncapped, admitted or not
+        (`CatalogueTables.topics`). `None` for a dcid the topic table does
+        not hold."""
+        ...
+
     def superseded_by(self, variable: str) -> str | None:
         """The DFO provenance holding the data a UN variable is derived
         from, when the registry excludes the variable's series, else
@@ -599,7 +648,8 @@ class Catalogue(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class CatalogueSnapshot:
-    """One loaded catalogue version. `un` holds the build's UN tables.
+    """One loaded catalogue version. `un` holds the build's UN tables, `arcs`
+    its arc tables and `families` the family summaries of both.
     `un_system_enabled` gates UN admission; with it off, no UN provenance or
     candidate is admitted and the UN tables answer nothing.
     `scope` narrows `admit_series` to a request's allowed provenances (`scoped`)."""
@@ -607,6 +657,8 @@ class CatalogueSnapshot:
     manifest: CatalogueManifest
     tables: CatalogueTables
     un: UnTables = EMPTY_UN_TABLES
+    arcs: ArcTables = EMPTY_ARC_TABLES
+    families: FamilyTables = EMPTY_FAMILY_TABLES
     un_system_enabled: bool = True
     scope: frozenset[str] | None = None
 
@@ -617,6 +669,10 @@ class CatalogueSnapshot:
     @property
     def built_at(self) -> datetime:
         return self.manifest.built_at
+
+    @property
+    def ingestion(self) -> Ingestion | None:
+        return self.manifest.ingestion
 
     @property
     def mixer_domains(self) -> tuple[str, ...]:
@@ -660,9 +716,6 @@ class CatalogueSnapshot:
         if self.scope is not None:
             present = tuple(pid for pid in present if pid in self.scope)
         admitted = [pid for pid in present if self.is_admitted(pid)]
-        dfo = self.tables.dfo_provenances
-        if any(pid in dfo for pid in admitted):
-            admitted = [pid for pid in admitted if pid in dfo]
         kept = set(admitted)
         return SeriesAdmission(
             admitted=tuple(admitted), withheld=tuple(pid for pid in present if pid not in kept)
@@ -716,6 +769,21 @@ class CatalogueSnapshot:
 
     def un_node(self, dcid: str) -> UnArc | None:
         return self.un.nodes.get(dcid) if self.un_system_enabled else None
+
+    def held_arcs(self, dcid: str) -> tuple[UnArc, ...] | None:
+        return self.arcs.arcs(dcid)
+
+    def held_family(self, key: FamilyKey) -> FamilySummary | None:
+        return self.families.family(key, un_system_enabled=self.un_system_enabled)
+
+    def arc_target(self, dcid: str) -> UnArc | None:
+        return self.arcs.targets.get(dcid)
+
+    def arc_label(self, dcid: str) -> str | None:
+        return self.arcs.labels.get(dcid)
+
+    def mixer_topic_leaves(self, topic: str) -> tuple[str, ...] | None:
+        return self.tables.topics.get(topic)
 
     def superseded_by(self, variable: str) -> str | None:
         return self.un.superseded_by(variable)

@@ -27,6 +27,7 @@ from materialise.reshape import (
     ColumnClassification,
     TableLike,
     classify_columns,
+    enrichment_qualifies,
 )
 
 _SCHEMA_VERSION = 1
@@ -60,7 +61,8 @@ class ColumnProfile:
 class EnrichmentCoverage:
     """Coverage of one `(column, field)` enrichment pair over the frame's
     distinct refs in `column`. `entities` is the distinct ref count.
-    `covered` is how many of those refs the graph carries `field` for.
+    `covered` is how many of those refs the lookup gives `field` for: the
+    code index for `party_kind`, the graph for every other field.
     `missing` lists the refs without `field`, each paired with its label
     from the same lookup call, empty when the graph carries no label for
     that ref either. It is capped at `_MAX_NAMED_MISSING_REFS`, with
@@ -611,7 +613,9 @@ def _enrichment_coverage_for_column(
 
     coverage: list[EnrichmentCoverage] = []
     for field_name in ENRICHMENT_FIELDS:
-        if field_name not in SUPPORTED_ENRICHMENTS:
+        if field_name not in SUPPORTED_ENRICHMENTS or not enrichment_qualifies(
+            role_column, field_name
+        ):
             continue
         covered_refs = [ref for ref in refs if field_name in resolved.get(ref, {})]
         if not covered_refs:

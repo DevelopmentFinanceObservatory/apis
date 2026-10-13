@@ -398,7 +398,8 @@ def test_parquet_export_carries_the_same_rows(frame_store, revision_store, relea
     )
     table = pq.read_table(io.BytesIO(exported.data))
 
-    assert table.column("time_period").to_pylist() == ["2020", "2022", "2020", "2021", "2022"]
+    assert table.column("time_period").to_pylist() == [2020, 2022, 2020, 2021, 2022]
+    assert table.schema.field("time_period").type == "int64"
     assert table.schema.field("value").type == "double"
 
 
@@ -970,7 +971,7 @@ def _put_composed_unit_frame(frame_store, *, labels: Mapping[str, str]) -> None:
         resolved_frame=ResolvedFrame(
             frame_ref=_OPS_FRAME_REF,
             frame=document,
-            structural_view=compute_structural_view(frame=document),
+            structural_view=compute_structural_view(frame=document, continuation=None),
             manifest={"schema_version": 1},
             labels=labels,
             retrieved_on=FIXTURE_RETRIEVED_ON,
@@ -1031,3 +1032,103 @@ def test_a_composed_unit_exports_as_its_canonical_json(
         units = pq.read_table(io.BytesIO(data)).column("unit").to_pylist()
 
     assert units == [_USD_PER_PERSON_TEXT] * 2
+
+
+def _put_continued_frame(frame_store) -> None:
+    """ETH reported for 2019-2021 under a null method and continued by its source's estimates
+    for 2022-2023 (`trace.continuations`), beside GHA reported under `Reported`."""
+    rows = [
+        {
+            **_row(recipient="country/ETH", period=str(year), value=float(year)),
+            "measurementMethod": "Estimated" if year >= 2022 else None,
+        }
+        for year in range(2019, 2024)
+    ]
+    rows += [
+        {
+            **_row(recipient="country/GHA", period=str(year), value=float(year) + 0.5),
+            "measurementMethod": "Reported",
+        }
+        for year in range(2019, 2024)
+    ]
+    frame_store.put(
+        resolved_frame=build_resolved_frame(
+            frame_ref=_FRAME_REF,
+            role_keys=("recipient",),
+            rows=rows,
+            labels={"country/ETH": "Ethiopia", "country/GHA": "Ghana"},
+            manifest={
+                "schema_version": 1,
+                "trace": {
+                    "continuations": [
+                        {
+                            "axis": "measurementMethod",
+                            "method": "Estimated",
+                            "periods": ["2022", "2023"],
+                        }
+                    ]
+                },
+            },
+        )
+    )
+
+
+@pytest.mark.parametrize("member", ["line_chart", "table"])
+@pytest.mark.parametrize(
+    ("bound", "periods"),
+    [
+        pytest.param({}, ["2019", "2020", "2021", "2022", "2023"], id="continued"),
+        pytest.param({"measurementMethod": "Estimated"}, ["2022", "2023"], id="estimates"),
+    ],
+)
+def test_a_continued_series_exports_each_row_the_card_shows(
+    member, bound, periods, frame_store, revision_store, release_registry
+):
+    """A series continued by its source's estimates exports its estimated rows, whether the
+    card draws them with the series or alone. Issue: the Zambia chart that drew only
+    2025-2026."""
+    _put_continued_frame(frame_store)
+    created = write_component(
+        intent={
+            "type": member,
+            "frame_ref": _frame_ref_body(_FRAME_REF),
+            "select": {"recipient": "country/ETH", **bound},
+        },
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+
+    rows = _csv_rows(_export(created, frame_store=frame_store, revision_store=revision_store).data)
+
+    assert [row["time_period"] for row in rows] == periods
+    assert [(row["series"], row["time_period"]) for row in rows] == _shown(
+        created.resolved_payload["component"]
+    )
+
+
+def test_a_table_row_of_a_continued_series_names_its_own_method(
+    frame_store, revision_store, release_registry
+):
+    """A table whose series differ on method labels each continuing row by its own method."""
+    _put_continued_frame(frame_store)
+    created = write_component(
+        intent={
+            "type": "table",
+            "frame_ref": _frame_ref_body(_FRAME_REF),
+            "select": {"stat_var": _STAT_VAR},
+        },
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+
+    table_rows = created.resolved_payload["component"]["rows"]
+    assert [
+        (row["dimensions"]["recipient"], row["period"], row["dimensions"]["measurementMethod"])
+        for row in table_rows
+    ] == [
+        *(("Ethiopia", str(year), "Not specified") for year in range(2019, 2022)),
+        *(("Ethiopia", str(year), "Estimated") for year in range(2022, 2024)),
+        *(("Ghana", str(year), "Reported") for year in range(2019, 2024)),
+    ]

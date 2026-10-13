@@ -18,7 +18,9 @@ A serve's store work is a fixed set of transactions, each holding one `dataset_s
 a time: the head read its caller makes, a read of the stored version only when that head names
 the result's `content_version`, one write transaction for the version record, every artifact's
 inventory row and link and any collapsed version (`VersionRecordWriter.write_version`), and one
-for the materialisation row and head advance. Artifacts are stored through a `deferred` view
+for the materialisation row and head advance. The write transaction also writes each version's
+description record (`version_descriptions.mint_describers`), whose labels one batched graph read
+gathers just before it. Artifacts are stored through a `deferred` view
 of the artifact store, whose writes add their inventory rows to an `InventoryBatch` for the
 write transaction and read no inventory for new bytes, so the frame worker opens no
 transaction beside the request thread. The canonical frame and the requested rendering overlap.
@@ -73,10 +75,12 @@ from datasets_api.admission import MaterialisePermits, bounded_materialise_slot
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.manifest import (
     assemble_manifest,
+    collapsed_citation,
     coverage_facts_of,
     definition_version_record,
     healed_citation,
     persisted_manifest,
+    provenance_refs_of,
     reshape_warning_models,
     stored_manifest_facts,
 )
@@ -92,8 +96,9 @@ from datasets_api.origin import (
     catalogue_build_id,
     refuse_unserved_empty_probe,
     refuse_unserved_selection,
+    un_unavailable_gaps,
     un_unavailable_warnings,
-    withheld_warnings,
+    withheld_finding,
 )
 from datasets_api.query_options import encode_query_options
 from datasets_api.render import (
@@ -106,6 +111,7 @@ from datasets_api.render import (
     stored_artifact_entry,
 )
 from datasets_api.timings import phase, record_elapsed
+from datasets_api.version_descriptions import MintDescribers, mint_describers
 from datasets_api.version_store import rendering_key
 from datasets_api.versions import (
     ArtifactRecord,
@@ -116,6 +122,7 @@ from datasets_api.versions import (
     NullVersionRecordWriter,
     SubjectHead,
     Trigger,
+    VersionDescriber,
     VersionRecord,
     VersionRecordWriter,
     VersionWrite,
@@ -133,6 +140,7 @@ from materialise import (
     materialise_group,
 )
 from materialise.bundle import ReproducingCall
+from materialise.continued_series import continued_series_of_trace
 from materialise.errors import DefaultFacetUndefinedError
 from materialise.graph import GraphReader
 from materialise.provenance_doc import (
@@ -140,7 +148,11 @@ from materialise.provenance_doc import (
     read_source_citations,
 )
 from materialise.rate_tables import RateTableCache
-from materialise.statistics import SeriesStatisticsSink, compute_series_statistics_table
+from materialise.statistics import (
+    SeriesFigures,
+    SeriesStatisticsSink,
+    compute_series_statistics_table,
+)
 from origin_catalogue import current_catalogue, recording_un_blocked_places
 from series_coverage.index import CoverageIndex, Estimate
 from spec_registry.reader import StoredDefinition
@@ -188,13 +200,6 @@ def raw_fetch_guard(estimate: Estimate, *, floor: int) -> int:
     Definition option rerenders use the floor: `refuse_inline_over_ceiling` admits only an estimate
     at or below it."""
     return max(floor, math.ceil(estimate.rows * _RAW_FETCH_GUARD_MARGIN))
-
-
-def provenance_refs_of(facets: Iterable[Mapping[str, object]]) -> list[str]:
-    """The provenance refs live or stored `trace.facets` entries select: the one a
-    materialisation dispatched, and none for one whose facet probe was empty
-    (`MaterialisationResult.probe_empty`), which selects no facet."""
-    return [cast(str, facet["ref"]) for facet in facets if facet["axis"] == "provenance"]
 
 
 def refs_from_resolved_stat_vars(entries: Iterable[Mapping[str, object]]) -> tuple[str, ...]:
@@ -601,16 +606,26 @@ def prewrite_definition(
             )
         # `refuse_unserved_empty_probe` already made the withheld re-read an empty probe gets.
         withheld = (
-            ()
+            None
             if result.probe_empty
-            else withheld_warnings(
+            else withheld_finding(
                 graph,
                 [(request, result.coverage) for request in requests],
                 default_scope=result.default_scope,
                 deadline=deadline,
             )
         )
-        origin_warnings = withheld + un_unavailable_warnings(un_blocked)
+        origin_warnings = (() if withheld is None else (withheld[1],)) + un_unavailable_warnings(
+            un_blocked
+        )
+        # Every manifest built from `result` records the places those warnings name.
+        origin_gaps = (() if withheld is None else (withheld[2],)) + un_unavailable_gaps(un_blocked)
+        result = replace(
+            result,
+            trace=replace(
+                result.trace, origin_gaps=tuple(gap.as_trace_entry() for gap in origin_gaps)
+            ),
+        )
         spec_dict: dict[str, object] = {
             "schema_version": stored.schema_version,
             "spec_id": stored.spec_id,
@@ -743,9 +758,11 @@ def _base_record(
     *,
     persisted: VersionState | None,
     artifacts: Sequence[ArtifactRecord],
+    describer: VersionDescriber | None = None,
 ) -> VersionRecord:
-    """The version record of `prewrite`'s materialisation, linking `artifacts`. It takes the
-    stored body when the version is on record (`persisted`), else this call's."""
+    """The version record of `prewrite`'s materialisation, linking `artifacts` and described by
+    `describer`. It takes the stored body when the version is on record (`persisted`), else
+    this call's."""
     record = definition_version_record(
         manifest=prewrite.manifest,
         stored=prewrite.stored,
@@ -753,9 +770,29 @@ def _base_record(
         artifacts=[],
         record_only_artifacts=artifacts,
     )
+    record = replace(record, describer=describer)
     if persisted is None:
         return record
     return replace(record, facts=persisted.version.facts)
+
+
+def _describers(
+    prewrite: DefinitionPrewrite, *, deps: ServeDeps, rendered: _RenderPass | None
+) -> MintDescribers:
+    """The describers of the versions this serve writes: its own and the collapse `rendered`
+    holds. Their labels are read here, before the write transaction."""
+    collapsed = None
+    if rendered is not None and rendered.collapsed is not None:
+        assert rendered.collapsed_figures is not None
+        collapsed = (rendered.collapsed, rendered.collapsed_figures)
+    return mint_describers(
+        _base_record(prewrite, persisted=prewrite.persisted, artifacts=()),
+        figures=prewrite.result.series_statistics.figures,
+        collapsed=collapsed,
+        code_index=deps.code_index,
+        enrichment=deps.enrichment,
+        deadline=deps.deadline,
+    )
 
 
 def _frame_result(
@@ -863,6 +900,7 @@ def _write_definition_artifacts(
             if statistics_artifact is not None and frame_record is not None:
                 try:
                     _check_work_deadline(deps, "recording the version")
+                    describers = _describers(prewrite, deps=deps, rendered=None)
                     with phase("record"):
                         deps.version_writer.write_version(
                             VersionWrite(
@@ -870,6 +908,7 @@ def _write_definition_artifacts(
                                     prewrite,
                                     persisted=prewrite.persisted,
                                     artifacts=_option_free(statistics_artifact, frame_record),
+                                    describer=describers.version,
                                 ),
                                 inventory=batch.entries,
                             ),
@@ -889,12 +928,16 @@ def _write_definition_artifacts(
     assert statistics_artifact is not None
     option_free = _option_free(statistics_artifact, frame_record)
     _check_work_deadline(deps, "recording the version")
+    describers = _describers(prewrite, deps=deps, rendered=rendered)
     if rendered is None:
         with phase("record"):
             deps.version_writer.write_version(
                 VersionWrite(
                     record=_base_record(
-                        prewrite, persisted=prewrite.persisted, artifacts=option_free
+                        prewrite,
+                        persisted=prewrite.persisted,
+                        artifacts=option_free,
+                        describer=describers.version,
                     ),
                     inventory=batch.entries,
                 ),
@@ -904,7 +947,8 @@ def _write_definition_artifacts(
     assert options is not None
     with phase("record"):
         written = deps.version_writer.write_version(
-            rendered.write(option_free, inventory=batch.entries), trace_id=trace_id
+            rendered.write(option_free, inventory=batch.entries, describers=describers),
+            trace_id=trace_id,
         )
     if not written.rendered:
         # A concurrent first mint recorded the version first. Render again from its record.
@@ -920,7 +964,8 @@ def _write_definition_artifacts(
         _check_work_deadline(deps, "recording the rendering")
         with phase("record"):
             written = deps.version_writer.write_version(
-                rendered.write((), inventory=rebatch.entries), trace_id=trace_id
+                rendered.write((), inventory=rebatch.entries, describers=describers),
+                trace_id=trace_id,
             )
     return rendered.response(written, now=utc_now())
 
@@ -952,17 +997,30 @@ class _RenderPass:
     call_warnings: tuple[WarningModel, ...]
     # Linked to the base version: the rendering, unless it is a multi-contributor collapse.
     links: tuple[ArtifactRecord, ...]
-    # A multi-contributor collapse's own version, recorded with its artifacts.
+    # A multi-contributor collapse's own version, recorded with its artifacts, and the series
+    # figures of its statistics.
     collapsed: VersionRecord | None
+    collapsed_figures: SeriesFigures | None
 
     def write(
-        self, option_free: Sequence[ArtifactRecord], *, inventory: Sequence[InventoryEntry]
+        self,
+        option_free: Sequence[ArtifactRecord],
+        *,
+        inventory: Sequence[InventoryEntry],
+        describers: MintDescribers,
     ) -> VersionWrite:
         return VersionWrite(
-            record=_base_record(self.prewrite, persisted=self.persisted, artifacts=option_free),
+            record=_base_record(
+                self.prewrite,
+                persisted=self.persisted,
+                artifacts=option_free,
+                describer=describers.version,
+            ),
             inventory=tuple(inventory),
             rendered=self.links,
-            collapsed=self.collapsed,
+            collapsed=None
+            if self.collapsed is None
+            else replace(self.collapsed, describer=describers.collapsed),
         )
 
     def response(self, written: WrittenVersion, *, now: datetime) -> Manifest:
@@ -1019,7 +1077,7 @@ def _render_pass(
     )
     _check_work_deadline(deps, "rendering the requested rendering")
     rendered = render_and_store(
-        frame_chunks=result.frame_chunks(),
+        frame_chunks=result.frame_chunks,
         options=options,
         spec=prewrite.spec_dict,
         provenance_refs=prewrite.provenance_refs,
@@ -1083,8 +1141,13 @@ def _render_pass(
             call_warnings=call_warnings,
             links=(_artifact_record(artifact),),
             collapsed=None,
+            collapsed_figures=None,
         )
-    collapsed_statistics_sink = SeriesStatisticsSink()
+    collapsed_statistics_sink = SeriesStatisticsSink(
+        continuing=continued_series_of_trace(
+            {"facets": result.trace.facets, "continuations": result.trace.continuations}
+        )
+    )
     collapsed_statistics_sink.write(compute_series_statistics_table(collapse.frame))
     collapsed_result = replace(
         result,
@@ -1126,7 +1189,10 @@ def _render_pass(
         settings=deps.settings,
         extra_warnings=call_warnings,
         coverage_stamp=prewrite.coverage_stamp,
-    ).model_copy(update={"citation": render_citation})
+    )
+    manifest = manifest.model_copy(
+        update={"citation": collapsed_citation(render_citation, base=manifest)}
+    )
     return _RenderPass(
         prewrite=prewrite,
         persisted=persisted,
@@ -1141,6 +1207,7 @@ def _render_pass(
             record_only_artifacts=[collapsed_frame_record],
             base_content_version=result.content_version,
         ),
+        collapsed_figures=collapsed_result.series_statistics.figures,
     )
 
 

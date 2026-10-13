@@ -37,7 +37,7 @@ def _ref_or_miss(dcid: str, labels: dict[str, str]) -> GraphRef:
 
 def _refs_present(dcids: list[str], labels: dict[str, str]) -> list[GraphRef]:
     """Build refs for labelled DCIDs in input order, omitting unresolved values."""
-    return [GraphRef(dcid=d, label=labels[d]) for d in dcids if d in labels]
+    return [GraphRef(ref=d, label=labels[d]) for d in dcids if d in labels]
 
 
 def _where_slot_refs(
@@ -53,9 +53,9 @@ def _where_slot_refs(
     refs = []
     for d in dcids:
         if d in labels:
-            refs.append(GraphRef(dcid=d, label=labels[d]))
+            refs.append(GraphRef(ref=d, label=labels[d]))
         elif d in role_dcids:
-            refs.append(GraphRef(dcid=d, label=d))
+            refs.append(GraphRef(ref=d, label=d))
     return refs
 
 

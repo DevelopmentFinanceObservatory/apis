@@ -40,5 +40,26 @@ def test_load_release_refuses_a_tampered_artifact(catalogue_dir, tmp_path):
     assert excinfo.value.path == "schemas/envelope.schema.json"
 
 
+@pytest.mark.parametrize("digest", ["sha256:" + "0" * 64, None], ids=["moved", "unnamed"])
+def test_load_release_refuses_a_referenced_schema_the_manifest_does_not_pin(
+    catalogue_dir, tmp_path, digest
+):
+    """The installed description schema's bytes must hash to the manifest's digest for its
+    `$id`; a manifest that names no digest for it refuses too."""
+    _copy_catalogue(catalogue_dir, tmp_path)
+    manifest_path = tmp_path / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    schema_id = next(key for key in manifest["referenced_schemas"] if "description" in key)
+    if digest is None:
+        del manifest["referenced_schemas"][schema_id]
+    else:
+        manifest["referenced_schemas"][schema_id] = digest
+    manifest_path.write_text(json.dumps(manifest))
+
+    with pytest.raises(CatalogueIntegrityError) as excinfo:
+        load_release(catalogue_dir=tmp_path)
+    assert excinfo.value.path == schema_id
+
+
 def _copy_catalogue(source: Path, destination: Path) -> None:
     shutil.copytree(source, destination, dirs_exist_ok=True)

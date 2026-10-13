@@ -41,7 +41,7 @@ def _shape_value(answer: Answer, key: str, ctx: ScoreContext) -> object:
 
     A denominator whose target is a ProvisionalNode (``PerCapita``) is written into the
     identity as ``{unresolved: true}`` with no ref; its dcid, when the target carries one,
-    is ``resolved.shape.measurement_denominator.dcid``. Without that dcid, as on an
+    is ``resolved.shape.measurement_denominator.ref``. Without that dcid, as on an
     unsupported part, the marker itself is returned and equals no expected value.
     """
     value = answer.identity(f"shape.{key}", ctx)
@@ -50,7 +50,7 @@ def _shape_value(answer: Answer, key: str, ctx: ScoreContext) -> object:
     if "ref" in value:
         return value["ref"]
     if answer.is_spec:
-        dcid = answer.read("resolved.shape.measurement_denominator.dcid", ctx)
+        dcid = answer.read("resolved.shape.measurement_denominator.ref", ctx)
         if dcid is not None:
             return dcid
     return value

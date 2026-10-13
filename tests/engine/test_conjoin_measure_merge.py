@@ -54,13 +54,13 @@ _NET = _partition("Net")
 
 
 def _gr(dcid: str) -> GraphRef:
-    return GraphRef(dcid=dcid, label=dcid)
+    return GraphRef(ref=dcid, label=dcid)
 
 
 _CRS = ProvenanceRef(
-    dcid="provenance/OECDCreditorReportingSystem", label="OECD Creditor Reporting System (CRS)"
+    ref="provenance/OECDCreditorReportingSystem", label="OECD Creditor Reporting System (CRS)"
 )
-_DAC1 = ProvenanceRef(dcid="provenance/OECDDAC1", label="OECD DAC1")
+_DAC1 = ProvenanceRef(ref="provenance/OECDDAC1", label="OECD DAC1")
 
 
 def _recipient_only_shape() -> Shape:

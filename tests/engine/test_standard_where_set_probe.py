@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.retrieval.read_plan import PairPlan
 from search.engine.retrieval.retrieve import Materialised
@@ -14,6 +15,7 @@ from search.engine.shape import ShapeDraft
 from search.models import BindingSet, CoverageExact
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 _SV = "Count_Person"
@@ -80,6 +82,8 @@ class _FixedBindLLM:
     """Elects the sole candidate shape with no constraint bindings."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0, bindings=[], also_plausible=None, ask=None
@@ -117,7 +121,7 @@ def test_a_first_answer_over_two_named_places_serves_the_second_places_data():
     resolved = result.specs[0].resolved
     where = next(s for s in resolved.slots if s.key.axis == "where")
     assert isinstance(where.binding, BindingSet)
-    assert [v.ref.dcid for v in where.binding.values] == [_GTM, _SLV]
+    assert [v.ref.ref for v in where.binding.values] == [_GTM, _SLV]
     assert isinstance(resolved.coverage, CoverageExact)
     assert resolved.coverage.has_data is True
     assert resolved.coverage.observation_count == 1

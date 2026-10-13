@@ -1,5 +1,5 @@
 {
-  "about": "Request and response pairs of the dfo-apis live-refresh routes, recorded from the composed test app by tests/live_refresh/wire_pairs.py. Ids are numbered stand-ins in their own grammar, the same id by the same stand-in in every pair. <timestamp>, <date>, <trace_id>, <capability_version>, and the two principal names stand for values that differ between runs or deployments.",
+  "about": "Request and response pairs of the dfo-apis live-refresh routes, recorded from the composed test app by tests/live_refresh/wire_pairs.py. Ids are numbered stand-ins in their own grammar, the same id by the same stand-in in every pair. <timestamp>, <date>, a citation's <year>, <trace_id>, <capability_version>, and the two principal names stand for values that differ between runs or deployments.",
   "pairs": {
     "component_read.at_revision": {
       "request": {
@@ -103,14 +103,9 @@
                 "next_expected": null,
                 "partial_period": false
               },
-              "warnings": [
-                {
-                  "kind": "provisional",
-                  "detail": "A source StatVar lacks a processing-level declaration; the citation credits the source and omits the processing qualifier."
-                }
-              ],
+              "warnings": [],
               "generated_at": "<timestamp>",
-              "citation": "OECD_DAC2A via ONE DFO, retrieved <date>",
+              "citation": "OECD_DAC2A (<year>), via the Development Finance Observatory",
               "refreshed_from": null
             },
             "component": {
@@ -664,14 +659,9 @@
                 "next_expected": null,
                 "partial_period": false
               },
-              "warnings": [
-                {
-                  "kind": "provisional",
-                  "detail": "A source StatVar lacks a processing-level declaration; the citation credits the source and omits the processing qualifier."
-                }
-              ],
+              "warnings": [],
               "generated_at": "<timestamp>",
-              "citation": "OECD_DAC2A via ONE DFO, retrieved <date>",
+              "citation": "OECD_DAC2A (<year>), via the Development Finance Observatory",
               "refreshed_from": 1
             },
             "component": {
@@ -1010,7 +1000,7 @@
                   "content_version": "ocv_00000000000000000000000000000002"
                 }
               ],
-              "execution_ref": null,
+              "execution_ref": "rpk_00000000000000000000000000000002",
               "sources": [
                 {
                   "id": "src_oecd_dac2a_6ec092e3",
@@ -1034,7 +1024,7 @@
                 }
               ],
               "generated_at": "<timestamp>",
-              "citation": "OECD_DAC2A via ONE DFO, retrieved <date>",
+              "citation": "OECD_DAC2A (<year>), processed by the Development Finance Observatory",
               "refreshed_from": 1
             },
             "component": {

@@ -12,6 +12,9 @@ from search.models import NO_DATA_RESOLUTION_ORDER, NoData, NoDataReason
 _CATEGORY_BY_REASON: dict[NoDataReason, str] = {
     "source_not_resolved": "unresolved",
     "source_ambiguous": "unresolved",
+    "source_code_not_held": "unresolved",
+    "source_code_ambiguous": "unresolved",
+    "source_code_shares_variable": "unresolved",
     "entity_not_resolved": "unresolved",
     "entity_ambiguous": "unresolved",
     "entity_role_not_admitted": "unresolved",

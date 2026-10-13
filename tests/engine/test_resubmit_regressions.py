@@ -236,7 +236,7 @@ def test_resubmit_property_label_miss_is_humanized_in_slots() -> None:
     slot = next(
         slot
         for slot in region.specs[0].resolved.slots
-        if slot.key.property and slot.key.property.dcid == property_dcid
+        if slot.key.property and slot.key.property.ref == property_dcid
     )
     assert slot.key.property.label == property_dcid
     assert slot.key.label == "place of residence classification"

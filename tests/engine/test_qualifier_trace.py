@@ -25,7 +25,7 @@ def test_resolution_trace_round_trips_query_qualifiers():
     qualifiers = [
         ResolvedQualifier(
             text="ODA",
-            named=[GraphRef(dcid="CRSTypeOfFlow10", label="ODA")],
+            named=[GraphRef(ref="CRSTypeOfFlow10", label="ODA")],
             slot="crsTypeOfFlow",
             disposition="bound",
         ),
@@ -66,11 +66,11 @@ def test_resolved_qualifier_carries_every_named_row_any_system():
     # "debt relief" names four rows across three systems -- named is not
     # limited to one code system.
     named = [
-        GraphRef(dcid="CRSPurposeCode600", label="Action relating to debt"),
-        GraphRef(dcid="CRSTypeOfFinance421", label="Debt forgiveness: ODA claims"),
-        GraphRef(dcid="CRSTypeOfFinance422", label="Debt rescheduling: ODA claims"),
-        GraphRef(dcid="CRSCooperationModalityB03", label="Debt relief"),
+        GraphRef(ref="CRSPurposeCode600", label="Action relating to debt"),
+        GraphRef(ref="CRSTypeOfFinance421", label="Debt forgiveness: ODA claims"),
+        GraphRef(ref="CRSTypeOfFinance422", label="Debt rescheduling: ODA claims"),
+        GraphRef(ref="CRSCooperationModalityB03", label="Debt relief"),
     ]
     qualifier = ResolvedQualifier(text="debt relief", named=named, slot=None, disposition="unbound")
     assert len(qualifier.named) == 4
-    assert {ref.dcid for ref in qualifier.named} == {ref.dcid for ref in named}
+    assert {ref.ref for ref in qualifier.named} == {ref.ref for ref in named}

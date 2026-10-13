@@ -13,6 +13,7 @@ from search.models import (
     Departure,
     GraphRef,
     NearestRealSpec,
+    NoDataDenominator,
     NoDataGate,
     NoDataReason,
     Relaxation,
@@ -150,10 +151,10 @@ def test_a_no_data_plan_ends_with_its_departures():
             id="ordinary-reason",
         ),
         pytest.param(
-            "denominator_not_available",
-            "teacher count per capita",
-            'No per-capita data is available for "teacher count per capita". Try dropping '
-            "the per-capita phrasing. Data exists for development finance flow.",
+            "variable_not_resolved",
+            "aid flows",
+            'Could not match "aid flows" to a supported indicator. Try a different wording '
+            "or a related indicator. Data exists for development finance flow.",
             "Check that it measures what you asked for.",
             id="trailing-imperative",
         ),
@@ -185,7 +186,7 @@ def test_no_data_sentence_plan_withholds_a_directional_alternate_with_no_role_si
         "no_observations",
         gate="only_alternate_has_data",
         alternate_match=alt,
-        elected_stat_vars=[GraphRef(dcid="Amount_Flow_Variant", label="ODA disbursed")],
+        elected_stat_vars=[GraphRef(ref="Amount_Flow_Variant", label="ODA disbursed")],
     )
     rendered = sentence_from_plan(plan)
     assert rendered == (
@@ -317,7 +318,7 @@ def test_no_data_sentence_plan_only_alternate_has_data_names_elected_concept_fir
         variable_term="climate finance",
         elected_stat_vars=[
             GraphRef(
-                dcid="sdg/DC_FIN_CLIMT",
+                ref="sdg/DC_FIN_CLIMT",
                 label="Total climate-specific financial support provided",
             )
         ],
@@ -335,7 +336,7 @@ def test_no_data_sentence_plan_bare_phrase_names_elected_concept_when_confirmed(
     """The bare no-data phrase names a confirmed concept before generic guidance."""
     plan = no_data_sentence_plan(
         "no_observations",
-        elected_stat_vars=[GraphRef(dcid="Count_Person", label="Total population")],
+        elected_stat_vars=[GraphRef(ref="Count_Person", label="Total population")],
     )
     assert plan == [
         SentenceToken(
@@ -402,6 +403,51 @@ def test_no_data_sentence_plan_qualifier_not_bound_drops_widened_flagged_match()
         )
     ]
     assert "matching series" not in sentence_from_plan(plan)
+
+
+_GDP_REF = GraphRef(ref="Amount_EconomicActivity_GDP", label="Gross domestic product")
+_GNI_REF = GraphRef(ref="Amount_EconomicActivity_GNI", label="Gross national income")
+
+
+@pytest.mark.parametrize(
+    ("denominator", "said"),
+    [
+        (
+            NoDataDenominator(asked=_GDP_REF, found=_GNI_REF),
+            " The question names gross domestic product as the base, and the closest series "
+            "divides by gross national income.",
+        ),
+        (
+            NoDataDenominator(asked=_GDP_REF, found=None),
+            " The question names gross domestic product as the base, and the closest series "
+            "states none.",
+        ),
+        (
+            NoDataDenominator(asked=None, found=_GNI_REF),
+            " The closest series divides by gross national income.",
+        ),
+        (NoDataDenominator(), ""),
+    ],
+    ids=["asked-and-found", "asked-only", "found-only", "neither"],
+)
+def test_a_denominator_refusal_names_the_denominators_and_offers_the_flagged_match(
+    denominator: NoDataDenominator, said: str
+):
+    """The phrase stays first, for the envelope to reframe; the denominators compared, the
+    flagged match as the closest series and the level nearest_real follow."""
+    plan = no_data_sentence_plan(
+        "denominator_not_available",
+        flagged_match=_matched_spec(_spec()),
+        nearest_real=[_nearest_real(_spec(), dropped_property="measurementDenominator")],
+        variable_term="debt to GDP ratio",
+        denominator=denominator,
+    )
+    assert plan[0].text == 'No series for "debt to GDP ratio" is in the form it asks for.'
+    assert sentence_from_plan(plan) == (
+        'No series for "debt to GDP ratio" is in the form it asks for.'
+        f"{said} The closest series is development finance flow. "
+        "Data exists for development finance flow."
+    )
 
 
 def test_no_data_sentence_plan_bare_phrase_when_no_near_match():
@@ -630,7 +676,7 @@ def test_mls_020_quotes_the_users_words_and_never_a_stat_var_dcid():
     year = "You asked for 2010. The data covers only 2011 to 2024."
     plan = no_data_sentence_plan(
         "no_observations",
-        elected_stat_vars=[GraphRef(dcid=_MLS_020_STAT_VAR, label=_MLS_020_STAT_VAR)],
+        elected_stat_vars=[GraphRef(ref=_MLS_020_STAT_VAR, label=_MLS_020_STAT_VAR)],
         variable_term="imputed multilateral ODA",
         departures=[Departure(code="year_unavailable", binding_ref="when:", text=year)],
     )
@@ -657,7 +703,7 @@ def test_crs_020_names_the_series_with_data_in_claim_form():
         alternate_match=alternate,
         elected_stat_vars=[
             GraphRef(
-                dcid="sdg/DC_ODA_POVDLG",
+                ref="sdg/DC_ODA_POVDLG",
                 label="Official development assistance grants for poverty reduction",
             )
         ],

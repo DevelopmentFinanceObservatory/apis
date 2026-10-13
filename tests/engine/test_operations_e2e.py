@@ -18,6 +18,7 @@ from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.core import resolve_events
 from search.engine.events import ResponseEvent, SentenceEvent
 from search.engine.extract import ExtractedDate, ExtractedEntity, ExtractedOperation, Extraction
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED, SLOT_DEFAULTED
 from search.models import (
     DatasetResubmitInput,
@@ -35,6 +36,7 @@ from search.models import (
 )
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import make_request, offline_resolve
+from tests.engine._quantity import NO_QUANTITY
 from tests.engine.test_bind import (
     _RESOLVE_DETECT_QUERY,
     _RESOLVE_NODES,
@@ -67,6 +69,8 @@ class _ScriptedLLM:
     async def generate_structured(self, *, prompt, system, schema):
         if schema.__name__ == "Extraction":
             return self._extraction, None
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         variable = next(
             line.removeprefix("Variable phrase: ")
@@ -208,7 +212,7 @@ def test_a_rank_over_sectors_of_aid_keeps_the_oda_default_and_the_sector_slot_op
     assert part.operations == [Operation(verb="rank", phrase=phrase, over="category")]
     flow_filter = _filter_for(part.spec, "crsTypeOfFlow")
     assert flow_filter.binding_kind == "value"
-    assert [ref.dcid for ref in flow_filter.refs] == ["CRSTypeOfFlow10"]
+    assert [ref.ref for ref in flow_filter.refs] == ["CRSTypeOfFlow10"]
     assert flow_filter.provenance == "declared_default"
     sector_filter = _filter_for(part.spec, "crsPurpose")
     assert sector_filter.binding_kind == "unbound"
@@ -294,7 +298,7 @@ def test_a_rank_whose_phrase_opens_no_flow_slot_states_the_oda_default(
 
     part = response.parts[0]
     flow_filter = _filter_for(part.spec, "crsTypeOfFlow")
-    assert [ref.dcid for ref in flow_filter.refs] == ["CRSTypeOfFlow10"]
+    assert [ref.ref for ref in flow_filter.refs] == ["CRSTypeOfFlow10"]
     assert flow_filter.provenance == "declared_default"
     assert _filter_for(part.spec, "crsPurpose").binding_kind == "unbound"
     assert _slot_defaulted_warnings(response) == [_ODA_DEFAULT_NOTE]
@@ -368,7 +372,7 @@ def test_a_flow_default_warns_only_where_the_query_names_flows(query, extraction
 
     part = response.parts[0]
     flow_filter = _filter_for(part.spec, "crsTypeOfFlow")
-    assert [ref.dcid for ref in flow_filter.refs] == ["CRSTypeOfFlow10"]
+    assert [ref.ref for ref in flow_filter.refs] == ["CRSTypeOfFlow10"]
     assert flow_filter.provenance == "declared_default"
     assert _slot_defaulted_warnings(response) == slot_warnings
     assert _query_qualifier_warnings(response) == []
@@ -404,7 +408,7 @@ def test_a_flow_breakdown_keeps_its_warning_beside_the_default(dropped, departs)
 
     part = response.parts[0]
     flow_filter = _filter_for(part.spec, "crsTypeOfFlow")
-    assert [ref.dcid for ref in flow_filter.refs] == ["CRSTypeOfFlow10"]
+    assert [ref.ref for ref in flow_filter.refs] == ["CRSTypeOfFlow10"]
     assert flow_filter.provenance == "declared_default"
     note = f'The requested qualifier "{dropped}" was not applied.'
     assert _slot_defaulted_warnings(response) == [_ODA_DEFAULT_NOTE]
@@ -875,7 +879,7 @@ def test_an_ambiguous_part_carries_a_data_query_that_resolves_once_the_pick_is_p
         ("Kenya", None, _E2E_KEN_DCID),
         ("Congo", "to", None),
     ]
-    candidates = {c.dcid for c in part.no_data.ambiguous_entities[0].candidates}
+    candidates = {c.ref for c in part.no_data.ambiguous_entities[0].candidates}
     assert "country/COD" in candidates
 
     picked = query_part.model_copy(

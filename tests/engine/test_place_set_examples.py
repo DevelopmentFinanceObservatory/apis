@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import pytest
 
+from entity_resolution import acquire_shared, release_shared
 from entity_resolution import resolver as entity_resolver
+from entity_resolution.membership import NotRecorded
 from search.engine.extract import ExtractedEntity, ExtractedOperation
 from search.models import EntityGroup, Operation, ParsedEntity, ParsedPart, ResolveResponse
 from tests.engine import _place_set_world as world
@@ -19,6 +21,7 @@ from tests.engine._place_set_world import (
     AID,
     EU,
     EXPANSION,
+    FRA,
     KEN,
     LABEL,
     NO_YEAR,
@@ -47,6 +50,18 @@ from tests.engine._place_set_world import (
 
 _SUBJECT = "observationAbout"
 _AFRICAS_MEMBERS = sorted(EXPANSION[AFRICA])
+
+
+def _registry_members(group_ref: str) -> list[str]:
+    """The group's members under the `countries` projection, from the membership registry the
+    resolver reads, sorted."""
+    shared = acquire_shared()
+    try:
+        found = shared.groups.get(group_ref).members()
+    finally:
+        release_shared(shared)
+    assert not isinstance(found, NotRecorded)
+    return sorted(found)
 
 
 @pytest.fixture
@@ -118,12 +133,14 @@ def test_a_parts_restatement_carries_members_only_when_it_is_true(
 
 
 def test_wording_that_names_a_groups_members_binds_them_without_the_flag(doors: Doors) -> None:
-    """ "EU member states" names the European Union's members, so the Spec binds them where
-    "European Union" binds the union's node."""
+    """ "EU member states" names the European Union's members, so the Spec binds the 27 the
+    membership registry lists where "European Union" binds the union's node."""
     spec = the_spec(doors.first_answer(WHO, "EU member states"))
+    eu_members = _registry_members(EU)
 
     assert subject_reading(WHO, EU) == [EU]
-    assert bound(spec) == {_SUBJECT: members_reading(EU)}
+    assert len(eu_members) == 27
+    assert bound(spec) == {_SUBJECT: eu_members}
 
 
 def test_raw_text_that_asks_for_africas_members_binds_them(doors: Doors) -> None:
@@ -246,13 +263,16 @@ def test_a_flow_between_two_sets_tests_each_node_against_the_others_members(
 
 def test_a_group_named_beside_one_of_its_members_binds_the_groups_members(doors: Doors) -> None:
     """The European Union and France, for a series the union's node lacks. The role binds
-    the union's members, France among them, and carries the union as its group."""
+    the union's 27 registry members, France among them, and carries the union as its group."""
     spec = the_spec(doors.first_answer(WDI, "European Union", "France"))
+    eu_members = _registry_members(EU)
 
-    assert bound(spec) == {_SUBJECT: subject_reading(WDI, EU)} == {_SUBJECT: sorted(EXPANSION[EU])}
+    assert subject_reading(WDI, EU) != [EU]
+    assert FRA in eu_members
+    assert bound(spec) == {_SUBJECT: eu_members}
     served = group(spec)
     assert served is not None
-    assert served["dcid"] == EU
+    assert served["ref"] == EU
 
 
 def test_wording_that_names_no_place_does_not_resolve(doors: Doors) -> None:
@@ -285,7 +305,7 @@ def test_a_group_whose_members_differ_from_the_graphs_is_dropped(doors: Doors) -
     """Africa's group is posted beside all but one of Africa's members. The resubmit answers
     for the dcids posted and drops the group."""
     identity = doors.identity(WDI, {_SUBJECT: _AFRICAS_MEMBERS[:-1]})
-    posted = {_SUBJECT: EntityGroup(dcid=AFRICA, label=LABEL[AFRICA])}
+    posted = {_SUBJECT: EntityGroup(ref=AFRICA, label=LABEL[AFRICA])}
 
     again = check_posted(doors, WDI, identity, posted)
 
@@ -296,7 +316,7 @@ def test_a_regions_node_posted_with_its_group_is_read_at_the_node(doors: Doors) 
     """`africa` is posted with Africa's group beside it. The role binds one dcid, which
     differs from Africa's members, so the group is dropped and the answer is the node's observations."""
     identity = doors.identity(WHO, {_SUBJECT: [AFRICA]})
-    posted = {_SUBJECT: EntityGroup(dcid=AFRICA, label=LABEL[AFRICA])}
+    posted = {_SUBJECT: EntityGroup(ref=AFRICA, label=LABEL[AFRICA])}
 
     again = check_posted(doors, WHO, identity, posted)
 

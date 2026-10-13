@@ -52,16 +52,20 @@ def spec_resubmit_input_for_identity(entry: ResubmitIdentityEntry) -> ResubmitId
     return ResubmitIdentityPayload(identity=entry.identity, entity_groups=entry.entity_groups)
 
 
+# The promote payload's fields a posted candidate carries under the same names.
+_CANDIDATE_FIELDS = ("/input/identity", "/input/entity_groups")
+
+
 def _rewrite_candidate_pointer(
     exc: EngineInputError, *, index: int, candidate_index: int
 ) -> EngineInputError:
-    """Point a refusal at the posted candidate's identity, or at the candidate itself for a
-    pointer outside it. Leave pointer-less refusals unchanged."""
+    """Point a refusal at the posted candidate's identity or entity groups, or at the candidate
+    itself for a pointer outside them. Leave pointer-less refusals unchanged."""
     pointer = exc.pointer
     if pointer is None:
         return exc
     prefix = f"/input/entries/{index}/candidates/{candidate_index}"
-    if pointer == "/input/identity" or pointer.startswith("/input/identity/"):
+    if any(pointer == field or pointer.startswith(f"{field}/") for field in _CANDIDATE_FIELDS):
         new_pointer = prefix + pointer.removeprefix("/input")
     else:
         new_pointer = prefix
@@ -339,6 +343,7 @@ async def resolve_parsed_entries(
         per_variable_member_entities=interpretation.member_entities,
         per_variable_unit_texts=interpretation.unit_texts,
         per_variable_source_scopes=interpretation.source_scopes,
+        per_variable_source_codes=interpretation.source_codes,
         per_variable_pre_resolved=per_variable_pre_resolved,
         per_variable_operations=interpretation.operations,
         per_variable_open_axes=interpretation.open_axes,

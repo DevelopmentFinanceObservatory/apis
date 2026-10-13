@@ -34,6 +34,7 @@ from dfo_platform.executor import submit_with_context
 from materialise import columnar
 from materialise.ceiling import check_ceiling
 from materialise.content_version import stream_frame_sha256
+from materialise.continued_series import ContinuedSeries
 from materialise.convert import ConversionRecord, merged_record
 from materialise.errors import (
     DefaultFacetUndefinedError,
@@ -57,10 +58,12 @@ from materialise.facets import (
     MemberProbe,
     ProvenanceRefresh,
     RowAdmission,
+    VariableBreadth,
     _alternatives,
     _probe_provenance_refresh,
     admitted_candidates,
     cadences_by_member,
+    continued_election,
     dataset_candidates,
     declared_default_policies,
     default_scope_of,
@@ -74,15 +77,23 @@ from materialise.facets import (
     request_scope_key,
     role_bearing_facet_candidates,
     select_facet,
+    selected_continued_series,
 )
 from materialise.frame_build import (
     Frame,
+    ParquetFrameChunks,
     build_frame_from_member_tables,
     build_frame_from_table,
+    fold_method_periods,
     period_grains,
 )
 from materialise.graph import Facet, GraphReader, GraphReadError
-from materialise.group_facets import _as_issue, group_breadth, select_group_facets
+from materialise.group_facets import (
+    _as_issue,
+    group_breadth,
+    group_variable_breadth,
+    select_group_facets,
+)
 from materialise.member_conversion import (
     MemberConversionPlan,
     apply_member_conversion,
@@ -91,6 +102,7 @@ from materialise.member_conversion import (
     omit_unmapped_rows,
     plan_member_conversion,
 )
+from materialise.national_currency import CoverageGap, narrow_to_national_currency
 from materialise.observation_rows import stream_observation_batches
 from materialise.place_scope import NO_DEFAULT_SCOPE, AvailabilityReader, DefaultPlaceScope
 from materialise.progress import RowProgress
@@ -190,6 +202,8 @@ class _MemberOutcome:
     (`_convert_by_series`). `probe_empty` is true when the member's probe returned no
     candidate, and the outcome then holds no row and no selection. `provenance_refresh` holds
     the dispatched provenance's refresh dates, read before the fetch (`_dispatch_refresh`).
+    `coverage_gaps` holds the places a national-currency unit binding serves no row at
+    (`_national_currency_probe`).
     """
 
     frame: Frame
@@ -203,6 +217,7 @@ class _MemberOutcome:
     series_conversions: dict[SeriesKey, SeriesConversion] = field(default_factory=dict)
     probe_empty: bool = False
     provenance_refresh: Mapping[str, ProvenanceRefresh] = field(default_factory=dict)
+    coverage_gaps: tuple[CoverageGap, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -220,7 +235,9 @@ class _GroupOutcome:
     member's converted series' records (`_convert_by_series`). `off_cadence_members` is
     `_GroupPlan.off_cadence_members`. `probe_empty` is true when no member's probe returned a
     candidate, and the outcome then holds no row and no selection. `provenance_refresh` is
-    `_MemberOutcome.provenance_refresh` for the group's shared selection.
+    `_MemberOutcome.provenance_refresh` for the group's shared selection. `method_periods`
+    maps each `measurementMethod` the rows name to the earliest and latest period its rows
+    hold (`frame_build.fold_method_periods`).
     """
 
     frame_chunks: Callable[[], Iterator[Frame]]
@@ -239,6 +256,7 @@ class _GroupOutcome:
     off_cadence_members: tuple[str, ...] = ()
     probe_empty: bool = False
     provenance_refresh: Mapping[str, ProvenanceRefresh] = field(default_factory=dict)
+    method_periods: Mapping[str, tuple[str, str]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -314,15 +332,35 @@ def _admitted(probe: MemberProbe, candidate_filter: Callable[[Facet], bool] | No
     return replace(probe, candidates=tuple(admitted_candidates(probe.candidates, candidate_filter)))
 
 
+def _national_currency_probe(
+    request: MaterialisationRequest,
+    probe: MemberProbe,
+    *,
+    graph: GraphReader,
+    deadline: float | None,
+) -> tuple[MemberProbe, tuple[CoverageGap, ...]]:
+    """`probe` narrowed to each place's own-currency facets when the request's unit binds
+    each place's national currency (`national_currency.narrow_to_national_currency`), with
+    the places it leaves out; otherwise `probe` and no gap."""
+    binding = request.facet_bindings.get("unit")
+    if binding is None or binding.national_currency is None:
+        return probe, ()
+    return narrow_to_national_currency(
+        probe, binding.national_currency, reader=graph, deadline=deadline
+    )
+
+
 def _select_member_facets(
     request: MaterialisationRequest,
     candidates: Sequence[Facet],
     *,
     graph: GraphReader,
     breadth: Mapping[str, int] | None = None,
+    variable_breadth: VariableBreadth = None,
 ) -> FacetElection:
     """Resolves all facet axes for one member from the probed candidates, ranked with
     `breadth`, each facet's series count under `request.window` (`MemberProbe.breadth_in`),
+    with `variable_breadth` (`MemberProbe.variable_breadth`) breaking a tie before the unit,
     and the cadence its dispatch serves: the cadence of the facet the same ranking puts first
     among the candidates matching every selected ref (`facets.dispatch_cadence`).
 
@@ -337,7 +375,8 @@ def _select_member_facets(
 
     With fewer than two bound axes, the selected refs must match one candidate
     jointly. Otherwise the helper raises `FacetNotAvailableError` with one
-    issue per axis. Two or more explicit bound axes skip this system-coherence
+    issue per axis. An unbound method axis whose served series ends before a range window
+    does names the estimated method that continues it (`facets.continued_election`). Two or more explicit bound axes skip this system-coherence
     check, so a valid caller filter that matches no candidate yields an empty
     result.
 
@@ -375,6 +414,7 @@ def _select_member_facets(
                 all_bindings=request.facet_bindings,
                 policies=policies,
                 breadth=breadth,
+                variable_breadth=variable_breadth,
             )
         except NonCurrencyUnitError as exc:
             unit_error = exc
@@ -418,7 +458,7 @@ def _select_member_facets(
             "all three selected refs at once",
             issues=tuple(coherence_issues),
         )
-    return facet_election(
+    election = facet_election(
         selections,
         matching=matching,
         member_matches=[matching],
@@ -426,7 +466,9 @@ def _select_member_facets(
         stat_vars=[request.stat_var],
         window=request.window,
         breadth=breadth,
+        variable_breadth=variable_breadth,
     )
+    return continued_election(election, [candidates], window=request.window, breadth=breadth)
 
 
 def _validate_empty_member_probe(
@@ -611,20 +653,21 @@ def _servable_rows(
     selections: Mapping[str, FacetSelection],
     admission: RowAdmission,
     conversion_plan: MemberConversionPlan | None,
-    ceiling_check: Callable[[], None] | None = None,
+    ceiling_check: Callable[[pa.Table], None] | None = None,
 ) -> tuple[pa.Table, EntityCurrencies | None]:
     """Omits the rows of entities no single currency names (`omit_unmapped_rows`), then
     reduces latest-window rows (`_apply_latest_reduction`), so a member's latest period is
-    one a converted row holds. Returns the rows and the currencies `apply_member_conversion`
+    one a converted row holds, then keeps a continuing method's rows only past each
+    series' last served period (`columnar.continuation_mask`). Returns the rows and the currencies `apply_member_conversion`
     converts them into.
 
     A latest window's rows arrive unfiltered, so currencies resolve for the rows that pass
     the window, facet and admission filters; other window kinds arrive filtered. When the
     currency read fails on a filtered window (a `NonCurrencyUnitError`, a graph read or the
-    deadline), `ceiling_check` runs on the rows before omission and its `OverCeilingError`
-    wins, then the failure re-raises: those rows are the ones a mid-stream check counts
-    (`_streaming_ceiling`). A latest window converts before its ceiling check, so its
-    failure raises as it is.
+    deadline), `ceiling_check` runs on the rows before omission, a continuing method's
+    earlier rows left out, and its `OverCeilingError` wins, then the failure re-raises: those
+    are the rows that would serve had no entity been omitted. A latest window converts before
+    its ceiling check, so its failure raises as it is.
     """
     served = (
         table.filter(
@@ -637,12 +680,12 @@ def _servable_rows(
         table, currencies = omit_unmapped_rows(conversion_plan, table, served=served)
     except Exception:
         if ceiling_check is not None and window.kind != "latest":
-            ceiling_check()
+            ceiling_check(table.filter(columnar.continuation_mask(table, selections=selections)))
         raise
     table = _apply_latest_reduction(
         table, window=window, selections=selections, admission=admission
     )
-    return table, currencies
+    return table.filter(columnar.continuation_mask(table, selections=selections)), currencies
 
 
 def _counts_after_conversion(conversion_plan: MemberConversionPlan | None) -> bool:
@@ -657,18 +700,27 @@ def _counts_after_conversion(conversion_plan: MemberConversionPlan | None) -> bo
     )
 
 
-def _streaming_ceiling(conversion_plan: MemberConversionPlan | None, ceiling: int) -> int | None:
+def _streaming_ceiling(
+    conversion_plan: MemberConversionPlan | None,
+    selections: Mapping[str, FacetSelection],
+    ceiling: int,
+) -> int | None:
     """The survivor ceiling a member's rows are checked against as they stream: `ceiling`,
-    or None for a conversion that omits rows. A role-shaped conversion omits the rows of
-    entities no single currency names (`_servable_rows`), known only once every row has
-    arrived, so its survivors are counted after omission and before conversion
-    (`_check_servable_ceiling`). A constant-price conversion omits rows a deflator lacks, so
-    its rows are counted after conversion (`_counts_after_conversion`). `over_ceiling`
-    therefore precedes every conversion refusal on a filtered window of a current-price
-    member: a rate or recipe gap, which conversion raises, and a failed currency read, before
-    which the rows are counted as they arrived. A constant-price member, and a `latest` window,
-    convert before they count, so their conversion refusals precede `over_ceiling`. The
-    raw-fetch guard still bounds what the read holds."""
+    or None for a selection a method continues or a conversion that omits rows. A continuing
+    method's rows serve only past each series' last served period
+    (`columnar.continuation_mask`), known only once every row has arrived, so its rows are
+    counted once filtered and before conversion (`_check_servable_ceiling`). A role-shaped
+    conversion omits the rows of entities no single currency names (`_servable_rows`), known
+    only once every row has arrived, so its survivors are counted after omission and before
+    conversion (`_check_servable_ceiling`). A constant-price conversion omits rows a deflator
+    lacks, so its rows are counted after conversion (`_counts_after_conversion`).
+    `over_ceiling` therefore precedes every conversion refusal on a filtered window of a
+    current-price member: a rate or recipe gap, which conversion raises, and a failed
+    currency read, before which the rows are counted as they arrived. A constant-price
+    member, and a `latest` window, convert before they count, so their conversion refusals
+    precede `over_ceiling`. The raw-fetch guard still bounds what the read holds."""
+    if any(selection.continued_by is not None for selection in selections.values()):
+        return None
     if conversion_plan is not None and (
         conversion_plan.spec_role is not None or _counts_after_conversion(conversion_plan)
     ):
@@ -680,19 +732,18 @@ def _check_servable_ceiling(
     request: MaterialisationRequest,
     table: pa.Table,
     *,
+    selections: Mapping[str, FacetSelection],
     conversion_plan: MemberConversionPlan | None,
     ceiling: int,
 ) -> None:
-    """Raises `OverCeilingError` when a role-shaped current-price member's servable rows
-    (`_servable_rows`) pass `ceiling`, before `apply_member_conversion` runs: the check its rows
-    skipped as they streamed (`_streaming_ceiling`). Every other current-price plan was checked
-    as its rows arrived, and a constant-price plan is checked on its converted rows
-    (`_counts_after_conversion`)."""
-    if (
-        conversion_plan is None
-        or conversion_plan.spec_role is None
-        or _counts_after_conversion(conversion_plan)
-    ):
+    """Raises `OverCeilingError` when the servable rows (`_servable_rows`) of a member whose
+    rows skipped the check as they streamed (`_streaming_ceiling`) pass `ceiling`, before
+    `apply_member_conversion` runs: a selection a method continues, or a role-shaped
+    current-price conversion. Every other plan was checked as its rows arrived, and a
+    constant-price plan is checked on its converted rows (`_counts_after_conversion`)."""
+    if _streaming_ceiling(
+        conversion_plan, selections, ceiling
+    ) is not None or _counts_after_conversion(conversion_plan):
         return
     applied_window = compute_applied_window(request.window, columnar.served_year_bounds(table))
     check_ceiling(
@@ -942,7 +993,8 @@ def _generate_member(
     passed to SDMX. `progress` tracks non-latest survivors.
     """
     bare_stat_var = _bare_stat_var_ref(request.stat_var)
-    probe = _admitted(
+    probe, coverage_gaps = _national_currency_probe(
+        request,
         _probe_member(
             request,
             graph=graph,
@@ -951,8 +1003,10 @@ def _generate_member(
             precomputed_probe=precomputed_probe,
             deadline=deadline,
         ),
-        request.candidate_filter,
+        graph=graph,
+        deadline=deadline,
     )
+    probe = _admitted(probe, request.candidate_filter)
     if not probe.candidates:
         _validate_empty_member_probe(request, coverage=coverage, graph=graph)
         empty = _finish_member_table(
@@ -964,10 +1018,14 @@ def _generate_member(
             currencies=None,
             default_scope=probe.scope,
         )
-        return replace(empty, probe_empty=True)
+        return replace(empty, probe_empty=True, coverage_gaps=coverage_gaps)
 
     election = _select_member_facets(
-        request, probe.candidates, graph=graph, breadth=probe.breadth_in(request.window)
+        request,
+        probe.candidates,
+        graph=graph,
+        breadth=probe.breadth_in(request.window),
+        variable_breadth=probe.variable_breadth,
     )
     selections = election.selections
     conversion_plan = _plan_conversion(
@@ -995,7 +1053,7 @@ def _generate_member(
             coverage=coverage,
             deadline=deadline,
             progress=progress,
-            streaming_ceiling=_streaming_ceiling(conversion_plan, ceiling),
+            streaming_ceiling=_streaming_ceiling(conversion_plan, selections, ceiling),
         )
     else:
         # No probed candidate's (provenance, measurementMethod, unit) jointly
@@ -1020,7 +1078,7 @@ def _generate_member(
         ceiling_check=partial(
             _check_servable_ceiling,
             request,
-            fetched,
+            selections=selections,
             conversion_plan=conversion_plan,
             ceiling=ceiling,
         ),
@@ -1034,7 +1092,7 @@ def _generate_member(
         currencies=currencies,
         default_scope=probe.scope,
     )
-    return replace(outcome, provenance_refresh=provenance_refresh)
+    return replace(outcome, provenance_refresh=provenance_refresh, coverage_gaps=coverage_gaps)
 
 
 def _surviving_tables(
@@ -1107,12 +1165,14 @@ def _finish_member_table(
     Duplicate identity facets collapse before conversion because collapse
     reads `unit` as a string. A missing plan skips arithmetic. Coverage and
     the ceiling check use the converted rows; the grammar receives `unit`
-    unchanged, whether it is a native string or converted struct. A role-shaped current-price
-    member's servable rows are checked against the ceiling before conversion
-    (`_check_servable_ceiling`). A frame whose periods hold more than one grain raises
-    `MixedGrainError` (`frame_build.period_grains`).
+    unchanged, whether it is a native string or converted struct. The servable rows of a
+    selection a method continues, and of a role-shaped current-price member, are checked
+    against the ceiling before conversion (`_check_servable_ceiling`). A frame whose periods
+    hold more than one grain raises `MixedGrainError` (`frame_build.period_grains`).
     """
-    _check_servable_ceiling(request, table, conversion_plan=conversion_plan, ceiling=ceiling)
+    _check_servable_ceiling(
+        request, table, selections=selections, conversion_plan=conversion_plan, ceiling=ceiling
+    )
     table, conversion_record, series_conversions = _convert_by_series(
         conversion_plan, table, request=request, currencies=currencies
     )
@@ -1311,8 +1371,9 @@ def _generate_chunk(
     mask keeps every row.
 
     Non-latest batches filter per member. Exceeding the member's `_streaming_ceiling`
-    raises `OverCeilingError`, with up to one batch of overshoot; a conversion that omits
-    rows counts its rows after omission instead (`_streaming_ceiling`). Latest chunks are
+    raises `OverCeilingError`, with up to one batch of overshoot; a selection a method
+    continues counts its rows once the continuation filters them, and a conversion that omits
+    rows after omission (`_streaming_ceiling`). Latest chunks are
     homogeneous. SDMX returns one row per series, then the caller's `_servable_rows`
     reduces to the member's global latest period and checks its coverage.
 
@@ -1354,7 +1415,8 @@ def _generate_chunk(
     parts: dict[int, list[pa.RecordBatch]] = {i: [] for i in chunk.member_indices}
     survivor_counts: dict[int, int] = dict.fromkeys(chunk.member_indices, 0)
     streaming_ceilings = {
-        i: _streaming_ceiling(plans[i].conversion_plan, ceiling) for i in chunk.member_indices
+        i: _streaming_ceiling(plans[i].conversion_plan, plans[i].selections, ceiling)
+        for i in chunk.member_indices
     }
     # Every member in `chunk` shares one `declared_roles` (`_ShapeChunk`'s
     # own docstring), so `_dispatch_entities_and_roles` needs only the
@@ -1677,24 +1739,6 @@ class _CanonicalParquetSink:
         return self._sink.getbuffer()
 
 
-def _parquet_frame_chunks_factory(
-    parquet_bytes: bytes | memoryview, *, columns: tuple[str, ...]
-) -> Callable[[], Iterator[Frame]]:
-    """Returns frames one Parquet row group at a time.
-
-    Each factory call opens a fresh `ParquetFile` over a zero-copy
-    `BufferReader`, so repeated passes avoid copying or retaining the full
-    group. Peak row memory stays within one row group per pass.
-    """
-
-    def _chunks() -> Iterator[Frame]:
-        reader = pq.ParquetFile(pa.BufferReader(parquet_bytes))
-        for row_group_index in range(reader.num_row_groups):
-            yield Frame(columns=columns, table=reader.read_row_group(row_group_index))
-
-    return _chunks
-
-
 def _probe_group_members(
     requests: Sequence[MaterialisationRequest],
     *,
@@ -1767,6 +1811,7 @@ def _plan_group_members(
         [probe.candidates for probe in probes],
         graph=graph,
         breadth=group_breadth(probes, window=requests[0].window),
+        variable_breadth=group_variable_breadth(probes),
     )
     selections = election.selections
     conversion_plans = [
@@ -1889,6 +1934,7 @@ class _GroupRowStreamer:
         shared_roles: tuple[str, ...],
         member_concurrency: int,
         progress: RowProgress | None,
+        continuing: Sequence[ContinuedSeries],
     ) -> None:
         self._dcid_requests = dcid_requests
         self._dcid_plans = dcid_plans
@@ -1910,9 +1956,10 @@ class _GroupRowStreamer:
         self.latest_windows: list[AppliedWindow | None] = []
         self.frame_columns: list[tuple[str, ...]] = []
         self.grains: dict[str, str] = {}
+        self.method_periods: dict[str, tuple[str, str]] = {}
         self.totals = _PooledCoverageTotals(shared_roles=shared_roles)
         self.parquet_sink = _CanonicalParquetSink()
-        self.statistics_sink = SeriesStatisticsSink()
+        self.statistics_sink = SeriesStatisticsSink(continuing=continuing)
 
     def _generate_one_chunk(self, chunk: _ShapeChunk) -> dict[int, _ConvertedMember]:
         """Runs entirely inside one pool worker: `_generate_chunk` is this
@@ -1949,13 +1996,17 @@ class _GroupRowStreamer:
                 ceiling_check=partial(
                     _check_servable_ceiling,
                     request,
-                    fetch_result.table,
+                    selections=plan.selections,
                     conversion_plan=plan.conversion_plan,
                     ceiling=self._ceiling,
                 ),
             )
             _check_servable_ceiling(
-                request, table, conversion_plan=plan.conversion_plan, ceiling=self._ceiling
+                request,
+                table,
+                selections=plan.selections,
+                conversion_plan=plan.conversion_plan,
+                ceiling=self._ceiling,
             )
             table, conversion_record, series_conversions = _convert_by_series(
                 plan.conversion_plan, table, request=request, currencies=currencies
@@ -1985,7 +2036,8 @@ class _GroupRowStreamer:
         since a row chunk always closes before `_assemble_group_outcome`'s
         pooled ceiling check runs), refuses with `MixedGrainError` once the
         chunks closed so far hold periods of two grains (`self.grains`, each
-        grain's earliest period), writes that `Frame`'s
+        grain's earliest period), widens each method's period bounds
+        (`self.method_periods`), writes that `Frame`'s
         own canonical Arrow table as one Parquet row group
         (`self.parquet_sink`), folds it into the group's pooled coverage
         (`self.totals`), and writes its own statistics table as one row
@@ -2011,6 +2063,7 @@ class _GroupRowStreamer:
             raise MixedGrainError(
                 self.grains, stat_vars=[request.stat_var for _, request in self._dcid_requests]
             )
+        fold_method_periods(self.method_periods, frame)
         self.parquet_sink.write(frame.table)
         chunk_table = pa.concat_tables([table.select(self._shared_columns) for _, table in members])
         self.totals.fold(chunk_table, shared_roles=self._shared_roles)
@@ -2171,9 +2224,7 @@ def _assemble_group_outcome(
     parquet_bytes = streamer.parquet_sink.finish()
 
     return _GroupOutcome(
-        frame_chunks=_parquet_frame_chunks_factory(
-            parquet_bytes, columns=streamer.frame_columns[0]
-        ),
+        frame_chunks=ParquetFrameChunks(parquet_bytes, columns=streamer.frame_columns[0]),
         frame_sha256=frame_sha256,
         series_statistics=streamer.statistics_sink.finish(),
         row_count=coverage.rows,
@@ -2188,6 +2239,7 @@ def _assemble_group_outcome(
         series_conversions=streamer.series_conversions,
         off_cadence_members=off_cadence_members,
         probe_empty=probe_empty,
+        method_periods=streamer.method_periods,
     )
 
 
@@ -2282,6 +2334,7 @@ def _generate_group(
         shared_roles=requests[0].declared_roles,
         member_concurrency=member_concurrency,
         progress=progress,
+        continuing=selected_continued_series(group_plan.selections),
     )
     outcome = _assemble_group_outcome(
         streamer,
@@ -2417,7 +2470,8 @@ def _prepare_preview_member(
     that cut. `ceiling` still sizes the raw-fetch guard.
     """
     bare_stat_var = _bare_stat_var_ref(request.stat_var)
-    probe = _admitted(
+    probe, _ = _national_currency_probe(
+        request,
         (
             probe_from_candidates(
                 precomputed,
@@ -2433,10 +2487,16 @@ def _prepare_preview_member(
                 deadline=deadline,
             )
         ),
-        request.candidate_filter,
+        graph=graph,
+        deadline=deadline,
     )
+    probe = _admitted(probe, request.candidate_filter)
     election = _select_member_facets(
-        request, probe.candidates, graph=graph, breadth=probe.breadth_in(request.window)
+        request,
+        probe.candidates,
+        graph=graph,
+        breadth=probe.breadth_in(request.window),
+        variable_breadth=probe.variable_breadth,
     )
     selections = election.selections
     conversion_plan = _plan_conversion(

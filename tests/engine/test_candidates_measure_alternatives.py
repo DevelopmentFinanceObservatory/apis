@@ -11,12 +11,14 @@ import asyncio
 
 from code_index.shared import get_index
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.models import Spec
 from series_coverage.schema import RoleNames
 from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 _QUERY = "grant equivalent flows or total aid spending to Kenya"
@@ -141,6 +143,8 @@ _COVERAGE_ROWS = [(_EXTRA_SV, "f1", "country/USA", _KEN_DCID, [2018, 2019, 2020]
 
 class _ElectGrantEquivalentAlsoPlausibleAidSpendingLLM:
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0,
@@ -183,7 +187,7 @@ def _run(monkeypatch):
 
 def _spec_for(specs: list[Spec], sv_dcid: str) -> Spec:
     return next(
-        spec for spec in specs if any(sv.ref.dcid == sv_dcid for sv in spec.resolved.members)
+        spec for spec in specs if any(sv.ref.ref == sv_dcid for sv in spec.resolved.members)
     )
 
 
@@ -193,7 +197,7 @@ def test_the_role_bearing_candidate_publishes_a_label_and_no_real_alternatives(m
     # Both the elected and plausible members must reach the response.
     assert result.status == "candidates"
     assert len(result.specs) == 2
-    assert {sv.ref.dcid for spec in result.specs for sv in spec.resolved.members} == {
+    assert {sv.ref.ref for spec in result.specs for sv in spec.resolved.members} == {
         _EXTRA_SV,
         _ALT_SV,
     }

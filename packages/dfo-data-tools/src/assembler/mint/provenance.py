@@ -1,6 +1,9 @@
 """Builds provenance sources, citations, and warnings for minted components.
 
-Data components cite bound-series sources. `source_card` cites all frame sources."""
+Data components cite bound-series sources. `source_card` cites all frame sources.
+`execution_ref` names the replay key of a derived frame's recipe, and is `None` for a dataset
+frame and a note narration. A component with a description, and a note narration, keep lineage
+alone (`lineage_only`)."""
 
 from __future__ import annotations
 
@@ -8,11 +11,19 @@ import datetime
 import hashlib
 import re
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import cast
 
 from assembler.bind import BoundSeries
 from assembler.limits import LABEL_MAX
-from assembler.ports import ResolvedFrame
+from assembler.ports import NamedSeries, ResolvedFrame
+from description.citation import citation_line, figures_processed
+from description.compose import change_step
+from description.steps import Step
+
+DESCRIPTION_PROVENANCE_MEMBERS = ("sources", "freshness", "warnings", "citation")
+"""The provenance members a lineage-only provenance leaves out, since a description carries
+what they hold."""
 
 _LICENCE_MAX = 200
 _REF_MAX = 200  # the envelope's `sources[].ref` maximum
@@ -158,12 +169,13 @@ def _build_all_sources(
     return _build_sources_for_refs(raw_refs=raw_refs, resolved_frame=resolved_frame)
 
 
-def _build_citation(*, sources: Sequence[Mapping[str, object]]) -> str:
-    if not sources:
-        return "ONE DFO"
-    names = ", ".join(cast(str, one["name"]) for one in sources)
-    retrieved = cast(str, sources[0]["retrieved"])
-    return f"{names} via ONE DFO, retrieved {retrieved}"[:_CITATION_MAX]
+def _build_citation(
+    *, sources: Sequence[Mapping[str, object]], retrieved: datetime.date, processed: bool
+) -> str:
+    """The envelope's citation: `description.citation.citation_line` over the sources' names,
+    held to `_CITATION_MAX` characters."""
+    names = [cast(str, one["name"]) for one in sources]
+    return citation_line(retrieved=retrieved, sources=names, processed=processed)[:_CITATION_MAX]
 
 
 def _translate_warnings(warnings: Sequence[Mapping[str, object]]) -> list[dict[str, object]]:
@@ -181,6 +193,20 @@ def _translate_warnings(warnings: Sequence[Mapping[str, object]]) -> list[dict[s
         detail = str(warning["message"])[:_WARNING_DETAIL_MAX]
         translated.append({"kind": _WARNING_KIND_BY_CODE[code], "detail": detail})
     return translated
+
+
+@dataclass(frozen=True)
+class LeftOut:
+    """The series a rolling component leaves out, one per display label, and the period they
+    hold no value at."""
+
+    period: str
+    series: tuple[NamedSeries, ...]
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        """The display labels of the series, in their order."""
+        return tuple(one.label for one in self.series)
 
 
 def _left_out_warning(*, period: str, names: Sequence[str]) -> dict[str, object]:
@@ -220,13 +246,33 @@ def _data_through(manifest: Mapping[str, object]) -> str | None:
     return str(end_year) if end_year is not None else None
 
 
+def card_derivation_steps(component: Mapping[str, object]) -> list[Step]:
+    """The steps a card takes after drawing its selection: a stat card's `change` between its
+    two basis periods (`description.compose.change_step`), else none."""
+    change = cast("Mapping[str, object] | None", component.get("change"))
+    if change is None:
+        return []
+    return [
+        change_step(
+            derivation=cast(str, change["derivation"]),
+            basis=cast("Sequence[str]", change["basis"]),
+        )
+    ]
+
+
 def _build_provenance(
     *,
     resolved_frame: ResolvedFrame,
     sources: tuple[dict[str, object], ...],
+    card_steps: Sequence[Step],
     clock: Callable[[], datetime.datetime],
 ) -> dict[str, object]:
+    """The provenance of a card drawn from `resolved_frame`, citing `sources`. The citation
+    routes through the DFO as the steps known to have made the card's figures decide
+    (`description.citation.figures_processed`): the version's, then the card's own
+    `card_steps`."""
     manifest = resolved_frame.manifest
+    record = resolved_frame.description_record
     warnings = cast(Sequence[Mapping[str, object]], manifest.get("warnings") or ())
     return {
         "inputs": [
@@ -235,7 +281,7 @@ def _build_provenance(
                 "content_version": resolved_frame.frame_ref.content_version,
             }
         ],
-        "execution_ref": None,
+        "execution_ref": resolved_frame.replay_key,
         "sources": list(sources),
         "freshness": {
             "data_through": _data_through(manifest),
@@ -245,7 +291,14 @@ def _build_provenance(
         },
         "warnings": _translate_warnings(warnings),
         "generated_at": clock().astimezone(datetime.UTC).isoformat().replace("+00:00", "Z"),
-        "citation": _build_citation(sources=sources),
+        "citation": _build_citation(
+            sources=sources,
+            retrieved=resolved_frame.retrieved_on,
+            processed=figures_processed(
+                version_id=resolved_frame.frame_ref.spec_id,
+                steps=[*(() if record is None else record.known_steps), *card_steps],
+            ),
+        ),
         "refreshed_from": None,
     }
 
@@ -258,21 +311,20 @@ def _refreshed_provenance(
     return {**provenance, "refreshed_from": refreshed_from}
 
 
+def lineage_only(provenance: Mapping[str, object]) -> dict[str, object]:
+    """`provenance` without `DESCRIPTION_PROVENANCE_MEMBERS`."""
+    return {
+        member: value
+        for member, value in provenance.items()
+        if member not in DESCRIPTION_PROVENANCE_MEMBERS
+    }
+
+
 def _build_frameless_provenance(*, clock: Callable[[], datetime.datetime]) -> dict[str, object]:
-    """Builds `note_narration` provenance with no inputs or sources, empty freshness,
-    and the usual timestamp and citation."""
+    """Builds `note_narration` provenance: lineage alone, with no inputs, and the timestamp."""
     return {
         "inputs": [],
         "execution_ref": None,
-        "sources": [],
-        "freshness": {
-            "data_through": None,
-            "last_refreshed": None,
-            "next_expected": None,
-            "partial_period": False,
-        },
-        "warnings": [],
         "generated_at": clock().astimezone(datetime.UTC).isoformat().replace("+00:00", "Z"),
-        "citation": _build_citation(sources=()),
         "refreshed_from": None,
     }

@@ -85,18 +85,18 @@ class TestSlotValueKinds:
         assert sv.literal == "some literal value"
 
     def test_entity_kind_with_ref(self):
-        ref = GraphRef(dcid="country/ETH", label="Ethiopia")
+        ref = GraphRef(ref="country/ETH", label="Ethiopia")
         sv = SlotValue(value_kind="entity", ref=ref)
         assert sv.value_kind == "entity"
         assert sv.ref is not None
-        assert sv.ref.dcid == "country/ETH"
+        assert sv.ref.ref == "country/ETH"
 
 
 class TestEntityRole:
     def test_directional_requires_role_and_axis(self):
         role = EntityRoleDirectional(
             kind="directional",
-            role=GraphRef(dcid="DevelopmentFinanceRecipient", label="recipient"),
+            role=GraphRef(ref="DevelopmentFinanceRecipient", label="recipient"),
             axis="destination",
         )
         assert role.kind == "directional"
@@ -105,7 +105,7 @@ class TestEntityRole:
     def test_directional_missing_axis_raises(self):
         with pytest.raises(ValidationError):
             EntityRoleDirectional.model_validate(
-                {"kind": "directional", "role": {"dcid": "Recipient", "label": "recipient"}}
+                {"kind": "directional", "role": {"ref": "Recipient", "label": "recipient"}}
             )
 
     @pytest.mark.parametrize("legacy_field", ["donor_dcid", "donor_dcids"])
@@ -177,18 +177,18 @@ class TestSlotKeyPropertyNullable:
     def test_how_axis_with_property(self):
         key = SlotKey(
             axis="how",
-            property=GraphRef(dcid="DevelopmentFinancePurpose", label="purpose"),
+            property=GraphRef(ref="DevelopmentFinancePurpose", label="purpose"),
             label="purpose",
         )
         assert key.property is not None
-        assert key.property.dcid == "DevelopmentFinancePurpose"
+        assert key.property.ref == "DevelopmentFinancePurpose"
 
 
 class TestBindingSetMembership:
     def _slot_value(self, dcid: str) -> SlotValue:
         return SlotValue(
             value_kind="enum_value",
-            ref=GraphRef(dcid=dcid, label=dcid),
+            ref=GraphRef(ref=dcid, label=dcid),
         )
 
     def test_one_member_set_rejected(self):
@@ -256,15 +256,15 @@ class TestInapplicableSlotsIdentity:
         shape = Shape(
             shape_id="sh1",
             label="Test Shape",
-            population_type=GraphRef(dcid="Pop", label="Pop"),
-            measured_property=GraphRef(dcid="Prop", label="Prop"),
-            stat_type=GraphRef(dcid="measuredValue", label="measured value"),
+            population_type=GraphRef(ref="Pop", label="Pop"),
+            measured_property=GraphRef(ref="Prop", label="Prop"),
+            stat_type=GraphRef(ref="measuredValue", label="measured value"),
             slot_keys=[],
             member_count=1,
         )
         stat_vars = [
             StatVar(
-                ref=GraphRef(dcid="sv1", label="SV1"),
+                ref=GraphRef(ref="sv1", label="SV1"),
                 shape_id="sh1",
                 slot_values=[],
                 constraint_properties=[],
@@ -319,19 +319,19 @@ class TestResolvedEntityRoleKeys:
     def test_every_role_is_a_valid_key_and_agrees_with_entity_role_key(self):
         entities = [
             Entity(
-                ref=GraphRef(dcid="country/ETH", label="Ethiopia"),
+                ref=GraphRef(ref="country/ETH", label="Ethiopia"),
                 role=EntityRoleSubject(),
             ),
             Entity(
-                ref=GraphRef(dcid="country/USA", label="USA"),
+                ref=GraphRef(ref="country/USA", label="USA"),
                 role=EntityRoleDirectional(
-                    role=GraphRef(dcid="DonorRole", label="Donor"), axis="origin"
+                    role=GraphRef(ref="DonorRole", label="Donor"), axis="origin"
                 ),
             ),
             Entity(
-                ref=GraphRef(dcid="country/KEN", label="Kenya"),
+                ref=GraphRef(ref="country/KEN", label="Kenya"),
                 role=EntityRoleDirectional(
-                    role=GraphRef(dcid="RecipientRole", label="Recipient"), axis="destination"
+                    role=GraphRef(ref="RecipientRole", label="Recipient"), axis="destination"
                 ),
             ),
         ]

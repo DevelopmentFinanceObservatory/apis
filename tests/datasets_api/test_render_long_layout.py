@@ -8,23 +8,28 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import time
+import zipfile
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Callable, Iterator, Sequence
 
 import openpyxl
 import pyarrow.parquet as pq
 import pytest
+from dfo_frame_grammar import Frame
 from dfo_frame_grammar.grammar import UnitRequest
 
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
 from code_index.shared import get_index
-from code_index.types import StatVarRow
+from code_index.types import PartyRow, StatVarRow
 from datasets_api.manifest_models import CitationSource
 from datasets_api.mint_models import GroupbyOptions, MintOptions
+from datasets_api.output_options import movable_totals_roles
 from datasets_api.render import RenderedDefinition, render_and_store
 from dc_graph import GraphDeadlineExceededError, GraphReadError
 from materialise.enrichment import EnrichmentLookup
+from materialise.frame_build import ParquetFrameChunks, build_frame
 from materialise.reshape import Table
 
 from ._artifact_doubles import FakeArtifactStore
@@ -116,6 +121,15 @@ _ARCS = {
     "WDI_GDP": {"name": ("GDP",)},
 }
 _GRAPH = FakeMintGraphReader(arcs=_ARCS)
+_PARTIES = {
+    "country/USA": PartyRow(dcid="country/USA", kind="party"),
+    "country/KEN": PartyRow(dcid="country/KEN", kind="party"),
+    "DACAfrica": PartyRow(dcid="DACAfrica", kind="total", datasets=("p1",), axes=("destination",)),
+    "DACAfricaUnallocated": PartyRow(dcid="DACAfricaUnallocated", kind="residual"),
+    "DACDevelopingCountries": PartyRow(
+        dcid="DACDevelopingCountries", kind="total", datasets=("p1",), axes=("destination",)
+    ),
+}
 _BY_PURPOSE = GroupbyOptions(by=["financingProvider", "financingRecipient", "crsPurpose"], op="sum")
 
 _SITE_POST = [*_FRAME_COLUMNS, "financingProvider_label"]
@@ -126,8 +140,10 @@ _LONG_HEADER = (
     "stat_var",
     "financingProvider",
     "financingProvider_label",
+    "financingProvider_party_kind",
     "financingRecipient",
     "financingRecipient_label",
+    "financingRecipient_party_kind",
     "crsPurpose",
     "crsPurpose_label",
     "crsTypeOfFinance",
@@ -144,7 +160,7 @@ _LONG_HEADER = (
     "provenance",
     "provenance_label",
 )
-_COLLAPSE_HEADER = (*_LONG_HEADER[:7], *_LONG_HEADER[9:])
+_COLLAPSE_HEADER = (*_LONG_HEADER[:9], *_LONG_HEADER[11:])
 """`_LONG_HEADER` after a groupby by purpose sums over the type of finance."""
 
 
@@ -158,12 +174,17 @@ def _render(
     citations: dict[str, CitationSource] | None = None,
     deadline: float | None = None,
     spec: dict[str, object] | None = None,
+    source: str = "tuples",
+    parties: dict[str, PartyRow] = _PARTIES,
 ) -> tuple[RenderedDefinition, bytes]:
+    """`chunks` render as tuple tables, as the Arrow frames a single-member mint streams with
+    `source="arrow"`, or as the row groups of a group mint's Parquet frame with
+    `source="parquet"`."""
     chunks = chunks if chunks is not None else (rows,)
     rows = [row for chunk in chunks for row in chunk]
     store = FakeArtifactStore()
     rendered = render_and_store(
-        frame_chunks=iter(Table(columns=_FRAME_COLUMNS, rows=tuple(chunk)) for chunk in chunks),
+        frame_chunks=_frame_chunks(chunks, source=source),
         options=options,
         spec=spec or {"spec_id": "family"},
         provenance_refs=["p1"],
@@ -174,13 +195,38 @@ def _render(
         site=SITE,
         artifact_store=store,
         entity_columns=_ENTITY_COLUMNS,
-        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(graph, parties=parties),
         pivot_max_output_cells=5_000_000,
         code_index=index,
         resolved_stat_var_refs=tuple(str(row[0]) for row in rows),
         deadline=deadline,
     )
     return rendered, store.fetch(rendered.artifact.url)
+
+
+def _frame(rows: Sequence[tuple[object, ...]]) -> Frame:
+    return build_frame(
+        role_keys=_ENTITY_COLUMNS,
+        rows=[
+            {column: cell for column, cell in zip(_FRAME_COLUMNS, row, strict=True) if cell}
+            for row in rows
+        ],
+    )
+
+
+def _frame_chunks(
+    chunks: Sequence[Sequence[tuple[object, ...]]], *, source: str
+) -> Callable[[], Iterator[Table | Frame]]:
+    if source == "tuples":
+        return lambda: iter(Table(columns=_FRAME_COLUMNS, rows=tuple(rows)) for rows in chunks)
+    frames = [_frame(rows) for rows in chunks]
+    if source == "arrow":
+        return lambda: iter(frames)
+    sink = io.BytesIO()
+    with pq.ParquetWriter(sink, frames[0].table.schema) as writer:
+        for frame in frames:
+            writer.write_table(frame.table)
+    return ParquetFrameChunks(sink.getvalue(), columns=_FRAME_COLUMNS)
 
 
 def _csv(body: bytes) -> list[list[str]]:
@@ -244,6 +290,10 @@ def test_every_code_gets_its_name_and_the_render_warns_of_nothing(
     assert (first["financingProvider_label"], first["financingRecipient_label"]) == (
         "United States",
         "Kenya",
+    )
+    assert (first["financingProvider_party_kind"], first["financingRecipient_party_kind"]) == (
+        "party",
+        "party",
     )
     assert first["provenance_label"] == "Source one"
     # A method shows only a name that says more than its dcid. An unnamed method is not a miss.
@@ -366,8 +416,13 @@ def test_a_statvar_without_a_value_on_an_axis_gets_an_empty_code_and_the_absent_
             None,
             _ROWS,
             ["financingRecipient_iso3", "financingProvider_label"],
-            (*_LONG_HEADER[:5], "financingRecipient_iso3", *_LONG_HEADER[5:]),
+            (*_LONG_HEADER[:7], "financingRecipient_iso3", *_LONG_HEADER[7:]),
             id="iso3-and-label-tokens",
+        ),
+        # The kind of each party role is a default column; a token names it once.
+        pytest.param(None, _ROWS, ["party_kind"], _LONG_HEADER, id="bare-kind-token"),
+        pytest.param(
+            None, _ROWS, ["financingRecipient_party_kind"], _LONG_HEADER, id="qualified-kind-token"
         ),
         # A selection that omits `financingProvider` but names its label keeps both.
         pytest.param(
@@ -382,7 +437,7 @@ def test_a_statvar_without_a_value_on_an_axis_gets_an_empty_code_and_the_absent_
                 "provenance",
                 "financingProvider_label",
             ],
-            (*_LONG_HEADER[:16], *_LONG_HEADER[18:]),
+            (*_LONG_HEADER[:18], *_LONG_HEADER[20:]),
             id="selection-naming-a-label-keeps-its-entity",
         ),
     ],
@@ -418,7 +473,7 @@ def test_a_groupby_collapse_keeps_its_frame_and_content_version():
     )
     header, *rows = _csv(body)
     assert tuple(header) == _COLLAPSE_HEADER
-    assert [row[5:8] for row in rows] == [
+    assert [row[7:10] for row in rows] == [
         [_HEALTH.dcid, "Basic health care", "2022"],
         [_MALARIA.dcid, "Malaria control", "2022"],
     ]
@@ -427,17 +482,28 @@ def test_a_groupby_collapse_keeps_its_frame_and_content_version():
 
 
 class _FailingGraph(FakeMintGraphReader):
-    """A graph whose batched arc read fails, recording the deadline each read carried. With a
-    `clock`, a read holds until its deadline before failing, as one does in a graph outage."""
+    """A graph whose batched arc read fails after its first `answers` reads, recording the
+    deadline each read carried. With a `clock`, a failing read holds until its deadline, as
+    one does in a graph outage."""
 
-    def __init__(self, error: GraphReadError, *, clock: _Clock | None = None) -> None:
-        super().__init__()
+    def __init__(
+        self, error: GraphReadError, *, clock: _Clock | None = None, answers: int = 0
+    ) -> None:
+        super().__init__(arcs=_ARCS)
         self._error = error
         self._clock = clock
+        self._answers = answers
         self.deadlines: list[float | None] = []
 
     def node_arcs_many(self, dcids, *, properties, individual_probe_budget=None, deadline=None):
         self.deadlines.append(deadline)
+        if len(self.deadlines) <= self._answers:
+            return super().node_arcs_many(
+                dcids,
+                properties=properties,
+                individual_probe_budget=individual_probe_budget,
+                deadline=deadline,
+            )
         if self._clock is not None and deadline is not None:
             self._clock.now = max(self._clock.now, deadline)
         raise self._error
@@ -493,8 +559,9 @@ def test_a_failed_name_read_leaves_name_cells_empty_warns_and_completes(error):
     records = _records(body)
     assert {record["financingProvider_label"] for record in records} == {""}
     assert {record["provenance_label"] for record in records} == {""}
-    # The unit's label is local, so it survives the failed read.
+    # The unit's label and the parties' index kinds are local, so they survive the failed read.
     assert {record["unit_label"] for record in records} == {"Current US dollars"}
+    assert {record["financingRecipient_party_kind"] for record in records} == {"party"}
     assert _unavailable(rendered) == [
         ("financingProvider_label", 4),
         ("financingRecipient_label", 4),
@@ -695,3 +762,397 @@ def test_a_frame_layout_render_reads_no_names():
     assert graph.deadlines == []
     assert rendered.labels_complete
     assert _unavailable(rendered) == []
+
+
+_RECIPIENT_ROWS = (
+    ("dcid:SV_A", "country/USA", "country/KEN", "2021", 10.0, "USD", None, "p1", None),
+    ("dcid:SV_A", "country/USA", "DACAfricaUnallocated", "2021", 2.0, "USD", None, "p1", None),
+    ("dcid:SV_A", "country/USA", "DACAfrica", "2021", 12.0, "USD", None, "p1", None),
+    ("dcid:SV_A", "country/USA", "DACDevelopingCountries", "2022", 40.0, "USD", None, "p1", None),
+)
+_PARTY_ROWS = ["country/KEN", "DACAfricaUnallocated"]
+_TOTAL_ROWS = ["DACAfrica", "DACDevelopingCountries"]
+
+
+def _spec(identity: dict[str, object]) -> dict[str, object]:
+    return {"spec_id": "family", "identity": {"shape": {"kind": "statvar_schema"}, **identity}}
+
+
+_OPEN_RECIPIENTS = _spec({"entities": {"origin": ["country/USA"]}, "open_roles": ["destination"]})
+
+
+def _recipients(records: list[dict[str, str]]) -> list[str]:
+    return [record["financingRecipient"] for record in records]
+
+
+def _sheet_rows(body: bytes, sheet: str) -> list[tuple[object, ...]]:
+    workbook = openpyxl.load_workbook(io.BytesIO(body), read_only=True)
+    return [tuple(row) for row in workbook[sheet].iter_rows(values_only=True)]
+
+
+@pytest.mark.parametrize(
+    ("spec", "rows", "kept"),
+    [
+        pytest.param(_OPEN_RECIPIENTS, _RECIPIENT_ROWS, _PARTY_ROWS, id="open-role-drops-totals"),
+        pytest.param(
+            _spec({"entities": {"recipient": ["country/KEN", "DACAfrica"]}}),
+            _RECIPIENT_ROWS[::2],
+            ["country/KEN"],
+            id="several-bound-drop-totals",
+        ),
+        pytest.param(
+            _spec(
+                {
+                    "entities": {
+                        "origin": ["country/USA"],
+                        "destination": ["DACDevelopingCountries"],
+                    }
+                }
+            ),
+            _RECIPIENT_ROWS[3:],
+            ["DACDevelopingCountries"],
+            id="one-bound-total-keeps-every-row",
+        ),
+        pytest.param(None, _RECIPIENT_ROWS, [*_PARTY_ROWS, *_TOTAL_ROWS], id="no-identity"),
+    ],
+)
+def test_a_bare_csv_leaves_out_the_totals_of_an_open_or_several_bound_role(spec, rows, kept):
+    """ "ODA from the UK to developing countries, total" binds the recipient to one total, so
+    its rows are the data and stay."""
+    _rendered, body = _render(MintOptions(format="csv", bundle=False), rows=rows, spec=spec)
+
+    assert _recipients(_records(body)) == kept
+
+
+def _totals_published(*, datasets: tuple[str, ...], axes: tuple[str, ...]) -> dict[str, PartyRow]:
+    return {
+        **_PARTIES,
+        **{
+            dcid: PartyRow(dcid=dcid, kind="total", datasets=datasets, axes=axes)
+            for dcid in _TOTAL_ROWS
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    ("parties", "named", "kept"),
+    [
+        pytest.param(_PARTIES, ["financingRecipient"], _PARTY_ROWS, id="read-provenance-totals"),
+        pytest.param(
+            _totals_published(datasets=("p1",), axes=("origin",)),
+            [],
+            [*_PARTY_ROWS, *_TOTAL_ROWS],
+            id="totals-only-as-donors",
+        ),
+        pytest.param(
+            _totals_published(datasets=("p2",), axes=("destination",)),
+            [],
+            [*_PARTY_ROWS, *_TOTAL_ROWS],
+            id="totals-of-another-provenance",
+        ),
+    ],
+)
+def test_a_bare_csv_drops_totals_only_on_the_roles_the_options_document_names(parties, named, kept):
+    """The render splits by `movable_totals_roles`, the rule behind `long_layout_totals`, so a
+    row the index declares a total stays when its role is not advertised."""
+    _rendered, body = _render(
+        MintOptions(format="csv", bundle=False),
+        rows=_RECIPIENT_ROWS,
+        spec=_OPEN_RECIPIENTS,
+        parties=parties,
+    )
+
+    identity = _OPEN_RECIPIENTS["identity"]
+    assert (
+        list(movable_totals_roles(identity, _ENTITY_COLUMNS, parties=parties, datasets=["p1"]))
+        == named
+    )
+    assert _recipients(_records(body)) == kept
+
+
+@pytest.mark.parametrize("bundle", [False, True])
+def test_an_xlsx_holds_the_totals_on_a_second_sheet_and_years_as_numbers(bundle):
+    _rendered, body = _render(
+        MintOptions(format="xlsx", bundle=bundle), rows=_RECIPIENT_ROWS, spec=_OPEN_RECIPIENTS
+    )
+    if bundle:
+        archive = zipfile.ZipFile(io.BytesIO(body))
+        body = archive.read("data/p1.xlsx")
+        (resource,) = [
+            entry
+            for entry in json.loads(archive.read("datapackage.json"))["resources"]
+            if entry["name"] != "codes"
+        ]
+        assert "on the sheet totals" in resource["description"]
+    recipient = _LONG_HEADER.index("financingRecipient")
+    year = _LONG_HEADER.index("time_period")
+
+    data = _sheet_rows(body, "data")
+    totals = _sheet_rows(body, "totals")
+
+    assert data[0] == totals[0] == _LONG_HEADER
+    assert [row[recipient] for row in data[1:]] == _PARTY_ROWS
+    assert [row[recipient] for row in totals[1:]] == _TOTAL_ROWS
+    assert [row[year] for row in totals[1:]] == [2021, 2022]
+
+
+def test_a_bundled_csv_writes_the_totals_as_a_second_data_file():
+    _rendered, body = _render(
+        MintOptions(format="csv", bundle=True), rows=_RECIPIENT_ROWS, spec=_OPEN_RECIPIENTS
+    )
+    archive = zipfile.ZipFile(io.BytesIO(body))
+    resources = {
+        entry["path"]: entry
+        for entry in json.loads(archive.read("datapackage.json"))["resources"]
+        if entry["name"] != "codes"
+    }
+
+    assert _recipients(_records(archive.read("data/p1.csv"))) == _PARTY_ROWS
+    assert _recipients(_records(archive.read("data/p1-totals.csv"))) == _TOTAL_ROWS
+    assert list(resources) == ["data/p1.csv", "data/p1-totals.csv"]
+    assert "data/p1-totals.csv" in resources["data/p1.csv"]["description"]
+    codes = {row["code"] for row in _records(archive.read("data/codes.csv"))}
+    assert codes >= {"country/KEN", "DACAfrica", "DACDevelopingCountries"}
+
+
+@pytest.mark.parametrize("format_", ["csv", "xlsx"])
+def test_an_open_role_holding_only_totals_leaves_the_data_file_empty_and_says_so(format_):
+    """The totals type the columns of the resource that holds them: the CSV totals file, or
+    the one XLSX file, whose data sheet is empty."""
+    _rendered, body = _render(
+        MintOptions(format=format_, bundle=True), rows=_RECIPIENT_ROWS[2:], spec=_OPEN_RECIPIENTS
+    )
+    archive = zipfile.ZipFile(io.BytesIO(body))
+
+    if format_ == "csv":
+        assert _csv(archive.read("data/p1.csv")) == [list(_LONG_HEADER)]
+        assert _recipients(_records(archive.read("data/p1-totals.csv"))) == _TOTAL_ROWS
+        assert "No rows: every observation is of a total" in archive.read("README.md").decode()
+        typed_path = "data/p1-totals.csv"
+    else:
+        workbook = archive.read("data/p1.xlsx")
+        assert _sheet_rows(workbook, "data") == [_LONG_HEADER]
+        totals = _sheet_rows(workbook, "totals")
+        assert [row[_LONG_HEADER.index("financingRecipient")] for row in totals[1:]] == _TOTAL_ROWS
+        typed_path = "data/p1.xlsx"
+    resource = next(
+        entry
+        for entry in json.loads(archive.read("datapackage.json"))["resources"]
+        if entry["path"] == typed_path
+    )
+    types = {field["name"]: field["type"] for field in resource["schema"]["fields"]}
+    assert (types["time_period"], types["value"]) == ("integer", "number")
+
+
+@pytest.mark.parametrize(
+    ("options", "header_at"),
+    [
+        pytest.param(MintOptions(format="parquet", bundle=False), _LONG_HEADER, id="parquet"),
+        pytest.param(
+            MintOptions(
+                format="csv",
+                bundle=False,
+                pivot={"index": "financingRecipient", "columns": "time_period"},
+            ),
+            None,
+            id="pivot",
+        ),
+    ],
+)
+def test_parquet_and_a_pivot_keep_every_row(options, header_at):
+    _rendered, body = _render(options, rows=_RECIPIENT_ROWS, spec=_OPEN_RECIPIENTS)
+
+    if options.format == "parquet":
+        table = pq.read_table(io.BytesIO(body))
+        assert table.column("financingRecipient").to_pylist() == [*_PARTY_ROWS, *_TOTAL_ROWS]
+        assert str(table.schema.field("time_period").type) == "int64"
+    else:
+        assert [record["financingRecipient"] for record in _records(body)] == [
+            *_PARTY_ROWS,
+            *_TOTAL_ROWS,
+        ]
+
+
+def test_totals_spread_over_chunks_keep_the_first_written_chunk_typed():
+    """A chunk of totals alone empties the main table's first chunk. The writer still types
+    its columns from a chunk with rows, so a bundle's schema reads numbers."""
+    _rendered, body = _render(
+        MintOptions(format="csv", bundle=True),
+        chunks=(_RECIPIENT_ROWS[2:], _RECIPIENT_ROWS[:2]),
+        spec=_OPEN_RECIPIENTS,
+    )
+    archive = zipfile.ZipFile(io.BytesIO(body))
+    resource = next(
+        entry
+        for entry in json.loads(archive.read("datapackage.json"))["resources"]
+        if entry["path"] == "data/p1.csv"
+    )
+    types = {field["name"]: field["type"] for field in resource["schema"]["fields"]}
+
+    assert _recipients(_records(archive.read("data/p1.csv"))) == _PARTY_ROWS
+    assert (types["value"], types["time_period"]) == ("number", "integer")
+
+
+@pytest.mark.parametrize(
+    ("chunks", "answers", "columns"),
+    [
+        pytest.param((_RECIPIENT_ROWS,), 0, None, id="first-read-fails"),
+        pytest.param((_RECIPIENT_ROWS[:2], _RECIPIENT_ROWS[2:]), 1, None, id="later-read-fails"),
+        pytest.param((_RECIPIENT_ROWS,), 0, ["party_kind"], id="bare-kind-token"),
+        pytest.param(
+            (_RECIPIENT_ROWS,), 0, ["financingRecipient_party_kind"], id="qualified-kind-token"
+        ),
+    ],
+)
+def test_a_failed_name_read_still_sets_the_index_totals_apart(chunks, answers, columns):
+    """The code index gives a listed party its kind with no graph read, so a graph outage from
+    the first read or partway through the render moves every listed total, in every chunk. A
+    token naming a party role's kind gives the same default column."""
+    graph = _FailingGraph(GraphReadError("graph unavailable"), answers=answers)
+
+    rendered, body = _render(
+        MintOptions(format="csv", bundle=True, columns=columns),
+        chunks=chunks,
+        graph=graph,
+        spec=_OPEN_RECIPIENTS,
+        deadline=time.monotonic() + 60.0,
+    )
+    archive = zipfile.ZipFile(io.BytesIO(body))
+    data = _records(archive.read("data/p1.csv"))
+    totals = _records(archive.read("data/p1-totals.csv"))
+    resources = {
+        entry["path"]: entry for entry in json.loads(archive.read("datapackage.json"))["resources"]
+    }
+
+    assert len(graph.deadlines) == answers + 1
+    assert not rendered.labels_complete
+    assert _recipients(data) == _PARTY_ROWS
+    assert _recipients(totals) == _TOTAL_ROWS
+    assert [record["financingRecipient_party_kind"] for record in data] == ["party", "residual"]
+    assert [record["financingRecipient_party_kind"] for record in totals] == ["total", "total"]
+    assert "data/p1-totals.csv" in resources["data/p1.csv"]["description"]
+    assert "data/p1-totals.csv" in archive.read("README.md").decode()
+
+
+_UNLISTED_RECIPIENT_ROW = (
+    "dcid:SV_A",
+    "country/USA",
+    "country/GHA",
+    "2022",
+    4.0,
+    "USD",
+    None,
+    "p1",
+    None,
+)
+_PIVOT_BY_YEAR = {"index": "financingRecipient", "columns": "time_period"}
+
+
+@pytest.mark.parametrize(
+    ("options", "rows", "kinds", "reads"),
+    [
+        pytest.param(
+            MintOptions(format="csv", bundle=False, columns=["party_kind"], pivot=_PIVOT_BY_YEAR),
+            _RECIPIENT_ROWS,
+            None,
+            0,
+            id="pivot",
+        ),
+        pytest.param(
+            MintOptions(format="parquet", bundle=False, layout="frame", columns=["party_kind"]),
+            _RECIPIENT_ROWS,
+            ["party", "residual", "total", "total"],
+            0,
+            id="frame-bare",
+        ),
+        pytest.param(
+            MintOptions(
+                format="parquet",
+                bundle=False,
+                layout="frame",
+                columns=["financingRecipient_party_kind"],
+            ),
+            (*_RECIPIENT_ROWS, _UNLISTED_RECIPIENT_ROW),
+            ["party", "residual", "total", "total", ""],
+            0,
+            id="frame-qualified-unlisted-party",
+        ),
+    ],
+)
+def test_a_party_kind_token_outside_the_long_layout_reads_the_index_alone(
+    options, rows, kinds, reads
+):
+    """The reshape enrichment reads a party's kind from the code index, as the long layout
+    does, and never reads the graph for it. A party the index does not list has an empty
+    cell with a warning, and the render completes."""
+    graph = _FailingGraph(GraphReadError("graph unavailable"))
+
+    rendered, body = _render(
+        options, rows=rows, graph=graph, spec=_OPEN_RECIPIENTS, deadline=time.monotonic() + 60.0
+    )
+
+    assert len(graph.deadlines) == reads
+    assert rendered.labels_complete == (reads == 0)
+    if kinds is not None:
+        column = pq.read_table(io.BytesIO(body)).column("financingRecipient_party_kind")
+        assert column.to_pylist() == kinds
+    assert _unavailable(rendered) == (
+        [("financingRecipient_party_kind", 1)] if "" in (kinds or ()) else []
+    )
+
+
+_MIXED_PERIOD_ROWS = (
+    ("dcid:SV_A", "country/USA", "country/KEN", "2021", 10.0, "USD", None, "p1", None),
+    ("dcid:SV_A", "country/USA", "country/KEN", "2022", 11.0, "USD", None, "p1", None),
+    ("dcid:SV_A", "country/USA", "country/KEN", "2019/2021", 30.0, "USD", None, "p1", None),
+)
+
+
+@pytest.mark.parametrize(
+    ("chunks", "typed"),
+    [
+        pytest.param((_MIXED_PERIOD_ROWS[:2],), True, id="year-points-are-integers"),
+        pytest.param((_MIXED_PERIOD_ROWS,), False, id="one-chunk"),
+        pytest.param(
+            (_MIXED_PERIOD_ROWS[:2], _MIXED_PERIOD_ROWS[2:]), False, id="span-in-a-later-chunk"
+        ),
+        pytest.param((_MIXED_PERIOD_ROWS[::-1],), False, id="span-first"),
+    ],
+)
+@pytest.mark.parametrize("source", ["tuples", "arrow", "parquet"])
+@pytest.mark.parametrize("format_", ["csv", "parquet"])
+def test_a_frame_mixing_year_points_and_spans_writes_every_period_as_text(
+    format_, source, chunks, typed, monkeypatch
+):
+    periods = sorted(str(row[3]) for chunk in chunks for row in chunk)
+    written = sorted(int(period) for period in periods) if typed else periods
+    passes: list[int] = []
+    read_frames = ParquetFrameChunks.__call__
+
+    def counted(self: ParquetFrameChunks) -> Iterator[Frame]:
+        passes.append(1)
+        return read_frames(self)
+
+    monkeypatch.setattr(ParquetFrameChunks, "__call__", counted)
+
+    _rendered, body = _render(
+        MintOptions(format=format_, bundle=format_ == "csv"), chunks=chunks, source=source
+    )
+    if source == "parquet":
+        # The grain is read from the `time_period` column alone, so only the write decodes rows.
+        assert passes == [1]
+
+    if format_ == "parquet":
+        column = pq.read_table(io.BytesIO(body)).column("time_period")
+        assert str(column.type) == ("int64" if typed else "string")
+        assert sorted(column.to_pylist()) == written
+        return
+    archive = zipfile.ZipFile(io.BytesIO(body))
+    (resource,) = [
+        entry
+        for entry in json.loads(archive.read("datapackage.json"))["resources"]
+        if entry["name"] != "codes"
+    ]
+    types = {field["name"]: field["type"] for field in resource["schema"]["fields"]}
+    assert types["time_period"] == ("integer" if typed else "string")
+    assert sorted(r["time_period"] for r in _records(archive.read(resource["path"]))) == periods

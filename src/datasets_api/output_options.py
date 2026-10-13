@@ -6,6 +6,9 @@ joined at each read. Disabled enrichments and single-distinct pivot pairs are om
 
 from __future__ import annotations
 
+from collections.abc import Collection, Mapping, Sequence
+
+from code_index.types import PartyRow
 from datasets_api.capabilities import Capabilities
 from datasets_api.manifest_models import (
     BundleOptionModel,
@@ -20,8 +23,12 @@ from datasets_api.manifest_models import (
     UnavailableFormatModel,
     VaryingColumnModel,
 )
+from dfo_platform.roles import role_key_axis
+from materialise.enrichment import party_kind_of
 from materialise.formats import FORMAT_COLUMN_CAPS
 from materialise.profile import EnrichmentCoverage, OutputProfile, PivotFeasibility
+from materialise.projection import long_layout_default_enrichments, totals_axes, totals_roles
+from materialise.reshape import enrichment_qualifies
 
 # `materialise.formats.FORMAT_COLUMN_CAPS` keys its Excel entry "excel".
 # The wire uses "xlsx".
@@ -36,12 +43,22 @@ _PIVOT_OVER_CELL_CAP_REASON = "pivot_over_cell_cap"
 
 
 def derive_output_options(
-    profile: OutputProfile, *, capabilities: Capabilities
+    profile: OutputProfile,
+    *,
+    identity: Mapping[str, object],
+    capabilities: Capabilities,
+    parties: Mapping[str, PartyRow],
+    datasets: Collection[str],
 ) -> OutputOptionsModel:
-    """Builds `output_options` from the frame profile and capabilities.
+    """Builds `output_options` from the frame profile, the definition's `identity` and
+    capabilities.
 
     Summability declarations come through `capabilities`, avoiding a second deployment read.
+    `long_layout_totals` names the roles whose total rows a long CSV or XLSX can move out of
+    its main table (`movable_totals_roles`, the rule the render splits by), from `identity`, the
+    code index's `parties` and the provenances the definition read, `datasets`.
     """
+    role_columns = [column.name for column in profile.columns if column.kind == "role"]
     return OutputOptionsModel(
         capability_version=capabilities.capability_version,
         columns=[
@@ -60,9 +77,49 @@ def derive_output_options(
             for coverage in profile.enrichments
             if (option := _enrichment_option(coverage, capabilities=capabilities)) is not None
         ],
+        long_layout_defaults=list(long_layout_default_enrichments(role_columns)),
+        long_layout_totals=list(
+            movable_totals_roles(identity, role_columns, parties=parties, datasets=datasets)
+        ),
         pivots=[_pivot_option(analysis, capabilities=capabilities) for analysis in profile.pivots],
         groupby=_groupby_options(capabilities=capabilities),
     )
+
+
+def movable_totals_roles(
+    identity: Mapping[str, object],
+    role_columns: Sequence[str],
+    *,
+    parties: Mapping[str, PartyRow],
+    datasets: Collection[str],
+) -> tuple[str, ...]:
+    """The roles of `materialise.projection.totals_roles` that can hold a total, and so the
+    roles whose total rows a long CSV or XLSX moves out of its main table. The options
+    document's `long_layout_totals` and the render's split (`render._TotalRows`) both read this
+    function, so a render drops rows only on a role the options document names.
+
+    A role bound to several entities qualifies when one of them is a total (`party_kind_of`
+    over `parties`). An open role qualifies when `parties` lists a total on its axis that one of
+    `datasets` publishes (`PartyRow.axes`, `PartyRow.datasets`), or any total on its axis when
+    `datasets` is empty, as for a definition whose read selected no provenance. The index builds
+    those rows from the coverage build that lists each provenance's parties, so a total an open
+    role can hold in a covered provenance is one this rule names."""
+    axes = totals_axes(identity)
+    read = set(datasets)
+
+    def movable(role: str) -> bool:
+        axis = role_key_axis(role)
+        bound = axes[axis] if axis is not None else ()
+        if bound:
+            return any(party_kind_of(entity, parties=parties) == "total" for entity in bound)
+        return any(
+            party.kind == "total"
+            and axis in party.axes
+            and (not read or not read.isdisjoint(party.datasets))
+            for party in parties.values()
+        )
+
+    return tuple(role for role in totals_roles(identity, role_columns) if movable(role))
 
 
 def _format_option(*, name: str, live: bool) -> FormatOptionModel:
@@ -80,8 +137,12 @@ def _bundle_option(bundle_active: bool) -> BundleOptionModel:
 def _enrichment_option(
     coverage: EnrichmentCoverage, *, capabilities: Capabilities
 ) -> EnrichmentOptionModel | None:
-    # Disabled fields appear in the capability document, not frame-specific options.
-    if coverage.field not in capabilities.enrichment_fields:
+    # Disabled fields appear in the capability document, not frame-specific options. A stored
+    # profile can list a subject column's kind, which the columns option refuses
+    # (`enrichment_qualifies`).
+    if coverage.field not in capabilities.enrichment_fields or not enrichment_qualifies(
+        coverage.column, coverage.field
+    ):
         return None
     available = coverage.covered == coverage.entities
     return EnrichmentOptionModel(

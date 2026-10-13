@@ -10,9 +10,11 @@ import asyncio
 
 from search.engine.bind import _UniversalBindOutput
 from search.engine.config import settings
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import RegionResult, resolve_variable
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 # ---------------------------------------------------------------------------
@@ -87,6 +89,8 @@ class _RecordingBindLLM:
         self.prompts: list[str] = []
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         self.prompts.append(prompt)
         return _UniversalBindOutput(

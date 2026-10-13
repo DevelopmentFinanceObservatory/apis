@@ -51,8 +51,11 @@ def topic_leaves(
     """Expand roots into their leaf StatVars with `walk_topics`, which the origin catalogue
     job also runs to build its topic table, each leaf under its own dcid.
 
-    SDG indicator topics reach leaves through three container hops. Batched arc reads keep
-    graph round trips at ``max_depth`` regardless of root count. A leaf the bound catalogue
+    The walk reads arcs through `graph`, whose origin client answers a Topic the bound
+    catalogue's topic tables hold, ours or the UN's, with its leaves in one level and no graph
+    read (`origin_catalogue.graph`). Any other root reads the graph: SDG indicator topics
+    reach leaves through three container hops, and batched arc reads keep graph round trips
+    at ``max_depth`` regardless of root count. A leaf the bound catalogue
     neither admits nor supersedes is dropped before it counts toward its root's
     ``max_members`` cap; a superseded leaf counts, whatever it stands as, as it counted while
     its provenance was admitted. An oversized root is dropped without affecting others, and a
@@ -60,8 +63,8 @@ def topic_leaves(
     that reaches them.
 
     Returns ``{leaf_dcid: root_dcid}`` in walk order, the first root in ``root_dcids``
-    winning when roots share a leaf. The keys are the leaves the confirm cap counts
-    (`derive.derive_shapes`), and `expand_topics` gives what they stand as.
+    winning when roots share a leaf. The keys are the leaves `derive.derive_shapes`
+    confirms, and `expand_topics` gives what they stand as.
     """
     catalogue = current_catalogue()
     leaf_to_root: dict[str, str] = {}

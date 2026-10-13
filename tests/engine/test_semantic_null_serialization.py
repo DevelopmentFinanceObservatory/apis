@@ -110,7 +110,7 @@ def _gender_options(spec_dict: dict) -> list[dict]:
     return next(
         so
         for so in spec_dict["resolved"]["slot_options"]
-        if (so["key"].get("property") or {}).get("dcid") == "gender"
+        if (so["key"].get("property") or {}).get("ref") == "gender"
     )["options"]
 
 
@@ -193,7 +193,7 @@ def _gender_slot_options_event(frames: list[tuple[str, dict]]) -> dict:
     return next(
         d
         for ev, d in frames
-        if ev == "slot_options" and (d["key"].get("property") or {}).get("dcid") == "gender"
+        if ev == "slot_options" and (d["key"].get("property") or {}).get("ref") == "gender"
     )
 
 

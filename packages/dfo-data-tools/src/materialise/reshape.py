@@ -11,14 +11,16 @@ results use this module's frozen `Table` because grouping and pivoting can break
 from __future__ import annotations
 
 import math
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence, Set
 from dataclasses import dataclass, field
 from typing import Protocol
 
 from dfo_platform.codes import CodeCatalogue
 from dfo_platform.problem import Alternative, ProblemIssue
 from materialise.codes import MaterialisationWarning
+from materialise.enrichment import PARTY_KIND_FIELD, is_party_role
 from materialise.errors import MaterialisationError, MaterialisationUsageError
+from materialise.method_status import method_status_classes
 
 # Mirrors dfo_frame_grammar.grammar's fixed column names (frame_build.py's
 # `_STAT_VAR_REF_PREFIX` is this same codebase's precedent for mirroring a
@@ -33,15 +35,15 @@ _MEASUREMENT_METHOD_COLUMN = "measurementMethod"
 _PROVENANCE_COLUMN = "provenance"
 _FACET_IDENTITY_COLUMNS: tuple[str, ...] = (_MEASUREMENT_METHOD_COLUMN, _PROVENANCE_COLUMN)
 
-SUPPORTED_ENRICHMENTS: frozenset[str] = frozenset({"iso2", "iso3", "kind", "label", "type"})
+SUPPORTED_ENRICHMENTS: frozenset[str] = frozenset({"iso2", "iso3", "label", "party_kind", "type"})
 """The closed enrichment field vocabulary this engine can fill. Capabilities
 publishing reads this constant directly rather than duplicating it."""
 
-TABLE_WIDE_ENRICHMENTS: frozenset[str] = frozenset({"kind"})
-"""The enrichment fields a bare token requests for every entity column of the
-table. A sum across any party role needs each party's kind, so a caller asks
-for it without knowing which roles the table carries. Every other field
-needs its entity-column prefix."""
+TABLE_WIDE_ENRICHMENTS: frozenset[str] = frozenset({"party_kind"})
+"""The enrichment fields a bare token requests for every party role of the
+table (`materialise.enrichment.is_party_role`). A sum across any party role needs
+each party's kind, so a caller asks for it without knowing which roles the table
+carries. Every other field needs its entity-column prefix."""
 
 _MAX_NAMED_DUPLICATE_KEYS = 10
 """Cap on how many duplicate pivot keys a `pivot_not_unique` message names,
@@ -453,6 +455,19 @@ class ExpectedPopulation:
                 )
 
 
+def _estimated_total(column: str, values: Set[object]) -> str | None:
+    """The `measurementMethod` a total carries when the rows it sums hold a series' method
+    and the estimated method continuing it (`facets.continuation`): the estimated one
+    (`method_status.method_status_classes`), since a total containing an estimate is an
+    estimate. `None` for another column, or for any other mix, such as no estimated method,
+    two, or two other methods beside one, which stays refused (`facet_homogeneity`)."""
+    if column != _MEASUREMENT_METHOD_COLUMN or len(values) != 2:
+        return None
+    classes = method_status_classes()
+    estimated = {v for v in values if isinstance(v, str) and classes.get(v) == "estimated"}
+    return next(iter(estimated)) if len(estimated) == 1 else None
+
+
 def groupby_sum(
     table: TableLike,
     *,
@@ -465,7 +480,9 @@ def groupby_sum(
     value_column: str = _VALUE_COLUMN,
 ) -> Table:
     """Sum `value_column` by the remaining grain columns. Facet columns and
-    `status` pass through and must be homogeneous within each output group.
+    `status` pass through and must be homogeneous within each output group, except that a
+    group mixing one estimated `measurementMethod` with other methods sums to a total
+    carrying the estimated one (`_estimated_total`).
     Parent-child overlap in `hierarchy` refuses a group that would double-count
     an ancestor.
 
@@ -568,11 +585,14 @@ def groupby_sum(
             group_order.append(key)
         groups[key].append(row)
 
+    estimated_totals: dict[tuple, dict[int, str]] = {}
     for key in group_order:
         rows_in_group = groups[key]
         for pos in passthrough_positions:
             values = {row[pos] for row in rows_in_group}
-            if len(values) > 1:
+            if len(values) > 1 and (method := _estimated_total(columns[pos], values)) is not None:
+                estimated_totals.setdefault(key, {})[pos] = method
+            elif len(values) > 1:
                 raise RollupNotSummableError(
                     f"groupby axis {axis!r} refused: column {columns[pos]!r} is not "
                     "homogeneous across the rows this axis would collapse together "
@@ -660,6 +680,8 @@ def groupby_sum(
             )
         representative = [rows_in_group[0][i] for i in remaining_positions]
         representative[value_pos_in_remaining] = total
+        for pos, method in estimated_totals.get(key, {}).items():
+            representative[remaining_positions.index(pos)] = method
         output_rows.append(tuple(representative))
     output_rows.sort(key=lambda r: tuple(_cell_sort_key(c) for c in r))
 
@@ -934,6 +956,7 @@ def _resolve_groupby_sum_outcome(
     exactly one of `table` or `violation`.
     """
     violation: RollupNotSummableError | ValueError | None = fold.unique_violation
+    estimated_totals: dict[tuple, dict[int, str]] = {}
 
     if violation is None:
         for key in fold.group_order:
@@ -941,7 +964,12 @@ def _resolve_groupby_sum_outcome(
             facet_violation: RollupNotSummableError | None = None
             for pos in plan.passthrough_positions:
                 values = group.passthrough.get(pos, set())
-                if len(values) > 1:
+                if (
+                    len(values) > 1
+                    and (method := _estimated_total(plan.columns[pos], values)) is not None
+                ):
+                    estimated_totals.setdefault(key, {})[pos] = method
+                elif len(values) > 1:
                     facet_violation = RollupNotSummableError(
                         f"groupby axis {plan.axis!r} refused: column {plan.columns[pos]!r} is "
                         "not homogeneous across the rows this axis would collapse together "
@@ -1013,6 +1041,8 @@ def _resolve_groupby_sum_outcome(
             assert group.representative is not None
             representative = list(group.representative)
             representative[plan.value_pos_in_remaining] = group.total
+            for pos, method in estimated_totals.get(key, {}).items():
+                representative[plan.remaining_positions.index(pos)] = method
             output_rows.append(tuple(representative))
 
     if violation is not None:
@@ -1925,9 +1955,11 @@ def parse_column_tokens(
     """Split tokens into selected columns and enrichment requests. Exact
     table-column matches take priority; other tokens match an entity-column
     prefix plus a supported field, since names can contain underscores. A bare
-    field in `TABLE_WIDE_ENRICHMENTS` (`kind`) requests that field for every
-    entity column of the table, and a qualified token the bare one already
-    covers adds nothing.
+    field in `TABLE_WIDE_ENRICHMENTS` (`party_kind`) requests that field for every
+    party role of the table (`materialise.enrichment.is_party_role`), and a qualified
+    token the bare one already covers adds nothing. `party_kind` belongs to party roles
+    only, so a token qualifying a subject role with it (`observationAbout_party_kind`)
+    does not parse.
     Unknown tokens raise `ColumnUnknownError` with all qualified alternatives,
     independent of field enablement. Preserve token order; callers reject
     duplicates.
@@ -1945,7 +1977,7 @@ def parse_column_tokens(
             enrichments.extend(
                 (entity_column, token)
                 for entity_column in entity_columns
-                if (entity_column, token) not in enrichments
+                if is_party_role(entity_column) and (entity_column, token) not in enrichments
             )
             continue
 
@@ -1955,7 +1987,7 @@ def parse_column_tokens(
             if not token.startswith(prefix):
                 continue
             field_name = token[len(prefix) :]
-            if field_name in supported_fields:
+            if field_name in supported_fields and enrichment_qualifies(entity_column, field_name):
                 matched_request = (entity_column, field_name)
                 break
         if matched_request is not None:
@@ -1968,6 +2000,7 @@ def parse_column_tokens(
                 f"{entity_column}_{field_name}"
                 for entity_column in entity_columns
                 for field_name in sorted(supported_fields)
+                if enrichment_qualifies(entity_column, field_name)
             )
         raise ColumnUnknownError(
             f"column {token!r} is not present on this table and does not parse as a "
@@ -1978,6 +2011,12 @@ def parse_column_tokens(
         )
 
     return ParsedColumns(select=tuple(select), enrichments=tuple(enrichments))
+
+
+def enrichment_qualifies(entity_column: str, field_name: str) -> bool:
+    """Whether `field_name` can qualify `entity_column`: every field but `party_kind`, which
+    qualifies a party role only."""
+    return field_name != PARTY_KIND_FIELD or is_party_role(entity_column)
 
 
 @dataclass(frozen=True)

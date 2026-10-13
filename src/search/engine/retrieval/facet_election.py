@@ -14,10 +14,18 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from materialise.facets import merge_facets, overlaps_window, rank_pool
+from materialise.facets import (
+    SeriesCounts,
+    at_cadence,
+    cadences_by_member,
+    continuation,
+    merge_facets,
+    overlaps_window,
+    rank_pool,
+)
 from materialise.window import RequestedWindow
 from search.engine.clients.graph import Facet
-from search.engine.clients.sdmx import RoleFacetCandidate, RoleFacetIndex
+from search.engine.clients.sdmx import RoleFacetCandidate, RoleFacetIndex, RoleTuple
 
 if TYPE_CHECKING:
     from series_coverage.coverage_types import FacetSpan
@@ -42,9 +50,13 @@ class ScopeFacetCandidate:
 
     def breadth(self, window: RequestedWindow | None) -> int:
         """The places this facet holds a point at inside `window` (`overlaps_window`)."""
-        return sum(
-            1
-            for f in self.by_entity.values()
+        return len(self.places_held(window))
+
+    def places_held(self, window: RequestedWindow | None) -> frozenset[str]:
+        """The places at which this facet holds a point inside `window`."""
+        return frozenset(
+            entity
+            for entity, f in self.by_entity.items()
             if f.obs_count > 0 and overlaps_window(f, window=window)
         )
 
@@ -92,9 +104,61 @@ def rank_scope_candidates(
         [c.facet for c in candidates.values()],
         stat_vars=stat_vars,
         window=window,
-        breadth={c.facet_id: c.breadth(window) for c in candidates.values()},
+        breadth=SeriesCounts(
+            counts={c.facet_id: c.breadth(window) for c in candidates.values()},
+            union_of=lambda ids: len(
+                frozenset().union(*(candidates[i].places_held(window) for i in ids))
+            ),
+        ),
     ).ranked
     return [candidates[f.facet_id] for f in ranked if f.facet_id is not None]
+
+
+def scope_served(
+    lead: ScopeFacetCandidate,
+    candidates: Mapping[str, ScopeFacetCandidate],
+    *,
+    window: RequestedWindow | None,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """The facet ids a mint of the answer's Spec serves when it elects `lead`, each facet
+    merged across every place: its selection, the facets of `candidates` sharing `lead`'s
+    provenance, method and unit at its cadence (`materialise.facets.cadences_by_member`),
+    `lead` first, as `materialise.facets.joint_matches` admits them; then the facets
+    continuing the selection's series in `window`, each past its own place's last year
+    (`materialise.facets.continuation`). Several qualifying methods rank by the places each
+    facet holds a point at. The continuation is empty where nothing continues the
+    selection."""
+    by_id = {facet_id: c.facet for facet_id, c in candidates.items()}
+    facets = list(by_id.values())
+    (cadence_of,) = cadences_by_member([facets])
+    cadence = cadence_of.get(lead.facet_id)
+
+    def serves(facet_id: str) -> bool:
+        return at_cadence(facet_id, cadence=cadence, cadence_of=cadence_of)
+
+    head = by_id[lead.facet_id]
+    axes = (head.provenance_id, head.measurement_method, head.unit)
+    selection = [
+        head,
+        *(
+            f
+            for facet_id, f in by_id.items()
+            if facet_id != lead.facet_id
+            and serves(facet_id)
+            and (f.provenance_id, f.measurement_method, f.unit) == axes
+        ),
+    ]
+    continuing = continuation(
+        selection,
+        facets,
+        window=window,
+        serves=serves,
+        breadth={c.facet_id: c.breadth(window) for c in candidates.values()},
+    )
+    return (
+        tuple(f.facet_id for f in selection if f.facet_id is not None),
+        tuple(f.facet_id for f in continuing if f.facet_id is not None),
+    )
 
 
 @dataclass
@@ -104,9 +168,9 @@ class RoleBulkCandidate:
     `by_sv` keeps each StatVar's role pairs separate. `pair_count` sums them, and
     `latest_date` is the latest of each pair's latest point.
     Metadata is shared by facet id in the coverage index. `lifetime` holds each StatVar's
-    observation count and span over every year under the same bound roles
-    (`CoverageIndex.facet_spans`), the values a mint ranks the facet by; it is empty for
-    candidates built outside coverage.
+    observation count, span and first series' end over every year under the same bound
+    roles (`CoverageIndex.facet_spans`), the values a mint ranks and continues the facet by;
+    it is empty for candidates built outside coverage.
     """
 
     facet_id: str
@@ -116,6 +180,7 @@ class RoleBulkCandidate:
     provenance_id: str | None = None
     measurement_method: str | None = None
     unit: str | None = None
+    observation_period: str | None = None
     lifetime: dict[str, FacetSpan] = field(default_factory=dict)
 
 
@@ -141,6 +206,7 @@ def merge_role_candidates(
                     provenance_id=c.provenance_id,
                     measurement_method=c.measurement_method,
                     unit=c.unit,
+                    observation_period=c.observation_period,
                 )
                 merged[c.facet_id] = candidate
             candidate.by_sv.setdefault(sv, []).append(c)
@@ -187,20 +253,45 @@ def rank_role_candidates(
     window's years, so each holds a pair with data in them and the pair count is those
     years' count.
 
-    The span and the observation count are the facet's over every year (`lifetime`, summed
-    and widened across the StatVars the candidate keeps), as a mint of the answer's Spec
-    reads them from coverage (`materialise.facets.coverage_probe`), so a bulk answer and
-    its mint rank each key on the same value. A candidate built outside coverage carries
-    no lifetime: it ranks on its count inside the window and its latest date, with its
-    covered years running from the window's start.
+    The span, the observation count and the first series' end are the facet's over every
+    year (`lifetime`, summed and widened across the StatVars the candidate keeps), as a mint
+    of the answer's Spec reads them from coverage (`materialise.facets.coverage_probe`), so
+    a bulk answer and its mint rank and continue each key on the same value: a series that
+    ends before the window opens still ends the facet's first series. A candidate built
+    outside coverage carries no lifetime: it ranks on its count inside the window and its
+    latest date, with its covered years running from the window's start.
+
+    A joined candidate (`materialise.facets.union_count`) counts the role tuples any of its
+    facets holds, read from their pairs only when the ranking forms it (`_pair_union`).
     """
     ranked = rank_pool(
         [_ranked_facet(c, window=window) for c in candidates.values()],
         stat_vars=stat_vars,
         window=window,
-        breadth={c.facet_id: c.pair_count for c in candidates.values()},
+        breadth=SeriesCounts(
+            counts={c.facet_id: c.pair_count for c in candidates.values()},
+            union_of=lambda ids: _pair_union([candidates[i] for i in ids], window=window),
+        ),
     ).ranked
     return [candidates[f.facet_id] for f in ranked if f.facet_id is not None]
+
+
+def _pair_union(candidates: Sequence[RoleBulkCandidate], *, window: RequestedWindow | None) -> int:
+    """The role tuples at least one of `candidates` holds with data inside `window`, counted
+    per StatVar and summed as `pair_count` is. Each facet's pairs are read once."""
+    first, last = (window.start_year, window.end_year) if window is not None else (None, None)
+    by_sv: dict[str, set[RoleTuple]] = {}
+    for candidate in candidates:
+        for sv, role_candidates in candidate.by_sv.items():
+            held = by_sv.setdefault(sv, set())
+            for c in role_candidates:
+                held.update(
+                    role_tuple
+                    for role_tuple, _n_obs in c.pairs.head(
+                        c.pair_count, first_year=first, last_year=last, with_data=True
+                    )
+                )
+    return sum(len(held) for held in by_sv.values())
 
 
 def _ranked_facet(candidate: RoleBulkCandidate, *, window: RequestedWindow | None) -> Facet:
@@ -210,10 +301,11 @@ def _ranked_facet(candidate: RoleBulkCandidate, *, window: RequestedWindow | Non
         obs_count = sum(span.n_obs for span in spans)
         earliest_date = str(min(span.first_year for span in spans))
         latest_date: str | None = str(max(span.last_year for span in spans))
+        first_series_end: str | None = str(min(span.first_series_end for span in spans))
     else:
         first, last = (window.start_year, window.end_year) if window is not None else (None, None)
         obs_count = role_n_obs(candidate, first_year=first, last_year=last)
-        earliest_date, latest_date = None, candidate.latest_date
+        earliest_date, latest_date, first_series_end = None, candidate.latest_date, None
     return Facet(
         facet_id=candidate.facet_id,
         provenance_id=candidate.provenance_id,
@@ -222,9 +314,36 @@ def _ranked_facet(candidate: RoleBulkCandidate, *, window: RequestedWindow | Non
         obs_count=obs_count,
         earliest_date=earliest_date,
         latest_date=latest_date,
+        first_series_end=first_series_end,
+        observation_period=candidate.observation_period,
         # Coverage's years, whatever the facet's cadence, so no evidence that it is annual.
         dates_coarsened=True,
     )
+
+
+def role_continuation(
+    best: RoleBulkCandidate,
+    candidates: Mapping[str, RoleBulkCandidate],
+    *,
+    window: RequestedWindow | None,
+) -> tuple[str, ...]:
+    """The facet ids of `candidates` continuing `best`'s series in `window`, each past its
+    own role tuple's last year (`materialise.facets.continuation`), each read as
+    `rank_role_candidates` ranks it, as a mint of the answer's Spec continues the facet it elects. Several qualifying
+    methods rank by the role pairs each facet covers. A facet continues only at `best`'s
+    cadence (`materialise.facets.cadences_by_member`), read from the coverage's stated
+    `observationPeriod`. Empty where nothing continues `best`."""
+    facets = [_ranked_facet(c, window=window) for c in candidates.values()]
+    (cadence_of,) = cadences_by_member([facets])
+    cadence = cadence_of.get(best.facet_id)
+    continuing = continuation(
+        [_ranked_facet(best, window=window)],
+        facets,
+        window=window,
+        serves=lambda facet_id: at_cadence(facet_id, cadence=cadence, cadence_of=cadence_of),
+        breadth={c.facet_id: c.pair_count for c in candidates.values()},
+    )
+    return tuple(f.facet_id for f in continuing if f.facet_id is not None)
 
 
 def select_role_candidate(

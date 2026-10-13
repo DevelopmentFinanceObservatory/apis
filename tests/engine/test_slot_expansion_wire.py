@@ -69,7 +69,7 @@ def test_apply_slot_expansions_patches_the_matching_slot():
     expansions = slot_expansions([_binding("crsPurpose", [_HEALTH])])
     (patched,) = apply_slot_expansions([slot], expansions)
     assert patched.expansion == expansions["crsPurpose"]
-    assert _MALARIA_CONTROL in {ref.dcid for ref in patched.expansion.added}
+    assert _MALARIA_CONTROL in {ref.ref for ref in patched.expansion.added}
 
 
 def test_apply_slot_expansions_is_a_no_op_when_expansions_is_empty():
@@ -265,9 +265,9 @@ class TestResubmitDoorWiresExpansion:
         crs_slot = next(
             s
             for s in spec["resolved"]["slots"]
-            if s["key"].get("property") is not None and s["key"]["property"]["dcid"] == "crsPurpose"
+            if s["key"].get("property") is not None and s["key"]["property"]["ref"] == "crsPurpose"
         )
-        added_dcids = {ref["dcid"] for ref in crs_slot["expansion"]["added"]}
+        added_dcids = {ref["ref"] for ref in crs_slot["expansion"]["added"]}
         assert _MALARIA_CONTROL in added_dcids
         assert _HEALTH not in added_dcids  # Expansion metadata lists descendants only.
 
@@ -394,10 +394,10 @@ class TestNearestRealWiresBothFields:
         crs_slot = next(
             s
             for s in resolved.slots
-            if s.key.property is not None and s.key.property.dcid == "crsPurpose"
+            if s.key.property is not None and s.key.property.ref == "crsPurpose"
         )
         assert crs_slot.expansion is not None
-        assert _MALARIA_CONTROL in {ref.dcid for ref in crs_slot.expansion.added}
+        assert _MALARIA_CONTROL in {ref.ref for ref in crs_slot.expansion.added}
         assert resolved.declaration_version == get_index().stamp.content_hash
 
     def test_relaxing_the_crs_binding_itself_carries_neither_field(self):
@@ -506,7 +506,7 @@ class TestResubmitDoorWiresSummable:
         crs_slot = next(
             s
             for s in spec["resolved"]["slots"]
-            if s["key"].get("property") is not None and s["key"]["property"]["dcid"] == "crsPurpose"
+            if s["key"].get("property") is not None and s["key"]["property"]["ref"] == "crsPurpose"
         )
         assert crs_slot["summable"] is True
         assert spec["spec_id"] == recorded_spec_id

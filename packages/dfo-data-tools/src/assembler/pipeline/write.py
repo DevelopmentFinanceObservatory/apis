@@ -18,7 +18,7 @@ from assembler.errors import (
     WriteRefused,
 )
 from assembler.limits import MAX_INTENT_BYTES
-from assembler.mint import stamp_envelope
+from assembler.mint import DescribedRevision, stamp_envelope
 from assembler.pipeline.candidate import _build_candidate
 from assembler.ports import (
     CompositionAppend,
@@ -28,6 +28,7 @@ from assembler.ports import (
     ReleaseRegistry,
     RevisionRecord,
     RevisionStore,
+    VocabularySource,
     WriteSubjectKind,
     WriteTokenInUse,
 )
@@ -102,9 +103,17 @@ def write_component(
     frame_store: FrameStore,
     revision_store: RevisionStore,
     release_registry: ReleaseRegistry,
+    vocabulary_source: VocabularySource | None = None,
     clock: Callable[[], datetime.datetime] = _utc_now,
 ) -> WriteReply:
     """Create a component, or revise the one at `component_id`.
+
+    The revision written carries its description, worded from `vocabulary_source`, when it
+    draws series from a frame whose version holds a description record
+    (`assembler.pipeline.candidate`). Without a
+    `vocabulary_source` no revision carries one. A revise whose envelope equals the head's in
+    everything a reader sees is a no-op (`_structurally_equal`). One that gains, loses or
+    rewords a description, or changes a source, citation or warning, writes a revision.
 
     `write_token` is the caller's `x-dfo-write-token`. A revise needs the component's own
     token, and a create into an existing composition needs that composition's token. Both
@@ -191,6 +200,20 @@ def write_component(
             raise EditConflict
         _require_release_not_behind(head=current, release=release)
 
+    # Allocate before the transaction so frame pinning can do network I/O outside
+    # the row lock, and before the candidate so its description names the component. The
+    # store owns id formats. Revises reuse their pinned frame.
+    working_component_id = component_id if not is_create else revision_store.allocate_component_id()
+
+    def described(revision: int) -> DescribedRevision | None:
+        if vocabulary_source is None:
+            return None
+        return DescribedRevision(
+            vocabulary_source=vocabulary_source,
+            component_id=working_component_id,
+            revision=revision,
+        )
+
     revision = (current.revision + 1) if current else 1
     candidate = _build_candidate(
         patch=intent,
@@ -199,11 +222,8 @@ def write_component(
         release=release,
         frame_store=frame_store,
         clock=clock,
+        described=described(revision),
     )
-
-    # Allocate before the transaction so frame pinning can do network I/O outside
-    # the row lock. The store owns id formats. Revises reuse their pinned frame.
-    working_component_id = component_id if not is_create else revision_store.allocate_component_id()
     pinned_frame_ref: FrameRef | None = None
     if is_create and candidate.resolved_frame is not None:
         # note_narration resolves no frame (no `frame_ref` on its grammar
@@ -242,6 +262,7 @@ def write_component(
                     frame_store=frame_store,
                     clock=clock,
                     resolved_frame=candidate.resolved_frame,
+                    described=described(revision),
                 )
 
             envelope = stamp_envelope(
@@ -510,21 +531,54 @@ def _check_intent_size(*, intent: Mapping[str, object]) -> None:
 
 
 _VOLATILE_ENVELOPE_FIELDS = ("revision",)
+_VOLATILE_DESCRIPTION_FIELDS = ("built_from",)
+_REVISION_NAMING_DESCRIPTION_MEMBERS = ("describes", "cite")
 
 
-def _excluding_volatile(payload: Mapping[str, object]) -> dict[str, object]:
+def _excluding_volatile(
+    payload: Mapping[str, object], *, volatile: Sequence[str]
+) -> dict[str, object]:
+    """`payload` without the members that move when its content does not: its `revision`,
+    the provenance members in `volatile`, and its description's `built_from` and the revision
+    its `describes` and `cite` name."""
     stripped = {
         key: value for key, value in payload.items() if key not in _VOLATILE_ENVELOPE_FIELDS
     }
-    provenance = dict(cast("Mapping[str, object]", stripped.get("provenance") or {}))
-    provenance.pop("generated_at", None)
-    stripped["provenance"] = provenance
+    provenance = cast("Mapping[str, object]", stripped.get("provenance") or {})
+    stripped["provenance"] = {
+        key: value for key, value in provenance.items() if key not in volatile
+    }
+    description = cast("Mapping[str, object] | None", stripped.get("description"))
+    if description is not None:
+        stripped["description"] = {
+            key: _without_revision(value) if key in _REVISION_NAMING_DESCRIPTION_MEMBERS else value
+            for key, value in description.items()
+            if key not in _VOLATILE_DESCRIPTION_FIELDS
+        }
     return stripped
 
 
-def _structurally_equal(a: Mapping[str, object], b: Mapping[str, object]) -> bool:
-    """Compares payloads while ignoring `revision` and `provenance.generated_at`.
+def _without_revision(member: object) -> object:
+    """A description member naming the card revision, without that revision."""
+    named = cast("Mapping[str, object]", member)
+    return {key: value for key, value in named.items() if key != "revision"}
 
-    Catalogue and schema versions remain part of the comparison. `component`
-    subtrees must match exactly."""
-    return _excluding_volatile(a) == _excluding_volatile(b)
+
+def _structurally_equal(candidate: Mapping[str, object], head: Mapping[str, object]) -> bool:
+    """Compares payloads in everything a reader sees, ignoring what moves on every write of the
+    same content: `revision`, `provenance.generated_at`, the card revision a description
+    names, and the description's `built_from`, whose vocabulary revision moves with every
+    graph generation while its words stay put. The words themselves are compared, so a
+    description gained, lost or reworded, and a changed source, citation or warning, make the
+    revise a revision.
+
+    A head whose `provenance.execution_ref` is null equals a candidate whatever replay key the
+    candidate names, since cards issued before provenance named a derived frame's replay key
+    store null there. Catalogue and schema versions remain part of the comparison."""
+    head_provenance = cast("Mapping[str, object]", head.get("provenance") or {})
+    volatile: tuple[str, ...] = ("generated_at",)
+    if head_provenance.get("execution_ref") is None:
+        volatile = (*volatile, "execution_ref")
+    return _excluding_volatile(candidate, volatile=volatile) == _excluding_volatile(
+        head, volatile=volatile
+    )

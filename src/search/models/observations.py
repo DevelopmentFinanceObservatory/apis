@@ -4,13 +4,14 @@ from typing import Any
 
 from pydantic import (
     Field,
+    PrivateAttr,
     SerializerFunctionWrapHandler,
     model_serializer,
 )
 
 from .base import StrictModel
 from .grammar import DataCommonsRef, ProvenanceRef, SourceRef
-from .vocab import EntityRoleKey, ObservationsOmissionReason, PreviewOrder
+from .vocab import EntityRoleKey, ObservationsOmissionReason, PartyKind, PreviewOrder
 
 # ---------------------------------------------------------------------------
 # SpecObservations: the observation values behind a Spec's coverage
@@ -59,6 +60,13 @@ class SeriesFacetRef(StrictModel):
             "from; absent for a provenance the catalogue does not list"
         ),
     )
+    documentation: str | None = Field(
+        default=None,
+        description=(
+            "provenance axis only: the Graph API route of the provenance's document, "
+            "GET /api/graph/documentation/{dcid}"
+        ),
+    )
 
 
 class SeriesStatVarRef(StrictModel):
@@ -83,6 +91,17 @@ class SeriesEntityRef(StrictModel):
     label: str | None = Field(
         default=None,
         description="best-effort display label for ref; None when unresolved, never fabricated",
+    )
+    party_kind: PartyKind | None = Field(
+        default=None,
+        description=(
+            "on an origin or destination entity, what the party is beside the others on its "
+            "side: 'party' (a country, territory or organisation), 'total' (other parties' "
+            "figures, so a sum "
+            "across the role that counts it counts its members twice) or 'residual' (figures "
+            "no other party holds), as the code index lists it. Absent for a party the index "
+            "does not list, and on observationAbout"
+        ),
     )
 
 
@@ -167,9 +186,11 @@ class ObservationSeries(StrictModel):
     )
     points: list[ObservationPoint] = Field(
         description=(
-            "chronological observation points from a SINGLE selected observation "
-            "facet (never merged across facets -- see SpecObservations), "
-            "filtered to the spec's requested window when one exists; the full "
+            "chronological observation points from the series' lead observation facet "
+            "(see SpecObservations), plus the points of the same source's estimates "
+            "continuing the series past the lead's last period when it has any -- the "
+            "`modelled_values` departure marks those -- filtered to the spec's requested "
+            "window when one exists; the full "
             "in-window series when SpecObservations.truncated is false, else at most "
             "the latest points (bounded by the server's preview-points setting and its "
             "per-series row limit)"
@@ -188,17 +209,18 @@ class ObservationSeries(StrictModel):
     source_refs: list[ProvenanceRef] = Field(
         default_factory=list,
         description=(
-            "provenance of the ONE observation facet these points were read from "
+            "provenance of the lead observation facet these points were read from "
             "(the facet selected for this series -- see SpecObservations)"
         ),
     )
     facet: dict[str, SeriesFacetRef] = Field(
         default_factory=dict,
         description=(
-            "this series' selected observation facet, per axis (provenance/"
-            "measurementMethod/unit); sparse -- an axis the facet carries no value "
+            "this series' lead observation facet, per axis (provenance/"
+            "measurementMethod/unit); the estimates continuing the series keep the "
+            "lead's entry; sparse -- an axis the facet carries no value "
             "for is absent, never a null placeholder. provenance here always agrees "
-            "with source_refs, since both derive from the same selected facet"
+            "with source_refs, since both derive from the same lead facet"
         ),
     )
     conversion: ObservationSeriesConversion | None = Field(
@@ -208,6 +230,30 @@ class ObservationSeries(StrictModel):
             "currency; absent on a series served in its native facet"
         ),
     )
+    # Whether a point the series serves carries a measurement method classed estimated
+    # (`materialise.method_status.status_of`), as the estimates continuing a reported series
+    # past its last period do. The part states it in a `modelled_values` departure
+    # (`engine.departures`), so it reaches the wire there alone, and a series read back from
+    # the cache does not hold it. Equality compares the wire state (`__eq__`).
+    _holds_estimates: bool = PrivateAttr(default=False)
+
+    @property
+    def holds_estimates(self) -> bool:
+        """Whether a served point carries a method classed estimated."""
+        return self._holds_estimates
+
+    def stating_estimates(self, held: bool) -> ObservationSeries:
+        """A copy whose `holds_estimates` is `held`."""
+        stated = self.model_copy()
+        stated._holds_estimates = held
+        return stated
+
+    def __eq__(self, other: object) -> bool:
+        """Equal when the wire state is: `holds_estimates` is an input to the part's
+        departures, which a cached response carries already written."""
+        if not isinstance(other, ObservationSeries):
+            return NotImplemented
+        return self.__dict__ == other.__dict__
 
 
 class ObservationsOmission(StrictModel):
@@ -316,11 +362,14 @@ class SpecObservations(StrictModel):
     entity) selection Spec.resolved.coverage already reports, so the numbers here never
     describe a different variable than what coverage summarises.
 
-    Each series carries exactly ONE observation facet's points, never a union
+    Each series carries one lead observation facet's points, never a union
     across facets: a StatVar/entity pair can have several reporting facets
     (e.g. commitments vs disbursements, current vs constant prices), and
     merging their points chronologically would interleave same-dated points
-    from incompatible series into one meaningless line. One facet group is
+    from incompatible series into one meaningless line. The one exception is
+    the same source's estimates continuing the lead past its last period: the
+    series carries their points after the lead's, `facet` names the lead, and
+    the `modelled_values` departure marks the estimates. One facet group is
     selected per StatVar instead, across every place and role tuple the answer
     names: among facets holding a point in the requested years (all facets when
     none does), DFO's facets first for a variable both DFO and base Data

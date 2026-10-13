@@ -76,6 +76,7 @@ from search.engine.region.place_options import PlaceOptionsPool
 from search.engine.region.result import RegionResult, with_departure_facts, with_entity_words
 from search.engine.response_cache_flow import CacheScope
 from search.engine.role_text import DoorRole, debt_axes
+from search.engine.source_code import PartCode, compile_part_code, scan_source_codes
 from search.engine.source_scan import scan_sources, source_phrases
 from search.engine.source_scope import (
     SourceRefusal,
@@ -296,7 +297,7 @@ async def _confirmed_country(
     if len(countries) != 1:
         return None
     (country,) = countries.values()
-    return GraphRef(dcid=country.dcid, label=country.name)
+    return GraphRef(ref=country.dcid, label=country.name)
 
 
 async def _disposition_response(
@@ -382,6 +383,10 @@ class _ExtractionPrep:
     words that marked one. `per_variable_sources` runs parallel to `unique` too: the
     source mentions the query writes for each variable (`source_scan.scan_sources`), and
     `per_variable_source_scopes` what each compiles to, `None` for a variable with none.
+    `per_variable_source_codes` runs parallel to `unique` too: the series code the query
+    writes for each variable (`source_code.scan_source_codes`), and
+    `per_variable_compiled_codes` what each compiles to within its variable's scope, `None`
+    for a variable with none.
     """
 
     date_request: DateRequest | None
@@ -403,6 +408,8 @@ class _ExtractionPrep:
     read_connectives: frozenset[int]
     per_variable_sources: list[tuple[SourceMention, ...]]
     per_variable_source_scopes: list[SourceScope | SourceRefusal | None]
+    per_variable_source_codes: list[str | None]
+    per_variable_compiled_codes: list[PartCode | None]
 
     def onto(self, region: RegionResult) -> RegionResult:
         """`region` holding what this extraction knows beyond it: the departures raised
@@ -458,6 +465,8 @@ def _prepare_extraction(
         index=get_index(),
     )
     per_variable_sources = scan.per_measure
+    # The extraction names no series code. A token of the query that writes a held one does.
+    per_variable_source_codes = scan_source_codes(query, measures=unique, index=get_index())
     extracted_entities = [
         entity
         for entity in extraction.entities
@@ -551,6 +560,14 @@ def _prepare_extraction(
         else None
         for mentions in per_variable_sources
     ]
+    per_variable_compiled_codes: list[PartCode | None] = [
+        compile_part_code(
+            code, scope=scope if isinstance(scope, SourceScope) else None, index=get_index()
+        )
+        if code is not None
+        else None
+        for code, scope in zip(per_variable_source_codes, per_variable_source_scopes, strict=True)
+    ]
 
     return _ExtractionPrep(
         date_request=date_request,
@@ -573,6 +590,8 @@ def _prepare_extraction(
         read_connectives=reading.read_connectives,
         per_variable_sources=per_variable_sources,
         per_variable_source_scopes=per_variable_source_scopes,
+        per_variable_source_codes=per_variable_source_codes,
+        per_variable_compiled_codes=per_variable_compiled_codes,
     )
 
 
@@ -595,6 +614,7 @@ def _log_unclaimed_words(prep: _ExtractionPrep, extraction: Extraction, *, query
         *(bound for date in extraction.dates for bound in (date.start, date.end) if bound),
         *([prep.unit_text] if prep.unit_text else []),
         *(m.text for mentions in prep.per_variable_sources for m in mentions if m.text),
+        *(code for code in prep.per_variable_source_codes if code),
     ]
     words = unclaimed_words(query, claimed=claimed, read_connectives=prep.read_connectives)
     if words:
@@ -654,6 +674,7 @@ async def _handle_single_variable(
         per_variable_date_requests=prep.per_variable_date_requests,
         per_variable_unit_texts=[prep.unit_text] * len(prep.unique),
         per_variable_source_scopes=prep.per_variable_source_scopes,
+        per_variable_source_codes=prep.per_variable_compiled_codes,
         unit_text_best_effort=True,
         include_option_coverage=params.include_option_coverage,
         stream_slot_options=params.stream_option_coverage,
@@ -766,6 +787,7 @@ async def _handle_multi_variable(
         per_variable_date_requests=prep.per_variable_date_requests,
         per_variable_unit_texts=[prep.unit_text] * len(prep.unique),
         per_variable_source_scopes=prep.per_variable_source_scopes,
+        per_variable_source_codes=prep.per_variable_compiled_codes,
         unit_text_best_effort=True,
         per_variable_separate=prep.separate,
         include_option_coverage=params.include_option_coverage,
@@ -892,6 +914,7 @@ async def handle(
             operations=prep.per_variable_operations,
             entity_roles=prep.entity_roles,
             sources=prep.per_variable_sources,
+            source_codes=prep.per_variable_source_codes,
             query_text=query if len(prep.unique) == 1 else None,
             separate=prep.separate,
             llm_usage=extract_usage,

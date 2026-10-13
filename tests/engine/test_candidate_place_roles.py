@@ -41,6 +41,7 @@ from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.core import resolve_async
 from search.engine.errors import GraphInfraError
 from search.engine.extract import Extraction
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import (
     candidate_admission,
     candidate_collapse,
@@ -51,6 +52,7 @@ from search.engine.region import (
     phase_rank_bind,
     pipeline,
 )
+from search.engine.region.candidates import _AlternatesRead
 from search.engine.region.phase_place_materialise import _phase_place_bindings
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.place_roles import (
@@ -87,6 +89,7 @@ from tests.engine._fake_coverage import (
 )
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query, offline_resolve
+from tests.engine._quantity import NO_QUANTITY
 from tests.engine._search_app import search_app
 from tests.engine._virtual_clock import VirtualRequests
 from tests.engine.test_dataset_resubmit import _identity_entry_from_spec
@@ -165,6 +168,8 @@ class _ElectFirstWithAlternate:
     """Elects the first shape on the menu and names the second as also plausible."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(chosen_shape_index=0, bindings=[], also_plausible=[1]), None
 
@@ -193,7 +198,7 @@ def _spec_serving(result, stat_var: str):
     specs = [
         spec
         for spec in result.specs
-        if [item.ref.dcid for item in spec.resolved.members] == [stat_var]
+        if [item.ref.ref for item in spec.resolved.members] == [stat_var]
     ]
     assert len(specs) == 1, [spec.resolved.stat_vars for spec in result.specs]
     return specs[0]
@@ -337,34 +342,37 @@ def test_role_bearing_alternate_beside_a_subject_only_election_binds_its_require
     )
     response = _options_status(graph, _ids_options_graph(), request)
     assert response.status_code == 200, response.json()
-    assert [item["value"]["ref"]["dcid"] for item in response.json()["options"]["items"]] == [_GHA]
+    assert [item["value"]["ref"]["ref"] for item in response.json()["options"]["items"]] == [_GHA]
 
 
 class _ElectFirstOnly:
     """Elects the first shape on the menu and names no alternate."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(chosen_shape_index=0, bindings=[], also_plausible=[]), None
 
 
-def test_reelected_subject_only_sibling_answers_under_its_own_place_roles() -> None:
-    """The IDS series is elected but has data only at Norway, so its subject-only sibling
-    GNI PPP is re-elected for Ghana. The definite spec binds Ghana as GNI PPP's subject, and
-    its identity resubmits to the same spec."""
-    query = "gross national income of Ghana"
-    order, scores = [_GNI_IDS, _GNI_PPP], [0.85, 0.84]
-    graph = _graph(query, order, scores)
+_GHANA_GNI = "gross national income of Ghana"
+_GHANA_GNI_ORDER, _GHANA_GNI_SCORES = [_GNI_IDS, _GNI_PPP], [0.85, 0.84]
+
+
+def _resolve_gni_of_ghana():
+    """Resolve "gross national income of Ghana" with the IDS series elected and holding data
+    only at Norway, beside its subject-only sibling GNI PPP, which holds data at Ghana."""
+    graph = _graph(_GHANA_GNI, _GHANA_GNI_ORDER, _GHANA_GNI_SCORES)
     coverage = FakeCoverageService(
         build_coverage_index([(_GNI_IDS, "f_ids", "", _NOR, _YEARS)], role_names=_ROLE_NAMES)
     )
-    result = asyncio.run(
+    return asyncio.run(
         resolve_variable(
-            query,
+            _GHANA_GNI,
             entities=["Ghana"],
             date_request=None,
-            detect_query=query,
-            role_query=query,
+            detect_query=_GHANA_GNI,
+            role_query=_GHANA_GNI,
             pac=True,
             graph=graph,
             resolver=make_resolver(graph),
@@ -375,9 +383,18 @@ def test_reelected_subject_only_sibling_answers_under_its_own_place_roles() -> N
         )
     )
 
+
+def test_reelected_subject_only_sibling_answers_under_its_own_place_roles() -> None:
+    """The IDS series is elected but has data only at Norway, so its subject-only sibling
+    GNI PPP is re-elected for Ghana. The definite spec binds Ghana as GNI PPP's subject, and
+    its identity resubmits to the same spec."""
+    query, order, scores = _GHANA_GNI, _GHANA_GNI_ORDER, _GHANA_GNI_SCORES
+    graph = _graph(query, order, scores)
+    result = _resolve_gni_of_ghana()
+
     assert result.status == "definite", result
     (spec,) = result.specs
-    assert [item.ref.dcid for item in spec.resolved.members] == [_GNI_PPP]
+    assert [item.ref.ref for item in spec.resolved.members] == [_GNI_PPP]
     assert "elected_shape_no_data" in [w.code for w in result.warnings]
     assert spec.definition.identity.entities == {"observationAbout": [_GHA]}
     assert [entity.role for entity in spec.resolved.entities] == ["observationAbout"]
@@ -391,6 +408,31 @@ def test_reelected_subject_only_sibling_answers_under_its_own_place_roles() -> N
     )
     assert replay.parts[0].status == "definite", replay.parts[0]
     assert replay.parts[0].spec.spec_id == spec.spec_id
+
+
+def test_a_sibling_beside_an_unevaluated_sibling_keeps_the_elected_no_data_answer(
+    monkeypatch,
+) -> None:
+    """The IDS series is elected with no data at Ghana and GNI PPP, its sibling, holds data
+    there, as in `test_reelected_subject_only_sibling_answers_under_its_own_place_roles`.
+    Another sibling's presence read after unbinding times out, so it is unevaluated rather
+    than disproven, and GNI PPP is not installed in the elected shape's place: the elected
+    no-data answer stands, as it does beside an over-cap sibling."""
+    materialise = phase_place_materialise._materialise_alt_shapes
+
+    def beside_a_timed_out_sibling(alternates, **kwargs) -> _AlternatesRead:
+        read = materialise(alternates, **kwargs)
+        timed_out = dataclasses.replace(alternates[0], bindings=[])
+        return read._replace(unevaluated=(*read.unevaluated, (timed_out, "timed_out")))
+
+    monkeypatch.setattr(
+        phase_place_materialise, "_materialise_alt_shapes", beside_a_timed_out_sibling
+    )
+
+    result = _resolve_gni_of_ghana()
+
+    assert result.status == "no_data", result
+    assert "elected_shape_no_data" not in [w.code for w in result.warnings]
 
 
 _GNI_IDS_BY_CREDITOR = "Amount_EconomicActivity_GrossNationalIncome_Nominal_ByCreditor"
@@ -499,7 +541,7 @@ def test_reelected_sibling_probes_reads_and_dates_every_subject_place(monkeypatc
 
     assert result.status == "definite", result
     (spec,) = result.specs
-    assert [item.ref.dcid for item in spec.resolved.members] == [_GNI_PPP]
+    assert [item.ref.ref for item in spec.resolved.members] == [_GNI_PPP]
     codes = [w.code for w in result.warnings]
     assert codes.count("direction_discarded") == 1, codes
     assert "elected_shape_no_data" in codes
@@ -562,7 +604,7 @@ def test_reelected_sibling_reports_its_own_carrier_warnings(monkeypatch) -> None
     monkeypatch.setattr(phase_place_materialise, "run_materialise", unverified_run_materialise)
     result = _resolve_mixed()
 
-    assert [item.ref.dcid for item in result.specs[0].resolved.members] == [_GNI_PPP]
+    assert [item.ref.ref for item in result.specs[0].resolved.members] == [_GNI_PPP]
     assert "role_declaration_unverified" not in [w.code for w in result.warnings]
 
 
@@ -670,7 +712,7 @@ def test_siblings_probed_in_separate_scopes_join_the_menu_in_rank_order() -> Non
     )
 
     assert result.status == "candidates", result
-    assert [[item.ref.dcid for item in spec.resolved.members] for spec in result.specs] == [
+    assert [[item.ref.ref for item in spec.resolved.members] for spec in result.specs] == [
         [_GNI_PPP],
         [_GNI_REAL_BY_CREDITOR],
         [_GNI_ATLAS],
@@ -695,6 +737,15 @@ _ELSEWHERE_ROWS = [
 ]
 
 
+_NORDIA_MEMBERS = ["country/DNK", "country/NOR", "country/SWE"]
+
+
+@pytest.fixture(autouse=True)
+def _regions(declare_regions):
+    """Search reads Nordia's members from the membership policy."""
+    declare_regions({_NORDIA: _NORDIA_MEMBERS})
+
+
 def _nordia_graph(order: list[str], scores: list[float], query: str = _NORDIA_QUERY) -> FakeGraph:
     """Nordia, a continent of three countries the provider role admits, beside Ghana. The
     IDS shape binds Ghana as recipient and Nordia as provider, as Nordia's node where it
@@ -702,7 +753,7 @@ def _nordia_graph(order: list[str], scores: list[float], query: str = _NORDIA_QU
     places). GNI PPP
     holds no observation at Nordia's node, so it binds Ghana and Nordia's three members as
     its subjects, four places."""
-    members = ["country/DNK", "country/NOR", "country/SWE"]
+    members = _NORDIA_MEMBERS
     return FakeGraph(
         nodes={
             **_MIXED_NODES,
@@ -755,7 +806,7 @@ def _resolve_nordia(
 
 
 def _served_members(result) -> list[list[str]]:
-    return [[item.ref.dcid for item in spec.resolved.members] for spec in result.specs]
+    return [[item.ref.ref for item in spec.resolved.members] for spec in result.specs]
 
 
 def _places_bound(result) -> list[int]:
@@ -1093,7 +1144,7 @@ def test_placeless_role_bearing_shape_takes_no_default_scope() -> None:
     )
 
     assert result.status == "definite", result
-    assert [item.ref.dcid for item in result.specs[0].resolved.members] == [_GNI_IDS]
+    assert [item.ref.ref for item in result.specs[0].resolved.members] == [_GNI_IDS]
     assert "place_scope_defaulted" not in [w.code for w in result.warnings]
     assert (["Earth"], "Country") not in enumerated
 
@@ -1141,7 +1192,7 @@ def test_alternate_whose_role_cannot_take_the_place_is_dropped(monkeypatch) -> N
     )
 
     assert result.status == "definite", result
-    assert [item.ref.dcid for item in result.specs[0].resolved.members] == [_GNI_PPP]
+    assert [item.ref.ref for item in result.specs[0].resolved.members] == [_GNI_PPP]
     assert result.specs[0].definition.identity.entities == {"observationAbout": [_NOR]}
     assert menus == [[(_GNI_PPP,)]]
 
@@ -1163,7 +1214,7 @@ def _state(*, names_and_roles: dict[str, list[DoorRole]], places: dict[str, str]
         entities=list(places),
         entity_roles=names_and_roles,
         place_sets=place_sets(places),
-        role_bearing_recalled=True,
+        role_bearing_outranks=True,
         date_request=None,
         detect_query="flow",
         role_query="flow",
@@ -1382,7 +1433,7 @@ def test_a_region_beside_a_rank_over_one_flow_axis_is_read_as_a_group() -> None:
 
 
 @pytest.mark.parametrize(
-    ("names_and_roles", "resolved", "role_bearing_recalled", "refused"),
+    ("names_and_roles", "resolved", "role_bearing_outranks", "refused"),
     [
         pytest.param(
             {"Kenya": ["destination"], "Norway": ["origin"]},
@@ -1418,12 +1469,12 @@ def test_a_region_beside_a_rank_over_one_flow_axis_is_read_as_a_group() -> None:
             {"Kenya": "country/KEN", "Norway": _NOR},
             False,
             False,
-            id="no-role-bearing-shape-recalled",
+            id="no-role-bearing-shape-outranks",
         ),
     ],
 )
 def test_subject_shapes_are_refused_only_when_both_resolved_flow_ends_are_named(
-    names_and_roles, resolved, role_bearing_recalled, refused
+    names_and_roles, resolved, role_bearing_outranks, refused
 ) -> None:
     """The predicate that drops subject-only shapes from election matches the binder's
     refusal of every subject-only shape."""
@@ -1434,7 +1485,7 @@ def test_subject_shapes_are_refused_only_when_both_resolved_flow_ends_are_named(
         places=resolved,
     )
     state.entities = list(names_and_roles) or list(resolved)
-    state.role_bearing_recalled = role_bearing_recalled
+    state.role_bearing_outranks = role_bearing_outranks
     subject_shape = _shape_for(_economic_activity_arcs("Nominal", {}))
 
     assert subject_shapes_refused(state) is refused
@@ -1538,7 +1589,7 @@ def test_each_candidates_read_plan_reads_its_own_place_role(monkeypatch, order) 
     def _spy(state, candidate_triples):
         grounded = real(state, candidate_triples)
         for spec in grounded.specs:
-            plans[spec.resolved.members[0].ref.dcid] = grounded.cand_plans.get(spec.spec_id)
+            plans[spec.resolved.members[0].ref.ref] = grounded.cand_plans.get(spec.spec_id)
         return grounded
 
     monkeypatch.setattr(candidate_collapse, "ground_candidates", _spy)
@@ -1576,7 +1627,7 @@ def _scenario_candidates(monkeypatch, scenario_id: str, search_settings, **chang
     def _ground(state, cands):
         grounded = real_ground(state, cands)
         for spec in grounded.specs:
-            grounded_by_sv[spec.resolved.members[0].ref.dcid] = SimpleNamespace(
+            grounded_by_sv[spec.resolved.members[0].ref.ref] = SimpleNamespace(
                 spec=spec,
                 probe_entities=grounded.cand_probe_entities[spec.spec_id],
                 place=grounded.cand_places[spec.spec_id],
@@ -1882,7 +1933,7 @@ def test_no_presence_read_is_made_for_an_alternate_the_admission_guards_reject(
 
     assert result.status == "definite", result
     (spec,) = result.specs
-    assert [sv.ref.dcid for sv in spec.resolved.members] == [scenarios._IDS]
+    assert [sv.ref.ref for sv in spec.resolved.members] == [scenarios._IDS]
     assert reads == []
 
 
@@ -2445,7 +2496,7 @@ def test_a_tied_reading_left_unevaluated_keeps_its_tie_on_the_elected_answer(
     scenario = _tied_trade_scenario(monkeypatch, trade_places)
 
     def _stat_vars(result: Any) -> list[str]:
-        return [spec.resolved.members[0].ref.dcid for spec in result.specs]
+        return [spec.resolved.members[0].ref.ref for spec in result.specs]
 
     free = scenarios._resolve(scenario)
     assert free.status == "candidates", free
@@ -2631,7 +2682,9 @@ def test_a_capped_alternate_s_refusal_beside_an_evaluated_alternate_is_not_degra
         code="scope_too_broad", pointer="/parts/0", detail="the trade reading is capped"
     )
     monkeypatch.setattr(
-        candidate_admission, "_materialise_alt_shapes", lambda *args, **kwargs: ([], refusal)
+        candidate_admission,
+        "_materialise_alt_shapes",
+        lambda *args, presence, **kwargs: _AlternatesRead([], refusal, presence, ()),
     )
 
     answer = scenarios._resolve(scenario)
@@ -2639,6 +2692,30 @@ def test_a_capped_alternate_s_refusal_beside_an_evaluated_alternate_is_not_degra
     assert answer.status == "unsupported", answer
     assert not _states_unevaluated(answer, "upstream_error")
     assert not answer.alternates_left_out
+
+
+@pytest.mark.parametrize("reason", ["timed_out", "upstream_error"])
+def test_a_tied_alternate_whose_presence_read_after_unbinding_fails_is_unevaluated(
+    monkeypatch, reason
+) -> None:
+    """The tied trade reading's presence is known, and materialising it unbinds values that
+    match no member together; the presence read its relaxed bindings need does not complete
+    (`candidates._presence_after_unbinding`). The reading is unevaluated, not found empty:
+    the answer states `alternates_unevaluated` for that reason and stays out of the cache."""
+    scenario = _tied_trade_scenario(monkeypatch, ())
+    _seeding_known_trade_presence(monkeypatch)
+    monkeypatch.setattr(
+        candidate_admission,
+        "_materialise_alt_shapes",
+        lambda alternates, *args, presence, **kwargs: _AlternatesRead(
+            [], None, presence, tuple((alternate, reason) for alternate in alternates)
+        ),
+    )
+
+    answer = scenarios._resolve(scenario)
+
+    assert _states_unevaluated(answer, reason)
+    assert answer.alternates_left_out
 
 
 @pytest.mark.parametrize("left_unevaluated", [True, False])

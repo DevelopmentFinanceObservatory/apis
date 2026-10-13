@@ -144,10 +144,10 @@ def _inflation_arcs() -> dict:
 def test_inflation_in_pakistan_offers_five_macroeconomic_dashboard_members():
     found = _read(_pakistan_graph(), arcs=_inflation_arcs())
 
-    assert found.group == GraphRef(dcid=_DASHBOARD, label="17.13.1: Macroeconomic Dashboard")
+    assert found.group == GraphRef(ref=_DASHBOARD, label="17.13.1: Macroeconomic Dashboard")
     assert [m.dcids for m in found.members] == [(dcid,) for dcid in _FIRST_FIVE]
     assert found.members[0].stat_var == GraphRef(
-        dcid=_FIRST_FIVE[0], label="Current account balance as a proportion of GDP"
+        ref=_FIRST_FIVE[0], label="Current account balance as a proportion of GDP"
     )
 
 
@@ -252,7 +252,7 @@ def test_the_smallest_group_of_2_to_40_members_is_read(sizes, elected_in, chosen
     if chosen is None:
         assert found == NO_RELATED
         return
-    assert found.group == GraphRef(dcid=chosen, label=f"Group {chosen}")
+    assert found.group == GraphRef(ref=chosen, label=f"Group {chosen}")
     assert [m.dcids for m in found.members] == [
         (f"{chosen}_member_{i:02d}",) for i in range(min(5, sizes[chosen] - 1))
     ]
@@ -367,7 +367,7 @@ def test_a_member_identity_is_its_own_shape_and_constraints_with_the_answer_plac
     arcs = nodes["Both_Places"]["arcs"]
     member = related.RelatedMember(
         dcids=("Both_Places",),
-        stat_var=GraphRef(dcid="Both_Places", label="Female count"),
+        stat_var=GraphRef(ref="Both_Places", label="Female count"),
         five_tuple=read_five_tuple(arcs),
         constraints={"gender": "Female"},
     )
@@ -394,11 +394,11 @@ def test_a_member_identity_is_its_own_shape_and_constraints_with_the_answer_plac
     elected = elected.model_copy(update={"open_roles": ["origin"]})
 
     [measure] = related_measures(
-        Related(group=GraphRef(dcid="g/a", label="Group a"), members=(member,)), elected
+        Related(group=GraphRef(ref="g/a", label="Group a"), members=(member,)), elected
     )
 
     identity = measure.definition.identity
-    assert measure.stat_var == GraphRef(dcid="Both_Places", label="Female count")
+    assert measure.stat_var == GraphRef(ref="Both_Places", label="Female count")
     assert identity.model_dump(include={"shape"}, exclude_none=True)["shape"] == {
         "kind": "statvar_schema",
         "population_type": "Person",
@@ -432,7 +432,7 @@ def test_every_inflation_in_pakistan_member_resubmits_to_a_definite_answer_elect
     assert f"{_INFLATION}_TWIN" not in named
     twinned, twinned_measure = next(pair for pair in pairs if _TWINNED in pair[0].dcids)
     assert twinned_measure.stat_var == twinned.stat_var
-    assert twinned.stat_var.dcid == _TWINNED
+    assert twinned.stat_var.ref == _TWINNED
     assert twinned.dcids == ((_TWINNED, f"{_TWINNED}_TWIN") if twins else (_TWINNED,))
 
     mint_graph = _mint_graph(nodes)
@@ -443,7 +443,7 @@ def test_every_inflation_in_pakistan_member_resubmits_to_a_definite_answer_elect
         [spec] = region.specs
         assert spec.spec_id == measure.definition.spec_id
         assert spec.resolved.stat_vars.member_count == len(member.dcids)
-        assert {sv.ref.dcid for sv in spec.resolved.members} <= set(member.dcids)
+        assert {sv.ref.ref for sv in spec.resolved.members} <= set(member.dcids)
         # A Datasets mint of the definition reads them.
         family = resolve_definition_members(
             measure.definition.identity.model_dump(exclude_none=True),
@@ -460,19 +460,19 @@ def test_every_inflation_in_pakistan_member_resubmits_to_a_definite_answer_elect
             continue
         # The answer lists its own siblings, never itself.
         assert spec.resolved.related_group == GraphRef(
-            dcid=_DASHBOARD, label="17.13.1: Macroeconomic Dashboard"
+            ref=_DASHBOARD, label="17.13.1: Macroeconomic Dashboard"
         )
-        listed = {m.stat_var.dcid for m in spec.resolved.related_measures or ()}
+        listed = {m.stat_var.ref for m in spec.resolved.related_measures or ()}
         assert listed
         assert listed.isdisjoint(member.dcids)
 
 
 def test_a_resubmitted_sibling_lists_its_own_siblings():
-    measure = next(m for m in _pakistan_measures() if m.stat_var.dcid == "sdg/BN_CAB_XOKA_GD_ZS")
+    measure = next(m for m in _pakistan_measures() if m.stat_var.ref == "sdg/BN_CAB_XOKA_GD_ZS")
 
     [spec] = _resubmit(measure, _pakistan_graph()).specs
 
-    assert [m.stat_var.dcid for m in spec.resolved.related_measures or ()] == [
+    assert [m.stat_var.ref for m in spec.resolved.related_measures or ()] == [
         "sdg/BN_KLT_PTXL_CD",
         "sdg/BX_KLT_DINV_WD_GD_ZS",
         "sdg/DT_DOD_DECT_GN_ZS",
@@ -522,7 +522,7 @@ def test_a_resubmit_waits_for_its_related_read_however_it_answers(
         return NO_RELATED
 
     monkeypatch.setattr(related_read, "read_related", _slow_read)
-    measure = next(m for m in _pakistan_measures() if m.stat_var.dcid == _CAB)
+    measure = next(m for m in _pakistan_measures() if m.stat_var.ref == _CAB)
     posted = measure.definition.identity.model_dump(exclude_none=True)
     posted["entities"] = {"observationAbout": places} if places else {}
     if facets is not None:
@@ -555,7 +555,7 @@ def test_a_resubmit_logs_a_failed_related_read_it_answers_without(monkeypatch, c
         raise ValueError("a malformed page")
 
     monkeypatch.setattr(related_read, "read_related", _broken_read)
-    measure = next(m for m in _pakistan_measures() if m.stat_var.dcid == _CAB)
+    measure = next(m for m in _pakistan_measures() if m.stat_var.ref == _CAB)
     posted = measure.definition.identity.model_dump(exclude_none=True)
     posted["entities"] = {"observationAbout": [_KEN]}
     identity = BaseIdentity.model_validate(posted)
@@ -642,11 +642,11 @@ def test_a_definite_answer_carries_its_related_group_and_measures():
     [part] = offline_resolve(make_request("population of Kenya")).parts
 
     resolved = part.spec.resolved
-    assert resolved.related_group == GraphRef(dcid="dc/g/Demographics", label="dc/g/Demographics")
+    assert resolved.related_group == GraphRef(ref="dc/g/Demographics", label="dc/g/Demographics")
     assert [m.stat_var for m in resolved.related_measures or ()] == [
-        GraphRef(dcid="GrowthRate_Count_Person", label="Rate of Population Growth"),
-        GraphRef(dcid="LifeExpectancy_Person", label="Life Expectancy"),
-        GraphRef(dcid="Count_Person_PerArea", label="Population Density"),
+        GraphRef(ref="GrowthRate_Count_Person", label="Rate of Population Growth"),
+        GraphRef(ref="LifeExpectancy_Person", label="Life Expectancy"),
+        GraphRef(ref="Count_Person_PerArea", label="Population Density"),
     ]
 
 
@@ -676,7 +676,7 @@ def test_a_resubmit_whose_related_read_failed_is_degraded(graph_type, degraded: 
     read leaves the Spec without related measures and marks the region degraded, so no cache
     stores it."""
     nodes, obs = _pakistan_nodes()
-    measure = next(m for m in _pakistan_measures() if m.stat_var.dcid == _CAB)
+    measure = next(m for m in _pakistan_measures() if m.stat_var.ref == _CAB)
 
     region = _resubmit(measure, graph_type(nodes=nodes, obs=obs, detect={}, resolve={}))
 
@@ -726,7 +726,7 @@ def _stalled_first_answer() -> Spec:
 
 def _stalled_resubmit() -> Spec:
     nodes, obs = _pakistan_nodes()
-    measure = next(m for m in _pakistan_measures() if m.stat_var.dcid == _CAB)
+    measure = next(m for m in _pakistan_measures() if m.stat_var.ref == _CAB)
     graph = _StalledSubjects(nodes=nodes, obs=obs, detect={}, resolve={})
     [spec] = _resubmit(measure, graph).specs
     return spec
@@ -749,7 +749,7 @@ def test_an_offline_read_stalled_past_its_deadline_is_still_stated(
     spec = answer()
 
     assert spec.resolved.related_group is not None
-    assert spec.resolved.related_group.dcid == group
+    assert spec.resolved.related_group.ref == group
 
 
 def _first_answer() -> Coroutine[Any, Any, object]:
@@ -761,7 +761,7 @@ def _first_answer() -> Coroutine[Any, Any, object]:
 def _sibling_resubmit() -> Coroutine[Any, Any, object]:
     """A resubmit of the current account balance, a Macroeconomic Dashboard member, in
     Pakistan, run off the event loop as the resubmit door runs it."""
-    measure = next(m for m in _pakistan_measures() if m.stat_var.dcid == "sdg/BN_CAB_XOKA_GD_ZS")
+    measure = next(m for m in _pakistan_measures() if m.stat_var.ref == "sdg/BN_CAB_XOKA_GD_ZS")
     return asyncio.to_thread(_resubmit, measure, _pakistan_graph())
 
 

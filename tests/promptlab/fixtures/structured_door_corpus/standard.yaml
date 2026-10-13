@@ -23,7 +23,7 @@
         kind: value
         value:
           ref:
-            dcid: country/IND
+            ref: country/IND
             label: India
           value_kind: entity
           time_window: null
@@ -31,7 +31,7 @@
     - key:
         axis: how
         property:
-          dcid: activitySource
+          ref: activitySource
           label: activity source
         label: activity source
       binding:

@@ -1,14 +1,33 @@
 """Tests the label `derive_shapes` gives a shape: an index family reads as what every
 row of the family shares, a multi-member UN System family as its population type plus
-the values every member shares, and every other shape keeps its member's name."""
+the values every member shares, and every other shape keeps its member's name. A resubmit
+of a first answer's identity takes the first answer's label."""
 
 from __future__ import annotations
+
+import asyncio
 
 import pytest
 
 from code_index.shared import get_index
+from origin_catalogue import UN_SYSTEM
+from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.quantity_read import QuantityOutput
+from search.engine.region import resolve_spec_resubmit, resolve_variable
+from search.engine.region.state import EngineOptions
 from search.engine.retrieval.derive import derive_shapes
-from tests.fixtures import FakeGraph
+from search.models import ResubmitIdentityPayload
+from tests.engine._fake_coverage import empty_coverage_snapshot
+from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._harness import walk_options
+from tests.engine._quantity import NO_QUANTITY
+from tests.fixtures import FakeGraph, make_resolver
+from tests.origin_catalogue.fake_catalogue import (
+    provenance_row,
+    restrictive_catalogue,
+    un_mirror,
+    un_variable,
+)
 
 _CME = "undata/unicef/SERIES-CME_MR"
 _NUT = "undata/who/SERIES-NUT_ANTH_SH"
@@ -228,3 +247,89 @@ def test_index_family_reads_as_what_every_row_shares(dcid, name, expected):
     )
 
     assert [shape.label for shape in shapes] == [expected]
+
+
+_MORT = "undata/who/SERIES-MORT_U5_RATE"
+_MORT_TOTAL = "undata/who/MORT_U5_RATE"
+_MORT_FEMALE = "undata/who/MORT_U5_RATE.SEX--F"
+
+
+class _BindFemaleLLM:
+    """Elects the first shape and binds its sex slot to female."""
+
+    async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
+        female = SlotBindingDraft(
+            axis="how", property_dcid="undataSex", kind="value", value_dcids=["undata/SEX-F"]
+        )
+        return _UniversalBindOutput(chosen_shape_index=0, bindings=[female], ask=None), None
+
+
+def test_a_resubmit_labels_a_held_family_as_its_first_answer_does(bind_catalogue):
+    """A UN series the catalogue holds reads as its total's name on a first answer that binds
+    the by-sex member, and the resubmit of that answer's identity, whose members are the
+    by-sex member alone, reads the same."""
+    bind_catalogue(
+        restrictive_catalogue(
+            provenances=[provenance_row("undata/p/WHO", UN_SYSTEM, segment="who")],
+            un_mirror=un_mirror(
+                {
+                    _MORT_TOTAL: un_variable(_MORT, name="Under-five mortality rate"),
+                    _MORT_FEMALE: un_variable(
+                        _MORT,
+                        name="Under-five mortality rate [Sex=Female]",
+                        constraints={"undataSex": ("Sex", "undata/SEX-F", "Female")},
+                    ),
+                }
+            ),
+        )
+    )
+    query = "female under-five mortality in Kenya"
+    facet = {"earliestDate": "2015", "latestDate": "2020", "obsCount": 5}
+    graph = FakeGraph(
+        nodes={
+            **{dcid: {"label": label} for dcid, label in _UN_LABELS.items()},
+            "country/KEN": {"label": "Kenya", "type": "Country"},
+            _MORT: {"label": "Under-five mortality rate"},
+            _MORT_TOTAL: _un_member("Under-five mortality rate", _MORT, {}),
+            _MORT_FEMALE: _un_member(
+                "Under-five mortality rate [Sex=Female]", _MORT, {"undataSex": "undata/SEX-F"}
+            ),
+        },
+        obs={f"{dcid}|country/KEN": [facet] for dcid in (_MORT_TOTAL, _MORT_FEMALE)},
+        detect={query: {"svs": [_MORT_FEMALE], "cosine_scores": [0.9]}},
+        resolve={"Kenya": "country/KEN"},
+    )
+    sdmx = FakeSdmxClient(observations={}, availability={})
+
+    first = asyncio.run(
+        resolve_variable(
+            query,
+            entities=["Kenya"],
+            date_request=None,
+            detect_query=query,
+            role_query=query,
+            pac=True,
+            graph=graph,
+            resolver=make_resolver(graph),
+            sdmx=sdmx,
+            llm=_BindFemaleLLM(),
+            base_timing={},
+            coverage=empty_coverage_snapshot(),
+            options=EngineOptions(deadline=None),
+        )
+    )
+    (answer,) = first.specs
+    resubmit = resolve_spec_resubmit(
+        inp=ResubmitIdentityPayload(identity=answer.definition.identity),
+        graph=graph,
+        sdmx=sdmx,
+        coverage=empty_coverage_snapshot(),
+        options=walk_options(graph),
+    )
+    (again,) = resubmit.specs
+
+    assert [sv.ref.ref for sv in again.resolved.members] == [_MORT_FEMALE]
+    assert answer.resolved.shape.label == "Under-five mortality rate"
+    assert again.resolved.shape.label == answer.resolved.shape.label

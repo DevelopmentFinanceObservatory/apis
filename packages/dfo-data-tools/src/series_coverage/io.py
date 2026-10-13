@@ -13,6 +13,7 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from artifact_publication.jobs import Ingestion
 from series_coverage.schema import (
     CoverageManifest,
     CoveragePointer,
@@ -78,6 +79,7 @@ def write_manifest(manifest: CoverageManifest, path: Path) -> None:
         "files": manifest.files,
         "epoch_year": manifest.horizon.epoch_year,
         "mask_words": manifest.horizon.mask_words,
+        "ingestion": None if manifest.ingestion is None else manifest.ingestion.to_json(),
         "format_version": manifest.format_version,
     }
     path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
@@ -86,7 +88,8 @@ def write_manifest(manifest: CoverageManifest, path: Path) -> None:
 def read_manifest(path: Path) -> CoverageManifest:
     """Raises `KeyError` naming the missing field for a manifest missing
     any of `stamp`/`build_id`/`built_at`/`source`/`row_counts`/`files`/
-    `epoch_year`/`mask_words`/`format_version`.
+    `epoch_year`/`mask_words`/`format_version`. A manifest without
+    `ingestion` reads as `None`.
     """
     payload = json.loads(path.read_text(encoding="utf-8"))
     try:
@@ -99,6 +102,11 @@ def read_manifest(path: Path) -> CoverageManifest:
             files=dict(payload["files"]),
             horizon=YearHorizon(
                 epoch_year=int(payload["epoch_year"]), mask_words=int(payload["mask_words"])
+            ),
+            ingestion=(
+                None
+                if (ingestion := payload.get("ingestion")) is None
+                else Ingestion.from_json(ingestion)
             ),
             format_version=int(payload["format_version"]),
         )

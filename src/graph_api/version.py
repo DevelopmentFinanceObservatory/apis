@@ -4,13 +4,17 @@ The response determines the token, so an environment variable cannot misstate it
 
 The hash covers three inputs:
 
-1. The capability document with `capability_version` and `build` pinned.
-   Published limits and door liveness affect the token. Rebuilds with
-   unchanged values keep the token stable.
+1. The capability document with `capability_version`, `build` and
+   `data_builds` pinned. Published limits and door liveness affect the
+   token. Rebuilds with unchanged values, and new data builds, keep the
+   token stable.
 2. Rendered refusal bodies for every code in `GRAPH_CODE_CATALOGUE`.
-3. The health, resolve, node, source-documentation, and source-catalogue
-   schemas, sorted by name and stripped of `description` and `title`.
-   Schema structure affects the token. The hash strips description and title text.
+3. The schemas `GET /api/graph/schema` serves
+   (`graph_api.doors.schema.served_wire_schemas`), sorted by name, with
+   `description` and `title` annotations removed by
+   `strip_schema_annotations`. Field names, types,
+   `enum`, `const` and `default` values affect the token; annotation prose
+   does not.
 
 Inputs are injectable for perturbation tests. Capability values are hashed
 as served, so deployments with different limits have different tokens.
@@ -23,15 +27,12 @@ import hashlib
 import json
 from collections.abc import Mapping
 
-from pydantic import TypeAdapter
-
-from dfo_platform import Alternative, CodeCatalogue, Envelope, HealthResponse, ProblemIssue
+from dfo_platform import Alternative, CodeCatalogue, Envelope, ProblemIssue
+from dfo_platform.schema_annotations import strip_schema_annotations
 from dfo_platform.trace import set_trace_id
-from graph_api.capabilities import build_capabilities
+from graph_api.capabilities import DataBuilds, build_capabilities
 from graph_api.codes import GRAPH_CODE_CATALOGUE
-from graph_api.node_models import NodeResponse
-from graph_api.resolve_models import ResolveRequest, ResolveResponse
-from graph_api.source_models import SourceCatalogue, SourceDocumentation
+from graph_api.doors.schema import served_wire_schemas
 
 # Fix the trace id so rendered refusal bodies hash deterministically.
 _EXEMPLAR_TRACE_ID = "0" * 32
@@ -43,24 +44,12 @@ _EXEMPLAR_CAPABILITY_VERSION = "graph_exemplar_placeholder"
 _EXEMPLAR_BUILD = "graph-exemplar-build-placeholder"
 
 
-def _strip_wire_invisible_keys(value: object) -> object:
-    """Remove `description` and `title` keys recursively before hashing a schema."""
-    if isinstance(value, dict):
-        return {
-            key: _strip_wire_invisible_keys(val)
-            for key, val in value.items()
-            if key not in ("description", "title")
-        }
-    if isinstance(value, list):
-        return [_strip_wire_invisible_keys(item) for item in value]
-    return value
-
-
 def _pin_capability_version_and_build(document: Mapping[str, object]) -> dict[str, object]:
     """Pin deployment-specific fields on a copy of the capability document."""
     pinned = dict(document)
     pinned["capability_version"] = _EXEMPLAR_CAPABILITY_VERSION
     pinned["build"] = _EXEMPLAR_BUILD
+    pinned["data_builds"] = DataBuilds().model_dump(mode="json")
     return pinned
 
 
@@ -116,14 +105,7 @@ def _compute_graph_capability_version(
             capability_version=_EXEMPLAR_CAPABILITY_VERSION, build=_EXEMPLAR_BUILD
         ).model_dump(mode="json")
     if wire_schemas is None:
-        wire_schemas = {
-            "health_response": HealthResponse.model_json_schema(),
-            "resolve_request": ResolveRequest.model_json_schema(),
-            "resolve_response": ResolveResponse.model_json_schema(),
-            "node_response": TypeAdapter(NodeResponse).json_schema(),
-            "source_documentation_response": SourceDocumentation.model_json_schema(),
-            "source_catalogue_response": SourceCatalogue.model_json_schema(),
-        }
+        wire_schemas = served_wire_schemas()
 
     payload = {
         "capability_document": _pin_capability_version_and_build(capability_document),
@@ -131,8 +113,7 @@ def _compute_graph_capability_version(
             _render_body_exemplars, code_catalogue
         ),
         "wire_schemas": {
-            name: _strip_wire_invisible_keys(schema)
-            for name, schema in sorted(wire_schemas.items())
+            name: strip_schema_annotations(schema) for name, schema in sorted(wire_schemas.items())
         },
     }
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))

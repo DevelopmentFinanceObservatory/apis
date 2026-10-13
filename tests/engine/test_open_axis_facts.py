@@ -153,7 +153,7 @@ def test_varying_axis_publishes_varies_true():
     purpose = next(f for f in published if f.property == "crsPurpose")
     assert purpose.varies is False
     assert purpose.distinct_count == 1
-    assert purpose.value == GraphRef(dcid="CRSPurposeCode11330", label="vocational training")
+    assert purpose.value == GraphRef(ref="CRSPurposeCode11330", label="vocational training")
 
 
 def test_agreed_value_absent_when_every_member_declares_nothing():
@@ -199,18 +199,34 @@ def test_each_declared_value_publishes_its_member_count():
 
     assert published is not None
     by_property = {f.property: f for f in published}
-    assert [(v.value.dcid, v.count) for v in by_property["crsPurpose"].values] == [
+    assert [(v.value.ref, v.count) for v in by_property["crsPurpose"].values] == [
         ("CRSPurposeCode11330", 2),
         ("CRSPurposeCode11110", 1),
     ]
     assert by_property["crsPurpose"].values[0].value.label == "vocational training"
-    assert [(v.value.dcid, v.count) for v in by_property["crsCooperationModality"].values] == [
+    assert [(v.value.ref, v.count) for v in by_property["crsCooperationModality"].values] == [
         ("CRSCooperationModalityA01", 1),
         ("CRSCooperationModalityA02", 1),
     ]
     for fact in published:
         assert sum(v.count for v in fact.values) + fact.undeclared_count == len(members)
         assert len(fact.values) == fact.distinct_count
+
+
+def test_values_tied_on_member_count_order_by_label():
+    """The composer's `ranked_values` rule: ties order by label, whatever the dcids' order."""
+    facts = (
+        OpenAxisFact(
+            property="undataSex",
+            member_values={"sv1": "undata/SEX-A", "sv2": "undata/SEX-B"},
+            value_names={"undata/SEX-A": "Zeta", "undata/SEX-B": "Alpha"},
+        ),
+    )
+
+    published = _open_axis_facts(facts)
+
+    assert published is not None
+    assert [v.value.ref for v in published[0].values] == ["undata/SEX-B", "undata/SEX-A"]
 
 
 def _un_member_arcs(sex_name: str | None) -> dict:
@@ -228,7 +244,7 @@ def test_a_value_the_code_index_lacks_publishes_its_graph_name():
     published = _open_axis_facts(facts)
 
     assert published is not None
-    assert published[0].value == GraphRef(dcid="undata/SEX-M", label="Male")
+    assert published[0].value == GraphRef(ref="undata/SEX-M", label="Male")
 
 
 def test_a_value_with_no_graph_name_publishes_its_dcid():
@@ -237,7 +253,7 @@ def test_a_value_with_no_graph_name_publishes_its_dcid():
     published = _open_axis_facts(facts)
 
     assert published is not None
-    assert published[0].value == GraphRef(dcid="undata/SEX-M", label="undata/SEX-M")
+    assert published[0].value == GraphRef(ref="undata/SEX-M", label="undata/SEX-M")
 
 
 @pytest.mark.parametrize(

@@ -11,6 +11,7 @@ from code_index.shared import get_index
 from materialise.rate_tables import RateTableCache
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.clients.graph import Facet
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.region.state import EngineOptions
 from series_coverage.schema import FacetMetadata, RoleNames
@@ -21,6 +22,7 @@ from tests.engine._harness import (
     build_materialise_double,
     door_roles_for_test_query,
 )
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 from tests.fixtures.provenance import index_provenance
 from tests.materialise.conftest import FakeGraphReader
@@ -145,6 +147,8 @@ _SDMX_OBS = {
 
 class _ElectGrantEquivalentAlsoPlausibleAmountLLM:
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0,
@@ -247,9 +251,9 @@ def test_the_unit_incompatible_survivor_is_dropped_before_the_fold_can_hide_its_
     assert result.status == "definite", result
     assert len(result.specs) == 1
     survivor = result.specs[0]
-    assert any(sv.ref.dcid == _ALT_SV for sv in survivor.resolved.members), (
+    assert any(sv.ref.ref == _ALT_SV for sv in survivor.resolved.members), (
         f"expected the unit-compatible sibling {_ALT_SV!r} to answer, "
-        f"got {[sv.ref.dcid for sv in survivor.resolved.members]!r}"
+        f"got {[sv.ref.ref for sv in survivor.resolved.members]!r}"
     )
 
 
@@ -278,7 +282,7 @@ def test_lone_survivor_carries_its_own_member_population(monkeypatch):
     result = _run(monkeypatch)
     assert result.status == "definite", result
     survivor = result.specs[0]
-    assert any(sv.ref.dcid == _ALT_SV for sv in survivor.resolved.members)
+    assert any(sv.ref.ref == _ALT_SV for sv in survivor.resolved.members)
 
     assert result.member_population is not None
     assert result.member_population.admitted_dcids == (_ALT_SV,)

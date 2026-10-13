@@ -12,6 +12,7 @@ import asyncio
 import pytest
 
 from search.engine.bind import _UniversalBindOutput
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import (
     NEAR_NEIGHBOR_AMBIGUOUS,
     NEAR_NEIGHBOR_POOL_WIDENED,
@@ -20,6 +21,7 @@ from search.engine.region import (
 )
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 # The tied, data-less ratio alternate is distinct from the lower-ranked alternate with data.
@@ -81,6 +83,8 @@ class _FixedBindLLM:
         self._also_plausible = also_plausible
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0,
@@ -143,7 +147,7 @@ class TestPoolWidenedWhenPrimaryNeighborLacksData:
 
     def test_tied_dataless_neighbor_excluded_expenditure_included(self):
         result = self._result()
-        sv_dcids = {sv.ref.dcid for s in result.specs for sv in s.resolved.members}
+        sv_dcids = {sv.ref.ref for s in result.specs for sv in s.resolved.members}
         assert len(result.specs) == 2
         assert _SV_INCIDENCE in sv_dcids
         assert _SV_EXPENDITURE in sv_dcids
@@ -167,7 +171,7 @@ class TestPoolWidenedWhenPrimaryNeighborLacksData:
             assert NEAR_NEIGHBOR_POOL_WIDENED in codes
         else:
             assert result.near_neighbor_fired is True
-            sv_dcids = {sv.ref.dcid for spec in result.specs for sv in spec.resolved.members}
+            sv_dcids = {sv.ref.ref for spec in result.specs for sv in spec.resolved.members}
             assert _SV_CONDITION_COUNT not in sv_dcids
 
 

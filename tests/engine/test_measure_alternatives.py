@@ -125,9 +125,9 @@ def _elected_shape(meas_prop: str, pop_type: str) -> dict:
 
 def _slot(prop: str, value: str) -> Slot:
     return Slot(
-        key=SlotKey(axis="what", property=GraphRef(dcid=prop, label=prop), label=prop),
+        key=SlotKey(axis="what", property=GraphRef(ref=prop, label=prop), label=prop),
         binding=BindingValue(
-            value=SlotValue(ref=GraphRef(dcid=value, label=value), value_kind="enum_value")
+            value=SlotValue(ref=GraphRef(ref=value, label=value), value_kind="enum_value")
         ),
     )
 
@@ -177,7 +177,7 @@ def test_siblings_reach_the_output_in_stable_order_with_distinct_labels(monkeypa
     assert alternatives is not None
     assert [a.label for a in alternatives] == ["count (gadget)", "count (gizmo)"]
     assert [
-        [(v.axis, v.value.dcid, v.value.label) for v in a.measure_axis_values] for a in alternatives
+        [(v.axis, v.value.ref, v.value.label) for v in a.measure_axis_values] for a in alternatives
     ] == [
         [
             ("measuredProperty", "count", "count"),

@@ -478,7 +478,7 @@ def _state(
             entity_roles=roles,
             operations=tuple(operations),
             open_axes=frozenset(),
-            role_bearing_recalled=False,
+            role_bearing_outranks=False,
             role_query="",
             shape_draft=None,
             elected_place_roles=None,

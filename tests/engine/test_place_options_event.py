@@ -161,11 +161,11 @@ class TestBuildPlaceOptionsEvents:
         # Peers: every Country under Earth with data -- the anchor's own
         # type. surface.py does not exclude the anchor itself from its own
         # peer list.
-        peer_dcids = {opt.value.ref.dcid for opt in by_scope["peers"].options}
+        peer_dcids = {opt.value.ref.ref for opt in by_scope["peers"].options}
         assert peer_dcids == {_KENYA, _UGANDA}
 
         # Children: Kenya's own AdministrativeArea1 descendants with data.
-        child_dcids = {opt.value.ref.dcid for opt in by_scope["children"].options}
+        child_dcids = {opt.value.ref.ref for opt in by_scope["children"].options}
         assert child_dcids == {_KENYA_COAST}
 
     def test_a_scope_the_anchor_type_does_not_support_is_dropped(self):
@@ -179,7 +179,7 @@ class TestBuildPlaceOptionsEvents:
         (event,) = events
         assert event.scope == "children"
         assert event.anchor_ref == _EARTH
-        assert {opt.value.ref.dcid for opt in event.options} == {_AFRICA}
+        assert {opt.value.ref.ref for opt in event.options} == {_AFRICA}
 
     def test_no_observation_about_binding_returns_no_events(self):
         assert _build(_identity({})) == []
@@ -392,9 +392,9 @@ class TestPlaceOptionsPoolMechanics:
 
         assert [ev.scope for ev in events] == ["peers", "children"]
         by_scope = {ev.scope: ev for ev in events}
-        peer_dcids = {opt.value.ref.dcid for opt in by_scope["peers"].options}
+        peer_dcids = {opt.value.ref.ref for opt in by_scope["peers"].options}
         assert peer_dcids == {_KENYA, _UGANDA}
-        child_dcids = {opt.value.ref.dcid for opt in by_scope["children"].options}
+        child_dcids = {opt.value.ref.ref for opt in by_scope["children"].options}
         assert child_dcids == {_KENYA_COAST}
 
 
@@ -415,7 +415,7 @@ def test_place_options_event_serialize_sse_roundtrip():
         anchor_ref=_KENYA,
         options=[
             SlotOption(
-                value=SlotValue(ref=GraphRef(dcid=_UGANDA, label="Uganda"), value_kind="entity")
+                value=SlotValue(ref=GraphRef(ref=_UGANDA, label="Uganda"), value_kind="entity")
             )
         ],
         truncated=False,
@@ -435,7 +435,7 @@ def test_place_options_event_serialize_sse_roundtrip():
         "options": [
             {
                 "value": {
-                    "ref": {"dcid": _UGANDA, "label": "Uganda"},
+                    "ref": {"ref": _UGANDA, "label": "Uganda"},
                     "value_kind": "entity",
                 },
                 # SlotOption's wrap serializer promises coverage=null (not

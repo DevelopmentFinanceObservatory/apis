@@ -33,24 +33,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from dfo_platform import codes, refusal
 from dfo_platform.codes import PLATFORM_CODE_CATALOGUE, CodeCatalogue
 from dfo_platform.problem import Alternative, Envelope, ProblemDetails, ProblemIssue
+from dfo_platform.schema_annotations import strip_schema_annotations
 from dfo_platform.trace import set_trace_id
-
-
-def _strip_wire_invisible_keys(value: object) -> object:
-    """Recursively remove schema-only `description` and `title` keys before hashing.
-
-    `ProblemDetails.to_json()` sends field values. Property keys and nested `$defs` retain schema
-    identity."""
-    if isinstance(value, dict):
-        return {
-            key: _strip_wire_invisible_keys(val)
-            for key, val in value.items()
-            if key not in ("description", "title")
-        }
-    if isinstance(value, list):
-        return [_strip_wire_invisible_keys(item) for item in value]
-    return value
-
 
 # Fixed exemplar values keep hashes independent of request context and the token being computed.
 _EXEMPLAR_TRACE_ID = "0" * 32
@@ -343,7 +327,7 @@ def _compute_platform_capability_version(
     exemplars = contextvars.copy_context().run(_render_exemplars, platform_codes)
 
     payload = {
-        "problem_details_schema": _strip_wire_invisible_keys(problem_details_schema),
+        "problem_details_schema": strip_schema_annotations(problem_details_schema),
         "platform_codes": {code: list(entry) for code, entry in platform_codes.items()},
         "refusal_policy": refusal_policy,
         **exemplars,

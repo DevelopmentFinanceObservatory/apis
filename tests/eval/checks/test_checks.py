@@ -12,7 +12,8 @@ from typing import Any
 
 import pytest
 
-from search.eval.checks import CHECKS, ScoreContext, Verdict, WireSchema
+from search.eval.checks import CHECKS, PART_CHECKS, ScoreContext, Verdict, WireSchema
+from search.eval.gate import Observation, Outcome, judge
 from tests.eval.checks.conftest import (
     IDS,
     make_case,
@@ -25,6 +26,7 @@ from tests.eval.checks.conftest import (
 )
 
 PASS, FAIL, NA, U = Verdict.PASS, Verdict.FAIL, Verdict.NA, Verdict.UNVERIFIABLE
+UNREACHED = Verdict.UNREACHED
 
 CRS_001_ENTITIES = [
     {"dcid": "country/DEU", "role": "origin"},
@@ -309,8 +311,21 @@ ROWS = [
         panel("weo-002"),
         PASS,
     ),
-    ("measure", {"definite": {"measure": {"family": "wdi.gdp"}}}, panel("weo-045"), NA),
     ("measure", {"definite": {}}, panel("crs-001"), NA),
+    # A status the expectation does not accept leaves the check unscored: unreached when a
+    # block asserts it, n/a when none does.
+    ("measure", {"definite": {"measure": {"family": "wdi.gdp"}}}, panel("weo-045"), UNREACHED),
+    ("measure", {"definite": {}}, panel("weo-045"), NA),
+    # An accepted kind other than resolution carries no parts to score.
+    (
+        "measure",
+        {
+            "kind": ["resolution", "catalogue"],
+            "definite": {"measure": {"family": "crs.commitment"}},
+        },
+        answer("catalogue"),
+        NA,
+    ),
     # A candidates part passes when one candidate is the measure.
     (
         "measure",
@@ -786,11 +801,42 @@ ROWS = [
         NA,
     ),
     ("refusal", {"definite": {}, "no_data": {"reason": "no_observations"}}, panel("crs-001"), NA),
+    # A declined-only case answered with a resolution never reads the reason.
+    (
+        "refusal",
+        {"kind": "declined", "declined": {"reason": "out_of_scope"}},
+        panel("crs-001"),
+        UNREACHED,
+    ),
+    # A resolution in a status the case does not accept reaches no block, so the declined
+    # reason reads unreached, as for dq-ext-042 and dq-ids-054; one in an accepted status
+    # reached the resolution block instead.
+    (
+        "refusal",
+        {
+            "kind": ["declined", "resolution"],
+            "declined": {"reason": "out_of_scope"},
+            "definite": {},
+        },
+        panel("weo-002"),
+        UNREACHED,
+    ),
+    (
+        "refusal",
+        {
+            "kind": ["declined", "resolution"],
+            "declined": {"reason": "out_of_scope"},
+            "definite": {},
+        },
+        panel("crs-001"),
+        NA,
+    ),
+    # A problem document returns no part for the asserted no-data block to score.
     (
         "refusal",
         {"no_data": {"reason": "no_observations"}},
         problem("facet_binding_unsupported"),
-        NA,
+        UNREACHED,
     ),
     # candidates: every family pairs with its own candidate.
     (
@@ -857,6 +903,17 @@ ROWS = [
         FAIL,
     ),
     ("parts", {"definite": {}}, panel("crs-048"), NA),
+    # Another kind the case accepts carries no parts to expect.
+    (
+        "parts",
+        {
+            "kind": ["resolution", "declined"],
+            "declined": {"reason": "out_of_scope"},
+            "parts": [{"definite": {}}, {"definite": {}}],
+        },
+        answer("declined", reason="out_of_scope"),
+        NA,
+    ),
 ]
 
 
@@ -957,3 +1014,122 @@ def test_a_shared_field_applies_under_each_accepted_status(ctx: ScoreContext):
     case = make_case({"entities": CRS_001_ENTITIES, "definite": {}, "no_data": {}})
     assert CHECKS["entities"](case, panel("crs-001"), ctx).verdict == PASS
     assert CHECKS["entities"](case, panel("crs-013"), ctx).verdict == NA
+
+
+COMMITMENT = {"measure": {"family": "crs.commitment"}}
+DISBURSEMENT = {"measure": {"family": "crs.disbursement_gross"}}
+
+
+def with_part_status(row_id: str, index: int, status: str) -> dict[str, Any]:
+    response = panel(row_id)
+    response["parts"][index]["status"] = status
+    return response
+
+
+def with_part_from(row_id: str, index: int, source_id: str) -> dict[str, Any]:
+    """A recorded response with the part at ``index`` replaced by ``source_id``'s first part."""
+    response = panel(row_id)
+    response["parts"][index] = panel(source_id)["parts"][0]
+    return response
+
+
+@pytest.mark.parametrize(
+    ("expect", "head", "base", "outcome"),
+    [
+        pytest.param(
+            {"definite": COMMITMENT},
+            panel("crs-001"),
+            panel("weo-002"),
+            Outcome.PRE_EXISTING,
+            id="other-status",
+        ),
+        pytest.param(
+            {"definite": COMMITMENT},
+            panel("crs-001"),
+            answer("catalogue"),
+            Outcome.PRE_EXISTING,
+            id="other-kind",
+        ),
+        pytest.param(
+            {"definite": COMMITMENT},
+            panel("crs-001"),
+            problem("x"),
+            Outcome.PRE_EXISTING,
+            id="problem",
+        ),
+        pytest.param(
+            {"parts": [{"definite": {}}, {"definite": COMMITMENT}]},
+            panel("crs-048"),
+            panel("crs-001"),
+            Outcome.PRE_EXISTING,
+            id="missing-part",
+        ),
+        # The head fails part 0, which the base reached and passed; the base left only
+        # part 1 unscored, so the failure is the head's own.
+        pytest.param(
+            {"parts": [{"definite": DISBURSEMENT}, {"definite": DISBURSEMENT}]},
+            with_part_from("crs-048", 0, "weo-001"),
+            with_part_status("crs-048", 1, "no_data"),
+            Outcome.REGRESSION,
+            id="other-part-reached",
+        ),
+    ],
+)
+def test_a_head_that_fixes_the_disposition_and_fails_the_measure(
+    expect, head, base, outcome, ctx: ScoreContext
+):
+    """dq-ext-005's shape: the base's answer never reaches the expected block, so its
+    measure never runs, and the head reaches it with the wrong measure. The failure is
+    pre-existing unless the head failed on a part the base reached."""
+    case = make_case(expect)
+    head_result = CHECKS["measure"](case, head, ctx)
+    base_result = CHECKS["measure"](case, base, ctx)
+    assert (head_result.verdict, base_result.verdict) == (FAIL, UNREACHED)
+    head_sample = Observation(head_result.verdict, parts=head_result.parts)
+    base_sample = Observation(base_result.verdict, parts=base_result.parts)
+
+    judgement = judge(
+        check="measure",
+        head=[head_sample] * 3,
+        base=[base_sample] * 3,
+        confirm=(head_sample, base_sample),
+    )
+
+    assert judgement.outcome == outcome
+
+
+# A status block asserting each part check, answered by ASSERTED_UNPAIRED's response,
+# whose status the block's expectation does not accept.
+ASSERTING = {
+    "measure": {"definite": COMMITMENT},
+    "provenance": {"definite": {"provenance": {"origin": "dfo"}}},
+    "entities": {"definite": {"entities": CRS_001_ENTITIES}},
+    "request": {"definite": {"window": {"kind": "all"}}},
+    "operations": {"definite": {"operations": []}},
+    "warnings": {"definite": {"warnings": ["role_scope_defaulted"]}},
+    "skills": {"definite": {"skills": {"present": True}}},
+    "candidates": {"candidates": {"include_families": ["crs.flow"]}},
+    "refusal": {"no_data": {"reason": "no_observations"}},
+}
+
+
+def test_every_part_check_has_an_asserting_block():
+    assert set(ASSERTING) == set(PART_CHECKS)
+
+
+@pytest.mark.parametrize("check", sorted(ASSERTING))
+def test_an_unpaired_part_is_unreached_only_for_a_check_its_blocks_assert(check, ctx: ScoreContext):
+    """The asserting block reads unreached; a block under the same status asserting another
+    check alone, on the same unpaired answer, reads n/a."""
+    status = next(iter(ASSERTING[check]))
+    unpaired = panel("weo-002") if status == "definite" else panel("crs-001")
+    other = {"entities": CRS_001_ENTITIES} if check == "warnings" else {"warnings": []}
+    assert CHECKS[check](make_case(ASSERTING[check]), unpaired, ctx).verdict == UNREACHED
+    assert CHECKS[check](make_case({status: other}), unpaired, ctx).verdict == NA
+
+
+@pytest.mark.parametrize("check", ["disposition", "parts", "measure"])
+def test_every_check_names_a_problem_document_by_its_kind(check, ctx: ScoreContext):
+    case = make_case({"parts": [{"definite": COMMITMENT}, {"definite": {}}]})
+    result = CHECKS[check](case, problem("facet_binding_unsupported"), ctx)
+    assert result.detail.startswith("kind: got 'problem'"), result.detail

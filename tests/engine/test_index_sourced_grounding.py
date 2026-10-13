@@ -11,11 +11,13 @@ import asyncio
 from code_index.shared import get_index
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.clients.graph import Facet
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from series_coverage.schema import RoleNames
 from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 # "Flows" leaves financialFlowType unbound; "disbursements" would force its value.
@@ -154,6 +156,8 @@ class _BindPurposeToExtraLLM:
     """Binds `crsPurpose` to the index-only member and leaves other constraint slots open."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0,
@@ -205,13 +209,13 @@ def test_index_only_winner_renders_its_bound_slot_value_on_the_wire(monkeypatch)
     result = _run(monkeypatch)
     assert result.status == "definite"
     spec = result.specs[0]
-    assert [sv.ref.dcid for sv in spec.resolved.members] == [_EXTRA_SV]
+    assert [sv.ref.ref for sv in spec.resolved.members] == [_EXTRA_SV]
     stat_var = spec.resolved.members[0]
     purpose_values = [
-        sv.value for sv in stat_var.slot_values if sv.key.property.dcid == _PROP_PURPOSE
+        sv.value for sv in stat_var.slot_values if sv.key.property.ref == _PROP_PURPOSE
     ]
     assert len(purpose_values) == 1
-    assert purpose_values[0].ref.dcid == _EXTRA_PURPOSE
+    assert purpose_values[0].ref.ref == _EXTRA_PURPOSE
 
 
 def test_index_only_winner_is_not_reported_inapplicable_for_properties_it_asserts(monkeypatch):
@@ -227,7 +231,7 @@ def test_index_only_winner_is_not_reported_inapplicable_for_properties_it_assert
         slot = next(
             s
             for s in spec.resolved.slots
-            if s.key.property is not None and s.key.property.dcid == prop
+            if s.key.property is not None and s.key.property.ref == prop
         )
         assert slot.binding.kind == "unbound"
 
@@ -236,7 +240,7 @@ def test_index_only_winner_is_not_reported_inapplicable_for_properties_it_assert
     flow_type_slot = next(
         s
         for s in spec.resolved.slots
-        if s.key.property is not None and s.key.property.dcid == _PROP_FLOW_TYPE
+        if s.key.property is not None and s.key.property.ref == _PROP_FLOW_TYPE
     )
     assert flow_type_slot.binding.kind == "value"
-    assert flow_type_slot.binding.value.ref.dcid == _FORCED_FLOW_TYPE_VALUE
+    assert flow_type_slot.binding.value.ref.ref == _FORCED_FLOW_TYPE_VALUE

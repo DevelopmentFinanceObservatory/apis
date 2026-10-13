@@ -1,7 +1,8 @@
 """The `skills_` capability token adds 16 SHA-256 hex characters over wire-visible refusal
-bodies, the warning catalogue, and response schemas (excluding `description` and `title`). It
-omits index limits because the Skills API publishes no capability document. Inputs are
-injectable so tests can prove each one changes the digest.
+bodies, the warning catalogue, and response schemas. `strip_schema_annotations` removes
+`description` and `title` annotations and keeps fields of those names. The token omits index
+limits because the Skills API publishes no capability document. Inputs are injectable so tests
+can prove each one changes the digest.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import json
 from collections.abc import Mapping
 
 from dfo_platform import Alternative, CodeCatalogue, Envelope, HealthResponse, ProblemIssue
+from dfo_platform.schema_annotations import strip_schema_annotations
 from dfo_platform.trace import set_trace_id
 from skills_api.codes import SKILLS_CODE_CATALOGUE, SKILLS_WARNING_CATALOGUE
 from skills_api.models import SkillBody, SkillListResponse, SkillResourceContent
@@ -21,18 +23,6 @@ _EXEMPLAR_TRACE_ID = "0" * 32
 
 # Placeholder avoids hashing a token that depends on itself.
 _EXEMPLAR_CAPABILITY_VERSION = "skills_exemplar_placeholder"
-
-
-def _strip_wire_invisible_keys(value: object) -> object:
-    if isinstance(value, dict):
-        return {
-            key: _strip_wire_invisible_keys(val)
-            for key, val in value.items()
-            if key not in ("description", "title")
-        }
-    if isinstance(value, list):
-        return [_strip_wire_invisible_keys(item) for item in value]
-    return value
 
 
 def _render_body_exemplars(catalogue: CodeCatalogue) -> dict[str, dict[str, object]]:
@@ -73,6 +63,17 @@ def _render_body_exemplars(catalogue: CodeCatalogue) -> dict[str, dict[str, obje
     return exemplars
 
 
+def served_wire_schemas() -> dict[str, dict[str, object]]:
+    """The JSON Schema of each response body, keyed by name, in serialization mode, which
+    describes the body the server emits and lists every field as required."""
+    return {
+        "health_response": HealthResponse.model_json_schema(mode="serialization"),
+        "skill_list_response": SkillListResponse.model_json_schema(mode="serialization"),
+        "skill_body": SkillBody.model_json_schema(mode="serialization"),
+        "skill_resource_content": SkillResourceContent.model_json_schema(mode="serialization"),
+    }
+
+
 def _compute_skills_capability_version(
     *,
     code_catalogue: CodeCatalogue = SKILLS_CODE_CATALOGUE,
@@ -81,12 +82,7 @@ def _compute_skills_capability_version(
 ) -> str:
     """Return the deterministic hash of the wire-visible inputs."""
     if wire_schemas is None:
-        wire_schemas = {
-            "health_response": HealthResponse.model_json_schema(),
-            "skill_list_response": SkillListResponse.model_json_schema(),
-            "skill_body": SkillBody.model_json_schema(),
-            "skill_resource_content": SkillResourceContent.model_json_schema(),
-        }
+        wire_schemas = served_wire_schemas()
 
     payload = {
         "refusal_body_exemplars": contextvars.copy_context().run(
@@ -96,8 +92,7 @@ def _compute_skills_capability_version(
             code: list(entry) for code, entry in sorted(warning_catalogue.items())
         },
         "wire_schemas": {
-            name: _strip_wire_invisible_keys(schema)
-            for name, schema in sorted(wire_schemas.items())
+            name: strip_schema_annotations(schema) for name, schema in sorted(wire_schemas.items())
         },
     }
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))

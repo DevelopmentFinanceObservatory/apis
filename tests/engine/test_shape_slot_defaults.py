@@ -143,13 +143,13 @@ def test_birth_rate_ethiopia_answers_the_crude_birth_rate_beside_the_fertility_r
         )
 
     assert result.status == "candidates"
-    assert [[sv.ref.dcid for sv in spec.resolved.members] for spec in result.specs] == [
+    assert [[sv.ref.ref for sv in spec.resolved.members] for spec in result.specs] == [
         [_CRUDE_BIRTH_RATE],
         [_FERTILITY_RATE],
     ]
     crude_birth_rate = result.specs[0]
     assert [
-        (f.key.property.dcid, [ref.dcid for ref in f.refs], f.provenance)
+        (f.key.property.ref, [ref.ref for ref in f.refs], f.provenance)
         for f in crude_birth_rate.resolved.trace.slot_filters
         if f.key.property is not None
     ] == [("medicalStatus", ["LiveBirth"], "declared_default")]
@@ -197,6 +197,6 @@ def test_a_failed_availability_probe_leaves_the_status_open_and_the_total_answer
     )
 
     assert result.status != "no_data"
-    assert [[sv.ref.dcid for sv in spec.resolved.members] for spec in result.specs] == [
+    assert [[sv.ref.ref for sv in spec.resolved.members] for spec in result.specs] == [
         [_BIRTHS_PER_CAPITA]
     ]

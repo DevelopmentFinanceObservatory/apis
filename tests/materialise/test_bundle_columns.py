@@ -160,3 +160,33 @@ def test_a_pivot_on_a_coded_column_names_its_headings_in_the_codes_table(
         doc = docs[spreadsheet_safe(heading)]
         assert not doc.coded
         assert ("Names are in `data/codes.csv`." in doc.description) is (kind is not None)
+
+
+@pytest.mark.parametrize(
+    ("role", "noun"),
+    [
+        ("financingProvider", "Provider"),
+        ("financingRecipient", "Recipient"),
+        # A creditor shares the provider's flow axis and keeps its own noun.
+        ("creditor", "Creditor"),
+        ("debtor", "Debtor"),
+        ("observationAbout", "Place"),
+        ("series", "Entity"),
+    ],
+)
+def test_a_role_column_and_its_name_column_read_the_role_noun(role, noun):
+    table = Table(
+        columns=("stat_var", role, f"{role}_label", "provenance"),
+        rows=(("dcid:Amount_A", "country/KEN", "Kenya", "OECD_DAC2A"),),
+    )
+    scan = TableScan(role_columns=(role,))
+    list(scan.observe((table,)))
+
+    titles = {doc.name: doc.title for doc in column_docs(scan, code_system_names={})}
+
+    assert titles == {
+        "stat_var": "Variable",
+        role: noun,
+        f"{role}_label": f"{noun} name",
+        "provenance": "Source dataset",
+    }

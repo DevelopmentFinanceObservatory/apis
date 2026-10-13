@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import copy
+import functools
 import sys
 from collections.abc import Callable
 from concurrent.futures import Future
@@ -17,6 +18,8 @@ import pytest
 from code_index import shared as code_index_shared
 from dfo_platform import trace as _trace_mod
 from search.engine.region import related_read
+from search.engine.retrieval import bound_values
+from tests import fixtures
 from tests.engine._request_log import checked_requests
 from tests.fixtures import PINNED_DATE
 
@@ -44,6 +47,37 @@ def _reset_trace_id():
         yield
     finally:
         _trace_mod._current.reset(token)
+
+
+@pytest.fixture(autouse=True)
+def _held_families_read_off_the_loop(monkeypatch: pytest.MonkeyPatch):
+    """Fail a test whose code reads a held family's member arcs (`bound_values._held_members`)
+    on a thread running an event loop, where a family of 8,248 members holds the loop for
+    about 200 ms. The phases read them off it first (`bound_values.read_held_families`). A
+    read is recorded and failed at teardown, so no handler on the way out can swallow it."""
+    read = bound_values.mirrored_arcs
+    on_loop: list[str] = []
+
+    def guarded(dcid: str, *, catalogue: Any) -> dict | None:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            on_loop.append(dcid)
+        return read(dcid, catalogue=catalogue)
+
+    monkeypatch.setattr(bound_values, "mirrored_arcs", guarded)
+    yield
+    assert not on_loop, f"held family members read on the event loop: {on_loop[:5]}"
+
+
+@pytest.fixture
+def declare_regions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Callable[..., None]:
+    """Declare regions to the membership policy for one test (`tests.fixtures.declare_regions`)."""
+    return functools.partial(fixtures.declare_regions, monkeypatch)
 
 
 @pytest.fixture

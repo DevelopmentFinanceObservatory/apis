@@ -783,7 +783,7 @@ def parse_sse(body: str) -> list[tuple[str, dict]]:
 def ref_dcid(ref: GraphRef | None) -> str:
     """Return a required graph ref's dcid; value-bound slots must be grounded."""
     assert ref is not None
-    return ref.dcid
+    return ref.ref
 
 
 def slot_value_dcid(slot: Slot) -> str:
@@ -991,7 +991,7 @@ def offline_resolve(
                 )
             )
         base = config.settings().model_dump(
-            exclude={"capability_version", "max_entity_occurrences"}
+            exclude={"capability_version_override", "max_entity_occurrences"}
         )
         overridden = config.SearchSettings.model_validate({**base, "seam_default": pac})
         with patch.object(config, "_SETTINGS", overridden):

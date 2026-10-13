@@ -56,26 +56,26 @@ def _shape() -> dict:
 
 def _bound_slot(prop: str, value: str) -> Slot:
     return Slot(
-        key=SlotKey(axis="how", property=GraphRef(dcid=prop, label=prop), label=prop),
+        key=SlotKey(axis="how", property=GraphRef(ref=prop, label=prop), label=prop),
         binding=BindingValue(
-            value=SlotValue(ref=GraphRef(dcid=value, label=value), value_kind="enum_value")
+            value=SlotValue(ref=GraphRef(ref=value, label=value), value_kind="enum_value")
         ),
     )
 
 
 def _unbound_slot(prop: str) -> Slot:
     return Slot(
-        key=SlotKey(axis="how", property=GraphRef(dcid=prop, label=prop), label=prop),
+        key=SlotKey(axis="how", property=GraphRef(ref=prop, label=prop), label=prop),
         binding=BindingUnbound(),
     )
 
 
 def _set_slot(prop: str, *values: str) -> Slot:
     return Slot(
-        key=SlotKey(axis="how", property=GraphRef(dcid=prop, label=prop), label=prop),
+        key=SlotKey(axis="how", property=GraphRef(ref=prop, label=prop), label=prop),
         binding=BindingSet(
             values=[
-                SlotValue(ref=GraphRef(dcid=v, label=v), value_kind="enum_value") for v in values
+                SlotValue(ref=GraphRef(ref=v, label=v), value_kind="enum_value") for v in values
             ]
         ),
     )
@@ -122,7 +122,7 @@ def _filter_for(spec, prop: str):
     return next(
         f
         for f in spec.resolved.trace.slot_filters
-        if f.key.property is not None and f.key.property.dcid == prop
+        if f.key.property is not None and f.key.property.ref == prop
     )
 
 
@@ -191,7 +191,7 @@ def test_a_posted_flow_type_set_on_a_grants_family_stays_the_posted_set(monkeypa
 
     flow_filter = _filter_for(spec, "crsTypeOfFlow")
     assert flow_filter.binding_kind == "set"
-    assert {ref.dcid for ref in flow_filter.refs} == {"CRSTypeOfFlow10", "CRSTypeOfFlow30"}
+    assert {ref.ref for ref in flow_filter.refs} == {"CRSTypeOfFlow10", "CRSTypeOfFlow30"}
     assert flow_filter.provenance != "declared_default"
 
     finance_filter = _filter_for(spec, "crsTypeOfFinance")

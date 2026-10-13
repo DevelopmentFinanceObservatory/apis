@@ -5,11 +5,13 @@ columns, groupby collapses over them, and `options.columns`, `groupby.by` and `p
 `LongProjection` maps that table to the published layout as the last step before the writer:
 
 - `stat_var`, then `stat_var_label` when the table decodes no code system;
-- each entity role in declared order, as the entity (`<role>`), its name (`<role>_label`) and
-  any requested enrichment (`_iso2`, `_iso3`, `_type`);
+- each entity role in declared order, as the entity (`<role>`), its name (`<role>_label`),
+  for a party role (`materialise.enrichment.is_party_role`) its party's kind
+  (`<role>_party_kind`: `party`, `total` or `residual`), and any requested enrichment (`_iso2`,
+  `_iso3`, `_type`);
 - each decoded code system in property order, as `<code_system>` (the value's code dcid) and
   `<code_system>_label` (the decoded label);
-- `time_period`, `value`;
+- `time_period` (an integer year for a frame of year points, `period_cell`), `value`;
 - the unit split into `unit` (the unit node dcid), `unit_label`, `currency` (ISO 4217),
   `price_basis` (`current` or `constant`) and `base_year`;
 - `measurementMethod` and `provenance`, each followed by its `_label`;
@@ -19,27 +21,36 @@ columns, groupby collapses over them, and `options.columns`, `groupby.by` and `p
 table and leaves every frame alone, so frames, collapse frames and their content versions keep
 the grammar names.
 
-Names come from a `names` mapping (cell value to name) the caller reads for each table
-(`LongProjection.refs_to_name`). A name cell left empty beside a non-empty code counts as
-unavailable, and so does an axis code cell whose label two codes of its system share. `apply`
-reports those counts per column so the caller can warn.
+Names come from a `names` mapping (cell value to name) and kinds from a `party_kinds` mapping
+(party ref to kind), both read by the caller for each table in one lookup
+(`LongProjection.refs_to_name`). A name or kind cell left empty beside a non-empty entity, and
+an axis code cell whose label two codes of its system share, count as unavailable. `apply`
+reports those counts per column so the caller can warn. A `<role>_party_kind` column the table
+already carries (an explicit `party_kind` token) takes that column's place, so the layout holds
+it once.
 
 `measurementMethod_label` holds only a name that differs from the method's dcid, and its empty
 cells are not counted as unavailable. Many methods carry their dcid as their graph name, and some
 have no name, so an empty method name is normal.
+
+A row is a total when a role `totals_roles` names holds a party of kind `total` there
+(`split_totals`). The CSV and XLSX writers keep those rows out of the main table.
 """
 
 from __future__ import annotations
 
 import functools
 from collections import Counter
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from operator import itemgetter
 from typing import Literal
 
+from dfo_frame_grammar import TIME_PERIOD_COLUMN, parse_time_period
 from dfo_frame_grammar.grammar import ComposedUnit, UnitRequest
 
+from dfo_platform.roles import role_key_axis
+from materialise.enrichment import PARTY_KIND_FIELD, is_party_role
 from materialise.errors import MaterialisationUsageError
 from materialise.reshape import Table, TableLike
 from materialise.unit_cells import unit_cell_text
@@ -47,8 +58,8 @@ from materialise.unit_cells import unit_cell_text
 type Row = tuple[object, ...]
 type Names = Mapping[str, str]
 type PriceBasis = Literal["current", "constant"]
-type Cell = Callable[[Row, Names], object]
-type Unavailable = Callable[[Row, Names], bool]
+type Cell = Callable[[Row, NodeReads], object]
+type Unavailable = Callable[[Row, NodeReads], bool]
 
 _STAT_VAR_COLUMN = "stat_var"
 _STATUS_COLUMN = "status"
@@ -60,7 +71,11 @@ _AXIS_SOURCE_PREFIX = f"{_STAT_VAR_COLUMN}_"
 _LABEL_SUFFIX = "_label"
 
 _ENRICHMENT_FIELD_ORDER = ("iso2", "iso3", "type")
-"""The requested enrichment fields that follow an entity's name."""
+"""The requested enrichment fields that follow an entity's name and party kind."""
+
+_YEAR_GRAIN = "year"
+
+_TOTAL_KIND = "total"
 
 _METHOD_COLUMN = "measurementMethod"
 _PROVENANCE_COLUMN = "provenance"
@@ -69,9 +84,108 @@ _CURRENCY_DCID_PREFIX = "Currency"
 """`CurrencyUnit` nodes are `Currency<ISO>`."""
 
 
+def long_layout_default_enrichments(entity_columns: Sequence[str]) -> tuple[str, ...]:
+    """The enrichment columns long output writes for `entity_columns` with no `columns` token,
+    in layout order: each role's `<role>_label`, followed for a party role by its
+    `<role>_party_kind`."""
+    columns: list[str] = []
+    for entity in entity_columns:
+        columns.append(f"{entity}{_LABEL_SUFFIX}")
+        if is_party_role(entity):
+            columns.append(f"{entity}_{PARTY_KIND_FIELD}")
+    return tuple(columns)
+
+
+def period_grain(periods: Iterable[object]) -> str | None:
+    """The grain of a frame whose `time_period` cells are `periods` when every one is a point at
+    that grain (`parse_time_period`), `None` when any is empty or a span, the points hold more
+    than one grain, or there are none. Long output reads it once over the whole frame before its
+    first row, so a frame mixing year points with year spans writes every period as text."""
+    grains: set[str] = set()
+    for cell in periods:
+        if not isinstance(cell, str) or not cell:
+            return None
+        period = parse_time_period(cell)
+        if period.start != period.end:
+            return None
+        grains.add(period.grain)
+    return grains.pop() if len(grains) == 1 else None
+
+
+def period_cell(grain: str | None, cell: object) -> object:
+    """A `time_period` cell as long output and card exports write it: a year point as an `int`
+    when `grain` is `year`, so spreadsheets and Parquet read a number, and any other cell
+    unchanged. `grain` is the whole frame's grain from `period_grain`. A span stays text."""
+    if grain == _YEAR_GRAIN and isinstance(cell, str) and len(cell) == 4 and cell.isdigit():
+        return int(cell)
+    return cell
+
+
+def totals_axes(identity: Mapping[str, object]) -> dict[str, tuple[str, ...]]:
+    """The flow axes whose total rows long CSV and XLSX output keeps apart, each mapped to the
+    entities the identity binds on it: empty for an axis the identity leaves open
+    (`open_roles`), the bound entities for one it binds to several. A role bound to one entity
+    is what the definition asks for, a total included ("ODA from the UK to developing
+    countries, total"), so it never makes a total row. Identity keys keep the caller's
+    spelling, so they compare by axis (`dfo_platform.roles.role_key_axis`)."""
+    open_roles = identity.get("open_roles")
+    entities = identity.get("entities")
+    axes: dict[str, tuple[str, ...]] = {}
+    if isinstance(entities, Mapping):
+        for role, bound in entities.items():
+            axis = role_key_axis(str(role))
+            if axis is not None and isinstance(bound, list | tuple) and len(bound) > 1:
+                axes[axis] = tuple(str(entity) for entity in bound)
+    if isinstance(open_roles, Sequence):
+        for role in open_roles:
+            if (axis := role_key_axis(str(role))) is not None:
+                axes[axis] = ()
+    return axes
+
+
+def totals_roles(identity: Mapping[str, object], entity_columns: Sequence[str]) -> tuple[str, ...]:
+    """The party roles of `entity_columns` (`is_party_role`) on an axis of `totals_axes`, whose
+    total rows long CSV and XLSX output keeps apart."""
+    axes = totals_axes(identity)
+    return tuple(
+        entity
+        for entity in entity_columns
+        if is_party_role(entity) and role_key_axis(entity) in axes
+    )
+
+
+def split_totals(table: Table, *, roles: Sequence[str]) -> tuple[Table, Table]:
+    """`table`, a table in the long layout, split into the rows of parties and residuals and
+    the rows where any of `roles` holds a party of kind `total` (its `<role>_party_kind`
+    cell). A role the table does not carry splits nothing."""
+    positions = [
+        list(table.columns).index(column)
+        for role in roles
+        if (column := f"{role}_{PARTY_KIND_FIELD}") in table.columns
+    ]
+    if not positions:
+        return table, Table(columns=table.columns, rows=())
+    parties: list[Row] = []
+    totals: list[Row] = []
+    for row in table.rows:
+        (totals if any(row[at] == _TOTAL_KIND for at in positions) else parties).append(row)
+    return Table(columns=table.columns, rows=tuple(parties)), Table(
+        columns=table.columns, rows=tuple(totals)
+    )
+
+
 def axis_source_column(code_system: str) -> str:
     """The decoded column reshape names for `code_system`."""
     return f"{_AXIS_SOURCE_PREFIX}{code_system}"
+
+
+@dataclass(frozen=True)
+class NodeReads:
+    """What a long output's cells read beyond the row: `names` maps a cell value to its name,
+    `party_kinds` a party ref to its kind."""
+
+    names: Names
+    party_kinds: Names
 
 
 @dataclass(frozen=True)
@@ -187,10 +301,10 @@ class LongProjection:
                     refs[cell] = None
         return tuple(refs)
 
-    def apply(self, table: TableLike, *, names: Names) -> ProjectedTable:
-        """`table` in this layout, its name cells read from `names`. Raises
-        `MaterialisationUsageError` when `table`'s columns differ from the ones the layout was
-        planned for."""
+    def apply(self, table: TableLike, *, names: Names, party_kinds: Names) -> ProjectedTable:
+        """`table` in this layout, its name cells read from `names` and its kind cells from
+        `party_kinds`. Raises `MaterialisationUsageError` when `table`'s columns differ from the
+        ones the layout was planned for."""
         if tuple(table.columns) != self.source_columns:
             raise MaterialisationUsageError(
                 f"a long projection planned for columns {self.source_columns!r} was applied to "
@@ -198,10 +312,11 @@ class LongProjection:
             )
         source_rows = table.rows
         cells = self.cells
-        rows = tuple(tuple(cell(row, names) for cell in cells) for row in source_rows)
+        reads = NodeReads(names=names, party_kinds=party_kinds)
+        rows = tuple(tuple(cell(row, reads) for cell in cells) for row in source_rows)
         counts: Counter[str] = Counter()
         for column, is_unavailable in self.unavailable:
-            missing = sum(1 for row in source_rows if is_unavailable(row, names))
+            missing = sum(1 for row in source_rows if is_unavailable(row, reads))
             if missing:
                 counts[column] = missing
         return ProjectedTable(table=Table(columns=self.columns, rows=rows), unavailable=counts)
@@ -213,13 +328,15 @@ def plan_long_projection(
     entity_columns: Sequence[str],
     axis_codes: Mapping[str, Mapping[str, str | None]],
     unit_naming: UnitNaming,
+    grain: str | None,
 ) -> LongProjection:
     """The canonical layout for a long table whose columns are `source_columns`.
 
-    `entity_columns` are the frame's declared roles. `axis_codes` maps each code system the
-    deployment declares to `{label: code dcid}`. A decoded cell holds a label, and after a
-    groupby that rolls up levels or sums over StatVars it is the only fact the row keeps about
-    its code, so the code column reads its value from the label. Groupby already treats a label
+    `entity_columns` are the frame's declared roles. `grain` is the grain of the frame's
+    periods (`period_grain`), which types its `time_period` cells (`period_cell`).
+    `axis_codes` maps each code system the deployment declares to `{label: code dcid}`. A
+    decoded cell holds a label, and after a groupby that rolls up levels or sums over StatVars
+    it is the only fact the row keeps about its code, so the code column reads its value from the label. Groupby already treats a label
     as the identity of its code within one system, so the lookup gives the code the row was
     grouped under. A label two codes of one system share maps to `None`: its code cell stays
     empty and counts as unavailable. A label the mapping lacks (a declared absence's
@@ -242,7 +359,7 @@ def plan_long_projection(
 
     def take(name: str) -> None:
         at = itemgetter(position[name])
-        add(name, lambda row, _names: at(row))
+        add(name, lambda row, _reads: at(row))
         used.add(name)
 
     def take_named(name: str) -> None:
@@ -251,15 +368,26 @@ def plan_long_projection(
         named.append(at)
         add(
             f"{name}{_LABEL_SUFFIX}",
-            lambda row, names: _name_of(row[at], names),
-            lambda row, names: _name_missing(row[at], names),
+            lambda row, reads: _name_of(row[at], reads.names),
+            lambda row, reads: _name_missing(row[at], reads.names),
+        )
+
+    def add_party_kind(entity: str) -> None:
+        at = position[entity]
+        add(
+            f"{entity}_{PARTY_KIND_FIELD}",
+            lambda row, reads: _name_of(row[at], reads.party_kinds),
+            lambda row, reads: _name_missing(row[at], reads.party_kinds),
         )
 
     def take_method() -> None:
         take(_METHOD_COLUMN)
         at = position[_METHOD_COLUMN]
         named.append(at)
-        add(f"{_METHOD_COLUMN}{_LABEL_SUFFIX}", lambda row, names: _method_name(row[at], names))
+        add(
+            f"{_METHOD_COLUMN}{_LABEL_SUFFIX}",
+            lambda row, reads: _method_name(row[at], reads.names),
+        )
 
     decodes_axes = any(axis_source_column(code_system) in position for code_system in axis_codes)
     if _STAT_VAR_COLUMN in position:
@@ -271,6 +399,11 @@ def plan_long_projection(
     for entity in entity_columns:
         if entity in position:
             take_named(entity)
+        party_kind_column = f"{entity}_{PARTY_KIND_FIELD}"
+        if party_kind_column in position:
+            take(party_kind_column)
+        elif entity in position and is_party_role(entity):
+            add_party_kind(entity)
         for field in _ENRICHMENT_FIELD_ORDER:
             if f"{entity}_{field}" in position:
                 take(f"{entity}_{field}")
@@ -283,16 +416,19 @@ def plan_long_projection(
         codes = axis_codes[code_system]
         add(
             code_system,
-            lambda row, _names, label_at=label_at, codes=codes: codes.get(label_at(row)),
-            lambda row, _names, label_at=label_at, codes=codes: _shared_label(label_at(row), codes),
+            lambda row, _reads, label_at=label_at, codes=codes: codes.get(label_at(row)),
+            lambda row, _reads, label_at=label_at, codes=codes: _shared_label(label_at(row), codes),
         )
-        add(f"{code_system}{_LABEL_SUFFIX}", lambda row, _names, label_at=label_at: label_at(row))
+        add(f"{code_system}{_LABEL_SUFFIX}", lambda row, _reads, label_at=label_at: label_at(row))
         used.add(source_column)
         renamed[source_column] = f"{code_system}{_LABEL_SUFFIX}"
 
-    for name in ("time_period", "value"):
-        if name in position:
-            take(name)
+    if TIME_PERIOD_COLUMN in position:
+        period_at = position[TIME_PERIOD_COLUMN]
+        add(TIME_PERIOD_COLUMN, lambda row, _reads: period_cell(grain, row[period_at]))
+        used.add(TIME_PERIOD_COLUMN)
+    if "value" in position:
+        take("value")
 
     if _UNIT_COLUMN in position:
         _add_unit_columns(
@@ -347,14 +483,14 @@ def _add_unit_columns(
         )
         return split(row[unit_at], price_basis)
 
-    def label_of(row: Row, names: Names) -> str | None:
+    def label_of(row: Row, reads: NodeReads) -> str | None:
         parts = parts_of(row)
         if parts is None:
             return None
-        return label(parts, names.get(parts.unit))
+        return label(parts, reads.names.get(parts.unit))
 
     def part(field: str) -> Cell:
-        def cell(row: Row, _names: Names) -> object:
+        def cell(row: Row, _reads: NodeReads) -> object:
             parts = parts_of(row)
             return getattr(parts, field) if parts is not None else None
 
@@ -364,7 +500,7 @@ def _add_unit_columns(
     add(
         f"{_UNIT_COLUMN}{_LABEL_SUFFIX}",
         label_of,
-        lambda row, names: parts_of(row) is not None and label_of(row, names) is None,
+        lambda row, reads: parts_of(row) is not None and label_of(row, reads) is None,
     )
     add("currency", part("currency"), None)
     add("price_basis", part("price_basis"), None)

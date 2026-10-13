@@ -8,10 +8,11 @@ request's origin catalogue build and the graph generation, holding at most
 source share one read, a repeat request within a generation and build reads
 nothing, and a read that fails is not kept. A miss runs the read as one task on
 the shared DCP-read executor, under a flight deadline of
-`GRAPH_NODE_TIMEOUT_SECONDS` from the moment the task is submitted, so queue
-time counts against it, and a task still queued at that deadline is cancelled
-before it reads. Each request waits until its own deadline, set the same way
-before it looks the document up. Oversized dcids return 400 before a read.
+`GRAPH_NODE_TIMEOUT_SECONDS` from the moment the task is submitted. An executor
+with every worker busy refuses the task with `DcpExecutorSaturated`, which every
+request waiting on the flight answers as retryable 503. Each request waits until
+its own deadline, set the same way before it looks the document up. Oversized
+dcids return 400 before a read.
 
 Currency and granularity stay out of the cached document. Each response looks
 them up in the coverage index's per-provenance views, which the index builds
@@ -61,6 +62,12 @@ registry row and a `rev` bump. They map missing nodes to 404, invalid source nod
 oversized ids to 400, truncated children to non-retryable 503, deadline
 expiry to 504, and DCP 4xx or other errors to
 502 or 503 respectively.
+
+A documentation response answers `public, max-age=300` with an `ETag` over its body,
+or `no-store` when it asked for coverage facts while the coverage index had failed to load
+or was unreadable (`dfo_platform.static_response.gapped_public_json`). The source index
+answers `public, max-age=300` with a strong `ETag` and a gzip representation, both
+encoded once per origin catalogue `build_id`.
 """
 
 from __future__ import annotations
@@ -73,13 +80,13 @@ from concurrent.futures import Executor
 from typing import TYPE_CHECKING
 
 from dfo_provenance_docs import DocumentErrorReason
-from fastapi import APIRouter
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Request, Response
 
 from dfo_platform import ProblemSpec
 from dfo_platform.doors import DoorContribution
 from dfo_platform.refusal import TIMEOUT_DEFAULT
 from dfo_platform.single_flight_cache import SingleFlightCache
+from dfo_platform.static_response import FrozenJSON, freeze_public_json, gapped_public_json
 from graph_api import routing
 from graph_api.config import GRAPH_NODE_TIMEOUT_SECONDS, GRAPH_PROVENANCE_DOC_CACHE_SIZE
 from graph_api.deps import GraphDeps, GraphDepsDep, log_queue_wait
@@ -133,8 +140,6 @@ from origin_catalogue.registry import Exclusion as RegistryExclusion
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
-
-    from series_coverage.shared import CoverageService
 
 logger = logging.getLogger(__name__)
 
@@ -206,24 +211,29 @@ def _to_wire(doc: ProvenanceDoc) -> SourceDocumentation:
 
 
 def _coverage_facts_of(
-    coverage: CoverageService | None, provenance_dcids: tuple[str, ...]
-) -> CoverageFacts:
-    """Return the currencies and granularity the coverage index gives these Provenances.
+    deps: GraphDeps, provenance_dcids: tuple[str, ...]
+) -> tuple[CoverageFacts, bool]:
+    """Return the currencies and granularity the coverage index gives these Provenances, and
+    whether the index failed to load or could not be read, so the gaps those facts leave are
+    transient: an unreadable index can answer a later response, and one that failed to load
+    loads when the process restarts.
 
     Runs on the event loop, since `current()` returns the served index without I/O and the
     index builds its per-provenance views when it loads. Without a coverage service the
-    currencies are empty and the granularity is `None`; startup already logged why. Both
+    currencies are empty and the granularity is `None`; startup already logged why, and the
+    gaps are transient only when the artifact failed to load (`deps.coverage_load_failed`),
+    since an unset `COVERAGE_ARTIFACT_URI` is a deployment's permanent state. Both
     facts come from one index snapshot, so a background refresh cannot mix two
     builds in one response.
     A failure reading the snapshot logs one WARNING and empties both facts.
     `materialise.provenance_doc.coverage_facts_from_index` then derives each
     fact under its own guard, so a failure logs a WARNING and empties only
-    that fact.
+    that fact. A failed snapshot read is transient.
     """
-    if coverage is None:
-        return CoverageFacts()
+    if deps.coverage is None:
+        return CoverageFacts(), deps.coverage_load_failed
     try:
-        index = coverage.current()
+        index = deps.coverage.current()
     except Exception:
         logger.warning(
             "Graph sources door could not read the coverage index for Provenances %s; "
@@ -231,8 +241,8 @@ def _coverage_facts_of(
             list(provenance_dcids),
             exc_info=True,
         )
-        return CoverageFacts()
-    return coverage_facts_from_index(index, provenance_dcids)
+        return CoverageFacts(), True
+    return coverage_facts_from_index(index, provenance_dcids), False
 
 
 def new_provenance_doc_cache(
@@ -266,11 +276,12 @@ async def _read_provenance_doc(deps: GraphDeps, dcid: str) -> ProvenanceDoc:
     )
 
 
-async def _build_response(deps: GraphDeps, dcid: str) -> SourceDocumentation:
-    """Read one source document, add this response's coverage facts and map it."""
+async def _build_response(deps: GraphDeps, dcid: str) -> tuple[SourceDocumentation, bool]:
+    """Read one source document, add this response's coverage facts and map it, and say
+    whether any of its gaps is transient."""
     doc = await _read_provenance_doc(deps, dcid)
-    facts = _coverage_facts_of(deps.coverage, doc.provenances)
-    return _to_wire(with_coverage_facts(doc, facts))
+    facts, transient_gap = _coverage_facts_of(deps, doc.provenances)
+    return _to_wire(with_coverage_facts(doc, facts)), transient_gap
 
 
 def classify_sources_exception(exc: BaseException) -> ProblemSpec | None:
@@ -305,13 +316,15 @@ def classify_sources_exception(exc: BaseException) -> ProblemSpec | None:
     return None
 
 
-async def sources_endpoint(dcid: str, deps: GraphDepsDep) -> JSONResponse:
+async def sources_endpoint(dcid: str, deps: GraphDepsDep, request: Request) -> Response:
     if len(dcid) > routing.DCID_MAX_LENGTH:
         raise DcidTooLong(len(dcid))
-    response = await asyncio.wait_for(
+    documentation, transient_gap = await asyncio.wait_for(
         _build_response(deps, dcid), timeout=GRAPH_NODE_TIMEOUT_SECONDS
     )
-    return JSONResponse(response.model_dump(mode="json"))
+    return gapped_public_json(
+        documentation.model_dump(mode="json"), request, transient_gap=transient_gap
+    )
 
 
 def _exclusion(exclusion: RegistryExclusion) -> Exclusion:
@@ -404,17 +417,27 @@ def _packaged_registry() -> Registry:
     return load_registry()
 
 
-async def sources_catalogue_endpoint() -> JSONResponse:
+@functools.lru_cache(maxsize=1)
+def _frozen_source_catalogue(build_id: str) -> FrozenJSON:
+    """The source index for the bound catalogue, encoded once per catalogue build.
+
+    `build_id` keys the cache and must be the bound catalogue's own. The packaged registry
+    is fixed for the process, so the build alone decides the body."""
+    catalogue = current_catalogue()
+    document = build_source_catalogue(registry=_packaged_registry(), catalogue=catalogue)
+    return freeze_public_json(document.model_dump(mode="json"), max_age=300)
+
+
+async def sources_catalogue_endpoint(request: Request) -> Response:
     # This literal route makes no graph reads.
-    catalogue = build_source_catalogue(registry=_packaged_registry(), catalogue=current_catalogue())
-    return JSONResponse(catalogue.model_dump(mode="json"))
+    return _frozen_source_catalogue(current_catalogue().build_id).respond(request)
 
 
 def build_sources_door() -> DoorContribution:
     # Load the registry now, so an invalid one fails startup rather than the first request.
     _packaged_registry()
     router = APIRouter()
-    # `response_model` documents the JSONResponse body in OpenAPI.
+    # `response_model` documents the response body in OpenAPI.
     router.add_api_route(
         "/api/graph/documentation/{dcid:dcid}",
         sources_endpoint,
@@ -429,6 +452,7 @@ def build_sources_door() -> DoorContribution:
     )
     return DoorContribution(
         router=router,
+        registry_endpoints={"/api/graph/documentation/{dcid:dcid}": "graph.documentation"},
         classify=classify_sources_exception,
         exception_types=(
             SourceDocumentNotFound,

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 
 import pytest
 
@@ -10,6 +10,7 @@ from search.engine.bind import SlotBindingDraft
 from search.engine.conjoin import assemble_region
 from search.engine.errors import GraphInfraError
 from search.engine.extract import DateRequest
+from search.engine.quantity_read import QuantityOutput
 from search.engine.retrieval.retrieve import (
     BoundValuesUnrealisable,
     FamilyTotalAbsent,
@@ -23,6 +24,7 @@ from search.models import CoverageBare, TimeWindow
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import walk_options
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 # Declaration-free standard shapes probe the subject role.
@@ -100,6 +102,10 @@ def _graph_with_male_data() -> FakeGraph:
 
 _MISMATCH_GENDER_SV = "UnemploymentRate_Person_Male_NoResidence"
 _MISMATCH_RESIDENCE_SV = "UnemploymentRate_Person_Rural_NoGender"
+
+
+# A residence value the graph and the code index hold no name for.
+_UNNAMED_RESIDENCE = "PeriUrban"
 
 
 def _two_axis_arcs(*, gender: str | None, residence: str | None) -> dict:
@@ -411,6 +417,8 @@ def _resolve_unemployment(
 
     class _GenderLLM:
         async def generate_structured(self, *, prompt, system, schema):
+            if schema is QuantityOutput:
+                return NO_QUANTITY
             assert schema.__name__ == "_UniversalBindOutput"
             return _UniversalBindOutput(
                 chosen_shape_index=0, bindings=[binding, *also], also_plausible=None, ask=None
@@ -456,24 +464,28 @@ def _departures(region):
 
 class TestUnrealisableValuesUnbound:
     """Bound values no member holds together are unbound and the shape resolved again, so
-    the Spec describes what was read."""
+    the Spec describes what was read. A request-named value is a code the question pins on
+    a slot the shape holds, so the part refuses `qualifier_not_bound` on it and flags that
+    read; an engine-chosen value goes silently."""
 
-    def test_a_request_named_value_no_member_holds_departs_and_is_not_read(self):
+    def test_a_request_named_value_no_member_holds_refuses_and_flags_the_read(self):
         from search.render.heading import heading_for
         from search.render.tokens import plan_words
 
         without = _resolve_unemployment(_gender_binding("unbound"))
         result = _resolve_unemployment(_gender_binding("value", "Female"))
 
-        assert result.status == without.status == "definite"
-        (spec,) = result.specs
+        assert without.status == "definite"
+        assert _refusal(result) == ("qualifier_not_bound", [("Female", "gender")])
+        assert result.flagged_match is not None
+        (spec,) = result.flagged_match
         assert spec.spec_id == without.specs[0].spec_id
         assert "female" not in plan_words(heading_for(spec))
-        assert _departures(result) == [("measure_not_applied", "how:gender", "Female")]
+        assert _departures(result) == []
 
-    def test_a_dropped_phrase_the_raw_text_bound_departs_once_in_its_own_words(self, monkeypatch):
+    def test_a_dropped_phrase_the_raw_text_bound_refuses_once_in_its_own_words(self, monkeypatch):
         """Extraction dropped "for women" and the raw text bound it to Female, which no
-        member holds. The filter departs once, in the request's words, on its token; the
+        member holds. The part refuses on it once, in the request's words, on its slot; the
         phrase stays admitted, so the request-wide dropped-qualifier warning does not
         return beside it."""
         from search.engine.assemble import _surviving_qualifier_warnings
@@ -500,8 +512,8 @@ class TestUnrealisableValuesUnbound:
         result = _resolve_unemployment(_gender_binding("unbound"), monkeypatch, dropped=(phrase,))
         dropped = Warning(code="query_qualifier_dropped", severity="info", message=phrase)
 
-        assert result.status == "definite"
-        assert _departures(result) == [("measure_not_applied", "how:gender", phrase)]
+        assert _refusal(result) == ("qualifier_not_bound", [(phrase, "gender")])
+        assert _departures(result) == []
         assert _surviving_qualifier_warnings([dropped], [phrase], [result]) == []
 
     def test_an_engine_chosen_value_no_member_holds_is_dropped_silently(self, monkeypatch):
@@ -521,7 +533,7 @@ class TestUnrealisableValuesUnbound:
         from search.engine.region.candidates import _Alternate, _materialise_alt_shapes
         from tests.engine._builders import bound_place_context, subject_place_roles
 
-        results, unsupported = _materialise_alt_shapes(
+        results, unsupported, _presence, _unevaluated = _materialise_alt_shapes(
             [_Alternate(_male_only_shape(), [_gender_binding("value", "Female")])],
             places=[bound_place_context(subject_place_roles(_RECIPIENT))],
             named_place_dcids=[_RECIPIENT],
@@ -556,8 +568,8 @@ class TestUnrealisableValuesUnbound:
     def test_a_resubmit_keeps_the_posted_value_a_member_holds(self):
         """A resubmit posts gender=Male and residence=Urban over male-rural and
         female-rural. Both members contradict urban and one also male, so the resubmit
-        unbinds residence alone, departing it, and keeps Male."""
-        from search.engine.departures import DepartureFact
+        unbinds residence alone, requiring it with its departure, and keeps Male."""
+        from search.engine.region.state import CodeRule, Requirement
         from search.engine.region.unrealisable import unbind_posted
 
         members = {
@@ -580,12 +592,7 @@ class TestUnrealisableValuesUnbound:
         class _Resubmit:
             bindings: list[SlotBindingDraft]
             graph: FakeGraph
-            warnings: list[object] = field(default_factory=list)
-            departed: list[DepartureFact] = field(default_factory=list)
-
-            def depart(self, warning: object, fact: DepartureFact) -> object:
-                self.departed.append(fact)
-                return warning
+            requirements: tuple[Requirement, ...] = ()
 
         state = _Resubmit(bindings=bindings, graph=graph)
         unbind_posted(state, refusal)
@@ -594,16 +601,109 @@ class TestUnrealisableValuesUnbound:
             ("gender", "value", ["Male"]),
             ("residence", "unbound", []),
         ]
-        assert [(fact.binding_ref, fact.asked) for fact in state.departed] == [
-            ("how:residence", "Urban")
+        assert [
+            (r.departure[1].binding_ref, r.departure[1].asked)
+            for r in state.requirements
+            if r.departure is not None
+        ] == [("how:residence", "Urban")]
+        assert [(r.rule, r.term.text) for r in state.requirements] == [
+            (CodeRule(property_dcid="residence", codes=("Urban",)), "Urban")
         ]
 
-    def test_a_request_keeps_the_value_a_member_holds(self):
+    @pytest.mark.parametrize("posted", ["Urban", _UNNAMED_RESIDENCE], ids=["named", "nameless"])
+    def test_a_resubmit_refuses_on_a_posted_value_no_member_holds(self, monkeypatch, posted):
+        """A resubmit elects male-rural and female-rural, and its bindings carry the posted
+        gender=Male and residence=Urban, which no member holds together. A posted value is
+        what the caller stated, so unbinding Urban refuses `qualifier_not_bound` on it and
+        flags the male-rural read, as the text doors do, where the resubmit answered
+        definite with a `measure_not_applied` departure. A posted value with no name still
+        refuses, named by its dcid."""
+        from search.engine.region import promote_reread, resubmit_promote
+        from search.engine.region.promote_bindings import _phase_build_bindings
+
+        members = {
+            _MALE_RURAL_SV: _two_axis_arcs(gender="Male", residence="Rural"),
+            _FEMALE_RURAL_SV: _two_axis_arcs(gender="Female", residence="Rural"),
+        }
+        monkeypatch.setattr(promote_reread, "_elected_members", lambda _state: list(members))
+
+        def _binding_posted_urban(state):
+            result = _phase_build_bindings(state)
+            state.bindings = [
+                _residence_binding(posted) if b.property_dcid == "residence" else b
+                for b in state.bindings
+            ]
+            return result
+
+        monkeypatch.setattr(
+            resubmit_promote,
+            "_PROMOTE_PHASES",
+            tuple(
+                _binding_posted_urban if phase is _phase_build_bindings else phase
+                for phase in resubmit_promote._PROMOTE_PHASES
+            ),
+        )
+        region = _resubmit_unemployment({"gender": "Male", "residence": posted}, members)
+
+        assert _refusal(region) == ("qualifier_not_bound", [(posted, "residence")])
+        assert [ref.ref for ref in region.unbound_qualifiers[0].named] == [posted]
+        assert _flagged_served(region) == [_MALE_RURAL_SV]
+        assert _departures(region) == []
+
+    def test_a_posted_value_the_representative_lacks_refuses_when_the_narrow_empties(
+        self, monkeypatch
+    ):
+        """A resubmit posts gender=Female and residence {Rural, Urban} over male-rural,
+        female-rural and male-peri-urban. No member carries Urban, so the narrow keeps none
+        and every member stands, male-rural first. Its Male is not the posted Female, so
+        the resubmit refuses on Female, and on the Urban it filtered out, where it
+        answered definite under Male."""
+        from search.engine.region import promote_reread
+
+        members = {
+            _MALE_RURAL_SV: _two_axis_arcs(gender="Male", residence="Rural"),
+            _FEMALE_RURAL_SV: _two_axis_arcs(gender="Female", residence="Rural"),
+            _MALE_PERI_SV: _two_axis_arcs(gender="Male", residence=_UNNAMED_RESIDENCE),
+        }
+        monkeypatch.setattr(promote_reread, "_elected_members", lambda _state: list(members))
+
+        region = _resubmit_unemployment(
+            {"gender": "Female", "residence": ["Rural", "Urban"]}, members
+        )
+
+        assert _refusal(region) == (
+            "qualifier_not_bound",
+            [("Urban", "residence"), ("Female", "gender")],
+        )
+
+    def test_a_filtered_posted_set_value_refuses(self, monkeypatch):
+        """A resubmit posts gender=Male and residence {Rural, Urban} over male-rural and
+        male-peri-urban. Male holds; the set keeps Rural and filters out Urban, which no
+        member carries, so the resubmit refuses on Urban where it dropped it silently."""
+        from search.engine.region import promote_reread
+
+        members = {
+            _MALE_RURAL_SV: _two_axis_arcs(gender="Male", residence="Rural"),
+            _MALE_PERI_SV: _two_axis_arcs(gender="Male", residence=_UNNAMED_RESIDENCE),
+        }
+        monkeypatch.setattr(promote_reread, "_elected_members", lambda _state: list(members))
+
+        region = _resubmit_unemployment(
+            {"gender": "Male", "residence": ["Rural", "Urban"]}, members
+        )
+
+        assert _refusal(region) == ("qualifier_not_bound", [("Urban", "residence")])
+
+    @pytest.mark.parametrize(
+        ("bound", "named"), [("Urban", "Urban"), (_UNNAMED_RESIDENCE, _UNNAMED_RESIDENCE)]
+    )
+    def test_a_request_keeps_the_value_a_member_holds(self, bound, named):
         """The reviewer's case: male and urban over male-rural and female-rural. Only
-        urban departs, and male-rural answers."""
+        urban is unbound, so the part refuses on urban and flags male-rural. A bound value
+        nothing names refuses the same way, named by its dcid."""
         result = _resolve_unemployment(
             _gender_binding("value", "Male"),
-            also=(_residence_binding("Urban"),),
+            also=(_residence_binding(bound),),
             graph=_two_axis_graph(
                 {
                     _MALE_RURAL_SV: _two_axis_arcs(gender="Male", residence="Rural"),
@@ -613,13 +713,13 @@ class TestUnrealisableValuesUnbound:
             query="male urban unemployment rate",
         )
 
-        assert result.status == "definite"
-        assert _served(result) == [_MALE_RURAL_SV]
-        assert _departures(result) == [("measure_not_applied", "how:residence", "Urban")]
+        assert _refusal(result) == ("qualifier_not_bound", [(named, "residence")])
+        assert _flagged_served(result) == [_MALE_RURAL_SV]
+        assert _departures(result) == []
 
     def test_a_default_a_member_holds_is_kept_when_a_named_value_goes(self, monkeypatch):
         """Female is named and Rural defaulted, over male-rural and male-urban. Dropping
-        Female alone admits male-rural, so the default stays bound."""
+        Female alone admits male-rural, so the default stays bound in the flagged read."""
         result = _resolve_unemployment(
             _gender_binding("value", "Female"),
             monkeypatch,
@@ -632,14 +732,15 @@ class TestUnrealisableValuesUnbound:
             ),
         )
 
-        assert result.status == "definite"
-        assert _served(result) == [_MALE_RURAL_SV]
-        assert _departures(result) == [("measure_not_applied", "how:gender", "Female")]
+        assert _refusal(result) == ("qualifier_not_bound", [("Female", "gender")])
+        assert _flagged_served(result) == [_MALE_RURAL_SV]
+        assert _departures(result) == []
 
 
 _MALE_RURAL_SV = "UnemploymentRate_Person_Male_Rural"
 _FEMALE_RURAL_SV = "UnemploymentRate_Person_Female_Rural"
 _MALE_URBAN_SV = "UnemploymentRate_Person_Male_Urban"
+_MALE_PERI_SV = "UnemploymentRate_Person_Male_PeriUrban"
 
 
 def _two_axis_graph(members: dict[str, dict]) -> FakeGraph:
@@ -670,13 +771,13 @@ def _two_axis_graph(members: dict[str, dict]) -> FakeGraph:
     )
 
 
-def _resubmit_unemployment(posted: dict[str, str], members: dict[str, dict]):
-    """Resubmit an unemployment identity posting `posted` values on their properties,
-    over `members`."""
+def _resubmit_unemployment(posted: dict[str, str | list[str]], members: dict[str, dict]):
+    """Resubmit an unemployment identity posting `posted` values on their properties, a
+    list as a set binding, over `members`."""
     from search.engine.region import resolve_spec_resubmit
     from search.models import ResubmitIdentityPayload
     from tests.engine._base_identity import make_identity, subject_entity
-    from tests.engine._builders import value_slot
+    from tests.engine._builders import binding_set_slot, value_slot
 
     identity = make_identity(
         {
@@ -685,7 +786,12 @@ def _resubmit_unemployment(posted: dict[str, str], members: dict[str, dict]):
             "measured_property": "unemploymentRate",
             "stat_type": "measuredValue",
         },
-        [value_slot("how", prop, prop, value) for prop, value in posted.items()],
+        [
+            binding_set_slot("how", prop, prop, value)
+            if isinstance(value, list)
+            else value_slot("how", prop, prop, value)
+            for prop, value in posted.items()
+        ],
         entities=[subject_entity(_RECIPIENT)],
     )
     return resolve_spec_resubmit(
@@ -701,7 +807,20 @@ def _resubmit_unemployment(posted: dict[str, str], members: dict[str, dict]):
 
 def _served(region) -> list[str]:
     """The StatVars the first Spec serves."""
-    return [sv.ref.dcid for sv in region.specs[0].resolved.members]
+    return [sv.ref.ref for sv in region.specs[0].resolved.members]
+
+
+def _refusal(region) -> tuple[str | None, list[tuple[str, str | None]]]:
+    """A no-data region's reason and the terms it names, each with its slot."""
+    assert region.status == "no_data"
+    return region.no_data_reason, [(q.text, q.slot) for q in region.unbound_qualifiers]
+
+
+def _flagged_served(region) -> list[str]:
+    """The StatVars the region's one flagged match serves."""
+    assert region.flagged_match is not None
+    (flagged,) = region.flagged_match
+    return [sv.ref.ref for sv in flagged.resolved.members]
 
 
 def _bound_slot(region, prop: str):
@@ -709,7 +828,7 @@ def _bound_slot(region, prop: str):
     (slot,) = [
         slot
         for slot in region.specs[0].resolved.slots
-        if slot.key.property is not None and slot.key.property.dcid == prop
+        if slot.key.property is not None and slot.key.property.ref == prop
     ]
     return slot.binding
 
@@ -1663,7 +1782,7 @@ class TestFamilyTotalAbsentWarning:
         )
 
         assert result.status == "definite"
-        assert [sv.ref.dcid for sv in result.spec.resolved.members] == [_UN_NEONATAL]
+        assert [sv.ref.ref for sv in result.spec.resolved.members] == [_UN_NEONATAL]
         assert [w.message for w in result.warnings if w.code == FAMILY_TOTAL_ABSENT] == [
             "No total for this family of variables was found, so the answer shows "
             "Neonatal mortality rate."
@@ -1696,7 +1815,7 @@ class TestFamilyTotalAbsentWarning:
             "Neonatal mortality rate."
         ]
         assert region.status == "definite"
-        assert [sv.ref.dcid for sv in region.specs[0].resolved.members] == [_UN_NEONATAL]
+        assert [sv.ref.ref for sv in region.specs[0].resolved.members] == [_UN_NEONATAL]
         assert [w.message for w in region.warnings if w.code == FAMILY_TOTAL_ABSENT] == warned
         assert MEMBERSHIP_UNVERIFIED not in [w.code for w in region.warnings]
         # The resubmit holds no words for the measure, so its closest match states only the
@@ -1718,7 +1837,10 @@ class TestFamilyTotalAbsentWarning:
         male under-5 member and a female neonatal one, so the bindings admit the male member
         alone, which states one value of the two the set names: the first answer warns. The
         resubmit's walk settles the family, elects among it, one member admitted, and warns
-        as the first answer does."""
+        as the first answer does. Every term the identity posts is applied, refused or
+        disclosed: no member read carries female, so the resubmit departs
+        `measure_not_applied` on the sex slot, under the slot's name, as the fake graph
+        names no sex value."""
         import asyncio
 
         from search.engine.bind import _UniversalBindOutput
@@ -1764,6 +1886,8 @@ class TestFamilyTotalAbsentWarning:
 
         class _BindLLM:
             async def generate_structured(self, *, prompt, system, schema):
+                if schema is QuantityOutput:
+                    return NO_QUANTITY
                 return _UniversalBindOutput(
                     chosen_shape_index=0, bindings=bindings, also_plausible=None, ask=None
                 ), None
@@ -1798,7 +1922,12 @@ class TestFamilyTotalAbsentWarning:
         )
 
         assert region.status == "definite"
-        assert [sv.ref.dcid for sv in region.specs[0].resolved.members] == [_UN_MALE_U5]
+        assert [sv.ref.ref for sv in region.specs[0].resolved.members] == [_UN_MALE_U5]
+        assert [
+            (fact.binding_ref, fact.values)
+            for fact in region.departure_facts.values()
+            if fact.code == "measure_not_applied"
+        ] == [("how:undataSex", ("a requested undata sex value",))]
         assert [w.message for w in region.warnings if w.code == FAMILY_TOTAL_ABSENT] == [
             "No total for this family of variables was found, so the answer shows "
             "Under-five mortality rate, male."
@@ -1894,6 +2023,8 @@ def _resolve_child_mortality_in_chad(members: dict[str, dict], *, with_data: tup
 
     class _UnboundAgeAndSexLLM:
         async def generate_structured(self, *, prompt, system, schema):
+            if schema is QuantityOutput:
+                return NO_QUANTITY
             assert schema.__name__ == "_UniversalBindOutput"
             return _UniversalBindOutput(
                 chosen_shape_index=0,
@@ -1963,24 +2094,51 @@ class TestFamilyTotalRule:
             total=None, shown=_UN_MALE_U5, places=(_RECIPIENT,)
         )
 
-    def test_a_narrower_member_listed_first_by_recall_warns(self):
-        """Recall lists the neonatal member ahead of the under-5 one. Both carry the same
-        constraint keys, so recall order elects the neonatal member, with the notice."""
-        members = {
-            _UN_NEONATAL: _un_arcs(age="undata/AGE-M0", sex=None),
-            _UN_U5: _un_arcs(age="undata/AGE-Y0T4", sex=None),
-            _UN_MALE_U5: _un_arcs(age="undata/AGE-Y0T4", sex="undata/SEX-M"),
-        }
-        result = _resolve_at_recipient(
-            _child_mortality_shape(members),
-            [_unbound("undataAge"), _unbound("undataSex")],
-            _graph_with_data_for(*members),
-        )
+    @pytest.mark.parametrize(
+        ("shape", "bindings", "elected"),
+        [
+            pytest.param(
+                _child_mortality_shape(
+                    {
+                        _UN_NEONATAL: _un_arcs(age="undata/AGE-M0", sex=None),
+                        _UN_U5: _un_arcs(age="undata/AGE-Y0T4", sex=None),
+                        _UN_MALE_U5: _un_arcs(age="undata/AGE-Y0T4", sex="undata/SEX-M"),
+                    }
+                ),
+                [_unbound("undataAge"), _unbound("undataSex")],
+                _UN_NEONATAL,
+                id="recall_breaks_a_tie_in_narrowness",
+            ),
+            pytest.param(
+                replace(
+                    _person_shape(),
+                    sv_arc_facts={
+                        _PERSON_FEMALE_URBAN: _person_arcs(
+                            gender="Female", placeOfResidenceClassification="Urban"
+                        ),
+                        "Count_Person_15OrMoreYears": _person_arcs(age="Years15Onwards"),
+                    },
+                ),
+                [_unbound("gender")],
+                "Count_Person_15OrMoreYears",
+                id="the_broader_member_listed_second_stands_in",
+            ),
+        ],
+    )
+    def test_with_no_total_the_member_narrowing_the_family_least_stands_in(
+        self, shape, bindings, elected
+    ):
+        """No member is the family's total, so the one asserting the fewest unbound
+        properties answers, with the notice. The neonatal and under-5 members assert one
+        each and recall lists the neonatal one first. The age member asserts one property
+        and the urban female member two, so the age member answers though recall lists it
+        second."""
+        result = _resolve_at_recipient(shape, bindings, _graph_with_data_for(*shape.sv_arc_facts))
 
         assert isinstance(result, Materialised)
-        assert result.sv_dcids == [_UN_NEONATAL]
+        assert result.sv_dcids == [elected]
         assert result.family_total_absent == FamilyTotalAbsent(
-            total=None, shown=_UN_NEONATAL, places=(_RECIPIENT,)
+            total=None, shown=elected, places=(_RECIPIENT,)
         )
 
     def test_a_recall_sample_without_the_root_warns(self):
@@ -2084,7 +2242,9 @@ class TestFamilyTotalRule:
         assert result.sv_dcids == ["Count_Person"]
         assert result.family_total_absent is None
 
-    def test_a_member_with_an_empty_arcs_mapping_answers_in_recall_order_with_a_notice(self):
+    def test_a_member_with_an_empty_arcs_mapping_stands_in_after_a_known_one(self):
+        """A member whose constraints are unknown may be narrower than any known one, so the
+        female member answers though recall lists the unknown one first."""
         shape = replace(
             _person_shape(),
             sv_arc_facts={"sv_unknown": {}, _PERSON_FEMALE: _person_arcs(gender="Female")},
@@ -2094,9 +2254,9 @@ class TestFamilyTotalRule:
         )
 
         assert isinstance(result, Materialised)
-        assert result.sv_dcids == ["sv_unknown"]
+        assert result.sv_dcids == [_PERSON_FEMALE]
         assert result.family_total_absent == FamilyTotalAbsent(
-            total=None, shown="sv_unknown", places=(_RECIPIENT,)
+            total=None, shown=_PERSON_FEMALE, places=(_RECIPIENT,)
         )
 
     @pytest.mark.parametrize(
@@ -2209,8 +2369,8 @@ class TestFamilyTotalRule:
         assert family.totals == frozenset()
 
     def test_a_member_with_unknown_constraints_is_no_total_and_dominates_nothing(self):
-        """A member with no facts stays electable in recall order. It never stands for the
-        family, and it leaves the constrained member beside it in the kept set."""
+        """A member with no facts stays electable after every known member. It never stands
+        for the family, and it leaves the constrained member beside it in the kept set."""
         from search.engine.retrieval.member_facts import ArcsMemberFacts
         from search.engine.retrieval.standard import _elect_family
 
@@ -2221,7 +2381,7 @@ class TestFamilyTotalRule:
 
         family = _elect_family(list(member_facts), member_facts, {})
 
-        assert family.order == ("sv_unknown", _UN_MALE_U5)
+        assert family.order == (_UN_MALE_U5, "sv_unknown")
         assert family.totals == frozenset()
 
 
@@ -2282,3 +2442,280 @@ def test_a_single_collect_elects_the_first_member_with_points_in_the_years_read(
     assert isinstance(since, Materialised) and since.has_data
     assert since.sv_dcids == ["sv_new"]
     assert since.coverage.window == TimeWindow(start_year=2021, end_year=2024)
+
+
+# A family that partitions on a measure slot: every nominal economic activity member states
+# its activity source, so none is the family's total.
+
+_GDP_NOMINAL = "Amount_EconomicActivity_GrossDomesticProduction_Nominal"
+_GVA_NOMINAL = "Nominal_Amount_EconomicActivity_GrossValueAdded"
+_GVA_CONSTRUCTION = "Nominal_Amount_EconomicActivity_GrossValueAdded_ConstructionSector"
+_NDP_NOMINAL = "Nominal_Amount_EconomicActivity_NetDomesticProduction"
+_WDI = "dc/base/WorldDevelopmentIndicators"
+
+
+def _activity_arcs(**constraints: str) -> dict:
+    return {
+        "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
+        "name": {"nodes": [{"value": "Nominal economic activity"}]},
+        "populationType": {"nodes": [{"dcid": "EconomicActivity"}]},
+        "measuredProperty": {"nodes": [{"dcid": "amount"}]},
+        "statType": {"nodes": [{"dcid": "measuredValue"}]},
+        "measurementQualifier": {"nodes": [{"dcid": "Nominal"}]},
+        "constraintProperties": {"nodes": [{"dcid": prop} for prop in constraints]},
+        **{prop: {"nodes": [{"dcid": value}]} for prop, value in constraints.items()},
+    }
+
+
+_ACTIVITY_ARCS = {
+    _GDP_NOMINAL: _activity_arcs(activitySource="GrossDomesticProduction"),
+    _GVA_NOMINAL: _activity_arcs(activitySource="GrossValueAdded"),
+    _GVA_CONSTRUCTION: _activity_arcs(
+        activitySource="GrossValueAdded", economicSector="ConstructionSector"
+    ),
+    _NDP_NOMINAL: _activity_arcs(activitySource="NetDomesticProduction"),
+}
+
+
+def _hold_activity_family(bind_catalogue, arcs: dict[str, dict]) -> None:
+    """Bind a catalogue holding `arcs` as one base family."""
+    from origin_catalogue import BASE
+    from tests.origin_catalogue.fake_catalogue import provenance_row, restrictive_catalogue
+    from tests.origin_catalogue.support import build_arc_tables
+
+    bind_catalogue(
+        restrictive_catalogue(
+            provenances=[provenance_row(_WDI, BASE)],
+            base_variables={dcid: ([_WDI], []) for dcid in arcs},
+            arcs=build_arc_tables(dfo={}, base=arcs, schema={}),
+        )
+    )
+
+
+def _activity_graph(arcs: dict[str, dict], places: dict[str, str]) -> FakeGraph:
+    """`arcs` with data at each place of `places`, a name to its dcid, and "GDP" recalling
+    the nominal GDP member alone."""
+    return FakeGraph(
+        nodes={
+            **{
+                sv: {"label": sv, "type": "StatisticalVariable", "arcs": a}
+                for sv, a in arcs.items()
+            },
+            **{dcid: {"label": name, "type": "Country"} for name, dcid in places.items()},
+        },
+        obs={
+            f"{sv}|{dcid}": [
+                {"earliestDate": "2020", "latestDate": "2020", "obsCount": 1, "provenanceId": _WDI}
+            ]
+            for sv in arcs
+            for dcid in places.values()
+        },
+        detect={"GDP": {"svs": [_GDP_NOMINAL]}},
+        resolve=places,
+    )
+
+
+def _activity_shape(
+    bind_catalogue,
+    arcs: dict[str, dict] = _ACTIVITY_ARCS,
+    recalled: tuple[str, ...] = (_GDP_NOMINAL,),
+) -> ShapeDraft:
+    """The shape "GDP" derives over the held family of `arcs`, recall scoring `recalled`."""
+    from search.engine.retrieval.derive import derive_shapes
+
+    _hold_activity_family(bind_catalogue, arcs)
+    (shape,) = derive_shapes(
+        confirmed_svs=list(recalled), graph=_activity_graph(arcs, {"India": "country/IND"})
+    )
+    assert shape.held_family is not None
+    return shape
+
+
+def _activity_source(kind: str, *values: str, evidence: str = "mentioned") -> SlotBindingDraft:
+    return SlotBindingDraft(
+        axis="how",
+        property_dcid="activitySource",
+        kind=kind,
+        value_dcids=list(values),
+        evidence=evidence,
+    )
+
+
+_GDP_BOUND = _activity_source("value", "GrossDomesticProduction", evidence="sole_option")
+
+
+class TestPartitionSlotBinding:
+    """A slot every member of a family states, with two or more values among them, is no
+    slot a stand-in may cross. The part binds it to the value every member recall scored
+    states, unless the bindings already decide it or the scored members disagree."""
+
+    @pytest.mark.parametrize(
+        ("recalled", "scored", "bindings", "added"),
+        [
+            pytest.param(
+                (_GDP_NOMINAL,),
+                None,
+                [_activity_source("unbound")],
+                [_GDP_BOUND],
+                id="the_open_partition_binds_the_recalled_value",
+            ),
+            pytest.param(
+                (_GVA_CONSTRUCTION, _GDP_NOMINAL),
+                frozenset({_GDP_NOMINAL}),
+                [_activity_source("unbound")],
+                [_GDP_BOUND],
+                id="an_unscored_member_listed_first_is_no_evidence",
+            ),
+            pytest.param(
+                (_GDP_NOMINAL, _GVA_NOMINAL),
+                None,
+                [_activity_source("unbound")],
+                [],
+                id="two_recalled_values_leave_the_slot_open",
+            ),
+            pytest.param(
+                (_GDP_NOMINAL,),
+                None,
+                [_activity_source("value", "GrossValueAdded")],
+                [],
+                id="the_model_mentioned_value_wins",
+            ),
+            pytest.param(
+                (_GDP_NOMINAL,),
+                None,
+                [_activity_source("unbound", evidence="requested_all")],
+                [],
+                id="a_slot_asked_in_full_stays_open",
+            ),
+        ],
+    )
+    def test_binds_an_open_partition_slot_from_unanimous_recall(
+        self, bind_catalogue, recalled, scored, bindings, added
+    ):
+        """A Topic expansion is no recall evidence, so a member it lists ahead of the
+        scored one states nothing (`ShapeDraft.scored_members`)."""
+        from search.engine.retrieval.standard import bind_partition_values
+
+        shape = _activity_shape(bind_catalogue, recalled=recalled)
+        if scored is not None:
+            shape = replace(shape, scored_members=scored)
+
+        bound, binding_added = bind_partition_values(shape, bindings, ())
+
+        assert binding_added == added
+        assert [b for b in bound if b.property_dcid == "activitySource"] == (added or bindings)
+
+    @pytest.mark.parametrize(
+        "arcs",
+        [
+            pytest.param(
+                {**_ACTIVITY_ARCS, "Amount_EconomicActivity_Nominal": _activity_arcs()},
+                id="a_family_with_a_total",
+            ),
+            pytest.param(
+                {
+                    _GDP_NOMINAL: _ACTIVITY_ARCS[_GDP_NOMINAL],
+                    _GVA_CONSTRUCTION: _ACTIVITY_ARCS[_GVA_CONSTRUCTION],
+                    "Nominal_Amount_EconomicActivity_ConstructionSector": _activity_arcs(
+                        economicSector="ConstructionSector"
+                    ),
+                },
+                id="a_family_no_slot_partitions",
+            ),
+        ],
+    )
+    def test_leaves_a_family_no_slot_partitions_alone(self, bind_catalogue, arcs):
+        """A member stating no activity source leaves the slot no partition, whether it is
+        the family's total or a narrower member that still lets a stand-in answer."""
+        from search.engine.retrieval.standard import bind_partition_values
+
+        shape = _activity_shape(bind_catalogue, arcs)
+        bindings = [_activity_source("unbound")]
+
+        assert bind_partition_values(shape, bindings, ()) == (bindings, [])
+
+    def test_leaves_a_recall_sample_alone(self):
+        """A recall sample may lack the family's total, so its members stating the slot
+        prove no partition."""
+        from search.engine.retrieval.standard import bind_partition_values
+
+        shape = replace(
+            _person_shape(),
+            sv_arc_facts={
+                _PERSON_FEMALE: _person_arcs(gender="Female"),
+                _PERSON_MALE: _person_arcs(gender="Male"),
+            },
+        )
+        bindings = [_gender("unbound")]
+
+        assert bind_partition_values(shape, bindings, ()) == (bindings, [])
+
+    @pytest.mark.parametrize(
+        ("place", "dcid"),
+        [
+            pytest.param("India", "country/IND", id="gdp_india"),
+            pytest.param("Ethiopia", "country/ETH", id="gdp_ethiopia"),
+        ],
+    )
+    def test_gdp_answers_nominal_gdp_with_the_activity_source_bound(
+        self, bind_catalogue, place, dcid
+    ):
+        """The model leaves the activity source open. The family has no total, so the slot
+        binds to the scored member's `GrossDomesticProduction`, which the Spec's bound slot
+        states, and the part answers nominal GDP definitely with no `family_total_absent`
+        warning."""
+        region = _resolve_gdp(bind_catalogue, place, dcid, _activity_source("unbound"))
+
+        assert region.status == "definite"
+        assert _served(region) == [_GDP_NOMINAL]
+        binding = _bound_slot(region, "activitySource")
+        assert binding.kind == "value"
+        assert binding.value.ref.ref == "GrossDomesticProduction"
+        assert all(w.code != "family_total_absent" for w in region.warnings)
+
+    def test_a_mentioned_activity_source_wins_over_recall(self, bind_catalogue):
+        region = _resolve_gdp(
+            bind_catalogue, "India", "country/IND", _activity_source("value", "GrossValueAdded")
+        )
+
+        assert _served(region) == [_GVA_NOMINAL]
+        assert _bound_slot(region, "activitySource").value.ref.ref == "GrossValueAdded"
+
+
+def _resolve_gdp(bind_catalogue, place: str, dcid: str, binding: SlotBindingDraft):
+    """Resolve "GDP" at `place` over the held nominal family, the binder drafting `binding`
+    on the activity source."""
+    import asyncio
+
+    from search.engine.bind import _UniversalBindOutput
+    from search.engine.region import resolve_variable
+
+    _hold_activity_family(bind_catalogue, _ACTIVITY_ARCS)
+    graph = _activity_graph(_ACTIVITY_ARCS, {place: dcid})
+
+    class _BindLLM:
+        async def generate_structured(self, *, prompt, system, schema):
+            if schema is QuantityOutput:
+                return NO_QUANTITY
+            assert schema.__name__ == "_UniversalBindOutput"
+            return _UniversalBindOutput(
+                chosen_shape_index=0, bindings=[binding], also_plausible=None, ask=None
+            ), None
+
+    return asyncio.run(
+        resolve_variable(
+            "GDP",
+            entities=[place],
+            date_request=None,
+            detect_query="GDP",
+            role_query=f"GDP {place}",
+            pac=True,
+            graph=graph,
+            resolver=make_resolver(graph),
+            llm=_BindLLM(),
+            dropped_qualifier_phrases=[],
+            base_timing={},
+            sdmx=FakeSdmxClient(observations={}, availability={}),
+            coverage=empty_coverage_snapshot(),
+        )
+    )

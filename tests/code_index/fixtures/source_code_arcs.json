@@ -1,0 +1,22 @@
+{
+  "Amount_FinancialFlow_ServicingPayment_IDSDebtorTypeGG_ByCreditor_Nominal": {
+    "sourceIndicatorCode": {
+      "nodes": [
+        {
+          "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+          "value": "DT.TDS.DEGG.CD"
+        }
+      ]
+    }
+  },
+  "Amount_FinancialFlow_ServicingPayment_IDSDebtorTypeGG_Nominal": {
+    "sourceIndicatorCode": {
+      "nodes": [
+        {
+          "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+          "value": "DT.TDS.DEGG.CD"
+        }
+      ]
+    }
+  }
+}

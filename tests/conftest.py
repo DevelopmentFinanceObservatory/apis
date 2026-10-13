@@ -306,7 +306,7 @@ def search_settings(monkeypatch: pytest.MonkeyPatch) -> "Callable[..., SearchSet
             )
         search_overrides = {k: v for k, v in overrides.items() if k not in obs_overrides}
         base = config.settings().model_dump(
-            exclude={"capability_version", "max_entity_occurrences"}
+            exclude={"capability_version_override", "max_entity_occurrences"}
         )
         updated = SearchSettings.model_validate({**base, **search_overrides})
         monkeypatch.setattr(config, "_SETTINGS", updated)
@@ -360,9 +360,9 @@ def minimal_spec(spec_id: str = "s1") -> dict:
             "shape": {
                 "shape_id": "sh1",
                 "label": "test shape",
-                "population_type": {"dcid": "Pop", "label": "Pop"},
-                "measured_property": {"dcid": "Prop", "label": "Prop"},
-                "stat_type": {"dcid": "measuredValue", "label": "measured value"},
+                "population_type": {"ref": "Pop", "label": "Pop"},
+                "measured_property": {"ref": "Prop", "label": "Prop"},
+                "stat_type": {"ref": "measuredValue", "label": "measured value"},
                 "slot_keys": [],
                 "member_count": 1,
             },
@@ -393,12 +393,12 @@ def base_response(**extra) -> dict:
     }
 
 
-_ETH_REF = {"dcid": "country/ETH", "label": "Ethiopia"}
-_SCHEME_PROP = {"dcid": "DevelopmentFinanceScheme", "label": "flow type"}
-_PURPOSE_PROP = {"dcid": "DevelopmentFinancePurpose", "label": "purpose"}
-_RECIPIENT_PROP = {"dcid": "DevelopmentFinanceRecipient", "label": "recipient"}
-_ODA_GRANTS_REF = {"dcid": "ODAGrants", "label": "ODA grants"}
-_DAC_HEALTH_REF = {"dcid": "DAC/Health", "label": "health (total)"}
+_ETH_REF = {"ref": "country/ETH", "label": "Ethiopia"}
+_SCHEME_PROP = {"ref": "DevelopmentFinanceScheme", "label": "flow type"}
+_PURPOSE_PROP = {"ref": "DevelopmentFinancePurpose", "label": "purpose"}
+_RECIPIENT_PROP = {"ref": "DevelopmentFinanceRecipient", "label": "recipient"}
+_ODA_GRANTS_REF = {"ref": "ODAGrants", "label": "ODA grants"}
+_DAC_HEALTH_REF = {"ref": "DAC/Health", "label": "health (total)"}
 
 
 def _minimal_resolution() -> dict:
@@ -489,14 +489,14 @@ def _build_worked_example_response() -> dict:
                             "shape_id": "df-flow",
                             "label": "development finance flows",
                             "population_type": {
-                                "dcid": "DevelopmentFinance",
+                                "ref": "DevelopmentFinance",
                                 "label": "development finance",
                             },
                             "measured_property": {
-                                "dcid": "DevelopmentFinanceFlow",
+                                "ref": "DevelopmentFinanceFlow",
                                 "label": "development finance flow",
                             },
-                            "stat_type": {"dcid": "measuredValue", "label": "measured value"},
+                            "stat_type": {"ref": "measuredValue", "label": "measured value"},
                             "slot_keys": [
                                 {"axis": "what", "property": _SCHEME_PROP, "label": "flow type"},
                                 {"axis": "how", "property": _PURPOSE_PROP, "label": "purpose"},
@@ -562,7 +562,7 @@ def _build_worked_example_response() -> dict:
                         "stat_vars": {"member_count": 1, "served_count": 1},
                         "entities": [
                             {
-                                "ref": _ETH_REF["dcid"],
+                                "ref": _ETH_REF["ref"],
                                 "label": _ETH_REF["label"],
                                 "entity_type": "Country",
                                 "role": "destination",

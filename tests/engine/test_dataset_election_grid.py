@@ -461,8 +461,8 @@ _AXES: dict[str, RoleAxis] = {"financingProvider": "origin", "financingRecipient
 def _identity_entities(roles: str) -> list[Entity]:
     return [
         Entity(
-            ref=GraphRef(dcid=dcid, label=dcid),
-            role=EntityRoleDirectional(role=GraphRef(dcid=role, label=role), axis=_AXES[role]),
+            ref=GraphRef(ref=dcid, label=dcid),
+            role=EntityRoleDirectional(role=GraphRef(ref=role, label=role), axis=_AXES[role]),
         )
         for role, dcids in _ENTITIES[roles].items()
         for dcid in dcids
@@ -553,10 +553,10 @@ def _minted(
         build_slot(
             key,
             draft,
-            [GraphRef(dcid=value, label=value) for value in draft.value_dcids]
+            [GraphRef(ref=value, label=value) for value in draft.value_dcids]
             if draft is not None
             else [],
-            property_ref=GraphRef(dcid=key.property_dcid, label=key.property_dcid)
+            property_ref=GraphRef(ref=key.property_dcid, label=key.property_dcid)
             if key.property_dcid is not None
             else None,
         )
@@ -1287,7 +1287,7 @@ def test_words_that_leave_no_table_refuse_naming_the_excluded_and_opt_in_tables(
         assert isinstance(outcome, RegionResult)
         assert outcome.no_data_reason == "qualifier_not_bound"
         assert [
-            [ref.dcid for ref in record.named]
+            [ref.ref for ref in record.named]
             for record in (*outcome.unbound_qualifiers, *outcome.unbound_sources)
         ] == refused
 
@@ -1332,7 +1332,7 @@ def test_words_naming_a_table_refuse_a_bound_code_the_table_lacks(
     if refused:
         assert isinstance(outcome, RegionResult)
         assert outcome.no_data_reason == "qualifier_not_bound"
-        assert [[ref.dcid for ref in record.named] for record in outcome.unbound_qualifiers] == [
+        assert [[ref.ref for ref in record.named] for record in outcome.unbound_qualifiers] == [
             [sector]
         ]
     else:
@@ -1367,9 +1367,9 @@ def test_an_exclusion_reads_a_forced_code_as_it_reads_a_drafted_one(index, sourc
         if elected is None:
             assert isinstance(outcome, RegionResult)
             assert outcome.no_data_reason == "qualifier_not_bound"
-            assert [
-                [ref.dcid for ref in record.named] for record in outcome.unbound_qualifiers
-            ] == [[sector]]
+            assert [[ref.ref for ref in record.named] for record in outcome.unbound_qualifiers] == [
+                [sector]
+            ]
         else:
             assert isinstance(outcome, Outcome)
             assert outcome.elected == elected
@@ -1395,7 +1395,7 @@ def test_the_code_check_reads_the_part_s_tables_less_the_excluded_ones(index, ex
 
     refused = _unheld_bound_codes([sector_d], shape)
 
-    assert [[ref.dcid for ref in record.named] for record in refused] == unheld
+    assert [[ref.ref for ref in record.named] for record in refused] == unheld
 
 
 @pytest.mark.parametrize(
@@ -1437,7 +1437,7 @@ def test_a_named_part_refuses_a_code_only_another_table_holds_once_bound(
 
     assert asyncio.run(_phase_prune_and_rank(state)) is None
     unavailable = [
-        [ref.dcid for ref in record.named]
+        [ref.ref for ref in record.named]
         for record in _resolve_query_qualifiers(
             dataclasses.replace(state, shape_draft=state.capped_shapes[0])
         )
@@ -1449,7 +1449,7 @@ def test_a_named_part_refuses_a_code_only_another_table_holds_once_bound(
     if refused:
         assert vetted is not None
         assert vetted.no_data_reason == "qualifier_not_bound"
-        assert [[ref.dcid for ref in record.named] for record in vetted.unbound_qualifiers] == [
+        assert [[ref.ref for ref in record.named] for record in vetted.unbound_qualifiers] == [
             [sector]
         ]
     else:
@@ -1839,8 +1839,8 @@ def _menus(outcome: Outcome) -> dict[str, set[str]]:
     )
     slot_options = grounded[7]
     return {
-        cast(GraphRef, menu.key.property).dcid: {
-            cast(GraphRef, option.value.ref).dcid for option in menu.options
+        cast(GraphRef, menu.key.property).ref: {
+            cast(GraphRef, option.value.ref).ref for option in menu.options
         }
         for menu in slot_options
     }
@@ -1904,12 +1904,10 @@ def _option_points(
         list(outcome.bindings),
         [
             SlotOptions(
-                key=SlotKey(axis="how", property=GraphRef(dcid=prop, label=prop), label=prop),
+                key=SlotKey(axis="how", property=GraphRef(ref=prop, label=prop), label=prop),
                 options=[
                     SlotOption(
-                        value=SlotValue(
-                            ref=GraphRef(dcid=code, label=code), value_kind="enum_value"
-                        )
+                        value=SlotValue(ref=GraphRef(ref=code, label=code), value_kind="enum_value")
                     )
                     for code in codes
                 ],
@@ -1928,7 +1926,7 @@ def _option_points(
     )
     assert warning is None
     return {
-        (cast(GraphRef, menu.key.property).dcid, cast(GraphRef, option.value.ref).dcid): (
+        (cast(GraphRef, menu.key.property).ref, cast(GraphRef, option.value.ref).ref): (
             option.coverage.observation_count
         )
         for menu in enriched
@@ -1998,7 +1996,7 @@ def test_the_shape_event_offers_the_menus_of_the_datasets_the_part_answers_from(
         _build_shape_event(shape, variable_index=0, graph=cast(EngineGraphClient, _EchoLabels()))
     )
 
-    assert {cast(GraphRef, menu.key.property).dcid for menu in event.slot_options} == menus
+    assert {cast(GraphRef, menu.key.property).ref for menu in event.slot_options} == menus
 
 
 # A `_TOTALS` donor row of channel K1, beside `_BROAD`'s `drill_a`.
@@ -2723,10 +2721,10 @@ def test_the_wire_slots_and_the_identity_agree_when_the_role_class_election_rebi
         build_slot(
             key,
             draft,
-            [GraphRef(dcid=value, label=value) for value in draft.value_dcids]
+            [GraphRef(ref=value, label=value) for value in draft.value_dcids]
             if draft is not None
             else [],
-            property_ref=GraphRef(dcid=key.property_dcid, label=key.property_dcid)
+            property_ref=GraphRef(ref=key.property_dcid, label=key.property_dcid)
             if key.property_dcid is not None
             else None,
         )
@@ -2746,7 +2744,7 @@ def test_the_wire_slots_and_the_identity_agree_when_the_role_class_election_rebi
     )
 
     wire = {
-        cast(GraphRef, slot.key.property).dcid: cast(GraphRef, slot.binding.value.ref).dcid
+        cast(GraphRef, slot.key.property).ref: cast(GraphRef, slot.binding.value.ref).ref
         for slot in slots
         if slot.binding.kind == "value"
     }
@@ -3278,7 +3276,7 @@ def _refused_names(result: RegionResult | None) -> list[list[str]]:
     assert result is not None
     assert result.no_data_reason == "qualifier_not_bound"
     return [
-        [ref.dcid for ref in record.named]
+        [ref.ref for ref in record.named]
         for record in (*result.unbound_qualifiers, *result.unbound_sources)
     ]
 
@@ -3346,7 +3344,7 @@ def test_a_part_naming_two_tables_neither_serves_refuses_naming_only_those_table
     assert result.no_data_reason == "qualifier_not_bound"
     assert result.unbound_sources == ()
     _terms, sources, _naming = _unbound_terms(dataclasses.replace(result, source_scope=scope))
-    assert [[ref.dcid for ref in record.named] for record in sources or ()] == [
+    assert [[ref.ref for ref in record.named] for record in sources or ()] == [
         [_BROAD],
         [_DETAIL],
     ]

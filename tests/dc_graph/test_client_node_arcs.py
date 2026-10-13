@@ -41,8 +41,8 @@ def test_node_arcs_batch_partial_hit_posts_only_misses(monkeypatch) -> None:
     assert client._arcs_cache.get((UNKNOWN_KEY, "country/DEU")) is not None
 
 
-def test_node_arcs_batch_confirmed_empty_dcid_not_cached(monkeypatch) -> None:
-    """A lone present-but-empty dcid maps to `None` without retry or caching."""
+def test_node_arcs_batch_confirmed_empty_dcid_trusted_and_cached(monkeypatch) -> None:
+    """A lone present-but-empty dcid maps to `None` without a retry and caches as `None`."""
     call_count = [0]
 
     def fake_post(self, path, payload, *, deadline=None):
@@ -61,12 +61,16 @@ def test_node_arcs_batch_confirmed_empty_dcid_not_cached(monkeypatch) -> None:
 
     assert result1 == {"empty/NODE": None}
     assert result2 == {"empty/NODE": None}
-    assert call_count[0] == 2, "a lone dcid's empty response is trusted without a retry"
-    assert (UNKNOWN_KEY, "empty/NODE") not in client._arcs_cache
+    assert call_count[0] == 1, "a lone dcid's empty response is trusted and the warm read is free"
+    assert (UNKNOWN_KEY, "empty/NODE") in client._arcs_cache
+    assert client._arcs_cache[(UNKNOWN_KEY, "empty/NODE")] is None
 
 
-def test_node_arcs_batch_confirmed_empty_dcid_in_multi_batch_still_retries(monkeypatch) -> None:
-    """An empty response retries when the original batch contains multiple dcids."""
+def test_node_arcs_batch_confirmed_empty_dcid_in_multi_batch_retries_then_caches(
+    monkeypatch,
+) -> None:
+    """An empty response retries when the batch holds several dcids; the retry's
+    confirmed-empty answer caches as `None`, so a warm read makes no request."""
     calls: list[list[str]] = []
 
     def fake_post(self, path, payload, *, deadline=None):
@@ -91,7 +95,36 @@ def test_node_arcs_batch_confirmed_empty_dcid_in_multi_batch_still_retries(monke
 
     assert result["empty/NODE"] is None
     assert len(calls) == 2, "the empty entry retries because the batch held more than one dcid"
-    assert (UNKNOWN_KEY, "empty/NODE") not in client._arcs_cache
+    assert client._arcs_cache[(UNKNOWN_KEY, "empty/NODE")] is None
+
+    warm = client.node_arcs_batch(["empty/NODE", "country/KEN"])
+
+    assert warm["empty/NODE"] is None
+    assert warm["country/KEN"] == result["country/KEN"]
+    assert len(calls) == 2, "a warm read of confirmed-empty and positive entries makes no request"
+
+
+def test_node_arcs_batch_group_retry_empty_is_returned_but_not_cached(monkeypatch) -> None:
+    """Two suspects that come back empty together from the group retry map to `None` but stay
+    uncached: the retry shared a batch, so the empty answer may depend on its composition."""
+    calls: list[list[str]] = []
+
+    def fake_post(self, path, payload, *, deadline=None):
+        nodes = list(payload["nodes"])
+        calls.append(nodes)
+        return {"data": {dcid: {"arcs": {}} for dcid in nodes}}
+
+    monkeypatch.setattr(GraphClient, "post", fake_post)
+    client = GraphClient(
+        base_url="http://fake/core/api", arcs_cache_size=10000, obs_properties_cache_size=10000
+    )
+
+    result = client.node_arcs_batch(["empty/A", "empty/B"])
+
+    assert result == {"empty/A": None, "empty/B": None}
+    assert calls == [["empty/A", "empty/B"], ["empty/A", "empty/B"]]
+    assert (UNKNOWN_KEY, "empty/A") not in client._arcs_cache
+    assert (UNKNOWN_KEY, "empty/B") not in client._arcs_cache
 
 
 def test_node_arcs_batch_omission_recovered_by_retry(monkeypatch) -> None:
@@ -170,7 +203,7 @@ def test_node_arcs_batch_single_dcid_empty_response_trusted_without_retry(monkey
 
     assert result["europe"] is None
     assert len(calls) == 1, "a lone dcid's empty response must not trigger a retry"
-    assert (UNKNOWN_KEY, "europe") not in client._arcs_cache
+    assert client._arcs_cache[(UNKNOWN_KEY, "europe")] is None
 
 
 def test_node_arcs_batch_omission_persists_raises(monkeypatch) -> None:
@@ -189,6 +222,35 @@ def test_node_arcs_batch_omission_persists_raises(monkeypatch) -> None:
         client.node_arcs_batch(["never/ANSWERS"])
 
     assert (UNKNOWN_KEY, "never/ANSWERS") not in client._arcs_cache
+
+
+def test_node_arcs_batch_omitted_dcid_is_re_read_not_cached(monkeypatch) -> None:
+    """A dcid the response omits is never cached as empty: after the failed read, the
+    next call POSTs it again and recovers its real arcs."""
+    calls: list[list[str]] = []
+    answering = [False]
+
+    def fake_post(self, path, payload, *, deadline=None):
+        calls.append(list(payload["nodes"]))
+        if not answering[0]:
+            return {"data": {}}
+        return {"data": {"late/NODE": {"arcs": {"name": {"nodes": [{"value": "Late"}]}}}}}
+
+    monkeypatch.setattr(GraphClient, "post", fake_post)
+    client = GraphClient(
+        base_url="http://fake/core/api", arcs_cache_size=10000, obs_properties_cache_size=10000
+    )
+
+    with pytest.raises(GraphReadError):
+        client.node_arcs_batch(["late/NODE"])
+    assert (UNKNOWN_KEY, "late/NODE") not in client._arcs_cache
+    posts_after_failure = len(calls)
+
+    answering[0] = True
+    result = client.node_arcs_batch(["late/NODE"])
+
+    assert result["late/NODE"] == {"name": {"nodes": [{"value": "Late"}]}}
+    assert len(calls) == posts_after_failure + 1, "the omitted dcid was read again"
 
 
 def test_node_arcs_batch_omission_never_cached_even_alongside_a_good_dcid(monkeypatch) -> None:
@@ -269,7 +331,7 @@ def test_node_arcs_batch_lru_eviction_at_maxsize(monkeypatch) -> None:
 def test_node_arcs_single_call_none_on_confirmed_empty(monkeypatch) -> None:
     """node_arcs (delegating to node_arcs_batch with a single dcid) returns
     None for a dcid present with an empty arcs map, trusted immediately
-    without a retry, and does not cache it (a later call re-POSTs)."""
+    without a retry, and caches it (a later call makes no POST)."""
     call_count = [0]
 
     def fake_post(self, path, payload, *, deadline=None):
@@ -283,7 +345,7 @@ def test_node_arcs_single_call_none_on_confirmed_empty(monkeypatch) -> None:
 
     assert client.node_arcs("empty/NODE") is None
     assert client.node_arcs("empty/NODE") is None
-    assert call_count[0] == 2
+    assert call_count[0] == 1
 
 
 def test_node_arcs_single_call_raises_on_persistent_omission(monkeypatch) -> None:
@@ -759,6 +821,11 @@ def test_node_observation_properties_batch_absent_arc_and_nonexistent_node_retur
 
     assert result == {"sv/STANDARD": (), "does/not/exist": ()}
     assert len(calls) == 1, "a present-but-empty entry must not trigger a retry"
+
+    warm = client.node_observation_properties_batch(["sv/STANDARD", "does/not/exist"])
+
+    assert warm == result
+    assert len(calls) == 1, "the empty results are served from the cache"
 
 
 def test_node_observation_properties_batch_dedup_and_completeness(monkeypatch) -> None:

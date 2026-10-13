@@ -35,7 +35,7 @@ from dc_sdmx import (
 )
 from dfo_platform import ProblemSpec
 from dfo_platform.codes import registered_status
-from materialise.errors import MixedGrainError, UpstreamResponseError
+from materialise.errors import MixedGrainError, UpstreamResponseError, VariableBreadthUnreadError
 from materialise.graph import GraphDeadlineExceededError, GraphReadError
 from statvar_members import MemberReadDeadline
 
@@ -182,6 +182,16 @@ def _inventory_failed(exc: ArtifactInventoryError) -> ProblemSpec:
     return _Failure((), "service_unavailable", _WRITE_FAILED, retryable=True).classify(exc)
 
 
+def _variable_breadth_unread(exc: VariableBreadthUnreadError) -> ProblemSpec:
+    # A mint stores its election, so it refuses rather than record the facet the unit's name
+    # would pick. A retry reads a transient failure again; a defect would fail alike.
+    if not exc.transient:
+        logger.error("Datasets mint refused a single-place tie on a defective breadth: %s", exc)
+        return _Failure((), "internal_error", "{exc}", retryable=False).classify(exc)
+    logger.warning("Datasets mint refused a single-place tie it could not break: %s", exc)
+    return _Failure((), "service_unavailable", "{exc}", retryable=True).classify(exc)
+
+
 # Each function takes the one class it is keyed by. `Any` fits the contravariant slot.
 _CLASSIFIERS: dict[type, Callable[[Any], ProblemSpec]] = {
     **{cls: failure.classify for failure in _FAILURES for cls in failure.classes},
@@ -189,6 +199,7 @@ _CLASSIFIERS: dict[type, Callable[[Any], ProblemSpec]] = {
     ArtifactRecordConflictError: _record_conflict,
     ArtifactInventoryError: _inventory_failed,
     MixedGrainError: _mixed_grain,
+    VariableBreadthUnreadError: _variable_breadth_unread,
 }
 
 

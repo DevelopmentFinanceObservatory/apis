@@ -15,11 +15,13 @@ import pytest
 
 from search.engine.bind import DraftBindingEvidence, SlotBindingDraft, _UniversalBindOutput
 from search.engine.quantity import quantity_requirement
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.region.alternate_guard import inadmissible_alternates, query_pins
 from search.engine.shape import ShapeDraft
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 _GDP_PC = "Amount_EconomicActivity_GrossDomesticProduction_Nominal_PerCapita"
@@ -314,6 +316,8 @@ class _GdpBindLLM:
         self._evidence = evidence
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0,
@@ -363,7 +367,7 @@ def _resolve_gdp_per_capita(evidence: DraftBindingEvidence):
 
 
 def _served(result) -> list[set[str]]:
-    return [{sv.ref.dcid for sv in spec.resolved.members} for spec in result.specs]
+    return [{sv.ref.ref for sv in spec.resolved.members} for spec in result.specs]
 
 
 def test_pipeline_mentioned_gdp_refuses_the_gni_nomination():

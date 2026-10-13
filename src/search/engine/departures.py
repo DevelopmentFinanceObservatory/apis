@@ -182,7 +182,7 @@ def qualifier_property(named: Sequence[GraphRef]) -> str | None:
     """The one constraint property the code rows `named` belong to, or `None` when they
     span several or the index holds none of them."""
     index = get_index()
-    properties = {row.code_system for ref in named if (row := index.code_by_dcid(ref.dcid))}
+    properties = {row.code_system for ref in named if (row := index.code_by_dcid(ref.ref))}
     return properties.pop() if len(properties) == 1 else None
 
 
@@ -265,8 +265,8 @@ def spec_departure_facts(
             asked=words.get(group.label, group.label),
             group=group.label,
             group_size=sum(1 for entity in spec.resolved.entities if entity.role == role),
-            group_type=group.entity_type,
-            excluded=_residual_labels(spec, role, group.dcid),
+            group_dcid=group.ref,
+            excluded=_residual_labels(spec, role, group.ref),
         )
         for role, group in (spec.resolved.entity_groups or {}).items()
         if group.total is None
@@ -288,7 +288,7 @@ def _residual_labels(spec: Spec, role: str, group: str | None) -> tuple[str, ...
     served = (
         {provenance.ref}
         if provenance is not None and provenance.ref is not None
-        else {source.dcid for source in spec.resolved.trace.resolved_sources}
+        else {source.ref for source in spec.resolved.trace.resolved_sources}
     )
     residuals = (index.parties.get(dcid) for dcid in total.residuals)
     return tuple(
@@ -347,16 +347,16 @@ def scope_limited_fact(spec: Spec) -> DepartureFact | None:
             slot_filter.key.axis != "how"
             or prop is None
             or slot_filter.provenance not in ENGINE_CHOSEN_PROVENANCES
-            or prop.dcid in consumed
+            or prop.ref in consumed
         ):
             continue
         for ref in slot_filter.refs:
-            row = index.code_by_dcid(ref.dcid)
+            row = index.code_by_dcid(ref.ref)
             # A ref the graph gave no name carries its dcid as its label.
-            label = ref.label if ref.label != ref.dcid else ""
+            label = ref.label if ref.label != ref.ref else ""
             name = (row.short_name if row is not None else None) or label
             if name:
-                limits.setdefault(name, prop.dcid)
+                limits.setdefault(name, prop.ref)
     if not limits:
         return None
     return DepartureFact(
@@ -426,7 +426,7 @@ def unavailable_entity_facts(
                     entities=tuple(names.values()),
                     group=group.label,
                     group_size=size_by_role[role],
-                    group_type=group.entity_type,
+                    group_dcid=group.ref,
                     latest_years=latest_years,
                 )
             )
@@ -464,8 +464,8 @@ def _unserved_members(
         ),
         key=lambda named_set: (
             -len(named_set[1]),
-            named_set[0].dcid is None,
-            named_set[0].dcid or "",
+            named_set[0].ref is None,
+            named_set[0].ref or "",
             named_set[0].label,
         ),
     )
@@ -478,7 +478,7 @@ def _unserved_members(
             sets.append(
                 UnservedMembers(
                     label=group.label,
-                    entity_type=group.entity_type,
+                    dcid=group.ref,
                     size=len(members),
                     asked=entity_words.get(group.label, group.label),
                     entities=tuple(uncounted.pop(dcid) for dcid in held),
@@ -542,24 +542,27 @@ def _folded(first: DepartureFact, other: DepartureFact) -> DepartureFact:
 
 def _modelled_fact(spec: Spec) -> DepartureFact | None:
     """`modelled_values` when the served method is modelled or estimated. Otherwise it fires
-    with `partial` set when any series in the Spec's observations is modelled, or holds
-    points converted with a projected exchange rate or deflator
-    (`ObservationSeriesConversion.projected_count`, the `deflator_projected` warning), which
-    are estimates too. Without observations there is nothing to read."""
+    with `partial` set when the answer serves the estimates continuing a reported series
+    past its last period (`ResolvedSpec.continued`), with or without observations, or when
+    any series in the Spec's observations is modelled, serves a point whose own method is
+    classed estimated (`ObservationSeries.holds_estimates`), or holds points converted with
+    a projected exchange rate or deflator (`ObservationSeriesConversion.projected_count`,
+    the `deflator_projected` warning), which are estimates too."""
     method = spec.resolved.facets.get("measurementMethod")
     if method is not None and method.ref in MODELLED_MEASUREMENT_METHODS:
         return DepartureFact(code="modelled_values", binding_ref=None, shown=method.label)
     observations = spec.resolved.observations
     series = observations.series if observations is not None else []
-    if not any(_holds_estimates(one) for one in series):
+    if not spec.resolved.continued and not any(_holds_estimates(one) for one in series):
         return None
     return DepartureFact(code="modelled_values", binding_ref=None, partial=True)
 
 
 def _holds_estimates(series: ObservationSeries) -> bool:
-    """Whether `series` selects a modelled or estimated method, or holds projected points."""
+    """Whether `series` selects a modelled or estimated method, serves an estimated point,
+    or holds projected points."""
     facet = series.facet.get("measurementMethod")
-    if facet is not None and facet.ref in MODELLED_MEASUREMENT_METHODS:
+    if series.holds_estimates or (facet is not None and facet.ref in MODELLED_MEASUREMENT_METHODS):
         return True
     return series.conversion is not None and series.conversion.projected_count > 0
 

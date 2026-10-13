@@ -3,21 +3,35 @@ Fixtures use a small in-memory `CoverageIndex`."""
 
 from __future__ import annotations
 
+import dataclasses
+from types import SimpleNamespace
+from typing import cast
+
 import pytest
 
+from code_index.types import PartyRow
 from datasets_api.admission import (
     UNCOVERED_MEMBER_CAP,
+    elected_provenances,
+    identity_role_keys,
     refuse_async_over_ceiling,
     refuse_excel_over_estimate,
+    refuse_excel_over_stored_rows,
     sync_estimate,
     within_sync_budget,
+    xlsx_splits_totals,
 )
 from datasets_api.config import DatasetsBuildSettings
+from datasets_api.current import DefinitionDeps, plan_stored_render
+from datasets_api.manifest_models import Manifest
+from datasets_api.mint_models import MintOptions
 from dc_sdmx import ContainedIn
 from materialise.errors import MaterialisationError, OverCeilingError
-from materialise.facets import FacetBinding
+from materialise.facets import ElectedDataset, FacetBinding
+from materialise.formats import EXCEL_MAX_ROWS
 from materialise.pipeline import MaterialisationRequest
 from materialise.window import RequestedWindow
+from series_coverage.index import Estimate
 from series_coverage.schema import RoleNames
 from tests.engine._fake_coverage import build_coverage_index
 
@@ -201,8 +215,6 @@ def test_contained_in_bound_role_is_treated_as_unbound_a_safe_over_estimate():
 
 
 def test_within_sync_budget_at_and_over_the_boundary():
-    from series_coverage.index import Estimate
-
     assert (
         within_sync_budget(
             Estimate(rows=100, requests=5), sync_budget_rows=100, sync_budget_requests=5
@@ -223,20 +235,176 @@ def test_within_sync_budget_at_and_over_the_boundary():
     )
 
 
-def test_refuse_excel_over_estimate_raises_only_for_xlsx_over_the_limit():
-    """Excel counts its header toward `EXCEL_MAX_ROWS`, so `EXCEL_MAX_ROWS - 1` data rows fit."""
-    from materialise.formats import EXCEL_MAX_ROWS
-    from series_coverage.index import Estimate
+_ONE_SHEET = EXCEL_MAX_ROWS - 1
+_TWO_SHEETS = 2 * (EXCEL_MAX_ROWS - 1)
 
-    refuse_excel_over_estimate(Estimate(rows=EXCEL_MAX_ROWS - 1, requests=1), format="xlsx")
-    refuse_excel_over_estimate(Estimate(rows=EXCEL_MAX_ROWS, requests=1), format="csv")
-    refuse_excel_over_estimate(Estimate(rows=EXCEL_MAX_ROWS, requests=1), format="parquet")
 
+@pytest.mark.parametrize(
+    ("rows", "format", "splits_totals", "refused"),
+    [
+        (_ONE_SHEET, "xlsx", False, False),
+        (_ONE_SHEET + 1, "xlsx", False, True),
+        (_ONE_SHEET + 1, "csv", False, False),
+        (_ONE_SHEET + 1, "parquet", False, False),
+        (_ONE_SHEET + 1, "xlsx", True, False),
+        (_TWO_SHEETS, "xlsx", True, False),
+        (_TWO_SHEETS + 1, "xlsx", True, True),
+        (_TWO_SHEETS + 1, "csv", True, False),
+    ],
+)
+def test_refuse_excel_over_estimate_raises_only_for_xlsx_over_the_limit(
+    rows: int, format: str, splits_totals: bool, refused: bool
+):
+    """Excel counts its header toward `EXCEL_MAX_ROWS`, so `EXCEL_MAX_ROWS - 1` data rows fit
+    one sheet. A render that can keep totals on a second sheet refuses only above two sheets'
+    room; the writer judges each sheet."""
+    estimate = Estimate(rows=rows, requests=1)
+    if not refused:
+        refuse_excel_over_estimate(estimate, format=format, splits_totals=splits_totals)
+        return
     with pytest.raises(MaterialisationError) as excinfo:
-        refuse_excel_over_estimate(Estimate(rows=EXCEL_MAX_ROWS, requests=1), format="xlsx")
+        refuse_excel_over_estimate(estimate, format=format, splits_totals=splits_totals)
     assert excinfo.value.code == "excel_limit"
-    assert "Parquet" in excinfo.value.detail or "parquet" in excinfo.value.detail
-    assert "csv" in excinfo.value.detail
+    assert "csv or parquet" in (excinfo.value.detail or "")
+
+
+@pytest.mark.parametrize(
+    ("rows", "splits_totals", "refused"),
+    [
+        (_ONE_SHEET, False, False),
+        (_ONE_SHEET + 1, False, True),
+        (_ONE_SHEET + 1, True, False),
+        (_TWO_SHEETS, True, False),
+        (_TWO_SHEETS + 1, True, True),
+    ],
+)
+def test_refuse_excel_over_stored_rows_follows_the_sheet_room(
+    rows: int, splits_totals: bool, refused: bool
+):
+    """The stored row count meets the same one-sheet or two-sheet room as the estimate."""
+    if not refused:
+        refuse_excel_over_stored_rows(rows, splits_totals=splits_totals)
+        return
+    with pytest.raises(MaterialisationError) as excinfo:
+        refuse_excel_over_stored_rows(rows, splits_totals=splits_totals)
+    assert excinfo.value.code == "excel_limit"
+
+
+_OPEN_ORIGIN = {"open_roles": ["origin"]}
+_OPEN_DESTINATION = {"open_roles": ["destination"]}
+_ONE_ORIGIN = {"entities": {"origin": ["country/GBR"]}}
+_TWO_ORIGINS = {"entities": {"origin": ["country/GBR", "country/FRA"]}}
+_ORIGIN_AND_TOTAL = {"entities": {"origin": ["country/GBR", "DACDonors"]}}
+# GBR and FRA are parties on both axes; the only total, `DACDonors`, is a donor in `p1`.
+_PARTIES = {
+    "country/GBR": PartyRow(
+        dcid="country/GBR", kind="party", datasets=("p1",), axes=("destination", "origin")
+    ),
+    "country/FRA": PartyRow(
+        dcid="country/FRA", kind="party", datasets=("p1",), axes=("destination", "origin")
+    ),
+    "DACDonors": PartyRow(dcid="DACDonors", kind="total", datasets=("p1",), axes=("origin",)),
+}
+
+
+@pytest.mark.parametrize(
+    ("options", "identity", "datasets", "expected"),
+    [
+        ({"format": "xlsx"}, _OPEN_ORIGIN, (), True),
+        ({"format": "xlsx"}, _OPEN_ORIGIN, ("p1",), True),
+        ({"format": "xlsx"}, _OPEN_ORIGIN, ("p2",), False),
+        ({"format": "xlsx"}, _OPEN_DESTINATION, (), False),
+        ({"format": "xlsx"}, _TWO_ORIGINS, (), False),
+        ({"format": "xlsx"}, _ORIGIN_AND_TOTAL, (), True),
+        ({"format": "xlsx"}, _ONE_ORIGIN, (), False),
+        ({"format": "xlsx"}, {}, (), False),
+        ({"format": "csv"}, _OPEN_ORIGIN, (), False),
+        (
+            {"format": "xlsx", "pivot": {"index": "recipient", "columns": "time_period"}},
+            _OPEN_ORIGIN,
+            (),
+            False,
+        ),
+    ],
+    ids=[
+        "open-total-any-dataset",
+        "open-total-read-dataset",
+        "open-total-unread-dataset",
+        "open-no-total",
+        "several-parties",
+        "several-with-total",
+        "one-bound",
+        "no-axes",
+        "csv",
+        "pivot",
+    ],
+)
+def test_xlsx_splits_totals_when_the_render_keeps_totals_apart(
+    options, identity, datasets, expected
+):
+    """The predicate agrees with the renderer's split (`movable_totals_roles`): an `xlsx`
+    render with no pivot where a role bound to several entities holds an index-listed total,
+    or an open role's axis has one in a dataset the read selects (any, when none is known)."""
+    assert (
+        xlsx_splits_totals(
+            MintOptions(**options),
+            identity=identity,
+            role_columns=identity_role_keys(identity),
+            parties=_PARTIES,
+            datasets=datasets,
+        )
+        is expected
+    )
+
+
+def _elected(provenance: str | None) -> MaterialisationRequest:
+    request = _request(stat_var="Amount_Crs_A")
+    if provenance is None:
+        return request
+    return dataclasses.replace(
+        request, dataset=ElectedDataset(provenance=provenance, member_provenances=(provenance,))
+    )
+
+
+@pytest.mark.parametrize(
+    ("provenances", "expected"),
+    [
+        (["p1", "p2", "p1"], ("p1", "p2")),
+        (["p1", None], ()),
+        ([], ()),
+    ],
+    ids=["every-request-elects", "one-elects-none", "no-requests"],
+)
+def test_elected_provenances_name_the_read_only_when_every_request_elects(provenances, expected):
+    """A request with no elected dataset can read any provenance, so the set is unknown."""
+    assert elected_provenances([_elected(p) for p in provenances]) == expected
+
+
+def _plan_xlsx_with_stored_rows(rows: int, *, identity: dict) -> None:
+    manifest = SimpleNamespace(
+        trace={"resolved_stat_vars": [], "facets": []},
+        coverage=SimpleNamespace(rows=rows),
+        definition=SimpleNamespace(identity=identity),
+    )
+    plan_stored_render(
+        cast(Manifest, manifest),
+        options=MintOptions(format="xlsx"),
+        subject_id="s",
+        content_version="v",
+        read_version=lambda: None,
+        deps=cast(DefinitionDeps, SimpleNamespace(code_index=SimpleNamespace(parties=_PARTIES))),
+    )
+
+
+def test_the_stored_render_plan_admits_a_split_xlsx_between_one_and_two_sheets():
+    """`plan_stored_render` passes a stored count past one sheet when the identity splits
+    totals, and refuses it when it does not."""
+    _plan_xlsx_with_stored_rows(_ONE_SHEET + 1, identity=_OPEN_ORIGIN)
+
+    for identity in (_ONE_ORIGIN, _TWO_ORIGINS):
+        with pytest.raises(MaterialisationError) as excinfo:
+            _plan_xlsx_with_stored_rows(_ONE_SHEET + 1, identity=identity)
+        assert excinfo.value.code == "excel_limit"
 
 
 def test_uncovered_variable_counts_toward_uncovered_requests_not_rows():

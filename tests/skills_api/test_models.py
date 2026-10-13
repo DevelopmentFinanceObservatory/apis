@@ -14,6 +14,7 @@ from skills_api.models import (
     skill_warning_from_issue,
     split_skill_warnings,
 )
+from skills_api.version import served_wire_schemas
 from skills_index import SkillIssue
 
 from .conftest import skill_entry
@@ -97,3 +98,13 @@ def test_skill_body_is_the_summary_plus_its_text():
     assert body.model_dump(exclude={"content_text"}) == summary.model_dump()
     assert body.content_text == entry.content_text
     assert SkillBody.model_json_schema()["required"].count("content_text") == 1
+
+
+def test_a_response_schema_requires_every_field_the_server_emits():
+    schemas = served_wire_schemas()
+
+    assert "skill_id" in schemas["skill_body"]["$defs"]["SkillWarning"]["required"]
+    for name, schema in schemas.items():
+        for node in [schema, *schema.get("$defs", {}).values()]:
+            properties = node.get("properties", {})
+            assert set(properties) == set(node.get("required", [])), (name, node.get("title"))

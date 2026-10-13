@@ -25,10 +25,10 @@ def test_slot_options_key_matches_a_bound_slot():
     r = _resolve("fertility rate in Kenya")
     spec = r.spec
     slot_keys = {
-        (s.key.axis, s.key.property.dcid if s.key.property else None) for s in spec.resolved.slots
+        (s.key.axis, s.key.property.ref if s.key.property else None) for s in spec.resolved.slots
     }
     for so in spec.resolved.slot_options:
-        key = (so.key.axis, so.key.property.dcid if so.key.property else None)
+        key = (so.key.axis, so.key.property.ref if so.key.property else None)
         assert key in slot_keys
 
 
@@ -64,13 +64,13 @@ def test_total_population_india_now_has_residence_classification_taxonomy():
     """Count_Person exposes its Rural and Urban residence options."""
     r = _resolve("total population India")
     spec = r.spec
-    assert [sv.ref.dcid for sv in spec.resolved.members] == ["Count_Person"]
-    by_prop = {so.key.property.dcid: so for so in spec.resolved.slot_options if so.key.property}
+    assert [sv.ref.ref for sv in spec.resolved.members] == ["Count_Person"]
+    by_prop = {so.key.property.ref: so for so in spec.resolved.slot_options if so.key.property}
     residence_opts = by_prop["placeOfResidenceClassification"]
     assert residence_opts.key.axis == "how"
     assert residence_opts.source == "observed"
     assert residence_opts.truncated is True
-    observed = {o.value.ref.dcid for o in residence_opts.options}
+    observed = {o.value.ref.ref for o in residence_opts.options}
     assert observed and observed <= {"Urban", "Rural"}, (
         f"expected residence siblings drawn from Urban/Rural, got {observed}"
     )

@@ -25,6 +25,7 @@ from code_index.members import (
 )
 from code_index.shared import get_index
 from materialise import GraphReader, facet_axis_value, role_bearing_facet_candidates
+from materialise.enrichment import read_party_kinds
 from origin_catalogue import recording_un_blocked_places
 from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import EngineGraphClient, Facet
@@ -52,6 +53,7 @@ from search.engine.retrieval.bound_values import (
     ServedSeriesRows,
     bound_values_from_bindings,
     entity_role_keys,
+    held_family_exact,
     identity_query,
     members_by_value,
     query_members,
@@ -173,7 +175,7 @@ def _entity_options_from_facts(role_axis_facts: Sequence[RoleAxisFactInput]) -> 
         ranked = sorted(fact.member_dcids)
         truncated = len(ranked) > settings().max_options
         options = [
-            SlotOption(value=SlotValue(ref=GraphRef(dcid=dcid, label=dcid), value_kind="entity"))
+            SlotOption(value=SlotValue(ref=GraphRef(ref=dcid, label=dcid), value_kind="entity"))
             for dcid in ranked[: settings().max_options]
         ]
         result.append(
@@ -211,14 +213,25 @@ def _entity_options_count_only(
 def _enrich_entity_options(
     entity_options: list[EntityOptions], *, graph: EngineGraphClient
 ) -> list[EntityOptions]:
-    """Resolve member labels in one batch, using the dcid when a label lookup misses.
+    """Resolve member labels in one batch, using the dcid when a label lookup misses, and give
+    each member the party kind the code index lists for it on its axis
+    (`materialise.enrichment.read_party_kinds`).
 
     Membership and counts come from the materialised result, so only labels require a read.
     """
     all_dcids = sorted(
-        {o.value.ref.dcid for eo in entity_options for o in eo.options if o.value.ref is not None}
+        {o.value.ref.ref for eo in entity_options for o in eo.options if o.value.ref is not None}
     )
     labels = graph.node_labels_batch(all_dcids) if all_dcids else {}
+    kinds = read_party_kinds(
+        (
+            (eo.role, o.value.ref.ref)
+            for eo in entity_options
+            for o in eo.options
+            if o.value.ref is not None
+        ),
+        parties=get_index().parties,
+    )
     return [
         eo.model_copy(
             update={
@@ -226,11 +239,12 @@ def _enrich_entity_options(
                     SlotOption(
                         value=SlotValue(
                             ref=GraphRef(
-                                dcid=o.value.ref.dcid,
-                                label=labels.get(o.value.ref.dcid, o.value.ref.dcid),
+                                ref=o.value.ref.ref,
+                                label=labels.get(o.value.ref.ref, o.value.ref.ref),
                             ),
                             value_kind="entity",
-                        )
+                        ),
+                        party_kind=kinds.get((eo.role, o.value.ref.ref)),
                     )
                     for o in eo.options
                     if o.value.ref is not None
@@ -429,13 +443,14 @@ def _pick_population(
     index_only: bool,
 ) -> _PickPopulation | None:
     """The members an answer over `shape` under `bindings` reads from (`query_members`).
-    None when `index_only` and the code index does not decide the family: a graph-walked
-    family holds the answer's own bindings alone, so it cannot stand for bindings that
-    differ from them."""
+    None when `index_only` and neither the code index decides the family nor the catalogue
+    holds it whole for the shape (`held_family_exact`): a graph-walked family holds the
+    answer's own bindings alone, so it cannot stand for bindings that differ from them,
+    where a family held whole holds every member whatever the bindings."""
     role_keys = entity_role_keys(served_filter.probe_entities, open_axes=served_filter.open_axes)
     query = shape_query(shape, bindings, role_keys.bound, open_role_keys=role_keys.open)
     members, index_sourced = query_members(shape, query)
-    if index_only and not index_sourced:
+    if index_only and not index_sourced and not held_family_exact(shape):
         return None
     return _PickPopulation(
         members=members, constraints={sv: m.read_constraints() for sv, m in members.items()}
@@ -739,7 +754,7 @@ def _current_values(slots: Sequence[Slot]) -> dict[str, frozenset[str]]:
             refs = [v.ref for v in binding.values]
         else:
             continue
-        current[slot.key.property.dcid] = frozenset(r.dcid for r in refs if r is not None)
+        current[slot.key.property.ref] = frozenset(r.ref for r in refs if r is not None)
     return current
 
 
@@ -762,7 +777,7 @@ def count_slot_options(
     current = _current_values(slots)
     counted: list[SlotOptions] = []
     for so in slot_options:
-        fact = by_property.get(so.key.property.dcid) if so.key.property is not None else None
+        fact = by_property.get(so.key.property.ref) if so.key.property is not None else None
         if fact is None:
             counted.append(so)
             continue
@@ -772,8 +787,8 @@ def count_slot_options(
             if o.value.ref is None:
                 options.append(o)
                 continue
-            found = fact.rows(o.value.ref.dcid)
-            if found.rows or o.value.ref.dcid in kept:
+            found = fact.rows(o.value.ref.ref)
+            if found.rows or o.value.ref.ref in kept:
                 options.append(
                     o.model_copy(
                         update={"served_rows": found.rows, "served_rows_exact": found.exact}
@@ -812,7 +827,7 @@ def counted_slot_options(
         shape,
         bindings,
         menus={
-            so.key.property.dcid: [o.value.ref.dcid for o in so.options if o.value.ref is not None]
+            so.key.property.ref: [o.value.ref.ref for o in so.options if o.value.ref is not None]
             for so in slot_options
             if so.key.property is not None
         },
@@ -897,7 +912,8 @@ def _pick_members(
 
     An option no member carries maps to an empty list when the population is exact, so the
     pick serves nothing, and to None when it is not, so the option stays uncounted. A
-    population is exact when the code index decides it, or for an unbound slot when the
+    population is exact when the code index decides it, when the catalogue's tables hold its
+    family whole (`held_family_exact`), whatever the bindings, or for an unbound slot when the
     shape holds its family exactly (`ShapeDraft.sv_arc_facts_complete`); a walked family
     holds the answer's own bindings alone, so it cannot rule out an option of a bound slot.
     A pick whose members do not declare every open key of `role_keys` reads none of them
@@ -908,7 +924,7 @@ def _pick_members(
     for so in menus:
         if so.key.property is None:
             continue
-        prop = so.key.property.dcid
+        prop = so.key.property.ref
         is_bound = prop in bound
         query = shape_query(
             shape,
@@ -916,7 +932,7 @@ def _pick_members(
             role_keys.bound,
             open_role_keys=role_keys.open,
         )
-        values = [o.value.ref.dcid for o in so.options if o.value.ref is not None]
+        values = [o.value.ref.ref for o in so.options if o.value.ref is not None]
         index_picks = _index_option_picks(query, prop, values)
         if index_picks is not None:
             picks[prop] = {
@@ -925,7 +941,11 @@ def _pick_members(
             }
             continue
         members, index_sourced = query_members(shape, query)
-        exact = index_sourced or (not is_bound and shape.sv_arc_facts_complete)
+        exact = (
+            index_sourced
+            or held_family_exact(shape)
+            or (not is_bound and shape.sv_arc_facts_complete)
+        )
         population = _PickPopulation(
             members=members, constraints={sv: m.read_constraints() for sv, m in members.items()}
         )
@@ -947,7 +967,7 @@ def _counted_from_probe(so: SlotOptions, kept: frozenset[str]) -> SlotOptions:
             "options": [
                 o
                 for o in so.options
-                if o.served_rows != 0 or (o.value.ref is not None and o.value.ref.dcid in kept)
+                if o.served_rows != 0 or (o.value.ref is not None and o.value.ref.ref in kept)
             ]
         }
     )
@@ -1024,7 +1044,7 @@ def _maybe_enrich_slot_options(
     }
     enriched = list(slot_options)
     for i, so in zip(pending, probed, strict=True):
-        prop = so.key.property.dcid if so.key.property is not None else None
+        prop = so.key.property.ref if so.key.property is not None else None
         enriched[i] = _counted_from_probe(so, current.get(prop, frozenset()))
     return [so for so in enriched if so.options], None
 
@@ -1388,7 +1408,7 @@ def _facet_options(
                 value=SlotValue(
                     ref=None
                     if dcid is None
-                    else GraphRef(dcid=dcid, label=facet_value_label(axis, labels.get(dcid, dcid))),
+                    else GraphRef(ref=dcid, label=facet_value_label(axis, labels.get(dcid, dcid))),
                     value_kind=value_kind,
                 )
             )

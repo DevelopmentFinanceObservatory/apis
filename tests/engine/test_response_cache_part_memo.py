@@ -124,7 +124,7 @@ def _key(
     )
 
 
-_GROUPS = {"observationAbout": EntityGroup(dcid=None, label="East Africa")}
+_GROUPS = {"observationAbout": EntityGroup(ref=None, label="East Africa")}
 
 
 @pytest.mark.parametrize(
@@ -184,8 +184,9 @@ def _edited_debt_resubmit(
     member_graph, *, group_read_fails: bool = False
 ) -> tuple[ResubmitIdentityPayload, RegionResult]:
     """Edit a recipient-only debt total to the public guarantee, so the mint's walk elects
-    the members. With `group_read_fails` the identity also names a destination group whose
-    members read fails, which drops the group and answers with no warning."""
+    the members. With `group_read_fails` the identity also names a destination group the
+    membership policy does not hold, whose members read fails, which drops the group and
+    answers with no warning."""
     base = _first_answer([_TOTAL], member_graph=_walk_reader(_DEBT_NODES)).specs[0]
     document = base.definition.identity.model_dump(mode="json", exclude_none=True)
     edited = BaseIdentity.model_validate(
@@ -200,7 +201,7 @@ def _edited_debt_resubmit(
     payload = ResubmitIdentityPayload(
         identity=edited,
         entity_groups=(
-            {"destination": EntityGroup(dcid="africa", label="Africa")}
+            {"destination": EntityGroup(ref="testonia", label="Testonia")}
             if group_read_fails
             else None
         ),
@@ -332,7 +333,7 @@ def test_one_identity_posted_with_and_without_a_group_gets_an_answer_for_each(gr
     spec_id, identity = _triangle_identity(_TRIANGLE)
     graph = FakeGraph(nodes=_nodes(_TRIANGLE), obs=_TRIANGLE_OBS)
     memo = PartMemo()
-    posted = {"observationAbout": EntityGroup(dcid=_NODE, label="posted")}
+    posted = {"observationAbout": EntityGroup(ref=_NODE, label="posted")}
     order = [posted, None] if grouped_first else [None, posted]
 
     served = []

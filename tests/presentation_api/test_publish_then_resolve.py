@@ -8,6 +8,7 @@ import csv
 import io
 from collections.abc import Iterator
 from dataclasses import dataclass
+from typing import Any, cast
 
 import pytest
 from fastapi.testclient import TestClient
@@ -18,6 +19,7 @@ from assembler.fakes import FakeReleaseRegistry, FakeRevisionStore
 from dataset_store.snapshot import LiveSnapshotReader
 from datasets_api.codes import DATASETS_CODE_CATALOGUE
 from datasets_api.config import DatasetsBuildSettings
+from datasets_api.description_store import LiveDescriptionStore
 from datasets_api.doors.publish import build_publish_door
 from datasets_api.version import DATASETS_CAPABILITY_VERSION
 from datasets_api.version_store import LiveVersionRecordWriter
@@ -59,6 +61,18 @@ _PUBLISH_BODY = {
 class _Deployment:
     client: TestClient
     artifact_store: LiveArtifactStore
+
+    def publish_with_steps(self, body: dict[str, object]) -> None:
+        """Publish `body`, whose record the publish door writes to the store the frame store
+        reads, listing as its inputs the versions its `retrieve` steps name, as the door
+        requires."""
+        steps = cast("list[dict[str, Any]]", body["steps"])
+        retrieved = [step["input"]["content_version"] for step in steps if step["op"] == "retrieve"]
+        body = {**body, "input_content_versions": list(dict.fromkeys(retrieved))}
+        published = self.client.post(
+            "/api/datasets/frames/publish", json=body, headers={"x-dfo-principal": _PRINCIPAL}
+        )
+        assert published.status_code == 200, published.text
 
 
 @pytest.fixture
@@ -104,6 +118,7 @@ def deployment(release: CatalogueRelease) -> Iterator[_Deployment]:
                 }
             ),
             reference_writer=_FakeReferenceWriter(),
+            description_reader=LiveDescriptionStore(store=store),
         ),
         revision_store=FakeRevisionStore(),
         release_registry=FakeReleaseRegistry(release=release),
@@ -152,32 +167,49 @@ def test_a_published_composed_unit_frame_resolves_to_cards_naming_both_sides(
         assert [series["unit"] for series in components[chart]["series"]] == [_PAYLOAD_UNIT]
 
 
+def _retrieve(step_id: str, label: str, digit: str) -> dict[str, object]:
+    return {
+        "id": step_id,
+        "op": "retrieve",
+        "input": {
+            "id": "spec_" + digit * 32,
+            "content_version": "cv_" + digit * 32,
+            "label": label,
+        },
+    }
+
+
+def _two_sided(
+    step_id: str, op: str, numerator: str, denominator: str, *, stat_var: str
+) -> dict[str, object]:
+    return {
+        "id": step_id,
+        "op": op,
+        "inputs": {"numerator": numerator, "denominator": denominator},
+        "stat_var": stat_var.removeprefix("dcid:"),
+    }
+
+
 def test_a_published_composed_stat_var_names_its_series_on_every_card(deployment: _Deployment):
-    """The frame's rows sit under a StatVar the graph does not hold. The entry published with
-    it gives the series a label on a chart, a stat card and a table export."""
+    """The frame's rows sit under a StatVar the graph does not hold. The step that wrote it
+    names the series on a chart, a stat card and a table export."""
     stat_var = "dcid:ops_ae6d604db16b8e2378c4a2deb8acf943"
-    label = "Nominal GDP per Total population"
-    published = deployment.client.post(
-        "/api/datasets/frames/publish",
-        json={
+    label = "Nominal GDP per total population"
+    deployment.publish_with_steps(
+        {
             **_PUBLISH_BODY,
             "role_keys": [],
             "rows": [
                 {"stat_var": stat_var, "time_period": period, "value": value}
                 for period, value in (("2023", 3.1), ("2024", 3.34))
             ],
-            "composed_stat_vars": [
-                {
-                    "stat_var": stat_var,
-                    "relation": "quotient",
-                    "first": ["dcid:Amount_GDP"],
-                    "second": ["dcid:Count_Person"],
-                }
+            "steps": [
+                _retrieve("s1", "Nominal GDP", "1"),
+                _retrieve("s2", "Total population", "2"),
+                _two_sided("s3", "quotient", "s1", "s2", stat_var=stat_var),
             ],
-        },
-        headers={"x-dfo-principal": _PRINCIPAL},
+        }
     )
-    assert published.status_code == 200, published.text
 
     components = {}
     for member in ("line_chart", "stat_card", "table"):
@@ -211,41 +243,32 @@ def test_a_published_composed_stat_var_names_its_series_on_every_card(deployment
 
 
 @pytest.mark.parametrize(
-    ("second", "label"),
-    [
-        (["dcid:Amount_GDP"], "Aid as a share of Nominal GDP"),
-        (["dcid:Amount_ODA"], "Share of Aid"),
-    ],
+    ("denominator", "label"),
+    [("s2", "Aid as a share of nominal GDP"), ("s1", "Share of aid")],
     ids=["two-sides", "equal-sides"],
 )
 def test_a_published_share_names_its_series_and_carries_the_percent_unit(
-    deployment: _Deployment, second: list[str], label: str
+    deployment: _Deployment, denominator: str, label: str
 ):
-    """A share entry passes the publish door and words the series on a chart, a stat card and
-    the fact summary. A bare `Percent` unit cell reads `Percent` on a line chart's series and in
-    the fact summary."""
+    """A share's step names the series on a chart, a stat card and the fact summary, and a
+    share of one variable within its own total reads `Share of <variable>`. A bare `Percent`
+    unit cell reads `Percent` on a line chart's series and in the fact summary."""
     stat_var = "dcid:ops_ae6d604db16b8e2378c4a2deb8acf943"
-    published = deployment.client.post(
-        "/api/datasets/frames/publish",
-        json={
+    deployment.publish_with_steps(
+        {
             **_PUBLISH_BODY,
             "role_keys": [],
             "rows": [
                 {"stat_var": stat_var, "time_period": period, "value": value, "unit": "Percent"}
                 for period, value in (("2023", 4.1), ("2024", 5.33))
             ],
-            "composed_stat_vars": [
-                {
-                    "stat_var": stat_var,
-                    "relation": "share",
-                    "first": ["dcid:Amount_ODA"],
-                    "second": second,
-                }
+            "steps": [
+                _retrieve("s1", "Aid", "1"),
+                _retrieve("s2", "Nominal GDP", "2"),
+                _two_sided("s3", "share", "s1", denominator, stat_var=stat_var),
             ],
-        },
-        headers={"x-dfo-principal": _PRINCIPAL},
+        }
     )
-    assert published.status_code == 200, published.text
 
     components = {}
     for member in ("line_chart", "stat_card"):
@@ -276,9 +299,8 @@ def test_a_composed_stat_var_beside_a_graph_one_leads_its_series_label(deploymen
     The composed StatVar's lines lead with its worded label, and no label in a chart or a table
     holds its ref."""
     composed = "dcid:ops_ae6d604db16b8e2378c4a2deb8acf943"
-    published = deployment.client.post(
-        "/api/datasets/frames/publish",
-        json={
+    deployment.publish_with_steps(
+        {
             **_PUBLISH_BODY,
             "rows": [
                 {
@@ -290,18 +312,14 @@ def test_a_composed_stat_var_beside_a_graph_one_leads_its_series_label(deploymen
                 for stat_var in ("dcid:Amount_ODA", composed)
                 for period, value in (("2023", 3.1), ("2024", 3.34))
             ],
-            "composed_stat_vars": [
-                {
-                    "stat_var": composed,
-                    "relation": "quotient",
-                    "first": ["dcid:Amount_ODA"],
-                    "second": ["dcid:Count_Person"],
-                }
+            "steps": [
+                _retrieve("s1", "Aid", "1"),
+                _retrieve("s2", "Total population", "2"),
+                _two_sided("s3", "quotient", "s1", "s2", stat_var=composed),
+                {"id": "s4", "op": "join", "inputs": {"left": "s1", "right": "s3"}},
             ],
-        },
-        headers={"x-dfo-principal": _PRINCIPAL},
+        }
     )
-    assert published.status_code == 200, published.text
 
     components = {}
     for member in ("line_chart", "table"):
@@ -321,7 +339,7 @@ def test_a_composed_stat_var_beside_a_graph_one_leads_its_series_label(deploymen
     line_chart, table = components["line_chart"], components["table"]
     assert [series["label"] for series in line_chart["series"]] == [
         "Aid / Ethiopia",
-        "Aid per Total population / Ethiopia",
+        "Aid per total population / Ethiopia",
     ]
     shown = [
         *(series["label"] for series in line_chart["series"]),
@@ -331,7 +349,7 @@ def test_a_composed_stat_var_beside_a_graph_one_leads_its_series_label(deploymen
     ]
     assert {row["dimensions"]["stat_var"] for row in table["rows"]} == {
         "Aid",
-        "Aid per Total population",
+        "Aid per total population",
     }
     assert not [text for text in shown if "dcid:ops_" in text]
 

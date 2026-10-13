@@ -16,6 +16,7 @@ from dfo_platform.static_response import FrozenJSON
 from entity_resolution import Admission, EntityResolver
 from graph_generation import UNKNOWN_GENERATION, GenerationProvider
 from materialise import GraphReader
+from materialise.facets import VariableBreadthReader
 from materialise.rate_tables import RateTableCache
 from search.catalogue.service import SearchCatalogueService
 from search.engine.clients.graph import EngineGraphClient
@@ -71,6 +72,9 @@ class SearchDeps:
     population_memo: OptionsPopulationMemo | None
     place_options_pool: PlaceOptionsPool | None
     search_catalogue: SearchCatalogueService | None
+    # Bound around each request, so an answer naming one place breaks a facet tie on each
+    # facet's places across the whole variable. None leaves the tie to the unit's name.
+    variable_breadth: VariableBreadthReader | None = None
 
 
 def search_deps(
@@ -93,6 +97,7 @@ def search_deps(
     population_memo: OptionsPopulationMemo | None = None,
     place_options_pool: PlaceOptionsPool | None = None,
     search_catalogue: SearchCatalogueService | None = None,
+    variable_breadth: VariableBreadthReader | None = None,
 ) -> SearchDeps:
     """Assemble dependencies, using `live_graph` for `materialise_graph` and
     `UNKNOWN_GENERATION` for an unset generation provider. Other values pass through unchanged.
@@ -115,6 +120,7 @@ def search_deps(
         population_memo=population_memo,
         place_options_pool=place_options_pool,
         search_catalogue=search_catalogue,
+        variable_breadth=variable_breadth,
     )
 
 

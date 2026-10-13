@@ -7,16 +7,28 @@ import json
 import os
 import re
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 from typing import TypeVar
 
+import pytest
 from pydantic import BaseModel
 
+import entity_resolution.shared as shared_module
 from code_index.shared import get_index
 from dc_graph import FacetDefaultPolicy
 from dc_graph.client import UNRESOLVED_NODE, _dedup_wire_arcs
 from entity_resolution import EntityResolver, GraphLookup, acquire_shared
+from entity_resolution.membership import (
+    COUNTRY_CLASS,
+    Authority,
+    Membership,
+    MembershipPolicy,
+    Row,
+    Sovereignty,
+)
+from entity_resolution.shared import shared_memberships
 from graph_generation import FakeGeneration, GenerationStamp
 from origin_catalogue import current_catalogue
 from search.engine.clients.graph import (
@@ -43,8 +55,61 @@ _FIXTURES_DIR = Path(__file__).parent
 
 
 def make_resolver(graph: GraphLookup) -> EntityResolver:
-    """Build an EntityResolver over `graph` using the session's shared resolver."""
-    return EntityResolver(graph=graph, shared=acquire_shared())
+    """Build an EntityResolver over `graph` using the session's shared resolver and the code
+    index production Search passes, so a node's kind follows `entity_resolution.kinds.classify`."""
+    return EntityResolver(graph=graph, shared=acquire_shared(), code_index=get_index())
+
+
+def declare_regions(
+    monkeypatch: pytest.MonkeyPatch,
+    regions: Mapping[str, Sequence[str]],
+    *,
+    omitted: Sequence[str] = (),
+) -> None:
+    """Make the process's membership policy hold `regions`, each a dcid mapped to
+    its member countries, and omit `omitted`, until `monkeypatch` undoes it (`with_regions`).
+    Search reads a region's members from that policy, so a fake graph's regions are declared
+    here."""
+    held = shared_memberships()
+    policy = with_regions(held.policy, regions, omitted=omitted)
+    monkeypatch.setattr(shared_module, "_memberships", replace(held, policy=policy))
+
+
+def with_regions(
+    policy: MembershipPolicy,
+    regions: Mapping[str, Sequence[str]],
+    *,
+    omitted: Sequence[str] = (),
+) -> MembershipPolicy:
+    """`policy` with each region dcid in `regions` holding the listed countries, replacing
+    any region of the same dcid and keeping its class, and each dcid in `omitted` omitted by
+    rule. A region the policy did not hold is a subregion. Every listed country is a
+    present-day UN member, so a declared region's `countries` projection is its list."""
+    members = {member for listed in regions.values() for member in listed}
+    sovereignty = Sovereignty(
+        states={member: (Row(member=member, member_class=COUNTRY_CLASS),) for member in members},
+        dissolved=frozenset(),
+        other_states=frozenset(),
+    )
+    held_classes = {m.ref: m.region_class for m in policy if m.region_class is not None}
+    declared = [
+        Membership(
+            ref=dcid,
+            entity_id=dcid,
+            label=dcid,
+            kind="region",
+            authority=Authority(name="test regions", version="1"),
+            dated=False,
+            rows=tuple(Row(member=member, member_class=COUNTRY_CLASS) for member in listed),
+            sovereignty=sovereignty,
+            region_class=held_classes.get(dcid, "geo.subregion"),
+        )
+        for dcid, listed in regions.items()
+    ]
+    return MembershipPolicy(
+        [*(m for m in policy if m.ref not in regions), *declared],
+        omitted_regions=(policy.omitted_regions - regions.keys()) | set(omitted),
+    )
 
 
 # Extract the typeOf constraint from an arc expression. Bare arcs return None.

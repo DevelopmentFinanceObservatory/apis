@@ -195,7 +195,7 @@ def test_both_members_agreeing_on_one_real_value_publishes_it():
     published = merged.spec.resolved.open_axis_facts
     assert published is not None
     assert published[0].varies is False
-    assert published[0].value == GraphRef(dcid="A01", label="A01")
+    assert published[0].value == GraphRef(ref="A01", label="A01")
     assert published[0].distinct_count == 1
 
 
@@ -228,7 +228,7 @@ def test_a_merged_agreed_value_keeps_the_graph_name_either_region_carried():
 
     published = effective[0].spec.resolved.open_axis_facts
     assert published is not None
-    assert published[0].value == GraphRef(dcid="undata/SEX-M", label="Male")
+    assert published[0].value == GraphRef(ref="undata/SEX-M", label="Male")
 
 
 @pytest.mark.parametrize(
@@ -283,7 +283,7 @@ def test_merged_value_counts_and_undeclared_count_sum_to_the_served_statvars(
 
     merged = effective[0].spec.resolved
     (published,) = merged.open_axis_facts or []
-    assert [(v.value.dcid, v.count) for v in published.values] == counts
+    assert [(v.value.ref, v.count) for v in published.values] == counts
     assert published.undeclared_count == undeclared
     assert (
         sum(v.count for v in published.values) + published.undeclared_count

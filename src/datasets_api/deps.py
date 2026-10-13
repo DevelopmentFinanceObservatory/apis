@@ -3,9 +3,10 @@
 `open_deps` builds one `Deps` for the surface's lifespan, and every door reads it through the
 surface's `DepsCell`. Doors build no client and no store. The bundle holds one graph client, one
 SDMX client, one artifact store, the stores over one `dataset_store` pool borrow, the task client,
-the coverage service, rate cache and code index, one materialise semaphore, and two executors.
+the coverage service, rate cache and code index, the whole-variable breadth reader, one
+materialise semaphore, and two executors.
 
-The read executor runs snapshot, observations, operations polls, members, pin, register,
+The read executor runs snapshot, description, observations, operations polls, members, pin, register,
 recipe, and head-hit reads. The work executor runs mints, definition rebuilds, frame refreshes,
 and publishes, which parse and write frames of up to 250,000 rows, so a queue of builds cannot
 delay a poll or a download. A
@@ -32,6 +33,7 @@ from dataset_store.clock import Clock, utc_now
 from dataset_store.snapshot import LiveSnapshotReader, SnapshotReader
 from datasets_api.admission import MaterialisePermits, RebuildFlights
 from datasets_api.config import DatasetsBuildSettings, DatasetsSettings
+from datasets_api.description_store import LiveDescriptionStore
 from datasets_api.door_executor import DoorExecutor, build_door_executor
 from datasets_api.generation import (
     PLACE_SCOPE_MEMO_NAME,
@@ -44,6 +46,7 @@ from datasets_api.operations.task_client import (
     TaskClientSettings,
     build_live_task_client,
 )
+from datasets_api.profile_breadth import open_profile_breadth
 from datasets_api.publish_models import MAX_ROWS
 from datasets_api.recipe_store import LiveRecipeStore, RecipeStore
 from datasets_api.reference_store import LiveArtifactReferenceWriter, PinReferenceWriter
@@ -53,6 +56,7 @@ from datasets_api.versions import HeadStore, VersionLister, VersionRecordWriter
 from dc_sdmx import SdmxClient
 from dfo_platform.build import build_commit
 from materialise import EnrichmentLookup
+from materialise.facets import VariableBreadthReader
 from materialise.graph import GraphReader
 from materialise.rate_tables import RateTableCache
 from origin_catalogue.graph import build_graph_client
@@ -80,6 +84,7 @@ class Deps:
     version_lister: VersionLister
     operation_store: OperationStore
     recipe_store: RecipeStore
+    description_store: LiveDescriptionStore
     reference_writer: PinReferenceWriter
     graph: GraphReader
     sdmx: SdmxClient
@@ -92,6 +97,10 @@ class Deps:
     enrichment: EnrichmentLookup
     materialiser_build: str
     now: Clock
+    # Read by every serve that elects a facet, so a request binding one place breaks a facet tie
+    # on each facet's places across the whole variable (`datasets_api.profile_breadth`). None
+    # with an injected graph, which leaves the tie to the unit's name.
+    variable_breadth: VariableBreadthReader | None
     # Bounds the frames alive at once across mints, rebuilds, head renders, file renewals and
     # observation reads. Each holds one permit for as long as its frame's work runs
     # (`admission.bounded_materialise_slot`), and a coverage reload holds every permit. An
@@ -143,6 +152,7 @@ class DepsOverrides:
     version_lister: VersionLister | None = None
     operation_store: OperationStore | None = None
     recipe_store: RecipeStore | None = None
+    description_store: LiveDescriptionStore | None = None
     reference_writer: PinReferenceWriter | None = None
     graph: GraphReader | None = None
     sdmx: SdmxClient | None = None
@@ -163,6 +173,7 @@ class DepsOverrides:
                 self.version_lister,
                 self.operation_store,
                 self.recipe_store,
+                self.description_store,
                 self.reference_writer,
                 self.artifact_store,
             )
@@ -193,7 +204,8 @@ async def open_deps(
 
     `DatasetsSettings` is validated once a live graph, SDMX client, or artifact store is built.
     An omitted graph is a live origin client keyed on the process-wide graph generation,
-    acquired against `catalogue`, with the default-scope memo registered on it. Shutdown
+    acquired against `catalogue`, with the default-scope memo registered on it, and with it the
+    process's shared facet profile cache, whose reader is `variable_breadth`. Shutdown
     cancels queued calls on both executors, waits for running ones within one budget, then
     closes the clients and the pool borrow. A failure while building closes whatever was
     already built.
@@ -207,6 +219,7 @@ async def open_deps(
             store = LiveDatasetStore(connections=connections)
 
         graph = overrides.graph
+        variable_breadth: VariableBreadthReader | None = None
         if graph is None:
             generation = await enter_shared_generation(
                 stack, catalogue=catalogue, graph_base_url=live().graph_base_url
@@ -224,6 +237,14 @@ async def open_deps(
             )
             stack.callback(live_graph.close)
             graph = live_graph
+            # Registered before the drain, so the profiles are released after it.
+            variable_breadth = open_profile_breadth(
+                stack,
+                settings=settings,
+                live_settings=live(),
+                generation=generation,
+                coverage=overrides.coverage,
+            )
 
         sdmx = overrides.sdmx
         if sdmx is None:
@@ -302,6 +323,10 @@ async def open_deps(
                 lambda: LiveOperationStore(store=_store(), settings=settings),
             ),
             recipe_store=_given_or(overrides.recipe_store, lambda: LiveRecipeStore(store=_store())),
+            description_store=_given_or(
+                overrides.description_store,
+                lambda: LiveDescriptionStore(store=_store(), now=overrides.now),
+            ),
             reference_writer=_given_or(
                 overrides.reference_writer, lambda: LiveArtifactReferenceWriter(store=_store())
             ),
@@ -314,11 +339,11 @@ async def open_deps(
             code_index=overrides.code_index,
             enrichment=EnrichmentLookup(
                 graph,
-                type_kinds=overrides.code_index.party_types,
                 parties=overrides.code_index.parties,
             ),
             materialiser_build=build_commit(),
             now=overrides.now,
+            variable_breadth=variable_breadth,
             materialise_semaphore=materialise_semaphore,
             rebuilds=RebuildFlights(),
             read_executor=read_executor,

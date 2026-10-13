@@ -13,6 +13,9 @@ from search.models import (
 )
 from tests.engine._harness import make_request as _req
 from tests.engine._harness import offline_resolve
+from tests.fixtures import FakeGraph
+from tests.origin_catalogue.fake_catalogue import FakeCatalogue
+from tests.origin_catalogue.support import build_arc_tables
 
 # California resolves through State -> AdministrativeArea -> Place.
 # Its offline extraction fixture has a stale prompt hash; the test un-skips once re-recorded.
@@ -60,17 +63,36 @@ def _check_invariants(response: CandidatesPart, *, query: str, max_count: int = 
 # ---------------------------------------------------------------------------
 
 
+def _hold_nominal_activity_family(bind_catalogue) -> None:
+    """Bind a catalogue whose tables hold the nominal economic activity family as the offline
+    graph records it, as the deployed catalogue's tables hold it. Every member states an
+    `activitySource`, so the part binds that slot from recall (`bind_partition_values`), which
+    reads a held family only: the default fake catalogue holds none."""
+    graph = FakeGraph()
+    family = {
+        dcid: graph.node_arcs(dcid)
+        for dcid, arcs in graph.member_arcs().items()
+        if arcs.get("populationType") == ("EconomicActivity",)
+        and arcs.get("measuredProperty") == ("amount",)
+        and arcs.get("statType") == ("measuredValue",)
+        and arcs.get("measurementQualifier") == ("Nominal",)
+        and not arcs.get("measurementDenominator")
+    }
+    bind_catalogue(FakeCatalogue(arcs=build_arc_tables(dfo={}, base=family, schema={})))
+
+
 class TestStd02GDPIndia:
-    """std-02: 'GDP India' -> definite."""
+    """std-02: 'GDP India' -> definite, answered by nominal GDP over the held family."""
 
     _QUERY = "GDP India"
 
-    def test_status_is_definite(self):
+    def test_status_is_definite(self, bind_catalogue):
+        _hold_nominal_activity_family(bind_catalogue)
         result = offline_resolve(_req(self._QUERY))
         inner = result.parts[0]
         assert inner.status == "definite"
         assert isinstance(inner, DefinitePart)
-        sv_dcids = [sv.ref.dcid for sv in inner.spec.resolved.members]
+        sv_dcids = [sv.ref.ref for sv in inner.spec.resolved.members]
         assert "Amount_EconomicActivity_GrossDomesticProduction_Nominal" in sv_dcids
 
 
@@ -92,7 +114,7 @@ class TestStd03BirthRateEthiopia:
 
     def test_svs_are_birth_rate_and_fertility_rate(self):
         resp = _candidates(self._QUERY)
-        sv_dcids = {sv.ref.dcid for spec in resp.candidates.specs for sv in spec.resolved.members}
+        sv_dcids = {sv.ref.ref for spec in resp.candidates.specs for sv in spec.resolved.members}
         assert sv_dcids == {
             "Count_BirthEvent_LiveBirth_AsFractionOf_Count_Person",
             "FertilityRate_Person_Female",
@@ -113,10 +135,9 @@ class TestStd03BirthRateEthiopia:
 
 
 class TestStd04bBirthsEthiopia:
-    """No birth-count variable has data at Ethiopia. Bind elects the live-birth count and
-    binds `medicalStatus` to live births, so the nominated per-capita birth shape reads its
-    live-birth fraction, which holds data, and the no-data answer names it as the nearest
-    series."""
+    """No birth-count variable has data at Ethiopia. A bind electing the live-birth count,
+    `Count_BirthEvent_LiveBirth`, and nominating the per-capita birth shape, which holds
+    data there, answers with the per-capita shape as its alternate."""
 
     _QUERY = "number of births in Ethiopia"
 
@@ -124,15 +145,25 @@ class TestStd04bBirthsEthiopia:
         result = offline_resolve(_req(self._QUERY))
         assert result.status == "no_data"
 
-    def test_the_live_birth_fraction_is_the_nearest_series(self):
+    def test_the_live_birth_count_is_elected_with_the_per_capita_shape_as_alternate(self):
+        """The live-birth count's five-tuple names `Count_BirthEvent_LiveBirth` as its
+        measured property, so it is no level (`quantity.normalisation_class`), the alternate
+        guard reads no per-capita shape as a quotient of it, and the per-capita shape stands
+        as the alternate through its live-birth member. The gate leaves `flagged_match`
+        empty, so only the message names the elected variable."""
         result = offline_resolve(_req(self._QUERY))
         inner = result.parts[0]
         assert isinstance(inner, NoDataPart)
         assert inner.no_data.gate == "only_alternate_has_data"
         assert inner.no_data.elected_count == 1
+        assert inner.no_data.flagged_match is None
+        assert "reported live births" in inner.no_data.message
         alternate = inner.no_data.alternate_match
         assert alternate is not None
-        assert [sv.ref.dcid for sv in alternate.resolved.members] == [
+        assert (
+            alternate.resolved.shape.shape_id == "birthevent_count_measuredvalue_per_count_person"
+        )
+        assert [sv.ref.ref for sv in alternate.resolved.members] == [
             "Count_BirthEvent_LiveBirth_AsFractionOf_Count_Person"
         ]
 
@@ -204,7 +235,7 @@ class TestStd06bFertilityRateKenya:
         inner = result.parts[0]
         assert inner.status == "definite"
         assert isinstance(inner, DefinitePart)
-        sv_dcids = [sv.ref.dcid for sv in inner.spec.resolved.members]
+        sv_dcids = [sv.ref.ref for sv in inner.spec.resolved.members]
         assert "FertilityRate_Person_Female" in sv_dcids
 
 
@@ -223,7 +254,7 @@ class TestStd07InfantMortalityEthiopia:
         inner = result.parts[0]
         assert inner.status == "definite"
         assert isinstance(inner, DefinitePart)
-        sv_dcids = [sv.ref.dcid for sv in inner.spec.resolved.members]
+        sv_dcids = [sv.ref.ref for sv in inner.spec.resolved.members]
         assert "Count_Death_0Years_AsFractionOf_Count_BirthEvent_LiveBirth" in sv_dcids
 
 
@@ -252,7 +283,7 @@ class TestSdg06EducationSpendingKenya:
         inner = result.parts[0]
         assert inner.status == "definite"
         assert isinstance(inner, DefinitePart)
-        sv_dcids = [sv.ref.dcid for sv in inner.spec.resolved.members]
+        sv_dcids = [sv.ref.ref for sv in inner.spec.resolved.members]
         assert (
             "Amount_EconomicActivity_ExpenditureActivity_EducationExpenditure_Government_"
             "AsFractionOf_Amount_EconomicActivity_ExpenditureActivity_Government"
@@ -281,7 +312,7 @@ class TestCandR1GDPBrazil:
         assert offline_resolve(_req(self._QUERY)).status == "definite"
 
     def test_sv_is_nominal_gdp(self):
-        sv_dcids = [sv.ref.dcid for sv in self._definite().spec.resolved.members]
+        sv_dcids = [sv.ref.ref for sv in self._definite().spec.resolved.members]
         assert sv_dcids == ["Amount_EconomicActivity_GrossDomesticProduction_Nominal"]
 
     def test_entity_is_brazil(self):

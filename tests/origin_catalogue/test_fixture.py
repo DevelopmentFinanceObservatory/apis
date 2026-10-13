@@ -14,6 +14,7 @@ from tests.origin_catalogue.support import (
     FIXTURE_BUILD_ID,
     FIXTURE_DIR,
     encode_sample,
+    sample_arc_tables,
     sample_tables,
     sample_un_mirror,
 )
@@ -25,15 +26,21 @@ _REWRITE = "rewrite it with `uv run python scripts/record_origin_catalogue_fixtu
 
 def _without_sizes(manifest: CatalogueManifest) -> CatalogueManifest:
     return replace(
-        manifest, resident_bytes=0, un_mirror=replace(manifest.un_mirror, resident_bytes=0)
+        manifest,
+        resident_bytes=0,
+        un_mirror=replace(manifest.un_mirror, resident_bytes=0),
+        arc_tables=replace(manifest.arc_tables, resident_bytes=0),
     )
 
 
 def test_committed_fixture_loads_as_the_sample_build(tmp_path: Path) -> None:
     snapshot = load_catalogue(stage_fixture(FIXTURE_DIR, tmp_path))
-    expected = encode_sample(build_id=FIXTURE_BUILD_ID, un_mirror=sample_un_mirror()).manifest
+    expected = encode_sample(
+        build_id=FIXTURE_BUILD_ID, un_mirror=sample_un_mirror(), arcs=sample_arc_tables()
+    ).manifest
     assert snapshot.tables == sample_tables(), _REWRITE
     assert snapshot.un.mirror == sample_un_mirror(), _REWRITE
+    assert snapshot.arcs == sample_arc_tables(), _REWRITE
     # `resident_bytes` sums `sys.getsizeof`, which varies across Python builds.
     assert _without_sizes(snapshot.manifest) == _without_sizes(expected), _REWRITE
 

@@ -18,6 +18,8 @@ from search.engine.region.phase_place_materialise import (
     _read_alternates_presence,
     _unsettled_places,
     _walked_alternates,
+    merge_presence,
+    record_unevaluated,
 )
 from search.engine.region.state import AlternateUnevaluatedReason, ResolveState
 from search.engine.retrieval.retrieve import Materialised
@@ -92,7 +94,10 @@ async def _materialise_candidates(
         {i: state.capped_shapes[i] for i in indices if i not in candidates},
         elected_has_data=state.elected_has_data,
     )
-    shapes = {i: (alternate.shape, alternate.roles) for i, alternate in walked.items()}
+    shapes = {
+        i: (alternate.shape, alternate.alternate.bindings, alternate.roles)
+        for i, alternate in walked.items()
+    }
     unevaluated = await _read_alternates_presence(state, shapes, group=group)
     unread = [i for i in walked if i not in unevaluated]
     over_bound: frozenset[int] = frozenset()
@@ -103,12 +108,13 @@ async def _materialise_candidates(
             state.default_presence,
         )
         refused: list[_Alternate] = []
-        read, blocking_unsupported = await asyncio.to_thread(
+        read = await asyncio.to_thread(
             _materialise_alt_shapes,
             [walked[i].alternate for i in unread],
             places=places,
             over_bound=refused,
             presence=state.default_presence,
+            presence_failure=state.alternates_presence_failure,
             named_place_dcids=state.standard_place_dcids,
             graph=state.graph,
             sdmx=state.sdmx,
@@ -116,16 +122,29 @@ async def _materialise_candidates(
             deadline=state.deadline,
             coverage=state.coverage,
         )
+        merge_presence(state, read.presence)
+        # An alternate whose presence read after unbinding did not complete is unevaluated,
+        # as one the read above left without presence is.
+        dropped = {
+            i: reason
+            for i in unread
+            for alternate, reason in read.unevaluated
+            if walked[i].alternate is alternate
+        }
+        record_unevaluated(state, dropped)
+        unevaluated = {**unevaluated, **dropped}
         over_bound = frozenset(
             i for i in unread if any(walked[i].alternate is alternate for alternate in refused)
         )
-        if blocking_unsupported is not None:
+        if read.blocking is not None:
             # A capped alternate keeps the ambiguous refusal intact across candidate ordering.
-            state.mat_result = blocking_unsupported
+            state.mat_result = read.blocking
             return {}, unevaluated, over_bound, True
         # The role-class election can replace a shape, so a result maps back by its group.
         index_by_group = {_shape_group_key(walked[i].shape): i for i in unread}
-        candidates.update({index_by_group[_shape_group_key(cand.shape)]: cand for cand in read})
+        candidates.update(
+            {index_by_group[_shape_group_key(cand.shape)]: cand for cand in read.candidates}
+        )
     return {i: candidates[i] for i in indices if i in candidates}, unevaluated, over_bound, False
 
 
@@ -174,7 +193,9 @@ async def admit_alternates(state: ResolveState) -> _AlternatesAdmission:
 
     When that read does not complete, for want of a worker, on a source failure or on a
     timeout, the alternates it would cover are unevaluated and the elected answer is served
-    with `alternates_unevaluated`. A fired tie then stays: its warning and its effect on
+    with `alternates_unevaluated`. So is an alternate whose values matched no member together
+    and whose presence read under the relaxed bindings does not complete
+    (`candidates._presence_after_unbinding`). A fired tie then stays: its warning and its effect on
     confidence hold (`ResolveState.tie_unresolved`). No search widens past an unevaluated
     tied reading, since nothing read its data.
 

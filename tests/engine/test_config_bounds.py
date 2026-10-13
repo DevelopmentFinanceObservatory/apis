@@ -13,8 +13,6 @@ class TestNumericBounds:
     @pytest.mark.parametrize(
         ("env_var", "invalid_val"),
         [
-            ("SEARCH_MAX_CONFIRM_CANDIDATES", "0"),
-            ("SEARCH_MIN_SHAPE_CLASS_CONFIRM_SLOTS", "-1"),
             ("SEARCH_RELEVANCE_THRESHOLD", "0"),
             ("SEARCH_RELEVANCE_THRESHOLD", "1.5"),
             ("SEARCH_WEAK_SCORE_THRESHOLD", "0"),
@@ -106,15 +104,6 @@ class TestNumericBounds:
         monkeypatch.setenv("SEARCH_SDMX_CHUNK_CONCURRENCY", "16")
         monkeypatch.setenv("SEARCH_SDMX_TOTAL_CONCURRENCY", "8")
         with pytest.raises(ValueError, match="SEARCH_SDMX_TOTAL_CONCURRENCY"):
-            config.SearchSettings()
-
-    def test_obs_properties_cache_size_below_role_refresh_max_members(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        # The cache must hold every member in the 5,000-member role refresh.
-        monkeypatch.setenv("SEARCH_ROLE_REFRESH_MAX_MEMBERS", "5000")
-        monkeypatch.setenv("SEARCH_OBS_PROPERTIES_CACHE_SIZE", "4096")
-        with pytest.raises(ValueError, match="SEARCH_OBS_PROPERTIES_CACHE_SIZE"):
             config.SearchSettings()
 
     @pytest.mark.parametrize("value", ["base", "custom"])

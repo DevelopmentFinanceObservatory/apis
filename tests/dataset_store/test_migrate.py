@@ -392,6 +392,10 @@ def test_apply_pending_applies_every_real_migration_in_order():
         "0030_version_record_facts.sql",
         "0031_version_record_facts_backfill.sql",
         "0032_operation_confirmed_at.sql",
+        "0033_output_profile_party_kind.sql",
+        "0034_description_record.sql",
+        "0035_strip_backfilled_documentation.sql",
+        "0036_version_record_continuations.sql",
     ]
     statements = [sql for sql, _params in conn.executed]
     assert any("CREATE TABLE datasets.version_record" in sql for sql in statements)
@@ -401,6 +405,7 @@ def test_apply_pending_applies_every_real_migration_in_order():
     assert any("CREATE TABLE datasets.frame_recipe" in sql for sql in statements)
     assert any("CREATE TABLE datasets.materialisation" in sql for sql in statements)
     assert any("CREATE TABLE datasets.spec_alias" in sql for sql in statements)
+    assert any("CREATE TABLE datasets.description_record" in sql for sql in statements)
     assert any("CREATE TABLE datasets.version_revocation" in sql for sql in statements)
     assert any("CREATE TABLE datasets.artifact_reference" in sql for sql in statements)
     assert any(
@@ -480,6 +485,17 @@ def _statement_kinds(name: str) -> list[str]:
             ["SET LOCAL", "ALTER TABLE", "CREATE OR", "CREATE OR"],
         ),
         ("0031_version_record_facts_backfill.sql", ["UPDATE datasets.version_record", "DO $$"]),
+        ("0034_description_record.sql", ["SET LOCAL", "CREATE TABLE"]),
+        (
+            "0033_output_profile_party_kind.sql",
+            [
+                "SET LOCAL",
+                "CREATE OR",
+                "CREATE OR",
+                "UPDATE datasets.version_record",
+                "UPDATE datasets.version_record",
+            ],
+        ),
     ],
 )
 def test_version_record_alters_run_apart_from_the_backfill(name: str, kinds: list[str]):

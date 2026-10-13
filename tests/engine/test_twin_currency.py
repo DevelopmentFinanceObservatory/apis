@@ -230,7 +230,7 @@ def _resolve(
 
 def _reading(spec) -> tuple[str, str | None, object]:
     """A spec's StatVar, served unit and identity unit binding."""
-    (stat_var,) = [sv.ref.dcid for sv in spec.resolved.members]
+    (stat_var,) = [sv.ref.ref for sv in spec.resolved.members]
     unit = spec.resolved.facets.get("unit")
     return (
         stat_var,

@@ -1,0 +1,22 @@
+{
+  "root": {
+    "region": "m49/001",
+    "source": "The World is the root every region sits under, not a region, so the policy neither holds nor omits it"
+  },
+  "region_compositions": [
+    {
+      "region": "wikidataId/Q49",
+      "members_from": ["wikidataId/Q49", "m49/013", "m49/029"],
+      "source": "North America as the continent: M49 Northern America (resolvekit holds it as wikidataId/Q49), Central America and the Caribbean"
+    }
+  ],
+  "other_states": {
+    "members": ["country/PSE", "country/TWN", "country/VAT", "country/XKS"],
+    "source": "States outside UN membership: the UN General Assembly's non-member observer states (Holy See, State of Palestine) and states with limited recognition (Kosovo, Taiwan)"
+  },
+  "region_gaps": {
+    "projections": ["territories", "former_states", "other_states"],
+    "code": "membership_incomplete",
+    "reason": "resolvekit 0.1.12 holds 18 territories as no country, places almost no former state in a region, and places Kosovo (XKS) and the French Southern Territories (ATF) in no region"
+  }
+}

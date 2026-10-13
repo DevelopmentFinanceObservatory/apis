@@ -124,7 +124,11 @@ class FakeUn:
     `repeating` node does, and each of its nodes reads well alone. The next
     `replaying[node]` reads naming the node with a token answer the first
     page and that token again, `<-` and `->*` alike. A node in `truncating`
-    answers only that many subjects and no token. `counts` overrides a
+    answers only that many subjects and no token. A `->name` or `->typeOf` read
+    answers each node's targets of that property whole. The next
+    `omitting[node]` `->*`, `->name` or `->typeOf` reads naming the node leave
+    it out of their answer, and the next `emptying[node]` such reads naming it beside
+    other nodes answer it with no arcs. `counts` overrides a
     group's count, `None` removing it. A read whose nodes include every
     dcid of one set in `refused` is refused as the front door refuses it,
     with the `GraphReadError` `GraphClient.post` raises from
@@ -141,6 +145,8 @@ class FakeUn:
         self.batches_repeat = False
         self.replaying: dict[str, int] = {}
         self.truncating: dict[str, int] = {}
+        self.omitting: dict[str, int] = {}
+        self.emptying: dict[str, int] = {}
         self.counts: dict[str, int | None] = {}
         self.refused: list[set[str]] = []
         self.failing = False
@@ -179,12 +185,37 @@ class FakeUn:
                 raise GraphReadError("graph returned HTTP 429 for /v2/node", upstream_status=429)
             arc = payload["property"]
             if arc == "->*":
-                return self._out_arcs(payload["nodes"], payload.get("nextToken"))
+                return self._omit(self._out_arcs(payload["nodes"], payload.get("nextToken")))
+            if arc in ("->name", "->typeOf"):
+                return self._omit(self._named(payload["nodes"], arc[2:]))
             assert arc.startswith("<-")
             return self._subjects(payload["nodes"], arc[2:], payload.get("nextToken"))
         finally:
             with self._lock:
                 self._in_flight -= 1
+
+    def _named(self, nodes: list[str], property: str) -> dict:
+        """A `->name` or `->typeOf` read: each node's `property` targets, `{}` for a node
+        with none."""
+        data = {}
+        for node in nodes:
+            found = self.nodes.get(node, {}).get(property, [])
+            data[node] = {"arcs": {property: {"nodes": list(found)}}} if found else {}
+        return {"data": data}
+
+    def _omit(self, body: dict) -> dict:
+        """`body` without each node `omitting` still leaves out, and with no arcs for each
+        node `emptying` still empties in an answer naming several."""
+        with self._lock:
+            data = body.get("data") or {}
+            for node in list(data):
+                if self.omitting.get(node, 0) > 0:
+                    self.omitting[node] -= 1
+                    del data[node]
+                elif len(data) > 1 and self.emptying.get(node, 0) > 0:
+                    self.emptying[node] -= 1
+                    data[node] = {}
+        return body
 
     def subjects_of(self, node: str, property: str) -> list[str]:
         found = sorted(

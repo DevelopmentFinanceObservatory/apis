@@ -498,7 +498,10 @@ _SITE = DatasetsBuildSettings().site
 @pytest.mark.parametrize(
     ("rendering", "renders"),
     [
-        pytest.param({"format": "csv", "bundle": False, "layout": 2}, True, id="bare-long"),
+        pytest.param({"format": "csv", "bundle": False, "layout": 3}, True, id="bare-long"),
+        pytest.param(
+            {"format": "csv", "bundle": False, "layout": 2}, False, id="superseded-bare-long"
+        ),
         pytest.param(
             {"format": "parquet", "bundle": False, "layout": "frame"}, True, id="bare-frame"
         ),

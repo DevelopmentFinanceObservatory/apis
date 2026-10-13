@@ -11,6 +11,7 @@ from typing import ClassVar
 
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.config import settings
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_spec_resubmit, resolve_variable
 from search.engine.region.codes import NO_MEMBER_HAS_DATA_AT_PLACE
 from search.engine.retrieval.retrieve import Materialised
@@ -21,6 +22,7 @@ from tests.engine._base_identity import make_identity
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import offline_resolve, walk_options
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 _RECIPIENT = "country/XYZ"
@@ -179,6 +181,8 @@ class TestMemberProbeRunsNearestReal:
         """Elects the sole shape and binds gender directly to Female."""
 
         async def generate_structured(self, *, prompt, system, schema):
+            if schema is QuantityOutput:
+                return NO_QUANTITY
             assert schema.__name__ == "_UniversalBindOutput"
             return _UniversalBindOutput(
                 chosen_shape_index=0,
@@ -265,10 +269,10 @@ class TestMemberProbeRunsNearestReal:
         assert len(result.flagged_match) == 1
         flagged = result.flagged_match[0]
         assert result.gate == NO_MEMBER_HAS_DATA_AT_PLACE
-        assert [sv.ref.dcid for sv in flagged.resolved.members] == [self._FEMALE_SV]
+        assert [sv.ref.ref for sv in flagged.resolved.members] == [self._FEMALE_SV]
         assert result.nearest_real
         assert [nr.relaxation.axis for nr in result.nearest_real] == ["how"]
-        assert [sv.ref.dcid for sv in result.nearest_real[0].resolved.members] == [
+        assert [sv.ref.ref for sv in result.nearest_real[0].resolved.members] == [
             self._AGGREGATE_SV
         ]
 
@@ -350,6 +354,8 @@ class _NoEntityBindLLM:
     """Elects the sole shape with no bindings, a plain, unqualified ask."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0,

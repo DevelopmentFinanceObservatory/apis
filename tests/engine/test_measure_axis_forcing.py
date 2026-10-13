@@ -19,11 +19,13 @@ from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.interpret import Recall
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region.phase_election import _phase_repair_bindings
 from search.engine.region.phase_rank_bind import _phase_bind
 from search.engine.region.state import ResolveState
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from tests.engine._fake_coverage import empty_coverage_snapshot
+from tests.engine._quantity import NO_QUANTITY
 
 _FIVE_TUPLE = {
     "pop_type_dcid": "Widget",
@@ -159,6 +161,8 @@ class _RecordingBindLLM:
         self.prompts: list[str] = []
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         self.prompts.append(prompt)
         return _UniversalBindOutput(

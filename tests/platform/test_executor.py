@@ -1,4 +1,5 @@
-"""Tests thread-pool saturation logging and slot release, and context-carrying submission."""
+"""Tests thread-pool saturation logging and slot release, the Graph surface's bounded
+admission, and context-carrying submission."""
 
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ from dfo_platform.executor import (
     run_in_executor_with_context,
     submit_with_context,
 )
+from graph_api.deps import DcpExecutorSaturated, DcpReadExecutor
 
 _REQUEST_VALUE: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "request_value", default=None
@@ -22,13 +24,25 @@ _REQUEST_VALUE: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 
 
 class TestSaturationTrackingExecutor:
-    def test_saturation_logged_on_full_and_cleared_on_drain(self, caplog):
+    @pytest.mark.parametrize(
+        ("executor_type", "consequence"),
+        [
+            (SaturationTrackingExecutor, "new work will queue"),
+            (DcpReadExecutor, "new reads are refused"),
+        ],
+        ids=["queueing", "refusing"],
+    )
+    def test_saturation_logged_on_full_and_cleared_on_drain(
+        self, caplog, executor_type: type[SaturationTrackingExecutor], consequence: str
+    ):
+        """The warning names what happens to the next submit: the shared pool queues it, the
+        Graph surface's DCP-read pool refuses it."""
         release = threading.Event()
 
         def slow() -> None:
             release.wait(timeout=5)
 
-        executor = SaturationTrackingExecutor(max_workers=2, thread_name_prefix="test-satur")
+        executor = executor_type(max_workers=2, thread_name_prefix="test-satur")
         try:
             with caplog.at_level(logging.INFO, logger="dfo_platform.executor"):
                 futures = [executor.submit(slow) for _ in range(2)]
@@ -43,6 +57,7 @@ class TestSaturationTrackingExecutor:
         ]
         cleared = [r for r in caplog.records if "no longer saturated" in r.message]
         assert len(saturated) == 1
+        assert saturated[0].message.endswith(consequence)
         assert len(cleared) == 1
 
     def test_cancelled_to_thread_call_frees_slot_without_wedging_pool(self):
@@ -144,6 +159,29 @@ class TestSaturationTrackingExecutor:
             executor.submit(lambda: None)
 
         assert executor._in_flight == 0
+
+
+class TestDcpReadExecutorAdmission:
+    def test_a_submit_with_every_worker_busy_is_refused_and_never_runs(self):
+        """Admission is per worker: the refused call never runs and a returned read frees its
+        slot for the next submit."""
+        release = threading.Event()
+        refused_ran = threading.Event()
+        executor = DcpReadExecutor(max_workers=2, thread_name_prefix="test-admission")
+        try:
+            running = [executor.submit(release.wait, 5) for _ in range(2)]
+
+            with pytest.raises(DcpExecutorSaturated):
+                executor.submit(refused_ran.set)
+
+            release.set()
+            for future in running:
+                future.result(timeout=5)
+            assert executor.submit(lambda: "ok").result(timeout=5) == "ok"
+        finally:
+            executor.shutdown(wait=True)
+
+        assert not refused_ran.is_set()
 
 
 class TestContextCarryingSubmission:

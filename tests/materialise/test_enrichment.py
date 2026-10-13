@@ -10,7 +10,7 @@ import httpx
 import materialise.enrichment as enrichment_module
 from code_index.types import PartyRow
 from dc_graph import GraphClient
-from materialise.enrichment import EnrichmentLookup
+from materialise.enrichment import EnrichmentLookup, read_party_kinds
 
 from .conftest import FakeGraphReader
 
@@ -31,7 +31,7 @@ def _graph() -> FakeGraphReader:
 
 
 def test_ref_with_all_three_fields():
-    lookup = EnrichmentLookup(_graph(), type_kinds={}, parties={})
+    lookup = EnrichmentLookup(_graph(), parties={})
 
     result = lookup.lookup(["country/KEN"])
 
@@ -50,7 +50,7 @@ def test_a_place_type_carries_every_type_of_the_place_sorted_and_comma_joined():
             "Earth": {"typeOf": ("Place",)},
         }
     )
-    lookup = EnrichmentLookup(graph, type_kinds={}, parties={})
+    lookup = EnrichmentLookup(graph, parties={})
 
     result = lookup.lookup(["nuts/FI2", "Earth"])
 
@@ -61,66 +61,35 @@ def test_a_place_type_carries_every_type_of_the_place_sorted_and_comma_joined():
     assert graph.calls["node_arcs_many"] == 1
 
 
-def test_a_partys_kind_comes_from_its_types_under_the_declared_party_types():
-    graph = FakeGraphReader(
-        arcs={
-            "country/IND": {"typeOf": ("Country", "Place")},
-            "DACAfrica": {"typeOf": ("DACGroup",)},
-            "DACAfricaUnallocated": {"typeOf": ("DACRecipientUnallocatedByCountry",)},
-            "Earth": {"typeOf": ("Place",)},
-            "nuts/FI2": {"typeOf": ("Country", "EurostatNUTS2")},
-        }
-    )
-    lookup = EnrichmentLookup(
-        graph,
-        type_kinds={
-            "Country": "party",
-            "DACGroup": "total",
-            "DACRecipientUnallocatedByCountry": "residual",
-            "Place": None,
-        },
-        parties={},
-    )
-
-    result = lookup.lookup(
-        ["country/IND", "DACAfrica", "DACAfricaUnallocated", "Earth", "nuts/FI2"]
-    )
-
-    assert {ref: fields.get("kind") for ref, fields in result.items()} == {
-        "country/IND": "party",
-        "DACAfrica": "total",
-        "DACAfricaUnallocated": "residual",
-        # Place alone carries no kind, and EurostatNUTS2 is not declared.
-        "Earth": None,
-        "nuts/FI2": None,
-    }
-    assert graph.calls["node_arcs_many"] == 1
-
-
-def test_a_partys_own_kind_takes_precedence_over_the_kind_its_types_give():
+def test_a_partys_kind_comes_from_its_index_row_whatever_its_graph_types():
+    """The index row decides the kind; a party it does not list has none, even when its graph
+    types once implied one (`DACGroup` a total, `Organization` a party)."""
     graph = FakeGraphReader(
         arcs={
             "WorldBankGroup": {"typeOf": ("Organization",)},
             "IDA": {"typeOf": ("Organization", "ProvisionalNode")},
+            "DACAfrica": {"typeOf": ("DACGroup",)},
             "Bare": {"label": ("No types",)},
         }
     )
     lookup = EnrichmentLookup(
         graph,
-        type_kinds={"Organization": "party", "ProvisionalNode": None},
         parties={
             "WorldBankGroup": PartyRow(dcid="WorldBankGroup", kind="total"),
             "Bare": PartyRow(dcid="Bare", kind="residual"),
         },
     )
 
-    result = lookup.lookup(["WorldBankGroup", "IDA", "Bare"])
+    result = lookup.lookup(["WorldBankGroup", "IDA", "DACAfrica", "Bare"])
 
-    assert {ref: fields.get("kind") for ref, fields in result.items()} == {
+    assert {ref: fields.get("party_kind") for ref, fields in result.items()} == {
         "WorldBankGroup": "total",
-        "IDA": "party",
+        "IDA": None,
+        "DACAfrica": None,
         "Bare": "residual",
     }
+    assert result["DACAfrica"] == {"type": "DACGroup"}
+    assert graph.calls["node_arcs_many"] == 1
 
 
 def test_a_partys_kind_survives_a_graph_that_returns_no_node_for_it():
@@ -129,21 +98,45 @@ def test_a_partys_kind_survives_a_graph_that_returns_no_node_for_it():
     graph = FakeGraphReader(arcs={})
     lookup = EnrichmentLookup(
         graph,
-        type_kinds={"Organization": "party"},
         parties={"WorldBankGroup": PartyRow(dcid="WorldBankGroup", kind="total")},
     )
 
     first = lookup.lookup(["WorldBankGroup", "country/NOWHERE"])
     repeat = lookup.lookup(["WorldBankGroup", "country/NOWHERE"])
 
-    expected = {"WorldBankGroup": {"kind": "total"}, "country/NOWHERE": {}}
+    expected = {"WorldBankGroup": {"party_kind": "total"}, "country/NOWHERE": {}}
     assert first == expected
     assert repeat == expected
     assert graph.calls["node_arcs_many"] == 1
 
 
+def test_party_kinds_read_the_index_alone_for_flow_parties():
+    """A party the index does not list has no kind, whatever its graph types, and a subject
+    role holds no party."""
+    kinds = read_party_kinds(
+        [
+            ("financingProvider", "WorldBankGroup"),
+            ("origin", "country/USA"),
+            ("destination", "DACAfrica"),
+            ("creditor", "country/KEN"),
+            ("observationAbout", "country/USA"),
+        ],
+        parties={
+            "WorldBankGroup": PartyRow(dcid="WorldBankGroup", kind="total"),
+            "country/USA": PartyRow(dcid="country/USA", kind="party"),
+            "DACAfrica": PartyRow(dcid="DACAfrica", kind="total"),
+        },
+    )
+
+    assert kinds == {
+        ("financingProvider", "WorldBankGroup"): "total",
+        ("origin", "country/USA"): "party",
+        ("destination", "DACAfrica"): "total",
+    }
+
+
 def test_ref_with_only_a_label_omits_the_missing_fields():
-    lookup = EnrichmentLookup(_graph(), type_kinds={}, parties={})
+    lookup = EnrichmentLookup(_graph(), parties={})
 
     result = lookup.lookup(["org/WORLDBANK"])
 
@@ -151,7 +144,7 @@ def test_ref_with_only_a_label_omits_the_missing_fields():
 
 
 def test_unknown_ref_maps_to_an_empty_mapping():
-    lookup = EnrichmentLookup(_graph(), type_kinds={}, parties={})
+    lookup = EnrichmentLookup(_graph(), parties={})
 
     result = lookup.lookup(["country/NOWHERE"])
 
@@ -160,7 +153,7 @@ def test_unknown_ref_maps_to_an_empty_mapping():
 
 def test_repeat_call_makes_no_graph_call():
     graph = _graph()
-    lookup = EnrichmentLookup(graph, type_kinds={}, parties={})
+    lookup = EnrichmentLookup(graph, parties={})
     lookup.lookup(["country/KEN", "org/WORLDBANK"])
     assert graph.calls["node_arcs_many"] == 1
 
@@ -175,7 +168,7 @@ def test_repeat_call_makes_no_graph_call():
 
 def test_partial_repeat_fetches_only_the_new_ref():
     graph = _graph()
-    lookup = EnrichmentLookup(graph, type_kinds={}, parties={})
+    lookup = EnrichmentLookup(graph, parties={})
     lookup.lookup(["country/KEN"])
     assert graph.calls["node_arcs_many"] == 1
 
@@ -190,7 +183,7 @@ def test_partial_repeat_fetches_only_the_new_ref():
 
 def test_empty_refs_makes_no_call():
     graph = _graph()
-    lookup = EnrichmentLookup(graph, type_kinds={}, parties={})
+    lookup = EnrichmentLookup(graph, parties={})
 
     result = lookup.lookup([])
 
@@ -202,7 +195,7 @@ def test_concurrent_lookups_of_the_same_uncached_refs_are_all_correct_then_cache
     # Graph reads run outside the cache lock, so concurrent misses may fetch
     # the same refs. Results remain correct and later reads use the cache.
     graph = _graph()
-    lookup = EnrichmentLookup(graph, type_kinds={}, parties={})
+    lookup = EnrichmentLookup(graph, parties={})
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         futures = [pool.submit(lookup.lookup, ["country/KEN", "org/WORLDBANK"]) for _ in range(8)]
@@ -234,7 +227,7 @@ def test_cache_evicts_the_least_recently_used_ref_at_the_ceiling(monkeypatch):
             "country/UGA": {"name": ("Uganda",)},
         }
     )
-    lookup = EnrichmentLookup(graph, type_kinds={}, parties={})
+    lookup = EnrichmentLookup(graph, parties={})
     lookup.lookup(["country/KEN"])
     lookup.lookup(["country/TGO"])
     # Reusing KEN makes TGO least-recently-used; UGA then evicts TGO.
@@ -262,7 +255,7 @@ def test_lookup_larger_than_the_ceiling_returns_every_requested_ref(monkeypatch)
             "country/UGA": {"name": ("Uganda",)},
         }
     )
-    lookup = EnrichmentLookup(graph, type_kinds={}, parties={})
+    lookup = EnrichmentLookup(graph, parties={})
 
     result = lookup.lookup(["country/KEN", "country/TGO", "country/UGA"])
 
@@ -287,7 +280,7 @@ def test_refs_evicted_by_a_concurrent_store_are_still_returned(monkeypatch):
             "country/BDI": {"name": ("Burundi",)},
         }
     )
-    lookup = EnrichmentLookup(graph, type_kinds={}, parties={})
+    lookup = EnrichmentLookup(graph, parties={})
     real_node_arcs_many = graph.node_arcs_many
     triggered = False
 
@@ -333,7 +326,7 @@ def test_budget_bounds_individual_probes_and_the_graph_logs_the_unprobed_count(m
     graph = GraphClient(
         base_url="https://graph.example.org/core/api", transport=httpx.MockTransport(handler)
     )
-    lookup = EnrichmentLookup(graph, type_kinds={}, parties={})
+    lookup = EnrichmentLookup(graph, parties={})
 
     with caplog.at_level("INFO", logger="dc_graph.client"):
         result = lookup.lookup(["country/AAA", "country/BBB"])

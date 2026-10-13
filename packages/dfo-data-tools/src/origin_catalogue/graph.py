@@ -8,23 +8,34 @@ both halves, and merge in first-occurrence input order. Methods that carry
 no UN dcids (place containment, resolve, currency units) go to our mixer
 whole.
 
-A read of a UN node's facts is answered from the request's catalogue where
-its UN tables hold them, and sends the UN deployment nothing: a variable's
-arcs, the name and type of a variable and of a node a variable's arc names,
-a topic's member variables, and the variables of a series (the subjects of
-a reverse read naming the series as `populationType`). A variable of a
-series the registry excludes reads as an absent node, and such a series has
-no subjects. Any other UN dcid, such as a unit or the arcs of a constraint
-value, is read from the UN deployment, and so are the subjects of a reverse
-read that names a UN node and no series. An observation
-read names only the UN variables the catalogue admits; the others read as
-holding no data there.
+A read of a node's schema facts (its arcs, names, label, type and
+observation properties, and whether it exists) is answered from the
+request's catalogue where its tables hold the node, and sends no backend
+anything. The UN tables hold each admitted UN variable, the nodes its arcs
+name, each UN topic's admitted leaves, and the variables of each series
+(the subjects of a reverse read naming the series as `populationType`). A
+variable of a series the registry excludes reads as an absent node, and
+such a series has no subjects. The arc tables hold every DFO and base
+variable the catalogue lists and the schema nodes their arcs depend on: a
+denominator, a role property's `rangeIncludes`, and the `subClassOf` chain
+of each type in that range (`origin_catalogue.arc_tables`). A node they
+hold empty reads as absent. The topic table holds our Topics' leaves.
+
+A dcid the tables do not hold is out of their scope, not absent: it is read
+from its backend, as an unlisted base variable, an entity node or a UN unit
+is. So is a reverse read that names no series the UN tables hold: our
+graph holds variables the arc tables do not list, so they cannot say which
+variables hold an arc. Table
+answers pass through no backend cache, which keeps only what the graph
+answered. An observation read names only the UN variables the catalogue
+admits; the others read as holding no data there.
 
 Every facet it returns has passed admission: a facet whose provenance the
-request's catalogue does not admit is dropped, and where a DFO facet is
-present for a variable and place the others are dropped too. A catalogue under
+request's catalogue does not admit is dropped (`admit_facets`), and DFO's and
+base facets for one variable and place are kept alike, so the election
+(`materialise.facets.dfo_precedence`) chooses between them. A catalogue under
 a source scope (`Catalogue.scope`) drops every provenance outside it first, so
-DFO precedence runs among the provenances the request allows. Facet reads to
+the election runs among the provenances the request allows. Facet reads to
 our mixer send the catalogue's admitted hostnames as `filter.domains`, which
 only shrinks the response. Admission decides what serves. With the UN
 origin off, UN dcids read as absent and go to neither backend.
@@ -44,7 +55,7 @@ result on the caller's thread with the catalogue it read at entry.
 from __future__ import annotations
 
 import contextvars
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import UTC, date, datetime
 from enum import Enum
@@ -53,7 +64,6 @@ from typing import Any, Final, Protocol, Self, TypedDict, Unpack
 import httpx
 
 from dc_graph import (
-    IMPORT_ADDED_CONSTRAINT_PROPERTIES,
     UNRESOLVED_NODE,
     CapErrorFactory,
     Facet,
@@ -79,7 +89,7 @@ from origin_catalogue.context import (
     record_un_read_failure,
 )
 from origin_catalogue.origins import DFO, UN_ID_PREFIX, UN_SYSTEM
-from origin_catalogue.un_mirror import UnVariable
+from origin_catalogue.un_mirror import UnArc, import_added, wire_arcs
 
 UN_BASE_URL: Final[str] = "https://unsd-datacommons.gcp.un-icc.cloud/core/api"
 """The UN System Data Commons API root. It needs no token."""
@@ -109,10 +119,10 @@ def is_un_dcid(dcid: str) -> bool:
 
 
 class _Unmirrored(Enum):
-    """What a UN table read answers for a dcid the tables hold no fact for."""
+    """What a table read answers for a dcid the catalogue's tables hold no fact for."""
 
     LIVE = "live"
-    """The tables do not hold the dcid, so the UN deployment is read."""
+    """The tables do not hold the dcid, so its backend is read."""
     OMITTED = "omitted"
     """The tables hold the dcid and it has no such fact, so the result leaves it out."""
 
@@ -127,43 +137,75 @@ _TOPIC_MEMBER_ARC: Final[str] = "relevantVariable"
 _TOPIC_TYPE: Final[str] = "Topic"
 
 
+def _wire(arcs: Iterable[UnArc]) -> dict:
+    """Table arc rows as `GraphClient.node_arcs_batch` returns them, without the
+    `import_added` targets, as the graph client leaves them out. The client keeps the
+    `constraintProperties` entry when it leaves out every target, and so does this."""
+    rows = tuple(arcs)
+    wire = wire_arcs(arc for arc in rows if not import_added(arc))
+    if any(arc.property == _CONSTRAINT_PROPERTIES for arc in rows):
+        wire.setdefault(_CONSTRAINT_PROPERTIES, {"nodes": []})
+    return wire
+
+
+def _topic_arcs(leaves: Iterable[tuple[str, list[str]]]) -> dict:
+    """A topic's arcs as the tables answer them: its type and its leaves, each with its
+    types, as `relevantVariable` targets. The topic walk reaches the same leaves in one
+    level."""
+    return {
+        "typeOf": {"nodes": [{"dcid": _TOPIC_TYPE}]},
+        _TOPIC_MEMBER_ARC: {"nodes": [{"dcid": leaf, "types": types} for leaf, types in leaves]},
+    }
+
+
+def _types(arcs: Iterable[UnArc]) -> list[str]:
+    return [arc.dcid for arc in arcs if arc.property == "typeOf" and arc.dcid is not None]
+
+
 def _table_arcs(catalogue: Catalogue, dcid: str) -> dict | None | _Unmirrored:
-    """A UN dcid's `->*` arcs from the catalogue's UN tables, as
+    """A dcid's `->*` arcs from the catalogue's tables, as
     `GraphClient.node_arcs_batch` returns them.
 
-    A variable's arcs are the ones the catalogue job copied. A topic's arcs
-    are its type and its admitted leaves as `relevantVariable` targets, and
-    nothing else: the topic walk reaches the same variables in one level.
-    A variable of an excluded series is absent, `None`. `_LIVE` for a dcid
-    the tables do not hold."""
-    variable = catalogue.un_variable(dcid)
-    if variable is not None:
-        arcs = variable.wire_arcs()
-        constraints = arcs.get(_CONSTRAINT_PROPERTIES)
-        if constraints is not None:
-            constraints["nodes"] = [
-                node
-                for node in constraints["nodes"]
-                if node.get("dcid") not in IMPORT_ADDED_CONSTRAINT_PROPERTIES
-            ]
-        return arcs
-    leaves = catalogue.un_topic_leaves(dcid)
+    A UN variable's arcs are the ones the catalogue job copied, and a variable of an
+    excluded series is absent, `None`. A node the arc tables hold has the arcs they hold, and
+    one held empty is absent: every DFO variable, base variable and schema node, and every node
+    a resolver index names, among them our index's subjects the graph dropped. A topic, UN or ours,
+    has its type and its leaves as `relevantVariable` targets, and nothing else: a UN
+    topic its admitted leaves, ours every leaf of the topic table. `_LIVE` for a dcid the
+    tables do not hold."""
+    if is_un_dcid(dcid):
+        variable = catalogue.un_variable(dcid)
+        if variable is not None:
+            return _wire(variable.arcs)
+        un_leaves = catalogue.un_topic_leaves(dcid)
+        if un_leaves is not None:
+            return _topic_arcs(
+                (leaf, _types(member.arcs))
+                for leaf in un_leaves
+                if (member := catalogue.un_variable(leaf)) is not None
+            )
+        return None if catalogue.superseded_by(dcid) is not None else _LIVE
+    held = catalogue.held_arcs(dcid)
+    if held is not None:
+        return _wire(held) or None
+    leaves = catalogue.mixer_topic_leaves(dcid)
     if leaves is not None:
-        return {
-            "typeOf": {"nodes": [{"dcid": _TOPIC_TYPE}]},
-            _TOPIC_MEMBER_ARC: {
-                "nodes": [
-                    {"dcid": leaf, "types": _variable_types(member)}
-                    for leaf in leaves
-                    if (member := catalogue.un_variable(leaf)) is not None
-                ]
-            },
-        }
-    return None if catalogue.superseded_by(dcid) is not None else _LIVE
+        return _topic_arcs((leaf, _types(catalogue.held_arcs(leaf) or ())) for leaf in leaves)
+    return _LIVE
 
 
-def _variable_types(variable: UnVariable) -> list[str]:
-    return [arc.dcid for arc in variable.arcs if arc.property == "typeOf" and arc.dcid is not None]
+def arcs_mirrored(dcid: str, *, catalogue: Catalogue) -> bool:
+    """Whether `catalogue`'s tables answer `dcid`'s `->*` arcs, so
+    `OriginGraphClient.node_arcs_batch` reads it from neither backend."""
+    return _table_arcs(catalogue, dcid) is not _LIVE
+
+
+def mirrored_arcs(dcid: str, *, catalogue: Catalogue) -> dict | None:
+    """`dcid`'s `->*` arcs as `catalogue`'s tables answer them, in the shape
+    `GraphClient.node_arcs_batch` returns, or None for a dcid the tables hold absent or do
+    not hold. Reads no backend."""
+    arcs = _table_arcs(catalogue, dcid)
+    return None if isinstance(arcs, _Unmirrored) else arcs
 
 
 def _table_exists(catalogue: Catalogue, dcid: str) -> bool | _Unmirrored:
@@ -174,7 +216,7 @@ def _table_exists(catalogue: Catalogue, dcid: str) -> bool | _Unmirrored:
 def _table_arc_values(
     catalogue: Catalogue, dcid: str, properties: Sequence[str]
 ) -> dict[str, tuple[str, ...]] | None | _Unmirrored:
-    """The named arcs of a UN dcid, as `GraphClient.node_arcs_many` returns them."""
+    """The named arcs of a dcid, as `GraphClient.node_arcs_many` returns them."""
     arcs = _table_arcs(catalogue, dcid)
     if arcs is None or isinstance(arcs, _Unmirrored):
         return arcs
@@ -190,41 +232,69 @@ def _table_observation_properties(catalogue: Catalogue, dcid: str) -> tuple[str,
     return tuple(v for v in arcs["observationProperties"] if v != UNRESOLVED_NODE)
 
 
+def _node_arcs(catalogue: Catalogue, dcid: str) -> tuple[UnArc, ...] | None:
+    """The arc rows the tables hold for `dcid` as a node: a UN variable's or an arc
+    table's. `None` for a dcid neither holds."""
+    if is_un_dcid(dcid):
+        variable = catalogue.un_variable(dcid)
+        return None if variable is None else variable.arcs
+    return catalogue.held_arcs(dcid)
+
+
+def _absent(catalogue: Catalogue, dcid: str) -> bool:
+    """Whether the tables say `dcid` has no node to read: a UN variable of an
+    excluded series."""
+    return is_un_dcid(dcid) and catalogue.superseded_by(dcid) is not None
+
+
 def _table_names(catalogue: Catalogue, dcid: str) -> tuple[str, ...] | _Unmirrored:
-    """A UN variable's `name` then `alternateName` values. The tables hold
-    one name of any other node, so its names are read live."""
-    variable = catalogue.un_variable(dcid)
-    if variable is None:
-        return () if catalogue.superseded_by(dcid) is not None else _LIVE
-    names = parse_arcs(variable.wire_arcs(), _NAME_PROPERTIES)
+    """A held node's `name` then `alternateName` values. The tables hold one name of
+    a node an arc names, so its names are read live."""
+    arcs = _node_arcs(catalogue, dcid)
+    if arcs is None:
+        return () if _absent(catalogue, dcid) else _LIVE
+    names = parse_arcs(wire_arcs(arcs), _NAME_PROPERTIES)
     return tuple(dict.fromkeys(name for prop in _NAME_PROPERTIES for name in names[prop]))
 
 
 def _table_label(catalogue: Catalogue, dcid: str) -> str | _Unmirrored:
-    """A UN dcid's label as `GraphClient.node_label` picks it: a variable's
-    last `name` value, or the name an arc naming the node carries."""
-    variable = catalogue.un_variable(dcid)
-    if variable is not None:
-        names = [arc.value for arc in variable.arcs if arc.property == "name" and arc.value]
+    """A dcid's label as `GraphClient.node_label` picks it: a held node's last `name`
+    value, the label the arc tables read for a node an arc of theirs names, or the name
+    a UN arc naming the node carries."""
+    arcs = _node_arcs(catalogue, dcid)
+    if arcs is not None:
+        names = [arc.value for arc in arcs if arc.property == "name" and arc.value]
         return names[-1] if names else _OMITTED
-    if catalogue.superseded_by(dcid) is not None:
+    if _absent(catalogue, dcid):
         return _OMITTED
-    node = catalogue.un_node(dcid)
-    return node.name if node is not None and node.name else _LIVE
+    if is_un_dcid(dcid):
+        node = catalogue.un_node(dcid)
+        return node.name if node is not None and node.name else _LIVE
+    if catalogue.arc_target(dcid) is None:
+        return _LIVE
+    return catalogue.arc_label(dcid) or _OMITTED
 
 
 def _table_type(catalogue: Catalogue, dcid: str) -> str | _Unmirrored:
-    """A UN dcid's first type, as `GraphClient.node_type` picks it."""
-    variable = catalogue.un_variable(dcid)
-    if variable is not None:
-        types = _variable_types(variable)
+    """A dcid's first type, as `GraphClient.node_type` picks it: a held node's first
+    `typeOf` target, `Topic` for a topic, or the type an arc naming the node carries.
+    An arc of ours naming a node of several types carries them in no order the
+    graph's `typeOf` read is known to share, so that node's type is read live."""
+    arcs = _node_arcs(catalogue, dcid)
+    if arcs is not None:
+        types = _types(arcs)
         return types[0] if types else _OMITTED
-    if catalogue.un_topic_leaves(dcid) is not None:
+    if is_un_dcid(dcid):
+        if catalogue.un_topic_leaves(dcid) is not None:
+            return _TOPIC_TYPE
+        if catalogue.superseded_by(dcid) is not None:
+            return _OMITTED
+        node = catalogue.un_node(dcid)
+        return node.types[0] if node is not None and node.types else _LIVE
+    if catalogue.mixer_topic_leaves(dcid) is not None:
         return _TOPIC_TYPE
-    if catalogue.superseded_by(dcid) is not None:
-        return _OMITTED
-    node = catalogue.un_node(dcid)
-    return node.types[0] if node is not None and node.types else _LIVE
+    target = catalogue.arc_target(dcid)
+    return target.types[0] if target is not None and len(target.types) == 1 else _LIVE
 
 
 def _table_subjects(
@@ -427,11 +497,12 @@ class OriginGraphClient:
     def exists_batch(self, dcids: list[str]) -> set[str]:
         catalogue = current_catalogue()
         ours, un = self._split(catalogue, dcids)
-        held = {dcid: _table_exists(catalogue, dcid) for dcid in un}
-        live = [dcid for dcid, answer in held.items() if answer is _LIVE]
+        held = {dcid: _table_exists(catalogue, dcid) for dcid in (*ours, *un)}
+        ours = [dcid for dcid in ours if held[dcid] is _LIVE]
+        un = [dcid for dcid in un if held[dcid] is _LIVE]
         found_ours, found_un = self._read_both(
             (lambda: self._ours.exists_batch(ours)) if ours else None,
-            (lambda: self._un.exists_batch(live)) if live else None,
+            (lambda: self._un.exists_batch(un)) if un else None,
         )
         mirrored = {dcid for dcid, answer in held.items() if answer is True}
         return (found_ours or set()) | (found_un or set()) | mirrored
@@ -643,14 +714,23 @@ class OriginGraphClient:
         )
 
     def observation_facets_batch_many(
-        self, *, stat_vars: Sequence[str], entities: Sequence[str], deadline: float | None = None
+        self,
+        *,
+        stat_vars: Sequence[str],
+        entities: Sequence[str],
+        deadline: float | None = None,
+        max_bytes: int | None = None,
     ) -> dict[str, dict[str, list[Facet]]]:
         return self._admitted_facets(
             current_catalogue(),
             stat_vars,
             entities,
             lambda backend, part, domains: backend.observation_facets_batch_many(
-                stat_vars=part, entities=entities, deadline=deadline, domains=domains
+                stat_vars=part,
+                entities=entities,
+                deadline=deadline,
+                max_bytes=max_bytes,
+                domains=domains,
             ),
         )
 
@@ -929,18 +1009,17 @@ class OriginGraphClient:
         tables: Callable[[Catalogue, str], V | _Unmirrored],
         read: Callable[[GraphClient], V],
     ) -> V | None:
-        """One dcid's fact: from the catalogue's UN tables where they hold
-        it, else from its backend. `None` for a UN dcid with the UN off and
-        for a fact the tables say the node lacks."""
+        """One dcid's fact: from the catalogue's tables where they hold it,
+        else from its backend. `None` for a UN dcid with the UN off and for a
+        fact the tables say the node lacks."""
         backend = self._backend(catalogue, dcid)
         if backend is None:
             return None
-        if backend is self._un:
-            answer = tables(catalogue, dcid)
-            if answer is _OMITTED:
-                return None
-            if not isinstance(answer, _Unmirrored):
-                return answer
+        answer = tables(catalogue, dcid)
+        if answer is _OMITTED:
+            return None
+        if not isinstance(answer, _Unmirrored):
+            return answer
         return read(backend)
 
     def _route_many[V](
@@ -953,21 +1032,21 @@ class OriginGraphClient:
         tables: Callable[[Catalogue, str], V | _Unmirrored] | None = None,
     ) -> dict[str, V]:
         """Read each backend's dcids and merge in first-occurrence input
-        order. A UN dcid `tables` answers is not read from the UN
-        deployment. With the UN off, UN dcids map to `disabled()`, or are
-        left out when `disabled` is `None`, as the backend leaves out a dcid
-        it does not hold."""
+        order. A dcid `tables` answers is read from neither backend, and one
+        they answer `_OMITTED` is left out. With the UN off, UN dcids map to
+        `disabled()`, or are left out when `disabled` is `None`, as the
+        backend leaves out a dcid it does not hold."""
         ours, un = self._split(catalogue, dcids)
         mirrored: dict[str, V] = {}
         if tables is not None:
-            live: list[str] = []
-            for dcid in un:
-                answer = tables(catalogue, dcid)
-                if answer is _LIVE:
-                    live.append(dcid)
-                elif not isinstance(answer, _Unmirrored):
-                    mirrored[dcid] = answer
-            un = live
+            answers = {dcid: tables(catalogue, dcid) for dcid in (*ours, *un)}
+            mirrored = {
+                dcid: answer
+                for dcid, answer in answers.items()
+                if not isinstance(answer, _Unmirrored)
+            }
+            ours = [dcid for dcid in ours if answers[dcid] is _LIVE]
+            un = [dcid for dcid in un if answers[dcid] is _LIVE]
         from_ours, from_un = self._read_both(
             (lambda: read(self._ours, ours)) if ours else None,
             (lambda: read(self._un, un)) if un else None,
@@ -1098,8 +1177,8 @@ def _scan_places(catalogue: Catalogue, variable: str) -> tuple[str, ...]:
 
 
 def admit_facets(catalogue: Catalogue, facets: Sequence[Facet]) -> list[Facet]:
-    """The facets of one variable at one place that `catalogue` admits, with
-    DFO precedence, in input order. A facet with no provenance is dropped."""
+    """The facets of one variable at one place that `catalogue` admits, in input
+    order, DFO's and base's alike. A facet with no provenance is dropped."""
     admitted = set(
         catalogue.admit_series(
             facet.provenance_id for facet in facets if facet.provenance_id is not None
@@ -1188,6 +1267,8 @@ __all__ = [
     "UnAvailabilityClient",
     "UnGeneration",
     "admit_facets",
+    "arcs_mirrored",
     "build_graph_client",
     "is_un_dcid",
+    "mirrored_arcs",
 ]

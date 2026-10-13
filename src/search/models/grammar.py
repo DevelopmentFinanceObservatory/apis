@@ -7,6 +7,8 @@ from pydantic import (
     model_validator,
 )
 
+from description.blocks import documentation_link
+
 from .base import StrictModel
 from .vocab import Axis, DataCommonsId, RoleAxis, SentenceAxis, SentenceSegment, ValueKind
 
@@ -18,7 +20,7 @@ from .vocab import Axis, DataCommonsId, RoleAxis, SentenceAxis, SentenceSegment,
 class GraphRef(StrictModel):
     """Every graph identifier in the contract."""
 
-    dcid: str = Field(description="the graph identifier")
+    ref: str = Field(description="the graph identifier")
     label: str = Field(description="plain-language display name, read from the graph")
 
 
@@ -44,17 +46,24 @@ class DataCommonsRef(StrictModel):
 
 
 class ProvenanceRef(GraphRef):
-    """A provenance on the wire: its dcid and label, the source behind it, and
-    the Data Commons its data comes from. `label`, `source` and `data_commons`
-    come from the origin catalogue's provenance table. A provenance the table
-    does not list carries its graph label and neither `source` nor
-    `data_commons`, and is omitted when the graph has no label for it."""
+    """A provenance on the wire: its dcid and label, the source behind it, the
+    Data Commons its data comes from, and the route of its document, which
+    follows from the dcid. `label`, `source` and `data_commons` come from the
+    origin catalogue's provenance table. A provenance the table does not list
+    carries its graph label and neither `source` nor `data_commons`, and is
+    omitted when the graph has no label for it."""
 
     source: SourceRef | None = Field(
         default=None, description="the organisation behind the provenance"
     )
     data_commons: DataCommonsRef | None = Field(
         default=None, description="the Data Commons the provenance's data comes from"
+    )
+    documentation: str = Field(
+        default_factory=lambda data: documentation_link(data["ref"]),
+        description=(
+            "the Graph API route of the provenance's document, GET /api/graph/documentation/{dcid}"
+        ),
     )
 
 
@@ -122,7 +131,7 @@ class SlotKey(StrictModel):
 
     def as_ref(self) -> str:
         """Return the ``axis:property_dcid`` key used by sentence tokens and slot options."""
-        return f"{self.axis}:{self.property.dcid if self.property else ''}"
+        return f"{self.axis}:{self.property.ref if self.property else ''}"
 
 
 # ---------------------------------------------------------------------------

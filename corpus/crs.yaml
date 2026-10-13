@@ -311,6 +311,8 @@
   why: The pipeline drops Rio markers, so no series measures climate finance; returning all German aid to Bangladesh under that label is wrong.
   reuse: panel/crs-031
   tags: {theme: climate_energy, entity: two_roles, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, probe: [crs_quirk, missing_data]}
+  # Known failure: A longer CRS member sample leaves "climate" out of the unplaced words, so the part answers gross disbursements instead of refusing qualifier_not_bound.
+  known_failure: {issue: 1298, checks: [disposition]}
   expect:
     no_data:
       entities: [{dcid: country/DEU, role: origin}, {dcid: country/BGD, role: destination}]

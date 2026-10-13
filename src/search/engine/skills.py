@@ -47,7 +47,7 @@ def project_spec_dcids(spec: Spec) -> set[str]:
         shape.measurement_denominator,
     ):
         if ref is not None:
-            dcids.add(ref.dcid)
+            dcids.add(ref.ref)
     provenance = spec.resolved.facets.get("provenance")
     if provenance is not None and provenance.ref is not None:
         dcids.add(provenance.ref)
@@ -61,9 +61,9 @@ def project_spec_dcids(spec: Spec) -> set[str]:
             values = binding.values
         else:
             continue
-        dcids.add(slot.key.property.dcid)
+        dcids.add(slot.key.property.ref)
         dcids.update(
-            value.ref.dcid
+            value.ref.ref
             for value in values
             if value.value_kind == "enum_value" and value.ref is not None
         )

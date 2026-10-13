@@ -7,9 +7,11 @@ from __future__ import annotations
 
 from materialise.graph import SubjectPage
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.quantity_read import QuantityOutput
 from search.models import ParsedEntity, ParsedInput, ParsedPart, ResolveRequest
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import materialise_double_from_obs, offline_resolve
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph
 
 _PROP = "testSlotValuesSource"
@@ -66,6 +68,8 @@ def _member_arcs(node_arcs: dict) -> dict[str, tuple[str, ...]]:
 
 class _SetBindLLM:
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0,
@@ -135,10 +139,10 @@ def test_two_stat_vars_carry_only_their_own_set_binding_member():
 
     assert result.parts[0].status == "definite", f"expected definite, got {result.parts[0]}"
     spec = result.parts[0].spec
-    stat_vars_by_ref = {sv.ref.dcid: sv for sv in spec.resolved.members}
+    stat_vars_by_ref = {sv.ref.ref: sv for sv in spec.resolved.members}
     assert set(stat_vars_by_ref) == {_SV_A, _SV_B}
 
-    a_values = {v.value.ref.dcid for v in stat_vars_by_ref[_SV_A].slot_values}
-    b_values = {v.value.ref.dcid for v in stat_vars_by_ref[_SV_B].slot_values}
+    a_values = {v.value.ref.ref for v in stat_vars_by_ref[_SV_A].slot_values}
+    b_values = {v.value.ref.ref for v in stat_vars_by_ref[_SV_B].slot_values}
     assert a_values == {_VAL_A}, f"{_SV_A} slot_values should carry only {_VAL_A}, got {a_values}"
     assert b_values == {_VAL_B}, f"{_SV_B} slot_values should carry only {_VAL_B}, got {b_values}"

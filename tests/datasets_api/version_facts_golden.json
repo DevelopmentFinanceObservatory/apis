@@ -154,6 +154,13 @@
           "schema_version": 1,
           "spec_id": "spec_golden"
         },
+        "diagnostics": [
+          {
+            "code": "processing_level_undeclared",
+            "message": "A source StatVar lacks a processing-level declaration; the citation credits the source and omits the processing qualifier.",
+            "severity": "info"
+          }
+        ],
         "output_options": null,
         "prepared_at": "2026-10-04T12:00:00Z",
         "schema_version": 1,
@@ -299,6 +306,13 @@
           "schema_version": 1,
           "spec_id": "spec_golden"
         },
+        "diagnostics": [
+          {
+            "code": "processing_level_undeclared",
+            "message": "A source StatVar lacks a processing-level declaration; the citation credits the source and omits the processing qualifier.",
+            "severity": "info"
+          }
+        ],
         "output_options": null,
         "prepared_at": "2026-10-04T12:00:00Z",
         "schema_version": 1,
@@ -699,6 +713,13 @@
           "schema_version": 1,
           "spec_id": "spec_golden"
         },
+        "diagnostics": [
+          {
+            "code": "processing_level_undeclared",
+            "message": "A source StatVar lacks a processing-level declaration; the citation credits the source and omits the processing qualifier.",
+            "severity": "info"
+          }
+        ],
         "output_options": null,
         "prepared_at": "2026-10-04T12:00:00Z",
         "schema_version": 1,
@@ -872,6 +893,13 @@
           "schema_version": 1,
           "spec_id": "spec_golden"
         },
+        "diagnostics": [
+          {
+            "code": "processing_level_undeclared",
+            "message": "A source StatVar lacks a processing-level declaration; the citation credits the source and omits the processing qualifier.",
+            "severity": "info"
+          }
+        ],
         "output_options": null,
         "prepared_at": "2026-10-04T12:00:00Z",
         "schema_version": 1,
@@ -1346,6 +1374,13 @@
           "schema_version": 1,
           "spec_id": "spec_golden"
         },
+        "diagnostics": [
+          {
+            "code": "processing_level_undeclared",
+            "message": "A source StatVar lacks a processing-level declaration; the citation credits the source and omits the processing qualifier.",
+            "severity": "info"
+          }
+        ],
         "output_options": null,
         "prepared_at": "2026-10-04T12:00:00Z",
         "schema_version": 1,
@@ -1486,6 +1521,13 @@
           "schema_version": 1,
           "spec_id": "spec_golden"
         },
+        "diagnostics": [
+          {
+            "code": "processing_level_undeclared",
+            "message": "A source StatVar lacks a processing-level declaration; the citation credits the source and omits the processing qualifier.",
+            "severity": "info"
+          }
+        ],
         "output_options": null,
         "prepared_at": "2026-10-04T12:00:00Z",
         "schema_version": 1,
@@ -1737,6 +1779,13 @@
           "schema_version": 1,
           "spec_id": "spec_golden"
         },
+        "diagnostics": [
+          {
+            "code": "processing_level_undeclared",
+            "message": "A source StatVar lacks a processing-level declaration; the citation credits the source and omits the processing qualifier.",
+            "severity": "info"
+          }
+        ],
         "output_options": null,
         "prepared_at": "2026-10-04T12:00:00Z",
         "schema_version": 1,
@@ -1822,6 +1871,13 @@
           "schema_version": 1,
           "spec_id": "spec_golden"
         },
+        "diagnostics": [
+          {
+            "code": "processing_level_undeclared",
+            "message": "A source StatVar lacks a processing-level declaration; the citation credits the source and omits the processing qualifier.",
+            "severity": "info"
+          }
+        ],
         "output_options": null,
         "prepared_at": "2026-10-04T12:00:00Z",
         "schema_version": 1,
@@ -2155,6 +2211,13 @@
           "schema_version": 1,
           "spec_id": "spec_golden"
         },
+        "diagnostics": [
+          {
+            "code": "processing_level_undeclared",
+            "message": "A source StatVar lacks a processing-level declaration; the citation credits the source and omits the processing qualifier.",
+            "severity": "info"
+          }
+        ],
         "output_options": null,
         "prepared_at": "2026-10-04T12:00:00Z",
         "schema_version": 1,
@@ -2313,6 +2376,13 @@
           "schema_version": 1,
           "spec_id": "spec_golden"
         },
+        "diagnostics": [
+          {
+            "code": "processing_level_undeclared",
+            "message": "A source StatVar lacks a processing-level declaration; the citation credits the source and omits the processing qualifier.",
+            "severity": "info"
+          }
+        ],
         "output_options": null,
         "prepared_at": "2026-10-04T12:00:00Z",
         "schema_version": 1,

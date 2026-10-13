@@ -146,7 +146,7 @@ def test_binding_satisfied_by_every_stat_var_answers_definite_with_all_series():
     region = _resubmit(obs, {"measurementMethod": IdentityBindingValue(ref="GrossDisbursement")})
     assert region.status == "definite", f"expected definite, got {region.status!r}"
     spec = region.specs[0]
-    assert {sv.ref.dcid for sv in spec.resolved.members} == {_SV_A, _SV_B}
+    assert {sv.ref.ref for sv in spec.resolved.members} == {_SV_A, _SV_B}
     assert spec.resolved.observations is not None
     assert {s.stat_var.ref for s in spec.resolved.observations.series} == {_SV_A, _SV_B}
 
@@ -199,4 +199,4 @@ def test_single_stat_var_behavior_unaffected_by_the_per_sv_check():
         options=walk_options(graph, EngineOptions(include_observations=True)),
     )
     assert region.status == "definite", f"expected definite, got {region.status!r}"
-    assert {sv.ref.dcid for sv in region.specs[0].resolved.members} == {_SV_A}
+    assert {sv.ref.ref for sv in region.specs[0].resolved.members} == {_SV_A}

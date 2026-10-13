@@ -184,12 +184,12 @@ def test_relaxation_names_the_dropped_binding_when_a_relaxes():
     assert len(suggestions) == 1
     suggestion = suggestions[0]
     assert suggestion.resolved.entity_groups == {
-        "observationAbout": EntityGroup(dcid=None, label="the test group")
+        "observationAbout": EntityGroup(ref=None, label="the test group")
     }
     assert suggestion.relaxation.axis == "how"
     assert suggestion.relaxation.property_dcid == _PROP_A
     assert suggestion.relaxation.dropped_value_dcids == [_VAL_A1]
-    assert [sv.ref.dcid for sv in suggestion.resolved.members] == [_SV_RELAX_A]
+    assert [sv.ref.ref for sv in suggestion.resolved.members] == [_SV_RELAX_A]
 
 
 def test_relaxation_moves_to_the_other_binding_when_data_moves():
@@ -220,7 +220,7 @@ def test_relaxation_moves_to_the_other_binding_when_data_moves():
     assert suggestion.relaxation.axis == "what"
     assert suggestion.relaxation.property_dcid == _PROP_B
     assert suggestion.relaxation.dropped_value_dcids == [_VAL_B1]
-    assert [sv.ref.dcid for sv in suggestion.resolved.members] == [_SV_RELAX_B]
+    assert [sv.ref.ref for sv in suggestion.resolved.members] == [_SV_RELAX_B]
 
 
 def test_untouched_binding_keeps_the_caller_supplied_provenance():
@@ -248,7 +248,7 @@ def test_untouched_binding_keeps_the_caller_supplied_provenance():
     assert len(suggestions) == 1
     filters = suggestions[0].resolved.trace.slot_filters
     prop_b_filter = next(
-        f for f in filters if f.key.property is not None and f.key.property.dcid == _PROP_B
+        f for f in filters if f.key.property is not None and f.key.property.ref == _PROP_B
     )
     assert prop_b_filter.provenance == "text_recognized"
 
@@ -342,7 +342,7 @@ def test_a_relaxation_settles_its_sets_on_its_own_read(held_at):
     assert suggestion.definition.identity.entities == {"observationAbout": places}
     (where,) = [slot.binding for slot in suggestion.resolved.slots if slot.key.axis == "where"]
     values = [where.value] if where.kind == "value" else where.values
-    assert sorted(value.ref.dcid for value in values) == places
+    assert sorted(value.ref.ref for value in values) == places
 
 
 def test_a_relaxation_over_the_place_bound_is_not_suggested(search_settings):
@@ -610,7 +610,7 @@ def test_relaxation_suggests_what_the_relaxed_first_answer_serves(
     )
     assert warnings == []
     assert not is_role_bearing(shape)
-    assert [[sv.ref.dcid for sv in suggestion.resolved.members] for suggestion in suggestions] == [
+    assert [[sv.ref.ref for sv in suggestion.resolved.members] for suggestion in suggestions] == [
         [_SV_RELAX_A]
     ]
     assert suggestions[0].resolved.unresolved_slots == unresolved
@@ -738,7 +738,7 @@ def test_role_bearing_nearest_real_uses_every_provider_and_second_provider_data(
 
     assert warnings == []
     assert len(suggestions) == 1
-    assert [sv.ref.dcid for sv in suggestions[0].resolved.members] == [_SV_RELAX_A]
+    assert [sv.ref.ref for sv in suggestions[0].resolved.members] == [_SV_RELAX_A]
     assert captured == [{"debtor": [_RECIPIENT], "creditor": [_DONOR, _DONOR_2]}]
 
 
@@ -823,7 +823,7 @@ def test_relaxation_probe_uses_every_named_destination_not_just_the_first(monkey
 
     assert warnings == []
     assert len(suggestions) == 1
-    assert [sv.ref.dcid for sv in suggestions[0].resolved.members] == [_SV_RELAX_A]
+    assert [sv.ref.ref for sv in suggestions[0].resolved.members] == [_SV_RELAX_A]
 
 
 def test_a_role_suggestion_cites_the_sources_its_plan_serves(monkeypatch):
@@ -868,7 +868,7 @@ def test_a_role_suggestion_cites_the_sources_its_plan_serves(monkeypatch):
     (suggestion,) = suggestions
     (read,) = reads.values()
     assert citable_source_ids(facets_served(read.plan)) == [ids]
-    assert [ref.dcid for ref in suggestion.resolved.trace.resolved_sources] == [ids]
+    assert [ref.ref for ref in suggestion.resolved.trace.resolved_sources] == [ids]
     dims = {d.label: d.count for d in suggestion.resolved.coverage.dimensions or []}
     assert dims["sources"] == 1
 
@@ -1010,7 +1010,7 @@ def test_each_relaxation_answers_with_the_family_its_own_walk_settles(monkeypatc
             RoleClassWalks(_walk_graph())
         )
 
-    assert sorted(sv.ref.dcid for s in suggestions for sv in s.resolved.members) == [
+    assert sorted(sv.ref.ref for s in suggestions for sv in s.resolved.members) == [
         _SV_RELAX_A,
         _SV_RELAX_B,
     ]
@@ -1102,7 +1102,7 @@ def test_a_placeless_relaxation_reads_the_presence_of_the_members_its_walk_adds(
         role_class_walks=RoleClassWalks(_walk_graph()),
     )
 
-    assert sorted(sv.ref.dcid for s in suggestions for sv in s.resolved.members) == [
+    assert sorted(sv.ref.ref for s in suggestions for sv in s.resolved.members) == [
         _SV_RELAX_A,
         _SV_RELAX_B,
     ]
@@ -1203,7 +1203,7 @@ def test_every_relaxation_is_walked_in_one_round_and_the_first_suggestions_are_k
     ):
         walked.clear()
         found, walk_starts = suggest(with_data)
-        assert [[sv.ref.dcid for sv in s.resolved.members] for s in found] == [[kept]]
+        assert [[sv.ref.ref for sv in s.resolved.members] for s in found] == [[kept]]
         assert sorted(walked) == [_PROP_A, _PROP_B]
         assert len(walk_starts) == 2
         assert walk_starts[0] == walk_starts[1]
@@ -1259,7 +1259,7 @@ def test_a_place_less_suggestion_reads_its_own_members_default_scope():
     )
     suggestions, _warnings, reads, _presence = suggest(default_scoped, presence)
     (suggestion,) = suggestions
-    assert [sv.ref.dcid for sv in suggestion.resolved.members] == [_SV_RELAX_A]
+    assert [sv.ref.ref for sv in suggestion.resolved.members] == [_SV_RELAX_A]
     plan = reads[suggestion.spec_id].plan
     assert {entity for series in plan.series for _role, entity in series.role_tuple} == {a_land}
 
@@ -1308,7 +1308,7 @@ def test_the_relaxed_queries_read_no_scope_their_requests_presence_holds():
     assert graph.presence_reads == []
     assert graph.listings == 0
     places = {
-        suggestion.resolved.members[0].ref.dcid: {
+        suggestion.resolved.members[0].ref.ref: {
             entity
             for series in reads[suggestion.spec_id].plan.series
             for _role, entity in series.role_tuple

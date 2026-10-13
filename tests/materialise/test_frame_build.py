@@ -14,7 +14,12 @@ from dc_sdmx.results import parse_data_csv
 from materialise import columnar
 from materialise.content_version import mint_version
 from materialise.errors import MaterialisationUsageError, UpstreamResponseError
-from materialise.frame_build import build_frame, build_frame_from_table, declared_roles
+from materialise.frame_build import (
+    build_frame,
+    build_frame_from_table,
+    declared_roles,
+    fold_method_periods,
+)
 
 from ._table_support import table_from_observations
 
@@ -55,6 +60,35 @@ def test_build_frame_empty_rows_is_stable_and_deterministic():
     token_2 = mint_version(frame)
     assert token_1 == token_2
     assert token_1.startswith("cv_")
+
+
+def _method_rows(*cells: tuple[str, str | None]) -> list[dict[str, object]]:
+    return [
+        {**_ROWS[0], "time_period": period, "measurementMethod": method} for period, method in cells
+    ]
+
+
+def test_method_periods_widen_across_frames_and_leave_out_rows_with_no_method():
+    """A group folds each chunk's frame in turn, so a method's bounds span every chunk."""
+    held: dict[str, tuple[str, str]] = {}
+
+    fold_method_periods(
+        held,
+        build_frame(
+            role_keys=_ROLE_KEYS,
+            rows=_method_rows(("2019", None), ("2026", "Estimated"), ("2027", "Estimated")),
+        ),
+    )
+    fold_method_periods(
+        held,
+        build_frame(
+            role_keys=_ROLE_KEYS,
+            rows=_method_rows(("2025", "Estimated"), ("2030", "Modelled")),
+        ),
+    )
+    fold_method_periods(held, build_frame(role_keys=_ROLE_KEYS, rows=()))
+
+    assert held == {"Estimated": ("2025", "2027"), "Modelled": ("2030", "2030")}
 
 
 def test_declared_roles_reads_from_sdmx_data_result_roles_not_role_bindings():

@@ -243,7 +243,7 @@ def test_member_converted_trace_and_content_version_shape():
         graph=_graph(),
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(_graph(), type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(_graph(), parties={}),
         rate_cache=RateTableCache(),
         coverage=coverage,
     )
@@ -282,7 +282,7 @@ def test_content_version_stays_when_only_the_native_unit_dcid_changes():
         graph=_graph(),
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(_graph(), type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(_graph(), parties={}),
         rate_cache=RateTableCache(),
         coverage=coverage_usd,
     )
@@ -315,7 +315,7 @@ def test_content_version_stays_when_only_the_native_unit_dcid_changes():
         graph=_graph(),
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(_graph(), type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(_graph(), parties={}),
         rate_cache=RateTableCache(),
         coverage=coverage_gbp,
     )
@@ -344,7 +344,7 @@ def test_ref_form_spec_carries_no_conversion():
         graph=_graph(),
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(_graph(), type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(_graph(), parties={}),
         coverage=coverage,
     )
 
@@ -393,7 +393,7 @@ def _constant_price_member() -> MaterialisationResult:
         graph=_graph(),
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(_graph(), type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(_graph(), parties={}),
         rate_cache=RateTableCache(),
         coverage=coverage,
     )
@@ -440,7 +440,7 @@ def test_group_with_two_converted_members_carries_one_conversion_entry_naming_bo
         graph=_graph(arcs),
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(_graph(arcs), type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(_graph(arcs), parties={}),
         rate_cache=RateTableCache(),
         coverage=coverage,
     )
@@ -488,7 +488,7 @@ def test_us_dollar_group_members_trace_their_facet_unit_like_the_member_path():
             graph=_graph(arcs),
             materialiser_build="test-build",
             capability_version="v1",
-            enrichment=EnrichmentLookup(_graph(arcs), type_kinds={}, parties={}),
+            enrichment=EnrichmentLookup(_graph(arcs), parties={}),
             rate_cache=RateTableCache(),
             coverage=_coverage_for(entries, unit="USDollar"),
         )
@@ -609,7 +609,7 @@ def _deflator_gap_member(deflator_years: tuple[str, ...]) -> MaterialisationResu
         graph=_graph(),
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(_graph(), type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(_graph(), parties={}),
         rate_cache=RateTableCache(),
         coverage=coverage,
     )
@@ -624,6 +624,12 @@ def test_a_year_missing_its_deflator_is_left_out_and_named_in_the_manifest():
         "warn",
         True,
     )
+    # The trace counts what the conversion left out, which the description's step states.
+    (conversion,) = result.trace.conversion or ()
+    assert conversion["left_out"] == [
+        {"reason": "deflator_missing", "count": 1, "of": "entities"},
+        {"reason": "deflator_missing", "count": 1, "of": "entity_periods"},
+    ]
 
 
 def test_a_base_year_missing_its_deflator_refuses_when_no_row_is_left():
@@ -634,11 +640,12 @@ def test_a_base_year_missing_its_deflator_refuses_when_no_row_is_left():
 
 
 # ---------------------------------------------------------------------------
-# deflator_projected warning: member, group, and preview
+# projected terms: counted in the trace, never a materialisation warning, on member, group,
+# and preview
 # ---------------------------------------------------------------------------
 
 
-def test_deflator_projected_warning_on_member():
+def test_projected_terms_are_counted_in_the_trace_and_raise_no_warning_on_member():
     request = _request(unit=FacetBinding(state="request", request=UnitRequest("EUR", "current")))
     sdmx, _requests = _router_sdmx(
         role_bodies={_BARE_STAT_VAR: _ROLE_HEADER + _role_row(year="2022", value="100")},
@@ -654,7 +661,7 @@ def test_deflator_projected_warning_on_member():
         graph=_graph(),
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(_graph(), type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(_graph(), parties={}),
         rate_cache=RateTableCache(),
         coverage=coverage,
     )
@@ -662,13 +669,11 @@ def test_deflator_projected_warning_on_member():
     (conversion,) = result.trace.conversion
     assert conversion["projected"]["count"] == 1
     assert conversion["projected"]["examples"] == ["CurrencyEUR@2022"]
-    codes = [w["code"] for w in result.warnings]
-    assert "deflator_projected" in codes
-    (warning,) = [w for w in result.warnings if w["code"] == "deflator_projected"]
-    assert "CurrencyEUR@2022" in warning["message"]
+    assert "left_out" not in conversion
+    assert "deflator_projected" not in [w["code"] for w in result.warnings]
 
 
-def test_deflator_projected_warning_on_group():
+def test_projected_terms_are_counted_in_the_trace_and_raise_no_warning_on_group():
     arcs = _base_arcs(bare_stat_vars=(_BARE_STAT_VAR, _BARE_STAT_VAR_B))
     sdmx, _requests = _router_sdmx(
         role_bodies={
@@ -694,18 +699,13 @@ def test_deflator_projected_warning_on_group():
         graph=_graph(arcs),
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(_graph(arcs), type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(_graph(arcs), parties={}),
         rate_cache=RateTableCache(),
         coverage=coverage,
     )
 
-    codes = [w["code"] for w in result.warnings]
-    assert "deflator_projected" in codes
-    (warning,) = [w for w in result.warnings if w["code"] == "deflator_projected"]
-    # Both members project `CurrencyEUR@2022`, so one example
-    # represents 2 rows. The trace and warning remain untruncated.
-    assert "2 row(s)" in warning["message"]
-    assert "(truncated)" not in warning["message"]
+    assert "deflator_projected" not in [w["code"] for w in result.warnings]
+    # Both members project `CurrencyEUR@2022`, so one example represents 2 rows, untruncated.
     (conversion,) = result.trace.conversion
     assert conversion["projected"] == {
         "count": 2,
@@ -714,7 +714,7 @@ def test_deflator_projected_warning_on_group():
     }
 
 
-def test_deflator_projected_warning_on_preview():
+def test_projected_terms_raise_no_warning_on_preview():
     request = _request(unit=FacetBinding(state="request", request=UnitRequest("EUR", "current")))
     sdmx, _requests = _router_sdmx(
         role_bodies={_BARE_STAT_VAR: _ROLE_HEADER + _role_row(year="2022", value="100")},
@@ -730,8 +730,7 @@ def test_deflator_projected_warning_on_preview():
 
     assert result.conversion_record is not None
     assert result.conversion_record.projected_count == 1
-    codes = [w["code"] for w in result.warnings]
-    assert "deflator_projected" in codes
+    assert "deflator_projected" not in [w["code"] for w in result.warnings]
 
 
 # ---------------------------------------------------------------------------
@@ -828,7 +827,7 @@ def _destination_currency_result(
         "graph": _graph(inputs.arcs),
         "materialiser_build": "test-build",
         "capability_version": "v1",
-        "enrichment": EnrichmentLookup(_graph(inputs.arcs), type_kinds={}, parties={}),
+        "enrichment": EnrichmentLookup(_graph(inputs.arcs), parties={}),
         "rate_cache": RateTableCache(),
         "coverage": inputs.coverage,
     }
@@ -874,6 +873,11 @@ def test_destination_currency_omits_the_recipients_no_currency_names(
     assert [w["severity"] for w in omitted] == ["warn"]
     assert omitted[0]["message"].endswith(named)
     assert not any(w["code"] == "coverage_below_scope" for w in result.warnings)
+    if isinstance(result, MaterialisationResult):
+        (conversion,) = result.trace.conversion or ()
+        assert conversion["left_out"] == [
+            {"reason": "currency_unmapped", "count": len(regions), "of": "entities"}
+        ]
 
 
 @pytest.mark.parametrize("entry", _ENTRIES)
@@ -1009,7 +1013,7 @@ def _converted_preview_and_mint(*, native_unit: str = "CurrencyUSD"):
         graph=_graph(),
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(_graph(), type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(_graph(), parties={}),
         rate_cache=RateTableCache(),
         coverage=coverage,
     )
@@ -1123,7 +1127,7 @@ def _current_price_member() -> MaterialisationResult:
         graph=_graph(),
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(_graph(), type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(_graph(), parties={}),
         rate_cache=RateTableCache(),
         coverage=_coverage_for([(_BARE_STAT_VAR, "country/KEN")]),
     )
@@ -1160,7 +1164,7 @@ def test_converted_group_token_recomputes_from_its_frame_bytes_alone():
         graph=_graph(arcs),
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(_graph(arcs), type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(_graph(arcs), parties={}),
         rate_cache=RateTableCache(),
         coverage=_coverage_for(
             [(_BARE_STAT_VAR, "country/KEN"), (_BARE_STAT_VAR_B, "country/KEN")]

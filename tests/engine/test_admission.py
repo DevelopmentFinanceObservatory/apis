@@ -13,6 +13,7 @@ from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.interpret import Recall
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import RegionResult, resolve_variable
 from search.engine.region.phase_intake import _prune_shapes_by_admission
 from search.engine.region.place_set import PlaceNode, PlaceSet, PlaceSetKind
@@ -20,6 +21,7 @@ from search.engine.region.state import ResolveState
 from search.engine.shape import ShapeDraft
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 
@@ -27,6 +29,8 @@ class _FixedBindLLM:
     """Elects shape index 0 unconditionally, with no constraint bindings."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
 
@@ -343,6 +347,11 @@ def test_a_flow_shape_admits_a_set_by_its_members_type_and_records_each_answer()
             ("States/m1", "State"),
             id="group-with-no-node-names-its-first-member",
         ),
+        pytest.param(
+            dataclasses.replace(_set("Untyped", None, "State", "group"), member_type=None),
+            ("Untyped/m1", None),
+            id="group-with-no-node-and-untyped-members-names-its-first-member",
+        ),
     ],
 )
 def test_a_set_neither_of_whose_types_a_role_admits_is_refused(
@@ -382,10 +391,11 @@ def test_a_set_asked_for_its_members_is_admitted_by_their_type_alone(reading, su
     assert [e.text for e in never_admitted] == ([] if survives else [place_set.name])
 
 
-def test_a_group_with_no_node_whose_members_have_no_type_is_refused():
-    """The fixture resolver's euro area is a group with no graph node whose members carry
-    no graph type. No role can judge it, so the refusal names it by its first member, with
-    no type."""
+def test_a_group_with_no_node_is_admitted_by_its_registry_members_type():
+    """The fixture resolver's euro area is a group with no graph node. The membership
+    registry types its members `Country`, so the role admits them, and with no observations
+    the answer is `no_observations`, not a role refusal. The refusal of a group whose members
+    carry no type is `test_a_set_neither_of_whose_types_a_role_admits_is_refused`."""
     graph = FakeGraph()
     result: RegionResult = asyncio.run(
         resolve_variable(
@@ -404,7 +414,5 @@ def test_a_group_with_no_node_whose_members_have_no_type_is_refused():
         )
     )
 
-    assert result.no_data_reason == "entity_role_not_admitted"
-    assert [(e.text, e.dcid, e.graph_type) for e in result.role_not_admitted_entities] == [
-        ("euro area", "country/AUT", None)
-    ]
+    assert result.no_data_reason == "no_observations"
+    assert result.role_not_admitted_entities == ()

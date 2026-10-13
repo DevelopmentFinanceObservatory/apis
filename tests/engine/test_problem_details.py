@@ -621,7 +621,7 @@ class TestResubmitIdentityRefusals:
                                         "key": {
                                             "axis": "how",
                                             "property": {
-                                                "dcid": "activitySource",
+                                                "ref": "activitySource",
                                                 "label": "activity source",
                                             },
                                             "label": "activity source",

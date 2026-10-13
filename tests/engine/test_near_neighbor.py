@@ -15,6 +15,7 @@ import pytest
 
 from search.engine.bind import _UniversalBindOutput
 from search.engine.config import settings
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import (
     NEAR_NEIGHBOR_AMBIGUOUS,
     RETRIEVAL_SCORE_WEAK,
@@ -28,6 +29,7 @@ from search.engine.region import (
     resolve_variable,
 )
 from search.engine.shape import ShapeDraft
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 
@@ -342,6 +344,8 @@ class _FixedBindLLM:
         self._also_plausible = also_plausible
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0,
@@ -438,7 +442,7 @@ def test_place_less_candidates_keep_availability_unknown_but_grade_relevance():
     assert result.status == "candidates"
     assert result.candidate_near_neighbor_spec_ids == frozenset()
     assert result.candidate_scores is not None
-    by_stat_var = {spec.resolved.members[0].ref.dcid: spec for spec in result.specs}
+    by_stat_var = {spec.resolved.members[0].ref.ref: spec for spec in result.specs}
     assert all(spec.resolved.available_at_place is None for spec in by_stat_var.values())
     for spec in by_stat_var.values():
         expected = (
@@ -608,7 +612,7 @@ def test_ranked_shapes_breadth_tiebreak_prefers_broader_shape_at_equal_score():
     codes = [w.code for w in result.warnings]
     assert NEAR_NEIGHBOR_AMBIGUOUS in codes
     fired_svs = {
-        sv.ref.dcid
+        sv.ref.ref
         for spec in result.specs
         if spec.spec_id in result.candidate_near_neighbor_spec_ids
         for sv in spec.resolved.members
@@ -703,7 +707,7 @@ def test_fired_neighbor_survives_five_or_more_also_plausible():
     # At the default cap of 6, five alternates fit. The computed neighbour plus
     # five fillers exceed that budget, so Filler_6 is dropped and truncation is set.
     assert result.status == "candidates"
-    sv_sets = [{sv.ref.dcid for sv in s.resolved.members} for s in result.specs]
+    sv_sets = [{sv.ref.ref for sv in s.resolved.members} for s in result.specs]
     assert {_SV_CHOSEN} in sv_sets
     assert {_SV_NEIGHBOR} in sv_sets
     assert len(result.specs) == settings().max_candidates
@@ -737,7 +741,7 @@ def test_fired_neighbor_survives_response_max_candidates_floor():
     )
     inner = part
     assert isinstance(inner, CandidatesPart)
-    clamped_sv_sets = [{sv.ref.dcid for sv in s.resolved.members} for s in inner.candidates.specs]
+    clamped_sv_sets = [{sv.ref.ref for sv in s.resolved.members} for s in inner.candidates.specs]
     assert clamped_sv_sets == [{_SV_CHOSEN}, {_SV_NEIGHBOR}]
     assert inner.candidates.truncated is True
 
@@ -769,7 +773,7 @@ def test_fired_neighbor_wins_scarce_slot_over_models_own_top_alternate():
     )
     inner = part
     assert isinstance(inner, CandidatesPart)
-    clamped_sv_sets = [{sv.ref.dcid for sv in s.resolved.members} for s in inner.candidates.specs]
+    clamped_sv_sets = [{sv.ref.ref for sv in s.resolved.members} for s in inner.candidates.specs]
     assert clamped_sv_sets == [{_SV_CHOSEN}, {_SV_NEIGHBOR}]
     assert {"Filler_3_Metric"} not in clamped_sv_sets
     assert {"Filler_7_Metric"} not in clamped_sv_sets
@@ -786,7 +790,7 @@ def test_near_neighbor_signal_marks_only_elected_and_fired_candidates():
         also_plausible=[2, 3],
     )
     assert result.status == "candidates"
-    by_stat_var = {spec.resolved.members[0].ref.dcid: spec for spec in result.specs}
+    by_stat_var = {spec.resolved.members[0].ref.ref: spec for spec in result.specs}
     assert result.candidate_near_neighbor_spec_ids == frozenset(
         {
             by_stat_var[_SV_CHOSEN].spec_id,
@@ -834,7 +838,7 @@ class TestNn01MeaslesImmunizationCoverageFlagged:
         assert inner.status == "no_data"
         assert inner.no_data.reason == "no_observations"
         assert inner.no_data.flagged_match is not None
-        sv_dcids = [sv.ref.dcid for sv in inner.no_data.flagged_match.resolved.members]
+        sv_dcids = [sv.ref.ref for sv in inner.no_data.flagged_match.resolved.members]
         assert sv_dcids, "expected the flagged match to resolve to at least one StatVar"
         assert all(ref == "WHO/WHS8_110" or ref.startswith("WHO/mslv_") for ref in sv_dcids), (
             f"expected the flagged match to resolve to a measles immunization coverage "
@@ -894,7 +898,7 @@ class TestNn03ChildMortalityFiresAtGateBoundary:
         assert isinstance(inner, NoDataPart)
         assert inner.no_data.gate == "only_alternate_has_data"
         assert inner.no_data.alternate_match is not None
-        assert [sv.ref.dcid for sv in inner.no_data.alternate_match.resolved.members] == [
+        assert [sv.ref.ref for sv in inner.no_data.alternate_match.resolved.members] == [
             "MortalityRate_Person_Upto4Years_AsFractionOf_Count_BirthEvent_LiveBirth"
         ]
         assert NEAR_NEIGHBOR_AMBIGUOUS not in [w.code for w in inner.warnings]

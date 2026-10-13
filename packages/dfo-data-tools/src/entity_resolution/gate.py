@@ -13,7 +13,11 @@ from resolvekit import EntityRecord, Resolver
 from resolvekit.core.model.result import CandidateSummary
 from resolvekit.packs.org.normalizer import OrgNormalizer
 
+from entity_resolution.types import MatchedAs
+
 _ORG_PACK_ID = "org"
+# The name kind resolvekit gives a record's canonical name in each language.
+_CANONICAL = "canonical"
 _org_normalizer = OrgNormalizer()
 
 
@@ -37,25 +41,37 @@ def _pack_normalize(resolver: Resolver, text: str, candidate: CandidateSummary) 
     return normalizer.normalize(text)
 
 
-def _is_listed_name(normalized_text: str, entity: EntityRecord) -> bool:
-    if normalized_text == entity.canonical_name_norm:
-        return True
+def _listed_as(normalized_text: str, entity: EntityRecord) -> MatchedAs | None:
+    """How `entity` lists the text: its canonical name, then a code, then any other name.
+
+    A text a record holds both as a code and as an alias (`KE` for Kenya) matches as `code`."""
+    if normalized_text == entity.canonical_name_norm or any(
+        normalized_text == name.value_norm and name.kind == _CANONICAL for name in entity.names
+    ):
+        return "name"
+    if any(normalized_text == code.value_norm for code in entity.codes):
+        return "code"
     if any(normalized_text == name.value_norm for name in entity.names):
-        return True
-    return any(normalized_text == code.value_norm for code in entity.codes)
+        return "alias"
+    return None
 
 
 def filter_listed_candidates(
     resolver: Resolver, text: str, candidates: Sequence[CandidateSummary]
-) -> list[CandidateSummary]:
-    """Return named candidates backed by resolver entities, ordered by confidence then ID."""
+) -> list[tuple[CandidateSummary, MatchedAs]]:
+    """Return named candidates backed by resolver entities, each with how its record lists
+    `text`, ordered by confidence then ID."""
     survivors = [
-        candidate
+        (candidate, matched_as)
         for candidate in candidates
         if (entity := resolver.entity(candidate.entity_id)) is not None
-        and _is_listed_name(_pack_normalize(resolver, text, candidate), entity)
+        and (matched_as := _listed_as(_pack_normalize(resolver, text, candidate), entity))
+        is not None
     ]
     return sorted(
         survivors,
-        key=lambda c: (-(c.confidence if c.confidence is not None else 0.0), c.entity_id),
+        key=lambda pair: (
+            -(pair[0].confidence if pair[0].confidence is not None else 0.0),
+            pair[0].entity_id,
+        ),
     )

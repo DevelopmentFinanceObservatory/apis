@@ -270,6 +270,10 @@ WARNING_CODES: frozenset[str] = frozenset(
         # A resubmit's elected members the graph does not hold, left out of the answer
         # (region/codes.py).
         "members_absent_from_graph",
+        # Denominator, artifact-pair and catalogue-index checks (region/codes.py).
+        "denominator_unverified",
+        "artifact_pair_stale",
+        "catalogue_index_drift",
         # Place-as-constraint (PAC) disabled info code (region/codes.py).
         "place_constraint_seam_off",
         "entity_role_disabled",

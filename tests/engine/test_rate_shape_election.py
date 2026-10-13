@@ -10,6 +10,7 @@ import pytest
 
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.config import settings
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.region.phase_rank_bind import (
     _has_strong_rate_intent,
@@ -24,6 +25,7 @@ from search.models import Binding, BindingSet, BindingUnbound, BindingValue
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import make_request, offline_resolve
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, FakeLLM, make_resolver
 
 _KENYA = "country/KEN"
@@ -114,6 +116,8 @@ class _RecordingBindLLM:
         self.prompts: list[str] = []
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         self.prompts.append(prompt)
         return (
@@ -176,7 +180,7 @@ def _run(
 
 def _slots_by_property(result: RegionResult) -> dict[str, Binding]:
     return {
-        slot.key.property.dcid: slot.binding
+        slot.key.property.ref: slot.binding
         for slot in result.spec.resolved.slots
         if slot.key.property is not None
     }
@@ -214,7 +218,7 @@ def test_explicit_rate_filter_precedes_top_k_ranking() -> None:
     assert all(f"raw count {index}" not in llm.prompts[0] for index in range(len(raw_stat_vars)))
     denominator = result.spec.resolved.shape.measurement_denominator
     assert denominator is not None
-    assert denominator.dcid == "Count_Person"
+    assert denominator.ref == "Count_Person"
 
 
 def test_multiple_rate_candidates_remain_for_the_single_model_election() -> None:
@@ -244,11 +248,18 @@ def test_multiple_rate_candidates_remain_for_the_single_model_election() -> None
     assert "raw count" not in llm.prompts[0]
     denominator = result.spec.resolved.shape.measurement_denominator
     assert denominator is not None
-    assert denominator.dcid == "Count_Household"
+    assert denominator.ref == "Count_Household"
 
 
-@pytest.mark.parametrize("variable", ["illustrative count", "illustrative rate count"])
-def test_count_or_ambiguous_rate_count_keeps_raw_count_candidates(variable: str) -> None:
+@pytest.mark.parametrize(
+    ("variable", "status"),
+    [("illustrative count", "definite"), ("illustrative rate count", "no_data")],
+)
+def test_count_or_ambiguous_rate_count_keeps_raw_count_candidates(
+    variable: str, status: str
+) -> None:
+    """Bind is offered the raw count either way. "Rate" names a rate, which an elected raw
+    count does not serve, so that election refuses at materialise."""
     raw_stat_var = "RawCount"
     rate_stat_var = "RatePerPerson"
     llm = _RecordingBindLLM()
@@ -265,10 +276,11 @@ def test_count_or_ambiguous_rate_count_keeps_raw_count_candidates(variable: str)
         with_data=[raw_stat_var],
     )
 
-    assert result.status == "definite"
+    assert result.status == status
     assert len(llm.prompts) == 1
     assert "raw count" in llm.prompts[0]
-    assert result.spec.resolved.shape.measurement_denominator is None
+    answer = result.spec if status == "definite" else result.flagged_match[0]
+    assert answer.resolved.shape.measurement_denominator is None
 
 
 @pytest.mark.parametrize(
@@ -364,18 +376,24 @@ def test_hiv_incidence_retains_raw_menu_and_elects_pinned_sdg_shape() -> None:
 
     assert response.status == "definite"
     assert llm.bind_calls == 1
-    assert [stat_var.ref.dcid for stat_var in response.parts[0].spec.resolved.members] == [
+    assert [stat_var.ref.ref for stat_var in response.parts[0].spec.resolved.members] == [
         "sdg/SH_HIV_INCD"
     ]
 
 
-def test_recorded_measles_menu_retains_raw_count_and_reports_no_observations() -> None:
+def test_recorded_measles_menu_retains_raw_count_and_refuses_its_form() -> None:
+    """Bind elects the measles case count, which serves no rate, so the answer refuses
+    `denominator_not_available`, flagging the one count materialise elected."""
     response = offline_resolve(make_request("measles incidence rate Kenya"), llm=FakeLLM())
 
     assert response.status == "no_data"
     part = response.parts[0]
-    assert part.no_data.reason == "no_observations"
+    assert part.no_data.reason == "denominator_not_available"
     assert part.no_data.elected_count == 1
+    assert part.no_data.flagged_match is not None
+    assert [sv.ref.ref for sv in part.no_data.flagged_match.resolved.members] == [
+        "Count_MedicalConditionIncident_ConditionMeasles"
+    ]
 
 
 def test_recorded_hiv_prevalence_menu_refuses_the_sdg_incidence_shape() -> None:
@@ -406,7 +424,8 @@ def test_joint_slice_deferral_keeps_data_bearing_alternate_when_raw_is_unavailab
     while the elected raw family has a real Female+Urban member that lacks
     observations. Its Materialised carrier is therefore availability=False,
     not the availability=None missing-slice case that may force the
-    single-shape path.
+    single-shape path. The raw count serves no rate, but the nominated rate
+    alternate does, so the quantity gate lets the fan-out offer it.
     """
     variable = "female urban literacy rate"
     raw_female_urban = "RawFemaleUrbanLiteracy"
@@ -416,6 +435,8 @@ def test_joint_slice_deferral_keeps_data_bearing_alternate_when_raw_is_unavailab
 
     class _FullyBoundRawLLM:
         async def generate_structured(self, *, prompt, system, schema):
+            if schema is QuantityOutput:
+                return NO_QUANTITY
             assert schema.__name__ == "_UniversalBindOutput"
             return (
                 _UniversalBindOutput(
@@ -504,7 +525,7 @@ def test_joint_slice_deferral_keeps_data_bearing_alternate_when_raw_is_unavailab
     assert result.status == "no_data"
     assert result.gate == "only_alternate_has_data"
     assert result.alternate_match is not None
-    assert [stat_var.ref.dcid for stat_var in result.alternate_match.resolved.members] == [
+    assert [stat_var.ref.ref for stat_var in result.alternate_match.resolved.members] == [
         data_bearing_neighbor
     ]
 
@@ -551,13 +572,13 @@ def test_single_bind_output_passes_value_set_unbound_and_absent_without_transfer
     assert len(llm.prompts) == 1
     slots = _slots_by_property(result)
     assert isinstance(slots["category"], BindingSet)
-    assert [value.ref.dcid for value in slots["category"].values if value.ref is not None] == [
+    assert [value.ref.ref for value in slots["category"].values if value.ref is not None] == [
         "CategoryA",
         "CategoryB",
     ]
     assert isinstance(slots["gender"], BindingValue)
     assert slots["gender"].value.ref is not None
-    assert slots["gender"].value.ref.dcid == "Female"
+    assert slots["gender"].value.ref.ref == "Female"
     assert isinstance(slots["age"], BindingUnbound)
     assert isinstance(slots["function"], BindingUnbound)
 
@@ -598,7 +619,7 @@ def test_rate_filter_never_transfers_a_cross_member_raw_binding_combination() ->
     assert len(llm.prompts) == 1
     assert "female count" not in llm.prompts[0]
     assert "literate count" not in llm.prompts[0]
-    assert [stat_var.ref.dcid for stat_var in result.spec.resolved.members] == [rate_literate]
+    assert [stat_var.ref.ref for stat_var in result.spec.resolved.members] == [rate_literate]
     assert "gender" not in _slots_by_property(result)
 
 
@@ -826,3 +847,35 @@ def test_replays_female_literacy_fixture_electing_the_normalized_rate() -> None:
     assert part.no_data.reason == "qualifier_not_bound"
     assert [q.text for q in part.no_data.unbound_qualifiers] == ["female"]
     assert part.no_data.elected_count == 1
+
+
+class _UnplacedOverridingLLM(FakeLLM):
+    """The recorded bank, with each bind answer's `unplaced` replaced by `unplaced`."""
+
+    def __init__(self, unplaced: list[str]) -> None:
+        super().__init__()
+        self.unplaced = unplaced
+
+    async def generate_structured(self, *, prompt, system, schema):
+        output, usage = await super().generate_structured(
+            prompt=prompt, system=system, schema=schema
+        )
+        if isinstance(output, _UniversalBindOutput):
+            output = output.model_copy(update={"unplaced": self.unplaced})
+        return output, usage
+
+
+@pytest.mark.parametrize("unplaced", [[], ["female"]], ids=["none-unplaced", "female-unplaced"])
+def test_female_literacy_refuses_on_female_whatever_the_bind_model_leaves_unplaced(
+    unplaced: list[str],
+) -> None:
+    """The recorded female literacy answer elects a literacy rate with no gender slot. The
+    request names Female, a value a shape on the bind menu holds, so the part refuses on
+    "female" once, whether or not the bind model lists it as unplaced."""
+    llm = _UnplacedOverridingLLM(unplaced)
+    response = offline_resolve(make_request("female literacy rate in Bangladesh"), llm=llm)
+
+    assert response.status == "no_data"
+    part = response.parts[0]
+    assert part.no_data.reason == "qualifier_not_bound"
+    assert [q.text for q in part.no_data.unbound_qualifiers] == ["female"]

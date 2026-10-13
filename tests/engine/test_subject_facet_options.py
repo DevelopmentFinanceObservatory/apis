@@ -66,7 +66,7 @@ _GRAPH = FakeGraph(
 
 def _refs(options: list[FacetOptions]) -> dict[str, list[str | None]]:
     return {
-        fo.axis: [o.value.ref.dcid if o.value.ref is not None else None for o in fo.options]
+        fo.axis: [o.value.ref.ref if o.value.ref is not None else None for o in fo.options]
         for fo in options
     }
 

@@ -140,10 +140,10 @@ EXAMPLES = """
     variable_text: debt disbursements from the IMF, 2015 to 2024
     shape: {kind: statvar_schema, population_type: FinancialFlow, measured_property: amount, stat_type: measuredValue, measurement_qualifier: Nominal}
     slots:
-      - key: {axis: how, property: {dcid: financialFlowType, label: financial flow type}, label: financial flow type}
-        binding: {kind: value, value: {ref: {dcid: Disbursement, label: disbursement}, value_kind: enum_value, time_window: null, literal: null}}
-      - key: {axis: how, property: {dcid: financingResource, label: financing resource}, label: financing resource}
-        binding: {kind: value, value: {ref: {dcid: DebtInstrument, label: debt instrument}, value_kind: enum_value, time_window: null, literal: null}}
+      - key: {axis: how, property: {ref: financialFlowType, label: financial flow type}, label: financial flow type}
+        binding: {kind: value, value: {ref: {ref: Disbursement, label: disbursement}, value_kind: enum_value, time_window: null, literal: null}}
+      - key: {axis: how, property: {ref: financingResource, label: financing resource}, label: financing resource}
+        binding: {kind: value, value: {ref: {ref: DebtInstrument, label: debt instrument}, value_kind: enum_value, time_window: null, literal: null}}
       - key: {axis: when, property: null, label: when}
         binding: {kind: value, value: {ref: null, value_kind: time_window, time_window: {start_year: 2015, end_year: 2024}, literal: null}}
     entity_dcids: [country/TZA]
@@ -282,17 +282,39 @@ def test_candidates_expand_their_families(examples: dict[str, Case]):
     [
         (
             "dq-crs-001",
-            {"disposition", "measure", "provenance", "entities", "request", "operations"},
+            {
+                "disposition",
+                "measure",
+                "provenance",
+                "entities",
+                "request",
+                "operations",
+                "materialisation",
+            },
         ),
-        ("dq-crs-031", {"disposition", "measure", "provenance", "entities", "request"}),
-        ("dq-crs-061", {"disposition", "measure", "provenance", "entities", "request", "refusal"}),
-        ("synth-population-kenya", {"disposition", "measure", "entities"}),
+        (
+            "dq-crs-031",
+            {"disposition", "measure", "provenance", "entities", "request", "materialisation"},
+        ),
+        (
+            "dq-crs-061",
+            {
+                "disposition",
+                "measure",
+                "provenance",
+                "entities",
+                "request",
+                "refusal",
+                "materialisation",
+            },
+        ),
+        ("synth-population-kenya", {"disposition", "measure", "entities", "materialisation"}),
         ("co2-emissions-sdg-kenya", {"disposition", "entities", "candidates"}),
         ("ent-04", {"disposition", "refusal"}),
         ("oos-sky-blue", {"disposition", "refusal"}),
         (
             "cur-ids-tza-imf-usd-constant-2024-projected",
-            {"disposition", "measure", "entities", "request", "warnings"},
+            {"disposition", "measure", "entities", "request", "warnings", "materialisation"},
         ),
     ],
 )

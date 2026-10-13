@@ -6,13 +6,14 @@ from dfo_platform.named import named_capped
 from search.engine.envelope import now_ms
 from search.engine.errors import EngineInputError, RoleEntityUnplaced
 from search.engine.place import read_default_presence
-from search.engine.region.place_context import default_scope_stat_vars, place_context
+from search.engine.region.place_context import place_context
 from search.engine.region.place_roles import PlaceRoles
 from search.engine.region.promote_results import _no_data_region
 from search.engine.region.promote_state import _PromoteState
 from search.engine.region.refs import confirm_dcids_present
 from search.engine.region.result import RegionResult
-from search.engine.region.state import identity_served_stat_vars
+from search.engine.region.state import identity_served_stat_vars, presence_stat_vars
+from search.engine.retrieval.bound_values import RoleKeys
 from search.engine.shape import entities_by_role, is_role_bearing
 
 
@@ -130,12 +131,13 @@ def _phase_where_places(state: _PromoteState) -> RegionResult | None:
         )
 
         # A subject shape with no posted place probes the countries where its StatVars,
-        # the resubmit's membership, have data.
+        # the resubmit's membership, have data. The shape holds its family exactly, so the
+        # read covers every member, whatever bindings unbinding leaves.
         presence = state.default_presence = (
             read_default_presence(
                 graph=state.graph,
                 sdmx=state.sdmx,
-                stat_vars=default_scope_stat_vars([state.shape_draft]),
+                stat_vars=presence_stat_vars(state.shape_draft, state.bindings, RoleKeys()),
                 deadline=state.deadline,
             )
             if not standard_where_dcids and not is_role_bearing(state.shape_draft)

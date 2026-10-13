@@ -210,7 +210,7 @@ def test_every_offered_source_is_one_the_mint_serves(two_dataset_world: World) -
         )
         assert warning is None
         offered = [
-            option.value.ref.dcid
+            option.value.ref.ref
             for facet in options
             if facet.axis == "provenance"
             for option in facet.options

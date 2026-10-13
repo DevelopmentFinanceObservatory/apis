@@ -21,6 +21,7 @@ from search.engine.bind import DraftBindingEvidence, SlotBindingDraft, _Universa
 from search.engine.extract import DateRequest
 from search.engine.qualifier_match import QualifierMatch, QualifierReadings
 from search.engine.quantity import NO_REQUIREMENT, quantity_requirement
+from search.engine.quantity_read import QuantityOutput
 from search.engine.reading_coverage import ObservedYears
 from search.engine.region import alternate_guard, resolve_variable
 from search.engine.region.alternate_guard import (
@@ -50,6 +51,7 @@ from search.models import CandidatesPart, Resolution, TimeWindow
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import make_request, offline_resolve, ref_dcid
+from tests.engine._quantity import NO_QUANTITY
 from tests.engine.test_count_units import _MORTALITY, _REPORTED_CASES
 from tests.fixtures import FakeGraph, make_resolver
 
@@ -1721,6 +1723,8 @@ class _SoleOptionLLM:
         self._bindings = list(bindings)
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0,
@@ -1778,7 +1782,7 @@ def _resolve_gdp_of_kenya(
 
 
 def _served(result) -> list[list[str]]:
-    return [[sv.ref.dcid for sv in spec.resolved.members] for spec in result.specs]
+    return [[sv.ref.ref for sv in spec.resolved.members] for spec in result.specs]
 
 
 def test_973_candidate_admission():
@@ -1928,7 +1932,7 @@ _GDP_PROVENANCE = {
 
 def _equivalent_readings(result) -> list[list[list[str]]]:
     return [
-        [[sv.ref.dcid for sv in twin.resolved.members] for twin in twins]
+        [[sv.ref.ref for sv in twin.resolved.members] for twin in twins]
         for spec in result.specs
         if (twins := spec.resolved.equivalent_readings)
     ]

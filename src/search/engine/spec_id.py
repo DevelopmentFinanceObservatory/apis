@@ -87,7 +87,7 @@ def _slot_binding_member(binding: object) -> dict:
             raise ValueError(
                 "BindingValue has no ref; a literal/time-window SlotValue must never reach identity"
             )
-        return {"state": "value", "ref": ref.dcid}
+        return {"state": "value", "ref": ref.ref}
 
     if isinstance(binding, BindingSet):
         refs: list[str] = []
@@ -97,7 +97,7 @@ def _slot_binding_member(binding: object) -> dict:
                     "BindingSet member has no ref; a literal/time-window "
                     "SlotValue must never reach identity"
                 )
-            refs.append(member.ref.dcid)
+            refs.append(member.ref.ref)
         return {"state": "set", "refs": refs}
 
     if isinstance(binding, BindingUnbound):
@@ -124,7 +124,7 @@ def _slots_member(slots: list[Slot]) -> list[dict]:
             )
         result.append(
             {
-                "property": prop.dcid,
+                "property": prop.ref,
                 "binding": _slot_binding_member(slot.binding),
             }
         )
@@ -146,7 +146,7 @@ def _entities_member(entities: list[Entity] | None) -> dict[str, list[str]]:
     """Map role keys to dcids. Empty input gives ``{}``, and the package sorts buckets."""
     result: dict[str, list[str]] = {}
     for entity in entities or []:
-        result.setdefault(entity_role_key(entity), []).append(entity.ref.dcid)
+        result.setdefault(entity_role_key(entity), []).append(entity.ref.ref)
     return result
 
 
@@ -334,14 +334,14 @@ def slots_in_identity_order(slots: list[Slot], identity_doc: BaseIdentity) -> li
     ordered: list[Slot] = []
     for slot in slots:
         binding = slot.binding
-        refs = set_refs.get(slot.key.property.dcid) if slot.key.property is not None else None
+        refs = set_refs.get(slot.key.property.ref) if slot.key.property is not None else None
         if refs is None or not isinstance(binding, BindingSet):
             ordered.append(slot)
             continue
         rank = {dcid: i for i, dcid in enumerate(refs)}
         values = sorted(
             binding.values,
-            key=lambda v: rank.get(v.ref.dcid, len(rank)) if v.ref is not None else len(rank),
+            key=lambda v: rank.get(v.ref.ref, len(rank)) if v.ref is not None else len(rank),
         )
         ordered.append(
             slot.model_copy(update={"binding": binding.model_copy(update={"values": values})})

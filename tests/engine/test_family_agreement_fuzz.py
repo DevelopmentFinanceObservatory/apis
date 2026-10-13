@@ -603,11 +603,11 @@ def _resubmit_disagreements(drawn: _Drawn, monkeypatch, kinds: dict[str, int]):
                 f"resubmit: Search states a digest that is not the digest of the "
                 f"{len(returned_family)} members the mint resolves"
             )
-        served = {stat_var.ref.dcid for stat_var in spec.resolved.members}
+        served = {stat_var.ref.ref for stat_var in spec.resolved.members}
         if not served <= returned_family:
             found.append(f"resubmit: {len(served - returned_family)} members outside the mint's")
         where = next(slot for slot in spec.resolved.slots if slot.key.axis == "where")
-        if not isinstance(where.binding, BindingValue) or where.binding.value.ref.dcid != _KEN:
+        if not isinstance(where.binding, BindingValue) or where.binding.value.ref.ref != _KEN:
             found.append(f"resubmit: the where slot binds {where.binding!r}")
         if named_dataset(get_index(), returned.get("facets", {})) != named_dataset(
             get_index(), drawn.identity.get("facets", {})

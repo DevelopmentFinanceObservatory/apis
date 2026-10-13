@@ -17,6 +17,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from code_index.shared import get_index
 from dc_graph import GraphCapExceededError
 from dc_sdmx import SdmxCapExceededError, SdmxObservation
 from materialise.place_scope import is_worldwide
@@ -341,6 +342,7 @@ def _bulk_scope_series(
     observations = assemble_scope_bulk(
         reads,
         label_source=graph,
+        index=get_index(),
         member_constraints=member_constraints or {},
         target_currency_ref=conversion.target_unit_ref if conversion is not None else None,
     )

@@ -23,6 +23,7 @@ from search.engine.clients.sdmx import LiveSdmxClient
 from search.engine.config import settings
 from search.engine.errors import GraphInfraError
 from search.engine.extract import DateRequest
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.region.codes import (
     OBSERVATIONS_BULK_FETCH_FAILED,
@@ -53,6 +54,7 @@ from tests.engine._harness import (
     sdmx_double,
     unit_check_planned,
 )
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 from tests.materialise._rate_table_support import (
     CONVERTIBLE_STAT_VAR_ARCS,
@@ -610,6 +612,8 @@ _EARTH_CHILDREN = {"Earth": {"Country": _COUNTRIES}}
 
 class _FixedBindLLM:
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0, bindings=[], also_plausible=None, ask=None
@@ -707,8 +711,9 @@ def test_bound_unit_display_read_failure_answers_from_the_scope_probe():
 # --- (9) bound (named-region) path stays byte-identical -------------------
 
 
-def test_named_region_query_never_calls_subject_observations():
+def test_named_region_query_never_calls_subject_observations(declare_regions):
     _region_countries = _COUNTRIES
+    declare_regions({"blocland": _region_countries})
     obs = {
         f"{_SV}|{c}": [
             {"earliestDate": "2020", "latestDate": "2020", "obsCount": 10, "facetId": "F1"}
@@ -867,6 +872,8 @@ class _CandidatesUnitBindLLM:
     """Elect the first shape and mark the second plausible."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0, bindings=[], also_plausible=[1], ask=None

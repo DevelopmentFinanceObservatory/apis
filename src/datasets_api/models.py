@@ -11,6 +11,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from dfo_platform.wire import ResponseModel
+
 
 def _require_schema_version_int(value: object) -> object:
     """Rejects booleans and floats before Pydantic coerces them to `1`.
@@ -61,7 +63,7 @@ class RegisterRequest(BaseModel):
     definition: CanonicalDefinition = Field(description="the canonical definition to register")
 
 
-class DefinitionResponse(BaseModel):
+class DefinitionResponse(ResponseModel):
     """The register door's response: the verified
     identity, echoed back whole."""
 

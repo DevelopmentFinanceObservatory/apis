@@ -83,7 +83,7 @@ def test_collapse_same_shape_single_slot_merge_counts_the_admitted_union_and_sta
     assert len(effective) == 1
     assert residual == []
     merged = effective[0].spec
-    assert {sv.ref.dcid for sv in merged.resolved.members} == {"sv_a", "sv_b"}
+    assert {sv.ref.ref for sv in merged.resolved.members} == {"sv_a", "sv_b"}
     assert merged.resolved.shape.member_count == 5
     assert merged.resolved.shape.member_digest is None
     assert merged.resolved.stat_vars.served_count is None

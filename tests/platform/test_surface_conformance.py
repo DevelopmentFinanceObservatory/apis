@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 from datasets_api.codes import SHARED_PLATFORM_CODES as _DATASETS_SHARED_PLATFORM_CODES
 from dfo_apis.app import all_surfaces
 from dfo_platform.app import Surface, create_app
-from dfo_platform.codes import PLATFORM_CODE_CATALOGUE, merge_catalogues
+from dfo_platform.codes import PLATFORM_CODE_CATALOGUE, bound_registry_endpoint, merge_catalogues
 from dfo_platform.problem import ProblemDetails, ProblemSpec
 from presentation_api.codes import (
     PRESENTATION_SERVED_PLATFORM_CODES as _PRESENTATION_SHARED_PLATFORM_CODES,
@@ -261,12 +261,27 @@ class _NeverDeclaredError(Exception):
     """
 
 
+def _classify_on_some_endpoint(surface: Surface, exemplar: BaseException) -> ProblemSpec | None:
+    """`surface.classify(exemplar)` with no registry endpoint bound, or else under the first of
+    the surface's endpoints whose registry status for the code resolves. The app binds the
+    endpoint of the route that raised (`codes.bound_registry_endpoint`), and a code whose
+    status differs by endpoint resolves only under one; which routes raise which type is each
+    surface's own sweep, as `tests/datasets_api/test_refusal_registry.py` is for Datasets."""
+    for endpoint in (None, *sorted(set(surface.registry_endpoints.values()))):
+        with bound_registry_endpoint(endpoint):
+            try:
+                return surface.classify(exemplar)
+            except LookupError:
+                continue
+    raise AssertionError(f"{exemplar!r} has a registered status on none of its surface's endpoints")
+
+
 @pytest.mark.parametrize("surface", _SURFACES, ids=_SURFACE_IDS)
 def test_classify_conforms_to_the_registered_catalogue_for_every_exemplar(surface: Surface):
     """Exemplars classify to `None` or to codes declared by their surface."""
     registry = _registered_codes_for(surface)
     for exemplar in (*surface.exception_exemplars, _NeverDeclaredError("never declared")):
-        spec = surface.classify(exemplar)
+        spec = _classify_on_some_endpoint(surface, exemplar)
         assert spec is None or spec.code in registry
 
 

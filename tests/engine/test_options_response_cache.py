@@ -15,8 +15,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from graph_generation import FakeGeneration, GenerationStamp
+from materialise.facets import bound_variable_breadth
+from materialise.graph import Facet as MaterialiseFacet
 from materialise.graph import GraphReadError
 from search.engine import config
+from search.engine.degraded_reads import note_degraded_read
+from search.engine.options import surface
 from search.engine.options.options_response_cache import (
     ComputedOptions,
     OptionsResponseCache,
@@ -158,8 +162,9 @@ def _body(req: OptionsRequest) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _peers_target() -> ResolvedOptionsTarget:
+def _peers_target(*, identity: BaseIdentity | None = None) -> ResolvedOptionsTarget:
     return ResolvedOptionsTarget(
+        identity=identity if identity is not None else _identity(),
         population=OptionsPopulation(
             stat_var_dcids=(_LIFE_EXPECTANCY_SV,),
             declared_roles=("observationAbout",),
@@ -199,6 +204,33 @@ class TestCacheKeyMovesWithTheCoverageStamp:
         )
 
         assert key_first == key_second
+
+
+class TestCacheKeyMovesWithTheOpenedRole:
+    def test_each_opened_role_keys_its_own_entry(self):
+        """The key reads the identity the population was elected from, so one posted request
+        keys apart under each flow axis the door opened."""
+        req = _peers_request(_KENYA_DCID)
+        coverage = empty_coverage_snapshot()
+        keys = {
+            options_response_cache_key(
+                req,
+                _peers_target(
+                    identity=BaseIdentity(
+                        shape=_LIFE_EXPECTANCY_SHAPE,
+                        slots=[],
+                        entities={},
+                        open_roles=open_roles,
+                        requested_window=IdentityWindowAll(),
+                    )
+                ),
+                build_commit="commit-x",
+                coverage=coverage,
+            )
+            for open_roles in (None, ["origin"], ["destination"])
+        }
+
+        assert len(keys) == 3
 
 
 # ---------------------------------------------------------------------------
@@ -270,8 +302,8 @@ class TestPeersVsChildrenSharing:
         # Child candidates depend on the anchor, so Ghana misses Kenya's entry.
         assert graph.child_places_batch_calls == calls_after_kenya + 1
 
-        kenya_dcids = {i["value"]["ref"]["dcid"] for i in resp_kenya.json()["options"]["items"]}
-        ghana_dcids = {i["value"]["ref"]["dcid"] for i in resp_ghana.json()["options"]["items"]}
+        kenya_dcids = {i["value"]["ref"]["ref"] for i in resp_kenya.json()["options"]["items"]}
+        ghana_dcids = {i["value"]["ref"]["ref"] for i in resp_ghana.json()["options"]["items"]}
         assert kenya_dcids == {_KENYA_CHILD_DCID}
         assert ghana_dcids == {_GHANA_CHILD_DCID}
 
@@ -305,6 +337,68 @@ class TestDegradedResultsAreNeverCached:
         # A stored (non-warning) result would have skipped this probe
         # entirely on the second call; a degraded one re-probes every time.
         assert materialise_graph.calls["observation_facets_batch_many"] > probes_after_first
+
+    @pytest.mark.parametrize(
+        ("profiled", "computes"),
+        [
+            pytest.param({"sv": {"fUSD": 197, "fEUR": 25}}, 1, id="breadth-read-is-cached"),
+            pytest.param({}, 2, id="fallback-election-is-not-cached"),
+        ],
+    )
+    def test_a_place_tie_left_to_the_unit_is_not_cached(self, profiled, computes):
+        """At France the euro and dollar facets tie on every key before whole-variable
+        breadth. When the breadth is not read, Search leaves the tie to the unit's name and
+        notes a degraded read, so the option's coverage is not stored for the generation."""
+        eur = MaterialiseFacet(
+            facet_id="fEUR",
+            provenance_id="P",
+            unit="CurrencyEUR",
+            obs_count=1,
+            earliest_date="2020",
+            latest_date="2020",
+        )
+        usd = MaterialiseFacet(
+            facet_id="fUSD",
+            provenance_id="P",
+            unit="CurrencyUSD",
+            obs_count=1,
+            earliest_date="2020",
+            latest_date="2020",
+        )
+        calls: list[float] = []
+
+        class _Labels:
+            def node_labels_batch(self, dcids):
+                return {dcid: dcid for dcid in dcids}
+
+        def compute(deadline: float) -> ComputedOptions:
+            calls.append(deadline)
+            items = surface._build_observation_about_options(
+                _Labels(),
+                ["country/FRA"],
+                include_coverage=True,
+                facets_batch={"sv": {"country/FRA": [eur, usd]}},
+                sv_dcids=["sv"],
+                facet_bindings={},
+                elected_units=None,
+                date_request=None,
+                deadline=deadline,
+            )
+            return ComputedOptions(options=OptionsSet(items=items, truncated=False), warnings=())
+
+        async def scenario():
+            cache = OptionsResponseCache(enabled=True, max_entries=10)
+            deadline = time.monotonic() + 5
+            for _ in range(2):
+                with bound_variable_breadth(
+                    lambda stat_vars, *, deadline: profiled,
+                    refuse_unread=False,
+                    on_fallback=lambda: note_degraded_read("whole-variable breadth"),
+                ):
+                    await cache.get_or_compute("k", compute, deadline=deadline)
+
+        asyncio.run(scenario())
+        assert len(calls) == computes
 
 
 # ---------------------------------------------------------------------------

@@ -242,6 +242,7 @@ def layer2_key(
     declared_default_trigger_words: Sequence[Mapping[str, str]],
     declared_default_slots_named: Sequence[str],
     scope: dict,
+    source_codes: Sequence[str | None] = (),
     separate: Sequence[bool] = (),
 ) -> str:
     """Key the effective extraction and raw-text signals over the shared scope.
@@ -254,7 +255,9 @@ def layer2_key(
     `variables`: each part echoes its own, and their phrases reach its bind. `sources` runs
     parallel to `variables` too: the source mentions each part compiles, in query order, as
     the part echoes them, so "aid to Kenya" and "aid to Kenya excluding the CRS" keep
-    separate entries.
+    separate entries. `source_codes` runs parallel to `variables` when given and holds the
+    series code the query writes for each (`source_code.scan_source_codes`). The key states
+    them and adds nothing when none is written.
     `separate` runs parallel to `variables` when given and marks each variable compared
     with the others, which never folds (`same_shape.fold_key`). The key states the marked
     positions and adds nothing when none is marked.
@@ -285,6 +288,8 @@ def layer2_key(
         "declared_default_trigger_words": [dict(word) for word in declared_default_trigger_words],
         "declared_default_slots_named": list(declared_default_slots_named),
     }
+    if any(code is not None for code in source_codes):
+        document["source_codes"] = list(source_codes)
     if separate_positions := [i for i, marked in enumerate(separate) if marked]:
         document["separate"] = separate_positions
     return _digest("l2", document)

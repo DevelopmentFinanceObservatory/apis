@@ -5,8 +5,6 @@ The fixture has three members; their values sum to 22 under the family StatVar.
 
 from __future__ import annotations
 
-from typing import cast
-
 import dfo_frame_grammar
 import pytest
 
@@ -14,7 +12,7 @@ from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
 from code_index.types import StatVarRow
 from datasets_api.mint_models import GroupbyOptions, MintOptions
 from datasets_api.render import (
-    StatVarsSummedWarning,
+    _RenderReads,
     _reshape,
 )
 from materialise.content_version import mint_version
@@ -137,7 +135,7 @@ _BY_NO_CRS_AXIS = MintOptions(groupby=GroupbyOptions(by=["financingProvider"], o
 
 
 def _enrichment() -> EnrichmentLookup:
-    return EnrichmentLookup(FakeMintGraphReader(), type_kinds={}, parties={})
+    return EnrichmentLookup(FakeMintGraphReader(), parties={})
 
 
 class TestFullCollapseMultiMember:
@@ -146,7 +144,7 @@ class TestFullCollapseMultiMember:
             _TABLE,
             options=_BY_NO_CRS_AXIS,
             entity_columns=_ENTITY_COLUMNS,
-            enrichment=_enrichment(),
+            reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
             code_index=_INDEX,
             resolved_stat_var_refs=(),
             provenance_refs=("p1",),
@@ -163,12 +161,12 @@ class TestFullCollapseMultiMember:
         assert {row[stat_var_pos] for row in result.table.rows} == {"dcid:spec_990600"}
         assert sum(row[value_pos] for row in result.table.rows) == 22.0  # 10 + 5 + 7
 
-    def test_contributing_count_and_stat_vars_summed_warning(self):
+    def test_contributing_count(self):
         result = _reshape(
             _TABLE,
             options=_BY_NO_CRS_AXIS,
             entity_columns=_ENTITY_COLUMNS,
-            enrichment=_enrichment(),
+            reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
             code_index=_INDEX,
             resolved_stat_var_refs=(),
             provenance_refs=("p1",),
@@ -178,18 +176,13 @@ class TestFullCollapseMultiMember:
 
         assert result.collapse is not None
         assert result.collapse.contributing_member_count == 3
-        assert len(result.warnings) == 1
-        warning = cast(StatVarsSummedWarning, result.warnings[0])
-        assert warning["code"] == "stat_vars_summed"
-        assert warning["contributing_member_count"] == 3
-        assert warning["stat_var_ref"] == "dcid:spec_990600"
 
     def test_the_collapsed_frame_is_grammar_valid_and_carries_the_family_ref(self):
         result = _reshape(
             _TABLE,
             options=_BY_NO_CRS_AXIS,
             entity_columns=_ENTITY_COLUMNS,
-            enrichment=_enrichment(),
+            reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
             code_index=_INDEX,
             resolved_stat_var_refs=(),
             provenance_refs=("p1",),
@@ -208,7 +201,7 @@ class TestFullCollapseMultiMember:
             _TABLE,
             options=_BY_NO_CRS_AXIS,
             entity_columns=_ENTITY_COLUMNS,
-            enrichment=_enrichment(),
+            reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
             code_index=_INDEX,
             resolved_stat_var_refs=(),
             provenance_refs=("p1",),
@@ -225,7 +218,7 @@ class TestFullCollapseMultiMember:
                 _TABLE,
                 options=_BY_NO_CRS_AXIS,
                 entity_columns=_ENTITY_COLUMNS,
-                enrichment=_enrichment(),
+                reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
                 code_index=_INDEX,
                 resolved_stat_var_refs=(),
                 provenance_refs=("p1",),
@@ -244,7 +237,7 @@ class TestFullCollapseSoleContributor:
             self._SOLE_TABLE,
             options=_BY_NO_CRS_AXIS,
             entity_columns=_ENTITY_COLUMNS,
-            enrichment=_enrichment(),
+            reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
             code_index=_INDEX,
             resolved_stat_var_refs=(),
             provenance_refs=("p1",),
@@ -262,7 +255,7 @@ class TestFullCollapseSoleContributor:
             self._SOLE_TABLE,
             options=_BY_NO_CRS_AXIS,
             entity_columns=_ENTITY_COLUMNS,
-            enrichment=_enrichment(),
+            reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
             code_index=_INDEX,
             resolved_stat_var_refs=(),
             provenance_refs=("p1",),
@@ -273,7 +266,7 @@ class TestFullCollapseSoleContributor:
 
 
 class TestFullCollapseEmpty:
-    """An empty full collapse emits no `stat_vars_summed` warning.
+    """An empty full collapse counts no contributor and names the family.
 
     Pass a resolved StatVar absent from the table to activate full-collapse decoding with
     zero contributing members.
@@ -281,12 +274,12 @@ class TestFullCollapseEmpty:
 
     _NO_ROWS = Table(columns=_TABLE_COLUMNS, rows=())
 
-    def test_an_empty_full_collapse_emits_no_stat_vars_summed(self):
+    def test_an_empty_full_collapse_names_the_family(self):
         result = _reshape(
             self._NO_ROWS,
             options=_BY_NO_CRS_AXIS,
             entity_columns=_ENTITY_COLUMNS,
-            enrichment=_enrichment(),
+            reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
             code_index=_INDEX,
             resolved_stat_var_refs=("dcid:SV_A",),
             provenance_refs=("p1",),
@@ -297,7 +290,6 @@ class TestFullCollapseEmpty:
         assert result.collapse is not None
         assert result.collapse.contributing_member_count == 0
         assert result.collapse.stat_var_ref == "dcid:spec_990600"
-        assert result.warnings == ()
 
     def test_an_empty_full_collapse_with_no_subject_id_still_refuses(self):
         # Zero contributors require the family ref to stand in for `stat_var`.
@@ -306,7 +298,7 @@ class TestFullCollapseEmpty:
                 self._NO_ROWS,
                 options=_BY_NO_CRS_AXIS,
                 entity_columns=_ENTITY_COLUMNS,
-                enrichment=_enrichment(),
+                reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
                 code_index=_INDEX,
                 resolved_stat_var_refs=("dcid:SV_A",),
                 provenance_refs=("p1",),

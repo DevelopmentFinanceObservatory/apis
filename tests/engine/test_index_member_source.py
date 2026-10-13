@@ -19,7 +19,6 @@ from code_index.shared import get_index, get_measure_index
 from datasets_api.adapter import resolve_definition_members
 from scripts.export_code_index import content_hash
 from search.engine.bind import SlotBindingDraft
-from search.engine.config import settings
 from search.engine.options.population import options_population
 from search.engine.options.population_memo import _population_key
 from search.engine.region.availability import _are_availability_siblings
@@ -69,9 +68,7 @@ from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._index_slots import index_slot_keys, query_for
 from tests.fixtures import FakeGraph
 
-# A real CRS five-tuple this deployment's index carries hundreds of members
-# for -- far more than settings().max_confirm_candidates (40) would ever let a
-# single recall pass confirm.
+# A real CRS five-tuple this deployment's index carries hundreds of members for.
 _POP_TYPE = "FinancialFlow"
 _MEAS_PROP = "grantEquivalent"
 _STAT_TYPE = "measuredValue"
@@ -180,11 +177,11 @@ def test_a_precise_small_posted_set_stays_on_the_recall_path():
     assert isinstance(member_facts[one_posted_sv], ArcsMemberFacts)
 
 
-def test_a_precise_posted_set_at_or_above_the_cap_still_stays_on_the_recall_path():
-    """A complete posted set remains exact at or above `max_confirm_candidates`."""
+def test_a_large_precise_posted_set_still_stays_on_the_recall_path():
+    """A complete posted set of 40 members, short of the whole population, remains exact."""
     population = _crs_population()
-    assert len(population) > settings().max_confirm_candidates
-    posted_set = {key: {} for key in population[: settings().max_confirm_candidates]}
+    assert len(population) > 40
+    posted_set = {key: {} for key in population[:40]}
     shape = _crs_shape("test_large_precise_posted_set", posted_set, complete=True)
 
     member_facts, index_sourced = shape_member_facts(shape, query_for(shape, {}))

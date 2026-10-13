@@ -33,7 +33,7 @@ def _scoped_answer(kind: str, *, warnings: list[Warning] | None = None):
     fields = {
         "query_echo": make_query_echo(query, extract_skipped=False),
         "diagnostics": make_diagnostics("test-build", warnings or [], {}, 5),
-        "scope": Scope(place=GraphRef(dcid="country/KEN", label="Kenya")),
+        "scope": Scope(place=GraphRef(ref="country/KEN", label="Kenya")),
     }
     if kind == "catalogue":
         return CatalogueAnswer(**fields)

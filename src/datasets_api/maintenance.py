@@ -31,17 +31,56 @@ writes one `datasets_frame1_backfill_failed` line per version it cannot convert 
 `datasets_frame1_backfilled` line with the converted and failed counts, exits 1 when any version
 failed, and reads the settings `sweep` reads.
 
-`settle` runs on every deploy, after the services move to the new image. The previous image can
-still write a pin reference holding the raw shared secret between the migration job and the
-service move, so `settle` repeats the statements of migration 0026 that turn one into the
-secret's label (`SETTLE_STATEMENTS`). Each touches only rows in the old shape, so a repeat
-run changes nothing. It runs them in one transaction, then writes one `datasets_settled` line
-counting the pin references still holding a raw secret and the version rows holding no facts.
-Migration 0030's insert trigger fills the facts of a version row the previous image writes with
-only `immutable_body`, so that count is above 0 only for a row whose body holds neither
-`prepared_at` nor `input_content_versions`, which `settle` leaves as it is. When either count is
-above 0 the line has `ERROR` severity and the task exits 1. It reads only the runtime database
-settings.
+`settle` runs on every deploy, after the services move to the new image. Between the migration
+job and the service move the previous image can still write a pin reference holding the raw
+shared secret, so `settle` repeats the statements of migration 0026 that turn the secret into
+its label (`SETTLE_STATEMENTS`). Each touches only rows in the old shape, so a repeat run
+changes nothing. It runs them in one transaction, then writes one `datasets_settled` line
+counting the pin references still holding a raw secret, the version rows holding no facts, and
+the version rows whose output profile, in the column or the body, still names the party-kind
+enrichment `kind`. Insert triggers repair the previous image's version rows, also for a request
+an old revision finishes after this task: migration 0030's fills the facts of a row written with
+only `immutable_body`, and migration 0033's renames the enrichment `party_kind`. The facts count
+is therefore above 0 only for a row whose body holds neither `prepared_at` nor
+`input_content_versions`, which `settle` leaves as it is, and the enrichment count only when
+0033's trigger is missing. When any count is above 0 the line has `ERROR` severity and the task
+exits 1. It reads only the runtime database settings.
+
+`backfill-descriptions` runs on every deploy, after the services move and the code index they
+run is recorded. It first fills the `continuations` of every published frame's version row
+holding none, recorded before versions stored them or by the previous image until the services
+move, oldest first, as a publish derives them (`run_backfill_continuations`), with one
+`datasets_continuations_backfill_failed` `ERROR` line per version it cannot fill, tried again on
+the next run, and one `datasets_continuations_backfilled` line counting the versions filled,
+failed and left for the next run. It then writes a description record
+with basis `backfill` for every dataset and frame version row that holds none: those made before
+records existed, those the previous image writes until the services move, and those whose
+stored record, of this image's schema version or an earlier one, fails validation, which it
+replaces (`description_store.insert_description`). Collection versions are skipped, since a
+record names only a `spec_` or `ops_` version. Versions recorded last come first, so the previous image's versions, whose artifacts every tier still holds, are
+described before older ones that may fail for want of them. It reads each
+version's stored facts, its series statistics artifact while a tier holds it, else its body's
+inline statistics, an `ops_` version's stored frame, and the image's code index
+(`code_index.shared.get_index`). Status counts come from the statistics through the fold a mint
+uses, and a version's period count is unknown without a known grain. An `ops_` version whose
+frame no tier holds gets a record whose series facts are unknown. Each record is inserted with
+`ON CONFLICT DO NOTHING`, so a valid record a mint or publish wrote first stands and a second
+run writes nothing. Versions that collapse no other come first, so a multi-contributor collapse is
+derived from its base version's record (`backfill_record`), and from none when its base holds
+no record. A stored warning code whose fact cannot be stated, a `withheld_by_registry` or
+`un_system_unavailable` message naming nothing in a format its producer wrote or a choice,
+conversion gap or projection the trace holds no step for, is left out of the record, which
+serves its steps as a gap when the code was a step, with one
+`datasets_description_backfill_warning_unstated` line naming the version and code. A version it
+cannot backfill is skipped with one `ERROR` line `datasets_description_backfill_failed` naming
+it, holding the traceback and saying whether the failure was transient, and is tried again on
+the next run (`run_backfill_descriptions` gives the rule). It starts no version once
+`BACKFILL_DESCRIPTIONS_BUDGET` has passed, so the run ends before the Job's timeout and the next
+run carries on from the versions still without a record. The run ends with one
+`datasets_descriptions_backfilled` line counting the versions written, failed permanently,
+failed transiently and left for the next run. It exits 1 when the store is unreachable, or when
+it read no version and at least one failed for a cause a retry clears (`_clears_on_retry`).
+It reads the settings `sweep` reads.
 
 Each task builds only what it uses from the environment the Job sets, so none reads a setting
 of the API surfaces, such as `DFO_PUBLIC_SITE_URL`.
@@ -50,27 +89,55 @@ of the API surfaces, such as `DFO_PUBLIC_SITE_URL`.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
-from collections.abc import Callable, Sequence
-from datetime import timedelta
+import traceback
+from collections.abc import Callable, Mapping, Sequence
+from datetime import datetime, timedelta
+from functools import partial
 from typing import cast
 
+import pg8000.exceptions
+import pyarrow as pa
+import pyarrow.parquet as pq
+from google.api_core.exceptions import RetryError, ServerError, TooManyRequests
+from google.auth.exceptions import TransportError
 from pydantic import Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from artifact_publication.jobs import emit
 from artifact_store import (
+    ArtifactInventoryError,
+    ArtifactNotFoundError,
     ArtifactStore,
     ArtifactStoreError,
     LiveArtifactInventory,
     LiveArtifactStore,
     Tier,
 )
+from code_index.query import CodeIndex
+from code_index.shared import get_index
 from dataset_store import DatasetStore, Transaction
+from dataset_store.connection import default_is_broken
+from dataset_store.errors import PoolTimeoutError
 from dataset_store.provider import close_shared_pool, shared_pool
-from dataset_store.snapshot import WORKING_TIER_RETENTION
+from dataset_store.snapshot import (
+    WORKING_TIER_RETENTION,
+    FrameLineage,
+    LiveSnapshotReader,
+    StoredArtifactLocation,
+    StoredVersion,
+    select_servable_locations,
+)
 from dataset_store.store import LiveDatasetStore
 from datasets_api.config import DEFAULT_OPERATION_DEADLINE_SECONDS
+from datasets_api.description_record import backfill_record, computed_inputs
+from datasets_api.description_store import (
+    insert_description,
+    read_description,
+    validated_record,
+)
+from datasets_api.lineage_continuations import derived_continuations, lineage_inputs
 from datasets_api.operation_store import (
     Clock,
     delete_terminal_operations,
@@ -78,18 +145,32 @@ from datasets_api.operation_store import (
     utc_now,
 )
 from datasets_api.reconciliation import sweep
-from datasets_api.render import CANONICAL_FRAME_RENDERING, render_and_store_canonical_frame
+from datasets_api.render import (
+    CANONICAL_FRAME_RENDERING,
+    is_statistics_rendering,
+    render_and_store_canonical_frame,
+    stored_frame_location,
+)
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.version_store import LiveVersionRecordWriter, rendering_key
 from datasets_api.versions import ArtifactRecord
+from description.facts import SCHEMA_VERSION, DescriptionRecord
+from dfo_platform.store_errors import extract_sqlstate, store_failure_is_permanent
+from materialise.continued_series import ContinuedSeries, continued_series_of_trace
 from materialise.formats import (
     FRAME1_MEDIA_TYPE,
     Frame,
     frame_entity_columns,
+    read_canonical_frame,
     read_frame1_table,
     write_frame1,
 )
 from materialise.frame_build import build_frame, unit_cell_for_rebuild
+from materialise.statistics import (
+    SERIES_STATISTICS_SCHEMA,
+    SeriesFigures,
+    SeriesStatisticsSink,
+)
 
 
 class MaintenanceSettings(BaseSettings):
@@ -223,14 +304,14 @@ SET principal = 'secret-sha256:' || left(encode(sha256(convert_to(principal, 'UT
 WHERE reference_kind = 'pin'
   AND NOT starts_with(principal, 'secret-sha256:')""",
 )
-"""The three statements of `0026_artifact_reference_principal_label.sql`, verbatim, which
-explains them."""
+"""The three statements of `0026_artifact_reference_principal_label.sql`, verbatim. The
+migration explains them."""
 
 
 def run_settle(*, store: DatasetStore) -> int:
     """Run `SETTLE_STATEMENTS` in one transaction, emit the pin references holding a raw
-    secret and the version rows holding no facts, at `ERROR` when either exists, and return
-    their number."""
+    secret, the version rows holding no facts and the version rows whose output profile still
+    names the enrichment `kind`, at `ERROR` when any exists, and return their number."""
     with store.transaction() as tx:
         for statement in SETTLE_STATEMENTS:
             tx.execute(statement)
@@ -244,12 +325,20 @@ def run_settle(*, store: DatasetStore) -> int:
             "SELECT count(*) AS count FROM datasets.artifact_reference "
             "WHERE reference_kind = 'pin' AND NOT starts_with(principal, 'secret-sha256:')",
         )
-    unsettled = factless + raw
+        legacy_party_kind = _count(
+            tx,
+            "SELECT count(*) AS count FROM datasets.version_record "
+            "WHERE output_profile -> 'enrichments' @> '[{\"field\": \"kind\"}]' "
+            "OR immutable_body -> 'output_profile' -> 'enrichments' "
+            '@> \'[{"field": "kind"}]\'',
+        )
+    unsettled = factless + raw + legacy_party_kind
     emit(
         "datasets_settled",
         severity="ERROR" if unsettled else "INFO",
         factless_versions=factless,
         raw_pin_principals=raw,
+        legacy_party_kind_profiles=legacy_party_kind,
     )
     return unsettled
 
@@ -372,6 +461,370 @@ def _backfill_frame1() -> int:
     return _run_over_artifacts("backfill-frame1", run_backfill_frame1)
 
 
+# The datasets maintenance Job's timeout is 3600 seconds. A backfill starts no version after
+# this long, leaving the rest of the hour to the version in hand.
+BACKFILL_DESCRIPTIONS_BUDGET = timedelta(minutes=45)
+
+
+def _clears_on_retry(exc: BaseException) -> bool:
+    """Whether a later run can get past `exc`. Only these can: the store unreachable (a broken
+    connection, `default_is_broken`), its pool exhausted, a SQLSTATE `store_failure_is_permanent`
+    holds transient, the artifact inventory's lookup failing in the store
+    (`ArtifactInventoryError`, which wraps only a store failure), and the artifact store's
+    transport failing, timing out or answering 429 or 5xx. Anything else, such as an object
+    whose bytes no longer hash to its digest, is permanent."""
+    if default_is_broken(exc) or isinstance(exc, PoolTimeoutError | ArtifactInventoryError):
+        return True
+    if isinstance(exc, DatasetsStoreUnavailable):
+        return not store_failure_is_permanent(exc.sqlstate)
+    if isinstance(exc, pg8000.exceptions.DatabaseError):
+        sqlstate = extract_sqlstate(exc)
+        return sqlstate is not None and not store_failure_is_permanent(sqlstate)
+    return isinstance(exc, ServerError | TooManyRequests | RetryError | TransportError)
+
+
+# Description rows checked for validity per query of `_invalid_record_versions`.
+_RECORD_SCAN_PAGE = 500
+
+
+def _unrecorded_versions(store: DatasetStore) -> list[tuple[str, str, datetime]]:
+    """`(subject_id, content_version, recorded_at)` of every dataset or frame version row that
+    holds no description record, or one that fails validation, those that collapse no other
+    version first, each group recorded last first."""
+    with store.transaction() as tx:
+        rows = tx.fetch_all(
+            "SELECT v.subject_id AS subject_id, v.content_version AS content_version, "
+            "v.recorded_at AS recorded_at, v.base_content_version AS base_content_version "
+            "FROM datasets.version_record v "
+            "WHERE v.subject_kind = 'spec' AND NOT EXISTS ("
+            "SELECT 1 FROM datasets.description_record d "
+            "WHERE d.subject_id = v.subject_id AND d.content_version = v.content_version)"
+        )
+    versions = [*rows, *_invalid_record_versions(store)]
+    versions.sort(key=lambda row: (str(row["subject_id"]), str(row["content_version"])))
+    versions.sort(key=lambda row: cast(datetime, row["recorded_at"]), reverse=True)
+    versions.sort(key=lambda row: row["base_content_version"] is not None)
+    return [
+        (str(row["subject_id"]), str(row["content_version"]), cast(datetime, row["recorded_at"]))
+        for row in versions
+    ]
+
+
+def _invalid_record_versions(store: DatasetStore) -> list[Mapping[str, object]]:
+    """The version rows whose description record, of this image's schema version or an
+    earlier one, fails validation, each logged by `validated_record`, read
+    `_RECORD_SCAN_PAGE` records at a time. A record of a later schema version is a later
+    image's, which this image leaves alone."""
+    invalid: list[Mapping[str, object]] = []
+    after = ("", "")
+    while True:
+        with store.transaction() as tx:
+            page = tx.fetch_all(
+                "SELECT d.subject_id AS subject_id, d.content_version AS content_version, "
+                "d.schema_version AS schema_version, d.record AS record, "
+                "v.recorded_at AS recorded_at, "
+                "v.base_content_version AS base_content_version "
+                "FROM datasets.description_record d JOIN datasets.version_record v "
+                "ON v.subject_id = d.subject_id AND v.content_version = d.content_version "
+                "WHERE (d.subject_id, d.content_version) > (%s, %s) "
+                "AND d.schema_version <= %s "
+                "ORDER BY d.subject_id, d.content_version LIMIT %s",
+                (*after, SCHEMA_VERSION, _RECORD_SCAN_PAGE),
+            )
+        invalid.extend(
+            row
+            for row in page
+            if validated_record(
+                row["record"],
+                schema_version=cast(int, row["schema_version"]),
+                id=str(row["subject_id"]),
+                content_version=str(row["content_version"]),
+            )
+            is None
+        )
+        if len(page) < _RECORD_SCAN_PAGE:
+            return invalid
+        after = (str(page[-1]["subject_id"]), str(page[-1]["content_version"]))
+
+
+def _held_bytes(
+    artifact_store: ArtifactStore, location: StoredArtifactLocation | None
+) -> bytes | None:
+    """The bytes at `location`, or `None` when there is none or its object is gone. Any other
+    artifact store failure raises, so a passing outage never reads as data no longer held."""
+    if location is None:
+        return None
+    try:
+        return artifact_store.get(
+            artifact_digest=location.artifact_digest, tier=Tier(location.tier)
+        )
+    except ArtifactNotFoundError:
+        return None
+
+
+def _statistics_figures(data: bytes, *, continuing: Sequence[ContinuedSeries]) -> SeriesFigures:
+    sink = SeriesStatisticsSink(continuing=continuing)
+    sink.write(pq.read_table(pa.BufferReader(data), schema=SERIES_STATISTICS_SCHEMA))
+    return sink.finish().figures
+
+
+def _inline_statistics_figures(
+    store: DatasetStore,
+    *,
+    subject_id: str,
+    content_version: str,
+    continuing: Sequence[ContinuedSeries],
+) -> SeriesFigures | None:
+    """The series figures of the per-series `statistics` list a body stored before the series
+    statistics artifact existed, or `None` when the body holds no such list."""
+    with store.transaction() as tx:
+        row = tx.fetch_one(
+            "SELECT immutable_body FROM datasets.version_record "
+            "WHERE subject_id = %s AND content_version = %s",
+            (subject_id, content_version),
+        )
+    body = None if row is None else row["immutable_body"]
+    entries = body.get("statistics") if isinstance(body, Mapping) else None
+    if not isinstance(entries, list):
+        return None
+    sink = SeriesStatisticsSink(continuing=continuing)
+    sink.write(
+        pa.Table.from_pylist(
+            [_statistics_row(cast("Mapping[str, object]", entry)) for entry in entries],
+            schema=SERIES_STATISTICS_SCHEMA,
+        )
+    )
+    return sink.finish().figures
+
+
+def _statistics_row(entry: Mapping[str, object]) -> dict[str, object]:
+    """One inline statistics entry as a `series-statistics/1` row."""
+    points = {
+        name: cast("Mapping[str, object]", entry[name])
+        for name in ("first", "latest", "minimum", "maximum")
+    }
+    change = cast("Mapping[str, object] | None", entry.get("change")) or {}
+    return {
+        "stat_var": entry["stat_var"],
+        "entities": entry["entities"],
+        "facet": json.dumps(entry["facet"], sort_keys=True, separators=(",", ":")),
+        "observations": entry["observations"],
+        **{f"{name}_value": point["value"] for name, point in points.items()},
+        **{f"{name}_period": point["period"] for name, point in points.items()},
+        "change_absolute": change.get("absolute"),
+        "change_percent": change.get("percent"),
+    }
+
+
+def _stored_frame(
+    artifact_store: ArtifactStore, servable: Sequence[StoredArtifactLocation]
+) -> Frame | None:
+    """The version's stored frame, its canonical frame or its frame1 document, while a tier
+    holds it."""
+    location = stored_frame_location(servable)
+    data = _held_bytes(artifact_store, location)
+    if location is None or data is None:
+        return None
+    if location.media_type == FRAME1_MEDIA_TYPE:
+        return _frame_of_frame1(data, digest=location.artifact_digest)
+    return read_canonical_frame(data)
+
+
+def run_backfill_continuations(*, store: DatasetStore, deadline: datetime, now: Clock) -> None:
+    """Fill `continuations` on every published frame's version row holding none, oldest
+    first, starting none once `deadline` has passed, and emit the counts.
+
+    Each version's continuations derive as its publish derives them
+    (`lineage_continuations.derived_continuations`): from the versions its record's `retrieve`
+    steps name, else from those its stored lineage lists. An older version is filled before the
+    versions computed from it, which then take its entries as stored. The update holds the row
+    to `continuations IS NULL`, so a second run, or a row a publish filled meanwhile, changes
+    nothing. A version that fails is logged with its traceback and tried again on the next run.
+    """
+    reader = LiveSnapshotReader(store=store)
+    with store.transaction() as tx:
+        rows = tx.fetch_all(
+            "SELECT subject_id, content_version FROM datasets.version_record "
+            "WHERE input_content_versions IS NOT NULL AND continuations IS NULL "
+            "ORDER BY recorded_at, subject_id, content_version"
+        )
+    filled = failed = remaining = 0
+    for position, row in enumerate(rows):
+        if now() >= deadline:
+            remaining = len(rows) - position
+            break
+        subject_id, content_version = str(row["subject_id"]), str(row["content_version"])
+        try:
+            version = reader.read_version(subject_id, content_version)
+            if version is None or not isinstance(version.facts, FrameLineage):
+                continue
+            with store.transaction() as tx:
+                record = read_description(tx, id=subject_id, content_version=content_version)
+            steps = None if record is None else record.steps
+            entries = derived_continuations(
+                lineage_inputs(
+                    steps_inputs=None if steps is None else computed_inputs(steps),
+                    lineage=version.facts,
+                ),
+                reader=reader,
+            )
+            with store.transaction() as tx:
+                tx.execute(
+                    "UPDATE datasets.version_record SET continuations = %s "
+                    "WHERE subject_id = %s AND content_version = %s AND continuations IS NULL",
+                    (json.dumps(entries), subject_id, content_version),
+                )
+        except Exception as exc:
+            # One version that fails is skipped; the run carries on with the others.
+            failed += 1
+            emit(
+                "datasets_continuations_backfill_failed",
+                severity="ERROR",
+                subject_id=subject_id,
+                content_version=content_version,
+                error=f"{type(exc).__name__}: {exc}",
+                traceback=traceback.format_exc(),
+            )
+            continue
+        filled += 1
+    emit("datasets_continuations_backfilled", filled=filled, failed=failed, remaining=remaining)
+
+
+def run_backfill_descriptions(
+    *,
+    store: DatasetStore,
+    artifact_store: ArtifactStore,
+    code_index: CodeIndex,
+    now: Clock = utc_now,
+    budget: timedelta = BACKFILL_DESCRIPTIONS_BUDGET,
+) -> int:
+    """Write a backfilled description record for every version holding none, starting none
+    once `budget` has passed, emit the counts, and return the number of versions that failed
+    transiently when it read none, else 0.
+
+    A version fails transiently when a later run can get past its failure (`_clears_on_retry`):
+    the store or the artifact store unreachable, timing out or overloaded. Every other failure
+    is permanent: building its record raises, or a stored row or object it reads is damaged.
+    Each failure is logged with its traceback, and the
+    version is skipped and tried again on the next run. Only a run that read no version and
+    met a transient failure exits non-zero, so an outage fails it and versions that can never be
+    described do not. A collapse whose base holds no record, as when the base failed earlier in
+    the run, is logged with both content versions and counted as a permanent failure, so a
+    later run derives it from the base's record."""
+    reader = LiveSnapshotReader(store=store)
+    deadline = now() + budget
+    run_backfill_continuations(store=store, deadline=deadline, now=now)
+    versions = _unrecorded_versions(store)
+    backfilled = failed = transient = read = remaining = 0
+    for position, (subject_id, content_version, recorded_at) in enumerate(versions):
+        if now() >= deadline:
+            remaining = len(versions) - position
+            break
+        try:
+            state = reader.read_version_state(subject_id, content_version)
+            if state is None:
+                read += 1
+                continue
+            base = _base_record(store, state.version)
+            if state.version.base_content_version is not None and base is None:
+                failed += 1
+                emit(
+                    "datasets_description_backfill_base_unrecorded",
+                    severity="ERROR",
+                    subject_id=subject_id,
+                    content_version=content_version,
+                    base_content_version=state.version.base_content_version,
+                )
+                continue
+            backfilled_at = now()
+            servable = select_servable_locations(state.locations, now=backfilled_at)
+            statistics = frame = None
+            if isinstance(state.version.facts, FrameLineage):
+                frame = _stored_frame(artifact_store, servable)
+            else:
+                data = _held_bytes(
+                    artifact_store,
+                    next((loc for loc in servable if is_statistics_rendering(loc.rendering)), None),
+                )
+                continuing = continued_series_of_trace(state.version.facts.trace)
+                statistics = (
+                    _statistics_figures(data, continuing=continuing)
+                    if data is not None
+                    else _inline_statistics_figures(
+                        store,
+                        subject_id=subject_id,
+                        content_version=content_version,
+                        continuing=continuing,
+                    )
+                )
+            record, unstated_warnings = backfill_record(
+                state.version,
+                statistics=statistics,
+                frame=frame,
+                code_index=code_index,
+                recorded_at=recorded_at,
+                backfilled_at=backfilled_at,
+                base=base,
+            )
+            with store.transaction() as tx:
+                written = insert_description(tx, record, recorded_at=backfilled_at)
+        except Exception as exc:
+            # One version that fails is skipped; the run carries on so every other version is
+            # backfilled.
+            failed += 1
+            outage = _clears_on_retry(exc)
+            if outage:
+                transient += 1
+            emit(
+                "datasets_description_backfill_failed",
+                severity="ERROR",
+                subject_id=subject_id,
+                content_version=content_version,
+                transient=outage,
+                error=f"{type(exc).__name__}: {exc}",
+                traceback=traceback.format_exc(),
+            )
+            continue
+        read += 1
+        if not written:
+            continue
+        backfilled += 1
+        for code in unstated_warnings:
+            emit(
+                "datasets_description_backfill_warning_unstated",
+                severity="WARNING",
+                subject_id=subject_id,
+                content_version=content_version,
+                warning_code=code,
+            )
+    emit(
+        "datasets_descriptions_backfilled",
+        backfilled=backfilled,
+        failed=failed,
+        transient=transient,
+        remaining=remaining,
+        code_index=code_index.stamp.content_hash,
+    )
+    return 0 if read else transient
+
+
+def _base_record(store: DatasetStore, version: StoredVersion) -> DescriptionRecord | None:
+    """The record of the version `version` collapses, `None` when it collapses none or its
+    base holds no record."""
+    if version.base_content_version is None:
+        return None
+    with store.transaction() as tx:
+        return read_description(
+            tx, id=version.subject_id, content_version=version.base_content_version
+        )
+
+
+def _backfill_descriptions() -> int:
+    return _run_over_artifacts(
+        "backfill-descriptions", partial(run_backfill_descriptions, code_index=get_index())
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="datasets-maintenance")
     tasks = parser.add_subparsers(dest="task", required=True)
@@ -388,6 +841,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     tasks.add_parser(
         "settle", help="label raw pin principals and count version rows holding no facts"
     ).set_defaults(run=_settle)
+    tasks.add_parser(
+        "backfill-descriptions",
+        help="write a description record for every version made before records existed",
+    ).set_defaults(run=_backfill_descriptions)
     args = parser.parse_args(argv)
     return args.run()
 

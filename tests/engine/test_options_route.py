@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
+from search.models import OptionsFor, OptionsRequest
+from series_coverage.schema import RoleNames
+from tests.engine._fake_coverage import patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._options_fixtures import (
     _KENYA_DCID,
@@ -13,7 +17,13 @@ from tests.engine._options_fixtures import (
     _place_graph,
 )
 from tests.engine._search_app import search_app
-from tests.fixtures import FakeLLM, make_resolver
+from tests.engine.test_options_population import (
+    _IDS_BY_CREDITOR,
+    _IDS_MEMBERS,
+    _ids_identity,
+    _ids_reader,
+)
+from tests.fixtures import FakeGraph, FakeLLM, make_resolver
 
 # ---------------------------------------------------------------------------
 # The mounted route: POST /api/search/options.
@@ -31,7 +41,7 @@ class TestOptionsRoute:
         payload = resp.json()
         assert payload["for"] == {"role": "observationAbout"}  # scope unset -> omitted, not null
         assert "diagnostics" in payload
-        dcids = {i["value"]["ref"]["dcid"] for i in payload["options"]["items"]}
+        dcids = {i["value"]["ref"]["ref"] for i in payload["options"]["items"]}
         assert dcids == {_KENYA_DCID}
 
     def test_refusal_surfaces_as_problem_body(self):
@@ -82,6 +92,50 @@ class TestOptionsRoute:
         resp = _options_client().post("/api/search/options", json=body)
         assert resp.status_code == 422
         assert resp.json()["code"] == "option_target_invalid"
+
+    @pytest.mark.usefixtures("unlisted_index")
+    def test_an_ids_total_asked_for_origin_offers_its_creditors(self, monkeypatch):
+        """The posted total declares only the debtor; the door reads the by-creditor twin,
+        whose coverage lists the creditors lending to the bound debtor."""
+        patch_coverage(
+            monkeypatch,
+            [
+                (_IDS_BY_CREDITOR, "f1", "country/CHN", _KENYA_DCID, [2020]),
+                (_IDS_BY_CREDITOR, "f1", "country/FRA", _KENYA_DCID, [2020]),
+            ],
+            role_names={
+                _IDS_BY_CREDITOR: RoleNames(
+                    donor="financingProvider", recipient="financingRecipient"
+                )
+            },
+        )
+        graph = FakeGraph(
+            nodes={
+                _KENYA_DCID: {"label": "Kenya", "type": "Country"},
+                "country/CHN": {"label": "China", "type": "Country"},
+                "country/FRA": {"label": "France", "type": "Country"},
+            }
+        )
+        client = TestClient(
+            search_app(
+                graph=graph,
+                resolver=make_resolver(graph),
+                llm=FakeLLM(),
+                sdmx=FakeSdmxClient(observations={}),
+                materialise_graph=_ids_reader(_IDS_MEMBERS),
+            ),
+            raise_server_exceptions=False,
+        )
+        req = OptionsRequest(
+            identity=_ids_identity({"destination": [_KENYA_DCID]}),
+            **{"for": OptionsFor(role="origin")},
+        )
+
+        resp = client.post("/api/search/options", json=req.model_dump(by_alias=True, mode="json"))
+
+        assert resp.status_code == 200, resp.text
+        dcids = [i["value"]["ref"]["ref"] for i in resp.json()["options"]["items"]]
+        assert dcids == ["country/CHN", "country/FRA"]
 
     def test_materialise_graph_uninitialised_refuses_503(self):
         """Every options request needs a materialise_graph: population

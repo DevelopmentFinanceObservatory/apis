@@ -101,7 +101,7 @@ def _bulk_preview(result: Materialised, date_name: str) -> dict[str, Any]:
     )
     # Discovery plans the facet the preview serves, the ranking's top.
     assert ranked[0].facet_id == plan.facet_id
-    fetch = _plan_role_bulk_fetch(plan, plan.elected)
+    fetch = _plan_role_bulk_fetch(plan)
     to_fetch = [[sv, [list(entry) for entry in rt]] for sv, rt in fetch.to_fetch]
     return {
         "time_period": list(plan.read_years) if plan.read_years is not None else None,

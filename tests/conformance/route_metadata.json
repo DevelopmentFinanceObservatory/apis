@@ -344,6 +344,24 @@
   {
     "has_description": false,
     "method": "GET",
+    "name": "get_description",
+    "operation_id": "get_description_api_datasets__id___content_version__description_get",
+    "path": "/api/datasets/{id}/{content_version}/description",
+    "summary": "Get Description",
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "get_description_values",
+    "operation_id": "get_description_values_api_datasets__id___content_version__description_values_get",
+    "path": "/api/datasets/{id}/{content_version}/description/values",
+    "summary": "Get Description Values",
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
     "name": "get_file",
     "operation_id": "get_file_api_datasets__id___content_version__files__digest__get",
     "path": "/api/datasets/{id}/{content_version}/files/{digest}",
@@ -532,6 +550,15 @@
   },
   {
     "has_description": false,
+    "method": "GET",
+    "name": "members_endpoint",
+    "operation_id": "members_endpoint_api_graph_node__dcid__members_get",
+    "path": "/api/graph/node/{dcid}/members",
+    "summary": "Members Endpoint",
+    "surface": "graph"
+  },
+  {
+    "has_description": false,
     "method": "POST",
     "name": "nodes_endpoint",
     "operation_id": "nodes_endpoint_api_graph_nodes_post",
@@ -546,6 +573,24 @@
     "operation_id": "resolve_endpoint_api_graph_resolve_post",
     "path": "/api/graph/resolve",
     "summary": "Resolve Endpoint",
+    "surface": "graph"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "roots_endpoint",
+    "operation_id": "roots_endpoint_api_graph_roots_get",
+    "path": "/api/graph/roots",
+    "summary": "Roots Endpoint",
+    "surface": "graph"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "schema",
+    "operation_id": "schema_api_graph_schema_get",
+    "path": "/api/graph/schema",
+    "summary": "Schema",
     "surface": "graph"
   },
   {

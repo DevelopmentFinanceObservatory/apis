@@ -36,7 +36,9 @@ candidate, so a candidate with no `earliest_date` overlaps when its
 leave the pool unchanged. The surviving candidates rank in one total order:
 
 1. for a StatVar the origin catalogue lists under both DFO and base Data
-   Commons, DFO's facets first (`materialise.facets.dfo_precedence`),
+   Commons, DFO's facets first when DFO's broadest facet covers at least as
+   many bound places, or role pairs, as the broadest base facet
+   (`materialise.facets.dfo_precedence`),
 2. then the facet holding a point in the window at the most bound places,
    or for a role-bearing StatVar at the most donor and recipient pairs
    (`materialise.facets.MemberProbe.breadth`),
@@ -44,16 +46,39 @@ leave the pool unchanged. The surviving candidates rank in one total order:
    (`materialise.facets.years_in_window`),
 4. then most observations (`obsCount`, summed across every bound entity),
 5. then most recent `latest_date`,
-6. then `provenance_id`,
-7. then `measurementMethod`,
-8. then `unit`,
-9. then `facet_id`.
+6. then, for a request binding one place, the most places the facet holds
+   a point at across the whole variable at its default place scope
+   (`materialise.facets.MemberProbe.variable_breadth`),
+7. then `provenance_id`,
+8. then `measurementMethod`,
+9. then `unit`,
+10. then `facet_id`.
 
 One facet group serves a StatVar at every bound place, so the facet that
 covers the most places leads: a request for Kenya and Ghana serves the
 source both publish over a longer series only Kenya holds, and a place the
 selected facet does not cover returns no rows. With one bound place every
-candidate covers it, and the next step decides.
+candidate covers it, so count and date decide, and facets that tie on both
+go to the one serving the variable most widely, as a request naming many
+places would elect: France alone gets the IMF's US-dollar GDP (197 places)
+over its euro series (25). The whole-variable breadth comes from the
+variable's facet profile (`materialise.facet_profile`), read only when the
+leading facets tie on every earlier step and differ in provenance, method,
+unit or the cadence the dispatch serves, and at most once per variable per
+request.
+
+When that read fails, the tie cannot be broken on breadth, and the two
+callers differ because one stores its election and the other does not. A
+Datasets mint, rebuild or operation refuses rather than store the facet the
+unit's name would pick. A transient failure (a timeout, a graph read error
+or byte cap, a profile flight the executor refused) refuses
+`service_unavailable` (503, retryable), and a retry reads again. A variable
+whose own profile raised for any other reason is a defect, logged as an
+error with the variable, and refuses `internal_error` (500, not retryable),
+since a retry would meet it again. Search falls back to the remaining steps,
+so the unit's name decides, and marks the answer degraded, so neither the
+answer nor an options result built on it is cached. A failed read that no
+tie needed changes nothing.
 
 The window step exists for series whose facets cover different years. A
 StatVar with recorded values to 2024 (no `measurementMethod`) and a
@@ -118,8 +143,9 @@ so a window that leaves one candidate yields `sole_candidate`:
   all, on an axis**, the top-ranked facet's own value still binds, reason
   `most_observations_over_disagreement`. This is the one place the policy
   makes a real choice among live alternatives rather than confirming
-  agreement. A `facet_default_selected` warning always fires, naming the
-  axis and the selected ref. `basis` is `deployment_fallback` on the wire
+  agreement. The trace's `choices` names the axis and each candidate value
+  in rank order, and the version's description record states the choice
+  as a `choose_source` step. `basis` is `deployment_fallback` on the wire
   for this outcome, the same as for every other outcome this rule
   produces -- `declared_default` names a graph-declared policy instead,
   never this deployment's own. The distinction between this outcome and the
@@ -138,14 +164,15 @@ so a window that leaves one candidate yields `sole_candidate`:
   empty result described under "A request that binds no entity" below and
   selects nothing.
 
-DFO precedence exists because admission works per place. Where DFO holds
-data for a StatVar at a place, the origin catalogue withholds every base
-facet there, but a base facet admitted at another bound place still joins
-the candidate set, and a fetch by its facet id would read its rows at DFO's
-places too. Ranking DFO's facet first whenever DFO has data at any bound
-place serves DFO's data there, and a place only the base source covers
-reads as a coverage gap. For every other StatVar the candidates come from
-one origin and step 1 changes nothing.
+Admission keeps DFO's and base facets alike at every place
+(`origin_catalogue.Catalogue.admit_series`), so the election alone picks the
+origin and one facet group serves every bound place. DFO's facet leads when
+it covers as many places as the best base facet. A narrower DFO facet gives
+way: OECD DAC1 holds `Count_Person` at 50 countries and World Development
+Indicators at 169, so a population request for every country serves the
+World Bank's 169 from one source. A request read at one series, where every
+facet covers it, ranks DFO's facet first. For every other StatVar the
+candidates come from one origin and step 1 changes nothing.
 
 Step 1 ranks the candidates left after narrowing by the caller's bound axes,
 by the native-currency preference for a current-price currency request, and
@@ -153,9 +180,9 @@ by the window. The window step runs first, and `dfo_precedence` reads the
 narrowed pool, so a window only a base facet reaches serves that base facet
 where a DFO facet would return an empty series. A spec that binds a
 provenance, unit or measurement method only a base facet carries, or
-requests a currency only a base facet is native in, gets that base facet,
-and its rows serve only at places where DFO holds no data, since admission
-withholds every base facet where DFO's is present.
+requests a currency only a base facet is native in, gets that base facet at
+every place it holds, DFO's places included. A spec that binds DFO's
+provenance gets DFO's facet however few places it covers.
 
 On the role-bearing path a candidate comes from the series coverage
 index. `obsCount` is the index's observation count for the bound roles,

@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.retrieval.retrieve import Materialised, materialise
 from search.engine.retrieval.role_resolve import graph_confirm_resolve
@@ -17,6 +18,7 @@ from tests.engine import test_index_sourced_grounding as _idx
 from tests.engine._fake_coverage import FakeCoverageService, empty_coverage_snapshot, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._index_slots import index_slot_keys
+from tests.engine._quantity import NO_QUANTITY
 from tests.engine.test_standard_resolve import (
     _RECIPIENT,
     _SET_SV_A,
@@ -264,6 +266,8 @@ class _NoBindingLLM:
     """Returns no bindings, so no member is excluded by a bound value."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return (
             _UniversalBindOutput(chosen_shape_index=0, bindings=[], also_plausible=None, ask=None),
@@ -304,7 +308,7 @@ def test_definite_standard_response_reports_the_confirmed_population_not_just_th
     spec = result.specs[0]
     resolved = spec.resolved
 
-    assert [sv.ref.dcid for sv in resolved.members] == [_BARE_SV]
+    assert [sv.ref.ref for sv in resolved.members] == [_BARE_SV]
     assert len(resolved.members) == 1
     assert resolved.stat_vars.member_count == 3
     assert resolved.shape.member_count == 3

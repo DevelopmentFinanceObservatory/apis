@@ -6,7 +6,7 @@ from pydantic import Field
 
 from .base import StrictModel
 from .grammar import GraphRef, ProvenanceRef, RequestedWindow, SlotKey
-from .vocab import BindingKind, BindingProvenance
+from .vocab import BindingKind, BindingProvenance, QuantityForm
 
 
 class ResolvedFilter(StrictModel):
@@ -35,7 +35,9 @@ class ResolvedQualifier(StrictModel):
     names in the packaged index;
     empty when the text names no code at all (a `no_vocabulary` term). `slot`
     is the constraint property dcid of the `slot_filters` entry whose
-    binding consumed the term; `None` when none did. `disposition` is
+    binding consumed the term, or, on an `"unbound"` value the answer's shape
+    has a slot for but leaves unmet, that slot's property; `None` otherwise.
+    `disposition` is
     `"bound"` when some final binding on a named row's code system covers
     it (that row or a descendant), `"unbound"` when a row was named but no
     binding covers it, and `"no_vocabulary"` when the term names no code at
@@ -81,7 +83,8 @@ class ResolvedQualifier(StrictModel):
         default=None,
         description=(
             "property dcid of the slot_filters entry whose binding consumed "
-            "this term; None when none did"
+            "this term, or, on an unbound value the answer's shape has a slot for "
+            "but leaves unmet, that slot's property; None otherwise"
         ),
     )
     disposition: Literal["bound", "unbound", "no_vocabulary"] = Field(
@@ -209,6 +212,15 @@ class ResolutionTrace(StrictModel):
             "what the default price-basis reading did before bind (see "
             "TraceDefaultReading); None when no bind ran for this Spec, as on a resubmit, "
             "or in hand-built fixtures that predate this field"
+        ),
+    )
+    stated_form: QuantityForm | None = Field(
+        default=None,
+        description=(
+            "the normalised form the quantity read found in the question when no wording "
+            'pattern named one ("debt to GDP" asks for a rate), and which the answer was '
+            "then checked against; None when a wording pattern named the form, when the "
+            "question asks for none, and when no bind ran for this Spec"
         ),
     )
     conversion: TraceConversion | None = Field(

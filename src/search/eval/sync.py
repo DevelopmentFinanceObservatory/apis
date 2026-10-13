@@ -13,6 +13,12 @@ none, 1 when there is one, and 3 when the app's schema does not load, or when a 
 check's read failed on infrastructure and nothing else failed. A post that failed on infrastructure is a known failure on a case
 whose ``known_failure.checks`` holds ``task_outcome``, as in the gate. Any crash exits 2.
 
+Each check writes a Langfuse score of 1 on a pass and 0 on a failure, and no score when it
+is unverifiable, n/a or unreached, since none of those says whether the answer was right.
+``answer`` is unreached when a check it gathers never ran, so on a case whose
+``disposition`` is a known failure, an answer in a status the case does not accept writes
+no ``answer`` score.
+
 Requires ``LANGFUSE_PUBLIC_KEY`` and ``LANGFUSE_SECRET_KEY``. The nightly also reads the
 graph settings, ``COVERAGE_ARTIFACT_URI`` and ``ORIGIN_CATALOGUE_URI`` the checks score
 against.

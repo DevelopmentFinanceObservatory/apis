@@ -8,6 +8,7 @@ import pytest
 
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.clients.graph import Facet
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region.codes import ENTITY_LABEL_UNRESOLVED
 from search.engine.region.grounding import _build_entity, _ground_answer
 from search.engine.region.pipeline import resolve_variable
@@ -19,6 +20,7 @@ from search.render.plan import render_sentence
 from search.render.tokens import plan_tokens, sentence_from_plan
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 _WHERE_SLOT = SlotKeyDraft(axis="where", property_dcid=None, label="place")
@@ -67,7 +69,7 @@ def test_accepted_place_alias_is_used_for_entity_and_sentence(
 ) -> None:
     grounded, sentence = _grounded_place(dcid=dcid, graph_label=graph_label, query_text=query_text)
 
-    assert grounded[5][0][1].dcid == dcid
+    assert grounded[5][0][1].ref == dcid
     assert grounded[5][0][1].label == query_text
     assert sentence == f"{query_text}'s total population."
 
@@ -155,6 +157,8 @@ def test_query_entity_text_never_relabels_stat_vars_or_sources() -> None:
 
 class _FixedBindLLM:
     async def generate_structured(self, *, prompt: str, system: str, schema: type):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema is _UniversalBindOutput
         return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
 

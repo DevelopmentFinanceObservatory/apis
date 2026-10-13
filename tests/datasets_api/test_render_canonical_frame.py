@@ -16,8 +16,9 @@ from datasets_api import render
 from datasets_api.mint_models import MintOptions
 from datasets_api.render import render_and_store, render_and_store_canonical_frame
 from materialise.enrichment import EnrichmentLookup
-from materialise.formats import read_stored_frame
+from materialise.formats import CANONICAL_FRAME_MEDIA_TYPE, read_stored_frame
 from materialise.frame_build import build_frame
+from tests.materialise._canonical_frame import frame_of_document, stored_canonical_frame_959f8bc
 
 from ._artifact_doubles import FakeArtifactStore
 from ._graph_doubles import FakeMintGraphReader
@@ -66,7 +67,7 @@ def _fresh_chunks(frame: Frame) -> list[Frame]:
 
 def _render_digest(chunks, *, options: MintOptions, store: FakeArtifactStore) -> str:
     rendered = render_and_store(
-        frame_chunks=chunks,
+        frame_chunks=lambda: iter(chunks),
         options=options,
         spec={"spec_id": "spec_immutable"},
         provenance_refs=[],
@@ -77,14 +78,14 @@ def _render_digest(chunks, *, options: MintOptions, store: FakeArtifactStore) ->
         site=SITE,
         artifact_store=store,
         entity_columns=("recipient",),
-        enrichment=EnrichmentLookup(_GRAPH, type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(_GRAPH, parties={}),
         pivot_max_output_cells=5_000_000,
         resolved_stat_var_refs=(),
     )
     return rendered.artifact.artifact_digest
 
 
-@pytest.mark.parametrize(
+_OPTIONS = pytest.mark.parametrize(
     "options",
     [
         MintOptions(format="csv"),
@@ -95,6 +96,9 @@ def _render_digest(chunks, *, options: MintOptions, store: FakeArtifactStore) ->
     ],
     ids=["csv", "xlsx", "parquet", "frame-layout", "bundle"],
 )
+
+
+@_OPTIONS
 def test_a_rendering_from_the_stored_frame_has_the_bytes_of_the_fresh_render(
     options: MintOptions, monkeypatch: pytest.MonkeyPatch
 ):
@@ -121,6 +125,22 @@ def test_a_rendering_from_the_stored_frame_has_the_bytes_of_the_fresh_render(
     assert stored == fresh
     assert again == stored
     assert converted_by_stored == _ROWS
+
+
+@_OPTIONS
+def test_a_frame_stored_before_unit_recipes_renders_as_its_rows_do(options: MintOptions):
+    """A canonical frame stored under frame grammar kit 959f8bc, whose unit `request` has no
+    `recipe`, renders the bytes of the same rows built by this release."""
+    data, _frame_sha256, document = stored_canonical_frame_959f8bc()
+    store = FakeArtifactStore()
+
+    stored = _render_digest(
+        (read_stored_frame(data, media_type=CANONICAL_FRAME_MEDIA_TYPE),),
+        options=options,
+        store=store,
+    )
+
+    assert stored == _render_digest((frame_of_document(document),), options=options, store=store)
 
 
 def _count_converted_rows(monkeypatch: pytest.MonkeyPatch) -> list[int]:

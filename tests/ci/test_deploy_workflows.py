@@ -186,8 +186,8 @@ def test_every_name_comes_from_the_environment_variables():
             r"gcloud run (?:jobs|services) \w+ (\S+ \S+ \S+)", step.get("run", "")
         )
     ]
-    # Six job updates, nine job executions, and two service updates.
-    assert len(targets) == 17
+    # Six job updates, ten job executions, and two service updates.
+    assert len(targets) == 18
     for target in targets:
         assert re.fullmatch(r'"\$\{\{ vars\.(JOB|SERVICE)_[A-Z_]+ \}\}"', target), target
 
@@ -266,21 +266,27 @@ def test_maintenance_job_moves_to_the_new_image_after_both_migrations():
     assert names.index(update) < names.index("Point the datasets worker at the new image")
 
 
-def test_the_maintenance_job_settles_once_both_services_run_the_new_image():
-    """The previous image writes rows in the old shape until both services move, so the settle
-    runs after the apis service moves, and it is the deploy's only maintenance execution."""
+def test_the_maintenance_job_settles_then_backfills_once_both_services_run_the_new_image():
+    """The previous image writes rows in the old shape, and versions without a description
+    record, until both services move, so the settle and then the description backfill run after
+    the apis service moves, and they are the deploy's only maintenance executions. The backfill
+    runs after the code index record, so its failure never holds that record back."""
     names = [step.get("name") for step in _steps()]
     settle = "Settle rows the previous image wrote"
+    backfill = "Backfill description records"
     executions = [
         step.get("name")
         for step in _steps()
         if 'jobs execute "${{ vars.JOB_DATASETS_MAINTENANCE }}"' in step.get("run", "")
     ]
 
-    assert executions == [settle]
+    assert executions == [settle, backfill]
     assert "--args=settle" in _named(settle)["run"]
-    assert "--wait" in _named(settle)["run"]
+    assert "--args=backfill-descriptions" in _named(backfill)["run"]
+    for name in (settle, backfill):
+        assert "--wait" in _named(name)["run"]
     assert names.index("Point Cloud Run at the new image") < names.index(settle)
+    assert names.index("Record the code index the services run") < names.index(backfill)
 
 
 def test_the_upfront_check_refuses_a_deploy_without_the_maintenance_job():
@@ -305,6 +311,7 @@ def test_the_upfront_check_refuses_a_deploy_without_the_maintenance_job():
     for name in (
         "Point the datasets maintenance job at the new image",
         "Settle rows the previous image wrote",
+        "Backfill description records",
     ):
         assert _named(name)["run"].lstrip().startswith("set -euo pipefail\ngcloud run jobs")
 
@@ -312,11 +319,12 @@ def test_the_upfront_check_refuses_a_deploy_without_the_maintenance_job():
 def test_worker_then_service_move_then_the_code_index_is_recorded():
     names = [step.get("name") for step in _steps()]
 
-    assert names[-4:] == [
+    assert names[-5:] == [
         "Point the datasets worker at the new image",
         "Point Cloud Run at the new image",
         "Settle rows the previous image wrote",
         "Record the code index the services run",
+        "Backfill description records",
     ]
 
 
@@ -335,7 +343,7 @@ def test_decide_step_runs_gcloud_describe_and_git_diff_and_gates_every_later_ste
     steps = _steps()
     decide_index = steps.index(decide)
     later = steps[decide_index + 1 :]
-    assert len(later) == 19
+    assert len(later) == 20
     for step in later:
         assert step["if"] == "steps.decide.outputs.deploy == 'true'", step
 

@@ -16,7 +16,13 @@ import scripts.harvest_llm_fixtures as m
 import search.engine.extract as extract_module
 from search.engine.bind import _UniversalBindOutput
 from search.engine.extract import Extraction
-from tests._harvest_outcome_plugin import OUTCOME_PATH_ENV, SCHEMA_VERSION
+from search.engine.quantity_read import QuantityOutput
+from tests._harvest_outcome_plugin import (
+    OUTCOME_PATH_ENV,
+    SCHEMA_VERSION,
+    worker_harvest_path,
+    worker_harvest_paths,
+)
 from tests.fixtures import MissingFixtureError, _append_harvest_line
 from tests.fixtures.keys import fixture_key, schema_fingerprint
 
@@ -206,6 +212,7 @@ def test_check_pytest_outcome_reports_an_unreadable_harvest_file(tmp_path):
 def test_schema_and_stage_known_schemas():
     assert m._schema_and_stage("Extraction") == (Extraction, "extract")
     assert m._schema_and_stage("_UniversalBindOutput") == (_UniversalBindOutput, "bind")
+    assert m._schema_and_stage("QuantityOutput") == (QuantityOutput, "quantity")
 
 
 def test_schema_and_stage_unknown_name_fails_closed():
@@ -442,12 +449,17 @@ def test_direction_corpus_collect_propagates_an_unrelated_keyerror(tmp_path, mon
 # ---------------------------------------------------------------------------
 
 
-def _write_outcome(path, failures: list[dict], *, counts: dict | None = None) -> None:
+def _write_outcome(
+    path, failures: list[dict], *, collected: int = 1, reported: int | None = None
+) -> None:
+    """Write a summary whose run reported every collected test unless `reported` says fewer."""
     Path(path).write_text(
         json.dumps(
             {
                 "schema_version": SCHEMA_VERSION,
-                "counts": counts or {"passed": 0, "failed": len(failures), "errored": 0},
+                "counts": {"passed": 0, "failed": len(failures), "errored": 0},
+                "collected": collected,
+                "reported": collected if reported is None else reported,
                 "failures": failures,
             }
         )
@@ -693,6 +705,66 @@ def test_check_pytest_outcome_refuses_a_failures_field_that_is_not_a_list(tmp_pa
             )
 
 
+@pytest.mark.parametrize("returncode", [0, 1])
+def test_check_pytest_outcome_refuses_a_run_that_reported_fewer_tests_than_it_collected(
+    tmp_path, returncode
+):
+    """Tests that never ran, as after xdist exhausts `--max-worker-restart`, requested no keys,
+    so a short run is refused whatever its exit code. The summary is built by hand because a
+    worker that keeps dying outside a test is impractical to stage in pytester."""
+    outcome_path = tmp_path / "pytest_outcome.json"
+    harvest_path = tmp_path / "misses.jsonl"
+    harvest_path.write_text("")
+    _write_miss_line(harvest_path, "Extraction:aaa")
+    failures = (
+        [
+            {
+                "nodeid": "tests/x.py::test_a",
+                "when": "call",
+                "exception_type": MissingFixtureError.__name__,
+                "fixture_key": "Extraction:aaa",
+            }
+        ]
+        if returncode == 1
+        else []
+    )
+    _write_outcome(outcome_path, failures, collected=5, reported=3)
+
+    with pytest.raises(m.HarvestError, match="collected 5 test"):
+        m._check_pytest_outcome(
+            returncode=returncode,
+            outcome_path=outcome_path,
+            harvest_file=harvest_path,
+            where="pytest collector",
+        )
+
+
+def test_check_pytest_outcome_refuses_a_summary_without_run_counts(tmp_path):
+    with pytest.raises(m.HarvestError, match="`collected`"):
+        _check(
+            tmp_path,
+            returncode=0,
+            failures=[],
+            summary_json=json.dumps({"schema_version": SCHEMA_VERSION, "failures": []}),
+        )
+
+
+def test_worker_harvest_paths_matches_only_xdist_worker_suffixes(tmp_path):
+    harvest_path = tmp_path / "misses.jsonl"
+    for name in (
+        "misses.jsonl.gw0",
+        "misses.jsonl.gw12",
+        "misses.jsonl.gw0.gw1",
+        "misses.jsonl.gwx",
+    ):
+        (tmp_path / name).write_text("")
+
+    assert worker_harvest_paths(harvest_path) == [
+        tmp_path / "misses.jsonl.gw0",
+        tmp_path / "misses.jsonl.gw12",
+    ]
+
+
 def test_check_pytest_outcome_refuses_a_zero_exit_that_records_failures(tmp_path):
     """An exit code of 0 conflicts with a recorded failure."""
     failures = [
@@ -761,7 +833,8 @@ def test_check_pytest_outcome_refuses_a_captured_miss_mixed_with_a_teardown_erro
 
 
 class _FakePassRunner:
-    """Records commands and writes a fake pytest outcome."""
+    """Records commands and writes a fake pytest outcome, logging each miss to an xdist worker's
+    harvest file in turn."""
 
     def __init__(self, *, pytest_returncode: int, miss_keys: list[str], failure_type: str):
         self.pytest_returncode = pytest_returncode
@@ -773,8 +846,9 @@ class _FakePassRunner:
     def __call__(self, *, cmd, env, ok_returncodes):
         self.commands.append(list(cmd))
         self.envs.append(dict(env))
-        for key in self.miss_keys:
-            _write_miss_line(env[m.HARVEST_MISS_PATH_ENV], key)
+        harvest_path = Path(env[m.HARVEST_MISS_PATH_ENV])
+        for i, key in enumerate(self.miss_keys):
+            _write_miss_line(worker_harvest_path(harvest_path, f"gw{i % 2}"), key)
         # A green run records no failure, matching the exit code the caller
         # asked for -- a summary that disagrees with its own rc is read as a
         # disagreement by _check_pytest_outcome, which is a different test.
@@ -795,29 +869,46 @@ class _FakePassRunner:
 
 
 def test_live_collect_pass_reads_the_misses_off_a_converged_pytest_run(tmp_path, monkeypatch):
-    """The pass the harvest expects: pytest exited 1 on one missing fixture,
-    which the run captured, so the pass reports that miss for resolution."""
+    """The pass the harvest expects: pytest exited 1 on missing fixtures, which two xdist
+    workers logged to their own files, so the pass merges them and reports both misses."""
     runner = _FakePassRunner(
-        pytest_returncode=1, miss_keys=["Extraction:aaa"], failure_type=MissingFixtureError.__name__
+        pytest_returncode=1,
+        miss_keys=["Extraction:aaa", "Extraction:bbb"],
+        failure_type=MissingFixtureError.__name__,
     )
     monkeypatch.setattr(m, "_run_pass_subprocess", runner)
     monkeypatch.setattr(m, "_direction_corpus_collect", lambda *, harvest_path: None)
+    harvest_path = tmp_path / "misses.jsonl"
 
-    obs = m._live_collect_pass(harvest_path=tmp_path / "misses.jsonl", pytest_args=["-k", "engine"])
+    obs = m._live_collect_pass(harvest_path=harvest_path, pytest_args=["-k", "engine"], workers="3")
 
-    assert set(obs.misses) == {"Extraction:aaa"}
-    assert obs.requested == frozenset({"Extraction:aaa"})
-    # pytest ran with the outcome plugin loaded, xdist off, and its own
-    # summary path. `python -m pytest`, because the plugin's dotted path is
-    # resolved before any conftest runs and only `python -m` puts the
-    # subprocess's working directory (this repo's root) on sys.path.
+    assert set(obs.misses) == {"Extraction:aaa", "Extraction:bbb"}
+    assert obs.requested == frozenset({"Extraction:aaa", "Extraction:bbb"})
+    assert worker_harvest_paths(harvest_path) == []
+    # pytest ran with the outcome plugin loaded, on the requested xdist workers, with its own
+    # summary path. `python -m pytest`, because the plugin's dotted path is resolved before any
+    # conftest runs and only `python -m` puts the subprocess's working directory (this repo's
+    # root) on sys.path.
     pytest_cmd = next(cmd for cmd in runner.commands if "pytest" in cmd)
     assert pytest_cmd[:6] == ["uv", "run", "python", "-m", "pytest", "-q"]
-    # Each `-p` flag is an adjacent pair, so this pins the plugin being
-    # loaded and xdist being off rather than a list position.
-    assert pytest_cmd[6:8] == ["-p", "no:xdist"]
+    assert pytest_cmd[6:8] == ["-n", "3"]
     assert pytest_cmd[8:10] == ["-p", "tests._harvest_outcome_plugin"]
     assert pytest_cmd[10:] == ["-k", "engine"]
+
+
+@pytest.mark.parametrize(
+    "var", ["SEARCH_RECORD_REQUESTS", "SEARCH_RECORD_SCENARIOS", "SEARCH_RECORD_BASELINE_DEPTH"]
+)
+def test_live_collect_pass_runs_serially_while_recording(tmp_path, monkeypatch, var):
+    """The engine's recording modes fail under xdist, so the collector disables it for them."""
+    runner = _FakePassRunner(pytest_returncode=0, miss_keys=[], failure_type="")
+    monkeypatch.setattr(m, "_run_pass_subprocess", runner)
+    monkeypatch.setattr(m, "_direction_corpus_collect", lambda *, harvest_path: None)
+    monkeypatch.setenv(var, "1")
+
+    m._live_collect_pass(harvest_path=tmp_path / "misses.jsonl", pytest_args=[])
+
+    assert runner.commands[0][6:8] == ["-p", "no:xdist"]
 
 
 @pytest.mark.parametrize(
@@ -843,35 +934,6 @@ def test_live_collect_pass_strips_inherited_pytest_collection_env(
     for call_env in runner.envs:
         assert var not in call_env
     assert f"{var}={value!r}" in capsys.readouterr().out
-
-
-@pytest.mark.parametrize(
-    "forwarded",
-    ["-n auto", "-nauto", "-n4", "-n=4", "--numprocesses=2", "--numprocesses 2", "--dist loadfile"],
-)
-def test_live_collect_pass_refuses_forwarded_xdist_args(tmp_path, monkeypatch, forwarded):
-    """xdist keeps the plugin's recording in worker processes and re-fires
-    only pytest_runtest_logreport on the controller, whose serialised report
-    carries no excinfo -- so the controller's summary records no failing
-    test and the harvest would abort on a pass that missed fixtures. The
-    flag is refused by name, with no subprocess double installed, so the
-    refusal is provably reached before any subprocess could run."""
-    monkeypatch.setattr(m, "_run_pass_subprocess", lambda **kwargs: pytest.fail("a subprocess ran"))
-
-    with pytest.raises(m.HarvestError, match="xdist"):
-        m._live_collect_pass(harvest_path=tmp_path / "misses.jsonl", pytest_args=forwarded.split())
-
-
-def test_live_collect_pass_allows_forwarded_args_that_are_not_xdist(tmp_path, monkeypatch):
-    """The refusal is narrow: an ordinary selection argument still runs."""
-    runner = _FakePassRunner(pytest_returncode=0, miss_keys=[], failure_type="")
-    monkeypatch.setattr(m, "_run_pass_subprocess", runner)
-    monkeypatch.setattr(m, "_direction_corpus_collect", lambda *, harvest_path: None)
-
-    obs = m._live_collect_pass(harvest_path=tmp_path / "misses.jsonl", pytest_args=["-k", "x"])
-
-    assert obs.misses == {}
-    assert len(runner.commands) == 1
 
 
 def test_live_collect_pass_refuses_a_run_broken_by_an_unrelated_failure(tmp_path, monkeypatch):

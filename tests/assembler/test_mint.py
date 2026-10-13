@@ -8,10 +8,11 @@ import datetime
 import pytest
 
 from assembler.bind import BoundSeries, bind_all
-from assembler.errors import BindingInvalid
+from assembler.errors import BindingInvalid, SchemaInvalid
 from assembler.limits import LABEL_MAX
 from assembler.mint import default_window, mint_component, stamp_envelope
-from assembler.mint.provenance import _WARNING_KIND_BY_CODE
+from assembler.mint.provenance import _WARNING_KIND_BY_CODE, DESCRIPTION_PROVENANCE_MEMBERS
+from assembler.ports import FrameRef
 from assembler.resolve import ResolvedSeries, resolve_selectors
 from assembler.select import normalize_select
 from assembler.series_id import mint_series_id
@@ -272,7 +273,7 @@ def test_source_id_derivation_is_deterministic_for_a_non_conforming_raw_ref(rele
 # -- bar_chart -----------------------------------------------------------
 
 
-def _multi_recipient_rows():
+def _multi_recipient_rows(*, role="recipient"):
     """Build data where Kenya's last observation (2021) precedes the window end (2022)."""
     data = {
         "country/ETH": {"2020": 100.0, "2021": 110.0, "2022": 120.0},
@@ -282,7 +283,7 @@ def _multi_recipient_rows():
     return tuple(
         {
             "stat_var": "dcid:MalariaGrantDisbursements",
-            "recipient": recipient,
+            role: recipient,
             "time_period": period,
             "value": value,
             "unit": None,
@@ -294,21 +295,23 @@ def _multi_recipient_rows():
     )
 
 
-def _multi_recipient_resolved_frame():
+def _multi_recipient_resolved_frame(*, role="recipient"):
     return build_resolved_frame(
         frame_ref=malaria_ethiopia_frame_ref(),
-        role_keys=("recipient",),
-        rows=_multi_recipient_rows(),
+        role_keys=(role,),
+        rows=_multi_recipient_rows(role=role),
         labels={"country/ETH": "Ethiopia", "country/GHA": "Ghana", "country/KEN": "Kenya"},
     )
 
 
-def _multi_recipient_selectors(*, recipients, stat_var="dcid:MalariaGrantDisbursements"):
+def _multi_recipient_selectors(
+    *, recipients, stat_var="dcid:MalariaGrantDisbursements", role="recipient"
+):
     return [
         {
             "bindings": [
                 {"dimension": "stat_var", "values": [stat_var]},
-                {"dimension": "recipient", "values": list(recipients)},
+                {"dimension": role, "values": list(recipients)},
             ]
         }
     ]
@@ -800,12 +803,22 @@ def test_bar_chart_with_two_unbound_dimensions_refuses_listing_the_one_to_bind(r
 # -- table -----------------------------------------------------------------
 
 
-def test_table_builds_one_row_per_coordinate_by_period(release):
-    resolved_frame = _multi_recipient_resolved_frame()
+@pytest.mark.parametrize(
+    ("role", "header"),
+    [
+        ("recipient", "Recipient"),
+        ("financingRecipient", "Recipient"),
+        # A creditor shares the provider's flow axis and keeps its own noun.
+        ("creditor", "Creditor"),
+    ],
+    ids=["recipient", "crs", "ids-creditor"],
+)
+def test_table_builds_one_row_per_coordinate_by_period(release, role, header):
+    resolved_frame = _multi_recipient_resolved_frame(role=role)
     recipients = ["country/ETH", "country/GHA"]
     series, bound = _resolve_and_bind(
         resolved_frame=resolved_frame,
-        selectors=_multi_recipient_selectors(recipients=recipients),
+        selectors=_multi_recipient_selectors(recipients=recipients, role=role),
         window={"start": "2020", "end": "2021"},
     )
     intent = {
@@ -814,7 +827,7 @@ def test_table_builds_one_row_per_coordinate_by_period(release):
             "spec_id": resolved_frame.frame_ref.spec_id,
             "content_version": resolved_frame.frame_ref.content_version,
         },
-        "select": {"stat_var": "dcid:MalariaGrantDisbursements", "recipient": recipients},
+        "select": {"stat_var": "dcid:MalariaGrantDisbursements", role: recipients},
         "window": {"start": "2020", "end": "2021"},
     }
     minted = mint_component(
@@ -829,16 +842,16 @@ def test_table_builds_one_row_per_coordinate_by_period(release):
     component = minted.component
     assert len(component["rows"]) == 4
     assert "total_rows" not in component
-    assert [col["key"] for col in component["columns"]] == [
-        "stat_var",
-        "recipient",
-        "period",
-        "value",
+    assert [(col["key"], col["label"]) for col in component["columns"]] == [
+        ("stat_var", "Variable"),
+        (role, header),
+        ("period", "Period"),
+        ("value", "Value"),
     ]
     row = next(
         r
         for r in component["rows"]
-        if r["dimensions"]["recipient"] == "Ethiopia" and r["period"] == "2020"
+        if r["dimensions"][role] == "Ethiopia" and r["period"] == "2020"
     )
     assert row["value"] == pytest.approx(100.0)
     assert row["source_ref"] == "src_oecd_dac"
@@ -1189,7 +1202,18 @@ def test_table_labels_the_facet_of_two_facets_of_one_stat_var(release, facet, va
 # -- stat_card ---------------------------------------------------------------
 
 
-def test_stat_card_mints_a_schema_valid_envelope(release, resolved_frame):
+@pytest.mark.parametrize(
+    ("change", "route"),
+    [
+        pytest.param(None, "via", id="headline"),
+        pytest.param(
+            {"basis": ["2023", "2024"], "derivation": "difference"}, "processed by", id="change"
+        ),
+    ],
+)
+def test_stat_card_mints_a_schema_valid_envelope(release, resolved_frame, change, route):
+    """The citation routes through the DFO as the card's figures say: a headline as the
+    dataset publishes it reads "via", and a change the card computes reads "processed by"."""
     series, bound = _resolve_and_bind(resolved_frame=resolved_frame, selectors=_malaria_selectors())
     intent = {
         "type": "stat_card",
@@ -1199,6 +1223,8 @@ def test_stat_card_mints_a_schema_valid_envelope(release, resolved_frame):
         },
         "select": _malaria_select(),
     }
+    if change is not None:
+        intent["change"] = change
     minted = mint_component(
         member="stat_card",
         merged_intent=intent,
@@ -1214,6 +1240,7 @@ def test_stat_card_mints_a_schema_valid_envelope(release, resolved_frame):
     assert envelope["component"]["type"] == "stat_card"
     assert envelope["component"]["value"] == pytest.approx(441.9)
     assert envelope["component"]["period"] == "2024"
+    assert f"{route} the Development Finance Observatory" in envelope["provenance"]["citation"]
 
 
 def test_stat_card_headline_value_is_the_latest_observed_point(release, resolved_frame):
@@ -1371,6 +1398,7 @@ def test_note_narration_mints_a_schema_valid_envelope(release):
 
 
 def test_note_narration_provenance_names_no_inputs_and_no_sources(release):
+    """A note narration keeps lineage alone."""
     intent = {"type": "note_narration", "text": "No frame is resolved for this member."}
     minted = mint_component(
         member="note_narration",
@@ -1382,9 +1410,8 @@ def test_note_narration_provenance_names_no_inputs_and_no_sources(release):
         clock=_fixed_clock(),
     )
     assert minted.provenance["inputs"] == []
-    assert minted.provenance["sources"] == []
-    assert minted.provenance["citation"] == "ONE DFO"
     assert minted.observed_periods == frozenset()
+    assert not set(DESCRIPTION_PROVENANCE_MEMBERS) & set(minted.provenance)
 
 
 # -- source_card -------------------------------------------------------------
@@ -1413,6 +1440,33 @@ def test_source_card_mints_a_schema_valid_envelope(release, resolved_frame):
     )
     assert envelope["component"]["type"] == "source_card"
     assert envelope["provenance"]["sources"][0]["id"] == "src_oecd_dac"
+
+
+def test_stamp_envelope_refuses_a_source_ref_no_listed_source_names(release, resolved_frame):
+    """`src_other` passes the envelope schema, and `provenance.sources` lists no such id."""
+    minted = mint_component(
+        member="source_card",
+        merged_intent={
+            "type": "source_card",
+            "frame_ref": {
+                "spec_id": resolved_frame.frame_ref.spec_id,
+                "content_version": resolved_frame.frame_ref.content_version,
+            },
+        },
+        resolved_frame=resolved_frame,
+        series=(),
+        bound_series=(),
+        release=release,
+        clock=_fixed_clock(),
+    )
+    unlisted = dataclasses.replace(
+        minted, component={"type": "source_card", "source_refs": ["src_oecd_dac", "src_other"]}
+    )
+
+    with pytest.raises(SchemaInvalid) as refused:
+        stamp_envelope(minted=unlisted, component_id="cmp_" + "h" * 20, revision=1, release=release)
+
+    assert refused.value.pointer == "/component/source_refs/1"
 
 
 def test_source_card_names_every_source_the_frame_carries_not_just_a_series_subset(release):
@@ -1515,10 +1569,24 @@ def _mint_source_card(*, resolved_frame, release):
     )
 
 
-def test_sources_carry_the_manifest_citation_and_the_frame_s_retrieval_date(release):
+@pytest.mark.parametrize(
+    ("frame_ref", "route"),
+    [
+        pytest.param(malaria_ethiopia_frame_ref(), "via", id="dataset-frame"),
+        pytest.param(
+            FrameRef(spec_id="ops_" + "c" * 32, content_version="ocv_" + "d" * 32),
+            "processed by",
+            id="computed-frame",
+        ),
+    ],
+)
+def test_sources_carry_the_manifest_citation_and_the_frame_s_retrieval_date(
+    release, frame_ref, route
+):
     """Citation metadata comes from the manifest. `retrieved` uses the frame date, 2026-09-12.
     The mint clock date is 2026-07-14. Unlisted refs use their raw ref as name, an empty URL, and
-    `Not stated` for licence.
+    `Not stated` for licence. The citation credits the sources, "processed by" the DFO where
+    the frame is a computed version.
     """
     manifest = {
         "schema_version": 1,
@@ -1534,7 +1602,8 @@ def test_sources_carry_the_manifest_citation_and_the_frame_s_retrieval_date(rele
             ],
         },
     }
-    minted = _mint_source_card(resolved_frame=_two_source_frame(manifest=manifest), release=release)
+    resolved_frame = dataclasses.replace(_two_source_frame(manifest=manifest), frame_ref=frame_ref)
+    minted = _mint_source_card(resolved_frame=resolved_frame, release=release)
 
     names = {source["name"]: source for source in minted.provenance["sources"]}
     wdi = names["World Development Indicators"]
@@ -1550,7 +1619,8 @@ def test_sources_carry_the_manifest_citation_and_the_frame_s_retrieval_date(rele
         "2026-09-12",
     )
     assert minted.provenance["citation"] == (
-        f"World Development Indicators, {_UNCITED_REF} via ONE DFO, retrieved 2026-09-12"
+        f"World Development Indicators and {_UNCITED_REF} (2026), {route} the Development"
+        " Finance Observatory"
     )
     envelope = stamp_envelope(
         minted=minted, component_id="cmp_" + "s" * 20, revision=1, release=release

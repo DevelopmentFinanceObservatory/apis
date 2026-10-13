@@ -554,7 +554,7 @@ def test_the_provenance_offered_beside_a_converting_unit_request_serves_when_pin
 
     assert region.status == "definite", f"expected definite, got {region.status!r}"
     offered = {
-        fo.axis: [o.value.ref.dcid if o.value.ref is not None else None for o in fo.options]
+        fo.axis: [o.value.ref.ref if o.value.ref is not None else None for o in fo.options]
         for fo in region.specs[0].resolved.facet_options
     }
     assert offered.get("provenance") == [_PROVENANCE_B]

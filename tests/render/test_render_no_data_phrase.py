@@ -6,6 +6,8 @@ from typing import get_args
 
 import pytest
 
+from search.engine.source_code import SourceCodeRefusal
+from search.engine.source_scope import SourceReference
 from search.models import GraphRef, NoDataReason, ResolvedQualifier
 from search.render.no_data import (
     _GENERIC_NO_DATA,
@@ -71,7 +73,7 @@ from search.render.tokens import sentence_from_plan
         ),
         (
             "denominator_not_available",
-            "No per-capita data is available for this query. Try dropping the per-capita phrasing.",
+            "No series for this query is in the form it asks for.",
         ),
         ("unit_not_resolved", "Could not read the requested unit in this query."),
         (
@@ -126,8 +128,7 @@ def test_no_data_phrase_unknown_code_falls_back():
         (
             "denominator_not_available",
             "school enrollment",
-            'No per-capita data is available for "school enrollment". '
-            "Try dropping the per-capita phrasing.",
+            'No series for "school enrollment" is in the form it asks for.',
         ),
         (
             "no_matching_slice",
@@ -285,6 +286,83 @@ def test_no_data_phrase_quotes_the_source_wordings(reason, source_terms, candida
     )
 
 
+_IDS = SourceReference(
+    ref="provenance/WorldBankInternationalDebtStatistics",
+    label="World Bank International Debt Statistics",
+    kind="provenance",
+)
+
+
+@pytest.mark.parametrize(
+    ("refusal", "expected"),
+    [
+        (
+            SourceCodeRefusal(
+                reason="source_code_not_held", code="NGDP", cause="unknown", sources=(_IDS,)
+            ),
+            'No source this search reads holds the series code "NGDP". The search holds the '
+            'series codes of "World Bank International Debt Statistics". Ask for the '
+            "indicator in words.",
+        ),
+        (
+            SourceCodeRefusal(
+                reason="source_code_not_held",
+                code="DT.TDS.DEGG.CD",
+                cause="excluded",
+                sources=(_IDS,),
+            ),
+            'The series code "DT.TDS.DEGG.CD" is a code of "World Bank International Debt '
+            "Statistics\", which this query's sources leave out. Ask for the indicator in words.",
+        ),
+        (
+            SourceCodeRefusal(
+                reason="source_code_not_held",
+                code="DT.TDS.DEGG.CD",
+                cause="not_served",
+                sources=(_IDS,),
+            ),
+            'The series code "DT.TDS.DEGG.CD" is a code of "World Bank International Debt '
+            'Statistics", but this search serves none of its series. Ask for the indicator in '
+            "words.",
+        ),
+        (
+            SourceCodeRefusal(
+                reason="source_code_not_held",
+                code="DT.TDS.DEGG.CD",
+                cause="unanswerable",
+                sources=(_IDS,),
+            ),
+            'The series of the code "DT.TDS.DEGG.CD" of "World Bank International Debt '
+            'Statistics" cannot answer this query as asked. Ask for the indicator in words.',
+        ),
+        (
+            SourceCodeRefusal(
+                reason="source_code_ambiguous",
+                code="X.CODE",
+                sources=(
+                    SourceReference(ref="dc/base/A", label="Source A", kind="provenance"),
+                    SourceReference(ref="dc/base/B", label="Source B", kind="provenance"),
+                ),
+            ),
+            '"X.CODE" is a series code of more than one source: "Source A" and "Source B". '
+            "Name one of them.",
+        ),
+        (
+            SourceCodeRefusal(
+                reason="source_code_shares_variable",
+                code="DT.NFL.MIDA.CD",
+                shared_codes=("DT.NFL.IMFC.CD",),
+            ),
+            'The series code "DT.NFL.MIDA.CD" shares its variable with "DT.NFL.IMFC.CD", so '
+            "this search cannot serve it alone. Ask for the indicator in words.",
+        ),
+    ],
+    ids=["unknown", "excluded", "not-served", "unanswerable", "ambiguous", "shares-variable"],
+)
+def test_a_source_code_phrase_states_its_refusal(refusal, expected):
+    assert no_data_phrase(refusal.reason, source_code_refusal=refusal) == expected
+
+
 def test_a_bare_source_refusal_plan_is_its_phrase():
     plan = no_data_sentence_plan("source_not_resolved", source_terms=["XYZ"])
     assert sentence_from_plan(plan) == no_data_phrase("source_not_resolved", source_terms=["XYZ"])
@@ -379,7 +457,7 @@ def test_no_data_phrase_no_observations_never_names_a_stat_var_by_its_dcid(
     phrase = no_data_phrase(
         "no_observations",
         variable_term=variable_term,
-        elected_stat_vars=[GraphRef(dcid=dcid, label=dcid)],
+        elected_stat_vars=[GraphRef(ref=dcid, label=dcid)],
     )
     assert phrase == (expected or no_data_phrase("no_observations"))
 
@@ -398,7 +476,7 @@ def test_no_data_phrase_no_observations_prefers_elected_stat_vars_over_variable_
             variable_term="climate finance",
             elected_stat_vars=[
                 GraphRef(
-                    dcid="sdg/DC_FIN_CLIMT",
+                    ref="sdg/DC_FIN_CLIMT",
                     label="Total climate-specific financial support provided",
                 )
             ],
@@ -412,8 +490,8 @@ def test_no_data_phrase_no_observations_joins_multiple_elected_stat_vars():
         no_data_phrase(
             "no_observations",
             elected_stat_vars=[
-                GraphRef(dcid="Count_Person_Male", label="Male population"),
-                GraphRef(dcid="Count_Person_Female", label="Female population"),
+                GraphRef(ref="Count_Person_Male", label="Male population"),
+                GraphRef(ref="Count_Person_Female", label="Female population"),
             ],
         )
         == "No data for male population and female population."
@@ -424,12 +502,12 @@ def test_no_data_phrase_no_observations_bounds_a_large_elected_set():
     """A 10,000-member set stays bounded. Naming 3,808 variants once produced 547,111 characters."""
     small = no_data_phrase(
         "no_observations",
-        elected_stat_vars=[GraphRef(dcid="SV_0", label="flow variant 0")],
+        elected_stat_vars=[GraphRef(ref="SV_0", label="flow variant 0")],
     )
     huge = no_data_phrase(
         "no_observations",
         elected_stat_vars=[
-            GraphRef(dcid=f"SV_{i}", label=f"flow variant {i}") for i in range(10_000)
+            GraphRef(ref=f"SV_{i}", label=f"flow variant {i}") for i in range(10_000)
         ],
     )
     # Length may grow for the count, not once per member.
@@ -445,7 +523,7 @@ def test_no_data_phrase_no_observations_prefers_variable_term_over_a_large_elect
             "no_observations",
             variable_term="official development assistance disbursed",
             elected_stat_vars=[
-                GraphRef(dcid=f"SV_{i}", label=f"flow variant {i}") for i in range(10_000)
+                GraphRef(ref=f"SV_{i}", label=f"flow variant {i}") for i in range(10_000)
             ],
         )
         == 'No data for "official development assistance disbursed".'
@@ -458,9 +536,9 @@ def test_no_data_phrase_no_observations_names_every_member_at_or_under_the_cap()
         no_data_phrase(
             "no_observations",
             elected_stat_vars=[
-                GraphRef(dcid="Count_Person_Male", label="Male population"),
-                GraphRef(dcid="Count_Person_Female", label="Female population"),
-                GraphRef(dcid="Count_Person_Nonbinary", label="Nonbinary population"),
+                GraphRef(ref="Count_Person_Male", label="Male population"),
+                GraphRef(ref="Count_Person_Female", label="Female population"),
+                GraphRef(ref="Count_Person_Nonbinary", label="Nonbinary population"),
             ],
         )
         == "No data for male population, female population, and nonbinary population."
@@ -488,7 +566,7 @@ def test_no_data_phrase_no_observations_no_concept_no_axis_falls_back_to_plain_p
     [
         pytest.param(
             "budget support",
-            [GraphRef(dcid="CRSCooperationModalityA", label="Budget support")],
+            [GraphRef(ref="CRSCooperationModalityA", label="Budget support")],
             "unbound",
             '"budget support" names a category the search could not apply to this query.',
             id="unbound-form",
@@ -558,7 +636,7 @@ def test_no_data_phrase_qualifier_not_bound_ignores_bound_entries():
     qualifiers = [
         ResolvedQualifier(
             text="ODA",
-            named=[GraphRef(dcid="CRSTypeOfFlow10", label="ODA")],
+            named=[GraphRef(ref="CRSTypeOfFlow10", label="ODA")],
             slot="crsTypeOfFlow",
             disposition="bound",
         )

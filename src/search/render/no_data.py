@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from materialise.roles import axis_noun
 from search.models import (
@@ -12,6 +12,7 @@ from search.models import (
     EntityRoleKey,
     GraphRef,
     NearestRealSpec,
+    NoDataDenominator,
     NoDataGate,
     NoDataReason,
     ResolvedQualifier,
@@ -26,11 +27,22 @@ from .labels import _join_labels
 from .tokens import _SENTENCE_ENDS, heading_tokens
 from .what import _lower_first_word
 
+if TYPE_CHECKING:
+    from search.engine.source_code import SourceCodeRefusal
+
 # The next step a role_not_resolved refusal gives.
 _NAME_A_DIRECTION = 'Put "from" or "to" before a name.'
 
 # The next step a source_not_resolved refusal gives.
 _NAME_A_SOURCE = "Try a publisher or dataset name, or leave the source out."
+
+# The next step a source_code_not_held or source_code_shares_variable refusal gives.
+_ASK_IN_WORDS = "Ask for the indicator in words."
+
+# The source-code refusals, which `_source_code_phrase` words.
+_SOURCE_CODE_REASONS = frozenset(
+    {"source_code_not_held", "source_code_ambiguous", "source_code_shares_variable"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +64,16 @@ _NO_DATA_PHRASES: dict[str, str] = {
     "source_ambiguous": (
         "A data source named in this query matches more than one source. Name one of them."
     ),
+    "source_code_not_held": (
+        f"No source this search reads holds the series code in this query. {_ASK_IN_WORDS}"
+    ),
+    "source_code_ambiguous": (
+        "The series code in this query is held by more than one source. Name one of them."
+    ),
+    "source_code_shares_variable": (
+        "The series code in this query shares its variable with other codes of its source, "
+        f"so this search cannot serve it alone. {_ASK_IN_WORDS}"
+    ),
     "entity_not_resolved": "Could not use the place named in this query. Try a different place name.",
     "entity_ambiguous": (
         "An entity named in this query matches more than one entity in the graph. Be more specific."
@@ -72,9 +94,7 @@ _NO_DATA_PHRASES: dict[str, str] = {
     ),
     "no_matching_slice": "The combination this query asks for was never published as a series.",
     "binding_mismatch": "No published series carries every condition this query asks for.",
-    "denominator_not_available": (
-        "No per-capita data is available for this query. Try dropping the per-capita phrasing."
-    ),
+    "denominator_not_available": "No series for this query is in the form it asks for.",
     "unit_not_resolved": "Could not read the requested unit in this query.",
     "facet_not_available": (
         "Data exists for this query, but none from the requested source, method, or unit."
@@ -100,9 +120,7 @@ _VARIABLE_TERM_PHRASES: dict[str, str] = {
         'Could not match "{t}" to a supported indicator. Try a different wording or a related '
         "indicator."
     ),
-    "denominator_not_available": (
-        'No per-capita data is available for "{t}". Try dropping the per-capita phrasing.'
-    ),
+    "denominator_not_available": 'No series for "{t}" is in the form it asks for.',
     "no_matching_slice": (
         'No published series for "{t}" matches the combination this query asks for.'
     ),
@@ -120,10 +138,7 @@ _COMPOSED_VARIABLE_TERM_PHRASES: dict[str, tuple[str, str]] = {
         "No match for ",
         ". Try a different wording or a related indicator.",
     ),
-    "denominator_not_available": (
-        "No per-capita data for ",
-        ". Try dropping the per-capita phrasing.",
-    ),
+    "denominator_not_available": ("No series for ", " is in the form it asks for."),
     "no_matching_slice": (
         "No published series for ",
         " matches the combination this query asks for.",
@@ -161,7 +176,7 @@ def _no_observations_concept(
     """
     quoted = f'"{variable_term}"' if variable_term else None
     if not elected_stat_vars or any(
-        not ref.label or ref.label == ref.dcid for ref in elected_stat_vars
+        not ref.label or ref.label == ref.ref for ref in elected_stat_vars
     ):
         return quoted
     labels = [_lower_first_word(ref.label) for ref in elected_stat_vars]
@@ -184,6 +199,7 @@ def no_data_phrase(
     qualifier_terms: list[ResolvedQualifier] | None = None,
     source_terms: list[str] | None = None,
     scope: ScopeSources | None = None,
+    source_code_refusal: SourceCodeRefusal | None = None,
 ) -> str:
     """Map a reason to its phrase, using query terms where supported.
 
@@ -202,7 +218,8 @@ def no_data_phrase(
 
     ``source_terms`` are quoted and joined for source_not_resolved and
     source_ambiguous, where ``ambiguous_candidates`` holds the labels of the
-    sources the wording matches.
+    sources the wording matches. The source-code reasons are worded from
+    ``source_code_refusal`` (`_source_code_phrase`).
 
     ``elected_stat_vars`` is used only for no_observations
     (`_no_observations_concept`). Up to three graph names take precedence, unquoted.
@@ -224,6 +241,8 @@ def no_data_phrase(
         variable_term = variable_term.strip() or None
     if reason in ("source_not_resolved", "source_ambiguous"):
         return _source_phrase(reason, source_terms, ambiguous_candidates)
+    if reason in _SOURCE_CODE_REASONS:
+        return _source_code_phrase(reason, source_code_refusal)
     if reason == "no_observations":
         concept = _no_observations_concept(elected_stat_vars, variable_term=variable_term)
         axis = axis_noun(role_axis) if role_axis is not None else None
@@ -311,6 +330,42 @@ def _source_phrase(
     return f"{joined} {verb} more than one source. Name one of them."
 
 
+def _source_code_phrase(reason: NoDataReason, refusal: SourceCodeRefusal | None) -> str:
+    """The phrase of a source-code refusal, quoting the code and the sources or codes
+    `refusal` names. A `source_code_not_held` phrase states its cause: no source this search
+    reads holds the code (`unknown`), the query's sources leave out its holders
+    (`excluded`), the search serves none of its series (`not_served`), or its series cannot
+    answer the query as asked (`unanswerable`)."""
+    if refusal is None:
+        return _NO_DATA_PHRASES[reason]
+    code = f'"{refusal.code}"'
+    sources = _join_labels([f'"{source.label}"' for source in refusal.sources])
+    if reason == "source_code_ambiguous":
+        among = f": {sources}" if sources else ""
+        return f"{code} is a series code of more than one source{among}. Name one of them."
+    if reason == "source_code_shares_variable":
+        shared = _join_labels([f'"{c}"' for c in refusal.shared_codes])
+        return (
+            f"The series code {code} shares its variable with "
+            f"{shared or 'other codes of its source'}, so this search cannot serve it alone. "
+            f"{_ASK_IN_WORDS}"
+        )
+    of = f" of {sources}" if sources else ""
+    match refusal.cause:
+        case "excluded":
+            verdict = f"The series code {code} is a code{of}, which this query's sources leave out."
+        case "not_served":
+            verdict = (
+                f"The series code {code} is a code{of}, but this search serves none of its series."
+            )
+        case "unanswerable":
+            verdict = f"The series of the code {code}{of} cannot answer this query as asked."
+        case _:
+            held = f" The search holds the series codes{of}." if sources else ""
+            verdict = f"No source this search reads holds the series code {code}.{held}"
+    return f"{verdict} {_ASK_IN_WORDS}"
+
+
 def _scope_verdict(scope: ScopeSources) -> str:
     """The qualifier_not_bound verdict of a part whose scope leaves no series for it."""
     joined = _join_labels(list(scope.labels))
@@ -347,11 +402,13 @@ _REASONS_WITH_TRAILING_IMPERATIVE = frozenset(
     {
         "source_not_resolved",
         "source_ambiguous",
+        "source_code_not_held",
+        "source_code_ambiguous",
+        "source_code_shares_variable",
         "entity_not_resolved",
         "entity_ambiguous",
         "entity_set_too_large",
         "variable_not_resolved",
-        "denominator_not_available",
         "role_not_resolved",
     }
 )
@@ -388,10 +445,13 @@ def no_data_message(
     qualifier_terms: list[ResolvedQualifier] | None = None,
     source_terms: list[str] | None = None,
     scope: ScopeSources | None = None,
+    denominator: NoDataDenominator | None = None,
+    source_code_refusal: SourceCodeRefusal | None = None,
 ) -> str:
     """The bare no-data sentence: `no_data_phrase` with every term given, plus the guidance
-    a bare no_observations sentence adds and the sources a scoped part was read under
-    (`scope_sentence`), as `no_data_sentence_plan` renders it when it names no near
+    a bare no_observations sentence adds, the denominators a denominator_not_available
+    refusal compared (`denominator_sentence`), and the sources a scoped part was read
+    under (`scope_sentence`), as `no_data_sentence_plan` renders it when it names no near
     match."""
     phrase = no_data_phrase(
         reason,
@@ -403,10 +463,56 @@ def no_data_message(
         qualifier_terms=qualifier_terms,
         source_terms=source_terms,
         scope=scope,
+        source_code_refusal=source_code_refusal,
     )
     text = _bare_no_data_text(phrase, reason)
+    if denominator is not None:
+        text += denominator_sentence(denominator)
     closing = scope_sentence(reason, scope, qualifier_terms)
     return f"{text} {closing}" if closing else text
+
+
+def denominator_sentence(denominator: NoDataDenominator) -> str:
+    """The sentence, with its leading space, naming the denominator a question named and
+    the one the closest series divides by: " The question names GDP as the base, and the
+    closest series divides by gross national income." Empty when it names neither."""
+    asked = _lower_first_word(denominator.asked.label) if denominator.asked else None
+    found = _lower_first_word(denominator.found.label) if denominator.found else None
+    if asked and found:
+        return (
+            f" The question names {asked} as the base, and the closest series divides by {found}."
+        )
+    if asked:
+        return f" The question names {asked} as the base, and the closest series states none."
+    if found:
+        return f" The closest series divides by {found}."
+    return ""
+
+
+def _denominator_plan(
+    phrase: str,
+    flagged_match: Spec,
+    nearest_real: list[NearestRealSpec] | None,
+    denominator: NoDataDenominator | None,
+) -> list[SentenceToken]:
+    """A denominator_not_available refusal's plan: the phrase, the denominators compared
+    (`denominator_sentence`), the flagged match offered as the closest series, and the
+    first nearest_real level as data that exists. ``phrase`` stays the first token, which
+    the envelope reframes."""
+    plan = [_text(phrase)]
+    if denominator is not None and (said := denominator_sentence(denominator)):
+        plan.append(_text(said))
+    if lead := _near_match_lead_plan(_near_match_heading(flagged_match)):
+        plan.extend([_text(" The closest series is "), *lead])
+    if nearest_real and (
+        level := _near_match_lead_plan(
+            _near_match_heading(
+                nearest_real[0], keep_how_properties=sibling_how_properties(nearest_real)
+            )
+        )
+    ):
+        plan.extend([_text(" Data exists for "), *level])
+    return plan
 
 
 def _join_separators(count: int) -> list[str]:
@@ -538,8 +644,8 @@ def _is_elected_variable(flagged_match: Spec, elected_stat_vars: list[GraphRef] 
     """Whether a flagged match and the elected request name identical StatVars."""
     if not elected_stat_vars:
         return False
-    flagged_stat_vars = {stat_var.ref.dcid for stat_var in flagged_match.resolved.members}
-    elected = {stat_var.dcid for stat_var in elected_stat_vars}
+    flagged_stat_vars = {stat_var.ref.ref for stat_var in flagged_match.resolved.members}
+    elected = {stat_var.ref for stat_var in elected_stat_vars}
     return bool(flagged_stat_vars) and flagged_stat_vars == elected
 
 
@@ -579,7 +685,9 @@ def no_data_sentence_plan(
     qualifier_terms: list[ResolvedQualifier] | None = None,
     source_terms: list[str] | None = None,
     scope: ScopeSources | None = None,
+    denominator: NoDataDenominator | None = None,
     departures: Sequence[Departure] = (),
+    source_code_refusal: SourceCodeRefusal | None = None,
 ) -> list[SentenceToken]:
     """Build a no-data plan: a verdict, a near-match's sentence when one is available,
     then the part's departures.
@@ -597,6 +705,10 @@ def no_data_sentence_plan(
       return the bare phrase.
     - ``role_incompatible`` or ``qualifier_not_bound`` with a flagged match
       returns the bare refusal to avoid contradicting it with the match.
+    - ``denominator_not_available`` with a flagged match names the denominator asked and
+      found (``denominator``), offers the flagged match as the closest series and the
+      first ``nearest_real`` entry, its level reading, as data that exists
+      (`_denominator_plan`).
     - Another flagged match whose StatVars equal the elected set is the checked
       series too and takes the same claim form, unless the reason quotes the
       variable (`composed_variable_outcome`), whose phrase the envelope reframes.
@@ -620,8 +732,9 @@ def no_data_sentence_plan(
     entity-ambiguity form; ``ambiguous_roles`` maps a wording to its flow axis.
     ``elected_stat_vars`` are added when the verdict would not repeat a
     variable already named by the match. ``qualifier_terms`` apply only to
-    qualifier_not_bound, and ``source_terms`` to the two source reasons, whose
-    ``ambiguous_candidates`` are source labels. A part read under a source ``scope``
+    qualifier_not_bound, ``source_terms`` to the two source reasons, whose
+    ``ambiguous_candidates`` are source labels, and ``source_code_refusal`` to the
+    source-code reasons (`no_data_phrase`). A part read under a source ``scope``
     closes its verdict on the sources it was read under (`scope_sentence`). The part's
     ``departures`` follow as departure-segment tokens.
     """
@@ -641,6 +754,8 @@ def no_data_sentence_plan(
         qualifier_terms=qualifier_terms,
         source_terms=source_terms,
         scope=scope,
+        denominator=denominator,
+        source_code_refusal=source_code_refusal,
     )
     if closing := scope_sentence(reason, scope, qualifier_terms):
         plan.append(_text(f" {closing}" if plan else closing))
@@ -665,6 +780,8 @@ def _no_data_verdict_plan(
     qualifier_terms: list[ResolvedQualifier] | None,
     source_terms: list[str] | None,
     scope: ScopeSources | None,
+    denominator: NoDataDenominator | None,
+    source_code_refusal: SourceCodeRefusal | None,
 ) -> list[SentenceToken]:
     """The no-data plan before its departures and its scope sentence
     (`no_data_sentence_plan`)."""
@@ -704,6 +821,13 @@ def _no_data_verdict_plan(
                 )
             )
         ]
+    elif reason == "denominator_not_available" and flagged_match is not None:
+        plan = _denominator_plan(
+            no_data_phrase(reason, variable_term=variable_term),
+            flagged_match,
+            nearest_real,
+            denominator,
+        )
     elif flagged_match is not None:
         phrase = no_data_phrase(
             reason, variable_term=variable_term, entity_terms=entity_terms, role_axis=role_axis
@@ -747,6 +871,7 @@ def _no_data_verdict_plan(
                 qualifier_terms=qualifier_terms,
                 source_terms=source_terms,
                 scope=scope,
+                source_code_refusal=source_code_refusal,
             ),
             reason,
         )

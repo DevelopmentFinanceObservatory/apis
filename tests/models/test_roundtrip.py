@@ -28,19 +28,19 @@ class TestSlotExpansionRoundtrip:
             {
                 "key": {
                     "axis": "how",
-                    "property": {"dcid": "crsPurpose", "label": "purpose"},
+                    "property": {"ref": "crsPurpose", "label": "purpose"},
                     "label": "purpose",
                 },
                 "binding": {
                     "kind": "value",
                     "value": {
-                        "ref": {"dcid": "CRSPurposeCode120", "label": "health"},
+                        "ref": {"ref": "CRSPurposeCode120", "label": "health"},
                         "value_kind": "enum_value",
                     },
                 },
                 "expansion": {
                     "added": [
-                        {"dcid": "CRSPurposeCode12262", "label": "malaria control"},
+                        {"ref": "CRSPurposeCode12262", "label": "malaria control"},
                     ]
                 },
             }
@@ -49,10 +49,10 @@ class TestSlotExpansionRoundtrip:
         spec = Spec.model_validate(payload)
         slot = spec.resolved.slots[0]
         assert slot.expansion is not None
-        assert [ref.dcid for ref in slot.expansion.added] == ["CRSPurposeCode12262"]
+        assert [ref.ref for ref in slot.expansion.added] == ["CRSPurposeCode12262"]
 
         dumped = spec.model_dump(mode="json")
-        assert dumped["resolved"]["slots"][0]["expansion"]["added"][0]["dcid"] == (
+        assert dumped["resolved"]["slots"][0]["expansion"]["added"][0]["ref"] == (
             "CRSPurposeCode12262"
         )
         assert Spec.model_validate(dumped).model_dump(mode="json") == dumped
@@ -64,7 +64,7 @@ class TestSlotExpansionRoundtrip:
                 "key": {"axis": "how", "property": None, "label": "purpose"},
                 "binding": {"kind": "unbound"},
                 "expansion": {
-                    "added": [{"dcid": "x", "label": "x"}],
+                    "added": [{"ref": "x", "label": "x"}],
                     "unexpected": True,
                 },
             }

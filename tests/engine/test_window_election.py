@@ -25,6 +25,7 @@ from materialise.graph import Facet
 from materialise.rate_tables import RateTableCache
 from search.engine.bind import _UniversalBindOutput
 from search.engine.extract import DateRequest
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region.convertibility import decide_part_unit
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.state import EngineOptions
@@ -33,6 +34,7 @@ from search.models import IdentityUnitRequest, Spec, TimeWindow
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import materialise_double_from_obs
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 from tests.materialise._rate_table_support import CONVERTIBLE_STAT_VAR_ARCS, conversion_arcs
 from tests.materialise.conftest import FakeGraphReader
@@ -66,6 +68,8 @@ _OBS = {
 
 class _Bind:
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         return _UniversalBindOutput(chosen_shape_index=0, bindings=[], also_plausible=[]), None
 
 
@@ -123,7 +127,7 @@ def test_a_search_answer_and_a_mint_of_its_spec_serve_the_same_source() -> None:
     identity = spec.definition.identity
 
     assert identity.facets is None
-    assert [ref.dcid for ref in spec.resolved.trace.resolved_sources] == [_SHORT]
+    assert [ref.ref for ref in spec.resolved.trace.resolved_sources] == [_SHORT]
     assert spec.resolved.facets["provenance"].ref == _SHORT
     observations = spec.resolved.observations
     assert observations is not None

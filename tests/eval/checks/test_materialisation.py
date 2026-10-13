@@ -14,6 +14,7 @@ from tests.conftest import base_response, minimal_spec
 from tests.eval.checks.conftest import (
     make_case,
     no_members_door,
+    panel,
     response_schema,
     schema_listing_members,
 )
@@ -69,7 +70,15 @@ def test_materialisation_is_the_one_modal_only_check():
     assert set(MODAL_ONLY_CHECKS) == {"materialisation"}
 
 
-def test_materialisation_skips_candidates():
+@pytest.mark.parametrize(
+    ("case", "verdict"),
+    [
+        (make_case({"candidates": {}}), NA),
+        # A definite-only expectation asserts the check, which the candidates status skips.
+        (DEFINITE, Verdict.UNREACHED),
+    ],
+)
+def test_materialisation_skips_candidates(case, verdict):
     spec1 = minimal_spec("s1")
     spec2 = minimal_spec("s2")
     resp = base_response(
@@ -86,7 +95,26 @@ def test_materialisation_skips_candidates():
             }
         ],
     )
-    assert check(resp, case=make_case({"candidates": {}})).verdict == NA
+    assert check(resp, case=case).verdict == verdict
+
+
+@pytest.mark.parametrize(
+    ("expect", "verdict", "parts"),
+    [
+        # A mixed block asserts the check on the definite parts of a mixed answer.
+        ({"mixed": {}}, Verdict.UNREACHED, None),
+        ({"parts": [{"definite": {}}, {"definite": {}}]}, Verdict.UNREACHED, {0, 1}),
+        ({"parts": [{"no_data": {}}, {"candidates": {}}]}, NA, None),
+    ],
+    ids=["mixed", "parts", "parts-unasserted"],
+)
+def test_materialisation_is_unreached_where_a_definite_or_mixed_block_goes_unpaired(
+    expect, verdict, parts
+):
+    """crs-013 returns one no-data part."""
+    result = check(panel("crs-013"), case=make_case(expect))
+    assert result.verdict == verdict
+    assert (set(result.parts) if result.parts is not None else None) == parts
 
 
 def test_materialisation_breadth_pass():
@@ -223,18 +251,36 @@ def test_materialisation_exact_counts_the_other_source_when_stated():
 
 
 def test_materialisation_exact_counts_overlapping_dates_of_one_group_once():
-    """Two facets of one group differ in observation period and share 2015 to 2019: the
-    series holds fifteen dates, not twenty."""
+    """Two facets of one group at one observation period share 2015 to 2019: the series
+    holds fifteen dates, not twenty."""
     facets = {
         _ETH: [
             _facet("f-annual", range(2005, 2020), period="P1Y"),
-            _facet("f-other", range(2015, 2020), period="P5Y"),
+            _facet("f-other", range(2015, 2020), period="P1Y"),
         ]
     }
     ev = _score(_exact_response(15), facets)
     assert ev.verdict == PASS, ev.detail
     assert "observed=15," in ev.detail
     assert _score(_exact_response(20), facets).verdict == FAIL
+
+
+def test_materialisation_exact_counts_one_observation_period_of_a_group():
+    """A dispatch serves a series at one observation period. WHO antenatal care coverage
+    at Nigeria holds four facets of one source and unit at four periods; the answer serves
+    the P6Y facet's five points, which no union of the four (ten dates) states."""
+    facets = {
+        _ETH: [
+            _facet("f-p4y", [1999, 2024], period="P4Y"),
+            _facet("f-p3y", [2011, 2021], period="P3Y"),
+            _facet("f-p6y", [1990, 2003, 2008, 2013, 2018], period="P6Y"),
+            _facet("f-p5y", [2017], period="P5Y"),
+        ]
+    }
+    ev = _score(_exact_response(5), facets)
+    assert ev.verdict == PASS, ev.detail
+    assert "observed=5," in ev.detail
+    assert _score(_exact_response(10), facets).verdict == FAIL
 
 
 def test_materialisation_exact_counts_inside_the_window():
@@ -330,6 +376,36 @@ def test_materialisation_exact_range_counts_every_date_in_the_window():
     ev = _score(resp, facets)
     assert ev.verdict == PASS, ev.detail
     assert "observed=3," in ev.detail
+
+
+@pytest.mark.parametrize(
+    ("estimates", "window", "observed"),
+    [
+        pytest.param(_WDI, (2015, 2027), 13, id="estimates-continue-past-the-series-end"),
+        pytest.param(_WDI, (2015, 2024), 10, id="series-reaches-the-window-end"),
+        pytest.param(_UN, (2015, 2027), 10, id="another-sources-estimates-continue-nothing"),
+    ],
+)
+def test_materialisation_exact_counts_the_estimates_continuing_a_series(
+    estimates: str, window: tuple[int, int], observed: int
+):
+    """Kenya's reported series runs to 2024 and an `Estimated` facet to 2030. The answer
+    states no method, and serves the estimates of the reported series' own source after
+    2024 inside its window, so 2015 to 2027 counts ten reported years and three
+    estimated ones."""
+    facets = {
+        _KEN: [
+            _facet("f-wdi", range(2000, 2025)),
+            _facet("f-est", range(2020, 2031), provenance=estimates, method="Estimated"),
+        ]
+    }
+    start, end = window
+    resp = _exact_response(
+        observed, window={"start_year": start, "end_year": end}, entities=("country/KEN",)
+    )
+    ev = _score(resp, facets)
+    assert ev.verdict == PASS, ev.detail
+    assert f"observed={observed}," in ev.detail
 
 
 _PER_SERIES = {"provenance": {"basis": "fallback", "selection": "per_series"}}
@@ -623,10 +699,10 @@ _IDS_ROWS = (
 )
 
 
-def _ids_coverage(stamp: str = _COVERAGE_STAMP, rows=_IDS_ROWS):
+def _ids_coverage(stamp: str = _COVERAGE_STAMP, rows=_IDS_ROWS, methods=None):
     """Coverage for ids-debt-to-china-kenya's StatVar, holding China's claims on Kenya, 1983
     to 2024 (42 observations, as the dev coverage build records them), and France's, 2009 to
-    2024, or the `rows` given."""
+    2024, or the `rows` given, each facet of `methods` under its measurement method."""
     from series_coverage.index import CoverageIndex
     from series_coverage.schema import CoverageManifest, FacetMetadata, RoleNames
     from series_coverage.shared import CoverageSnapshot
@@ -636,7 +712,12 @@ def _ids_coverage(stamp: str = _COVERAGE_STAMP, rows=_IDS_ROWS):
     index = CoverageIndex(
         table,
         {sv: RoleNames(donor="creditor", recipient="debtor") for sv, *_ in rows},
-        {_IDS_FACET: FacetMetadata(provenance_id=_IDS, observation_period="P1Y")},
+        {
+            facet_id: FacetMetadata(
+                provenance_id=_IDS, measurement_method=method, observation_period="P1Y"
+            )
+            for facet_id, method in (methods or {_IDS_FACET: None}).items()
+        },
         horizon=horizon,
     )
     manifest = CoverageManifest(
@@ -728,6 +809,34 @@ def test_materialisation_role_bearing_latest_counts_the_tuples_reaching_their_st
         requested={"kind": "latest"},
     )
     ev = check(resp, coverage=functools.partial(_ids_coverage, rows=rows))
+    assert ev.verdict == PASS, ev.detail
+    assert f"observed={observed}," in ev.detail
+
+
+@pytest.mark.parametrize(
+    ("window", "observed"),
+    [
+        pytest.param((2015, 2026), 12, id="estimates-continue-past-the-tuples-end"),
+        pytest.param((2015, 2022), 8, id="tuple-reaches-the-window-end"),
+    ],
+)
+def test_materialisation_role_bearing_counts_the_estimates_continuing_a_tuple(
+    window: tuple[int, int], observed: int
+):
+    """China's reported claims on Kenya run to 2022 and IDS's `Estimated` facet to 2030, so
+    2015 to 2026 serves eight reported years and the four estimated years after them."""
+    rows = (
+        (_IDS_SV, _IDS_FACET, "country/CHN", "country/KEN", range(2010, 2023)),
+        (_IDS_SV, "ids-estimated", "country/CHN", "country/KEN", range(2020, 2031)),
+    )
+    start, end = window
+    resp = _role_response(
+        observed, (_KEN_DEBTOR, _CHN_CREDITOR), window={"start_year": start, "end_year": end}
+    )
+    coverage = functools.partial(
+        _ids_coverage, rows=rows, methods={_IDS_FACET: None, "ids-estimated": "Estimated"}
+    )
+    ev = check(resp, coverage=coverage)
     assert ev.verdict == PASS, ev.detail
     assert f"observed={observed}," in ev.detail
 

@@ -2,7 +2,8 @@
 
 `VersionRecordWriter` stores a version's immutable facts (`dataset_store.snapshot.VersionFacts`),
 and `write_version` stores everything one
-serve writes (`VersionWrite`) in one transaction. `VersionLister` lists a
+serve writes (`VersionWrite`) in one transaction. A record's `VersionDescriber` writes its
+description record in the transaction that writes its row. `VersionLister` lists a
 subject's stored versions. `HeadWriter` records each materialisation run
 (`MaterialisationRecord`) and moves the current content version, and `HeadReader`
 reads it. An operation run fences its head advance on its claim (`HeadFence`), and a write the
@@ -12,13 +13,24 @@ fence refuses raises `HeadFenceLost`. The default null writers record or advance
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass
+import logging
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Literal, Protocol
 
+from pydantic import JsonValue
+
 from artifact_store.inventory import InventoryEntry
 from dataset_store.snapshot import StoredVersion, VersionFacts, VersionState
+from description.facts import Basis, DescriptionRecord
+from description.stored import FieldPath
+
+logger = logging.getLogger(__name__)
+
+# Logs a description record that could not be built, with the version's id and content version.
+# The version is stored without a record, which `backfill-descriptions` fills once fixed.
+DESCRIPTION_BUILD_FAILED_MARKER = "description_record_build_failed"
 
 # The entry point a materialisation ran through, recorded on its `MaterialisationRecord` and
 # logged on its `datasets.timings` line.
@@ -56,6 +68,74 @@ class VersionRecord:
     # The hash of the version's frame (`dfo_frame_grammar.frame_sha256`), which every writer
     # holds when it records the version.
     frame_sha256: str | None = None
+    # Builds and settles the version's description record in the transaction that writes the
+    # version row. `None` writes no record.
+    describer: VersionDescriber | None = field(default=None, compare=False)
+
+
+@dataclass(frozen=True)
+class LateFields:
+    """Members of a stored description record to fill once, and what they arrived by.
+
+    `derived` members follow the fill: the write that fills a `values` member sets them too,
+    replacing what they held, and a write that fills nothing leaves them as they are.
+    `continuations` follows the fill the same way on the version row: a published frame's
+    continuations (`dataset_store.snapshot.FrameLineage.continuations`) derived from the steps
+    the fill brings, replacing those its publish stored; `None` leaves them.
+    """
+
+    values: Mapping[FieldPath, JsonValue]
+    basis: Basis
+    derived: Mapping[FieldPath, JsonValue] = field(default_factory=dict)
+    continuations: Sequence[Mapping[str, object]] | None = None
+
+
+class DescriptionDiverges(Exception):
+    """A write's evidence states facts of a version that differ from those its description
+    record holds. `pointer` names the request member that carried them."""
+
+    def __init__(self, message: str, *, pointer: str) -> None:
+        self.pointer = pointer
+        super().__init__(message)
+
+
+def log_description_build_failure(version: VersionRecord) -> None:
+    """Log, at error level with the exception in hand, that `version`'s description record
+    could not be built."""
+    logger.exception(
+        "%s id=%s content_version=%s",
+        DESCRIPTION_BUILD_FAILED_MARKER,
+        version.subject_id,
+        version.content_version,
+    )
+
+
+class VersionDescriber(Protocol):
+    """How a version write records the version's `DescriptionRecord`.
+
+    The writer calls it inside the transaction that writes the version row. A version that
+    holds no record gets the one `describe` builds from the version as stored, so a write that
+    found the row already recorded describes the stored facts, never its own. A version that
+    holds one gets the late fields `settle` returns. Both run with no I/O of their own. Any
+    exception either raises, other than `DescriptionDiverges`, is a defect: the writer logs it
+    (`log_description_build_failure`) and stores the version without touching its record.
+    """
+
+    def describe(
+        self, version: VersionRecord, *, base: DescriptionRecord | None
+    ) -> DescriptionRecord | None:
+        """The record of `version`, whose facts and frame hash are the stored ones. `base` is
+        the stored record of the version `version.base_content_version` names, `None` when it
+        names none or that version holds no record. `None` when no record can be built."""
+        ...
+
+    def settle(self, stored: DescriptionRecord, *, version: VersionRecord) -> LateFields | None:
+        """The late fields this write fills in `stored`, or `None` for none.
+
+        Raises:
+            DescriptionDiverges: this write's evidence contradicts `stored`.
+        """
+        ...
 
 
 # The facts a rendered artifact carries. An artifact links to a version only when the stored

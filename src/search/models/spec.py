@@ -96,6 +96,13 @@ class ResolvedFacet(StrictModel):
             "provenance axis only, alongside ref: the Data Commons the provenance's data comes from"
         ),
     )
+    documentation: str | None = Field(
+        default=None,
+        description=(
+            "provenance axis only, alongside ref: the Graph API route of the provenance's "
+            "document, GET /api/graph/documentation/{dcid}"
+        ),
+    )
     account: FlowAccount | None = Field(
         default=None,
         description=(
@@ -127,11 +134,13 @@ class ResolvedFacet(StrictModel):
         if (
             self.source is not None
             or self.data_commons is not None
+            or self.documentation is not None
             or self.currency is not None
             or self.account is not None
         ) and self.ref is None:
             raise ValueError(
-                "source, data_commons, currency and account are only meaningful alongside ref"
+                "source, data_commons, documentation, currency and account are only "
+                "meaningful alongside ref"
             )
         if (self.ref is not None) == (self.selection is not None):
             raise ValueError("exactly one of ref or selection must be present")
@@ -449,8 +458,11 @@ class DownloadFacts(StrictModel):
     rows: int | None = Field(
         default=None,
         description=(
-            "the file's rows: one per series and date. Null when it could understate: "
-            "a served member the coverage artifact does not hold"
+            "the rows the definition's series serve: one per series and date, totals "
+            "included. A long-layout CSV or XLSX keeps the rows where a role the Datasets "
+            "options document lists in long_layout_totals holds a total out of its main "
+            "table, so that table can hold fewer. Null when it could understate: a served "
+            "member the coverage artifact does not hold"
         ),
     )
     rows_exact: bool = Field(
@@ -593,7 +605,7 @@ class ResolvedSpec(StrictModel):
         description=(
             "the slots whose property none of the resolved StatVars declares, listed "
             "by property dcid; empty when every slot applies. Joins to "
-            "resolved.slots[*].key.property.dcid. Applicability is graph "
+            "resolved.slots[*].key.property.ref. Applicability is graph "
             "state, so it is reported here and the slot itself reads 'unbound' in the "
             "definition either way. It is never a member of BaseIdentity, never hashed."
         ),
@@ -604,7 +616,7 @@ class ResolvedSpec(StrictModel):
             "the slots whose property is present but unresolved on at least one "
             "resolved StatVar (the graph asserted a value for this axis but could "
             "not resolve it to a dcid), listed by property dcid; empty when no such "
-            "slot exists. Joins to resolved.slots[*].key.property.dcid, and is "
+            "slot exists. Joins to resolved.slots[*].key.property.ref, and is "
             "disjoint from inapplicable_slots: a property is either never asserted by "
             "any resolved StatVar (inapplicable_slots), present but unreadable on one "
             "(this field), or neither (a genuinely open axis). The slot itself reads "
@@ -912,6 +924,9 @@ class ResolvedSpec(StrictModel):
     # from the cache holds neither. Equality compares the wire state (`__eq__`).
     _unserved_entities: tuple[tuple[str, str], ...] = PrivateAttr(default=())
     _data_years: tuple[int, int] | None = PrivateAttr(default=None)
+    # Whether the served series include points continuing a series past its last period
+    # (`ResolvedSpec.continued`), which the part states in a `modelled_values` departure.
+    _continued: bool = PrivateAttr(default=False)
     # The sets the request named whose every member a role binds, each with its role and
     # member dcids (`ResolvedSpec.named_sets`). The part's departures count a set's members
     # without values against it. `entity_groups` carries the one set a role's entities equal.
@@ -965,6 +980,14 @@ class ResolvedSpec(StrictModel):
         `data_date_range` is clipped to the window; a `year_unavailable` departure states
         this span as where the data starts and ends."""
         return self._data_years
+
+    @property
+    def continued(self) -> bool:
+        """Whether the served series include points from a facet continuing a series past
+        its last period, the same source's estimates (`read_plan.serves_continuation`).
+        Coverage counts those points, and a `modelled_values` departure marks them
+        (`engine.departures.spec_departure_facts`), with or without observations."""
+        return self._continued
 
     @property
     def members(self) -> tuple[StatVar, ...]:
@@ -1039,6 +1062,12 @@ class ResolvedSpec(StrictModel):
         """A copy whose `data_years` are `years`."""
         stated = self.model_copy()
         stated._data_years = years
+        return stated
+
+    def stating_continued(self, continued: bool) -> ResolvedSpec:
+        """A copy whose `continued` is `continued`."""
+        stated = self.model_copy()
+        stated._continued = continued
         return stated
 
     def stating_members(self, members: Sequence[StatVar]) -> ResolvedSpec:

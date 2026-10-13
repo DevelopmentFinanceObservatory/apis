@@ -10,6 +10,7 @@ from dataclasses import replace
 
 import pytest
 
+from code_index import members
 from code_index.members import DatasetScope, FamilyQuery, family_query_digest
 from code_index.shared import get_index
 from search.engine.bind import DraftBindingEvidence, DraftBindingKind, SlotBindingDraft
@@ -257,3 +258,32 @@ def test_queries_that_differ_in_any_field_get_different_memo_keys(other):
 
     assert family_query_digest(reordered) == family_query_digest(_EDU_ODA)
     assert family_query_digest(other) != family_query_digest(_EDU_ODA)
+
+
+def test_prepared_index_views_answer_a_first_request_without_scanning_the_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The app prepares the code index's views at startup, so the first resolve to read a
+    five-tuple's rows or role-class facts, or whether the index carries a five-tuple, builds
+    nothing."""
+    index = get_index()
+    for cache in (
+        members._five_tuple_rows_cache,
+        members._five_tuple_facts_cache,
+        bound_values._index_five_tuples_cache,
+    ):
+        cache.pop(id(index), None)
+
+    bound_values.prepare_index_views()
+
+    def scan(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("a prepared view scanned the index")
+
+    monkeypatch.setattr(members, "row_five_tuple", scan)
+    monkeypatch.setattr(members, "role_class_facts", scan)
+    monkeypatch.setattr(bound_values, "IndexMemberFacts", scan)
+    five_tuples = list(members._five_tuple_rows(index).rows)
+    assert five_tuples
+    for five_tuple in five_tuples:
+        members._five_tuple_facts(index, five_tuple)
+    assert bound_values._index_five_tuples(index)

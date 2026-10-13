@@ -249,7 +249,7 @@
 
 - id: dq-weo-025
   query: government debt as a share of GDP in Kenya
-  why: A World Bank Datasets central government debt share answers if it holds Kenya, otherwise no_data.
+  why: A World Bank Datasets central government debt share answers if it holds Kenya; otherwise the part refuses, and a debt level series elected for the share is refused denominator_not_available.
   reuse: panel/weo-040
   tags: {theme: debt, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, probe: [weo_unpublished], overlap: [ids]}
   known_failure: {issue: 1156, checks: [disposition]}
@@ -257,7 +257,7 @@
     definite:
       measure: {family: base.government_debt}
       entities: [{dcid: country/KEN, role: observationAbout}]
-    no_data: {reason: [variable_not_resolved, no_observations]}
+    no_data: {reason: [denominator_not_available, variable_not_resolved, no_observations]}
 
 - id: dq-weo-026
   query: inflation in Ghana in 2023

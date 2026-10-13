@@ -39,18 +39,13 @@ series the agency does not hold or the UN deployment does not name. A read the U
 deployment fails raises `dc_graph.GraphReadError`. A read it answers with HTTP
 429 is repeated after a wait, three times at most.
 
-The UN front door refuses some `/v2/node` POSTs by their text, with an HTML 403
-(`dc_graph.FrontDoorRefused`). A body naming three particular topics together is
-refused, and each topic alone passes. A refused read naming several nodes is
-read again as two halves, each halved again while refused, and a node refused
-on its own is an `un_read_refused` fault.
-
-The UN deployment sometimes answers a page request with a token the read has
-already been given, beside the first page again, and answers the same request
-correctly a second later. Such a page is requested again after 1, 2 and 4
-seconds, and only one that repeats a token on all four attempts stops the
-read. A read that stops is an `un_enumeration_stalled` fault. The count check
-decides whether the tables are whole, whatever the pages did.
+Every `/v2/node` read follows `origin_catalogue.node_reads`' rules: a read
+the UN front door refuses is read again in halves, a node a read naming
+several leaves out or answers empty is read again alone, and a page
+repeating a token is requested again. A read those rules cannot answer
+whole is an `un_read_refused`, `un_node_omitted` or `un_enumeration_stalled`
+fault. The count check decides whether the tables are whole, whatever the
+pages did.
 
 At most `UN_MIRROR_CONCURRENCY` requests are in flight against the UN
 deployment.
@@ -58,9 +53,8 @@ deployment.
 
 from __future__ import annotations
 
-import threading
 import time
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from typing import Final, Literal, Protocol
@@ -68,7 +62,8 @@ from typing import Final, Literal, Protocol
 import httpx
 
 from artifact_publication.jobs import emit
-from dc_graph import FrontDoorRefused, GraphReadError
+from dc_graph import IMPORT_ADDED_CONSTRAINT_PROPERTIES, GraphReadError
+from origin_catalogue.node_reads import NodeReadFault, NodeRun, chunks, read_arcs, read_subjects
 from origin_catalogue.origins import UN_ID_PREFIX
 from origin_catalogue.registry import Registry, UnAgency
 from origin_catalogue.schema import UnAgencyCounts
@@ -81,7 +76,6 @@ UN_SITE_SUFFIX: Final[str] = "/core/api"
 """The path of the UN deployment's API root under its site root. The group
 counts are served by the site, beside the API."""
 
-_NODE_PATH: Final[str] = "/v2/node"
 _GROUP_INFO_PATH: Final[str] = "/api/variable-group/info"
 _ROOT_GROUP_PREFIX: Final[str] = f"{UN_ID_PREFIX}g/"
 _TOPIC_ROOT: Final[str] = f"{UN_ID_PREFIX}topic/Root"
@@ -89,31 +83,11 @@ _TOPIC_TYPE: Final[str] = "Topic"
 _SERIES_ARC: Final[str] = "populationType"
 _TOPIC_MEMBER_ARCS: Final[tuple[str, ...]] = ("relevantVariable", "member")
 
-_NODES_PER_REQUEST: Final[int] = 25
-"""Nodes named in one read. A `->*` answer pages at about 500 arc targets,
-and a variable carries up to about 15."""
-
 _TOPIC_ROOTS_PER_WALK: Final[int] = 500
 """Topics walked together. A walk holds every root's visited nodes at once,
 and the UN deployment has about 32,000 topics."""
 
-_MAX_PAGES: Final[int] = 400
-"""Pages one read may take. The largest group and topic lists end well inside it."""
-
-_STALLED_PAGE_LIMIT: Final[int] = 3
-"""Consecutive pages that add nothing before a read counts as stalled."""
-
-_REPEATED_PAGE_WAITS_SECONDS: Final[tuple[float, ...]] = (1.0, 2.0, 4.0)
-"""The waits before each further attempt at a page the UN deployment answered
-with a token the read had already been given. A page that still repeats one
-after the last wait, 7 seconds in all, stops the read."""
-
 _RATE_LIMITED: Final[int] = 429
-_RATE_LIMIT_WAITS_SECONDS: Final[tuple[float, ...]] = (10.0, 30.0, 60.0)
-"""The waits before each further attempt at a read the UN front door
-answered with HTTP 429. It rate-limits a client that has sent it tens of
-thousands of requests within the hour."""
-
 _SITE_BACKOFF_SECONDS: Final[tuple[float, ...]] = (1.0, 4.0)
 """The waits between the three attempts a group count read makes."""
 
@@ -121,6 +95,7 @@ type UnMirrorFaultKind = Literal[
     "un_enumeration_stalled",
     "un_excluded_series_missing",
     "un_excluded_series_unnamed",
+    "un_node_omitted",
     "un_read_refused",
     "un_tables_inconsistent",
     "un_topic_unanswered",
@@ -133,6 +108,7 @@ type UnMirrorFaultKind = Literal[
 _INCOMPLETE_FAULT_KINDS: Final[frozenset[UnMirrorFaultKind]] = frozenset(
     {
         "un_enumeration_stalled",
+        "un_node_omitted",
         "un_read_refused",
         "un_tables_inconsistent",
         "un_topic_unanswered",
@@ -158,16 +134,42 @@ def un_root_group(agency: UnAgency) -> str:
 
 @dataclass(frozen=True, slots=True)
 class UnArc:
-    """One target of one arc of a UN node, as `/v2/node` answers `->*`:
+    """One target of one arc of a node, as `/v2/node` answers `->*`:
     `property` is the arc, `dcid` the target node or `value` the literal,
     `name` the target's name and `types` its types. The answer's
-    `provenanceId` is dropped."""
+    `provenanceId` is dropped. The UN tables and the arc tables
+    (`origin_catalogue.arc_tables`) both hold their arcs as these rows."""
 
     property: str
     dcid: str | None = None
     value: str | None = None
     name: str | None = None
     types: tuple[str, ...] = ()
+
+
+def wire_arcs(arcs: Iterable[UnArc]) -> dict[str, dict[str, list[dict]]]:
+    """`arcs` as `dc_graph.GraphClient.node_arcs_batch` returns them: each
+    property's `nodes`, in the order given, each node carrying the keys it has."""
+    wire: dict[str, dict[str, list[dict]]] = {}
+    for arc in arcs:
+        node: dict = {}
+        if arc.dcid is not None:
+            node["dcid"] = arc.dcid
+        if arc.value is not None:
+            node["value"] = arc.value
+        if arc.name is not None:
+            node["name"] = arc.name
+        if arc.types:
+            node["types"] = list(arc.types)
+        wire.setdefault(arc.property, {"nodes": []})["nodes"].append(node)
+    return wire
+
+
+def import_added(arc: UnArc) -> bool:
+    """Whether `arc` is a `constraintProperties` target naming an
+    `IMPORT_ADDED_CONSTRAINT_PROPERTIES` property, which every served read leaves out
+    (`dc_graph.GraphClient.node_arcs_batch` live, `origin_catalogue.graph` from the tables)."""
+    return arc.property == "constraintProperties" and arc.dcid in IMPORT_ADDED_CONSTRAINT_PROPERTIES
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,21 +182,8 @@ class UnVariable:
     arcs: tuple[UnArc, ...]
 
     def wire_arcs(self) -> dict[str, dict[str, list[dict]]]:
-        """The arcs as `dc_graph.GraphClient.node_arcs_batch` returns them:
-        each property's `nodes`, each node carrying the keys it has."""
-        wire: dict[str, dict[str, list[dict]]] = {}
-        for arc in self.arcs:
-            node: dict = {}
-            if arc.dcid is not None:
-                node["dcid"] = arc.dcid
-            if arc.value is not None:
-                node["value"] = arc.value
-            if arc.name is not None:
-                node["name"] = arc.name
-            if arc.types:
-                node["types"] = list(arc.types)
-            wire.setdefault(arc.property, {"nodes": []})["nodes"].append(node)
-        return wire
+        """The arcs as `dc_graph.GraphClient.node_arcs_batch` returns them."""
+        return wire_arcs(self.arcs)
 
 
 class UnMirrorTableError(ValueError):
@@ -463,89 +452,18 @@ class _Faulted(Exception):
         self.fault = fault
 
 
-class _NotAdvancing(Exception):
-    """A paged read repeated a token on every attempt at one page, added
-    nothing for `_STALLED_PAGE_LIMIT` pages, or passed `_MAX_PAGES`."""
-
-
-class _Refused(Exception):
-    """The UN front door refused a `/v2/node` POST by its text (`FrontDoorRefused`)."""
+def _fault(exc: _Faulted | NodeReadFault) -> UnMirrorFault:
+    """The fault an enumeration step or one of its reads raised."""
+    if isinstance(exc, _Faulted):
+        return exc.fault
+    return UnMirrorFault(kind=exc.kind, subject=exc.subject, detail=exc.detail)
 
 
 @dataclass
-class _Run:
-    """One enumeration's graph, worker pool, deadline, request and page
-    retry counters and the strings and arcs its tables share."""
+class _Run(NodeRun):
+    """One enumeration's reads (`node_reads.NodeRun`), with the arcs its tables share."""
 
-    graph: UnMirrorGraph
-    pool: ThreadPoolExecutor
-    deadline: float | None
-    _lock: threading.Lock = field(default_factory=threading.Lock)
-    _requests: int = 0
-    _page_retries: int = 0
-    _strings: dict[str, str] = field(default_factory=dict)
     _arcs: dict[UnArc, UnArc] = field(default_factory=dict)
-
-    def post(self, payload: dict) -> dict:
-        """One `/v2/node` read. An HTTP 429 is read again after each of
-        `_RATE_LIMIT_WAITS_SECONDS`, and raises once they are spent. The
-        front door's refusal raises `_Refused`, which `_halving` turns into
-        reads of the halves."""
-        waits = iter(_RATE_LIMIT_WAITS_SECONDS)
-        while True:
-            with self._lock:
-                self._requests += 1
-            try:
-                return self.graph.post(_NODE_PATH, payload, deadline=self.deadline)
-            except GraphReadError as exc:
-                if isinstance(exc.__cause__, FrontDoorRefused):
-                    raise _Refused from exc
-                wait = next(waits, None)
-                if exc.upstream_status != _RATE_LIMITED or wait is None:
-                    raise
-            time.sleep(wait)
-
-    def page(self, payload: dict, given: set[str]) -> dict:
-        """One page of a paged read, whose answer carries no token or one
-        outside `given`, the tokens the read has been given so far. An
-        answer repeating one of them is dropped and the page requested again
-        after each of `_REPEATED_PAGE_WAITS_SECONDS`. Raises `_NotAdvancing`
-        once they are spent, or when the next wait would pass the deadline."""
-        waits = iter(_REPEATED_PAGE_WAITS_SECONDS)
-        while True:
-            body = self.post(payload)
-            if body.get("nextToken") not in given:
-                return body
-            wait = next(waits, None)
-            if wait is None or (
-                self.deadline is not None and time.monotonic() + wait >= self.deadline
-            ):
-                raise _NotAdvancing
-            with self._lock:
-                self._page_retries += 1
-            time.sleep(wait)
-
-    def requests(self) -> int:
-        with self._lock:
-            return self._requests
-
-    def page_retries(self) -> int:
-        with self._lock:
-            return self._page_retries
-
-    def map[T, R](self, read: Callable[[T], R], items: Sequence[T]) -> Iterator[R]:
-        """`read` over `items` on the pool, in order. A failure cancels the
-        reads not yet started."""
-        futures = [self.pool.submit(read, item) for item in items]
-        try:
-            for future in futures:
-                yield future.result()
-        finally:
-            for future in futures:
-                future.cancel()
-
-    def string(self, value: str) -> str:
-        return self._strings.setdefault(value, value)
 
     def arc(self, property: str, node: Mapping) -> UnArc:
         """The shared `UnArc` for one answered arc target."""
@@ -560,150 +478,7 @@ class _Run:
         return self._arcs.setdefault(arc, arc)
 
 
-def _chunks[T](items: Sequence[T], size: int = _NODES_PER_REQUEST) -> list[Sequence[T]]:
-    return [items[i : i + size] for i in range(0, len(items), size)]
-
-
-def _halving[R](
-    read: Callable[[Sequence[str]], dict[str, R]], nodes: Sequence[str], arc: str
-) -> dict[str, R]:
-    """`read(nodes)`, or, when the front door refuses it, the merged reads of
-    the two halves, each through `_halving` again. The halves are read in the
-    calling worker, since waiting on the pool from inside it can take every
-    worker. A refused read naming one node is an `un_read_refused` fault."""
-    try:
-        return read(nodes)
-    except _Refused:
-        if len(nodes) == 1:
-            raise _Faulted(
-                UnMirrorFault(
-                    kind="un_read_refused",
-                    subject=nodes[0],
-                    detail=f"the UN front door refused a {_NODE_PATH} read of {arc} of {nodes[0]}",
-                )
-            ) from None
-    middle = len(nodes) // 2
-    return {**_halving(read, nodes[:middle], arc), **_halving(read, nodes[middle:], arc)}
-
-
-def _stalled(node: str, arc: str) -> _Faulted:
-    return _Faulted(
-        UnMirrorFault(
-            kind="un_enumeration_stalled",
-            subject=node,
-            detail=f"the UN deployment stopped advancing while paging {arc} of {node}",
-        )
-    )
-
-
 # --- Reads -------------------------------------------------------------------
-
-
-def _subjects_paged(run: _Run, nodes: Sequence[str], property: str) -> dict[str, dict[str, None]]:
-    """Every `<-property` subject of each node, from one paged read naming
-    them all. Raises `_NotAdvancing` when the read stops advancing and
-    `_Refused` when the front door refuses a page."""
-    found: dict[str, dict[str, None]] = {node: {} for node in nodes}
-    tokens: set[str] = set()
-    token: str | None = None
-    idle_pages = 0
-    for _ in range(_MAX_PAGES):
-        payload: dict = {"nodes": list(nodes), "property": f"<-{property}"}
-        if token is not None:
-            payload["nextToken"] = token
-        body = run.page(payload, tokens)
-        before = sum(len(subjects) for subjects in found.values())
-        data = body.get("data") or {}
-        for node in nodes:
-            arcs = (data.get(node) or {}).get("arcs") or {}
-            for entry in (arcs.get(property) or {}).get("nodes", []):
-                if entry.get("dcid"):
-                    found[node][run.string(entry["dcid"])] = None
-        token = body.get("nextToken")
-        if token is None:
-            return found
-        idle_pages = (
-            idle_pages + 1 if sum(len(subjects) for subjects in found.values()) == before else 0
-        )
-        if idle_pages >= _STALLED_PAGE_LIMIT:
-            raise _NotAdvancing
-        tokens.add(token)
-    raise _NotAdvancing
-
-
-def _subjects(run: _Run, nodes: Sequence[str], property: str) -> dict[str, tuple[str, ...]]:
-    """Every `<-property` subject of each node. A read naming several nodes
-    that stops advancing is read again one node at a time, and a single
-    node's read that stops advancing is a fault. A read the front door
-    refuses is read again in halves (`_halving`), each with the same
-    fallback."""
-    arc = f"<-{property}"
-
-    def read(chunk: Sequence[str]) -> dict[str, dict[str, None]]:
-        try:
-            return _subjects_paged(run, chunk, property)
-        except _NotAdvancing:
-            if len(chunk) == 1:
-                raise _stalled(chunk[0], arc) from None
-        found: dict[str, dict[str, None]] = {}
-        for node in chunk:
-            try:
-                found.update(_subjects_paged(run, [node], property))
-            except _NotAdvancing:
-                raise _stalled(node, arc) from None
-        return found
-
-    subjects: dict[str, tuple[str, ...]] = {}
-    for found in run.map(lambda chunk: _halving(read, chunk, arc), _chunks(nodes)):
-        subjects.update({node: tuple(dcids) for node, dcids in found.items()})
-    return subjects
-
-
-def _arc_pages(run: _Run, node: str, first: dict) -> dict[str, list[dict]]:
-    """One node's `->*` targets by property, following `first`'s token to the end."""
-    merged: dict[str, list[dict]] = {}
-    tokens: set[str] = set()
-    body = first
-    for _ in range(_MAX_PAGES):
-        arcs = ((body.get("data") or {}).get(node) or {}).get("arcs") or {}
-        for property, targets in arcs.items():
-            merged.setdefault(property, []).extend(targets.get("nodes", []))
-        token = body.get("nextToken")
-        if token is None:
-            return merged
-        tokens.add(token)
-        try:
-            body = run.page({"nodes": [node], "property": "->*", "nextToken": token}, tokens)
-        except _NotAdvancing:
-            break
-    raise _stalled(node, "->*")
-
-
-def _arcs(run: _Run, nodes: Sequence[str]) -> dict[str, dict[str, list[dict]]]:
-    """Each node's `->*` targets by property. A read naming several nodes
-    that pages, or that the front door refuses, is split in half, and a
-    single node's pages are followed. A single node whose first or later
-    page the front door refuses is an `un_read_refused` fault."""
-    return _halving(lambda chunk: _arcs_read(run, chunk), nodes, "->*")
-
-
-def _arcs_read(run: _Run, nodes: Sequence[str]) -> dict[str, dict[str, list[dict]]]:
-    """`_arcs` for one read naming `nodes`, raising `_Refused` when the
-    front door refuses it or a later page."""
-    body = run.post({"nodes": list(nodes), "property": "->*"})
-    if body.get("nextToken") is None:
-        data = body.get("data") or {}
-        return {
-            node: {
-                property: targets.get("nodes", [])
-                for property, targets in ((data.get(node) or {}).get("arcs") or {}).items()
-            }
-            for node in nodes
-        }
-    if len(nodes) == 1:
-        return {nodes[0]: _arc_pages(run, nodes[0], body)}
-    middle = len(nodes) // 2
-    return {**_arcs(run, nodes[:middle]), **_arcs(run, nodes[middle:])}
 
 
 def _compact(run: _Run, arcs: Mapping[str, list[dict]]) -> tuple[UnArc, ...]:
@@ -740,7 +515,7 @@ def _walk_groups(run: _Run, root: str) -> dict[str, tuple[str, ...]]:
     children: dict[str, tuple[str, ...]] = {}
     frontier = [root]
     while frontier:
-        found = _subjects(run, frontier, "specializationOf")
+        found = read_subjects(run, frontier, "specializationOf")
         children.update(found)
         frontier = sorted({child for kids in found.values() for child in kids} - children.keys())
     return children
@@ -800,7 +575,7 @@ def _read_variables(run: _Run, agency: UnAgency, dcids: Sequence[str]) -> dict[s
     """Each variable's series and arcs. A variable with no `populationType`
     target is a fault, since its series decides its admission."""
     variables: dict[str, UnVariable] = {}
-    for read in run.map(lambda chunk: _arcs(run, chunk), _chunks(dcids)):
+    for read in run.map(lambda chunk: read_arcs(run, chunk), chunks(dcids)):
         for dcid, arcs in read.items():
             series = next(
                 (node["dcid"] for node in arcs.get(_SERIES_ARC, []) if node.get("dcid")), None
@@ -842,7 +617,7 @@ def _read_agency(run: _Run, agency: UnAgency, group_counts: UnGroupCounts) -> _A
     requests, page_retries = run.requests(), run.page_retries()
     root = un_root_group(agency)
     children = _walk_groups(run, root)
-    members = _subjects(run, sorted(children), "memberOf")
+    members = read_subjects(run, sorted(children), "memberOf")
     counted = group_counts(root)
     _check_counts(agency, counted=counted, children=children, members=members)
 
@@ -952,7 +727,7 @@ def _read_topics(run: _Run, admitted: Mapping[str, UnVariable]) -> dict[str, tup
     frontier = [_TOPIC_ROOT]
     while frontier:
         level: dict[str, dict[str, list[dict]]] = {}
-        for read in run.map(lambda chunk: _arcs(run, chunk), _chunks(frontier)):
+        for read in run.map(lambda chunk: read_arcs(run, chunk), chunks(frontier)):
             level.update(read)
         found: set[str] = set()
         for container, arcs in level.items():
@@ -982,7 +757,7 @@ def _read_topics(run: _Run, admitted: Mapping[str, UnVariable]) -> dict[str, tup
         frontier = sorted(found - members.keys())
     reader = _TopicArcs(members)
     table: dict[str, tuple[str, ...]] = {}
-    for roots in _chunks(sorted(topics), _TOPIC_ROOTS_PER_WALK):
+    for roots in chunks(sorted(topics), _TOPIC_ROOTS_PER_WALK):
         walked = walk_topics(
             list(roots),
             graph=reader,
@@ -1032,8 +807,8 @@ def build_un_mirror(
         for agency in registry.un_system:
             try:
                 agencies[agency.segment] = _read_agency(run, agency, group_counts)
-            except _Faulted as exc:
-                faults.append(exc.fault)
+            except (_Faulted, NodeReadFault) as exc:
+                faults.append(_fault(exc))
         stats = tuple(agency.stats for agency in agencies.values())
         mirror = None
         topic_requests, topic_page_retries = run.requests(), run.page_retries()
@@ -1060,8 +835,8 @@ def build_un_mirror(
                     },
                     agencies={segment: agency.counts for segment, agency in agencies.items()},
                 )
-            except _Faulted as exc:
-                faults.append(exc.fault)
+            except (_Faulted, NodeReadFault) as exc:
+                faults.append(_fault(exc))
             except UnMirrorTableError as exc:
                 faults.append(
                     UnMirrorFault(
@@ -1101,4 +876,5 @@ __all__ = [
     "registry_exclusions",
     "un_root_group",
     "un_site_url",
+    "wire_arcs",
 ]

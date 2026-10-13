@@ -7,7 +7,7 @@ OECD CRS and ONE imputed partitions take their partition label
 carries the unit inside it: "Debt service on external debt (current US$)", "Gross
 domestic product (GDP), Per capita, purchasing power parity (PPP) international dollar,
 ICP benchmarks 2017-2021". `measure_noun` gives "external debt service" and "GDP"
-instead. The unit (`search.heading.unit_class`) carries "per capita", "PPP
+instead. The unit (`unit_words.unit_class`) carries "per capita", "PPP
 international dollars" and the share base.
 """
 

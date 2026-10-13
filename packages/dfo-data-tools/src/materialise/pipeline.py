@@ -17,12 +17,13 @@ from materialise.content_version import mint_version
 from materialise.convert import ConversionRecord
 from materialise.dependencies import Dependencies, build_dependencies
 from materialise.enrichment import EnrichmentLookup
-from materialise.errors import MaterialisationUsageError
+from materialise.errors import FacetBindingUnsupportedError, MaterialisationUsageError
 from materialise.facets import (
     CollectionFacetProbe,
     ElectedDataset,
     FacetBinding,
     FacetSelection,
+    VariableBreadth,
     admitted_candidates,
     probe_facets,
 )
@@ -79,9 +80,9 @@ class MaterialisationRequest:
     # mapping is treated as `FacetBinding(state="unbound")`. All three axes
     # in `facets.FACET_AXES` are always evaluated, regardless of which keys
     # this mapping carries. This is the one place an axis and its binding
-    # are known together, so `__post_init__` is where a `state="request"`
-    # binding stored under any key other than `"unit"` is caught -- a
-    # `FacetBinding` itself carries no axis of its own.
+    # are known together, so `__post_init__` is where a `state="request"` or
+    # `state="national_currency"` binding stored under any key other than
+    # `"unit"` is caught -- a `FacetBinding` itself carries no axis of its own.
     facet_bindings: Mapping[str, FacetBinding]
     window: RequestedWindow
     # Code-index-derived shapes use `(provenance, unit)` for group facet agreement.
@@ -99,9 +100,10 @@ class MaterialisationRequest:
 
     def __post_init__(self) -> None:
         for axis, binding in self.facet_bindings.items():
-            if binding.state == "request" and axis != "unit":
+            if binding.state in ("request", "national_currency") and axis != "unit":
                 raise MaterialisationUsageError(
-                    f"a request-state facet binding only applies to the unit axis, not {axis!r}"
+                    f"a {binding.state}-state facet binding only applies to the unit axis, "
+                    f"not {axis!r}"
                 )
 
 
@@ -239,8 +241,14 @@ def materialise_group(
     member.
 
     Before any network call, raises `MaterialisationUsageError` for an empty request, duplicate
-    StatVars, different declared-role sets or conflicting unit bindings. Other facet-axis
-    mismatches are graph-state refusals when a member lacks the requested facet.
+    StatVars, different declared-role sets or conflicting unit bindings, and
+    `FacetBindingUnsupportedError` for a unit bound to each place's national currency across
+    several members. Other facet-axis mismatches are graph-state refusals when a member lacks
+    the requested facet.
+
+    A unit bound to each place's national currency serves each place the facets in its own
+    currency, unconverted (`national_currency.narrow_to_national_currency`), and the trace
+    names the places it serves no row at (`ManifestTrace.coverage_gaps`).
 
     When no member's facet probe returns a candidate, the result is empty and says so
     (`MaterialisationResult.probe_empty`): no facet is selected and no conversion is planned.
@@ -273,6 +281,7 @@ def materialise_group(
     _check_group_role_agreement(requests)
     _check_group_stat_var_uniqueness(requests)
     _check_group_unit_binding_agreement(requests)
+    _refuse_group_national_currency(requests)
     rate_cache = rate_cache.for_request() if rate_cache is not None else None
     if precomputed_probe is not None:
         note_un_unserved(precomputed_probe.un_unserved)
@@ -385,12 +394,15 @@ def decide_member_unit(
     settle: bool,
     precomputed: Sequence[Facet] | None = None,
     breadth: Mapping[str, int] | None = None,
+    variable_breadth: VariableBreadth = None,
     deadline: float | None = None,
 ) -> Mapping[str, FacetSelection]:
     """Return the facets and conversion decision a mint would use. The function reads facet
     candidates but stops before observations and rate-table loading. `precomputed` skips the
-    probe and ranks with `breadth`, each facet's series count under the request's window, as
-    the probe's own count ranks a probed decision (`facets.MemberProbe.breadth_in`). `settle`
+    probe and ranks with `breadth`, each facet's series count under the request's window, and
+    `variable_breadth`, each facet's places across the whole variable, as the probe's own
+    counts rank a probed decision (`facets.MemberProbe.breadth_in`,
+    `facets.MemberProbe.variable_breadth`). `settle`
     goes to the probe (`facets.probe_facets`), and Search passes `False`.
 
     Role-bearing requests require `coverage` or raise `MaterialisationUsageError` before probing.
@@ -411,11 +423,14 @@ def decide_member_unit(
             deadline=deadline,
         )
         probed, breadth = probe.candidates, probe.breadth_in(request.window)
+        variable_breadth = probe.variable_breadth
     else:
         # A decision fetches no rows, so precomputed candidates need no admission.
         probed = precomputed
     candidates = admitted_candidates(probed, request.candidate_filter)
-    selections = _select_member_facets(request, candidates, graph=graph, breadth=breadth).selections
+    selections = _select_member_facets(
+        request, candidates, graph=graph, breadth=breadth, variable_breadth=variable_breadth
+    ).selections
     decide_member_conversion(request=request, selections=selections, graph=graph, deadline=deadline)
     return selections
 
@@ -614,6 +629,19 @@ def _check_group_stat_var_uniqueness(requests: Sequence[MaterialisationRequest])
                 f"materialise_group got two members sharing stat_var {request.stat_var!r}"
             )
         seen.add(request.stat_var)
+
+
+def _refuse_group_national_currency(requests: Sequence[MaterialisationRequest]) -> None:
+    """Raise `FacetBindingUnsupportedError` before network access when a group of several
+    members binds its unit to each place's national currency: group selection elects one
+    unit across the members, and the binding serves one subject-only variable."""
+    unit = requests[0].facet_bindings.get("unit")
+    if len(requests) > 1 and unit is not None and unit.state == "national_currency":
+        raise FacetBindingUnsupportedError(
+            f"a national-currency unit binding serves one variable; this definition resolves "
+            f"to {len(requests)}",
+            facet_pointer="/facets/unit",
+        )
 
 
 def _check_group_unit_binding_agreement(requests: Sequence[MaterialisationRequest]) -> None:

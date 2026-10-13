@@ -17,6 +17,7 @@ from dfo_platform.static_response import (
     dynamic_public_json,
     encode_json_body,
     freeze_public_json,
+    gapped_public_json,
     serve_encoded_json,
 )
 
@@ -416,3 +417,45 @@ def test_dynamic_public_json_is_encode_json_body_then_serve_encoded_json():
     assert resp.content == body
     assert resp.headers["etag"] == etag
     assert resp.headers["cache-control"] == "public, max-age=42"
+
+
+def _gapped_client(*, transient_gap: bool) -> TestClient:
+    app = FastAPI()
+
+    @app.get("/gapped")
+    async def get_gapped(request: Request) -> object:
+        return gapped_public_json(_TINY_PAYLOAD, request, transient_gap=transient_gap)
+
+    return TestClient(app)
+
+
+def test_gapped_permanent_gaps_serve_public_with_an_etag_over_the_body():
+    resp = _gapped_client(transient_gap=False).get("/gapped")
+
+    body, etag = encode_json_body(_TINY_PAYLOAD)
+    assert resp.status_code == 200
+    assert resp.content == body
+    assert resp.headers["cache-control"] == "public, max-age=300"
+    assert resp.headers["etag"] == etag
+
+
+def test_gapped_permanent_gaps_honour_if_none_match():
+    client = _gapped_client(transient_gap=False)
+    etag = client.get("/gapped").headers["etag"]
+
+    resp = client.get("/gapped", headers={"if-none-match": etag})
+
+    assert resp.status_code == 304
+    assert resp.content == b""
+
+
+def test_gapped_transient_gap_serves_no_store_without_an_etag():
+    client = _gapped_client(transient_gap=True)
+    _body, etag = encode_json_body(_TINY_PAYLOAD)
+
+    resp = client.get("/gapped", headers={"if-none-match": etag})
+
+    assert resp.status_code == 200
+    assert resp.json() == _TINY_PAYLOAD
+    assert resp.headers["cache-control"] == "no-store"
+    assert "etag" not in resp.headers

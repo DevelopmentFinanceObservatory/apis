@@ -2,6 +2,8 @@
 
 `freeze_public_json` is for process-wide, unauthenticated content. Use `dynamic_public_json`
 for changing payloads. Both support conditional requests and vary on encoding and origin.
+`gapped_public_json` serves a payload whose gaps are permanent as public and one with a
+transient gap as `no-store`.
 """
 
 from __future__ import annotations
@@ -189,3 +191,25 @@ def dynamic_public_json(
         etag=etag,
         cache_control=resolved_cache_control,
     )
+
+
+NO_STORE = "no-store"
+
+
+def gapped_public_json(
+    payload: Any,
+    request: Request,
+    *,
+    transient_gap: bool,
+    max_age: int = 300,
+) -> Response:
+    """Serve a payload that may carry gaps, choosing its cache policy from where they came from.
+
+    The caller sets `transient_gap` when any gap in `payload` comes from a failed read or an
+    unloaded index. Such a payload answers `no-store` with no `ETag`, so a shared cache never
+    holds a transient fault. Otherwise every gap is permanent, and the payload answers
+    `public, max-age=<max_age>` with a strong `ETag` over the identity body, honouring
+    `If-None-Match` with 304."""
+    if transient_gap:
+        return JSONResponse(payload, headers={"Cache-Control": NO_STORE})
+    return dynamic_public_json(payload, request, cache_control=f"public, max-age={max_age}")

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import pytest
+
 from search.models import (
     BindingSet,
     BindingUnbound,
     BindingValue,
+    OpenConstraintAxisFact,
     Shape,
     Slot,
     SlotValue,
@@ -589,3 +592,80 @@ def test_keep_how_properties_prevents_the_fold():
     assert rendered == "Nominal gross domestic product for gross domestic production."
     how_tok = next(t for t in plan if t.axis == "how")
     assert how_tok.text == "gross domestic production"
+
+
+# A guarantee status a public-sector debtor type implies.
+
+_PPG = ("PublicOrPubliclyGuaranteed", "public or publicly guaranteed")
+_PUBLICLY_GUARANTEED = ("PubliclyGuaranteedClaim", "publicly guaranteed")
+_GENERAL_GOVERNMENT = ("IDSDebtorTypeGG", "general government (IDS debtor type)")
+_PUBLIC_SECTOR = ("IDSDebtorTypePS", "public sector (IDS debtor type)")
+_PRIVATE_SECTOR = ("IDSDebtorTypePrivateSector", "private sector (IDS debtor type)")
+
+
+def _value_slot(prop: str, prop_label: str, value: tuple[str, str]) -> Slot:
+    return Slot(
+        key=_slot_key("how", prop, prop_label, prop_label),
+        binding=BindingValue(value=SlotValue(ref=_ref(*value), value_kind="enum_value")),
+    )
+
+
+def _debt_service(slots: list[Slot], open_axis_facts=None) -> str:
+    """The sentence of an IDS-like debt-service Spec of two members with `slots` bound."""
+    return _rendered(
+        _spec(
+            measured_property=_ref("amount", "debt service"),
+            population_type=_ref("FinancialFlow", "financial flow"),
+            slots=slots,
+            open_axis_facts=open_axis_facts,
+            stat_vars=[
+                StatVar(
+                    ref=_ref(f"sv{n}", f"SV {n}"),
+                    shape_id="test-shape",
+                    slot_values=[],
+                    constraint_properties=[],
+                )
+                for n in (1, 2)
+            ],
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    ("debtor", "guarantee", "kept"),
+    [
+        (_GENERAL_GOVERNMENT, _PPG, False),
+        (_PUBLIC_SECTOR, _PPG, False),
+        (_PRIVATE_SECTOR, _PPG, True),
+        (_PRIVATE_SECTOR, _PUBLICLY_GUARANTEED, True),
+        (None, _PPG, True),
+    ],
+    ids=["general-government", "public-sector", "private-ppg", "private-guaranteed", "aggregate"],
+)
+def test_a_public_sector_debtor_type_drops_the_guarantee_it_implies(debtor, guarantee, kept):
+    """A general government or public-sector debtor owes public debt, so "public or publicly
+    guaranteed" says nothing beside it. A private-sector debtor and the aggregate with no
+    debtor type keep their guarantee status."""
+    slots = [_value_slot("guaranteeStatus", "guarantee status", guarantee)]
+    if debtor is not None:
+        slots.append(_value_slot("idsDebtorType", "IDS debtor type", debtor))
+    rendered = _debt_service(slots)
+
+    assert (f"for {guarantee[1]}" in rendered) is kept, rendered
+    if debtor is not None:
+        assert debtor[1].removesuffix(" (IDS debtor type)") in rendered, rendered
+
+
+def test_an_agreed_public_sector_debtor_drops_the_bound_guarantee():
+    fact = OpenConstraintAxisFact(
+        property="idsDebtorType",
+        varies=False,
+        value=_ref(*_GENERAL_GOVERNMENT),
+        distinct_count=1,
+        undeclared_count=0,
+    )
+    rendered = _debt_service(
+        [_value_slot("guaranteeStatus", "guarantee status", _PPG)], open_axis_facts=[fact]
+    )
+
+    assert "publicly guaranteed" not in rendered, rendered

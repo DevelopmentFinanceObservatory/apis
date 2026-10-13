@@ -1453,7 +1453,7 @@ _CRS_OPEN_SLOTS = ("crsCooperationModality", "crsPurpose", "crsTypeOfFinance", "
 @pytest.mark.parametrize(
     ("open_slots", "as_role_keys", "dataset", "count"),
     [
-        (("dac1AidType",), ("origin",), "provenance/OECDDAC1", 125),
+        (("dac1AidType",), ("origin",), "provenance/OECDDAC1", 128),
         (
             _CRS_OPEN_SLOTS,
             ("origin", "destination"),
@@ -1468,7 +1468,7 @@ def test_an_open_recipient_reads_the_packaged_rows_its_dataset_declares_it_on(
 ):
     """A donor's net disbursements to every recipient. DAC1 holds a recipient on two flows
     to the West Bank and Gaza Strip only, at constraint values no provider total holds,
-    so its rows are its 125 provider totals, those of the donor alone, without the two
+    so its rows are its 128 provider totals, those of the donor alone, without the two
     flows. Every CRS row holds one, so its rows are those of a named recipient."""
     index = load_index(default_index_path())
     slots = {**dict.fromkeys(open_slots, ("unbound",)), **_NET_DISBURSEMENT}

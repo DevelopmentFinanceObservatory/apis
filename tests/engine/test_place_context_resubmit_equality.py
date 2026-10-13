@@ -51,6 +51,7 @@ from materialise.place_scope import DefaultPlaceScope, scope_of_places
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.extract import DateRequest
 from search.engine.place import default_place_scope_message
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import (
     candidate_grounding,
     grounding,
@@ -70,6 +71,7 @@ from tests.engine import test_first_answer_place_scenarios as scenarios
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 from tests.materialise._scope_availability import ScopeAvailability
 from tests.materialise.conftest import FakeGraphReader
@@ -641,6 +643,8 @@ class _Bind:
         self._route = route
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         return _UniversalBindOutput(
             chosen_shape_index=self._route.chosen,
             bindings=list(self._route.bindings),
@@ -817,7 +821,7 @@ def _kind(result: RegionResult) -> str:
 
 
 def _stat_vars(spec: Spec) -> tuple[str, ...]:
-    return tuple(sv.ref.dcid for sv in spec.resolved.members)
+    return tuple(sv.ref.ref for sv in spec.resolved.members)
 
 
 def _answered(result: RegionResult) -> Spec:
@@ -977,11 +981,11 @@ def _shape_key_from(spec: Spec) -> tuple[str | None, ...]:
     """The five-tuple of `spec`'s shape, as `_shape_key` keys a draft."""
     shape = spec.resolved.shape
     return (
-        shape.population_type.dcid if shape.population_type else None,
-        shape.measured_property.dcid if shape.measured_property else None,
-        shape.stat_type.dcid if shape.stat_type else None,
-        shape.measurement_qualifier.dcid if shape.measurement_qualifier else None,
-        shape.measurement_denominator.dcid if shape.measurement_denominator else None,
+        shape.population_type.ref if shape.population_type else None,
+        shape.measured_property.ref if shape.measured_property else None,
+        shape.stat_type.ref if shape.stat_type else None,
+        shape.measurement_qualifier.ref if shape.measurement_qualifier else None,
+        shape.measurement_denominator.ref if shape.measurement_denominator else None,
     )
 
 

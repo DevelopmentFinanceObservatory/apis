@@ -71,7 +71,7 @@ def recorded_spec(raw: Mapping[str, Any]) -> Spec:
 
 
 def _ref(dcid: str, label: str) -> GraphRef:
-    return GraphRef(dcid=dcid, label=label)
+    return GraphRef(ref=dcid, label=label)
 
 
 def _slot_key(axis: Axis, prop_dcid: str, prop_label: str, label: str) -> SlotKey:
@@ -130,7 +130,7 @@ def _spec(
     trace = ResolutionTrace(
         resolved_entities=[],
         resolved_sources=[
-            ProvenanceRef(dcid=ref.dcid, label=ref.label) for ref in resolved_sources or []
+            ProvenanceRef(ref=ref.ref, label=ref.label) for ref in resolved_sources or []
         ],
         slot_filters=[],
     )
@@ -166,7 +166,12 @@ def _spec(
             shape=shape,
             slots=slots or [],
             stat_vars=_resolved_stat_vars(
-                members, member_count=None, member_count_exact=True, stated=None
+                members,
+                member_count=None,
+                member_count_exact=True,
+                stated=None,
+                identity=identity_doc,
+                provenance=None,
             ),
             entities=_resolved_entities(entities or []),
             coverage=coverage,

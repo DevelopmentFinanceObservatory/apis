@@ -53,7 +53,7 @@ def resolve_fallback(
         distinct_strings = set(names) | {
             name for names_for_dcid in node_names.values() for name in names_for_dcid
         }
-        normalized = {value: _normalize_or_none(normalize, value) for value in distinct_strings}
+        normalized = {value: normalize_or_none(normalize, value) for value in distinct_strings}
         normalized_names_by_dcid = {
             dcid: {normalized[name] for name in names_for_dcid if normalized[name] is not None}
             for dcid, names_for_dcid in node_names.items()
@@ -75,7 +75,7 @@ def resolve_fallback(
     return found
 
 
-def _normalize_or_none(normalize: Callable[[str], str], text: str) -> str | None:
+def normalize_or_none(normalize: Callable[[str], str], text: str) -> str | None:
     """Return the normalized text, or `None` when normalization raises `NormalizationError`."""
     try:
         return normalize(text)

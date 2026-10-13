@@ -444,9 +444,23 @@ def test_record_version_returns_whether_its_own_insert_created_the_row(version_s
     assert writer.record_version(record) is False
 
 
+class _CapturingDescriber:
+    """Records the facts of each version it is asked to describe, and builds no record."""
+
+    def __init__(self) -> None:
+        self.described: list[object] = []
+
+    def describe(self, version: VersionRecord, *, base: object) -> None:
+        self.described.append(version.facts)
+
+    def settle(self, stored: object, *, version: VersionRecord) -> None:
+        return None
+
+
 def test_live_writer_does_not_rewrite_an_already_recorded_versions_facts(version_store):
     """A repeated version insert with other facts returns `False`, preserves the stored
-    timestamp and facts, and adds new artifact links."""
+    timestamp and facts, and adds new artifact links. Its describer describes the stored facts,
+    so a writer that lost the race records the winner's."""
     writer = LiveVersionRecordWriter(
         store=version_store, now=lambda: datetime(2026, 1, 1, tzinfo=UTC)
     )
@@ -464,6 +478,7 @@ def test_live_writer_does_not_rewrite_an_already_recorded_versions_facts(version
     later_writer = LiveVersionRecordWriter(
         store=version_store, now=lambda: datetime(2026, 6, 1, tzinfo=UTC)
     )
+    describer = _CapturingDescriber()
     recorded = later_writer.record_version(
         VersionRecord(
             subject_id="spec_a",
@@ -472,6 +487,7 @@ def test_live_writer_does_not_rewrite_an_already_recorded_versions_facts(version
             schema_version=1,
             facts=FrameLineage(input_content_versions=["cv_second"]),
             artifacts=(_artifact_record("sha256:aaa"), _artifact_record("sha256:ccc")),
+            describer=describer,
         )
     )
 
@@ -489,6 +505,7 @@ def test_live_writer_does_not_rewrite_an_already_recorded_versions_facts(version
     assert record_row["recorded_at"] == datetime(2026, 1, 1, tzinfo=UTC)
     assert record_row["input_content_versions"] == ["cv_first"]
     assert [row["artifact_digest"] for row in artifact_rows] == ["sha256:aaa", "sha256:ccc"]
+    assert describer.described == [FrameLineage(input_content_versions=["cv_first"])]
 
 
 def test_live_writer_defaults_its_clock_to_the_real_utc_now(version_store):

@@ -5,9 +5,10 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from pathlib import PurePosixPath
 
-from pydantic import BaseModel, Field
+from pydantic import Field
 
 from dfo_platform import WarningSeverity
+from dfo_platform.wire import ResponseModel
 from skills_api.codes import WIRE_SEVERITY
 from skills_index import (
     FrontMatterValue,
@@ -17,7 +18,7 @@ from skills_index import (
 )
 
 
-class SkillWarning(BaseModel):
+class SkillWarning(ResponseModel):
     """One corpus-level or skill-level issue, on the wire. `skill_id` is the
     catalogue id for an issue about a served skill, the roster dcid for a skill
     left out of the catalogue, or `None` for an issue about the whole corpus.
@@ -63,7 +64,7 @@ def split_skill_warnings(
     return corpus_warnings, skill_warnings
 
 
-class SkillFileListing(BaseModel):
+class SkillFileListing(ResponseModel):
     """One file in a skill's manifest. The client fetches it at the resources door
     by the skill id and this `path`."""
 
@@ -89,7 +90,7 @@ def skill_file_listing(file: SkillFile) -> SkillFileListing:
     )
 
 
-class SkillSummary(BaseModel):
+class SkillSummary(ResponseModel):
     """One skill's list entry: front matter, attachment and breadth figures, own
     warnings, and manifest. `SkillBody` adds the skill's text.
 
@@ -172,7 +173,7 @@ class SkillBody(SkillSummary):
     content_text: str = Field(description="`SKILL.md` verbatim, front matter included")
 
 
-class SkillResourceContent(BaseModel):
+class SkillResourceContent(ResponseModel):
     """The resources door's response: one manifest file and its text.
 
     Carries `skill_id` and `path` so a client that fires several requests
@@ -187,7 +188,7 @@ class SkillResourceContent(BaseModel):
     content_text: str = Field(description="the file's text")
 
 
-class SkillListResponse(BaseModel):
+class SkillListResponse(ResponseModel):
     """`GET /api/skills`'s response body: every served skill's entry, ordered by
     id, plus the corpus warnings. A per-skill warning rides on that skill's own
     entry."""

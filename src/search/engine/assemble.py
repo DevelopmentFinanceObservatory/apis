@@ -40,6 +40,7 @@ from search.models import (
     DepartureCode,
     EntityRoleKey,
     NoData,
+    NoDataDenominator,
     NoDataGate,
     NoDataPart,
     NoDataReason,
@@ -75,6 +76,7 @@ from skills_index import SkillsIndex
 
 if TYPE_CHECKING:
     from search.engine.region.result import RegionResult
+    from search.engine.source_code import SourceCodeRefusal
     from search.models import (  # Circular at runtime. Safe under TYPE_CHECKING.
         GraphRef,
         NearestRealSpec,
@@ -479,6 +481,7 @@ def build_no_data_part(
     unbound_sources: list[ResolvedQualifier] | None = None,
     scope: ScopeSources | None = None,
     unit_alternatives: list[UnitAlternative] | None = None,
+    denominator: NoDataDenominator | None = None,
     restatement: ParsedPart | None = None,
     operations: Sequence[Operation] = (),
     include_skills: bool = False,
@@ -487,6 +490,7 @@ def build_no_data_part(
     window_gap_fact: DepartureFact | None = None,
     departure_facts: Sequence[DepartureFact] = (),
     request_words: bool = True,
+    source_code_refusal: SourceCodeRefusal | None = None,
 ) -> NoDataPart:
     """Build a no-data part with optional grounded near-matches.
 
@@ -502,16 +506,21 @@ def build_no_data_part(
     ``ambiguous_candidates`` feeds the wording. ``ambiguous_entities`` carries structured
     graph candidates, and ``ambiguous_roles`` names the flow axis of each ambiguous wording
     the sentence marks as a slot. ``data_query`` is the part's parsed form for
-    ``entity_ambiguous`` and ``source_ambiguous``. ``source_terms`` are the source wordings
-    a ``source_not_resolved`` or ``source_ambiguous`` outcome rests on, and
-    ``ambiguous_sources`` pairs each ambiguous one with its candidates. For
-    ``source_ambiguous`` ``ambiguous_candidates`` holds the candidates' labels.
+    ``entity_ambiguous``, ``source_ambiguous`` and ``source_code_ambiguous``.
+    ``source_terms`` are the source wordings a ``source_not_resolved`` or
+    ``source_ambiguous`` outcome rests on, or the series code a ``source_code_*`` outcome
+    rests on, and ``ambiguous_sources`` pairs each ambiguous one with its candidates. For
+    ``source_ambiguous`` and ``source_code_ambiguous`` ``ambiguous_candidates`` holds the
+    candidates' labels. ``source_code_refusal`` is the refusal a ``source_code_*`` outcome
+    rests on, whose sentence it words.
     ``qualifier_terms`` are the category terms of a ``qualifier_not_bound`` outcome, and
     ``unbound_sources`` the sources it could not bind. ``NoData.unbound_qualifiers`` holds
     both, terms first. ``scope`` names the sources an outcome the request reached was read
     under (`no_data.scope_sentence`), and an unresolved outcome ignores it.
     ``unit_alternatives`` carries a ``unit_not_resolved`` refusal's capped currencies.
-    ``None`` omits it. ``NoData.message`` is the bare no-data sentence with every term the part names.
+    ``None`` omits it. ``denominator`` carries a ``denominator_not_available`` refusal's
+    denominator asked and found, which its sentence names.
+    ``NoData.message`` is the bare no-data sentence with every term the part names.
 
     Sentence plans reuse each near-match's tokens under a gate-specific lead-in. A skills
     request adds ``skills_not_matchable`` for the answer and matches available near-matches
@@ -592,7 +601,9 @@ def build_no_data_part(
         qualifier_terms=qualifier_terms,
         source_terms=source_terms,
         scope=scope,
+        denominator=denominator,
         departures=departures,
+        source_code_refusal=source_code_refusal,
     )
     rendered = sentence_from_plan(plan)
     if include_skills and skills_index is not None:
@@ -630,6 +641,8 @@ def build_no_data_part(
                 qualifier_terms=qualifier_terms,
                 source_terms=source_terms,
                 scope=scope,
+                denominator=denominator,
+                source_code_refusal=source_code_refusal,
             ),
             nearest_real=nearest_real,
             flagged_match=flagged_match,
@@ -643,6 +656,7 @@ def build_no_data_part(
             cause=cause,
             unbound_qualifiers=[*(qualifier_terms or ()), *(unbound_sources or ())],
             unit_alternatives=unit_alternatives,
+            denominator=denominator,
             data_query=data_query,
         ),
         rendered_sentence=rendered,

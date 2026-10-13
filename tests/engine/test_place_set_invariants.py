@@ -31,6 +31,7 @@ from collections.abc import Callable, Mapping, Sequence
 
 import pytest
 
+from entity_resolution import acquire_shared, release_shared
 from search.engine.errors import EngineInputError, GraphInfraError
 from search.models import EntityGroup, Operation, ParsedEntity, ResolveResponse, Spec
 from tests.engine import _place_set_world as world
@@ -102,6 +103,19 @@ def doors(monkeypatch: pytest.MonkeyPatch) -> Doors:
 
 def _named(*names: str) -> tuple[str, ...]:
     return tuple(LABEL[dcid] for dcid in names)
+
+
+@pytest.mark.parametrize(
+    ("ref", "held"), [(EU, EXPANSION[EU]), ("groups/AU", AFRICAN_UNION)], ids=["eu", "au"]
+)
+def test_the_worlds_groups_hold_the_registrys_members(ref: str, held: tuple[str, ...]) -> None:
+    """The world's groups hold the members the resolver's group registry gives, so each
+    invariant checks the groups Search serves."""
+    shared = acquire_shared()
+    try:
+        assert shared.groups.get(ref).members() == held
+    finally:
+        release_shared(shared)
 
 
 # Invariant 1.
@@ -467,7 +481,7 @@ def test_a_set_one_of_whose_texts_is_directed_fills_that_axis(
     first = name if directed_first else alias
     assert twice.resolved.entity_groups == (
         {
-            role: served if served.dcid is not None else served.model_copy(update={"label": first})
+            role: served if served.ref is not None else served.model_copy(update={"label": first})
             for role, served in once.resolved.entity_groups.items()
         }
         if once.resolved.entity_groups
@@ -708,7 +722,7 @@ def test_a_set_named_by_two_texts_binds_its_members_when_either_asks(
         assert bound(spec) == {_SUBJECT: members_reading(node)}
         assert spec.spec_id == alone.spec_id
         assert group(spec) == {
-            "dcid": node,
+            "ref": node,
             "label": LABEL[node],
             "entity_type": NODE_TYPE[node],
             "total": None,
@@ -743,7 +757,7 @@ def test_a_set_on_a_flow_role_asked_for_its_members_binds_them(
 
     assert bound(asked) == {axis: sorted(EXPANSION[node]), other_axis: [across]}
     assert group(asked, axis) == {
-        "dcid": node,
+        "ref": node,
         "label": LABEL[node],
         "entity_type": NODE_TYPE[node],
         "total": None,
@@ -919,7 +933,7 @@ def test_a_role_carries_a_group_only_when_it_binds_that_sets_members(
         None
         if carrier is None
         else {
-            "dcid": carrier,
+            "ref": carrier,
             "label": LABEL[carrier],
             "entity_type": NODE_TYPE[carrier],
             "total": None,
@@ -938,7 +952,7 @@ def test_a_region_named_in_other_words_carries_the_graphs_label(doors: Doors) ->
     assert len(places_with_data(WDI, EXPANSION[AFRICA])) < len(EXPANSION[AFRICA])
     assert departure_asks(response, "entity_unavailable") == [AFRICA_ALIAS]
     assert group(spec) == {
-        "dcid": AFRICA,
+        "ref": AFRICA,
         "label": LABEL[AFRICA],
         "entity_type": NODE_TYPE[AFRICA],
         "total": None,
@@ -1174,7 +1188,7 @@ def test_a_group_with_no_node_carries_its_name_and_no_dcid(doors: Doors) -> None
     assert bound(spec) == {_SUBJECT: sorted(AFRICAN_UNION)}
     served = group(spec)
     assert served is not None
-    assert served["dcid"] is None
+    assert served["ref"] is None
 
 
 # Invariant 5.
@@ -1183,9 +1197,9 @@ def test_a_group_with_no_node_carries_its_name_and_no_dcid(doors: Doors) -> None
 def _named_groups(spec: Spec) -> dict[str, tuple[str, str]]:
     """The dcid and label of each group `spec` serves that has a dcid, by role."""
     return {
-        role: (served.dcid, served.label)
+        role: (served.ref, served.label)
         for role, served in (spec.resolved.entity_groups or {}).items()
-        if served.dcid is not None
+        if served.ref is not None
     }
 
 
@@ -1235,12 +1249,12 @@ def test_a_resubmit_states_a_kept_group_as_the_graph_does(doors: Doors, node: st
     """A set's members posted with the set as their group, under a label of the caller's
     own: the resubmit keeps the group and states the graph's label and type for it."""
     identity = doors.identity(WDI, {_SUBJECT: EXPANSION[node]})
-    posted = {_SUBJECT: EntityGroup(dcid=node, label="a label of the caller's own")}
+    posted = {_SUBJECT: EntityGroup(ref=node, label="a label of the caller's own")}
 
     again = check_posted(doors, WDI, identity, posted)
 
     assert group(again) == {
-        "dcid": node,
+        "ref": node,
         "label": LABEL[node],
         "entity_type": NODE_TYPE[node],
         "total": None,

@@ -15,7 +15,8 @@ digest another component stores becomes `WriteTokenInUse`; Postgres holds the in
 concurrent create with the same digest commits or rolls back. Other generated-ID collisions
 (SQLSTATE 23505) become `GeneratedIdCollision`. Revision-key collisions (SQLSTATE 23505)
 become `EditConflict`. A revised component whose stored composition row is missing also
-raises `EditConflict`. Other store failures become `PresentationStoreUnavailable`.
+raises `EditConflict`. Other store failures become `PresentationStoreUnavailable`, which
+records whether the driver failure meant a dead connection so the presentation pool discards it.
 """
 
 from __future__ import annotations
@@ -40,7 +41,6 @@ from assembler.ports import (
 )
 from dataset_store import DatasetStore
 from dataset_store.store import Transaction
-from dfo_platform.store_errors import extract_sqlstate, safe_diagnostics
 from presentation_store.ids import mint_component_id, mint_composition_id
 from presentation_store.store_errors import (
     GeneratedIdCollision,
@@ -104,8 +104,7 @@ class LivePresentationStore:
         return self._read(component_id=component_id, revision=revision)
 
     def _read(self, *, component_id: str, revision: int | None) -> RevisionRecord | None:
-        failure: str | None = None
-        sqlstate: str | None = None
+        failure: PresentationStoreUnavailable | None = None
         result: RevisionRecord | None = None
         try:
             with self._store.transaction() as tx:
@@ -127,18 +126,15 @@ class LivePresentationStore:
         except DraftNotFound:
             raise
         except Exception as exc:
-            failure = (
-                f"reading component_id {component_id!r} revision {revision!r} failed: "
-                f"{safe_diagnostics(exc)}"
+            failure = PresentationStoreUnavailable.from_driver_failure(
+                f"reading component_id {component_id!r} revision {revision!r} failed", exc
             )
-            sqlstate = extract_sqlstate(exc)
         if failure is not None:
-            raise PresentationStoreUnavailable(failure, sqlstate=sqlstate)
+            raise failure
         return result
 
     def composition_of(self, *, component_id: str) -> CompositionMembership | None:
-        failure: str | None = None
-        sqlstate: str | None = None
+        failure: PresentationStoreUnavailable | None = None
         result: CompositionMembership | None = None
         try:
             with self._store.transaction() as tx:
@@ -159,13 +155,11 @@ class LivePresentationStore:
         except DraftNotFound:
             raise
         except Exception as exc:
-            failure = (
-                f"reading composition membership for component_id {component_id!r} failed: "
-                f"{safe_diagnostics(exc)}"
+            failure = PresentationStoreUnavailable.from_driver_failure(
+                f"reading composition membership for component_id {component_id!r} failed", exc
             )
-            sqlstate = extract_sqlstate(exc)
         if failure is not None:
-            raise PresentationStoreUnavailable(failure, sqlstate=sqlstate)
+            raise failure
         return result
 
     def write_token_digest(
@@ -176,28 +170,24 @@ class LivePresentationStore:
             if subject_kind == "component"
             else "SELECT write_token_sha256 FROM presentation.composition WHERE composition_id = %s"
         )
-        failure: str | None = None
-        sqlstate: str | None = None
+        failure: PresentationStoreUnavailable | None = None
         row: Mapping[str, object] | None = None
         try:
             with self._store.transaction() as tx:
                 row = tx.fetch_one(sql, (subject_id,))
         except Exception as exc:
-            failure = (
-                f"reading the write token digest for {subject_kind} {subject_id!r} failed: "
-                f"{safe_diagnostics(exc)}"
+            failure = PresentationStoreUnavailable.from_driver_failure(
+                f"reading the write token digest for {subject_kind} {subject_id!r} failed", exc
             )
-            sqlstate = extract_sqlstate(exc)
         if failure is not None:
-            raise PresentationStoreUnavailable(failure, sqlstate=sqlstate)
+            raise failure
         if row is None:
             raise DraftNotFound(subject_kind=subject_kind, subject_id=subject_id)
         digest = row["write_token_sha256"]
         return bytes(cast("bytes | memoryview", digest)) if digest is not None else None
 
     def prior_create(self, *, write_token_sha256: bytes) -> PriorCreate | None:
-        failure: str | None = None
-        sqlstate: str | None = None
+        failure: PresentationStoreUnavailable | None = None
         row: Mapping[str, object] | None = None
         try:
             with self._store.transaction() as tx:
@@ -207,10 +197,11 @@ class LivePresentationStore:
                     (write_token_sha256,),
                 )
         except Exception as exc:
-            failure = f"reading the component by write token digest failed: {safe_diagnostics(exc)}"
-            sqlstate = extract_sqlstate(exc)
+            failure = PresentationStoreUnavailable.from_driver_failure(
+                "reading the component by write token digest failed", exc
+            )
         if failure is not None:
-            raise PresentationStoreUnavailable(failure, sqlstate=sqlstate)
+            raise failure
         if row is None:
             return None
         request_digest = row["create_request_sha256"]
@@ -242,19 +233,16 @@ class LivePresentationStore:
         opening or committing it. Caller-body exceptions propagate after rollback.
         """
         tx_manager = self._store.transaction()
-        entry_failure: str | None = None
-        entry_sqlstate: str | None = None
+        entry_failure: PresentationStoreUnavailable | None = None
         tx: Transaction | None = None
         try:
             tx = tx_manager.__enter__()
         except Exception as exc:
-            entry_failure = (
-                f"opening a write transaction for component_id {component_id!r} failed: "
-                f"{safe_diagnostics(exc)}"
+            entry_failure = PresentationStoreUnavailable.from_driver_failure(
+                f"opening a write transaction for component_id {component_id!r} failed", exc
             )
-            entry_sqlstate = extract_sqlstate(exc)
         if entry_failure is not None:
-            raise PresentationStoreUnavailable(entry_failure, sqlstate=entry_sqlstate)
+            raise entry_failure
         assert tx is not None
 
         try:
@@ -273,18 +261,16 @@ class LivePresentationStore:
                 return
             raise
         else:
-            commit_failure: str | None = None
-            commit_sqlstate: str | None = None
+            commit_failure: PresentationStoreUnavailable | None = None
             try:
                 tx_manager.__exit__(None, None, None)
             except Exception as exc:
-                commit_failure = (
-                    f"committing the write transaction for component_id {component_id!r} failed: "
-                    f"{safe_diagnostics(exc)}"
+                commit_failure = PresentationStoreUnavailable.from_driver_failure(
+                    f"committing the write transaction for component_id {component_id!r} failed",
+                    exc,
                 )
-                commit_sqlstate = extract_sqlstate(exc)
             if commit_failure is not None:
-                raise PresentationStoreUnavailable(commit_failure, sqlstate=commit_sqlstate)
+                raise commit_failure
 
     def _prepare_write(
         self,
@@ -297,8 +283,7 @@ class LivePresentationStore:
         composition_write_token_sha256: bytes | None,
         create_request_sha256: bytes | None,
     ) -> _LiveWriteContext:
-        failure: str | None = None
-        sqlstate: str | None = None
+        failure: PresentationStoreUnavailable | None = None
         result: _LiveWriteContext | None = None
         try:
             result = self._do_prepare_write(
@@ -313,12 +298,11 @@ class LivePresentationStore:
         except (DraftNotFound, EditConflict, GeneratedIdCollision, WriteTokenInUse):
             raise
         except Exception as exc:
-            failure = (
-                f"opening a write for component_id {component_id!r} failed: {safe_diagnostics(exc)}"
+            failure = PresentationStoreUnavailable.from_driver_failure(
+                f"opening a write for component_id {component_id!r} failed", exc
             )
-            sqlstate = extract_sqlstate(exc)
         if failure is not None:
-            raise PresentationStoreUnavailable(failure, sqlstate=sqlstate)
+            raise failure
         assert result is not None
         return result
 
@@ -454,18 +438,16 @@ def _wrap_unavailable[T](
     """Wrap exceptions from `fn`, except those in `passthrough`, as
     `PresentationStoreUnavailable` after leaving `except` to keep driver context out.
     """
-    failure: str | None = None
-    sqlstate: str | None = None
+    failure: PresentationStoreUnavailable | None = None
     result: T | None = None
     try:
         result = fn()
     except passthrough:
         raise
     except Exception as exc:
-        failure = f"{action_detail}: {safe_diagnostics(exc)}"
-        sqlstate = extract_sqlstate(exc)
+        failure = PresentationStoreUnavailable.from_driver_failure(action_detail, exc)
     if failure is not None:
-        raise PresentationStoreUnavailable(failure, sqlstate=sqlstate)
+        raise failure
     return cast("T", result)
 
 

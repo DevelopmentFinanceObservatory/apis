@@ -41,6 +41,7 @@ from materialise.convert import converted_facets, deflator_key
 from materialise.errors import UpstreamResponseError
 from materialise.facets import native_currency_iso
 from materialise.graph import GraphReader
+from materialise.national_currency import read_national_currencies
 from materialise.rate_tables import (
     RateTable,
     RateTableCache,
@@ -56,9 +57,9 @@ from materialise.recipes import (
     elect_recipe,
     recipe_datasets,
 )
-from search.currency_codes import ISO_4217_CODES
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.unit.base_year import declared_base_year
+from unit_words.currency_codes import ISO_4217_CODES
 
 logger = logging.getLogger(__name__)
 
@@ -66,15 +67,13 @@ type _TableKey = tuple[RateTableKind, str, str]
 """A conversion table: its kind, StatVar, and table provenance."""
 
 _RECIPE_PROPERTY = "conversionRecipe"
-_NATIONAL_CURRENCY_OF = "nationalCurrencyOf"
-_CURRENCY_UNIT = "CurrencyUnit"
 _DATASET = "Dataset"
 _RECIPE_NODE_PROPERTIES = (*DATASET_RECIPE_PROPERTIES, "isPartOf", "typeOf")
 """What the catalogue reads of each node a recipe election consults. `typeOf` tells a
 Dataset from a provenance and keeps every live node from coming back with no arcs."""
 _MAX_SUBJECTS = 5000
 """The most subjects one reverse read lists: the provenances or Datasets naming a recipe,
-the provenances of one Dataset, or the currency units. A truncated read fails the load."""
+or the provenances of one Dataset. A truncated read fails the load."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,7 +195,7 @@ def load_conversion_catalogue(
     with ThreadPoolExecutor(max_workers=len(table_keys) + 3) as pool:
         table_futures = {key: submit_with_context(pool, table, key) for key in table_keys}
         recipes = submit_with_context(pool, _provenance_recipes, reader, deadline)
-        currencies = submit_with_context(pool, _national_currencies, reader, deadline)
+        currencies = submit_with_context(pool, read_national_currencies, reader, deadline=deadline)
         base_year = submit_with_context(pool, declared_base_year, graph, deadline=deadline)
         loaded = {key: future.result() for key, future in table_futures.items()}
         national = currencies.result()
@@ -321,25 +320,6 @@ def _recipe_tables(
         base_year_min=min(years),
         base_year_max=max(years),
     )
-
-
-def _national_currencies(reader: GraphReader, deadline: float | None) -> dict[str, str]:
-    """Each place's one national currency, by ISO code: the `CurrencyUnit` nodes'
-    `nationalCurrencyOf` arcs, inverted. A place two currencies name has none, as
-    `materialise.recipes.resolve_entity_currencies` leaves it unmapped."""
-    units = _subjects(reader, _CURRENCY_UNIT, "typeOf", deadline)
-    # `typeOf` keeps every node from coming back with no arcs, which the read would retry.
-    arcs = reader.node_arcs_many(
-        list(units), properties=(_NATIONAL_CURRENCY_OF, "typeOf"), deadline=deadline
-    )
-    named: dict[str, set[str]] = {}
-    for unit in units:
-        code = native_currency_iso(unit)
-        if code is None:
-            continue
-        for place in (arcs.get(unit) or {}).get(_NATIONAL_CURRENCY_OF, ()):
-            named.setdefault(place, set()).add(code)
-    return {place: next(iter(codes)) for place, codes in named.items() if len(codes) == 1}
 
 
 _UNBOUND = object()

@@ -15,17 +15,19 @@ from search.models import (
     DefinitePart,
     GraphRef,
     NoData,
+    NoDataDenominator,
     NoDataPart,
     Operation,
     ParsedInput,
     ParsedPart,
     Resolution,
     Scope,
+    Spec,
     UnsupportedPart,
 )
-from tests.conftest import base_response
+from tests.conftest import base_response, minimal_spec
 
-_KENYA = GraphRef(dcid="country/KEN", label="Kenya")
+_KENYA = GraphRef(ref="country/KEN", label="Kenya")
 
 
 def _resolution(worked_example: dict) -> Resolution:
@@ -183,3 +185,35 @@ class TestNoDataQuery:
             {"reason": "entity_ambiguous", "data_query": query.model_dump(mode="json")}
         )
         assert no_data.data_query == query
+
+
+class TestNoDataNearMatch:
+    @pytest.mark.parametrize(
+        ("reason", "accepted"),
+        [
+            ("role_incompatible", True),
+            ("qualifier_not_bound", True),
+            ("denominator_not_available", True),
+            ("no_observations", False),
+        ],
+    )
+    def test_a_flagged_match_without_a_gate(self, reason, accepted):
+        """Refusals that judge the elected shape itself flag it without a gate."""
+        flagged = Spec.model_validate(minimal_spec("s1"))
+        if accepted:
+            assert NoData(reason=reason, flagged_match=flagged).gate is None
+        else:
+            with pytest.raises(ValidationError):
+                NoData(reason=reason, flagged_match=flagged)
+
+    @pytest.mark.parametrize(
+        ("reason", "accepted"),
+        [("denominator_not_available", True), ("no_observations", False)],
+    )
+    def test_denominator_belongs_to_denominator_not_available(self, reason, accepted):
+        denominator = NoDataDenominator(found=_KENYA)
+        if accepted:
+            assert NoData(reason=reason, denominator=denominator).denominator == denominator
+        else:
+            with pytest.raises(ValidationError):
+                NoData(reason=reason, denominator=denominator)

@@ -16,8 +16,9 @@ from datetime import datetime
 from typing import Any, Final
 
 from artifact_publication import POINTER_FILE, VERSIONS_PREFIX
+from artifact_publication.jobs import Ingestion
 
-CATALOGUE_FORMAT_VERSION: Final[int] = 4
+CATALOGUE_FORMAT_VERSION: Final[int] = 5
 """The on-disk shape: file names, Parquet schemas and manifest fields. Every
 artifact lives under its format's own root, so a change to this number
 starts a new, empty root that the next job run fills, and the loader refuses
@@ -42,6 +43,11 @@ UN_ARCS_FILE: Final[str] = "un_arcs.parquet"
 UN_EXCLUDED_VARIABLES_FILE: Final[str] = "un_excluded_variables.parquet"
 UN_TOPICS_FILE: Final[str] = "un_topics.parquet"
 UN_MIRROR_FILE: Final[str] = "un_mirror.json"
+DFO_ARCS_FILE: Final[str] = "dfo_arcs.parquet"
+BASE_ARCS_FILE: Final[str] = "base_arcs.parquet"
+SCHEMA_ARCS_FILE: Final[str] = "schema_arcs.parquet"
+ARC_TARGETS_FILE: Final[str] = "arc_targets.parquet"
+FAMILIES_FILE: Final[str] = "families.parquet"
 
 _BUILD_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
@@ -127,6 +133,44 @@ class UnMirrorManifest:
 
 
 @dataclass(frozen=True, slots=True)
+class IndexPresence:
+    """How a build learned which subjects of our resolver index the mixer
+    does not hold (`origin_catalogue.arc_reads.held_by_mixer`): `carried`,
+    the subjects the published build held absent and this build took as
+    absent without a read, and `read`, the subjects it sent a `->typeOf`
+    read for."""
+
+    carried: int = 0
+    read: int = 0
+
+
+NO_INDEX_PRESENCE: Final = IndexPresence()
+"""The index presence of a build that read nothing of our resolver index."""
+
+
+@dataclass(frozen=True, slots=True)
+class ArcTablesManifest:
+    """The arc tables' part of a manifest: each arc table's row count, the
+    tables' size in memory once decoded
+    (`origin_catalogue.artifact.decode_arc_tables`), and how the build
+    learned the presence of our resolver index's subjects (`index_presence`)."""
+
+    row_counts: Mapping[str, int] = field(default_factory=dict)
+    resident_bytes: int = 0
+    index_presence: IndexPresence = field(default_factory=IndexPresence)
+
+
+@dataclass(frozen=True, slots=True)
+class FamilyTablesManifest:
+    """The family tables' part of a manifest: the number of family rows over the arc
+    tables (`families`) and over the UN tables (`un_families`), and the tables' size in
+    memory once decoded (`origin_catalogue.artifact.decode_family_tables`)."""
+
+    row_counts: Mapping[str, int] = field(default_factory=dict)
+    resident_bytes: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class CatalogueManifest:
     """One build's manifest.
 
@@ -135,11 +179,17 @@ class CatalogueManifest:
     `resident_bytes` is the loaded tables' size in memory, which the loader
     checks against its budget before reading them. `overlaps` lists every
     variable the DFO variable set and an admitted base provenance both hold.
-    `files` maps each table's logical name to its path in the build directory.
+    `files` maps each table's logical name to its path in the build directory,
+    and `file_sha256` each logical name to the SHA-256 hex digest of that
+    file's bytes, which the loader checks every file it reads against.
     `un_carried_forward` is set when the build carries its UN rows, refused
     places and UN tables from an earlier build, and `None` when it read them
-    from the UN. `un_mirror` describes the UN tables, which `row_counts` and
-    `resident_bytes` leave out.
+    from the UN. `un_mirror` describes the UN tables, `arc_tables` the arc
+    tables and `families` the family tables, which `row_counts` and
+    `resident_bytes` leave out. `ingestion`
+    is the `IngestionHistory` row the build's DFO fingerprint read, which
+    the coverage manifest records too, and `None` for a build made outside
+    the job.
     """
 
     build_id: str
@@ -151,8 +201,12 @@ class CatalogueManifest:
     resident_bytes: int
     overlaps: tuple[str, ...]
     files: Mapping[str, str]
+    file_sha256: Mapping[str, str] = field(default_factory=dict)
     un_carried_forward: UnCarryForward | None = None
     un_mirror: UnMirrorManifest = field(default_factory=UnMirrorManifest)
+    arc_tables: ArcTablesManifest = field(default_factory=ArcTablesManifest)
+    families: FamilyTablesManifest = field(default_factory=FamilyTablesManifest)
+    ingestion: Ingestion | None = None
     format_version: int = CATALOGUE_FORMAT_VERSION
 
     @property
@@ -171,6 +225,7 @@ class CatalogueManifest:
                 "resident_bytes": self.resident_bytes,
                 "overlaps": list(self.overlaps),
                 "files": dict(self.files),
+                "file_sha256": dict(self.file_sha256),
                 "un_carried_forward": (
                     None
                     if self.un_carried_forward is None
@@ -192,6 +247,19 @@ class CatalogueManifest:
                     },
                     "resident_bytes": self.un_mirror.resident_bytes,
                 },
+                "arc_tables": {
+                    "row_counts": dict(self.arc_tables.row_counts),
+                    "resident_bytes": self.arc_tables.resident_bytes,
+                    "index_presence": {
+                        "carried": self.arc_tables.index_presence.carried,
+                        "read": self.arc_tables.index_presence.read,
+                    },
+                },
+                "families": {
+                    "row_counts": dict(self.families.row_counts),
+                    "resident_bytes": self.families.resident_bytes,
+                },
+                "ingestion": None if self.ingestion is None else self.ingestion.to_json(),
                 "format_version": self.format_version,
             },
             sort_keys=True,
@@ -217,6 +285,7 @@ class CatalogueManifest:
             resident_bytes=int(payload["resident_bytes"]),
             overlaps=tuple(str(v) for v in payload["overlaps"]),
             files={str(k): str(v) for k, v in dict(payload["files"]).items()},
+            file_sha256={str(k): str(v) for k, v in dict(payload["file_sha256"]).items()},
             un_carried_forward=(
                 None
                 if (carried := payload["un_carried_forward"]) is None
@@ -234,6 +303,27 @@ class CatalogueManifest:
                 },
                 resident_bytes=int(payload["un_mirror"]["resident_bytes"]),
             ),
+            arc_tables=ArcTablesManifest(
+                row_counts={
+                    str(k): int(v) for k, v in dict(payload["arc_tables"]["row_counts"]).items()
+                },
+                resident_bytes=int(payload["arc_tables"]["resident_bytes"]),
+                index_presence=IndexPresence(
+                    carried=int(payload["arc_tables"]["index_presence"]["carried"]),
+                    read=int(payload["arc_tables"]["index_presence"]["read"]),
+                ),
+            ),
+            families=FamilyTablesManifest(
+                row_counts={
+                    str(k): int(v) for k, v in dict(payload["families"]["row_counts"]).items()
+                },
+                resident_bytes=int(payload["families"]["resident_bytes"]),
+            ),
+            ingestion=(
+                None
+                if (ingestion := payload["ingestion"]) is None
+                else Ingestion.from_json(ingestion)
+            ),
             format_version=int(payload["format_version"]),
         )
 
@@ -249,16 +339,22 @@ def agency_counts_from_json(payload: Mapping[str, Any]) -> UnAgencyCounts:
 
 
 __all__ = [
+    "ARC_TARGETS_FILE",
+    "BASE_ARCS_FILE",
     "BASE_VARIABLES_FILE",
     "CATALOGUE_FORMAT_VERSION",
     "DATASET_FACTS_FILE",
+    "DFO_ARCS_FILE",
     "DFO_VARIABLES_FILE",
+    "FAMILIES_FILE",
     "FORMAT_ROOT",
     "MANIFEST_FILE",
+    "NO_INDEX_PRESENCE",
     "POINTER_FILE",
     "PROVENANCES_FILE",
     "PROVENANCE_PLACES_FILE",
     "SCAN_FILE",
+    "SCHEMA_ARCS_FILE",
     "SOURCE_DOCUMENTATION_FILE",
     "SUPERSEDED_VARIABLES_FILE",
     "TOPICS_FILE",
@@ -270,8 +366,11 @@ __all__ = [
     "UN_VARIABLES_FILE",
     "VERSIONS_PREFIX",
     "WITHHELD_VARIABLES_FILE",
+    "ArcTablesManifest",
     "CatalogueManifest",
     "CataloguePointer",
+    "FamilyTablesManifest",
+    "IndexPresence",
     "ScanLevel",
     "UnAgencyCounts",
     "UnCarryForward",

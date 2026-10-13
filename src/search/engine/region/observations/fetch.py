@@ -31,6 +31,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Protocol, Self, cast
 
+from code_index.shared import get_index
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from dc_sdmx import SdmxClientError
 from dfo_platform.executor import submit_with_context
@@ -50,6 +51,7 @@ from materialise import (
 )
 from materialise.convert import ConversionRecord
 from materialise.facets import FacetSelection, UnitRequest, merge_facets_by_series
+from materialise.method_status import status_of
 from materialise.rate_tables import RateTableCache
 from materialise.recipes import (
     NonCurrencyUnitError,
@@ -546,13 +548,15 @@ def _dispatches(
 @dataclass(frozen=True)
 class _SeriesRead:
     """One planned series' share of a read: its points in date order, the rows it holds
-    before the read's row limit or any display truncation, and the read's selections and its
-    own conversion record."""
+    before the read's row limit or any display truncation, the read's selections and its
+    own conversion record, and whether a row it serves carries an estimated method
+    (`_holds_estimates`)."""
 
     points: list[tuple[str, float | None]]
     total_rows: int
     selections: Mapping[str, FacetSelection]
     conversion_record: ConversionRecord | None
+    holds_estimates: bool = False
 
 
 def _split_series(dispatch: _Dispatch, result: PreviewResult) -> dict[_SeriesKey, _SeriesRead]:
@@ -570,6 +574,7 @@ def _split_series(dispatch: _Dispatch, result: PreviewResult) -> dict[_SeriesKey
                 total_rows=result.total_rows,
                 selections=result.selections,
                 conversion_record=result.conversion_record,
+                holds_estimates=_holds_estimates(result.frame.rows, columns=result.frame.columns),
             )
         }
     columns = result.frame.columns
@@ -581,14 +586,29 @@ def _split_series(dispatch: _Dispatch, result: PreviewResult) -> dict[_SeriesKey
     for s in dispatch.series:
         by_role = dict(s.role_tuple)
         dcids = tuple(by_role[role] for role in open_roles)
-        points = sorted(_frame_points(rows_by_dcids.get(dcids, []), result), key=lambda p: p[0])
+        rows = rows_by_dcids.get(dcids, [])
+        points = sorted(_frame_points(rows, result), key=lambda p: p[0])
         reads[(s.stat_var, s.role_tuple)] = _SeriesRead(
             points=points,
             total_rows=result.series_total_rows.get(dcids, 0),
             selections=result.selections,
             conversion_record=result.series_conversion_records.get(dcids),
+            holds_estimates=_holds_estimates(rows, columns=columns),
         )
     return reads
+
+
+def _holds_estimates(rows: Sequence[tuple[object, ...]], *, columns: Sequence[str]) -> bool:
+    """Whether a row of `rows` carries a measurement method the measurement-method
+    classification classes estimated under the row's provenance
+    (`materialise.method_status.status_of`), as the rows of a continuation
+    (`materialise.facets.FacetSelection.continued_by`) do."""
+    method, provenance = columns.index("measurementMethod"), columns.index("provenance")
+    return any(
+        status_of(cast("str | None", row[method]), cast("str | None", row[provenance]))
+        == "estimated"
+        for row in rows
+    )
 
 
 def _at_latest_periods(
@@ -1155,6 +1175,7 @@ def _series_read(read: _SeriesRead) -> SeriesRead:
             if read.conversion_record is not None
             else None
         ),
+        holds_estimates=read.holds_estimates,
     )
 
 
@@ -1182,6 +1203,7 @@ def _assemble_pair_series(
         observations = assemble_per_series(
             {key: _series_read(read) for key, read in pair_results.items()},
             label_source=graph,
+            index=get_index(),
             member_constraints=member_constraints,
             target_currency_ref=target_currency_ref,
         )

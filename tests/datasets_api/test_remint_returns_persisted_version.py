@@ -25,6 +25,7 @@ from datasets_api.version_store import LiveHeadStore, LiveVersionRecordWriter
 from datasets_api.versions import VersionRecord, VersionWrite, WrittenVersion
 from datasets_api.warnings import DATASETS_WARNING_CATALOGUE
 from dc_sdmx import SdmxClient
+from description.citation import citation_line
 from dfo_platform.config import PublicSiteSettings
 from origin_catalogue.service import get_catalogue_service
 from spec_registry import LiveSpecRegistry
@@ -278,7 +279,7 @@ def test_a_remint_of_a_stored_version_carries_this_call_s_origin_warnings(
     [["dcid:RemintStaleDefinition"]],
     ids=["definition"],
 )
-def test_a_remint_of_a_stored_version_carries_this_call_s_stale_catalogue_warning(
+def test_a_remint_of_a_stored_version_carries_this_call_s_stale_catalogue_diagnostic(
     version_store, monkeypatch: pytest.MonkeyPatch, stat_vars: list[str]
 ):
     client, _artifact_store = _client(
@@ -292,12 +293,12 @@ def test_a_remint_of_a_stored_version_carries_this_call_s_stale_catalogue_warnin
 
     assert second.status_code == 200, second.text
     assert second.json()["content_version"] == first.json()["content_version"]
-    assert "origin_catalogue_stale" not in [w["code"] for w in first.json()["warnings"]]
-    assert "origin_catalogue_stale" in [w["code"] for w in second.json()["warnings"]]
+    assert "origin_catalogue_stale" not in [w["code"] for w in first.json()["diagnostics"]]
+    assert "origin_catalogue_stale" in [w["code"] for w in second.json()["diagnostics"]]
 
 
 def _stale_messages(manifest: dict) -> list[str]:
-    return [w["message"] for w in manifest["warnings"] if w["code"] == "origin_catalogue_stale"]
+    return [w["message"] for w in manifest["diagnostics"] if w["code"] == "origin_catalogue_stale"]
 
 
 @pytest.mark.parametrize(
@@ -305,7 +306,7 @@ def _stale_messages(manifest: dict) -> list[str]:
     [["dcid:RemintRestaleDefinition"]],
     ids=["definition"],
 )
-def test_a_remint_under_another_stale_build_carries_only_that_build_s_warning(
+def test_a_remint_under_another_stale_build_carries_only_that_build_s_diagnostic(
     version_store, monkeypatch: pytest.MonkeyPatch, stat_vars: list[str]
 ):
     client, _artifact_store = _client(
@@ -330,7 +331,7 @@ def test_a_remint_under_another_stale_build_carries_only_that_build_s_warning(
     [["dcid:RemintFreshDefinition"]],
     ids=["definition"],
 )
-def test_a_remint_under_a_fresh_build_drops_the_stored_stale_warning(
+def test_a_remint_under_a_fresh_build_carries_no_stale_diagnostic(
     version_store, monkeypatch: pytest.MonkeyPatch, stat_vars: list[str]
 ):
     client, _artifact_store = _client(
@@ -346,8 +347,8 @@ def test_a_remint_under_a_fresh_build_drops_the_stored_stale_warning(
 
     assert second.status_code == 200, second.text
     assert second.json()["content_version"] == first.json()["content_version"]
-    assert "origin_catalogue_stale" in [w["code"] for w in first.json()["warnings"]]
-    assert "origin_catalogue_stale" not in [w["code"] for w in second.json()["warnings"]]
+    assert "origin_catalogue_stale" in [w["code"] for w in first.json()["diagnostics"]]
+    assert "origin_catalogue_stale" not in [w["code"] for w in second.json()["diagnostics"]]
 
 
 @pytest.mark.parametrize(
@@ -406,9 +407,9 @@ def test_a_first_mint_after_a_rename_cites_the_new_name(version_store):
 def test_a_collapse_minted_over_a_renamed_base_cites_the_base_s_stored_citation(
     version_store, clock
 ):
-    """A collapse after a source rename uses the base version's stored citation and
-    `prepared_at` for its record, bundle, and repeat-mint response.
-    """
+    """A collapse after a source rename uses the base version's stored sources and
+    `prepared_at` for its record, bundle, and repeat-mint response. Its line reads "processed
+    by" the DFO, which summed the base's variables, where the base's reads "via"."""
     arcs: dict[str, dict[str, tuple[str, ...]]] = {
         **_NAMED_NODES,
         groupby_fixture._MEMBER_A: {
@@ -449,8 +450,17 @@ def test_a_collapse_minted_over_a_renamed_base_cites_the_base_s_stored_citation(
     assert collapsed["content_version"] != base["content_version"]
     base_citation = _snapshot(client, base)["citation"]
     assert [source["label"] for source in base_citation["sources"]] == [_FIRST_NAME]
-    assert collapsed["citation"] == base_citation
-    assert _snapshot(client, collapsed)["citation"] == base_citation
+    assert base_citation["text"] == citation_line(
+        retrieved=_FIRST_PREPARED.date(), sources=[_FIRST_NAME], processed=False
+    )
+    collapsed_citation = {
+        **base_citation,
+        "text": citation_line(
+            retrieved=_FIRST_PREPARED.date(), sources=[_FIRST_NAME], processed=True
+        ),
+    }
+    assert collapsed["citation"] == collapsed_citation
+    assert _snapshot(client, collapsed)["citation"] == collapsed_citation
     assert _bundle_source_titles(artifact_store, collapsed) == [_FIRST_NAME]
     assert again["content_version"] == collapsed["content_version"]
     assert _stored_fields(again) == _stored_fields(_snapshot(client, collapsed))

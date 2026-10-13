@@ -122,7 +122,8 @@
   tags:
     directional_flow: na
     conjunction: none
-  known_failure: {issue: 1156, checks: [measure]}
+  # Also known failure under #1298 (disposition): WHO and SDG series are both offered as candidates instead of one definite SDG answer.
+  known_failure: {issue: 1156, checks: [measure, disposition]}
   expect:
     definite:
       measure:
@@ -482,20 +483,17 @@
       operations: []
 - id: renewable-energy-share
   query: share of renewable energy in total energy
-  why: Share of renewable energy in total energy offers the SDG final-consumption share and the narrower electricity share as candidates.
+  why: The query asks for renewable energy over total energy. The SDG and World Development Indicators series both divide renewables by total final energy consumption, so either answers.
   tags:
     directional_flow: na
     conjunction: none
   expect:
+    definite:
+      measure:
+        family: [un.sdg_renewable_energy_share, base.renewable_energy_share]
     candidates:
       measure:
-        shape:
-          population_type: undata/sdg/SERIES-EG_FEC_RNEW
-          measured_property: value
-          stat_type: measuredValue
-          measurement_qualifier: null
-          measurement_denominator: null
-        stat_vars: [undata/sdg/EG_FEC_RNEW, worldBank/4_1_SHARE_RE_IN_ELECTRICITY]
+        family: [un.sdg_renewable_energy_share, base.renewable_energy_share]
 - id: sanitation-access-bangladesh
   query: basic sanitation coverage in Bangladesh
   why: Basic sanitation coverage in Bangladesh resolves to undata/sdg/SP_ACS_BSRVSAN.

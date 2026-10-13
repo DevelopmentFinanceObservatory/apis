@@ -1,6 +1,7 @@
 """Recall stage: graph-backed SV detection and entity resolution.
 
-Calls graph.detect_svs() for candidate SV dcids on the bare variable text, and
+Calls graph.detect_svs() for candidate SV dcids on the bare variable text, or takes the
+StatVars a part's series code names in its place, and
 entity_resolution.EntityResolver.resolve() for every entity name recall() was
 not handed a cached resolution for -- one call for the whole miss set,
 concurrent with detect_svs in the same gather.
@@ -21,7 +22,15 @@ from dataclasses import dataclass
 from pydantic import BaseModel, ConfigDict, Field
 
 from entity_resolution import EntityResolver, Resolution, Resolved
-from search.engine.clients.graph import DetectedSV, EngineGraphClient, settled_un
+from origin_catalogue import current_catalogue
+from search.engine.clients.graph import (
+    DetectedSV,
+    Detection,
+    EngineGraphClient,
+    cut_hits,
+    settled_un,
+    stand_candidates,
+)
 from search.engine.config import settings
 from search.engine.retrieval.topics import is_topic_candidate
 
@@ -92,7 +101,7 @@ class Recall(BaseModel):
     # region/pipeline.py), and `un_candidates` and `un_unavailable` read it once settled.
     un_leg: Future[tuple[DetectedSV, ...] | None] = Field(default_factory=lambda: settled_un(()))
     # Our resolve's hits under their own dcids, above the recall floor (`Detection.hits`):
-    # the first pass's confirm cap counts these. `None` reads as `candidates`.
+    # the first pass's derivation confirms these. `None` reads as `candidates`.
     hits: list[DetectedSV] | None = None
 
     async def settle_un(self) -> None:
@@ -137,6 +146,20 @@ def _above_recall_floor(candidates: Sequence[DetectedSV]) -> list[DetectedSV]:
     return [c for c in candidates if c.score >= floor or is_topic_candidate(c.dcid, c.type_of)]
 
 
+def _member_detection(members: Sequence[str]) -> Detection:
+    """`members` as a detection whose hits the request's catalogue admits (`cut_hits`),
+    standing as `detect_svs` stands its own (`stand_candidates`), with no UN candidate."""
+    catalogue = current_catalogue()
+    pool = [
+        DetectedSV(dcid=dcid, score=1.0, type_of="StatisticalVariable", sentence=None)
+        for dcid in members
+    ]
+    hits = cut_hits(pool, catalogue=catalogue, detect_k=len(pool))
+    return Detection(
+        candidates=stand_candidates(hits, catalogue=catalogue), un=settled_un(()), hits=hits
+    )
+
+
 async def recall(
     variable: str,
     entities: list[str],
@@ -145,6 +168,7 @@ async def recall(
     resolver: EntityResolver,
     raw_query: str | None = None,
     pre_resolved: dict[str, Resolution] | None = None,
+    members: Sequence[str] | None = None,
 ) -> Recall:
     """Recall candidate StatVars and resolve entity names concurrently.
 
@@ -156,16 +180,24 @@ async def recall(
     Candidates stay in descending score order. The recall floor drops low
     scores except Topic candidates. Results remain unconfirmed until the
     materialise stage reads the graph.
+
+    `members` are the StatVars a part's series code names (`search.engine.source_code`).
+    They are the candidates, each at score 1.0 and admitted by the request's catalogue as a
+    resolve's hits are, and neither resolver is asked, so the part has no UN candidate.
     """
     detect_query = raw_query or variable
     _pre = pre_resolved or {}
     cache_hits = {name: _pre[name] for name in entities if name in _pre}
     misses = [name for name in entities if name not in _pre]
 
-    detection, miss_resolutions = await asyncio.gather(
-        asyncio.to_thread(graph.detect_svs, _canonicalize_acronyms(detect_query)),
-        resolver.resolve(misses),
-    )
+    if members is not None:
+        detection = _member_detection(members)
+        miss_resolutions = await resolver.resolve(misses)
+    else:
+        detection, miss_resolutions = await asyncio.gather(
+            asyncio.to_thread(graph.detect_svs, _canonicalize_acronyms(detect_query)),
+            resolver.resolve(misses),
+        )
     candidates = _above_recall_floor(detection.candidates)
     resolutions: dict[str, Resolution] = dict(cache_hits)
     resolutions.update(zip(misses, miss_resolutions, strict=True))

@@ -118,7 +118,12 @@ def test_failed_reload_keeps_the_last_good_snapshot(tmp_path: Path) -> None:
 def test_reload_over_budget_keeps_the_last_good_snapshot(tmp_path: Path) -> None:
     uri = _uri(tmp_path)
     build = publish_sample(uri)
-    budget = build.manifest.resident_bytes + build.manifest.un_mirror.resident_bytes
+    budget = (
+        build.manifest.resident_bytes
+        + build.manifest.un_mirror.resident_bytes
+        + build.manifest.arc_tables.resident_bytes
+        + build.manifest.families.resident_bytes
+    )
     now = [0.0]
     service = CatalogueService(
         artifact_uri=uri, recheck_seconds=10, clock=lambda: now[0], max_resident_bytes=budget

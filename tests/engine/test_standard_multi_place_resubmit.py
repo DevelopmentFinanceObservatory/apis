@@ -97,7 +97,7 @@ def _resubmit(where_slot: Slot, obs: dict):
     inp = ResubmitIdentityPayload(
         identity=make_identity(
             PERSON_COUNT_SHAPE,
-            entities=[subject_entity(value.ref.dcid, value.ref.label) for value in values],
+            entities=[subject_entity(value.ref.ref, value.ref.label) for value in values],
         ),
     )
     return resolve_spec_resubmit(
@@ -138,7 +138,7 @@ def test_posted_two_place_set_survives_as_binding_set_with_both_roles():
     spec = region.specs[0]
     where = _where_slot(region)
     assert isinstance(where.binding, BindingSet)
-    assert [v.ref.dcid for v in where.binding.values] == ["country/GTM", "country/SLV"]
+    assert [v.ref.ref for v in where.binding.values] == ["country/GTM", "country/SLV"]
     assert {e.ref for e in spec.resolved.entities} == {"country/GTM", "country/SLV"}
 
 
@@ -218,7 +218,7 @@ def test_posted_region_is_read_at_its_node(where_slot, bound):
     spec = region.specs[0]
     binding = _where_slot(region).binding
     values = [binding.value] if isinstance(binding, BindingValue) else binding.values
-    assert [value.ref.dcid for value in values] == bound
+    assert [value.ref.ref for value in values] == bound
     assert isinstance(spec.resolved.coverage, CoverageExact)
     assert spec.resolved.coverage.observation_count == 1
 
@@ -254,7 +254,7 @@ def test_unresolvable_base_entity_alongside_valid_where_set_is_inert():
         identity=make_identity(
             PERSON_COUNT_SHAPE,
             entities=[
-                subject_entity(value.ref.dcid, value.ref.label)
+                subject_entity(value.ref.ref, value.ref.label)
                 for value in where_slot.binding.values
             ],
         ),
@@ -269,7 +269,7 @@ def test_unresolvable_base_entity_alongside_valid_where_set_is_inert():
     assert region.status == "definite"
     where = _where_slot(region)
     assert isinstance(where.binding, BindingSet)
-    assert {v.ref.dcid for v in where.binding.values} == {"country/GTM", "country/SLV"}
+    assert {v.ref.ref for v in where.binding.values} == {"country/GTM", "country/SLV"}
 
 
 # The bound on the places a Spec binds holds on resubmit.
@@ -339,4 +339,4 @@ def test_posted_single_value_where_unchanged():
     assert region.status == "definite"
     where = _where_slot(region)
     assert isinstance(where.binding, BindingValue)
-    assert where.binding.value.ref.dcid == "country/GTM"
+    assert where.binding.value.ref.ref == "country/GTM"

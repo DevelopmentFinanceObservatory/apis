@@ -31,6 +31,7 @@ from datasets_api.adapter import resolve_definition_members
 from origin_catalogue import DFO, Catalogue, ProvenanceRow, SourceRef
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.extract import ExtractedEntity, Extraction
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import pipeline as pipeline_module
 from search.engine.region.phase_rank_bind import _phase_prune_and_rank
 from search.engine.region.state import ResolveState
@@ -67,6 +68,7 @@ from tests.datasets_api._member_bounds import mint_bounds
 from tests.engine._fake_coverage import patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import make_request, offline_resolve
+from tests.engine._quantity import NO_QUANTITY
 from tests.engine._source_scopes import part_scope
 from tests.fixtures import FakeGraph, FakeLLM
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue
@@ -255,9 +257,7 @@ def _held_spec(part: Part) -> Spec:
 def _bound(spec: Spec) -> dict[str, str]:
     """The spec's bound slots, by constraint property or by axis where a slot has none."""
     return {
-        (
-            slot.key.property.dcid if slot.key.property else slot.key.axis
-        ): slot.binding.value.ref.dcid
+        (slot.key.property.ref if slot.key.property else slot.key.axis): slot.binding.value.ref.ref
         for slot in spec.resolved.slots
         if slot.binding.kind == "value" and slot.binding.value.ref is not None
     }
@@ -272,7 +272,7 @@ def _pinned(spec: Spec) -> dict[str, str]:
 
 
 def _sources(spec: Spec) -> list[str]:
-    return [source.dcid for source in spec.resolved.trace.resolved_sources]
+    return [source.ref for source in spec.resolved.trace.resolved_sources]
 
 
 def _spec_id(identity: dict) -> str:
@@ -347,7 +347,7 @@ def test_a_question_naming_no_dataset_answers_the_crs(
     response, llm = _resolve(query, variable)
 
     (spec,) = _specs(response)
-    assert llm.calls == {"Extraction": 1, "_UniversalBindOutput": 1}
+    assert llm.calls == {"Extraction": 1, "_UniversalBindOutput": 1, "QuantityOutput": 1}
     assert spec.resolved.shape.member_count == member_count
     assert AID_TYPE not in _bound(spec)
     assert "source" not in _bound(spec)
@@ -543,7 +543,7 @@ def test_a_question_excluding_the_crs_answers_from_the_other_table_or_refuses(
         assert isinstance(part, NoDataPart)
         assert part.no_data.reason == "qualifier_not_bound"
         assert [
-            [(ref.dcid, ref.label) for ref in unbound.named]
+            [(ref.ref, ref.label) for ref in unbound.named]
             for unbound in part.no_data.unbound_qualifiers
         ] == [[(CRS_PROVENANCE, _CRS_LABEL)], [(_SECOND, _SECOND_LABEL)]]
     else:
@@ -685,6 +685,8 @@ class _ScriptedLLM:
                 ],
                 dropped_qualifiers=self._dropped,
             ), None
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         self.bind_prompts.append(prompt)
         return schema(
             chosen_shape_index=0,
@@ -849,7 +851,7 @@ def test_a_parsed_part_naming_no_dataset_answers_the_crs():
     (spec,) = _specs(response)
     assert AID_TYPE not in _bound(spec)
     assert _sources(spec) == [CRS_PROVENANCE]
-    assert llm.calls == {"_UniversalBindOutput": 1}
+    assert llm.calls == {"_UniversalBindOutput": 1, "QuantityOutput": 1}
 
 
 def _resolve_parsed(part: ParsedPart, llm: _ScriptedLLM, *, graph: FakeGraph) -> ResolveResponse:
@@ -948,7 +950,7 @@ def test_raw_text_source_words_that_leave_a_part_no_source_refuse_that_part_alon
     assert isinstance(second, NoDataPart)
     assert second.no_data.reason == "qualifier_not_bound"
     assert [
-        [ref.dcid for ref in unbound.named] for unbound in second.no_data.unbound_qualifiers
+        [ref.ref for ref in unbound.named] for unbound in second.no_data.unbound_qualifiers
     ] == [[CRS_PROVENANCE]]
     assert llm.calls["Extraction"] == 1
     assert len(llm.bind_prompts) == 1
@@ -974,7 +976,7 @@ def test_an_exclusion_refusal_stands_though_the_un_system_has_a_candidate(
     (part,) = response.parts
     assert isinstance(part, NoDataPart)
     assert part.no_data.reason == "qualifier_not_bound"
-    assert [[ref.dcid for ref in unbound.named] for unbound in part.no_data.unbound_qualifiers] == [
+    assert [[ref.ref for ref in unbound.named] for unbound in part.no_data.unbound_qualifiers] == [
         [CRS_PROVENANCE],
         [_SECOND],
     ]
@@ -1283,9 +1285,7 @@ def test_a_dataset_that_publishes_no_recalled_shape_refuses_and_names_the_datase
     assert part.no_data.reason == "qualifier_not_bound"
     (unbound,) = part.no_data.unbound_qualifiers
     assert unbound.disposition == "unbound"
-    assert [(ref.dcid, ref.label) for ref in unbound.named] == [
-        (IMPUTED_PROVENANCE, _IMPUTED_LABEL)
-    ]
+    assert [(ref.ref, ref.label) for ref in unbound.named] == [(IMPUTED_PROVENANCE, _IMPUTED_LABEL)]
     assert part.no_data.flagged_match is None
     assert llm.calls["_UniversalBindOutput"] == 0
 
@@ -1354,9 +1354,9 @@ def test_each_pinned_slot_offers_the_menu_around_its_pin(monkeypatch: pytest.Mon
     pinned = _pinned(spec)
     assert set(pinned) == {AID_TYPE, "crsTypeOfFlow"}
     menus = {
-        menu.key.property.dcid: [option.value.ref.dcid for option in menu.options]
+        menu.key.property.ref: [option.value.ref.ref for option in menu.options]
         for menu in spec.resolved.slot_options
-        if menu.key.property is not None and menu.key.property.dcid in pinned
+        if menu.key.property is not None and menu.key.property.ref in pinned
     }
     assert menus == {"crsTypeOfFlow": [pinned["crsTypeOfFlow"]]}
     flows = get_index().level_scoped_options("crsTypeOfFlow", pinned["crsTypeOfFlow"])
@@ -1427,8 +1427,8 @@ def test_a_term_the_named_dataset_cannot_apply_refuses_with_the_near_match(
     assert part.no_data.reason == "qualifier_not_bound"
     term, source = part.no_data.unbound_qualifiers
     assert (term.text, term.disposition, term.evidence) == (text, "unbound", "unavailable")
-    assert {ref.dcid for ref in term.named} == named
-    assert [ref.dcid for ref in source.named] == [provenance]
+    assert {ref.ref for ref in term.named} == named
+    assert [ref.ref for ref in source.named] == [provenance]
     assert _bound(_held_spec(part)).items() >= near.items()
 
 
@@ -1455,8 +1455,8 @@ def test_a_bind_call_electing_no_shape_refuses_a_term_no_offered_shape_holds(
     assert part.no_data.reason == "qualifier_not_bound"
     term, source = part.no_data.unbound_qualifiers
     assert (term.text, term.evidence) == ("grants", "unavailable")
-    assert {ref.dcid for ref in term.named} == {"CRSTypeOfFinance100", "CRSTypeOfFinance110"}
-    assert [ref.dcid for ref in source.named] == [IMPUTED_PROVENANCE]
+    assert {ref.ref for ref in term.named} == {"CRSTypeOfFinance100", "CRSTypeOfFinance110"}
+    assert [ref.ref for ref in source.named] == [IMPUTED_PROVENANCE]
 
 
 _BUDGET_SUPPORT_MEMBER = next(

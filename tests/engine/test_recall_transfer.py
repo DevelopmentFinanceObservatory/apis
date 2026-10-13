@@ -16,6 +16,7 @@ import pytest
 from origin_catalogue import BASE, UN_SYSTEM, CatalogueSnapshot
 from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.graph import DetectedSV, Detection, admit_candidates, standing_dcid
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import phase_intake
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.result import RegionResult
@@ -23,6 +24,7 @@ from search.engine.region.state import EngineOptions
 from search.engine.retrieval.topics import expand_topics
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 from tests.origin_catalogue.fake_catalogue import (
     FakeCatalogue,
@@ -159,6 +161,8 @@ class _ElectFirstLLM:
         self.prompts: list[str] = []
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         self.prompts.append(prompt)
         usage = {"input_tokens": 1, "output_tokens": 1, "cached_tokens": 0}
@@ -188,7 +192,7 @@ def _resolve(graph: FakeGraph, **kwargs) -> RegionResult:
 
 
 def _elected(result: RegionResult) -> list[str]:
-    return [sv.ref.dcid for spec in result.specs for sv in spec.resolved.members]
+    return [sv.ref.ref for spec in result.specs for sv in spec.resolved.members]
 
 
 def _answer(result: RegionResult) -> tuple:
@@ -402,61 +406,46 @@ def test_the_second_pass_does_not_elect_the_transferred_shape_the_first_found_em
     assert _WHO in second and _SDG not in second
 
 
-def test_the_second_pass_elects_a_same_id_shape_holding_other_members(bind_catalogue) -> None:
-    """The first pass elects `_SDG`'s shape and finds it empty. The UN resolve recalls
-    another member of the same series, which has data: its shape has the same id and other
-    members, so the second pass elects it."""
+def test_the_first_pass_answers_from_a_held_series_member_recall_did_not_find(
+    bind_catalogue,
+) -> None:
+    """The first pass elects `_SDG`'s shape, which stands for the series the catalogue
+    holds, so its population holds `_SDG_FEMALE`, which has data, though only the UN
+    resolve recalls it. The first pass answers from it and no second pass runs."""
     bind_catalogue(_catalogue())
     llm = _ElectFirstLLM()
 
     result = _resolve(_graph(un=((_SDG_FEMALE, 0.9),), data=(_SDG_FEMALE,)), llm=llm)
 
     assert _elected(result) == [_SDG_FEMALE]
-    first, second = llm.prompts
-    assert _SDG in first and _SDG_FEMALE in second
+    (menu,) = llm.prompts
+    assert _SDG in menu
 
 
 @pytest.mark.parametrize(
-    ("ours", "slots", "low_confirmed"),
+    "ours",
     [
         pytest.param(
-            ((_BASE, 0.95), (_BASE_VARIANT, 0.9), (_OURS, 0.8), (_OURS_LOW, 0.7)),
-            3,
-            False,
-            id="merged",
+            ((_BASE, 0.95), (_BASE_VARIANT, 0.9), (_OURS, 0.8), (_OURS_LOW, 0.7)), id="merged"
         ),
         pytest.param(
-            ((_BASE, 0.95), (_BASE_ALONE, 0.9), (_OURS, 0.8), (_OURS_LOW, 0.7)),
-            3,
-            False,
-            id="dropped",
+            ((_BASE, 0.95), (_BASE_ALONE, 0.9), (_OURS, 0.8), (_OURS_LOW, 0.7)), id="dropped"
         ),
-        pytest.param(((_TOPIC, 0.95), (_OURS, 0.9), (_OURS_LOW, 0.7)), 3, False, id="topic-leaves"),
+        pytest.param(((_TOPIC, 0.95), (_OURS, 0.9), (_OURS_LOW, 0.7)), id="topic-leaves"),
         pytest.param(
             ((_TOPIC, 0.95), (_TOPIC_BASE, 0.95), (_OURS, 0.9), (_OURS_LOW, 0.7)),
-            5,
-            True,
             id="leaf-of-two-roots",
         ),
         pytest.param(
             ((_BASE_VARIANT, 0.95), (_TOPIC_BASE, 0.95), (_OURS, 0.9), (_OURS_LOW, 0.7)),
-            3,
-            False,
             id="leaf-standing-as-a-recalled-successor",
         ),
     ],
 )
-def test_a_superseded_hit_holds_its_place_at_the_confirm_cap(
-    bind_catalogue, search_settings, monkeypatch, ours, slots: int, low_confirmed: bool
-) -> None:
-    """The confirm cap counts each base variable once, as it did while its provenance was
-    admitted: a merged or dropped hit, a hit recalled directly or a Topic leaf, spends its
-    slot; a leaf two roots reach spends one; a leaf standing as the successor a recalled hit
-    stands as spends its own. So `_OURS_LOW` is confirmed exactly where it was then."""
+def test_a_superseded_hit_is_read_only_as_its_successor(bind_catalogue, monkeypatch, ours) -> None:
+    """A merged or dropped hit, recalled directly or as a Topic leaf, is never read or
+    drafted under its own dcid, and every other candidate, `_OURS_LOW` included, is."""
     bind_catalogue(_catalogue())
-    search_settings(
-        max_confirm_candidates=slots, min_recall_confirm_slots=0, min_shape_class_confirm_slots=0
-    )
     llm = _ElectFirstLLM()
     graph = _graph(ours=ours, data=(_SDG, _OURS, _OURS_LOW))
     read: list[str] = []
@@ -476,8 +465,7 @@ def test_a_superseded_hit_holds_its_place_at_the_confirm_cap(
 
     (menu,) = llm.prompts
     assert _SDG in menu
-    assert (_OURS_LOW in menu) is low_confirmed
-    # A spent slot is never read and drafts no shape.
+    assert _OURS_LOW in menu
     superseded = (_BASE, _BASE_VARIANT, _BASE_ALONE)
     assert [d for d in superseded if d in read or d in drafted or _names(menu, d)] == []
     # The control: the reads did reach the confirmed variables.

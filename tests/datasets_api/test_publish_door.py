@@ -7,6 +7,7 @@ cover refusal mapping through `make_client_for_door`.
 from __future__ import annotations
 
 import io
+import json
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
@@ -25,6 +26,7 @@ from dataset_store.snapshot import (
     select_servable_locations,
 )
 from datasets_api.config import DatasetsBuildSettings
+from datasets_api.description_store import LiveDescriptionStore
 from datasets_api.doors.publish import (
     PublishBytesDiverge,
     PublishFrameInvalid,
@@ -35,8 +37,6 @@ from datasets_api.doors.publish import (
 )
 from datasets_api.publish_models import (
     MAX_CELL_CHARS,
-    MAX_COMPOSED_STAT_VAR_SIDE_REFS,
-    MAX_COMPOSED_STAT_VARS,
     MAX_INPUT_CONTENT_VERSIONS,
     MAX_ROLE_KEYS,
     MAX_ROW_WIDTH,
@@ -105,7 +105,7 @@ def _publish_body(**overrides: object) -> dict[str, object]:
         "content_version": _CONTENT_VERSION,
         "role_keys": list(_ROLE_KEYS),
         "rows": _rows(),
-        "input_content_versions": ["cv_abc123"],
+        "input_content_versions": ["cv_00000000000000000000000000abc123"],
     }
     body.update(overrides)
     return body
@@ -148,12 +148,11 @@ class _Deps:
         content_version: str = _CONTENT_VERSION,
         role_keys=_ROLE_KEYS,
         rows=None,
-        input_content_versions=("cv_abc123",),
-        composed_stat_vars=(),
+        input_content_versions=("cv_00000000000000000000000000abc123",),
         ceiling: int | None = None,
         artifact_store=None,
     ):
-        kwargs: dict[str, object] = {"composed_stat_vars": composed_stat_vars}
+        kwargs: dict[str, object] = {}
         if ceiling is not None:
             kwargs["ceiling"] = ceiling
         return publish_frame(
@@ -189,7 +188,9 @@ def test_fresh_publish_records_version_row_and_its_parquet_canonical_frame(deps:
     stored = deps.snapshot_reader.read_version(_SPEC_ID, _CONTENT_VERSION)
     assert stored is not None
     assert stored.subject_kind == "spec"
-    assert stored.facts == FrameLineage(input_content_versions=["cv_abc123"])
+    assert stored.facts == FrameLineage(
+        input_content_versions=["cv_00000000000000000000000000abc123"], continuations=[]
+    )
 
     locations = deps.snapshot_reader.read_artifact_locations(_SPEC_ID, _CONTENT_VERSION)
     assert [(loc.rendering, loc.media_type, loc.tier) for loc in locations] == [
@@ -243,7 +244,7 @@ def _record_stored_pair(
             subject_kind="spec",
             content_version=_CONTENT_VERSION,
             schema_version=1,
-            facts=FrameLineage(input_content_versions=["cv_abc123"]),
+            facts=FrameLineage(input_content_versions=["cv_00000000000000000000000000abc123"]),
             artifacts=(
                 ArtifactRecord(
                     artifact_digest=stored.digest, rendering=rendering, media_type=media_type
@@ -421,41 +422,30 @@ _COMPOSED_STAT_VARS = [
 ]
 
 
-@pytest.mark.parametrize(
-    ("first", "second"),
-    [
-        (_COMPOSED_STAT_VARS, _COMPOSED_STAT_VARS),
-        (_COMPOSED_STAT_VARS, ()),
-        ((), _COMPOSED_STAT_VARS),
-        ((), ()),
-        (_COMPOSED_STAT_VARS, [{**_COMPOSED_STAT_VARS[0], "relation": "sum"}]),
-    ],
-    ids=[
-        "with-onto-with",
-        "without-onto-with",
-        "with-onto-without",
-        "without-onto-without",
-        "another-list-onto-with",
-    ],
-)
-def test_repeat_publish_keeps_the_facts_first_written_whatever_entries_it_carries(
-    deps: _Deps, first, second
-) -> None:
-    """`composed_stat_vars` is no part of a pair's lineage, so a repeat publish succeeds with or
-    without it and the stored facts are the first publish's."""
-    assert deps.publish(composed_stat_vars=first).created is True
-    stored = deps.snapshot_reader.read_version(_SPEC_ID, _CONTENT_VERSION).facts
+def test_repeat_publish_keeps_the_composed_stat_vars_a_stored_body_holds(deps: _Deps) -> None:
+    """A version stored with `composed_stat_vars` keeps them through a repeat publish, which
+    compares the frame and its lineage alone."""
+    assert deps.publish().created is True
+    with deps.store.transaction() as tx:
+        tx.execute(
+            "UPDATE datasets.version_record SET composed_stat_vars = %s "
+            "WHERE subject_id = %s AND content_version = %s",
+            (json.dumps(_COMPOSED_STAT_VARS), _SPEC_ID, _CONTENT_VERSION),
+        )
 
-    assert deps.publish(composed_stat_vars=second).created is False
+    assert deps.publish().created is False
 
-    assert deps.snapshot_reader.read_version(_SPEC_ID, _CONTENT_VERSION).facts == stored
-    assert stored == FrameLineage(
-        input_content_versions=["cv_abc123"],
-        composed_stat_vars=_COMPOSED_STAT_VARS if first else None,
+    assert deps.snapshot_reader.read_version(_SPEC_ID, _CONTENT_VERSION).facts == FrameLineage(
+        input_content_versions=["cv_00000000000000000000000000abc123"],
+        composed_stat_vars=_COMPOSED_STAT_VARS,
+        continuations=[],
     )
 
 
-@pytest.mark.parametrize("input_content_versions", [("cv_abc123",), ("cv_bbbbbb",)])
+@pytest.mark.parametrize(
+    "input_content_versions",
+    [("cv_00000000000000000000000000abc123",), ("cv_00000000000000000000000000bbbbbb",)],
+)
 def test_repeat_publish_with_different_bytes_refuses_rather_than_overwrites(
     deps: _Deps, input_content_versions: tuple[str, ...]
 ) -> None:
@@ -507,10 +497,10 @@ def test_repeat_publish_of_another_frame_than_a_canonical_frame_holds_refuses(
 
 def test_repeat_publish_with_identical_bytes_but_different_lineage_refuses(deps: _Deps) -> None:
     """Identical bytes with different lineage raise `PublishLineageDiverge` before writing."""
-    first = deps.publish(input_content_versions=("cv_aaaaaa",))
+    first = deps.publish(input_content_versions=("cv_00000000000000000000000000aaaaaa",))
 
     with pytest.raises(PublishLineageDiverge) as excinfo:
-        deps.publish(input_content_versions=("cv_bbbbbb",))
+        deps.publish(input_content_versions=("cv_00000000000000000000000000bbbbbb",))
 
     assert excinfo.value.spec_id == _SPEC_ID
     assert excinfo.value.content_version == _CONTENT_VERSION
@@ -519,7 +509,9 @@ def test_repeat_publish_with_identical_bytes_but_different_lineage_refuses(deps:
     # lineage never got recorded.
     stored = deps.snapshot_reader.read_version(_SPEC_ID, _CONTENT_VERSION)
     assert stored is not None
-    assert stored.facts == FrameLineage(input_content_versions=["cv_aaaaaa"])
+    assert stored.facts == FrameLineage(
+        input_content_versions=["cv_00000000000000000000000000aaaaaa"], continuations=[]
+    )
     assert _canonical_frames(deps)[0].artifact_digest == first.artifact_digest
 
 
@@ -572,11 +564,11 @@ def test_revocation_outranks_bytes_divergence(deps: _Deps) -> None:
 
 def test_revocation_outranks_lineage_divergence(deps: _Deps) -> None:
     """Revocation takes precedence over lineage divergence."""
-    deps.publish(input_content_versions=("cv_aaaaaa",))
+    deps.publish(input_content_versions=("cv_00000000000000000000000000aaaaaa",))
     _revoke(deps.store, subject_id=_SPEC_ID, content_version=_CONTENT_VERSION)
 
     with pytest.raises(SnapshotRevoked):
-        deps.publish(input_content_versions=("cv_bbbbbb",))
+        deps.publish(input_content_versions=("cv_00000000000000000000000000bbbbbb",))
 
 
 class _CheckBlindSnapshotReader:
@@ -604,12 +596,15 @@ class _CheckBlindSnapshotReader:
     def read_version_state(self, subject_id: str, content_version: str):
         return self._reader.read_version_state(subject_id, content_version)
 
+    def read_versions_of(self, content_versions):
+        return self._reader.read_versions_of(content_versions)
+
 
 def test_verify_phase_catches_a_concurrent_publish_with_different_lineage(deps: _Deps) -> None:
     """Post-write verification catches the losing publish when concurrent calls claim
     different `input_content_versions` for identical bytes.
     """
-    winner = deps.publish(input_content_versions=("cv_aaaaaa",))
+    winner = deps.publish(input_content_versions=("cv_00000000000000000000000000aaaaaa",))
 
     blind_reader = _CheckBlindSnapshotReader(deps.snapshot_reader)
     with pytest.raises(PublishLineageDiverge) as excinfo:
@@ -618,7 +613,7 @@ def test_verify_phase_catches_a_concurrent_publish_with_different_lineage(deps: 
             content_version=_CONTENT_VERSION,
             role_keys=_ROLE_KEYS,
             rows=_rows(),
-            input_content_versions=("cv_bbbbbb",),
+            input_content_versions=("cv_00000000000000000000000000bbbbbb",),
             artifact_store=deps.artifact_store,
             snapshot_reader=blind_reader,
             version_writer=deps.version_writer,
@@ -629,7 +624,9 @@ def test_verify_phase_catches_a_concurrent_publish_with_different_lineage(deps: 
 
     stored = deps.snapshot_reader.read_version(_SPEC_ID, _CONTENT_VERSION)
     assert stored is not None
-    assert stored.facts == FrameLineage(input_content_versions=["cv_aaaaaa"])
+    assert stored.facts == FrameLineage(
+        input_content_versions=["cv_00000000000000000000000000aaaaaa"], continuations=[]
+    )
     assert winner.created is True
 
 
@@ -645,7 +642,7 @@ def test_verify_phase_derives_created_from_the_insert_not_from_reaching_it(deps:
         content_version=_CONTENT_VERSION,
         role_keys=_ROLE_KEYS,
         rows=_rows(),
-        input_content_versions=("cv_abc123",),
+        input_content_versions=("cv_00000000000000000000000000abc123",),
         artifact_store=deps.artifact_store,
         snapshot_reader=blind_reader,
         version_writer=deps.version_writer,
@@ -672,7 +669,7 @@ def test_verify_phase_answers_the_digest_a_concurrent_publish_linked(deps: _Deps
         content_version=_CONTENT_VERSION,
         role_keys=_ROLE_KEYS,
         rows=_rows(1.0),
-        input_content_versions=("cv_abc123",),
+        input_content_versions=("cv_00000000000000000000000000abc123",),
         artifact_store=deps.artifact_store,
         snapshot_reader=_CheckBlindSnapshotReader(deps.snapshot_reader),
         version_writer=deps.version_writer,
@@ -697,7 +694,7 @@ def test_verify_phase_catches_a_revocation_landing_between_check_and_verify(deps
             content_version=_CONTENT_VERSION,
             role_keys=_ROLE_KEYS,
             rows=_rows(),
-            input_content_versions=("cv_abc123",),
+            input_content_versions=("cv_00000000000000000000000000abc123",),
             artifact_store=deps.artifact_store,
             snapshot_reader=blind_reader,
             version_writer=deps.version_writer,
@@ -719,7 +716,7 @@ def test_publish_composed_with_a_null_version_writer_raises_publish_record_missi
             content_version=_CONTENT_VERSION,
             role_keys=_ROLE_KEYS,
             rows=_rows(),
-            input_content_versions=("cv_abc123",),
+            input_content_versions=("cv_00000000000000000000000000abc123",),
             artifact_store=deps.artifact_store,
             snapshot_reader=deps.snapshot_reader,
             version_writer=NullVersionRecordWriter(),
@@ -1105,7 +1102,10 @@ def test_http_input_content_versions_over_the_cap_is_request_invalid_with_a_poin
     client = _build_client(deps)
     response = client.post(
         "/api/datasets/frames/publish",
-        json=_publish_body(input_content_versions=["cv_abc123"] * (MAX_INPUT_CONTENT_VERSIONS + 1)),
+        json=_publish_body(
+            input_content_versions=["cv_00000000000000000000000000abc123"]
+            * (MAX_INPUT_CONTENT_VERSIONS + 1)
+        ),
         headers=_AUTH_HEADERS,
     )
     assert response.status_code == 400, response.text
@@ -1115,12 +1115,44 @@ def test_http_input_content_versions_over_the_cap_is_request_invalid_with_a_poin
     assert deps.snapshot_reader.read_version(_SPEC_ID, _CONTENT_VERSION) is None
 
 
+@pytest.mark.parametrize(
+    ("token", "status"),
+    [
+        pytest.param("cv_abc123", 400, id="a-short-cv"),
+        pytest.param("cv_" + "a" * 33, 400, id="a-long-cv"),
+        pytest.param("cv_" + "a" * 32, 200, id="control-a-32-hex-cv"),
+        pytest.param("ocv_abc123", 200, id="control-a-short-ocv"),
+    ],
+)
+def test_http_an_input_content_version_outside_the_frame_grammar_is_request_invalid(
+    token: str, status: int
+) -> None:
+    """A `cv_` input holds exactly 32 hex digits, as the frame grammar and the description
+    record require; an `ocv_` input keeps the publish door's 6 to 64."""
+    deps = _Deps()
+    client = _build_client(deps)
+    response = client.post(
+        "/api/datasets/frames/publish",
+        json=_publish_body(input_content_versions=["cv_" + "b" * 32, token]),
+        headers=_AUTH_HEADERS,
+    )
+    assert response.status_code == status, response.text
+    if status == 400:
+        body = response.json()
+        assert body["code"] == "request_invalid"
+        assert body["pointer"] == "/input_content_versions/1"
+        assert deps.snapshot_reader.read_version(_SPEC_ID, _CONTENT_VERSION) is None
+
+
 def test_http_input_content_versions_at_exactly_the_cap_succeeds() -> None:
     deps = _Deps()
     client = _build_client(deps)
     response = client.post(
         "/api/datasets/frames/publish",
-        json=_publish_body(input_content_versions=["cv_abc123"] * MAX_INPUT_CONTENT_VERSIONS),
+        json=_publish_body(
+            input_content_versions=["cv_00000000000000000000000000abc123"]
+            * MAX_INPUT_CONTENT_VERSIONS
+        ),
         headers=_AUTH_HEADERS,
     )
     assert response.status_code == 200, response.text
@@ -1271,7 +1303,7 @@ def test_unit_mapping_value_at_exactly_max_cell_chars_parses() -> None:
         content_version=_CONTENT_VERSION,
         role_keys=list(_ROLE_KEYS),
         rows=[row],
-        input_content_versions=["cv_abc123"],
+        input_content_versions=["cv_00000000000000000000000000abc123"],
     )
 
     assert request.rows[0]["unit"] == row["unit"]
@@ -1362,7 +1394,7 @@ def test_unit_key_at_exactly_max_cell_chars_parses() -> None:
         content_version=_CONTENT_VERSION,
         role_keys=list(_ROLE_KEYS),
         rows=[row],
-        input_content_versions=["cv_abc123"],
+        input_content_versions=["cv_00000000000000000000000000abc123"],
     )
 
     assert request.rows[0]["unit"] == row["unit"]
@@ -1572,10 +1604,6 @@ def _one_row(cells: dict[str, object]) -> dict[str, object]:
     return {"rows": [{**_rows()[0], **cells}]}
 
 
-def _one_entry(**members: object) -> dict[str, object]:
-    return {"composed_stat_vars": [{**_COMPOSED_STAT_VARS[0], **members}]}
-
-
 @pytest.mark.parametrize(
     ("overrides", "pointer"),
     [
@@ -1603,10 +1631,6 @@ def _one_entry(**members: object) -> dict[str, object]:
             _one_row({"unit": {"numerator": {"stat_var": {_LONG_KEY: [1]}}, "denominator": "b"}}),
             "/rows/0/unit/numerator/stat_var",
         ),
-        (_one_entry(**{_LONG_KEY: [1]}), "/composed_stat_vars"),
-        (_one_entry(label="GDP per person"), "/composed_stat_vars"),
-        (_one_entry(first=[{_LONG_KEY: [1]}]), "/composed_stat_vars/0/first/0"),
-        (_one_entry(stat_var={_LONG_KEY: [1]}), "/composed_stat_vars/0/stat_var"),
     ],
     ids=[
         "request_side_scalar_value",
@@ -1619,19 +1643,14 @@ def _one_entry(**members: object) -> dict[str, object]:
         "role_composed_side_list_value",
         "role_composed_third_member",
         "third_level_of_a_unit",
-        "composed_stat_var_entry_key",
-        "composed_stat_var_unknown_member",
-        "composed_stat_var_side_ref_mapping",
-        "composed_stat_var_ref_mapping",
     ],
 )
 def test_http_overlong_key_is_refused_without_echoing_it(
     overrides: dict[str, object], pointer: str
 ) -> None:
     """Key lengths are checked before a cell is parsed, so a cell that fails its type cannot
-    carry the key above it into the pointer. A key at the third level of a unit, or inside a
-    composed StatVar's ref, is below the member the model reports. An entry of
-    `composed_stat_vars` takes its four keys and no other."""
+    carry the key above it into the pointer. A key at the third level of a unit is below the
+    member the model reports."""
     deps = _Deps()
     client = _build_client(deps)
     response = client.post(
@@ -1659,92 +1678,51 @@ def test_publish_request_schema_admits_every_unit_form() -> None:
         validator.validate(_publish_body(rows=[{**_rows()[0], "unit": unit}]))
 
 
-@pytest.mark.parametrize("relation", ["sum", "share"])
-def test_http_composed_stat_vars_are_stored_in_nfc_with_the_version(relation: str) -> None:
-    deps = _Deps()
-    client = _build_client(deps)
-    entries = [
-        {
-            "stat_var": "dcid:Exemplar",
-            "relation": relation,
-            "first": ["dcid:Cafe\u0301"],
-            "second": ["dcid:Count_Person", "dcid:spec_" + "a" * 32],
-        }
-    ]
-    response = client.post(
-        "/api/datasets/frames/publish",
-        json=_publish_body(composed_stat_vars=entries),
-        headers=_AUTH_HEADERS,
-    )
-    assert response.status_code == 200, response.text
-    stored = deps.snapshot_reader.read_version(_SPEC_ID, _CONTENT_VERSION).facts
-    assert isinstance(stored, FrameLineage)
-    assert stored.composed_stat_vars == [{**entries[0], "first": ["dcid:Caf\u00e9"]}]
-
-
-def _entries(count: int, *, refs_per_side: int = 1) -> list[dict[str, object]]:
-    return [
-        {
-            "stat_var": f"dcid:ops_{position}",
-            "relation": "sum",
-            "first": [f"dcid:A{position}_{ref}" for ref in range(refs_per_side)],
-            "second": [f"dcid:B{position}_{ref}" for ref in range(refs_per_side)],
-        }
-        for position in range(count)
-    ]
-
-
-def _entry(**members: object) -> list[dict[str, object]]:
-    return [{**_COMPOSED_STAT_VARS[0], **members}]
+_STEP = {
+    "id": "s1",
+    "op": "retrieve",
+    "input": {
+        "id": "spec_" + "a" * 32,
+        "content_version": "cv_00000000000000000000000000abc123",
+        "label": "GDP",
+    },
+    "options": {},
+}
 
 
 @pytest.mark.parametrize(
-    ("composed_stat_vars", "pointer"),
+    ("posted", "carried"),
     [
-        (_entries(MAX_COMPOSED_STAT_VARS + 1), "/composed_stat_vars"),
-        (_entries(11, refs_per_side=3), "/composed_stat_vars"),
-        (_entry(first=[]), "/composed_stat_vars/0/first"),
-        (_entry(second=["Count_Person"]), "/composed_stat_vars/0/second/0"),
-        (_entry(stat_var="dcid:" + "x" * 196), "/composed_stat_vars/0/stat_var"),
-        (_entry(first=["dcid:" + "\u0958" * 195]), "/composed_stat_vars"),
-        (_entry(relation="difference"), "/composed_stat_vars/0/relation"),
-        (_entry(second=None), "/composed_stat_vars/0/second"),
-        ([{"stat_var": "dcid:Exemplar", "relation": "sum"}], "/composed_stat_vars/0/first"),
-        (["dcid:Exemplar"], "/composed_stat_vars/0"),
-        (_COMPOSED_STAT_VARS * 2, "/composed_stat_vars"),
-        (_entry(first=["dcid:Exemplar"]), "/composed_stat_vars"),
-        (
-            [
-                {**_COMPOSED_STAT_VARS[0], "first": ["dcid:ops_later"]},
-                {**_COMPOSED_STAT_VARS[0], "stat_var": "dcid:ops_later"},
-            ],
-            "/composed_stat_vars",
-        ),
-        (_entry(first=["dcid:" + "9" * 100_000]), "/composed_stat_vars/0/first/0"),
-        (_entry(stat_var="dcid:a\u0000b"), "/composed_stat_vars"),
-        (_entry(second=["dcid:a\u0000b"]), "/composed_stat_vars"),
-    ],
-    ids=[
-        "seventeen_entries",
-        "sixty_six_side_refs",
-        "empty_side",
-        "ref_without_dcid",
-        "ref_over_200",
-        "ref_over_200_in_nfc",
-        "unknown_relation",
-        "null_side",
-        "missing_sides",
-        "entry_not_a_mapping",
-        "repeated_stat_var",
-        "side_names_its_own_entry",
-        "side_names_a_later_entry",
-        "ref_of_100000_characters",
-        "stat_var_holding_nul",
-        "side_ref_holding_nul",
+        pytest.param({"steps": [_STEP]}, [_STEP], id="steps"),
+        pytest.param({}, None, id="no-steps-member"),
     ],
 )
-def test_http_malformed_composed_stat_vars_is_request_invalid_and_writes_nothing(
-    composed_stat_vars: list[object], pointer: str
+def test_http_posted_steps_travel_to_the_description_record(
+    posted: dict[str, object], carried: list[dict[str, object]] | None
+) -> None:
+    deps = _Deps()
+    client = _build_client(deps)
+
+    response = client.post(
+        "/api/datasets/frames/publish", json=_publish_body(**posted), headers=_AUTH_HEADERS
+    )
+
+    assert response.status_code == 200, response.text
+    record = LiveDescriptionStore(store=deps.store).read_description(
+        id=_SPEC_ID, content_version=_CONTENT_VERSION
+    )
+    assert record is not None
+    steps = record.steps
+    assert (None if steps is None else [step.model_dump(mode="json") for step in steps]) == carried
+
+
+@pytest.mark.parametrize(
+    "composed_stat_vars",
+    [_COMPOSED_STAT_VARS, [], [{_LONG_KEY: [1]}]],
+    ids=["an_entry", "empty", "overlong_key"],
+)
+def test_http_composed_stat_vars_is_an_unknown_member_and_writes_nothing(
+    composed_stat_vars: list[object],
 ) -> None:
     deps = _Deps()
     client = _build_client(deps)
@@ -1756,28 +1734,7 @@ def test_http_malformed_composed_stat_vars_is_request_invalid_and_writes_nothing
     assert response.status_code == 400, response.text[:500]
     body = response.json()
     assert body["code"] == "request_invalid"
-    assert body["pointer"] == pointer
+    assert body["pointer"] == "/composed_stat_vars"
     assert len(response.text) < 2_000
     assert deps.snapshot_reader.read_version(_SPEC_ID, _CONTENT_VERSION) is None
     assert _no_artifact_store_puts(deps)
-
-
-def test_http_composed_stat_vars_at_the_caps_publish() -> None:
-    """Sixteen entries and 64 side refs, with a side naming an earlier entry and a ref no
-    entry describes."""
-    deps = _Deps()
-    client = _build_client(deps)
-    entries = _entries(MAX_COMPOSED_STAT_VARS, refs_per_side=2)
-    entries[1]["first"] = ["dcid:ops_0", "dcid:Count_Person"]
-    assert sum(len(one["first"]) + len(one["second"]) for one in entries) == (
-        MAX_COMPOSED_STAT_VAR_SIDE_REFS
-    )
-    response = client.post(
-        "/api/datasets/frames/publish",
-        json=_publish_body(composed_stat_vars=entries),
-        headers=_AUTH_HEADERS,
-    )
-    assert response.status_code == 200, response.text
-    stored = deps.snapshot_reader.read_version(_SPEC_ID, _CONTENT_VERSION).facts
-    assert isinstance(stored, FrameLineage)
-    assert stored.composed_stat_vars == entries

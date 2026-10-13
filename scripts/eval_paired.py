@@ -20,9 +20,11 @@ holds ``task_outcome`` it is a known failure.
 
 Head sampling is adaptive. Each case runs once at head. A case takes the rest of its
 ``--samples`` and is judged on all of them when a check outside its
-``known_failure.checks`` did not pass, or when a known failure passed, which is reported
-fixed only if it passes on every sample. Any head sample passing decides a pass, so for
-every check scored on each sample the verdict is the one a run of every sample gives.
+``known_failure.checks`` did not pass or passed only because no sample reached it, or when
+a known failure passed, which is reported fixed only if it passes on every sample. A head
+sample that reaches the check and passes decides a pass, so for every check scored on each
+sample the verdict is the one a run of every sample gives. A check unreached on the first
+sample is not settled, since a later sample may reach it and fail.
 ``materialisation`` is scored on the modal sample of the samples taken. A case that stops
 after one sample scores it on that sample, where a run of every sample scores it on the
 modal sample of all of them, so its verdict can differ when the other samples agree on
@@ -175,6 +177,7 @@ class SampleScore:
             request_rejected=self.sample is not None and self.sample.request_rejected,
             degraded=self.sample is not None and self.sample.degraded,
             run_failed=self.infra and side == "head",
+            parts=result.parts,
         )
 
 
@@ -223,12 +226,14 @@ class CaseState:
 
     def wants_more_samples(self) -> bool:
         """Whether more head samples could change a verdict: a check outside the known
-        failures has no head pass, or a known failure passed, which is reported fixed only
-        when it passes on every sample. Infra and a known task failure's failed run stay
-        what they are on any number of samples."""
+        failures has no head pass from a sample that reached it, or a known failure passed,
+        which is reported fixed only when it passes on every sample. Infra and a known task
+        failure's failed run stay what they are on any number of samples."""
         settled = {Outcome.PASS, Outcome.INFRA, Outcome.KNOWN_FAILURE}
         return any(
-            judgement.fixed if check in self.known else judgement.outcome not in settled
+            judgement.fixed
+            if check in self.known
+            else judgement.outcome not in settled or not judgement.reached
             for check, judgement in self.judgements.items()
         )
 

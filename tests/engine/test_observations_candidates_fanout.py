@@ -19,6 +19,7 @@ from materialise.rate_tables import RateTableCache
 from search.engine.bind import _UniversalBindOutput
 from search.engine.concurrency import scoped_concurrency
 from search.engine.errors import GraphInfraError
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.region.place_options import PlaceOptionsPool
 from search.engine.region.state import EngineOptions
@@ -27,6 +28,7 @@ from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import (
     materialise_double_from_obs,
 )
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 from tests.materialise.conftest import FakeGraphReader
 
@@ -64,6 +66,8 @@ class _CandidateUnitBindLLM:
         self._chosen_shape_index = chosen_shape_index
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=self._chosen_shape_index,

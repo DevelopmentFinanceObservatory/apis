@@ -10,6 +10,7 @@ from search.models import (
     BaseIdentity,
     GraphRef,
     NoDataGate,
+    ResolvedQualifier,
     Spec,
     Unsupported,
     Warning,
@@ -27,6 +28,7 @@ def _no_data_region(
     elected_stat_vars: list[GraphRef] | None = None,
     window_gap_fact: DepartureFact | None = None,
     cause: Cause | None = None,
+    unbound_qualifiers: tuple[ResolvedQualifier, ...] = (),
 ) -> RegionResult:
     """Build a `no_data` result for an unresolved identity or slice.
 
@@ -35,7 +37,8 @@ def _no_data_region(
     and gate so the client sees the requested identity marked unavailable. Pass elected
     StatVars after materialisation; `_elected_stat_vars` returns `None` for other outcomes.
     `window_gap_fact` is the years asked that hold no point (`RegionResult.window_gap_fact`),
-    and `cause` says why the reason fired (`RegionResult.cause`).
+    `cause` says why the reason fired (`RegionResult.cause`), and `unbound_qualifiers` are
+    the terms a `qualifier_not_bound` refusal names.
 
     Resubmits omit `nearest_real` because their definitions come from the client."""
     return RegionResult(
@@ -51,6 +54,7 @@ def _no_data_region(
         elected_stat_vars=elected_stat_vars,
         window_gap_fact=window_gap_fact,
         cause=cause,
+        unbound_qualifiers=unbound_qualifiers,
     )
 
 

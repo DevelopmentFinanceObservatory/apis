@@ -8,7 +8,9 @@ meta door mounts first. Static paths are disjoint from subject-id routes. Those 
 Routes include `GET /api/datasets/healthz`, `/api/datasets/schema`,
 `/api/datasets/capabilities`, `/api/datasets/operations/{operation_id}`,
 `GET /api/datasets/{spec_id}/{content_version}/observations`,
-`GET /api/datasets/{spec_id}/{content_version}/files/{digest}`, `POST /api/datasets/register`,
+`GET /api/datasets/{spec_id}/{content_version}/files/{digest}`,
+`GET /api/datasets/{id}/{content_version}/description` and its `/values` page for a `spec_` or
+`ops_` id, `POST /api/datasets/register`,
 `POST /api/datasets`, `POST /api/datasets/frames/publish`, `POST /api/datasets/frames/refresh`,
 and the recipe door's
 `PUT` and `GET /api/datasets/frames/{spec_id}/{content_version}/recipe`,
@@ -38,7 +40,9 @@ from dataset_store.snapshot import SnapshotReader
 from datasets_api.codes import DATASETS_CODE_CATALOGUE
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.deps import DepsCell, DepsOverrides, open_deps
+from datasets_api.description_store import LiveDescriptionStore
 from datasets_api.doors.definition import build_definition_door, classify_definition_exception
+from datasets_api.doors.description import build_description_door
 from datasets_api.doors.files import build_files_door, classify_files_exception
 from datasets_api.doors.meta import build_meta_door, classify_meta_exception
 from datasets_api.doors.mint import build_mint_door
@@ -108,6 +112,7 @@ def datasets_surface(
     version_lister: VersionLister | None = None,
     operation_store: OperationStore | None = None,
     recipe_store: RecipeStore | None = None,
+    description_store: LiveDescriptionStore | None = None,
     reference_writer: PinReferenceWriter | None = None,
     graph: GraphReader | None = None,
     sdmx: SdmxClient | None = None,
@@ -158,6 +163,7 @@ def datasets_surface(
         version_lister=version_lister,
         operation_store=operation_store,
         recipe_store=recipe_store,
+        description_store=description_store,
         reference_writer=reference_writer,
         graph=graph,
         sdmx=sdmx,
@@ -177,6 +183,7 @@ def datasets_surface(
             deps=cell, settings=_settings, allowed_principals=publish_allowed_principals
         ),
         build_snapshot_door(deps=cell),
+        build_description_door(deps=cell),
         build_files_door(deps=cell),
         build_observations_door(deps=cell),
         build_pin_door(deps=cell, settings=_settings, allowed_principals=pin_allowed_principals),

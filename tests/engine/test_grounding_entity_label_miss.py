@@ -52,7 +52,7 @@ def test_label_miss_keeps_entity_with_dcid_echo_label():
     entity_objects_data = result[5]
 
     assert len(entity_objects_data) == 2
-    by_dcid = {er.dcid: er for _rd, er, _etr in entity_objects_data}
+    by_dcid = {er.ref: er for _rd, er, _etr in entity_objects_data}
     assert by_dcid["country/USA"].label == "United States"
     assert by_dcid["country/ZZZ"].label == "country/ZZZ"
 
@@ -74,7 +74,7 @@ def test_label_miss_keeps_every_served_stat_var_with_a_dcid_echo_label():
         graph=FakeGraph(nodes=nodes),
     )
 
-    assert [(ref.dcid, ref.label) for ref in result[4]] == [
+    assert [(ref.ref, ref.label) for ref in result[4]] == [
         ("dc/unnamed", "dc/unnamed"),
         ("Count_Person", "Total population"),
     ]
@@ -160,9 +160,9 @@ def test_where_slot_value_label_miss_keeps_dcid_echoed_binding():
     warnings = result[9]
 
     assert isinstance(slot.binding, BindingValue)
-    assert slot.binding.value.ref.dcid == "country/ZZZ"
+    assert slot.binding.value.ref.ref == "country/ZZZ"
     assert slot.binding.value.ref.label == "country/ZZZ"
-    assert [er.dcid for _rd, er, _etr in entity_objects_data] == ["country/ZZZ"]
+    assert [er.ref for _rd, er, _etr in entity_objects_data] == ["country/ZZZ"]
     assert len(warnings) == 1
     assert warnings[0].code == ENTITY_LABEL_UNRESOLVED
 
@@ -196,9 +196,9 @@ def test_where_slot_set_label_miss_retains_both_values():
     warnings = result[9]
 
     assert isinstance(slot.binding, BindingSet)
-    by_dcid = {v.ref.dcid: v.ref.label for v in slot.binding.values}
+    by_dcid = {v.ref.ref: v.ref.label for v in slot.binding.values}
     assert by_dcid == {"country/USA": "United States", "country/ZZZ": "country/ZZZ"}
-    assert {er.dcid for _rd, er, _etr in entity_objects_data} == {"country/USA", "country/ZZZ"}
+    assert {er.ref for _rd, er, _etr in entity_objects_data} == {"country/USA", "country/ZZZ"}
     assert len(warnings) == 1
     assert warnings[0].code == ENTITY_LABEL_UNRESOLVED
     assert "country/ZZZ" in warnings[0].message
@@ -269,7 +269,7 @@ def test_constraint_value_keeps_evidenced_unlabelled_provisional_dcid():
     slot = result[2][0]
 
     assert isinstance(slot.binding, BindingValue)
-    assert slot.binding.value.ref.dcid == _PROVISIONAL_SCHEME
+    assert slot.binding.value.ref.ref == _PROVISIONAL_SCHEME
     assert slot.binding.value.ref.label == _PROVISIONAL_SCHEME
 
 
@@ -315,7 +315,7 @@ def test_constraint_value_absent_from_recalled_arcs_stays_when_a_served_member_a
 
     if kept:
         assert isinstance(slot.binding, BindingValue)
-        assert (slot.binding.value.ref.dcid, slot.binding.value.ref.label) == (
+        assert (slot.binding.value.ref.ref, slot.binding.value.ref.label) == (
             "UnrecalledScheme",
             "UnrecalledScheme",
         )
@@ -364,7 +364,7 @@ def test_constraint_value_uses_index_label_when_graph_omits_it(monkeypatch):
     slot = result[2][0]
 
     assert isinstance(slot.binding, BindingValue)
-    assert slot.binding.value.ref.dcid == _PROVISIONAL_SCHEME
+    assert slot.binding.value.ref.ref == _PROVISIONAL_SCHEME
     assert slot.binding.value.ref.label == "Grant"
 
 
@@ -417,7 +417,7 @@ def test_constraint_set_keeps_labelled_and_evidenced_values_in_input_order():
     slot = result[2][0]
 
     assert isinstance(slot.binding, BindingSet)
-    assert [(value.ref.dcid, value.ref.label) for value in slot.binding.values] == [
+    assert [(value.ref.ref, value.ref.label) for value in slot.binding.values] == [
         ("Grant", "Grant"),
         (_PROVISIONAL_SCHEME, _PROVISIONAL_SCHEME),
     ]

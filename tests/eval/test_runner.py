@@ -35,13 +35,13 @@ _RESUBMIT = {
         {
             "key": {
                 "axis": "how",
-                "property": {"dcid": "financialFlowType", "label": "financial flow type"},
+                "property": {"ref": "financialFlowType", "label": "financial flow type"},
                 "label": "financial flow type",
             },
             "binding": {
                 "kind": "value",
                 "value": {
-                    "ref": {"dcid": "Disbursement", "label": "disbursement"},
+                    "ref": {"ref": "Disbursement", "label": "disbursement"},
                     "value_kind": "enum_value",
                     "time_window": None,
                     "literal": None,

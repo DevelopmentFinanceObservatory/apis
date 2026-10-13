@@ -234,21 +234,19 @@ def read_slot_taxonomy(
     order across ``member_facts``. The caller chooses the source and scope.
     ``core.py`` adds the recipient where-slot after entity resolution.
     """
-    observed: dict[str, list[str]] = {}
+    # Values keep first-seen order; a dict per property dedupes them in constant time.
+    observed: dict[str, dict[str, None]] = {}
     for member in member_facts.values():
-        constraints = member.read_constraints()
-        for prop_dcid, value_dcid in constraints.items():
-            observed.setdefault(prop_dcid, [])
-            if value_dcid not in observed[prop_dcid]:
-                observed[prop_dcid].append(value_dcid)
+        for prop_dcid, value_dcid in member.read_constraints().items():
+            observed.setdefault(prop_dcid, {})[value_dcid] = None
 
     taxonomy = {}
     for slot in slot_keys:
         prop = slot.property_dcid
         if prop is None:
             continue
-        values = observed.get(prop, [])
+        values = observed.get(prop)
         if values:
-            taxonomy[f"{slot.axis}:{prop}"] = values
+            taxonomy[f"{slot.axis}:{prop}"] = list(values)
 
     return taxonomy

@@ -12,7 +12,9 @@ import dataclasses
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import NamedTuple
 
+from dc_graph import GraphCapExceededError, GraphDeadlineExceededError, GraphReadError
 from materialise.errors import DatasetDisagreementError
 from materialise.place_scope import DefaultPresence
 from materialise.rate_tables import RateTableCache
@@ -20,9 +22,8 @@ from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.config import settings
-from search.engine.errors import FamilyNotResolvableError, RoleSignatureError
+from search.engine.errors import FamilyNotResolvableError, GraphInfraError, RoleSignatureError
 from search.engine.extract import DateRequest
-from search.engine.qualifier_match import _normalize
 from search.engine.region.arcs import standard_bindings_from_arcs
 from search.engine.region.codes import OBSERVATIONS_NOTHING_TO_PROBE
 from search.engine.region.decisions import PlaceSetNotAdmittedError, PlaceSetTooLargeError
@@ -36,7 +37,13 @@ from search.engine.region.place_context import (
     with_where,
 )
 from search.engine.region.result import RegionResult
-from search.engine.region.state import ResolveState
+from search.engine.region.state import (
+    AlternateUnevaluatedReason,
+    ResolveState,
+    presence_covering,
+    presence_lacking,
+    presence_stat_vars,
+)
 from search.engine.retrieval.bound_values import (
     PartNotServed,
     RoleClassWalks,
@@ -49,6 +56,7 @@ from search.engine.retrieval.bound_values import (
     part_source,
     shape_for_part,
     shape_member_facts,
+    shape_population_arcs,
     shape_query,
     without_values,
 )
@@ -64,7 +72,7 @@ from search.engine.retrieval.retrieve import (
 from search.engine.retrieval.standard import FacetBatch, facets_at_own_places
 from search.engine.shape import ShapeDraft, is_role_bearing
 from search.engine.source_scope import SourceScope
-from search.models import ResolvedQualifier, SpecObservations, Warning, omitted_observations
+from search.models import SpecObservations, Warning, omitted_observations
 from series_coverage.shared import CoverageSnapshot
 
 logger = logging.getLogger(__name__)
@@ -98,6 +106,8 @@ class _Candidate:
 
 def _prewarm_places(
     shape: ShapeDraft,
+    bindings: Sequence[SlotBindingDraft],
+    role_keys: RoleKeys,
     members: Sequence[str],
     place: PlaceContext,
     presence: DefaultPresence | None,
@@ -105,13 +115,14 @@ def _prewarm_places(
     read_places: Sequence[str] = (),
 ) -> dict[str, tuple[str, ...]]:
     """The places a shape's facet prewarm reads each of `members` at: on a default scope,
-    each member of the presence read at its own scope (`DefaultPresence.scope`), else every
-    member at `read_places`, the places the settling of the shape's place sets reads
+    each member the presence read covers for `shape` under `bindings` and `role_keys`
+    (`presence_stat_vars`) at its own scope (`DefaultPresence.scope`), else every member at
+    `read_places`, the places the settling of the shape's place sets reads
     (`UnsettledPlace.read_places`), else at the shape's probe places, else at every named
     place."""
     scoped = place.presence_for(presence)
     if scoped is not None:
-        covered = shape.sv_arc_facts or {}
+        covered = set(presence_stat_vars(shape, bindings, role_keys))
         return {sv: scoped.scope(sv).places for sv in members if sv in covered}
     entities = tuple(read_places or place.probe_dcids or named_place_dcids)
     return dict.fromkeys(members, entities)
@@ -143,7 +154,7 @@ def alternate_representative(
     uses its first member because its constraint axes describe flows, and so does any shape
     when the elected shape has no data."""
     if is_role_bearing(shape) or not elected_has_data:
-        return next(iter(shape.sv_arc_facts or {}), None)
+        return next(iter(shape_population_arcs(shape)), None)
     elected_bound_values: dict[str, list[str]] = {
         b.property_dcid: list(b.value_dcids)
         for b in elected_bindings
@@ -240,6 +251,18 @@ def elect_alternate(
     )
 
 
+class _AlternatesRead(NamedTuple):
+    """What `_materialise_alt_shapes` read: the candidates with data, an `UnsupportedDraft`
+    that blocks candidate collapse, the presence read over (`presence` as given, topped up
+    for alternates whose bindings unbinding relaxed), and each alternate left unevaluated
+    because that top-up did not complete, with the reason."""
+
+    candidates: list[_Candidate]
+    blocking: UnsupportedDraft | None
+    presence: DefaultPresence | None
+    unevaluated: tuple[tuple[_Alternate, AlternateUnevaluatedReason], ...]
+
+
 def _materialise_alt_shapes(
     alternates: Sequence[_Alternate],
     *,
@@ -252,7 +275,8 @@ def _materialise_alt_shapes(
     deadline: float | None = None,
     coverage: CoverageSnapshot,
     over_bound: list[_Alternate] | None = None,
-) -> tuple[list[_Candidate], UnsupportedDraft | None]:
+    presence_failure: AlternateUnevaluatedReason | None = None,
+) -> _AlternatesRead:
     """Materialise alternates (`elect_alternate`), each in its own place context.
 
     ``places`` holds each alternate's places, in ``alternates`` order, for the shape the
@@ -268,7 +292,12 @@ def _materialise_alt_shapes(
     without data are dropped, and so is one whose member the mint refuses because only a
     dataset the code index does not record for it publishes its observations
     (`DatasetDisagreementError`). An ``UnsupportedDraft`` blocks candidate collapse because
-    the alternate is unevaluated.
+    the alternate is unevaluated. Values that match no member together are unbound and the
+    alternate read again over ``presence`` topped up for its new bindings
+    (`_presence_after_unbinding`); an alternate whose top-up does not complete, or that needs
+    one after the pass's optional presence read failed (``presence_failure``) or after an
+    earlier alternate's top-up in this call did, is unevaluated. The result carries the presence read over, which the caller merges into
+    the request's (`_AlternatesRead`).
 
     Batched observation-facet requests warm the cache before the loop, avoiding up to
     ``max_candidates - 1`` sequential reads. Shapes probed over the same places share one
@@ -279,8 +308,8 @@ def _materialise_alt_shapes(
     those of the family the alternate's own query elects (its bindings and role keys,
     `shape_query`), so its resolve hits the cache keyed by StatVar, entity, and date need.
     Each batch is capped at ``region_max_members``: index
-    populations may span the full CRS vocabulary, while recall is capped at
-    ``SEARCH_MAX_CONFIRM_CANDIDATES`` per shape. Materialisation is uncapped.
+    populations may span the full CRS vocabulary, while a recall-sourced shape holds
+    only the members recall found. Materialisation is uncapped.
     """
     # Prewarm key: one for every default-scoped shape, else the probe places themselves.
     # Each batch maps its members to the places they are read at, the first shape's first.
@@ -307,6 +336,8 @@ def _materialise_alt_shapes(
         )
         places_of = _prewarm_places(
             shape,
+            alternate.bindings,
+            role_keys,
             list(shape_members),
             place,
             presence,
@@ -326,14 +357,18 @@ def _materialise_alt_shapes(
         )
 
     results: list[_Candidate] = []
+    unevaluated: list[tuple[_Alternate, AlternateUnevaluatedReason]] = []
     for alternate, unsettled in readable:
         bindings = list(alternate.bindings)
+        # The presence the alternate is read over, the last topped up after unbinding.
+        presences = [presence]
 
         def read(
             place: PlaceContext,
             facet_batch: FacetBatch | None,
             alternate: _Alternate = alternate,
             bindings: list[SlotBindingDraft] = bindings,
+            presences: list[DefaultPresence | None] = presences,
         ) -> Materialised | NoDataDraft | MaterialisedCandidates | UnsupportedDraft:
             return materialise(
                 alternate.shape,
@@ -344,7 +379,7 @@ def _materialise_alt_shapes(
                 date_request=date_request,
                 deadline=deadline,
                 place_dcids=place.probe_places,
-                default_presence=place.presence_for(presence),
+                default_presence=place.presence_for(presences[-1]),
                 discover_scope=True,
                 open_axes=place.roles.open_axes,
                 coverage=coverage,
@@ -360,6 +395,26 @@ def _materialise_alt_shapes(
                 if not isinstance(result, BoundValuesUnrealisable):
                     break
                 bindings[:] = without_values(bindings, result.relaxation())
+                scoped = place.presence_for(presences[-1])
+                if scoped is not None:
+                    covering = _presence_after_unbinding(
+                        scoped,
+                        alternate.shape,
+                        bindings,
+                        place,
+                        graph=graph,
+                        sdmx=sdmx,
+                        deadline=deadline,
+                        failure=presence_failure,
+                    )
+                    if not isinstance(covering, DefaultPresence):
+                        unevaluated.append((alternate, covering))
+                        # The call tries no other optional presence read after one failed.
+                        presence_failure = presence_failure or covering
+                        break
+                    # Later alternates read over what this one added.
+                    presence = covering
+                    presences.append(covering)
         except PlaceSetTooLargeError as exc:
             _drop_over_bound(alternate, exc, over_bound)
             continue
@@ -378,8 +433,11 @@ def _materialise_alt_shapes(
                 exc_info=True,
             )
             continue
+        if isinstance(result, BoundValuesUnrealisable):
+            # Its presence read under the relaxed bindings failed (`_presence_after_unbinding`).
+            continue
         if isinstance(result, UnsupportedDraft):
-            return results, result
+            return _AlternatesRead(results, result, presence, tuple(unevaluated))
         if isinstance(result, Materialised) and result.has_data:
             if alternate.unverified:
                 result = dataclasses.replace(result, membership_unverified=True)
@@ -392,7 +450,42 @@ def _materialise_alt_shapes(
                     alternate.walked,
                 )
             )
-    return results, None
+    return _AlternatesRead(results, None, presence, tuple(unevaluated))
+
+
+def _presence_after_unbinding(
+    presence: DefaultPresence,
+    shape: ShapeDraft,
+    bindings: Sequence[SlotBindingDraft],
+    place: PlaceContext,
+    *,
+    graph: EngineGraphClient,
+    sdmx: EngineSdmxClient,
+    deadline: float | None,
+    failure: AlternateUnevaluatedReason | None,
+) -> DefaultPresence | AlternateUnevaluatedReason:
+    """`presence` topped up with what the resolve of an alternate's `shape` under `bindings`,
+    which unbinding relaxed, reads at its own default scope (`presence_covering`), or why
+    that read did not complete, as `phase_place_materialise._await_alternates_presence`
+    words it: the alternate is then unevaluated and the elected answer stands. After an
+    optional presence read of the pass failed (`failure`), no other is tried, as
+    `phase_place_materialise._read_alternates_presence` rules, and an alternate that needs
+    one is unevaluated for that failure."""
+    role_keys = entity_role_keys(place.roles.resolved_entities, open_axes=place.roles.open_axes)
+    if failure is not None and presence_lacking(presence, shape, bindings, role_keys):
+        return failure
+    try:
+        return presence_covering(
+            presence, shape, bindings, role_keys, graph=graph, sdmx=sdmx, deadline=deadline
+        )
+    except (TimeoutError, GraphDeadlineExceededError):
+        logger.warning("alternate %r unevaluated: its presence read timed out", shape.shape_id)
+        return "timed_out"
+    except (GraphInfraError, GraphReadError, GraphCapExceededError):
+        logger.warning(
+            "alternate %r unevaluated: its presence read failed", shape.shape_id, exc_info=True
+        )
+        return "upstream_error"
 
 
 def _drop_over_bound(
@@ -408,24 +501,6 @@ def _drop_over_bound(
     )
     if over_bound is not None:
         over_bound.append(alternate)
-
-
-def _unbound_query_qualifiers(
-    query_qualifiers: Sequence[ResolvedQualifier], *, unapplied: frozenset[str]
-) -> tuple[ResolvedQualifier, ...]:
-    """Return unbound and unsupported qualifiers from the elected shape's query.
-
-    This includes unsupported phrases. A term whose normalised text is in `unapplied` is
-    left out. Its values matched no member together with the other bound values, so the
-    answer reads without them and already departs it (`unrealisable.unbind_unrealisable`).
-    The pipeline and single-survivor collapse share the predicate. It lives here to avoid
-    an import cycle.
-    """
-    return tuple(
-        q
-        for q in query_qualifiers
-        if q.disposition != "bound" and _normalize(q.text) not in unapplied
-    )
 
 
 async def resolve_candidates(

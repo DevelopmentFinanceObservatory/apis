@@ -198,13 +198,13 @@ _CATALOGUE = ConversionCatalogue(
 
 
 def _slot(prop: str, value: str | None) -> Slot:
-    key = SlotKey(axis="how", property=GraphRef(dcid=prop, label=prop), label=prop)
+    key = SlotKey(axis="how", property=GraphRef(ref=prop, label=prop), label=prop)
     if value is None:
         return Slot(key=key, binding=BindingUnbound())
     return Slot(
         key=key,
         binding=BindingValue(
-            value=SlotValue(ref=GraphRef(dcid=value, label=value), value_kind="enum_value")
+            value=SlotValue(ref=GraphRef(ref=value, label=value), value_kind="enum_value")
         ),
     )
 
@@ -364,13 +364,13 @@ def _crs_region(
 
 def _slot_menu(spec: Spec, prop: str) -> SlotOptions:
     return next(
-        so for so in spec.resolved.slot_options if so.key.property and so.key.property.dcid == prop
+        so for so in spec.resolved.slot_options if so.key.property and so.key.property.ref == prop
     )
 
 
 def _menu(spec: Spec, prop: str) -> dict[str, int | None]:
     menu = _slot_menu(spec, prop)
-    return {o.value.ref.dcid: o.served_rows for o in menu.options if o.value.ref is not None}
+    return {o.value.ref.ref: o.served_rows for o in menu.options if o.value.ref is not None}
 
 
 def _alternatives(spec: Spec) -> dict[str, int | None]:
@@ -445,10 +445,10 @@ def test_measure_alternatives_count_the_rows_their_resubmit_would_serve(monkeypa
 
 def _options(prop: str, *dcids: str, relation=None) -> SlotOptions:
     return SlotOptions(
-        key=SlotKey(axis="how", property=GraphRef(dcid=prop, label=prop), label=prop),
+        key=SlotKey(axis="how", property=GraphRef(ref=prop, label=prop), label=prop),
         options=[
             SlotOption(
-                value=SlotValue(ref=GraphRef(dcid=d, label=d), value_kind="enum_value"),
+                value=SlotValue(ref=GraphRef(ref=d, label=d), value_kind="enum_value"),
                 relation=relation,
             )
             for d in dcids
@@ -463,12 +463,12 @@ def test_a_bound_slots_current_value_stays_when_it_counts_none():
     leave-one-out scan finds no series for it."""
     fact = OptionServedFact(property=_FLOW, served={_OOF: _served(sv1=1)})
     [menu] = count_slot_options([_options(_FLOW, _ODA, _OOF, "CRSTypeOfFlow30")], [fact], [])
-    assert {o.value.ref.dcid: o.served_rows for o in menu.options} == {_OOF: 1}
+    assert {o.value.ref.ref: o.served_rows for o in menu.options} == {_OOF: 1}
 
     [menu] = count_slot_options(
         [_options(_FLOW, _ODA, _OOF, "CRSTypeOfFlow30")], [fact], [_slot(_FLOW, _ODA)]
     )
-    assert {o.value.ref.dcid: o.served_rows for o in menu.options} == {_ODA: 0, _OOF: 1}
+    assert {o.value.ref.ref: o.served_rows for o in menu.options} == {_ODA: 0, _OOF: 1}
 
 
 # ---------------------------------------------------------------------------
@@ -485,15 +485,15 @@ def _stream(monkeypatch, slot_options, bindings, probed: list) -> dict[str, list
     about at its `_PROBED` series and records the menus it was handed in `probed`."""
 
     def probe(*, slot_options, pick_members, **_kwargs):
-        probed.extend(so.key.property.dcid for so in slot_options)
+        probed.extend(so.key.property.ref for so in slot_options)
         return [
             so.model_copy(
                 update={
                     "options": [
                         o.model_copy(
                             update={
-                                "served_rows": _PROBED[o.value.ref.dcid]
-                                if pick_members[so.key.property.dcid][o.value.ref.dcid] is not None
+                                "served_rows": _PROBED[o.value.ref.ref]
+                                if pick_members[so.key.property.ref][o.value.ref.ref] is not None
                                 else None
                             }
                         )
@@ -533,8 +533,7 @@ def _stream(monkeypatch, slot_options, bindings, probed: list) -> dict[str, list
         open_axes=frozenset(),
     )
     return {
-        ev.key.property.dcid: [(o.value.ref.dcid, o.served_rows) for o in ev.options]
-        for ev in events
+        ev.key.property.ref: [(o.value.ref.ref, o.served_rows) for o in ev.options] for ev in events
     }
 
 
@@ -726,7 +725,7 @@ def test_a_walked_family_serving_its_total_counts_the_parts_a_pick_would_serve(m
     region = _debt_resubmit(monkeypatch)
     assert region.status == "definite", region.no_data_reason
     spec = region.specs[0]
-    assert [sv.ref.dcid for sv in spec.resolved.members] == [_DS_TOTAL]
+    assert [sv.ref.ref for sv in spec.resolved.members] == [_DS_TOTAL]
 
     assert _menu(spec, "idsCreditorType") == {"IDSCreditorTypeOFFT": 1}
     assert _menu(spec, "idsDebtorType") == {"IDSDebtorTypeGG": 1}
@@ -746,7 +745,7 @@ def test_a_pick_elects_the_edited_family(monkeypatch, bound, served):
     region = _debt_resubmit(monkeypatch, **bound)
 
     assert region.status == "definite", region.no_data_reason
-    assert [sv.ref.dcid for sv in region.specs[0].resolved.members] == served
+    assert [sv.ref.ref for sv in region.specs[0].resolved.members] == served
 
 
 # ---------------------------------------------------------------------------
@@ -869,7 +868,7 @@ def test_a_bound_root_whose_other_roots_serve_nothing_is_counted_without_drift(m
     assert {"DAC2aAidType206", "DAC2aAidType207", "DAC2aAidType213"} <= set(fact.served)
     assert not any(fact.served.values())
     assert "no served series" not in caplog.text
-    menus = {so.key.property.dcid for so in region.specs[0].resolved.slot_options}
+    menus = {so.key.property.ref for so in region.specs[0].resolved.slot_options}
     assert "dac2aAidType" not in menus
 
 
@@ -1052,7 +1051,7 @@ def test_a_merged_answer_counts_its_alternatives_and_offers_conversions_over_its
 
 
 def _option(spec: Spec, prop: str, value: str) -> SlotOption:
-    return next(o for o in _slot_menu(spec, prop).options if o.value.ref.dcid == value)
+    return next(o for o in _slot_menu(spec, prop).options if o.value.ref.ref == value)
 
 
 def _assert_option_bounds_its_pick(rows: int | None, exact: bool | None, pick: Spec) -> None:
@@ -1354,7 +1353,7 @@ def test_a_probed_options_rows_are_its_picks_download_rows():
         variable_labels=NO_LABELS,
         open_axes=frozenset(),
     )
-    [male] = [o for event in events for o in event.options if o.value.ref.dcid == "Male"]
+    [male] = [o for event in events for o in event.options if o.value.ref.ref == "Male"]
 
     # The men's answer a pick lands on: the resubmit elects the men's StatVar.
     identity = make_identity(

@@ -33,7 +33,11 @@ class SaturationTrackingExecutor(ThreadPoolExecutor):
     runs its DCP reads on another (`graph-dcp`). A queued cancellation cancels the
     future and releases its slot. A running thread cannot be interrupted and holds its
     slot until the function returns. Each log line names the pool by `thread_name_prefix`.
+    A subclass that refuses work past its pool size sets `saturation_consequence` to say so.
     """
+
+    # What the saturation warning says happens to the next submit.
+    saturation_consequence = "new work will queue"
 
     def __init__(self, *, max_workers: int, thread_name_prefix: str, **kwargs: Any) -> None:
         super().__init__(
@@ -55,10 +59,11 @@ class SaturationTrackingExecutor(ThreadPoolExecutor):
             self._saturated = self._in_flight >= self._pool_size
         if newly_saturated:
             logger.warning(
-                "thread pool %s saturated (%d/%d workers busy); new work will queue",
+                "thread pool %s saturated (%d/%d workers busy); %s",
                 self._name,
                 self._in_flight,
                 self._pool_size,
+                self.saturation_consequence,
             )
 
         try:

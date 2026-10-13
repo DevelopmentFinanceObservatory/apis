@@ -10,6 +10,7 @@ from fastapi import APIRouter, FastAPI, Request
 from fastapi.routing import APIRoute
 
 from dfo_platform import ProblemSpec
+from dfo_platform.codes import bound_endpoint
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,32 @@ def combine_classifiers(
             if spec is not None:
                 return spec
         return None
+
+    return classify
+
+
+def classify_by_door(
+    doors: Iterable[DoorContribution],
+    *leading: Callable[[BaseException], ProblemSpec | None],
+) -> Callable[[BaseException], ProblemSpec | None]:
+    """Try `leading`, then the classifier of the door whose route the request matched, then
+    every door's in order.
+
+    The matched route is the one whose code registry endpoint the platform binds while it
+    classifies (`codes.bound_endpoint`), so an exception several doors recognise is classified
+    and logged by the door that raised it. With no endpoint bound, or one no door names, the
+    doors are tried in order.
+    """
+    doors = tuple(doors)
+    by_endpoint = {
+        endpoint: door.classify for door in doors for endpoint in door.registry_endpoints.values()
+    }
+    in_order = tuple(door.classify for door in doors)
+
+    def classify(exc: BaseException) -> ProblemSpec | None:
+        own = by_endpoint.get(bound_endpoint() or "")
+        first = () if own is None else (own,)
+        return combine_classifiers(*leading, *first, *in_order)(exc)
 
     return classify
 

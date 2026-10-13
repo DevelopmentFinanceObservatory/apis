@@ -18,6 +18,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
+from artifact_publication.jobs import Ingestion
 from artifact_publication.uri import join_uri, read_uri_bytes
 from series_coverage._bits import popcount64
 from series_coverage.index import CoverageIndex
@@ -197,9 +198,14 @@ def _read_manifest(prefix: str, *, root: str, pointer: CoveragePointer) -> Cover
             horizon=YearHorizon(
                 epoch_year=int(payload["epoch_year"]), mask_words=int(payload["mask_words"])
             ),
+            ingestion=(
+                None
+                if (ingestion := payload.get("ingestion")) is None
+                else Ingestion.from_json(ingestion)
+            ),
             format_version=format_version,
         )
-    except (ValueError, TypeError) as exc:
+    except (ValueError, TypeError, KeyError) as exc:
         raise CoverageArtifactError(f"manifest.json at {uri!r} is malformed: {exc}") from exc
 
 

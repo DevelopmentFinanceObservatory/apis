@@ -8,12 +8,15 @@ after resolution. Both read the selected series and name the kinds that show a
 span: a table, a stat card, and an entity-mode bar chart with a select that
 resolves several series, which a frame with nothing to compare leaves out.
 
+A candidate built with a `DescribedRevision` carries the card revision's description when its
+frame's version holds a description record (`assembler.mint.with_card_description`).
+
 An intent's relative periods are resolved on the frame by `assembler.rolling` before the
 window is completed, and the component is built from the resolved periods. The candidate's
 `stored_intent` keeps the relative form. A bar chart that compares entities up to a relative
 `window.end` draws the series holding a value at that period and leaves the others out. The
 series a rolling component leaves out are named in one `coverage_gap` warning, first in
-`provenance.warnings`.
+`provenance.warnings`, or on a card with a description in its first caveat.
 
 A render of a stored revision binds its select on the target frame by
 `assembler.rolling.StoredSelect`'s rules, whatever its intent states. On a frame with an
@@ -52,9 +55,16 @@ from assembler.limits import (
     MAX_TABLE_ROWS,
 )
 from assembler.merge import merge_intent
-from assembler.mint import MintedComponent, complete_window, default_window, mint_component
-from assembler.mint.provenance import _with_left_out_warning
-from assembler.ports import FrameRef, FrameStore, ResolvedFrame, RevisionRecord
+from assembler.mint import (
+    DescribedRevision,
+    MintedComponent,
+    complete_window,
+    default_window,
+    mint_component,
+    with_card_description,
+)
+from assembler.mint.provenance import LeftOut, _with_left_out_warning
+from assembler.ports import FrameRef, FrameStore, NamedSeries, ResolvedFrame, RevisionRecord
 from assembler.resolve import ResolvedSeries, resolve_selectors
 from assembler.rolling import (
     ROLLING_ANCHOR_UNHELD,
@@ -93,15 +103,6 @@ class _Candidate:
     minted: MintedComponent
 
 
-@dataclass(frozen=True)
-class _LeftOut:
-    """The series a rolling component leaves out, by display label, and the period they
-    hold no value at."""
-
-    period: str
-    names: tuple[str, ...]
-
-
 def _build_candidate(
     *,
     patch: Mapping[str, object],
@@ -112,10 +113,12 @@ def _build_candidate(
     clock: Callable[[], datetime.datetime],
     resolved_frame: ResolvedFrame | None = None,
     load_stored_frame: Callable[[], ResolvedFrame | None] | None = None,
+    described: DescribedRevision | None = None,
 ) -> _Candidate:
     """`load_stored_frame` is set for a render of `current` on `resolved_frame`: it returns
     the frame `current` was written on, or `None` when that frame cannot be loaded, and the
-    select binds by `StoredSelect`'s rules."""
+    select binds by `StoredSelect`'s rules. `described` names the revision the candidate's
+    description describes; without it the candidate carries none."""
     if is_create:
         member = _resolve_type(intent=patch, release=release)
         _validate_intent(
@@ -152,6 +155,7 @@ def _build_candidate(
             bound_series=(),
             release=release,
             clock=clock,
+            described=described,
         )
 
     if resolved_frame is None:
@@ -173,6 +177,7 @@ def _build_candidate(
             bound_series=(),
             release=release,
             clock=clock,
+            described=described,
         )
 
     select = cast("Mapping[str, object]", merged["select"])
@@ -205,7 +210,7 @@ def _build_candidate(
     )
     drawn: Mapping[str, object] = merged
     # The series a render names when its intent states no relative period.
-    rendered_names: tuple[str, ...] = ()
+    rendered_names: tuple[NamedSeries, ...] = ()
     if rolling is not None:
         drawn, selectors = rolling.intent, list(rolling.selectors)
     elif stored_select is not None:
@@ -219,7 +224,7 @@ def _build_candidate(
         left_out_names = (
             admitted_left_out(anchor=anchor, select=select) if anchor is not None else ()
         )
-        rendered_names = tuple(dict.fromkeys((*left_out_names, *absent)))
+        rendered_names = _one_per_label((*left_out_names, *absent))
     window = cast("Mapping[str, object] | None", drawn.get("window"))
     if window is not None:
         window = complete_window(window=window, resolved_frame=resolved_frame)
@@ -293,7 +298,7 @@ def _build_candidate(
             )
     bound = bind_all(resolved_frame=resolved_frame, series=series, window=effective_window)
 
-    left_out: _LeftOut | None = None
+    left_out: LeftOut | None = None
     if rolling is not None:
         series, bound, left_out = _leave_out(
             rolling=rolling,
@@ -309,9 +314,9 @@ def _build_candidate(
         )
     elif rendered_names:
         anchor = resolved_frame.anchor
-        left_out = _LeftOut(
+        left_out = LeftOut(
             period=anchor.period if anchor is not None else str(effective_window["end"]),
-            names=rendered_names,
+            series=rendered_names,
         )
 
     return _finish_candidate(
@@ -324,6 +329,7 @@ def _build_candidate(
         release=release,
         clock=clock,
         left_out=left_out,
+        described=described,
     )
 
 
@@ -333,7 +339,7 @@ def _leave_out(
     series: tuple[ResolvedSeries, ...],
     bound_series: tuple[BoundSeries, ...],
     entity_period: str | None,
-) -> tuple[tuple[ResolvedSeries, ...], tuple[BoundSeries, ...], _LeftOut | None]:
+) -> tuple[tuple[ResolvedSeries, ...], tuple[BoundSeries, ...], LeftOut | None]:
     """The series a rolling component draws, and the ones it leaves out.
 
     `entity_period` is the period an entity-mode bar chart with a relative `window.end`
@@ -348,7 +354,16 @@ def _leave_out(
             any(point["period"] == entity_period and "value" in point for point in one.points)
             for one in bound_series
         ]
-        names.extend(one.label for one, held in zip(bound_series, holds, strict=True) if not held)
+        names.extend(
+            NamedSeries(
+                label=bound.label,
+                coordinates={
+                    name: value for name, value in resolved.coordinates if isinstance(value, str)
+                },
+            )
+            for resolved, bound, held in zip(series, bound_series, holds, strict=True)
+            if not held
+        )
         series = tuple(one for one, held in zip(series, holds, strict=True) if held)
         bound_series = tuple(one for one, held in zip(bound_series, holds, strict=True) if held)
         if not bound_series:
@@ -358,8 +373,16 @@ def _leave_out(
                 detail=f"no selected series holds a value at {entity_period}, the window's end",
             )
     names.extend(rolling.absent)
-    unique = tuple(dict.fromkeys(names))
-    return series, bound_series, _LeftOut(period=period, names=unique) if unique else None
+    unique = _one_per_label(names)
+    return series, bound_series, LeftOut(period=period, series=unique) if unique else None
+
+
+def _one_per_label(named: Sequence[NamedSeries]) -> tuple[NamedSeries, ...]:
+    """`named` with the first series of each display label, in order."""
+    first: dict[str, NamedSeries] = {}
+    for one in named:
+        first.setdefault(one.label, one)
+    return tuple(first.values())
 
 
 def _refuse_span_frame(
@@ -482,7 +505,8 @@ def _finish_candidate(
     release: CatalogueRelease,
     clock: Callable[[], datetime.datetime],
     stored_intent: Mapping[str, object] | None = None,
-    left_out: _LeftOut | None = None,
+    left_out: LeftOut | None = None,
+    described: DescribedRevision | None = None,
 ) -> _Candidate:
     """Mints, checks constraints, and enforces `MAX_ENVELOPE_BYTES` before returning a
     candidate. The size check runs before a create pins its frame and repeats
@@ -490,7 +514,9 @@ def _finish_candidate(
 
     The component is minted from `merged_intent`. The candidate stores `stored_intent`,
     which differs from it only where `merged_intent` holds a resolved relative period, and
-    defaults to it. `left_out` adds the left-out series warning to the provenance."""
+    defaults to it. `left_out` adds the left-out series warning to the provenance.
+    `described` composes the description of the revision it names, and the left-out series
+    become one of its caveats."""
     minted = mint_component(
         member=member,
         merged_intent=merged_intent,
@@ -506,6 +532,17 @@ def _finish_candidate(
             provenance=_with_left_out_warning(
                 provenance=minted.provenance, period=left_out.period, names=left_out.names
             ),
+        )
+    if described is not None:
+        minted = with_card_description(
+            minted=minted,
+            member=member,
+            merged_intent=merged_intent,
+            resolved_frame=resolved_frame,
+            series=series,
+            bound_series=bound_series,
+            described=described,
+            left_out=left_out,
         )
     _run_constraints(
         component=minted.component,
@@ -527,12 +564,15 @@ def _finish_candidate(
 
 
 def _check_envelope_size(*, minted: MintedComponent) -> None:
-    """Measures `component` and `provenance` in the encoding Starlette's
+    """Measures `component`, `provenance` and any `description` in the encoding Starlette's
     `JSONResponse` sends them in (UTF-8, compact separators, `ensure_ascii`
     off)."""
+    measured: dict[str, object] = {"component": minted.component, "provenance": minted.provenance}
+    if minted.description is not None:
+        measured["description"] = minted.description
     size = len(
         json.dumps(
-            {"component": minted.component, "provenance": minted.provenance},
+            measured,
             ensure_ascii=False,
             separators=(",", ":"),
         ).encode("utf-8")

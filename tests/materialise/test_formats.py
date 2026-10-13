@@ -76,9 +76,9 @@ def write_csv(chunks, *, rendering: Rendering) -> _Written:
     return _Written(data=sink.getvalue(), media_type=artifact.media_type, digest=artifact.digest)
 
 
-def write_excel(chunks, *, rendering: Rendering) -> _Written:
+def write_excel(chunks, *, rendering: Rendering, totals=None) -> _Written:
     sink = _Sink()
-    artifact = _real_write_excel(chunks, rendering=rendering, sink=sink)
+    artifact = _real_write_excel(chunks, rendering=rendering, sink=sink, totals=totals)
     return _Written(data=sink.getvalue(), media_type=artifact.media_type, digest=artifact.digest)
 
 
@@ -368,19 +368,33 @@ def test_a_tables_own_duplicate_column_names_refuse_even_without_friendly_header
 
 
 @pytest.mark.parametrize("read_only", [False, True], ids=["loaded", "streamed"])
-def test_write_excel_content_round_trips(read_only):
+@pytest.mark.parametrize(
+    ("totals", "sheets"),
+    [
+        pytest.param(None, ["data"], id="no-totals"),
+        pytest.param((), ["data"], id="no-total-rows"),
+        pytest.param((_GOLDEN_TABLE,), ["data", "totals"], id="a-totals-sheet"),
+    ],
+)
+def test_write_excel_content_round_trips(read_only, totals, sheets):
     """A streaming read, as frictionless makes, sizes rows by the sheet's dimension, so a row
-    ending in an empty cell reads at full width only when the writer records that range."""
-    artifact = write_excel((_GOLDEN_TABLE,), rendering=_FRIENDLY_RENDERING)
+    ending in an empty cell reads at full width only when the writer records that range, on
+    the totals sheet as on the data sheet."""
+    artifact = write_excel(
+        (_GOLDEN_TABLE,),
+        rendering=_FRIENDLY_RENDERING,
+        totals=(lambda: iter(totals)) if totals is not None else None,
+    )
     assert (
         artifact.media_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
     workbook = openpyxl.load_workbook(io.BytesIO(artifact.data), read_only=read_only)
-    sheet = workbook.active
-    rows = [[cell.value for cell in row] for row in sheet.iter_rows()]
-    assert rows[0] == ["Statistical Variable", "Recipient", "Period", "Value", "Unit"]
-    assert rows[1] == ["dcid:MalariaGrantDisbursements", "country/TGO", "2015", 1000, "USD"]
-    assert rows[2] == ["dcid:MalariaGrantDisbursements", "country/KEN", "2016", 2500.5, None]
+    assert workbook.sheetnames == sheets
+    for sheet in workbook.worksheets:
+        rows = [[cell.value for cell in row] for row in sheet.iter_rows()]
+        assert rows[0] == ["Statistical Variable", "Recipient", "Period", "Value", "Unit"]
+        assert rows[1] == ["dcid:MalariaGrantDisbursements", "country/TGO", "2015", 1000, "USD"]
+        assert rows[2] == ["dcid:MalariaGrantDisbursements", "country/KEN", "2016", 2500.5, None]
 
 
 def test_write_excel_neutralises_formula_trigger_cells_and_they_are_inert():

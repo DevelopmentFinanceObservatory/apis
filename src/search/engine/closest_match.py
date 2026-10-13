@@ -85,14 +85,14 @@ def spec_closest_match_fact(
     values, in that order."""
     stat_vars = spec.resolved.members
     codes = [
-        value.ref.dcid
+        value.ref.ref
         for slot in spec.resolved.slots
         if slot.key.axis == "how"
         for value in _bound_values(slot.binding)
         if value.ref is not None
     ]
     codes.extend(
-        slot_value.value.ref.dcid
+        slot_value.value.ref.ref
         for stat_var in stat_vars
         for slot_value in stat_var.slot_values
         if slot_value.value.ref is not None

@@ -176,8 +176,6 @@ def test_mentions_compile_to_a_scope(
 
 _REFUSALS: list[tuple[str, list[SourceMention], str, list[str]]] = [
     ("unknown word", [_include("XYZ statistics")], "source_not_resolved", ["XYZ statistics"]),
-    # The registry aliases DAC2b, which this build does not admit.
-    ("alias of an unadmitted ref", [_include("DAC2b")], "source_not_resolved", ["DAC2b"]),
     # Two conversion tables share the words and neither contains the other.
     (
         "ambiguous word",
@@ -219,6 +217,14 @@ def test_words_that_resolve_to_no_one_source_refuse(
     refusal = compile_sources(mentions, catalogue=catalogue, pointers=pointers)
     assert isinstance(refusal, SourceRefusal)
     assert (refusal.reason, list(refusal.terms)) == (reason, terms)
+
+
+def test_an_alias_of_an_unadmitted_ref_refuses(catalogue: CatalogueSnapshot) -> None:
+    # Every registry alias names refs this build admits, so the alias here is made up.
+    with _aliases_replaced(Alias(refs=("provenance/NotInThisBuild",), names=("Phantom",))):
+        refusal = compile_sources([_include("Phantom")], catalogue=catalogue, pointers=["/s"])
+    assert isinstance(refusal, SourceRefusal)
+    assert (refusal.reason, list(refusal.terms)) == ("source_not_resolved", ["Phantom"])
 
 
 def test_an_ambiguous_refusal_lists_the_candidates_and_pins_the_resolved_mentions(
@@ -344,9 +350,8 @@ def _union(catalogue: CatalogueSnapshot, refs: list[str]) -> frozenset[str]:
 # Each row: the words, the label the collection takes from its alias's first name, and the
 # references the alias gathers in this build.
 _COLLECTIONS: list[tuple[str, str, str, list[str]]] = [
-    # The fixture does not admit DAC2B, so the alias gathers three of its four refs.
-    ("DAC", "DAC", "DAC", [CRS, DAC1, DAC2A]),
-    ("DAC with a qualifier", "the OECD DAC", "DAC", [CRS, DAC1, DAC2A]),
+    ("DAC", "DAC", "DAC", [CRS, DAC1, DAC2A, DAC2B]),
+    ("DAC with a qualifier", "the OECD DAC", "DAC", [CRS, DAC1, DAC2A, DAC2B]),
     # The base source and the UN agency, which the catalogue gives the same label.
     ("WHO", "WHO", "WHO", [WHO_SOURCE, WHO_UN]),
     ("WHO spelled out", "World Health Organization", "WHO", [WHO_SOURCE, WHO_UN]),
