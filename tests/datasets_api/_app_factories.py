@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from dataset_store.clock import Clock
 from datasets_api.app import datasets_surface
 from datasets_api.config import DatasetsBuildSettings
+from datasets_api.description_store import LiveDescriptionStore
 from datasets_api.mint_deps import MintDeps
 from datasets_api.operation_store import NullOperationStore, OperationStore
 from datasets_api.operations.task_client import FakeTaskClient, TaskClient
@@ -28,13 +29,14 @@ from ._version_record_store import FakeVersionRecordDatasetStore
 
 
 def offline_recipe_stores() -> dict[str, object]:
-    """Return `datasets_surface`'s `recipe_store` and `version_lister` keywords over one empty
-    SQLite-backed store, so the recipe door's lifespan opens no pool.
+    """Return `datasets_surface`'s `recipe_store`, `version_lister` and `description_store`
+    keywords over one empty SQLite-backed store, so the lifespan opens no pool.
     """
     store = FakeVersionRecordDatasetStore()
     return {
         "recipe_store": LiveRecipeStore(store=store),
         "version_lister": LiveVersionLister(store=store),
+        "description_store": LiveDescriptionStore(store=store),
     }
 
 
@@ -57,6 +59,7 @@ def make_app(
     publish_allowed_principals: frozenset[str] | None = None,
     recipe_store=None,
     version_lister=None,
+    description_store=None,
     code_index=None,
     rate_cache: RateTableCache | None = None,
     coverage=None,
@@ -71,7 +74,8 @@ def make_app(
     Omitted writers, the head store and the operation store are the null implementations, an
     omitted snapshot reader reads nothing, and `task_client` defaults to `FakeTaskClient`.
     `recipe_store` and `version_lister` default to `offline_recipe_stores()`. A recipe test
-    injects both over the store its version writer shares. Every other omitted client is
+    injects both over the store its version writer shares. `description_store` defaults to one
+    over an empty SQLite-backed store. Every other omitted client is
     `Unwired`. Publish verification under the null writer raises `PublishRecordMissing` (500),
     so a successful publish test injects a writer sharing the snapshot reader's store.
     The concurrency keywords replace the matching `settings` fields. `catalogue` replaces the
@@ -94,6 +98,12 @@ def make_app(
         if recipe_store is None and version_lister is None
         else {"recipe_store": recipe_store, "version_lister": version_lister}
     )
+    if description_store is not None or "description_store" not in recipe_stores:
+        recipe_stores["description_store"] = (
+            description_store
+            if description_store is not None
+            else LiveDescriptionStore(store=FakeVersionRecordDatasetStore())
+        )
     kwargs: dict[str, object] = {
         "settings": resolved,
         "registry": registry,
@@ -206,9 +216,7 @@ def mint_deps(
         member_concurrency=member_concurrency,
         enumerator=enumerator if enumerator is not None else MemberEnumerator(),
         enrichment=(
-            enrichment
-            if enrichment is not None
-            else EnrichmentLookup(graph, type_kinds=index.party_types, parties=index.parties)
+            enrichment if enrichment is not None else EnrichmentLookup(graph, parties=index.parties)
         ),
         code_index=index,
         rate_cache=rate_cache if rate_cache is not None else RateTableCache(),

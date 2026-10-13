@@ -1,0 +1,544 @@
+# Resolve regression corpus. Each case posts `text` to `POST /api/graph/resolve` with `kinds` and
+# `code_system` when set, and expects the four-status wire: `status`; `ref` (the resolved entity's
+# `ref`), or `candidates` (the refs an ambiguous result lists); `kind`; `matched_as`; `reading`;
+# `member_count`, a group's or region's count under the real membership policy. A null
+# expectation is not checked. tests/graph_api/test_resolve_corpus.py runs every case.
+#
+# `graph.held` maps each dcid the fake graph holds to its `typeOf`. `graph.last_rung` lists the
+# dcids the resolver's last fallback rung (`<-description->dcid`) answers for `text`; each is
+# also held and lists `text` as its name. A case with no `graph` holds only what the membership
+# policy and the code index hold.
+
+cases:
+  # --- Countries: names, codes, other languages ---
+  - text: Kenya
+    expect: { status: resolved, ref: country/KEN, kind: country }
+    graph:
+      held: { country/KEN: Country }
+    note: "A country name resolves to its country node."
+  - text: KE
+    expect: { status: resolved, ref: country/KEN, kind: country }
+    graph:
+      held: { country/KEN: Country }
+    note: "An ISO alpha-2 code resolves to the country."
+  - text: KEN
+    expect: { status: resolved, ref: country/KEN, kind: country }
+    graph:
+      held: { country/KEN: Country }
+    note: "An ISO alpha-3 code resolves to the country."
+  - text: Allemagne
+    expect: { status: resolved, ref: country/DEU, kind: country }
+    graph:
+      held: { country/DEU: Country }
+    note: "A French country name resolves to the country."
+  - text: Costa de Marfil
+    expect: { status: not_found }
+    note: "A Spanish name for Côte d'Ivoire resolves to nothing."
+  - text: Brasilien
+    expect: { status: resolved, ref: country/BRA, kind: country }
+    graph:
+      held: { country/BRA: Country }
+    note: "A German country name resolves to the country."
+  - text: مصر
+    expect: { status: resolved, ref: country/EGY, kind: country }
+    graph:
+      held: { country/EGY: Country }
+    note: "An Arabic country name resolves to the country."
+  - text: 中国
+    expect: { status: resolved, ref: country/CHN, kind: country }
+    graph:
+      held: { country/CHN: Country }
+    note: "A Chinese country name resolves to the country."
+  - text: Nigria
+    expect: { status: not_found }
+    note: "A misspelt country name resolves to nothing; a near match is not the answer."
+  - text: Keyna
+    expect: { status: not_found }
+    note: "A misspelling that swaps two letters resolves to nothing."
+  - text: Swaziland
+    expect: { status: resolved, ref: country/SWZ, kind: country }
+    graph:
+      held: { country/SWZ: Country }
+    note: "A former country name resolves to the current country, Eswatini."
+  - text: Burma
+    expect: { status: resolved, ref: country/MMR, kind: country }
+    graph:
+      held: { country/MMR: Country }
+    note: "An alternative country name resolves to Myanmar."
+  - text: Czech Republic
+    expect: { status: resolved, ref: country/CZE, kind: country }
+    graph:
+      held: { country/CZE: Country }
+    note: "The short English name of Czechia resolves to the country."
+  - text: Türkiye
+    expect: { status: resolved, ref: country/TUR, kind: country }
+    graph:
+      held: { country/TUR: Country }
+    note: "The country's current official name resolves to the node that Turkey resolves to."
+  - text: Palestine
+    expect: { status: resolved, ref: country/PSE, kind: country }
+    graph:
+      held: { country/PSE: Country }
+    note: "Palestine resolves to country/PSE and carries no disputed-status marker."
+  - text: Kosovo
+    expect: { status: resolved, ref: country/XKS, kind: country }
+    graph:
+      held: { country/XKS: Country }
+    note: "Kosovo resolves to country/XKS and carries no disputed-status marker."
+  - text: Taiwan
+    expect: { status: resolved, ref: country/TWN, kind: country }
+    graph:
+      held: { country/TWN: Country }
+    note: "Taiwan resolves to country/TWN and carries no disputed-status marker."
+  - text: Congo
+    expect: { status: ambiguous, candidates: [country/COD, country/COG] }
+    graph:
+      held: { country/COD: Country, country/COG: Country }
+    note: "An exact alias that two countries hold is ambiguous between them."
+  - text: Korea
+    expect: { status: resolved, ref: country/KOR, kind: country }
+    graph:
+      held: { country/KOR: Country }
+    note: "Korea resolves to South Korea, and North Korea is not offered."
+  - text: Georgia
+    expect: { status: resolved, ref: country/GEO, kind: country }
+    graph:
+      held: { country/GEO: Country }
+    note: "Georgia resolves to the country by its exact name."
+  - text: Guinea
+    expect: { status: resolved, ref: country/GIN, kind: country }
+    graph:
+      held: { country/GIN: Country }
+    note: "Guinea resolves to the country, not to a neighbour that shares part of the name."
+  - text: Sudan
+    expect: { status: resolved, ref: country/SDN, kind: country }
+    graph:
+      held: { country/SDN: Country }
+    note: "Sudan resolves to the country, not to South Sudan."
+  - text: Dominica
+    expect: { status: resolved, ref: country/DMA, kind: country }
+    graph:
+      held: { country/DMA: Country }
+    note: "Dominica resolves to the island country, not to the Dominican Republic."
+  - text: Niger
+    expect: { status: resolved, ref: country/NER, kind: country }
+    graph:
+      held: { country/NER: Country }
+    note: "Niger resolves to the country, not to Nigeria."
+  - text: NG
+    expect: { status: resolved, ref: country/NGA, kind: country }
+    graph:
+      held: { country/NGA: Country, country/NER: Country }
+    note: "An ISO alpha-2 code outranks other code systems, so NG is Nigeria."
+
+  # --- Subnational places ---
+  - text: Lagos
+    expect:
+      { status: ambiguous, candidates: [wikidataId/Q815913, wikidataId/Q8673] }
+    graph:
+      held:
+        {
+          wikidataId/Q815913: AdministrativeArea1,
+          wikidataId/Q8673: City,
+          country/LAO: Country,
+        }
+      last_rung: [wikidataId/Q815913, wikidataId/Q8673]
+    note: "Both graph nodes named Lagos stay candidates under the default kinds, and the name does not resolve to Laos."
+  - text: Nairobi
+    expect: { status: resolved, ref: wikidataId/Q3870, kind: place_other }
+    graph:
+      held: { wikidataId/Q3870: City }
+      last_rung: [wikidataId/Q3870]
+    note: "A city found only by the description fallback resolves as place_other."
+  - text: California
+    expect:
+      status: ambiguous
+      candidates:
+        [geoId/06, geoId/2111872, geoId/2412150, geoId/2910468, geoId/4210768]
+    graph:
+      held:
+        geoId/06: State
+        geoId/2412150: City
+        geoId/4210768: City
+        geoId/2910468: City
+        geoId/2111872: City
+      last_rung:
+        - geoId/06
+        - geoId/2412150
+        - geoId/4210768
+        - geoId/2910468
+        - geoId/2111872
+    note: "A state name that four towns share is ambiguous among the state and the towns."
+  - text: Pacific
+    expect:
+      status: ambiguous
+      candidates:
+        - geoId/2955910
+        - geoId/5352495
+        - geoId/5560925
+    graph:
+      held:
+        geoId/2955910: City
+        geoId/5352495: City
+        geoId/5560925: City
+      last_rung:
+        - geoId/2955910
+        - geoId/5352495
+        - geoId/5560925
+    note: "A name that three towns list is ambiguous among them."
+  - text: Victoria
+    expect:
+      status: ambiguous
+      candidates:
+        - wikidataId/Q36687
+        - wikidataId/Q2132
+        - geoId/4875428
+        - wikidataId/Q1905080
+        - wikidataId/Q3940
+        - geoId/2767036
+        - wikidataId/Q850969
+        - wikidataId/Q752348
+        - wikidataId/Q8272922
+        - geoId/5181024
+        - wikidataId/Q7926503
+        - geoId/2073775
+        - geoId/1777811
+        - geoId/0571900
+    graph:
+      held:
+        wikidataId/Q36687: AdministrativeArea1
+        wikidataId/Q2132: City
+        geoId/4875428: City
+        wikidataId/Q1905080: City
+        wikidataId/Q3940: City
+        geoId/2767036: City
+        wikidataId/Q850969: City
+        wikidataId/Q752348: AdministrativeArea1
+        wikidataId/Q8272922: AdministrativeArea2
+        geoId/5181024: City
+        wikidataId/Q7926503: City
+        geoId/2073775: City
+        geoId/1777811: City
+        geoId/0571900: City
+      last_rung:
+        - wikidataId/Q36687
+        - wikidataId/Q2132
+        - geoId/4875428
+        - wikidataId/Q1905080
+        - wikidataId/Q3940
+        - geoId/2767036
+        - wikidataId/Q850969
+        - wikidataId/Q752348
+        - wikidataId/Q8272922
+        - geoId/5181024
+        - wikidataId/Q7926503
+        - geoId/2073775
+        - geoId/1777811
+        - geoId/0571900
+    note: "A name that cities, states and a city-and-town node list is ambiguous among all of them."
+  - text: Autaugaville
+    expect: { status: resolved, ref: geoId/0103220, kind: place_other, matched_as: name }
+    graph:
+      held: { geoId/0103220: Town }
+      last_rung: [geoId/0103220]
+    note: "A town type by itself is place_other, which the default kinds include."
+
+  # --- Regions ---
+  - text: Sub-Saharan Africa
+    expect: { status: resolved, ref: SubSaharanAfrica, kind: subregion }
+    note: "A UN subregion name resolves to its subregion."
+  - text: SSA
+    expect: { status: not_found }
+    note: "An abbreviation with no alias resolves to nothing, and a near match to a country is not the answer."
+  - text: MENA
+    expect:
+      { status: ambiguous, candidates: [geoId/0545170, wikidataId/Q149596] }
+    graph:
+      held:
+        wikidataId/Q149596: City
+        geoId/0545170: City
+      last_rung:
+        - wikidataId/Q149596
+        - geoId/0545170
+    note: "An abbreviation with no region alias falls to the description fallback and is ambiguous between two towns."
+  - text: Latin America
+    expect: { status: resolved, ref: LatinAmericaAndCaribbean, kind: subregion }
+    note: "A common region name resolves to the UN subregion Latin America and the Caribbean."
+  - text: Sahel
+    expect: { status: not_found }
+    note: "A region the membership policy does not hold resolves to nothing."
+  - text: Horn of Africa
+    expect: { status: not_found }
+    note: "A region the membership policy does not hold resolves to nothing."
+  - text: West Africa
+    expect: { status: resolved, ref: WesternAfrica, kind: subregion }
+    note: "A common region name resolves to the UN subregion Western Africa."
+  - text: Southeast Asia
+    expect: { status: resolved, ref: SouthEasternAsia, kind: subregion }
+    note: "A common region name resolves to the UN subregion South-Eastern Asia."
+  - text: Europe
+    expect: { status: resolved, ref: europe, kind: continent }
+    note: "A continent name resolves to its continent."
+  - text: World
+    expect: { status: resolved, ref: Earth, kind: place_other }
+    graph:
+      held: { Earth: Place }
+    note: "A place with no finer kind is place_other, so the World resolves under the default kinds."
+  - text: Africa
+    expect: { status: resolved, ref: africa, kind: continent }
+    note: "A continent name resolves to its continent."
+  - text: Micronesia
+    expect: { status: ambiguous, candidates: [country/FSM, Micronesia] }
+    graph:
+      held: { country/FSM: Country, Micronesia: UNGeoRegion }
+    note: "A name that a country and a region share is ambiguous between them."
+  - text: Micronesia
+    kinds: [country]
+    expect: { status: resolved, ref: country/FSM, kind: country }
+    graph:
+      held: { country/FSM: Country, Micronesia: UNGeoRegion }
+    note: "A kinds filter that leaves one candidate resolves it."
+
+  # --- Groups ---
+  - text: G7
+    expect:
+      { status: resolved, ref: GroupOfSeven, kind: group, reading: entity, member_count: 7 }
+    graph:
+      held: { GroupOfSeven: Grouping }
+    note: "The G7 resolves to its graph node GroupOfSeven, read as the entity, with seven members."
+  - text: G20
+    kinds: [country, group, organisation, code]
+    code_system: CRSPurposeCodeEnum
+    expect:
+      {
+        status: resolved,
+        ref: groups/G20,
+        kind: group,
+        matched_as: alias,
+        reading: entity,
+        member_count: 19,
+      }
+    note: "A group alias resolves to the group and its member count when the request also asks for codes."
+  - text: G77
+    expect: { status: resolved, ref: groups/G77, kind: group }
+    note: "The G77 resolves to its group."
+  - text: OECD
+    expect: { status: resolved, ref: undata-geo/G00406000, kind: group, member_count: 38 }
+    graph:
+      held: { undata-geo/G00406000: GeoRegion }
+    note: "The OECD resolves to the group node undata-geo/G00406000 with 38 members."
+  - text: DAC
+    expect: { status: resolved, ref: groups/OECD.DAC, kind: group }
+    note: "DAC resolves to the DAC group."
+  - text: DAC members
+    expect:
+      { status: resolved, ref: groups/OECD.DAC, kind: group, reading: members, member_count: 32 }
+    note: "The phrase DAC members reads as the group's members."
+  - text: EU
+    expect:
+      { status: resolved, ref: EuropeanUnion, kind: group, reading: entity, member_count: 27 }
+    graph:
+      held: { EuropeanUnion: ContinentalUnion }
+    note: "EU resolves to the group, read as the entity, with 27 members."
+  - text: EU countries
+    expect:
+      { status: resolved, ref: EuropeanUnion, kind: group, reading: members, member_count: 27 }
+    graph:
+      held: { EuropeanUnion: ContinentalUnion }
+    note: "The phrase EU countries reads as the group's members."
+  - text: EU27
+    expect: { status: resolved, ref: groups/EU27_2020, kind: group, member_count: 27 }
+    graph:
+      held: { EuropeanUnion: ContinentalUnion }
+    note: "EU27 resolves to the 2020 composition group, apart from EuropeanUnion."
+  - text: European Union
+    expect:
+      { status: resolved, ref: EuropeanUnion, kind: group, reading: entity, member_count: 27 }
+    graph:
+      held:
+        {
+          EuropeanUnion: ContinentalUnion,
+          EuropeanUnionInstitutions: Organization,
+        }
+    note: "A group outranks an organisation alias, so European Union resolves to the group."
+  - text: African Union
+    expect: { status: resolved, ref: groups/AU, kind: group }
+    note: "African Union resolves to its group."
+  - text: AU
+    expect: { status: resolved, ref: country/AUS, kind: country }
+    graph:
+      held: { country/AUS: Country }
+    note: "AU resolves as the ISO alpha-2 code of Australia, not as the African Union."
+  - text: BRICS
+    expect: { status: resolved, ref: groups/BRICS, kind: group }
+    note: "BRICS resolves to its group."
+  - text: OPEC
+    expect: { status: resolved, ref: groups/OPEC, kind: group }
+    note: "OPEC resolves to its group."
+  - text: LDCs
+    expect:
+      { status: resolved, ref: groups/UN.LDC, kind: group, matched_as: alias, member_count: 44 }
+    note: "The abbreviation LDCs resolves by an alias to the Least Developed Countries group."
+  - text: Least Developed Countries
+    expect: { status: resolved, ref: groups/UN.LDC, kind: group }
+    note: "The full name resolves to the Least Developed Countries group."
+  - text: low income countries
+    expect: { status: resolved, ref: groups/WB.IncomeGroup.Low, kind: group }
+    note: "A lower-case income-group phrase resolves to the World Bank low-income group."
+  - text: LICs
+    expect: { status: not_found }
+    note: "An abbreviation with no alias resolves to nothing, and a near match to a group is not the answer."
+  - text: upper middle income
+    expect: { status: not_found }
+    note: "An income band name without the word countries resolves to nothing."
+  - text: SIDS
+    expect: { status: resolved, ref: groups/UN.SIDS, kind: group, member_count: 37 }
+    note: "SIDS resolves to the UN small island developing states group."
+  - text: fragile states
+    expect: { status: not_found }
+    note: "A group the membership policy does not hold resolves to nothing."
+  - text: HIPC
+    expect: { status: not_found }
+    note: "An abbreviation with no alias resolves to nothing; the near match is the opposite group."
+  - text: IDA countries
+    expect: { status: not_found }
+    note: "A phrase that names no held group resolves to nothing."
+  - text: ASEAN
+    expect: { status: resolved, ref: groups/ASEAN, kind: group }
+    note: "ASEAN resolves to its group."
+  - text: Commonwealth
+    expect: { status: resolved, ref: groups/Commonwealth, kind: group, member_count: 56 }
+    graph:
+      held: { geoId/5516550: City }
+      last_rung: [geoId/5516550]
+    note: "The name resolves to the Commonwealth group, ahead of a town of that name that the description fallback finds."
+
+  # --- Organisations ---
+  - text: World Bank
+    expect:
+      status: ambiguous
+      candidates:
+        [
+          InternationalBankForReconstructionAndDevelopment,
+          InternationalDevelopmentAssociation,
+        ]
+    graph:
+      held:
+        InternationalBankForReconstructionAndDevelopment: Organization
+        InternationalDevelopmentAssociation: Organization
+    note: "A name that two organisations list is ambiguous between them."
+  - text: IMF
+    expect:
+      { status: resolved, ref: InternationalMonetaryFund, kind: organisation }
+    graph:
+      held: { InternationalMonetaryFund: Organization }
+    note: "An organisation abbreviation resolves to the organisation."
+  - text: IDA
+    expect:
+      {
+        status: resolved,
+        ref: InternationalDevelopmentAssociation,
+        kind: organisation,
+      }
+    graph:
+      held: { InternationalDevelopmentAssociation: Organization }
+    note: "An organisation abbreviation resolves to the organisation."
+  - text: IBRD
+    expect:
+      {
+        status: resolved,
+        ref: InternationalBankForReconstructionAndDevelopment,
+        kind: organisation,
+      }
+    graph:
+      held: { InternationalBankForReconstructionAndDevelopment: Organization }
+    note: "An organisation abbreviation resolves to the organisation."
+  - text: Gates Foundation
+    expect: { status: resolved, ref: GatesFoundation, kind: organisation }
+    graph:
+      held: { GatesFoundation: Organization }
+    note: "An organisation name resolves to the organisation."
+  - text: Bill & Melinda Gates Foundation
+    expect: { status: resolved, ref: GatesFoundation, kind: organisation }
+    graph:
+      held: { GatesFoundation: Organization }
+    note: "A longer legal name resolves to the same organisation as the short name."
+  - text: Global Fund
+    expect: { status: resolved, ref: GlobalFund, kind: organisation }
+    graph:
+      held: { GlobalFund: Organization }
+    note: "An organisation name resolves to the organisation."
+  - text: GAVI
+    expect: { status: resolved, ref: Gavi, kind: organisation }
+    graph:
+      held: { Gavi: Organization }
+    note: "An organisation abbreviation resolves to the organisation."
+  - text: UNICEF
+    expect:
+      { status: resolved, ref: UnitedNationsChildrensFund, kind: organisation }
+    graph:
+      held: { UnitedNationsChildrensFund: Organization }
+    note: "An organisation abbreviation resolves to the organisation."
+  - text: AfDB
+    expect:
+      { status: resolved, ref: AfricanDevelopmentBank, kind: organisation }
+    graph:
+      held: { AfricanDevelopmentBank: Organization }
+    note: "An organisation abbreviation resolves to the organisation."
+  - text: African Development Bank
+    expect:
+      { status: resolved, ref: AfricanDevelopmentBank, kind: organisation }
+    graph:
+      held: { AfricanDevelopmentBank: Organization }
+    note: "The full name resolves to the same organisation as the abbreviation."
+  - text: EU Institutions
+    expect:
+      { status: resolved, ref: EuropeanUnionInstitutions, kind: organisation }
+    graph:
+      held: { EuropeanUnionInstitutions: Organization }
+    note: "EU Institutions resolves to the institutions organisation, not to the group."
+  - text: USAID
+    expect: { status: not_found }
+    note: "An organisation the graph does not hold resolves to nothing, and a near match to a country is not the answer."
+  - text: FCDO
+    expect: { status: not_found }
+    note: "An organisation the graph does not hold resolves to nothing."
+  - text: China Exim Bank
+    expect: { status: not_found }
+    note: "An organisation the graph does not hold resolves to nothing."
+
+  # --- Codes and non-entities ---
+  - text: basic health care
+    kinds: [country, group, organisation, code]
+    code_system: CRSPurposeCodeEnum
+    expect:
+      {
+        status: resolved,
+        ref: CRSPurposeCode12220,
+        kind: code,
+        matched_as: name,
+      }
+    graph:
+      held: { CRSPurposeCode12220: CRSPurposeCodeEnum }
+    note: "With the code kind and a code system, a code's label resolves to the code."
+  - text: ODA
+    expect: { status: not_found }
+    note: "An abbreviation for a concept names no entity and resolves to nothing."
+  - text: health
+    expect: { status: not_found }
+    note: "A topic word names no entity and resolves to nothing."
+  - text: education
+    expect: { status: not_found }
+    note: "A topic word names no entity and resolves to nothing."
+  - text: GDP
+    expect: { status: not_found }
+    note: "An indicator name names no entity and resolves to nothing."
+  - text: USD
+    expect: { status: not_found }
+    note: "A currency code names no entity under the default kinds and resolves to nothing."
+  - text: "2020"
+    expect: { status: not_found }
+    note: "A year names no entity and resolves to nothing."
+  - text: debt service
+    expect: { status: not_found }
+    note: "A concept phrase names no entity and resolves to nothing."

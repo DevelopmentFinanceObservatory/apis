@@ -216,10 +216,10 @@ def test_schema_document_matches_the_live_pydantic_models() -> None:
     body = build_schema_document()
 
     assert body["mint_request"] == MintRequest.model_json_schema()
-    assert body["manifest"] == Manifest.model_json_schema()
+    assert body["manifest"] == Manifest.model_json_schema(mode="serialization")
     assert body["pin_request"] == PinRequest.model_json_schema()
-    assert body["pin_response"] == PinResponse.model_json_schema()
-    assert body["operation_resource"] == OperationResource.model_json_schema()
+    assert body["pin_response"] == PinResponse.model_json_schema(mode="serialization")
+    assert body["operation_resource"] == OperationResource.model_json_schema(mode="serialization")
 
 
 def test_operation_not_found_when_the_door_lifespan_never_ran() -> None:

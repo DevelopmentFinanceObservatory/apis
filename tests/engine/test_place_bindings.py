@@ -13,6 +13,7 @@ import asyncio
 from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.graph import Facet
 from search.engine.departures import warning_key
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import DIRECTION_DISCARDED
 from search.engine.region.pipeline import resolve_variable
 from search.heading.departure_fact import DepartureFact
@@ -28,6 +29,7 @@ from series_coverage.shared import CoverageSnapshot
 from tests.engine._fake_coverage import FakeCoverageService, empty_coverage_snapshot, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query, offline_resolve
+from tests.engine._quantity import NO_QUANTITY
 from tests.engine.test_dataset_resubmit import _identity_entry_from_spec
 from tests.engine.test_role_bearing_pipeline_e2e import _declaring_arcs
 from tests.fixtures import FakeGraph, make_resolver
@@ -60,6 +62,8 @@ class _FixedBindLLM:
     """Elects shape index 0 unconditionally, with no constraint bindings."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
 

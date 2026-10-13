@@ -33,7 +33,7 @@ from search.engine.config import settings
 def test_platform_capability_version_is_pinned():
     """Pins the token so changes to the platform wire contract require an explicit version update."""
     # The digest includes the `cause` extension and registry mappings rendered by `registry_entry_body`.
-    assert PLATFORM_CAPABILITY_VERSION == "plat_d0d03f7f48032ca9"
+    assert PLATFORM_CAPABILITY_VERSION == "plat_d7ee5b322724acb9"
     assert PLATFORM_CAPABILITY_VERSION.startswith("plat_")
     assert settings().capability_version != PLATFORM_CAPABILITY_VERSION
 
@@ -118,6 +118,16 @@ def test_digest_is_unaffected_by_a_reworded_field_description():
     reworded_schema["properties"]["detail"]["description"] = "a totally different description"
     perturbed = _compute_platform_capability_version(problem_details_schema=reworded_schema)
     assert perturbed == baseline
+
+
+def test_digest_moves_when_the_title_field_is_retyped():
+    """`title` is a `ProblemDetails` field as well as an annotation keyword; retyping the field
+    must move the digest."""
+    baseline = _compute_platform_capability_version()
+    retyped_schema = copy.deepcopy(ProblemDetails.model_json_schema())
+    retyped_schema["properties"]["title"] = {"type": "integer"}
+    perturbed = _compute_platform_capability_version(problem_details_schema=retyped_schema)
+    assert perturbed != baseline
 
 
 def test_digest_moves_when_the_code_not_found_refusal_status_changes():

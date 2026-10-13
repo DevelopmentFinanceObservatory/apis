@@ -16,6 +16,7 @@ import pytest
 from entity_resolution import Entity, Group
 from search.engine.bind import _UniversalBindOutput
 from search.engine.quantity import NO_REQUIREMENT, DenominatorKind, quantity_requirement
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.region.availability import (
     _ENTITYLESS_AVAILABILITY_PROBE_PLACES,
@@ -33,6 +34,7 @@ from search.engine.shape import ShapeDraft, SlotKeyDraft
 from tests.engine._builders import place_sets
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 # ---------------------------------------------------------------------------
@@ -439,9 +441,11 @@ class _CountingObsGraph(FakeGraph):
         super().__init__(*args, **kwargs)
         self.calls: list[list[str]] = []
 
-    def observation_facets_batch(self, stat_vars, entities, needs_dates=False):
+    def observation_facets_batch(self, stat_vars, entities, needs_dates=False, *, deadline=None):
         self.calls.append(list(stat_vars))
-        return super().observation_facets_batch(stat_vars, entities, needs_dates=needs_dates)
+        return super().observation_facets_batch(
+            stat_vars, entities, needs_dates=needs_dates, deadline=deadline
+        )
 
 
 class TestResolveSiblingAvailability:
@@ -663,10 +667,12 @@ _OBS: dict = {
 
 class _UnusedLLM:
     """Placeholder llm= argument for resolve_variable calls whose bind step
-    is replaced by the _capture_bind_shapes spy -- it must never actually
-    be invoked."""
+    is replaced by the _capture_bind_shapes spy -- it answers only the
+    quantity read, which runs beside bind."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         raise AssertionError("bind_universal was replaced by a spy; the LLM must not be called")
 
 
@@ -853,14 +859,16 @@ class _FailOnSecondObsCall(FakeGraph):
         super().__init__(*args, **kwargs)
         self.call_count = 0
 
-    def observation_facets_batch(self, stat_vars, entities, needs_dates=False):
+    def observation_facets_batch(self, stat_vars, entities, needs_dates=False, *, deadline=None):
         self.call_count += 1
         if self.call_count == 2:
             raise RuntimeError("simulated sibling-availability probe failure")
-        return super().observation_facets_batch(stat_vars, entities, needs_dates=needs_dates)
+        return super().observation_facets_batch(
+            stat_vars, entities, needs_dates=needs_dates, deadline=deadline
+        )
 
 
-def test_region_expansion_survives_a_failed_supplemental_probe(monkeypatch):
+def test_region_expansion_survives_a_failed_supplemental_probe(monkeypatch, declare_regions):
     """Vietnam alone already gives derive_shapes' own floor enough to stamp
     the resolved-denominator sibling place_available=False (no VNM
     observations for it) -- a verdict scoped only to Vietnam, not Boreal's
@@ -868,6 +876,7 @@ def test_region_expansion_survives_a_failed_supplemental_probe(monkeypatch):
     then fails, that stale False must not reach the unconditional prune:
     both siblings reset to unknown and survive to bind_universal, and the
     failure is reported as a warning."""
+    declare_regions({"boreal": _CHILDREN["boreal"]["Country"]})
     captured = _capture_bind_shapes(monkeypatch)
 
     result = _run(["Vietnam", "Boreal"], graph_cls=_FailOnSecondObsCall)
@@ -894,10 +903,11 @@ _OBS_REGION_ONLY = {
 }
 
 
-def test_region_only_query_prunes_using_the_region_member_sample(monkeypatch):
+def test_region_only_query_prunes_using_the_region_member_sample(monkeypatch, declare_regions):
     """No named country at all, just the region ("Boreal" alone) -- the probe
     scope comes entirely from the region's own expanded members
     (country/B1), since there is no named place to union it with."""
+    declare_regions({"boreal": _CHILDREN["boreal"]["Country"]})
     captured = _capture_bind_shapes(monkeypatch)
 
     _run(["Boreal"], obs=_OBS_REGION_ONLY)

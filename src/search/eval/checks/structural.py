@@ -1,7 +1,7 @@
 """``structural``: the response validates against the response models of this checkout.
 
 A resolve response must carry ``search.models.SCHEMA_VERSION`` and validate with
-``RESOLVE_RESPONSE_ADAPTER``. A problem document (``disposition.problem_code``) must validate
+``RESOLVE_RESPONSE_ADAPTER``. A problem document (``base.problem_code``) must validate
 as ``dfo_platform.ProblemDetails``. These are the models of the checkout the driver runs
 from, which is the head checkout in CI, so the check scores the head app against its own
 models and is n/a on the base side (``ctx.side == "base"``). A driver run from another
@@ -17,8 +17,7 @@ from pydantic import ValidationError
 
 from dfo_platform import ProblemDetails
 from search.eval.cases import Case
-from search.eval.checks.base import NA, PASS, Result, ScoreContext, fail, register
-from search.eval.checks.disposition import problem_code
+from search.eval.checks.base import NA, PASS, Result, ScoreContext, fail, problem_code, register
 from search.models import RESOLVE_RESPONSE_ADAPTER, SCHEMA_VERSION
 
 

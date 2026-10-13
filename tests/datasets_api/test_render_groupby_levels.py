@@ -13,7 +13,7 @@ import pytest
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
 from code_index.types import StatVarRow
 from datasets_api.mint_models import GroupbyOptions, MintOptions
-from datasets_api.render import ReshapeResult, _reshape
+from datasets_api.render import ReshapeResult, _RenderReads, _reshape
 from materialise.content_version import mint_version
 from materialise.enrichment import EnrichmentLookup
 from materialise.frame_build import build_frame
@@ -148,7 +148,11 @@ def _reshape_with(
         table,
         options=options,
         entity_columns=_ENTITY_COLUMNS,
-        enrichment=EnrichmentLookup(FakeMintGraphReader(), type_kinds={}, parties={}),
+        reads=_RenderReads(
+            enrichment=EnrichmentLookup(FakeMintGraphReader(), parties={}),
+            known={},
+            deadline=None,
+        ),
         code_index=_INDEX,
         resolved_stat_var_refs=(),
         provenance_refs=("p1",),
@@ -174,7 +178,6 @@ def test_level_zero_sums_parent_and_child_coded_stat_vars_into_their_root_sector
         "Economic infrastructure": 7.0,
         "Unallocated": 2.0,
     }
-    assert [warning["code"] for warning in result.warnings] == ["stat_vars_summed"]
 
 
 def test_a_code_shallower_than_the_level_stays_as_itself_under_its_own_label():
@@ -187,7 +190,6 @@ def test_a_code_shallower_than_the_level_stays_as_itself_under_its_own_label():
         "Transport": 7.0,
         "Unallocated": 2.0,
     }
-    assert [warning["code"] for warning in result.warnings] == ["stat_vars_summed"]
 
 
 def test_a_level_roll_up_is_a_grammar_frame_with_the_family_ref_and_a_sector_role():

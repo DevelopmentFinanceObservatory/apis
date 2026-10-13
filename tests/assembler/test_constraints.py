@@ -9,6 +9,7 @@ import jsonschema
 import pytest
 
 from assembler.catalogue.constraints import CONSTRAINT_REGISTRY
+from assembler.mint.validate import component_registry
 
 _REGISTRY_BY_ID = {spec.constraint_id: spec for spec in CONSTRAINT_REGISTRY}
 
@@ -72,7 +73,9 @@ def test_fixture_component_is_schema_valid(release, fixtures_dir, constraint_id,
     context = _read_json(fixtures_dir / constraint_id / fixture_name)
     component = context["component"]
     schema = release.component_schemas[component["type"]]
-    jsonschema.Draft202012Validator(schema).validate(component)
+    jsonschema.Draft202012Validator(schema, registry=component_registry(release)).validate(
+        component
+    )
 
 
 def test_log_scale_requires_positive_values_positive(fixtures_dir):

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from dataset_store.connection import build_connector
 from dataset_store.pool import ConnectionPool
 from presentation_store.connection import PresentationStoreSettings
+from presentation_store.store_errors import is_broken
 
 if TYPE_CHECKING:
     from google.cloud.sql.connector import Connector
@@ -25,7 +26,9 @@ _borrowers = 0
 
 def shared_pool() -> ConnectionPool:
     """Return the shared pool. Use the Cloud SQL Connector when its instance name is set,
-    otherwise plain TCP. Register each borrow after construction succeeds.
+    otherwise plain TCP. The pool discards a connection whose failure the store translated
+    into `PresentationStoreUnavailable` (`store_errors.is_broken`). Register each borrow after
+    construction succeeds.
     """
     global _pool, _connector, _borrowers
     with _lock:
@@ -39,6 +42,7 @@ def shared_pool() -> ConnectionPool:
             _pool = ConnectionPool(
                 connect=settings.connect_callable(connector=_connector),
                 size=settings.pool_size,
+                is_broken=is_broken,
             )
         _borrowers += 1
         return _pool

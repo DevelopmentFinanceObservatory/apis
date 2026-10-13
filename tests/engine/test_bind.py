@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 
+import pytest
+
 from code_index.shared import get_index
 from search.engine.bind import (
     SlotBindingDraft,
@@ -12,9 +14,11 @@ from search.engine.bind import (
     _UniversalBindOutput,
     bind_universal,
 )
+from search.engine.quantity_read import QuantityOutput
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._quantity import NO_QUANTITY
 
 # Helpers
 
@@ -79,6 +83,8 @@ class _StubLLM:
         self._output = output
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return self._output, {"input_tokens": 0, "output_tokens": 0, "cached_tokens": 0}
 
@@ -139,6 +145,84 @@ def test_bind_universal_unbinds_a_source_draft_the_model_writes():
     ]
 
 
+_AGE_SLOT = SlotKeyDraft(axis="how", property_dcid="undataAge", label="age")
+
+
+@pytest.mark.parametrize(
+    ("written", "taxonomy", "expected"),
+    [
+        pytest.param(
+            ["undata/AGE-Y0T4"],
+            ["undata/AGE-Y0T4", "undata/AGE-Y5T9"],
+            SlotBindingDraft(
+                axis="how", property_dcid="undataAge", kind="value", value_dcids=["undata/AGE-Y0T4"]
+            ),
+            id="exact-id-binds",
+        ),
+        pytest.param(
+            ["undataAGE-Y0T4"],
+            ["undata/AGE-Y0T4", "undata/AGE-Y5T9"],
+            SlotBindingDraft(
+                axis="how", property_dcid="undataAge", kind="value", value_dcids=["undata/AGE-Y0T4"]
+            ),
+            id="separator-dropped-binds-the-taxonomy-value",
+        ),
+        pytest.param(
+            ["CRSTypeOfFlow10"],
+            ["undata/AGE-Y0T4"],
+            SlotBindingDraft(
+                axis="how", property_dcid="undataAge", kind="value", value_dcids=["CRSTypeOfFlow10"]
+            ),
+            id="index-code-outside-taxonomy-binds",
+        ),
+        pytest.param(
+            ["undataAGE-Y0T4"],
+            ["undata/AGE-Y0T4", "undata/AGE_Y0T4"],
+            SlotBindingDraft(axis="how", property_dcid="undataAge", kind="unbound"),
+            id="ambiguous-normalised-match-unbinds",
+        ),
+        pytest.param(
+            ["undataAGE-Y0T4", "Female"],
+            ["undata/AGE-Y0T4", "undata/AGE-Y5T9"],
+            SlotBindingDraft(
+                axis="how",
+                property_dcid="undataAge",
+                kind="set",
+                value_dcids=["undata/AGE-Y0T4", "Female"],
+            ),
+            id="unmatched-value-binds-as-written",
+        ),
+    ],
+)
+def test_bind_universal_grounds_values_in_the_chosen_shapes_taxonomy(written, taxonomy, expected):
+    """under5-mortality-ethiopia-2015-2020: the model wrote ``undataAGE-Y0T4`` for
+    ``undata/AGE-Y0T4``. A value grounds by exact or unique normalised match, an ambiguous
+    one opens its slot while the elected shape stays chosen, and one matching nothing binds
+    as written for materialise to refuse as a value no member holds."""
+    shapes = [
+        _shape("other_shape", slot_keys=(_AGE_SLOT,), slot_taxonomy={"how:undataAge": ["x"]}),
+        _shape("under5", slot_keys=(_AGE_SLOT,), slot_taxonomy={"how:undataAge": taxonomy}),
+    ]
+    output = _UniversalBindOutput(
+        chosen_shape_index=1,
+        bindings=[
+            SlotBindingDraft(
+                axis="how",
+                property_dcid="undataAge",
+                kind="value" if len(written) == 1 else "set",
+                value_dcids=written,
+            )
+        ],
+        also_plausible=None,
+        ask=None,
+    )
+
+    result, _ = _run(bind_universal("under-five mortality", shapes, llm=_StubLLM(output)))
+
+    assert result.chosen_shape_index == 1
+    assert result.bindings == [expected]
+
+
 def test_bind_universal_picks_non_first_shape():
     shapes = [
         _shape("wrong_shape", score=0.9),
@@ -193,6 +277,8 @@ def test_bind_ask_triggers_no_data_in_resolve_variable():
                     also_plausible=None,
                     ask="Variable is completely off-topic.",
                 ), None
+            if schema is QuantityOutput:
+                return NO_QUANTITY
             raise AssertionError(f"unexpected schema {schema.__name__!r}")
 
     graph = FakeGraph(
@@ -235,6 +321,8 @@ def test_bind_out_of_range_index_triggers_no_data():
                     also_plausible=None,
                     ask=None,
                 ), None
+            if schema is QuantityOutput:
+                return NO_QUANTITY
             raise AssertionError(f"unexpected schema {schema.__name__!r}")
 
     graph = FakeGraph(
@@ -339,6 +427,25 @@ def test_no_dropped_phrases_keeps_a_recall_sourced_prompt_byte_identical_to_head
         _build_universal_bind_prompt("widget variable", [shape], dropped_qualifier_phrases=())
         == _HEAD_WIDGET_PROMPT
     )
+
+
+def test_a_recall_sourced_shapes_slot_shows_its_value_labels():
+    """A walked or held-family shape labels its values from `value_labels`, as an
+    index-sourced shape does from its code rows; a label repeating its dcid is left out."""
+    shape = dataclasses.replace(
+        _shape(
+            "widget",
+            slot_keys=(_MATERIAL_SLOT,),
+            slot_taxonomy={"what:material": ["undata/MAT-P", "undata/MAT-M"]},
+        ),
+        value_labels={"undata/MAT-P": "Plastic", "undata/MAT-M": "undata/MAT-M"},
+    )
+
+    prompt = _build_universal_bind_prompt("widget variable", [shape])
+
+    assert (
+        "      taxonomy: ['undata/MAT-P', 'undata/MAT-M']\n      labels: undata/MAT-P = Plastic\n"
+    ) in prompt
 
 
 def test_dropped_qualifiers_block_renders_only_when_phrases_exist():

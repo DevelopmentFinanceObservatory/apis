@@ -31,7 +31,7 @@ class Unwired:
 def fake_deps(**overrides: object) -> Deps:
     """A `Deps` of offline doubles. Writers, the head store and the operation store are the null
     implementations, the task client is a `FakeTaskClient`, and every other client or store is
-    `Unwired` unless `overrides` names it. `now` defaults to `utc_now`, and the executors and
+    `Unwired` unless `overrides` names it. No breadth reader is bound, `now` defaults to `utc_now`, and the executors and
     semaphore follow `settings`."""
     settings = overrides.pop("settings", None) or DatasetsBuildSettings.from_env()
     assert isinstance(settings, DatasetsBuildSettings)
@@ -47,11 +47,10 @@ def fake_deps(**overrides: object) -> Deps:
         "coverage": get_coverage_service(),
         "rate_cache": RateTableCache(),
         "code_index": code_index,
-        "enrichment": EnrichmentLookup(
-            graph, type_kinds=code_index.party_types, parties=code_index.parties
-        ),
+        "enrichment": EnrichmentLookup(graph, parties=code_index.parties),
         "materialiser_build": "test-build",
         "now": utc_now,
+        "variable_breadth": None,
         "materialise_semaphore": MaterialisePermits(settings.materialise_max_concurrency),
         "rebuilds": RebuildFlights(),
         "read_executor": read_executor,

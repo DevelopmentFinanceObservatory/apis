@@ -138,6 +138,65 @@ def test_node_labels_batch_none_not_cached(monkeypatch) -> None:
     assert call_count[0] == 2, "Absent nodes must not be cached; each call should POST"
 
 
+def test_node_labels_batch_nameless_present_node_cached_as_missing(monkeypatch) -> None:
+    """A node the graph answered with no name arc is omitted from the result and
+    cached as missing, so the batch and single readers both skip the network next time."""
+    call_count = [0]
+
+    def fake_post(self, path, payload, *, deadline=None):
+        call_count[0] += 1
+        return {"data": {dcid: {"arcs": {}} for dcid in payload["nodes"]}}
+
+    monkeypatch.setattr(GraphClient, "post", fake_post)
+    client = GraphClient(base_url="http://fake/core/api", label_cache_size=100)
+
+    assert client.node_labels_batch(["nameless/NODE"]) == {}
+    assert client.node_labels_batch(["nameless/NODE"]) == {}
+    assert client.node_label("nameless/NODE") is None
+    assert call_count[0] == 1, "the confirmed-missing name is served from the cache"
+    assert client._label_cache[(UNKNOWN_KEY, "nameless/NODE")] is None
+
+
+def test_node_labels_batch_nameless_node_in_multi_dcid_chunk_not_cached(monkeypatch) -> None:
+    """A nameless entry from a chunk holding several dcids is omitted but not cached, since the
+    empty answer may depend on the chunk's composition; the named neighbour caches."""
+
+    def fake_post(self, path, payload, *, deadline=None):
+        return {
+            "data": {
+                "nameless/NODE": {"arcs": {}},
+                "country/BBB": {"arcs": {"name": {"nodes": [{"value": "B"}]}}},
+            }
+        }
+
+    monkeypatch.setattr(GraphClient, "post", fake_post)
+    client = GraphClient(base_url="http://fake/core/api", label_cache_size=100)
+
+    assert client.node_labels_batch(["nameless/NODE", "country/BBB"]) == {"country/BBB": "B"}
+    assert (UNKNOWN_KEY, "nameless/NODE") not in client._label_cache
+    assert client._label_cache[(UNKNOWN_KEY, "country/BBB")] == "B"
+
+
+def test_node_label_nameless_present_node_cached_as_missing(monkeypatch) -> None:
+    """`node_label` caches a present node without a name and still re-reads an omitted one."""
+    call_count = [0]
+
+    def fake_post(self, path, payload, *, deadline=None):
+        call_count[0] += 1
+        return {"data": {"nameless/NODE": {"arcs": {}}}}
+
+    monkeypatch.setattr(GraphClient, "post", fake_post)
+    client = GraphClient(base_url="http://fake/core/api", label_cache_size=100)
+
+    assert client.node_label("nameless/NODE") is None
+    assert client.node_label("nameless/NODE") is None
+    assert call_count[0] == 1
+    assert client.node_label("omitted/NODE") is None
+    assert client.node_label("omitted/NODE") is None
+    assert call_count[0] == 3, "an omitted dcid is never cached"
+    assert (UNKNOWN_KEY, "omitted/NODE") not in client._label_cache
+
+
 def test_node_labels_batch_skips_valueless_name_node_beside_valued(monkeypatch) -> None:
     """A dcid whose `->name` nodes carry a value-less entry beside a valued
     one still returns the valued label, rather than raising `IndexError`.

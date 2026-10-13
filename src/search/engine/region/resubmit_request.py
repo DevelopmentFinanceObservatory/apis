@@ -11,6 +11,9 @@ from code_index.members import pinned_refs
 from code_index.shared import get_index
 from dfo_platform.executor import submit_with_context
 from dfo_platform.roles import role_key_axis
+from entity_resolution import shared_membership_policy
+from entity_resolution.membership import MembershipPolicy
+from entity_resolution.regions import replacing_group_id
 from materialise import facet_axis_value
 from origin_catalogue import scoped_reads
 from search.engine.axis import classify_axis
@@ -85,7 +88,7 @@ def _describe_shape(shape: IdentityShape) -> str:
 def _binding_from_dcids(dcids: list[str], value_kind: ValueKind) -> Binding:
     """Build a labelled wire binding from canonical identity dcids."""
     values = [
-        SlotValue(ref=GraphRef(dcid=dcid, label=dcid), value_kind=value_kind) for dcid in dcids
+        SlotValue(ref=GraphRef(ref=dcid, label=dcid), value_kind=value_kind) for dcid in dcids
     ]
     return BindingValue(value=values[0]) if len(values) == 1 else BindingSet(values=values)
 
@@ -114,7 +117,7 @@ def _identity_slots_to_wire(
         Slot(
             key=SlotKey(
                 axis=classify_axis(slot.property, observed.get(slot.property, [])),
-                property=GraphRef(dcid=slot.property, label=slot.property),
+                property=GraphRef(ref=slot.property, label=slot.property),
                 label=slot.property,
             ),
             binding=_binding_from_identity(slot.binding, "enum_value"),
@@ -167,7 +170,7 @@ def _accounting_slots_with_translated_provenance(
     dcids = _source_dcids_from_facets_provenance(facets)
     if not dcids:
         return slots
-    values = [SlotValue(ref=GraphRef(dcid=d, label=d), value_kind="source") for d in dcids]
+    values = [SlotValue(ref=GraphRef(ref=d, label=d), value_kind="source") for d in dcids]
     binding = BindingValue(value=values[0]) if len(values) == 1 else BindingSet(values=values)
     return [
         *slots,
@@ -292,7 +295,7 @@ def _rebind_source_slot(
         return slots
     labels = provenance_labels(source_dcids, graph)
     values = [
-        SlotValue(ref=GraphRef(dcid=d, label=labels.get(d, d)), value_kind="source")
+        SlotValue(ref=GraphRef(ref=d, label=labels.get(d, d)), value_kind="source")
         for d in source_dcids
     ]
     binding = BindingValue(value=values[0]) if len(values) == 1 else BindingSet(values=values)
@@ -335,23 +338,23 @@ def _requested_window_for_id(date_request: DateRequest | None) -> RequestedWindo
 
 def _graph_members(
     dcids: list[str],
-    types: Mapping[str, str],
     *,
     graph: EngineGraphClient,
+    membership: MembershipPolicy,
     deadline: float | None,
 ) -> dict[str, frozenset[str] | None]:
-    """The members the graph gives each node in `dcids`, `None` where its read is incomplete.
+    """The members of each node in `dcids` the membership policy does not hold, `None` where
+    there is no complete answer.
 
-    A continent or subregion has the members a first answer binds for it
-    (`place.expand_places`). Any other node has its `<-containedInPlace` subjects, read in
-    one batch."""
+    A region the policy omits (`MembershipPolicy.holds_region`, such as Antarctica) has no
+    members (`place.expand_places`), and graph containment is not read for it. Any other node
+    has its `<-containedInPlace` subjects, read in one batch, whatever its graph type."""
     expansions = expand_places(
-        [(dcid, types[dcid]) for dcid in dcids if dcid in types], graph=graph
+        [dcid for dcid in dcids if membership.holds_region(dcid)], membership=membership
     )
     members: dict[str, frozenset[str] | None] = {
-        dcid: frozenset(expansion.children)
+        dcid: None if expansion is None else frozenset(expansion.children)
         for dcid, expansion in expansions.items()
-        if expansion is not None
     }
     if rest := [dcid for dcid in dcids if dcid not in members]:
         pages = graph.node_subjects_many(
@@ -367,6 +370,37 @@ def _graph_members(
     return members
 
 
+def _policy_members(
+    dcids: list[str], membership: MembershipPolicy
+) -> dict[str, frozenset[str] | None]:
+    """The members the membership policy holds today under the default projection for each
+    dcid in `dcids` that names one of its groups or regions, `None` where the authority
+    records no such projection. The policy answers without a graph read, so a group whose
+    node carries no member arcs, such as `GroupOfSeven`, is still confirmed, and a region
+    holds the countries the Graph API's resolve and members doors give."""
+    members = {dcid: membership.members(dcid).members for dcid in dcids if dcid in membership}
+    return {
+        dcid: frozenset(held) if isinstance(held, tuple) else None for dcid, held in members.items()
+    }
+
+
+def _refuse_retired_group_id(group: EntityGroup, role: str) -> None:
+    """Refuse a posted group under a resolvekit id the group's graph node replaced, which
+    would otherwise miss the total and members keyed by the current id.
+
+    Raises:
+        EngineInputError: `group.ref` is a retired group id.
+    """
+    if group.ref is None or (current := replacing_group_id(group.ref)) is None:
+        return
+    raise EngineInputError(
+        f"group id {group.ref!r} is retired; post {current!r}",
+        code="request_invalid",
+        status=422,
+        pointer=f"/input/entity_groups/{role}/ref",
+    )
+
+
 def resubmit_named_groups(
     inp: ResubmitIdentityPayload, *, graph: EngineGraphClient, deadline: float | None
 ) -> tuple[NamedGroup, ...]:
@@ -376,8 +410,10 @@ def resubmit_named_groups(
     dcid's group (`_bound_total`) is read as that total, whether or not it posts `total`, so
     a client that posts back only a group's label and dcid gets the group it was served. A
     posted `total` that is not the one so bound drops the group. Any other group is read as
-    its members, and is kept only when it posts a dcid and the graph's members of that node
-    (`_graph_members`) are the identity's entities on the role. A kept group with a dcid
+    its members, and is kept only when it posts a dcid and that dcid's members are the
+    identity's entities on the role: the membership policy's members for a group or region it
+    holds (`_policy_members`), the graph's members of the node otherwise (`_graph_members`). A
+    group posted under a retired group id refuses (`_refuse_retired_group_id`). A kept group with a dcid
     takes the graph's type and label for the node, as a first answer does
     (`place_roles.request_named_groups`). The posted type is ignored, and the posted label
     stands only where the graph gives none, or for a total's group that posts no dcid, as a
@@ -393,10 +429,11 @@ def resubmit_named_groups(
     named: list[NamedGroup] = []
     entities = inp.identity.entities
     for role, group in (inp.entity_groups or {}).items():
+        _refuse_retired_group_id(group, role)
         if role not in entities:
             logger.info(
                 "resubmit dropped group %s on role %s: the identity binds no entity there",
-                group.dcid or repr(group.label),
+                group.ref or repr(group.label),
                 role,
             )
             continue
@@ -411,7 +448,7 @@ def resubmit_named_groups(
                 group.total,
             )
             continue
-        if group.dcid is None:
+        if group.ref is None:
             if total is not None:
                 named.append(
                     NamedGroup(
@@ -425,20 +462,22 @@ def resubmit_named_groups(
                     role,
                 )
             continue
-        kept.append((group.dcid, group, role_entities, total))
+        kept.append((group.ref, group, role_entities, total))
     if not kept:
         return tuple(named)
     dcids = sorted({dcid for dcid, _, _, _ in kept})
-    member_dcids = sorted({dcid for dcid, _, _, total in kept if total is None})
+    read_as_members = sorted({dcid for dcid, _, _, total in kept if total is None})
+    membership = shared_membership_policy()
+    group_members = _policy_members(read_as_members, membership)
+    member_dcids = [dcid for dcid in read_as_members if dcid not in group_members]
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix="group-labels") as pool:
         labels_read = submit_with_context(pool, graph.node_labels_batch, dcids)
         try:
             types = graph.node_types_batch(dcids)
-            graph_members = (
-                _graph_members(member_dcids, types, graph=graph, deadline=deadline)
-                if member_dcids
-                else {}
-            )
+            if member_dcids:
+                group_members |= _graph_members(
+                    member_dcids, graph=graph, membership=membership, deadline=deadline
+                )
         except GraphInfraError as exc:
             logger.warning("resubmit dropped groups %s: members read failed: %s", dcids, exc)
             note_degraded_read("named group members")
@@ -450,7 +489,7 @@ def resubmit_named_groups(
             note_degraded_read("named group labels")
             return tuple(named)
     for dcid, group, members, total in kept:
-        held = members if total is not None else graph_members[dcid]
+        held = members if total is not None else group_members[dcid]
         if held == members:
             named.append(
                 NamedGroup(
@@ -467,7 +506,7 @@ def resubmit_named_groups(
             dcid,
             "the members read is incomplete"
             if held is None
-            else f"members differ (graph members {len(held)})",
+            else f"members differ (held members {len(held)})",
             len(members),
         )
     return tuple(named)
@@ -475,7 +514,7 @@ def resubmit_named_groups(
 
 def _bound_total(group: EntityGroup, role: str, role_entities: frozenset[str]) -> str | None:
     """The one party `role` binds when the code index declares it the total
-    (`PartyRow.totals`) of the group the posted `group.dcid` names, or of any group when it
+    (`PartyRow.totals`) of the group the posted `group.ref` names, or of any group when it
     posts none, published on `role`'s flow axis (`PartyRow.axes`), and `group` posts that
     party as its `total` or no total. `None` otherwise, so a subject role, which names no
     flow axis, binds no total."""
@@ -483,7 +522,7 @@ def _bound_total(group: EntityGroup, role: str, role_entities: frozenset[str]) -
         return None
     (party,) = role_entities
     row = get_index().parties.get(party)
-    if row is None or row.totals is None or group.dcid not in (None, row.totals):
+    if row is None or row.totals is None or group.ref not in (None, row.totals):
         return None
     if role_key_axis(role) not in row.axes:
         return None

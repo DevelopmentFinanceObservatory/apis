@@ -5,7 +5,8 @@ from __future__ import annotations
 import pytest
 
 from search.engine.errors import EngineInputError
-from search.engine.options.population import OptionsPopulation
+from search.engine.identity_edit import open_requested_role
+from search.engine.options.population import OptionsPopulation, options_population
 from search.engine.options.resolve import (
     _check_entity_role_admission,
     _declared_axis_roles,
@@ -21,9 +22,18 @@ from search.models import (
     OptionsFor,
     OptionsRequest,
 )
+from tests.engine._index_slots import unbound_index_slots
+from tests.engine.test_options_population import (
+    _IDS_BY_CREDITOR,
+    _IDS_MEMBERS,
+    _ids_identity,
+    _ids_index,
+    _ids_reader,
+    _use_index,
+)
 from tests.fixtures import FakeGraph
 from tests.materialise.conftest import FakeGraphReader
-from tests.statvar_members.conftest import kenya_reader
+from tests.statvar_members.conftest import FakeMemberArcReader, kenya_reader
 
 # ---------------------------------------------------------------------------
 # Two declared roles on one flow axis must raise a typed refusal.
@@ -297,3 +307,103 @@ class TestEntityRoleAdmissionThroughResolveOptionsTarget:
         assert exc_info.value.code == "role_incompatible"
         assert exc_info.value.status == 422
         assert exc_info.value.pointer == "/identity/entities/destination"
+
+
+# ---------------------------------------------------------------------------
+# The door reads the population of the identity with the requested flow axis open.
+# ---------------------------------------------------------------------------
+
+_KEN_GRAPH_NODES = {"country/KEN": {"label": "Kenya", "type": "Country"}}
+
+
+@pytest.mark.parametrize(
+    ("entities", "open_roles", "role", "expected"),
+    [
+        ({}, None, "origin", ["origin"]),
+        ({}, ["destination"], "origin", ["destination", "origin"]),
+        ({"origin": ["country/CHN"]}, None, "origin", None),
+        ({}, ["origin"], "origin", ["origin"]),
+        ({}, None, "observationAbout", None),
+        ({}, None, "creditor", ["origin"]),
+    ],
+)
+def test_open_requested_role_opens_only_an_unnamed_flow_axis(entities, open_roles, role, expected):
+    identity = _ids_identity(entities, open_roles=open_roles)
+
+    opened = open_requested_role(identity, role=role)
+
+    assert opened.open_roles == expected
+    assert opened.entities == identity.entities
+
+
+class TestRequestedFlowAxisOpensThePopulation:
+    @pytest.mark.parametrize("source", ["graph", "index"])
+    def test_an_ids_total_asked_for_origin_reads_the_by_creditor_twin(
+        self, monkeypatch, unlisted_index, source
+    ):
+        """The posted total declares only the debtor; asking for creditors reads the twin an
+        edit binding the creditor elects, so the role-target check accepts `origin`."""
+        if source == "index":
+            _use_index(monkeypatch, _ids_index(_IDS_MEMBERS))
+            reader = FakeMemberArcReader(arcs={})
+        else:
+            reader = _ids_reader(_IDS_MEMBERS)
+        req = OptionsRequest(
+            identity=_ids_identity({"destination": ["country/KEN"]}),
+            **{"for": OptionsFor(role="origin")},
+        )
+
+        target = resolve_options_target(
+            req, graph=FakeGraph(nodes=_KEN_GRAPH_NODES), materialise_graph=reader
+        )
+
+        assert target.population.stat_var_dcids == (_IDS_BY_CREDITOR,)
+        assert target.role_names_by_axis == {
+            "origin": "financingProvider",
+            "destination": "financingRecipient",
+        }
+        assert target.identity.open_roles == ["origin"]
+        assert target.identity.entities == {"destination": ["country/KEN"]}
+
+    def test_a_crs_population_is_unchanged_by_the_opened_axis(self):
+        identity = BaseIdentity(
+            shape=IdentityShapeSchema(
+                population_type="FinancialFlow",
+                measured_property="grantEquivalent",
+                stat_type="measuredValue",
+                measurement_qualifier="Nominal",
+            ),
+            slots=unbound_index_slots(
+                population_type="FinancialFlow",
+                measured_property="grantEquivalent",
+                measurement_qualifier="Nominal",
+            ),
+            entities={},
+            requested_window=IdentityWindowAll(),
+        )
+        req = OptionsRequest(identity=identity, **{"for": OptionsFor(role="destination")})
+
+        target = resolve_options_target(req, graph=FakeGraph(), materialise_graph=kenya_reader())
+
+        assert target.population == options_population(identity, kenya_reader())
+        assert target.identity.open_roles == ["destination"]
+
+    def test_a_subject_only_identity_asked_for_origin_still_refuses(self):
+        """No StatVar declares the opened axis, so the election drops it and the population
+        stays subject-only."""
+        identity = BaseIdentity(
+            shape=_NON_INDEX_SHAPE,
+            slots=[IdentitySlot(property="gender", binding=IdentityBindingUnbound())],
+            entities={"observationAbout": ["country/KEN"]},
+            requested_window=IdentityWindowAll(),
+        )
+        req = OptionsRequest(identity=identity, **{"for": OptionsFor(role="origin")})
+
+        with pytest.raises(EngineInputError) as exc_info:
+            resolve_options_target(
+                req, graph=FakeGraph(nodes=_KEN_GRAPH_NODES), materialise_graph=kenya_reader()
+            )
+
+        assert exc_info.value.code == "option_target_invalid"
+        assert exc_info.value.pointer == "/for/role"
+        assert [a.ref for a in exc_info.value.alternatives] == ["observationAbout"]

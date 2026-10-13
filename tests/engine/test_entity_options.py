@@ -9,6 +9,7 @@ import json
 
 from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.graph import Facet
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.state import EngineOptions
 from search.models import (
@@ -30,6 +31,7 @@ from tests.engine._harness import (
     materialise_double_from_obs,
     offline_resolve,
 )
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 # Materialise requires a provenance id on every facet.
@@ -76,7 +78,7 @@ def test_entity_options_event_serialize_sse_roundtrip():
         options=[
             SlotOption(
                 value=SlotValue(
-                    ref=GraphRef(dcid="country/FRA", label="France"), value_kind="entity"
+                    ref=GraphRef(ref="country/FRA", label="France"), value_kind="entity"
                 )
             )
         ],
@@ -141,6 +143,8 @@ class _FixedBindLLM:
     """Elects shape 0 without bindings."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
 
@@ -252,7 +256,7 @@ def test_bound_destination_open_origin_lists_members_under_include_option_covera
     assert eo.entity_ref is None
     assert eo.role == "origin"
     assert eo.truncated is False
-    assert {o.value.ref.dcid: o.value.ref.label for o in eo.options if o.value.ref} == {
+    assert {o.value.ref.ref: o.value.ref.label for o in eo.options if o.value.ref} == {
         _NOR: "Norway",
         _USA: "USA",
     }
@@ -301,6 +305,8 @@ class _CollapseBindLLM:
     """Elects shape 0 and includes the no-data sibling as plausible."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0, bindings=[], also_plausible=[1], ask=None
@@ -349,12 +355,12 @@ def test_candidates_single_survivor_collapse_populates_entity_options(monkeypatc
     )
     assert result.status == "definite", result
     spec = result.specs[0]
-    assert spec.resolved.members[0].ref.dcid == _SV_DCID
+    assert spec.resolved.members[0].ref.ref == _SV_DCID
     assert spec.resolved.role_axis_facts == [
         RoleAxisFact(role="origin", member_count=2, members_available=True)
     ]
     assert spec.resolved.entity_options != []
     eo = spec.resolved.entity_options[0]
     assert eo.role == "origin"
-    assert {o.value.ref.dcid for o in eo.options if o.value.ref} == {_NOR, _USA}
+    assert {o.value.ref.ref for o in eo.options if o.value.ref} == {_NOR, _USA}
     assert "options" in result.timing_by_step

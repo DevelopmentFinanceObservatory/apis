@@ -1,7 +1,8 @@
 """Loads the versioned presentation catalogue from `dfo_spec_kit_components`.
 
-Schemas, intents, fixtures, and the digest manifest ship as package data.
-`CatalogueRelease` lives here because `assembler.ports` imports it for the
+Schemas, intents, fixtures, and the digest manifest ship as package data. The envelope
+references the description and step schemas of `dfo_descriptions` by `$id`; those load from
+that package, and the manifest's `referenced_schemas` digests pin their bytes. `CatalogueRelease` lives here because `assembler.ports` imports it for the
 `ReleaseRegistry` protocol's return type.
 """
 
@@ -10,13 +11,15 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
 
 from assembler.catalogue.constraints import CONSTRAINT_REGISTRY, ConstraintSpec
 
 _MEMBERS = ("line_chart", "stat_card", "bar_chart", "table", "note_narration", "source_card")
+_DESCRIPTION_SCHEMA_FILES = ("description.schema.json", "steps.schema.json")
+"""The `dfo_descriptions` schemas the envelope's `description` and `source_ref` reference."""
 _NON_CLEARABLE_FIELDS = frozenset({"type", "frame_ref", "select"})
 """Tolerant schemas keep `type`, `frame_ref`, and `select` non-null.
 
@@ -25,7 +28,10 @@ _NON_CLEARABLE_FIELDS = frozenset({"type", "frame_ref", "select"})
 
 @dataclass(frozen=True)
 class CatalogueRelease:
-    """Immutable, digest-verified release. Its fields define the `ReleaseRegistry` contract."""
+    """Immutable, digest-verified release. Its fields define the `ReleaseRegistry` contract.
+
+    `referenced_schemas` holds the schemas of other kit packages the envelope references by
+    `$id`, keyed by `$id`."""
 
     catalog_version: str
     schema_version: int
@@ -39,10 +45,12 @@ class CatalogueRelease:
     constraints: tuple[ConstraintSpec, ...]
     formatter_profile: Mapping[str, object]
     retry_modes: Mapping[str, str]
+    referenced_schemas: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
 
 
 class CatalogueIntegrityError(Exception):
-    """A bundle artifact's digest differs from its `manifest.json` entry."""
+    """A bundle artifact's or referenced schema's digest differs from its `manifest.json` entry.
+    `path` is the artifact's path in the bundle, or the referenced schema's `$id`."""
 
     def __init__(self, *, path: str, expected: str, actual: str) -> None:
         self.path = path
@@ -58,13 +66,27 @@ def _load_json(path: Path) -> dict[str, object]:
     return json.loads(path.read_text())
 
 
-def _verify_digests(*, directory: Path, manifest: Mapping[str, object]) -> None:
+def _digest(content: bytes) -> str:
+    return "sha256:" + hashlib.sha256(content).hexdigest()
+
+
+def _verify_digests(
+    *, directory: Path, manifest: Mapping[str, object], referenced: Mapping[str, bytes]
+) -> None:
+    """Checks each bundle artifact's bytes, then each schema the envelope references by `$id`
+    (`referenced`, the installed bytes by `$id`), against the manifest's digests. A schema the
+    manifest names that is not installed, or one installed that it does not name, refuses too."""
     artifacts = cast("Mapping[str, str]", manifest["artifacts"])
     for relative_path, expected in artifacts.items():
-        artifact_path = directory / relative_path
-        actual = "sha256:" + hashlib.sha256(artifact_path.read_bytes()).hexdigest()
+        actual = _digest((directory / relative_path).read_bytes())
         if actual != expected:
             raise CatalogueIntegrityError(path=relative_path, expected=expected, actual=actual)
+    digests = cast("Mapping[str, str]", manifest["referenced_schemas"])
+    for schema_id in sorted(digests.keys() | referenced.keys()):
+        expected = digests.get(schema_id, "absent")
+        actual = _digest(referenced[schema_id]) if schema_id in referenced else "absent"
+        if actual != expected:
+            raise CatalogueIntegrityError(path=schema_id, expected=expected, actual=actual)
 
 
 def _default_catalogue_dir() -> Path:
@@ -72,6 +94,15 @@ def _default_catalogue_dir() -> Path:
     from importlib import resources
 
     return cast("Path", resources.files("dfo_spec_kit_components") / "catalogue")
+
+
+def _installed_description_schemas() -> dict[str, bytes]:
+    """The bytes of the installed `dfo_descriptions` description and step schemas, by `$id`."""
+    from importlib import resources
+
+    directory = resources.files("dfo_descriptions") / "schemas"
+    contents = [(directory / name).read_bytes() for name in _DESCRIPTION_SCHEMA_FILES]
+    return {cast("str", json.loads(content)["$id"]): content for content in contents}
 
 
 def _grammar_member_names(*, grammar: Mapping[str, object]) -> tuple[str, ...]:
@@ -104,12 +135,14 @@ def _derive_tolerant_schema(*, strict: Mapping[str, object]) -> dict[str, object
 
 
 def load_release(*, catalogue_dir: Path | None = None) -> CatalogueRelease:
-    """Loads and digest-verifies a catalogue bundle into `CatalogueRelease`.
+    """Loads and digest-verifies a catalogue bundle, and the schemas it references, into
+    `CatalogueRelease`.
 
     Loads once during surface or door construction. Imports stay side-effect-free."""
     directory = catalogue_dir or _default_catalogue_dir()
     manifest = _load_json(directory / "manifest.json")
-    _verify_digests(directory=directory, manifest=manifest)
+    referenced = _installed_description_schemas()
+    _verify_digests(directory=directory, manifest=manifest, referenced=referenced)
 
     envelope_schema = _load_json(directory / "schemas" / "envelope.schema.json")
     component_schemas = {
@@ -141,6 +174,9 @@ def load_release(*, catalogue_dir: Path | None = None) -> CatalogueRelease:
         constraints=CONSTRAINT_REGISTRY,
         formatter_profile=cast("Mapping[str, object]", manifest["formatter_profile"]),
         retry_modes=cast("Mapping[str, str]", manifest["retry_modes"]),
+        referenced_schemas={
+            schema_id: json.loads(content) for schema_id, content in referenced.items()
+        },
     )
 
 

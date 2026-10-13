@@ -32,7 +32,9 @@ them with `publish_build`; dfo-apis loads the published build with
   variable that stands for it, null where none does
   (`origin_catalogue.successors`).
 - `manifest.json`: `CatalogueManifest`, written last, so a build directory
-  holding one is complete.
+  holding one is complete. It records the SHA-256 of every other file, and
+  the loader refuses a file whose bytes do not match, so a file from another
+  build or edited by hand never loads beside the others.
 
 The UN tables (`un_mirror.UnMirror`) are five more files, which
 `load_catalogue` reads into the snapshot beside the other tables:
@@ -59,17 +61,41 @@ The UN tables (`un_mirror.UnMirror`) are five more files, which
   series and its name, and `agencies`, each agency's
   `UnAgencyCounts` by id segment.
 
+The arc tables (`arc_tables.ArcTables`) are four more files, in the UN
+tables' shape:
+
+- `dfo_arcs.parquet`, `base_arcs.parquet` and `schema_arcs.parquet`: one row
+  per node, `node` and `arcs`, row numbers into `arc_targets.parquet`. An
+  empty `arcs` holds the node empty. The first two hold listed DFO and base
+  variables, the third the schema nodes their arcs depend on.
+- `arc_targets.parquet`: one row per distinct arc target, with the columns
+  of `un_arcs.parquet` and `label`, the label of the node the row names
+  (`ArcTables.labels`), null for a literal and for a node with no name.
+
+`families.parquet` holds the family tables (`families.FamilyTables`), which
+`encode_build` computes from the arc tables and the UN tables: one row per
+five-tuple family and role class (`families.FamilyKey`, one column per field)
+of the `dfo` and `base` variables, `un` false, and one per family of the
+admitted UN variables, `un` true. Each row carries `members`, the member
+dcids in table order, `properties` and `values`, each constraint property the members assert
+and the distinct values they assert for it, `shared`, the properties every
+member asserts at one value, and `total` and `total_name`, the family total
+and its name, null where the family has none.
+
 `encode_build` decodes what it encoded before returning, so a build the job
 can publish is one the loader accepts, and it measures the decoded tables to
-record `resident_bytes` and the UN tables' `un_mirror.resident_bytes`.
+record `resident_bytes`, the UN tables' `un_mirror.resident_bytes`, the
+arc tables' `arc_tables.resident_bytes` and the family tables'
+`families.resident_bytes`.
 """
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import sys
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import datetime
 from typing import Any, Final
@@ -78,7 +104,9 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
+from artifact_publication.jobs import Ingestion
 from artifact_publication.uri import join_uri, read_uri_bytes, write_uri_bytes_if_unchanged
+from origin_catalogue.arc_tables import EMPTY_ARC_TABLES, ArcTables
 from origin_catalogue.catalogue import (
     BaseVariable,
     CardFacts,
@@ -92,18 +120,30 @@ from origin_catalogue.catalogue import (
     SourceRef,
     UnTables,
 )
-from origin_catalogue.origins import ORIGINS, DataCommons
+from origin_catalogue.families import (
+    FamilyKey,
+    FamilySummary,
+    FamilyTables,
+    family_tables,
+)
+from origin_catalogue.origins import ORIGINS, UN_SYSTEM, DataCommons
 from origin_catalogue.schema import (
+    ARC_TARGETS_FILE,
+    BASE_ARCS_FILE,
     BASE_VARIABLES_FILE,
     CATALOGUE_FORMAT_VERSION,
     DATASET_FACTS_FILE,
+    DFO_ARCS_FILE,
     DFO_VARIABLES_FILE,
+    FAMILIES_FILE,
     FORMAT_ROOT,
     MANIFEST_FILE,
+    NO_INDEX_PRESENCE,
     POINTER_FILE,
     PROVENANCE_PLACES_FILE,
     PROVENANCES_FILE,
     SCAN_FILE,
+    SCHEMA_ARCS_FILE,
     SOURCE_DOCUMENTATION_FILE,
     SUPERSEDED_VARIABLES_FILE,
     TOPICS_FILE,
@@ -115,8 +155,11 @@ from origin_catalogue.schema import (
     UN_VARIABLES_FILE,
     VERSIONS_PREFIX,
     WITHHELD_VARIABLES_FILE,
+    ArcTablesManifest,
     CatalogueManifest,
     CataloguePointer,
+    FamilyTablesManifest,
+    IndexPresence,
     ScanLevel,
     UnCarryForward,
     UnMirrorManifest,
@@ -160,7 +203,13 @@ _UN_VARIABLES_SCHEMA: Final = pa.schema(
         pa.field("arcs", pa.list_(pa.int32()), nullable=False),
     ]
 )
-_UN_ARCS_SCHEMA: Final = pa.schema(
+_ARC_ROWS_SCHEMA: Final = pa.schema(
+    [
+        pa.field("node", pa.string(), nullable=False),
+        pa.field("arcs", pa.list_(pa.int32()), nullable=False),
+    ]
+)
+_ARC_TARGETS_SCHEMA: Final = pa.schema(
     [
         pa.field("property", pa.string(), nullable=False),
         pa.field("dcid", pa.string()),
@@ -169,6 +218,7 @@ _UN_ARCS_SCHEMA: Final = pa.schema(
         pa.field("types", pa.list_(pa.string()), nullable=False),
     ]
 )
+_ARC_TABLE_TARGETS_SCHEMA: Final = _ARC_TARGETS_SCHEMA.append(pa.field("label", pa.string()))
 _UN_EXCLUDED_VARIABLES_SCHEMA: Final = pa.schema(
     [
         pa.field("variable", pa.string(), nullable=False),
@@ -182,8 +232,27 @@ _SUPERSEDED_VARIABLES_SCHEMA: Final = pa.schema(
     ]
 )
 
+_FAMILIES_SCHEMA: Final = pa.schema(
+    [
+        pa.field("un", pa.bool_(), nullable=False),
+        pa.field("population_type", pa.string(), nullable=False),
+        pa.field("measured_property", pa.string(), nullable=False),
+        pa.field("stat_type", pa.string(), nullable=False),
+        pa.field("measurement_qualifier", pa.string()),
+        pa.field("measurement_denominator", pa.string()),
+        pa.field("denominator_unresolved", pa.bool_(), nullable=False),
+        pa.field("role_bearing", pa.bool_(), nullable=False),
+        pa.field("members", pa.list_(pa.string()), nullable=False),
+        pa.field("properties", pa.list_(pa.string()), nullable=False),
+        pa.field("values", pa.list_(pa.list_(pa.string())), nullable=False),
+        pa.field("shared", pa.list_(pa.string()), nullable=False),
+        pa.field("total", pa.string()),
+        pa.field("total_name", pa.string()),
+    ]
+)
+
 _UN_DECODE_ROWS: Final[int] = 4_096
-"""Rows of a UN table file converted to Python objects at a time. A whole
+"""Rows of a UN or arc table file converted to Python objects at a time. A whole
 column converted at once holds a Python object per arc reference and per
 topic leaf, several times the size of the tables they decode to."""
 
@@ -209,13 +278,22 @@ _UN_MIRROR_FILES: Final[dict[str, str]] = {
     "un_mirror": UN_MIRROR_FILE,
 }
 
+_ARC_TABLES_FILES: Final[dict[str, str]] = {
+    "dfo_arcs": DFO_ARCS_FILE,
+    "base_arcs": BASE_ARCS_FILE,
+    "schema_arcs": SCHEMA_ARCS_FILE,
+    "arc_targets": ARC_TARGETS_FILE,
+}
+
+_FAMILY_FILES: Final[dict[str, str]] = {"families": FAMILIES_FILE}
+
 
 class CatalogueArtifactError(Exception):
     """A published catalogue is missing, malformed, or disagrees with its manifest."""
 
 
 class CatalogueTooLargeError(CatalogueArtifactError):
-    """A build's tables, the UN tables included, exceed the loader's memory budget."""
+    """A build's tables, the UN and arc tables included, exceed the loader's memory budget."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,14 +322,25 @@ def encode_build(
     registry_hash: str,
     un_carried_forward: UnCarryForward | None = None,
     un_mirror: UnMirror = EMPTY_UN_MIRROR,
+    arcs: ArcTables = EMPTY_ARC_TABLES,
+    index_presence: IndexPresence = NO_INDEX_PRESENCE,
+    ingestion: Ingestion | None = None,
 ) -> EncodedBuild:
-    """Encodes `tables`, `un_mirror` and the manifest describing them. Row
-    counts, the overlap list and both `resident_bytes` are computed here.
-    `un_carried_forward` is recorded as given. Each table set is decoded,
-    compared or measured, and released before the other is decoded, so one
-    decoded copy is alive at a time beside the tables being encoded."""
+    """Encodes `tables`, `un_mirror`, `arcs`, the family tables of `arcs` and
+    `un_mirror` (`families.family_tables`) and the manifest describing them.
+    Row counts, the overlap list and the four `resident_bytes` are computed
+    here. `un_carried_forward`, `index_presence` and `ingestion` are
+    recorded as given. Each table set
+    is decoded, compared or measured, and released before the next is
+    decoded, so one decoded copy is alive at a time beside the tables being
+    encoded. The manifest records each file's SHA-256. Refuses, with
+    `CatalogueArtifactError`, arc tables that disagree with the variables
+    `tables` lists (`_check_arc_scope`)."""
     if built_at.tzinfo is None:
         raise ValueError(f"built_at {built_at!r} has no UTC offset")
+    label = f"build {build_id!r} before publication"
+    _check_arc_scope(tables, arcs, label=label)
+    families = family_tables(dfo=arcs.dfo, base=arcs.base, un=un_mirror)
     files = {
         PROVENANCES_FILE: _encode_provenances(tables.provenances),
         DFO_VARIABLES_FILE: _encode_variables(tables.dfo_variables),
@@ -283,10 +372,14 @@ def encode_build(
             )
         ),
         **_encode_un_mirror(un_mirror),
+        **_encode_arc_tables(arcs),
+        FAMILIES_FILE: _encode_families(families),
     }
-    label = f"build {build_id!r} before publication"
     tables_bytes = resident_bytes(_decode_tables(files, label=label))
     un_bytes = _checked_un_bytes(files, un_mirror, label=label)
+    arc_bytes = _checked_arc_bytes(files, arcs, label=label)
+    family_bytes = _checked_family_bytes(files, families, label=label)
+    manifest_files = {**_FILES, **_UN_MIRROR_FILES, **_ARC_TABLES_FILES, **_FAMILY_FILES}
     manifest = CatalogueManifest(
         build_id=build_id,
         built_at=built_at,
@@ -296,13 +389,26 @@ def encode_build(
         row_counts=_row_counts(tables),
         resident_bytes=tables_bytes,
         overlaps=tuple(sorted(tables.dfo_variables & tables.base_variables.keys())),
-        files={**_FILES, **_UN_MIRROR_FILES},
+        files=manifest_files,
+        file_sha256={
+            logical: hashlib.sha256(files[name]).hexdigest()
+            for logical, name in manifest_files.items()
+        },
         un_carried_forward=un_carried_forward,
         un_mirror=UnMirrorManifest(
             row_counts=_un_row_counts(un_mirror),
             agencies=dict(un_mirror.agencies),
             resident_bytes=un_bytes,
         ),
+        arc_tables=ArcTablesManifest(
+            row_counts=_arc_row_counts(arcs),
+            resident_bytes=arc_bytes,
+            index_presence=index_presence,
+        ),
+        families=FamilyTablesManifest(
+            row_counts=_family_row_counts(families), resident_bytes=family_bytes
+        ),
+        ingestion=ingestion,
     )
     return EncodedBuild(manifest=manifest, files=files)
 
@@ -314,6 +420,64 @@ def _checked_un_bytes(files: Mapping[str, bytes], un_mirror: UnMirror, *, label:
     if decoded != un_mirror:
         raise CatalogueArtifactError(f"{label}: the UN tables do not decode to what was encoded")
     return resident_bytes(decoded)
+
+
+def _checked_arc_bytes(files: Mapping[str, bytes], arcs: ArcTables, *, label: str) -> int:
+    """The size in memory of the arc tables `files` decode to, refusing files
+    that do not decode to `arcs`."""
+    decoded = decode_arc_tables(files, label=label)
+    if decoded != arcs:
+        raise CatalogueArtifactError(f"{label}: the arc tables do not decode to what was encoded")
+    return resident_bytes(decoded)
+
+
+def _checked_family_bytes(files: Mapping[str, bytes], families: FamilyTables, *, label: str) -> int:
+    """The size in memory of the family tables `files` decode to, refusing a file that
+    does not decode to `families`."""
+    decoded = decode_family_tables(files, label=label)
+    if decoded != families:
+        raise CatalogueArtifactError(
+            f"{label}: the family tables do not decode to what was encoded"
+        )
+    return resident_bytes(decoded)
+
+
+def _check_arc_scope(tables: CatalogueTables, arcs: ArcTables, *, label: str) -> None:
+    """Refuses arc tables that disagree with the variables the build lists.
+
+    A `dfo` node with arcs must be a listed DFO variable, and an empty one a node the
+    build does not list: the `dfo` table holds empty each resolver-index subject the graph
+    has no node for (`origin_catalogue.arc_reads.read_catalogue_arcs`), which routes as a
+    confirmed absence. The `base` table holds the listed base variables, each DFO variable
+    whose node is base Data Commons', such as `Count_Person`, and each base node a
+    resolver index names, so a `base` node may be any node admission admits. A `dfo` or
+    `base` node must not be one admission refuses, a withheld variable that is not DFO's,
+    whose arcs would reach the family summaries. A `schema` node must not be listed. Every
+    listed variable must be held by the `dfo` or `base` table, so none reads live."""
+    listed = tables.dfo_variables | tables.base_variables.keys()
+    refused = tables.withheld_variables - tables.dfo_variables
+    for name, outside in (
+        (
+            "dfo",
+            sorted(
+                node
+                for node, rows in arcs.dfo.items()
+                if (node not in tables.dfo_variables if rows else node in listed) or node in refused
+            ),
+        ),
+        ("base", sorted(arcs.base.keys() & refused)),
+        ("schema", sorted(arcs.schema.keys() & listed)),
+    ):
+        if outside:
+            raise CatalogueArtifactError(
+                f"{label}: {len(outside)} node(s) of the {name} arc table are outside its "
+                f"scope, e.g. {outside[:3]!r}"
+            )
+    if unheld := sorted(listed - arcs.dfo.keys() - arcs.base.keys()):
+        raise CatalogueArtifactError(
+            f"{label}: the dfo and base arc tables hold none of {len(unheld)} listed "
+            f"variable(s), e.g. {unheld[:3]!r}"
+        )
 
 
 def publish_build(base_uri: str, build: EncodedBuild, *, expected_generation: str | None) -> bool:
@@ -473,18 +637,7 @@ def _encode_un_mirror(mirror: UnMirror) -> dict[str, bytes]:
                 schema=_UN_VARIABLES_SCHEMA,
             )
         ),
-        UN_ARCS_FILE: _encode_parquet(
-            pa.table(
-                {
-                    "property": [arc.property for arc in rows],
-                    "dcid": [arc.dcid for arc in rows],
-                    "value": [arc.value for arc in rows],
-                    "name": [arc.name for arc in rows],
-                    "types": [list(arc.types) for arc in rows],
-                },
-                schema=_UN_ARCS_SCHEMA,
-            )
-        ),
+        UN_ARCS_FILE: _encode_arc_targets(list(rows)),
         UN_EXCLUDED_VARIABLES_FILE: _encode_parquet(
             pa.table(
                 {
@@ -516,6 +669,96 @@ def _encode_un_mirror(mirror: UnMirror) -> dict[str, bytes]:
             },
             sort_keys=True,
         ).encode("utf-8"),
+    }
+
+
+def _encode_arc_tables(arcs: ArcTables) -> dict[str, bytes]:
+    """The arc tables' four files. Target rows are numbered in first-use
+    order over the DFO, base and schema nodes, each table sorted by dcid, so
+    equal tables encode to equal bytes."""
+    rows: dict[UnArc, int] = {}
+    encoded: dict[str, bytes] = {}
+    for name, table in (
+        (DFO_ARCS_FILE, arcs.dfo),
+        (BASE_ARCS_FILE, arcs.base),
+        (SCHEMA_ARCS_FILE, arcs.schema),
+    ):
+        nodes = sorted(table)
+        arc_lists = [[rows.setdefault(arc, len(rows)) for arc in table[node]] for node in nodes]
+        encoded[name] = _encode_parquet(
+            pa.table({"node": nodes, "arcs": arc_lists}, schema=_ARC_ROWS_SCHEMA)
+        )
+    encoded[ARC_TARGETS_FILE] = _encode_arc_targets(list(rows), labels=arcs.labels)
+    return encoded
+
+
+def _encode_arc_targets(
+    rows: list[UnArc], *, labels: Mapping[str, str | None] | None = None
+) -> bytes:
+    """Target rows, with a `label` column from `labels` when given."""
+    columns: dict[str, list[Any]] = {
+        "property": [arc.property for arc in rows],
+        "dcid": [arc.dcid for arc in rows],
+        "value": [arc.value for arc in rows],
+        "name": [arc.name for arc in rows],
+        "types": [list(arc.types) for arc in rows],
+    }
+    if labels is None:
+        return _encode_parquet(pa.table(columns, schema=_ARC_TARGETS_SCHEMA))
+    columns["label"] = [None if arc.dcid is None else labels[arc.dcid] for arc in rows]
+    return _encode_parquet(pa.table(columns, schema=_ARC_TABLE_TARGETS_SCHEMA))
+
+
+def _encode_families(families: FamilyTables) -> bytes:
+    """The family table file: the arc tables' rows, then the UN tables', each in key
+    order, so equal tables encode to equal bytes."""
+    rows = [
+        (un, key, summary)
+        for un, table in ((False, families.arcs), (True, families.un))
+        for key, summary in sorted(table.items(), key=lambda item: _key_order(item[0]))
+    ]
+    return _encode_parquet(
+        pa.table(
+            {
+                "un": [un for un, _, _ in rows],
+                **{
+                    name: [key[at] for _, key, _ in rows]
+                    for at, name in enumerate(FamilyKey._fields)
+                },
+                "members": [list(summary.members) for _, _, summary in rows],
+                "properties": [list(summary.values) for _, _, summary in rows],
+                "values": [
+                    [list(found) for found in summary.values.values()] for _, _, summary in rows
+                ],
+                "shared": [list(summary.shared) for _, _, summary in rows],
+                "total": [summary.total for _, _, summary in rows],
+                "total_name": [summary.total_name for _, _, summary in rows],
+            },
+            schema=_FAMILIES_SCHEMA,
+        )
+    )
+
+
+def _key_order(key: FamilyKey) -> tuple[tuple[bool, str], ...]:
+    """A total order over family keys, a missing qualifier or denominator first."""
+    return tuple((field is not None, str(field or "")) for field in key)
+
+
+def _family_row_counts(families: FamilyTables) -> dict[str, int]:
+    return {"families": len(families.arcs), "un_families": len(families.un)}
+
+
+def _arc_row_counts(arcs: ArcTables) -> dict[str, int]:
+    tables = {"dfo_arcs": arcs.dfo, "base_arcs": arcs.base, "schema_arcs": arcs.schema}
+    return {
+        **{name: len(table) for name, table in tables.items()},
+        **{
+            f"{name}_empty": sum(not row for row in table.values())
+            for name, table in tables.items()
+        },
+        "arc_targets": len(
+            {arc for table in tables.values() for row in table.values() for arc in row}
+        ),
     }
 
 
@@ -557,7 +800,7 @@ def _bitset_width(places: int) -> int:
     return (places + 7) // 8
 
 
-def resident_bytes(tables: CatalogueTables | UnMirror) -> int:
+def resident_bytes(tables: CatalogueTables | UnMirror | ArcTables | FamilyTables) -> int:
     """The tables' size in memory: every object reachable from them, each
     counted once, by `sys.getsizeof`."""
     seen: set[int] = set()
@@ -599,15 +842,23 @@ def load_catalogue(
     Refuses, with `CatalogueArtifactError`, a missing or malformed pointer or
     file, a manifest of another format or build, a table whose rows disagree
     with the manifest's counts, UN tables whose row counts or agency counts
-    disagree with the manifest's, tables breaking `CatalogueTables`' or
-    `UnMirror`'s invariants, and a successor the UN tables do not admit.
-    Refuses with `CatalogueTooLargeError`, before
-    reading any table, a build whose `resident_bytes` and
-    `un_mirror.resident_bytes` together exceed `max_resident_bytes`.
+    disagree with the manifest's, a file whose SHA-256 the manifest does not
+    record, arc tables whose row counts disagree with the manifest's, that hold
+    a node outside their scope or that hold no row for a listed variable
+    (`_check_arc_scope`), tables breaking
+    `CatalogueTables`', `UnMirror`'s or `ArcTables`' invariants, family
+    tables `decode_family_tables` refuses or whose row counts disagree with the
+    manifest's, and a successor the UN tables do not admit. Refuses with
+    `CatalogueTooLargeError`, before reading any table, a build whose
+    `resident_bytes`, `un_mirror.resident_bytes`, `arc_tables.resident_bytes`
+    and `families.resident_bytes` together exceed `max_resident_bytes`.
     """
     manifest, tables = load_tables(base_uri, max_resident_bytes=max_resident_bytes)
     prefix = join_uri(format_root(base_uri), VERSIONS_PREFIX, manifest.build_id)
     mirror = _read_un_mirror(prefix, manifest)
+    arcs = _read_arc_tables(prefix, manifest)
+    families = _read_family_tables(prefix, manifest)
+    _check_arc_scope(tables, arcs, label=f"catalogue build {manifest.build_id!r} at {prefix!r}")
     unheld = unheld_successors(tables.superseded, mirror)
     if unheld:
         raise CatalogueArtifactError(
@@ -618,6 +869,8 @@ def load_catalogue(
         manifest=manifest,
         tables=tables,
         un=UnTables(mirror=mirror),
+        arcs=arcs,
+        families=families,
         un_system_enabled=un_system_enabled,
     )
 
@@ -626,7 +879,8 @@ def load_tables(
     base_uri: str, *, max_resident_bytes: int | None = None
 ) -> tuple[CatalogueManifest, CatalogueTables]:
     """The manifest and tables of the build `current.json` names, without
-    its UN tables, which `read_un_mirror` reads. Refuses what
+    its UN tables, which `read_un_mirror` reads, and its arc tables, which
+    `read_arc_tables` reads. Refuses what
     `load_catalogue` refuses of the pointer, the manifest, the budget and
     these tables."""
     root = format_root(base_uri)
@@ -643,17 +897,21 @@ def load_tables(
             f"{pointer.identity!r}, but the manifest at {prefix!r} carries build "
             f"{manifest.build_id!r} identity {manifest.identity!r}"
         )
-    needed = manifest.resident_bytes + manifest.un_mirror.resident_bytes
+    needed = (
+        manifest.resident_bytes
+        + manifest.un_mirror.resident_bytes
+        + manifest.arc_tables.resident_bytes
+        + manifest.families.resident_bytes
+    )
     if max_resident_bytes is not None and needed > max_resident_bytes:
         raise CatalogueTooLargeError(
             f"catalogue build {manifest.build_id!r} needs {needed} bytes in memory "
-            f"({manifest.un_mirror.resident_bytes} of them for the UN tables), over the "
+            f"({manifest.un_mirror.resident_bytes} of them for the UN tables, "
+            f"{manifest.arc_tables.resident_bytes} for the arc tables and "
+            f"{manifest.families.resident_bytes} for the family tables), over the "
             f"{max_resident_bytes}-byte budget"
         )
-    files = {
-        name: _read(join_uri(prefix, _manifest_file(manifest, logical)))
-        for logical, name in _FILES.items()
-    }
+    files = _read_files(prefix, manifest, _FILES)
     label = f"catalogue build {manifest.build_id!r} at {prefix!r}"
     tables = _decode_tables(files, label=label)
     counts = _row_counts(tables)
@@ -682,10 +940,7 @@ def read_un_mirror(base_uri: str, manifest: CatalogueManifest) -> UnMirror:
 
 
 def _read_un_mirror(prefix: str, manifest: CatalogueManifest) -> UnMirror:
-    files = {
-        name: _read(join_uri(prefix, _manifest_file(manifest, logical)))
-        for logical, name in _UN_MIRROR_FILES.items()
-    }
+    files = _read_files(prefix, manifest, _UN_MIRROR_FILES)
     label = f"catalogue build {manifest.build_id!r} at {prefix!r}"
     mirror = decode_un_mirror(files, label=label)
     if foreign := foreign_variables(mirror):
@@ -700,6 +955,230 @@ def _read_un_mirror(prefix: str, manifest: CatalogueManifest) -> UnMirror:
             f"{dict(mirror.agencies)!r}, but its manifest records {recorded!r}"
         )
     return mirror
+
+
+@dataclass(frozen=True, slots=True)
+class BuildUnTables:
+    """One build directory's UN rows, the places the UN front door refused
+    it, and its UN tables, with the build's id and format."""
+
+    build_id: str
+    format_version: int
+    rows: Mapping[str, ProvenanceRow]
+    blocked_places: frozenset[str]
+    mirror: UnMirror
+
+
+def read_build_un_tables(build_uri: str) -> BuildUnTables:
+    """Reads the UN rows, refused places and UN tables of the build
+    directory at `build_uri`, whatever its format: the manifest is read as
+    JSON for its build id, file names and UN counts alone, with no format
+    check. `un.json` and the five UN table files have kept their encoding
+    since format 3, and so have the UN rows of `provenances.json`, apart from
+    the empty `licence` format 4 added to every row, which a UN row decodes
+    to whether or not its build wrote one. Refuses, with
+    `CatalogueArtifactError`, a missing or malformed file, UN tables breaking
+    `UnMirror`'s invariants or holding a variable no agency's id prefix
+    starts, and UN tables whose row counts or agency counts disagree with the
+    manifest's."""
+    uri = join_uri(build_uri, MANIFEST_FILE)
+    try:
+        payload = json.loads(_read(uri))
+        build_id = _string(payload["build_id"])
+        format_version = int(payload["format_version"])
+        files = {str(logical): str(name) for logical, name in dict(payload["files"]).items()}
+        recorded = UnMirrorManifest(
+            row_counts={
+                str(k): int(v) for k, v in dict(payload["un_mirror"]["row_counts"]).items()
+            },
+            agencies={
+                str(segment): agency_counts_from_json(counts)
+                for segment, counts in dict(payload["un_mirror"]["agencies"]).items()
+            },
+        )
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise CatalogueArtifactError(f"manifest at {uri!r} is malformed: {exc!r}") from exc
+
+    def read(logical: str) -> bytes:
+        if logical not in files:
+            raise CatalogueArtifactError(f"manifest at {uri!r} names no {logical!r} file")
+        return _read(join_uri(build_uri, files[logical]))
+
+    label = f"catalogue build {build_id!r} at {build_uri!r}"
+    try:
+        un_rows = _provenance_rows(
+            {**item, "licence": item.get("licence", _NO_LICENCE)}
+            for item in json.loads(read("provenances"))
+            if item["data_commons"] == UN_SYSTEM.id
+        )
+        blocked = frozenset(_string(place) for place in json.loads(read("un"))["blocked_places"])
+    except (ValueError, KeyError, TypeError) as exc:
+        raise CatalogueArtifactError(f"{label}: {exc!r}") from exc
+    mirror = decode_un_mirror(
+        {name: read(logical) for logical, name in _UN_MIRROR_FILES.items()}, label=label
+    )
+    if foreign := foreign_variables(mirror):
+        raise CatalogueArtifactError(
+            f"{label} holds {len(foreign)} UN variable(s) no agency's id prefix starts, "
+            f"e.g. {foreign[:3]!r}"
+        )
+    if _un_row_counts(mirror) != dict(recorded.row_counts) or mirror.agencies != recorded.agencies:
+        raise CatalogueArtifactError(
+            f"{label} has UN row counts {_un_row_counts(mirror)!r} and agencies "
+            f"{dict(mirror.agencies)!r}, but its manifest records {recorded!r}"
+        )
+    return BuildUnTables(
+        build_id=build_id,
+        format_version=format_version,
+        rows=un_rows,
+        blocked_places=blocked,
+        mirror=mirror,
+    )
+
+
+def read_arc_tables(base_uri: str, manifest: CatalogueManifest) -> ArcTables:
+    """Reads the arc tables of `manifest`'s build. Refuses, with
+    `CatalogueArtifactError`, a missing or malformed file, tables breaking
+    `ArcTables`' invariants, and tables whose row counts disagree with the
+    manifest's."""
+    return _read_arc_tables(
+        join_uri(format_root(base_uri), VERSIONS_PREFIX, manifest.build_id), manifest
+    )
+
+
+def _read_arc_tables(prefix: str, manifest: CatalogueManifest) -> ArcTables:
+    files = _read_files(prefix, manifest, _ARC_TABLES_FILES)
+    label = f"catalogue build {manifest.build_id!r} at {prefix!r}"
+    arcs = decode_arc_tables(files, label=label)
+    counts = _arc_row_counts(arcs)
+    if counts != dict(manifest.arc_tables.row_counts):
+        raise CatalogueArtifactError(
+            f"{label} has arc table row counts {counts!r}, but its manifest records "
+            f"{dict(manifest.arc_tables.row_counts)!r}"
+        )
+    return arcs
+
+
+def _read_family_tables(prefix: str, manifest: CatalogueManifest) -> FamilyTables:
+    files = _read_files(prefix, manifest, _FAMILY_FILES)
+    label = f"catalogue build {manifest.build_id!r} at {prefix!r}"
+    families = decode_family_tables(files, label=label)
+    counts = _family_row_counts(families)
+    if counts != dict(manifest.families.row_counts):
+        raise CatalogueArtifactError(
+            f"{label} has family row counts {counts!r}, but its manifest records "
+            f"{dict(manifest.families.row_counts)!r}"
+        )
+    return families
+
+
+def decode_family_tables(files: Mapping[str, bytes], *, label: str) -> FamilyTables:
+    """Decodes the family table file, keyed by its standard file name. Rows share one
+    string per distinct property, value and key field. Refuses a key twice in one table, a
+    family of no member or naming a member twice, a property listed twice or with no value or a value twice, a
+    `properties` and `values` of different lengths, a shared property not listed or listed
+    with several values, a total without a name or a name without a total, and nulls."""
+    try:
+        strings: dict[str, str] = {}
+        tables: tuple[dict[FamilyKey, FamilySummary], dict[FamilyKey, FamilySummary]] = ({}, {})
+        for (
+            un,
+            population_type,
+            measured_property,
+            stat_type,
+            qualifier,
+            denominator,
+            unresolved,
+            role_bearing,
+            members,
+            properties,
+            values,
+            shared,
+            total,
+            total_name,
+        ) in _rows(files[FAMILIES_FILE], _FAMILIES_SCHEMA):
+            key = FamilyKey(
+                population_type=strings.setdefault(population_type, population_type),
+                measured_property=strings.setdefault(measured_property, measured_property),
+                stat_type=strings.setdefault(stat_type, stat_type),
+                measurement_qualifier=qualifier and strings.setdefault(qualifier, qualifier),
+                measurement_denominator=denominator
+                and strings.setdefault(denominator, denominator),
+                denominator_unresolved=unresolved,
+                role_bearing=role_bearing,
+            )
+            table = tables[un]
+            if key in table:
+                raise CatalogueTableError(f"family {key!r} appears twice")
+            if not members or len(set(members)) != len(members):
+                raise CatalogueTableError(f"family {key!r} lists its members malformed")
+            if len(properties) != len(values) or len(set(properties)) != len(properties):
+                raise CatalogueTableError(f"family {key!r} lists its properties malformed")
+            if any(not found or len(set(found)) != len(found) for found in values):
+                raise CatalogueTableError(f"family {key!r} lists a property's values malformed")
+            by_property = {
+                strings.setdefault(prop, prop): tuple(strings.setdefault(v, v) for v in found)
+                for prop, found in zip(properties, values, strict=True)
+            }
+            if any(len(by_property.get(prop, ())) != 1 for prop in shared):
+                raise CatalogueTableError(f"family {key!r} shares a property it lists malformed")
+            if (total is None) != (total_name is None):
+                raise CatalogueTableError(f"family {key!r} has a total without a name")
+            table[key] = FamilySummary(
+                members=tuple(members),
+                values=by_property,
+                shared={strings[prop]: by_property[prop][0] for prop in shared},
+                total=total,
+                total_name=total_name,
+                un_only=un,
+            )
+        return FamilyTables(arcs=tables[0], un=tables[1])
+    except (ValueError, KeyError, TypeError, pa.ArrowException) as exc:
+        # CatalogueTableError is a ValueError.
+        raise CatalogueArtifactError(f"{label}: {exc!r}") from exc
+
+
+def decode_arc_tables(files: Mapping[str, bytes], *, label: str) -> ArcTables:
+    """Decodes the arc table files, keyed by their standard file names.
+    Nodes share one `UnArc` per target row and one string per property and
+    type, so the tables' memory scales with their distinct values. Refuses
+    a missing `label` column, a node twice in one table, a row number out
+    of range, two rows naming one node with different labels, and nulls."""
+    try:
+        strings: dict[str, str] = {}
+        targets: list[UnArc] = []
+        labels: dict[str, str | None] = {}
+        for property, dcid, value, name, kinds, target_label in _rows(
+            files[ARC_TARGETS_FILE], _ARC_TABLE_TARGETS_SCHEMA
+        ):
+            targets.append(
+                UnArc(
+                    property=strings.setdefault(property, property),
+                    dcid=dcid,
+                    value=value,
+                    name=name,
+                    types=tuple(strings.setdefault(kind, kind) for kind in kinds),
+                )
+            )
+            # A label equal to the row's name shares its string.
+            target_label = name if target_label == name else target_label
+            if dcid is not None and labels.setdefault(dcid, target_label) != target_label:
+                raise CatalogueTableError(f"arc target {dcid!r} has two labels")
+        tables: list[dict[str, tuple[UnArc, ...]]] = []
+        for file_name in (DFO_ARCS_FILE, BASE_ARCS_FILE, SCHEMA_ARCS_FILE):
+            table: dict[str, tuple[UnArc, ...]] = {}
+            for node, rows in _rows(files[file_name], _ARC_ROWS_SCHEMA):
+                if node in table:
+                    raise CatalogueTableError(f"node {node!r} appears twice in {file_name}")
+                if any(not 0 <= row < len(targets) for row in rows):
+                    raise CatalogueTableError(f"node {node!r} names an arc row out of range")
+                table[node] = tuple(targets[row] for row in rows)
+            tables.append(table)
+        dfo, base, schema = tables
+        return ArcTables(dfo=dfo, base=base, schema=schema, labels=labels)
+    except (ValueError, KeyError, TypeError, pa.ArrowException) as exc:
+        # CatalogueTableError and ArcTablesError are ValueErrors.
+        raise CatalogueArtifactError(f"{label}: {exc!r}") from exc
 
 
 def decode_un_mirror(files: Mapping[str, bytes], *, label: str) -> UnMirror:
@@ -719,7 +1198,9 @@ def decode_un_mirror(files: Mapping[str, bytes], *, label: str) -> UnMirror:
                 name=name,
                 types=tuple(types.setdefault(kind, kind) for kind in kinds),
             )
-            for property, dcid, value, name, kinds in _rows(files[UN_ARCS_FILE], _UN_ARCS_SCHEMA)
+            for property, dcid, value, name, kinds in _rows(
+                files[UN_ARCS_FILE], _ARC_TARGETS_SCHEMA
+            )
         ]
         series_ids: dict[str, str] = {}
         variables: dict[str, UnVariable] = {}
@@ -818,6 +1299,26 @@ def _read_manifest(prefix: str) -> CatalogueManifest:
         raise CatalogueArtifactError(f"manifest at {uri!r} is malformed: {exc!r}") from exc
 
 
+def _read_files(
+    prefix: str, manifest: CatalogueManifest, logical: Mapping[str, str]
+) -> dict[str, bytes]:
+    """The files `logical` names, each logical name mapped to its standard file name, read
+    from where the manifest puts them and keyed by standard name. Refuses a file whose
+    SHA-256 the manifest does not record or whose bytes do not match it."""
+    files: dict[str, bytes] = {}
+    for logical_name, name in logical.items():
+        uri = join_uri(prefix, _manifest_file(manifest, logical_name))
+        raw = _read(uri)
+        recorded = manifest.file_sha256.get(logical_name)
+        if recorded is None or hashlib.sha256(raw).hexdigest() != recorded:
+            raise CatalogueArtifactError(
+                f"{uri!r} does not match the SHA-256 the manifest of build "
+                f"{manifest.build_id!r} records for {logical_name!r} ({recorded!r})"
+            )
+        files[name] = raw
+    return files
+
+
 def _manifest_file(manifest: CatalogueManifest, logical_name: str) -> str:
     try:
         return manifest.files[logical_name]
@@ -894,9 +1395,17 @@ def _read_columns(raw: bytes, schema: pa.Schema) -> dict[str, list[Any]]:
     return columns
 
 
+_NO_LICENCE: Final[Mapping[str, None]] = {"type": None, "label": None, "url": None}
+"""The `licence` of a row that states none, as `provenances.json` encodes it."""
+
+
 def _decode_provenances(raw: bytes) -> dict[str, ProvenanceRow]:
+    return _provenance_rows(json.loads(raw))
+
+
+def _provenance_rows(items: Iterable[Mapping[str, Any]]) -> dict[str, ProvenanceRow]:
     rows: dict[str, ProvenanceRow] = {}
-    for item in json.loads(raw):
+    for item in items:
         row = ProvenanceRow(
             id=_string(item["id"]),
             data_commons=_origin(item["data_commons"]),
@@ -1056,15 +1565,20 @@ def _origin(value: object) -> DataCommons:
 
 
 __all__ = [
+    "BuildUnTables",
     "CatalogueArtifactError",
     "CatalogueTooLargeError",
     "EncodedBuild",
+    "decode_arc_tables",
+    "decode_family_tables",
     "decode_un_mirror",
     "encode_build",
     "format_root",
     "load_catalogue",
     "load_tables",
     "publish_build",
+    "read_arc_tables",
+    "read_build_un_tables",
     "read_manifest",
     "read_published_pointer",
     "read_un_mirror",

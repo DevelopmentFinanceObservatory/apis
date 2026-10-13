@@ -13,6 +13,7 @@ import asyncio
 
 from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.graph import Facet
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import (
     NEAR_NEIGHBOR_AMBIGUOUS,
     NEAR_NEIGHBOR_POOL_WIDENED,
@@ -23,6 +24,7 @@ from series_coverage.schema import RoleNames
 from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 _SV_AID_FLOW = "TESTFIXTURE/AlternateGuardCascade/AidFlow"
@@ -141,6 +143,8 @@ class _OneAlsoPlausibleBindLLM:
     """Elect the top-ranked shape and nominate index 2 as an alternate."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0,
@@ -154,6 +158,8 @@ class _NoAlsoPlausibleBindLLM:
     """Elect the top-ranked shape without an alternate nomination."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0,
@@ -190,7 +196,7 @@ def _run(monkeypatch, detect: dict, llm=None) -> RegionResult:
 
 
 def _sv_dcids(result: RegionResult) -> set[str]:
-    return {sv.ref.dcid for spec in result.specs for sv in spec.resolved.members}
+    return {sv.ref.ref for spec in result.specs for sv in spec.resolved.members}
 
 
 def test_guard_rejecting_the_fired_index_retracts_the_ordering_flag(monkeypatch):

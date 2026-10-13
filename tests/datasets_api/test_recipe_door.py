@@ -51,7 +51,13 @@ def _recipe(**overrides: object) -> dict[str, object]:
         "replay_key": _REPLAY_KEY,
         "execution_identity": "engine-3|grammar-1.0.0|reduction-2",
         "tree": {"verb": "growth", "inputs": [{"root": 0}], "args": {"periods": 1}},
-        "roots": [{"spec_id": "spec_a", "content_version": "cv_abc123", "groupby": None}],
+        "roots": [
+            {
+                "spec_id": "spec_a",
+                "content_version": "cv_00000000000000000000000000abc123",
+                "groupby": None,
+            }
+        ],
         "anchor": None,
     }
     recipe.update(overrides)
@@ -85,7 +91,7 @@ def _publish_body(**overrides: object) -> dict[str, object]:
         "content_version": _CONTENT_VERSION,
         "role_keys": ["recipient"],
         "rows": _ROWS,
-        "input_content_versions": ["cv_abc123"],
+        "input_content_versions": ["cv_00000000000000000000000000abc123"],
     }
     body.update(overrides)
     return body
@@ -177,7 +183,9 @@ def test_publish_with_a_recipe_stores_it_outside_the_version_facts(deps: _Deps) 
     )
     stored = deps.snapshot_reader.read_version(_SPEC_ID, _CONTENT_VERSION)
     assert stored is not None
-    assert stored.facts == FrameLineage(input_content_versions=["cv_abc123"])
+    assert stored.facts == FrameLineage(
+        input_content_versions=["cv_00000000000000000000000000abc123"], continuations=[]
+    )
 
 
 def test_republish_with_the_same_recipe_answers_as_a_republish(deps: _Deps) -> None:
@@ -236,7 +244,7 @@ def test_publish_with_a_recipe_and_no_recipe_store_refuses_before_any_write(deps
             content_version=_CONTENT_VERSION,
             role_keys=("recipient",),
             rows=_ROWS,
-            input_content_versions=("cv_abc123",),
+            input_content_versions=("cv_00000000000000000000000000abc123",),
             artifact_store=deps.artifact_store,
             snapshot_reader=deps.snapshot_reader,
             version_writer=deps.version_writer,
@@ -373,22 +381,22 @@ _LEVELLED_GROUPBY = {"by": ["recipient", "sector"], "op": "sum", "levels": {"sec
 def test_versions_list_is_newest_first_with_each_version_s_rendering(deps: _Deps) -> None:
     deps.record_version(
         subject_id="spec_a",
-        content_version="cv_000001",
-        base_content_version="cv_000000",
+        content_version="cv_00000000000000000000000000000001",
+        base_content_version="cv_00000000000000000000000000000000",
         renderings=(_FRAME1_RENDERING, {**_PLAIN_RENDERING, "groupby": _LEVELLED_GROUPBY}),
     )
     deps.now += timedelta(hours=1)
     # A raw version lists as plain whatever is linked under it.
     deps.record_version(
         subject_id="spec_a",
-        content_version="cv_000003",
+        content_version="cv_00000000000000000000000000000003",
         renderings=(_FRAME1_RENDERING, _PLAIN_RENDERING, {**_PLAIN_RENDERING, "groupby": _GROUPBY}),
     )
     deps.now += timedelta(hours=1)
     deps.record_version(
         subject_id="spec_a",
-        content_version="cv_000002",
-        base_content_version="cv_000003",
+        content_version="cv_00000000000000000000000000000002",
+        base_content_version="cv_00000000000000000000000000000003",
         renderings=(
             _STATISTICS_RENDERING,
             _FRAME1_RENDERING,
@@ -399,14 +407,14 @@ def test_versions_list_is_newest_first_with_each_version_s_rendering(deps: _Deps
     # A collapse holding only its frame1 and statistics files records no groupby.
     deps.record_version(
         subject_id="spec_a",
-        content_version="cv_000004",
-        base_content_version="cv_000003",
+        content_version="cv_00000000000000000000000000000004",
+        base_content_version="cv_00000000000000000000000000000003",
         renderings=(_FRAME1_RENDERING, _STATISTICS_RENDERING),
     )
     deps.record_version(
         subject_id="spec_b",
-        content_version="cv_000009",
-        base_content_version="cv_000008",
+        content_version="cv_00000000000000000000000000000009",
+        base_content_version="cv_00000000000000000000000000000008",
         renderings=({**_PLAIN_RENDERING, "groupby": {"by": ["donor"], "op": "sum"}},),
     )
 
@@ -418,26 +426,26 @@ def test_versions_list_is_newest_first_with_each_version_s_rendering(deps: _Deps
         "spec_id": "spec_a",
         "versions": [
             {
-                "content_version": "cv_000004",
-                "base_content_version": "cv_000003",
+                "content_version": "cv_00000000000000000000000000000004",
+                "base_content_version": "cv_00000000000000000000000000000003",
                 "rendering": "not_recorded",
                 "groupby": None,
             },
             {
-                "content_version": "cv_000002",
-                "base_content_version": "cv_000003",
+                "content_version": "cv_00000000000000000000000000000002",
+                "base_content_version": "cv_00000000000000000000000000000003",
                 "rendering": "groupby",
                 "groupby": _GROUPBY,
             },
             {
-                "content_version": "cv_000003",
+                "content_version": "cv_00000000000000000000000000000003",
                 "base_content_version": None,
                 "rendering": "plain",
                 "groupby": None,
             },
             {
-                "content_version": "cv_000001",
-                "base_content_version": "cv_000000",
+                "content_version": "cv_00000000000000000000000000000001",
+                "base_content_version": "cv_00000000000000000000000000000000",
                 "rendering": "groupby",
                 "groupby": _LEVELLED_GROUPBY,
             },
@@ -612,8 +620,8 @@ def test_a_recipe_at_the_size_cap_parses_and_one_byte_over_is_refused(deps: _Dep
 @pytest.mark.parametrize(
     ("method", "path"),
     [
-        ("PUT", "/api/datasets/frames/spec_abc123/cv_abc123/recipe"),
-        ("GET", "/api/datasets/frames/ops_abc123/cv_abc123/recipe"),
+        ("PUT", "/api/datasets/frames/spec_abc123/cv_00000000000000000000000000abc123/recipe"),
+        ("GET", "/api/datasets/frames/ops_abc123/cv_00000000000000000000000000abc123/recipe"),
         ("GET", "/api/datasets/recipes/replays/not-a-replay-key"),
     ],
 )

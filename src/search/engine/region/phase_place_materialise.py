@@ -26,18 +26,24 @@ from search.engine.envelope import _emit_step, now_ms
 from search.engine.errors import FamilyNotResolvableError, GraphInfraError, RoleSignatureError
 from search.engine.interpret import PinnedResolved, Recall
 from search.engine.place import earth_countries, read_default_presence
-from search.engine.quantity import PER_PERSON_FORMS, fulfils
+from search.engine.quantity import (
+    NamedDenominator,
+    check_denominator,
+    schema_denominator_kind,
+    serves_quantity,
+)
 from search.engine.region.alternate_guard import AlternateJudge, query_pins
 from search.engine.region.availability import _shape_group_key
 from search.engine.region.candidate_options import _elected_sibling_warning
 from search.engine.region.candidates import (
     _Alternate,
-    _Candidate,
+    _AlternatesRead,
     _materialise_alt_shapes,
     alternate_representative,
     walk_alternate,
 )
 from search.engine.region.codes import (
+    DENOMINATOR_UNVERIFIED,
     MEMBERSHIP_UNVERIFIED,
     SEAM_OFF_INFO_CODE,
     _elect_no_data_reason,
@@ -69,6 +75,7 @@ from search.engine.region.phase_intake import not_admitted_entity
 from search.engine.region.phase_rank_bind import _raw_count_is_pending_joint_slice
 from search.engine.region.phase_shared import (
     _admitted_qualifier_properties,
+    _elected_flagged_match,
     _role_incompatible_no_data,
     _role_not_resolved_no_data,
     _unsupported,
@@ -100,14 +107,19 @@ from search.engine.region.sentence_events import _build_sentence_event
 from search.engine.region.state import (
     AlternateUnevaluatedReason,
     ResolveState,
+    TakerStatVars,
     for_shape,
-    served_stat_vars,
+    presence_covering,
+    taker_stat_vars,
 )
 from search.engine.region.unrealisable import unbind_unrealisable
 from search.engine.retrieval.bound_values import (
     RoleKeys,
     bound_values_from_bindings,
     elected_role_class_shape,
+    entity_role_keys,
+    narrowed_to,
+    shape_population_arcs,
     shape_query,
 )
 from search.engine.retrieval.facts import read_constraints
@@ -131,6 +143,8 @@ from search.models import (
     IdentityFacetValueRequest,
     IdentityUnitRequest,
     NearestRealSpec,
+    NoDataDenominator,
+    Relaxation,
     UnitAlternative,
     Warning,
 )
@@ -233,15 +247,21 @@ async def _phase_place_bindings(state: ResolveState) -> RegionResult | None:
         return await _role_not_resolved_no_data(state)
     state.elected_place_roles = bound
     # The bound roles elect one role class among the shape's members, and every later
-    # step reads the shape narrowed to it. The mint's walk settles the members off the
-    # event loop, for any shape with a member graph to walk. Members it does not settle
-    # still answer, under a warning.
+    # step reads the shape narrowed to it. The election reads a held family whole, so it
+    # runs off the event loop. The mint's walk then settles the members, off the event loop
+    # too, for any shape the index or the catalogue's tables leave unsettled and with a
+    # member graph to walk. Members it does not settle still answer, under a warning.
     role_keys = bound.role_keys
     role_query = shape_query(
         state.shape_draft, state.bindings, role_keys.bound, open_role_keys=role_keys.open
     )
     recalled = state.shape_draft
-    resolution = elected_role_class_shape(state.shape_draft, role_query)
+    try:
+        resolution = await asyncio.to_thread(
+            elected_role_class_shape, state.shape_draft, role_query
+        )
+    except (RoleSignatureError, FamilyNotResolvableError) as exc:
+        return _election_refusal(state, exc)
     state.shape_draft = resolution.value
     # The alternates and siblings start their walks now, beside the elected shape's own, under
     # the plan the recalled election gives. A walk that changes the elected shape makes the
@@ -249,7 +269,7 @@ async def _phase_place_bindings(state: ResolveState) -> RegionResult | None:
     planned, plan = state.shape_draft, _plan_alternates(state)
     if not names_a_place(state):
         _start_countries_listing(state, plan)
-    if state.role_class_walks is not None:
+    if state.role_class_walks is not None and not resolution.authority.settled:
         try:
             resolution = await asyncio.to_thread(
                 elected_role_class_shape,
@@ -259,13 +279,8 @@ async def _phase_place_bindings(state: ResolveState) -> RegionResult | None:
                 arcs_graph=state.graph,
                 deadline=state.deadline,
             )
-        except RoleSignatureError:
-            # The mint refuses this identity for role sets its walk cannot order.
-            return state.no_data("role_signature_incompatible", llm_usage=state.var_usage)
-        except FamilyNotResolvableError:
-            # The mint refuses this identity for a member at fault, so its series are not
-            # resolved.
-            return state.no_data("variable_not_resolved", llm_usage=state.var_usage)
+        except (RoleSignatureError, FamilyNotResolvableError) as exc:
+            return _election_refusal(state, exc)
         state.shape_draft = resolution.value
     if not resolution.authority.settled:
         state.warnings.append(membership_unverified_warning())
@@ -293,6 +308,17 @@ async def _phase_place_bindings(state: ResolveState) -> RegionResult | None:
     if place.default_scope is None:
         state.alternates_presence = _start_alternates_presence_read(state, plan)
     return None
+
+
+def _election_refusal(
+    state: ResolveState, exc: RoleSignatureError | FamilyNotResolvableError
+) -> RegionResult:
+    """The refusal of an elected shape whose members the mint refuses: role sets its walk
+    cannot order (`RoleSignatureError`), or a member at fault, so its series are not
+    resolved (`FamilyNotResolvableError`)."""
+    if isinstance(exc, RoleSignatureError):
+        return state.no_data("role_signature_incompatible", llm_usage=state.var_usage)
+    return state.no_data("variable_not_resolved", llm_usage=state.var_usage)
 
 
 def _plan_alternates(state: ResolveState) -> _AdmissionPlan:
@@ -411,32 +437,86 @@ def _start_countries_listing(state: ResolveState, plan: _AdmissionPlan) -> None:
     state.countries_listing = listing
 
 
+type _Taker = tuple[ShapeDraft, Sequence[SlotBindingDraft], PlaceAssignment]
+"""A shape taking a default scope, as the role-class election returned it, with the
+bindings and places it is answered under."""
+
+
 def _group_stat_vars(
-    state: ResolveState, group: Sequence[int], shapes: Sequence[ShapeDraft] = ()
+    state: ResolveState, group: Sequence[int], takers: Sequence[_Taker] = ()
 ) -> list[str]:
-    """The StatVars a default-scope presence read covers for `shapes`, then for the capped
-    shapes at `group`'s indices (`default_scope_stat_vars`). `shapes` holds shapes as the
-    role-class election returned them, which the capped menu does not."""
-    return default_scope_stat_vars(
-        [
-            *shapes,
-            *(
-                state.capped_shapes[i]
-                for i in dict.fromkeys(group)
-                if 0 <= i < len(state.capped_shapes)
-            ),
-        ]
+    """The StatVars a default-scope presence read covers for `takers`, each answered under
+    its own bindings (`presence_stat_vars`, as `_read_taker_stat_vars` elected it), then for
+    the capped shapes at `group`'s indices,
+    whose bindings are not yet known (`default_scope_stat_vars`). A taker standing for a
+    held family's members past its recall reads the members a mint serves for it, since
+    reading the scope of every member of a held family would cost one availability read per
+    member. `takers` holds shapes as the role-class election returned them, which the capped
+    menu does not."""
+    return list(
+        dict.fromkeys(
+            [
+                *(sv for taker in takers for sv in _stat_vars_of(state, taker).covered),
+                *default_scope_stat_vars(
+                    [
+                        state.capped_shapes[i]
+                        for i in dict.fromkeys(group)
+                        if 0 <= i < len(state.capped_shapes)
+                    ]
+                ),
+            ]
+        )
     )
 
 
+def _taker_key(taker: _Taker) -> tuple[int, tuple[str, ...], RoleKeys]:
+    """The key `state.taker_stat_vars` holds `taker` under: its shape, bindings and role
+    keys."""
+    shape, bindings, roles = taker
+    return id(shape), tuple(b.model_dump_json() for b in bindings), roles.role_keys
+
+
+async def _read_taker_stat_vars(state: ResolveState, takers: Iterable[_Taker]) -> None:
+    """Elect, off the event loop, the served and covered StatVars (`taker_stat_vars`) of
+    each of `takers` that takes a default scope and that `state.taker_stat_vars` does not
+    hold yet. For a shape standing for a held family's members the election reads the
+    whole population, about 90 ms for a family of 9,641, so every reader on the event loop
+    (`_group_stat_vars`, `_lacks_presence`, `_unsettled_places`) reads it from here."""
+    unread = {
+        _taker_key(taker): taker
+        for taker in takers
+        if takes_default_scope(taker[0], taker[2])
+        and _taker_key(taker) not in state.taker_stat_vars
+    }
+    if unread:
+        state.taker_stat_vars.update(
+            await asyncio.to_thread(
+                lambda: {
+                    key: (shape, taker_stat_vars(shape, bindings, roles.role_keys))
+                    for key, (shape, bindings, roles) in unread.items()
+                }
+            )
+        )
+
+
+def _stat_vars_of(state: ResolveState, taker: _Taker) -> TakerStatVars:
+    """`taker`'s served and covered StatVars as `_read_taker_stat_vars` elected them. A taker
+    it has not read is elected here."""
+    key = _taker_key(taker)
+    if key not in state.taker_stat_vars:
+        shape, bindings, roles = taker
+        state.taker_stat_vars[key] = (shape, taker_stat_vars(shape, bindings, roles.role_keys))
+    return state.taker_stat_vars[key][1]
+
+
 def _lacks_presence(
-    state: ResolveState, group: Sequence[int], shapes: Sequence[ShapeDraft] = ()
+    state: ResolveState, group: Sequence[int], takers: Sequence[_Taker] = ()
 ) -> bool:
-    """Whether `state.default_presence` lacks a subject-only StatVar of `shapes` or of the
-    capped shapes at `group`'s indices."""
+    """Whether `state.default_presence` lacks a StatVar the presence read covers for
+    `takers` or the capped shapes at `group`'s indices (`_group_stat_vars`)."""
     known = state.default_presence
     return known is None or any(
-        sv not in known.scopes for sv in _group_stat_vars(state, group, shapes)
+        sv not in known.scopes for sv in _group_stat_vars(state, group, takers)
     )
 
 
@@ -454,11 +534,12 @@ async def _unsettled_places(
     (`UnsettledPlace.admission_questions`, `state.node_admissions`), and every question it
     has not answered is asked at once.
     """
+    await _read_taker_stat_vars(state, shapes)
     places = [
         UnsettledPlace(
             shape,
             roles,
-            stat_vars=tuple(served_stat_vars(shape, bindings, roles.role_keys))
+            stat_vars=_stat_vars_of(state, (shape, bindings, roles)).served
             if takes_default_scope(shape, roles)
             else (),
             presence=presence,
@@ -497,7 +578,8 @@ async def _place_contexts(
     (`read_default_presence`), and the result becomes `state.default_presence`. Graph
     errors propagate as retryable failures.
     """
-    takers = [shape for shape, _, roles in shapes if takes_default_scope(shape, roles)]
+    takers = [taker for taker in shapes if takes_default_scope(taker[0], taker[2])]
+    await _read_taker_stat_vars(state, takers)
     if takers and _lacks_presence(state, group, takers):
         listing, state.countries_listing = state.countries_listing, None
         if state.default_presence is None and listing is not None:
@@ -552,8 +634,9 @@ def _guard_judge(state: ResolveState, *, elected_has_data: bool) -> AlternateJud
     """The alternate guard's judge of the elected shape under this leg's pins: its phrase,
     its bindings, the properties the engine authored, its qualifier matches, whether a
     price-basis phrase went unread, whether the elected shape has data, the leg's quantity
-    requirement (`state.quantity_requirement`, which the materialise check also reads) and
-    the kinds of the denominators read before bind (`state.denominator_kinds`). A judge this
+    requirement (`state.quantity_requirement`, which the materialise check also reads), the
+    kinds of the denominators read before bind (`state.denominator_kinds`) and the
+    denominator the quantity read chose (`state.named_denominator`). A judge this
     pass built for the same elected shape under equal pins is reused
     (`state.alternate_judges`)."""
     pins = query_pins(
@@ -565,6 +648,7 @@ def _guard_judge(state: ResolveState, *, elected_has_data: bool) -> AlternateJud
         unread_price_basis=state.unread_price_basis,
         elected_has_data=elected_has_data,
         denominator_kinds=state.denominator_kinds,
+        named_denominator=state.named_denominator,
         quantity=state.quantity_requirement,
     )
     for judge in state.alternate_judges:
@@ -868,6 +952,36 @@ def _submit_alternates_presence_read(
     )
 
 
+def merge_presence(state: ResolveState, presence: DefaultPresence | None) -> None:
+    """Merge `presence`, a read made over the request's presence when it started, into
+    `state.default_presence`, so a read made since keeps what it added and the pass's
+    unsettled scopes (`pipeline._scope_unsettled`) include those `presence` left."""
+    if presence is None:
+        return
+    known = state.default_presence
+    state.default_presence = presence if known is None else known.merged(presence)
+
+
+def record_unevaluated(
+    state: ResolveState, unread: Mapping[int, AlternateUnevaluatedReason]
+) -> None:
+    """Record the capped-shape indices in `unread` as left unevaluated by a presence read that
+    did not complete, each with the reason, as `_read_alternates_presence` records its own:
+    the pass states them (`alternates_unevaluated`), tries no other optional presence read,
+    and its result stays out of the response cache."""
+    if not unread:
+        return
+    if state.alternates_presence_failure is None:
+        state.alternates_presence_failure = next(iter(unread.values()))
+    state.unevaluated_alternates.update(unread)
+    logger.warning(
+        "a presence read after unbinding did not complete; shapes %r are left unevaluated; "
+        "trace_id=%s",
+        [state.capped_shapes[i].shape_id for i in unread],
+        get_trace_id(),
+    )
+
+
 async def _await_alternates_presence(
     state: ResolveState, read: Future[DefaultPresence]
 ) -> AlternateUnevaluatedReason | None:
@@ -876,9 +990,7 @@ async def _await_alternates_presence(
     made since (a re-election's) keeps what it added. The read serves alternates only, so its
     failure leaves them unevaluated and the elected answer stands."""
     try:
-        presence = await asyncio.wrap_future(read)
-        known = state.default_presence
-        state.default_presence = presence if known is None else known.merged(presence)
+        merge_presence(state, await asyncio.wrap_future(read))
     except (TimeoutError, dc_graph.GraphDeadlineExceededError):
         return "timed_out"
     except (GraphInfraError, dc_graph.GraphReadError, dc_graph.GraphCapExceededError):
@@ -888,7 +1000,7 @@ async def _await_alternates_presence(
 
 async def _read_alternates_presence(
     state: ResolveState,
-    shapes: Mapping[int, tuple[ShapeDraft, PlaceAssignment]],
+    shapes: Mapping[int, _Taker],
     *,
     group: Sequence[int],
 ) -> dict[int, AlternateUnevaluatedReason]:
@@ -896,8 +1008,8 @@ async def _read_alternates_presence(
     return the indices left without it, in order, each with the reason.
 
     `shapes` holds each alternate by capped-shape index as the role-class election returned
-    it, with the places bound to that shape (`_walked_alternates`), so the read covers the
-    StatVars the alternate is probed through. The read started beside a role-bearing
+    it, with its bindings and the places bound to that shape (`_walked_alternates`), so the
+    read covers the StatVars the alternate is probed through (`_group_stat_vars`). The read started beside a role-bearing
     elected shape's materialisation (`state.alternates_presence`) is awaited first. Presence
     the request still lacks is read over those shapes and the rest of `group`, the shapes a
     widened search may add, on `_ALTERNATES_POOL`
@@ -914,9 +1026,10 @@ async def _read_alternates_presence(
     recorded in `state.unevaluated_alternates`; the pass's result states them
     (`alternates_unevaluated`) and stays out of the response cache.
     """
-    takers = {i: shape for i, (shape, roles) in shapes.items() if takes_default_scope(shape, roles)}
+    takers = {i: taker for i, taker in shapes.items() if takes_default_scope(taker[0], taker[2])}
     if not takers:
         return {}
+    await _read_taker_stat_vars(state, takers.values())
     others = [i for i in group if i not in shapes]
     reason = state.alternates_presence_failure
     started, state.alternates_presence = state.alternates_presence, None
@@ -936,7 +1049,7 @@ async def _read_alternates_presence(
                 return {}
     state.alternates_presence_failure = reason
     unread = dict.fromkeys(
-        (i for i, shape in takers.items() if _lacks_presence(state, [], [shape])), reason
+        (i for i, taker in takers.items() if _lacks_presence(state, [], [taker])), reason
     )
     if unread:
         state.unevaluated_alternates.update(unread)
@@ -1110,7 +1223,8 @@ async def _run_materialise_task(state: ResolveState) -> _MaterialiseOutcome:
     holds it until the part's answer stands, so it never precedes a declared-default refusal
     from this or a later step (`pipeline.resolve_variable`). Bound values that together match
     no member lose a minimal set and the shape is resolved again
-    (`unrealisable.unbind_unrealisable`) until its bindings can be read.
+    (`unrealisable.unbind_unrealisable`) until its bindings can be read, over a presence
+    read that covers what the resolve under the new bindings reads (`_cover_unbound`).
 
     Raises `PlaceSetTooLargeError` when the places the sets settle to exceed the bound on
     the places a Spec binds."""
@@ -1124,6 +1238,7 @@ async def _run_materialise_task(state: ResolveState) -> _MaterialiseOutcome:
         place, mat_result = await materialise_task
         while isinstance(mat_result, BoundValuesUnrealisable):
             unbind_unrealisable(state, mat_result)
+            await _cover_unbound(state)
             materialise_task = _materialise_task(state)
             place, mat_result = await materialise_task
         if place != state.place:
@@ -1146,6 +1261,29 @@ async def _run_materialise_task(state: ResolveState) -> _MaterialiseOutcome:
     return mat_result
 
 
+async def _cover_unbound(state: ResolveState) -> None:
+    """Top `state.default_presence` up, off-thread, with the scopes the elected shape's
+    resolve under `state.bindings` reads and the read made under its earlier bindings lacks
+    (`presence_covering`). Unbinding can widen a held shape's served members past the ones
+    that read covered. Nothing is read off a default scope."""
+    presence = state.default_presence
+    if presence is None or state.place.default_scope is None:
+        return
+    role_keys = entity_role_keys(
+        state.place.roles.resolved_entities, open_axes=state.place.roles.open_axes
+    )
+    state.default_presence = await asyncio.to_thread(
+        presence_covering,
+        presence,
+        state.shape_draft,
+        state.bindings,
+        role_keys,
+        graph=state.graph,
+        sdmx=state.sdmx,
+        deadline=state.deadline,
+    )
+
+
 def _is_qualifier_variant_sibling(a: ShapeDraft, b: ShapeDraft) -> bool:
     """Match shapes differing only in ``meas_qual_dcid``, with stat type and denominator equal."""
     return (
@@ -1160,8 +1298,8 @@ def _is_qualifier_variant_sibling(a: ShapeDraft, b: ShapeDraft) -> bool:
 def _members_holding_bound_values(
     shape: ShapeDraft, bound_values: Mapping[str, list[str]]
 ) -> dict[str, dict]:
-    """Return the members of `shape` that assert every property `bound_values` binds, at
-    a bound value, with their arcs.
+    """Return the members `shape` stands for (`shape_population_arcs`) that assert every
+    property `bound_values` binds, at a bound value, with their arcs.
 
     A qualifier variant measures the elected quantity only when it keeps the elected
     bindings: nominal GDP beside inflation-adjusted GDP both hold
@@ -1170,7 +1308,7 @@ def _members_holding_bound_values(
     """
     return {
         sv: arcs
-        for sv, arcs in (shape.sv_arc_facts or {}).items()
+        for sv, arcs in shape_population_arcs(shape).items()
         if all(read_constraints(arcs).get(prop) in values for prop, values in bound_values.items())
     }
 
@@ -1222,14 +1360,13 @@ def _reelection_siblings(state: ResolveState) -> list[int]:
 def _sibling_shapes_of(state: ResolveState) -> dict[int, ShapeDraft]:
     """Each re-election sibling (`state.reelection_siblings`) by capped-shape index, holding
     the members it is probed and answered through: those that hold the elected bindings'
-    values (`_members_holding_bound_values`)."""
+    values among every member it stands for (`_members_holding_bound_values`), and those
+    alone (`narrowed_to`)."""
     elected_bound_values = bound_values_from_bindings(state.bindings)
     return {
-        i: dataclasses.replace(
+        i: narrowed_to(
             state.capped_shapes[i],
-            sv_arc_facts=_members_holding_bound_values(
-                state.capped_shapes[i], elected_bound_values
-            ),
+            _members_holding_bound_values(state.capped_shapes[i], elected_bound_values),
         )
         for i in state.reelection_siblings
     }
@@ -1248,8 +1385,10 @@ async def _reelect_zero_observation_sibling(
     settles its own place sets on its own read, for the shape the election returned
     (`_place_contexts`, `place_context.settle_sets`), or takes the default scopes of its own
     StatVars when it is subject-only and the query names no place. The elected shape's
-    presence read covers those scopes (`_phase_place_bindings`) unless the walk replaced the
-    sibling's members, so no read is made here otherwise. Siblings with separate probe
+    presence read covers the scopes of the siblings' recalled members
+    (`_phase_place_bindings`), so a read is made here only for a sibling whose walk replaced
+    its members, or for the members a mint serves (`_group_stat_vars`) of one narrowed from
+    a held family's members past its recalled ones. Siblings with separate probe
     places are read concurrently, so their facet reads take one serial step between them.
 
     One data-bearing subject sibling is installed in place of the elected shape with its
@@ -1280,7 +1419,7 @@ async def _reelect_zero_observation_sibling(
             # A sibling that cannot bind its places is not probed or offered.
             continue
         by_scope.setdefault(scope, []).append((walked.alternate, place))
-    _scope_results: list[tuple[list[_Candidate], UnsupportedDraft | None]] = await asyncio.gather(
+    _scope_results: list[_AlternatesRead] = await asyncio.gather(
         *[
             asyncio.to_thread(
                 _materialise_alt_shapes,
@@ -1297,15 +1436,30 @@ async def _reelect_zero_observation_sibling(
             for members in by_scope.values()
         ]
     )
+    for _scope_read in _scope_results:
+        merge_presence(state, _scope_read.presence)
+        record_unevaluated(
+            state,
+            {
+                i: reason
+                for i in _walked
+                for alternate, reason in _scope_read.unevaluated
+                if _walked[i].alternate is alternate
+            },
+        )
     # The role-class election can replace a sibling's shape, so its group key, which the
     # election leaves unchanged, maps a result back to its menu index.
     _index_by_group = {_shape_group_key(_walked[i].shape): i for i in _walked}
-    # An over-cap sibling is unevaluated. Keep the elected no-observations result rather
-    # than treating that sibling as disproven or surfacing a cap refusal.
-    if any(_sibling_blocking is not None for _, _sibling_blocking in _scope_results):
+    # An over-cap sibling, or one whose presence read after unbinding did not complete, is
+    # unevaluated. Keep the elected no-observations result rather than treating that sibling
+    # as disproven or surfacing a cap refusal.
+    if any(
+        _scope_read.blocking is not None or _scope_read.unevaluated
+        for _scope_read in _scope_results
+    ):
         return mat_result
     _sibling_candidates = [
-        cand for _scope_candidates, _ in _scope_results for cand in _scope_candidates
+        cand for _scope_read in _scope_results for cand in _scope_read.candidates
     ]
     if not _sibling_candidates:
         return mat_result
@@ -1409,39 +1563,199 @@ async def _phase_materialise(state: ResolveState) -> RegionResult | None:
         state.force_single_shape_path = True
 
     # Preserve no-data precedence. ``no_matching_slice`` and ``variable_not_resolved`` win.
-    # Otherwise an elected shape that does not divide by the count of persons the leg names
-    # (`quantity.fulfils`: an amount, or a share of GNI, for "aid per capita") outranks
+    # Otherwise an elected shape that does not serve the leg's quantity
+    # (`quantity.serves_quantity`: an amount, or a share of GNI, for "aid per capita"; a
+    # dollar level for "debt to GDP ratio"; a share of GNI for "debt to GDP") outranks
     # ``no_observations`` or base-measure data.
-    per_person = state.quantity_requirement.narrowed(PER_PERSON_FORMS)
-    if per_person.named and not fulfils(per_person, state.shape_draft, state.denominator_kinds):
-        # Defer place-less, no-data materialised results so the pipeline can mint
-        # ``no_matching_slice`` with its flagged match.
+    if not serves_leg_quantity(state, state.shape_draft):
+        # Defer a place-less missing slice (no member asserts every bound value, so no
+        # availability verdict exists) so the pipeline can mint ``no_matching_slice`` with
+        # its flagged match. A bound member without data is no missing slice.
         _slice_mint_pending = (
             state.destination_dcid is None
             and isinstance(mat_result, Materialised)
             and not mat_result.has_data
+            and mat_result.available_at_place is None
         )
         _elected = _elect_no_data_reason(
             mat_result.reason if isinstance(mat_result, NoDataDraft) else None,
             "no_matching_slice" if _slice_mint_pending else None,
             fallback="denominator_not_available",
         )
-        # Neither outcome reaches candidate fan-out, so retract its near-neighbour warning.
-        if state.near_neighbor_warning is not None:
-            state.warnings.remove(state.near_neighbor_warning)
-        state.near_neighbor_fired_index = None
-        state.near_neighbor_warning = None
+        if _elected == "denominator_not_available" and any(
+            serves_leg_quantity(state, state.capped_shapes[i])
+            for i in _plan_admission(state).alt_indices
+        ):
+            # An alternate the fan-out admits serves the quantity, so the fan-out runs, and
+            # the refusal waits for an outcome in which no reading that serves it survives
+            # (`refuse_unserved_quantity`).
+            state.quantity_refusal = mat_result
+            return None
+        # No outcome below reaches candidate fan-out, so retract its near-neighbour warning.
+        _retract_near_neighbor(state)
         if _slice_mint_pending and _elected == "no_matching_slice":
             # The single-shape path attaches the flagged match after Spec assembly.
             state.force_single_shape_path = True
+        elif _elected == "denominator_not_available":
+            return await _denominator_refusal(state, mat_result)
         else:
             return state.no_data(_elected, llm_usage=state.var_usage)
 
     return None
 
 
-async def _nearest_real_for(state: ResolveState) -> tuple[NearestRealSpec, ...] | None:
-    """Probe one-binding relaxations, with a limit of 2 suggestions.
+def serves_leg_quantity(state: ResolveState, shape: ShapeDraft) -> bool:
+    """Whether `shape` serves the leg's quantity: every form it names and the denominator
+    the quantity read chose (`quantity.serves_quantity`)."""
+    return serves_quantity(
+        state.quantity_requirement, state.named_denominator, shape, state.denominator_kinds
+    )
+
+
+def _retract_near_neighbor(state: ResolveState) -> None:
+    """Drop the near-neighbour tie and its warning from an answer no fan-out reaches."""
+    if state.near_neighbor_warning is not None:
+        state.warnings.remove(state.near_neighbor_warning)
+    state.near_neighbor_fired_index = None
+    state.near_neighbor_warning = None
+
+
+async def refuse_unserved_quantity(state: ResolveState) -> RegionResult | None:
+    """The `denominator_not_available` refusal the materialise gate deferred to the
+    fan-out (`state.quantity_refusal`), once no reading that serves the quantity survived
+    it (`serves_leg_quantity`). `None` when the gate deferred nothing."""
+    if state.quantity_refusal is None:
+        return None
+    _retract_near_neighbor(state)
+    return await _denominator_refusal(state, state.quantity_refusal)
+
+
+def note_denominator_unverified(
+    state: ResolveState, shape: ShapeDraft, *, spec_id: str | None
+) -> None:
+    """Warn `denominator_unverified` when `shape`, a shape the answer serves, is not
+    checked against the denominator the question names (`quantity.check_denominator`):
+    it states its base only in its name, or it divides by a base the quantity read
+    matched to none of the listed ones. The warning carries the `spec_id` of the spec
+    `shape` answers through, definite or candidate."""
+    named = state.named_denominator
+    if named is not None and check_denominator(shape, named) == "unverified":
+        arc = None if shape.meas_denom_unresolved else shape.meas_denom_dcid
+        state.warnings.append(
+            denominator_unverified_warning(
+                named,
+                divides=arc is not None,
+                arc_name=_denominator_name(state, arc) if arc is not None else None,
+                spec_id=spec_id,
+            )
+        )
+
+
+# The words for the base a schema-term denominator names (`quantity.schema_denominator_kind`).
+_SCHEMA_BASE_WORDS = {"person": "people", "area": "land area"}
+
+
+def _denominator_name(state: ResolveState, arc: str) -> str | None:
+    """The name of the base `arc` divides by: words for a schema term, else the graph's
+    name for the StatVar (`state.denominator_reads`), `None` when the graph gives none."""
+    if (kind := schema_denominator_kind(arc)) is not None:
+        return _SCHEMA_BASE_WORDS.get(kind)
+    read = state.denominator_reads.get(arc)
+    return read.name if read is not None else None
+
+
+def denominator_unverified_warning(
+    named: NamedDenominator, *, divides: bool, arc_name: str | None, spec_id: str | None
+) -> Warning:
+    """Describe an answer the search could not check against the denominator the question
+    names, `named`, quoting the question's own words for it. A series that `divides` by a
+    stated base, `arc_name` when known, names that base beside them; any other series
+    states no base, so only its name says whether it divides by the named one."""
+    if divides:
+        found = f'"{arc_name}"' if arc_name else "a base the graph does not name"
+        message = (
+            f'the question names "{named.base_words}" as the base; this series divides '
+            f"by {found}, which the search could not match to it."
+        )
+    else:
+        message = (
+            f"this series states no base the search could check, so only its name says "
+            f'whether it divides by "{named.base_words}".'
+        )
+    return Warning(code=DENOMINATOR_UNVERIFIED, severity="warn", message=message, spec_id=spec_id)
+
+
+async def _denominator_refusal(
+    state: ResolveState, mat_result: _MaterialiseOutcome
+) -> RegionResult:
+    """Refuse ``denominator_not_available`` with the elected shape as the flagged match,
+    naming the StatVars materialise elected (`mat_result`), its level reading as
+    nearest_real (`_level_relaxation`), and the denominator the question named beside the
+    one the flagged match divides by. The flagged match keeps the open axes materialise
+    confirmed the elected members declare (`Materialised.open_axes`,
+    `NoDataDraft.open_axes`), so "external debt
+    per capita by every creditor in Kenya" flags a by-creditor reading. A shape with no
+    level relaxation, such as one that is already a level, carries no nearest_real:
+    relaxing one of its bindings would offer the reading the gate refused."""
+    members = mat_result.sv_dcids if isinstance(mat_result, (Materialised, NoDataDraft)) else None
+    flagged = await _elected_flagged_match(
+        state,
+        members=members,
+        open_roles=(
+            mat_result.open_axes if isinstance(mat_result, (Materialised, NoDataDraft)) else ()
+        ),
+    )
+    named = state.named_denominator
+    level = _level_relaxation(state)
+    return state.no_data(
+        "denominator_not_available",
+        flagged_match=(flagged,),
+        nearest_real=None if level is None else await _nearest_real_for(state, level=level),
+        denominator=NoDataDenominator(
+            asked=named.ref if named is not None else None,
+            found=flagged.resolved.shape.measurement_denominator,
+        ),
+        llm_usage=state.var_usage,
+    )
+
+
+def _level_relaxation(state: ResolveState) -> tuple[ShapeDraft, Relaxation] | None:
+    """The level reading of the elected shape, the relaxation that drops its denominator: a
+    recalled shape with the same population type, measured property, stat type, qualifier
+    and constraint properties and no denominator arc. `None` when the elected shape
+    divides by nothing, or no recalled shape is its level."""
+    elected = state.shape_draft
+    denominator = elected.meas_denom_dcid
+    if denominator is None or elected.meas_denom_unresolved:
+        return None
+    properties = _constraint_properties(elected)
+    for shape in state.shapes_found:
+        if (
+            shape.meas_denom_dcid is None
+            and not shape.meas_denom_unresolved
+            and shape.pop_type_dcid == elected.pop_type_dcid
+            and shape.meas_prop_dcid == elected.meas_prop_dcid
+            and shape.stat_type_dcid == elected.stat_type_dcid
+            and shape.meas_qual_dcid == elected.meas_qual_dcid
+            and _constraint_properties(shape) == properties
+        ):
+            return shape, Relaxation(
+                axis="what",
+                property_dcid="measurementDenominator",
+                dropped_value_dcids=[denominator],
+            )
+    return None
+
+
+def _constraint_properties(shape: ShapeDraft) -> frozenset[str]:
+    return frozenset(key.property_dcid for key in shape.slot_keys if key.property_dcid)
+
+
+async def _nearest_real_for(
+    state: ResolveState, *, level: tuple[ShapeDraft, Relaxation] | None = None
+) -> tuple[NearestRealSpec, ...] | None:
+    """Probe one-binding relaxations, with a limit of 2 suggestions, or, with `level`, the
+    one level reading of the elected shape (`_level_relaxation`).
 
     Each relaxation is probed in the original answer's place context and each suggestion is
     read over its own (`SuggestionRead.place`): the preview binds the places the
@@ -1471,6 +1785,7 @@ async def _nearest_real_for(state: ResolveState) -> tuple[NearestRealSpec, ...] 
         coverage=state.coverage,
         unsettled=state.unsettled_place,
         pin_served_provenance=state.pin_served_provenance,
+        level=level,
     )
     if near_presence is not None:
         known = state.default_presence
@@ -1510,7 +1825,7 @@ async def _nearest_real_for(state: ResolveState) -> tuple[NearestRealSpec, ...] 
             asyncio.to_thread(
                 _build_observations,
                 near_reads[near_specs[index].spec_id].plan,
-                [sv.ref.dcid for sv in near_specs[index].resolved.members],
+                [sv.ref.ref for sv in near_specs[index].resolved.members],
                 obs_entities,
                 graph=state.graph,
                 materialise_graph=state.materialise_graph,
@@ -1534,8 +1849,12 @@ async def _phase_no_data_answer(state: ResolveState) -> RegionResult | None:
     """Return the single-shape no-data result. ``None`` means materialisation found data.
 
     Attach nearest-real suggestions for ``no_observations``. Pass materialised results to
-    definite assembly.
+    definite assembly. An elected shape the quantity gate found does not serve the leg's
+    quantity answers nothing alone, so the refusal the gate deferred to the fan-out stands
+    when the fan-out left the elected shape's path (`refuse_unserved_quantity`).
     """
+    if (refused := await refuse_unserved_quantity(state)) is not None:
+        return refused
     mat_result = state.mat_result
 
     if isinstance(mat_result, NoDataDraft):
@@ -1543,6 +1862,10 @@ async def _phase_no_data_answer(state: ResolveState) -> RegionResult | None:
         nearest_real: tuple[NearestRealSpec, ...] | None = None
         if mat_result.reason == "no_observations":
             nearest_real = await _nearest_real_for(state)
+        if (
+            refused := state.source_code_no_data(mat_result.reason, llm_usage=state.var_usage)
+        ) is not None:
+            return refused
         return RegionResult(
             variable_text=state.variable,
             status="no_data",

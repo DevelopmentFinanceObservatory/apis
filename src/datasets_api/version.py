@@ -11,8 +11,10 @@ The hash covers four inputs:
    affects the token.
 2. Rendered refusal bodies for every code. The first exemplar fills every
    optional field, so rendering and catalogue wording changes are detected.
-3. The schema-endpoint payload without `description` or `title` fields.
-   Schema structure affects the token. The hash strips description and title text.
+3. The schema-endpoint payload, with `description` and `title` annotations
+   removed from each schema by `strip_schema_annotations`. Field names, types,
+   `enum`, `const` and `default` values affect the token; annotation prose
+   does not.
 4. The warning catalogue, sorted by code, including each title, detail,
    and severity.
 
@@ -35,6 +37,7 @@ from datasets_api.schema import build_schema_document
 from datasets_api.warnings import DATASETS_WARNING_CATALOGUE
 from dfo_platform import Alternative, CodeCatalogue, Envelope, ProblemIssue
 from dfo_platform.config import PublicSiteSettings
+from dfo_platform.schema_annotations import strip_schema_annotations
 from dfo_platform.trace import set_trace_id
 
 # Exclude the self-referential token and deployment build from the hash.
@@ -66,22 +69,6 @@ _EXEMPLAR_GROUPBY_LEVEL_AXES: list[str] = []
 
 # Fix the trace id so refusal-body exemplars hash deterministically.
 _EXEMPLAR_TRACE_ID = "0" * 32
-
-
-def _strip_wire_invisible_keys(value: object) -> object:
-    """Remove `description` and `title` keys recursively before hashing a schema.
-
-    The local copy keeps the Datasets token independent of the platform.
-    """
-    if isinstance(value, dict):
-        return {
-            key: _strip_wire_invisible_keys(val)
-            for key, val in value.items()
-            if key not in ("description", "title")
-        }
-    if isinstance(value, list):
-        return [_strip_wire_invisible_keys(item) for item in value]
-    return value
 
 
 def _pin_deployment_identity_fields(document: Mapping[str, object]) -> dict[str, object]:
@@ -159,7 +146,9 @@ def _compute_datasets_capability_version(
         "refusal_body_exemplars": contextvars.copy_context().run(
             _render_body_exemplars, code_catalogue
         ),
-        "schema_document": _strip_wire_invisible_keys(schema_document),
+        "schema_document": {
+            name: strip_schema_annotations(entry) for name, entry in schema_document.items()
+        },
         "warning_catalogue": {
             code: list(entry) for code, entry in sorted(warning_catalogue.items())
         },

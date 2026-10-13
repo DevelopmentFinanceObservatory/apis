@@ -1,10 +1,16 @@
 """Dependencies shared by the Graph doors and published during the surface lifespan.
 
 The node, sources, and resolve doors share the graph reader and the bounded
-DCP-read executor. Resolve also uses the resolver and generation provider.
+DCP-read executor, which refuses a read when every worker is busy instead of
+queueing it. Resolve also uses the resolver and generation provider.
 Resolvekit owns a separate single-worker executor. The sources door reads
 currency from the coverage service when one is configured, and keeps the
-source documents it reads in `provenance_docs`.
+source documents it reads in `provenance_docs`. A variable's facet
+profile comes from the process's shared `FacetProfileCache` for its source
+(`materialise.shared_profiles`), whose flights run on an executor no request
+runs on. The national currencies and node facts a
+variable's availability reads beside its profile (`CardReadCaches`) run their
+flights on the DCP-read executor.
 
 This module holds the bundle and the doors' one way onto the executor,
 `run_dcp_read`, to keep door imports separate from the composition root,
@@ -16,8 +22,9 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import threading
 from collections.abc import Callable
-from concurrent.futures import BrokenExecutor, ThreadPoolExecutor
+from concurrent.futures import BrokenExecutor, Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from time import perf_counter
 from typing import TYPE_CHECKING, Annotated, Any, override
@@ -31,8 +38,11 @@ from entity_resolution import EntityResolver
 from graph_api.config import DCP_QUEUE_WAIT_WARN_SECONDS
 from graph_api.reader import GraphNodeReader
 from graph_generation import GenerationProvider
+from materialise.facet_profile import FacetProfileCache
 
 if TYPE_CHECKING:
+    # `card_reads` imports this module's executor refusals.
+    from graph_api.card_reads import CardReadCaches
     from materialise.provenance_doc import ProvenanceDoc
 
     # `series_coverage.shared` needs numpy, which the `graph` extra does not install.
@@ -60,6 +70,15 @@ class GraphDeps:
     provenance_docs: SingleFlightCache[tuple[str, str], ProvenanceDoc]
     # `None` when `COVERAGE_ARTIFACT_URI` is unset or the artifact failed to load.
     coverage: CoverageService | None = None
+    # True when `coverage` is `None` because the artifact failed to load, a gap a later start
+    # can clear. An unset URI is a deployment's choice, so it leaves this false.
+    coverage_load_failed: bool = False
+    # The process's shared facet profiles on a live surface. An injected graph has its own
+    # only when the surface was given a profile graph and availability reader, else `None`.
+    profile_cache: FacetProfileCache | None = None
+    # The national currencies and node facts a variable's availability reads beside its
+    # profile, on the DCP-read executor. Set whenever `profile_cache` is.
+    card_reads: CardReadCaches | None = None
 
 
 class DcpExecutorShutDown(Exception):
@@ -70,13 +89,36 @@ class DcpExecutorShutDown(Exception):
         super().__init__("the Graph surface's DCP-read executor is shut down")
 
 
+class DcpExecutorSaturated(Exception):
+    """Every worker of the DCP-read executor is busy, so the read is refused instead of
+    queued. The surface classifies this as retryable 503."""
+
+    def __init__(self) -> None:
+        super().__init__("every worker of the Graph surface's DCP-read executor is busy")
+
+
 class DcpReadExecutor(SaturationTrackingExecutor):
-    """The Graph surface's DCP-read executor. It refuses work after shutdown with
-    `DcpExecutorShutDown`, so every graph read answers retryable 503, whether it comes
-    from a door through `run_dcp_read` or from the resolver's confirmation."""
+    """The Graph surface's DCP-read executor. It admits at most one read per worker and
+    refuses the next with `DcpExecutorSaturated`, and refuses work after shutdown with
+    `DcpExecutorShutDown`. Every graph read therefore answers retryable 503 at once,
+    whether it comes from a door through `run_dcp_read` or from one of the resolver's
+    sequential reads, so a resolve admitted at its first read can be refused at a later one.
+
+    A slot is taken at submit and released with the parent's in-flight count, when the read
+    returns or the parent refuses the submit. A running read therefore holds its worker's
+    slot until it finishes, even after its request has timed out.
+    """
+
+    saturation_consequence = "new reads are refused"
+
+    def __init__(self, *, max_workers: int, thread_name_prefix: str, **kwargs: Any) -> None:
+        super().__init__(max_workers=max_workers, thread_name_prefix=thread_name_prefix, **kwargs)
+        self._admission = threading.BoundedSemaphore(max_workers)
 
     @override
     def submit(self, fn, /, *args: Any, **kwargs: Any):  # type: ignore[override]
+        if not self._admission.acquire(blocking=False):
+            raise DcpExecutorSaturated()
         try:
             return super().submit(fn, *args, **kwargs)
         except BrokenExecutor:
@@ -85,16 +127,22 @@ class DcpReadExecutor(SaturationTrackingExecutor):
             # `ThreadPoolExecutor.submit` raises a bare `RuntimeError` after shutdown.
             raise DcpExecutorShutDown() from None
 
+    @override
+    def _release_slot(self, _future: Future | None) -> None:
+        # Free admission first, so a caller that sees the in-flight count drop can submit.
+        self._admission.release()
+        super()._release_slot(_future)
+
 
 async def run_dcp_read[**P, R](
     executor: ThreadPoolExecutor, fn: Callable[P, R], /, *args: P.args, **kwargs: P.kwargs
 ) -> R:
     """Run `fn` on the DCP-read executor under the caller's context and await its result.
 
-    A busy executor queues the call. Cancelling the await while the call is still queued
-    cancels it, so a door's `wait_for` timeout stops a queued read from ever running. A
-    running call keeps its worker until it returns. Logs and re-raises `BrokenExecutor`.
-    The call logs its queue wait (`log_queue_wait`).
+    A `DcpReadExecutor` with every worker busy raises `DcpExecutorSaturated` here. A
+    running call keeps its worker until it returns, even after a door's `wait_for`
+    timeout has given up on it. Logs and re-raises `BrokenExecutor`. The call logs its
+    wait for a worker (`log_queue_wait`).
     """
     timed = log_queue_wait(fn)
     try:

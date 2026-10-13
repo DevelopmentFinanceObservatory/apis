@@ -15,7 +15,10 @@ Reads, on each definite part's spec (``parts[].spec``):
 A bare answer passes on ``has_data`` and a breadth answer on every dimension counting
 something. An exact count is checked, within 5 percent, against the oracle's own count of
 the facets the answer states it serves, inside the coverage window, and under a ``latest``
-request at each StatVar's latest period from the series reaching it. The StatVars are those
+request at each StatVar's latest period from the series reaching it. A series whose
+stated facets end before the coverage window does also counts the points after its last
+one from the same source's estimates continuing it (``materialise.facets.continuation``),
+which the answer serves without stating their method. The StatVars are those
 the responding app states for the spec (``base.served_stat_vars``). StatVars and places
 listed twice count once. A non-role answer is counted from ``ctx.graph`` at each StatVar and
 served place (``_served_places``). A role-bearing answer is counted from
@@ -39,7 +42,8 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from dc_graph import Facet
-from materialise.window import latest_period
+from materialise.facets import Cadence, at_cadence, cadences_by_member, continuation
+from materialise.window import RequestedWindow, latest_period
 from search.engine.region.codes import (
     CURRENCY_UNMAPPED_OMITTED,
     OBSERVATIONS_PROBE_FAILED,
@@ -55,7 +59,8 @@ from search.eval.checks.base import (
     Result,
     ScoreContext,
     Verdict,
-    all_of,
+    by_part,
+    expected_parts,
     fail,
     infra_error,
     part_pairs,
@@ -63,6 +68,7 @@ from search.eval.checks.base import (
     register,
     run_part,
     served_stat_vars,
+    unreached,
 )
 from search.eval.checks.specs import SpecView
 from search.models import TimeWindow, in_window
@@ -80,8 +86,9 @@ _FACET_AXIS_FIELDS = {
 type _Stated = tuple[str | None, bool]
 """One axis of `resolved.facets`: its `ref`, and whether a `request_basis` binds it."""
 
-type _FacetGroup = tuple[str | None, ...]
-"""A facet's provenance, measurement method and unit, the values a served group shares."""
+type _FacetGroup = tuple[tuple[str | None, ...], Cadence | None]
+"""A facet's provenance, measurement method and unit, and its cadence
+(`materialise.facets.cadences_by_member`): what the facets one dispatch serves share."""
 
 _PARTIAL_PREVIEW_CODES = frozenset(
     {OBSERVATIONS_PROBE_FAILED, OBSERVATIONS_TIMED_OUT, OBSERVATIONS_SERIES_TRUNCATED}
@@ -110,15 +117,19 @@ def _stated_groups(
     facets: Sequence[Facet], stated: Mapping[str, _Stated]
 ) -> dict[_FacetGroup, list[Facet]]:
     """The facets of one series that `stated` admits on every axis (`_axis_admits`), by
-    group. A series whose admitted facets form several groups is one the answer does not
-    pin to a single group."""
+    group. A group is one cadence of one provenance, measurement method and unit, since a
+    dispatch serves its series at one observation period (`materialise.facets.served_facets`).
+    A series whose admitted facets form several groups is one the answer does not pin to a
+    single group."""
+    (cadence_of,) = cadences_by_member([facets])
     groups: dict[_FacetGroup, list[Facet]] = {}
     for facet in facets:
-        key = tuple(getattr(facet, field) for field in _FACET_AXIS_FIELDS.values())
+        values = tuple(getattr(facet, field) for field in _FACET_AXIS_FIELDS.values())
         if all(
             _axis_admits(stated.get(axis), value)
-            for axis, value in zip(_FACET_AXIS_FIELDS, key, strict=True)
+            for axis, value in zip(_FACET_AXIS_FIELDS, values, strict=True)
         ):
+            key = (values, cadence_of.get(facet.facet_id or ""))
             groups.setdefault(key, []).append(facet)
     return groups
 
@@ -132,6 +143,37 @@ def _group_points(group: Sequence[Facet], *, window: TimeWindow | None) -> int:
     ):
         return sum(f.obs_count for f in group)
     return len({d for f in group for d in f.dates if in_window(d, window)})
+
+
+def _series_points(
+    group: Sequence[Facet], facets: Sequence[Facet], *, window: TimeWindow | None
+) -> int:
+    """The points one series serves from `group` (`_group_points`) and from the facets of
+    the series' `facets` continuing it past its last period inside `window`, chosen as the
+    engine and a mint choose them (`materialise.facets.continuation`, at the cadence of the
+    group's lead facet). A continuing facet serves only its dates after the group's last
+    period (`materialise.columnar.continuation_mask`)."""
+    points = _group_points(group, window=window)
+    if window is None or window.end_year is None:
+        return points
+    (cadence_of,) = cadences_by_member([facets])
+    cadence = cadence_of.get(group[0].facet_id or "")
+    continuing = continuation(
+        group,
+        facets,
+        window=RequestedWindow(
+            kind="range", start_year=window.start_year, end_year=window.end_year
+        ),
+        serves=lambda facet_id: at_cadence(facet_id, cadence=cadence, cadence_of=cadence_of),
+    )
+    last = _group_latest(group)
+    later = {
+        d
+        for f in continuing
+        for d in f.dates
+        if in_window(d, window) and (last is None or d > last)
+    }
+    return points + len(later)
 
 
 def _group_latest(group: Sequence[Facet]) -> str | None:
@@ -189,9 +231,10 @@ def _reachable_totals(
     its StatVar, as a bitset whose bit `t` is set when one stated group per series sums to
     `t` observations, or None when the graph holds no facet for any series.
 
-    Each series serves the points of one stated group (`_stated_groups`, `_group_points`),
-    and nothing when no facet matches. A series pinned to one group adds its points to
-    every total, and a series left with several groups branches into one total per group.
+    Each series serves the points of one stated group and of the estimates continuing it
+    (`_stated_groups`, `_series_points`), and nothing when no facet matches. A series
+    pinned to one group adds its points to every total, and a series left with several
+    groups branches into one total per group.
     Under `latest` each StatVar's series count together (`_latest_totals`). The set holds
     at most one bit per observation the largest groups hold together.
     """
@@ -209,7 +252,7 @@ def _reachable_totals(
     for _sv, facets in facets_by_series:
         points = 0
         for group in _stated_groups(facets, stated).values():
-            points |= 1 << _group_points(group, window=window)
+            points |= 1 << _series_points(group, facets, window=window)
         totals = _add_totals(totals, points or 1)
     return totals
 
@@ -452,13 +495,17 @@ def _part(
 @register("materialisation", modal_only=True)
 def materialisation(case: Case, response: Mapping[str, Any], ctx: ScoreContext) -> Result:
     """Every definite part's coverage holds in the graph or the coverage index. A pass or
-    n/a keeps each part's count or reason in its detail."""
+    n/a keeps each part's count or reason in its detail. A ``definite`` or ``mixed`` block
+    asserts the check (``cases.assertion_checks``), so a part pairing with no block reads
+    unreached."""
+    expected = expected_parts(case, response, ctx)
     results = [
         (part, run_part(_part, block, part, response, ctx))
-        for block, part in part_pairs(case, response, ctx)
+        for block, part in part_pairs(expected)
         if part.status == "definite"
     ]
-    combined = all_of(result for _part_view, result in results)
+    missed = unreached(case, expected, check="materialisation")
+    combined = by_part(case, ((part.index, result) for part, result in results), missed)
     if combined.verdict not in (Verdict.PASS, Verdict.NA):
         return combined
     details = [f"parts[{part.index}]: {r.detail}" for part, r in results if r.detail]

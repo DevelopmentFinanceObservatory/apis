@@ -8,10 +8,12 @@ from __future__ import annotations
 import asyncio
 
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region.pipeline import resolve_variable
 from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query
+from tests.engine._quantity import NO_QUANTITY
 from tests.engine.test_measure_election_inapplicable_slots import (
     _COVERAGE_ROWS,
     _DETECT,
@@ -36,7 +38,7 @@ def _filter_for(spec, prop: str):
     return next(
         f
         for f in spec.resolved.trace.slot_filters
-        if f.key.property is not None and f.key.property.dcid == prop
+        if f.key.property is not None and f.key.property.ref == prop
     )
 
 
@@ -48,7 +50,7 @@ def test_the_axis_the_election_forced_reads_measure_elected(monkeypatch):
 
     flow_type_filter = _filter_for(spec, _PROP_FLOW_TYPE)
     assert flow_type_filter.provenance == "measure_elected"
-    assert flow_type_filter.refs and flow_type_filter.refs[0].dcid == _FORCED_FLOW_TYPE_VALUE
+    assert flow_type_filter.refs and flow_type_filter.refs[0].ref == _FORCED_FLOW_TYPE_VALUE
 
     purpose_filter = _filter_for(spec, _PROP_PURPOSE)
     assert purpose_filter.provenance == "binder"
@@ -58,6 +60,8 @@ class _BindPurposeAndFlowTypeLLM:
     """Also drafts the family's sole forceable axis, leaving the election nothing to bind."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0,

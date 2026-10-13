@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
+import time
 from collections.abc import Callable
 
+import httpx
+import pytest
 from cachetools import TLRUCache
 
+from dc_graph import GraphClient
+from dc_graph.errors import GraphDeadlineExceededError
 from entity_resolution import Admission
 from entity_resolution.admission import _PARENTS_CACHE_MAXSIZE, _RANGE_CACHE_MAXSIZE, _ttu
 from graph_generation import FakeGeneration
@@ -16,6 +22,9 @@ from graph_generation.config import (
     GRAPH_CACHE_UNKNOWN_GENERATION_MAX_AGE_SECONDS,
 )
 from graph_generation.stamp import UNKNOWN_KEY
+from origin_catalogue.graph import OriginGraphClient, UnGeneration
+from tests.origin_catalogue.fake_catalogue import restrictive_catalogue
+from tests.origin_catalogue.support import build_arc_tables
 
 from .conftest import FakeGraphLookup
 
@@ -99,6 +108,23 @@ def test_empty_graph_type_never_admits():
     admission = Admission(_graph())
 
     assert _run(admission.admits("observationAbout", "")) is False
+
+
+def test_every_read_takes_the_callers_deadline():
+    graph = _graph()
+    deadline = time.monotonic() + 60
+
+    assert _run(Admission(graph).admits("observationAbout", "State", deadline=deadline)) is True
+    assert graph.deadline_calls
+    assert {called for _, called in graph.deadline_calls} == {deadline}
+
+
+def test_a_read_due_after_the_deadline_raises_without_reading():
+    graph = _graph()
+
+    with pytest.raises(GraphDeadlineExceededError):
+        _run(Admission(graph).admits("observationAbout", "State", deadline=time.monotonic()))
+    assert graph.node_arcs_many_calls == []
 
 
 def test_each_distinct_node_read_from_graph_once_across_repeated_calls():
@@ -363,3 +389,46 @@ def test_tiny_maxsize_that_evicts_its_own_batch_writes_still_returns_correct_par
     admission._parents_cache = TLRUCache(maxsize=1, ttu=_ttu)
 
     assert _run(admission.admits("observationAbout", "Multi")) is True
+
+
+def test_admission_reads_a_held_role_and_its_class_chain_from_the_catalogue(bind_catalogue):
+    """Through the origin client, a role and the classes its range reaches that the arc
+    tables hold cost no graph read; a class outside them reads live."""
+    sent: list[tuple[str, ...]] = []
+
+    def mixer(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        sent.append(tuple(payload["nodes"]))
+        parents = {"State": [{"dcid": "AdministrativeArea"}]}
+        data = {
+            dcid: {"arcs": {"subClassOf": {"nodes": parents[dcid]}}} if dcid in parents else {}
+            for dcid in payload["nodes"]
+        }
+        return httpx.Response(200, json={"data": data})
+
+    arcs = build_arc_tables(
+        dfo={},
+        base={},
+        schema={
+            "financingRecipient": {"rangeIncludes": {"nodes": [{"dcid": "Place"}]}},
+            "Place": {},
+            "Country": {"subClassOf": {"nodes": [{"dcid": "AdministrativeArea"}]}},
+            "AdministrativeArea": {"subClassOf": {"nodes": [{"dcid": "Place"}]}},
+        },
+    )
+    bind_catalogue(restrictive_catalogue(arcs=arcs))
+    transport = httpx.MockTransport(mixer)
+    client = OriginGraphClient(
+        ours=GraphClient(base_url="https://graph.example.org/core/api", transport=transport),
+        un=GraphClient(
+            base_url="https://un.example.org/core/api",
+            transport=transport,
+            generation=UnGeneration(),
+        ),
+    )
+    admission = Admission(client)
+
+    assert _run(admission.admits("financingRecipient", "Country")) is True
+    assert sent == []
+    assert _run(admission.admits("financingRecipient", "State")) is True
+    assert sent == [("State",)]

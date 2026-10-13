@@ -135,7 +135,7 @@ def _materialise(
         list(requests),
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(graph, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         member_concurrency=1,
@@ -146,7 +146,9 @@ def _materialise(
         witnesses.update(str(entry["dispatch_facet_id"]) for entry in result.trace.facets)
     frame = only_chunk(result)
     rows = [list(row) for row in frame.rows]
-    view = compute_structural_view(frame={"columns": list(frame.columns), "rows": rows})
+    view = compute_structural_view(
+        frame={"columns": list(frame.columns), "rows": rows}, continuation=None
+    )
     # The presentation assembler's default window over the frame binds without refusal.
     assert view.coverage is not None
     count_periods(
@@ -204,7 +206,7 @@ def test_a_group_member_serves_no_row_from_a_facet_only_another_member_dispatche
         [_request(_RATE), _request(_YOUTH)],
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(graph, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         member_concurrency=1,

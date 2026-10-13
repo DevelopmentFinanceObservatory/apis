@@ -204,7 +204,7 @@ def statements(answer: Answer) -> tuple[Stated, ...]:
 
 
 def _stat_vars(spec: Spec) -> tuple[str, ...]:
-    return tuple(sv.ref.dcid for sv in spec.resolved.members)
+    return tuple(sv.ref.ref for sv in spec.resolved.members)
 
 
 def _read_statements(spec: Spec) -> Stated:
@@ -244,7 +244,7 @@ def _read_statements(spec: Spec) -> Stated:
             for fact in spec_departure_facts(spec, operations=())
             if fact.code == "year_unavailable"
         ),
-        sources=tuple(ref.dcid for ref in resolved.trace.resolved_sources),
+        sources=tuple(ref.ref for ref in resolved.trace.resolved_sources),
         facets=tuple(
             sorted((axis, facet.ref, facet.selection) for axis, facet in resolved.facets.items())
         ),
@@ -255,7 +255,7 @@ def _read_statements(spec: Spec) -> Stated:
         headline_year=resolved.headline.year if resolved.headline else None,
         date_ranges=tuple(
             (
-                sv.ref.dcid,
+                sv.ref.ref,
                 sv.data_date_range.start if sv.data_date_range else None,
                 sv.data_date_range.end if sv.data_date_range else None,
             )
@@ -736,7 +736,7 @@ def _window_gap_fact_agrees(cell: Cell, world: World, door: str, answer: Answer)
         return
     fact = result.window_gap_fact
     if fact is None:
-        elected = [ref.dcid for ref in result.elected_stat_vars or ()]
+        elected = [ref.ref for ref in result.elected_stat_vars or ()]
         spans = _spans(world, elected, **(_admitted(cell) if cell.unit != "converting" else {}))
         if door != FIRST and result.no_data_reason == "no_observations" and asked and spans:
             yield (
@@ -926,7 +926,7 @@ def _datasets_read(
     (`materialise.materialise_preview`). For an identity with no facet binding the request
     equals the one a mint makes (`_mint_request`)."""
     identity = spec.definition.identity.model_dump(mode="json", exclude_none=True)
-    stat_var = spec.resolved.members[0].ref.dcid
+    stat_var = spec.resolved.members[0].ref.ref
     key = (world, stat_var, json.dumps(identity, sort_keys=True))
     if key not in _READS:
         measured_property, purpose = world.stat_vars[stat_var]
@@ -1674,7 +1674,7 @@ def _expected_family_warnings(world: World, answer: Answer) -> list[str]:
         held.append(result.alternate_match)
     named = [_stat_vars(spec) for spec in held]
     if _is_window_answer(result) and result.elected_stat_vars:
-        named = [[ref.dcid for ref in result.elected_stat_vars]]
+        named = [[ref.ref for ref in result.elected_stat_vars]]
     message = f"No total for this family of variables was found, so the answer shows {world.label}."
     return sorted(
         message for members in named if len(members) == 1 and world.lacks_total(members[0])

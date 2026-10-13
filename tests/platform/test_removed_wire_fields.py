@@ -26,7 +26,7 @@ import pytest
 
 from dfo_apis.app import all_surfaces
 from dfo_platform.app import create_app
-from search.engine.app import _schema_payload
+from search.engine.schema import schema_payload
 
 _GRAPH_ENV_VARS = (
     "GRAPH_DCP_BASE_URL",
@@ -72,7 +72,7 @@ def _documents() -> dict[str, Mapping[str, Any]]:
         os.environ.pop(var, None)
     return {
         "openapi": create_app(all_surfaces()).openapi(),
-        "search_schema": _schema_payload(),
+        "search_schema": schema_payload(),
     }
 
 

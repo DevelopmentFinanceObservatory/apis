@@ -157,7 +157,7 @@ def test_detect_set_ref_full_children_returns_graphref() -> None:
     g = _fake_graph()
     result = detect_set_ref(value_dcids=["c1", "c2", "c3"], graph=g)
     assert result is not None
-    assert result.dcid == "Agg"
+    assert result.ref == "Agg"
     assert result.label == "Aggregate Label"
 
 
@@ -282,7 +282,7 @@ def test_collapse_same_shape_what_axis_set_ref_for_called() -> None:
     r1 = _region(sh, _value_slot("what", "c1"), sv="sv/1", index=0)
     r2 = _region(sh, _value_slot("what", "c2"), sv="sv/2", index=1)
 
-    parent_ref = GraphRef(dcid="Agg", label="Aggregate Label")
+    parent_ref = GraphRef(ref="Agg", label="Aggregate Label")
     captured: list[list[str]] = []
 
     def fake_set_ref_for(dcids: list[str]) -> GraphRef | None:
@@ -324,7 +324,7 @@ def test_collapse_same_shape_where_axis_not_labelled() -> None:
 
     def should_not_call(_dcids: list[str]) -> GraphRef | None:
         called.append(True)
-        return GraphRef(dcid="WRONG", label="WRONG")
+        return GraphRef(ref="WRONG", label="WRONG")
 
     effective, _ = collapse_same_shape([r1, r2], set_ref_for=should_not_call)
     assert called == [], "set_ref_for must not be called for where-axis slots"
@@ -347,7 +347,7 @@ def test_collapse_same_shape_how_axis_set_ref_for_called() -> None:
     r1 = _region(sh, slot1, sv="sv/1", index=0)
     r2 = _region(sh, slot2, sv="sv/2", index=1)
 
-    how_ref = GraphRef(dcid="HowParent", label="How Parent")
+    how_ref = GraphRef(ref="HowParent", label="How Parent")
     effective, _ = collapse_same_shape([r1, r2], set_ref_for=lambda _: how_ref)
     diff_slot = next(s for s in effective[0].spec.resolved.slots if s.binding.kind == "set")
     assert isinstance(diff_slot.binding, BindingSet)

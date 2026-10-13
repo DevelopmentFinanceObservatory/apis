@@ -1159,6 +1159,15 @@ def _memoised[V](
     return found
 
 
+def prepare_member_views(index: CodeIndex) -> None:
+    """Builds `index`'s per-index views the member queries read: each five-tuple's rows
+    and carried properties (`_five_tuple_rows`) and role-class facts
+    (`_five_tuple_facts`). The first query reading a view builds it otherwise, which on the
+    packaged index costs that query about 60 ms."""
+    for five_tuple in _five_tuple_rows(index).rows:
+        _five_tuple_facts(index, five_tuple)
+
+
 def _per_index[M](cache: dict[int, M], index: CodeIndex, new: Callable[[], M]) -> M:
     """Returns `index`'s memo in `cache`, made by `new` and keyed and finalised as
     `_five_tuple_rows_cache` is."""
@@ -1328,6 +1337,7 @@ __all__ = [
     "offers_slot",
     "option_families",
     "pinned_refs",
+    "prepare_member_views",
     "publishers",
     "query_family",
     "shared_pins",

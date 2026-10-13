@@ -329,8 +329,8 @@ def test_an_alternate_whose_bindings_hold_the_pins_mints_the_canonical_spec_id(m
         build_slot(
             key,
             draft,
-            [GraphRef(dcid=value, label=value) for value in draft.value_dcids] if draft else [],
-            property_ref=GraphRef(dcid=key.property_dcid, label=key.property_dcid)
+            [GraphRef(ref=value, label=value) for value in draft.value_dcids] if draft else [],
+            property_ref=GraphRef(ref=key.property_dcid, label=key.property_dcid)
             if key.property_dcid is not None
             else None,
         )
@@ -388,7 +388,7 @@ def test_build_slot_binds_the_source_slot_to_the_dataset_its_draft_names():
     assert slot.binding.kind == "value"
     assert slot.binding.value.value_kind == "source"
     assert slot.binding.value.ref == GraphRef(
-        dcid=CRS_PROVENANCE, label=_INDEX.datasets[CRS_PROVENANCE].label
+        ref=CRS_PROVENANCE, label=_INDEX.datasets[CRS_PROVENANCE].label
     )
     assert _facets_member([slot]) == {"provenance": {"state": "value", "ref": CRS_PROVENANCE}}
 
@@ -412,7 +412,7 @@ def test_build_slot_leaves_the_source_slot_unbound_without_one_named_dataset(dra
 
 
 def _provenance(dcid: str) -> ProvenanceRef:
-    return ProvenanceRef(dcid=dcid, label=f"catalogue name of {dcid}")
+    return ProvenanceRef(ref=dcid, label=f"catalogue name of {dcid}")
 
 
 @pytest.mark.parametrize(
@@ -429,7 +429,7 @@ def test_the_sources_of_an_index_family_are_its_elected_dataset_alone(identity: 
 
     sources = elected_sources(observed, BaseIdentity.model_validate(identity))
 
-    assert sources == [ProvenanceRef(dcid=elected, label=_INDEX.datasets[elected].label)]
+    assert sources == [ProvenanceRef(ref=elected, label=_INDEX.datasets[elected].label)]
 
 
 def test_an_answer_that_served_nothing_from_its_elected_dataset_names_no_source():
@@ -820,7 +820,7 @@ def test_a_scope_leaving_no_shape_names_its_sources_and_the_opt_in_tables(monkey
     assert _dataset_candidates([shape], scope) == []
     records = _out_of_scope_records([shape], scope)
     assert [record.text for record in records] == [_WIDE, side]
-    assert [[ref.dcid for ref in record.named] for record in records] == [[_WIDE], [side]]
+    assert [[ref.ref for ref in record.named] for record in records] == [[_WIDE], [side]]
 
 
 _IDS = "provenance/WorldBankInternationalDebtStatistics"

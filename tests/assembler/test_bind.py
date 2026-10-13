@@ -88,7 +88,7 @@ def test_status_the_frame_carries_passes_through():
     rf = ResolvedFrame(
         frame_ref=_FRAME_REF,
         frame=doc,
-        structural_view=compute_structural_view(frame=doc),
+        structural_view=compute_structural_view(frame=doc, continuation=None),
         manifest={},
         labels={},
         retrieved_on=FIXTURE_RETRIEVED_ON,
@@ -173,7 +173,7 @@ def test_converted_unit_passes_through_as_the_raw_structured_object():
     rf = ResolvedFrame(
         frame_ref=_FRAME_REF,
         frame=doc,
-        structural_view=compute_structural_view(frame=doc),
+        structural_view=compute_structural_view(frame=doc, continuation=None),
         manifest={},
         labels={},
         retrieved_on=FIXTURE_RETRIEVED_ON,
@@ -286,7 +286,7 @@ def test_month_grain_period_sequence():
     rf = ResolvedFrame(
         frame_ref=_FRAME_REF,
         frame=doc,
-        structural_view=compute_structural_view(frame=doc),
+        structural_view=compute_structural_view(frame=doc, continuation=None),
         manifest={},
         labels={},
         retrieved_on=FIXTURE_RETRIEVED_ON,

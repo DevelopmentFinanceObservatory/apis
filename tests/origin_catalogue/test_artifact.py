@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 from dataclasses import replace
@@ -12,39 +13,52 @@ import pyarrow.parquet as pq
 import pytest
 
 from origin_catalogue import UN_SYSTEM, CataloguePointer, artifact
+from origin_catalogue.arc_tables import EMPTY_ARC_TABLES, ArcTables
 from origin_catalogue.artifact import (
     CatalogueArtifactError,
     CatalogueTooLargeError,
     encode_build,
     load_catalogue,
     publish_build,
+    read_arc_tables,
     read_published_pointer,
     read_un_mirror,
     resident_bytes,
 )
+from origin_catalogue.families import FamilyKey, family_tables
 from origin_catalogue.schema import (
+    ARC_TARGETS_FILE,
+    BASE_ARCS_FILE,
     CATALOGUE_FORMAT_VERSION,
+    DFO_ARCS_FILE,
+    FAMILIES_FILE,
     FORMAT_ROOT,
+    SCHEMA_ARCS_FILE,
     UN_TOPICS_FILE,
     CatalogueManifest,
     UnCarryForward,
     identity_key,
 )
-from origin_catalogue.un_mirror import EMPTY_UN_MIRROR
+from origin_catalogue.un_mirror import EMPTY_UN_MIRROR, wire_arcs
 from tests.origin_catalogue.support import (
     BUILT_AT,
     CENSUS_POVERTY,
     CRS,
+    CRS_VARIABLE,
     EUROSTAT_GDP,
     GDP,
+    HOUSEHOLDS,
     POPULATION,
+    UN_SERIES,
     UN_VARIABLE,
     UN_VARIABLE_FEMALE,
     UN_WHO,
     WDI,
     WDI_DATASET,
+    build_arc_tables,
     encode_sample,
     publish_sample,
+    sample_arc_tables,
     sample_tables,
     sample_un_mirror,
 )
@@ -56,6 +70,20 @@ def _uri(tmp_path: Path) -> str:
 
 def _build_dir(tmp_path: Path, build_id: str = "build-a") -> Path:
     return tmp_path / "catalogue" / FORMAT_ROOT / "versions" / build_id
+
+
+def _rehash(tmp_path: Path) -> CatalogueManifest:
+    """Records in the build's manifest the SHA-256 of each file as it now stands, so a
+    test that rewrites a table reaches the decoder's own checks. Returns the manifest."""
+    path = _build_dir(tmp_path) / "manifest.json"
+    payload = json.loads(path.read_text())
+    payload["file_sha256"] = {
+        logical: hashlib.sha256((path.parent / name).read_bytes()).hexdigest()
+        for logical, name in payload["files"].items()
+        if (path.parent / name).exists()
+    }
+    path.write_text(json.dumps(payload))
+    return CatalogueManifest.from_json(path.read_text())
 
 
 def test_round_trip_reproduces_the_tables(tmp_path: Path) -> None:
@@ -141,9 +169,16 @@ def test_load_refuses_a_build_over_the_memory_budget_before_reading_tables(
     tmp_path: Path,
 ) -> None:
     uri = _uri(tmp_path)
-    manifest = publish_sample(uri, un_mirror=sample_un_mirror()).manifest
-    needed = manifest.resident_bytes + manifest.un_mirror.resident_bytes
+    manifest = publish_sample(uri, un_mirror=sample_un_mirror(), arcs=sample_arc_tables()).manifest
+    needed = (
+        manifest.resident_bytes
+        + manifest.un_mirror.resident_bytes
+        + manifest.arc_tables.resident_bytes
+        + manifest.families.resident_bytes
+    )
     assert manifest.un_mirror.resident_bytes > 1
+    assert manifest.arc_tables.resident_bytes > 1
+    assert manifest.families.resident_bytes > 1
     (_build_dir(tmp_path) / "base_variables.parquet").unlink()
     with pytest.raises(CatalogueTooLargeError, match="over the"):
         load_catalogue(uri, max_resident_bytes=needed - 1)
@@ -194,6 +229,7 @@ def _rewrite_base_variables(tmp_path: Path, table: pa.Table) -> None:
     sink = io.BytesIO()
     pq.write_table(table, sink)
     (_build_dir(tmp_path) / "base_variables.parquet").write_bytes(sink.getvalue())
+    _rehash(tmp_path)
 
 
 def test_load_refuses_a_bitset_of_the_wrong_width(tmp_path: Path) -> None:
@@ -217,6 +253,7 @@ def _rewrite_provenance_places(tmp_path: Path, table: pa.Table) -> None:
     sink = io.BytesIO()
     pq.write_table(table, sink)
     (_build_dir(tmp_path) / "provenance_places.parquet").write_bytes(sink.getvalue())
+    _rehash(tmp_path)
 
 
 def test_load_refuses_a_provenance_bitset_of_the_wrong_width(tmp_path: Path) -> None:
@@ -289,6 +326,7 @@ def test_load_refuses_an_unknown_origin(tmp_path: Path) -> None:
     rows = json.loads(path.read_text())
     rows[0]["data_commons"] = "wikidata"
     path.write_text(json.dumps(rows))
+    _rehash(tmp_path)
     with pytest.raises(CatalogueArtifactError, match="wikidata"):
         load_catalogue(uri)
 
@@ -312,6 +350,7 @@ def test_load_refuses_dataset_facts_that_miss_an_entry(tmp_path: Path) -> None:
     path.write_text(
         json.dumps([f for f in json.loads(path.read_text()) if f["ref"] != WDI_DATASET])
     )
+    _rehash(tmp_path)
     with pytest.raises(CatalogueArtifactError, match="dataset facts miss 1"):
         load_catalogue(uri)
 
@@ -407,6 +446,7 @@ def test_the_superseded_variable_table_round_trips_and_is_counted(tmp_path: Path
         identity_inputs={"week": "w"},
         registry_hash="r1",
         un_mirror=sample_un_mirror(),
+        arcs=sample_arc_tables(),
     )
     assert publish_build(uri, build, expected_generation=None)
 
@@ -440,6 +480,7 @@ def test_load_refuses_a_successor_the_un_tables_do_not_admit(tmp_path: Path) -> 
     manifest["row_counts"]["superseded_variables"] = 1
     manifest["row_counts"]["successor_variables"] = 1
     manifest_path.write_text(json.dumps(manifest))
+    _rehash(tmp_path)
 
     with pytest.raises(CatalogueArtifactError, match="not admitted UN variables"):
         load_catalogue(uri)
@@ -475,6 +516,7 @@ def test_load_refuses_un_tables_the_manifest_disagrees_with(tmp_path: Path) -> N
     uri, _manifest = _publish_with_un_tables(tmp_path)
     # A well-formed topic table of another build: it decodes, and holds no topic.
     (_build_dir(tmp_path) / UN_TOPICS_FILE).write_bytes(encode_sample().files[UN_TOPICS_FILE])
+    _rehash(tmp_path)
 
     with pytest.raises(CatalogueArtifactError, match="UN row counts"):
         load_catalogue(uri)
@@ -522,6 +564,7 @@ def test_reading_un_tables_refuses_tables_that_break_their_invariants(tmp_path: 
     uri, manifest = _publish_with_un_tables(tmp_path)
     path = _build_dir(tmp_path) / "un_variables.parquet"
     pq.write_table(pq.read_table(path).slice(0, 1), path)
+    manifest = _rehash(tmp_path)
 
     with pytest.raises(CatalogueArtifactError, match="UnMirrorTableError"):
         read_un_mirror(uri, manifest)
@@ -531,6 +574,7 @@ def test_reading_un_tables_refuses_an_arc_row_out_of_range(tmp_path: Path) -> No
     uri, manifest = _publish_with_un_tables(tmp_path)
     arcs = _build_dir(tmp_path) / "un_arcs.parquet"
     pq.write_table(pq.read_table(arcs).slice(0, 2), arcs)
+    manifest = _rehash(tmp_path)
 
     with pytest.raises(CatalogueArtifactError, match="out of range"):
         read_un_mirror(uri, manifest)
@@ -565,6 +609,380 @@ def test_reading_un_tables_requires_the_excluded_series_names(tmp_path: Path) ->
     payload = json.loads(path.read_bytes())
     del payload["series_names"]
     path.write_text(json.dumps(payload))
+    manifest = _rehash(tmp_path)
 
     with pytest.raises(CatalogueArtifactError, match="series_names"):
         read_un_mirror(uri, manifest)
+
+
+# --- Arc tables --------------------------------------------------------------
+
+
+def test_the_arc_tables_round_trip_and_the_manifest_counts_and_measures_them(
+    tmp_path: Path,
+) -> None:
+    uri = _uri(tmp_path)
+    manifest = publish_sample(uri, arcs=sample_arc_tables()).manifest
+    snapshot = load_catalogue(uri)
+
+    assert snapshot.arcs == sample_arc_tables()
+    assert read_arc_tables(uri, manifest) == sample_arc_tables()
+    assert manifest.arc_tables.row_counts == {
+        "dfo_arcs": 1,
+        "base_arcs": 2,
+        "schema_arcs": 4,
+        "dfo_arcs_empty": 0,
+        "base_arcs_empty": 1,
+        "schema_arcs_empty": 1,
+        "arc_targets": 8,
+    }
+    assert manifest.arc_tables.resident_bytes == resident_bytes(snapshot.arcs)
+    assert CatalogueManifest.from_json(manifest.to_json()) == manifest
+
+
+def _arcs_moving_gdp_to_dfo(*, empty: bool) -> ArcTables:
+    """The sample arc tables with GDP, a variable listed as base alone, left out of the
+    `base` table, and held empty in the `dfo` table when `empty`."""
+    arcs = sample_arc_tables()
+    return build_arc_tables(
+        dfo={
+            **{node: wire_arcs(rows) for node, rows in arcs.dfo.items()},
+            **({GDP: None} if empty else {}),
+        },
+        base={node: wire_arcs(rows) for node, rows in arcs.base.items() if node != GDP},
+        schema={node: wire_arcs(rows) for node, rows in arcs.schema.items()},
+        labels=arcs.labels,
+    )
+
+
+def test_a_build_without_arcs_for_its_listed_variables_is_refused() -> None:
+    """A listed variable no arc table holds would read live, so encoding refuses it."""
+    with pytest.raises(CatalogueArtifactError, match="hold none of 3 listed") as refused:
+        encode_sample(arcs=EMPTY_ARC_TABLES)
+    assert all(node in str(refused.value) for node in (CRS_VARIABLE, GDP, POPULATION))
+    with pytest.raises(CatalogueArtifactError, match=rf"hold none of 1 listed.*{GDP}"):
+        encode_sample(arcs=_arcs_moving_gdp_to_dfo(empty=False))
+
+
+def test_equal_arc_tables_encode_to_equal_bytes_whatever_the_input_order() -> None:
+    arcs = sample_arc_tables()
+    reordered = build_arc_tables(
+        **{
+            name: {node: wire_arcs(table[node]) for node in reversed(list(table))}
+            for name, table in (("dfo", arcs.dfo), ("base", arcs.base), ("schema", arcs.schema))
+        },
+        labels=arcs.labels,
+    )
+
+    first = encode_sample(arcs=arcs).files
+    second = encode_sample(arcs=reordered).files
+
+    assert reordered == arcs
+    for name in (DFO_ARCS_FILE, BASE_ARCS_FILE, SCHEMA_ARCS_FILE, ARC_TARGETS_FILE):
+        assert first[name] == second[name]
+
+
+def test_decoded_arc_tables_share_one_row_per_target_across_tables(tmp_path: Path) -> None:
+    uri = _uri(tmp_path)
+    publish_sample(uri, arcs=sample_arc_tables())
+    arcs = load_catalogue(uri).arcs
+
+    crs_type = arcs.dfo[CRS_VARIABLE][-1]
+    households_type = arcs.schema[HOUSEHOLDS][-1]
+    assert crs_type.property == "typeOf"
+    assert crs_type is households_type
+
+
+@pytest.mark.parametrize(
+    ("arcs", "table"),
+    [
+        pytest.param(
+            build_arc_tables(
+                dfo={CENSUS_POVERTY: {"name": {"nodes": [{"value": "Poverty"}]}}},
+                base={},
+                schema={},
+            ),
+            "dfo",
+            id="dfo-node-with-arcs-not-a-dfo-variable",
+        ),
+        pytest.param(
+            build_arc_tables(dfo={}, base={}, schema={GDP: None}),
+            "schema",
+            id="schema-node-a-listed-variable",
+        ),
+        pytest.param(
+            build_arc_tables(
+                dfo={},
+                base={CENSUS_POVERTY: {"name": {"nodes": [{"value": "Poverty"}]}}},
+                schema={},
+            ),
+            "base",
+            id="base-node-a-withheld-variable",
+        ),
+        pytest.param(
+            build_arc_tables(dfo={CENSUS_POVERTY: None}, base={}, schema={}),
+            "dfo",
+            id="dfo-empty-row-a-withheld-variable",
+        ),
+        pytest.param(
+            _arcs_moving_gdp_to_dfo(empty=True), "dfo", id="dfo-empty-row-a-listed-base-variable"
+        ),
+    ],
+)
+def test_encoding_refuses_arc_tables_holding_a_node_outside_their_scope(
+    arcs: object, table: str
+) -> None:
+    with pytest.raises(CatalogueArtifactError, match=f"the {table} arc table"):
+        encode_sample(arcs=arcs)
+
+
+def test_loading_refuses_arc_tables_holding_a_node_outside_their_scope(tmp_path: Path) -> None:
+    uri = _uri(tmp_path)
+    publish_sample(uri, arcs=sample_arc_tables())
+    path = _build_dir(tmp_path) / DFO_ARCS_FILE
+    table = pq.read_table(path)
+    nodes = [
+        CENSUS_POVERTY if node == CRS_VARIABLE else node
+        for node in table.column("node").to_pylist()
+    ]
+    pq.write_table(table.set_column(0, "node", pa.array(nodes)), path)
+    _rehash(tmp_path)
+
+    with pytest.raises(CatalogueArtifactError, match="the dfo arc table"):
+        load_catalogue(uri)
+
+
+def test_a_dfo_variable_whose_node_is_base_data_commons_loads_from_the_base_table(
+    tmp_path: Path,
+) -> None:
+    """A DFO variable Spanner declares no node for, as it declares none for
+    `Count_Person`, holds its arcs in the `base` table though the base list does not
+    name it."""
+    uri = _uri(tmp_path)
+    arcs = sample_arc_tables()
+    moved = build_arc_tables(
+        dfo={node: wire_arcs(rows) for node, rows in arcs.dfo.items() if node != CRS_VARIABLE},
+        base={
+            **{node: wire_arcs(rows) for node, rows in arcs.base.items()},
+            CRS_VARIABLE: wire_arcs(arcs.dfo[CRS_VARIABLE]),
+        },
+        schema={node: wire_arcs(rows) for node, rows in arcs.schema.items()},
+        labels=arcs.labels,
+    )
+    publish_sample(uri, arcs=moved)
+
+    loaded = load_catalogue(uri)
+    assert CRS_VARIABLE in loaded.tables.dfo_variables
+    assert loaded.held_arcs(CRS_VARIABLE) == arcs.dfo[CRS_VARIABLE]
+
+
+def test_loading_refuses_a_listed_base_variable_held_empty_in_place_of_its_base_row(
+    tmp_path: Path,
+) -> None:
+    """A partial `base` table that leaves out a listed base variable, held empty in the `dfo`
+    table with counts and hashes to match, would route the variable as absent. The loader
+    refuses it."""
+    uri = _uri(tmp_path)
+    publish_sample(uri, arcs=sample_arc_tables())
+    build = _build_dir(tmp_path)
+    partial = _arcs_moving_gdp_to_dfo(empty=True)
+    for name, data in artifact._encode_arc_tables(partial).items():
+        (build / name).write_bytes(data)
+    payload = json.loads((build / "manifest.json").read_text())
+    payload["arc_tables"]["row_counts"] = artifact._arc_row_counts(partial)
+    (build / "manifest.json").write_text(json.dumps(payload))
+    _rehash(tmp_path)
+
+    with pytest.raises(CatalogueArtifactError, match=rf"the dfo arc table.*{GDP}"):
+        load_catalogue(uri)
+
+
+def test_the_arc_tables_hold_resolver_index_nodes_beyond_the_listed_variables(
+    tmp_path: Path,
+) -> None:
+    """Our index's subject the graph dropped is held empty in the `dfo` table, and a base
+    node the base index names is held in the `base` table, though neither is a listed
+    variable."""
+    uri = _uri(tmp_path)
+    dropped, indexed = "Amount_FinancialFlow_CRSPurposeCode43010", "Count_Person_Urban"
+    arcs = sample_arc_tables()
+    held = build_arc_tables(
+        dfo={
+            **{node: wire_arcs(rows) for node, rows in arcs.dfo.items()},
+            dropped: None,
+        },
+        base={
+            **{node: wire_arcs(rows) for node, rows in arcs.base.items()},
+            indexed: {"name": {"nodes": [{"value": "Urban population"}]}},
+        },
+        schema={node: wire_arcs(rows) for node, rows in arcs.schema.items()},
+        labels=arcs.labels,
+    )
+    publish_sample(uri, arcs=held)
+
+    loaded = load_catalogue(uri)
+    assert loaded.held_arcs(dropped) == ()
+    assert [arc.value for arc in loaded.held_arcs(indexed) or ()] == ["Urban population"]
+
+
+def test_reading_arc_tables_refuses_counts_the_manifest_does_not_record(tmp_path: Path) -> None:
+    uri = _uri(tmp_path)
+    manifest = publish_sample(uri, arcs=sample_arc_tables()).manifest
+    recorded = replace(
+        manifest.arc_tables, row_counts={**manifest.arc_tables.row_counts, "base_arcs_empty": 0}
+    )
+
+    with pytest.raises(CatalogueArtifactError, match="arc table row counts"):
+        read_arc_tables(uri, replace(manifest, arc_tables=recorded))
+
+
+def test_reading_arc_tables_refuses_a_row_out_of_range_naming_the_build(tmp_path: Path) -> None:
+    uri = _uri(tmp_path)
+    manifest = publish_sample(uri, arcs=sample_arc_tables()).manifest
+    path = _build_dir(tmp_path) / ARC_TARGETS_FILE
+    pq.write_table(pq.read_table(path).slice(0, 2), path)
+    manifest = _rehash(tmp_path)
+
+    with pytest.raises(
+        CatalogueArtifactError, match=rf"^catalogue build {manifest.build_id!r} .*out of range"
+    ):
+        read_arc_tables(uri, manifest)
+
+
+def test_reading_arc_tables_refuses_targets_without_labels(tmp_path: Path) -> None:
+    uri = _uri(tmp_path)
+    manifest = publish_sample(uri, arcs=sample_arc_tables()).manifest
+    path = _build_dir(tmp_path) / ARC_TARGETS_FILE
+    pq.write_table(pq.read_table(path).drop_columns(["label"]), path)
+    manifest = _rehash(tmp_path)
+
+    with pytest.raises(CatalogueArtifactError, match="label"):
+        read_arc_tables(uri, manifest)
+
+
+def test_reading_arc_tables_refuses_a_node_twice_in_one_table(tmp_path: Path) -> None:
+    uri = _uri(tmp_path)
+    manifest = publish_sample(uri, arcs=sample_arc_tables()).manifest
+    path = _build_dir(tmp_path) / BASE_ARCS_FILE
+    table = pq.read_table(path)
+    pq.write_table(pa.concat_tables([table, table.slice(0, 1)]), path)
+    manifest = _rehash(tmp_path)
+
+    with pytest.raises(CatalogueArtifactError, match="appears twice"):
+        read_arc_tables(uri, manifest)
+
+
+# --- Family tables -----------------------------------------------------------
+
+
+def test_the_family_tables_round_trip_and_the_manifest_counts_and_measures_them(
+    tmp_path: Path,
+) -> None:
+    """The build holds one summary per family of its arc tables' and UN tables' variables,
+    computed when it is encoded, and the loaded snapshot serves them."""
+    uri = _uri(tmp_path)
+    arcs, mirror = sample_arc_tables(), sample_un_mirror()
+    manifest = publish_sample(uri, un_mirror=mirror, arcs=arcs).manifest
+    snapshot = load_catalogue(uri)
+    expected = family_tables(dfo=arcs.dfo, base=arcs.base, un=mirror)
+
+    assert snapshot.families == expected
+    assert manifest.families.row_counts == {"families": 2, "un_families": 1}
+    assert manifest.families.resident_bytes == resident_bytes(snapshot.families)
+    family = snapshot.held_family(FamilyKey(UN_SERIES, "value", "", None, None, False, False))
+    assert family is not None
+    assert len(family.members) == 2
+    assert CatalogueManifest.from_json(manifest.to_json()) == manifest
+
+
+def _rewrite_families(path: Path, column: str, value: object) -> None:
+    """Sets `column` of the family table at `path` to `value` in every row."""
+    table = pq.read_table(path)
+    at = table.schema.get_field_index(column)
+    values = pa.array([value] * table.num_rows, table.schema.field(at).type)
+    pq.write_table(table.set_column(at, column, values), path)
+
+
+@pytest.mark.parametrize(
+    ("corrupt", "match"),
+    [
+        pytest.param(
+            lambda path: pq.write_table(
+                pa.concat_tables([pq.read_table(path), pq.read_table(path).slice(0, 1)]), path
+            ),
+            "appears twice",
+            id="family-twice",
+        ),
+        pytest.param(
+            lambda path: _rewrite_families(path, "members", []),
+            "lists its members malformed",
+            id="family-of-no-member",
+        ),
+        pytest.param(
+            lambda path: _rewrite_families(path, "members", ["Debt", "Debt"]),
+            "lists its members malformed",
+            id="member-twice",
+        ),
+        pytest.param(
+            lambda path: _rewrite_families(path, "shared", ["missing"]),
+            "shares a property",
+            id="shared-property-not-listed",
+        ),
+        pytest.param(
+            lambda path: _rewrite_families(path, "total_name", None),
+            "total without a name",
+            id="total-without-a-name",
+        ),
+    ],
+)
+def test_loading_refuses_malformed_family_rows(tmp_path: Path, corrupt, match: str) -> None:
+    uri = _uri(tmp_path)
+    publish_sample(uri, un_mirror=sample_un_mirror(), arcs=sample_arc_tables())
+    corrupt(_build_dir(tmp_path) / FAMILIES_FILE)
+    _rehash(tmp_path)
+
+    with pytest.raises(CatalogueArtifactError, match=match):
+        load_catalogue(uri)
+
+
+def test_loading_refuses_a_family_table_of_another_build(tmp_path: Path) -> None:
+    """A family file another build wrote, with the same row counts, decodes and passes every
+    row check, so the manifest's SHA-256 of the file is what refuses it."""
+    uri = _uri(tmp_path)
+    publish_sample(uri, un_mirror=sample_un_mirror(), arcs=sample_arc_tables())
+    arcs = sample_arc_tables()
+    renamed = build_arc_tables(
+        dfo={node: wire_arcs(rows) for node, rows in arcs.dfo.items()},
+        base={
+            **{node: wire_arcs(rows) for node, rows in arcs.base.items()},
+            GDP: {
+                "name": {"nodes": [{"value": "GDP, renamed"}]},
+                "typeOf": {"nodes": [{"dcid": "StatisticalVariable", "types": ["Class"]}]},
+            },
+        },
+        schema={node: wire_arcs(rows) for node, rows in arcs.schema.items()},
+        labels=arcs.labels,
+    )
+    other = encode_sample(build_id="build-b", un_mirror=sample_un_mirror(), arcs=renamed)
+    assert (
+        other.files[FAMILIES_FILE]
+        != encode_sample(un_mirror=sample_un_mirror(), arcs=sample_arc_tables()).files[
+            FAMILIES_FILE
+        ]
+    )
+    (_build_dir(tmp_path) / FAMILIES_FILE).write_bytes(other.files[FAMILIES_FILE])
+
+    with pytest.raises(CatalogueArtifactError, match="SHA-256"):
+        load_catalogue(uri)
+
+
+def test_loading_refuses_family_counts_the_manifest_does_not_record(tmp_path: Path) -> None:
+    uri = _uri(tmp_path)
+    publish_sample(uri, un_mirror=sample_un_mirror(), arcs=sample_arc_tables())
+    path = _build_dir(tmp_path) / "manifest.json"
+    payload = json.loads(path.read_text())
+    payload["families"]["row_counts"]["un_families"] = 0
+    path.write_text(json.dumps(payload))
+
+    with pytest.raises(CatalogueArtifactError, match="family row counts"):
+        load_catalogue(uri)

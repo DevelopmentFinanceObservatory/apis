@@ -17,12 +17,12 @@ from collections.abc import Callable
 
 import dc_graph
 from materialise.facets import native_currency_iso
-from search.currency_codes import ISO_4217_CODES
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.degraded_reads import note_degraded_read
 from search.engine.errors import GraphInfraError
-from search.heading.unit_class import is_known_non_currency
 from search.models import IdentityCurrencyRole, IdentityUnitRequest
+from unit_words.currency_codes import ISO_4217_CODES
+from unit_words.unit_class import is_known_non_currency
 
 logger = logging.getLogger(__name__)
 

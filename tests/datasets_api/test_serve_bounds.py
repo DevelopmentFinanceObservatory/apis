@@ -336,7 +336,7 @@ def test_byte_cap_exceeded_labels_the_detail_in_bytes_not_rows():
             request,
             sdmx=sdmx,
             graph=graph,
-            enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
+            enrichment=EnrichmentLookup(graph, parties={}),
             ceiling=5,
             materialiser_build="test-build",
             capability_version="cap-v1",

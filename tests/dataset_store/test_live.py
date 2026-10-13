@@ -3688,11 +3688,13 @@ def test_a_row_inserted_with_facts_is_stored_as_written(live_store):
 def test_settle_counts_factless_versions_and_labels_raw_pin_principals(live_store):
     """`datasets-maintenance settle` turns a pin reference holding a raw secret (the previous
     image's write after 0026) into the secret's label and returns 0, and a second run changes
-    nothing. A version row holding no facts adds one to its count and stays as it is."""
+    nothing. A version row holding no facts and one whose profile names the enrichment `kind`
+    each add one to its count and stay as they are."""
     from datasets_api.maintenance import run_settle
 
     suffix = uuid4().hex
     factless = f"spec_settle_factless_{suffix}"
+    legacy = f"spec_settle_legacy_party_kind_{suffix}"
     pinned = f"spec_settle_pin_{suffix}"
     digest = f"sha256:test-live-settle-{suffix}"
     secret = f"settle-secret-{suffix}"
@@ -3725,8 +3727,213 @@ def test_settle_counts_factless_versions_and_labels_raw_pin_principals(live_stor
         )
         assert run_settle(store=live_store) == 1
         assert _stored_fact_columns(live_store, factless) == empty
+
+        _insert_as_the_previous_image(
+            live_store,
+            subject_id=legacy,
+            content_version="cv1",
+            body={"prepared_at": "2026-10-01T00:00:00Z", "output_profile": _profile("kind")},
+        )
+        _store_profile_past_the_trigger(live_store, legacy, _profile("kind"))
+        assert run_settle(store=live_store) == 2
+        assert _stored_profiles(live_store, [legacy]) == {
+            legacy: (_profile("kind"), _profile("kind"))
+        }
     finally:
         with live_store.transaction() as tx:
             tx.execute("DELETE FROM datasets.artifact_reference WHERE subject_id = %s", (pinned,))
             tx.execute("DELETE FROM datasets.version_artifact WHERE subject_id = %s", (pinned,))
-        _delete_versions(live_store, [factless, pinned])
+        _delete_versions(live_store, [factless, legacy, pinned])
+
+
+_STRIP_DOCUMENTATION_MIGRATION = "0035_strip_backfilled_documentation.sql"
+
+
+def test_0035_strips_documentation_from_bodies_prepared_before_the_cutoff(live_store):
+    """The migration drops `documentation` from each cited source of a body prepared before
+    2026-10-04T09:22:14Z, keeps every other member and the `citation` column equal to the
+    body, and leaves a body prepared at that instant and a body with no citation as stored. A
+    rerun changes nothing."""
+
+    suffix = uuid4().hex
+    before = f"spec_0035_before_{suffix}"
+    at_cutoff = f"spec_0035_at_cutoff_{suffix}"
+    no_citation = f"spec_0035_no_citation_{suffix}"
+    subjects = [before, at_cutoff, no_citation]
+    documented = _null_collection_body(before)
+    undocumented = {"ref": "OECD_CRS", "label": "OECD CRS", "processing_level": "minor"}
+    citation = cast(dict, documented["citation"])
+    (source,) = citation["sources"]
+    documented["citation"] = {**citation, "sources": [source, undocumented]}
+    documented["prepared_at"] = "2026-10-04T09:22:13Z"
+    cutoff_body = {**documented, "prepared_at": "2026-10-04T09:22:14Z"}
+    no_citation_body = {key: value for key, value in documented.items() if key != "citation"}
+    stripped = {
+        **documented,
+        "citation": {
+            **citation,
+            "sources": [
+                {key: value for key, value in source.items() if key != "documentation"},
+                undocumented,
+            ],
+        },
+    }
+    stored = {before: documented, at_cutoff: cutoff_body, no_citation: no_citation_body}
+    expected = {before: stripped, at_cutoff: cutoff_body, no_citation: no_citation_body}
+
+    def _rows() -> dict[str, tuple[dict, dict | None]]:
+        with live_store.transaction() as tx:
+            found = tx.fetch_all(
+                "SELECT subject_id, immutable_body, citation FROM datasets.version_record "
+                "WHERE subject_id = ANY(%s)",
+                (subjects,),
+            )
+        return {
+            cast(str, row["subject_id"]): (
+                cast(dict, row["immutable_body"]),
+                cast("dict | None", row["citation"]),
+            )
+            for row in found
+        }
+
+    for subject_id, body in stored.items():
+        _insert_as_the_previous_image(
+            live_store, subject_id=subject_id, content_version="cv1", body=body
+        )
+    try:
+        assert _rerun_migration(live_store, _STRIP_DOCUMENTATION_MIGRATION) == [
+            _STRIP_DOCUMENTATION_MIGRATION
+        ]
+        rows = _rows()
+        assert {subject_id: body for subject_id, (body, _) in rows.items()} == expected
+        assert {subject_id: citation for subject_id, (_, citation) in rows.items()} == {
+            subject_id: body.get("citation") for subject_id, body in expected.items()
+        }
+
+        assert _rerun_migration(live_store, _STRIP_DOCUMENTATION_MIGRATION) == [
+            _STRIP_DOCUMENTATION_MIGRATION
+        ]
+        assert _rows() == rows
+    finally:
+        _delete_versions(live_store, subjects)
+
+
+_PARTY_KIND_MIGRATION = "0033_output_profile_party_kind.sql"
+
+
+def _profile(*fields: str) -> dict[str, object]:
+    """An output profile with one role column and one enrichment entry per field, in order."""
+    return {
+        "schema_version": 1,
+        "rows": 2,
+        "columns": [{"name": "recipient", "kind": "role", "droppable": True, "distinct": 2}],
+        "pivots": [],
+        "enrichments": [
+            {
+                "column": "recipient",
+                "field": field,
+                "entities": 2,
+                "covered": 2,
+                "missing": [],
+                "truncated": False,
+            }
+            for field in fields
+        ],
+    }
+
+
+def _store_profile_past_the_trigger(live_store, subject_id: str, profile: object) -> None:
+    """Set `subject_id`'s `output_profile` column and body member to `profile` by UPDATE, which
+    0033's insert trigger does not see, as a row stored before 0033 holds it."""
+    with live_store.transaction() as tx:
+        tx.execute(
+            "UPDATE datasets.version_record SET output_profile = %s::jsonb, "
+            "immutable_body = jsonb_set(immutable_body, '{output_profile}', %s::jsonb) "
+            "WHERE subject_id = %s",
+            (json.dumps(profile), json.dumps(profile), subject_id),
+        )
+
+
+def _stored_profiles(live_store, subjects: list[str]) -> dict[str, tuple[object, object]]:
+    """Each subject's `output_profile` column and body member."""
+    with live_store.transaction() as tx:
+        rows = tx.fetch_all(
+            "SELECT subject_id, output_profile, immutable_body -> 'output_profile' AS body "
+            "FROM datasets.version_record WHERE subject_id = ANY(%s)",
+            (subjects,),
+        )
+    return {cast(str, row["subject_id"]): (row["output_profile"], row["body"]) for row in rows}
+
+
+def test_0033_renames_the_kind_enrichment_in_the_column_and_the_body(live_store):
+    """A profile stored with a `kind` entry before 0033 has it renamed `party_kind` in the
+    `output_profile` column and the body, in place, with its other entries and the column's
+    own `kind` kept. A profile with no `kind` entry and a version with no profile stay as
+    stored, and a rerun changes nothing."""
+    suffix = uuid4().hex
+    seeded = f"spec_party_kind_seeded_{suffix}"
+    renamed = f"spec_party_kind_renamed_{suffix}"
+    bare = f"spec_party_kind_bare_{suffix}"
+    bodies = {
+        seeded: {"prepared_at": "2026-10-01T00:00:00Z", "output_profile": None},
+        renamed: {"prepared_at": "2026-10-01T00:00:00Z", "output_profile": _profile("party_kind")},
+        bare: {"prepared_at": "2026-10-01T00:00:00Z", "output_profile": None},
+    }
+
+    for subject_id, body in bodies.items():
+        _insert_as_the_previous_image(
+            live_store, subject_id=subject_id, content_version="cv1", body=body
+        )
+    legacy = _profile("label", "kind", "iso3")
+    _store_profile_past_the_trigger(live_store, seeded, legacy)
+    try:
+        assert _stored_profiles(live_store, [seeded]) == {seeded: (legacy, legacy)}
+        assert _rerun_migration(live_store, _PARTY_KIND_MIGRATION) == [_PARTY_KIND_MIGRATION]
+        stored = _stored_profiles(live_store, list(bodies))
+        assert _rerun_migration(live_store, _PARTY_KIND_MIGRATION) == [_PARTY_KIND_MIGRATION]
+        assert _stored_profiles(live_store, list(bodies)) == stored
+
+        expected = _profile("label", "party_kind", "iso3")
+        assert stored == {
+            seeded: (expected, expected),
+            renamed: (_profile("party_kind"), _profile("party_kind")),
+            bare: (None, None),
+        }
+    finally:
+        _delete_versions(live_store, list(bodies))
+
+
+def test_a_kind_enrichment_inserted_after_0033_is_stored_as_party_kind(live_store):
+    """The previous image keeps writing `kind` after 0033 runs. A row it inserts with only
+    `immutable_body`, whose profile column 0030's trigger copies from the body, and a row it
+    inserts with its facts both store `party_kind` in the column and the body."""
+    suffix = uuid4().hex
+    body_only = f"spec_party_kind_body_only_{suffix}"
+    with_facts = f"spec_party_kind_with_facts_{suffix}"
+    legacy = _profile("label", "kind", "iso3")
+    body = {"prepared_at": "2026-10-01T00:00:00Z", "output_profile": legacy}
+    try:
+        _insert_as_the_previous_image(
+            live_store, subject_id=body_only, content_version="cv1", body=body
+        )
+        with live_store.transaction() as tx:
+            tx.execute(
+                "INSERT INTO datasets.version_record "
+                "(subject_id, subject_kind, content_version, schema_version, immutable_body, "
+                "recorded_at, prepared_at, output_profile) "
+                "VALUES (%s, 'spec', 'cv1', 1, %s::jsonb, now(), %s, %s::jsonb)",
+                (
+                    with_facts,
+                    json.dumps(body),
+                    datetime(2026, 10, 1, tzinfo=UTC),
+                    json.dumps(legacy),
+                ),
+            )
+
+        expected = _profile("label", "party_kind", "iso3")
+        assert _stored_profiles(live_store, [body_only, with_facts]) == {
+            body_only: (expected, expected),
+            with_facts: (expected, expected),
+        }
+    finally:
+        _delete_versions(live_store, [body_only, with_facts])

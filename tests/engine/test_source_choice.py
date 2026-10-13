@@ -28,6 +28,7 @@ from search.engine.entry.parsed import _dedupe_parts_with_indices
 from search.engine.fanout import restated_sources
 from search.engine.options import surface as surface_module
 from search.engine.options.resolve import ResolvedOptionsTarget
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region.arcs import standard_bindings_from_arcs
 from search.engine.region.facets import _resolved_facets
 from search.engine.region.named_source import with_named_source
@@ -71,6 +72,7 @@ from search.models import (
 from series_coverage.shared import CoverageSnapshot
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._quantity import NO_QUANTITY
 from tests.engine.test_admissibility_table import _FACETS, _GDP_SOLE_OPTION, _node, _SoleOptionLLM
 from tests.engine.test_ids_index_sourcing import _crs_arcs, _derive_one, _ids_shape
 from tests.engine.test_parsed_pipeline import _fertility_kenya_part
@@ -315,10 +317,10 @@ def test_a_part_scoped_to_a_source_the_index_holds_no_rows_of_elects_its_pin_s_q
         build_slot(
             key,
             draft,
-            [GraphRef(dcid=value, label=value) for value in draft.value_dcids]
+            [GraphRef(ref=value, label=value) for value in draft.value_dcids]
             if draft is not None
             else [],
-            property_ref=GraphRef(dcid=key.property_dcid, label=key.property_dcid)
+            property_ref=GraphRef(ref=key.property_dcid, label=key.property_dcid)
             if key.property_dcid is not None
             else None,
         )
@@ -511,7 +513,7 @@ def test_an_unresolved_source_answers_no_data_quoting_its_words():
 _IDS = "provenance/WorldBankInternationalDebtStatistics"
 _EDUCATION = ResolvedQualifier(
     text="education",
-    named=[GraphRef(dcid="CRSPurposeCode110", label="education")],
+    named=[GraphRef(ref="CRSPurposeCode110", label="education")],
     slot=None,
     disposition="unbound",
 )
@@ -589,7 +591,7 @@ def test_a_no_data_outcome_under_a_scope_names_its_sources(
     assert part.rendered_sentence == message
     assert [q.text for q in part.no_data.unbound_qualifiers] == unbound
     assert all(
-        [ref.dcid for ref in q.named] == [_IDS]
+        [ref.ref for ref in q.named] == [_IDS]
         for q in part.no_data.unbound_qualifiers
         if q.text != "education"
     )
@@ -906,6 +908,8 @@ class _MenuLLM:
         self.prompts: list[str] = []
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         self.prompts.append(prompt)
         return schema(chosen_shape_index=0, bindings=[], also_plausible=None, ask=None), None
 
@@ -928,7 +932,7 @@ def test_an_exclusion_of_every_publisher_the_question_reaches_refuses_naming_it(
 
     assert result.status == "no_data"
     assert result.no_data_reason == "qualifier_not_bound"
-    assert [ref.dcid for record in result.unbound_sources for ref in record.named] == [_CRS]
+    assert [ref.ref for record in result.unbound_sources for ref in record.named] == [_CRS]
     assert llm.prompts == []
 
 
@@ -966,8 +970,54 @@ def test_an_exclusion_ranks_on_the_evidence_the_unscoped_question_reaches(
         )
     )
     assert scope is None or isinstance(scope, SourceScope)
+    graph = _gdp_graph(nominal_publishers, scores=(0.9, 0.85))
+
+    with caplog.at_level(logging.INFO, logger="search.engine.region.pipeline"):
+        result = _resolve_gdp(graph, scope)
+
+    assert [
+        (member.ref.ref, spec.resolved.facets["provenance"].ref)
+        for spec in result.specs
+        for member in spec.resolved.members
+    ] == served
+    if not served:
+        assert result.status == "no_data"
+        assert result.no_data_reason == "qualifier_not_bound"
+        assert [ref.ref for record in result.unbound_sources for ref in record.named] == [_WEO]
+        assert result.source_scope == scope
+        (line,) = [r.getMessage() for r in caplog.records if r.getMessage().startswith("gap_fill ")]
+        assert "pass2=skipped:source_scope" in line
+
+
+def test_an_exclusion_whose_prunes_leave_no_reading_refuses_the_variable(bind_catalogue):
+    """ "GDP of Kenya" excluding the CRS recalls nominal and real GDP under the score floor.
+    The prunes run unscoped and leave no reading, so the exclusion removed none and the
+    part refuses `variable_not_resolved`. The scope allows only code-index datasets, so
+    both shapes lie outside it, and the refusal still does not blame it."""
+    bind_catalogue(FakeCatalogue(provenances={_WEO: _row(_WEO), _WDI: _row(_WDI)}))
+    mention = SourceMention(text="CRS", ref=_CRS, polarity="exclude")
+    scope = SourceScope(
+        allowed=frozenset(get_index().datasets) - {_CRS},
+        named=False,
+        mentions=(mention,),
+        references=(SourceReference(ref=_CRS, label="CRS", kind="provenance"),),
+        expansions=(frozenset({_CRS}),),
+    )
+
+    result = _resolve_gdp(_gdp_graph((_WEO,), scores=(0.6, 0.55)), scope)
+
+    assert result.status == "no_data"
+    assert result.no_data_reason == "variable_not_resolved"
+    assert not result.unbound_sources
+
+
+def _gdp_graph(
+    nominal_publishers: tuple[str, ...], *, scores: tuple[float, float]
+) -> _ScopedFakeGraph:
+    """Nominal GDP from `nominal_publishers` and real GDP from the WDI at Kenya, recalled
+    for "GDP of Kenya" at `scores`."""
     publishers = {_NOMINAL_GDP: nominal_publishers, _REAL_GDP: (_WDI,)}
-    graph = _ScopedFakeGraph(
+    return _ScopedFakeGraph(
         nodes={
             _KEN: {"label": "Kenya", "type": "Country"},
             _NOMINAL_GDP: _node(
@@ -981,29 +1031,13 @@ def test_an_exclusion_ranks_on_the_evidence_the_unscoped_question_reaches(
                 {"activitySource": "GrossDomesticProduction"},
             ),
         },
-        detect={"GDP of Kenya": {"svs": [_NOMINAL_GDP, _REAL_GDP], "cosine_scores": [0.9, 0.85]}},
+        detect={"GDP of Kenya": {"svs": [_NOMINAL_GDP, _REAL_GDP], "cosine_scores": list(scores)}},
         resolve={"Kenya": _KEN},
         obs={
             f"{sv}|{_KEN}": [{**facet, "provenanceId": p} for p in provenances for facet in _FACETS]
             for sv, provenances in publishers.items()
         },
     )
-
-    with caplog.at_level(logging.INFO, logger="search.engine.region.pipeline"):
-        result = _resolve_gdp(graph, scope)
-
-    assert [
-        (member.ref.dcid, spec.resolved.facets["provenance"].ref)
-        for spec in result.specs
-        for member in spec.resolved.members
-    ] == served
-    if not served:
-        assert result.status == "no_data"
-        assert result.no_data_reason == "qualifier_not_bound"
-        assert [ref.dcid for record in result.unbound_sources for ref in record.named] == [_WEO]
-        assert result.source_scope == scope
-        (line,) = [r.getMessage() for r in caplog.records if r.getMessage().startswith("gap_fill ")]
-        assert "pass2=skipped:source_scope" in line
 
 
 def _resolve_gdp(graph: _ScopedFakeGraph, scope: SourceScope | None) -> RegionResult:
@@ -1026,3 +1060,49 @@ def _resolve_gdp(graph: _ScopedFakeGraph, scope: SourceScope | None) -> RegionRe
             coverage=empty_coverage_snapshot(),
         )
     )
+
+
+class _AskLLM(_MenuLLM):
+    """A bind model that declines its menu."""
+
+    async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
+        self.prompts.append(prompt)
+        return schema(
+            chosen_shape_index=0, bindings=[], also_plausible=None, ask="Which flow?"
+        ), None
+
+
+@pytest.mark.parametrize(
+    ("polarity", "source", "allowed"),
+    [
+        ("include", _DAC2A, frozenset({_DAC2A})),
+        ("exclude", _CRS, frozenset({_DAC2A, _WDI})),
+    ],
+    ids=["naming-dac2a", "excluding-crs"],
+)
+def test_a_bind_declining_a_part_whose_scope_removed_shapes_refuses_naming_its_sources(
+    polarity: Literal["include", "exclude"], source: str, allowed: frozenset[str]
+):
+    """Recall reaches CRS and DAC2a flows. Naming DAC2a removes the CRS shape at candidacy;
+    excluding the CRS removes it from the ranked menu. Bind declines the DAC2a shape left.
+    Readings exist outside the scope and none inside is accepted, so the part refuses
+    `qualifier_not_bound` naming the source it mentions."""
+    mention = SourceMention(text=source, ref=source, polarity=polarity)
+    scope = SourceScope(
+        allowed=allowed,
+        named=polarity == "include",
+        mentions=(mention,),
+        references=(SourceReference(ref=source, label=source, kind="provenance"),),
+        expansions=(frozenset({source}),),
+    )
+    llm = _AskLLM()
+
+    result = _resolve_flow(
+        scope, {_family_member(_CRS): 0.66, _family_member(_DAC2A): 0.61}, llm, "aid"
+    )
+
+    assert len(llm.prompts) == 1
+    assert result.no_data_reason == "qualifier_not_bound"
+    assert [ref.ref for record in result.unbound_sources for ref in record.named] == [source]

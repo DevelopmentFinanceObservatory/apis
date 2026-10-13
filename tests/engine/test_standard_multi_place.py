@@ -9,11 +9,15 @@ from __future__ import annotations
 import asyncio
 from typing import ClassVar
 
+import pytest
+
 from search.engine.bind import _UniversalBindOutput
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import RegionResult, resolve_variable
 from search.models import BindingSet, BindingValue, CoverageExact
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 # A single SV resolved via the standard resolve path.
@@ -62,6 +66,13 @@ _BOREAL = ["country/B1", "country/B2", "country/B3"]
 _AUSTRAL = ["country/A1", "country/A2", "country/A3"]
 _CHILDREN: dict = {"boreal": {"Country": _BOREAL}, "austral": {"Country": _AUSTRAL}}
 
+
+@pytest.fixture(autouse=True)
+def _regions(declare_regions):
+    """Search reads a region's members from the membership policy."""
+    declare_regions({"boreal": _BOREAL, "austral": _AUSTRAL})
+
+
 # The graph names a provenance on every facet it serves; `select_facet` refuses one without.
 _SOURCE = "dc/base/PlaceFixture"
 
@@ -70,6 +81,8 @@ class _FixedBindLLM:
     """Elects the sole candidate shape with no constraint bindings, unconditionally."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0,
@@ -146,7 +159,7 @@ def test_two_named_countries_bind_as_set_with_distinct_country_count():
     spec = result.specs[0]
     where = _where_slot(result)
     assert isinstance(where.binding, BindingSet)
-    assert [v.ref.dcid for v in where.binding.values] == ["country/GTM", "country/SLV"]
+    assert [v.ref.ref for v in where.binding.values] == ["country/GTM", "country/SLV"]
     assert {e.ref for e in spec.resolved.entities} == {"country/GTM", "country/SLV"}
     assert isinstance(spec.resolved.coverage, CoverageExact)
     assert spec.resolved.coverage.dimensions is not None
@@ -171,7 +184,7 @@ def test_probe_union_covers_region_mix():
     spec = result.specs[0]
     where = _where_slot(result)
     assert isinstance(where.binding, BindingSet)
-    assert [v.ref.dcid for v in where.binding.values] == [*_BOREAL, "country/GTM"]
+    assert [v.ref.ref for v in where.binding.values] == [*_BOREAL, "country/GTM"]
     assert isinstance(spec.resolved.coverage, CoverageExact)
     assert spec.resolved.coverage.dimensions is not None
     countries_dim = next(d for d in spec.resolved.coverage.dimensions if d.label == "countries")
@@ -198,7 +211,7 @@ def test_probe_union_covers_two_regions():
     spec = result.specs[0]
     where = _where_slot(result)
     assert isinstance(where.binding, BindingSet)
-    assert [v.ref.dcid for v in where.binding.values] == [*_AUSTRAL, *_BOREAL]
+    assert [v.ref.ref for v in where.binding.values] == [*_AUSTRAL, *_BOREAL]
     assert isinstance(spec.resolved.coverage, CoverageExact)
     assert spec.resolved.coverage.dimensions is not None
     countries_dim = next(d for d in spec.resolved.coverage.dimensions if d.label == "countries")
@@ -236,7 +249,7 @@ def test_eleven_named_countries_all_bind_and_no_warning_is_served():
     assert [w.code for w in result.warnings] == ["membership_unverified"]
     where = _where_slot(result)
     assert isinstance(where.binding, BindingSet)
-    assert [v.ref.dcid for v in where.binding.values] == dcids
+    assert [v.ref.ref for v in where.binding.values] == dcids
     assert [e.ref for e in result.specs[0].resolved.entities] == dcids
 
 
@@ -320,7 +333,7 @@ def test_two_surface_names_one_dcid_stays_scalar():
     assert result.status == "definite"
     where = _where_slot(result)
     assert isinstance(where.binding, BindingValue)
-    assert where.binding.value.ref.dcid == "country/GTM"
+    assert where.binding.value.ref.ref == "country/GTM"
 
 
 def test_single_named_place_stays_scalar_value_binding():
@@ -334,7 +347,7 @@ def test_single_named_place_stays_scalar_value_binding():
     assert result.status == "definite"
     where = _where_slot(result)
     assert isinstance(where.binding, BindingValue)
-    assert where.binding.value.ref.dcid == "country/GTM"
+    assert where.binding.value.ref.ref == "country/GTM"
 
 
 # Sentence events preserve the multi-place binding.
@@ -363,7 +376,7 @@ def test_sentence_event_carries_both_places():
     assert sentence_events, "expected at least one SentenceEvent"
     where = next(s for s in sentence_events[0].slots if s.key.axis == "where")
     assert isinstance(where.binding, BindingSet)
-    assert {v.ref.dcid for v in where.binding.values} == {"country/GTM", "country/SLV"}
+    assert {v.ref.ref for v in where.binding.values} == {"country/GTM", "country/SLV"}
 
 
 # Candidate specs retain the full place set.
@@ -426,6 +439,8 @@ class TestCandidatesEveryShapeCarriesFullPlaceSet:
         """Elect the first shape and flag the second as also plausible."""
 
         async def generate_structured(self, *, prompt, system, schema):
+            if schema is QuantityOutput:
+                return NO_QUANTITY
             assert schema.__name__ == "_UniversalBindOutput"
             return _UniversalBindOutput(
                 chosen_shape_index=0,
@@ -466,7 +481,7 @@ class TestCandidatesEveryShapeCarriesFullPlaceSet:
 def _assert_where_is_full_place_set(spec) -> None:
     where = next(s for s in spec.resolved.slots if s.key.axis == "where")
     assert isinstance(where.binding, BindingSet), (
-        f"expected BindingSet for spec {spec.resolved.members[0].ref.dcid!r}, "
+        f"expected BindingSet for spec {spec.resolved.members[0].ref.ref!r}, "
         f"got {type(where.binding).__name__}"
     )
-    assert {v.ref.dcid for v in where.binding.values} == {"country/GTM", "country/SLV"}
+    assert {v.ref.ref for v in where.binding.values} == {"country/GTM", "country/SLV"}

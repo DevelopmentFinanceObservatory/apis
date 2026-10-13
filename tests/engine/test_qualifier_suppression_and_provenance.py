@@ -14,6 +14,7 @@ from code_index.types import CodeRow, CodeSystemDeclaration, IndexStamp
 from search.engine.assemble import _surviving_qualifier_warnings, build_definite_part
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.extract import ExtractedEntity, Extraction
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import RegionResult
 from search.engine.region import phase_election as phase_election_module
 from search.engine.region import phase_rank_bind as phase_rank_bind_module
@@ -30,6 +31,7 @@ from tests.engine._builders import value_slot
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import make_request, offline_resolve
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 # ---------------------------------------------------------------------------
@@ -96,6 +98,8 @@ class _ExtractAndBindLLM:
                 dates=[],
                 dropped_qualifiers=self._dropped,
             ), None
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0, bindings=[], also_plausible=[], ask=None
@@ -134,7 +138,7 @@ def test_admitted_dropped_qualifier_suppresses_warning_and_sentence_note():
     finance_slot = next(
         s
         for s in part.spec.resolved.slots
-        if s.key.property is not None and s.key.property.dcid == "crsTypeOfFinance"
+        if s.key.property is not None and s.key.property.ref == "crsTypeOfFinance"
     )
     assert finance_slot.binding.kind == "value"
     assert "was not applied" not in part.spec.resolved.rendered_sentence
@@ -197,6 +201,8 @@ def test_terminal_before_election_reports_no_admitted_phrases():
                     dates=[],
                     dropped_qualifiers=self._dropped,
                 ), None
+            if schema is QuantityOutput:
+                return NO_QUANTITY
             assert schema.__name__ == "_UniversalBindOutput"
             return _UniversalBindOutput(
                 chosen_shape_index=0, bindings=[], also_plausible=[], ask="no shape matches"
@@ -279,7 +285,7 @@ def test_dropped_qualifier_absent_from_variable_text_is_still_admitted():
     finance_slot = next(
         s
         for s in part.spec.resolved.slots
-        if s.key.property is not None and s.key.property.dcid == "crsTypeOfFinance"
+        if s.key.property is not None and s.key.property.ref == "crsTypeOfFinance"
     )
     assert finance_slot.binding.kind == "value"
     assert "was not applied" not in part.spec.resolved.rendered_sentence
@@ -305,7 +311,7 @@ def test_two_variable_query_attributes_its_dropped_qualifier_to_the_leg_that_can
     finance_slot = next(
         s
         for s in oda_part.spec.resolved.slots
-        if s.key.property is not None and s.key.property.dcid == "crsTypeOfFinance"
+        if s.key.property is not None and s.key.property.ref == "crsTypeOfFinance"
     )
     assert finance_slot.binding.kind == "value"
 
@@ -477,7 +483,7 @@ def test_measure_elected_properties_stamps_forced_slot_and_leaves_the_rest():
 
     def _provenance(prop: str) -> str:
         return next(
-            f for f in spec.resolved.trace.slot_filters if f.key.property.dcid == prop
+            f for f in spec.resolved.trace.slot_filters if f.key.property.ref == prop
         ).provenance
 
     assert _provenance("textProp") == "text_recognized"
@@ -544,9 +550,7 @@ def test_merged_spec_keeps_provenance_through_collapse_same_shape():
     merged_spec = effective[0].spec
     assert merged_spec.resolved.slots[0].binding.kind == "set"
     merged_filter = next(
-        f
-        for f in merged_spec.resolved.trace.slot_filters
-        if f.key.property.dcid == "constraintProp"
+        f for f in merged_spec.resolved.trace.slot_filters if f.key.property.ref == "constraintProp"
     )
     assert merged_filter.provenance == "text_recognized"
 
@@ -585,9 +589,7 @@ def test_merged_spec_keeps_measure_elected_provenance_through_collapse_same_shap
     assert residual == []
     merged_spec = effective[0].spec
     merged_filter = next(
-        f
-        for f in merged_spec.resolved.trace.slot_filters
-        if f.key.property.dcid == "constraintProp"
+        f for f in merged_spec.resolved.trace.slot_filters if f.key.property.ref == "constraintProp"
     )
     assert merged_filter.provenance == "measure_elected"
 
@@ -637,9 +639,7 @@ def test_merged_spec_prefers_text_recognized_over_measure_elected_on_conflict():
     assert residual == []
     merged_spec = effective[0].spec
     merged_filter = next(
-        f
-        for f in merged_spec.resolved.trace.slot_filters
-        if f.key.property.dcid == "constraintProp"
+        f for f in merged_spec.resolved.trace.slot_filters if f.key.property.ref == "constraintProp"
     )
     assert merged_filter.provenance == "text_recognized"
 
@@ -657,6 +657,8 @@ def test_e2e_forced_binding_carries_text_recognized_provenance_binder_elects_the
         crsTypeOfFinance) -- both forced only if admission actually ran."""
 
         async def generate_structured(self, *, prompt, system, schema):
+            if schema is QuantityOutput:
+                return NO_QUANTITY
             assert schema.__name__ == "_UniversalBindOutput"
             return _UniversalBindOutput(
                 chosen_shape_index=0,
@@ -693,7 +695,7 @@ def test_e2e_forced_binding_carries_text_recognized_provenance_binder_elects_the
 
     def _provenance(prop: str) -> str:
         return next(
-            f for f in slot_filters if f.key.property is not None and f.key.property.dcid == prop
+            f for f in slot_filters if f.key.property is not None and f.key.property.ref == prop
         ).provenance
 
     assert _provenance("crsTypeOfFlow") == "text_recognized"
@@ -771,6 +773,8 @@ _SYN_OBS = {
 
 class _SyntheticNoBindingLLM:
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0, bindings=[], also_plausible=[], ask=None
@@ -808,6 +812,6 @@ def test_synthetic_code_system_admission_reaches_both_halves(monkeypatch, search
     assert result.status == "definite"
     assert result.admitted_qualifier_phrases == frozenset({"synthetic widget grade"})
     slot_filters = result.specs[0].resolved.trace.slot_filters
-    synthetic_filter = next(f for f in slot_filters if f.key.property.dcid == "syntheticAxis")
+    synthetic_filter = next(f for f in slot_filters if f.key.property.ref == "syntheticAxis")
     assert synthetic_filter.provenance == "text_recognized"
-    assert synthetic_filter.refs[0].dcid == "SyntheticAxisCodeAlpha"
+    assert synthetic_filter.refs[0].ref == "SyntheticAxisCodeAlpha"

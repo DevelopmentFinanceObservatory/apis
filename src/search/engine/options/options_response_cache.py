@@ -9,8 +9,10 @@ response`'s own compute -- the graph/SDMX work that turns a resolved target
 into candidates -- is what a hit skips.
 
 The key includes the caller-supplied
-`build_commit` and `req.schema_version` (so rebuilds and schema changes produce distinct keys), `options.population_memo._population_key(req.
-identity)` (anchors do not change a population), `req.for_.role` and
+`build_commit` and `req.schema_version` (so rebuilds and schema changes produce distinct keys),
+`options.population_memo._population_key(target.identity)` (anchors do not change a
+population, and the identity carries the requested flow axis as an open role),
+`req.for_.role` and
 `req.include_coverage`, `target.facets` and `target.requested_window`
 (carried through from the identity, unchanged), and finally one piece that
 depends on which half of `build_options_response` will run: for `for.role ==
@@ -27,9 +29,12 @@ The caller passes one `CoverageSnapshot` to the cache key and response
 builder. Its stamp ensures a republished coverage artifact cannot reuse
 results built against earlier donor or recipient membership.
 
-The cache stores results without warnings. Coverage-only probe failures return
-warnings and remain uncached; refusals and infrastructure failures raise and
-remain uncached. A later request retries every uncached result.
+The cache stores results without warnings that read everything they needed.
+Coverage-only probe failures return warnings and remain uncached; a compute that
+noted a degraded read (`degraded_reads.note_degraded_read`), such as a place's
+facet tie left to the unit's name because its whole-variable breadth was not
+read, remains uncached; refusals and infrastructure failures raise and remain
+uncached. A later request retries every uncached result.
 
 Each entry's generation stamp is part of its key and sets its `max_age_s`.
 A coverage republish changes the caller-supplied key. Single-flight starts
@@ -53,7 +58,7 @@ from __future__ import annotations
 import hashlib
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import cast
 
 import rfc8785
@@ -62,6 +67,7 @@ import search.engine.config as config  # module-attribute access for runtime-res
 from dfo_platform.single_flight_cache import SingleFlightCache
 from graph_generation import UNKNOWN_GENERATION, GenerationProvider
 from materialise.roles import RoleAxis
+from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.options.population_memo import _population_key
 from search.engine.options.resolve import ResolvedOptionsTarget
 from search.engine.options.surface import (
@@ -164,7 +170,7 @@ def options_response_cache_key(
     document = {
         "build_commit": build_commit,
         "schema_version": req.schema_version,
-        "population_key": _population_key(req.identity),
+        "population_key": _population_key(target.identity),
         "role": req.for_.role,
         "include_coverage": bool(req.include_coverage),
         "axis": axis_component,
@@ -187,14 +193,30 @@ class ComputedOptions:
     """One `get_or_compute` result: the `OptionsSet` `build_options_
     response` produced, plus whatever `Warning`s it carried. A non-empty
     `warnings` means this result was never, and will never be, written to
-    the store. See `OptionsResponseCache`'s own docstring."""
+    the store, as does `degraded`, set when the compute noted a read it
+    stands without. See `OptionsResponseCache`'s own docstring."""
 
     options: OptionsSet
     warnings: tuple[Warning, ...]
+    degraded: bool = False
 
 
 def _is_cacheable(computed: ComputedOptions) -> bool:
-    return not computed.warnings
+    return not computed.warnings and not computed.degraded
+
+
+def _recording_degraded(
+    compute: Callable[[float], ComputedOptions],
+) -> Callable[[float], ComputedOptions]:
+    """`compute` under its own degraded-read record, marking the result `degraded` when the
+    record noted any read."""
+
+    def recorded(deadline: float) -> ComputedOptions:
+        with recording_degraded_reads() as lost:
+            computed = compute(deadline)
+        return replace(computed, degraded=True) if lost.degraded else computed
+
+    return recorded
 
 
 class OptionsResponseCache:
@@ -236,15 +258,15 @@ class OptionsResponseCache:
     ) -> ComputedOptions:
         """Return the cached result or compute it on a miss.
 
-        Exceptions propagate and are not stored. Results with warnings are
-        shared with concurrent callers but not cached. `deadline` bounds only
+        Exceptions propagate and are not stored. Results with warnings or a
+        degraded read are shared with concurrent callers but not cached. `deadline` bounds only
         this caller's wait; timeout raises `asyncio.TimeoutError` without
         cancelling the shared task. `compute` receives the absolute deadline
         its reads must honour: the flight's, or this caller's when the cache
         is disabled.
         """
         return await self._cache.aget_or_fetch(
-            key, compute, deadline=deadline, is_cacheable=_is_cacheable
+            key, _recording_degraded(compute), deadline=deadline, is_cacheable=_is_cacheable
         )
 
     def stats(self) -> Mapping[str, int]:

@@ -18,7 +18,8 @@ the head's source by source: a match confirms and serves the head, a difference 
 head with no fingerprint rebuilds once. The graph serving revision is never compared, since it
 moves on every graph restart. A rebuild materialises the definition
 (`serve.serve_definition`), sharing one rebuild per subject in this process
-(`admission.RebuildFlights`).
+(`admission.RebuildFlights`), and breaks a single-place facet tie on the process's
+whole-variable breadth (`DefinitionDeps.variable_breadth`).
 
 A call with no rendering (`options` `None`, the `/options` route) loads the head's version
 without its artifacts, and a rebuild records the version, its canonical frame and statistics, and
@@ -54,11 +55,15 @@ from datasets_api.admission import (
     MaterialisePermits,
     RebuildFlights,
     bounded_materialise_slot,
+    elected_provenances,
+    identity_role_keys,
     refuse_excel_over_estimate,
+    refuse_excel_over_stored_rows,
     refuse_inline_over_ceiling,
     sync_estimate,
     under_current_coverage,
     within_sync_budget,
+    xlsx_splits_totals,
 )
 from datasets_api.capabilities import build_capabilities
 from datasets_api.codes_materialise import ExcludedByRegistry
@@ -66,6 +71,7 @@ from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors.snapshot import read_snapshot_currency, read_snapshot_manifest
 from datasets_api.manifest import (
     collapsed_head_manifest,
+    provenance_refs_of,
     record_collapsed_head_version,
     reshape_warning_models,
     stored_manifest_facts,
@@ -97,13 +103,13 @@ from datasets_api.serve import (
     bundle_citations,
     incomplete_artifact,
     persisted_response,
-    provenance_refs_of,
     raw_fetch_guard,
     refs_from_resolved_stat_vars,
     serve_definition,
     with_linked_artifacts,
 )
 from datasets_api.timings import count, label, phase
+from datasets_api.version_descriptions import collapse_describer
 from datasets_api.versions import (
     ArtifactRecord,
     HeadFence,
@@ -125,22 +131,26 @@ from materialise import (
 )
 from materialise.bundle import ReproducingCall
 from materialise.codes import MaterialisationWarning
+from materialise.continued_series import continued_series_of_trace
 from materialise.dependencies import (
     decode_dependencies,
     dependency_changes,
     refreshed_dependencies,
 )
 from materialise.errors import DefaultFacetUndefinedError, FacetNotAvailableError
+from materialise.facets import VariableBreadthReader, bound_variable_breadth
 from materialise.formats import (
-    EXCEL_MAX_ROWS,
-    check_excel_rows,
     frame_entity_columns,
     read_stored_frame,
 )
 from materialise.graph import GraphReader
 from materialise.profile import OutputProfile
+from materialise.projection import totals_axes
 from materialise.rate_tables import RateTableCache
-from materialise.statistics import SeriesStatisticsSink, compute_series_statistics_table
+from materialise.statistics import (
+    SeriesStatisticsSink,
+    compute_series_statistics_table,
+)
 from series_coverage.index import CoverageIndex, Estimate
 from series_coverage.shared import CoverageService, CoverageSnapshot
 from spec_registry import SpecRegistry
@@ -216,6 +226,10 @@ class DefinitionDeps:
     # Lists a subject's stored versions for the frame refresh, which looks up the collapsed
     # version already recorded under a head. `None` lists nothing.
     version_lister: VersionLister | None = None
+    # Bound around each materialisation, so a request binding one place breaks a facet tie on
+    # each facet's places across the whole variable (`datasets_api.profile_breadth`). None
+    # leaves the tie to the unit's name.
+    variable_breadth: VariableBreadthReader | None = None
 
 
 # Loads the stored manifest that answers a call from the head at the given content version.
@@ -368,7 +382,9 @@ def _record_head_hit_collapse(
     (`persisted_response`): its stored body with the artifacts linked for it, so its stored
     warnings stand. An incomplete render gives way to a complete artifact a concurrent call
     linked under the collapsed version (`with_linked_artifacts`). The base record precedes
-    the render, so every writer dates and cites the collapsed version as the base does.
+    the render, so every writer dates and cites the collapsed version as the base does. The
+    collapsed version's description record derives from the base version's in the transaction
+    that records it (`version_descriptions.collapse_describer`).
     """
     collapsed_frame_record = render_and_store_canonical_frame(
         frame_chunks=(collapse.frame,),
@@ -376,7 +392,9 @@ def _record_head_hit_collapse(
         content_version=collapse.content_version,
         artifact_store=deps.artifact_store,
     )
-    collapsed_statistics_sink = SeriesStatisticsSink()
+    collapsed_statistics_sink = SeriesStatisticsSink(
+        continuing=continued_series_of_trace(manifest.trace)
+    )
     collapsed_statistics_sink.write(compute_series_statistics_table(collapse.frame))
     collapsed_statistics_file = collapsed_statistics_sink.finish()
     collapsed_statistics_artifact = render_and_store_series_statistics(
@@ -403,7 +421,15 @@ def _record_head_hit_collapse(
         statistics_artifact=collapsed_statistics_artifact,
         series_count=collapsed_statistics_file.series_count,
         content_version=collapse.content_version,
-        output_options=derive_output_options(output_profile, capabilities=capabilities),
+        output_options=derive_output_options(
+            output_profile,
+            identity=manifest.definition.identity,
+            capabilities=capabilities,
+            parties=deps.code_index.parties,
+            datasets=provenance_refs_of(
+                cast("list[dict[str, object]]", manifest.trace.get("facets", []))
+            ),
+        ),
         extra_warnings=call_warnings,
     )
     created = record_collapsed_head_version(
@@ -416,6 +442,13 @@ def _record_head_hit_collapse(
         record_only_artifacts=[collapsed_frame_record],
         version_writer=deps.version_writer,
         trace_id=trace_id,
+        describer_for=functools.partial(
+            collapse_describer,
+            figures=collapsed_statistics_file.figures,
+            code_index=deps.code_index,
+            enrichment=deps.enrichment,
+            deadline=deps.deadline,
+        ),
     )
     if created and not is_incomplete_rendering(artifact.rendering):
         return collapsed_manifest
@@ -468,12 +501,13 @@ def plan_stored_render(
     materialise permit is taken.
 
     Raise `StoredTraceMissingResolvedStatVars` for a trace without `resolved_stat_vars`,
-    which a render needs for the groupby population. A pivot or a groupby reads the version
-    record once (`read_version`). With no `groupby` and no `columns`, a pivot refuses its caps
+    which a render needs for the groupby population. A pivot, a groupby, or a plain long `xlsx`
+    whose identity has an axis to split reads the version record once (`read_version`). With no `groupby` and no `columns`, a pivot refuses its caps
     from the stored pivot facts (`refuse_pivot_over_stored_caps`). A plain long `xlsx` (no
     `groupby`, no `pivot`, no `columns`) refuses `excel_limit` from the stored row count
-    through the writer's own check (`materialise.formats.check_excel_rows`), since the stored
-    count is then the count the writer writes; a groupby or pivot changes that count,
+    (`refuse_excel_over_stored_rows`), since the stored count is then the count the writer
+    writes. Where totals can take a second sheet (`_stored_xlsx_splits_totals`), only a count past two
+    sheets' room refuses and the writer judges each sheet; a groupby or pivot changes that count,
     `columns` refusals come first, and the render decides those.
     """
     if manifest.trace.get("resolved_stat_vars") is None:
@@ -493,11 +527,49 @@ def plan_stored_render(
                 pivot_max_output_cells=deps.settings.pivot_max_output_cells,
             )
     elif options.groupby is None and options.columns is None and options.format == "xlsx":
-        # The writer refuses at the first row past the limit and names that row.
-        check_excel_rows(min(manifest.coverage.rows + 1, EXCEL_MAX_ROWS + 1))
+        # The writer refuses at the first row past a sheet's limit and names that row.
+        refuse_excel_over_stored_rows(
+            manifest.coverage.rows,
+            splits_totals=_stored_xlsx_splits_totals(
+                manifest, options=options, read_version=read_version, deps=deps
+            ),
+        )
     return StoredRenderPlan(
         output_profile=output_profile,
         frame_sha256=stored.frame_sha256 if stored is not None else None,
+    )
+
+
+def _stored_xlsx_splits_totals(
+    manifest: Manifest,
+    *,
+    options: MintOptions,
+    read_version: Callable[[], StoredVersion | None],
+    deps: DefinitionDeps,
+) -> bool:
+    """`xlsx_splits_totals` for a render of the stored version `manifest`, with the inputs the
+    render splits by: the trace's provenances and the stored profile's role columns
+    (`stored_output_profile`). A version minted before versions stored a profile takes the
+    identity's role keys (`identity_role_keys`), which name the same axes. An identity with no
+    axis to split keeps every row on one sheet without reading the version."""
+    identity = manifest.definition.identity
+    if not totals_axes(identity):
+        return False
+    stored = read_version()
+    profile = stored_output_profile(stored_manifest_facts(stored)) if stored is not None else None
+    role_columns = (
+        [column.name for column in profile.columns if column.kind == "role"]
+        if profile is not None
+        else identity_role_keys(identity)
+    )
+    return xlsx_splits_totals(
+        options,
+        identity=identity,
+        role_columns=role_columns,
+        parties=deps.code_index.parties,
+        datasets=provenance_refs_of(
+            cast("list[dict[str, object]]", manifest.trace.get("facets", []))
+        ),
     )
 
 
@@ -559,7 +631,7 @@ def _render_frame(
         coverage_index=coverage_index,
     )
     rendered = render_and_store(
-        frame_chunks=(table,),
+        frame_chunks=lambda: iter((table,)),
         options=options,
         spec=spec_dict,
         provenance_refs=provenance_refs,
@@ -1248,7 +1320,17 @@ def _admitted_ceiling(
     if options is None:
         refuse_inline_over_ceiling(estimate, ceiling=deps.ceiling)
         return deps.ceiling
-    refuse_excel_over_estimate(estimate, format=options.format)
+    refuse_excel_over_estimate(
+        estimate,
+        format=options.format,
+        splits_totals=xlsx_splits_totals(
+            options,
+            identity=stored.identity,
+            role_columns=identity_role_keys(stored.identity),
+            parties=deps.code_index.parties,
+            datasets=elected_provenances(requests),
+        ),
+    )
     submit_over_budget(
         subject_id=stored.spec_id,
         options=options,
@@ -1284,7 +1366,12 @@ def _materialise_and_record(
 ) -> ServedDefinition:
     """Admit, materialise, record the version and the run under `trigger`, and advance the head
     from `expected_head`. With `strip_pointer` a body-pointing refusal is marked
-    `without_pointers`."""
+    `without_pointers`.
+
+    The materialisation reads under `deps.variable_breadth` with `refuse_unread`, since the
+    version stores its election: a single-place tie the breadth would decide refuses
+    `VariableBreadthUnreadError` when the breadth cannot be read, so every trigger of one
+    definition elects one facet."""
     try:
         ceiling = _admitted_ceiling(
             stored,
@@ -1294,20 +1381,21 @@ def _materialise_and_record(
             coverage_snapshot=coverage_snapshot,
             admitted=admitted,
         )
-        return serve_definition(
-            stored=stored,
-            requests=requests,
-            options=options,
-            deps=serve_deps(deps),
-            trigger=trigger,
-            trace_id=trace_id,
-            expected_head=expected_head,
-            ceiling=ceiling,
-            coverage_stamp=coverage_snapshot.stamp,
-            coverage_index=coverage_snapshot.index,
-            coverage_current=functools.partial(deps.coverage.serves, coverage_snapshot),
-            progress=progress,
-        )
+        with bound_variable_breadth(deps.variable_breadth, refuse_unread=True):
+            return serve_definition(
+                stored=stored,
+                requests=requests,
+                options=options,
+                deps=serve_deps(deps),
+                trigger=trigger,
+                trace_id=trace_id,
+                expected_head=expected_head,
+                ceiling=ceiling,
+                coverage_stamp=coverage_snapshot.stamp,
+                coverage_index=coverage_snapshot.index,
+                coverage_current=functools.partial(deps.coverage.serves, coverage_snapshot),
+                progress=progress,
+            )
     except _BODY_POINTING_REFUSALS as exc:
         if strip_pointer:
             without_pointers(exc)

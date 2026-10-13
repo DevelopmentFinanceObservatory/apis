@@ -11,6 +11,7 @@ from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.graph import Facet
 from search.engine.errors import EngineInputError
 from search.engine.extract import DateRequest
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_spec_resubmit
 from search.engine.region.pipeline import resolve_variable
 from search.models import (
@@ -30,6 +31,7 @@ from tests.engine._fake_coverage import (
 )
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import walk_options
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 pytestmark = pytest.mark.usefixtures("request_log")
@@ -106,6 +108,8 @@ class _FixedBindLLM:
     """Elects shape index 0 unconditionally, with no constraint bindings."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
 
@@ -251,7 +255,7 @@ def test_unit_binding_narrows_which_sources_are_cited(monkeypatch):
 
     assert region.status == "definite", region.no_data_reason
     spec = region.specs[0]
-    assert sorted(r.dcid for r in spec.resolved.trace.resolved_sources) == ["source/A"]
+    assert sorted(r.ref for r in spec.resolved.trace.resolved_sources) == ["source/A"]
     dims = {d.label: d.count for d in spec.resolved.coverage.dimensions}
     assert dims["sources"] == 1
     assert dims["recipients"] == 1
@@ -322,7 +326,7 @@ def test_measurement_method_binding_narrows_which_sources_are_cited(monkeypatch)
 
     assert region.status == "definite", region.no_data_reason
     spec = region.specs[0]
-    assert sorted(r.dcid for r in spec.resolved.trace.resolved_sources) == ["source/A"]
+    assert sorted(r.ref for r in spec.resolved.trace.resolved_sources) == ["source/A"]
     dims = {d.label: d.count for d in spec.resolved.coverage.dimensions}
     assert dims["sources"] == 1
     assert dims["recipients"] == 1

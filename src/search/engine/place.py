@@ -1,8 +1,12 @@
-"""Expand `Continent` and `UNGeoRegion` place sets to member countries.
+"""Expand the continents and subregions the membership policy holds to member countries.
 
-Graph reads are synchronous. Async callers use `asyncio.to_thread`. The engine expands top-level
-member countries, while interactive pickers can add deeper drill-downs. A query that names no
-place takes the default place scope the datasets mint takes (`materialise.place_scope`).
+A region's members are the present-day countries the membership policy holds for it
+(`entity_resolution.membership`, `countries` projection), the answer the Graph API's resolve
+and members doors give. Graph containment answers a different question (places with data) and
+misplaces sovereign states in several regions, so it stays with `materialise.place_scope`. A
+query that names no place takes the default place scope the datasets mint takes
+(`materialise.place_scope`). Graph reads are synchronous. Async callers use
+`asyncio.to_thread`.
 """
 
 from __future__ import annotations
@@ -11,6 +15,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from entity_resolution.membership import MembershipPolicy, NotRecorded
 from materialise import place_scope
 from materialise.place_scope import (
     DefaultPlaceScope,
@@ -25,58 +30,40 @@ if TYPE_CHECKING:
     from search.engine.clients.graph import EngineGraphClient
     from search.engine.clients.sdmx import EngineSdmxClient
 
-# Map every resolved place-set graph type here to support expansion.
-_CHILD_PLACE_TYPES: dict[str, str] = {
-    "Continent": "Country",
-    "UNGeoRegion": "Country",
-}
+# The graph type every member of a region's `countries` projection has.
+REGION_MEMBER_TYPE = "Country"
 
 
 @dataclass
 class PlaceExpansion:
-    """Every member dcid of a place set, in graph order, and the graph type they share. A
-    covered set with no members returns an empty expansion. An unsupported type returns `None`.
-    """
+    """A region's member country dcids, sorted, and the graph type they share."""
 
     children: list[str]
     child_type: str
 
 
 def expand_places(
-    resolved: list[tuple[str, str]],
-    *,
-    graph: EngineGraphClient,
+    dcids: Iterable[str], *, membership: MembershipPolicy
 ) -> dict[str, PlaceExpansion | None]:
-    """Expand resolved `(place_dcid, type_of)` pairs, grouping them by child type for one graph call
-    per type. Return one entry per input dcid. Unsupported types map to `None`. Supported sets with
-    no recorded members return an empty `PlaceExpansion`.
-    """
-    by_child_type: dict[str, list[str]] = {}
-    for dcid, type_of in resolved:
-        child_type = _CHILD_PLACE_TYPES.get(type_of)
-        if child_type is not None:
-            by_child_type.setdefault(child_type, []).append(dcid)
+    """The members of each region in `dcids` under the policy's default `countries` projection.
 
-    results: dict[str, PlaceExpansion | None] = {dcid: None for dcid, _ in resolved}
-    for child_type, dcids in by_child_type.items():
-        children_by_dcid = graph.child_places_batch(dcids, child_type)
-        for dcid in dcids:
-            results[dcid] = PlaceExpansion(
-                children=children_by_dcid.get(dcid, []), child_type=child_type
-            )
+    Every dcid is a region by the policy (`MembershipPolicy.holds_region`). One the policy omits
+    (`omitted_regions`, such as Antarctica, which holds no country) maps to `None`, so its set
+    reads as its node alone; graph containment is not read in its place.
+
+    Raises:
+        UnknownMembership: a dcid the policy neither holds nor omits.
+    """
+    results: dict[str, PlaceExpansion | None] = {}
+    for dcid in dcids:
+        if dcid in membership.omitted_regions:
+            results[dcid] = None
+            continue
+        members = membership.members(dcid).members
+        # A region's rows are countries, so the policy always records its `countries`.
+        assert not isinstance(members, NotRecorded), dcid
+        results[dcid] = PlaceExpansion(children=list(members), child_type=REGION_MEMBER_TYPE)
     return results
-
-
-def expand_place(
-    dcid: str,
-    type_of: str,
-    *,
-    graph: EngineGraphClient,
-) -> PlaceExpansion | None:
-    """Expand one place-set through one `child_places_batch` call. Unsupported types return
-    `None`. Empty supported sets return an empty expansion.
-    """
-    return expand_places([(dcid, type_of)], graph=graph).get(dcid)
 
 
 def is_worldwide_scope(place_dcids: Sequence[str] | None) -> bool:

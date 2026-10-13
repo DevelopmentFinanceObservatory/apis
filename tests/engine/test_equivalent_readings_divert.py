@@ -14,11 +14,13 @@ from search.engine.bind import _UniversalBindOutput
 from search.engine.config import SearchSettings
 from search.engine.conjoin import assemble_region
 from search.engine.envelope import now_ms
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import NEAR_NEIGHBOR_AMBIGUOUS, resolve_variable
 from search.engine.region.codes import ELECTED_SHAPE_NO_DATA
 from search.engine.region.state import EngineOptions
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 _KEN_NODE = {"country/KEN": {"label": "Kenya", "type": "Country"}}
@@ -80,6 +82,8 @@ class _CandidateBindLLM:
         self._also_plausible = also_plausible
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=self._chosen_shape_index,
@@ -140,7 +144,7 @@ def _run(
 
 
 def _sv_refs(spec) -> set[str]:
-    return {sv.ref.dcid for sv in spec.resolved.members}
+    return {sv.ref.ref for sv in spec.resolved.members}
 
 
 def _warning_codes(result) -> set[str]:

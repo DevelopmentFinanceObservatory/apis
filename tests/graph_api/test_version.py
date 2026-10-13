@@ -6,15 +6,12 @@ import os
 import subprocess
 import sys
 
-from pydantic import TypeAdapter
+import pytest
 
-from dfo_platform import HealthResponse
 from graph_api import version
-from graph_api.capabilities import build_capabilities
+from graph_api.capabilities import DataBuilds, build_capabilities
 from graph_api.codes import GRAPH_CODE_CATALOGUE
-from graph_api.node_models import NodeResponse
-from graph_api.resolve_models import ResolveRequest, ResolveResponse
-from graph_api.source_models import SourceCatalogue, SourceDocumentation
+from graph_api.doors.schema import served_wire_schemas
 
 
 def _baseline_capability_document() -> dict:
@@ -22,18 +19,6 @@ def _baseline_capability_document() -> dict:
         capability_version=version._EXEMPLAR_CAPABILITY_VERSION,
         build=version._EXEMPLAR_BUILD,
     ).model_dump(mode="json")
-
-
-def _baseline_wire_schemas() -> dict[str, dict]:
-    """Return the default wire-schema set hashed by the capability version."""
-    return {
-        "health_response": HealthResponse.model_json_schema(),
-        "resolve_request": ResolveRequest.model_json_schema(),
-        "resolve_response": ResolveResponse.model_json_schema(),
-        "node_response": TypeAdapter(NodeResponse).json_schema(),
-        "source_documentation_response": SourceDocumentation.model_json_schema(),
-        "source_catalogue_response": SourceCatalogue.model_json_schema(),
-    }
 
 
 class TestPerturbationsMoveTheToken:
@@ -104,7 +89,7 @@ class TestPerturbationsMoveTheToken:
 
     def test_wire_schema_property_change_moves_the_token(self):
         baseline = version._compute_graph_capability_version()
-        mutated_schemas = _baseline_wire_schemas()
+        mutated_schemas = served_wire_schemas()
         mutated_schemas["health_response"] = {
             **mutated_schemas["health_response"],
             "title": mutated_schemas["health_response"].get("title", ""),
@@ -120,7 +105,7 @@ class TestPerturbationsMoveTheToken:
         its schema must move the token.
         """
         baseline = version._compute_graph_capability_version()
-        mutated_schemas = _baseline_wire_schemas()
+        mutated_schemas = served_wire_schemas()
         mutated_schemas["source_catalogue_response"] = {
             **mutated_schemas["source_catalogue_response"],
             "title": mutated_schemas["source_catalogue_response"].get("title", ""),
@@ -134,9 +119,30 @@ class TestPerturbationsMoveTheToken:
 
         assert perturbed != baseline
 
+    def test_retyping_the_statvar_description_field_moves_the_token(self):
+        """`StatVarNode.description` is a served field, so its type is hashed even though
+        `description` is also an annotation keyword."""
+        baseline = version._compute_graph_capability_version()
+        mutated_schemas = served_wire_schemas()
+        statvar = mutated_schemas["node_response"]["$defs"]["StatVarNode"]
+        statvar["properties"]["description"] = {"type": "integer"}
+
+        perturbed = version._compute_graph_capability_version(wire_schemas=mutated_schemas)
+
+        assert perturbed != baseline
+
+    def test_batch_response_schema_change_moves_the_token(self):
+        baseline = version._compute_graph_capability_version()
+        mutated_schemas = served_wire_schemas()
+        mutated_schemas["nodes_response"]["required"] = ["nodes", "mutated"]
+
+        perturbed = version._compute_graph_capability_version(wire_schemas=mutated_schemas)
+
+        assert perturbed != baseline
+
     def test_wire_schema_addition_moves_the_token(self):
         baseline = version._compute_graph_capability_version()
-        mutated_schemas = _baseline_wire_schemas()
+        mutated_schemas = served_wire_schemas()
         mutated_schemas["extra_schema"] = {"type": "object"}
 
         perturbed = version._compute_graph_capability_version(wire_schemas=mutated_schemas)
@@ -147,9 +153,9 @@ class TestPerturbationsMoveTheToken:
 class TestNonPerturbationsDoNotMoveTheToken:
     def test_wire_schema_description_edit_does_not_move_the_token(self):
         baseline = version._compute_graph_capability_version()
-        mutated_schemas = _baseline_wire_schemas()
+        mutated_schemas = served_wire_schemas()
         # Mutate a description -- stripped before hashing
-        # (_strip_wire_invisible_keys), so this must be a no-op on the token.
+        # (strip_schema_annotations), so this must be a no-op on the token.
         mutated_schemas["health_response"] = {
             **mutated_schemas["health_response"],
             "description": "a reworded, purely cosmetic description",
@@ -159,26 +165,36 @@ class TestNonPerturbationsDoNotMoveTheToken:
 
         assert unchanged == baseline
 
-    def test_build_id_change_does_not_move_the_token(self):
+    @pytest.mark.parametrize(
+        ("build_b", "data_builds_b"),
+        [
+            ("build-B", None),
+            (
+                "build-A",
+                DataBuilds(
+                    graph_generation="gen-B",
+                    origin_catalogue="catalogue-B",
+                    coverage_index="coverage-B",
+                    code_index="code-B",
+                ),
+            ),
+        ],
+        ids=["build", "data_builds"],
+    )
+    def test_build_id_change_does_not_move_the_token(
+        self, build_b: str, data_builds_b: DataBuilds | None
+    ):
         document_a = build_capabilities(
             capability_version="graph_whatever", build="build-A"
         ).model_dump(mode="json")
         document_b = build_capabilities(
-            capability_version="graph_whatever", build="build-B"
+            capability_version="graph_whatever", build=build_b, data_builds=data_builds_b
         ).model_dump(mode="json")
 
         token_a = version._compute_graph_capability_version(capability_document=document_a)
         token_b = version._compute_graph_capability_version(capability_document=document_b)
 
         assert token_a == token_b
-
-
-def test_baseline_wire_schemas_mirror_matches_the_real_default():
-    """The helper's keys and schemas must match the version function's defaults."""
-    baseline = version._compute_graph_capability_version()
-    mirrored = version._compute_graph_capability_version(wire_schemas=_baseline_wire_schemas())
-
-    assert mirrored == baseline
 
 
 def test_graph_capability_version_is_graph_prefixed_and_deterministic():

@@ -90,11 +90,11 @@ def test_build_no_data_part_composes_no_member_has_data_at_place_gate():
         ResolvedFilter(
             key=SlotKey(
                 axis="how",
-                property=GraphRef(dcid="crsTypeOfFlow", label="CRS type of flow"),
+                property=GraphRef(ref="crsTypeOfFlow", label="CRS type of flow"),
                 label="flow",
             ),
             binding_kind="value",
-            refs=[GraphRef(dcid="CRSTypeOfFlow10", label="official development assistance")],
+            refs=[GraphRef(ref="CRSTypeOfFlow10", label="official development assistance")],
             provenance="declared_default",
         ),
     )
@@ -106,7 +106,7 @@ def test_build_no_data_part_composes_no_member_has_data_at_place_gate():
         warnings=[],
         flagged_match=spec,
         gate="no_member_has_data_at_place",
-        elected_stat_vars=[GraphRef(dcid="Count_Person", label="Count person")],
+        elected_stat_vars=[GraphRef(ref="Count_Person", label="Count person")],
     )
 
     assert part.no_data.flagged_match is not None
@@ -184,7 +184,7 @@ def test_build_no_data_part_composes_only_alternate_has_data_gate(
         warnings=warnings,
         alternate_match=spec,
         gate="only_alternate_has_data",
-        elected_stat_vars=[GraphRef(dcid="Count_Person_Alternate", label="Alternate count")],
+        elected_stat_vars=[GraphRef(ref="Count_Person_Alternate", label="Alternate count")],
     )
 
     assert part.no_data.flagged_match is None
@@ -224,7 +224,7 @@ def test_build_no_data_part_calls_elected_kenya_debt_match_matching_series():
         flagged_match=spec,
         gate="no_member_asserts_bound_properties",
         elected_stat_vars=[
-            GraphRef(dcid="Test_Measured_Property_GDP", label="External debt stocks")
+            GraphRef(ref="Test_Measured_Property_GDP", label="External debt stocks")
         ],
     )
 
@@ -235,7 +235,7 @@ def test_build_no_data_part_calls_elected_kenya_debt_match_matching_series():
 def test_build_no_data_part_counts_the_elected_stat_vars_on_the_wire():
     """Count the elected StatVars beside the alternate match."""
     spec = _make_spec(sv_dcid="Count_Person", purpose_dcid="DAC/Health", place_dcid="country/ETH")
-    elected = [GraphRef(dcid="Count_MedicalConditionIncident_ConditionHIVAIDS", label="HIV cases")]
+    elected = [GraphRef(ref="Count_MedicalConditionIncident_ConditionHIVAIDS", label="HIV cases")]
 
     part = build_no_data_part(
         "no_observations",
@@ -281,7 +281,7 @@ def test_build_no_data_part_composes_no_member_asserts_bound_properties_gate():
         warnings=[],
         flagged_match=spec,
         gate="no_member_asserts_bound_properties",
-        elected_stat_vars=[GraphRef(dcid="Count_Person", label="Count person")],
+        elected_stat_vars=[GraphRef(ref="Count_Person", label="Count person")],
     )
 
     assert part.no_data.flagged_match is not None
@@ -518,7 +518,7 @@ def test_a_window_answer_departs_as_year_unavailable_with_no_note(
         "no_observations",
         variable_text="GDP per capita",
         warnings=[],
-        elected_stat_vars=[GraphRef(dcid="sv/recorded", label=label)],
+        elected_stat_vars=[GraphRef(ref="sv/recorded", label=label)],
         window_gap_fact=window_gap_fact(gap),
     )
 

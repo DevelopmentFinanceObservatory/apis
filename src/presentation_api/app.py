@@ -20,7 +20,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from fastapi import FastAPI
 
 from assembler.catalogue import BakedReleaseRegistry
-from assembler.ports import FrameStore, ReleaseRegistry, RevisionStore
+from assembler.ports import FrameStore, ReleaseRegistry, RevisionStore, VocabularySource
 from dataset_store.snapshot import SnapshotReader
 from datasets_api.live_refresh import LiveRefreshPrincipal
 from datasets_api.recipe_store import RecipeReader
@@ -48,6 +48,7 @@ def presentation_surface(
     release_registry: ReleaseRegistry | None = None,
     snapshot_reader: SnapshotReader | None = None,
     recipe_reader: RecipeReader | None = None,
+    vocabulary_source: VocabularySource | None = None,
     live_refresh: LiveRefreshPrincipal | None = None,
 ) -> Surface:
     """Build the Presentation `Surface`. Unset stores use live dependencies. Injected stores
@@ -58,7 +59,9 @@ def presentation_surface(
     Datasets records those routes accept a target frame from: version records for a dataset
     frame and recipes for a derived one. With no `frame_store` injected the components door
     builds both over the datasets pool. With one injected, a reader left out accepts no frame
-    by its rule, so only the frame a revision is stored on renders.
+    by its rule, so only the frame a revision is stored on renders. `vocabulary_source` gives
+    the words cards' descriptions are composed from, and defaults to a `LiveVocabularySource`
+    over the code index.
     """
     effective_release_registry: ReleaseRegistry = (
         release_registry if release_registry is not None else BakedReleaseRegistry()
@@ -82,6 +85,7 @@ def presentation_surface(
             release_registry=effective_release_registry,
             snapshot_reader=snapshot_reader,
             recipe_reader=recipe_reader,
+            vocabulary_source=vocabulary_source,
             live_refresh=live_refresh,
         ),
         build_frames_door(frame_store=frame_store),

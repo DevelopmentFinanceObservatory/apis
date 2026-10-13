@@ -273,7 +273,7 @@ def test_a_resubmitted_total_and_its_part_are_scoped_over_the_total_their_mint_s
     )
 
     assert region.status == "definite", region.no_data_reason
-    assert [sv.ref.dcid for sv in region.specs[0].resolved.members] == [_SV]
+    assert [sv.ref.ref for sv in region.specs[0].resolved.members] == [_SV]
     assert _scope_members(region) == [_COUNTRIES[0]]
     (defaulted,) = [w for w in region.warnings if w.code == PLACE_SCOPE_DEFAULTED]
     assert "every place with data" in defaulted.message
@@ -314,7 +314,7 @@ def test_a_resubmit_leaving_the_part_open_answers_the_total_its_mint_serves():
         code_index=get_index(),
         bounds=mint_bounds(),
     )
-    answered = [sv.ref.dcid for sv in spec.resolved.members]
+    answered = [sv.ref.ref for sv in spec.resolved.members]
     assert answered == [shape.stat_var.removeprefix("dcid:") for shape in minted.shapes]
     assert answered == [_SV]
     assert MEMBERSHIP_UNVERIFIED not in [w.code for w in region.warnings]
@@ -437,7 +437,7 @@ def test_a_resubmitted_member_is_counted_and_grounded_at_its_own_scope():
 
     assert region.status == "definite", region.no_data_reason
     spec = region.specs[0]
-    assert [sv.ref.dcid for sv in spec.resolved.members] == [_SV_FEMALE]
+    assert [sv.ref.ref for sv in spec.resolved.members] == [_SV_FEMALE]
     assert spec.resolved.coverage.observation_count == 1
     assert _scope_members(region) == [_COUNTRIES[0]]
     assert ([_SV_FEMALE, _SV_OVER65], _COUNTRIES[:2]) in graph.probes

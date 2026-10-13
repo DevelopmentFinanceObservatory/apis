@@ -12,10 +12,12 @@ from typing import cast
 import pytest
 from fastapi.testclient import TestClient
 
+import search.engine.region.observations.bulk_role_series
 import search.observations
 import tests.fixtures
 from artifact_store import Tier
 from code_index import CodeIndex, CodeRow, IndexStamp, StatVarRow
+from code_index.types import PartyRow
 from dataset_store.snapshot import WORKING_TIER_RETENTION, Revocation, StoredVersion
 from datasets_api.admission import MaterialisePermits
 from datasets_api.codes import DATASETS_CODE_CATALOGUE
@@ -96,8 +98,8 @@ _LABELS = {
 
 
 def _index() -> CodeIndex:
-    """One CRS code row whose label drops the graph's suffix, and the health StatVar's row.
-    The education StatVar is left to the graph's arcs."""
+    """One CRS code row whose label drops the graph's suffix, the health StatVar's row, and the
+    flow's parties. The education StatVar is left to the graph's arcs."""
     return CodeIndex(
         stamp=IndexStamp(
             graph_endpoint="test",
@@ -128,6 +130,11 @@ def _index() -> CodeIndex:
                 observation_properties=("provider", "recipient"),
                 constraint_properties={"crsPurpose": "CRSPurposeCode121"},
             ),
+        ),
+        parties=(
+            PartyRow(dcid="country/FRA", kind="party"),
+            PartyRow(dcid="country/GHA", kind="party"),
+            PartyRow(dcid="country/KEN", kind="party"),
         ),
     )
 
@@ -546,9 +553,7 @@ def test_a_per_series_version_returns_every_series_labelled_and_sourced():
     ]
     assert kenya["total_obs"] == 2
     # The request-scoped catalogue reached the worker thread, so the provenance carries its row.
-    assert [(ref["dcid"], ref["source"]["ref"]) for ref in kenya["source_refs"]] == [
-        (_PROV, "OECD")
-    ]
+    assert [(ref["ref"], ref["source"]["ref"]) for ref in kenya["source_refs"]] == [(_PROV, "OECD")]
     assert kenya["facet"]["measurementMethod"] == {
         "ref": "GrantEquivalent",
         "label": "Grant equivalent",
@@ -802,6 +807,7 @@ def test_the_door_and_the_live_role_bulk_preview_agree_on_each_series_axes(
     index, as both read the packaged index in production."""
     search_settings(role_bulk_rank_max_rows=gate)
     monkeypatch.setattr(tests.fixtures, "get_index", _index)
+    monkeypatch.setattr(search.engine.region.observations.bulk_role_series, "get_index", _index)
     points: dict[tuple[str, str], list[tuple[str, float]]] = {}
     for sv, recipient, year, value in flow_points:
         points.setdefault((sv, recipient), []).append((year, value))

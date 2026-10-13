@@ -139,7 +139,7 @@ frame = Frame.build(
 
 # Compute series statistics on a canonical Frame and stream them to a
 # series-statistics/1 Parquet build
-statistics_sink = SeriesStatisticsSink()
+statistics_sink = SeriesStatisticsSink(continuing=None)
 statistics_sink.write(compute_series_statistics_table(frame))
 statistics_file = statistics_sink.finish()  # .data (bytes), .series_count (int)
 

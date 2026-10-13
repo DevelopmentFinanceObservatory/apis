@@ -537,7 +537,7 @@ def _live_engine() -> Iterator[tuple[Resolve, PlaceNames]]:
         stack.callback(sdmx.close)
         materialise_sdmx = build_materialise_sdmx_client()
         stack.callback(materialise_sdmx.close)
-        resolver = EntityResolver(graph=graph, shared=shared)
+        resolver = EntityResolver(graph=graph, shared=shared, code_index=get_index())
         rate_cache = RateTableCache()
 
         async def resolve(request: ResolveRequest) -> ResolveResponse:

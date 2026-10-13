@@ -28,6 +28,7 @@ from search.engine.retrieval.bound_values import (
 from search.engine.retrieval.member_facts import MemberFacts
 from search.engine.retrieval.retrieve import MemberPopulation
 from search.engine.shape import ShapeDraft
+from search.engine.source_code import SourceCodeRefusal
 from search.engine.source_scope import AmbiguousSource, SourceRefusal, SourceScope
 from search.engine.spec_build import RoleAxisFactInput
 from search.heading.departure_fact import DepartureFact
@@ -35,6 +36,7 @@ from search.models import (
     EntityRoleKey,
     GraphRef,
     NearestRealSpec,
+    NoDataDenominator,
     NoDataGate,
     Operation,
     Ordering,
@@ -157,11 +159,16 @@ class RegionResult:
     # `entity_ambiguous`.
     ambiguous_entities: tuple[AmbiguousEntity, ...] = ()
     # The source wordings a `source_not_resolved` or `source_ambiguous` outcome rests on, in
-    # mention order (`source_scope.SourceRefusal.terms`). Empty for every other outcome.
+    # mention order (`source_scope.SourceRefusal.terms`), and the series code a
+    # `source_code_*` outcome rests on. Empty for every other outcome.
     source_terms: tuple[str, ...] = ()
     # Each ambiguous source wording with the sources it could name, populated only for
-    # `source_ambiguous`.
+    # `source_ambiguous`, and the series code with the sources holding it for
+    # `source_code_ambiguous`.
     ambiguous_sources: tuple[AmbiguousSource, ...] = ()
+    # The refusal a `source_code_*` outcome rests on, whose cause, sources and shared codes
+    # its sentence names. `None` for every other outcome.
+    source_code_refusal: SourceCodeRefusal | None = None
     # Entity names that resolved to exactly one graph node, with that node's dcid,
     # populated only for `entity_ambiguous`. The part's `data_query` pins them.
     resolved_entity_dcids: Mapping[str, str] = field(default_factory=dict)
@@ -188,6 +195,9 @@ class RegionResult:
     # Capped currencies a `unit_not_resolved` refusal offers. Empty for every other
     # outcome and for a refusal with no candidates.
     unit_alternatives: tuple[UnitAlternative, ...] = ()
+    # The denominator the question named and the one the flagged match divides by, set on a
+    # `denominator_not_available` refusal after election. `None` on every other outcome.
+    denominator: NoDataDenominator | None = None
     # The `year_unavailable` fact of an answer holding data at the place but none in the
     # years asked (`departures.window_gap_fact`). It holds the years asked and the span the
     # series runs. No warning discloses it, so it rides outside `departure_facts`.
@@ -378,6 +388,36 @@ def source_refusal_result(
         timing_by_step=dict(timing_by_step),
         source_terms=refusal.terms,
         ambiguous_sources=refusal.ambiguous,
+    )
+
+
+def source_code_refusal_result(
+    variable_text: str,
+    refusal: SourceCodeRefusal,
+    *,
+    timing_by_step: Mapping[str, int],
+    warnings: tuple[Warning, ...] = (),
+    llm_usage: dict | None = None,
+) -> RegionResult:
+    """The no-data result of a part whose series code names no StatVar it can answer from
+    (`source_code.SourceCodeRefusal`): the code is the outcome's source term, and an
+    ambiguous code's sources are its candidates."""
+    ambiguous = (
+        (AmbiguousSource(text=refusal.code, candidates=refusal.sources),)
+        if refusal.reason == "source_code_ambiguous"
+        else ()
+    )
+    return RegionResult(
+        variable_text=variable_text,
+        status="no_data",
+        specs=(),
+        no_data_reason=refusal.reason,
+        warnings=warnings,
+        timing_by_step=dict(timing_by_step),
+        llm_usage=llm_usage,
+        source_terms=(refusal.code,),
+        ambiguous_sources=ambiguous,
+        source_code_refusal=refusal,
     )
 
 

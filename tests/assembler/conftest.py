@@ -10,21 +10,7 @@ import pytest
 from assembler.catalogue import CatalogueRelease, load_release
 from assembler.fakes import FakeFrameStore, FakeReleaseRegistry, FakeRevisionStore
 
-_BUNDLE_RELATIVE_PATH = Path("python/dfo-spec-kit-components/src/dfo_spec_kit_components/catalogue")
-
-
-def _spec_kit_dir() -> Path:
-    env_dir = os.environ.get("DFO_SPEC_KIT_DIR")
-    if env_dir:
-        return Path(env_dir)
-    # Sibling checkout: <repo root>/../dfo-spec-kit, resolved from this file's
-    # own path so it works regardless of the invoking cwd.
-    repo_root = Path(__file__).resolve().parents[2]
-    return repo_root.parent / "dfo-spec-kit"
-
-
-def _resolved_catalogue_dir() -> Path:
-    return _spec_kit_dir() / _BUNDLE_RELATIVE_PATH
+from ._catalogue import resolved_catalogue_dir
 
 
 @pytest.fixture(scope="session")
@@ -34,7 +20,7 @@ def catalogue_dir() -> Path:
     Missing bundles skip users unless `DFO_SPEC_KIT_REQUIRED` is set, which
     turns the missing checkout into a collection error.
     """
-    directory = _resolved_catalogue_dir()
+    directory = resolved_catalogue_dir()
     if not (directory / "manifest.json").is_file():
         if os.environ.get("DFO_SPEC_KIT_REQUIRED"):
             raise RuntimeError(

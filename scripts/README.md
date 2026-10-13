@@ -151,11 +151,14 @@ Run by `.github/workflows/bundle-round-trip.yml`, same trigger as `bundle_round_
 
 Extends `tests/fixtures/llm_responses.json` by replaying the engine offline against the frozen graph fixtures, calling the live LLM only for prompts the offline suite cannot answer yet.
 
-The offline suite includes `tests/eval/test_corpus_offline.py`, which runs every corpus case, so one harvest covers the corpus keys too. A test that fails for any reason other than a missing fixture stops the harvest before any LLM call.
+The offline suite includes `tests/eval/test_corpus_offline.py`, which runs every corpus case, so one harvest covers the corpus keys too. A test that fails for any reason other than a missing fixture stops the harvest before any LLM call. A module that fails to import stops it too, and so does a run that reports fewer tests than it collected, as when xdist shuts down after too many worker crashes.
+
+The offline suite runs under pytest-xdist on `--workers` processes (default `auto`). It runs serially when `SEARCH_RECORD_REQUESTS`, `SEARCH_RECORD_SCENARIOS` or `SEARCH_RECORD_BASELINE_DEPTH` is 1, because those recording modes fail under xdist.
 
 ```bash
 uv run python scripts/harvest_llm_fixtures.py
 uv run python scripts/harvest_llm_fixtures.py --max-passes 5
+uv run python scripts/harvest_llm_fixtures.py --workers 4
 ```
 
 Needs `GEMINI_API_KEY`.

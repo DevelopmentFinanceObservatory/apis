@@ -40,6 +40,7 @@ from search.engine.qualifier_match import (
     match_qualifier_ties,
     match_qualifiers,
 )
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import RegionResult
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
 from search.engine.region.phase_election import _phase_vet_election
@@ -78,6 +79,8 @@ from tests.engine._index_slots import (
     query_qualifiers,
     read_text,
 )
+from tests.engine._quantity import NO_QUANTITY
+from tests.engine._requirements import depart_requirements
 from tests.engine._source_scopes import part_scope
 from tests.engine.test_two_ended_menu import _CRS_SV as _TWO_ENDED_CRS_SV
 from tests.engine.test_two_ended_menu import _DAC2A_ODA_SV as _TWO_ENDED_DAC2A_ODA_SV
@@ -628,7 +631,7 @@ def test_a_term_naming_codes_no_row_holds_follows_the_coverage_mode(
         return
     assert result.no_data_reason == "qualifier_not_bound"
     assert [
-        (q.text, q.evidence, {ref.dcid for ref in q.named}) for q in result.unbound_qualifiers
+        (q.text, q.evidence, {ref.ref for ref in q.named}) for q in result.unbound_qualifiers
     ] == [
         (
             "goods donations",
@@ -696,6 +699,7 @@ def _vet_state(
 def _run_vet(state: ResolveState) -> None:
     result = asyncio.run(_phase_vet_election(state))
     assert result is None, "expected _phase_vet_election to fall through"
+    depart_requirements(state)
 
 
 _BUDGET_SUPPORT_TIE = _crs_ties("budget support")[0]
@@ -1139,7 +1143,7 @@ def test_two_matches_on_one_code_system_bind_by_the_connective_between_them(
     def summary(q):
         if q.evidence == "unsupported":
             return (q.disposition, q.evidence, q.operation)
-        operation = (q.operation, [ref.dcid for ref in q.selected]) if q.operation else None
+        operation = (q.operation, [ref.ref for ref in q.selected]) if q.operation else None
         return (q.disposition, q.evidence, operation)
 
     assert {q.text: summary(q) for q in qualifiers if q.text != "ODA"} == expected
@@ -1766,6 +1770,8 @@ class _NoBindingLLM:
     """Elect the shape with no bindings, so admitted values come from forcing."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         # The raw phrase appears only in the echoed variable line, not fixed context.
         fixed_context = prompt.split("FIXED CONTEXT")[1].split("CANDIDATE")[0]
@@ -1820,16 +1826,16 @@ def test_e2e_admitted_matches_reach_the_wire_as_forced_value_slots(caplog, monke
         return next(
             s
             for s in spec.resolved.slots
-            if s.key.property is not None and s.key.property.dcid == prop
+            if s.key.property is not None and s.key.property.ref == prop
         )
 
     flow_slot = _slot("crsTypeOfFlow")
     assert flow_slot.binding.kind == "value"
-    assert flow_slot.binding.value.ref.dcid == "CRSTypeOfFlow10"
+    assert flow_slot.binding.value.ref.ref == "CRSTypeOfFlow10"
 
     finance_slot = _slot("crsTypeOfFinance")
     assert finance_slot.binding.kind == "value"
-    assert finance_slot.binding.value.ref.dcid == "CRSTypeOfFinance110"
+    assert finance_slot.binding.value.ref.ref == "CRSTypeOfFinance110"
 
     # financialFlowType is one of this deployment's kind="constraint" measure
     # axes. The query does not name it, and admission does not touch it. Once
@@ -1840,7 +1846,7 @@ def test_e2e_admitted_matches_reach_the_wire_as_forced_value_slots(caplog, monke
     # not an admitted match.
     flow_type_slot = _slot("financialFlowType")
     assert flow_type_slot.binding.kind == "value"
-    assert flow_type_slot.binding.value.ref.dcid == "Disbursement"
+    assert flow_type_slot.binding.value.ref.ref == "Disbursement"
 
     # Every other constraint slot the shape declares was neither matched,
     # forced by admission, nor elected. It grounds as unbound, same as the
@@ -1869,16 +1875,16 @@ def test_e2e_query_text_admits_a_finance_type_qualifier_the_paraphrase_dropped(c
         return next(
             s
             for s in spec.resolved.slots
-            if s.key.property is not None and s.key.property.dcid == prop
+            if s.key.property is not None and s.key.property.ref == prop
         )
 
     flow_slot = _slot("crsTypeOfFlow")
     assert flow_slot.binding.kind == "value"
-    assert flow_slot.binding.value.ref.dcid == "CRSTypeOfFlow10"
+    assert flow_slot.binding.value.ref.ref == "CRSTypeOfFlow10"
 
     finance_slot = _slot("crsTypeOfFinance")
     assert finance_slot.binding.kind == "value"
-    assert finance_slot.binding.value.ref.dcid == "CRSTypeOfFinance110"
+    assert finance_slot.binding.value.ref.ref == "CRSTypeOfFinance110"
 
     assert not any(q.slot == "crsTypeOfFinance" for q in spec.resolved.trace.query_qualifiers)
 
@@ -1892,6 +1898,8 @@ class _PermissiveNoBindingLLM:
     """Elect the shape without bindings, accepting a prompt with tie alternatives."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return (
             _UniversalBindOutput(chosen_shape_index=0, bindings=[], also_plausible=[], ask=None),
@@ -1921,6 +1929,8 @@ class _TieElectingLLM:
     """Elect the shape and bind the query-text-only "grants" tie to row 110."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return (
             _UniversalBindOutput(
@@ -1953,7 +1963,7 @@ def test_e2e_query_text_only_tie_elects_cleanly_and_answers(caplog, monkeypatch)
     spec = result.specs[0]
     grants = next(q for q in spec.resolved.trace.query_qualifiers if q.text == "grants")
     assert grants.disposition == "bound"
-    assert {ref.dcid for ref in grants.named} == {"CRSTypeOfFinance100", "CRSTypeOfFinance110"}
+    assert {ref.ref for ref in grants.named} == {"CRSTypeOfFinance100", "CRSTypeOfFinance110"}
 
 
 def test_e2e_query_text_only_tie_left_unresolved_refuses(caplog, monkeypatch):
@@ -2194,7 +2204,7 @@ def test_a_code_chosen_from_a_phrases_menu_reads_the_phrase(
     assert bound["crsPurpose"] == purpose
 
     def summary(q):
-        operation = (q.operation, [ref.dcid for ref in q.selected]) if q.operation else None
+        operation = (q.operation, [ref.ref for ref in q.selected]) if q.operation else None
         return (q.disposition, q.evidence, operation)
 
     expected = {**records, **(gated if mode == "refuse" else {})}
@@ -2299,6 +2309,8 @@ class _MenuChoosingLLM:
     education policy and administrative management, 11110, which the fixture row holds."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         menu = prompt.split('    phrase "school governance":\n')[1].split("\n\n")[0]
         assert "value_dcid=CRSPurposeCode11110 (" in menu
@@ -2329,9 +2341,9 @@ def test_e2e_a_menu_choice_binds_and_the_confirmation_sentence_names_it(
     assert result.status == "definite"
     spec = result.specs[0]
     purpose = next(
-        s for s in spec.resolved.slots if s.key.property and s.key.property.dcid == "crsPurpose"
+        s for s in spec.resolved.slots if s.key.property and s.key.property.ref == "crsPurpose"
     )
-    assert purpose.binding.value.ref.dcid == "CRSPurposeCode11110"
+    assert purpose.binding.value.ref.ref == "CRSPurposeCode11110"
     assert "education policy and administrative management" in render_sentence(spec)
     record = next(q for q in spec.resolved.trace.query_qualifiers if q.evidence == "model")
     assert (record.text, record.disposition) == ("school governance", "bound")

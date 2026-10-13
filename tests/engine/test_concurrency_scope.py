@@ -44,7 +44,7 @@ _ACTIVITY_SOURCE_SLOT = Slot.model_validate(
     {
         "key": {
             "axis": "how",
-            "property": {"dcid": "activitySource", "label": "activity source"},
+            "property": {"ref": "activitySource", "label": "activity source"},
             "label": "activity source",
         },
         "binding": {"kind": "unbound"},

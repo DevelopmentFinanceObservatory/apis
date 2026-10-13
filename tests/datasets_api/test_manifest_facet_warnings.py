@@ -1,5 +1,7 @@
-"""Tests when `facet_default_selected` appears, including bound axes and collection aggregation.
-The composed app and materialiser are real. Graph, SDMX, and artifact storage are fakes.
+"""Tests when a mint's trace records a choice of value over disagreeing candidates
+(`trace.choices`), including bound axes and collection aggregation, and that a new mint raises
+no `facet_default_selected` warning. The composed app and materialiser are real. Graph, SDMX,
+and artifact storage are fakes.
 """
 
 from __future__ import annotations
@@ -171,15 +173,18 @@ def _body(*, statvars: list[str], facets: dict[str, dict] | None = None) -> dict
     }
 
 
-def _facet_warnings(manifest: dict) -> list[dict]:
-    return [w for w in manifest["warnings"] if w["code"] == "facet_default_selected"]
+def _choices(manifest: dict) -> list[dict]:
+    """The trace's choices, with every `facet_default_selected` warning, which a new mint
+    raises none of."""
+    assert [w for w in manifest["warnings"] if w["code"] == "facet_default_selected"] == []
+    return manifest["trace"].get("choices", [])
 
 
 def _facet_entry(manifest: dict, axis: str) -> dict:
     return next(entry for entry in manifest["trace"]["facets"] if entry["axis"] == axis)
 
 
-def test_disagreeing_candidates_carry_exactly_one_warning_naming_the_axis():
+def test_disagreeing_candidates_carry_exactly_one_choice_naming_the_axis():
     facets_by_stat_var = {_STAT_VAR_A: [_WINNING_FACET, _DISAGREEING_FACET]}
     graph = _graph(facets_by_stat_var)
     client = _client(
@@ -193,13 +198,19 @@ def test_disagreeing_candidates_carry_exactly_one_warning_naming_the_axis():
     assert resp.status_code == 200, resp.text
     manifest = resp.json()
     assert _facet_entry(manifest, "provenance")["basis"] == "deployment_fallback"
-    warnings = _facet_warnings(manifest)
-    assert len(warnings) == 1
-    assert "'provenance'" in warnings[0]["message"]
+    assert _choices(manifest) == [
+        {
+            "axis": "provenance",
+            "candidates": [
+                {"ref": "OECD_DAC2A", "places": 1, "years": None, "observations": 20},
+                {"ref": "IMF_WEO", "places": 1, "years": None, "observations": 10},
+            ],
+        }
+    ]
 
 
-def test_agreeing_candidates_carry_no_warning():
-    # Agreeing candidates select by observation count but trigger no warning.
+def test_agreeing_candidates_carry_no_choice():
+    # Agreeing candidates select by observation count and record no choice.
     facets_by_stat_var = {_STAT_VAR_A: [_WINNING_FACET, _AGREEING_FACET]}
     graph = _graph(facets_by_stat_var)
     client = _client(
@@ -214,11 +225,11 @@ def test_agreeing_candidates_carry_no_warning():
     manifest = resp.json()
     assert _facet_entry(manifest, "provenance")["basis"] == "deployment_fallback"
     assert _facet_entry(manifest, "provenance")["selection_reason"] == "most_observations"
-    assert _facet_warnings(manifest) == []
+    assert _choices(manifest) == []
 
 
-def test_single_candidate_carries_no_warning():
-    # A sole candidate uses `sole_candidate` and triggers no warning.
+def test_single_candidate_carries_no_choice():
+    # A sole candidate uses `sole_candidate` and records no choice.
     facets_by_stat_var = {_STAT_VAR_A: [_WINNING_FACET]}
     graph = _graph(facets_by_stat_var)
     client = _client(
@@ -233,10 +244,10 @@ def test_single_candidate_carries_no_warning():
     manifest = resp.json()
     assert _facet_entry(manifest, "provenance")["basis"] == "deployment_fallback"
     assert _facet_entry(manifest, "provenance")["selection_reason"] == "sole_candidate"
-    assert _facet_warnings(manifest) == []
+    assert _choices(manifest) == []
 
 
-def test_caller_bound_axis_carries_no_warning_for_that_axis():
+def test_caller_bound_axis_carries_no_choice_for_that_axis():
     # Binding provenance removes the disagreeing candidate before default selection.
     facets_by_stat_var = {_STAT_VAR_A: [_WINNING_FACET, _DISAGREEING_FACET]}
     graph = _graph(facets_by_stat_var)
@@ -254,4 +265,4 @@ def test_caller_bound_axis_carries_no_warning_for_that_axis():
     assert resp.status_code == 200, resp.text
     manifest = resp.json()
     assert _facet_entry(manifest, "provenance")["basis"] == "bound"
-    assert _facet_warnings(manifest) == []
+    assert _choices(manifest) == []

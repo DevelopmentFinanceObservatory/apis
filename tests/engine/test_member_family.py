@@ -25,7 +25,7 @@ from search.engine.retrieval.bound_values import (
     shape_query,
     shape_slot_properties,
 )
-from search.engine.retrieval.derive import _index_group_keys, derive_shapes
+from search.engine.retrieval.derive import derive_shapes
 from search.engine.retrieval.facts import FiveTuple
 from tests.code_index.test_elect_dataset import (
     _PLAIN,
@@ -54,9 +54,6 @@ def test_a_datasets_rows_share_its_family_when_another_family_holds_fewer_proper
     assert plain.datasets == (_PLAIN,)
     assert tables.datasets == (_TABLES,)
     assert unindexed is tables
-    group_keys = _index_group_keys(index)
-    assert group_keys["plain_health"] == group_keys["plain_health_ngo"]
-    assert group_keys["plain_health"] != group_keys["tables_health"]
 
 
 def _no_place() -> RoleKeys:

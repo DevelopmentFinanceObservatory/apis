@@ -44,16 +44,16 @@ _ROLE_NAMES = RoleNames(donor=_ROLES[0], recipient=_ROLES[1])
 
 def _slot(prop: str, value: str) -> Slot:
     return Slot(
-        key=SlotKey(axis="how", property=GraphRef(dcid=prop, label=prop), label=prop),
+        key=SlotKey(axis="how", property=GraphRef(ref=prop, label=prop), label=prop),
         binding=BindingValue(
-            value=SlotValue(ref=GraphRef(dcid=value, label=value), value_kind="enum_value")
+            value=SlotValue(ref=GraphRef(ref=value, label=value), value_kind="enum_value")
         ),
     )
 
 
 def _unbound_slot(prop: str) -> Slot:
     return Slot(
-        key=SlotKey(axis="how", property=GraphRef(dcid=prop, label=prop), label=prop),
+        key=SlotKey(axis="how", property=GraphRef(ref=prop, label=prop), label=prop),
         binding=BindingUnbound(),
     )
 
@@ -147,7 +147,7 @@ def _round_trip(
     # crsTypeOfFlow, the routing axes) is posted unbound here too, so each
     # one becomes a slot in the shape's own five-tuple family instead of
     # only surfacing as an open axis.
-    already_named = {_PURPOSE_PROP, *(s.key.property.dcid for s in extra_slots if s.key.property)}
+    already_named = {_PURPOSE_PROP, *(s.key.property.ref for s in extra_slots if s.key.property)}
     other_props = {
         prop
         for row in member_rows

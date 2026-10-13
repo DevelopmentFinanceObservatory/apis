@@ -2,12 +2,14 @@
 
 Outside the origin catalogue's overlap set the order is the one each bulk path used before:
 series covered, then observations, then recency, then provenance, method, unit and facet id.
-Inside it, DFO's facet leads, ahead of breadth, as it does for a single member.
+Inside it, DFO's facet leads when it covers at least as many series as the best base facet,
+as it does for a single member; a broader base facet leads a narrower DFO one (#1271).
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass, field, replace
 
 import pytest
 
@@ -20,8 +22,9 @@ from search.engine.retrieval.facet_election import (
     merge_scope_candidates,
     rank_role_candidates,
     rank_scope_candidates,
+    role_continuation,
 )
-from tests.engine._role_candidates import role_candidate
+from tests.engine._role_candidates import ListedRolePairs, role_candidate
 from tests.origin_catalogue.fake_catalogue import provenance_row, restrictive_catalogue
 
 _SV = "Count_Person"
@@ -83,18 +86,23 @@ def test_scope_ranking_leads_with_places_then_observations_then_recency():
 
 
 @pytest.mark.usefixtures("overlap")
-def test_scope_ranking_puts_dfo_first_ahead_of_places_covered():
+@pytest.mark.parametrize(
+    ("dfo_places", "expected"),
+    [
+        pytest.param(1, ["base", "dfo"], id="dfo-narrower-base-leads"),
+        pytest.param(2, ["dfo", "base"], id="dfo-as-broad-dfo-leads"),
+    ],
+)
+def test_scope_ranking_puts_dfo_first_only_when_it_covers_as_many_places(
+    dfo_places: int, expected: list[str]
+):
+    base = _facet("base", obs=60, latest="2023")
+    dfo = _facet("dfo", obs=5, latest="2023", provenance=_DFO_PROVENANCE)
     order = _scope_order(
-        {
-            _PLACES[0]: [
-                _facet("base", obs=60, latest="2023"),
-                _facet("dfo", obs=5, latest="2023", provenance=_DFO_PROVENANCE),
-            ],
-            _PLACES[1]: [_facet("base", obs=60, latest="2023")],
-        }
+        {place: [base, dfo] if i < dfo_places else [base] for i, place in enumerate(_PLACES[:2])}
     )
 
-    assert order == ["dfo", "base"]
+    assert order == expected
 
 
 def test_scope_election_merges_each_place_once(monkeypatch: pytest.MonkeyPatch):
@@ -183,7 +191,16 @@ def test_role_ranking_leads_with_pairs_then_observations_then_recency():
 
 
 @pytest.mark.usefixtures("overlap")
-def test_role_ranking_puts_dfo_first_ahead_of_pairs_covered():
+@pytest.mark.parametrize(
+    ("dfo_pairs", "expected"),
+    [
+        pytest.param(1, ["base", "dfo"], id="dfo-narrower-base-leads"),
+        pytest.param(3, ["dfo", "base"], id="dfo-as-broad-dfo-leads"),
+    ],
+)
+def test_role_ranking_puts_dfo_first_only_when_it_covers_as_many_pairs(
+    dfo_pairs: int, expected: list[str]
+):
     order = _role_order(
         [
             role_candidate(
@@ -194,11 +211,134 @@ def test_role_ranking_puts_dfo_first_ahead_of_pairs_covered():
             ),
             role_candidate(
                 facet_id="dfo",
-                role_tuples=_pairs(_PLACES[0], n_obs=5),
+                role_tuples=_pairs(*_PLACES[:dfo_pairs], n_obs=5),
                 latest_date="2023",
                 provenance_id=_DFO_PROVENANCE,
             ),
         ]
     )
 
-    assert order == ["dfo", "base"]
+    assert order == expected
+
+
+# A recorded series at two places and the `Estimated` series continuing it at two others,
+# under one provenance, beside another source's series at three of the four places.
+_JOIN_PLACES = ["country/KEN", "country/GHA", "country/TGO", "country/NGA"]
+_JOIN_WINDOW = RequestedWindow(kind="range", start_year=2015, end_year=2028)
+_JOIN = {
+    "rec": (None, "2010", "2020", _JOIN_PLACES[:2]),
+    "est": ("Estimated", "2021", "2030", _JOIN_PLACES[2:]),
+    "other": (None, "2010", "2025", _JOIN_PLACES[:3]),
+}
+
+
+def _join_provenance(facet_id: str) -> str:
+    return "dc/base/Other" if facet_id == "other" else _BASE_PROVENANCE
+
+
+def test_scope_ranking_counts_a_joined_candidate_at_every_place_any_of_its_facets_holds():
+    """Under a 2015 to 2028 window `rec` and the estimates continuing it rank as one
+    candidate. Each holds two places and `other` three, but joined they serve all four."""
+    by_place = {
+        place: [
+            Facet(
+                facet_id=facet_id,
+                provenance_id=_join_provenance(facet_id),
+                measurement_method=method,
+                obs_count=1,
+                earliest_date=earliest,
+                latest_date=latest,
+            )
+            for facet_id, (method, earliest, latest, places) in _JOIN.items()
+            if place in places
+        ]
+        for place in _JOIN_PLACES
+    }
+    merged = merge_scope_candidates(by_place, _JOIN_PLACES)
+    ranked = rank_scope_candidates(merged, stat_vars=[_SV], window=_JOIN_WINDOW)
+
+    assert [c.facet_id for c in ranked] == ["rec", "est", "other"]
+
+
+@pytest.mark.parametrize(
+    ("estimates_period", "continuing"),
+    [
+        pytest.param("P1Y", ("est",), id="same-cadence-continues"),
+        pytest.param("P1M", (), id="another-cadence-does-not"),
+    ],
+)
+def test_a_role_bulk_read_continues_its_series_only_at_its_cadence(
+    estimates_period: str, continuing: tuple[str, ...]
+):
+    """Coverage states each facet's `observationPeriod`. Monthly estimates neither continue
+    the annual `rec` nor join it in the ranking, as a mint of the same request reads them."""
+    candidates = [
+        role_candidate(
+            facet_id=facet_id,
+            role_tuples=_pairs(*places),
+            latest_date=latest,
+            provenance_id=_join_provenance(facet_id),
+            measurement_method=method,
+            observation_period=estimates_period if facet_id == "est" else "P1Y",
+        )
+        for facet_id, (method, _earliest, latest, places) in _JOIN.items()
+    ]
+    merged = merge_role_candidates({_SV: candidates}, [_SV])
+
+    ranked = rank_role_candidates(merged, stat_vars=[_SV], window=_JOIN_WINDOW)
+
+    assert role_continuation(merged["rec"], merged, window=_JOIN_WINDOW) == continuing
+    assert (ranked[0].facet_id == "rec") == bool(continuing)
+
+
+@dataclass(frozen=True)
+class _CountingPairs(ListedRolePairs):
+    """Listed pairs recording `facet_id` at each read of their tuples."""
+
+    facet_id: str = ""
+    reads: list[str] = field(default_factory=list)
+
+    def head(self, limit, *, first_year, last_year, with_data=False):
+        self.reads.append(self.facet_id)
+        return super().head(limit, first_year=first_year, last_year=last_year, with_data=with_data)
+
+
+@pytest.mark.parametrize(
+    ("window", "order", "reads"),
+    [
+        pytest.param(
+            _JOIN_WINDOW, ["rec", "est", "other"], ["est", "rec"], id="join-reads-its-pairs-once"
+        ),
+        pytest.param(None, ["other", "est", "rec"], [], id="no-join-reads-no-pairs"),
+    ],
+)
+def test_role_ranking_reads_pairs_only_to_count_a_joined_candidate(
+    window: RequestedWindow | None, order: list[str], reads: list[str]
+):
+    """Joined, `rec` and its estimates hold all four debtors against `other`'s three, so
+    they lead; counting that reads each of their pairs once, however often the ranking asks.
+    A ranking that forms no join reads no pairs."""
+    read: list[str] = []
+    candidates = []
+    for facet_id, (method, _earliest, latest, places) in _JOIN.items():
+        candidate = role_candidate(
+            facet_id=facet_id,
+            role_tuples=_pairs(*places),
+            latest_date=latest,
+            provenance_id=_join_provenance(facet_id),
+            measurement_method=method,
+            observation_period="P1Y",
+        )
+        assert isinstance(candidate.pairs, ListedRolePairs)
+        candidates.append(
+            replace(
+                candidate,
+                pairs=_CountingPairs(candidate.pairs.n_obs_by_role_tuple, facet_id, read),
+            )
+        )
+    merged = merge_role_candidates({_SV: candidates}, [_SV])
+
+    ranked = rank_role_candidates(merged, stat_vars=[_SV], window=window)
+
+    assert [c.facet_id for c in ranked] == order
+    assert sorted(read) == reads

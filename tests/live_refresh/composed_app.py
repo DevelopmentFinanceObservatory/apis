@@ -3,7 +3,7 @@ dataset whose data a test can move.
 
 `compose()` builds `dfo_platform.app.create_app` over both surfaces. The live stores
 (`LiveVersionRecordWriter`, `LiveSnapshotReader`, `LiveHeadStore`, `LiveRecipeStore`,
-`LiveVersionLister`, `LiveArtifactInventory`, `LiveArtifactReferenceWriter`,
+`LiveDescriptionStore`, `LiveVersionLister`, `LiveArtifactInventory`, `LiveArtifactReferenceWriter`,
 `LiveOperationStore`, `LiveArtifactStore`, `LiveFrameStore`) run their own SQL and storage calls
 against SQLite and a fake GCS client. The graph, coverage index, and SDMX endpoint are doubles
 that read one `Observations` table, so a change to that table is what a new upstream release is
@@ -78,6 +78,7 @@ from code_index.types import StatVarRow
 from dataset_store.snapshot import LiveSnapshotReader
 from datasets_api.app import datasets_surface
 from datasets_api.config import DatasetsBuildSettings
+from datasets_api.description_store import LiveDescriptionStore
 from datasets_api.doors.definition import DefinitionDeps
 from datasets_api.live_refresh import LiveRefreshPrincipal
 from datasets_api.operation_store import LiveOperationStore
@@ -895,6 +896,7 @@ def compose(
     version_writer = LiveVersionRecordWriter(store=version_store)
     head_store = LiveHeadStore(store=version_store)
     recipe_store = LiveRecipeStore(store=version_store)
+    description_store = LiveDescriptionStore(store=version_store)
     version_lister = LiveVersionLister(store=version_store)
     reference_writer = LiveArtifactReferenceWriter(store=version_store)
     operation_store = LiveOperationStore(store=version_store)
@@ -933,6 +935,7 @@ def compose(
                 snapshot_reader=snapshot_reader,
                 reference_writer=reference_writer,
                 recipe_store=recipe_store,
+                description_store=description_store,
                 version_lister=version_lister,
                 code_index=code_index,
                 rate_cache=rate_cache,
@@ -973,9 +976,7 @@ def compose(
             ceiling=1_000_000,
             member_concurrency=4,
             enumerator=MemberEnumerator(),
-            enrichment=EnrichmentLookup(
-                graph, type_kinds=code_index.party_types, parties=code_index.parties
-            ),
+            enrichment=EnrichmentLookup(graph, parties=code_index.parties),
             code_index=code_index,
             rate_cache=rate_cache,
             coverage=coverage,

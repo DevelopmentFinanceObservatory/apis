@@ -6,6 +6,7 @@ import asyncio
 
 from dc_sdmx import SdmxObservation
 from search.engine.bind import _UniversalBindOutput
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import (
     PLACE_SCOPE_DEFAULTED,
     RegionResult,
@@ -26,6 +27,7 @@ from tests.engine._builders import shape_five_tuple
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import materialise_double_from_obs, walk_options
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 from tests.materialise._rate_table_support import CONVERTIBLE_STAT_VAR_ARCS, conversion_arcs
 
@@ -57,6 +59,8 @@ class _FixedBindLLM:
     """Elects the sole candidate shape with no constraint bindings, unconditionally."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0, bindings=[], also_plausible=None, ask=None
@@ -67,6 +71,8 @@ class _CandidatesBindLLM:
     """Elects capped_shapes[0], flags capped_shapes[1] also_plausible."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0, bindings=[], also_plausible=[1], ask=None
@@ -410,7 +416,7 @@ def test_candidates_each_carry_their_own_scope():
         assert spec.resolved.scope.axis == "observationAbout"
         assert len(spec.resolved.scope.members) == 1
         ref = spec.resolved.scope.members[0].ref
-        if any(sv.ref.dcid == _SV_A for sv in spec.resolved.members):
+        if any(sv.ref.ref == _SV_A for sv in spec.resolved.members):
             assert ref == "country/A1"
         else:
             assert ref == "country/A2"

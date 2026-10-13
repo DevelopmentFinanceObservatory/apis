@@ -113,12 +113,12 @@ class TestUnassertedAxisResolvesUnboundAndInapplicable:
         age_slot = next(
             s
             for s in spec.resolved.slots
-            if s.key.property is not None and s.key.property.dcid == "age"
+            if s.key.property is not None and s.key.property.ref == "age"
         )
         assert age_slot.binding.kind == "unbound"
         assert "age" in spec.resolved.inapplicable_slots
         assert not any(
-            so.key.property is not None and so.key.property.dcid == "age"
+            so.key.property is not None and so.key.property.ref == "age"
             for so in spec.resolved.slot_options
         )
 
@@ -148,15 +148,15 @@ class TestUnassertedAxisAdmittedAndFilled:
         gender_slot = next(
             s
             for s in spec.resolved.slots
-            if s.key.property is not None and s.key.property.dcid == "gender"
+            if s.key.property is not None and s.key.property.ref == "gender"
         )
         assert gender_slot.binding.kind == "unbound"
         gender_options = next(
             so
             for so in spec.resolved.slot_options
-            if so.key.property is not None and so.key.property.dcid == "gender"
+            if so.key.property is not None and so.key.property.ref == "gender"
         )
-        assert {opt.value.ref.dcid for opt in gender_options.options} == {"Male", "Female"}
+        assert {opt.value.ref.ref for opt in gender_options.options} == {"Male", "Female"}
 
 
 class TestBoundAssertedAxisUnaffected:
@@ -183,7 +183,7 @@ class TestBoundAssertedAxisUnaffected:
         gender_slot = next(
             s
             for s in spec.resolved.slots
-            if s.key.property is not None and s.key.property.dcid == "gender"
+            if s.key.property is not None and s.key.property.ref == "gender"
         )
         assert gender_slot.binding.kind == "value"
 
@@ -273,7 +273,7 @@ class TestForeignFamilyExcluded:
         assert spec.spec_id == base_spec_id
         assert "age" in spec.resolved.inapplicable_slots
         assert not any(
-            so.key.property is not None and so.key.property.dcid == "age"
+            so.key.property is not None and so.key.property.ref == "age"
             for so in spec.resolved.slot_options
         )
 
@@ -298,9 +298,9 @@ class TestForeignFamilyExcluded:
         age_options = next(
             so
             for so in spec.resolved.slot_options
-            if so.key.property is not None and so.key.property.dcid == "age"
+            if so.key.property is not None and so.key.property.ref == "age"
         )
-        age_values = {opt.value.ref.dcid for opt in age_options.options}
+        age_values = {opt.value.ref.ref for opt in age_options.options}
         assert age_values == {"Years25Onwards"}
         assert "Years20To34" not in age_values
 
@@ -408,12 +408,12 @@ class TestConfirmedAxisSampleNeverDecidesClassification:
         gender_slot = next(
             s
             for s in spec.resolved.slots
-            if s.key.property is not None and s.key.property.dcid == "gender"
+            if s.key.property is not None and s.key.property.ref == "gender"
         )
         assert gender_slot.key.axis == "how"
         gender_options = next(
             so
             for so in spec.resolved.slot_options
-            if so.key.property is not None and so.key.property.dcid == "gender"
+            if so.key.property is not None and so.key.property.ref == "gender"
         )
-        assert {opt.value.ref.dcid for opt in gender_options.options} == {"country/USA"}
+        assert {opt.value.ref.ref for opt in gender_options.options} == {"country/USA"}

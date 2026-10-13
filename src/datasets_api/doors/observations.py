@@ -476,15 +476,23 @@ def read_snapshot_observations(*, id: str, content_version: str, deps: Deps) -> 
             )
             if order is not None:
                 return assemble_role_bulk(
-                    series, label_source=labels, member_constraints=constraints, order=order
+                    series,
+                    label_source=labels,
+                    index=deps.code_index,
+                    member_constraints=constraints,
+                    order=order,
                 )
             if mode is PreviewMode.SCOPE_BULK:
                 return assemble_scope_bulk(
-                    series, label_source=labels, member_constraints=constraints
+                    series,
+                    label_source=labels,
+                    index=deps.code_index,
+                    member_constraints=constraints,
                 )
             return assemble_per_series(
                 series,
                 label_source=labels,
+                index=deps.code_index,
                 member_constraints=constraints,
                 target_currency_ref=stored.target_currency_ref,
             )

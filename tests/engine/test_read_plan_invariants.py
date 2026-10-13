@@ -927,7 +927,7 @@ def test_a_role_answer_cites_the_sources_its_plan_serves(
     served = citable_source_ids(read_plan.facets_served(plan))
     assert served == ["dc/base/Ids"]
     resolved = result.spec.resolved
-    assert [ref.dcid for ref in resolved.trace.resolved_sources] == served
+    assert [ref.ref for ref in resolved.trace.resolved_sources] == served
     dims = {d.label: d.count for d in resolved.coverage.dimensions or []}
     assert dims["sources"] == len(served)
     sentence = render_sentence(result.spec)

@@ -36,6 +36,7 @@ from search.engine.shape import ShapeDraft, SlotKeyDraft
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._index_slots import crs_vocabulary, own_variable_spans, read_text
 from tests.engine._index_slots import query_qualifiers as read_query_qualifiers
+from tests.engine._requirements import depart_requirements
 from tests.fixtures import FakeLLM
 from tests.fixtures.keys import fixture_key
 
@@ -202,6 +203,7 @@ def test_sidecar_only_tie_left_unresolved_produces_query_qualifier_dropped():
     )
     result = asyncio.run(_phase_vet_election(state))
     assert result is None, "expected _phase_vet_election to fall through"
+    depart_requirements(state)
     assert len(state.warnings) == 1
     assert state.warnings[0].code == QUERY_QUALIFIER_DROPPED
     assert "budget support" in state.warnings[0].message
@@ -231,6 +233,7 @@ def test_sidecar_tie_owned_elsewhere_stays_silent():
     )
     result = asyncio.run(_phase_vet_election(state))
     assert result is None
+    depart_requirements(state)
     assert state.warnings == []
 
 
@@ -447,6 +450,7 @@ def _run_qualifier_pipeline(
         coverage=empty_coverage_snapshot(),
     )
     fell_through = asyncio.run(_phase_vet_election(state))
+    depart_requirements(state)
     # Mirrors _phase_repair_bindings' own `state.bindings = list(state.
     # bind_result.bindings)` -- _resolve_query_qualifiers reads state.
     # bindings, not state.bind_result.bindings, for its own bound/unbound

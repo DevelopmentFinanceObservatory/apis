@@ -1,11 +1,12 @@
 """Builds the frame's structural view: dimensions, period grain, coverage, span, and series count.
 
 Dimension names come from frame columns. Distinct values are capped, with
-full counts retained for truncated listings."""
+full counts retained for truncated listings. A row's series is its `series_keys` key, which
+files the estimates continuing a series under that series."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping, Sequence, Set
 from typing import cast
 
 from dfo_frame_grammar import (
@@ -19,14 +20,24 @@ from dfo_frame_grammar import (
 
 from assembler.errors import BindingInvalid
 from assembler.limits import LABEL_MAX, PER_DIMENSION_LISTING_CAP
-from assembler.ports import DimensionView, StructuralView
+from assembler.ports import Continuation, DimensionView, StructuralView
+from assembler.series_id import Coordinates
+from materialise.bundle_columns import MEASUREMENT_METHOD_COLUMN, PROVENANCE_COLUMN
+from materialise.continued_series import (
+    continuation_leads,
+    continued_series_of_entries,
+    continued_series_of_trace,
+)
 from materialise.unit_cells import shared_unit_key, unit_key_text
 
 __all__ = [
     "compute_structural_view",
+    "continuation_known",
     "dimension_columns",
     "facet_dimension_names",
+    "frame_continuation",
     "hashable_cell",
+    "series_keys",
 ]
 
 _NON_DIMENSION_COLUMNS = frozenset({TIME_PERIOD_COLUMN, VALUE_COLUMN, STATUS_COLUMN})
@@ -43,7 +54,80 @@ def facet_dimension_names() -> frozenset[str]:
     return frozenset({UNIT_COLUMN, *FACET_IDENTITY_COLUMNS})
 
 
-def compute_structural_view(*, frame: Mapping[str, object]) -> StructuralView:
+def frame_continuation(*, manifest: Mapping[str, object]) -> Continuation | None:
+    """The continuation of a frame's series, or `None` when nothing continues them.
+
+    A dataset version's manifest records its own (`trace.continuations`, written by
+    `materialise.finish`), scoped to the selections its `trace.facets` name
+    (`materialise.continued_series.continued_series_of_trace`). A computed version's manifest
+    holds the continuations it inherited from the versions it was computed from, stored when
+    it was published (`continuations`, `datasets_api.lineage_continuations`). Nothing else is
+    read, so a frame's series stay as they first loaded whatever description records arrive."""
+    trace = manifest.get("trace")
+    series = (
+        continued_series_of_trace(cast("Mapping[str, object]", trace))
+        if isinstance(trace, Mapping)
+        else continued_series_of_entries(manifest.get("continuations"))
+    )
+    return Continuation(series=series) if series else None
+
+
+def continuation_known(*, manifest: Mapping[str, object]) -> bool:
+    """Whether `manifest` states its frame's continuation. A computed version recorded before
+    versions stored continuations holds `continuations: null` until the backfill fills it;
+    its `frame_continuation` reads as none meanwhile, and a reader that caches the frame reads
+    the version again until it is known."""
+    return "trace" in manifest or manifest.get("continuations", ()) is not None
+
+
+def series_keys(
+    *,
+    columns: Sequence[str],
+    rows: Sequence[Sequence[object]],
+    continuation: Continuation | None,
+) -> tuple[Coordinates, ...]:
+    """Each row's series key: its dimension cells by column name, sorted, rendered with
+    `hashable_cell`.
+
+    A row that `continuation` admits takes the key of the row whose series it continues
+    (`materialise.continued_series.continuation_leads`): the first row, in frame order, holding
+    the same cells on every other dimension under the method it continues. So a series and the
+    estimates continuing it are one series, as the manifest and a description count them. A
+    continuing row with no such row keys a series of its own. With no continuation, or a frame
+    without a `measurementMethod` column, the key is the row's own cells."""
+    index = {column: position for position, column in enumerate(columns)}
+    names = dimension_columns(columns=columns)
+    keys = [
+        cast(
+            "Coordinates",
+            tuple(sorted((name, hashable_cell(row[index[name]])) for name in names)),
+        )
+        for row in rows
+    ]
+    if continuation is None or MEASUREMENT_METHOD_COLUMN not in index:
+        return tuple(keys)
+    axis = index[MEASUREMENT_METHOD_COLUMN]
+    source = index.get(PROVENANCE_COLUMN)
+    leads = continuation_leads(
+        continuation.series,
+        # Each key without its method cell, the series identity a continuing row shares.
+        identities=[
+            tuple(item for item in key if item[0] != MEASUREMENT_METHOD_COLUMN) for key in keys
+        ],
+        methods=[row[axis] for row in rows],
+        provenances=None if source is None else [row[source] for row in rows],
+    )
+    return tuple(key if lead is None else keys[lead] for key, lead in zip(keys, leads, strict=True))
+
+
+def compute_structural_view(
+    *, frame: Mapping[str, object], continuation: Continuation | None
+) -> StructuralView:
+    """`series_count` counts `series_keys` under `continuation`, the frame's
+    `frame_continuation`, and a dimension is `plural` when those series hold more than one
+    of its values. A continued series holds the method of the rows it continues, so its
+    continuing method neither counts a series nor makes the method axis plural, though the
+    method stays listed as a value a select may bind."""
     columns = tuple(cast("Sequence[str]", frame["columns"]))
     rows = tuple(cast("Sequence[Sequence[object]]", frame["rows"]))
     index_by_column = {column: position for position, column in enumerate(columns)}
@@ -64,8 +148,9 @@ def compute_structural_view(*, frame: Mapping[str, object]) -> StructuralView:
                 ),
             )
 
+    series = set(series_keys(columns=columns, rows=rows, continuation=continuation))
     dimensions = tuple(
-        _dimension_view(name=name, index=index_by_column[name], rows=rows)
+        _dimension_view(name=name, index=index_by_column[name], rows=rows, series=series)
         for name in dimension_columns(columns=columns)
     )
 
@@ -79,9 +164,7 @@ def compute_structural_view(*, frame: Mapping[str, object]) -> StructuralView:
     # Empty frames default to year. Window resolution refuses zero observations.
     grain, span = _period_grain_and_span(periods=periods) if periods else ("year", None)
 
-    coordinate_columns = dimension_columns(columns=columns)
-    coordinate_indices = tuple(index_by_column[column] for column in coordinate_columns)
-    series_count = len({tuple(hashable_cell(row[i]) for i in coordinate_indices) for row in rows})
+    series_count = len(series)
 
     return StructuralView(
         dimensions=dimensions,
@@ -92,11 +175,13 @@ def compute_structural_view(*, frame: Mapping[str, object]) -> StructuralView:
     )
 
 
-def _dimension_view(*, name: str, index: int, rows: Sequence[Sequence[object]]) -> DimensionView:
-    """`values`, `total_count` and `truncated` cover the bindable, non-null values.
-    `plural` also counts a null, so `{USDollar, None}` is plural."""
+def _dimension_view(
+    *, name: str, index: int, rows: Sequence[Sequence[object]], series: Set[Coordinates]
+) -> DimensionView:
+    """`values`, `total_count` and `truncated` cover the bindable, non-null values of every
+    row. `plural` counts the values `series` hold, a null included, so `{USDollar, None}` is
+    plural."""
     distinct = sorted({_cell_text(row[index]) for row in rows if row[index] is not None})
-    has_null = any(row[index] is None for row in rows)
     total_count = len(distinct)
     capped = tuple(distinct[:PER_DIMENSION_LISTING_CAP])
     return DimensionView(
@@ -104,7 +189,7 @@ def _dimension_view(*, name: str, index: int, rows: Sequence[Sequence[object]]) 
         values=capped,
         total_count=total_count,
         truncated=total_count > len(capped),
-        plural=total_count + has_null > 1,
+        plural=len({dict(key)[name] for key in series}) > 1,
     )
 
 

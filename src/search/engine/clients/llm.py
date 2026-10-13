@@ -176,9 +176,13 @@ def _temperature_for_model(model: str) -> float | None:
 # into the lazily-imported enum without a second mapping at each call site.
 _THINKING_LEVEL_NAMES = {"minimal": "MINIMAL", "low": "LOW", "medium": "MEDIUM", "high": "HIGH"}
 
-# Extract keeps the instance's resolved level. Bind defaults to minimal.
+# Extract keeps the instance's resolved level. Bind and the quantity read default to minimal.
 # An instance-level or config override takes precedence in for_stage().
-_STAGE_THINKING_LEVELS: dict[str, str | None] = {"extract": None, "bind": "minimal"}
+_STAGE_THINKING_LEVELS: dict[str, str | None] = {
+    "extract": None,
+    "bind": "minimal",
+    "quantity": "minimal",
+}
 
 
 def _validate_stage_thinking_levels() -> None:
@@ -193,7 +197,7 @@ def _validate_stage_thinking_levels() -> None:
 _validate_stage_thinking_levels()
 
 
-def for_stage(llm: SupportsLLM, stage: Literal["extract", "bind"]) -> SupportsLLM:
+def for_stage(llm: SupportsLLM, stage: Literal["extract", "bind", "quantity"]) -> SupportsLLM:
     """Return ``llm`` or a shallow copy with the stage's thinking level.
 
     The original object wins when the stage has no override, the LLM is a

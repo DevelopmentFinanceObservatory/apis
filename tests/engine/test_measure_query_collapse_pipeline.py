@@ -34,6 +34,7 @@ from search.heading.departure_fact import DepartureFact
 from search.models import TraceDefaultReading
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._index_slots import index_slot_keys
+from tests.engine._requirements import depart_requirements
 from tests.engine.test_admissibility_table import _node, _resolve_gdp_of_kenya
 
 _ROLES = ("financingProvider", "financingRecipient")
@@ -147,6 +148,7 @@ def _run_prune_and_elect(state: ResolveState) -> None:
     )
     result = asyncio.run(_phase_vet_election(state))
     assert result is None, "expected _phase_vet_election to fall through"
+    depart_requirements(state)
 
 
 def test_commitments_survives_as_financial_obligation_not_financial_flow():
@@ -412,6 +414,7 @@ def _elect_reading_ppp(variable: str, shape: ShapeDraft) -> ResolveState:
         chosen_shape_index=0, bindings=[], also_plausible=[], ask=None
     )
     assert asyncio.run(_phase_vet_election(state)) is None
+    depart_requirements(state)
     return state
 
 
@@ -560,7 +563,7 @@ def test_the_answer_trace_names_the_members_the_default_reading_removed():
 
     assert result.status == "definite", result
     (spec,) = result.specs
-    assert [sv.ref.dcid for sv in spec.resolved.members] == [nominal]
+    assert [sv.ref.ref for sv in spec.resolved.members] == [nominal]
     assert spec.resolved.trace.default_reading == TraceDefaultReading(
         applied=True, removed_stat_vars=[adjusted]
     )

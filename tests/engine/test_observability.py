@@ -9,6 +9,7 @@ from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import Facet
 from search.engine.conjoin import assemble_region
 from search.engine.envelope import make_diagnostics, now_ms
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import RegionResult
 from search.engine.retrieval.read_plan import plan_standard
 from search.engine.shape import ShapeDraft, SlotKeyDraft
@@ -40,6 +41,7 @@ from search.models import (
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import offline_resolve
+from tests.engine._quantity import NO_QUANTITY
 
 
 def _query_echo() -> QueryEcho:
@@ -58,7 +60,7 @@ def _diagnostics(**kw) -> Diagnostics:
 
 
 def _sv_ref(dcid: str) -> GraphRef:
-    return GraphRef(dcid=dcid, label=dcid)
+    return GraphRef(ref=dcid, label=dcid)
 
 
 def _facet(
@@ -125,9 +127,9 @@ def _minimal_spec():
         ),
     )
     five_tuple_refs = {
-        "DevelopmentFinance": GraphRef(dcid="DevelopmentFinance", label="Dev Finance"),
-        "DevelopmentFinanceFlow": GraphRef(dcid="DevelopmentFinanceFlow", label="Flow"),
-        "measuredValue": GraphRef(dcid="measuredValue", label="Measured Value"),
+        "DevelopmentFinance": GraphRef(ref="DevelopmentFinance", label="Dev Finance"),
+        "DevelopmentFinanceFlow": GraphRef(ref="DevelopmentFinanceFlow", label="Flow"),
+        "measuredValue": GraphRef(ref="measuredValue", label="Measured Value"),
     }
     scheme_draft = SlotBindingDraft(
         axis="what",
@@ -135,22 +137,22 @@ def _minimal_spec():
         kind="value",
         value_dcids=["ODAGrants"],
     )
-    prop_ref = GraphRef(dcid="DevelopmentFinanceScheme", label="DevelopmentFinanceScheme")
+    prop_ref = GraphRef(ref="DevelopmentFinanceScheme", label="DevelopmentFinanceScheme")
     slot = build_slot(
         shape_draft.slot_keys[0],
         scheme_draft,
-        [GraphRef(dcid="ODAGrants", label="ODA Grants")],
+        [GraphRef(ref="ODAGrants", label="ODA Grants")],
         property_ref=prop_ref,
     )
     shape_model = build_shape_model(
         shape_draft, [slot.key], five_tuple_refs, member_count=1, members=None
     )
-    sv_ref = GraphRef(dcid="TEST_SV", label="Test SV")
+    sv_ref = GraphRef(ref="TEST_SV", label="Test SV")
     stat_vars = [
         StatVar(ref=sv_ref, shape_id=shape_draft.shape_id, slot_values=[], constraint_properties=[])
     ]
     entity = Entity(
-        ref=GraphRef(dcid="country/ETH", label="Ethiopia"),
+        ref=GraphRef(ref="country/ETH", label="Ethiopia"),
         entity_type=None,
         role=EntityRoleSubject(),
     )
@@ -277,12 +279,10 @@ def _constraint_arcs(prop: str, value: str) -> dict:
 def _value_slot(prop_dcid: str, value_dcid: str) -> Slot:
     return Slot(
         key=SlotKey(
-            axis="what", property=GraphRef(dcid=prop_dcid, label=prop_dcid), label=prop_dcid
+            axis="what", property=GraphRef(ref=prop_dcid, label=prop_dcid), label=prop_dcid
         ),
         binding=BindingValue(
-            value=SlotValue(
-                ref=GraphRef(dcid=value_dcid, label=value_dcid), value_kind="enum_value"
-            )
+            value=SlotValue(ref=GraphRef(ref=value_dcid, label=value_dcid), value_kind="enum_value")
         ),
     )
 
@@ -301,8 +301,8 @@ class TestBuildStatVarsSlotValuesArcDerived:
             slots=[slot],
             arcs_by_sv=arcs_by_sv,
         )
-        by_ref = {sv.ref.dcid: sv for sv in stat_vars}
-        assert [v.value.ref.dcid for v in by_ref["Count_Person_Female"].slot_values] == [
+        by_ref = {sv.ref.ref: sv for sv in stat_vars}
+        assert [v.value.ref.ref for v in by_ref["Count_Person_Female"].slot_values] == [
             "schema:Male"
         ]
         assert by_ref["Count_Person_Urban"].slot_values == []
@@ -312,16 +312,16 @@ class TestBuildStatVarsSlotValuesArcDerived:
         slot = Slot(
             key=SlotKey(
                 axis="how",
-                property=GraphRef(dcid="financingSource", label="financingSource"),
+                property=GraphRef(ref="financingSource", label="financingSource"),
                 label="financingSource",
             ),
             binding=BindingSet(
                 values=[
                     SlotValue(
-                        ref=GraphRef(dcid="SourceA", label="SourceA"), value_kind="enum_value"
+                        ref=GraphRef(ref="SourceA", label="SourceA"), value_kind="enum_value"
                     ),
                     SlotValue(
-                        ref=GraphRef(dcid="SourceB", label="SourceB"), value_kind="enum_value"
+                        ref=GraphRef(ref="SourceB", label="SourceB"), value_kind="enum_value"
                     ),
                 ]
             ),
@@ -336,9 +336,9 @@ class TestBuildStatVarsSlotValuesArcDerived:
             slots=[slot],
             arcs_by_sv=arcs_by_sv,
         )
-        by_ref = {sv.ref.dcid: sv for sv in stat_vars}
-        assert [v.value.ref.dcid for v in by_ref["SV_A"].slot_values] == ["SourceA"]
-        assert [v.value.ref.dcid for v in by_ref["SV_B"].slot_values] == ["SourceB"]
+        by_ref = {sv.ref.ref: sv for sv in stat_vars}
+        assert [v.value.ref.ref for v in by_ref["SV_A"].slot_values] == ["SourceA"]
+        assert [v.value.ref.ref for v in by_ref["SV_B"].slot_values] == ["SourceB"]
 
 
 class TestNearestReal:
@@ -472,6 +472,8 @@ class TestNearestRealProbeFailureIsContained:
             """Bind the sole constraint slot for the nearest-real probe."""
 
             async def generate_structured(self, *, prompt, system, schema):
+                if schema is QuantityOutput:
+                    return NO_QUANTITY
                 assert schema.__name__ == "_UniversalBindOutput"
                 return (
                     _UniversalBindOutput(

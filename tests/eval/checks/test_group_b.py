@@ -116,7 +116,7 @@ SKILLS_ROWS = [
         id="orphan-on-a-flagged-match",
     ),
     pytest.param(make_case({"definite": {}}), definite(["oda-measures"]), NA, id="not-asserted"),
-    pytest.param(skills_case(present=True), panel("crs-005"), NA, id="no-data-part"),
+    pytest.param(skills_case(present=True), panel("crs-005"), Verdict.UNREACHED, id="no-data-part"),
 ]
 
 
@@ -217,7 +217,7 @@ def test_groundedness_passes_when_every_reference_exists():
 
 def first_value_slot(resolved: dict[str, Any]) -> tuple[int, str]:
     return next(
-        (i, s["binding"]["value"]["ref"]["dcid"])
+        (i, s["binding"]["value"]["ref"]["ref"])
         for i, s in enumerate(resolved["slots"])
         if s["binding"]["kind"] == "value"
     )
@@ -230,8 +230,8 @@ def test_groundedness_names_the_path_of_a_fabricated_reference(where: str):
     at = "/parts/0/spec/resolved"
     slot, slot_dcid = first_value_slot(resolved)
     fabricated, path = {
-        "shape": (resolved["shape"]["population_type"]["dcid"], f"{at}/shape/population_type/dcid"),
-        "slot": (slot_dcid, f"{at}/slots/{slot}/binding/value/ref/dcid"),
+        "shape": (resolved["shape"]["population_type"]["ref"], f"{at}/shape/population_type/ref"),
+        "slot": (slot_dcid, f"{at}/slots/{slot}/binding/value/ref/ref"),
         "entity": (resolved["entities"][0]["ref"], f"{at}/entities/0/ref"),
     }[where]
     result = CHECKS["groundedness"](
@@ -246,7 +246,7 @@ def test_groundedness_walks_candidates_and_equivalent_readings():
     specs = response["parts"][0]["candidates"]["specs"]
     twin = copy.deepcopy(specs[0])
     twin["resolved"].pop("equivalent_readings", None)
-    twin["resolved"]["shape"]["population_type"]["dcid"] = "TwinPop"
+    twin["resolved"]["shape"]["population_type"]["ref"] = "TwinPop"
     specs[-1]["resolved"]["equivalent_readings"] = [twin]
     graph = KnownGraph(frozenset({"TwinPop"}))
     result = CHECKS["groundedness"](make_case({"candidates": {}}), response, ctx_with(graph=graph))

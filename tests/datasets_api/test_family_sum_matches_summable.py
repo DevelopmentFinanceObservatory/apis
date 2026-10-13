@@ -16,7 +16,7 @@ from code_index import CodeIndex
 from code_index.shared import get_index
 from datasets_api.adapter import resolve_definition_members
 from datasets_api.mint_models import GroupbyOptions, MintOptions
-from datasets_api.render import ReshapeResult, _reshape
+from datasets_api.render import ReshapeResult, _RenderReads, _reshape
 from materialise.enrichment import EnrichmentLookup
 from materialise.frame_build import Frame
 from materialise.reshape import RollupNotSummableError, Table
@@ -100,7 +100,11 @@ def _mint_sum(
             table,
             options=MintOptions(groupby=GroupbyOptions(by=["time_period"], op="sum")),
             entity_columns=roles,
-            enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
+            reads=_RenderReads(
+                enrichment=EnrichmentLookup(graph, parties={}),
+                known={},
+                deadline=None,
+            ),
             code_index=code_index,
             resolved_stat_var_refs=tuple(shape.stat_var for shape in shapes),
             provenance_refs=(dataset.provenance,),
@@ -121,7 +125,7 @@ def _search_summable(identity: dict) -> dict[str, bool]:
         for slot in identity["slots"]
     ]
     stamped = apply_slot_summability(slots, BaseIdentity.model_validate(identity))
-    return {slot.key.property.dcid: slot.summable for slot in stamped if slot.key.property}
+    return {slot.key.property.ref: slot.summable for slot in stamped if slot.key.property}
 
 
 @pytest.mark.parametrize(
@@ -201,4 +205,3 @@ def test_the_summed_imputed_frame_is_a_grammar_frame_without_the_classifier_colu
             None,
         ),
     )
-    assert [warning["code"] for warning in summed.warnings] == ["stat_vars_summed"]

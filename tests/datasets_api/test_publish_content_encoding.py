@@ -90,7 +90,7 @@ def _body_bytes() -> bytes:
             "content_version": "ocv_abc123",
             "role_keys": ["recipient"],
             "rows": rows,
-            "input_content_versions": ["cv_abc123"],
+            "input_content_versions": ["cv_00000000000000000000000000abc123"],
         }
     ).encode()
 

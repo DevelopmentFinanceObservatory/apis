@@ -1,5 +1,6 @@
-"""Batched graph lookups for materialisation's country-code, label, place-type and party-kind
-enrichment fields."""
+"""Batched graph lookups for materialisation's country-code, label and place-type enrichment
+fields, the party-kind field the code index gives, and `read_party_kinds`, Search's reader of a
+party's kind. Every reader takes the kind from the code index alone (`party_kind_of`)."""
 
 from __future__ import annotations
 
@@ -7,7 +8,8 @@ import threading
 from collections import OrderedDict
 from collections.abc import Iterable, Mapping
 
-from code_index.types import PartyKind, PartyRow, party_kind
+from code_index.types import PartyKind, PartyRow
+from dfo_platform.roles import role_key_axis
 from materialise.graph import GraphReader
 
 ENRICHMENT_PROPERTIES: Mapping[str, str] = {
@@ -19,12 +21,11 @@ ENRICHMENT_PROPERTIES: Mapping[str, str] = {
 """Enrichment field name to the graph out-arc property that supplies it. Every field comes from
 one batched `node_arcs_many` read, so asking for `type` beside `label` costs no extra read."""
 
-KIND_FIELD = "kind"
-"""The field a lookup derives with no read of its own: the kind the code index declares for the
-ref (`CodeIndex.parties`), else the kind the node's `typeOf` values give under the declared party
-types (`code_index.types.party_kind`)."""
+PARTY_KIND_FIELD = "party_kind"
+"""The field a lookup derives with no graph read: the party's kind (`party`, `total`,
+`residual`) the code index declares (`party_kind_of`)."""
 
-ENRICHMENT_FIELDS: tuple[str, ...] = (*ENRICHMENT_PROPERTIES, KIND_FIELD)
+ENRICHMENT_FIELDS: tuple[str, ...] = (*ENRICHMENT_PROPERTIES, PARTY_KIND_FIELD)
 """Every field a lookup can return."""
 
 _TYPE_PROPERTY = "typeOf"
@@ -42,15 +43,12 @@ its group retry."""
 
 
 class EnrichmentLookup:
-    """Resolves refs to available `iso3`, `iso2`, `label`, `type` and `kind` fields in an LRU
-    capped at `_CACHE_CEILING`. Each entry caches all fields. Lookups promote refs to
+    """Resolves refs to available `iso3`, `iso2`, `label`, `type` and `party_kind` fields in an
+    LRU capped at `_CACHE_CEILING`. Each entry caches all fields. Lookups promote refs to
     most-recently used.
 
-    `parties` and `type_kinds` are the code index's party declarations (`CodeIndex.parties` and
-    `CodeIndex.party_types`). A ref has the `kind` its `parties` row gives it, which can differ
-    from its types' (a group of organisations is typed `Organization`); a ref with no row has
-    the kind its graph types give under `type_kinds`, when they give one. With both empty, no ref
-    has a kind.
+    `parties` is the code index's party rows (`CodeIndex.parties`), which give a ref its
+    `party_kind` (`party_kind_of`). A ref they do not list has no kind, whatever its graph types.
 
     The lock guards cache access only. Graph calls run unlocked, so concurrent misses may
     duplicate requests. Results use each call's own hits and fetches, even if another call
@@ -60,12 +58,10 @@ class EnrichmentLookup:
         self,
         graph: GraphReader,
         *,
-        type_kinds: Mapping[str, PartyKind | None],
         parties: Mapping[str, PartyRow],
     ) -> None:
         self._graph = graph
-        self._type_kinds = type_kinds
-        self._parties = parties
+        self.parties = parties
         self._lock = threading.Lock()
         self._cache: OrderedDict[str, Mapping[str, str]] = OrderedDict()
 
@@ -73,9 +69,9 @@ class EnrichmentLookup:
         self, refs: Iterable[str], *, deadline: float | None = None
     ) -> Mapping[str, Mapping[str, str]]:
         """Returns unique refs in input order, mapping available fields to values. Absent refs
-        map to `{}`, or to the `kind` their `parties` row gives. Cached refs avoid graph calls.
-        New refs are fetched in one unlocked batch, bounded by the absolute monotonic `deadline`
-        when given."""
+        map to `{}`, or to the `party_kind` their `parties` row gives. Cached refs avoid graph
+        calls. New refs are fetched in one unlocked batch, bounded by the absolute monotonic
+        `deadline` when given."""
         requested = list(dict.fromkeys(refs))
         if not requested:
             return {}
@@ -88,14 +84,16 @@ class EnrichmentLookup:
                 deadline=deadline,
             )
             resolved = {
-                ref: _resolve_fields(
-                    ref, fetched.get(ref), type_kinds=self._type_kinds, parties=self._parties
-                )
-                for ref in missing
+                ref: _resolve_fields(ref, fetched.get(ref), parties=self.parties) for ref in missing
             }
             self._store(resolved)
             hits.update(resolved)
         return {ref: hits[ref] for ref in requested}
+
+    def party_kind(self, ref: str) -> PartyKind | None:
+        """The kind `parties` declares for `ref` (`party_kind_of`), read with no graph call, so
+        it holds when a `lookup` fails. `lookup` gives `ref` the same kind."""
+        return party_kind_of(ref, parties=self.parties)
 
     def _hits_and_missing(
         self, requested: list[str]
@@ -124,18 +122,15 @@ def _resolve_fields(
     ref: str,
     node: Mapping[str, tuple[str, ...]] | None,
     *,
-    type_kinds: Mapping[str, PartyKind | None],
     parties: Mapping[str, PartyRow],
 ) -> Mapping[str, str]:
     """Each field's first value, except `type`: every `typeOf` value of the place, sorted and
     comma-joined (`AdministrativeArea1,Country,EurostatNUTS2`), since a place can hold several
-    levels at once. `kind` is the kind `parties` gives `ref`, which holds with no `node`
-    (the graph has no node for `ref`, or its read failed); else the kind the node's types give
-    under `type_kinds`, absent when neither gives one. A `ref` with no `node` and no `parties`
-    row maps to `{}`."""
+    levels at once. `party_kind` is `party_kind_of` the ref, absent when it gives none. A `ref`
+    with no `node` and no `parties` row maps to `{}`."""
     fields = {} if node is None else _node_fields(node)
-    if (kind := _kind(ref, node, type_kinds=type_kinds, parties=parties)) is not None:
-        fields[KIND_FIELD] = kind
+    if (kind := party_kind_of(ref, parties=parties)) is not None:
+        fields[PARTY_KIND_FIELD] = kind
     return fields
 
 
@@ -148,15 +143,37 @@ def _node_fields(node: Mapping[str, tuple[str, ...]]) -> dict[str, str]:
     return fields
 
 
-def _kind(
-    ref: str,
-    node: Mapping[str, tuple[str, ...]] | None,
-    *,
-    type_kinds: Mapping[str, PartyKind | None],
-    parties: Mapping[str, PartyRow],
-) -> PartyKind | None:
-    if (party := parties.get(ref)) is not None:
-        return party.kind
-    if node is None:
-        return None
-    return party_kind(node.get(_TYPE_PROPERTY, ()), type_kinds)
+def party_kind_of(ref: str, *, parties: Mapping[str, PartyRow]) -> PartyKind | None:
+    """The kind the code index's `parties` row declares for the party `ref`, which holds
+    whatever the graph says (a group of organisations is typed `Organization` and declared
+    `total`). `None` for a ref the rows do not list.
+
+    Search, the options document and every download read this one source, since the index
+    lists every party a declared dataset publishes. A coverage build carrying a party the index
+    was not exported for leaves that party with no kind. That is index drift, which the
+    code-index drift gate reports and a re-export of the index repairs."""
+    party = parties.get(ref)
+    return None if party is None else party.kind
+
+
+def is_party_role(role: str) -> bool:
+    """Whether an entity in `role` is a party of a flow: a role on a flow axis (`origin`,
+    `destination`, or a graph role placed on one, `dfo_platform.roles.role_key_axis`). A subject
+    role (`observationAbout`) holds no party."""
+    return role_key_axis(role) is not None
+
+
+def read_party_kinds(
+    entities: Iterable[tuple[str, str]], *, parties: Mapping[str, PartyRow]
+) -> dict[tuple[str, str], PartyKind]:
+    """The kind of each `(role, ref)` entity whose role is a party role (`is_party_role`), keyed
+    by the pair: `party_kind_of` over the code index's `parties` rows. An
+    entity the rows do not list, or in a subject role, is absent."""
+    kinds: dict[tuple[str, str], PartyKind] = {}
+    for role, ref in dict.fromkeys(entities):
+        if not is_party_role(role):
+            continue
+        kind = party_kind_of(ref, parties=parties)
+        if kind is not None:
+            kinds[role, ref] = kind
+    return kinds

@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from entity_resolution import Entity, Group
 from search.engine.bind import _UniversalBindOutput
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_spec_resubmit, resolve_variable
 from search.engine.region.resubmit_request import resubmit_named_groups
 from search.engine.spec_id import build_spec_identity
@@ -36,11 +37,12 @@ from tests.engine._base_identity import (
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import offline_resolve, walk_options
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 _SV = "Count_Person"
 _TRIANGLE = ("country/GTM", "country/HND", "country/SLV")
-_GROUP = EntityGroup(dcid=None, label="Northern Triangle countries")
+_GROUP = EntityGroup(ref=None, label="Northern Triangle countries")
 _NODE = "NorthernTriangle"
 
 _NODES: dict = {
@@ -131,7 +133,7 @@ def test_a_group_naming_no_graph_node_drops(caplog):
         (
             "observationAbout",
             _TRIANGLE,
-            EntityGroup(dcid=_NODE, label="Northern Triangle"),
+            EntityGroup(ref=_NODE, label="Northern Triangle"),
             None,
         ),
         (
@@ -153,7 +155,7 @@ def test_a_group_posting_a_dcid_is_checked_and_labelled_by_the_graph(
     still answers. A dropped group is logged with the reason."""
     with caplog.at_level(logging.INFO, logger="search.engine.region.resubmit_request"):
         region = _resubmit(
-            _TRIANGLE, EntityGroup(dcid=_NODE, label="Tampered label"), contained, role
+            _TRIANGLE, EntityGroup(ref=_NODE, label="Tampered label"), contained, role
         )
 
     assert region.status == "definite"
@@ -165,13 +167,47 @@ def test_a_group_posting_a_dcid_is_checked_and_labelled_by_the_graph(
 
 
 _EU_NODE = "EuropeanUnion"
-_EU_MEMBERS = tuple(f"country/EU{i:02d}" for i in range(27))
+# The group registry confirms a resubmitted group by its members, so these are the EU's 27.
+_EU_MEMBERS = tuple(
+    f"country/{iso}"
+    for iso in [
+        "AUT",
+        "BEL",
+        "BGR",
+        "CYP",
+        "CZE",
+        "DEU",
+        "DNK",
+        "ESP",
+        "EST",
+        "FIN",
+        "FRA",
+        "GRC",
+        "HRV",
+        "HUN",
+        "IRL",
+        "ITA",
+        "LTU",
+        "LUX",
+        "LVA",
+        "MLT",
+        "NLD",
+        "POL",
+        "PRT",
+        "ROU",
+        "SVK",
+        "SVN",
+        "SWE",
+    ]
+)
 
 
 class _ElectSoleShape:
     """Elects the sole shape without a recorded LLM response."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0, bindings=[], also_plausible=None, ask=None
@@ -233,7 +269,7 @@ def test_a_first_answers_27_member_group_identity_resubmits_with_its_group():
     assert served.definition.identity.entities == {"observationAbout": list(_EU_MEMBERS)}
     assert served.resolved.entity_groups == {
         "observationAbout": EntityGroup(
-            dcid=_EU_NODE, label="European Union", entity_type="ContinentalUnion"
+            ref=_EU_NODE, label="European Union", entity_type="ContinentalUnion"
         )
     }
 
@@ -254,7 +290,7 @@ def test_a_first_answers_27_member_group_identity_resubmits_with_its_group():
     assert spec.resolved.coverage == served.resolved.coverage
 
 
-_CONFIRMED = {"observationAbout": EntityGroup(dcid=_NODE, label="Northern Triangle")}
+_CONFIRMED = {"observationAbout": EntityGroup(ref=_NODE, label="Northern Triangle")}
 
 
 def _resolve_entry(entry: ResubmitIdentityEntry | ResubmitCandidatesEntry):
@@ -272,7 +308,7 @@ def _resolve_entry(entry: ResubmitIdentityEntry | ResubmitCandidatesEntry):
 def test_a_group_posted_beside_an_identity_entry_reaches_the_answer():
     """The served group carries the graph's label and type, whatever the posted group says."""
     spec_id, identity = _identity(_TRIANGLE)
-    posted = EntityGroup(dcid=_NODE, label="posted", entity_type="PostedType")
+    posted = EntityGroup(ref=_NODE, label="posted", entity_type="PostedType")
 
     part = _resolve_entry(
         ResubmitIdentityEntry(
@@ -301,7 +337,7 @@ def test_a_candidate_serves_only_the_group_posted_beside_its_own_identity():
             candidates=[
                 ResubmitCandidate(
                     identity=grouped,
-                    entity_groups={"observationAbout": EntityGroup(dcid=_NODE, label="posted")},
+                    entity_groups={"observationAbout": EntityGroup(ref=_NODE, label="posted")},
                 ),
                 ResubmitCandidate(identity=bare),
             ],
@@ -357,7 +393,7 @@ _ROLE_ENTITIES = {
     [
         pytest.param(
             "destination",
-            EntityGroup(dcid="africa", label="Africa"),
+            EntityGroup(ref="africa", label="Africa"),
             ("DACAfrica",),
             ("africa", "Africa", "DACAfrica"),
             id="a-region-bound-as-its-total",
@@ -371,21 +407,21 @@ _ROLE_ENTITIES = {
         ),
         pytest.param(
             "origin",
-            EntityGroup(dcid="groups/G7", label="G7"),
+            EntityGroup(ref="GroupOfSeven", label="G7"),
             ("GroupOfSeven",),
-            ("groups/G7", "G7", "GroupOfSeven"),
+            ("GroupOfSeven", "G7", "GroupOfSeven"),
             id="a-resolver-id-bound-as-its-total",
         ),
         pytest.param(
             "destination",
-            EntityGroup(dcid="africa", label="Africa"),
+            EntityGroup(ref="africa", label="Africa"),
             _AFRICA_MEMBERS,
             ("africa", "Africa", None),
             id="a-region-bound-as-its-members",
         ),
         pytest.param(
             "destination",
-            EntityGroup(dcid="africa", label="Africa"),
+            EntityGroup(ref="africa", label="Africa"),
             ("DACAmerica",),
             None,
             id="another-groups-total-bound",
@@ -399,7 +435,7 @@ _ROLE_ENTITIES = {
         ),
         pytest.param(
             "destination",
-            EntityGroup(dcid="africa", label="Africa", total="DACAfrica"),
+            EntityGroup(ref="africa", label="Africa", total="DACAfrica"),
             ("DACAfrica",),
             ("africa", "Africa", "DACAfrica"),
             id="a-posted-total",
@@ -413,21 +449,21 @@ _ROLE_ENTITIES = {
         ),
         pytest.param(
             "destination",
-            EntityGroup(dcid="asia", label="Asia", total="DACAfrica"),
+            EntityGroup(ref="asia", label="Asia", total="DACAfrica"),
             ("DACAfrica",),
             None,
             id="a-posted-total-of-another-group",
         ),
         pytest.param(
             "destination",
-            EntityGroup(dcid="africa", label="Africa", total="DACAfrica"),
+            EntityGroup(ref="africa", label="Africa", total="DACAfrica"),
             ("DACAfrica", "country/KEN"),
             None,
             id="a-posted-total-beside-a-place",
         ),
         pytest.param(
             "destination",
-            EntityGroup(dcid="africa", label="Africa", total="DACAfrica"),
+            EntityGroup(ref="africa", label="Africa", total="DACAfrica"),
             _AFRICA_MEMBERS,
             None,
             id="a-posted-total-the-role-does-not-bind",
@@ -463,7 +499,7 @@ _ROLE_ENTITIES = {
     ],
 )
 def test_a_group_on_a_role_bound_to_its_total_is_read_as_that_total(
-    role, group, role_entities, kept
+    role, group, role_entities, kept, declare_regions
 ):
     """A role binding the one party the code index declares the group's total, on a flow axis
     the code index publishes it on, keeps the group with that `total`, whether or not the
@@ -471,6 +507,7 @@ def test_a_group_on_a_role_bound_to_its_total_is_read_as_that_total(
     role binding members reads the group as its members, and a total of another group, or
     none, drops it, as does a total on another axis or on a subject role (`Count_Person`
     about the G7)."""
+    declare_regions({"africa": _AFRICA_MEMBERS})
     shape, entity = _ROLE_ENTITIES[role]
     _spec_id, identity = build_spec_identity(
         shape, [], entities=[entity(dcid) for dcid in role_entities], open_roles=()

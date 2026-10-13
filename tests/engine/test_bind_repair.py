@@ -29,12 +29,14 @@ from search.engine.bind_repair import (
     restore_starved_axis_binding,
 )
 from search.engine.qualifier_match import QualifierMatch, QualifierTie
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.region.codes import DEGENERATE_BINDING_DETECTED, STARVED_AXIS_BINDING_RESTORED
 from search.engine.shape import ShapeDraft, shape_draft_from
 from search.models import Axis
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 _SV_A = "SV_A"
@@ -953,6 +955,8 @@ class TestDetectDegenerateBindingsIntegrationStandard:
         kind="value" with an empty value_dcids."""
 
         async def generate_structured(self, *, prompt, system, schema):
+            if schema is QuantityOutput:
+                return NO_QUANTITY
             assert schema.__name__ == "_UniversalBindOutput"
             return _UniversalBindOutput(
                 chosen_shape_index=0,
@@ -1063,6 +1067,8 @@ class TestRestoreStarvedAxisBindingIntegrationStandard:
         emptied gender's slot_taxonomy entry."""
 
         async def generate_structured(self, *, prompt, system, schema):
+            if schema is QuantityOutput:
+                return NO_QUANTITY
             assert schema.__name__ == "_UniversalBindOutput"
             return _UniversalBindOutput(
                 chosen_shape_index=0,
@@ -1085,6 +1091,8 @@ class TestRestoreStarvedAxisBindingIntegrationStandard:
         than a hardcoded one."""
 
         async def generate_structured(self, *, prompt, system, schema):
+            if schema is QuantityOutput:
+                return NO_QUANTITY
             assert schema.__name__ == "_UniversalBindOutput"
             return _UniversalBindOutput(
                 chosen_shape_index=0,
@@ -1169,7 +1177,7 @@ class TestRestoreStarvedAxisBindingIntegrationStandard:
         assert len(result.flagged_match) == 1
         flagged = result.flagged_match[0]
         assert result.gate == "no_member_has_data_at_place"
-        assert [sv.ref.dcid for sv in flagged.resolved.members] == [self._FEMALE_SV], (
+        assert [sv.ref.ref for sv in flagged.resolved.members] == [self._FEMALE_SV], (
             "the flagged match must name the gendered member the restored "
             "binding pointed at, never the ungendered aggregate"
         )

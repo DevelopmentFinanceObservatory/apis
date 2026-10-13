@@ -60,7 +60,13 @@ from graph_generation import acquire_shared as acquire_shared_generation
 from graph_generation import release_shared as release_shared_generation
 from materialise import GraphReader, place_scope
 from materialise.errors import UpstreamVersionChangedError
+from materialise.facets import VariableBreadthReader, bound_variable_breadth
 from materialise.rate_tables import RateTableCache, RateTableInvalidError
+from materialise.shared_profiles import (
+    ProfileSource,
+    acquire_shared_profiles,
+    release_shared_profiles,
+)
 from origin_catalogue import bound_catalogue
 from origin_catalogue.service import CatalogueService, get_catalogue_service
 from search.catalogue.response import (
@@ -80,6 +86,7 @@ from search.engine.codes import CODE_CATALOG, SEARCH_CODE_CATALOGUE
 from search.engine.config import SEARCH_UNIMPLEMENTED_DOORS, settings
 from search.engine.core import ResolveHealth, request_budget, resolve_async, resolve_events
 from search.engine.deadline import _await_bounded
+from search.engine.degraded_reads import note_degraded_read
 from search.engine.deps import (
     SEARCH_DEPS_SLOT,
     SearchDeps,
@@ -107,6 +114,8 @@ from search.engine.options.surface import build_options_response
 from search.engine.region.place_options import PlaceOptionsPool
 from search.engine.response_cache import ResponseCache
 from search.engine.response_cache_memo import PartMemo
+from search.engine.retrieval.bound_values import prepare_index_views
+from search.engine.schema import schema_payload
 from search.engine.unit.conversion_catalogue import (
     ConversionCatalogue,
     ConversionCatalogueService,
@@ -114,8 +123,6 @@ from search.engine.unit.conversion_catalogue import (
     load_conversion_catalogue,
 )
 from search.models import (
-    RESOLVE_RESPONSE_ADAPTER,
-    SCHEMA_VERSION,
     OptionsRequest,
     OptionsResponse,
     ResolveRequest,
@@ -318,39 +325,11 @@ async def _event_source(
         await asyncio.gather(prod_task, hb_task, return_exceptions=True)
 
 
-def _with_declared_datasets(request_schema: dict) -> dict:
-    """List the code index's declared datasets, in rank order, as the values a parsed part's
-    `provenance` takes: one `const` per dataset, titled with its label, described by its
-    description and flagged with `x-opt-in`."""
-    field = request_schema["$defs"]["ParsedPart"]["properties"]["provenance"]
-    named = next(branch for branch in field["anyOf"] if branch.get("type") == "string")
-    named["oneOf"] = [
-        {
-            "const": dataset.provenance,
-            "title": dataset.label,
-            "description": dataset.description,
-            "x-opt-in": dataset.opt_in,
-        }
-        for dataset in sorted(get_index().datasets.values(), key=lambda dataset: dataset.rank)
-    ]
-    return request_schema
-
-
-def _schema_payload() -> dict:
-    # Versioned, unauthenticated contract schema. Capabilities are linked by relative path.
-    return {
-        "schema_version": SCHEMA_VERSION,
-        "request": _with_declared_datasets(ResolveRequest.model_json_schema()),
-        "response": RESOLVE_RESPONSE_ADAPTER.json_schema(mode="serialization"),
-        "capabilities": "/api/search/capabilities",
-    }
-
-
 def _schema_payload_response_schema() -> dict:
-    """Derive the OpenAPI body schema from `_schema_payload`, keeping property types aligned
+    """Derive the OpenAPI body schema from `schema_payload`, keeping property types aligned
     with the returned document.
     """
-    document = _schema_payload()
+    document = schema_payload()
     properties: dict[str, object] = {}
     for key, value in document.items():
         if isinstance(value, dict):
@@ -376,7 +355,7 @@ def _schema_payload_response_schema() -> dict:
 def search_documents() -> SearchDocuments:
     """Freeze the public schema and capability documents. Build errors propagate."""
     return SearchDocuments(
-        schema=freeze_public_json(_schema_payload(), max_age=300),
+        schema=freeze_public_json(schema_payload(), max_age=300),
         capabilities=freeze_public_json(build_capabilities().model_dump(mode="json"), max_age=300),
     )
 
@@ -724,6 +703,9 @@ async def _open_search_deps(
         )
         logger.info("graph generation provider acquired (service base: %s)", settings().graph_base)
 
+    # The code index's views are built on first read, so build them before serving.
+    await asyncio.to_thread(prepare_index_views)
+
     shared_resolvekit: SharedResolver | None = None
     if resolver is None:
         shared_resolvekit = acquire_shared()
@@ -854,7 +836,9 @@ async def _open_search_deps(
 
     if resolver is None:
         assert shared_resolvekit is not None
-        resolver = EntityResolver(graph=graph, shared=shared_resolvekit, generation=generation)
+        resolver = EntityResolver(
+            graph=graph, shared=shared_resolvekit, generation=generation, code_index=get_index()
+        )
         logger.info("EntityResolver started")
         _register(
             registrations,
@@ -901,6 +885,32 @@ async def _open_search_deps(
             settings().llm_memo_ttl_s,
         )
 
+    variable_breadth: VariableBreadthReader | None = None
+    if live_graph is not None and materialise_graph is None:
+        # An answer naming one place breaks a facet tie on each facet's places across the
+        # whole variable, read from these profiles as a Datasets mint reads them.
+        # The process's shared profile cache, shared with Graph and Datasets when they name
+        # the same roots, reads Search's graph root for both graph and SDMX availability, as
+        # `materialise_sdmx` does.
+        api_root = f"{settings().graph_base.rstrip('/')}/core/api"
+        profiles = acquire_shared_profiles(
+            source=ProfileSource(
+                graph_base_url=api_root,
+                sdmx_base_url=api_root,
+                un_base_url=settings().un_graph_base_url,
+                token=settings().graph_token or None,
+            ),
+            generation=generation,
+        )
+        owned.push_async_callback(
+            asyncio.to_thread,
+            _logged,
+            "facet profile cache released",
+            release_shared_profiles,
+            profiles,
+        )
+        variable_breadth = profiles.breadth(get_coverage_service().snapshot)
+
     if conversion_loading is not None:
         await _wait_for_conversion_catalogue(conversion_loading)
 
@@ -923,7 +933,15 @@ async def _open_search_deps(
         population_memo=population_memo,
         place_options_pool=place_options_pool,
         search_catalogue=search_catalogue,
+        variable_breadth=variable_breadth,
     )
+
+
+def _note_breadth_fallback() -> None:
+    """Note a tie the whole-variable breadth would have decided, left to the unit's name
+    because the breadth was not read, so the resolution's region is marked degraded and its
+    answer is not cached (`materialise.facets.bound_variable_breadth`'s `on_fallback`)."""
+    note_degraded_read("whole-variable breadth")
 
 
 _CONVERSION_CATALOGUE_LOAD_S = 120.0
@@ -993,12 +1011,22 @@ async def _wait_for_conversion_catalogue(service: ConversionCatalogueService) ->
 
 @contextmanager
 def _request_scope(
-    catalogue: CatalogueService, conversion_catalogue: ConversionCatalogueService | None
+    catalogue: CatalogueService,
+    conversion_catalogue: ConversionCatalogueService | None,
+    variable_breadth: VariableBreadthReader | None,
 ) -> Iterator[None]:
-    """Bind the origin catalogue's and the conversion catalogue's loaded snapshots for one
-    request."""
+    """Bind the origin catalogue's and the conversion catalogue's loaded snapshots, and the
+    process's whole-variable breadth reader, for one request."""
     conversion = conversion_catalogue.snapshot() if conversion_catalogue is not None else None
-    with bound_catalogue(catalogue.snapshot()), bound_conversion_catalogue(conversion):
+    with (
+        bound_catalogue(catalogue.snapshot()),
+        bound_conversion_catalogue(conversion),
+        # Search stores no election, so a tie an unread breadth would have decided falls
+        # back to the unit's name and marks the answer degraded.
+        bound_variable_breadth(
+            variable_breadth, refuse_unread=False, on_fallback=_note_breadth_fallback
+        ),
+    ):
         yield
 
 
@@ -1041,9 +1069,12 @@ def search_surface(
     documents = search_documents()
     owns_conversion = conversion_catalogue is None
     conversions = conversion_catalogue or ConversionCatalogueService()
+    # The lifespan sets the reader it builds, so each request binds it (`_request_scope`).
+    variable_breadth: VariableBreadthReader | None = None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        nonlocal variable_breadth
         # `registrations` exits before `owned`, on startup failure and on
         # shutdown alike.
         async with AsyncExitStack() as owned:
@@ -1071,9 +1102,11 @@ def search_surface(
                     conversion_catalogue=conversions if owns_conversion else None,
                 )
                 SEARCH_DEPS_SLOT.set(app, deps)
+                variable_breadth = deps.variable_breadth
                 try:
                     yield
                 finally:
+                    variable_breadth = None
                     SEARCH_DEPS_SLOT.clear(app)
 
     router = APIRouter()
@@ -1131,7 +1164,7 @@ def search_surface(
             UpstreamVersionChangedError("exemplar rate table changed version during its load"),
         ),
         lifespan=lifespan,
-        request_scope=lambda: _request_scope(catalogue, conversions),
+        request_scope=lambda: _request_scope(catalogue, conversions, variable_breadth),
     )
 
 

@@ -40,7 +40,7 @@ def test_dual_provenance_ispartof_still_yields_one_parent_for_set_ref(monkeypatc
     result = detect_set_ref(value_dcids=["c1", "c2"], graph=client)
 
     assert result is not None
-    assert result.dcid == "Agg"
+    assert result.ref == "Agg"
     assert result.label == "Aggregate Label"
 
 

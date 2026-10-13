@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from search.currency_codes import ISO_4217_CODES
 from search.engine.unit.lexicon import (
     AMBIGUOUS_CURRENCY_NAMES,
     AMBIGUOUS_ISO_CODES,
@@ -14,6 +13,7 @@ from search.engine.unit.lexicon import (
     ROLE_CURRENCY_PHRASES,
     UNSUPPORTED_PHRASES,
 )
+from unit_words.currency_codes import ISO_4217_CODES
 
 
 def test_iso_codes_are_upper_case_three_letters() -> None:

@@ -13,12 +13,16 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import origin_catalogue.service as catalogue_service_module
+from code_index.shared import get_index
 from dfo_platform.app import create_app
 from entity_resolution import EntityResolver
 from entity_resolution.shared import SharedResolver
 from graph_api.app import graph_surface
+from graph_api.code_lookup import CodeIndexCodes
 from graph_api.reader import NodeArcsByDcid
+from materialise.facet_profile import ProfileGraphReader
 from materialise.graph import SubjectPage
+from materialise.place_scope import AvailabilityReader
 from origin_catalogue import Catalogue
 from tests.origin_catalogue.fake_catalogue import fake_catalogue_service
 
@@ -150,7 +154,9 @@ class FakeGraphNodeReader:
 
 def make_resolver(shared: SharedResolver, *, graph: FakeGraphNodeReader) -> EntityResolver:
     """Build an `EntityResolver` with the shared resolver and test graph."""
-    return EntityResolver(graph=graph, shared=shared)
+    return EntityResolver(
+        graph=graph, shared=shared, codes=CodeIndexCodes(get_index()), code_index=get_index()
+    )
 
 
 def make_app(
@@ -159,6 +165,8 @@ def make_app(
     resolver: EntityResolver | None = None,
     node_pool_size: int | None = None,
     coverage: object | None = None,
+    profile_graph: ProfileGraphReader | None = None,
+    availability: AvailabilityReader | None = None,
 ) -> FastAPI:
     if graph is None:
         graph = FakeGraphNodeReader()
@@ -169,6 +177,8 @@ def make_app(
                 resolver=resolver,
                 node_pool_size=node_pool_size,
                 coverage=coverage,
+                profile_graph=profile_graph,
+                availability=availability,
             )
         ]
     )
@@ -180,9 +190,18 @@ def make_client(
     resolver: EntityResolver | None = None,
     node_pool_size: int | None = None,
     coverage: object | None = None,
+    profile_graph: ProfileGraphReader | None = None,
+    availability: AvailabilityReader | None = None,
 ) -> TestClient:
     return TestClient(
-        make_app(graph=graph, resolver=resolver, node_pool_size=node_pool_size, coverage=coverage),
+        make_app(
+            graph=graph,
+            resolver=resolver,
+            node_pool_size=node_pool_size,
+            coverage=coverage,
+            profile_graph=profile_graph,
+            availability=availability,
+        ),
         raise_server_exceptions=False,
     )
 

@@ -16,6 +16,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 
+from artifact_publication.jobs import Ingestion
 from origin_catalogue import (
     BASE,
     DFO,
@@ -34,7 +35,9 @@ from origin_catalogue import (
     UnTables,
     entry_ref,
 )
+from origin_catalogue.arc_tables import EMPTY_ARC_TABLES, ArcTables
 from origin_catalogue.catalogue import EMPTY_UN_TABLES, SourceDocumentation
+from origin_catalogue.families import FamilyKey, FamilySummary, FamilyTables, family_tables
 from origin_catalogue.origins import UN_ID_PREFIX
 from origin_catalogue.schema import UnAgencyCounts
 from origin_catalogue.service import CatalogueService
@@ -43,12 +46,16 @@ from origin_catalogue.un_mirror import EMPTY_UN_MIRROR, UnArc, UnMirror, UnVaria
 FAKE_BUILT_AT = datetime(2026, 9, 29, tzinfo=UTC)
 
 
-def _fake_build_id(stem: str, rows: Mapping[str, ProvenanceRow]) -> str:
-    """`stem` for a catalogue listing no rows, else `stem` and a digest of `rows`."""
-    if not rows:
+def _fake_build_id(
+    stem: str, *, rows: Mapping[str, ProvenanceRow], arcs: ArcTables, un: UnMirror
+) -> str:
+    """`stem` for a catalogue holding no rows, arc table or UN table, else `stem` and a digest
+    of all three, so a cache keyed on the build id, such as the shared held-family decodes,
+    never serves one fake's tables to another."""
+    if not rows and arcs == EMPTY_ARC_TABLES and un == EMPTY_UN_MIRROR:
         return stem
-    digest = hashlib.sha256(repr(sorted(rows.items())).encode()).hexdigest()[:12]
-    return f"{stem}-{digest}"
+    tables = repr((sorted(rows.items()), arcs, un))
+    return f"{stem}-{hashlib.sha256(tables.encode()).hexdigest()[:12]}"
 
 
 def _origin_of(dcid: str, dfo: frozenset[str]) -> DataCommons:
@@ -72,13 +79,18 @@ class FakeCatalogue:
     deployment; a UN dcid outside the tables it is given is admitted too.
     `successors` maps a superseded variable to the UN variable standing for
     it, empty by default, and names none with the UN origin off.
+    `arcs` holds no arc table by default, so every node of ours is read from
+    our mixer, and it holds no topic table. `families` are the family tables
+    of `arcs` and `un`, computed as the catalogue job computes them.
+    `ingestion` is the ingestion the build read, none by default.
     `superseded` holds the superseded dcids with no successor. A superseded
     dcid is the one candidate it refuses, as a snapshot withholds it. `scope`, set
     by `scoped`, admits only the provenances it holds, as a snapshot's does. Left
-    unset, `build_id` names the rows it lists (`_fake_build_id`)."""
+    unset, `build_id` names the rows and tables it holds (`_fake_build_id`)."""
 
     build_id: str = ""
     built_at: datetime = FAKE_BUILT_AT
+    ingestion: Ingestion | None = None
     dfo_variables: frozenset[str] = frozenset()
     un_system_enabled: bool = True
     mixer_domains: tuple[str, ...] | None = None
@@ -87,15 +99,25 @@ class FakeCatalogue:
     card_facts: Mapping[str, CardFacts] = field(default_factory=dict, compare=False)
     documentation: Mapping[str, SourceDocumentation] = field(default_factory=dict, compare=False)
     un: UnTables = field(default=EMPTY_UN_TABLES, compare=False)
+    arcs: ArcTables = field(default=EMPTY_ARC_TABLES, compare=False)
+    families: FamilyTables = field(init=False, compare=False, repr=False)
     successors: Mapping[str, str] = field(default_factory=dict, compare=False)
     superseded: frozenset[str] = frozenset()
     scope: frozenset[str] | None = None
 
     def __post_init__(self) -> None:
-        # Each set of rows names its own build, as a published catalogue's rows change only
-        # with its build id, so a cache keyed on the build sees the rows it was built from.
+        object.__setattr__(
+            self,
+            "families",
+            family_tables(dfo=self.arcs.dfo, base=self.arcs.base, un=self.un.mirror),
+        )
+        # Each set of tables names its own build, as a published catalogue's tables change only
+        # with its build id, so a cache keyed on the build sees the tables it was built from.
         if not self.build_id:
-            object.__setattr__(self, "build_id", _fake_build_id("fake-catalogue", self.provenances))
+            build_id = _fake_build_id(
+                "fake-catalogue", rows=self.provenances, arcs=self.arcs, un=self.un.mirror
+            )
+            object.__setattr__(self, "build_id", build_id)
 
     def scoped(self, allowed: frozenset[str]) -> FakeCatalogue:
         return replace(self, scope=allowed if self.scope is None else self.scope & allowed)
@@ -154,6 +176,21 @@ class FakeCatalogue:
     def un_node(self, dcid: str) -> UnArc | None:
         return self.un.nodes.get(dcid)
 
+    def held_arcs(self, dcid: str) -> tuple[UnArc, ...] | None:
+        return self.arcs.arcs(dcid)
+
+    def held_family(self, key: FamilyKey) -> FamilySummary | None:
+        return self.families.family(key, un_system_enabled=self.un_system_enabled)
+
+    def arc_target(self, dcid: str) -> UnArc | None:
+        return self.arcs.targets.get(dcid)
+
+    def arc_label(self, dcid: str) -> str | None:
+        return self.arcs.labels.get(dcid)
+
+    def mixer_topic_leaves(self, topic: str) -> tuple[str, ...] | None:
+        return None
+
     def superseded_by(self, variable: str) -> str | None:
         return self.un.superseded_by(variable)
 
@@ -197,24 +234,27 @@ def restrictive_catalogue(
     scan_places: Iterable[str] = (),
     un_blocked_places: Iterable[str] = (),
     un_mirror: UnMirror = EMPTY_UN_MIRROR,
+    arcs: ArcTables = EMPTY_ARC_TABLES,
     successors: Mapping[str, str | None] | None = None,
     un_system_enabled: bool = True,
     dataset_facts: Mapping[str, CardFacts] | None = None,
     source_documentation: Mapping[str, SourceDocumentation] | None = None,
     build_id: str | None = None,
     built_at: datetime = FAKE_BUILT_AT,
+    ingestion: Ingestion | None = None,
 ) -> CatalogueSnapshot:
     """A real snapshot admitting only what it is given. `base_variables`
     maps a variable to its admitted base provenances and the scan places
     holding it, and each provenance holds data at every place of every
     variable naming it. A base candidate it does not list is admitted unless
     `withheld_variables` names it. A UN candidate is admitted when `un_mirror`
-    holds it. `successors` maps a superseded variable, which must be
+    holds it. `arcs` are its arc tables, whose `dfo` nodes with arcs must be listed in
+    `dfo_variables`, and its family tables are those of `arcs` and `un_mirror`. `successors` maps a superseded variable, which must be
     withheld, to the UN variable standing for it, or to `None`. `dataset_facts` defaults to empty facts
     for every DFO and base row's entry (`empty_dataset_facts`),
     `source_documentation` to documentation covering no provenance for each
     (`empty_source_documentation`), and `build_id` to one naming its rows
-    (`_fake_build_id`)."""
+    and tables (`_fake_build_id`). `ingestion` is the ingestion its manifest records."""
     rows = {row.id: row for row in provenances}
     places = tuple(scan_places)
     index = {place: i for i, place in enumerate(places)}
@@ -245,7 +285,8 @@ def restrictive_catalogue(
         superseded=dict(successors or {}),
     )
     manifest = CatalogueManifest(
-        build_id=build_id or _fake_build_id("restrictive-catalogue", rows),
+        build_id=build_id
+        or _fake_build_id("restrictive-catalogue", rows=rows, arcs=arcs, un=un_mirror),
         built_at=built_at,
         build_seconds=0.0,
         identity_inputs={},
@@ -254,11 +295,14 @@ def restrictive_catalogue(
         resident_bytes=0,
         overlaps=(),
         files={},
+        ingestion=ingestion,
     )
     return CatalogueSnapshot(
         manifest=manifest,
         tables=tables,
         un=UnTables(mirror=un_mirror),
+        arcs=arcs,
+        families=family_tables(dfo=arcs.dfo, base=arcs.base, un=un_mirror),
         un_system_enabled=un_system_enabled,
     )
 

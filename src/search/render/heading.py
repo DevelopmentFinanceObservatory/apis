@@ -13,14 +13,11 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Literal, NamedTuple, Protocol
 
+from code_index.flow_family import flow_family
 from code_index.labels import PRICE_BASIS_AXIS
 from code_index.shared import get_index
 from dfo_platform.roles import FlowFamily, RoleNoun, RoleWording, role_wording
-from search.heading.currency_nouns import currency_noun
-from search.heading.flow_family import flow_family
 from search.heading.pins import identity_pinned_properties
-from search.heading.price_basis import PriceBasis, price_basis, price_basis_phrase
-from search.heading.unit_class import classify_unit
 from search.models import (
     UNIT_REF,
     BindingSet,
@@ -51,6 +48,9 @@ from search.models import (
     Spec,
     TimeWindow,
 )
+from unit_words.currency_nouns import currency_noun
+from unit_words.price_basis import PriceBasis, price_basis, price_basis_phrase
+from unit_words.unit_class import classify_unit
 
 from .how import HowValue, _shared_constraint_values, how_values
 from .labels import (
@@ -252,7 +252,7 @@ def _normalize_entities(entities: list[Entity] | list[ResolvedEntity]) -> list[_
     for e in entities:
         if isinstance(e, Entity):
             axis = e.role.axis if isinstance(e.role, EntityRoleDirectional) else None
-            result.append(_NormalizedEntity(dcid=e.ref.dcid, label=e.ref.label, axis=axis))
+            result.append(_NormalizedEntity(dcid=e.ref.ref, label=e.ref.label, axis=axis))
         else:
             axis = e.role if e.role in ("origin", "destination") else None
             result.append(_NormalizedEntity(dcid=e.ref, label=e.label, axis=axis))
@@ -362,13 +362,13 @@ def sibling_how_properties(specs: Sequence[Spec]) -> frozenset[str]:
                 signature = frozenset(value_signature(v) for v in binding.values)
             else:
                 signature = _UNBOUND_HOW_SIGNATURE
-            signatures.setdefault(slot.key.property.dcid, set()).add(signature)
+            signatures.setdefault(slot.key.property.ref, set()).add(signature)
     return frozenset(prop for prop, seen in signatures.items() if len(seen) > 1)
 
 
 def value_signature(value: SlotValue) -> str:
     """A slot value's ref dcid or literal, which display-label changes leave alone."""
-    return value.ref.dcid if value.ref is not None else (value.literal or "")
+    return value.ref.ref if value.ref is not None else (value.literal or "")
 
 
 def _unit_request(spec: Spec) -> IdentityUnitRequest | None:
@@ -465,7 +465,7 @@ def heading_from_parts(
         slots,
         shape,
         # A label equal to its dcid is no name (`candidates._graph_name`).
-        None if facts is None else [m.label for m in facts.members if m.label != m.dcid],
+        None if facts is None else [m.label for m in facts.members if m.label != m.ref],
         measure_label,
         measure_label_axes,
         measure_label_named_values,
@@ -675,7 +675,7 @@ def _how_phrases(
     walked: list[Slot] = []
     measure_slots: list[Slot] = []
     for slot in slots:
-        prop_dcid = slot.key.property.dcid if slot.key.property else None
+        prop_dcid = slot.key.property.ref if slot.key.property else None
         if slot.key.axis == "how" and prop_dcid in measure_axes:
             measure_slots.append(slot)
         else:
@@ -698,7 +698,7 @@ def _how_phrases(
     )
     how.extend(
         HowValue(
-            slot.key.property.dcid if slot.key.property else None, "", "", slot, named_by_noun=True
+            slot.key.property.ref if slot.key.property else None, "", "", slot, named_by_noun=True
         )
         for slot in measure_slots
     )
@@ -833,7 +833,7 @@ def _subject_phrase(
         return None
     labels = _entity_labels(where_slot.binding)
     if labels:
-        dcids = tuple(v.ref.dcid for v in _binding_values(where_slot.binding) if v.ref)
+        dcids = tuple(v.ref.ref for v in _binding_values(where_slot.binding) if v.ref)
         return RolePhrase(
             axis=None,
             preposition="in",
@@ -867,7 +867,7 @@ def _flow_family(
     shares. With none, the shared values stand for the one member.
     """
     stat_vars = list(member_dcids) or [
-        member.dcid for member in (facts.members if facts is not None else ())
+        member.ref for member in (facts.members if facts is not None else ())
     ]
     members = [
         {prop_dcid: constraints.get(prop_dcid, "") for prop_dcid in properties}
@@ -875,8 +875,13 @@ def _flow_family(
     ]
     if not members and constraints:
         members = [dict(constraints)]
-    population_type = shape.population_type.dcid if shape.population_type else None
-    return flow_family(population_type=population_type, stat_vars=stat_vars, members=members)
+    population_type = shape.population_type.ref if shape.population_type else None
+    return flow_family(
+        index=get_index(),
+        population_type=population_type,
+        stat_vars=stat_vars,
+        members=members,
+    )
 
 
 def _byline_unit(
@@ -913,7 +918,7 @@ def _byline_unit(
         denominator = shape.measurement_denominator
         unit_class = classify_unit(
             unit=unit.ref,
-            denominator=denominator.dcid if denominator is not None else None,
+            denominator=denominator.ref if denominator is not None else None,
             currency_units=facet_currency_units(unit),
         )
     if unit is not None and unit_class is not None and unit_class.currency is not None:
@@ -928,10 +933,14 @@ def _byline_unit(
         return "", None
     qualifier = shape.measurement_qualifier
     basis = price_basis(
-        unit_request=unit_request,
+        requested=(
+            PriceBasis(prices=unit_request.prices, base_year=unit_request.base_year)
+            if unit_request is not None
+            else None
+        ),
         unit_class=unit_class,
         measurement_qualifier=(
-            qualifier.dcid if qualifier is not None else constraints.get(PRICE_BASIS_AXIS)
+            qualifier.ref if qualifier is not None else constraints.get(PRICE_BASIS_AXIS)
         ),
     )
     return price_basis_phrase(basis, currency_noun=noun), basis

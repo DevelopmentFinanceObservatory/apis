@@ -25,20 +25,26 @@ joining caller, or job completion to see the deadline pass expires the flight, o
 lock. Every end of a flight resolves its waiters: a value, a fetch error, a submission the
 executor refuses, a queued job a shutdown cancels, or the flight deadline.
 
-Async callers share a cache-owned task created in the flight's context, which runs the fetch on
-the cache's `executor`, or the event loop's default executor when it has none, under
+`aget_or_fetch_many` claims and starts sync flights as `get_or_fetch_many` does, sharing them
+with sync callers, and awaits each on the event loop: a slot's resolution wakes the loop
+(`_SyncSlot.wakers`), so the wait holds no thread.
+
+Async callers of `aget_or_fetch` share a cache-owned task created in the flight's context,
+which runs the fetch on the cache's `executor`, or the event loop's default executor when it has none, under
 `asyncio.timeout` set to the flight deadline. At that deadline the task ends with the
 flight-expired `TimeoutError` and leaves the registry, which cancels a job still queued; a thread
 that already started finishes on its own. Each caller awaits the task through `asyncio.shield` until its own deadline,
 so a timeout or cancellation detaches only that caller.
 
-Failures reach every caller waiting and are never stored. Sync and async in-flight maps are
-independent. Deadlines use real `time.monotonic()`. The injectable `clock` controls TTL only.
+Failures reach every caller waiting and are never stored. The sync flights and the tasks of
+`aget_or_fetch` are registered apart and never join one another. Deadlines use real
+`time.monotonic()`. The injectable `clock` controls TTL only.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import threading
 import time
 from collections import OrderedDict
@@ -81,12 +87,14 @@ class WaitTimeout(TimeoutError):
 
 @dataclass(eq=False)
 class _SyncFlight[K, V]:
-    """One sync flight: its deadline, the TTL its values store under, the slots it owns, and its
-    executor job once submitted. A flight is filled under the lock by the caller that starts it
-    and never gains slots afterwards."""
+    """One sync flight: its deadline, the TTL its values store under, which values it stores
+    (`is_cacheable`, every value when `None`), the slots it owns, and its executor job once
+    submitted. A flight is filled under the lock by the caller that starts it and never gains
+    slots afterwards."""
 
     deadline: float
     ttl: float
+    is_cacheable: Callable[[V], bool] | None = None
     owned: dict[K, tuple[tuple[str, K], _SyncSlot[K, V]]] = field(default_factory=dict)
     job: Future[dict[K, V]] | None = None
 
@@ -96,12 +104,14 @@ class _SyncSlot[K, V]:
     """One in-flight key's event and result.
     `ready` is set, under the lock, once the slot is resolved with a value or error; a resolved
     slot is never written again. `_MISS` distinguishes a stored `None` from an unset slot.
+    `wakers` are the async waiters' callbacks, called under the lock as the slot resolves.
     """
 
     flight: _SyncFlight[K, V]
     ready: threading.Event = field(default_factory=threading.Event)
     value: V | _Miss = field(default_factory=lambda: _MISS)
     error: BaseException | None = None
+    wakers: list[Callable[[], None]] = field(default_factory=list)
 
 
 def _cancel_job[K, V](flight: _SyncFlight[K, V]) -> None:
@@ -215,21 +225,87 @@ class SingleFlightCache[K, V]:
         *,
         deadline: float | None = None,
         copy_result: Callable[[V], V] | None = None,
+        is_cacheable: Callable[[V], bool] | None = None,
+        flight_per_key: bool = False,
+        on_error: Callable[[K, Exception], V] | None = None,
     ) -> dict[K, V]:
         """Resolve unique keys in input order. The misses no live flight holds start one flight,
-        whose `fetch` receives them and the flight's deadline. Fetch failures reach every caller
-        waiting on the flight. The cache stores successful fetches only. Each wait ends at the
-        earlier of its flight's deadline and `deadline`, as in `get_or_fetch`. `copy_result`, when
-        given, copies hits and fetched values.
+        or with `flight_per_key` one flight each, whose `fetch` receives its keys and its
+        deadline. Fetch failures reach every caller waiting on the flight. The cache stores
+        successful fetches only. A fetched value `is_cacheable` rejects reaches the flight's
+        callers and leaves the store unchanged, while the flight's other values store. Each wait
+        ends at the earlier of its flight's deadline and `deadline`, as in `get_or_fetch`. The
+        first key whose flight fails or whose wait ends raises that error, unless `on_error` is
+        given: then such a key resolves to `on_error(key, error)`, which is not stored, and the
+        other keys resolve on their own. `copy_result`, when given, copies hits and fetched
+        values.
         """
         unique_keys = list(dict.fromkeys(keys))
         if not self.enabled:
             return fetch(unique_keys, self._direct_deadline(deadline))
 
-        stamp = self._generation.stamp()
-        flight: _SyncFlight[K, V] = _SyncFlight(
-            deadline=self._new_flight_deadline(), ttl=self._ttl_for_stamp(stamp)
+        hits, waiting = self._claim_many(
+            unique_keys, fetch, is_cacheable=is_cacheable, flight_per_key=flight_per_key
         )
+        for key, slot in waiting:
+            try:
+                hits[key] = self._slot_result(slot, deadline=deadline)
+            except Exception as exc:
+                if on_error is None:
+                    raise
+                hits[key] = on_error(key, exc)
+        return _ordered(hits, unique_keys, copy_result)
+
+    async def aget_or_fetch_many(
+        self,
+        keys: Sequence[K],
+        fetch: Callable[[list[K], float], dict[K, V]],
+        *,
+        deadline: float | None = None,
+        copy_result: Callable[[V], V] | None = None,
+        is_cacheable: Callable[[V], bool] | None = None,
+        flight_per_key: bool = False,
+        on_error: Callable[[K, Exception], V] | None = None,
+    ) -> dict[K, V]:
+        """`get_or_fetch_many` awaited on the event loop. It joins and starts the same sync
+        flights, on the cache's executor, and each wait holds no thread. A disabled cache runs
+        `fetch` in `asyncio.to_thread`."""
+        unique_keys = list(dict.fromkeys(keys))
+        if not self.enabled:
+            return await asyncio.to_thread(fetch, unique_keys, self._direct_deadline(deadline))
+
+        hits, waiting = self._claim_many(
+            unique_keys, fetch, is_cacheable=is_cacheable, flight_per_key=flight_per_key
+        )
+        for key, slot in waiting:
+            try:
+                hits[key] = await self._aslot_result(slot, deadline=deadline)
+            except Exception as exc:
+                if on_error is None:
+                    raise
+                hits[key] = on_error(key, exc)
+        return _ordered(hits, unique_keys, copy_result)
+
+    def _claim_many(
+        self,
+        unique_keys: list[K],
+        fetch: Callable[[list[K], float], dict[K, V]],
+        *,
+        is_cacheable: Callable[[V], bool] | None,
+        flight_per_key: bool,
+    ) -> tuple[dict[K, V], list[tuple[K, _SyncSlot[K, V]]]]:
+        """The hits among `unique_keys`, and the slot each miss waits on: a live flight's, or
+        one of the new flights over the misses no live flight holds, started here, one over them
+        all or, with `flight_per_key`, one each."""
+        stamp = self._generation.stamp()
+        ttl = self._ttl_for_stamp(stamp)
+
+        def new_flight() -> _SyncFlight[K, V]:
+            return _SyncFlight(
+                deadline=self._new_flight_deadline(), ttl=ttl, is_cacheable=is_cacheable
+            )
+
+        flights: list[_SyncFlight[K, V]] = []
         hits: dict[K, V] = {}
         waiting: list[tuple[K, _SyncSlot[K, V]]] = []
         expired: list[_SyncFlight[K, V]] = []
@@ -243,19 +319,36 @@ class SingleFlightCache[K, V]:
                     continue
                 slot = self._live_slot_locked(full_key, expired=expired)
                 if slot is None:
-                    slot = self._own_slot_locked(flight, key, full_key)
+                    if flight_per_key or not flights:
+                        flights.append(new_flight())
+                    slot = self._own_slot_locked(flights[-1], key, full_key)
                 waiting.append((key, slot))
         for stale in expired:
             _cancel_job(stale)
 
-        if flight.owned:
+        for flight in flights:
             self._start_sync_flight(flight, fetch)
-        for key, slot in waiting:
-            hits[key] = self._slot_result(slot, deadline=deadline)
+        return hits, waiting
 
-        if copy_result is None:
-            return {key: hits[key] for key in unique_keys}
-        return {key: copy_result(hits[key]) for key in unique_keys}
+    def cached_many(self, keys: Sequence[K]) -> dict[K, V]:
+        """The live stored values of `keys`, in input order, without fetching or joining a
+        flight. Each value found counts a hit. A key not found counts nothing, since a caller
+        that wants it fetches it next and counts the miss there."""
+        if not self.enabled:
+            return {}
+        stamp = self._generation.stamp()
+        found: dict[K, V] = {}
+        with self._lock:
+            now = self._clock()
+            for key in dict.fromkeys(keys):
+                full_key = (stamp.key, key)
+                entry = self._store.get(full_key)
+                if entry is None or entry[0] <= now:
+                    continue
+                self._store.move_to_end(full_key)
+                self._hits += 1
+                found[key] = entry[1]
+        return found
 
     def _claim_sync(
         self, key: K, full_key: tuple[str, K], *, ttl: float
@@ -392,21 +485,55 @@ class SingleFlightCache[K, V]:
                 del self._sync_inflight[full_key]
             if error is None:
                 slot.value = fetched[key]
-                self._publish_locked(full_key, fetched[key], ttl=flight.ttl, now=now)
+                if flight.is_cacheable is None or flight.is_cacheable(fetched[key]):
+                    self._publish_locked(full_key, fetched[key], ttl=flight.ttl, now=now)
             else:
                 slot.error = error
             slot.ready.set()
+            for wake in slot.wakers:
+                wake()
+            slot.wakers.clear()
 
     def _slot_result(self, slot: _SyncSlot[K, V], *, deadline: float | None) -> V:
         """Wait for `slot` until the earlier of its flight's deadline and `deadline` narrowed by
         the bound request deadline, then return its value or raise its error. A wait that reaches
         the caller's own deadline first raises `WaitTimeout`. One that reaches the flight deadline
         expires the flight and raises its `TimeoutError`."""
-        flight_deadline = slot.flight.deadline
-        bound = bounded_deadline(deadline)
-        wait_until = flight_deadline if bound is None else min(bound, flight_deadline)
-        if not slot.ready.wait(timeout=max(0.0, wait_until - time.monotonic())):
-            if bound is not None and bound < flight_deadline:
+        bound, wait_until = _wait_bounds(slot, deadline)
+        ready = slot.ready.wait(timeout=max(0.0, wait_until - time.monotonic()))
+        return self._slot_outcome(slot, ready=ready, bound=bound)
+
+    async def _aslot_result(self, slot: _SyncSlot[K, V], *, deadline: float | None) -> V:
+        """`_slot_result` awaited on the running loop, which the slot's resolution wakes."""
+        bound, wait_until = _wait_bounds(slot, deadline)
+        loop = asyncio.get_running_loop()
+        woken: asyncio.Future[None] = loop.create_future()
+
+        def wake() -> None:
+            # A loop closed while its waiter detached has no one left to wake.
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(_set_done, woken)
+
+        with self._lock:
+            ready = slot.ready.is_set()
+            if not ready:
+                slot.wakers.append(wake)
+        if not ready:
+            try:
+                with contextlib.suppress(TimeoutError):
+                    async with asyncio.timeout(max(0.0, wait_until - time.monotonic())):
+                        await woken
+            finally:
+                with self._lock:
+                    if wake in slot.wakers:
+                        slot.wakers.remove(wake)
+            ready = slot.ready.is_set()
+        return self._slot_outcome(slot, ready=ready, bound=bound)
+
+    def _slot_outcome(self, slot: _SyncSlot[K, V], *, ready: bool, bound: float | None) -> V:
+        """`slot`'s value or error once a wait on it ends, `ready` or not by its end."""
+        if not ready:
+            if bound is not None and bound < slot.flight.deadline:
                 raise WaitTimeout(self._timeout_message)
             self._expire_sync_flight(slot.flight)
         if slot.error is not None:
@@ -586,6 +713,27 @@ class SingleFlightCache[K, V]:
             self._store.clear()
             self._sync_inflight.clear()
             self._async_inflight.clear()
+
+
+def _ordered[K, V](
+    hits: Mapping[K, V], keys: list[K], copy_result: Callable[[V], V] | None
+) -> dict[K, V]:
+    if copy_result is None:
+        return {key: hits[key] for key in keys}
+    return {key: copy_result(hits[key]) for key in keys}
+
+
+def _wait_bounds[K, V](slot: _SyncSlot[K, V], deadline: float | None) -> tuple[float | None, float]:
+    """`deadline` narrowed by the bound request deadline, and when a wait on `slot` ends: the
+    earlier of that and the flight's deadline."""
+    bound = bounded_deadline(deadline)
+    flight_deadline = slot.flight.deadline
+    return bound, flight_deadline if bound is None else min(bound, flight_deadline)
+
+
+def _set_done(future: asyncio.Future[None]) -> None:
+    if not future.done():
+        future.set_result(None)
 
 
 class _Miss:

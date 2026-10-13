@@ -26,16 +26,16 @@ def test_build_unsupported_definition_projects_identity_without_spec_id():
     slots = [
         Slot(
             key=SlotKey(
-                axis="what", property=GraphRef(dcid="propA", label="Prop A"), label="Prop A"
+                axis="what", property=GraphRef(ref="propA", label="Prop A"), label="Prop A"
             ),
             binding=BindingValue(
-                value=SlotValue(ref=GraphRef(dcid="valA", label="Val A"), value_kind="enum_value")
+                value=SlotValue(ref=GraphRef(ref="valA", label="Val A"), value_kind="enum_value")
             ),
         ),
     ]
     entities = [
         Entity(
-            ref=GraphRef(dcid="country/KEN", label="Kenya"),
+            ref=GraphRef(ref="country/KEN", label="Kenya"),
             entity_type=None,
             role=EntityRoleSubject(),
         )

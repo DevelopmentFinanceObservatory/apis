@@ -7,6 +7,7 @@ synthetic shapes that prevent measure-family election from changing bindings.
 from __future__ import annotations
 
 import asyncio
+import itertools
 import logging
 from collections.abc import Sequence
 from dataclasses import replace
@@ -18,11 +19,14 @@ from pydantic import ValidationError
 from code_index.shared import get_index, get_measure_index
 from code_index.tokens import tokenize
 from entity_resolution import Admission, EntityResolver
+from origin_catalogue import UnTables
+from origin_catalogue.un_mirror import UnVariable
 from search.engine.bind import DraftBindingKind, SlotBindingDraft, _UniversalBindOutput
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.conjoin import _build_part
+from search.engine.departures import measure_not_applied, warning_key
 from search.engine.function_words import FUNCTION_WORDS
 from search.engine.interpret import Recall
 from search.engine.qualifier_match import QualifierSpan
@@ -32,13 +36,40 @@ from search.engine.region.phase_rank_bind import (
     _qualifier_disposition,
     _resolve_query_qualifiers,
     _unread_words_beside_codes,
+    value_requirements,
 )
-from search.engine.region.state import ResolveState
+from search.engine.region.requirements import (
+    Judgement,
+    Outcome,
+    answer_terms,
+    record_reading,
+    refusal_terms,
+    settle_answer,
+    settle_candidate_set,
+)
+from search.engine.region.state import (
+    Requirement,
+    ResolveState,
+    ValueRule,
+    code_requirement,
+    qualifier_dropped_warning,
+    unapplied_departure,
+)
+from search.engine.region.unrealisable import (
+    _unapplied,
+    _unnamed_departure,
+    _value_requirements,
+    unbind_unrealisable,
+)
+from search.engine.retrieval.retrieve import BoundValuesUnrealisable, MemberConflict
+from search.engine.role_text import DoorRole
 from search.engine.shape import ShapeDraft, SlotKeyDraft
-from search.models import NoData, NoDataPart, ResolvedQualifier, Spec
+from search.models import GraphRef, NoData, NoDataPart, ResolvedQualifier, Spec
 from tests.conftest import minimal_spec
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._index_slots import crs_flow_slot_keys, own_variable_spans, read_text
+from tests.fixtures import FakeGraph
+from tests.origin_catalogue.fake_catalogue import FakeCatalogue, un_mirror, un_variable
 
 _POP_TYPE_DCID = "Widget"
 _MEAS_PROP_DCID = "count"
@@ -174,7 +205,8 @@ def test_a_word_the_shapes_own_reading_leaves_unread_is_recorded_or_warned(
     """In every code system together "multilateral ODA" is DAC1 aid type 2000. A shape with
     the CRS flow slot reads "ODA" alone, so "ODA" records the bound flow type. Under the log
     coverage mode the unread "multilateral" records `no_vocabulary` when the bind model
-    lists it as unplaced, and otherwise departs once with the dropped-qualifier warning.
+    lists it as unplaced, and otherwise is a term the answer departs once with the
+    dropped-qualifier warning.
     Exactly one of the two applies."""
     search_settings(qualifier_coverage="log")
     shape = _shape(_FLOW_SLOT)
@@ -186,12 +218,14 @@ def test_a_word_the_shapes_own_reading_leaves_unread_is_recorded_or_warned(
     )
     qualifiers = _run(state)
     assert [(q.text, q.disposition, q.slot) for q in qualifiers] == records
-    assert [
-        fact.asked for fact in state.departure_facts.values() if fact.code == "measure_not_applied"
-    ] == dropped
-    assert [w.code for w in state.warnings if w.code == "query_qualifier_dropped"] == [
-        "query_qualifier_dropped"
-    ] * len(dropped)
+    # The elected answer is the part's final answer here.
+    settle_answer(state, state.shape_draft, state.bindings)
+    assert state.judgement is not None
+    departed = state.judgement.departures()
+    assert [fact.asked for _warning, fact in departed if fact.code == "measure_not_applied"] == (
+        dropped
+    )
+    assert [w.code for w, _fact in departed] == ["query_qualifier_dropped"] * len(dropped)
 
 
 _CRS_SLOTS = crs_flow_slot_keys()
@@ -312,7 +346,7 @@ def test_an_uncovered_word_beside_a_code_is_a_record(search_settings, variable, 
         variable=variable, shape_draft=shape, bindings=[], unplaced=[], entities=_ENTITIES
     )
     uncovered = [q for q in _resolve_query_qualifiers(state) if q.evidence == "uncovered"]
-    assert [(q.text, [ref.dcid for ref in q.named]) for q in uncovered] == records
+    assert [(q.text, [ref.ref for ref in q.named]) for q in uncovered] == records
     assert all(q.disposition == "unbound" for q in uncovered)
     assert [variable[q.start : q.end] for q in uncovered if q.start is not None] == [
         text for text, _ in records
@@ -371,7 +405,7 @@ def test_a_word_the_name_of_an_unnamed_bound_code_holds_is_read(
         unplaced=[],
     )
     uncovered = [q for q in _run(state) if q.evidence == "uncovered"]
-    assert [(q.text, [ref.dcid for ref in q.named]) for q in uncovered] == records
+    assert [(q.text, [ref.ref for ref in q.named]) for q in uncovered] == records
 
 
 @pytest.mark.parametrize("mode", ["refuse", "log"])
@@ -860,7 +894,7 @@ def test_ambiguous_span_with_no_covering_binding_is_unbound():
     assert q.slot is None
     # The record names the codes the shape's own vocabulary reads, its two slots' systems;
     # the DAC1 aid types of the same text belong to a system it declares no slot for.
-    assert {ref.dcid for ref in q.named} == {
+    assert {ref.ref for ref in q.named} == {
         "CRSCooperationModalityA",
         "CRSPurposeCode510",
     }
@@ -907,7 +941,7 @@ def test_ambiguous_single_system_span_with_a_scripted_binding_is_bound():
     q = qualifiers[0]
     assert q.disposition == "bound"
     assert q.slot == "crsTypeOfFinance"
-    assert {ref.dcid for ref in q.named} == {"CRSTypeOfFinance100", "CRSTypeOfFinance110"}
+    assert {ref.ref for ref in q.named} == {"CRSTypeOfFinance100", "CRSTypeOfFinance110"}
     assert not _has_miss(qualifiers)
 
 
@@ -1038,3 +1072,1051 @@ def test_qualifier_not_bound_wire_no_data_assembles_with_gate_less_flagged_match
     assert no_data.flagged_match.spec_id == "s1"
     assert [q.text for q in no_data.unbound_qualifiers] == ["untied"]
     assert [q.disposition for q in no_data.unbound_qualifiers] == ["no_vocabulary"]
+
+
+# ---------------------------------------------------------------------------
+# A value the request names by its graph label is judged against the answer
+# ---------------------------------------------------------------------------
+
+_VALUE_LABELS = {
+    "Female": "Female",
+    "Male": "Male",
+    "Literate": "Literate",
+    "Years10Onwards": "Years 10 Onwards",
+    "Student": "Student",
+    "German": "German",
+    "CRSPurposeCode120": "Health",
+    "Infant": "Infant",
+    "EducationLevelPrimary": "Primary education",
+    "EducationLevelSecondary": "Secondary education",
+    "undata/SKILL-LTRCY": "Literacy",
+    "undata/SKILL-MATH": "Minimum proficiency in mathematics",
+    "undata/SKILL-READ": "Minimum proficiency in reading",
+    "undata/POVERTY_STATUS-EXTREME_POVERTY": "In extreme poverty",
+    "undata/POVERTY_STATUS-POVERTY": "In poverty",
+    "undata/WASH_SERVICE_TYPE-SAN": "Sanitation",
+    "undata/WASH_SERVICE_TYPE-HYG": "Hygiene",
+    "undata/WASH_SERVICE_TYPE-WAT": "Drinking water",
+}
+_VALUE_GENDER_SLOT = SlotKeyDraft(axis="how", property_dcid="gender", label="gender")
+_VALUE_LITERACY_SLOT = SlotKeyDraft(axis="how", property_dcid="literacyStatus", label="literacy")
+_VALUE_LITERATE = ("literacyStatus", ["Literate"])
+_VALUE_FEMALE = ("gender", ["Female"])
+_VALUE_HEALTH_ODA = [_ODA, ("crsPurpose", ["CRSPurposeCode12220"])]
+
+
+def _value_member_arcs(constraints: dict[str, str], name: str) -> dict:
+    return {
+        "name": {"nodes": [{"value": name}]},
+        "constraintProperties": {"nodes": [{"dcid": prop} for prop in constraints]},
+        **{prop: {"nodes": [{"dcid": value}]} for prop, value in constraints.items()},
+    }
+
+
+def _value_shape(
+    shape_id: str,
+    *slot_keys: SlotKeyDraft,
+    members: Sequence[dict[str, str]],
+    names: Sequence[str] = (),
+) -> ShapeDraft:
+    """A shape whose members hold `members`' constraints under `names`, by default each
+    the shape id."""
+    return replace(
+        _shape(*slot_keys),
+        shape_id=shape_id,
+        sv_arc_facts={
+            f"{shape_id}_{index}": _value_member_arcs(constraints, name)
+            for index, (constraints, name) in enumerate(
+                zip(members, names or [shape_id] * len(members), strict=True)
+            )
+        },
+        value_labels=_VALUE_LABELS,
+    )
+
+
+_VALUE_INFANT_MORTALITY = _value_shape(
+    "infant_mortality",
+    SlotKeyDraft(axis="how", property_dcid="ageGroupClassification", label="age group"),
+    SlotKeyDraft(axis="how", property_dcid="age", label="age"),
+    members=[
+        {"ageGroupClassification": "Infant"},
+        {"age": "Years0"},
+        {"ageGroupClassification": "Newborn"},
+    ],
+    names=["Infant mortality rate", "Infant Mortality Rate", "Newborn mortality rate"],
+)
+
+
+def _series_shape(shape_id: str, series: str, members: Sequence[dict[str, str]]) -> ShapeDraft:
+    """A shape of the series named `series` whose members hold `members`' constraints."""
+    return replace(_value_shape(shape_id, members=members), pop_type_name=series)
+
+
+_UN_YOUTH_AGE = [{"undataAge": "undata/AGE-Y15T24"}]
+
+
+# A bind menu sibling whose members name the value each row's variable asks for.
+_VALUE_FEMALE_SIBLING = _value_shape(
+    "female_sibling", members=[{"gender": "Female", "literacyStatus": "Literate"}]
+)
+_VALUE_LITERACY = _value_shape(
+    "literacy",
+    _VALUE_LITERACY_SLOT,
+    members=[{"literacyStatus": "Literate", "age": "Years10Onwards"}],
+)
+
+
+@pytest.mark.parametrize(
+    ("variable", "elected", "menu", "bound", "entity_roles", "records"),
+    [
+        # The elected literacy rate has no gender slot, so "female" is unapplied, whatever
+        # the bind model reports (female-literacy-bangladesh).
+        (
+            "female literacy rate",
+            _VALUE_LITERACY,
+            [_VALUE_FEMALE_SIBLING],
+            [_VALUE_LITERATE],
+            {},
+            [("female", "no_vocabulary", None)],
+        ),
+        # An answer binding Female applies it.
+        (
+            "female literacy rate",
+            _value_shape(
+                "literacy_by_gender",
+                _VALUE_LITERACY_SLOT,
+                _VALUE_GENDER_SLOT,
+                members=[{"literacyStatus": "Literate", "gender": "Female"}],
+            ),
+            [_VALUE_FEMALE_SIBLING],
+            [_VALUE_LITERATE, _VALUE_FEMALE],
+            {},
+            [],
+        ),
+        # A gender slot left open answers every gender, so "female" is unapplied, a
+        # category the gender slot leaves unbound.
+        (
+            "female literacy rate",
+            _value_shape(
+                "literacy_by_gender",
+                _VALUE_LITERACY_SLOT,
+                _VALUE_GENDER_SLOT,
+                members=[
+                    {"literacyStatus": "Literate", "gender": "Female"},
+                    {"literacyStatus": "Literate", "gender": "Male"},
+                ],
+            ),
+            [_VALUE_FEMALE_SIBLING],
+            [_VALUE_LITERATE],
+            {},
+            [("female", "unbound", "gender")],
+        ),
+        # Every member of the elected shape holds gender Female, so its measure states it.
+        (
+            "female literacy rate",
+            _value_shape(
+                "female_literacy",
+                _VALUE_LITERACY_SLOT,
+                members=[{"literacyStatus": "Literate", "gender": "Female"}],
+            ),
+            [_VALUE_FEMALE_SIBLING],
+            [_VALUE_LITERATE],
+            {},
+            [],
+        ),
+        # The member binding age 0 is named "Infant Mortality Rate", so the answer states
+        # "infant" though it binds no age group (std-07).
+        (
+            "infant mortality rate",
+            _VALUE_INFANT_MORTALITY,
+            [],
+            [("age", ["Years0"])],
+            {},
+            [],
+        ),
+        # An age group bound absent leaves the age-0 member alone.
+        (
+            "infant mortality rate",
+            _VALUE_INFANT_MORTALITY,
+            [],
+            [("ageGroupClassification", [])],
+            {},
+            [],
+        ),
+        # With both slots open the answer holds the newborn rate too, whose name lacks
+        # "infant", left unbound on the age group slot that holds Infant
+        # (infant-mortality-rate).
+        (
+            "infant mortality rate",
+            _VALUE_INFANT_MORTALITY,
+            [],
+            [],
+            {},
+            [("infant", "unbound", "ageGroupClassification")],
+        ),
+        # The elected shape's population type is the measure word "student".
+        (
+            "student literacy rate",
+            replace(_VALUE_LITERACY, pop_type_dcid="Student"),
+            [_value_shape("student_sibling", members=[{"occupation": "Student"}])],
+            [_VALUE_LITERATE],
+            {},
+            [],
+        ),
+        # "German" is the origin role's own words (dq-crs-049), whatever value a sibling
+        # labels with it.
+        (
+            "German literacy rate",
+            _VALUE_LITERACY,
+            [_value_shape("language_sibling", members=[{"language": "German"}])],
+            [_VALUE_LITERATE],
+            {"Germany": [DoorRole(axis="origin", span="German")]},
+            [],
+        ),
+        # A code term is the code reading's: "health" names purpose 120, and the answer
+        # applies it through its descendant 12220.
+        (
+            "health ODA",
+            _value_shape("crs", *_CRS_SLOTS, members=[{"crsPurpose": "CRSPurposeCode12220"}]),
+            [_value_shape("health_sibling", members=[{"crsPurpose": "CRSPurposeCode120"}])],
+            _VALUE_HEALTH_ODA,
+            {},
+            [],
+        ),
+        # A bound parent purpose selects the members holding its descendants, as
+        # materialisation reads it, and each of them holds gender Female.
+        (
+            "female aid",
+            _value_shape(
+                "aid_by_purpose",
+                SlotKeyDraft(axis="how", property_dcid="crsPurpose", label="purpose"),
+                members=[
+                    {"crsPurpose": "CRSPurposeCode12220", "gender": "Female"},
+                    {"crsPurpose": "CRSPurposeCode11220", "gender": "Male"},
+                ],
+            ),
+            [],
+            [("crsPurpose", ["CRSPurposeCode120"])],
+            {},
+            [],
+        ),
+        # A code term is the code readers' even where the elected shape holds no slot of
+        # its system: they judge "health", purpose 120, and this reader names nothing.
+        (
+            "health literacy rate",
+            _VALUE_LITERACY,
+            [_value_shape("health_sibling", members=[{"crsPurpose": "CRSPurposeCode120"}])],
+            [_VALUE_LITERATE],
+            {},
+            [],
+        ),
+        # "primary education" is also the text of CRS purpose 11220, but the elected
+        # completion rate holds no CRS slot, so the code readers judge nothing here and
+        # the open education level leaves the value unbound.
+        (
+            "primary education completion rate",
+            _value_shape(
+                "completion",
+                SlotKeyDraft(axis="how", property_dcid="educationLevel", label="level"),
+                members=[
+                    {"educationLevel": "EducationLevelPrimary"},
+                    {"educationLevel": "EducationLevelSecondary"},
+                ],
+            ),
+            [],
+            [],
+            {},
+            [("primary education", "unbound", "educationLevel")],
+        ),
+        # Skill Literacy, the one skill of the UN youth/adult literacy rate, names that
+        # series' measure, so "literacy" restricts nothing on the literate share elected
+        # (literacy-rate).
+        (
+            "literacy rate",
+            _series_shape(
+                "pct_literate", "Percentage of the population that is literate", _UN_YOUTH_AGE
+            ),
+            [
+                _series_shape(
+                    "youth_adult_literacy",
+                    "Youth/adult literacy rate",
+                    [{"undataSkill": "undata/SKILL-LTRCY"}],
+                )
+            ],
+            [],
+            {},
+            [],
+        ),
+        # The ECLAC series states both its poverty statuses and splits on them, so "in
+        # extreme poverty" restricts it and another poverty series leaves it unapplied.
+        (
+            "population living in extreme poverty",
+            _series_shape(
+                "poverty_line",
+                "Proportion of population below international poverty line",
+                _UN_YOUTH_AGE,
+            ),
+            [
+                _series_shape(
+                    "eclac_poverty",
+                    "Population living in extreme poverty and poverty",
+                    [
+                        {"undataPovertyStatus": "undata/POVERTY_STATUS-EXTREME_POVERTY"},
+                        {"undataPovertyStatus": "undata/POVERTY_STATUS-POVERTY"},
+                    ],
+                )
+            ],
+            [],
+            {},
+            [("in extreme poverty", "no_vocabulary", None)],
+        ),
+        # SE_TOT_PRFL splits on the two skills its series names (SDG proficiency).
+        (
+            "children achieving minimum proficiency in mathematics",
+            _series_shape("completion", "Completion rate", _UN_YOUTH_AGE),
+            [
+                _series_shape(
+                    "se_tot_prfl",
+                    "Proportion of children and young people achieving a minimum "
+                    "proficiency level in reading and mathematics",
+                    [
+                        {"undataSkill": "undata/SKILL-MATH"},
+                        {"undataSkill": "undata/SKILL-READ"},
+                    ],
+                )
+            ],
+            [],
+            {},
+            [("minimum proficiency in mathematics", "no_vocabulary", None)],
+        ),
+        # The WHO WASH series splits on the three service types its series names.
+        (
+            "diarrhoea deaths attributable to inadequate sanitation",
+            _series_shape("diarrhoea_deaths", "Number of deaths from diarrhoea", _UN_YOUTH_AGE),
+            [
+                _series_shape(
+                    "diarrhoea_wash",
+                    "Number of diarrhoea deaths attributable to inadequate water, "
+                    "sanitation and hygiene",
+                    [
+                        {"undataWashServiceType": "undata/WASH_SERVICE_TYPE-SAN"},
+                        {"undataWashServiceType": "undata/WASH_SERVICE_TYPE-HYG"},
+                        {"undataWashServiceType": "undata/WASH_SERVICE_TYPE-WAT"},
+                    ],
+                )
+            ],
+            [],
+            {},
+            [("sanitation", "no_vocabulary", None)],
+        ),
+    ],
+    ids=[
+        "unapplied",
+        "applied",
+        "slot-left-open",
+        "measure-holds-the-value",
+        "member-names-state-it",
+        "age-group-absent",
+        "member-names-differ",
+        "measure-word",
+        "role-words",
+        "descendant-code",
+        "parent-code-selects-descendants",
+        "code-term-off-the-shape",
+        "value-inside-a-code-text-off-the-shape",
+        "value-names-its-shape-measure",
+        "series-splits-on-poverty-status",
+        "series-splits-on-skill",
+        "series-splits-on-service-type",
+    ],
+)
+def test_a_value_the_request_names_is_judged_against_the_answer(
+    search_settings, variable, elected, menu, bound, entity_roles, records
+):
+    """Under the refuse coverage mode a word naming, by its graph label, a value a shape on
+    the bind menu holds is a requirement the answer leaves unmet unless it binds that
+    value, its measure states it, a place's words hold it, or the word is a code term of
+    a system the answer holds. An unmet value is a category left unbound on the answer's
+    slot for its property, and a distinction the data does not record (``no_vocabulary``)
+    on an answer with no such slot. A value with no codes binds absent. The bind model's
+    `unplaced` is empty throughout."""
+    search_settings(qualifier_coverage="refuse")
+    assert _value_refusal(variable, elected, menu, bound, entity_roles) == records
+
+
+def _value_refusal(
+    variable: str,
+    elected: ShapeDraft,
+    menu: Sequence[ShapeDraft],
+    bound: Sequence[tuple[str, list[str]]] = (),
+    entity_roles: dict[str, list[DoorRole]] | None = None,
+) -> list[tuple[str, str, str | None]]:
+    """The terms the elected answer refuses on, with their slots, once the variable's value requirements,
+    read off `menu` and `elected`, are recorded."""
+    entity_roles = entity_roles or {}
+    kinds: dict[int, DraftBindingKind] = {0: "absent", 1: "value"}
+    state = _state(
+        variable=variable,
+        shape_draft=elected,
+        bindings=[
+            _binding(prop, kind=kinds.get(len(dcids), "set"), value_dcids=dcids)
+            for prop, dcids in bound
+        ],
+        unplaced=[],
+        entities=tuple(entity_roles),
+    )
+    state.bindings = state.bind_result.bindings
+    state.entity_roles = entity_roles
+    state.capped_shapes = [*menu, elected]
+    record_reading(state, _resolve_query_qualifiers(state))
+    state.requirements = (*state.requirements, *value_requirements(state, state.query_qualifiers))
+    missed = refusal_terms(state, state.shape_draft, state.bindings)
+    return [(q.text, q.disposition, q.slot) for q in missed]
+
+
+_VALUE_INFANT_TWO_SLOTS = _value_shape(
+    "infant_two_slots",
+    SlotKeyDraft(axis="how", property_dcid="ageGroupClassification", label="age group"),
+    SlotKeyDraft(axis="how", property_dcid="age", label="age"),
+    members=[
+        {"ageGroupClassification": "Infant"},
+        {"age": "Infant"},
+        {"ageGroupClassification": "Newborn"},
+    ],
+    names=["Infant mortality rate", "Infant Mortality Rate", "Newborn mortality rate"],
+)
+
+
+def test_a_value_held_on_two_slots_is_named_on_the_first_property(search_settings):
+    """Infant held under both the age and the age group slots of the elected shape, both
+    left open: the unmet "infant" names the first property in sorted order, "age", in
+    every run, and the refusal names the same term the answer's trace flags."""
+    search_settings(qualifier_coverage="refuse")
+    state = _state(
+        variable="infant mortality rate",
+        shape_draft=_VALUE_INFANT_TWO_SLOTS,
+        bindings=[],
+        unplaced=[],
+        entities=(),
+    )
+    state.bindings = state.bind_result.bindings
+    state.capped_shapes = [_VALUE_INFANT_TWO_SLOTS]
+    record_reading(state, _resolve_query_qualifiers(state))
+    state.requirements = (*state.requirements, *value_requirements(state, state.query_qualifiers))
+
+    refused = list(refusal_terms(state, _VALUE_INFANT_TWO_SLOTS, state.bindings))
+    assert [(q.text, q.disposition, q.slot) for q in refused] == [("infant", "unbound", "age")]
+    assert [ref.ref for ref in refused[0].named] == ["Infant"]
+    trace = answer_terms(state, _VALUE_INFANT_TWO_SLOTS, state.bindings)
+    assert refused == [q for q in trace if q.disposition != "bound"]
+
+
+_LITERACY_SERIES = "undata/SERIES-SE_ADT_LITRAT"
+_PROFICIENCY_SERIES = "undata/SERIES-SE_TOT_PRFL"
+
+
+def _un_member(series: str, skill: str, age: str) -> UnVariable:
+    return un_variable(
+        series,
+        name=f"{series} {skill} {age}",
+        constraints={
+            "undataSkill": ("Skill", skill, _VALUE_LABELS[skill]),
+            "undataAge": ("Age", age, age),
+        },
+    )
+
+
+def _un_sample(series: str, name: str, skill: str) -> ShapeDraft:
+    """A recalled sample of the UN `series`, one member holding `skill`."""
+    return replace(
+        _series_shape(series, name, [{"undataSkill": skill}]),
+        pop_type_dcid=series,
+        meas_prop_dcid="value",
+        stat_type_dcid="measuredValue",
+        sv_arc_facts_complete=False,
+    )
+
+
+@pytest.mark.parametrize(
+    ("variable", "menu", "members", "records"),
+    [
+        # The catalogue lists every member of the youth/adult literacy rate, and each holds
+        # Skill Literacy, so "literacy" names the series' measure.
+        (
+            "literacy rate",
+            _un_sample(_LITERACY_SERIES, "Youth/adult literacy rate", "undata/SKILL-LTRCY"),
+            [
+                _un_member(_LITERACY_SERIES, "undata/SKILL-LTRCY", "undata/AGE-Y15T24"),
+                _un_member(_LITERACY_SERIES, "undata/SKILL-LTRCY", "undata/AGE-Y15T99"),
+            ],
+            [],
+        ),
+        # The sample shows mathematics alone, but the catalogue's members split on reading
+        # and mathematics, so the skill restricts the series.
+        (
+            "children achieving minimum proficiency in mathematics",
+            _un_sample(
+                _PROFICIENCY_SERIES,
+                "Proportion of children and young people achieving a minimum proficiency "
+                "level in reading and mathematics",
+                "undata/SKILL-MATH",
+            ),
+            [
+                _un_member(_PROFICIENCY_SERIES, "undata/SKILL-MATH", "undata/AGE-Y15T24"),
+                _un_member(_PROFICIENCY_SERIES, "undata/SKILL-READ", "undata/AGE-Y15T24"),
+            ],
+            [("minimum proficiency in mathematics", "no_vocabulary", None)],
+        ),
+        # No source lists the series' whole family, so its sample cannot show the value
+        # restricts nothing.
+        (
+            "literacy rate",
+            _un_sample(_LITERACY_SERIES, "Youth/adult literacy rate", "undata/SKILL-LTRCY"),
+            [],
+            [("literacy", "no_vocabulary", None)],
+        ),
+    ],
+    ids=["family-holds-one-value", "sample-hides-a-split", "family-unlisted"],
+)
+def test_a_value_names_its_series_measure_only_when_its_whole_family_holds_it(
+    search_settings, bind_catalogue, variable, menu, members, records
+):
+    """Whether a value its holding series states is that series' measure is read off the
+    series' whole family, the UN tables of the origin catalogue here, never off the bind
+    menu's recalled sample."""
+    search_settings(qualifier_coverage="refuse")
+    bind_catalogue(
+        FakeCatalogue(
+            un=UnTables(mirror=un_mirror({f"member_{i}": m for i, m in enumerate(members)}))
+        )
+    )
+    elected = _series_shape(
+        "pct_literate", "Percentage of the population that is literate", _UN_YOUTH_AGE
+    )
+
+    assert _value_refusal(variable, elected, [menu]) == records
+
+
+@pytest.mark.parametrize("mode", ["refuse", "log"])
+def test_coverage_mode_decides_whether_an_unapplied_value_refuses(search_settings, caplog, mode):
+    """In refuse mode the unapplied "female" is a requirement the elected answer leaves
+    unmet, so the part is a miss. In log mode no requirement is recorded and the
+    would-refuse line names it once."""
+    search_settings(qualifier_coverage=mode)
+    state = _state(
+        variable="female literacy rate",
+        shape_draft=_VALUE_LITERACY,
+        bindings=[_binding("literacyStatus", kind="value", value_dcids=["Literate"])],
+        unplaced=[],
+        entities=(),
+    )
+    state.capped_shapes = [_VALUE_FEMALE_SIBLING, _VALUE_LITERACY]
+    with caplog.at_level(logging.INFO, logger=phase_election.__name__):
+        _run(state)
+    lines = [r.getMessage() for r in caplog.records if "qualifier_coverage" in r.getMessage()]
+    missed = [
+        (q.text, q.disposition) for q in refusal_terms(state, state.shape_draft, state.bindings)
+    ]
+    if mode == "refuse":
+        assert missed == [("female", "no_vocabulary")]
+        assert lines == []
+    else:
+        assert missed == []
+        assert lines == ["qualifier_coverage would_refuse phrase=female codes="]
+
+
+_FEMALE_UNBOUND = code_requirement(
+    property_dcid="gender",
+    codes=("Female",),
+    asked="Female",
+    named=[GraphRef(ref="Female", label="Female")],
+    departure=(
+        qualifier_dropped_warning("Female"),
+        measure_not_applied(asked="Female", property_dcid="gender"),
+    ),
+    origin="unbinding",
+)
+
+
+@pytest.mark.parametrize(
+    "unbound",
+    [(), (_FEMALE_UNBOUND,)],
+    ids=["unmet-by-one-answer", "already-departed-by-unbinding"],
+)
+def test_a_candidate_set_departs_an_unmet_value_once(search_settings, unbound):
+    """A candidate set of the literacy rate, which leaves "female" unmet, and the female
+    sibling, which applies it, departs "female" once. When unbinding has also dropped Female
+    (a requirement on gender, which neither answer's slots hold), the set still departs it
+    once, and the literacy rate's trace and a refusal on it name it, as the same term."""
+    search_settings(qualifier_coverage="refuse")
+    state = _state(
+        variable="female literacy rate",
+        shape_draft=_VALUE_LITERACY,
+        bindings=[_binding("literacyStatus", kind="value", value_dcids=["Literate"])],
+        unplaced=[],
+        entities=(),
+    )
+    state.bindings = state.bind_result.bindings
+    state.capped_shapes = [_VALUE_FEMALE_SIBLING, _VALUE_LITERACY]
+    record_reading(state, _resolve_query_qualifiers(state))
+    state.requirements = (
+        *state.requirements,
+        *value_requirements(state, state.query_qualifiers),
+        *unbound,
+    )
+
+    settle_candidate_set(state, [(_VALUE_LITERACY, state.bindings), (_VALUE_FEMALE_SIBLING, [])])
+
+    assert state.judgement is not None
+    assert [(fact.code, fact.asked) for _warning, fact in state.judgement.departures()] == [
+        ("measure_not_applied", "female")
+    ]
+    trace = answer_terms(state, _VALUE_LITERACY, state.bindings)
+    assert [q.text for q in trace if q.disposition == "no_vocabulary"] == ["female"]
+    assert list(refusal_terms(state, _VALUE_LITERACY, state.bindings)) == [
+        q for q in trace if q.disposition != "bound"
+    ]
+
+
+_VALUE_LITERACY_BY_GENDER = _value_shape(
+    "literacy_by_gender",
+    _VALUE_GENDER_SLOT,
+    _VALUE_LITERACY_SLOT,
+    members=[
+        {"gender": "Female", "literacyStatus": "Literate"},
+        {"gender": "Male", "literacyStatus": "Literate"},
+    ],
+)
+
+
+@pytest.mark.parametrize(
+    ("answers", "refused", "departed"),
+    [
+        ([_VALUE_LITERACY_BY_GENDER], [("Female", "unbound", "gender")], []),
+        ([_VALUE_LITERACY_BY_GENDER, _VALUE_FEMALE_SIBLING], None, [("Female", "how:gender")]),
+        ([_VALUE_FEMALE_SIBLING], [], []),
+        ([_VALUE_FEMALE_SIBLING, _VALUE_FEMALE_SIBLING], None, []),
+    ],
+    ids=[
+        "answer-holds-the-property",
+        "set-member-holds-the-property",
+        "answer-applies-the-value-off-the-property",
+        "set-applies-the-value-off-the-property",
+    ],
+)
+def test_a_phrase_a_value_and_unbinding_both_require_is_judged_once(
+    search_settings, answers, refused, departed
+):
+    """ "female" is a value the request names and, as Female on gender, a code unbinding
+    dropped (recorded after it). An answer whose shape holds gender and binds nothing on
+    it refuses on the code term with its slot, and a set departs that code's departure. An
+    answer applying Female without a gender slot meets the phrase, so nothing departs.
+    `refused` is `None` for a candidate set, which refuses nothing."""
+    search_settings(qualifier_coverage="refuse")
+    state = _state(
+        variable="female literacy rate",
+        shape_draft=_VALUE_LITERACY_BY_GENDER,
+        bindings=[_binding("literacyStatus", kind="value", value_dcids=["Literate"])],
+        unplaced=[],
+        entities=(),
+    )
+    state.bindings = state.bind_result.bindings
+    state.capped_shapes = [_VALUE_FEMALE_SIBLING, _VALUE_LITERACY_BY_GENDER]
+    record_reading(state, _resolve_query_qualifiers(state))
+    state.requirements = (
+        *state.requirements,
+        *value_requirements(state, state.query_qualifiers),
+        _FEMALE_UNBOUND,
+    )
+    read = [
+        (shape, state.bindings if shape is _VALUE_LITERACY_BY_GENDER else []) for shape in answers
+    ]
+
+    if refused is None:
+        settle_candidate_set(state, read)
+    else:
+        terms = settle_answer(state, *read[0])
+        assert [(q.text, q.disposition, q.slot) for q in terms] == refused
+
+    assert state.judgement is not None
+    assert [
+        (fact.asked, fact.binding_ref) for _warning, fact in state.judgement.departures()
+    ] == departed
+
+
+_VALUE_YOUTH_LITERACY = _value_shape(
+    "youth_literacy",
+    _VALUE_LITERACY_SLOT,
+    members=[{"literacyStatus": "Literate", "age": "Years15To24"}],
+)
+
+
+_BOTH = ["Female", "Male"]
+_EITHER = ("female literacy rate", "male literacy rate")
+# Gender values the graph and the code index hold no name for.
+_NAMELESS = "GenderUnnamed"
+_NAMELESS_TOO = "GenderUnnamedToo"
+
+
+@pytest.mark.parametrize(
+    ("variable", "values", "answers", "definite", "departed"),
+    [
+        *(
+            (
+                variable,
+                _BOTH,
+                [(_VALUE_LITERACY_BY_GENDER, []), (_VALUE_LITERACY_BY_GENDER, [])],
+                False,
+                [("Female and Male", "how:gender")],
+            )
+            for variable in _EITHER
+        ),
+        *(
+            (
+                variable,
+                values,
+                [(_VALUE_LITERACY, []), (_VALUE_YOUTH_LITERACY, [])],
+                False,
+                [(" and ".join(values), "how:gender")],
+            )
+            for values in (_BOTH, ["Male", "Female"], ["Female", "Male", "Other"])
+            for variable in _EITHER
+        ),
+        ("female literacy rate", _BOTH, [(_VALUE_LITERACY, [])], True, [("Male", "how:gender")]),
+        ("male literacy rate", _BOTH, [(_VALUE_LITERACY, [])], True, [("Female", "how:gender")]),
+        *(
+            (
+                variable,
+                _BOTH,
+                [
+                    (_VALUE_LITERACY_BY_GENDER, ["Female"]),
+                    (_VALUE_LITERACY_BY_GENDER, ["Female"]),
+                ],
+                False,
+                [("Male", "how:gender")],
+            )
+            for variable in _EITHER
+        ),
+        *(
+            (
+                "female literacy rate",
+                [*_BOTH, _NAMELESS],
+                [(_VALUE_LITERACY_BY_GENDER, applied)] * 2,
+                False,
+                departed,
+            )
+            for applied, departed in (
+                ([], [("Female and Male", "how:gender"), (None, "how:gender")]),
+                (_BOTH, [(None, "how:gender")]),
+                (["Female"], [("Male", "how:gender"), (None, "how:gender")]),
+            )
+        ),
+        (
+            "female literacy rate",
+            [*_BOTH, _NAMELESS],
+            [(_VALUE_LITERACY, [])],
+            True,
+            [("Male", "how:gender"), (None, "how:gender")],
+        ),
+        *(
+            (
+                "literacy rate",
+                ["Female", _NAMELESS, _NAMELESS_TOO],
+                [(_VALUE_LITERACY_BY_GENDER, applied)] * 2,
+                False,
+                departed,
+            )
+            for applied, departed in (
+                ([_NAMELESS], [("Female", "how:gender"), (None, "how:gender")]),
+                (["Female", _NAMELESS], [(None, "how:gender")]),
+            )
+        ),
+    ],
+    ids=[
+        "female-set-holds-the-property",
+        "male-set-holds-the-property",
+        "female-set-lacks-the-property",
+        "male-set-lacks-the-property",
+        "female-set-lacks-the-property-reversed",
+        "male-set-lacks-the-property-reversed",
+        "female-set-lacks-the-property-three-values",
+        "male-set-lacks-the-property-three-values",
+        "female-definite-lacks-the-property",
+        "male-definite-lacks-the-property",
+        "female-set-applies-female",
+        "male-set-applies-female",
+        "nameless-set-applies-none",
+        "nameless-set-applies-the-named",
+        "nameless-set-applies-female",
+        "nameless-definite-lacks-the-property",
+        "two-nameless-set-applies-one",
+        "two-nameless-set-applies-female-and-one",
+    ],
+)
+def test_a_phrase_sharing_a_departure_departs_once(
+    search_settings, variable, values, answers, definite, departed
+):
+    """Bind sets gender to `values` with no query term and the request names one of them
+    by its graph label. Unbinding drops them under one joined departure, which also
+    discloses the named value, so a set leaving every value unapplied departs it once,
+    whichever value the request names and whether or not its answers hold gender. Each
+    answer binds the gender values its row names. Where the joined departure would also
+    disclose a value the answer applies or the refusal names, each other value departs on
+    its own: a definite answer without gender refuses on the named value and departs the
+    other, and a set applying Female departs Male alone. A value with no name departs
+    under its slot's name on its own, beside the joined departure of the named values, and
+    no departure's text names its dcid. Two such values share that departure, which still
+    departs when an answer applies one of them and not the other."""
+    search_settings(qualifier_coverage="refuse")
+    state = _state(
+        variable=variable,
+        shape_draft=_VALUE_LITERACY_BY_GENDER,
+        bindings=[_binding("literacyStatus", kind="value", value_dcids=["Literate"])],
+        unplaced=[],
+        entities=(),
+    )
+    state.graph = cast(
+        EngineGraphClient,
+        FakeGraph(
+            nodes={g: {"label": g, "type": "Thing"} for g in ("Female", "Male", "Other")},
+            obs={},
+            detect={},
+            resolve={},
+        ),
+    )
+    state.bindings = state.bind_result.bindings
+    state.capped_shapes = [
+        _VALUE_FEMALE_SIBLING,
+        _VALUE_LITERACY_BY_GENDER,
+        _VALUE_LITERACY,
+        _VALUE_YOUTH_LITERACY,
+    ]
+    record_reading(state, _resolve_query_qualifiers(state))
+    state.requirements = (*state.requirements, *value_requirements(state, state.query_qualifiers))
+    state.bindings = [*state.bindings, _binding("gender", kind="value", value_dcids=values)]
+    unbind_unrealisable(
+        state,
+        BoundValuesUnrealisable(
+            conflicts=(MemberConflict(properties=frozenset({"gender"}), fully_bound=True),)
+        ),
+    )
+    read = [
+        (shape, [*state.bindings, _binding("gender", kind="value", value_dcids=gender)])
+        if gender
+        else (shape, state.bindings)
+        for shape, gender in answers
+    ]
+
+    if definite:
+        terms = settle_answer(state, *read[0])
+        assert [(q.text, q.disposition) for q in terms] == [(variable.split()[0], "no_vocabulary")]
+    else:
+        settle_candidate_set(state, read)
+
+    assert state.judgement is not None
+    departures = state.judgement.departures()
+    assert [(fact.asked, fact.binding_ref) for _warning, fact in departures] == departed
+    assert not any(
+        dcid in text
+        for dcid in (_NAMELESS, _NAMELESS_TOO)
+        for warning, fact in departures
+        for text in (warning.message, fact.asked or "", *fact.values)
+    )
+
+
+# A phrase's value requirement (`None` when it has none) and unbinding code requirement,
+# as one answer judges them.
+type _PhraseState = tuple[Outcome | None, Outcome]
+_PHRASE_STATES: list[_PhraseState] = [
+    (value, code) for value in (None, "met", "unmet") for code in ("met", "unmet", "outside")
+]
+
+
+def _invariant_ledger(
+    labels: Sequence[str],
+    states: Sequence[_PhraseState],
+    key: str,
+    nameless: Sequence[Outcome] = (),
+) -> list[tuple[Requirement, Outcome]]:
+    """Per value in `labels`, its phrase's requirements and their outcomes, values first,
+    then a code requirement per value with no name in `nameless`. A named value's code
+    departs under its name (`key` "own"), under the request's words, which is the value
+    requirement's key with another fact ("words"), or joined with the other named values
+    and alone under its name ("joined"), or under words every value shares and alone
+    under its name ("shared"), as unbinding records them. A nameless value departs the
+    slot's generic departure, beside the shared words under "shared"."""
+    joined = " and ".join(labels)
+    shared = unapplied_departure("those values", asked="those values", property_dcid="gender")
+    values: list[tuple[Requirement, Outcome]] = []
+    codes: list[tuple[Requirement, Outcome]] = []
+    for label, (value, code) in zip(labels, states, strict=True):
+        words = label.lower()
+        if value is not None:
+            requirement = Requirement(
+                term=ResolvedQualifier(text=words, named=[], disposition="no_vocabulary"),
+                origin="value",
+                rule=ValueRule(values=frozenset({("gender", label)})),
+                departure=unapplied_departure(words, asked=words, property_dcid=None),
+            )
+            values.append((requirement, value))
+        own = unapplied_departure(label, asked=label, property_dcid="gender")
+        departure = {
+            "own": own,
+            "words": unapplied_departure(words, asked=words, property_dcid="gender"),
+            "joined": unapplied_departure(joined, asked=joined, property_dcid="gender"),
+            "shared": shared,
+        }[key]
+        requirement = code_requirement(
+            property_dcid="gender",
+            codes=(label,),
+            asked=label,
+            named=[GraphRef(ref=label, label=label)],
+            departure=departure,
+            origin="unbinding",
+            alone=own if key in ("joined", "shared") else None,
+        )
+        codes.append((requirement, code))
+    for dcid, code in zip(_NAMELESS_DCIDS, nameless, strict=False):
+        requirement = code_requirement(
+            property_dcid="gender",
+            codes=(dcid,),
+            asked=None,
+            named=(),
+            departure=shared if key == "shared" else None,
+            origin="unbinding",
+            generic=_unnamed_departure("gender", "gender"),
+        )
+        codes.append((requirement, code))
+    return [*values, *codes]
+
+
+_NAMELESS_DCIDS = ("X1", "X2")
+
+
+def _invariant_cases():
+    for count in (1, 2, 3):
+        labels = ("Female", "Male", "Other")[:count]
+        for key in ("own", "words", "joined"):
+            for states in itertools.product(_PHRASE_STATES, repeat=count):
+                for named in itertools.product((False, True), repeat=count):
+                    refused = {label for label, name in zip(labels, named, strict=True) if name}
+                    yield labels, states, key, refused, True, ()
+            # With no answer only whether a phrase has a value requirement matters.
+            for value in itertools.product(("met", None), repeat=count):
+                yield labels, [(v, "outside") for v in value], key, set(), False, ()
+    # Up to two named values beside one or two nameless ones.
+    for count, unnamed in itertools.product((0, 1, 2), (1, 2)):
+        labels = ("Female", "Male")[:count]
+        phrases = (*labels, *_NAMELESS_DCIDS[:unnamed])
+        for key in ("own", "words", "joined", "shared"):
+            for states in itertools.product(_PHRASE_STATES, repeat=count):
+                for nameless in itertools.product(("met", "unmet", "outside"), repeat=unnamed):
+                    for named in itertools.product((False, True), repeat=len(phrases)):
+                        refused = {p for p, name in zip(phrases, named, strict=True) if name}
+                        yield labels, states, key, refused, True, nameless
+            for value in itertools.product(("met", None), repeat=count):
+                outside = ("outside",) * unnamed
+                yield labels, [(v, "outside") for v in value], key, set(), False, outside
+
+
+def _judged(
+    ledger: Sequence[tuple[Requirement, Outcome]], refused: set[str], answered: bool
+) -> Judgement:
+    return Judgement(
+        requirements=tuple(requirement for requirement, _ in ledger),
+        outcomes=(tuple(outcome for _, outcome in ledger),) if answered else (),
+        refused=tuple(
+            ResolvedQualifier(text=label.lower(), named=[], disposition="no_vocabulary")
+            for label in refused
+        ),
+    )
+
+
+def test_departures_disclose_each_phrase_needing_it_once():
+    """For one to three named values of one slot, each phrase met, unmet or outside under
+    a value requirement and an unbinding code requirement, and for up to two named values
+    beside one or two with no name, each met, unmet or outside, under each kind of
+    departure key, with one answer or none, and with the refusal naming any of the
+    phrases: each phrase the answer does not meet and the refusal does not name is
+    disclosed by exactly one departure, a generic one counting only for the phrases that
+    need it and no other departure discloses; no other departure discloses a phrase the
+    answer meets or the refusal names; a generic departure departs only when one of its
+    phrases needs it; a departure disclosing exactly the phrases that need one departs
+    alone; and the ledger departs the same in every order (every order up to two named
+    values with none nameless; otherwise values or codes first, each reversed). The
+    76,244 ledgers take about 11 s, most of it judging each in several orders."""
+    cases = 0
+    for labels, states, key, refused, answered, nameless in _invariant_cases():
+        cases += 1
+        case = (labels, states, key, refused, answered, nameless)
+        ledger = _invariant_ledger(labels, states, key, nameless)
+        departed = _judged(ledger, refused, answered).departures()
+
+        covers: dict[tuple[str, str], set[str]] = {}
+        generic: dict[tuple[str, str], set[str]] = {}
+        for requirement, _ in ledger:
+            for departure in (requirement.departure, requirement.alone):
+                if departure is not None:
+                    covers.setdefault(warning_key(departure[0]), set()).add(requirement.phrase)
+            if requirement.generic is not None:
+                generic.setdefault(warning_key(requirement.generic[0]), set()).add(
+                    requirement.phrase
+                )
+        needing = {
+            label.lower()
+            for label, state in zip(labels, states, strict=True)
+            if label not in refused and not (answered and "unmet" not in state and "met" in state)
+        } | {
+            dcid.lower()
+            for dcid, state in zip(_NAMELESS_DCIDS, nameless, strict=False)
+            if dcid not in refused and not (answered and state == "met")
+        }
+        keys = [warning_key(warning) for warning, _fact in departed]
+        emitted = [covers[k] for k in keys if k in covers]
+        assert all(phrases <= needing for phrases in emitted), case
+        disclosed = set().union(*emitted)
+        emitted += [generic[k] & needing - disclosed for k in keys if k not in covers]
+        assert all(emitted), case
+        for phrase in needing:
+            assert sum(phrase in phrases for phrases in emitted) == 1, case
+        if needing in covers.values():
+            assert len(emitted) == 1, case
+
+        expected = sorted(map(repr, departed))
+        size = len(ledger)
+        values = size - len(labels) - len(nameless)
+        codes_first = [*ledger[values:], *ledger[:values]]
+        orders = (
+            [[ledger[i] for i in order] for order in itertools.permutations(range(size))]
+            if len(labels) < 3 and not nameless
+            else [ledger, ledger[::-1], codes_first, codes_first[::-1]]
+        )
+        for order in orders:
+            assert sorted(map(repr, _judged(order, refused, answered).departures())) == expected
+    assert cases == 76_244
+
+
+@pytest.mark.parametrize("met", [0, 1], ids=["all-unmet", "first-met"])
+def test_a_joined_departure_of_many_values_departs_once_or_alone(met):
+    """Unbinding drops 24 named values of one property under one joined departure. An
+    answer leaving every value unmet departs it once; one meeting the first departs each
+    other value alone."""
+    labels = {f"V{i}": f"Value {i}" for i in range(24)}
+    joined = _unapplied(" and ".join(labels.values()), "prop")
+    requirements = tuple(
+        _value_requirements(
+            "prop",
+            list(labels),
+            labels,
+            joined,
+            unnamed=_unnamed_departure("prop", "prop"),
+            named_only=True,
+        )
+    )
+    judgement = Judgement(
+        requirements=requirements, outcomes=(("met",) * met + ("unmet",) * (24 - met),)
+    )
+
+    assert [fact.asked for _warning, fact in judgement.departures()] == (
+        [" and ".join(labels.values())] if not met else list(labels.values())[1:]
+    )

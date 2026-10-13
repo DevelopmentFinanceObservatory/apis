@@ -12,11 +12,13 @@ from dataclasses import dataclass, replace
 from datetime import date
 from typing import Literal, NamedTuple
 
+from code_index.labels import without_property_suffix
 from code_index.members import ProvenanceScope, is_opt_in
 from code_index.query import CodeIndex
 from code_index.shared import get_index, get_measure_index
 from code_index.tokens import Token, text_matches, tokenize, word_tokens
 from code_index.types import CodeRow, MeasureAxis
+from origin_catalogue import current_catalogue
 from search.engine.bind import (
     CandidateMenu,
     SlotBindingDraft,
@@ -29,7 +31,8 @@ from search.engine.bind_repair import (
     _unscoped_property_values,
 )
 from search.engine.config import settings
-from search.engine.envelope import _emit_step, now_ms
+from search.engine.envelope import _emit_step, _sum_usage, now_ms
+from search.engine.errors import GraphInfraError
 from search.engine.function_words import (
     AMOUNT_WORDS,
     DATA_WORDS,
@@ -61,12 +64,17 @@ from search.engine.qualifier_match import (
 )
 from search.engine.quantity import (
     PER_HEAD_RATE_BASE_RE,
-    PER_PERSON_FORMS,
     STRONG_RATE_REQUEST_RE,
     DenominatorKind,
-    denominator_kinds,
+    DenominatorRead,
+    NamedDenominator,
+    names_only_form,
     normalisation_class,
+    read_denominators,
+    statvar_denominators,
+    with_stated_form,
 )
+from search.engine.quantity_read import QuantityOutput, read_stated_quantity
 from search.engine.region.alternate_guard import (
     is_cross_population_false_friend,
     leaves_price_basis_unread,
@@ -101,28 +109,49 @@ from search.engine.region.source_choice import (
     source_record,
     with_idle_exclusions,
 )
-from search.engine.region.state import ResolveState, for_shape, merge_lists, shape_vocabulary
+from search.engine.region.state import (
+    Requirement,
+    ResolveState,
+    ValueRule,
+    for_shape,
+    merge_lists,
+    shape_vocabulary,
+    unapplied_departure,
+)
 from search.engine.retrieval.bound_values import (
     DefaultReading,
+    _collapse_bindings,
+    bound_values_from_bindings,
     collapse_measure_families,
     elect_five_tuple_family,
+    five_tuple_member_facts,
+    held_family_exact,
     index_carries_shape,
     other_families_properties,
     part_datasets,
     part_member_rows,
     price_basis_order,
     query_phrases_read,
+    read_held_families,
+    shape_constraint_values,
     shape_datasets,
+    shape_five_tuple,
     shape_for_part,
     shape_listed_rows,
+    shape_population_arcs,
+    sole_shared_value,
 )
+from search.engine.retrieval.facts import read_constraints, read_five_tuple, read_name
+from search.engine.retrieval.member_facts import MemberFacts
 from search.engine.retrieval.representative import _shape_disagreement_props
 from search.engine.retrieval.role_scope import _COVERAGE_ROLE_FOR_AXIS
+from search.engine.retrieval.standard import family_totals
 from search.engine.shape import (
     ShapeDraft,
     is_role_bearing,
     measures_count,
 )
+from search.engine.source_code import names_only_code
 from search.engine.source_scope import SourceScope
 from search.engine.time_bind import parse_time_text
 from search.heading.measure_noun import denominator_noun
@@ -295,8 +324,8 @@ def _prune_explicit_rate_raw_counts(shapes: list[ShapeDraft], variable: str) -> 
 def _rank_key(shape: ShapeDraft) -> tuple[bool, float, int, str]:
     """Order by recall or topic-root rank, breadth, then ``shape_id``.
 
-    Unscored shapes sort last. Breadth is the confirmed recall sample, capped at
-    ``SEARCH_MAX_CONFIRM_CANDIDATES``. It breaks flat-score ties, broadest first. The same
+    Unscored shapes sort last. Breadth is the confirmed recall sample. It breaks
+    flat-score ties, broadest first. The same
     key selects the cross-population anchor.
     """
     return (
@@ -307,23 +336,224 @@ def _rank_key(shape: ShapeDraft) -> tuple[bool, float, int, str]:
     )
 
 
-async def _read_denominator_kinds(state: ResolveState, shapes: list[ShapeDraft]) -> None:
-    """Read the kinds of the shapes' StatVar denominators into ``state.denominator_kinds``,
-    in one batch, when the leg names a per-person form (`quantity.PER_PERSON_FORMS`).
-
-    Materialise and the alternate guard read the map: a series divided by
-    `Count_Person_15OrMoreYears` is per person, one divided by GNI is not. Nothing is read
-    for any other request. The menu keeps every shape: an off-topic per-capita series must
-    not displace the shape the query names ("teacher count per capita" keeps the teacher
-    count, which refuses ``denominator_not_available`` at materialise).
-    """
-    if not state.quantity_requirement.named & PER_PERSON_FORMS:
-        return
-    state.denominator_kinds = await asyncio.to_thread(
-        denominator_kinds,
-        [s.meas_denom_dcid for s in shapes if s.meas_denom_dcid is not None],
-        graph=state.graph,
+def _role_bearing_outranks(eligible_shapes: Sequence[ShapeDraft]) -> bool:
+    """Whether a role-bearing shape among `eligible_shapes` outranks the subject-only ones:
+    the top-ranked shape (`_rank_key`) is role-bearing, or a role-bearing shape meets the
+    score floor on its own measured score. A role-bearing shape the index carries passes
+    the floor whatever its score, so its presence alone says nothing of the query: two
+    flows recalled at 0.61 for "GDP of Ethiopia" do not outrank GDP shapes above them."""
+    if not eligible_shapes:
+        return False
+    floor = settings().unknown_score_threshold
+    return is_role_bearing(min(eligible_shapes, key=_rank_key)) or any(
+        is_role_bearing(s) and s.measured_score is not None and s.measured_score >= floor
+        for s in eligible_shapes
     )
+
+
+async def _read_denominators(state: ResolveState, shapes: list[ShapeDraft]) -> None:
+    """Read the kind and name of every StatVar denominator the shapes divide by into
+    ``state.denominator_reads``, in one batch, and hold their kinds in
+    ``state.denominator_kinds`` when the leg names a form.
+
+    The quantity read lists the denominators by name, so the model can say which one a
+    question names ("debt to GDP"). Materialise and the alternate guard read the kinds: a series divided
+    by `Count_Person_15OrMoreYears` is per person, one divided by GNI is not. A menu with
+    no StatVar denominator reads nothing. The menu keeps every shape: an off-topic
+    per-capita series must not displace the shape the query names ("teacher count per
+    capita" keeps the teacher count, which refuses ``denominator_not_available`` at
+    materialise).
+
+    A leg that names no form reads the denominators for the quantity read's list alone, so
+    a graph read that fails or omits a dcid (``GraphInfraError``) leaves the reads empty and
+    the list without them (`_quantity_denominators`), and is held on
+    ``state.denominator_read_failure``: the request answers as one that named no
+    denominator would unless the quantity read states a form or names a denominator, which
+    raise it
+    (`_read_quantity_answer`). A leg that names a form needs the kinds to judge its shapes,
+    so the failure raises.
+    """
+    try:
+        state.denominator_reads = await asyncio.to_thread(
+            read_denominators, statvar_denominators(shapes), graph=state.graph
+        )
+    except GraphInfraError as exc:
+        if state.quantity_requirement.named:
+            raise
+        logger.warning(
+            "denominator read failed; the quantity read lists no denominator", exc_info=True
+        )
+        state.denominator_reads = {}
+        state.denominator_read_failure = exc
+        return
+    if state.quantity_requirement.named:
+        state.denominator_kinds = _kinds_of(state.denominator_reads)
+
+
+def _kinds_of(reads: Mapping[str, DenominatorRead]) -> dict[str, DenominatorKind]:
+    return {denominator: read.kind for denominator, read in reads.items()}
+
+
+def _quantity_denominators(state: ResolveState) -> list[GraphRef]:
+    """The StatVar denominators the bind menu's shapes divide by and the graph was read
+    for (`_read_denominators`), in menu order, each under its graph name, else its dcid.
+    The quantity read lists them (`quantity_read.read_stated_quantity`)."""
+    reads = state.denominator_reads
+    return [
+        GraphRef(ref=dcid, label=reads[dcid].name or dcid)
+        for dcid in statvar_denominators(state.capped_shapes)
+        if dcid in reads
+    ]
+
+
+def _entity_spans(state: ResolveState, tokens: Sequence[Token]) -> list[tuple[int, int]]:
+    """The character ranges of the variable phrase, read as `tokens`, that the part's
+    entities name, by their names and by the spans their door roles carry
+    (`role_text.DoorRole.span`, the query's own wording of the place): other readers own
+    them ("German" in "German aid" is the origin Germany). A role's cue word ("to" in "aid
+    to Kenya") stays in the phrase."""
+    return [
+        occurrence
+        for text in (
+            *state.entities,
+            *(role.span for roles in state.entity_roles.values() for role in roles),
+        )
+        for occurrence in _token_occurrences(tokens, text)
+    ]
+
+
+def _quantity_phrase(state: ResolveState) -> str:
+    """The variable phrase the quantity read reads: the variable less the words the part's
+    entities own (`_entity_spans`), so a place named inside the phrase is never read as a
+    base."""
+    variable = state.variable
+    words: list[str] = []
+    at = 0
+    for start, end in sorted(_entity_spans(state, tokenize(variable))):
+        words.append(variable[at:start] if start > at else "")
+        at = max(at, end)
+    words.append(variable[at:])
+    return " ".join("".join(words).split())
+
+
+def _names_base(state: ResolveState, words: str | None) -> bool:
+    """Whether `words`, the quantity read's quote of the base its denominator names, occur
+    in the variable phrase with a word left beyond form wording and function words
+    (`quantity.names_only_form`) once the spans the part's entities own (`_entity_spans`)
+    and the spans menu values' labels hold (`_menu_value_spans`) are taken out. A base the
+    model names without quoting the phrase is one the phrase does not name: "maternal
+    mortality ratio" names a form, and no base. A quote of form words alone, "ratio" in
+    "poverty headcount ratio" or "share" in "debt as a share of GDP", names no base
+    either, while "share of GDP" names GDP. Nor does a quote of a qualifier and function
+    words: "private creditors" and "to private creditors" in "debt service to private
+    creditors" leave nothing or "to" outside the span of the creditor type a menu shape's
+    slot holds. "total government spending" leaves "total spending" outside the value
+    "Government", and "GDP of private creditors" leaves "GDP of", so both name a base. The
+    quote matches with hyphens read as spaces in both, so "GDP" grounds in "debt-to-GDP
+    ratio", which the tokeniser holds as one word. The swap keeps every offset, so the
+    owned spans still apply."""
+    if not words:
+        return False
+    tokens = tokenize(state.variable.replace("-", " "))
+    owned = [
+        *_entity_spans(state, tokenize(state.variable)),
+        *_menu_value_spans(state, tokens),
+    ]
+    return any(
+        not names_only_form(
+            " ".join(
+                token.text
+                for token in tokens
+                if token.kind == "word"
+                and start <= token.start
+                and token.end <= end
+                and not any(_ranges_overlap((token.start, token.end), span) for span in owned)
+            )
+        )
+        for start, end in _token_occurrences(tokens, words.replace("-", " "))
+    )
+
+
+def _menu_value_spans(state: ResolveState, tokens: Sequence[Token]) -> list[tuple[int, int]]:
+    """The character ranges of the variable phrase, read as `tokens` with hyphens as
+    spaces, where the graph label (`ShapeDraft.value_labels`) of a constraint value a
+    member of a bind-menu shape (`ResolveState.capped_shapes`) holds occurs, among the
+    members each shape stands for (`shape_constraint_values`). The label is
+    read without the trailing name of its property, which `value_labels` also holds and
+    the graph adds to tell code lists apart (`code_index.labels.without_property_suffix`); a code-index
+    label carries none. "private creditors (IDS creditor type)" owns "private creditors"
+    in "debt service to private creditors", and "holders of GDP-linked bonds" owns nothing
+    in "debt to GDP"."""
+    spans: list[tuple[int, int]] = []
+    for shape in state.capped_shapes:
+        labels = shape.value_labels or {}
+        for prop, value in shape_constraint_values(shape):
+            label = labels.get(value)
+            if label is not None:
+                own = without_property_suffix(label, labels.get(prop))
+                spans += _token_occurrences(tokens, own.replace("-", " "))
+    return spans
+
+
+def _read_quantity_answer(
+    state: ResolveState, quantity: QuantityOutput, denominators: list[GraphRef]
+) -> bool:
+    """Record what the quantity read found the question asks for: the form it states,
+    joined to the requirement when no phrase named one (`quantity.with_stated_form`), and
+    the denominator it chose from ``denominators``, the last index meaning "none of these".
+    The denominator stands only when the read quotes the phrase's words that name it
+    (`_names_base`); otherwise the phrase names no base, whatever the index. A stated
+    rate or share is a division by a base, so a quote that names none drops it too:
+    "debt service to private creditors" read as a rate on "private creditors", a
+    qualifier, states no form. An unquoted rate or share stands, since a share of people
+    quotes no base by design ("HIV prevalence among young women" reads as a share), as
+    does a per-person, per-head or per-area form. Return whether the output is well
+    formed: a grounded index outside the list is a malformed output, as an out-of-range
+    shape index is, and the part refuses ``variable_not_resolved``. When the denominator
+    read failed (``state.denominator_read_failure``), a stated form or any grounded
+    index, "none of these" included, would be judged on reads that are missing, so the
+    read's error is raised.
+    """
+    index = quantity.denominator_index
+    stated_form = quantity.stated_form
+    if not _names_base(state, quantity.base_words):
+        if index is not None:
+            logger.info(
+                "quantity read names denominator_index %d on ungrounded words %r; no base read",
+                index,
+                quantity.base_words,
+            )
+            index = None
+        if quantity.base_words and stated_form in ("rate", "share"):
+            logger.info(
+                "quantity read states %s on quoted words %r that name no base; no form read",
+                stated_form,
+                quantity.base_words,
+            )
+            stated_form = None
+    failure = state.denominator_read_failure
+    if failure is not None and (stated_form is not None or index is not None):
+        raise failure
+    requirement = with_stated_form(state.quantity_requirement, stated_form)
+    if requirement != state.quantity_requirement:
+        state.quantity_requirement = requirement
+        state.stated_form = stated_form
+        state.denominator_kinds = _kinds_of(state.denominator_reads)
+    if index is None:
+        return True
+    base_words = quantity.base_words or ""
+    if 0 <= index < len(denominators):
+        state.named_denominator = NamedDenominator(ref=denominators[index], base_words=base_words)
+    elif index == len(denominators):
+        state.named_denominator = NamedDenominator(ref=None, base_words=base_words)
+    else:
+        logger.warning(
+            "quantity read returned denominator_index %d outside %d entries",
+            index,
+            len(denominators) + 1,
+        )
+        return False
+    return True
 
 
 async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
@@ -331,7 +561,7 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
 
     Applies dataset candidacy (`_dataset_candidates`), the score floor, the measure-class
     check (`shape_measure_class`), the two-ended prune, the denominator-kind read
-    (`_read_denominator_kinds`), availability and measure pruning,
+    (`_read_denominators`), availability and measure pruning,
     then reserves recalled shapes within the top-K menu. A part whose scope
     (`ResolveState.scope`) names a source takes candidacy first, so naming a table can
     elect a family the unscoped ranking puts lower. It refuses ``qualifier_not_bound``,
@@ -344,7 +574,11 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
     reading, so removing that reading first would let through readings they drop. When the
     filter empties the menu, the part refuses ``qualifier_not_bound`` naming the excluded
     sources and marks the scope as settling the answer (`ResolveState.scope_settled`), so
-    the UN pass does not run. Falling through leaves ``_phase_bind`` to call the model. An
+    the UN pass does not run. A part the prunes leave with no reading refuses as
+    `_declined_terminal` does: ``qualifier_not_bound`` naming its sources when its scope
+    removed a reading at candidacy (`ResolveState.scope_removed_readings`), else
+    ``variable_not_resolved``, as for every excluding part, whose scope removes nothing
+    before the menu filter. Falling through leaves ``_phase_bind`` to call the model. An
     excluding source mention that publishes none of the recalled shapes is marked idle on
     the scope (`with_idle_exclusions`) and warns that it removed nothing
     (`idle_exclusion_warnings`) on every later outcome, and no refusal names it.
@@ -355,6 +589,7 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
     candidates = _dataset_candidates(
         state.shapes_found, None if excluding is not None else state.scope
     )
+    state.scope_removed_readings = len(candidates) < len(state.shapes_found)
     if not candidates and state.scope is not None and state.shapes_found:
         await _record_shape_step(state)
         return state.no_data(
@@ -402,11 +637,14 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
         kept = [s for s in eligible_shapes if shape_measure_class(s) in (None, named_class)]
         state.n_measure_class_refused = len(eligible_shapes) - len(kept)
         eligible_shapes = kept
-    # When the query's places name both flow ends, `bind_place_roles` refuses every
-    # subject-only shape `role_incompatible` (`subject_shapes_refused`). Once a role-bearing
-    # shape survives the floor, they leave the election. With none surviving, bind elects a
-    # subject-only shape and its refusal flags the identity it elected.
-    if subject_shapes_refused(state) and any(is_role_bearing(s) for s in eligible_shapes):
+    # When the query's places name both flow ends and a role-bearing shape outranks the
+    # subject-only ones (`_role_bearing_outranks`), `bind_place_roles` refuses every
+    # subject-only shape `role_incompatible` (`subject_shapes_refused`), and they leave the
+    # election. A role-bearing shape the floor only exempts, ranked below a subject-only
+    # one, evicts nothing: "GDP of Ethiopia" beside "aid from Norway to Ethiopia" keeps
+    # its GDP shapes.
+    state.role_bearing_outranks = _role_bearing_outranks(eligible_shapes)
+    if subject_shapes_refused(state):
         eligible_shapes = [s for s in eligible_shapes if is_role_bearing(s)]
     # A role-bearing shape that declares no role on an axis the query needs, a directed
     # place's or an operation's (`lacks_query_axis`), is no candidate once another shape
@@ -418,8 +656,9 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
     # the index carries that declares no role on it leaves once a role-bearing shape that
     # does survives (`without_open_axis_gaps`).
     eligible_shapes = without_open_axis_gaps(state, eligible_shapes)
-    await _read_denominator_kinds(state, eligible_shapes)
+    await _read_denominators(state, eligible_shapes)
     if _has_strong_rate_intent(state.variable):
+        await read_held_families(s for s in eligible_shapes if _is_unnormalised_raw_count(s))
         eligible_shapes = _prune_explicit_rate_raw_counts(eligible_shapes, state.variable)
     state.eligible_shapes = eligible_shapes
     # The availability prune, query-aware measure collapse and bind admission share the
@@ -481,7 +720,7 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
     state.eligible_shapes = eligible_shapes
     if not eligible_shapes:
         await _record_shape_step(state)
-        return state.no_data("variable_not_resolved")
+        return _declined_terminal(state)
 
     # Families of one five-tuple and role class are rival readings, and the one reading the
     # most of the query reaches the election; of families reading alike, one with no series
@@ -544,7 +783,9 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
     )
     ranked_shapes = collapsed
     if excluding is not None:
-        ranked_shapes = _dataset_candidates(ranked_shapes, excluding)
+        menu = _dataset_candidates(ranked_shapes, excluding)
+        state.scope_removed_readings = len(menu) < len(ranked_shapes)
+        ranked_shapes = menu
         state.eligible_shapes = _dataset_candidates(state.eligible_shapes, excluding)
         if not ranked_shapes:
             state.scope_settled = True
@@ -623,6 +864,22 @@ def _in_scope(shape: ShapeDraft, scope: ProvenanceScope, index: CodeIndex) -> bo
     return not scope.allowed <= index.datasets.keys()
 
 
+def _declined_terminal(state: ResolveState, *, llm_usage: dict | None = None) -> RegionResult:
+    """The refusal of a part left with no reading it accepts. A part whose source scope
+    removed a reading (`ResolveState.scope_removed_readings`) refuses
+    ``qualifier_not_bound`` naming its sources (`_out_of_scope_records`): readings exist
+    outside them and none inside is accepted. Any other part refuses
+    ``variable_not_resolved``, including one whose prunes, run unscoped under an
+    excluding scope, left no reading."""
+    if state.scope is not None and state.scope_removed_readings:
+        return state.no_data(
+            "qualifier_not_bound",
+            unbound_sources=_out_of_scope_records(state.shapes_found, state.scope),
+            llm_usage=llm_usage,
+        )
+    return state.no_data("variable_not_resolved", llm_usage=llm_usage)
+
+
 def _out_of_scope_records(
     shapes: Sequence[ShapeDraft], scope: SourceScope
 ) -> tuple[ResolvedQualifier, ...]:
@@ -654,7 +911,7 @@ def _bound_code_records(bindings: Sequence[SlotBindingDraft]) -> tuple[ResolvedQ
             records.append(
                 ResolvedQualifier(
                     text=label,
-                    named=[GraphRef(dcid=dcid, label=label)],
+                    named=[GraphRef(ref=dcid, label=label)],
                     slot=None,
                     disposition="unbound",
                 )
@@ -942,7 +1199,7 @@ def _unavailable_record(span: QualifierSpan, code_rows: Sequence[CodeRow]) -> Re
     apply."""
     return ResolvedQualifier(
         text=span.matched_text,
-        named=[GraphRef(dcid=row.dcid, label=row.label) for row in code_rows],
+        named=[GraphRef(ref=row.dcid, label=row.label) for row in code_rows],
         slot=None,
         disposition="unbound",
         start=span.start,
@@ -985,7 +1242,7 @@ def _unheld_bound_codes(
             unheld.append(
                 ResolvedQualifier(
                     text=label,
-                    named=[GraphRef(dcid=dcid, label=label)],
+                    named=[GraphRef(ref=dcid, label=label)],
                     slot=None,
                     disposition="unbound",
                 )
@@ -2224,6 +2481,216 @@ def _coverage_records(
     return [*unsupported, *records]
 
 
+def value_requirements(
+    state: ResolveState, recorded: Sequence[ResolvedQualifier]
+) -> tuple[Requirement, ...]:
+    """Each run of the variable's words that names, by its graph label
+    (`ShapeDraft.value_labels`), a constraint value a member of a shape on the bind menu
+    (`ResolveState.capped_shapes`) or of the elected shape holds (`shape_constraint_values`),
+    as a requirement each
+    final answer is judged against (`judge_value_requirements`). "female" in "female
+    literacy rate" names Female, which a gender-by-literacy shape on the menu holds,
+    whatever the bind model lists as unplaced. Its term is the ``no_vocabulary`` record a
+    refusal names on an answer whose shape has no slot for the value
+    (`requirements._value_term`), and it departs `measure_not_applied` under the run's own
+    words. A value whose label the holding shape's series states (`_series_words`), and
+    which every member of that shape's whole family holds (`_family_constraints`), names
+    the shape's measure and restricts nothing: Skill Literacy, the one skill of the UN
+    "Youth/adult literacy rate", names no value of "literacy rate", which a series
+    measuring the literate share answers. A value the family splits on restricts it even
+    where its series states the label, as "In extreme poverty" on the ECLAC "Population
+    living in extreme poverty and poverty", whose members hold In poverty too, and so does
+    a value of a shape whose whole family no source lists, since its recalled sample can
+    show one value of a split.
+
+    Words other readers own name nothing here: the elected shape's own reading, the terms
+    in `recorded`, the part's entities and their spans (`_entity_spans`: "German" in
+    "German aid" is the origin Germany), and every measure term the measure index reads. A value
+    the code index knows (`CodeIndex.code_by_dcid`) is the code readers', so "health" is
+    the reading of purpose 120 alone. A requirement keeps the code systems of the code
+    terms its words overlap, read in every code system, for the judge. A value a negated or
+    excluded occurrence names (`_label_has_negated_occurrence`) is left to the exclusion
+    readers.
+    """
+    index = get_index()
+    variable = state.variable
+    tokens = tokenize(variable)
+    asked: dict[str, set[tuple[str, str]]] = defaultdict(set)
+    for menu_shape in (*state.capped_shapes, state.shape_draft):
+        labels = menu_shape.value_labels or {}
+        measured = _series_words(menu_shape)
+        family: list[dict[str, str]] | None = None
+        for prop, value in shape_constraint_values(menu_shape):
+            label = labels.get(value)
+            if label is None or index.code_by_dcid(value) is not None:
+                continue
+            if all(_holds_word(measured, word) for word in _casefolded_words(label)):
+                if family is None:
+                    family = _family_constraints(menu_shape)
+                if family and all(member.get(prop) == value for member in family):
+                    continue
+            asked[label].add((prop, value))
+    if not asked:
+        return ()
+
+    read = [
+        (span.start, span.end)
+        for span in for_shape(state.variable_spans_by_vocabulary, state.shape_draft)
+    ]
+    read += [
+        occurrence
+        for qualifier in recorded
+        for occurrence in _token_occurrences(tokens, qualifier.text)
+    ]
+    read += _entity_spans(state, tokens)
+    code_spans: list[tuple[tuple[int, int], frozenset[str]]] = []
+    for span in state.variable_spans_in_every_system:
+        if all(isinstance(row, CodeRow) for row in span.rows):
+            systems = frozenset(row.code_system for row in span.rows if isinstance(row, CodeRow))
+            code_spans.append(((span.start, span.end), systems))
+        else:
+            read.append((span.start, span.end))
+
+    named: dict[tuple[int, int], set[tuple[str, str]]] = defaultdict(set)
+    for label, values in asked.items():
+        occurrences = [
+            occurrence
+            for occurrence in _token_occurrences(tokens, label)
+            if not any(_ranges_overlap(occurrence, other) for other in read)
+        ]
+        if occurrences and not _label_has_negated_occurrence(label, variable):
+            for occurrence in occurrences:
+                named[occurrence] |= values
+    return tuple(
+        Requirement(
+            term=ResolvedQualifier(
+                text=variable[start:end],
+                named=[],
+                slot=None,
+                disposition="no_vocabulary",
+                start=start,
+                end=end,
+            ),
+            origin="value",
+            rule=ValueRule(
+                values=frozenset(values),
+                code_systems=frozenset().union(
+                    *(
+                        systems
+                        for span, systems in code_spans
+                        if _ranges_overlap((start, end), span)
+                    )
+                ),
+            ),
+            departure=unapplied_departure(
+                variable[start:end], asked=variable[start:end], property_dcid=None
+            ),
+        )
+        for (start, end), values in sorted(named.items())
+    )
+
+
+def _family_constraints(shape: ShapeDraft) -> list[dict[str, str]] | None:
+    """The constraints of every member of `shape`'s family, or `None` when no source lists
+    them all. The sources: the shape's own members when they are complete
+    (`ShapeDraft.sv_arc_facts_complete`), the code index's rows of the family its part
+    may answer from, or the family the catalogue holds whole for the shape
+    (`held_family_exact`), both read by `five_tuple_member_facts`, else the origin
+    catalogue's UN tables,
+    which hold every admitted member of a UN series (`Catalogue.un_series_members`) with
+    all its arcs, narrowed to the shape's five-tuple. A recalled sample is no source."""
+    if shape.sv_arc_facts_complete:
+        return [read_constraints(arcs) for arcs in (shape.sv_arc_facts or {}).values()]
+    rows, index_sourced = five_tuple_member_facts(shape)
+    if index_sourced or held_family_exact(shape):
+        return [row.read_constraints() for row in rows.values()]
+    catalogue = current_catalogue()
+    five_tuple = shape_five_tuple(shape)
+    members = [
+        arcs
+        for member in catalogue.un_series_members(shape.pop_type_dcid)
+        if (variable := catalogue.un_variable(member)) is not None
+        and read_five_tuple(arcs := variable.wire_arcs()) == five_tuple
+    ]
+    return [read_constraints(arcs) for arcs in members] or None
+
+
+def judge_value_requirements(
+    requirements: Sequence[Requirement],
+    shape: ShapeDraft,
+    bindings: Sequence[SlotBindingDraft],
+) -> tuple[Requirement, ...]:
+    """The requirements of `requirements` judged by the values their words name
+    (`ValueRule`, `value_requirements`) that an answer of `shape` read under `bindings`
+    leaves unmet.
+
+    The answer is the members of `shape` its bindings select (`_selected_members`). It
+    applies a value its bindings bind, or one every selected member holds, as every member
+    of a female population shape holds gender Female. It states a run every word of which
+    its series states (`_series_words`), as a Student population states "student", or each
+    selected member's name holds, as "Infant Mortality Rate", the name of
+    `Count_Death_0Years_AsFractionOf_Count_BirthEvent_LiveBirth`, holds "infant" though
+    the member binds age 0 and not the age group Infant. A run overlapping a code term of
+    a system `shape` holds (`shape_vocabulary`) is its code readers'. Any other run is
+    unmet: "female" when the answering literacy rate has no gender slot.
+    """
+    if not requirements:
+        return ()
+    held = shape_vocabulary(shape)
+    bound = {
+        (binding.property_dcid, value)
+        for binding in bindings
+        if binding.kind in ("value", "set")
+        for value in binding.value_dcids
+    }
+    selected = _selected_members(shape, bindings)
+    constraints = [read_constraints(arcs) for arcs in selected]
+    names = [_casefolded_words(read_name(arcs) or "") for arcs in selected]
+    stated = _series_words(shape)
+
+    def applied(prop: str, value: str) -> bool:
+        return (prop, value) in bound or (
+            bool(constraints) and all(member.get(prop) == value for member in constraints)
+        )
+
+    def states(words: frozenset[str]) -> bool:
+        return all(_holds_word(stated, word) for word in words) or (
+            bool(names) and all(words <= name for name in names)
+        )
+
+    return tuple(
+        requirement
+        for requirement in requirements
+        if isinstance(rule := requirement.rule, ValueRule)
+        and not rule.code_systems & held
+        and not any(applied(prop, value) for prop, value in rule.values)
+        and not states(_casefolded_words(requirement.term.text))
+    )
+
+
+def _selected_members(shape: ShapeDraft, bindings: Sequence[SlotBindingDraft]) -> list[dict]:
+    """The arcs of each member `shape` stands for (`shape_population_arcs`) that
+    `bindings` select, as materialisation selects them (`bound_values_from_bindings`): one
+    holding a value of each property they bind as a value or set, or a descendant of one, and
+    none of each property they bind as absent."""
+    bound = {
+        prop: frozenset(values) for prop, values in bound_values_from_bindings(bindings).items()
+    }
+    absent = {
+        binding.property_dcid
+        for binding in bindings
+        if binding.property_dcid is not None and binding.kind == "absent"
+    }
+    selected: list[dict] = []
+    for arcs in shape_population_arcs(shape).values():
+        member = read_constraints(arcs)
+        if all(member.get(prop) in values for prop, values in bound.items()) and not (
+            absent & member.keys()
+        ):
+            selected.append(arcs)
+    return selected
+
+
 def _unnamed_bound_code_words(
     bindings: Sequence[SlotBindingDraft], named: AbstractSet[str], index: CodeIndex
 ) -> Callable[[str], bool]:
@@ -2255,7 +2722,7 @@ def _unnamed_bound_code_words(
 def _code_ref(dcid: str, index: CodeIndex) -> GraphRef:
     """The `GraphRef` of the code `dcid`, under its index label."""
     row = index.code_by_dcid(dcid)
-    return GraphRef(dcid=dcid, label=row.label if row is not None else dcid)
+    return GraphRef(ref=dcid, label=row.label if row is not None else dcid)
 
 
 def _unsupported_records(
@@ -2307,7 +2774,7 @@ def _uncovered_record(
     """The unbound record of the uncovered words `text` at `start`..`end`, naming the code
     rows of `spans` once each."""
     named = {
-        row.dcid: GraphRef(dcid=row.dcid, label=row.label)
+        row.dcid: GraphRef(ref=row.dcid, label=row.label)
         for span in spans
         for row in span.rows
         if isinstance(row, CodeRow)
@@ -2374,6 +2841,10 @@ def _resolve_query_qualifiers(state: ResolveState) -> list[ResolvedQualifier]:
        ``"uncovered"``, and every other exclusion or comparison phrase
        (`_coverage_records`). In log mode election vetting logs them instead
        (`phase_election._phase_repair_bindings`) and the answer reads without them.
+
+    The words naming a value a shape on the bind menu holds are no record here: election
+    vetting records them as value requirements (`value_requirements`), which each final
+    answer is judged against on its own shape and bindings.
     """
     index = get_index()
     declared = shape_vocabulary(state.shape_draft)
@@ -2405,7 +2876,7 @@ def _resolve_query_qualifiers(state: ResolveState) -> list[ResolvedQualifier]:
             for choice in chosen
         ):
             continue
-        named = [GraphRef(dcid=row.dcid, label=row.label) for row in code_rows]
+        named = [GraphRef(ref=row.dcid, label=row.label) for row in code_rows]
         operation = combination.operations.get((span.start, span.end))
         disposition, slot = _qualifier_disposition(
             [(row.code_system, row.dcid) for row in code_rows],
@@ -2433,7 +2904,7 @@ def _resolve_query_qualifiers(state: ResolveState) -> list[ResolvedQualifier]:
             continue
         if not any(row.code_system in declared for row in tie.rows):
             continue
-        named = [GraphRef(dcid=row.code_dcid, label=row.label) for row in tie.rows]
+        named = [GraphRef(ref=row.code_dcid, label=row.label) for row in tie.rows]
         disposition, slot = _qualifier_disposition(
             [(row.code_system, row.code_dcid) for row in tie.rows], bound_values, index
         )
@@ -2457,7 +2928,7 @@ def _resolve_query_qualifiers(state: ResolveState) -> list[ResolvedQualifier]:
             ]
             if not code_rows or not any(row.code_system in declared for row in code_rows):
                 continue
-            named = [GraphRef(dcid=row.dcid, label=row.label) for row in code_rows]
+            named = [GraphRef(ref=row.dcid, label=row.label) for row in code_rows]
             disposition, slot = _qualifier_disposition(
                 [(row.code_system, row.dcid) for row in code_rows], bound_values, index
             )
@@ -2541,7 +3012,7 @@ def _model_records(
         records.append(
             ResolvedQualifier(
                 text=choices[0].matched_text,
-                named=[GraphRef(dcid=choice.code_dcid, label=choice.label) for choice in choices],
+                named=[GraphRef(ref=choice.code_dcid, label=choice.label) for choice in choices],
                 slot=slot,
                 disposition=disposition,
                 start=start,
@@ -2591,33 +3062,76 @@ def _validate_requested_all_bindings(
 def _validate_sole_option_bindings(
     bindings: list[SlotBindingDraft], shape_draft: ShapeDraft
 ) -> list[SlotBindingDraft]:
-    """Validate model ``sole_option`` claims against option sets the index supplies.
+    """Validate model ``sole_option`` claims against the shape's population.
 
-    A ``sole_option`` claim says the slot offers one value and the phrase says nothing
-    about it. For a shape whose membership the index decides
-    (`slot_taxonomy_index_sourced`), `slot_taxonomy` holds every value the index's family
-    carries for the property, whatever the recalled sample holds. A claim on a slot that
-    offers two or more values is false. The phrase did not name the value and the slot
-    did not force it, so no binding rule produced the draft and the slot is left unbound.
-    A claim on a slot with one value, or with no taxonomy entry to check against, stays.
+    A ``sole_option`` claim says the slot forces one value and the phrase says nothing
+    about it. The population is the members the shape's slot taxonomy describes
+    (`five_tuple_member_facts`): the rows of the family the index carries for the shape,
+    else the members of the family the catalogue holds for it beside its recalled ones,
+    else its recalled members alone. The phrase did not name the value and a slot that
+    the population leaves a reading without it does not force it, so no binding rule
+    produced the draft and the slot is left unbound.
 
-    Claims on a shape with recall-sourced option sets pass through. That set is a capped
-    sample, and there the model files a value the phrase implies under ``sole_option``
-    ("child mortality" as the under-five age band), which this check would open.
+    On the index's family or a held family, which are complete, the slot forces a value
+    only when every member asserts the property with that one value (`sole_shared_value`,
+    the rule the engine binds a shared value by). A member asserting another value or
+    none fails the claim: "life expectancy" offers ``Resident`` as the one value of
+    ``residentStatus``, but members of the held family hold no resident status.
+
+    A recalled sample is part of the family, so what it shows holds for the family too,
+    but a member missing from it may assert the value. There a claim fails when a member
+    asserts another value, or when a total of the sample asserts none (`_sample_forces`).
+    The IDS "debt service" shape is such a sample, since the catalogue holds its family
+    only beside the CRS rows of the same five-tuple: its members offer one value each of
+    ``idsConcessionality``, ``includesIMFCredit`` and ``maturityBand``, but its
+    by-creditor member, which asserts only the flow type every member shares, is the
+    total and asserts none of them. A member that asserts none but narrows on another
+    property is no reading without the value: "infant mortality rate" binds ``age=Years0``
+    beside members that state an age group classification instead. A shape with no
+    members passes every claim through.
     """
-    if not shape_draft.slot_taxonomy_index_sourced:
+    population, index_sourced = five_tuple_member_facts(shape_draft)
+    if not population:
         return bindings
-    slot_taxonomy = shape_draft.slot_taxonomy or {}
+    complete = index_sourced or shape_draft.held_family is not None
+    constraints = [member.read_constraints() for member in population.values()]
+    # Other claims are under validation themselves, so only the rest state values.
+    stated = _collapse_bindings([b for b in bindings if b.evidence != "sole_option"])
     validated: list[SlotBindingDraft] = []
     for binding in bindings:
-        if binding.kind == "value" and binding.evidence == "sole_option":
-            options = slot_taxonomy.get(f"{binding.axis}:{binding.property_dcid}") or ()
-            if len(set(options)) > 1:
+        prop = binding.property_dcid
+        if binding.kind == "value" and binding.evidence == "sole_option" and prop is not None:
+            value = binding.value_dcids[0] if len(binding.value_dcids) == 1 else None
+            others = {p: values for p, values in stated.items() if p != prop}
+            if value is None or not (
+                sole_shared_value(constraints, prop) == value
+                if complete
+                else _sample_forces(population, constraints, prop, value, others)
+            ):
                 binding = binding.model_copy(
                     update={"kind": "unbound", "value_dcids": [], "evidence": "mentioned"}
                 )
         validated.append(binding)
     return validated
+
+
+def _sample_forces(
+    population: Mapping[str, MemberFacts],
+    constraints: Sequence[Mapping[str, str]],
+    prop: str,
+    value: str,
+    stated_values: Mapping[str, list[str]],
+) -> bool:
+    """Whether a recalled sample leaves `prop` no reading but `value`: no member asserts
+    another value on it (`constraints` are the members' `read_constraints`), and every
+    total of the sample under the part's other bindings (`family_totals`), the member a
+    slot left open serves, asserts `value`."""
+    if any(member.get(prop) not in (None, value) for member in constraints):
+        return False
+    return all(
+        population[sv].read_constraints().get(prop) == value
+        for sv in family_totals(population, stated_values)
+    )
 
 
 def _open_operation_slots(
@@ -2671,6 +3185,24 @@ def _open_operation_slots(
     return result
 
 
+def _bind_variable(state: ResolveState) -> str:
+    """The variable phrase the bind model reads: the part's own, or the graph name of its
+    series code's StatVars when the code is all the part's variable text writes
+    (`ResolveState.source_code`), so the model reads the measure in place of an opaque code.
+    The name is that of the menu's code member declaring the fewest roles, the code's
+    aggregate. A part none of whose members has a name reads its own phrase."""
+    code = state.source_code
+    if code is None or not names_only_code(state.variable, code.code):
+        return state.variable
+    named = [
+        (len(arcs.get("observationProperties", {}).get("nodes", [])), name)
+        for shape in state.capped_shapes
+        for dcid, arcs in (shape.sv_arc_facts or {}).items()
+        if dcid in code.dcids and (name := read_name(arcs)) is not None
+    ]
+    return min(named)[1] if named else state.variable
+
+
 async def _phase_bind(state: ResolveState) -> RegionResult | None:
     """Run one choose-and-bind call. Return a terminal result for ask or an invalid index.
 
@@ -2683,6 +3215,9 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
     Election vetting checks ``requested_all`` claims against the chosen shape. A call that
     elects no shape on a part naming a source refuses ``qualifier_not_bound`` on the code
     terms no offered shape holds (`_unelected_qualifiers`).
+
+    The quantity read (`quantity_read.read_stated_quantity`) runs beside the call, so the
+    election never carries it and the part waits for the slower of the two.
     """
     per_shape = [_shape_qualifiers(state, shape) for shape in state.capped_shapes]
     candidate_menus = [_candidate_menus(state, shape) for shape in state.capped_shapes]
@@ -2693,12 +3228,13 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
     withheld_measure_axes = frozenset(
         axis.axis for axis in get_measure_index().axes if axis.kind == "constraint"
     )
+    denominators = _quantity_denominators(state)
     t0 = now_ms()
     bind_result: _UniversalBindOutput
     _bind_usage: dict | None
     bind_task = asyncio.create_task(
         bind_universal(
-            state.variable,
+            _bind_variable(state),
             state.capped_shapes,
             admitted_qualifiers=admitted_qualifiers,
             admitted_ties=admitted_ties,
@@ -2707,6 +3243,9 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
             candidate_menus=candidate_menus if any(candidate_menus) else (),
             llm=state.llm,
         )
+    )
+    quantity_task = asyncio.create_task(
+        read_stated_quantity(_quantity_phrase(state), denominators, llm=state.llm)
     )
     try:
         if state.emit is not None:
@@ -2717,12 +3256,14 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
             await state.emit(shape_event)
         bind_result, _bind_usage = await bind_task
         state.bind_result = bind_result
+        quantity, quantity_usage = await quantity_task
     finally:
-        # Cancel and await an unfinished bind task so cancellation cannot detach it.
-        if not bind_task.done():
-            bind_task.cancel()
-            await asyncio.gather(bind_task, return_exceptions=True)
-    _var_usage = state.var_usage = _bind_usage
+        # Cancel unfinished tasks and await both, so cancellation cannot detach either and
+        # neither leaves an exception unretrieved.
+        for task in (bind_task, quantity_task):
+            task.cancel()
+        await asyncio.gather(bind_task, quantity_task, return_exceptions=True)
+    _var_usage = state.var_usage = _sum_usage(_bind_usage, quantity_usage)
     state.timing["bind"] = now_ms() - t0
     await _emit_step(
         state.emit,
@@ -2731,12 +3272,19 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
         ms=state.timing["bind"],
     )
 
-    # An ask or out-of-range index ends the part here: on code terms no shape can hold,
-    # else ``variable_not_resolved``. Entity errors were checked before shape derivation.
-    if bind_result.ask or not (0 <= bind_result.chosen_shape_index < len(state.capped_shapes)):
+    # An ask, an out-of-range shape index or a grounded out-of-range denominator index
+    # ends the part here: on code terms no shape can hold, else, when the bind declined,
+    # as `_declined_terminal` refuses, else ``variable_not_resolved``. Entity errors were
+    # checked before shape derivation.
+    declined = bool(bind_result.ask) or not (
+        0 <= bind_result.chosen_shape_index < len(state.capped_shapes)
+    )
+    if declined or not _read_quantity_answer(state, quantity, denominators):
         if unelected := _unelected_qualifiers(state):
             return state.no_data(
                 "qualifier_not_bound", unbound_qualifiers=unelected, llm_usage=_var_usage
             )
+        if declined:
+            return _declined_terminal(state, llm_usage=_var_usage)
         return state.no_data("variable_not_resolved", llm_usage=_var_usage)
     return None

@@ -28,6 +28,7 @@ from search.engine.region.promote_state import _PromoteState
 from search.engine.region.promote_survivors import _phase_resolve_survivors
 from search.engine.region.promote_validate import _phase_validate
 from search.engine.region.related_read import settle_pending_related
+from search.engine.region.requirements import with_requirement_departures
 from search.engine.region.result import RegionResult, with_departure_facts
 from search.engine.retrieval.bound_values import ResubmitWalk, RoleClassWalks
 from search.engine.spec_id import identity_spec_id
@@ -115,15 +116,20 @@ def _resolve_standard_promote(
         for phase in _PROMOTE_PHASES:
             result = phase(state)
             if result is not None:
-                # Include timings from phases that returned early, and the departures raised
-                # beside the warnings the result keeps. A resubmit posts no words for any
+                # Include timings from phases that returned early, the departures of the
+                # posted values the answer leaves unapplied (`with_requirement_departures`),
+                # and the departures raised beside the warnings the result keeps. A resubmit posts no words for any
                 # entity, so its departures quote none (`RegionResult.entity_words`).
                 return with_departure_facts(
-                    dataclasses.replace(
-                        result,
-                        timing_by_step=dict(state.timing),
-                        entity_words=None,
-                        reads_deadline=state.deadline,
+                    with_requirement_departures(
+                        dataclasses.replace(
+                            result,
+                            timing_by_step=dict(state.timing),
+                            entity_words=None,
+                            reads_deadline=state.deadline,
+                        ),
+                        state.requirements,
+                        state.judgement,
                     ),
                     state.departure_facts,
                 )
@@ -152,7 +158,8 @@ def _walk_spec_id(definition: BaseIdentity) -> str | None:
 # Materialisation returns the draft's no-data reason or `variable_not_resolved`, and
 # raises `open_role_unavailable` for an open role of the identity its answer does not serve.
 # Grounding returns
-# `no_observations` (`NO_MEMBER_HAS_DATA_AT_PLACE`) or `no_matching_slice`
+# `qualifier_not_bound` for a posted value the answer unbound, `no_observations`
+# (`NO_MEMBER_HAS_DATA_AT_PLACE`) or `no_matching_slice`
 # (`NO_MEMBER_ASSERTS_BOUND_PROPERTIES`). It can refuse facet/unit bindings with
 # `facet_not_available`, `facet_binding_unsupported`, `recipe_not_declared`,
 # `rate_coverage_gap`, or `request_invalid`. Missing required clients raise

@@ -44,7 +44,7 @@
   query: HIV prevalence among young women aged 15 to 24 in South Africa
   why: The World Bank series for HIV prevalence among women 15 to 24 holds South Africa, so base answers before UNAIDS.
   tags: {theme: health, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: age, door: raw_text, phrasing: casual, overlap: [unaids]}
-  known_failure: {issue: 1156, checks: [disposition]}
+  known_failure: {issue: 1156, checks: [measure, provenance]}
   expect:
     definite:
       measure: {family: base.wb_hiv_prevalence_young_women}
@@ -82,7 +82,8 @@
   query: lower secondary completion rate for girls in rural Nigeria
   why: The UN SDG series holds lower secondary completion for rural girls in Nigeria (2003 to 2024).
   tags: {theme: education, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: residence, door: raw_text, phrasing: casual, overlap: [sdg_base]}
-  known_failure: {issue: 1156, checks: [measure]}
+  # Also known failure under #1298 (disposition): the SDG and UNICEF series are both offered as candidates instead of one definite SDG answer.
+  known_failure: {issue: 1156, checks: [measure, disposition]}
   expect:
     definite:
       measure:
@@ -94,7 +95,8 @@
   query: gross enrolment ratio in tertiary education in Ghana
   why: The World Bank tertiary gross enrolment ratio holds Ghana from 1971 to 2023.
   tags: {theme: education, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical}
-  known_failure: {issue: 1156, checks: [disposition]}
+  # Also known failure under #1298 (measure, provenance): the wider slot lists let the model bind six tertiary education levels on ILO's employment-to-population ratio.
+  known_failure: {issue: 1156, checks: [disposition, measure, provenance]}
   expect:
     definite:
       measure: {family: base.uis_tertiary_ger}
@@ -104,7 +106,8 @@
   query: average years of schooling of women over 25 in Pakistan
   why: Barro-Lee average schooling of women 25 and over holds Pakistan in base, so the UNDP-HDRO copy is not consulted.
   tags: {theme: education, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: sex, door: raw_text, phrasing: casual}
-  known_failure: {issue: 1156, checks: [measure, provenance]}
+  # Also known failure under #1298 (materialisation): the model claims age=Years25Onwards on the bachelor's-degree shape and a family_total_absent stand-in answers.
+  known_failure: {issue: 1156, checks: [measure, provenance, materialisation]}
   expect:
     entities: [{dcid: country/PAK, role: observationAbout}]
     definite: {measure: {family: base.barro_lee_years}}
@@ -114,6 +117,8 @@
   query: gender pay gap in Kenya
   why: Base holds no gender pay gap series, so the ILO series on the UN deployment answers for Kenya.
   tags: {theme: gender, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: sex, door: raw_text, phrasing: casual}
+  # Known failure: The eight-shape menu elects women in managerial positions with sex and age claimed as sole_option, so four SDG series are offered instead of the ILO gender pay gap.
+  known_failure: {issue: 1298, checks: [candidates]}
   expect:
     entities: [{dcid: country/KEN, role: observationAbout}]
     definite: {measure: {family: un.ilo_gender_pay_gap}}

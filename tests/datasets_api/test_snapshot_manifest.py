@@ -92,7 +92,7 @@ def _output_options_fixture_profile(*, stat_var: str = _STAT_VAR_A):
     return compute_output_profile(
         _output_options_fixture_frame(stat_var=stat_var),
         role_columns=("recipient",),
-        enrichment=EnrichmentLookup(FakeMintGraphReader(), type_kinds={}, parties={}),
+        enrichment=EnrichmentLookup(FakeMintGraphReader(), parties={}),
     )
 
 

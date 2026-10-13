@@ -171,9 +171,9 @@ def test_a_mint_response_carries_every_declared_code_system_as_its_own_column():
     statvar = next(row for row in get_index().statvars if row.dcid == _STAT_VAR)
     code_systems = [decoded.removeprefix("stat_var_") for decoded in _EXPECTED_DECODED_LABELS]
     # Each declared axis is a code column and its label column, in property order after the
-    # entities and their names. The packaged index declares neither undeclared constraint, so
-    # both stay out.
-    assert header[5:13] == [name for cs in code_systems for name in (cs, f"{cs}_label")]
+    # entities, their names and their party kinds. The packaged index declares neither
+    # undeclared constraint, so both stay out.
+    assert header[7:15] == [name for cs in code_systems for name in (cs, f"{cs}_label")]
     assert not {"financialFlowType", "nettingBasis"} & set(header)
     for code_system, expected_label in zip(
         code_systems, _EXPECTED_DECODED_LABELS.values(), strict=True
@@ -212,8 +212,10 @@ def test_a_decoded_column_is_selectable_by_name_through_the_mint_door():
         "stat_var",
         "financingProvider",
         "financingProvider_label",
+        "financingProvider_party_kind",
         "financingRecipient",
         "financingRecipient_label",
+        "financingRecipient_party_kind",
         "crsPurpose",
         "crsPurpose_label",
         "time_period",
@@ -226,7 +228,7 @@ def test_a_decoded_column_is_selectable_by_name_through_the_mint_door():
         "provenance",
         "provenance_label",
     ]
-    assert rows[1][5:7] == ["CRSPurposeCode11330", "vocational training"]
+    assert rows[1][7:9] == ["CRSPurposeCode11330", "vocational training"]
 
 
 def test_a_mistyped_decoded_column_name_is_offered_as_an_alternative():

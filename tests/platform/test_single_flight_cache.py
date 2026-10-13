@@ -350,6 +350,54 @@ def test_get_or_fetch_many_fetches_only_the_misses():
     assert second == {"a": "value-a", "c": "value-c"}
 
 
+def test_get_or_fetch_many_is_cacheable_false_answers_but_stores_only_the_accepted_keys():
+    cache: SingleFlightCache[str, str] = _cache(maxsize=10)
+    calls: list[list[str]] = []
+
+    def fetch(keys: list[str], _deadline: float) -> dict[str, str]:
+        calls.append(list(keys))
+        return {k: "degraded" if k == "b" else f"value-{k}" for k in keys}
+
+    def accepted(value: str) -> bool:
+        return value != "degraded"
+
+    first = cache.get_or_fetch_many(["a", "b", "c"], fetch, is_cacheable=accepted)
+    second = cache.get_or_fetch_many(["a", "b", "c"], fetch, is_cacheable=accepted)
+
+    assert first == second == {"a": "value-a", "b": "degraded", "c": "value-c"}
+    assert calls == [["a", "b", "c"], ["b"]]
+
+
+@pytest.mark.parametrize("awaited", [False, True], ids=["sync", "async"])
+def test_get_or_fetch_many_flight_per_key_fails_a_key_alone(awaited: bool):
+    """Each miss reads in its own flight, and a failed flight resolves its key through
+    `on_error` while the other keys resolve and store."""
+    cache: SingleFlightCache[str, str] = _cache(maxsize=10)
+    calls: list[list[str]] = []
+
+    def fetch(keys: list[str], _deadline: float) -> dict[str, str]:
+        calls.append(list(keys))
+        if keys == ["b"]:
+            raise ValueError("b failed")
+        return _echo(keys)
+
+    def on_error(key: str, exc: Exception) -> str:
+        return f"failed-{key}-{type(exc).__name__}"
+
+    def call() -> dict[str, str]:
+        kwargs: dict[str, Any] = {"flight_per_key": True, "on_error": on_error}
+        if awaited:
+            return asyncio.run(cache.aget_or_fetch_many(["a", "b", "c"], fetch, **kwargs))
+        return cache.get_or_fetch_many(["a", "b", "c"], fetch, **kwargs)
+
+    first = call()
+    second = call()
+
+    assert first == second == {"a": "value-a", "b": "failed-b-ValueError", "c": "value-c"}
+    assert sorted(calls[:3]) == [["a"], ["b"], ["c"]]
+    assert calls[3:] == [["b"]]
+
+
 def test_get_or_fetch_many_copy_result_isolates_stored_values():
     cache: SingleFlightCache[str, list[int]] = _cache(maxsize=10)
 
@@ -405,6 +453,66 @@ def test_get_or_fetch_many_concurrent_leader_survives_a_clear_mid_fetch():
     assert not follower_thread.is_alive()
     assert leader_result["value"] == {"a": "value-a", "b": "value-b"}
     assert follower_result["value"] == {"a": "value-a"}
+
+
+def test_an_async_many_caller_joins_a_sync_flight_and_its_wait_holds_no_thread():
+    """The async caller joins a sync caller's flight and starts one for its other key; while it
+    waits, the loop's one default-executor thread stays free."""
+    cache: SingleFlightCache[str, str] = _cache(maxsize=10)
+    started = threading.Event()
+    release = threading.Event()
+    calls: list[list[str]] = []
+
+    def fetch(keys: list[str], _deadline: float) -> dict[str, str]:
+        calls.append(list(keys))
+        started.set()
+        assert release.wait(timeout=5), "test deadlocked waiting for release"
+        return _echo(keys)
+
+    sync_result: dict[str, dict[str, str]] = {}
+    sync = threading.Thread(
+        target=lambda: sync_result.update(value=cache.get_or_fetch_many(["a"], fetch))
+    )
+    sync.start()
+    assert started.wait(timeout=5), "the sync caller never reached fetch"
+
+    async def run() -> dict[str, str]:
+        asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=1))
+        waiting = asyncio.create_task(
+            cache.aget_or_fetch_many(["a", "b"], fetch, deadline=time.monotonic() + 5)
+        )
+        assert await asyncio.wait_for(asyncio.to_thread(lambda: "free"), timeout=1) == "free"
+        assert not waiting.done()
+        release.set()
+        return await waiting
+
+    async_result = asyncio.run(run())
+    sync.join(timeout=5)
+
+    assert sync_result["value"] == {"a": "value-a"}
+    assert async_result == {"a": "value-a", "b": "value-b"}
+    assert calls == [["a"], ["b"]]
+
+
+def test_an_async_many_wait_past_its_deadline_raises_while_the_flight_publishes():
+    cache: SingleFlightCache[str, str] = _cache(maxsize=10)
+    release = threading.Event()
+
+    def fetch(keys: list[str], _deadline: float) -> dict[str, str]:
+        assert release.wait(timeout=5), "test deadlocked waiting for release"
+        return _echo(keys)
+
+    async def run() -> None:
+        with pytest.raises(WaitTimeout):
+            await cache.aget_or_fetch_many(["a"], fetch, deadline=time.monotonic() + 0.05)
+
+    asyncio.run(run())
+    release.set()
+    wait_deadline = time.monotonic() + 5
+    while not cache.cached_many(["a"]):
+        assert time.monotonic() < wait_deadline, "the flight never published"
+        time.sleep(0.01)
+    assert cache.cached_many(["a"]) == {"a": "value-a"}
 
 
 # ---------------------------------------------------------------------------

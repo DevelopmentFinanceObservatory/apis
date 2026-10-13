@@ -103,7 +103,7 @@ class TestMeasurementMethodNarrowsResponseMetadata:
         resolved = region.specs[0].resolved
 
         assert resolved.coverage.observation_count == 1
-        sources = {s.dcid for s in resolved.trace.resolved_sources}
+        sources = {s.ref for s in resolved.trace.resolved_sources}
         assert sources == {_PROVENANCE_DCID}
         date_range = resolved.members[0].data_date_range
         assert date_range is not None
@@ -118,9 +118,11 @@ class _CountingObsGraph(FakeGraph):
         super().__init__(**kwargs)
         self.obs_batch_calls = 0
 
-    def observation_facets_batch(self, stat_vars, entities, needs_dates=False):
+    def observation_facets_batch(self, stat_vars, entities, needs_dates=False, *, deadline=None):
         self.obs_batch_calls += 1
-        return super().observation_facets_batch(stat_vars, entities, needs_dates=needs_dates)
+        return super().observation_facets_batch(
+            stat_vars, entities, needs_dates=needs_dates, deadline=deadline
+        )
 
 
 _INEXPRESSIBLE_UNIT_FACETS = {

@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from typing import Protocol
 
 import search.engine.config as config  # module-attribute access: SEARCH_ENGINE_MODEL/SEARCH_LLM_SEED are runtime-resolved
+from code_index.shared import get_index
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from dfo_platform.build import build_commit
 from dfo_platform.executor import submit_with_context
@@ -25,6 +26,8 @@ from graph_generation import UNKNOWN_GENERATION, GenerationProvider
 from materialise import GraphReader
 from materialise.rate_tables import RateTableCache
 from origin_catalogue import STALE_AFTER, current_catalogue
+from origin_catalogue.service import CatalogueSettings
+from search.engine.artifact_checks import index_drift_warning, pair_stale_warning, with_warning
 from search.engine.assemble import (
     build_no_data_part,
     skills_index_incomplete_warning,
@@ -45,6 +48,7 @@ from search.engine.region.place_options import PlaceOptionsPool
 from search.engine.response_cache import ResponseCache
 from search.engine.response_cache_flow import CacheScope, PartMemoScope
 from search.engine.response_cache_memo import PartMemo
+from search.engine.retrieval.bound_values import held_family_memo
 from search.models import (
     DatasetResubmitInput,
     NoDataReason,
@@ -56,7 +60,7 @@ from search.models import (
     ResolveResponse,
     Warning,
 )
-from series_coverage.shared import get_coverage_service
+from series_coverage.shared import CoverageSnapshot, get_coverage_service
 from skills_index import SkillsIndex
 
 logger = logging.getLogger(__name__)
@@ -261,38 +265,55 @@ async def resolve_events(
         _shared_resolvekit = None
     else:
         _shared_resolvekit = acquire_shared()
-        _resolver = EntityResolver(graph=_graph, shared=_shared_resolvekit, generation=generation)
+        _resolver = EntityResolver(
+            graph=_graph, shared=_shared_resolvekit, generation=generation, code_index=get_index()
+        )
     _admission = (
         admission if admission is not None else Admission(graph=_graph, generation=generation)
     )
 
     try:
+        # The request binds one artifact set: the catalogue bound at entry, this coverage
+        # snapshot, the process's code index and each cache scope's one generation stamp.
+        # Separate coverage reads could straddle an artifact swap and mismatch its index and
+        # stamp. Both reads sit inside the `try`, so the clients are released whatever raises.
+        coverage = get_coverage_service().snapshot()
+        checks = CatalogueSettings()
         async with scoped_concurrency():
-            async for event in _resolve_pipeline_events(
-                request,
-                graph=_graph,
-                resolver=_resolver,
-                admission=_admission,
-                llm=_llm,
-                sdmx=_sdmx,
-                start_ms=start_ms,
-                deadline=budget.soft,
-                stream_slot_options=stream_slot_options,
-                materialise_graph=materialise_graph,
-                materialise_sdmx=materialise_sdmx,
-                rate_cache=request_rate_cache,
-                population_memo=population_memo,
-                place_options_pool=place_options_pool,
-                shared_skills_index=shared_skills_index,
-                response_cache=response_cache,
-                part_memo=part_memo,
-                generation=generation,
-                record=record,
-            ):
-                event = _with_stale_catalogue_warning(event)
-                if isinstance(event, ResponseEvent):
-                    record.response = event.response
-                yield event
+            with held_family_memo():
+                async for event in _resolve_pipeline_events(
+                    request,
+                    graph=_graph,
+                    resolver=_resolver,
+                    admission=_admission,
+                    llm=_llm,
+                    sdmx=_sdmx,
+                    start_ms=start_ms,
+                    deadline=budget.soft,
+                    stream_slot_options=stream_slot_options,
+                    materialise_graph=materialise_graph,
+                    materialise_sdmx=materialise_sdmx,
+                    rate_cache=request_rate_cache,
+                    population_memo=population_memo,
+                    place_options_pool=place_options_pool,
+                    shared_skills_index=shared_skills_index,
+                    response_cache=response_cache,
+                    part_memo=part_memo,
+                    generation=generation,
+                    coverage_snapshot=coverage,
+                    warn_index_drift=checks.warn_index_drift,
+                    record=record,
+                ):
+                    event = _with_stale_catalogue_warning(event)
+                    if isinstance(event, ResponseEvent):
+                        event = _with_response_warning(
+                            event,
+                            pair_stale_warning(
+                                current_catalogue(), coverage.manifest, warn=checks.warn_pair_stale
+                            ),
+                        )
+                        record.response = event.response
+                    yield event
     finally:
         _log_resolve(
             request,
@@ -306,6 +327,31 @@ async def resolve_events(
             _sdmx.close()  # ty: ignore[call-non-callable]  # hasattr
         if _shared_resolvekit is not None:
             release_shared(_shared_resolvekit)
+
+
+def _with_response_warning(event: ResponseEvent, warning: Warning | None) -> ResponseEvent:
+    """`event` with `warning` appended to its response's diagnostics, or `event` itself
+    when `warning` is `None`."""
+    if warning is None:
+        return event
+    return ResponseEvent(response=with_warning(event.response, warning))
+
+
+def _with_index_drift_warning(event: Event, *, warn: bool) -> Event:
+    """A response event carrying `catalogue_index_drift` when the bound catalogue's arcs
+    and the code index disagree on a StatVar it serves (`index_drift_warning`). It runs
+    before the response cache stores the answer: the cache key holds the catalogue build
+    and the build commit that packages the code index, so the warning holds for every
+    answer served under that key. A cached answer's Specs state no members, so it is
+    checked once, when computed."""
+    if not isinstance(event, ResponseEvent):
+        return event
+    return _with_response_warning(
+        event,
+        index_drift_warning(
+            event.response, catalogue=current_catalogue(), index=get_index(), warn=warn
+        ),
+    )
 
 
 def _with_stale_catalogue_warning(event: Event) -> Event:
@@ -326,16 +372,7 @@ def _with_stale_catalogue_warning(event: Event) -> Event:
             f"{catalogue.built_at.date().isoformat()}."
         ),
     )
-    diagnostics = event.response.diagnostics
-    return ResponseEvent(
-        response=event.response.model_copy(
-            update={
-                "diagnostics": diagnostics.model_copy(
-                    update={"warnings": [*diagnostics.warnings, warning]}
-                )
-            }
-        )
-    )
+    return _with_response_warning(event, warning)
 
 
 async def _resolve_pipeline_events(
@@ -358,6 +395,8 @@ async def _resolve_pipeline_events(
     response_cache: ResponseCache | None,
     part_memo: PartMemo | None = None,
     generation: GenerationProvider = UNKNOWN_GENERATION,
+    coverage_snapshot: CoverageSnapshot,
+    warn_index_drift: bool,
     record: _ResolveRecord,
 ) -> AsyncIterator[Event]:
     """Compute shared request settings, then dispatch by input kind.
@@ -375,6 +414,8 @@ async def _resolve_pipeline_events(
     Read ``shared_skills_index`` once. Every stage uses that request snapshot.
 
     ``deadline``, the request's soft deadline, governs every pipeline stage and thread hop.
+    ``coverage_snapshot`` is the request's one coverage snapshot, shared by the cache key and every
+    reader. ``warn_index_drift`` is `CatalogueSettings.warn_index_drift`.
     """
     inp = request.input
 
@@ -407,10 +448,6 @@ async def _resolve_pipeline_events(
 
     # Parsed and raw-text doors use the same server-side PAC setting.
     pac: bool = config.settings().seam_default
-
-    # Share one coverage snapshot between the cache key and downstream readers.
-    # Separate reads could straddle an artifact swap and mismatch its index and stamp.
-    coverage_snapshot = get_coverage_service().snapshot()
 
     today = datetime.now(UTC).date().isoformat()
 
@@ -471,7 +508,7 @@ async def _resolve_pipeline_events(
                 place_options_pool=place_options_pool,
                 memo=memo,
             ):
-                yield ev
+                yield _with_index_drift_warning(ev, warn=warn_index_drift)
         finally:
             if memo.active:
                 record.memo_hits, record.memo_misses = memo.hits, memo.misses
@@ -541,6 +578,7 @@ async def _resolve_pipeline_events(
     # finally releases any unpublished lease if the request raises.
     try:
         async for ev in events:
+            ev = _with_index_drift_warning(ev, warn=warn_index_drift)
             if isinstance(ev, ResponseEvent):
                 await scope.store(ev.response)
             elif isinstance(ev, DoneEvent) and scope.degraded_leg:

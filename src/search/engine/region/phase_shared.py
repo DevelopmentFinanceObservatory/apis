@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Collection, Sequence
 from typing import TYPE_CHECKING
 
 from dfo_platform import Cause
@@ -24,11 +25,14 @@ from search.engine.region.grounding import (
     role_bindings,
 )
 from search.engine.region.place_roles import request_named_groups, untold_direction_names
+from search.engine.region.requirements import settle_flagged
 from search.engine.region.result import RegionResult
 from search.engine.region.state import ResolveState
 from search.engine.retrieval.bound_values import (
     apply_declaration_version,
     apply_slot_expansions,
+    read_held_families,
+    shape_population_arcs,
     slot_expansions,
 )
 from search.engine.shape import identity_shape_for
@@ -52,14 +56,15 @@ from search.models import (
 )
 
 if TYPE_CHECKING:
+    from materialise.roles import RoleAxis
     from search.engine.region.candidates import _Candidate
 
 
 def _grounded_values(binding: SlotBindingDraft | None) -> list[GraphRef]:
-    """Use dcids as labels; identity hashes read only `.ref.dcid`."""
+    """Use dcids as labels; identity hashes read only `.ref`."""
     if binding is None or binding.kind not in ("value", "set"):
         return []
-    return [GraphRef(dcid=d, label=d) for d in binding.value_dcids]
+    return [GraphRef(ref=d, label=d) for d in binding.value_dcids]
 
 
 def _admitted_qualifier_properties(matches: tuple[QualifierMatch, ...]) -> frozenset[str]:
@@ -93,7 +98,7 @@ def _unsupported_definition(
             binding,
             _grounded_values(binding),
             property_ref=(
-                GraphRef(dcid=slot_draft.property_dcid, label=slot_draft.property_dcid)
+                GraphRef(ref=slot_draft.property_dcid, label=slot_draft.property_dcid)
                 if slot_draft.property_dcid
                 else None
             ),
@@ -101,7 +106,7 @@ def _unsupported_definition(
         for slot_draft, binding in pair_slot_drafts(shape.slot_keys, bindings)
     ]
     id_entities = [
-        _build_entity(role, GraphRef(dcid=dcid, label=dcid), None, {})
+        _build_entity(role, GraphRef(ref=dcid, label=dcid), None, {})
         for dcid, role in role_bindings(place_roles.roles)
     ]
     return build_unsupported_definition(
@@ -243,12 +248,27 @@ def withdraw_typed_unit(state: ResolveState, exc: UnitConversionRefusal) -> bool
     return True
 
 
-async def _role_incompatible_flagged_match(state: ResolveState) -> Spec:
-    """Build the flagged identity without probing availability.
+async def _elected_flagged_match(
+    state: ResolveState,
+    *,
+    members: Sequence[str] | None = None,
+    open_roles: Collection[RoleAxis] = (),
+) -> Spec:
+    """Build the elected shape's flagged identity without probing availability, for a
+    refusal that judges the shape itself: role incompatibility, or a quantity form or
+    denominator the shape does not serve. The identity names `members`, the StatVars
+    materialise elected, else every confirmed member of the shape, and states `open_roles`
+    as its open axes: those materialise confirmed the elected members declare
+    (`Materialised.open_axes`) on a quantity refusal, none on a role refusal, where no
+    member serving the bound roles is elected (`phase_election._query_role_keys`). The
+    refusal's departures and its trace derive from one judgement of the elected answer
+    (`requirements.settle_flagged`): the trace records the query terms it leaves unmet,
+    which the refusal does not name, and each of them departs.
 
     Preserve an established entity mapping on materialise-stage refusals so the where slot,
     entities, trace, and identity agree. Early refusals have no mapping to retain."""
-    sv_dcids = list(state.shape_draft.sv_arc_facts or ())
+    await read_held_families((state.shape_draft,))
+    sv_dcids = list(members) if members else list(state.shape_draft.sv_arc_facts or ())
     (
         five_tuple_refs,
         role_refs,
@@ -276,8 +296,8 @@ async def _role_incompatible_flagged_match(state: ResolveState) -> Spec:
     # A ShapeDraft's members were confirmed before bind. Preserve every one
     # even if its display label is missing, matching _elected_stat_vars' own
     # dcid-label fallback for no-data outcomes.
-    labels_by_dcid = {ref.dcid: ref for ref in labelled_sv_refs}
-    sv_refs = [labels_by_dcid.get(dcid, GraphRef(dcid=dcid, label=dcid)) for dcid in sv_dcids]
+    labels_by_dcid = {ref.ref: ref for ref in labelled_sv_refs}
+    sv_refs = [labels_by_dcid.get(dcid, GraphRef(ref=dcid, label=dcid)) for dcid in sv_dcids]
     shape = build_shape_model(
         state.shape_draft,
         slot_key_models,
@@ -289,7 +309,7 @@ async def _role_incompatible_flagged_match(state: ResolveState) -> Spec:
         sv_refs,
         state.shape_draft.shape_id,
         slots,
-        arcs_by_sv=state.shape_draft.sv_arc_facts or {},
+        arcs_by_sv=shape_population_arcs(state.shape_draft),
     )
     entities = [
         _build_entity(role, entity_ref, entity_type_ref, role_refs)
@@ -308,6 +328,7 @@ async def _role_incompatible_flagged_match(state: ResolveState) -> Spec:
             window=state.date_request.window if state.date_request is not None else None,
         ),
         default_reading=state.default_reading,
+        stated_form=state.stated_form,
         resolved_sources=[],
         slot_options=[],
         entity_options=[],
@@ -316,16 +337,13 @@ async def _role_incompatible_flagged_match(state: ResolveState) -> Spec:
         confidence="low",
         requested_window=requested_window,
         identity_entities=identity_entities,
-        # No member serving the bound roles is elected, so no axis is open
-        # (`phase_election._query_role_keys`).
-        open_roles=(),
+        open_roles=open_roles,
         # state.bindings (fed to slots above via slot_expansions) is the same
         # bindings list _phase_vet_election may have forced a qualifier-match
-        # value onto. This flagged_match runs after that phase (see
-        # _role_incompatible_no_data's own caller), so the forced set is final.
+        # value onto. Every caller runs after that phase, so the forced set is final.
         text_recognized_properties=_admitted_qualifier_properties(state.admitted_qualifiers),
-        # Every call site of _role_incompatible_no_data runs from
-        # _phase_place_bindings or later, and all of those phases run after
+        # Every caller runs from _phase_place_bindings or later (the role refusals and
+        # the materialise quantity gate), and all of those phases run after
         # _phase_repair_bindings' measure-election splice, so
         # state.measure_elected_properties already carries any forced
         # pairs, as on the definite path below.
@@ -333,13 +351,14 @@ async def _role_incompatible_flagged_match(state: ResolveState) -> Spec:
         defaulted_properties=state.defaulted_properties,
         named_groups=request_named_groups(state, state.place.roles),
         walked=state.walked,
+        query_qualifiers=settle_flagged(state, state.shape_draft, state.bindings),
     )
     return apply_declaration_version(spec, state.bindings)
 
 
 async def _role_incompatible_no_data(state: ResolveState) -> RegionResult:
     """Return the common role-incompatibility outcome without a new probe."""
-    flagged_match = await _role_incompatible_flagged_match(state)
+    flagged_match = await _elected_flagged_match(state)
     return state.no_data(
         "role_incompatible",
         flagged_match=(flagged_match,),

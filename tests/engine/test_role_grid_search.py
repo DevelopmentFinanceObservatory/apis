@@ -50,6 +50,7 @@ from code_index.types import StatVarRow
 from datasets_api.adapter import resolve_definition_members
 from dfo_platform.roles import ROLE_AXES
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.state import _served_members
 from search.engine.retrieval.bound_values import (
@@ -94,6 +95,7 @@ from tests.datasets_api.test_role_grid_members import (
 )
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 from tests.statvar_members.role_grid import (
     ASKED_AGAIN,
@@ -692,13 +694,15 @@ _DAC1 = "provenance/OECDDAC1"
 _DAC1_NET_TOTAL = "Amount_FinancialFlow_Net_Disbursement_DAC1AidType1010_Nominal"
 # One of the two DAC1 rows that hold a recipient beside the donor.
 _DAC1_NET_FLOW = "Amount_FinancialFlow_Net_Disbursement_DAC1AidType8863_Nominal"
-_DAC1_NET_DONOR_ONLY = 125
+_DAC1_NET_DONOR_ONLY = 128
 
 
 class _ElectFirst:
     """Elects the first shape on the menu with no bindings."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
 
 
@@ -778,7 +782,7 @@ def test_a_donor_only_dac1_question_answers_the_donor_totals_the_mint_serves(
     identity = spec.definition.identity
     assert identity.entities == {axis: ["country/FRA"] for axis in entities.values()}
     assert identity.open_roles is None
-    assert [item.ref.dcid for item in spec.resolved.members] == [_DAC1_NET_TOTAL]
+    assert [item.ref.ref for item in spec.resolved.members] == [_DAC1_NET_TOTAL]
     minted = resolve_definition_members(
         identity.model_dump(mode="json", exclude_none=True),
         spec_id=spec.spec_id,
@@ -864,7 +868,7 @@ def test_a_question_opening_both_axes_over_two_datasets_mints_what_the_mint_serv
     )
     minted_family = minted.shapes[0].family
     assert minted_family is not None
-    assert [item.ref.dcid for item in spec.resolved.members] == [
+    assert [item.ref.ref for item in spec.resolved.members] == [
         shape.stat_var.removeprefix("dcid:") for shape in minted.shapes
     ]
     assert spec.resolved.stat_vars.served_count == len(minted.shapes)

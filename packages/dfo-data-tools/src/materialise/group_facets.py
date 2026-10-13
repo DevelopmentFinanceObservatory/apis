@@ -30,6 +30,9 @@ from materialise.facets import (
     FacetElection,
     FacetSelection,
     MemberProbe,
+    RankedPool,
+    SeriesCounts,
+    VariableBreadth,
     _alternatives,
     _decided_by_precedence,
     _match_policy,
@@ -39,13 +42,17 @@ from materialise.facets import (
     _require_currency_native_unit,
     _selection,
     cadences_by_member,
+    continued_election,
     dataset_candidates,
     facet_axis_value,
     facet_election,
+    joined_breadth,
     joint_matches,
     merge_facets,
     rank_pool,
+    ranked_values,
     select_bound_facet,
+    summed_counts,
 )
 from materialise.graph import Facet, FacetDefaultPolicy, GraphReader
 from materialise.window import RequestedWindow
@@ -206,18 +213,18 @@ def _group_declared_policies(
 
 def _resolve_group_axis_selections(
     requests: Sequence[MaterialisationRequest],
-    top: Facet,
+    ranked_pool: RankedPool,
     shared_pool: Sequence[Facet],
-    shared_candidates: Sequence[Facet],
     policies: Mapping[str, FacetDefaultPolicy | None],
     *,
     window: RequestedWindow | None,
-    precedence: frozenset[str],
     breadth: Mapping[str, int] | None,
+    variable_breadth: VariableBreadth,
 ) -> dict[str, FacetSelection]:
-    """Resolves every axis from the group's ranked shared candidate.
+    """Resolves every axis from the group's top-ranked shared candidate, the top of
+    `ranked_pool`.
 
-    `shared_candidates` is `shared_pool`'s fallback pool (`facets.fallback_pool`), so each
+    `ranked_pool.pool` is `shared_pool`'s fallback pool (`facets.fallback_pool`), so each
     selection reason describes the narrowed pool.
 
     For unbound axes, the policy in `policies` (`_group_declared_policies`) wins when its
@@ -240,6 +247,8 @@ def _resolve_group_axis_selections(
     # supplies selection basis/reason; candidates remain member-specific.
     representative_bindings = requests[0].facet_bindings
     index_sourced = _group_is_index_sourced(requests)
+    shared_candidates, precedence = ranked_pool.pool, ranked_pool.precedence
+    top = ranked_pool.ranked[0]
     selections: dict[str, FacetSelection] = {}
     for axis in FACET_AXES:
         binding = representative_bindings.get(axis, FacetBinding(state="unbound"))
@@ -266,6 +275,7 @@ def _resolve_group_axis_selections(
                 window=window,
                 precedence=precedence,
                 breadth=breadth,
+                variable_breadth=variable_breadth,
             )
             if preferred is not None:
                 selections[axis] = preferred
@@ -312,6 +322,9 @@ def _resolve_group_axis_selections(
             default_policy_version=DEPLOYMENT_FACET_POLICY_VERSION,
             request=request,
             selection_reason=reason,
+            ranked_values=ranked_values(
+                ranked_pool, axis, reason=reason, window=window, breadth=breadth
+            ),
         )
         if request is not None:
             _require_currency_native_unit(selections[axis].ref)
@@ -360,20 +373,24 @@ def _check_group_joint_coherence(
 
 def group_breadth(
     probes: Sequence[MemberProbe], *, window: RequestedWindow | None
-) -> dict[str, int] | None:
+) -> SeriesCounts | None:
     """Each facet id's series count under `window` summed across the group's members
-    (`MemberProbe.breadth_in`), which leads the group's ranking as a member's count leads
-    its own (`facets.rank_candidates`). None when no member counts series."""
-    total: dict[str, int] = {}
-    counted = False
-    for probe in probes:
-        member = probe.breadth_in(window)
-        if member is None:
-            continue
-        counted = True
-        for facet_id, count in member.items():
-            total[facet_id] = total.get(facet_id, 0) + count
-    return total if counted else None
+    (`MemberProbe.breadth_in`, `facets.summed_counts`), which leads the group's ranking as a
+    member's count leads its own (`facets.rank_candidates`). None when no member counts
+    series."""
+    counted = [b for probe in probes if (b := probe.breadth_in(window)) is not None]
+    return summed_counts(counted) if counted else None
+
+
+def group_variable_breadth(probes: Sequence[MemberProbe]) -> VariableBreadth:
+    """Each facet id's places across the whole of each member's variable, summed across the
+    group's members (`MemberProbe.variable_breadth`), which breaks the group's tie before the
+    unit as a member's own does (`facets.rank_candidates`), joined without reading it
+    (`facets.joined_breadth`): pending members stay one pending read, which the group's tie
+    alone starts. A `BreadthUnread` when any member's is, so a group needing it acts on it as
+    a member would; otherwise None unless every member carries one, so a member without one
+    leaves the group's tie to the unit's name."""
+    return joined_breadth([probe.variable_breadth for probe in probes])
 
 
 def select_group_facets(
@@ -382,6 +399,7 @@ def select_group_facets(
     *,
     graph: GraphReader,
     breadth: Mapping[str, int] | None = None,
+    variable_breadth: VariableBreadth = None,
 ) -> FacetElection:
     """Resolves the group's shared selections and its one cadence from its member candidates.
 
@@ -389,9 +407,12 @@ def select_group_facets(
     members agree on, keeps the shared candidates carrying those defaults and
     narrows them to the requested window (`facets.fallback_pool`, the pool member
     selection ranks too), ranks them with DFO's first when any member is in the
-    origin catalogue's overlap set (`facets.dfo_precedence`, computed on the
-    narrowed pool) and led by `breadth`, each facet's series count across the members
-    (`group_breadth`), resolves each remaining axis from the top candidate, then
+    origin catalogue's overlap set and DFO's broadest facet holds at least as many of the
+    members' series as any other facet (`facets.dfo_precedence`, computed on the narrowed
+    pool), led by `breadth`, each facet's series count across the members
+    (`group_breadth`), with `variable_breadth`, each facet's places across the members'
+    whole variables (`group_variable_breadth`), breaking a tie that remains before the unit,
+    resolves each remaining axis from the top candidate, then
     checks joint coherence before returning. The group's cadence is the one at which the
     most members hold a candidate matching every selected ref, counting under a range window
     only candidates with a point in it when any member has one. Ties go to the cadence of
@@ -402,7 +423,9 @@ def select_group_facets(
     none serves nothing. Each member's copies of a facet id are judged apart
     (`facets.cadences_by_member`), so an id stating no period that one member dates by year
     and another by month dispatches only for the members whose copy is at the elected
-    cadence. Members share one identity and so
+    cadence. A range window running past the group's served series takes the same source's
+    estimates for the later years, as a member's election does
+    (`facets.continued_election`). Members share one identity and so
     one window; the first request's window stands for the group, as its bindings
     do. `candidates` follows `requests` order and may come from a precomputed
     probe.
@@ -435,21 +458,19 @@ def select_group_facets(
         window=window,
         declared=declared,
         breadth=breadth,
+        variable_breadth=variable_breadth,
     )
-    shared_candidates, precedence = ranked_pool.pool, ranked_pool.precedence
-    top = ranked_pool.ranked[0]
     selections = _resolve_group_axis_selections(
         requests,
-        top,
+        ranked_pool,
         shared_pool,
-        shared_candidates,
         policies,
         window=window,
-        precedence=precedence,
         breadth=breadth,
+        variable_breadth=variable_breadth,
     )
     _check_group_joint_coherence(requests, candidates, selections, graph=graph)
-    return facet_election(
+    election = facet_election(
         selections,
         matching=_merged_joint_matches(probed, selections),
         member_matches=[joint_matches(member, selections) for member in probed],
@@ -457,7 +478,9 @@ def select_group_facets(
         stat_vars=[request.stat_var for request in requests],
         window=window,
         breadth=breadth,
+        variable_breadth=variable_breadth,
     )
+    return continued_election(election, probed, window=window, breadth=breadth)
 
 
 def _merged_joint_matches(

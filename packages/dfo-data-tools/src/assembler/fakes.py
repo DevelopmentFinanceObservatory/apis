@@ -1,7 +1,7 @@
-"""In-memory fakes for the frame, revision, and release-registry ports.
+"""In-memory fakes for the frame, revision, release-registry and vocabulary ports.
 
 They reproduce store refusals without a database or network. `FakeReleaseRegistry`
-wraps one `CatalogueRelease`."""
+wraps one `CatalogueRelease`, and `FakeVocabularySource` one `Vocabulary`."""
 
 from __future__ import annotations
 
@@ -28,8 +28,9 @@ from assembler.ports import (
     WriteSubjectKind,
     WriteTokenInUse,
 )
+from description.vocabulary import Vocabulary
 
-__all__ = ["FakeFrameStore", "FakeReleaseRegistry", "FakeRevisionStore"]
+__all__ = ["FakeFrameStore", "FakeReleaseRegistry", "FakeRevisionStore", "FakeVocabularySource"]
 
 
 class FakeFrameStore:
@@ -327,3 +328,13 @@ class FakeReleaseRegistry:
 
     def pinned(self) -> CatalogueRelease:
         return self._resolved_release()
+
+
+class FakeVocabularySource:
+    """`VocabularySource` fake that gives one `Vocabulary`."""
+
+    def __init__(self, *, vocabulary: Vocabulary) -> None:
+        self._vocabulary = vocabulary
+
+    def current(self) -> Vocabulary:
+        return self._vocabulary

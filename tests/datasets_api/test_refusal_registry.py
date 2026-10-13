@@ -18,6 +18,7 @@ import datasets_api.app  # noqa: F401 -- imports every door module, so every ref
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.deps import DepsCell
 from datasets_api.doors.definition import ROUTE_EXCEPTION_TYPES, build_definition_door
+from datasets_api.doors.description import build_description_door
 from datasets_api.doors.files import build_files_door
 from datasets_api.doors.meta import build_meta_door
 from datasets_api.doors.mint import build_mint_door
@@ -44,6 +45,7 @@ _ENDPOINTS = {
     "refresh": ("datasets.refresh",),
     "recipe": ("datasets.recipe",),
     "snapshot": ("datasets.snapshot",),
+    "description": ("datasets.description",),
     "files": ("datasets.files",),
     "observations": ("datasets.observations",),
     "pin": ("datasets.pin",),
@@ -66,6 +68,7 @@ def doors() -> dict[str, DoorContribution]:
         "refresh": build_refresh_door(deps=cell, settings=settings),
         "recipe": build_recipe_door(deps=cell, settings=settings),
         "snapshot": build_snapshot_door(deps=cell),
+        "description": build_description_door(deps=cell),
         "files": build_files_door(deps=cell),
         "observations": build_observations_door(deps=cell),
         "pin": build_pin_door(deps=cell, settings=settings),

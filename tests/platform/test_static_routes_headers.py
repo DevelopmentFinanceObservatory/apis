@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 import datasets_api.schema
-import search.engine.app
+import search.engine.schema
 from code_index.shared import get_index
 from datasets_api.capabilities import build_capabilities as build_datasets_capabilities
 from datasets_api.config import DatasetsBuildSettings
@@ -30,7 +30,7 @@ def _datasets_capabilities_payload() -> dict[str, object]:
 
 
 _ROUTE_PAYLOAD_BUILDERS = {
-    "/api/search/schema": search.engine.app._schema_payload,
+    "/api/search/schema": search.engine.schema.schema_payload,
     "/api/search/capabilities": lambda: build_search_capabilities().model_dump(mode="json"),
     "/api/datasets/schema": datasets_api.schema.build_schema_document,
     "/api/datasets/capabilities": _datasets_capabilities_payload,

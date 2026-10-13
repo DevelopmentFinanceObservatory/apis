@@ -19,13 +19,13 @@ class UnservedMembers:
     """The members of one set the request named that the data holds no values for, on a
     role that binds every member of the set beside other places.
 
-    `label`, `entity_type` and `size` are the set's label, the graph type of its node and
+    `label`, `dcid` and `size` are the set's label, its node's dcid (`EntityGroup.ref`) and
     its member count, `asked` the request's own words for it, and `entities` the names of
     its members without values, in the answer's entity order.
     """
 
     label: str
-    entity_type: str | None
+    dcid: str | None
     size: int
     asked: str
     entities: tuple[str, ...]
@@ -50,9 +50,9 @@ class DepartureFact:
     - `sets` (`entity_unavailable`): on a role that binds the members of sets the request
       named beside other places, each set with the members the data holds no values for.
       `entities` then names only the places the request named one by one.
-    - `group`, `group_size` and `group_type` (`entity_unavailable`,
-      `group_read_as_members`): the label, the member count and the graph type of the
-      node (`EntityGroup.entity_type`) of the group the request named for the role, when
+    - `group`, `group_size` and `group_dcid` (`entity_unavailable`,
+      `group_read_as_members`): the label, the member count and the node's dcid
+      (`EntityGroup.ref`) of the group the request named for the role, when
       it named one; `asked` is then the request's own words for the group, `None` on a
       door that holds none.
     - `excluded` (`group_read_as_members`): the labels of the residuals the total of the
@@ -81,8 +81,10 @@ class DepartureFact:
     - `partial` (`modelled_values`): only some of the served series are modelled.
     - `limits` (`scope_limited`): the values a no-data check covered that the request did
       not name, each as the code index names it.
-    - `values` (`measure_not_applied`): on a door that holds no words (a resubmit, `asked`
-      is `None`), the names of the posted values the answer does not apply.
+    - `values` (`measure_not_applied`): when `asked` is `None`, what the answer does not
+      apply: on a door that holds no words (a resubmit) the names of the posted values, and
+      for a dropped value no name exists for its slot's words ("a requested gender
+      value").
     """
 
     code: DepartureCode
@@ -95,7 +97,7 @@ class DepartureFact:
     sets: tuple[UnservedMembers, ...] = ()
     group: str | None = None
     group_size: int | None = None
-    group_type: str | None = None
+    group_dcid: str | None = None
     excluded: tuple[str, ...] = ()
     sources: tuple[str, ...] = ()
     latest_years: tuple[int, int] | None = None

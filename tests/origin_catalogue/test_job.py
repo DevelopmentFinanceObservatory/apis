@@ -6,6 +6,7 @@ import ast
 import json
 import time
 import types
+from collections.abc import Sequence
 from dataclasses import replace
 from importlib import resources
 from pathlib import Path
@@ -13,7 +14,7 @@ from typing import Any, cast
 
 import pytest
 
-from artifact_publication.jobs import LEASE_FILE, acquire_lease
+from artifact_publication.jobs import LEASE_FILE, Ingestion, acquire_lease
 from dc_graph import UNRESOLVED_NODE, GraphClient, GraphReadError, SubjectPage
 from origin_catalogue import (
     BASE,
@@ -25,7 +26,7 @@ from origin_catalogue import (
     DatasetRef,
     ScanLevel,
     artifact,
-    un_mirror,
+    node_reads,
 )
 from origin_catalogue import job as catalogue_job
 from origin_catalogue.artifact import load_catalogue, read_un_mirror
@@ -33,10 +34,11 @@ from origin_catalogue.catalogue import Licence, SourceDocumentation
 from origin_catalogue.enumerate import EnumerationError
 from origin_catalogue.graph import UN_BASE_URL
 from origin_catalogue.registry import parse_registry
-from origin_catalogue.schema import FORMAT_ROOT, CataloguePointer, UnAgencyCounts
+from origin_catalogue.schema import FORMAT_ROOT, CataloguePointer, IndexPresence, UnAgencyCounts
 from origin_catalogue.successors import Successors
 from origin_catalogue.un_mirror import UnMirror
 from tests.origin_catalogue.fake_catalogue import provenance_row, spread_provenance_places
+from tests.origin_catalogue.support import held_wire_arcs
 from tests.origin_catalogue.un_fake import (
     MORT,
     MORT_BY_SEX,
@@ -46,6 +48,7 @@ from tests.origin_catalogue.un_fake import (
     ODA_SERIES,
     FakeUn,
 )
+from tests.origin_catalogue.un_fake import target as un_target
 from tests.series_coverage.test_job import FakeBigQuery
 
 _CONNECTION = "proj.region.conn"
@@ -185,8 +188,34 @@ class FakeGraph:
         }
 
 
+COUNT_HOUSEHOLD = "Count_Household"
+FINANCING_PROVIDER = "financingProvider"
+ORGANIZATION = "Organization"
+THING = "Thing"
+MEASURED_VALUE = "measuredValue"
+
+
+def mixer_nodes() -> dict[str, Any]:
+    """The `->*` arcs our mixer answers: one base variable with a
+    denominator neither variable list holds, the role property a DFO variable
+    names, and the class chain its range runs up. `IDS_VARIABLE` and
+    `POPULATION` have no node."""
+    return {
+        GDP: {
+            "typeOf": [un_target("StatisticalVariable", "StatisticalVariable", "Class")],
+            "name": [{"value": "Nominal GDP"}],
+            "measurementDenominator": [un_target(COUNT_HOUSEHOLD, "Households")],
+        },
+        COUNT_HOUSEHOLD: {"name": [{"value": "Households"}]},
+        FINANCING_PROVIDER: {"rangeIncludes": [un_target(ORGANIZATION, "Organization", "Class")]},
+        ORGANIZATION: {"subClassOf": [un_target(THING, "Thing", "Class")]},
+        THING: {"typeOf": [un_target("Class", "Class", "Class")]},
+    }
+
+
 def mixer() -> FakeGraph:
     return FakeGraph(
+        un=FakeUn(mixer_nodes()),
         subjects={
             WORLD_BANK: (WDI, WB_IDS, IDS, WB_DATASET),
             OECD: (CRS, OECD_MAIN),
@@ -228,6 +257,7 @@ def mixer() -> FakeGraph:
                 "typeOf": ("LicenseTypeEnum",),
                 "name": ("Creative Commons Attribution License",),
             },
+            MEASURED_VALUE: {"typeOf": ("Property",), "name": ("measuredValue",)},
         },
     )
 
@@ -294,21 +324,100 @@ def base_tables(**overrides: Any) -> BaseTables:
     return BaseTables(**fields)
 
 
+def spanner_edges(variables: list[str]) -> list[dict[str, str]]:
+    """Each variable's Spanner `Edge` rows: its type, a name literal, a
+    `statType` on a base Data Commons node, and for `CRS_VARIABLE` a
+    denominator and a role property."""
+    rows = []
+    for variable in variables:
+        arcs = [
+            ("typeOf", "StatisticalVariable"),
+            ("name", f"{variable}:hash"),
+            ("statType", MEASURED_VALUE),
+        ]
+        if variable == CRS_VARIABLE:
+            arcs += [
+                ("measurementDenominator", POPULATION),
+                ("observationProperties", FINANCING_PROVIDER),
+            ]
+        rows += [
+            {"subject_id": variable, "predicate": predicate, "object_id": object_id}
+            for predicate, object_id in arcs
+        ]
+    return rows
+
+
+def spanner_nodes(variables: list[str]) -> list[dict[str, Any]]:
+    """The Spanner `Node` rows of `spanner_edges`' targets but the base Data Commons ones."""
+    return [
+        {
+            "subject_id": "StatisticalVariable",
+            "value": "StatisticalVariable",
+            "name": "StatisticalVariable",
+            "types": ["Class"],
+        },
+        {
+            "subject_id": FINANCING_PROVIDER,
+            "value": FINANCING_PROVIDER,
+            "name": "financingProvider",
+            "types": ["Property"],
+        },
+        *(
+            {"subject_id": f"{variable}:hash", "value": f"{variable} name", "name": "", "types": []}
+            for variable in variables
+        ),
+    ]
+
+
+SPANNER_EDGES = "FROM variable_edges AS e"
+"""The marker of `arc_reads.dfo_edges_sql`, which `FakeBigQuery` checks before the
+holdings query's `LEFT JOIN`."""
+
+
+def spanner_rows(edges: list[dict[str, str]], nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """`dfo_edges_sql`'s rows: each `Edge` row with its target's `Node` row from
+    `nodes`, all null for a target with none."""
+    by_id = {node["subject_id"]: node for node in nodes}
+    rows = []
+    for edge in edges:
+        node = by_id.get(edge["object_id"])
+        rows.append(
+            {
+                **edge,
+                "node_id": None if node is None else node["subject_id"],
+                "value": None if node is None else node["value"],
+                "name": None if node is None else node["name"],
+                "types": None if node is None else node["types"],
+            }
+        )
+    return rows
+
+
 def bq_responses(
     *, row_count: int = 3, lock_owner: str | None = None, extra_crs_variables: int = 0
 ) -> dict[str, list]:
+    """Spanner holds observations of `POPULATION` and declares no node for
+    it, as dev's Spanner does for `Count_Person`."""
+    declared = [
+        CRS_VARIABLE,
+        IDS_VARIABLE,
+        *(f"{CRS_VARIABLE}_{i}" for i in range(extra_crs_variables)),
+    ]
     return {
+        SPANNER_EDGES: spanner_rows(spanner_edges(declared), spanner_nodes(declared)),
         "IngestionLock": [{"LockOwner": lock_owner}],
         "IngestionHistory": [{"WorkflowExecutionID": "wf-1", "CreationTimestamp": "t1"}],
         "COUNT(*) AS row_count": [{"row_count": row_count, "max_ts": "t2"}],
         "LEFT JOIN": [
             {"variable": CRS_VARIABLE, "provenance": CRS},
             {"variable": IDS_VARIABLE, "provenance": IDS},
+            {"variable": POPULATION, "provenance": CRS},
             *(
                 {"variable": f"{CRS_VARIABLE}_{i}", "provenance": CRS}
                 for i in range(extra_crs_variables)
             ),
         ],
+        "NodeEmbedding": [{"subject_id": variable, "has_edges": True} for variable in declared],
     }
 
 
@@ -339,6 +448,8 @@ def run(
     builder: FakeBuilder | None = None,
     registry: str = REGISTRY,
     clock: Clock | None = None,
+    carry_un_from: str | None = None,
+    base_index: Sequence[str] = (),
 ) -> None:
     un_graph = un_graph or un_deployment()
     catalogue_job.run(
@@ -349,8 +460,10 @@ def run(
         un_graph=un_graph,
         un_group_counts=un_graph.un,
         build_base_tables=builder or FakeBuilder(),
+        read_base_index=lambda uri: base_index,
         registry_raw=registry.encode("utf-8"),
         clock=clock or Clock(),
+        carry_un_from=carry_un_from,
     )
 
 
@@ -444,23 +557,58 @@ def test_run_publishes_a_build_the_loader_accepts(tmp_path, capsys):
         # The graph holds no node for IDS's Source, so it names no publisher.
         IDS: SourceDocumentation(provenances=(IDS,)),
     }
-    assert snapshot.tables.dfo_variables == {CRS_VARIABLE, IDS_VARIABLE}
-    assert snapshot.manifest.overlaps == (IDS_VARIABLE,)
+    assert snapshot.tables.dfo_variables == {CRS_VARIABLE, IDS_VARIABLE, POPULATION}
+    assert snapshot.manifest.overlaps == (POPULATION, IDS_VARIABLE)
     assert set(snapshot.manifest.identity_inputs) == {
         "format_version",
         "job_code",
         "enumeration_code",
+        "base_arc_code",
         "un_mirror_code",
         "registry",
         "dfo_fingerprint",
         "iso_week",
+        "base_index",
     }
     assert snapshot.manifest.identity_inputs["job_code"] == catalogue_job.source_digest(
         catalogue_job.JOB_MODULES
     )
+    assert snapshot.manifest.identity_inputs["base_index"] == catalogue_job.BASE_INDEX_URI
     assert snapshot.manifest.un_carried_forward is None
     assert builder.calls[0]["provenances"] == [OECD_MAIN, WDI]
     assert not (root(tmp_path) / LEASE_FILE).exists()
+
+
+def test_the_build_holds_every_node_a_resolver_index_names(tmp_path, capsys):
+    """A subject of our index the graph dropped is held empty, and a base node the base
+    index names is held with its arcs; a withheld one is left to admission, and a topic
+    stands for its leaves, here a listed variable."""
+    dropped, indexed = "Amount_FinancialFlow_CRSPurposeCode43010", "Count_Person_Urban"
+    responses = bq_responses()
+    responses["NodeEmbedding"] = [
+        *responses["NodeEmbedding"],
+        {"subject_id": dropped, "has_edges": False},
+    ]
+    graph = mixer()
+    graph.un.nodes[indexed] = {"name": [{"value": "Urban population"}]}
+
+    run(
+        tmp_path,
+        bq=FakeBigQuery(responses),
+        graph=graph,
+        base_index=[indexed, "dc/topic/Demographics", WITHHELD_VARIABLE],
+    )
+
+    [published] = events(capsys)
+    assert (
+        published["resolver_index_absent"],
+        published["resolver_index_held_by_mixer"],
+        published["resolver_index_base"],
+    ) == (1, 0, 1)
+    arcs = load_catalogue(f"file://{tmp_path}").arcs
+    assert arcs.dfo[dropped] == ()
+    assert [arc.value for arc in arcs.base[indexed]] == ["Urban population"]
+    assert WITHHELD_VARIABLE not in arcs.base
 
 
 def test_the_fingerprint_counts_every_observation_row(tmp_path):
@@ -502,14 +650,17 @@ def test_a_registry_edit_changes_the_identity(tmp_path, capsys):
     assert len(builds(tmp_path)) == 2
 
 
-def _code(*, job: str, enumeration: str, un_mirror: str = "un-1"):
+def _code(*, job: str, enumeration: str, un_mirror: str = "un-1", base_arc: str = "arc-1"):
     """A `source_digest` answering `enumeration` for the enumeration modules,
-    `un_mirror` for the UN table modules and `job` for the job's."""
+    `base_arc` for the base arc modules, `un_mirror` for the UN table modules
+    and `job` for the job's."""
 
     def digest(modules: tuple[str, ...]) -> str:
-        if modules == catalogue_job.UN_MIRROR_MODULES:
-            return un_mirror
-        return enumeration if modules == catalogue_job.ENUMERATION_MODULES else job
+        return {
+            catalogue_job.UN_MIRROR_MODULES: un_mirror,
+            catalogue_job.ENUMERATION_MODULES: enumeration,
+            catalogue_job.BASE_ARC_MODULES: base_arc,
+        }.get(modules, job)
 
     return digest
 
@@ -525,8 +676,28 @@ def test_a_job_code_change_publishes_and_carries_the_base_tables(tmp_path, capsy
 
     [published] = events(capsys)
     assert published["base_tables"] == "carried"
+    assert published["base_arcs_read"] == 0
+    assert published["base_arcs_carried"] > 0
     assert len(builder.calls) == 1
     assert load_catalogue(f"file://{tmp_path}").manifest.identity_inputs["job_code"] == "job-2"
+
+
+def test_a_base_arc_code_change_reads_the_base_arcs_again(tmp_path, capsys, monkeypatch):
+    builder = FakeBuilder()
+    monkeypatch.setattr(catalogue_job, "source_digest", _code(job="job-1", enumeration="enum-1"))
+    run(tmp_path, builder=builder)
+    [first] = events(capsys)
+
+    monkeypatch.setattr(
+        catalogue_job, "source_digest", _code(job="job-2", enumeration="enum-1", base_arc="arc-2")
+    )
+    run(tmp_path, builder=builder)
+
+    [published] = events(capsys)
+    assert published["base_tables"] == "carried"
+    assert len(builder.calls) == 1
+    assert published["base_arcs_carried"] == 0
+    assert published["base_arcs_read"] == first["base_arcs_read"] > 0
 
 
 def test_an_enumeration_code_change_rebuilds_the_base_tables(tmp_path, capsys, monkeypatch):
@@ -561,10 +732,28 @@ def test_the_job_modules_cover_every_package_module_the_job_imports():
     imported = set().union(*(_package_imports(m) for m in catalogue_job.JOB_MODULES))
     assert imported - serving <= set(catalogue_job.JOB_MODULES)
     assert set(catalogue_job.ENUMERATION_MODULES) <= set(catalogue_job.JOB_MODULES)
+    assert set(catalogue_job.BASE_ARC_MODULES) <= set(catalogue_job.JOB_MODULES)
     assert set(catalogue_job.UN_MIRROR_MODULES) <= set(catalogue_job.JOB_MODULES)
     assert not {"context.py", "service.py", "graph.py"} & set(catalogue_job.JOB_MODULES)
     # The card-fact derivation shapes every build, so a change to it rebuilds.
     assert "card_facts.py" in catalogue_job.JOB_MODULES
+
+
+def test_the_base_arc_code_hashes_the_node_reads_and_not_the_un_enumeration():
+    """A UN enumeration edit keeps the carried base arcs: the base arc modules take
+    only the `UnArc` row type from `un_mirror.py`, and the reads they share with the UN
+    tables live in `node_reads.py`, which both code hashes cover."""
+    assert catalogue_job.BASE_ARC_MODULES == ("arc_reads.py", "arc_tables.py", "node_reads.py")
+    assert "node_reads.py" in catalogue_job.UN_MIRROR_MODULES
+    for module in catalogue_job.BASE_ARC_MODULES:
+        tree = ast.parse((resources.files("origin_catalogue") / module).read_text())
+        taken = {
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module == "origin_catalogue.un_mirror"
+            for alias in node.names
+        }
+        assert taken <= {"UnArc"}, module
 
 
 def test_the_source_digest_reads_the_named_modules():
@@ -665,7 +854,7 @@ def test_a_un_read_failure_carries_the_un_rows_and_refused_places_forward(
     assert note is not None
     assert (note.from_build, note.reason) == (first, carried["reason"])
     # DFO's update publishes regardless.
-    assert snapshot.tables.dfo_variables == {CRS_VARIABLE, IDS_VARIABLE}
+    assert snapshot.tables.dfo_variables == {CRS_VARIABLE, IDS_VARIABLE, POPULATION}
 
 
 def test_a_un_refusal_refuses_even_with_a_published_build(tmp_path, capsys):
@@ -710,11 +899,15 @@ def test_a_published_carry_forward_retries_the_un_on_an_unchanged_identity(tmp_p
     ).build_id
     ingested = bq_responses(row_count=4)
 
-    # Still down: the retry publishes nothing new.
-    run(tmp_path, bq=FakeBigQuery(ingested), un_graph=down)
+    # Still down: the retry publishes nothing new, and reads the UN before anything else,
+    # so it reads no arc, provenance or holdings.
+    bq, graph = FakeBigQuery(ingested), mixer()
+    run(tmp_path, bq=bq, graph=graph, un_graph=down)
     [retry] = events(capsys)
     assert retry["event"] == "origin_catalogue_job_un_retry_failed"
     assert load_catalogue(f"file://{tmp_path}").build_id == carried_build
+    assert (graph.calls, graph.un.requests) == ([], [])
+    assert not [sql for sql in bq.queries if SPANNER_EDGES in sql or "NodeEmbedding" in sql]
 
     # Back up: the same identity publishes a build that read the UN.
     run(tmp_path, bq=FakeBigQuery(ingested))
@@ -890,7 +1083,7 @@ def test_refuses_an_excluded_series_whose_dfo_provenance_dfo_does_not_hold(tmp_p
 
 @pytest.fixture(autouse=True)
 def _no_wait_before_a_repeated_page(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(un_mirror, "_REPEATED_PAGE_WAITS_SECONDS", (0.0, 0.0, 0.0))
+    monkeypatch.setattr(node_reads, "_REPEATED_PAGE_WAITS_SECONDS", (0.0, 0.0, 0.0))
 
 
 def _stalling(un_graph: FakeGraph) -> None:
@@ -1179,11 +1372,23 @@ def test_an_ingestion_carries_the_base_tables_into_a_new_build_directory(tmp_pat
     first = CataloguePointer.from_json((root(tmp_path) / "current.json").read_bytes()).build_id
     capsys.readouterr()
 
-    run(tmp_path, bq=FakeBigQuery(bq_responses(row_count=4)), builder=builder)
+    first_arcs = load_catalogue(f"file://{tmp_path}").arcs
+    graph = mixer()
+
+    run(tmp_path, bq=FakeBigQuery(bq_responses(row_count=4)), graph=graph, builder=builder)
 
     [published] = events(capsys)
     assert published["base_tables"] == "carried"
     assert len(builder.calls) == 1
+    # The base arcs carry with the base tables; the schema nodes are read again.
+    assert (published["base_arcs_read"], published["base_arcs_carried"]) == (0, 2)
+    read = {
+        node
+        for request in graph.un.requests
+        if request["property"] == "->*"
+        for node in request["nodes"]
+    }
+    assert read == {COUNT_HOUSEHOLD, FINANCING_PROVIDER, ORGANIZATION, THING, "observationAbout"}
     second = published["build_id"]
     assert (root(tmp_path) / "versions" / second / "base_variables.parquet").is_file()
     # The new build stands alone: it loads with the previous build deleted.
@@ -1196,6 +1401,7 @@ def test_an_ingestion_carries_the_base_tables_into_a_new_build_directory(tmp_pat
     assert snapshot.tables.withheld_variables == frozenset({WITHHELD_VARIABLE})
     assert snapshot.tables.topics == base_tables().topics
     assert snapshot.admit_candidate(WITHHELD_VARIABLE) is None
+    assert snapshot.arcs == first_arcs
 
 
 def test_a_new_dfo_variable_carries_the_base_tables_forward(tmp_path, capsys):
@@ -1210,7 +1416,10 @@ def test_a_new_dfo_variable_carries_the_base_tables_forward(tmp_path, capsys):
     [published] = events(capsys)
     assert published["base_tables"] == "carried"
     assert len(builder.calls) == 1
-    assert f"{CRS_VARIABLE}_0" in load_catalogue(f"file://{tmp_path}").tables.dfo_variables
+    snapshot = load_catalogue(f"file://{tmp_path}")
+    assert f"{CRS_VARIABLE}_0" in snapshot.tables.dfo_variables
+    # DFO arcs are read on every ingestion.
+    assert f"{CRS_VARIABLE}_0" in snapshot.arcs.dfo
 
 
 def test_a_new_iso_week_rebuilds_the_base_tables(tmp_path, capsys):
@@ -1222,8 +1431,10 @@ def test_a_new_iso_week_rebuilds_the_base_tables(tmp_path, capsys):
     clock.offset = 7 * 24 * 3600
     run(tmp_path, builder=builder, clock=clock)
 
-    assert events(capsys)[0]["base_tables"] == "built"
+    published = events(capsys)[0]
+    assert published["base_tables"] == "built"
     assert len(builder.calls) == 2
+    assert (published["base_arcs_read"], published["base_arcs_carried"]) == (2, 0)
 
 
 def test_a_new_base_provenance_rebuilds_the_base_tables(tmp_path, capsys):
@@ -1255,6 +1466,247 @@ def test_a_new_dfo_provenance_rebuilds_the_base_tables(tmp_path, capsys):
     assert events(capsys)[0]["base_tables"] == "built"
     assert builder.calls[0]["dfo_provenances"] == [CRS, IDS]
     assert builder.calls[1]["dfo_provenances"] == sorted([CRS, IDS, new])
+
+
+_DROPPED = "Amount_FinancialFlow_CRSPurposeCode43010"
+_DROPPED_LATER = "Amount_FinancialFlow_CRSPurposeCode43020"
+
+
+def _indexing(*subjects: str, row_count: int = 3) -> FakeBigQuery:
+    """Spanner's answers with `subjects` added to our resolver index, each a
+    subject Spanner holds no `Edge` row of and the mixer holds no node for."""
+    responses = bq_responses(row_count=row_count)
+    responses["NodeEmbedding"] = [
+        *responses["NodeEmbedding"],
+        *({"subject_id": subject, "has_edges": False} for subject in subjects),
+    ]
+    return FakeBigQuery(responses)
+
+
+def _type_read(graph: FakeGraph) -> set[str]:
+    return {
+        node
+        for request in graph.un.requests
+        if request["property"] == "->typeOf"
+        for node in request["nodes"]
+    }
+
+
+def test_an_ingestion_reads_the_type_of_only_the_subjects_the_published_build_does_not_hold(
+    tmp_path, capsys
+):
+    """A subject the published build holds absent stays absent with no `->typeOf` read,
+    and a subject new to our index is read."""
+    run(tmp_path, bq=_indexing(_DROPPED))
+    capsys.readouterr()
+    graph = mixer()
+
+    run(tmp_path, bq=_indexing(_DROPPED, _DROPPED_LATER, row_count=4), graph=graph)
+
+    [published] = events(capsys)
+    assert _type_read(graph) == {_DROPPED_LATER}
+    assert (published["resolver_index_carried"], published["resolver_index_read"]) == (1, 1)
+    assert published["resolver_index_absent"] == 2
+    snapshot = load_catalogue(f"file://{tmp_path}")
+    assert snapshot.arcs.dfo[_DROPPED] == snapshot.arcs.dfo[_DROPPED_LATER] == ()
+    assert snapshot.manifest.arc_tables.index_presence == IndexPresence(carried=1, read=1)
+
+
+@pytest.mark.parametrize("change", ["iso_week", "base_arc_code"])
+def test_a_new_week_or_base_arc_code_reads_the_type_of_every_subject(
+    tmp_path, capsys, monkeypatch, change
+):
+    clock = Clock()
+    monkeypatch.setattr(catalogue_job, "source_digest", _code(job="job-1", enumeration="enum-1"))
+    run(tmp_path, bq=_indexing(_DROPPED), clock=clock)
+    capsys.readouterr()
+    if change == "iso_week":
+        clock.offset = 7 * 24 * 3600
+    else:
+        monkeypatch.setattr(
+            catalogue_job,
+            "source_digest",
+            _code(job="job-1", enumeration="enum-1", base_arc="arc-2"),
+        )
+    graph = mixer()
+
+    run(tmp_path, bq=_indexing(_DROPPED, row_count=4), graph=graph, clock=clock)
+
+    published = events(capsys)[0]
+    assert _type_read(graph) == {_DROPPED}
+    assert (published["resolver_index_carried"], published["resolver_index_read"]) == (0, 1)
+    assert load_catalogue(f"file://{tmp_path}").arcs.dfo[_DROPPED] == ()
+
+
+# --- Arc tables --------------------------------------------------------------
+
+
+def test_the_build_publishes_dfo_base_and_schema_arcs(tmp_path, capsys):
+    run(tmp_path)
+
+    [published] = events(capsys)
+    snapshot = load_catalogue(f"file://{tmp_path}")
+    arcs = snapshot.arcs
+    assert set(arcs.dfo) == {CRS_VARIABLE, IDS_VARIABLE}
+    assert held_wire_arcs(arcs, CRS_VARIABLE) == {
+        # A base Data Commons node the mixer has no node for carries its dcid alone.
+        "measurementDenominator": {"nodes": [{"dcid": POPULATION}]},
+        "name": {"nodes": [{"value": f"{CRS_VARIABLE} name"}]},
+        "observationProperties": {
+            "nodes": [
+                {"dcid": FINANCING_PROVIDER, "name": "financingProvider", "types": ["Property"]}
+            ]
+        },
+        # Spanner has no node for it: the mixer names it.
+        "statType": {
+            "nodes": [{"dcid": MEASURED_VALUE, "name": "measuredValue", "types": ["Property"]}]
+        },
+        "typeOf": {
+            "nodes": [
+                {"dcid": "StatisticalVariable", "name": "StatisticalVariable", "types": ["Class"]}
+            ]
+        },
+    }
+    # IDS_VARIABLE's node is DFO's, so the DFO table holds it and the base table does not.
+    assert set(arcs.base) == {GDP, POPULATION}
+    assert arcs.arcs(POPULATION) == ()
+    assert held_wire_arcs(arcs, GDP)["measurementDenominator"] == {
+        "nodes": [{"dcid": COUNT_HOUSEHOLD, "name": "Households"}]
+    }
+    assert set(arcs.schema) == {
+        COUNT_HOUSEHOLD,
+        FINANCING_PROVIDER,
+        ORGANIZATION,
+        THING,
+        "observationAbout",
+    }
+    assert arcs.arcs("observationAbout") == ()
+    assert snapshot.manifest.ingestion == Ingestion(
+        workflow_execution_id="wf-1", creation_timestamp="t1"
+    )
+    assert published["arc_row_counts"] == dict(snapshot.manifest.arc_tables.row_counts)
+    assert published["arc_resident_bytes"] == snapshot.manifest.arc_tables.resident_bytes > 0
+    assert (published["base_arcs_read"], published["base_arcs_carried"]) == (2, 0)
+
+
+def test_a_variable_spanner_declares_no_node_for_stays_dfo_with_base_arcs(tmp_path, capsys):
+    """Spanner holds observations of `POPULATION` and no node for it, as dev's
+    Spanner does for `Count_Person`, whose node is base Data Commons'. Its
+    observations keep it a DFO variable; its arcs are the base node's."""
+    run(tmp_path)
+
+    [published] = events(capsys)
+    snapshot = load_catalogue(f"file://{tmp_path}")
+    assert published["dfo_variables_without_node"] == [POPULATION]
+    assert POPULATION in snapshot.tables.dfo_variables
+    assert snapshot.data_commons(POPULATION) == (DFO, BASE)
+    assert snapshot.manifest.overlaps == (POPULATION, IDS_VARIABLE)
+    assert POPULATION in snapshot.arcs.base
+    assert POPULATION not in snapshot.arcs.dfo
+
+
+def _as_format_3(build: Path) -> None:
+    """Rewrites `build` as a format-3 build of an earlier ISO week: no arc
+    tables, no source documentation, no licence on any provenance row and no
+    ingestion in its manifest."""
+    manifest = json.loads((build / "manifest.json").read_text())
+    for logical in ("dfo_arcs", "base_arcs", "schema_arcs", "arc_targets", "source_documentation"):
+        (build / manifest["files"].pop(logical)).unlink()
+    provenances = build / manifest["files"]["provenances"]
+    rows = json.loads(provenances.read_text())
+    for row in rows:
+        del row["licence"]
+    provenances.write_text(json.dumps(rows))
+    del manifest["arc_tables"], manifest["ingestion"]
+    manifest["format_version"] = 3
+    manifest["identity_inputs"]["iso_week"] = "2026-W01"
+    (build / "manifest.json").write_text(json.dumps(manifest))
+
+
+def _old_build(tmp_path: Path, capsys) -> tuple[Path, UnMirror]:
+    """A format-3 build directory holding the UN tables of a WHO excluding
+    `ODA_SERIES`, and those tables."""
+    old = tmp_path / "old"
+    run(old, registry=_excluding(ODA_SERIES))
+    tables = _un_tables(old)
+    [build_id] = builds(old)
+    build = root(old) / "versions" / build_id
+    _as_format_3(build)
+    capsys.readouterr()
+    return build, tables
+
+
+def _un_down() -> FakeGraph:
+    down = un_deployment()
+    down.failing = frozenset({"post", "node_arcs_many", "observation_facets_batch"})
+    down.un.failing = True
+    return down
+
+
+def test_carry_un_from_takes_a_format_3_build_s_un_stage_without_reading_the_un(tmp_path, capsys):
+    build, tables = _old_build(tmp_path, capsys)
+    down = _un_down()
+
+    run(
+        tmp_path / "new",
+        un_graph=down,
+        registry=_excluding(ODA_SERIES),
+        carry_un_from=build.as_uri(),
+    )
+
+    carried, published = events(capsys)
+    assert carried["event"] == "origin_catalogue_job_un_carried_forward"
+    assert published["un_mirror"] == "carried"
+    assert down.calls == []
+    assert down.un.requests == []
+    assert _un_tables(tmp_path / "new") == tables
+    snapshot = load_catalogue(f"file://{tmp_path / 'new'}")
+    assert snapshot.un_blocked_places == {"country/GRC"}
+    assert snapshot.tables.provenances[WHO].segment == "who"
+    note = snapshot.manifest.un_carried_forward
+    assert note is not None
+    assert note.from_build == build.name
+    assert note.reason == f"--carry-un-from build {build.name}, format 3"
+
+
+def test_main_carries_the_un_stage_from_a_local_build(tmp_path, monkeypatch, capsys):
+    build, tables = _old_build(tmp_path, capsys)
+
+    _main(
+        tmp_path,
+        monkeypatch,
+        builder=FakeBuilder(),
+        expected_exit=0,
+        un_graph=_un_down(),
+        registry=_excluding(ODA_SERIES),
+        argv=["--carry-un-from", str(build)],
+    )
+
+    assert _un_tables(tmp_path / "out") == tables
+
+
+def test_carry_un_from_refuses_a_catalogue_uri_that_is_not_local(tmp_path):
+    bq = FakeBigQuery(bq_responses())
+    un_graph = un_deployment()
+
+    with pytest.raises(catalogue_job.CatalogueBuildError, match="file://"):
+        catalogue_job.run(
+            catalogue_job.JobSettings(
+                artifact_uri="gs://bucket/catalogue",
+                bq_connection=_CONNECTION,
+                graph_base_url="https://mixer/core/api",
+            ),
+            bq=bq,
+            graph=cast("GraphClient", mixer()),
+            un_graph=un_graph,
+            un_group_counts=un_graph.un,
+            build_base_tables=FakeBuilder(),
+            read_base_index=lambda uri: (),
+            registry_raw=REGISTRY.encode(),
+            carry_un_from=(tmp_path / "old").as_uri(),
+        )
+
+    assert bq.queries == []
 
 
 # --- Lease -------------------------------------------------------------------
@@ -1639,7 +2091,7 @@ def test_read_dfo_holdings_aggregates_outside_the_external_query():
     holdings = catalogue_job.read_dfo_holdings(bq, connection=_CONNECTION)
 
     assert holdings.provenances == {CRS, IDS}
-    assert holdings.variables == {CRS_VARIABLE, IDS_VARIABLE}
+    assert holdings.variables == {CRS_VARIABLE, IDS_VARIABLE, POPULATION}
     [sql] = bq.queries
     for inner in sql.split("EXTERNAL_QUERY(")[1:]:
         assert "DISTINCT" not in inner.split('")')[0]
@@ -1778,12 +2230,18 @@ def _main(
     builder: FakeBuilder,
     expected_exit: int,
     un_graph: FakeGraph | None = None,
+    registry: str = REGISTRY,
+    argv: Sequence[str] = (),
 ) -> dict[str, dict[str, Any]]:
-    """Runs `main` over fakes and returns each graph client's options by base URL."""
+    """Runs `main` over fakes, with a base resolver index naming `GDP`, and returns each graph
+    client's options by base URL."""
+    base_index = tmp_path / "embeddings.csv"
+    base_index.write_text(f"0,dcid,sentence\n0.1,{GDP},Gross domestic product\n")
     for name, value in {
         "ORIGIN_CATALOGUE_BQ_CONNECTION": _CONNECTION,
         "DATASETS_GRAPH_BASE_URL": "https://mixer/core/api",
         "UN_GRAPH_BASE_URL": "https://un/core/api",
+        "ORIGIN_CATALOGUE_BASE_INDEX_URI": base_index.as_uri(),
     }.items():
         monkeypatch.setenv(name, value)
     monkeypatch.delenv("ORIGIN_CATALOGUE_URI", raising=False)
@@ -1806,11 +2264,11 @@ def _main(
     monkeypatch.setattr(
         catalogue_job,
         "packaged_registry",
-        lambda: types.SimpleNamespace(read_bytes=lambda: REGISTRY.encode()),
+        lambda: types.SimpleNamespace(read_bytes=lambda: registry.encode()),
     )
     monkeypatch.setattr(catalogue_job, "build_base_tables", builder)
 
-    assert catalogue_job.main(["--local-dir", str(tmp_path / "out")]) == expected_exit
+    assert catalogue_job.main(["--local-dir", str(tmp_path / "out"), *argv]) == expected_exit
     return options
 
 

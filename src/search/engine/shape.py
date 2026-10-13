@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 
 from materialise.roles import RoleAxis, roles_by_axis
 from origin_catalogue import DataCommons, SourceRef
+from origin_catalogue.families import FamilyKey
 from origin_catalogue.origins import UN_ID_PREFIX
 from search.engine.axis import classify_axis
 from search.engine.errors import RoleEntityUnplaced
@@ -81,10 +82,25 @@ class ShapeDraft:
     # Per-SV arc facts dict (sv_dcid -> raw arcs), carried from derive_shapes.
     sv_arc_facts: dict[str, dict] | None = field(default=None, compare=False)
     # True when sv_arc_facts is complete and False when it is a
-    # recall sample, even if the confirm cap returned every candidate. Directly
+    # recall sample, however many members recall returned. Directly
     # built drafts default to complete, preventing consumers from widening facts
     # whose completeness the constructor leaves unknown.
     sv_arc_facts_complete: bool = field(default=True, compare=False)
+    # The catalogue family whose members the shape stands for, stamped by derive_shapes on a
+    # group whose membership the graph walk decides and whose family the catalogue's tables
+    # hold (`derive.held_family`): its slot taxonomy reads that family, and so does
+    # `bound_values.shape_member_facts`, beside sv_arc_facts. None on every other shape and
+    # on one narrowed to some of its members.
+    held_family: FamilyKey | None = field(default=None, compare=False)
+    # The role set the role-class election narrowed a held shape to
+    # (`bound_values._recalled_role_class_shape`): its population holds the members of
+    # held_family that declare that set alone. None on a shape no election narrowed.
+    held_roles: frozenset[str] | None = field(default=None, compare=False)
+    # The members of sv_arc_facts the mint's walk of this shape is seeded with
+    # (`bound_values.elected_role_class_shape`): on a shape narrowed from the members it
+    # stood for (`bound_values.narrowed_to`), the ones it held before, so a walk is seeded
+    # with recalled members and never with a held family's. None seeds every member.
+    walk_seeds: frozenset[str] | None = field(default=None, compare=False)
     # Per-shape bind taxonomy: "axis:property_dcid" -> a list of values a
     # member asserts (facts.read_slot_taxonomy).
     slot_taxonomy: dict[str, list[str]] | None = field(default=None, compare=False)
@@ -135,10 +151,14 @@ class ShapeDraft:
     # the creditor role of a total/by-creditor twin pair. A query may fill an
     # optional role; admission keeps the members that answer the roles it fills.
     optional_roles: frozenset[str] = field(default=frozenset(), compare=False)
-    # True when any confirmed member is a direct recall, including through
-    # confirm backfill. The bind menu reserves space for recalled shapes, and
-    # family collapse carries this flag from any recalled sibling.
+    # True when any confirmed member is a direct recall. The bind menu reserves
+    # space for recalled shapes, and family collapse carries this flag from any
+    # recalled sibling.
     recalled: bool = field(default=False, compare=False)
+    # The members retrieval scored against the question (`derive_shapes`), Topic expansions
+    # excluded, which can sort ahead of them in sv_arc_facts. Empty on a shape derive did
+    # not build.
+    scored_members: frozenset[str] = field(default=frozenset(), compare=False)
     # True when every confirmed member is a row recall added for its five-tuple past the
     # cut (`clients.graph.with_rival_families`). Such a shape displaces only shapes of its
     # own five-tuple (`place_roles.without_unasked_axes`).

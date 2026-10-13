@@ -52,7 +52,7 @@ _WEAK = Warning(code=RETRIEVAL_SCORE_WEAK, severity="info", message="weak")
 
 def _places() -> list[Entity]:
     return [
-        Entity(ref=GraphRef(dcid=dcid, label=label), role=EntityRoleSubject())
+        Entity(ref=GraphRef(ref=dcid, label=label), role=EntityRoleSubject())
         for dcid, label in (("country/KEN", "Kenya"), ("country/SOM", "Somaliland"))
     ]
 

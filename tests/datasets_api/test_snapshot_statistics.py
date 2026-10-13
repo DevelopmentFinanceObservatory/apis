@@ -73,7 +73,7 @@ def _statistics_fixture_frame():
 
 
 def _statistics_file(frame):
-    sink = SeriesStatisticsSink()
+    sink = SeriesStatisticsSink(continuing=())
     sink.write(compute_series_statistics_table(frame))
     return sink.finish()
 
@@ -101,7 +101,7 @@ def _statistics_fixture_result(frame) -> MaterialisationResult:
         output_profile=compute_output_profile(
             frame,
             role_columns=("recipient",),
-            enrichment=EnrichmentLookup(FakeMintGraphReader(), type_kinds={}, parties={}),
+            enrichment=EnrichmentLookup(FakeMintGraphReader(), parties={}),
         ),
         conversion_record=None,
         member_conversion_records={"dcid:GrantA": None},

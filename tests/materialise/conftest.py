@@ -79,6 +79,7 @@ class FakeGraphReader:
         self._child_places = child_places
         self.calls: dict[str, int] = {
             "node_label": 0,
+            "node_labels_batch": 0,
             "variable_facets_batch": 0,
             "observation_facets_batch_many": 0,
             "child_places_batch": 0,
@@ -116,6 +117,10 @@ class FakeGraphReader:
         self._count("node_label")
         return self._labels.get(dcid)
 
+    def node_labels_batch(self, dcids: list[str]) -> dict[str, str]:
+        self._count("node_labels_batch")
+        return {dcid: self._labels[dcid] for dcid in dict.fromkeys(dcids) if dcid in self._labels}
+
     def variable_facets_batch(
         self, *, stat_var: str, entities: Sequence[str], deadline: float | None = None
     ) -> dict[str, list[Facet]]:
@@ -123,7 +128,12 @@ class FakeGraphReader:
         return {entity: self._facets.get((stat_var, entity), []) for entity in entities}
 
     def observation_facets_batch_many(
-        self, *, stat_vars: Sequence[str], entities: Sequence[str], deadline: float | None = None
+        self,
+        *,
+        stat_vars: Sequence[str],
+        entities: Sequence[str],
+        deadline: float | None = None,
+        max_bytes: int | None = None,
     ) -> dict[str, dict[str, list[Facet]]]:
         self._count("observation_facets_batch_many")
         return {

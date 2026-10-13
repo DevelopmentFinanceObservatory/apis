@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel
 
-from tests._harvest_outcome_plugin import OUTCOME_PATH_ENV, SCHEMA_VERSION
+from tests._harvest_outcome_plugin import OUTCOME_PATH_ENV, SCHEMA_VERSION, worker_harvest_paths
 from tests.fixtures import HARVEST_MISS_PATH_ENV, FakeLLM, MissingFixtureError
 from tests.fixtures.keys import fixture_key
 
@@ -142,20 +142,44 @@ def test_missing_fixture():
 """
 
 
-def _run_generated_pass(pytester, *, outcome_path: Path | None) -> dict:
+_XDIST_ROWS = pytest.mark.parametrize(
+    "xdist_args", [pytest.param([], id="serial"), pytest.param(["-n", "2"], id="xdist")]
+)
+"""Serial runs and xdist runs, where each worker classifies its failures in its own process."""
+
+
+def _runpytest(pytester, *args: str):
+    """Run pytester in-process, or in a subprocess under xdist.
+
+    Xdist workers take the controller's `sys.path` from when xdist was imported, which in this
+    process lacks the repo root, so the plugin would not import. A subprocess controller started
+    with the repo root on `PYTHONPATH` passes it on.
+    """
+    if "-n" not in args:
+        return pytester.runpytest(*args)
+    pytester._monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[2]))
+    return pytester.runpytest_subprocess(*args)
+
+
+def _run_generated_pass(
+    pytester, *, outcome_path: Path | None, xdist_args: list[str] | None = None
+) -> dict:
     """Run three generated tests and parse the plugin summary."""
     pytester.makepyfile(test_generated=_GENERATED_TESTS)
-    args = ["-q", "-p", "tests._harvest_outcome_plugin"]
+    args = ["-q", *(xdist_args or []), "-p", "tests._harvest_outcome_plugin"]
     if outcome_path is not None:
         pytester._monkeypatch.setenv(OUTCOME_PATH_ENV, str(outcome_path))
     else:
         pytester._monkeypatch.delenv(OUTCOME_PATH_ENV, raising=False)
-    pytester.runpytest(*args)
+    _runpytest(pytester, *args)
     return json.loads(outcome_path.read_text()) if outcome_path is not None else {}
 
 
-def test_plugin_summary_records_each_failure_type_and_the_fixture_key(pytester):
-    summary = _run_generated_pass(pytester, outcome_path=pytester.path / "out.json")
+@_XDIST_ROWS
+def test_plugin_summary_records_each_failure_type_and_the_fixture_key(pytester, xdist_args):
+    summary = _run_generated_pass(
+        pytester, outcome_path=pytester.path / "out.json", xdist_args=xdist_args
+    )
 
     assert summary["schema_version"] == SCHEMA_VERSION
     assert summary["counts"] == {
@@ -177,6 +201,7 @@ def test_plugin_summary_records_each_failure_type_and_the_fixture_key(pytester):
     assert missing["exception_type"] == MissingFixtureError.__name__
     assert missing["fixture_key"] == "Extraction:deadbeef"
     assert missing["when"] == "call"
+    assert summary["collected"] == summary["reported"] == 3
 
 
 def test_plugin_writes_nothing_when_the_outcome_path_is_unset(pytester):
@@ -224,6 +249,74 @@ def test_plugin_records_a_teardown_error_the_call_phase_never_saw(pytester):
     assert failure["fixture_key"] is None
 
 
+_SKIP_AND_SETUP_ERROR_TESTS = """
+import pytest
+
+
+@pytest.fixture
+def setup_raises():
+    raise RuntimeError("boom in setup")
+
+
+def test_setup_error(setup_raises):
+    pass
+
+
+@pytest.mark.skip(reason="skipped in setup")
+def test_skipped_in_setup():
+    pass
+
+
+def test_skipped_in_call():
+    pytest.skip("skipped in call")
+
+
+@pytest.mark.xfail(reason="expected")
+def test_xfails():
+    assert False
+"""
+
+
+@_XDIST_ROWS
+def test_plugin_reports_every_test_that_ran_whatever_its_outcome(pytester, xdist_args):
+    """Setup errors, skips and xfails each count as reported, so a complete run reports as many
+    tests as it collected."""
+    pytester.makepyfile(test_generated=_SKIP_AND_SETUP_ERROR_TESTS)
+    outcome_path = pytester.path / "out.json"
+    pytester._monkeypatch.setenv(OUTCOME_PATH_ENV, str(outcome_path))
+
+    _runpytest(pytester, "-q", *xdist_args, "-p", "tests._harvest_outcome_plugin")
+    summary = json.loads(outcome_path.read_text())
+
+    assert summary["collected"] == summary["reported"] == 4
+
+
+@_XDIST_ROWS
+def test_plugin_records_a_module_that_fails_to_import(pytester, xdist_args):
+    """A module raising at import is a failure with an empty exception type, which the harvest
+    refuses. Under xdist the run carries on past it, so the summary is the only record."""
+    pytester.makepyfile(
+        test_broken="raise ImportError('broken at import')",
+        test_fine="def test_passes():\n    assert True\n",
+    )
+    outcome_path = pytester.path / "out.json"
+    pytester._monkeypatch.setenv(OUTCOME_PATH_ENV, str(outcome_path))
+
+    _runpytest(pytester, "-q", *xdist_args, "-p", "tests._harvest_outcome_plugin")
+    summary = json.loads(outcome_path.read_text())
+
+    assert summary["counts"]["errored"] == 1
+    assert summary["failures"] == [
+        {
+            "nodeid": "test_broken.py",
+            "when": "collect",
+            "exception_type": "",
+            "fixture_key": None,
+            "misses_during": 0,
+        }
+    ]
+
+
 _COLLATERAL_TESTS = """
 import asyncio
 
@@ -250,14 +343,19 @@ def test_unrelated_assertion_after_a_clean_test():
 """
 
 
-def test_plugin_counts_the_misses_logged_while_each_failing_test_ran(pytester):
-    """A failure after a logged miss carries the miss count; an unrelated failure carries zero."""
+@_XDIST_ROWS
+def test_plugin_counts_the_misses_logged_while_each_failing_test_ran(pytester, xdist_args):
+    """A failure after a logged miss carries the miss count; an unrelated failure carries zero.
+
+    Under xdist each worker logs to its own harvest file, never to the shared path.
+    """
     pytester.makepyfile(test_generated=_COLLATERAL_TESTS)
     outcome_path = pytester.path / "out.json"
+    harvest_path = pytester.path / "misses.jsonl"
     pytester._monkeypatch.setenv(OUTCOME_PATH_ENV, str(outcome_path))
-    pytester._monkeypatch.setenv(HARVEST_MISS_PATH_ENV, str(pytester.path / "misses.jsonl"))
+    pytester._monkeypatch.setenv(HARVEST_MISS_PATH_ENV, str(harvest_path))
 
-    pytester.runpytest("-q", "-p", "tests._harvest_outcome_plugin")
+    _runpytest(pytester, "-q", *xdist_args, "-p", "tests._harvest_outcome_plugin")
     by_nodeid = {f["nodeid"]: f for f in json.loads(outcome_path.read_text())["failures"]}
 
     assert (
@@ -268,6 +366,8 @@ def test_plugin_counts_the_misses_logged_while_each_failing_test_ran(pytester):
         by_nodeid["test_generated.py::test_unrelated_assertion_after_a_clean_test"]["misses_during"]
         == 0
     )
+    assert bool(worker_harvest_paths(harvest_path)) == bool(xdist_args)
+    assert harvest_path.exists() != bool(xdist_args)
 
 
 def test_plugin_loads_without_search_graph_base():

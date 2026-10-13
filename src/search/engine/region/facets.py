@@ -156,6 +156,7 @@ def _resolved_facets(
                 label=shared.label,
                 source=shared.source,
                 data_commons=shared.data_commons,
+                documentation=shared.documentation,
                 currency=(
                     currency_of(shared.ref) if axis == "unit" and currency_of is not None else None
                 ),

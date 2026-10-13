@@ -10,6 +10,9 @@ dependencies = [
     "dfo-spec-kit-frame-grammar[arrow]",
     "dfo-spec-kit-components",
     "dfo-spec-kit-provenance-docs",
+    # assembler.catalogue loads the description and step schemas the envelope references
+    # by `$id`; datasets_api checks a publish's steps with `check_steps`.
+    "dfo-spec-kit-descriptions",
     # graph_generation's TLRU caches (wave 2) key their lifetime on the
     # captured GenerationStamp; cachetools.TLRUCache is the shared
     # implementation every generation-keyed cache in this repo builds on.
@@ -78,9 +81,10 @@ coverage = [
 [tool.uv.sources]
 # See the root pyproject.toml's dfo-spec-kit source comment for the
 # pin-consistency invariant this rev must satisfy.
-dfo-spec-kit-frame-grammar = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git", rev = "0a34033f23d0ee400cbe7131781a6d142eba0508", subdirectory = "python/frame-grammar" }
-dfo-spec-kit-components = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git", rev = "0a34033f23d0ee400cbe7131781a6d142eba0508", subdirectory = "python/dfo-spec-kit-components" }
-dfo-spec-kit-provenance-docs = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git", rev = "0a34033f23d0ee400cbe7131781a6d142eba0508", subdirectory = "python/provenance-docs" }
+dfo-spec-kit-frame-grammar = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git", rev = "739caf69e7ae2fca083ce6781990b912f5e6dc8c", subdirectory = "python/frame-grammar" }
+dfo-spec-kit-components = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git", rev = "739caf69e7ae2fca083ce6781990b912f5e6dc8c", subdirectory = "python/dfo-spec-kit-components" }
+dfo-spec-kit-provenance-docs = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git", rev = "739caf69e7ae2fca083ce6781990b912f5e6dc8c", subdirectory = "python/provenance-docs" }
+dfo-spec-kit-descriptions = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git", rev = "739caf69e7ae2fca083ce6781990b912f5e6dc8c", subdirectory = "python/descriptions" }
 
 [build-system]
 requires = ["uv_build>=0.11,<0.12"]
@@ -101,4 +105,6 @@ module-name = [
     "artifact_publication",
     "series_coverage",
     "origin_catalogue",
+    "unit_words",
+    "description",
 ]

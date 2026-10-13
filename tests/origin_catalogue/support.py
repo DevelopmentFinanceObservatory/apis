@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
 from artifact_publication.uri import join_uri, read_uri_bytes_and_generation
 from origin_catalogue import BASE, DFO, UN_SYSTEM, CatalogueTables, ScanLevel
+from origin_catalogue.arc_tables import ArcTables, ArcTablesBuilder, WireArcs
 from origin_catalogue.artifact import EncodedBuild, encode_build, publish_build
 from origin_catalogue.catalogue import (
     BaseVariable,
@@ -16,9 +18,53 @@ from origin_catalogue.catalogue import (
     Licence,
     SourceDocumentation,
 )
+from origin_catalogue.graph import _wire
 from origin_catalogue.schema import FORMAT_ROOT, UnAgencyCounts
 from origin_catalogue.un_mirror import UnArc, UnMirror, UnVariable
 from tests.origin_catalogue.fake_catalogue import provenance_row
+
+
+def named_labels(*tables: Mapping[str, tuple[UnArc, ...]]) -> dict[str, str | None]:
+    """Each node an arc of `tables` names, labelled with the name its arc carries."""
+    labels: dict[str, str | None] = {}
+    for table in tables:
+        for rows in table.values():
+            for arc in rows:
+                if arc.dcid is not None and labels.get(arc.dcid) is None:
+                    labels[arc.dcid] = arc.name
+    return labels
+
+
+def build_labelled(
+    builder: ArcTablesBuilder, *, labels: Mapping[str, str | None] | None = None
+) -> ArcTables:
+    """`builder`'s tables, each target labelled from `labels` or else with the name its arc
+    carries."""
+    named = named_labels(*(builder.table(name) for name in ("dfo", "base", "schema")))
+    return builder.build(labels={**named, **(labels or {})})
+
+
+def build_arc_tables(
+    *,
+    dfo: Mapping[str, WireArcs | None],
+    base: Mapping[str, WireArcs | None],
+    schema: Mapping[str, WireArcs | None],
+    labels: Mapping[str, str | None] | None = None,
+) -> ArcTables:
+    """The arc tables of `->*` answers keyed by node, through `ArcTablesBuilder`, labelled
+    as `build_labelled` labels them."""
+    builder = ArcTablesBuilder()
+    for name, answers in (("dfo", dfo), ("base", base), ("schema", schema)):
+        for node, arcs in answers.items():
+            builder.add(name, node, arcs)
+    return build_labelled(builder, labels=labels)
+
+
+def held_wire_arcs(tables: ArcTables, dcid: str) -> dict | None:
+    """`dcid`'s held arcs as the origin client serves them, `None` for a node no table holds."""
+    arcs = tables.arcs(dcid)
+    return None if arcs is None else _wire(arcs)
+
 
 CRS = "provenance/OECDCreditorReportingSystem"
 WDI = "dc/base/WorldDevelopmentIndicators"
@@ -184,13 +230,66 @@ def sample_un_mirror() -> UnMirror:
     )
 
 
+HOUSEHOLDS = "Count_Household"
+RECIPIENT = "financingRecipient"
+
+
+def sample_arc_tables() -> ArcTables:
+    """The CRS variable's arcs as the graph answers them, two provenances
+    repeating its `typeOf`, with an import-added constraint property and a
+    denominator no variable list holds; GDP's name; the population variable
+    held empty; and the schema: the denominator, the recipient role with its
+    range and the range's superclass chain."""
+    statvar = {"dcid": "StatisticalVariable", "name": "StatisticalVariable", "types": ["Class"]}
+    return build_arc_tables(
+        dfo={
+            CRS_VARIABLE: {
+                "typeOf": {
+                    "nodes": [
+                        {**statvar, "provenanceId": "dc/base/CRS"},
+                        {**statvar, "provenanceId": "dc/base/CRS_redeclared"},
+                    ]
+                },
+                "constraintProperties": {
+                    "nodes": [
+                        {"dcid": RECIPIENT, "name": RECIPIENT, "types": ["Property"]},
+                        {"dcid": "sourceIndicatorCode", "types": ["Property"]},
+                    ]
+                },
+                "name": {"nodes": [{"value": "Gross ODA disbursements"}]},
+                "measurementDenominator": {
+                    "nodes": [{"dcid": HOUSEHOLDS, "types": ["StatisticalVariable"]}]
+                },
+            }
+        },
+        base={
+            GDP: {
+                "name": {"nodes": [{"value": "Gross domestic product"}]},
+                "typeOf": {"nodes": [statvar]},
+            },
+            POPULATION: None,
+        },
+        schema={
+            HOUSEHOLDS: {"typeOf": {"nodes": [statvar]}},
+            RECIPIENT: {"rangeIncludes": {"nodes": [{"dcid": "Country", "types": ["Class"]}]}},
+            "Country": {"subClassOf": {"nodes": [{"dcid": "Place", "types": ["Class"]}]}},
+            "Place": {},
+        },
+        # The graph's arcs name the nameless role by its dcid; `node_label` gives it none.
+        labels={RECIPIENT: None},
+    )
+
+
 def encode_sample(*, build_id: str = "build-a", **overrides: object) -> EncodedBuild:
+    """The sample tables encoded as a build, holding `sample_arc_tables` unless `overrides`
+    names its own `arcs`."""
     fields: dict = {
         "build_id": build_id,
         "built_at": BUILT_AT,
         "build_seconds": 12.5,
         "identity_inputs": {"registry": "r1", "dfo": "f1", "week": "2026-W40"},
         "registry_hash": "r1",
+        "arcs": sample_arc_tables(),
     }
     fields.update(overrides)
     tables = replace(sample_tables(), superseded=fields.pop("superseded", {}))

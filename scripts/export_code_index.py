@@ -14,6 +14,17 @@ graph walk (`code_index.members.listed_group`). An unsplit read of each five-tup
 has refuses the export when the graph holds a StatVar there that is neither an exported nor a
 listed row.
 
+Each listed StatVar's `sourceIndicatorCode` arcs give the `source_codes` block: the StatVars each
+publisher's series code names under the provenance the arc carries, so search can answer a code
+such as `DT.TDS.DEGG.CD` with its variables. A listed StatVar with no code refuses the export, and
+so does a code whose arc provenance the coverage build does not give its StatVar, since the
+finished document must load (`code_index.loader._check_source_codes`).
+
+The `specializationOf` arc of each constraint value a listed StatVar holds gives the
+`value_parents` block, so the sentence renderer knows a general government debtor
+(`IDSDebtorTypeGG`) is a public-sector one (`IDSDebtorTypePS`) without a graph read. A value with
+two parents refuses the export.
+
 Pass 1 reads each StatVar's type, shape, and declared constraints. Pass 2 reads their values.
 Export requires held, resolved targets with `typeOf` and one value per single-value field. Nodes
 typed only `ProvisionalNode` and non-StatisticalVariables raise. Constraint and observation
@@ -60,6 +71,7 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Protocol
 
 from code_index.loader import IndexFormatError, parse_index, parse_measure_axes
 from code_index.members import key_sets_cover
@@ -98,6 +110,8 @@ _ARC_CHUNK_SIZE = 20
 # Six levels cover every partition axis and bound recursive splitting.
 _MAX_PARTITION_DEPTH = 6
 
+_SOURCE_CODE = "sourceIndicatorCode"
+
 _LABEL_SUFFIX_RE = re.compile(r"\s*\((?:CRS|DAC)\s[^()]*\)\s*$")
 
 _CODE_ARC_PROPERTIES = (
@@ -106,6 +120,7 @@ _CODE_ARC_PROPERTIES = (
     "alternateName",
     "shortName",
     "specializationOf",
+    "description",
 )
 # `export_statvars` rejects multiple distinct values on these single-valued fields.
 _STATVAR_SHAPE_PROPERTIES = (
@@ -127,7 +142,8 @@ _STATVAR_PASS1_PROPERTIES = (
 class CodeSystemConfig:
     """One code system's graph enum and semantic declarations.
 
-    `hierarchical` is derived from graph rows and checked against the expected value.
+    `enum_dcid` is the enumeration the system's codes are `typeOf`; the declaration carries it
+    as the system's graph id. `hierarchical` is derived from graph rows and checked against the expected value.
 
     `declared_by_every_statvar_of` lists the provenances of the datasets whose every StatVar
     declares this property. CRS StatVars all declare `crsPurpose`, `crsTypeOfFinance`, and
@@ -486,7 +502,7 @@ TOTAL_GROUPS: Mapping[str, TotalGroup] = {
     ),
     "DACPolynesia": TotalGroup("Polynesia", _unallocated("Polynesia")),
     "DACSouthernAfrica": TotalGroup("SouthernAfrica", _unallocated("SouthernAfrica")),
-    "GroupOfSeven": TotalGroup("groups/G7"),
+    "GroupOfSeven": TotalGroup("GroupOfSeven"),
     "UNLandlockedDevelopingCountries": TotalGroup("groups/UN.LLDC"),
     "UNLeastDevelopedCountries": TotalGroup("groups/UN.LDC"),
     "WorldBankHighIncome": TotalGroup("groups/WB.IncomeGroup.High"),
@@ -630,6 +646,7 @@ def export_parties(
 
 # Axis order controls partition election.
 # `measuredProperty` is the basis axis, and either basis value generalises.
+# `label` names an axis the graph gives no plain name for, as a description's dimension.
 MEASURE_AXES: tuple[MeasureAxis, ...] = (
     MeasureAxis(
         axis="populationType",
@@ -654,6 +671,7 @@ MEASURE_AXES: tuple[MeasureAxis, ...] = (
         kind="constraint",
         role="free",
         prefer=("Disbursement",),
+        label="flow type",
     ),
     MeasureAxis(
         axis="financialObligationType",
@@ -666,6 +684,7 @@ MEASURE_AXES: tuple[MeasureAxis, ...] = (
         kind="constraint",
         role="free",
         prefer=("Gross", "Net"),
+        label="netting basis",
     ),
 )
 
@@ -915,6 +934,17 @@ _CODE_SHORT_NAMES: Mapping[str, str] = {
 # partition; `label_for_pairs` picks the most specific label, so a family-level label never
 # names a full partition. `measurementQualifier` stays outside the key, because no measure
 # label states the price basis (`code_index.labels.compose_measure_label`).
+#
+# Each label's `definition` restates the OECD's own words: the DAC Glossary for commitments,
+# disbursements, imputed multilateral flows and the grant element
+# (https://www.oecd.org/dac/dac-glossary.htm), the ODA definition for grant equivalents
+# (https://www.oecd.org/dac/financing-sustainable-development/development-finance-standards/officialdevelopmentassistancedefinitionandcoverage.htm),
+# and the mobilisation standard for private finance mobilised
+# (https://www.oecd.org/dac/financing-sustainable-development/development-finance-standards/mobilisation.htm).
+_MOBILISED = (
+    "Finance from private sources that official development finance interventions, such as "
+    "guarantees, syndicated loans and direct investment, mobilise for a project"
+)
 _MEASURE_PARTITION_LABELS: tuple[MeasurePartitionLabel, ...] = (
     MeasurePartitionLabel(
         axis_values=(
@@ -923,6 +953,10 @@ _MEASURE_PARTITION_LABELS: tuple[MeasurePartitionLabel, ...] = (
             ("populationType", "FinancialObligation"),
         ),
         label="commitments",
+        definition=(
+            "Firm written obligations, backed by the necessary funds, to give specified "
+            "resources to a recipient country or multilateral organisation."
+        ),
     ),
     # A family spanning both netting bases (CRS and DAC1 disbursements) reads as this
     # label; a gross or net partition matches its own, more specific label.
@@ -933,6 +967,10 @@ _MEASURE_PARTITION_LABELS: tuple[MeasurePartitionLabel, ...] = (
             ("populationType", "FinancialFlow"),
         ),
         label="disbursements",
+        definition=(
+            "Funds released to a recipient, or goods and services bought for it, in a period: "
+            "the actual transfer of resources, recorded gross or net of repayments."
+        ),
     ),
     MeasurePartitionLabel(
         axis_values=(
@@ -942,6 +980,10 @@ _MEASURE_PARTITION_LABELS: tuple[MeasurePartitionLabel, ...] = (
             ("populationType", "FinancialFlow"),
         ),
         label="gross disbursements",
+        definition=(
+            "The total amount released to recipients, or spent on goods and services for them, "
+            "in a period, before any repayments are subtracted."
+        ),
     ),
     MeasurePartitionLabel(
         axis_values=(
@@ -951,6 +993,10 @@ _MEASURE_PARTITION_LABELS: tuple[MeasurePartitionLabel, ...] = (
             ("populationType", "FinancialFlow"),
         ),
         label="net disbursements",
+        definition=(
+            "The amount released to recipients in a period, less any loan principal repaid or "
+            "grants recovered in the same period."
+        ),
     ),
     MeasurePartitionLabel(
         axis_values=(
@@ -967,6 +1013,10 @@ _MEASURE_PARTITION_LABELS: tuple[MeasurePartitionLabel, ...] = (
             ("crsTypeOfFlow", "CRSTypeOfFlow10"),
             ("dac2aAidType", "DAC2aAidType106"),
         ),
+        definition=(
+            "A provider's core contributions to multilateral agencies, shared out among "
+            "recipients in proportion to where those agencies disbursed their funds that year."
+        ),
     ),
     MeasurePartitionLabel(
         axis_values=(
@@ -975,6 +1025,11 @@ _MEASURE_PARTITION_LABELS: tuple[MeasurePartitionLabel, ...] = (
             ("populationType", "FinancialFlow"),
         ),
         label="grant equivalents",
+        definition=(
+            "A measure of a provider's effort that counts each grant, loan or other flow at its "
+            "face value times its grant element, so a grant counts in full and a loan counts only "
+            "for the share given through terms softer than the market's."
+        ),
     ),
     # Only DAC1 StatVars hold `amountMobilised`: private finance that official flows mobilise.
     MeasurePartitionLabel(
@@ -984,6 +1039,7 @@ _MEASURE_PARTITION_LABELS: tuple[MeasurePartitionLabel, ...] = (
             ("populationType", "FinancialFlow"),
         ),
         label="private finance mobilised by disbursements",
+        definition=f"{_MOBILISED}, recorded as disbursements.",
     ),
     MeasurePartitionLabel(
         axis_values=(
@@ -993,6 +1049,7 @@ _MEASURE_PARTITION_LABELS: tuple[MeasurePartitionLabel, ...] = (
             ("populationType", "FinancialFlow"),
         ),
         label="private finance mobilised by gross disbursements",
+        definition=f"{_MOBILISED}, recorded as disbursements before any repayments.",
     ),
     MeasurePartitionLabel(
         axis_values=(
@@ -1002,6 +1059,7 @@ _MEASURE_PARTITION_LABELS: tuple[MeasurePartitionLabel, ...] = (
             ("populationType", "FinancialFlow"),
         ),
         label="private finance mobilised by net disbursements",
+        definition=f"{_MOBILISED}, recorded as disbursements less repayments.",
     ),
     MeasurePartitionLabel(
         axis_values=(
@@ -1010,6 +1068,7 @@ _MEASURE_PARTITION_LABELS: tuple[MeasurePartitionLabel, ...] = (
             ("populationType", "FinancialObligation"),
         ),
         label="private finance mobilised by commitments",
+        definition=f"{_MOBILISED}, recorded as commitments.",
     ),
 )
 
@@ -1021,6 +1080,15 @@ _MEASURE_PARTITION_LABELS: tuple[MeasurePartitionLabel, ...] = (
 # the price basis (`measurementQualifier`) or the denominator, which belong to the unit.
 # No entry keys on `financialFlowType = Disbursement` alone, since CRS disbursements carry
 # that value and take their partition's label (`_verify_measure_nouns`).
+#
+# A noun names every measure whose pairs contain its key, and a card shows the constraints
+# beyond the key (`maturityBand = LongTermMaturity`, an `economicSector`) beside the
+# definition. So each noun's `definition` states only what its key states, and holds for every
+# measure the noun names. It follows its publisher's note on the series named beside it, less
+# any clause on maturity, IMF credit, guarantee, sector or price basis: the World Bank's
+# indicator notes for IDS and World Development Indicators series
+# (https://api.worldbank.org/v2/indicator/<code>), and the IMF's WEO indicator descriptions
+# (https://api.imf.org/external/sdmx/3.0/structure/codelist/IMF.RES/CL_WEO_INDICATOR/+).
 _POPULATION = "populationType"
 _PROPERTY = "measuredProperty"
 _STAT_TYPE = "statType"
@@ -1029,19 +1097,30 @@ _GDP_BASIS = (
     ("productTaxBasis", "IncludingProductTaxes"),
     ("fixedCapitalConsumptionBasis", "GrossOfFixedCapitalConsumption"),
 )
+# The IMF's WEO descriptor of NGDPD and PPPGDP, and the World Bank's note on NY.GDP.MKTP.CD:
+# GDP "is the total income earned through the production of goods and services in an economic
+# territory during an accounting period", measured by the expenditure, income or production
+# approach. It names no sector, so it holds for the sector series the WDI noun also names.
+_GDP_DEFINITION = (
+    "The total income earned through the production of goods and services in an economy "
+    "during a period, measured by what is spent, earned or produced."
+)
 
 
-def _noun(label: str, *pairs: tuple[str, str]) -> MeasurePartitionLabel:
-    return MeasurePartitionLabel(axis_values=pairs, label=label)
+def _noun(label: str, *pairs: tuple[str, str], definition: str) -> MeasurePartitionLabel:
+    return MeasurePartitionLabel(axis_values=pairs, label=label, definition=definition)
 
 
-def _ids(label: str, population: str, axis: str, value: str) -> MeasurePartitionLabel:
+def _ids(
+    label: str, population: str, axis: str, value: str, *, definition: str
+) -> MeasurePartitionLabel:
     return _noun(
         label,
         (_POPULATION, population),
         (_PROPERTY, "amount"),
         (_STAT_TYPE, "measuredValue"),
         (axis, value),
+        definition=definition,
     )
 
 
@@ -1057,18 +1136,38 @@ _WITH_IMF_CREDIT = (
 
 _MEASURE_NOUNS: tuple[MeasurePartitionLabel, ...] = (
     # World Bank International Debt Statistics.
-    _ids("external debt service", "FinancialFlow", "financialFlowType", "ServicingPayment"),
+    _ids(
+        "external debt service",
+        "FinancialFlow",
+        "financialFlowType",
+        "ServicingPayment",
+        # DT.TDS.DLXF.CD: "the sum of principal repayments and interest payments actually made"
+        definition=(
+            "Principal and interest actually paid by borrowers, in currency, goods or services, "
+            "on external debt."
+        ),
+    ),
     _ids(
         "interest payments on external debt",
         "FinancialFlow",
         "financialFlowType",
         "InterestPayment",
+        # DT.INT.DECT.CD: "actual amounts of interest paid by the borrower in currency, goods, or
+        # services"
+        definition=(
+            "Interest actually paid by borrowers, in currency, goods or services, on external debt."
+        ),
     ),
     _ids(
         "principal repayments on external debt",
         "FinancialFlow",
         "financialFlowType",
         "PrincipalRepayment",
+        # DT.AMT.DLXF.CD
+        definition=(
+            "Principal actually repaid by borrowers, in currency, goods or services, on "
+            "external debt."
+        ),
     ),
     # Every IDS StatVar declaring `netOf` nets principal repayments off disbursements.
     _noun(
@@ -1077,45 +1176,84 @@ _MEASURE_NOUNS: tuple[MeasurePartitionLabel, ...] = (
         ("financialFlowType", "Disbursement"),
         ("netOf", "PrincipalRepayment"),
         ("nettingBasis", "Net"),
+        # DT.NFL.DLXF.CD: "Net flows ... received by the borrower during the year are
+        # disbursements minus principal repayments."
+        definition=(
+            "Disbursements on external debt received by borrowers in a year, less the principal "
+            "they repaid in it."
+        ),
     ),
     # The four IDS StatVars declaring `includesIMFCredit = WithIMFCredit` are long-term
     # disbursements and principal repayments. The shared entry names a pair of them.
-    _noun("flows on long-term external debt with IMF credit", *_IDS_FLOW, *_WITH_IMF_CREDIT),
+    _noun(
+        "flows on long-term external debt with IMF credit",
+        *_IDS_FLOW,
+        *_WITH_IMF_CREDIT,
+        # DT.DIS.DLTF.CD and DT.AMT.DLTF.CD
+        definition=(
+            "Disbursements or principal repayments on long-term external debt, counted "
+            "together with purchases from or repurchases to the IMF."
+        ),
+    ),
     _noun(
         "disbursements on long-term external debt with IMF credit",
         *_IDS_FLOW,
         *_WITH_IMF_CREDIT,
         ("financialFlowType", "Disbursement"),
+        # DT.DIS.DLTF.CD
+        definition=(
+            "Drawings by borrowers on long-term external loan commitments, together with "
+            "purchases from the IMF outside the reserve tranche."
+        ),
     ),
     _noun(
         "principal repayments on long-term external debt with IMF credit",
         *_IDS_FLOW,
         *_WITH_IMF_CREDIT,
         ("financialFlowType", "PrincipalRepayment"),
+        # DT.AMT.DLTF.CD
+        definition=(
+            "Principal actually repaid on long-term external debt, together with repurchases "
+            "of IMF credit outside the reserve tranche."
+        ),
     ),
     _ids(
         "outstanding external debt",
         "FinancialPosition",
         "financialPositionType",
         "AmountOutstanding",
+        # DT.DOD.DECT.CD: "debt owed to nonresidents repayable in currency, goods, or services"
+        definition="Debt owed to non-residents and repayable in currency, goods or services.",
     ),
     _ids(
         "principal arrears on external debt",
         "FinancialPosition",
         "financialPositionType",
         "PrincipalArrears",
+        # DT.AXA.DPPG.CD: "principal repayment due but not paid, on a cumulative basis"
+        definition=(
+            "Principal on external debt that has fallen due and not been paid, added up over "
+            "all past years."
+        ),
     ),
     _ids(
         "interest arrears on external debt",
         "FinancialPosition",
         "financialPositionType",
         "InterestArrears",
+        # DT.IXA.DPPG.CD: "interest payment due but not paid, on a cumulative basis"
+        definition=(
+            "Interest on external debt that has fallen due and not been paid, added up over "
+            "all past years."
+        ),
     ),
     _ids(
         "undisbursed external debt",
         "FinancialPosition",
         "financialPositionType",
         "AmountUndisbursed",
+        # DT.UND.DPPG.CD: "debt undrawn at year end"
+        definition="External loans committed but not yet drawn at the end of the year.",
     ),
     # IMF World Economic Outlook.
     _noun(
@@ -1124,6 +1262,8 @@ _MEASURE_NOUNS: tuple[MeasurePartitionLabel, ...] = (
         (_PROPERTY, "valueAdded"),
         (_STAT_TYPE, "measuredValue"),
         *_GDP_BASIS,
+        # NGDPD
+        definition=_GDP_DEFINITION,
     ),
     _noun(
         "GDP",
@@ -1132,6 +1272,8 @@ _MEASURE_NOUNS: tuple[MeasurePartitionLabel, ...] = (
         (_STAT_TYPE, "measuredValue"),
         *_GDP_BASIS,
         ("currencyConversionBasis", "PurchasingPowerParityRate"),
+        # PPPGDP
+        definition=_GDP_DEFINITION,
     ),
     _noun(
         "output gap",
@@ -1139,6 +1281,8 @@ _MEASURE_NOUNS: tuple[MeasurePartitionLabel, ...] = (
         (_PROPERTY, "outputGap"),
         (_STAT_TYPE, "measuredValue"),
         *_GDP_BASIS,
+        # NGAP_NPGDP
+        definition="The difference between an economy's actual output and its potential output.",
     ),
     _noun(
         "gross national savings",
@@ -1146,6 +1290,11 @@ _MEASURE_NOUNS: tuple[MeasurePartitionLabel, ...] = (
         (_PROPERTY, "saving"),
         (_STAT_TYPE, "measuredValue"),
         ("fixedCapitalConsumptionBasis", "GrossOfFixedCapitalConsumption"),
+        # NGSD_NGDP
+        definition=(
+            "The income that an economy's residents, including households, corporations and "
+            "government, earn in a period and do not consume."
+        ),
     ),
     _noun(
         "gross capital formation",
@@ -1154,6 +1303,11 @@ _MEASURE_NOUNS: tuple[MeasurePartitionLabel, ...] = (
         (_STAT_TYPE, "measuredValue"),
         ("finalExpenditureType", "CapitalFormation"),
         ("fixedCapitalConsumptionBasis", "GrossOfFixedCapitalConsumption"),
+        # NID_NGDP
+        definition=(
+            "Acquisitions less disposals of produced assets for fixed capital formation, "
+            "inventories or valuables."
+        ),
     ),
     # Base Data Commons series that WEO questions elect (World Development Indicators).
     _noun(
@@ -1162,6 +1316,8 @@ _MEASURE_NOUNS: tuple[MeasurePartitionLabel, ...] = (
         (_PROPERTY, "amount"),
         (_STAT_TYPE, "measuredValue"),
         ("activitySource", "GrossDomesticProduction"),
+        # NY.GDP.MKTP.CD
+        definition=_GDP_DEFINITION,
     ),
     _noun(
         "GDP growth",
@@ -1169,6 +1325,8 @@ _MEASURE_NOUNS: tuple[MeasurePartitionLabel, ...] = (
         (_PROPERTY, "amount"),
         (_STAT_TYPE, "growthRate"),
         ("activitySource", "GrossDomesticProduction"),
+        # NY.GDP.MKTP.KD.ZG: "the percentage change over each previous year"
+        definition="The change in gross domestic product from the year before, as a percentage.",
     ),
     _noun(
         "health expenditure",
@@ -1177,6 +1335,8 @@ _MEASURE_NOUNS: tuple[MeasurePartitionLabel, ...] = (
         (_STAT_TYPE, "measuredValue"),
         ("activitySource", "ExpenditureActivity"),
         ("expenditureType", "HealthcareExpenditure"),
+        # SH.XPD.CHEX.PC.CD
+        definition="Current spending on healthcare goods and services consumed during the year.",
     ),
     _noun(
         "government debt",
@@ -1184,6 +1344,12 @@ _MEASURE_NOUNS: tuple[MeasurePartitionLabel, ...] = (
         (_PROPERTY, "amount"),
         (_STAT_TYPE, "measuredValue"),
         ("debtor", "Government"),
+        # GC.DOD.TOTL.CN
+        definition=(
+            "The stock of a central government's direct fixed-term contractual obligations to "
+            "others outstanding on a date, including currency and deposits, securities other "
+            "than shares, and loans."
+        ),
     ),
 )
 
@@ -1246,6 +1412,16 @@ def _check_typed_as_statvar(dcid: str, type_of: tuple[str, ...]) -> None:
         )
 
 
+class ExportReader(GraphReader, Protocol):
+    """The graph reads the export makes: `GraphReader`'s, and the full forward read whose
+    values carry the provenance that asserted them, which `export_source_codes` needs."""
+
+    def node_arcs_batch(self, dcids: list[str]) -> Mapping[str, dict | None]:
+        """Each dcid's forward arcs as the graph sends them, `None` for an absent node.
+        See `dc_graph.GraphClient.node_arcs_batch`."""
+        ...
+
+
 def export_reader(base_url: str, token: str | None) -> GraphClient:
     """Create the export's GraphClient with its configured chunk size.
 
@@ -1286,6 +1462,7 @@ def _build_code_row(dcid: str, code_system: str, arcs: dict[str, tuple[str, ...]
         "synonyms": synonyms,
         "short_name": short_name,
         "parent": parent,
+        "definition": _first_or_none(arcs.get("description", ())),
     }
 
 
@@ -1534,6 +1711,7 @@ def export_code_system(
         "absent_reading": config.absent_reading,
         "plain_name": config.plain_name,
         "default": _declared_default_to_dict(config.default),
+        "enum_dcid": config.enum_dcid,
     }
     return declaration, rows
 
@@ -2048,6 +2226,78 @@ def listed_dcids(
     return tuple(sorted(dcid for dcid, datasets_of in found.items() if datasets_of))
 
 
+def export_source_codes(reader: ExportReader, dcids: Sequence[str]) -> list[dict]:
+    """Build the `source_codes` rows from the `sourceIndicatorCode` arcs of `dcids`: one row
+    per arc provenance and upper-cased code, naming its StatVars, sorted.
+
+    The rows key on the provenance each arc value carries. The coverage build gives the same
+    StatVar its provenances separately, and `parse_index` refuses a code row whose provenance
+    its StatVar's row lacks. A StatVar of `dcids` with no code, and a code value with no
+    provenance or no text, raise `SystemExit`. Every listed dataset gives each of its
+    StatVars a series code (today World Bank IDS alone), so a listed dataset without codes
+    must lift this rule before it is listed."""
+    arcs = reader.node_arcs_batch(list(dcids))
+    members: dict[tuple[str, str], set[str]] = defaultdict(set)
+    uncoded: list[str] = []
+    for dcid in dcids:
+        values = ((arcs.get(dcid) or {}).get(_SOURCE_CODE) or {}).get("nodes", ())
+        if not values:
+            uncoded.append(dcid)
+            continue
+        for value in values:
+            provenance, code = value.get("provenanceId"), (value.get("value") or "").strip()
+            if not provenance or not code:
+                raise SystemExit(
+                    f"{dcid}'s {_SOURCE_CODE} arc carries {value!r}, which names no provenance "
+                    "or no code -- cannot key a series code on it"
+                )
+            members[provenance, code.upper()].add(dcid)
+    if uncoded:
+        named = uncoded[:_MISSING_STATVAR_NAME_CAP]
+        more = f" and {len(uncoded) - len(named)} more" if len(uncoded) > len(named) else ""
+        raise SystemExit(
+            f"{len(uncoded)} listed StatVar(s) carry no {_SOURCE_CODE}: {named!r}{more} -- "
+            "search could not answer their series code"
+        )
+    return [
+        {"provenance": provenance, "code": code, "dcids": sorted(found)}
+        for (provenance, code), found in sorted(members.items())
+    ]
+
+
+def export_value_parents(reader: GraphReader, statvars: Sequence[dict]) -> list[dict]:
+    """Build the `value_parents` rows: the `specializationOf` chain above each constraint
+    value a row of `statvars` holds, one row per value with a parent, the parents' own
+    parents included, sorted by dcid.
+
+    A value with two parents, and a chain that returns to a value it holds, raise
+    `SystemExit`, since `CodeIndex.value_ancestors` walks one finite chain."""
+    parent_of: dict[str, str] = {}
+    read: set[str] = set()
+    frontier = sorted(
+        {value for row in statvars for value in row["constraint_properties"].values()}
+    )
+    while frontier:
+        read.update(frontier)
+        arcs = _fetch_arcs_many(reader, frontier, properties=("specializationOf",))
+        for dcid in frontier:
+            parents = (arcs.get(dcid) or {}).get("specializationOf", ())
+            _check_single_valued(dcid, "specializationOf", parents)
+            if parents:
+                parent_of[dcid] = parents[0]
+        frontier = sorted({parent_of[d] for d in frontier if d in parent_of} - read)
+    for dcid in parent_of:
+        chain = [dcid]
+        while (node := parent_of.get(chain[-1])) is not None:
+            if node in chain:
+                raise SystemExit(
+                    f"the specializationOf chain of {dcid} returns to {node}: "
+                    f"{' -> '.join([*chain, node])}"
+                )
+            chain.append(node)
+    return [{"dcid": dcid, "parent": parent} for dcid, parent in sorted(parent_of.items())]
+
+
 def _verify_listed_five_tuples(
     reader: GraphReader,
     statvars: Sequence[dict],
@@ -2263,7 +2513,7 @@ _MEASURE_AXIS_SHAPE_FIELDS = {
     "measuredProperty": "measured_property",
     "measurementQualifier": "measurement_qualifier",
 }
-_MEASURE_VALUE_ARC_PROPERTIES = ("name", "alternateName", "shortName")
+_MEASURE_VALUE_ARC_PROPERTIES = ("name", "alternateName", "shortName", "description")
 
 
 def _measure_axis_value(row: dict, axis: MeasureAxis) -> str | None:
@@ -2298,7 +2548,7 @@ def export_measure_values(
     declared: Mapping[str, Sequence[str]] = _DECLARED_MEASURE_VALUES,
 ) -> list[dict]:
     """Build rows for observed and declared `(axis, dcid)` pairs with graph labels and authored
-    text overrides.
+    text overrides. A row's `definition` is the value's graph `description`.
 
     Authored labels replace graph names. Synonyms merge with `alternateName`, and `matchable`
     and `same_reading_as` pass through. A missing `name` raises `SystemExit` because a
@@ -2333,6 +2583,7 @@ def export_measure_values(
                     "short_name": _first_or_none(arcs.get("shortName", ())),
                     "matchable": overrides.matchable,
                     "same_reading_as": overrides.same_reading_as,
+                    "definition": _first_or_none(arcs.get("description", ())),
                 }
             )
     rows.sort(key=lambda row: (row["axis"], row["dcid"]))
@@ -2442,7 +2693,13 @@ def _verify_measure_label_named_values(
 
 
 def _measure_axis_to_dict(axis: MeasureAxis) -> dict:
-    return {"axis": axis.axis, "kind": axis.kind, "role": axis.role, "prefer": list(axis.prefer)}
+    return {
+        "axis": axis.axis,
+        "kind": axis.kind,
+        "role": axis.role,
+        "prefer": list(axis.prefer),
+        "label": axis.label,
+    }
 
 
 def _measure_partition_label_to_dict(partition_label: MeasurePartitionLabel) -> dict:
@@ -2450,6 +2707,7 @@ def _measure_partition_label_to_dict(partition_label: MeasurePartitionLabel) -> 
         "axis_values": [list(pair) for pair in partition_label.axis_values],
         "label": partition_label.label,
         "named_values": [list(pair) for pair in partition_label.named_values],
+        "definition": partition_label.definition,
     }
 
 
@@ -2509,7 +2767,7 @@ def _statvar_shape_counts(statvars: list[dict], code_systems: Sequence[str]) -> 
 
 
 def export_graph_blocks(
-    reader: GraphReader,
+    reader: ExportReader,
     *,
     code_systems: Sequence[CodeSystemConfig] = CODE_SYSTEMS,
     measure_axes: Sequence[MeasureAxis] = MEASURE_AXES,
@@ -2522,7 +2780,9 @@ def export_graph_blocks(
     """Build every document block the graph and the authored config determine, sorted.
 
     `listed` names the StatVars of the datasets no code system enumerates (`listed_dcids`),
-    read into `listed_statvars` and checked by `_verify_listed_five_tuples`.
+    read into `listed_statvars` and checked by `_verify_listed_five_tuples`, their series
+    codes into `source_codes` (`export_source_codes`), and the parents of their constraint
+    values into `value_parents` (`export_value_parents`).
 
     StatVar rows carry no `provenances` and the result has no stamp, so it does not load as an
     index. `export_index` completes it from a coverage build. The drift test compares it with the
@@ -2558,6 +2818,8 @@ def export_graph_blocks(
     )
     listed_statvars = export_statvars(reader, sorted(listed)) if listed else []
     _verify_listed_five_tuples(reader, statvars, listed_statvars)
+    source_codes = export_source_codes(reader, sorted(listed)) if listed else []
+    value_parents = export_value_parents(reader, listed_statvars)
     _verify_measure_partition_labels(statvars, measure_axes, measure_partition_labels)
     _verify_measure_nouns(statvars, measure_nouns)
     _verify_measure_label_named_values(statvars, codes, measure_axes, measure_partition_labels)
@@ -2572,6 +2834,8 @@ def export_graph_blocks(
         "codes": codes,
         "statvars": statvars,
         "listed_statvars": listed_statvars,
+        "source_codes": source_codes,
+        "value_parents": value_parents,
         "measure_axes": [_measure_axis_to_dict(axis) for axis in measure_axes],
         "measure_values": measure_values,
         "measure_partition_labels": [
@@ -2604,7 +2868,7 @@ def content_hash(blocks: Mapping[str, list[dict]]) -> str:
 
 
 def export_index(
-    reader: GraphReader,
+    reader: ExportReader,
     *,
     graph_endpoint: str,
     now: datetime,
@@ -2707,7 +2971,7 @@ def main() -> None:
         f"{len(document['statvars'])} StatVar rows, "
         f"{len(document['listed_statvars'])} listed StatVar rows "
         f"({stamp['statvars_without_coverage']} not in coverage build "
-        f"{stamp['coverage_build']}), and "
+        f"{stamp['coverage_build']}), {len(document['source_codes'])} source code rows, and "
         f"{len(document['measure_values'])} measure values to {args.out}",
         file=sys.stderr,
     )

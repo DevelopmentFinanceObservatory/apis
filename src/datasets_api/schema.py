@@ -1,7 +1,7 @@
 """`GET /api/datasets/schema` publishes contract-stable schemas with immutable `$id`s. Register,
 mint, and members request schemas reuse their runtime models, and the members door serves
-`MembersEnvelope` itself. The manifest, options, pin, and operation schemas define the fields
-their doors enforce. Nested graph-dependent shapes remain open.
+`MembersEnvelope` itself. The manifest, options, pin, operation, and description values page
+schemas define the fields their doors enforce. A description refers to dfo-spec-kit's schema. Nested graph-dependent shapes remain open.
 Problem details embeds the platform-owned schema without a datasets `$id`.
 """
 
@@ -19,6 +19,7 @@ from datasets_api.mint_models import (
 )
 from datasets_api.models import DefinitionResponse, RegisterRequest
 from dfo_platform.problem import ProblemDetails
+from dfo_platform.wire import ResponseModel, is_none
 
 _SCHEMA_BASE = "https://schemas.dfo.one.org/datasets/v1"
 
@@ -38,14 +39,14 @@ class MintRequest(BaseModel):
     options: MintOptions = Field(default_factory=MintOptions)
 
 
-class Manifest(BaseModel):
+class Manifest(ResponseModel):
     """The manifest every materialising door returns: the `definition`, the immutable version
-    record (`content_version`, `coverage`, `citation`, `trace`, `warnings`), the
-    live artifact inventory (`artifacts`), and the number of distinct
-    series this definition resolves (`series_count`, `null` on a version
-    record minted before this field existed). The per-series detail itself
+    record (`content_version`, `coverage`, `citation`, `trace`, `warnings`), the response's
+    `diagnostics`, the live artifact inventory (`artifacts`), and the number of distinct
+    series this definition resolves (`series_count`, a series and the estimates continuing it
+    counting once, absent on a version record minted before this field existed). The per-series detail itself
     is a `series-statistics/1` Parquet artifact listed in `artifacts`
-    whenever `series_count` is not `null`, never inline on this shape.
+    whenever `series_count` is present, never inline on this shape.
     Nested shapes (coverage/citation/trace/artifact entry) are
     left as open objects here. Each door's own runtime models define their
     frozen field sets separately, so fixing them in this schema risks a
@@ -55,7 +56,7 @@ class Manifest(BaseModel):
     currency-facing pair a caller checks alongside `content_version`.
     `series_coverage_stamp` is lineage only (C156): the
     `series_coverage` artifact this request's sync-admission estimate ran
-    against, `null` when a served-from-head response ran no estimate this
+    against, absent when a served-from-head response ran no estimate this
     call. `content_version` does not fold it in. `prepared_at` is the
     RFC 3339 instant the version was first minted. Every later mint and
     re-render of the version reports the same instant.
@@ -73,13 +74,14 @@ class Manifest(BaseModel):
     citation: dict[str, object]
     trace: dict[str, object]
     warnings: list[dict[str, object]] = Field(default_factory=list)
+    diagnostics: list[dict[str, object]] = Field(default_factory=list)
     artifacts: list[dict[str, object]]
-    series_count: int | None = None
-    output_options: dict[str, object] | None = None
-    series_coverage_stamp: str | None = None
+    series_count: int | None = Field(default=None, exclude_if=is_none)
+    output_options: dict[str, object] | None = Field(default=None, exclude_if=is_none)
+    series_coverage_stamp: str | None = Field(default=None, exclude_if=is_none)
 
 
-class OptionsEnvelope(BaseModel):
+class OptionsEnvelope(ResponseModel):
     """`GET /api/datasets/{id}/options`'s response, the projection of a
     manifest onto `content_version`, `coverage`, `output_options`,
     `warnings`, and `trace`. Nested shapes stay open objects here, the same
@@ -98,12 +100,12 @@ class OptionsEnvelope(BaseModel):
     definition: dict[str, object]
     content_version: str = Field(pattern=r"^cv_")
     coverage: dict[str, object]
-    output_options: dict[str, object] | None = None
+    output_options: dict[str, object] | None = Field(default=None, exclude_if=is_none)
     warnings: list[dict[str, object]] = Field(default_factory=list)
     trace: dict[str, object]
 
 
-class ServedMember(BaseModel):
+class ServedMember(ResponseModel):
     """One StatVar a definition serves: its `dcid:`-prefixed `ref`, as the manifest trace's
     `resolved_stat_vars` names it, its graph `label` (`null` when the graph holds none), the
     `roles` it declares, and its `constraints`, each constraint property with its value
@@ -117,7 +119,7 @@ class ServedMember(BaseModel):
     constraints: dict[str, str | None]
 
 
-class MembersEnvelope(BaseModel):
+class MembersEnvelope(ResponseModel):
     """`POST /api/datasets/{id}/members`'s response: the members a mint of the spec serves,
     resolved without materialising a frame.
 
@@ -140,6 +142,72 @@ class MembersEnvelope(BaseModel):
     family_member_digest: str | None
 
 
+DESCRIPTION_SCHEMA_ID = (
+    "https://developmentfinance.org/descriptions/schema/v1/description.schema.json"
+)
+"""The `$id` of dfo-spec-kit's description schema, which
+`GET /api/datasets/{id}/{content_version}/description` answers in."""
+
+DESCRIPTION_OPENAPI_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "description": f"A version's description, in the schema {DESCRIPTION_SCHEMA_ID}",
+    "properties": {
+        member: {}
+        for member in (
+            "describes",
+            "title",
+            "about",
+            "sources",
+            "freshness",
+            "steps",
+            "cite",
+            "caveats",
+            "gaps",
+            "built_from",
+        )
+    },
+}
+"""The description route's OpenAPI response: its members, each shaped by dfo-spec-kit's
+schema."""
+
+
+class DescribedProperty(BaseModel):
+    """The open dimension a values page lists, and its label (`null` where none is known)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ref: str
+    label: str | None
+
+
+class DescribedValue(BaseModel):
+    """One value of an open dimension, its label (`null` where none is known), and how many of
+    the version's variables with data hold it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ref: str
+    label: str | None
+    variables: int = Field(ge=0)
+
+
+class DescriptionValuesPage(BaseModel):
+    """One page of `GET /api/datasets/{id}/{content_version}/description/values`: the values
+    the version's record holds for one open dimension, most variables first, ties ordered by
+    dcid. `next_cursor` continues the list after the page's last value and is `null` on its
+    last page, where `complete` is true."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={"$id": f"{_SCHEMA_BASE}/description-values-page.json"},
+    )
+
+    property: DescribedProperty
+    items: list[DescribedValue]
+    next_cursor: str | None
+    complete: bool
+
+
 class PinRequest(BaseModel):
     """`POST /api/datasets/{id}/{content_version}/pin`'s body: names the
     exact bytes to pin, not a rendering to re-derive.
@@ -153,7 +221,7 @@ class PinRequest(BaseModel):
     artifact_digest: str = Field(pattern=r"^sha256:")
 
 
-class PinnedArtifact(BaseModel):
+class PinnedArtifact(ResponseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str
@@ -162,7 +230,7 @@ class PinnedArtifact(BaseModel):
     pinned_at: str
 
 
-class PinResponse(BaseModel):
+class PinResponse(ResponseModel):
     model_config = ConfigDict(
         extra="forbid", json_schema_extra={"$id": f"{_SCHEMA_BASE}/pin-response.json"}
     )
@@ -171,7 +239,7 @@ class PinResponse(BaseModel):
     pinned: PinnedArtifact
 
 
-class OperationProgress(BaseModel):
+class OperationProgress(ResponseModel):
     """`rows_written` against `estimate_rows`, read live off
     `datasets.operation` at poll time (`datasets_api.operation_store
     .Operation`). Present on a `pending`/`running` operation's own
@@ -187,25 +255,26 @@ class OperationProgress(BaseModel):
     estimate_rows: int
 
 
-class OperationEnvelope(BaseModel):
+class OperationEnvelope(ResponseModel):
     model_config = ConfigDict(extra="forbid")
 
     operation_id: str = Field(pattern=r"^op_")
     status: Literal["pending", "running", "done", "failed"]
-    poll: str | None = None
+    poll: str | None = Field(default=None, exclude_if=is_none)
     retry_after_ms: int | None = Field(
         default=None,
+        exclude_if=is_none,
         description=(
-            "populated only on the initial 202 submit response; always None on a "
+            "present only on the initial 202 submit response; absent on a "
             "pending/running poll -- a caller polling with no backoff strategy of "
             "its own gets no ongoing pacing guidance from this field past the "
             "first response"
         ),
     )
-    progress: OperationProgress | None = None
+    progress: OperationProgress | None = Field(default=None, exclude_if=is_none)
 
 
-class OperationResource(BaseModel):
+class OperationResource(ResponseModel):
     """`GET /api/datasets/operations/{operation_id}`'s poll response. The
     capability document reports `operation_envelope_active: true`, and this
     is the shape the route returns for a known operation id in `pending`,
@@ -234,8 +303,8 @@ class OperationResource(BaseModel):
     )
 
     operation: OperationEnvelope
-    manifest: dict[str, object] | None = None
-    error: dict[str, object] | None = None
+    manifest: dict[str, object] | None = Field(default=None, exclude_if=is_none)
+    error: dict[str, object] | None = Field(default=None, exclude_if=is_none)
 
     @model_validator(mode="after")
     def _manifest_or_error_only_when_terminal(self) -> OperationResource:
@@ -245,20 +314,29 @@ class OperationResource(BaseModel):
 
 
 def build_schema_document() -> dict[str, object]:
-    """Returns each contract schema and the capabilities URL."""
+    """Returns each contract schema and the capabilities URL.
+
+    A request schema is built in validation mode, where a defaulted field is optional. A
+    response schema is built in serialization mode, which describes the body the server emits:
+    every field is required except one declared `exclude_if=is_none`, which the doors leave out
+    of a body when it is `None`. Problem details stays in validation mode, since its
+    optional members are left out of a body when `None`.
+    """
     return {
         "schema_version": 1,
         "mint_request": MintRequest.model_json_schema(),
         "register_request": RegisterRequest.model_json_schema(),
-        "register_response": DefinitionResponse.model_json_schema(),
-        "manifest": Manifest.model_json_schema(),
+        "register_response": DefinitionResponse.model_json_schema(mode="serialization"),
+        "manifest": Manifest.model_json_schema(mode="serialization"),
         "definition_options_request": DefinitionOptionsRequest.model_json_schema(),
-        "options_envelope": OptionsEnvelope.model_json_schema(),
+        "options_envelope": OptionsEnvelope.model_json_schema(mode="serialization"),
         "definition_members_request": DefinitionMembersRequest.model_json_schema(),
-        "members_envelope": MembersEnvelope.model_json_schema(),
+        "members_envelope": MembersEnvelope.model_json_schema(mode="serialization"),
         "pin_request": PinRequest.model_json_schema(),
-        "pin_response": PinResponse.model_json_schema(),
-        "operation_resource": OperationResource.model_json_schema(),
+        "pin_response": PinResponse.model_json_schema(mode="serialization"),
+        "operation_resource": OperationResource.model_json_schema(mode="serialization"),
+        "description": {"$ref": DESCRIPTION_SCHEMA_ID},
+        "description_values_page": DescriptionValuesPage.model_json_schema(mode="serialization"),
         "problem_details_extensions": ProblemDetails.model_json_schema(),
         "capabilities": "/api/datasets/capabilities",
     }

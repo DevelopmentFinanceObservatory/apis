@@ -224,20 +224,32 @@ class _CoverageRolePairs:
             member_sorts_first=member_sorts_first,
             with_data=with_data,
         )
-        result: list[tuple[RoleTuple, int]] = []
-        for member, opposite, n_obs in pairs:
-            role_tuple = (
-                _role_tuple_for_pair(
-                    role_name=self.role_name,
-                    member=member,
-                    opposite_role_name=self.opposite_role_name,
-                    opposite=opposite,
-                )
-                if opposite is not None
-                else ((self.role_name, member),)
-            )
-            result.append((role_tuple, n_obs))
-        return result
+        return [(self._role_tuple(member, opposite), n_obs) for member, opposite, n_obs in pairs]
+
+    def year_counts(
+        self, *, first_year: int | None, last_year: int | None
+    ) -> list[tuple[RoleTuple, tuple[tuple[int, int], ...]]]:
+        pairs = self.rows.pair_year_counts(
+            variable=self.variable,
+            facet_id=self.facet_id,
+            first_year=first_year,
+            last_year=last_year,
+            member_is_donor=self.member_is_donor,
+            has_opposite=self.opposite_role_name is not None,
+        )
+        return [(self._role_tuple(member, opposite), counts) for member, opposite, counts in pairs]
+
+    def _role_tuple(self, member: str, opposite: str | None) -> RoleTuple:
+        """The role tuple of a row binding `member` on this pairs' role and `opposite`, or
+        no opposite, on the other."""
+        if opposite is None:
+            return ((self.role_name, member),)
+        return _role_tuple_for_pair(
+            role_name=self.role_name,
+            member=member,
+            opposite_role_name=self.opposite_role_name,
+            opposite=opposite,
+        )
 
     def n_obs(self, *, first_year: int | None, last_year: int | None) -> int:
         return self.rows.n_obs(
@@ -344,6 +356,7 @@ def _role_index_from_coverage(
                 measurement_method=meta.measurement_method if meta else None,
                 unit=meta.unit if meta else None,
                 scaling_factor=meta.scaling_factor if meta else None,
+                observation_period=meta.observation_period if meta else None,
             )
         )
     return role_index_by_sv

@@ -26,6 +26,7 @@ from search.engine.errors import (
     GraphInfraError,
 )
 from search.engine.events import Event, EventSink, SentenceEvent, ShapeEvent, StepEvent
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import pipeline, place_context
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.result import RegionResult
@@ -34,6 +35,7 @@ from search.models import DefinitePart, ParsedEntity, ParsedInput, ParsedPart, R
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import offline_resolve
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue
 
@@ -129,6 +131,8 @@ class _ElectFirstLLM:
         self.second_bind = second_bind
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         self.prompts.append(prompt)
         if self.second_bind is not None and len(self.prompts) > 1:
@@ -179,7 +183,7 @@ async def _resolving(
 
 
 def _elected(result: RegionResult) -> list[str]:
-    return [sv.ref.dcid for spec in result.specs for sv in spec.resolved.members]
+    return [sv.ref.ref for spec in result.specs for sv in spec.resolved.members]
 
 
 def _codes(result: RegionResult) -> list[str]:
@@ -338,7 +342,7 @@ def test_a_second_pass_over_an_upstream_cap_keeps_the_first_with_a_warning(caplo
 
     assert result.status == "no_data"
     assert result.no_data_reason == "no_observations"
-    assert [sv.dcid for sv in result.elected_stat_vars or []] == [_OURS]
+    assert [sv.ref for sv in result.elected_stat_vars or []] == [_OURS]
     assert "un_system_unavailable" in _codes(result)
     (line,) = _gap_fill_lines(caplog)
     assert "pass2=ran pass2_status=error:GraphCapExceededError" in line
@@ -350,7 +354,7 @@ def test_a_defect_in_the_second_pass_keeps_the_first_unwarned_and_logs_it(caplog
 
     assert result.status == "no_data"
     assert result.no_data_reason == "no_observations"
-    assert [sv.dcid for sv in result.elected_stat_vars or []] == [_OURS]
+    assert [sv.ref for sv in result.elected_stat_vars or []] == [_OURS]
     assert "un_system_unavailable" not in _codes(result)
     (error,) = [r for r in caplog.records if r.levelno == logging.ERROR]
     assert error.exc_info is not None and isinstance(error.exc_info[1], RuntimeError)
@@ -405,7 +409,7 @@ def test_a_second_pass_that_outruns_its_bound_keeps_the_first_before_the_deadlin
     assert _menu_named(llm, _UN), "the second pass never reached bind"
     assert result.status == "no_data"
     assert result.no_data_reason == "no_observations"
-    assert [sv.dcid for sv in result.elected_stat_vars or []] == [_OURS]
+    assert [sv.ref for sv in result.elected_stat_vars or []] == [_OURS]
     assert result.flagged_match
     assert "un_system_unavailable" in _codes(result)
     (line,) = _gap_fill_lines(caplog)
@@ -433,7 +437,7 @@ def test_a_second_pass_that_also_ends_no_data_keeps_the_first(caplog) -> None:
 
     assert result.status == "no_data"
     assert result.no_data_reason == "no_observations"
-    assert [sv.dcid for sv in result.elected_stat_vars or []] == [_OURS]
+    assert [sv.ref for sv in result.elected_stat_vars or []] == [_OURS]
     assert _menu_named(llm, _UN_EMPTY), "the second pass never reached bind"
     (line,) = _gap_fill_lines(caplog)
     assert "pass1=no_data/no_observations" in line
@@ -548,7 +552,7 @@ def test_a_two_part_request_fills_only_the_part_without_data() -> None:
 
     parts = response.parts
     assert all(isinstance(part, DefinitePart) for part in parts)
-    elected = [[sv.ref.dcid for sv in part.spec.resolved.members] for part in parts]
+    elected = [[sv.ref.ref for sv in part.spec.resolved.members] for part in parts]
     assert elected == [[_UN], [_ENROLMENT]]
 
 
@@ -774,6 +778,8 @@ class _RecordedBirthRateLLM(_ElectFirstLLM):
     the first shape."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         output, usage = await super().generate_structured(
             prompt=prompt, system=system, schema=schema
         )
@@ -807,8 +813,8 @@ def test_a_weak_second_pass_answer_leaves_the_first_passs_alternate_standing(cap
     assert result.no_data_reason == "no_observations"
     assert result.gate == "only_alternate_has_data"
     assert result.alternate_match is not None
-    assert [sv.ref.dcid for sv in result.alternate_match.resolved.members] == [_FERTILITY_RATE]
-    assert [sv.dcid for sv in result.elected_stat_vars or []] == [_CRUDE_BIRTH_RATE]
+    assert [sv.ref.ref for sv in result.alternate_match.resolved.members] == [_FERTILITY_RATE]
+    assert [sv.ref for sv in result.elected_stat_vars or []] == [_CRUDE_BIRTH_RATE]
     assert _menu_named(llm, _UN_TOTAL_FERTILITY_RATE), "the second pass never reached bind"
     assert "un_system_unavailable" not in _codes(result)
     (line,) = _gap_fill_lines(caplog)

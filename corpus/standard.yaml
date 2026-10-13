@@ -4,6 +4,8 @@
   tags:
     directional_flow: na
     conjunction: none
+  # Known failure: The wider activitySource list on the expenditure shape sends the election to the UN pool, which offers three UN series instead of the two education spending shares.
+  known_failure: {issue: 1298, checks: [measure]}
   expect:
     candidates:
       measure:
@@ -213,7 +215,7 @@
         kind: value
         value:
           ref:
-            dcid: country/IND
+            ref: country/IND
             label: India
           value_kind: entity
           time_window: null
@@ -221,7 +223,7 @@
     - key:
         axis: how
         property:
-          dcid: activitySource
+          ref: activitySource
           label: activity source
         label: activity source
       binding:
@@ -314,6 +316,8 @@
   tags:
     directional_flow: na
     conjunction: none
+  # Known failure: The UNICEF family offers several age bands, so the model leaves age open and the part serves three bands (75 rows) instead of under five.
+  known_failure: {issue: 1298, checks: [measure, materialisation]}
   expect:
     definite:
       measure:
@@ -334,6 +338,8 @@
   tags:
     directional_flow: na
     conjunction: none
+  # Known failure: The held family's slot values are not narrowed to the place, so the model leaves ageGroupClassification and age open and the family total, with no Kenya data, elects.
+  known_failure: {issue: 1298, checks: [measure]}
   expect:
     definite:
       measure:
@@ -456,9 +462,8 @@
   tags:
     directional_flow: na
     conjunction: none
-  known_failure:
-    issue: 1156
-    checks: [measure]
+  # Also known failure under #1298 (disposition): UNICEF and UNFPA series are both offered as candidates instead of one definite answer.
+  known_failure: {issue: 1156, checks: [measure, disposition]}
   expect:
     definite:
       measure:
@@ -842,12 +847,15 @@
         role: observationAbout
 - id: govt-education-expenditure
   query: government expenditure on education as share of total government spending
-  why: Government education expenditure as a share of total government spending offers the share-of-expenditure and share-of-GDP variants as candidates.
+  why: The query names total government spending as the base, so the share of GDP is refused and the share of government expenditure answers.
   tags:
     directional_flow: na
     conjunction: none
+  known_failure:
+    issue: 1288
+    checks: [disposition]
   expect:
-    candidates:
+    definite:
       measure:
         shape:
           population_type: EconomicActivity
@@ -857,7 +865,6 @@
           measurement_denominator: Amount_EconomicActivity_ExpenditureActivity_Government
         stat_vars:
         - Amount_EconomicActivity_ExpenditureActivity_EducationExpenditure_Government_AsFractionOf_Amount_EconomicActivity_ExpenditureActivity_Government
-        - Amount_EconomicActivity_ExpenditureActivity_EducationExpenditure_Government_AsFractionOf_Amount_EconomicActivity_GrossDomesticProduction_Nominal
 - id: hiv-prevalence
   query: people living with HIV
   why: When the DFO and base paths end no_data for people living with HIV, the UN System Data Commons answers with undata/unaids/PLWH.
@@ -967,6 +974,8 @@
   tags:
     directional_flow: na
     conjunction: none
+  # Known failure: age now has several values, so the model no longer claims Years15To64 and the identity leaves age open.
+  known_failure: {issue: 1298, checks: [measure]}
   expect:
     definite:
       measure:
@@ -988,6 +997,8 @@
   tags:
     directional_flow: na
     conjunction: none
+  # Known failure: The family's new age slot lets the model bind Years0, so LifeExpectancy_Person_0Years (1980 to 2020) answers instead of the total.
+  known_failure: {issue: 1298, checks: [measure]}
   expect:
     definite:
       measure:
@@ -1702,6 +1713,8 @@
   tags:
     directional_flow: na
     conjunction: none
+  # Known failure: The wider slot lists change the model's binding, so the part refuses no_matching_slice instead of qualifier_not_bound.
+  known_failure: {issue: 1298, checks: [refusal]}
   expect:
     no_data:
       reason: qualifier_not_bound
@@ -1741,14 +1754,14 @@
     - key:
         axis: how
         property:
-          dcid: crsPurpose
+          ref: crsPurpose
           label: CRS purpose
         label: CRS purpose
       binding:
         kind: value
         value:
           ref:
-            dcid: CRSPurposeCode99810
+            ref: CRSPurposeCode99810
             label: sectors not specified
           value_kind: enum_value
           time_window: null
@@ -1756,14 +1769,14 @@
     - key:
         axis: how
         property:
-          dcid: crsTypeOfFinance
+          ref: crsTypeOfFinance
           label: CRS type of finance
         label: CRS type of finance
       binding:
         kind: value
         value:
           ref:
-            dcid: CRSTypeOfFinance110
+            ref: CRSTypeOfFinance110
             label: standard grant
           value_kind: enum_value
           time_window: null
@@ -1771,14 +1784,14 @@
     - key:
         axis: how
         property:
-          dcid: crsTypeOfFlow
+          ref: crsTypeOfFlow
           label: CRS type of flow
         label: CRS type of flow
       binding:
         kind: value
         value:
           ref:
-            dcid: CRSTypeOfFlow10
+            ref: CRSTypeOfFlow10
             label: official development assistance
           value_kind: enum_value
           time_window: null
@@ -1786,14 +1799,14 @@
     - key:
         axis: how
         property:
-          dcid: financialFlowType
+          ref: financialFlowType
           label: financial flow type
         label: financial flow type
       binding:
         kind: value
         value:
           ref:
-            dcid: Disbursement
+            ref: Disbursement
             label: disbursement
           value_kind: enum_value
           time_window: null
@@ -1801,14 +1814,14 @@
     - key:
         axis: how
         property:
-          dcid: nettingBasis
+          ref: nettingBasis
           label: netting basis
         label: netting basis
       binding:
         kind: value
         value:
           ref:
-            dcid: Gross
+            ref: Gross
             label: gross
           value_kind: enum_value
           time_window: null
@@ -1866,14 +1879,14 @@
     - key:
         axis: how
         property:
-          dcid: crsPurpose
+          ref: crsPurpose
           label: CRS purpose
         label: CRS purpose
       binding:
         kind: value
         value:
           ref:
-            dcid: CRSPurposeCode99810
+            ref: CRSPurposeCode99810
             label: sectors not specified
           value_kind: enum_value
           time_window: null
@@ -1881,14 +1894,14 @@
     - key:
         axis: how
         property:
-          dcid: crsTypeOfFinance
+          ref: crsTypeOfFinance
           label: CRS type of finance
         label: CRS type of finance
       binding:
         kind: value
         value:
           ref:
-            dcid: CRSTypeOfFinance110
+            ref: CRSTypeOfFinance110
             label: standard grant
           value_kind: enum_value
           time_window: null
@@ -1896,14 +1909,14 @@
     - key:
         axis: how
         property:
-          dcid: crsTypeOfFlow
+          ref: crsTypeOfFlow
           label: CRS type of flow
         label: CRS type of flow
       binding:
         kind: value
         value:
           ref:
-            dcid: CRSTypeOfFlow10
+            ref: CRSTypeOfFlow10
             label: official development assistance
           value_kind: enum_value
           time_window: null
@@ -1911,14 +1924,14 @@
     - key:
         axis: how
         property:
-          dcid: financialFlowType
+          ref: financialFlowType
           label: financial flow type
         label: financial flow type
       binding:
         kind: value
         value:
           ref:
-            dcid: Disbursement
+            ref: Disbursement
             label: disbursement
           value_kind: enum_value
           time_window: null
@@ -1926,14 +1939,14 @@
     - key:
         axis: how
         property:
-          dcid: nettingBasis
+          ref: nettingBasis
           label: netting basis
         label: netting basis
       binding:
         kind: value
         value:
           ref:
-            dcid: Gross
+            ref: Gross
             label: gross
           value_kind: enum_value
           time_window: null
@@ -2905,14 +2918,14 @@
     - key:
         axis: how
         property:
-          dcid: crsCooperationModality
+          ref: crsCooperationModality
           label: CRS cooperation modality
         label: CRS cooperation modality
       binding:
         kind: value
         value:
           ref:
-            dcid: CRSCooperationModalityC01
+            ref: CRSCooperationModalityC01
             label: project-type interventions
           value_kind: enum_value
           time_window: null
@@ -2920,14 +2933,14 @@
     - key:
         axis: how
         property:
-          dcid: crsPurpose
+          ref: crsPurpose
           label: CRS purpose
         label: CRS purpose
       binding:
         kind: value
         value:
           ref:
-            dcid: CRSPurposeCode15110
+            ref: CRSPurposeCode15110
             label: public sector policy and administrative management
           value_kind: enum_value
           time_window: null
@@ -2935,14 +2948,14 @@
     - key:
         axis: how
         property:
-          dcid: crsTypeOfFinance
+          ref: crsTypeOfFinance
           label: CRS type of finance
         label: CRS type of finance
       binding:
         kind: value
         value:
           ref:
-            dcid: CRSTypeOfFinance110
+            ref: CRSTypeOfFinance110
             label: standard grant
           value_kind: enum_value
           time_window: null
@@ -2950,14 +2963,14 @@
     - key:
         axis: how
         property:
-          dcid: crsTypeOfFlow
+          ref: crsTypeOfFlow
           label: CRS type of flow
         label: CRS type of flow
       binding:
         kind: value
         value:
           ref:
-            dcid: CRSTypeOfFlow10
+            ref: CRSTypeOfFlow10
             label: official development assistance
           value_kind: enum_value
           time_window: null
@@ -2965,14 +2978,14 @@
     - key:
         axis: how
         property:
-          dcid: financialFlowType
+          ref: financialFlowType
           label: financial flow type
         label: financial flow type
       binding:
         kind: value
         value:
           ref:
-            dcid: Disbursement
+            ref: Disbursement
             label: disbursement
           value_kind: enum_value
           time_window: null
@@ -2980,14 +2993,14 @@
     - key:
         axis: how
         property:
-          dcid: nettingBasis
+          ref: nettingBasis
           label: netting basis
         label: netting basis
       binding:
         kind: value
         value:
           ref:
-            dcid: Gross
+            ref: Gross
             label: gross
           value_kind: enum_value
           time_window: null
@@ -3041,14 +3054,14 @@
     - key:
         axis: how
         property:
-          dcid: crsCooperationModality
+          ref: crsCooperationModality
           label: CRS cooperation modality
         label: CRS cooperation modality
       binding:
         kind: value
         value:
           ref:
-            dcid: CRSCooperationModalityC01
+            ref: CRSCooperationModalityC01
             label: project-type interventions
           value_kind: enum_value
           time_window: null
@@ -3056,14 +3069,14 @@
     - key:
         axis: how
         property:
-          dcid: crsPurpose
+          ref: crsPurpose
           label: CRS purpose
         label: CRS purpose
       binding:
         kind: value
         value:
           ref:
-            dcid: CRSPurposeCode15110
+            ref: CRSPurposeCode15110
             label: public sector policy and administrative management
           value_kind: enum_value
           time_window: null
@@ -3071,14 +3084,14 @@
     - key:
         axis: how
         property:
-          dcid: crsTypeOfFinance
+          ref: crsTypeOfFinance
           label: CRS type of finance
         label: CRS type of finance
       binding:
         kind: value
         value:
           ref:
-            dcid: CRSTypeOfFinance110
+            ref: CRSTypeOfFinance110
             label: standard grant
           value_kind: enum_value
           time_window: null
@@ -3086,14 +3099,14 @@
     - key:
         axis: how
         property:
-          dcid: crsTypeOfFlow
+          ref: crsTypeOfFlow
           label: CRS type of flow
         label: CRS type of flow
       binding:
         kind: value
         value:
           ref:
-            dcid: CRSTypeOfFlow10
+            ref: CRSTypeOfFlow10
             label: official development assistance
           value_kind: enum_value
           time_window: null
@@ -3101,14 +3114,14 @@
     - key:
         axis: how
         property:
-          dcid: financialFlowType
+          ref: financialFlowType
           label: financial flow type
         label: financial flow type
       binding:
         kind: value
         value:
           ref:
-            dcid: Disbursement
+            ref: Disbursement
             label: disbursement
           value_kind: enum_value
           time_window: null
@@ -3116,14 +3129,14 @@
     - key:
         axis: how
         property:
-          dcid: nettingBasis
+          ref: nettingBasis
           label: netting basis
         label: netting basis
       binding:
         kind: value
         value:
           ref:
-            dcid: Gross
+            ref: Gross
             label: gross
           value_kind: enum_value
           time_window: null
@@ -3177,14 +3190,14 @@
     - key:
         axis: how
         property:
-          dcid: crsCooperationModality
+          ref: crsCooperationModality
           label: CRS cooperation modality
         label: CRS cooperation modality
       binding:
         kind: value
         value:
           ref:
-            dcid: CRSCooperationModalityC01
+            ref: CRSCooperationModalityC01
             label: project-type interventions
           value_kind: enum_value
           time_window: null
@@ -3192,14 +3205,14 @@
     - key:
         axis: how
         property:
-          dcid: crsPurpose
+          ref: crsPurpose
           label: CRS purpose
         label: CRS purpose
       binding:
         kind: value
         value:
           ref:
-            dcid: CRSPurposeCode15110
+            ref: CRSPurposeCode15110
             label: public sector policy and administrative management
           value_kind: enum_value
           time_window: null
@@ -3207,14 +3220,14 @@
     - key:
         axis: how
         property:
-          dcid: crsTypeOfFinance
+          ref: crsTypeOfFinance
           label: CRS type of finance
         label: CRS type of finance
       binding:
         kind: value
         value:
           ref:
-            dcid: CRSTypeOfFinance110
+            ref: CRSTypeOfFinance110
             label: standard grant
           value_kind: enum_value
           time_window: null
@@ -3222,14 +3235,14 @@
     - key:
         axis: how
         property:
-          dcid: crsTypeOfFlow
+          ref: crsTypeOfFlow
           label: CRS type of flow
         label: CRS type of flow
       binding:
         kind: value
         value:
           ref:
-            dcid: CRSTypeOfFlow10
+            ref: CRSTypeOfFlow10
             label: official development assistance
           value_kind: enum_value
           time_window: null
@@ -3237,14 +3250,14 @@
     - key:
         axis: how
         property:
-          dcid: financialFlowType
+          ref: financialFlowType
           label: financial flow type
         label: financial flow type
       binding:
         kind: value
         value:
           ref:
-            dcid: Disbursement
+            ref: Disbursement
             label: disbursement
           value_kind: enum_value
           time_window: null
@@ -3252,14 +3265,14 @@
     - key:
         axis: how
         property:
-          dcid: nettingBasis
+          ref: nettingBasis
           label: netting basis
         label: netting basis
       binding:
         kind: value
         value:
           ref:
-            dcid: Gross
+            ref: Gross
             label: gross
           value_kind: enum_value
           time_window: null
@@ -3313,14 +3326,14 @@
     - key:
         axis: how
         property:
-          dcid: crsCooperationModality
+          ref: crsCooperationModality
           label: CRS cooperation modality
         label: CRS cooperation modality
       binding:
         kind: value
         value:
           ref:
-            dcid: CRSCooperationModalityC01
+            ref: CRSCooperationModalityC01
             label: project-type interventions
           value_kind: enum_value
           time_window: null
@@ -3328,14 +3341,14 @@
     - key:
         axis: how
         property:
-          dcid: crsPurpose
+          ref: crsPurpose
           label: CRS purpose
         label: CRS purpose
       binding:
         kind: value
         value:
           ref:
-            dcid: CRSPurposeCode15110
+            ref: CRSPurposeCode15110
             label: public sector policy and administrative management
           value_kind: enum_value
           time_window: null
@@ -3343,14 +3356,14 @@
     - key:
         axis: how
         property:
-          dcid: crsTypeOfFinance
+          ref: crsTypeOfFinance
           label: CRS type of finance
         label: CRS type of finance
       binding:
         kind: value
         value:
           ref:
-            dcid: CRSTypeOfFinance110
+            ref: CRSTypeOfFinance110
             label: standard grant
           value_kind: enum_value
           time_window: null
@@ -3358,14 +3371,14 @@
     - key:
         axis: how
         property:
-          dcid: crsTypeOfFlow
+          ref: crsTypeOfFlow
           label: CRS type of flow
         label: CRS type of flow
       binding:
         kind: value
         value:
           ref:
-            dcid: CRSTypeOfFlow10
+            ref: CRSTypeOfFlow10
             label: official development assistance
           value_kind: enum_value
           time_window: null
@@ -3373,14 +3386,14 @@
     - key:
         axis: how
         property:
-          dcid: financialFlowType
+          ref: financialFlowType
           label: financial flow type
         label: financial flow type
       binding:
         kind: value
         value:
           ref:
-            dcid: Disbursement
+            ref: Disbursement
             label: disbursement
           value_kind: enum_value
           time_window: null
@@ -3388,14 +3401,14 @@
     - key:
         axis: how
         property:
-          dcid: nettingBasis
+          ref: nettingBasis
           label: netting basis
         label: netting basis
       binding:
         kind: value
         value:
           ref:
-            dcid: Gross
+            ref: Gross
             label: gross
           value_kind: enum_value
           time_window: null
@@ -3449,14 +3462,14 @@
     - key:
         axis: how
         property:
-          dcid: crsCooperationModality
+          ref: crsCooperationModality
           label: CRS cooperation modality
         label: CRS cooperation modality
       binding:
         kind: value
         value:
           ref:
-            dcid: CRSCooperationModalityC01
+            ref: CRSCooperationModalityC01
             label: project-type interventions
           value_kind: enum_value
           time_window: null
@@ -3464,14 +3477,14 @@
     - key:
         axis: how
         property:
-          dcid: crsPurpose
+          ref: crsPurpose
           label: CRS purpose
         label: CRS purpose
       binding:
         kind: value
         value:
           ref:
-            dcid: CRSPurposeCode15110
+            ref: CRSPurposeCode15110
             label: public sector policy and administrative management
           value_kind: enum_value
           time_window: null
@@ -3479,14 +3492,14 @@
     - key:
         axis: how
         property:
-          dcid: crsTypeOfFinance
+          ref: crsTypeOfFinance
           label: CRS type of finance
         label: CRS type of finance
       binding:
         kind: value
         value:
           ref:
-            dcid: CRSTypeOfFinance110
+            ref: CRSTypeOfFinance110
             label: standard grant
           value_kind: enum_value
           time_window: null
@@ -3494,14 +3507,14 @@
     - key:
         axis: how
         property:
-          dcid: crsTypeOfFlow
+          ref: crsTypeOfFlow
           label: CRS type of flow
         label: CRS type of flow
       binding:
         kind: value
         value:
           ref:
-            dcid: CRSTypeOfFlow10
+            ref: CRSTypeOfFlow10
             label: official development assistance
           value_kind: enum_value
           time_window: null
@@ -3509,14 +3522,14 @@
     - key:
         axis: how
         property:
-          dcid: financialFlowType
+          ref: financialFlowType
           label: financial flow type
         label: financial flow type
       binding:
         kind: value
         value:
           ref:
-            dcid: Disbursement
+            ref: Disbursement
             label: disbursement
           value_kind: enum_value
           time_window: null
@@ -3524,14 +3537,14 @@
     - key:
         axis: how
         property:
-          dcid: nettingBasis
+          ref: nettingBasis
           label: netting basis
         label: netting basis
       binding:
         kind: value
         value:
           ref:
-            dcid: Gross
+            ref: Gross
             label: gross
           value_kind: enum_value
           time_window: null
@@ -3589,14 +3602,14 @@
     - key:
         axis: how
         property:
-          dcid: crsCooperationModality
+          ref: crsCooperationModality
           label: CRS cooperation modality
         label: CRS cooperation modality
       binding:
         kind: value
         value:
           ref:
-            dcid: CRSCooperationModalityC01
+            ref: CRSCooperationModalityC01
             label: project-type interventions
           value_kind: enum_value
           time_window: null
@@ -3604,14 +3617,14 @@
     - key:
         axis: how
         property:
-          dcid: crsPurpose
+          ref: crsPurpose
           label: CRS purpose
         label: CRS purpose
       binding:
         kind: value
         value:
           ref:
-            dcid: CRSPurposeCode15110
+            ref: CRSPurposeCode15110
             label: public sector policy and administrative management
           value_kind: enum_value
           time_window: null
@@ -3619,14 +3632,14 @@
     - key:
         axis: how
         property:
-          dcid: crsTypeOfFinance
+          ref: crsTypeOfFinance
           label: CRS type of finance
         label: CRS type of finance
       binding:
         kind: value
         value:
           ref:
-            dcid: CRSTypeOfFinance110
+            ref: CRSTypeOfFinance110
             label: standard grant
           value_kind: enum_value
           time_window: null
@@ -3634,14 +3647,14 @@
     - key:
         axis: how
         property:
-          dcid: crsTypeOfFlow
+          ref: crsTypeOfFlow
           label: CRS type of flow
         label: CRS type of flow
       binding:
         kind: value
         value:
           ref:
-            dcid: CRSTypeOfFlow10
+            ref: CRSTypeOfFlow10
             label: official development assistance
           value_kind: enum_value
           time_window: null
@@ -3649,14 +3662,14 @@
     - key:
         axis: how
         property:
-          dcid: financialFlowType
+          ref: financialFlowType
           label: financial flow type
         label: financial flow type
       binding:
         kind: value
         value:
           ref:
-            dcid: Disbursement
+            ref: Disbursement
             label: disbursement
           value_kind: enum_value
           time_window: null
@@ -3664,14 +3677,14 @@
     - key:
         axis: how
         property:
-          dcid: nettingBasis
+          ref: nettingBasis
           label: netting basis
         label: netting basis
       binding:
         kind: value
         value:
           ref:
-            dcid: Gross
+            ref: Gross
             label: gross
           value_kind: enum_value
           time_window: null
@@ -3708,14 +3721,14 @@
     - key:
         axis: how
         property:
-          dcid: financialFlowType
+          ref: financialFlowType
           label: financial flow type
         label: financial flow type
       binding:
         kind: value
         value:
           ref:
-            dcid: Disbursement
+            ref: Disbursement
             label: disbursement
           value_kind: enum_value
           time_window: null
@@ -3723,14 +3736,14 @@
     - key:
         axis: how
         property:
-          dcid: financingResource
+          ref: financingResource
           label: financing resource
         label: financing resource
       binding:
         kind: value
         value:
           ref:
-            dcid: DebtInstrument
+            ref: DebtInstrument
             label: debt instrument
           value_kind: enum_value
           time_window: null

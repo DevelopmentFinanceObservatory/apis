@@ -70,6 +70,8 @@ if TYPE_CHECKING:
     # reason.
     from search.engine.region.place_options import PlaceOptionsPool
     from search.engine.region.related_read import PendingRelated
+    from search.engine.region.requirements import Judgement
+    from search.engine.region.state import Requirement
     from search.engine.retrieval.member_facts import MemberFacts
 
 
@@ -129,6 +131,18 @@ class _PromoteState:
     # Every posted-bound what/how property, keyed to its requested values,
     # regardless of whether it turned out to be an edit.
     posted_bound_values: dict[str, list[str]] = dataclasses.field(default_factory=dict)
+    # A code requirement (`region.state.Requirement`) on each set of posted values the
+    # answer cannot apply: those unbinding removed (`unrealisable.unbind_posted`), the
+    # values of an edited posted set no elected member carries, and a single edited value no
+    # elected member carries (`promote_bindings._phase_build_bindings`). The resubmit
+    # refuses on each it leaves unmet (`requirements.settle_posted`). A value of an unedited
+    # posted set no survivor carries is a requirement no answer is judged on, which departs
+    # (`unrealisable.disclose_posted_values`).
+    requirements: tuple[Requirement, ...] = ()
+    # The judgement of the resubmit's answer (`requirements.settle_posted`), `None` until
+    # it is judged. The resubmit emits the departures it leaves at its exit
+    # (`requirements.with_requirement_departures`).
+    judgement: Judgement | None = None
     # Final StatVar set served by this resubmit after any narrowing.
     resolved_stat_var_dcids: list[str] = dataclasses.field(default_factory=list)
     # resolved_stat_var_dcids' own confirmed arcs, and from _phase_build_shape on those of

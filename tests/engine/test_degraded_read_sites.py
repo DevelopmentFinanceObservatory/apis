@@ -13,6 +13,7 @@ import search.engine.place as place
 from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.errors import GraphInfraError, RoleSignatureError
 from search.engine.region import grounding
+from search.engine.region import state as region_state
 from search.engine.retrieval import derive
 from search.engine.unit import refs
 
@@ -27,6 +28,7 @@ def _availability_probe() -> None:
         place_dcids=["country/KEN"],
         full_facets_max_candidates=None,
         graph=SimpleNamespace(observation_facets_batch=_raise_graph_failure),
+        deadline=None,
     )
 
 
@@ -71,10 +73,11 @@ def _relaxation_walk(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _relaxations_presence(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(grounding, "is_role_bearing", lambda _shape: False)
+    monkeypatch.setattr(region_state, "presence_stat_vars", lambda *_args: ["Count_Person"])
+    monkeypatch.setattr(grounding, "entity_role_keys", _no_role_keys)
     monkeypatch.setattr(place, "read_default_presence", _raise_graph_failure)
     ctx = _relaxation_ctx()
-    assert grounding._relaxations_presence(ctx, [ctx.shape_draft]) is ctx.presence
+    assert grounding._relaxations_presence(ctx, [(ctx.shape_draft, [])]) is ctx.presence
 
 
 def _relaxed_suggestion(monkeypatch: pytest.MonkeyPatch) -> None:

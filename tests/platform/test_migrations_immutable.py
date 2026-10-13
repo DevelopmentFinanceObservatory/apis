@@ -77,6 +77,18 @@ _DATASET_STORE = {
     "0032_operation_confirmed_at.sql": (
         "9daa6be37ff91df3c06e49a633b4c8ee81c804025d725f4c0a67ce66d2f76227"
     ),
+    "0033_output_profile_party_kind.sql": (
+        "cb2b22abcc784b65e46c9d3ec21163ca218a2a6a0f94d29af8a70110c1c6ac32"
+    ),
+    "0034_description_record.sql": (
+        "f30ecafdf90bfee3885f279884c92a5abe0e1c3b036ef7f27bb086dc72031336"
+    ),
+    "0035_strip_backfilled_documentation.sql": (
+        "3384412073a9b99370a0bae3e7452cc951e5fbaf5353051a25a87da10ba7f418"
+    ),
+    "0036_version_record_continuations.sql": (
+        "034edded49a5cc08f3c5c55c65d1523b618d896332d598e333a02fca40336511"
+    ),
 }
 
 _PRESENTATION_STORE = {

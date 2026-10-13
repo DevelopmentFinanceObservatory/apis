@@ -18,7 +18,7 @@ from datasets_api.versions import MaterialisationRecord, Trigger
 from ._operation_store import _OPERATION_SCHEMA, _lease_end, _to_sqlite_paramstyle
 
 # The schema covers version records, artifacts, revocations, references, inventory, frame recipes,
-# materialisation runs, and subject heads. `LiveRecipeStore` and `LiveVersionLister` over this store are the recipe and
+# description records, materialisation runs, and subject heads. `LiveRecipeStore` and `LiveVersionLister` over this store are the recipe and
 # version-list doubles.
 # SQLite runs the real reader/writer SQL here, but does not enforce cross-table foreign keys.
 _VERSION_RECORD_SCHEMA = """
@@ -45,6 +45,7 @@ CREATE TABLE datasets.version_record (
     default_scope_plural INTEGER,
     input_content_versions TEXT,
     composed_stat_vars TEXT,
+    continuations TEXT,
     frame_sha256 TEXT,
     PRIMARY KEY (subject_id, content_version)
 );
@@ -95,6 +96,15 @@ CREATE TABLE datasets.frame_recipe (
     normal_form_hash TEXT NOT NULL,
     replay_key TEXT NOT NULL UNIQUE,
     recipe TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    PRIMARY KEY (subject_id, content_version)
+);
+CREATE TABLE datasets.description_record (
+    subject_id TEXT NOT NULL,
+    content_version TEXT NOT NULL,
+    schema_version INTEGER NOT NULL,
+    basis TEXT NOT NULL CHECK (basis IN ('mint', 'publish', 'backfill')),
+    record TEXT NOT NULL,
     recorded_at TEXT NOT NULL,
     PRIMARY KEY (subject_id, content_version)
 );
@@ -150,9 +160,11 @@ _JSON_COLUMNS = frozenset(
         "series_conversions",
         "input_content_versions",
         "composed_stat_vars",
+        "continuations",
         "rendering",
         "signal",
         "recipe",
+        "record",
         "dependencies",
         "selection",
         "conversion",

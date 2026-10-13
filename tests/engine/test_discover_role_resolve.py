@@ -48,11 +48,12 @@ def _dated(years: range) -> dict:
 
 
 def test_a_standard_plan_reads_the_members_holding_a_point_in_its_years() -> None:
-    """The total holds data at Kenya only in 2000 to 2004 and its Health part for 2018 to
-    2020. A 2015 to 2020 read plans the part, the one member with a point there, so the total
-    held outside the years does not remove it from the antichain; a dateless read plans the
-    total. A nearest-real relaxation of a standard shape resolves through the same
-    `standard_resolve`."""
+    """The unconstrained member holds data at Kenya only in 2000 to 2004 and its Health part
+    for 2018 to 2020. Its arcs are unread, so its constraints are unknown and it dominates
+    no member. A 2015 to 2020 read plans the part, the one member with a point there; a
+    dateless read also plans the part, because a member whose constraints are known stands
+    in ahead of one whose constraints are not. A nearest-real relaxation of a standard shape
+    resolves through the same `standard_resolve`."""
     total, health = "sv/WindowTotal", "sv/WindowHealth"
     shape = ShapeDraft(
         shape_id="test_window_antichain",
@@ -95,7 +96,7 @@ def test_a_standard_plan_reads_the_members_holding_a_point_in_its_years() -> Non
 
     window = DateRequest(window=TimeWindow(start_year=2015, end_year=2020), latest=False)
     assert plan_members(window) == (health,)
-    assert plan_members(None) == (total,)
+    assert plan_members(None) == (health,)
 
 
 # A debtor-only flow: the role graph confirmation reads coverage for.

@@ -11,12 +11,14 @@ import asyncio
 import pytest
 
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.region.codes import NO_MEMBER_ASSERTS_BOUND_PROPERTIES
 from search.engine.retrieval.retrieve import NoDataDraft, UnsupportedDraft
 from search.engine.retrieval.retrieve import materialise as _real_materialise
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 _ELECTED_SV = "Count_Person_ExperimentalCensus"
@@ -64,6 +66,8 @@ class _ElectedBindLLM:
     """Elects the empty shape and flags the standard alternate."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=1,
@@ -327,6 +331,8 @@ class _PerCapitaSplitOwnershipBindLLM:
     """
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return (
             _UniversalBindOutput(
@@ -358,6 +364,8 @@ class _PerCapitaFullyAssertedBindLLM:
     """
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return (
             _UniversalBindOutput(
@@ -414,7 +422,8 @@ def test_place_less_per_capita_no_matching_slice_defers_to_mint_with_flagged_mat
 
 def test_place_less_per_capita_fully_asserted_member_reports_denominator_not_available():
     """The member asserts Female and has a 2020 Kenya observation but no
-    denominator, so the query reports `denominator_not_available`.
+    denominator, so the query reports `denominator_not_available`, flagging the elected
+    member.
     """
     graph = FakeGraph(
         nodes=_PC_NODES,
@@ -448,4 +457,5 @@ def test_place_less_per_capita_fully_asserted_member_reports_denominator_not_ava
 
     assert result.status == "no_data"
     assert result.no_data_reason == "denominator_not_available"
-    assert not result.flagged_match
+    (flagged,) = result.flagged_match or ()
+    assert [sv.ref.ref for sv in flagged.resolved.members] == [_PC_SV_A]

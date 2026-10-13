@@ -277,7 +277,7 @@ def test_shape_event_publishes_the_classifications_roots_for_an_index_sourced_sl
 
     assert len(event.slot_options) == 1
     slot_options = event.slot_options[0]
-    dcids = {o.value.ref.dcid for o in slot_options.options}
+    dcids = {o.value.ref.ref for o in slot_options.options}
     assert dcids <= set(roots)
     assert dcids  # at least one root survived the shape-event's own label lookup
     assert all(o.relation == "root" for o in slot_options.options)
@@ -324,7 +324,7 @@ def test_shape_event_option_labels_come_from_the_code_index_not_the_raw_graph_na
     options = event.slot_options[0].options
     assert options
     for option in options:
-        dcid = option.value.ref.dcid
+        dcid = option.value.ref.ref
         assert option.value.ref.label == clean_labels[dcid]
         assert "(CRS Purpose)" not in option.value.ref.label
 
@@ -831,16 +831,16 @@ def test_disconnect_cancels_fanout_no_orphaned_tasks(monkeypatch):
 _WHERE_PROP = "whereProp"
 _WHERE_KEY = SlotKey(
     axis="where",
-    property=GraphRef(dcid=_WHERE_PROP, label=_WHERE_PROP),
+    property=GraphRef(ref=_WHERE_PROP, label=_WHERE_PROP),
     label=_WHERE_PROP,
 )
 
 _SAME_SHAPE = Shape(
     shape_id="Person/count/",
     label="Test",
-    population_type=GraphRef(dcid="Person", label="Person"),
-    measured_property=GraphRef(dcid="count", label="count"),
-    stat_type=GraphRef(dcid="measuredValue", label="measuredValue"),
+    population_type=GraphRef(ref="Person", label="Person"),
+    measured_property=GraphRef(ref="count", label="count"),
+    stat_type=GraphRef(ref="measuredValue", label="measuredValue"),
     measurement_qualifier=None,
     measurement_denominator=None,
     slot_keys=[_WHERE_KEY],
@@ -852,7 +852,7 @@ def _where_slot(value_dcid: str) -> Slot:
     return Slot(
         key=_WHERE_KEY,
         binding=BindingValue(
-            value=SlotValue(ref=GraphRef(dcid=value_dcid, label=value_dcid), value_kind="entity")
+            value=SlotValue(ref=GraphRef(ref=value_dcid, label=value_dcid), value_kind="entity")
         ),
     )
 
@@ -872,7 +872,7 @@ def _same_shape_region_with_obs_task(
     delay: float,
 ) -> RegionResult:
     """Build a same-shape result with a pending observations task and relaunch callback."""
-    stat_var_ref = GraphRef(dcid=sv_dcid, label=sv_dcid)
+    stat_var_ref = GraphRef(ref=sv_dcid, label=sv_dcid)
     spec = build_spec(
         open_roles=(),
         measure_elected_properties=frozenset(),
@@ -1003,7 +1003,7 @@ def _same_shape_region_with_place_options_task(
     relaunch_calls: list[tuple[str, str]],
 ) -> RegionResult:
     """Build a same-shape result with a pending place-options task and relaunch callback."""
-    stat_var_ref = GraphRef(dcid=sv_dcid, label=sv_dcid)
+    stat_var_ref = GraphRef(ref=sv_dcid, label=sv_dcid)
     spec = build_spec(
         open_roles=(),
         measure_elected_properties=frozenset(),

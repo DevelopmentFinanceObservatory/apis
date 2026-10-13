@@ -202,6 +202,17 @@ class TestPerturbationsMoveTheToken:
 
         assert perturbed != baseline
 
+    def test_retyping_the_problem_title_field_moves_the_token(self):
+        """No Datasets schema has a field named `description`; `ProblemDetails.title` is the served
+        field that shares an annotation keyword's name, so retyping it must move the token."""
+        baseline = version._compute_datasets_capability_version()
+        perturbed_schema = version.build_schema_document()
+        perturbed_schema["problem_details_extensions"]["properties"]["title"] = {"type": "integer"}
+
+        perturbed = version._compute_datasets_capability_version(schema_document=perturbed_schema)
+
+        assert perturbed != baseline
+
 
 class TestNonPerturbationsDoNotMoveTheToken:
     def test_schema_description_edit_does_not_move_the_token(self):

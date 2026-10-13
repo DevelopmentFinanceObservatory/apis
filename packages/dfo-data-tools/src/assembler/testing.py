@@ -11,8 +11,9 @@ from collections.abc import Iterable, Mapping, Sequence
 
 from dfo_frame_grammar import Frame
 
-from assembler.frame_view import compute_structural_view
+from assembler.frame_view import compute_structural_view, frame_continuation
 from assembler.ports import FrameRef, ResolvedFrame
+from description.facts import DescriptionRecord
 
 __all__ = [
     "FIXTURE_RETRIEVED_ON",
@@ -50,16 +51,22 @@ def build_resolved_frame(
     labels: Mapping[str, str] | None = None,
     manifest: Mapping[str, object] | None = None,
     retrieved_on: datetime.date = FIXTURE_RETRIEVED_ON,
+    input_records: Sequence[DescriptionRecord] = (),
 ) -> ResolvedFrame:
+    """A `ResolvedFrame` of `rows` whose continuation and structural view follow from
+    `manifest`, as `LiveFrameStore.load` derives them."""
     doc = build_frame_doc(role_keys=role_keys, rows=rows)
-    structural_view = compute_structural_view(frame=doc)
+    manifest = manifest or {"schema_version": 1}
+    continuation = frame_continuation(manifest=manifest)
     return ResolvedFrame(
         frame_ref=frame_ref,
         frame=doc,
-        structural_view=structural_view,
-        manifest=manifest or {"schema_version": 1},
+        structural_view=compute_structural_view(frame=doc, continuation=continuation),
+        manifest=manifest,
         labels=labels or {},
         retrieved_on=retrieved_on,
+        input_records=input_records,
+        continuation=continuation,
     )
 
 

@@ -488,7 +488,7 @@ def test_no_data_draft_sv_dcids_excludes_constraint_mismatched_members():
     assert result.sv_dcids == [_SV_MATCH], (
         f"the bound-constraint filter must exclude {_SV_MISMATCH!r}; got {result.sv_dcids}"
     )
-    assert _elected_stat_vars(result, shape) == [GraphRef(dcid=_SV_MATCH, label=_SV_MATCH)]
+    assert _elected_stat_vars(result, shape) == [GraphRef(ref=_SV_MATCH, label=_SV_MATCH)]
 
 
 _EXTRA_PROP = "prop:instrument"
@@ -541,7 +541,7 @@ def test_no_data_draft_sv_dcids_preserves_specificity_order(monkeypatch):
     assert result.sv_dcids == [_SV_SPECIFIC], (
         f"the most specific SV must be the representative; got {result.sv_dcids}"
     )
-    assert _elected_stat_vars(result, shape) == [GraphRef(dcid=_SV_SPECIFIC, label=_SV_SPECIFIC)]
+    assert _elected_stat_vars(result, shape) == [GraphRef(ref=_SV_SPECIFIC, label=_SV_SPECIFIC)]
 
     coverage = _patch_coverage_snapshot(
         monkeypatch,

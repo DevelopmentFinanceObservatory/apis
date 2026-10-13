@@ -425,13 +425,13 @@ _CASES: list[tuple[DepartureFact, str | None, str]] = [
             code="entity_unavailable",
             binding_ref="where:",
             asked="Africa",
-            entities=("Mayotte", "Saint Helena"),
+            entities=("Eritrea", "Somalia"),
             group="Africa",
-            group_size=59,
-            group_type="Continent",
+            group_size=54,
+            group_dcid="africa",
         ),
         None,
-        "The data holds no values for 2 of the 59 countries and territories in Africa.",
+        "The data holds no values for 2 of the 54 countries in Africa.",
     ),
     # A role binding a region's members beside a place: the region's members are counted
     # and only the place named is asked for.
@@ -440,11 +440,10 @@ _CASES: list[tuple[DepartureFact, str | None, str]] = [
             code="entity_unavailable",
             binding_ref="where:",
             asked="Africa",
-            sets=(UnservedMembers("Africa", "Continent", 59, "Africa", ("Ghana", "Tanzania")),),
+            sets=(UnservedMembers("Africa", "africa", 54, "Africa", ("Ghana", "Tanzania")),),
         ),
         None,
-        "You asked for Africa. The data holds no values for 2 of the 59 countries and "
-        "territories in Africa.",
+        "You asked for Africa. The data holds no values for 2 of the 54 countries in Africa.",
     ),
     (
         DepartureFact(
@@ -453,15 +452,14 @@ _CASES: list[tuple[DepartureFact, str | None, str]] = [
             asked="Norway, Africa, Baltic states",
             entities=("Norway",),
             sets=(
-                UnservedMembers("Africa", "Continent", 59, "Africa", ("Ghana",)),
+                UnservedMembers("Africa", "africa", 54, "Africa", ("Ghana",)),
                 UnservedMembers("Baltic states", None, 3, "Baltic states", ("Latvia",)),
             ),
             latest_years=(2024, 2024),
         ),
         None,
         "You asked for Norway. The data holds no values for it in 2024. The data holds no "
-        "values in 2024 for 1 of the 59 countries and territories in Africa and 1 of the 3 "
-        "Baltic states.",
+        "values in 2024 for 1 of the 54 countries in Africa and 1 of the 3 Baltic states.",
     ),
     # ids-016: a label ending in a role noun keeps it.
     (
@@ -526,10 +524,22 @@ _CASES: list[tuple[DepartureFact, str | None, str]] = [
             code="group_read_as_members",
             binding_ref="where:",
             asked="Africa",
-            group_type="Continent",
+            group_dcid="africa",
         ),
         "aid",
-        "You asked for Africa. This shows the countries and territories in it, each on its own.",
+        "You asked for Africa. This shows the countries in it, each on its own.",
+    ),
+    # A region the membership policy holds reads as the places in it whatever its graph
+    # type: dev types the Americas a `GeoRegion`.
+    (
+        DepartureFact(
+            code="group_read_as_members",
+            binding_ref="where:",
+            asked="the Americas",
+            group_dcid="undata-geo/G00134000",
+        ),
+        "aid",
+        "You asked for the Americas. This shows the countries in it, each on its own.",
     ),
     # The CRS publishes no Africa total, so its members leave out the regional amounts.
     (
@@ -537,14 +547,14 @@ _CASES: list[tuple[DepartureFact, str | None, str]] = [
             code="group_read_as_members",
             binding_ref="where:",
             asked="Africa",
-            group_type="Continent",
+            group_dcid="africa",
             excluded=(
                 "Africa, unallocated by country (DAC)",
                 "North of Sahara, unallocated by country (DAC)",
             ),
         ),
         "aid",
-        "You asked for Africa. This shows the countries and territories in it, each on its own, "
+        "You asked for Africa. This shows the countries in it, each on its own, "
         "and leaves out what the data allocates to no single country: Africa, unallocated by "
         "country (DAC); North of Sahara, unallocated by country (DAC).",
     ),
@@ -553,7 +563,7 @@ _CASES: list[tuple[DepartureFact, str | None, str]] = [
             code="group_read_as_members",
             binding_ref="origin:",
             asked="the EU",
-            group_type="ContinentalUnion",
+            group_dcid="EuropeanUnion",
         ),
         "aid",
         "You asked for the EU. This shows its members, each on its own.",

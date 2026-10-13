@@ -207,6 +207,17 @@ class WarningModel(BaseModel):
     )
 
 
+class DiagnosticModel(BaseModel):
+    """One manifest diagnostic: a fact about how this response was produced that a developer
+    reads and a dataset's description leaves out, since it states nothing about the data.
+    `processing_level_undeclared` and `origin_catalogue_stale` are the codes it carries."""
+
+    model_config = ConfigDict(extra="forbid")
+    code: str
+    severity: str
+    message: str
+
+
 class ArtifactEntryModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
     artifact_digest: str
@@ -336,6 +347,27 @@ class OutputOptionsModel(BaseModel):
     formats: list[FormatOptionModel]
     bundle: BundleOptionModel
     enrichments: list[EnrichmentOptionModel]
+    long_layout_defaults: list[str] = Field(
+        description=(
+            "the enrichment tokens a long-layout download writes with no columns option, in "
+            "column order: every role's {role}_label, and {role}_party_kind for every role on "
+            "a flow axis. Naming one in columns gives the same column once"
+        )
+    )
+    long_layout_totals: list[str] = Field(
+        description=(
+            "the roles whose total rows ({role}_party_kind is total) a long-layout CSV or "
+            "XLSX download keeps out of its main table. A role is listed when the definition "
+            "binds it to several entities one of which the code index declares a total, or "
+            "leaves it open and the code index lists a total on its axis in a dataset the "
+            "definition read (any dataset, when the read selected none). A role bound to "
+            "several parties holds no total row and is not listed. A bundle's CSV writes those "
+            "rows to a second data file, data/<name>-totals.csv; an XLSX writes them on a "
+            "second sheet, totals. A bare CSV has no README and drops them, so this list names "
+            "the roles whose totals it drops. Parquet, a pivot and the frame layout keep every "
+            "row. Empty when no role can hold a total row"
+        )
+    )
     pivots: list[PivotOptionModel]
     groupby: GroupbyOptionsModel
 
@@ -355,7 +387,9 @@ class Manifest(BaseModel):
     is already this field's exact wire shape.
 
     `series_count` is the number of distinct series this definition
-    resolves. `None` means a version record minted before this field existed, whose old
+    resolves, as the version's description counts them (`statistics.SeriesFigures.series`): a
+    series and the estimates continuing it count once, though the statistics artifact holds a
+    row for each method. `None` means a version record minted before this field existed, whose old
     inline `statistics` no fact carries. The per-series detail itself lives in the
     `series-statistics/1` Parquet artifact every door that returns a
     `Manifest` lists in `artifacts` whenever `series_count` is not `None`
@@ -379,6 +413,12 @@ class Manifest(BaseModel):
     citation: CitationModel
     trace: dict[str, object]
     warnings: list[WarningModel] = Field(default_factory=list)
+    diagnostics: list[DiagnosticModel] = Field(
+        default_factory=list,
+        description="facts about how this response was produced, for developers: a citation "
+        "whose sources declare no processing level, and an origin catalogue past its "
+        "staleness limit. A version stores none; each response states its own",
+    )
     artifacts: list[ArtifactEntryModel] = Field(
         description="every servable artifact for this rendering, in a fixed order: every "
         "data artifact first, the series-statistics/1 artifact (rendering.statistics == "

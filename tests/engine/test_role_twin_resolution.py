@@ -15,6 +15,7 @@ import pytest
 
 from search.engine.bind import _UniversalBindOutput
 from search.engine.errors import RoleSignatureError
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region.candidate_measure_fold import _shapes_are_measure_siblings
 from search.engine.region.pipeline import resolve_variable
 from search.engine.retrieval.derive import derive_shapes
@@ -35,6 +36,7 @@ from tests.engine._fake_coverage import (
     empty_coverage_snapshot,
 )
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 _TOTAL = "Amount_DebtFixture_PublicOrPubliclyGuaranteed_Nominal"
@@ -222,6 +224,8 @@ class _RecordingBindLLM:
         self.bind_prompts: list[str] = []
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         self.bind_prompts.append(prompt)
         return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None

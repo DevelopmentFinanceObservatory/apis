@@ -61,7 +61,7 @@ def _stat_var(dcid: str, slot_values: list[StatVarSlotValue] | None = None) -> S
         shape_id="test_shape",
         slot_values=slot_values,
         constraint_properties=sorted(
-            sv.key.property.dcid for sv in slot_values if sv.key.property is not None
+            sv.key.property.ref for sv in slot_values if sv.key.property is not None
         ),
     )
 

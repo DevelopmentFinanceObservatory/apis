@@ -70,6 +70,7 @@ _P = "dc/base/Elected"
 _Q = "dc/base/Unrecorded"
 _TOTAL = "Count_Person"
 _FEMALE = "Count_Person_Female"
+_MALE = "Count_Person_Male"
 _KEN = "country/KEN"
 
 
@@ -100,9 +101,9 @@ def _population_arcs(constraints: dict[str, str]) -> dict:
     }
 
 
-def _resolve_population(monkeypatch, *, total_provenance: str, female_provenance: str):
-    """An index family {Count_Person, Count_Person_Female} electing `_P` at Kenya, gender
-    unbound, each member's one facet under the provenance given."""
+def _resolve_population(monkeypatch, members: dict[str, tuple[dict[str, str], str]]):
+    """An index family of `members`, each dcid to its constraints and the provenance of its
+    one facet, electing `_P` at Kenya with gender unbound."""
     from code_index.members import DatasetFamily
     from search.engine.bind import SlotBindingDraft
     from search.engine.retrieval import bound_values
@@ -112,7 +113,7 @@ def _resolve_population(monkeypatch, *, total_provenance: str, female_provenance
 
     family = DatasetFamily(
         provenance=_P,
-        rows=(_population_row(_TOTAL, {}), _population_row(_FEMALE, {"gender": "Female"})),
+        rows=tuple(_population_row(sv, constraints) for sv, (constraints, _) in members.items()),
     )
     monkeypatch.setattr(bound_values, "index_family", lambda _index, _query: family)
     shape = ShapeDraft(
@@ -125,8 +126,7 @@ def _resolve_population(monkeypatch, *, total_provenance: str, female_provenance
         meas_denom_dcid=None,
         slot_keys=(),
         sv_arc_facts={
-            _TOTAL: _population_arcs({}),
-            _FEMALE: _population_arcs({"gender": "Female"}),
+            sv: _population_arcs(constraints) for sv, (constraints, _) in members.items()
         },
         representative_score=0.9,
     )
@@ -149,10 +149,7 @@ def _resolve_population(monkeypatch, *, total_provenance: str, female_provenance
         entities={"observationAbout": [_KEN]},
         graph=FakeGraph(
             nodes={},
-            obs={
-                f"{_TOTAL}|{_KEN}": point(total_provenance),
-                f"{_FEMALE}|{_KEN}": point(female_provenance),
-            },
+            obs={f"{sv}|{_KEN}": point(provenance) for sv, (_, provenance) in members.items()},
             detect={},
             resolve={},
         ),
@@ -167,7 +164,7 @@ def test_a_member_the_mint_does_not_serve_is_not_checked(monkeypatch, female_pro
     from search.engine.retrieval.retrieve import Materialised
 
     result = _resolve_population(
-        monkeypatch, total_provenance=_P, female_provenance=female_provenance
+        monkeypatch, {_TOTAL: ({}, _P), _FEMALE: ({"gender": "Female"}, female_provenance)}
     )
 
     assert isinstance(result, Materialised)
@@ -176,9 +173,24 @@ def test_a_member_the_mint_does_not_serve_is_not_checked(monkeypatch, female_pro
 
 def test_a_member_the_mint_serves_is_checked(monkeypatch):
     with pytest.raises(DatasetDisagreementError) as raised:
-        _resolve_population(monkeypatch, total_provenance=_Q, female_provenance=_P)
+        _resolve_population(monkeypatch, {_TOTAL: ({}, _Q), _FEMALE: ({"gender": "Female"}, _P)})
 
     assert raised.value.stat_var == _TOTAL
+
+
+def test_a_kept_member_after_the_elected_one_is_still_checked(monkeypatch):
+    """With no total the mint serves both members, so the male member is checked although
+    the female member, read first under one StatVar per read, is elected."""
+    from search.engine.retrieval import standard
+
+    monkeypatch.setattr(standard, "_FACET_PROBE_MAX_PAIRS_PER_POST", 1)
+    with pytest.raises(DatasetDisagreementError) as raised:
+        _resolve_population(
+            monkeypatch,
+            {_FEMALE: ({"gender": "Female"}, _P), _MALE: ({"gender": "Male"}, _Q)},
+        )
+
+    assert raised.value.stat_var == _MALE
 
 
 def test_an_alternate_the_mint_refuses_is_dropped_and_the_others_stand(monkeypatch):

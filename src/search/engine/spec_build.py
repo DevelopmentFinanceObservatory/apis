@@ -17,6 +17,7 @@ from code_index.labels import (
 )
 from code_index.shared import get_index, get_measure_index
 from code_index.types import label_for_pairs
+from description.blocks import ranked_values
 from origin_catalogue import ORIGINS, current_catalogue
 from search.engine.bind import SlotBindingDraft
 from search.engine.config import settings
@@ -39,6 +40,7 @@ from search.engine.retrieval.read_plan import (
     data_years,
     served_dates,
     served_provenances,
+    serves_continuation,
     unserved_entities,
 )
 from search.engine.shape import (
@@ -48,6 +50,7 @@ from search.engine.shape import (
     identity_shape_for,
     is_ratio_backed_sv,
 )
+from search.engine.source_code import stands_for_code
 from search.engine.source_scope import source_label
 from search.engine.spec_id import (
     build_identity_projection,
@@ -57,7 +60,6 @@ from search.engine.spec_id import (
 )
 from search.engine.unit.conversion import counted_conversion
 from search.engine.unit.conversion_catalogue import current_conversion_catalogue
-from search.heading.price_basis import price_basis_option_label
 from search.models import (
     SCHEMA_VERSION,
     BaseIdentity,
@@ -82,6 +84,7 @@ from search.models import (
     OpenAxisValueCount,
     OpenConstraintAxisFact,
     ProvenanceRef,
+    QuantityForm,
     RequestedWindow,
     ResolutionTrace,
     ResolvedEntity,
@@ -99,6 +102,7 @@ from search.models import (
     SlotKey,
     SlotOptions,
     SlotValue,
+    SourceCode,
     SourceRef,
     SpecObservations,
     StatVar,
@@ -108,6 +112,7 @@ from search.models import (
     served_date_range,
 )
 from search.render.labels import _humanize_ref
+from unit_words.price_basis import price_basis_option_label
 
 if TYPE_CHECKING:
     from materialise.roles import RoleAxis
@@ -153,7 +158,7 @@ def _source_slot_binding(binding_draft: SlotBindingDraft | None) -> BindingValue
     if dcid is None:
         return BindingUnbound()
     dataset = get_index().datasets.get(dcid)
-    ref = GraphRef(dcid=dcid, label=dataset.label if dataset is not None else dcid)
+    ref = GraphRef(ref=dcid, label=dataset.label if dataset is not None else dcid)
     return BindingValue(value=SlotValue(ref=ref, value_kind="source"))
 
 
@@ -162,7 +167,7 @@ def with_served_provenance(slots: Sequence[Slot], provenances: Sequence[str]) ->
     read plan serves (`read_plan.served_provenances`), as a value for one and a set for
     several. A shape with no source slot gains one."""
     values = [
-        SlotValue(ref=GraphRef(dcid=dcid, label=source_label(dcid)), value_kind="source")
+        SlotValue(ref=GraphRef(ref=dcid, label=source_label(dcid)), value_kind="source")
         for dcid in provenances
     ]
     binding = BindingValue(value=values[0]) if len(values) == 1 else BindingSet(values=values)
@@ -177,6 +182,19 @@ def with_served_provenance(slots: Sequence[Slot], provenances: Sequence[str]) ->
     ]
 
 
+def slot_label(slot_key_draft: SlotKeyDraft) -> str:
+    """The label a slot carries for people: an indexed code system's declared plain_name,
+    else the draft's graph label with a dcid echo humanised. The draft keeps the graph's
+    label for binding."""
+    prop = slot_key_draft.property_dcid
+    if prop is None:
+        return slot_key_draft.label
+    declaration = get_index().declarations.get(prop)
+    if declaration is not None:
+        return declaration.plain_name
+    return _humanize_ref(prop, slot_key_draft.label)
+
+
 def build_slot(
     slot_key_draft: SlotKeyDraft,
     binding_draft: SlotBindingDraft | None,
@@ -189,23 +207,10 @@ def build_slot(
 
     The source slot binds from its own draft (`_source_slot_binding`) and reads no
     grounded value."""
-    # Preserve graph labels for binding. Humanise only dcid echoes. Indexed code
-    # systems supply their declared plain_name.
-    declaration = (
-        get_index().declarations.get(slot_key_draft.property_dcid)
-        if slot_key_draft.property_dcid is not None
-        else None
-    )
-    if declaration is not None:
-        slot_label = declaration.plain_name
-    elif slot_key_draft.property_dcid is not None:
-        slot_label = _humanize_ref(slot_key_draft.property_dcid, slot_key_draft.label)
-    else:
-        slot_label = slot_key_draft.label
     slot_key = SlotKey(
         axis=slot_key_draft.axis,
         property=property_ref,
-        label=slot_label,
+        label=slot_label(slot_key_draft),
     )
 
     # bind_when_slot binds when afterward.
@@ -267,9 +272,9 @@ def _resolved_entities(entities: list[Entity]) -> list[ResolvedEntity]:
     """Project entities with the shared role mapping. Confidence is unset."""
     return [
         ResolvedEntity(
-            ref=e.ref.dcid,
+            ref=e.ref.ref,
             label=e.ref.label,
-            entity_type=e.entity_type.dcid if e.entity_type else None,
+            entity_type=e.entity_type.ref if e.entity_type else None,
             role=entity_role_key(e),
             confidence=None,
         )
@@ -309,7 +314,7 @@ def spec_named_groups(spec: Spec) -> tuple[NamedGroup, ...]:
     named = [
         NamedGroup(
             label=group.label,
-            dcid=group.dcid,
+            dcid=group.ref,
             member_dcids=members,
             entity_type=group.entity_type,
             named_alone=frozenset((r, d) for r, d in alone if r == role and d in members),
@@ -319,7 +324,7 @@ def spec_named_groups(spec: Spec) -> tuple[NamedGroup, ...]:
     named.extend(
         NamedGroup(
             label=group.label,
-            dcid=group.dcid,
+            dcid=group.ref,
             member_dcids=frozenset(entities[role]),
             entity_type=group.entity_type,
             named_alone=frozenset((r, d) for r, d in alone if r == role and d in entities[role]),
@@ -340,12 +345,12 @@ def role_named_sets(
     node, so the role does not name it: the members it binds came from other names."""
     dcids_by_role: dict[str, set[str]] = {}
     for entity in entities:
-        dcids_by_role.setdefault(entity_role_key(entity), set()).add(entity.ref.dcid)
+        dcids_by_role.setdefault(entity_role_key(entity), set()).add(entity.ref.ref)
     distinct = tuple(dict.fromkeys(groups))
     return tuple(
         (
             role,
-            EntityGroup(dcid=group.dcid, label=group.label, entity_type=group.entity_type),
+            EntityGroup(ref=group.dcid, label=group.label, entity_type=group.entity_type),
             group.member_dcids,
         )
         for role, dcids in dcids_by_role.items()
@@ -367,7 +372,7 @@ def role_entity_groups(
     """
     dcids_by_role: dict[str, set[str]] = {}
     for entity in entities:
-        dcids_by_role.setdefault(entity_role_key(entity), set()).add(entity.ref.dcid)
+        dcids_by_role.setdefault(entity_role_key(entity), set()).add(entity.ref.ref)
     groups = tuple(groups)
     result: dict[str, EntityGroup] = {}
     for role, dcids in dcids_by_role.items():
@@ -378,7 +383,7 @@ def role_entity_groups(
         )
         if group is not None:
             result[role] = EntityGroup(
-                dcid=group.dcid,
+                ref=group.dcid,
                 label=group.label,
                 entity_type=group.entity_type,
                 total=group.total if {group.total} == dcids else None,
@@ -392,13 +397,13 @@ def entity_from_resolved(re: ResolvedEntity) -> Entity:
     Directional role-property provenance is absent on the wire and restored as a
     placeholder. Identity uses the role axis and entity dcid instead.
     """
-    ref = GraphRef(dcid=re.ref, label=re.label or re.ref)
-    entity_type = GraphRef(dcid=re.entity_type, label=re.entity_type) if re.entity_type else None
+    ref = GraphRef(ref=re.ref, label=re.label or re.ref)
+    entity_type = GraphRef(ref=re.entity_type, label=re.entity_type) if re.entity_type else None
     role: EntityRole
     if re.role == "observationAbout":
         role = EntityRoleSubject()
     else:
-        role = EntityRoleDirectional(role=GraphRef(dcid=re.role, label=re.role), axis=re.role)
+        role = EntityRoleDirectional(role=GraphRef(ref=re.role, label=re.role), axis=re.role)
     return Entity(ref=ref, entity_type=entity_type, role=role)
 
 
@@ -408,17 +413,41 @@ def _resolved_stat_vars(
     member_count: int | None,
     member_count_exact: bool,
     stated: StatedMembers | None,
+    identity: BaseIdentity,
+    provenance: str | None,
 ) -> ResolvedStatVars:
     """The wire's counts of `stat_vars` and the dates they serve.
 
     ``member_count`` is ``len(stat_vars)`` when None and can report a wider confirmed
     population. ``member_count_exact`` tells a total from a lower bound. ``served_count`` is
-    the mint's own count when Search knows it (``stated``)."""
+    the mint's own count when Search knows it (``stated``). ``source_codes`` are the
+    publisher codes the code index gives the members, whether the members were elected from
+    the index or recalled. A code is ``exact`` when a part naming it would accept the Spec of
+    `identity`, which reads `provenance`, as its answer (`source_code.stands_for_code`)."""
+    index = get_index()
+    served = {sv.ref.ref for sv in stat_vars}
     return ResolvedStatVars(
         member_count=member_count if member_count is not None else len(stat_vars),
         member_count_exact=member_count_exact,
         served_count=stated.served_count if stated is not None else None,
         data_date_range=served_date_range(stat_vars),
+        source_codes=[
+            SourceCode(
+                provenance=holder,
+                code=code,
+                exact=stands_for_code(
+                    code,
+                    provenance=holder,
+                    identity=identity,
+                    served=served,
+                    read=provenance,
+                    index=index,
+                ),
+            )
+            for holder, code in sorted(
+                {pair for dcid in served for pair in index.source_codes_of(dcid)}
+            )
+        ],
     )
 
 
@@ -451,7 +480,7 @@ def elected_sources(sources: list[ProvenanceRef], identity: BaseIdentity) -> lis
     dataset = identity_dataset(identity)
     if dataset is None:
         return sources
-    observed = next((source for source in sources if source.dcid == dataset), None)
+    observed = next((source for source in sources if source.ref == dataset), None)
     if observed is None:
         return []
     return [observed.model_copy(update={"label": get_index().datasets[dataset].label})]
@@ -511,8 +540,8 @@ def build_shape_model(
         if ref := five_tuple_refs.get(dcid):
             return ref
         if (measure_label := measure_value_labels.get(dcid)) is not None:
-            return GraphRef(dcid=dcid, label=measure_label)
-        return GraphRef(dcid=dcid, label=dcid)
+            return GraphRef(ref=dcid, label=measure_label)
+        return GraphRef(ref=dcid, label=dcid)
 
     pop_ref = (
         None
@@ -550,11 +579,11 @@ def build_shape_model(
 def identity_shape_from_wire(shape: Shape) -> dict:
     """Build the identity shape member from the grounded Shape's dcids."""
     return identity_shape_for(
-        pop_type_dcid=shape.population_type.dcid if shape.population_type else None,
-        meas_prop_dcid=shape.measured_property.dcid if shape.measured_property else None,
-        stat_type_dcid=shape.stat_type.dcid if shape.stat_type else None,
-        meas_qual_dcid=shape.measurement_qualifier.dcid if shape.measurement_qualifier else None,
-        meas_denom_dcid=shape.measurement_denominator.dcid
+        pop_type_dcid=shape.population_type.ref if shape.population_type else None,
+        meas_prop_dcid=shape.measured_property.ref if shape.measured_property else None,
+        stat_type_dcid=shape.stat_type.ref if shape.stat_type else None,
+        meas_qual_dcid=shape.measurement_qualifier.ref if shape.measurement_qualifier else None,
+        meas_denom_dcid=shape.measurement_denominator.ref
         if shape.measurement_denominator
         else None,
         meas_denom_unresolved=shape.measurement_denominator_unresolved,
@@ -607,16 +636,16 @@ def build_stat_vars(
         date_range: DateRange | None = None
         confirmed_at_destination: bool | None = None
 
-        if (dates := served.get(sv_ref.dcid)) is not None:
+        if (dates := served.get(sv_ref.ref)) is not None:
             date_range = DateRange(start=dates[0], end=dates[1])
 
         if destination_confirmed is not None:
-            confirmed_at_destination = sv_ref.dcid in destination_confirmed
+            confirmed_at_destination = sv_ref.ref in destination_confirmed
 
         if member_facts is not None:
-            sv_member = member_facts.get(sv_ref.dcid)
+            sv_member = member_facts.get(sv_ref.ref)
         else:
-            sv_arcs = (arcs_by_sv or {}).get(sv_ref.dcid)
+            sv_arcs = (arcs_by_sv or {}).get(sv_ref.ref)
             sv_member = ArcsMemberFacts(sv_arcs) if sv_arcs is not None else None
         sv_constraints = sv_member.read_constraints() if sv_member is not None else {}
         asserted = asserted_constraint_properties(sv_member) if sv_member is not None else None
@@ -626,7 +655,7 @@ def build_stat_vars(
             for key, value in candidate_slot_values
             if key.property is not None
             and value.ref is not None
-            and sv_constraints.get(key.property.dcid) == value.ref.dcid
+            and sv_constraints.get(key.property.ref) == value.ref.ref
         ]
 
         stat_vars.append(
@@ -769,7 +798,7 @@ def measure_axis_values(partition: MeasurePartition) -> list[MeasureAxisValue]:
     """
     labels = {value.dcid: value.label for value in get_measure_index().values}
     return [
-        MeasureAxisValue(axis=axis, value=GraphRef(dcid=value, label=labels[value]))
+        MeasureAxisValue(axis=axis, value=GraphRef(ref=value, label=labels[value]))
         for axis, value in partition.values
         if value is not None
     ]
@@ -782,7 +811,8 @@ def _open_axis_facts(
 
     An axis appears even with no declared values. A single declared value is
     published only for constant axes. Every declared value is published with its
-    member count, highest first. Labels come from the code index, then the graph
+    member count, in the description composer's `ranked_values` order: highest
+    count first, ties by label. Labels come from the code index, then the graph
     name a served member's arc carries, then the dcid.
     """
     if not axes:
@@ -792,16 +822,17 @@ def _open_axis_facts(
     def _value_ref(axis: OpenAxisFact, dcid: str) -> GraphRef:
         code_row = index.code_by_dcid(dcid)
         label = code_row.label if code_row is not None else axis.value_names.get(dcid, dcid)
-        return GraphRef(dcid=dcid, label=label)
+        return GraphRef(ref=dcid, label=label)
 
     facts: list[OpenConstraintAxisFact] = []
     for axis in axes:
         varies = len(axis.values) > 1
         counts = axis.value_counts()
+        refs = {dcid: _value_ref(axis, dcid) for dcid in counts}
         value = None
         if not varies and counts:
             (only_value,) = counts
-            value = _value_ref(axis, only_value)
+            value = refs[only_value]
         facts.append(
             OpenConstraintAxisFact(
                 property=axis.property,
@@ -810,8 +841,10 @@ def _open_axis_facts(
                 distinct_count=len(counts),
                 undeclared_count=axis.undeclared_count,
                 values=[
-                    OpenAxisValueCount(value=_value_ref(axis, dcid), count=count)
-                    for dcid, count in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+                    OpenAxisValueCount(value=refs[dcid], count=count)
+                    for dcid, count in ranked_values(
+                        counts.items(), labels={dcid: ref.label for dcid, ref in refs.items()}
+                    )
                 ],
             )
         )
@@ -876,11 +909,11 @@ def _compose_wire_shape_label(
 
     for slot in slots:
         prop = slot.key.property
-        if prop is None or prop.dcid in covered:
+        if prop is None or prop.ref in covered:
             continue
         binding = slot.binding
         if isinstance(binding, BindingValue) and binding.value.ref is not None:
-            covered.add(prop.dcid)
+            covered.add(prop.ref)
             _add_qualifier(binding.value.ref.label)
     for fact in open_axis_facts or ():
         if fact.property in covered or fact.varies or fact.value is None:
@@ -941,7 +974,7 @@ def _wire_shape_label(
     if composed_label is not None:
         return shape.model_copy(update={"label": composed_label})
     partition_members = set(measure_partition.members)
-    served_donor = next((sv for sv in stat_vars if sv.ref.dcid in partition_members), None)
+    served_donor = next((sv for sv in stat_vars if sv.ref.ref in partition_members), None)
     if served_donor is not None:
         return shape.model_copy(update={"label": served_donor.ref.label})
     return shape
@@ -965,7 +998,7 @@ def _build_slot_filters(
             refs = [sv.ref for sv in binding.values if sv.ref]
 
         kind: BindingKind = binding.kind  # type: ignore[assignment]
-        prop_dcid = slot.key.property.dcid if slot.key.property is not None else None
+        prop_dcid = slot.key.property.ref if slot.key.property is not None else None
         provenance: BindingProvenance
         if prop_dcid is not None and prop_dcid in text_recognized_properties:
             provenance = "text_recognized"
@@ -1012,6 +1045,7 @@ def build_spec(
     text_recognized_properties: frozenset[str] = frozenset(),
     query_qualifiers: list[ResolvedQualifier] | None = None,
     default_reading: TraceDefaultReading | None = None,
+    stated_form: QuantityForm | None = None,
     measure_elected_properties: frozenset[str],
     defaulted_properties: frozenset[str] = frozenset(),
     measure_partition: MeasurePartition | None = None,
@@ -1034,8 +1068,10 @@ def build_spec(
             ``entities`` that it was asked to read and serves no point at on their role
             (``read_plan.unserved_entities``) become ``ResolvedSpec.unserved_entities``,
             and the years its served series hold over every date
-            (``read_plan.data_years``) become ``ResolvedSpec.data_years``. The part's
-            departures state both. They never feed identity.
+            (``read_plan.data_years``) become ``ResolvedSpec.data_years``, and whether it
+            serves a continuation's points (``read_plan.serves_continuation``) becomes
+            ``ResolvedSpec.continued``. The part's departures state all three. They never
+            feed identity.
         coverage_index: The request's coverage index, which ``ResolvedSpec.download``
             counts a role-bearing plan from (``download.download_facts``). Without it, or
             without a plan, the Spec states no download facts.
@@ -1154,6 +1190,7 @@ def build_spec(
         slot_filters=slot_filters,
         query_qualifiers=query_qualifiers or [],
         default_reading=default_reading,
+        stated_form=stated_form,
         requested_window=requested_window,
         capability_version=settings().capability_version,
     )
@@ -1189,6 +1226,8 @@ def build_spec(
                 member_count=stat_vars_member_count,
                 member_count_exact=stat_vars_member_count_exact,
                 stated=stated,
+                identity=identity_doc,
+                provenance=provenance.ref if provenance is not None else None,
             ),
             entities=_resolved_entities(entities),
             entity_groups=entity_groups or None,
@@ -1214,9 +1253,9 @@ def build_spec(
         )
         .stating_unserved(
             tuple(
-                (entity_role_key(e), e.ref.dcid)
+                (entity_role_key(e), e.ref.ref)
                 for e in entities
-                if (entity_role_key(e), e.ref.dcid) in unserved
+                if (entity_role_key(e), e.ref.ref) in unserved
             )
         )
         .stating_named_sets(
@@ -1224,6 +1263,7 @@ def build_spec(
             frozenset(alone for group in named_groups for alone in group.named_alone),
         )
         .stating_data_years(data_years(plan))
+        .stating_continued(serves_continuation(plan))
         .stating_members(stat_vars)
         .stating_measure_label_named_values(measure_label.named_values),
     )

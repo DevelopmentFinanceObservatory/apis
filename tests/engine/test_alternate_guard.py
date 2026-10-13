@@ -14,17 +14,31 @@ import pytest
 
 from search.engine.bind import _UniversalBindOutput
 from search.engine.qualifier_match import CodedQualifier
-from search.engine.quantity import denominator_kinds, normalisation_class, quantity_requirement
+from search.engine.quantity import (
+    DenominatorRead,
+    NamedDenominator,
+    check_denominator,
+    normalisation_class,
+    quantity_requirement,
+    read_denominators,
+    serves_every_form,
+    with_stated_form,
+)
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import NEAR_NEIGHBOR_AMBIGUOUS, resolve_variable
 from search.engine.region.alternate_guard import (
+    QueryPins,
     inadmissible_alternates,
+    inadmissible_reason,
     measure_class,
     query_pins,
     shape_measure_class,
 )
 from search.engine.shape import ShapeDraft
+from search.models import GraphRef
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 # Unit tests use observed tuples where FakeGraph has arcs.
@@ -648,6 +662,7 @@ _DENOMINATOR_NODES = {
     },
     _GNI: {
         "arcs": {
+            "name": {"nodes": [{"value": "Gross national income"}]},
             "populationType": {"nodes": [{"dcid": "EconomicActivity"}]},
             "measuredProperty": {"nodes": [{"dcid": "amount"}]},
         }
@@ -666,20 +681,26 @@ class _CountingGraph(FakeGraph):
         return super().node_arcs_batch(dcids, deadline=deadline)
 
 
-def test_denominator_kinds_reads_statvar_denominators_in_one_batch():
-    """Schema terms are not read; each StatVar denominator is read once."""
+def test_read_denominators_reads_statvar_denominators_in_one_batch():
+    """Schema terms are not read; each StatVar denominator is read once, for its kind and
+    its graph name."""
     graph = _CountingGraph()
-    kinds = denominator_kinds(
+    reads = read_denominators(
         [_ADULTS, "Count_Person", _GNI, "PerCapita", "area", "Area_Land", _ADULTS, "Unloaded"],
         graph=graph,
     )
     assert graph.batches == [[_ADULTS, _GNI, "Area_Land", "Unloaded"]]
-    assert kinds == {_ADULTS: "person", _GNI: "other", "Area_Land": "area", "Unloaded": "unknown"}
+    assert reads == {
+        _ADULTS: DenominatorRead(kind="person", name=None),
+        _GNI: DenominatorRead(kind="other", name="Gross national income"),
+        "Area_Land": DenominatorRead(kind="area", name=None),
+        "Unloaded": DenominatorRead(kind="unknown", name=None),
+    }
 
 
-def test_denominator_kinds_skips_the_read_with_no_statvar_denominator():
+def test_read_denominators_skips_the_read_with_no_statvar_denominator():
     graph = _CountingGraph()
-    assert denominator_kinds(["Count_Person", "PerCapita", "area"], graph=graph) == {}
+    assert read_denominators(["Count_Person", "PerCapita", "area"], graph=graph) == {}
     assert graph.batches == []
 
 
@@ -711,6 +732,138 @@ def test_denominator_kinds_skips_the_read_with_no_statvar_denominator():
 def test_normalisation_class_reads_the_denominator_kind(denominator, kinds, expected):
     shape = _shape("x", "Consumption", "amount", "measuredValue", None, denominator)
     assert normalisation_class(shape, kinds=kinds) == expected
+
+
+_GDP = "Amount_EconomicActivity_GrossDomesticProduction_Nominal"
+
+
+@pytest.mark.parametrize(
+    "shape,named,expected,asked",
+    [
+        (
+            _shape("x", "Debt", "amount", "measuredValue", None, _GDP),
+            NamedDenominator(ref=GraphRef(ref=_GDP, label="GDP"), base_words="GDP"),
+            "matches",
+            None,
+        ),
+        (
+            _shape("x", "Debt", "amount", "measuredValue", None, _GNI),
+            NamedDenominator(ref=GraphRef(ref=_GDP, label="GDP"), base_words="GDP"),
+            "refused",
+            f"the query names the denominator {_GDP},",
+        ),
+        # "None of these" is no match, which proves nothing about the arc.
+        (
+            _shape("x", "Debt", "amount", "measuredValue", None, _GNI),
+            NamedDenominator(ref=None, base_words="exports"),
+            "unverified",
+            None,
+        ),
+        (
+            _shape("x", "Debt", "amount", "measuredValue", None, "Count_Person"),
+            NamedDenominator(ref=GraphRef(ref=_GDP, label="GDP"), base_words="GDP"),
+            "refused",
+            f"the query names the denominator {_GDP},",
+        ),
+        # A series whose base only its name states passes unverified.
+        (
+            _shape("x", "Debt", "value", "measuredValue", None, None),
+            NamedDenominator(ref=None, base_words="exports"),
+            "unverified",
+            None,
+        ),
+        (
+            _shape("x", "Debt", "amount", "measuredValue", None, _GNI, unresolved=True),
+            NamedDenominator(ref=GraphRef(ref=_GDP, label="GDP"), base_words="GDP"),
+            "unverified",
+            None,
+        ),
+        # A level divides by nothing, whichever base the question names.
+        (
+            _shape("x", "Debt", "amount", "measuredValue", None, None),
+            NamedDenominator(ref=GraphRef(ref=_GDP, label="GDP"), base_words="GDP"),
+            "refused",
+            f"the query names the denominator {_GDP},",
+        ),
+        (
+            _shape("x", "Debt", "amount", "measuredValue", None, None),
+            NamedDenominator(ref=None, base_words="exports"),
+            "refused",
+            'the query names the denominator "exports",',
+        ),
+    ],
+    ids=[
+        "arc-matches",
+        "arc-differs",
+        "none-of-these-leaves-an-arc-unverified",
+        "schema-term-arc-differs",
+        "arcless-other-unverified",
+        "unresolved-arc-unverified",
+        "level-refused",
+        "level-refused-under-none-of-these",
+    ],
+)
+def test_check_denominator_holds_the_shape_to_the_named_denominator(shape, named, expected, asked):
+    """A refused alternate's reason names the denominator the question names: its dcid when
+    listed, else the question's own words for it."""
+    assert check_denominator(shape, named) == expected
+    elected = _shape("x", "Debt", "amount", "measuredValue", None, _GDP)
+    reason = inadmissible_reason(QueryPins(named_denominator=named), elected, shape)
+    if asked is None:
+        assert reason is None or "names the denominator" not in reason
+    else:
+        assert reason is not None and asked in reason
+
+
+@pytest.mark.parametrize(
+    "variable,stated,named",
+    [
+        ("debt to GDP", "rate", {"rate"}),
+        ("debt to GDP", None, set()),
+        # A form a phrase names outranks the one the model states.
+        ("debt to GDP ratio", "per_person", {"rate"}),
+    ],
+    ids=["model-form-joins", "no-form-stated", "phrase-form-wins"],
+)
+def test_with_stated_form_joins_only_when_no_phrase_names_a_form(variable, stated, named):
+    requirement = with_stated_form(quantity_requirement([variable]), stated)
+    assert requirement.named == named
+    assert requirement.named <= requirement.framing
+
+
+@pytest.mark.parametrize(
+    "variable,shape,expected",
+    [
+        ("debt to GDP ratio", _shape("x", "Debt", "amount", "measuredValue", None, None), False),
+        (
+            "debt as a share of GDP",
+            _shape("x", "Debt", "amount", "measuredValue", None, _GDP),
+            True,
+        ),
+        ("population density", _shape("x", "Person", "count", "measuredValue", None, None), False),
+        # "Incidence per capita" names a rate and a per-person form; a rate series that is
+        # not per person honours only the rate.
+        (
+            "incidence per capita",
+            _shape("x", "Event", "incidence", "measuredValue", None, None),
+            False,
+        ),
+        (
+            "homicide rate per 100,000 people",
+            _shape("x", "Event", "rate", "measuredValue", None, None),
+            True,
+        ),
+    ],
+    ids=[
+        "level-for-rate",
+        "series-for-share",
+        "count-for-density",
+        "rate-not-per-person",
+        "other-per-head-base",
+    ],
+)
+def test_serves_every_form_holds_every_named_form(variable, shape, expected):
+    assert serves_every_form(quantity_requirement([variable]), shape) is expected
 
 
 def test_person_count_denominator_alternate_honours_per_capita():
@@ -924,7 +1077,6 @@ def test_per_area_alternate_rejected_on_bare_count_phrase():
         "population relative to area",
         "population in urban area",
         "area of Kenya",
-        "area per person",
         "people living in area",
     ],
 )
@@ -937,6 +1089,18 @@ def test_per_area_alternate_kept_when_phrase_names_the_framing(variable):
         )
         == {}
     )
+
+
+def test_per_area_alternate_refused_when_the_phrase_also_names_a_per_person_form():
+    """ "area per person" frames an area and names a per-person form. A density honours the
+    area alone, so the guard refuses it as the materialise gate refuses an elected shape
+    that does not honour every form named."""
+    elected, density = _r7_pair()
+    variable = "area per person"
+    result = inadmissible_alternates(
+        query_pins(variable, quantity=quantity_requirement([variable])), elected, [(0, density)]
+    )
+    assert _code(result[0]) == "pin:normalisation", result
 
 
 @pytest.mark.parametrize(
@@ -1413,6 +1577,8 @@ class _FixedBindLLM:
         self._also_plausible = also_plausible
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=self._chosen_shape_index,
@@ -1423,7 +1589,7 @@ class _FixedBindLLM:
 
 
 def _sv_refs(spec) -> set[str]:
-    return {sv.ref.dcid for sv in spec.resolved.members}
+    return {sv.ref.ref for sv in spec.resolved.members}
 
 
 def _warning_codes(result) -> set[str]:
@@ -1645,7 +1811,9 @@ def test_pipeline_r7_density_nomination_rejected():
     assert _sv_refs(result.specs[0]) == {elected_sv}
 
 
-# The same nomination survives when the query names density.
+# The same nomination survives when the query names density. The elected count serves no
+# density, but the nomination does, so the quantity gate lets the fan-out answer with it,
+# and the count the gate refuses is no candidate beside it.
 
 
 def test_pipeline_r7_density_nomination_kept_when_query_names_density():
@@ -1670,9 +1838,9 @@ def test_pipeline_r7_density_nomination_kept_when_query_names_density():
             f"{alt_sv}|country/TST": [_facet()],
         },
     )
-    assert result.status == "candidates"
-    assert len(result.specs) == 2
-    assert {ref for s in result.specs for ref in _sv_refs(s)} == {elected_sv, alt_sv}
+    assert result.status == "definite"
+    (spec,) = result.specs
+    assert _sv_refs(spec) == {alt_sv}
 
 
 # The margin gate injects a raw-count alternate. The normalisation pin refuses it and clears the warning.

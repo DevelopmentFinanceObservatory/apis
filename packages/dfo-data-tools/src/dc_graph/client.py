@@ -201,6 +201,11 @@ class Facet:
     facets' evidence in `annual_evidence`, never a judgement of the widened bounds, so one
     place dated by month keeps the merged facet from reading as annual. `annual_evidence` is
     `None` on a facet no merge built.
+
+    `first_series_end` is the latest date of the series that ends first among those the facet
+    holds: a merge across places or StatVars (`materialise.facets.merge_facets`) keeps the
+    earliest of theirs, and a coverage facet its earliest row's. `None` when every series
+    the facet holds ends at `latest_date` (`earliest_series_end`), as on a facet of one.
     """
 
     obs_count: int
@@ -220,6 +225,13 @@ class Facet:
     # `search.engine.retrieval.role_scope.facet_from_coverage`).
     dates_coarsened: bool = False
     annual_evidence: bool | None = None
+    first_series_end: str | None = None
+
+    @property
+    def earliest_series_end(self) -> str | None:
+        """The latest date of the series that ends first (`first_series_end`), or
+        `latest_date` on a facet of one series."""
+        return self.first_series_end if self.first_series_end is not None else self.latest_date
 
     @property
     def reads_annual(self) -> bool:
@@ -460,7 +472,7 @@ class GraphClient:
         self._cap_error_cls = cap_error_cls
 
         self._cache_lock = threading.Lock()
-        self._label_cache: cachetools.TLRUCache[tuple[str, str], str] | None = (
+        self._label_cache: cachetools.TLRUCache[tuple[str, str], str | None] | None = (
             cachetools.TLRUCache(
                 maxsize=label_cache_size, ttu=_ttu_from_stamp_key, timer=self._timer
             )
@@ -468,7 +480,7 @@ class GraphClient:
             else None
         )
         self._label_counters = _CacheCounters()
-        self._type_cache: cachetools.TLRUCache[tuple[str, str], str] | None = (
+        self._type_cache: cachetools.TLRUCache[tuple[str, str], str | None] | None = (
             cachetools.TLRUCache(
                 maxsize=type_cache_size, ttu=_ttu_from_stamp_key, timer=self._timer
             )
@@ -476,7 +488,7 @@ class GraphClient:
             else None
         )
         self._type_counters = _CacheCounters()
-        self._arcs_cache: cachetools.TLRUCache[tuple[str, str], dict] | None = (
+        self._arcs_cache: cachetools.TLRUCache[tuple[str, str], dict | None] | None = (
             cachetools.TLRUCache(
                 maxsize=arcs_cache_size, ttu=_ttu_from_stamp_key, timer=self._timer
             )
@@ -735,7 +747,8 @@ class GraphClient:
 
     def node_label(self, dcid: str) -> str | None:
         """Return the last `->name` value or `None` for an absent or empty node. It shares the
-        optional cache with `node_labels_batch`. Cache returned labels only.
+        optional cache with `node_labels_batch`. A node the graph answered without a name caches as
+        `None`; an unanswered dcid caches nothing.
         """
         stamp = self._generation.stamp()
         return self._cached_single_arc(
@@ -782,14 +795,15 @@ class GraphClient:
                     return cache[cache_key]
                 counters.misses += 1
         body = self.post(NODE_PATH, {"nodes": [dcid], "property": arc_property})
-        node_data = body.get("data", {}).get(dcid)
+        data = body.get("data", {})
+        node_data = data.get(dcid)
         arcs = (node_data or {}).get("arcs", {}) if node_data is not None else {}
-        if not arcs:
-            return None
-        arc_name = arc_property.removeprefix("->")
-        values = [n.get(field) for n in arcs.get(arc_name, {}).get("nodes", [])]
-        result = pick(values)
-        if result is not None and cache is not None:
+        result = None
+        if arcs:
+            arc_name = arc_property.removeprefix("->")
+            values = [n.get(field) for n in arcs.get(arc_name, {}).get("nodes", [])]
+            result = pick(values)
+        if dcid in data and cache is not None:
             with self._cache_lock:
                 cache[cache_key] = result
         return result
@@ -834,13 +848,15 @@ class GraphClient:
         pick: Callable[[list[str]], str | None],
     ) -> dict[str, str]:
         """Fetch uncached dcids in chunks and merge hits with results in first-occurrence input
-        order. `cache=None` treats every dcid as a miss.
+        order. A dcid the graph answered without a value is omitted from the result, and caches as
+        `None` only when it was the one dcid read; a dcid missing from the response caches
+        nothing. `cache=None` treats every dcid as a miss.
         """
         if not dcids:
             return {}
         stamp = self._generation.stamp()
         unique_dcids = list(dict.fromkeys(dcids))
-        hits: dict[str, str] = {}
+        hits: dict[str, str | None] = {}
         if cache is not None:
             with self._cache_lock:
                 misses = []
@@ -866,27 +882,26 @@ class GraphClient:
             if misses
             else {}
         )
-        fetched: dict[str, str] = {}
+        fetched: dict[str, str | None] = {}
+        read_alone = len(misses) == 1
         for dcid in misses:
             node_data = data.get(dcid)
             if node_data is None:
                 continue
-            arcs = node_data.get("arcs", {})
-            if not arcs:
-                continue
-            values = [n.get(field) for n in arcs.get(arc_name, {}).get("nodes", []) if n.get(field)]
+            values = [
+                n.get(field)
+                for n in node_data.get("arcs", {}).get(arc_name, {}).get("nodes", [])
+                if n.get(field)
+            ]
             picked = pick(values)
-            if picked is None:
-                continue
             fetched[dcid] = picked
-            if cache is not None:
+            # An empty entry from a multi-dcid chunk may depend on the chunk's composition, so
+            # only a dcid read alone is trusted empty.
+            if cache is not None and (picked is not None or read_alone):
                 with self._cache_lock:
                     cache[(stamp.key, dcid)] = picked
-        return {
-            dcid: hits[dcid] if dcid in hits else fetched[dcid]
-            for dcid in unique_dcids
-            if dcid in hits or dcid in fetched
-        }
+        known = {**fetched, **hits}
+        return {dcid: value for dcid in unique_dcids if (value := known.get(dcid)) is not None}
 
     def _fetch_single_arc_chunk(
         self,
@@ -1018,9 +1033,14 @@ class GraphClient:
         """Fetch each dcid's `->*` arcs in chunks of `node_arc_batch_chunk_size`. This mixer repeats
         continuation tokens for this shape, so chunks halve on continuation. An absent or empty
         result is retried once as a group, except for a single-dcid request. Missing retry results
-        raise the configured read error. Results are deduplicated in first-occurrence order.
-        They share the optional cache with `node_arcs`. One absolute `deadline` bounds every
-        request and semaphore wait; past it the configured deadline error raises.
+        raise the configured read error. A node the graph answered with empty arcs when read alone
+        (a single-dcid request or a single-suspect retry) caches as `None` under the stamp; an empty
+        answer from a multi-dcid group retry is returned uncached, because a `->*` batch can empty
+        an entry depending on which other dcids share it. A dcid the response omitted caches
+        nothing. Results are deduplicated in
+        first-occurrence order. They share the optional cache with `node_arcs`. One absolute
+        `deadline` bounds every request and semaphore wait; past it the configured deadline error
+        raises.
         """
         if not dcids:
             return {}
@@ -1051,16 +1071,11 @@ class GraphClient:
         for dcid in misses:
             present = data.get(dcid) is not None
             arcs = _dedup_wire_arcs(data[dcid].get("arcs", {})) if present else {}
-            if not arcs:
-                if present and single_batch:
-                    result[dcid] = None
-                    continue
+            if not arcs and not (present and single_batch):
                 suspects.append(dcid)
                 continue
-            result[dcid] = arcs
-            if self._arcs_cache is not None:
-                with self._cache_lock:
-                    self._arcs_cache[(stamp.key, dcid)] = arcs
+            result[dcid] = arcs or None
+            self._remember_arcs(stamp, dcid, result[dcid])
 
         if suspects:
             retry_data = self._post_node_arcs_batch(suspects, deadline=deadline)
@@ -1070,21 +1085,26 @@ class GraphClient:
                     f"graph /v2/node omitted {unanswered!r} from both the initial batch "
                     "and a single-dcid retry"
                 )
+            read_alone = len(suspects) == 1
             for dcid in suspects:
                 arcs = (
                     _dedup_wire_arcs(retry_data[dcid].get("arcs", {}))
                     if retry_data[dcid] is not None
                     else {}
                 )
-                if not arcs:
-                    result[dcid] = None
-                    continue
-                result[dcid] = arcs
-                if self._arcs_cache is not None:
-                    with self._cache_lock:
-                        self._arcs_cache[(stamp.key, dcid)] = arcs
+                result[dcid] = arcs or None
+                # A group retry can empty several suspects together for the same composition
+                # reason as the first batch, so only a dcid read alone is trusted empty.
+                if arcs or read_alone:
+                    self._remember_arcs(stamp, dcid, result[dcid])
 
         return result
+
+    def _remember_arcs(self, stamp: GenerationStamp, dcid: str, arcs: dict | None) -> None:
+        """Cache a read the graph answered: the arcs, or `None` for a node it confirmed empty."""
+        if self._arcs_cache is not None:
+            with self._cache_lock:
+                self._arcs_cache[(stamp.key, dcid)] = arcs
 
     def _post_node_arcs_batch(self, dcids: list[str], *, deadline: float | None) -> dict:
         try:

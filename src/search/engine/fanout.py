@@ -40,12 +40,19 @@ from search.engine.region import RegionResult, resolve_variable
 from search.engine.region.place_options import PlaceOptionsPool
 from search.engine.region.result import (
     empty_scope_result,
+    source_code_refusal_result,
     source_refusal_result,
     with_dropped_open_roles,
     with_runnable_operations,
 )
 from search.engine.region.state import EngineOptions
 from search.engine.role_text import DoorRole, role_text_for_axis
+from search.engine.source_code import (
+    PartCode,
+    SeriesCodeMembers,
+    SourceCodeRefusal,
+    without_code_words,
+)
 from search.engine.source_scope import SourceRefusal, SourceScope, without_source_words
 from search.models import (
     IdentityBindingValue,
@@ -208,6 +215,7 @@ def _leg_parsed_form(
     date_request: DateRequest | None,
     unit_text: str | None,
     sources: Sequence[SourceMention] = (),
+    source_code: str | None = None,
     entity_roles: Mapping[str, list[DoorRole]] | None = None,
     member_entities: Collection[str] = (),
     operations: Sequence[Operation] = (),
@@ -220,10 +228,10 @@ def _leg_parsed_form(
     `role_text`, as the parsed door reads a name repeated on opposite axes. An entity
     without an axis appears bare. An entity of `member_entities` states `members`.
     `sources` are the mentions it echoes (`restated_sources`), so a reposted part answers
-    from the same sources. The leg's own open roles appear as their axes in
-    `open_roles`, and the axes its operations open ride on the operations. A leg
-    compared with the others states `separate`. Return `None` when `ParsedPart` bounds
-    reject any input.
+    from the same sources, and `source_code` is the series code it names. The leg's own
+    open roles appear as their axes in `open_roles`, and the axes its operations open ride
+    on the operations. A leg compared with the others states `separate`. Return `None`
+    when `ParsedPart` bounds reject any input.
     """
     roles = entity_roles or {}
     try:
@@ -242,6 +250,7 @@ def _leg_parsed_form(
             time_text=_date_request_to_time_text(date_request),
             unit_text=unit_text,
             sources=list(sources),
+            source_code=source_code,
             operations=list(operations),
             open_roles=sorted(open_axes) or None,
             separate=separate,
@@ -257,6 +266,7 @@ def _leg_restatement(
     date_request: DateRequest | None,
     unit_text: str | None,
     sources: Sequence[SourceMention] = (),
+    source_code: str | None = None,
     directional: bool = False,
     entity_roles: Mapping[str, list[DoorRole]] | None = None,
     member_entities: Collection[str] = (),
@@ -287,6 +297,7 @@ def _leg_restatement(
         date_request=date_request,
         unit_text=unit_text,
         sources=sources,
+        source_code=source_code,
         entity_roles=roles,
         member_entities=member_entities,
         operations=operations,
@@ -303,6 +314,7 @@ def _placeholder_no_data(
     date_request: DateRequest | None = None,
     unit_text: str | None = None,
     sources: Sequence[SourceMention] = (),
+    source_code: str | None = None,
     role_query: str | None = None,
     entity_roles: Mapping[str, list[DoorRole]] | None = None,
     member_entities: Collection[str] = (),
@@ -322,6 +334,7 @@ def _placeholder_no_data(
         date_request=date_request,
         unit_text=unit_text,
         sources=sources,
+        source_code=source_code,
         directional=bool(role_query),
         entity_roles=entity_roles,
         member_entities=member_entities,
@@ -435,6 +448,7 @@ async def _stream_one_variable(
     unit_text: str | None = None,
     unit_text_best_effort: bool = False,
     source_scope: SourceScope | SourceRefusal | None = None,
+    source_code: PartCode | None = None,
     dropped_qualifier_phrases: list[str] | None = None,
     operations: tuple[Operation, ...] = (),
     open_axes: frozenset[RoleAxis] = frozenset(),
@@ -459,8 +473,11 @@ async def _stream_one_variable(
     is the leg's compiled source mentions. A scope is what the leg answers under, and its
     source words leave `v` (`_measure_words`). A refusal, or a scope allowing nothing,
     makes the leg answer no_data and run no step
-    (`source_refusal_result`, `empty_scope_result`). `member_entities` are the entities asked for as
-    their members (`ResolveState.member_entities`), which the restatement states.
+    (`source_refusal_result`, `empty_scope_result`). `source_code` is the leg's compiled
+    series code: its StatVars are the leg's recall, its words leave `v` too, and a refusal
+    answers the leg no_data after the source refusals (`source_code_refusal_result`).
+    `member_entities` are the entities asked for as their members
+    (`ResolveState.member_entities`), which the restatement states.
     `entity_roles` also supplies the axes written into the leg's restatement, which carries
     its source mentions (`restated_sources`). `operations` ride on the final
     region and its restatement, their phrases join `dropped_qualifier_phrases` for this leg's
@@ -473,7 +490,8 @@ async def _stream_one_variable(
     (`search.engine.leg_phase`).
     """
     track_leg_phase(phase)
-    v = _measure_words(v, source_scope)
+    v = _measure_words(v, source_scope, source_code)
+    code = _code_text(source_code)
     # `v` plus every sidecar CodedQualifier's own phrase, verbatim -- see
     # this function's own qualifiers= comment above for why every
     # user-visible surface below reads this instead of `v`.
@@ -487,6 +505,8 @@ async def _stream_one_variable(
             return source_refusal_result(v, source_scope, timing_by_step=base_timing)
         if source_scope is not None and not source_scope.allowed:
             return empty_scope_result(v, source_scope, timing_by_step=base_timing)
+        if isinstance(source_code, SourceCodeRefusal):
+            return source_code_refusal_result(v, source_code, timing_by_step=base_timing)
         return await resolve_variable(
             v,
             entities=entities,
@@ -498,6 +518,7 @@ async def _stream_one_variable(
             unit_text=unit_text,
             unit_text_best_effort=unit_text_best_effort,
             source_scope=source_scope,
+            source_code=source_code if isinstance(source_code, SeriesCodeMembers) else None,
             dropped_qualifier_phrases=_bind_phrases(dropped_qualifier_phrases, operations),
             operations=operations,
             open_axes=_asked_open_axes(open_axes, operations),
@@ -554,6 +575,7 @@ async def _stream_one_variable(
             date_request=date_request,
             unit_text=unit_text,
             sources=restated_sources(source_scope, None),
+            source_code=code,
             role_query=role_query if role_query is not None else query,
             entity_roles=entity_roles,
             member_entities=member_entities,
@@ -573,6 +595,7 @@ async def _stream_one_variable(
             date_request=date_request,
             unit_text=unit_text,
             sources=sources,
+            source_code=code,
             directional=_success_directional(
                 region,
                 role_query=role_query if role_query is not None else query,
@@ -596,6 +619,7 @@ async def _stream_one_variable(
                 date_request=date_request,
                 unit_text=unit_text,
                 sources=sources,
+                source_code=code,
                 entity_roles=entity_roles,
                 member_entities=member_entities,
                 operations=operations,
@@ -634,6 +658,7 @@ class _LegOverrides:
     per_variable_unit_texts: list[str | None] | None
     unit_text_best_effort: bool
     per_variable_source_scopes: list[SourceScope | SourceRefusal | None] | None
+    per_variable_source_codes: list[PartCode | None] | None
     per_variable_qualifiers: list[tuple[CodedQualifier, ...]] | None
     per_variable_pre_resolved: list[dict[str, Resolution]] | None
     per_variable_operations: list[tuple[Operation, ...]] | None
@@ -671,6 +696,19 @@ def _leg_source_scope(overrides: _LegOverrides, i: int) -> SourceScope | SourceR
         if overrides.per_variable_source_scopes is not None
         else None
     )
+
+
+def _leg_source_code(overrides: _LegOverrides, i: int) -> PartCode | None:
+    return (
+        overrides.per_variable_source_codes[i]
+        if overrides.per_variable_source_codes is not None
+        else None
+    )
+
+
+def _code_text(code: PartCode | None) -> str | None:
+    """The series code a leg's compiled `code` names, which its restatement echoes."""
+    return None if code is None else code.code
 
 
 def _leg_qualifiers(overrides: _LegOverrides, i: int) -> tuple[CodedQualifier, ...] | None:
@@ -718,15 +756,22 @@ def _leg_variable_text(overrides: _LegOverrides, i: int) -> str:
     reaches `_stream_one_variable`'s own composition.
     """
     return recall_text(
-        _measure_words(overrides.unique[i], _leg_source_scope(overrides, i)),
+        _measure_words(
+            overrides.unique[i], _leg_source_scope(overrides, i), _leg_source_code(overrides, i)
+        ),
         _leg_qualifiers(overrides, i),
     )
 
 
-def _measure_words(variable: str, scope: SourceScope | SourceRefusal | None) -> str:
+def _measure_words(
+    variable: str, scope: SourceScope | SourceRefusal | None, code: PartCode | None
+) -> str:
     """`variable` less the words of the sources its leg's `scope` resolved
-    (`source_scope.without_source_words`), so one span has one reading on every door."""
-    return without_source_words(variable, scope) if isinstance(scope, SourceScope) else variable
+    (`source_scope.without_source_words`) and of its series `code`
+    (`source_code.without_code_words`), so one span has one reading on every door."""
+    if isinstance(scope, SourceScope):
+        variable = without_source_words(variable, scope)
+    return variable if code is None else without_code_words(variable, code.code)
 
 
 def _leg_role_query(overrides: _LegOverrides, i: int) -> str:
@@ -826,6 +871,7 @@ def _launch_variable_tasks(
                 unit_text=_leg_unit_text(overrides, i),
                 unit_text_best_effort=overrides.unit_text_best_effort,
                 source_scope=_leg_source_scope(overrides, i),
+                source_code=_leg_source_code(overrides, i),
                 qualifiers=_leg_qualifiers(overrides, i),
                 dropped_qualifier_phrases=dropped_qualifier_phrases,
                 operations=_leg_operations(overrides, i),
@@ -913,6 +959,7 @@ async def _run_variables_streaming(
     per_variable_unit_texts: list[str | None] | None = None,
     unit_text_best_effort: bool = False,
     per_variable_source_scopes: list[SourceScope | SourceRefusal | None] | None = None,
+    per_variable_source_codes: list[PartCode | None] | None = None,
     per_variable_qualifiers: list[tuple[CodedQualifier, ...]] | None = None,
     per_variable_pre_resolved: list[dict[str, Resolution]] | None = None,
     per_variable_operations: list[tuple[Operation, ...]] | None = None,
@@ -943,7 +990,8 @@ async def _run_variables_streaming(
     `per_variable_operations` gives each leg its own operations, which ride on its
     region and restatement and join its bind's dropped phrases; `None` gives every
     leg none. `per_variable_source_scopes` gives each leg its compiled source mentions;
-    `None` gives every leg none. `per_variable_open_axes` gives each leg its own open
+    `None` gives every leg none. `per_variable_source_codes` gives each leg its compiled
+    series code, and `None` gives every leg none. `per_variable_open_axes` gives each leg its own open
     roles, and `None` gives every leg none. `per_variable_separate` marks each leg compared
     with the others (`RegionResult.separate`), and `None` marks none. `member_entities`
     are the entities every leg is asked the members of, and `per_variable_member_entities`
@@ -967,6 +1015,7 @@ async def _run_variables_streaming(
         per_variable_unit_texts=per_variable_unit_texts,
         unit_text_best_effort=unit_text_best_effort,
         per_variable_source_scopes=per_variable_source_scopes,
+        per_variable_source_codes=per_variable_source_codes,
         per_variable_qualifiers=per_variable_qualifiers,
         per_variable_pre_resolved=per_variable_pre_resolved,
         per_variable_operations=per_variable_operations,
@@ -1074,6 +1123,7 @@ async def _run_variables_streaming(
                 date_request=_leg_date_request(overrides, i),
                 unit_text=_leg_unit_text(overrides, i),
                 sources=restated_sources(_leg_source_scope(overrides, i), None),
+                source_code=_code_text(_leg_source_code(overrides, i)),
                 role_query=_leg_role_query(overrides, i),
                 entity_roles=_leg_entity_roles(overrides, i),
                 member_entities=_leg_member_entities(overrides, i),

@@ -76,7 +76,7 @@ class TestWidening:
         activity_slot = next(
             s
             for s in region.specs[0].resolved.slots
-            if s.key.property is not None and s.key.property.dcid == "activitySource"
+            if s.key.property is not None and s.key.property.ref == "activitySource"
         )
         assert activity_slot.binding.kind == "unbound"
 
@@ -95,11 +95,11 @@ class TestWidening:
             options=walk_options(FakeGraph()),
         )
         assert region.status == "definite"
-        assert [sv.ref.dcid for sv in region.specs[0].resolved.members] == [_GDP_SV_DCID]
+        assert [sv.ref.ref for sv in region.specs[0].resolved.members] == [_GDP_SV_DCID]
         activity_slot = next(
             s
             for s in region.specs[0].resolved.slots
-            if s.key.property is not None and s.key.property.dcid == "activitySource"
+            if s.key.property is not None and s.key.property.ref == "activitySource"
         )
         assert activity_slot.binding.kind == "value"
 
@@ -124,7 +124,7 @@ class TestBoundAxes:
             options=walk_options(_standard_refine_graph()),
         )
         assert region.status == "definite"
-        assert [sv.ref.dcid for sv in region.specs[0].resolved.members] == [_PERSON_URBAN_FEMALE_SV]
+        assert [sv.ref.ref for sv in region.specs[0].resolved.members] == [_PERSON_URBAN_FEMALE_SV]
 
 
 class TestMixedPresenceAndPlurality:
@@ -163,5 +163,5 @@ class TestMixedPresenceAndPlurality:
             options=walk_options(_standard_refine_graph()),
         )
         assert region.status == "definite"
-        dcids = {sv.ref.dcid for sv in region.specs[0].resolved.members}
+        dcids = {sv.ref.ref for sv in region.specs[0].resolved.members}
         assert dcids == {_PERSON_FEMALE_SV, _PERSON_MALE_SV}

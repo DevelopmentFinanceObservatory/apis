@@ -10,12 +10,14 @@ import asyncio
 from materialise.graph import Facet as MaterialiseFacet
 from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.graph import Facet
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.state import EngineOptions
 from series_coverage.schema import FacetMetadata, RoleNames
 from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 from tests.materialise.conftest import FakeGraphReader
 
@@ -71,6 +73,8 @@ class _FixedBindLLM:
     """Leaves modality open so both members appear as slot options."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
 
@@ -176,10 +180,10 @@ def test_directional_single_place_gets_no_slot_options_coverage(monkeypatch):
     modality_opts = next(
         so
         for so in spec.resolved.slot_options
-        if so.key.property and so.key.property.dcid == "modality"
+        if so.key.property and so.key.property.ref == "modality"
     )
     assert all(o.coverage is None for o in modality_opts.options)
     assert [
-        (fo.axis, [o.value.ref.dcid for o in fo.options if o.value.ref is not None], fo.truncated)
+        (fo.axis, [o.value.ref.ref for o in fo.options if o.value.ref is not None], fo.truncated)
         for fo in spec.resolved.facet_options
     ] == [("provenance", [_SOURCE], False)]

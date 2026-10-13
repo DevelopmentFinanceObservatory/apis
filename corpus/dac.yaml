@@ -71,7 +71,7 @@
   expect:
     definite:
       measure: {family: dac1.oda_grant_equivalent}
-      entities: [{label: G7, role: origin, expands: true}]
+      entities: [{dcid: GroupOfSeven, role: origin, expands: true}]
 
 - id: dq-dac-008
   query: in-donor refugee costs in Germany

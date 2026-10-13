@@ -8,6 +8,7 @@ must be cut, and background reads are drained before the memo is checked."""
 
 from __future__ import annotations
 
+import contextvars
 import threading
 import time
 from collections.abc import Collection, Iterator, Mapping, Sequence
@@ -29,6 +30,7 @@ from graph_generation import FakeGeneration, GenerationStamp
 from materialise import place_scope
 from materialise.errors import MaterialisationUsageError
 from materialise.place_scope import (
+    AVAILABILITY_WORKERS,
     MAX_EVERY_PLACE,
     MAX_EVERY_PLACE_BYTES,
     NO_DEFAULT_SCOPE,
@@ -56,6 +58,7 @@ _NAIROBI, _AFRICA = "wikidataId/Q3870", "africa"
 _COUNTRIES = (_UGA, _KEN, _TGO)
 _UN_VARIABLE = "undata/who/MORT_U5_RATE"
 _QUEUE_BOUND = place_scope.MAX_QUEUED_SETTLES
+_CALLER: contextvars.ContextVar[str | None] = contextvars.ContextVar("caller", default=None)
 
 
 @pytest.fixture(autouse=True)
@@ -629,6 +632,115 @@ def test_a_node_check_failing_on_the_client_side_propagates():
         read_default_presence(graph=graph, availability=_Availability(data=_EVERY), stat_vars=["A"])
 
 
+def test_a_later_check_reads_only_the_places_no_earlier_check_answered():
+    """A place's answer, held or not, is memoised, so a variable whose list overlaps an earlier
+    one's reads only its new places."""
+    availability = _Availability(data=[*_EVERY, ("B", _KEN), ("B", _NAIROBI), ("B", "country/ZAF")])
+    graph = _Graph(nodes={_AFRICA, _KEN, _TGO, "country/ZAF", "Earth"})
+
+    read_default_presence(graph=graph, availability=availability, stat_vars=["A"])
+    later = read_default_presence(graph=graph, availability=availability, stat_vars=["B"])
+
+    assert later.scope("B").places == (_KEN, "country/ZAF")
+    assert [places for kind, places in graph.reads if kind == "nodes"][1:] == [("country/ZAF",)]
+
+
+class _HeldNodesGraph(_Graph):
+    """Holds the first node check until `release` is set, then answers it or raises
+    `first_error`, and signals `started` when it begins. With `first_error` set to
+    `"deadline"`, it raises `GraphDeadlineExceededError` as a read its deadline ended does."""
+
+    def __init__(self, *, first_error: Exception | str | None, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.started, self.release = threading.Event(), threading.Event()
+        self._first_error = first_error
+        self._held = True
+
+    def node_arcs_many(self, dcids, *, properties, deadline=None):
+        if not self._held:
+            return super().node_arcs_many(dcids, properties=properties, deadline=deadline)
+        self._held = False
+        self.started.set()
+        assert self.release.wait(timeout=5)
+        if self._first_error is None:
+            return super().node_arcs_many(dcids, properties=properties, deadline=deadline)
+        self.reads.append(("nodes", tuple(dcids)))
+        if self._first_error == "deadline":
+            assert deadline is not None and time.monotonic() >= deadline
+            raise GraphDeadlineExceededError("the node check ran past its deadline")
+        raise self._first_error
+
+    def node_reads(self) -> list[tuple[str, ...]]:
+        return [places for kind, places in self.reads if kind == "nodes"]
+
+
+_FIRST_PLACES = sorted({_TGO, "Earth", _AFRICA, _NAIROBI, _KEN})
+
+
+@pytest.mark.parametrize(
+    ("first_error", "reads"),
+    [
+        pytest.param(None, [_FIRST_PLACES, ["country/ZAF"]], id="answers"),
+        pytest.param(
+            GraphReadError("down", upstream_status=503),
+            [_FIRST_PLACES, ["country/ZAF"]],
+            id="fails",
+        ),
+        # The first check's own deadline ends the read it shares; the second, with time left,
+        # reads the shared place itself.
+        pytest.param(
+            "deadline",
+            [_FIRST_PLACES, ["country/KEN"], ["country/ZAF"]],
+            id="owner-deadline",
+        ),
+    ],
+)
+def test_a_check_waits_for_the_places_another_check_is_reading(first_error, reads):
+    """Concurrent checks read each place once: the second reads only the places the first is
+    not reading and takes the first's answers. When that read fails it falls back for the
+    request, as the first does, unless the first's own deadline ended it: then it reads those
+    places once under its own deadline and answers."""
+    availability = _Availability(data=[*_EVERY, ("D", _KEN), ("D", "country/ZAF")])
+    graph = _HeldNodesGraph(admitted=_ADMITTED, first_error=first_error)
+    found: dict[str, DefaultPresence | Exception] = {}
+    first_deadline = time.monotonic() + 0.5 if first_error == "deadline" else None
+
+    def presence(stat_var: str, deadline: float | None) -> None:
+        try:
+            found[stat_var] = read_default_presence(
+                graph=graph, availability=availability, stat_vars=[stat_var], deadline=deadline
+            )
+        except Exception as exc:
+            found[stat_var] = exc
+
+    first = threading.Thread(target=presence, args=("A", first_deadline))
+    first.start()
+    assert graph.started.wait(timeout=5)
+    second = threading.Thread(target=presence, args=("D", time.monotonic() + 8))
+    second.start()
+    # The second check's own read lands while the first is held, so it has claimed its places.
+    wait_until = time.monotonic() + 5
+    while not graph.node_reads() and time.monotonic() < wait_until:
+        time.sleep(0.01)
+    if first_deadline is not None:
+        time.sleep(max(0.0, first_deadline - time.monotonic()))
+    graph.release.set()
+    first.join(timeout=5)
+    second.join(timeout=5)
+
+    assert sorted(sorted(places) for places in graph.node_reads()) == reads
+    second_found = found["D"]
+    assert isinstance(second_found, DefaultPresence), second_found
+    if isinstance(first_error, Exception):
+        assert second_found.unsettled == {"D"}
+        assert second_found.scope("D") == _countries_of_d()
+    else:
+        assert second_found.unsettled == frozenset()
+        assert second_found.scope("D") == DefaultPlaceScope(
+            places=(_KEN, "country/ZAF"), every_place=True
+        )
+
+
 # -- settling in the background --
 
 
@@ -779,6 +891,67 @@ def test_a_saturated_pool_gives_countries_for_the_request_and_queues_the_read(mo
     pool.shutdown()
 
 
+def test_a_queued_read_runs_in_the_context_of_the_call_that_queued_it(monkeypatch):
+    """A read is submitted by whichever thread frees, often one running another request's
+    read, yet it runs in its own call's context, which carries that request's trace id and
+    timings."""
+    pool = _one_settle_thread(monkeypatch)
+    release = threading.Event()
+    callers: dict[str, str | None] = {}
+
+    class _RecordingAvailability(_Availability):
+        def availability_values(self, **kwargs) -> list[str]:  # type: ignore[override]
+            (stat_var,) = kwargs["variables"]
+            callers[stat_var] = _CALLER.get()
+            return super().availability_values(**kwargs)
+
+    availability = _RecordingAvailability(data=[("Z", _KEN)], blocked={"W0": release})
+    graph = _Graph(admitted=_ADMITTED)
+
+    def call(caller: str, stat_vars: list[str]) -> None:
+        _CALLER.set(caller)
+        read_default_presence(graph=graph, availability=availability, stat_vars=stat_vars)
+
+    contextvars.Context().run(call, "A", ["W0", "W1"])
+    contextvars.Context().run(call, "B", ["Z"])
+    release.set()
+    _drain()
+
+    # `W0`'s thread submits `Z`, and `Z`'s thread submits `W1`.
+    assert callers == {"W0": "A", "Z": "B", "W1": "A"}
+    pool.shutdown()
+
+
+def test_a_read_two_lanes_hold_runs_once(monkeypatch):
+    """A joined flight sits in two lanes. Once one lane's read has ended the flight, the other
+    lane's entry is skipped even before the flight resolves."""
+    pool = _one_settle_thread(monkeypatch)
+    release = threading.Event()
+    availability = _Availability(data=[("W1", _KEN)], blocked={"W0": release})
+    graph = _Graph(admitted=_ADMITTED)
+    ended, resolve = threading.Event(), threading.Event()
+    end_flight = place_scope._end_flight
+
+    def end_and_hold(key, flight, *, outcome=None):
+        end_flight(key, flight, outcome=outcome)
+        if key.stat_var == "W1" and outcome is not None:
+            ended.set()
+            assert resolve.wait(timeout=5)
+
+    monkeypatch.setattr(place_scope, "_end_flight", end_and_hold)
+    read_default_presence(graph=graph, availability=availability, stat_vars=["W0", "W1"])
+    read_default_presence(graph=graph, availability=availability, stat_vars=["W1"])
+    release.set()
+    assert ended.wait(timeout=5)
+
+    # `W1` has ended its flight and not yet resolved it; a call arriving now dispatches.
+    place_scope._dispatch()
+    resolve.set()
+    pool.shutdown(wait=True)
+
+    assert availability.read_stat_vars() == ["W0", "W1"]
+
+
 def test_a_read_arriving_at_a_full_queue_is_dropped(monkeypatch):
     pool = _one_settle_thread(monkeypatch)
     monkeypatch.setattr(place_scope, "MAX_QUEUED_SETTLES", 0)
@@ -795,6 +968,89 @@ def test_a_read_arriving_at_a_full_queue_is_dropped(monkeypatch):
     _drain()
     assert availability.read_stat_vars() == ["A"]
     pool.shutdown()
+
+
+def test_a_lone_request_reads_on_every_settle_thread(monkeypatch):
+    """A request queueing more reads than the pool has threads runs one on each thread, and
+    the rest as threads free."""
+    monkeypatch.setattr(place_scope, "EVERY_PLACE_SECONDS", 0.0)
+    release = threading.Event()
+    wide = [f"W{i:02}" for i in range(40)]
+    availability = _Availability(data=[], blocked=dict.fromkeys(wide, release))
+
+    presence = read_default_presence(
+        graph=_Graph(admitted=_ADMITTED), availability=availability, stat_vars=wide
+    )
+    deadline = time.monotonic() + 5
+    while len(availability.reads) < AVAILABILITY_WORKERS and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert presence.cold_reads == AVAILABILITY_WORKERS
+    assert availability.read_stat_vars() == wide[:AVAILABILITY_WORKERS]
+    release.set()
+    _drain()
+    assert sorted(availability.read_stat_vars()) == wide
+
+
+def test_a_request_arriving_beside_a_queue_takes_the_next_free_thread(monkeypatch):
+    """One request queues 60 reads past the pool's threads. Another request's cold StatVar
+    is queued too, as every thread runs a read, and the first thread to free reads it ahead
+    of the first request's queue, so it settles while that queue still waits."""
+    monkeypatch.setattr(place_scope, "EVERY_PLACE_SECONDS", 0.0)
+    wide = [f"W{i:02}" for i in range(60)]
+    released = {sv: threading.Event() for sv in wide}
+    availability = _Availability(data=[("Z", _KEN)], blocked=released)
+    graph = _Graph(admitted=_ADMITTED)
+    read_default_presence(graph=graph, availability=availability, stat_vars=wide)
+
+    second = read_default_presence(graph=graph, availability=availability, stat_vars=["Z"])
+    (z_flight,) = (f for key, f in place_scope._flights.items() if key.stat_var == "Z")
+    released[wide[0]].set()
+    z_flight.result(timeout=5)
+
+    assert second.unsettled == {"Z"}
+    # `Z` took the freed thread; the thread `Z` then frees reads the first request's next.
+    assert availability.read_stat_vars()[: AVAILABILITY_WORKERS + 1] == [
+        *wide[:AVAILABILITY_WORKERS],
+        "Z",
+    ]
+    settled = read_default_presence(graph=graph, availability=availability, stat_vars=["Z"])
+    assert settled.scope("Z") == DefaultPlaceScope(places=(_KEN,), every_place=True)
+    assert settled.cold_reads == 0
+    for event in released.values():
+        event.set()
+    _drain()
+    assert sorted(availability.read_stat_vars()) == sorted([*wide, "Z"])
+
+
+def test_a_request_joining_a_read_deep_in_another_queue_runs_it_in_its_own_turn(monkeypatch):
+    """One request queues 60 reads past the pool's threads. Another request wants one of
+    them, deep in that queue: it joins the flight and puts it in its own lane, so the first
+    thread to free reads it ahead of the queue, and the first request's lane drops it."""
+    monkeypatch.setattr(place_scope, "EVERY_PLACE_SECONDS", 0.0)
+    wide = [f"W{i:02}" for i in range(60)]
+    released = {sv: threading.Event() for sv in wide}
+    availability = _Availability(data=[("W40", _KEN)], blocked=released)
+    graph = _Graph(admitted=_ADMITTED)
+    read_default_presence(graph=graph, availability=availability, stat_vars=wide)
+    released["W40"].set()
+
+    second = read_default_presence(graph=graph, availability=availability, stat_vars=["W40"])
+    (flight,) = (f for key, f in place_scope._flights.items() if key.stat_var == "W40")
+    released[wide[0]].set()
+    flight.result(timeout=5)
+
+    assert (second.unsettled, second.cold_reads) == ({"W40"}, 0)
+    assert availability.read_stat_vars()[: AVAILABILITY_WORKERS + 1] == [
+        *wide[:AVAILABILITY_WORKERS],
+        "W40",
+    ]
+    settled = read_default_presence(graph=graph, availability=availability, stat_vars=["W40"])
+    assert settled.scope("W40") == DefaultPlaceScope(places=(_KEN,), every_place=True)
+    for event in released.values():
+        event.set()
+    _drain()
+    assert sorted(availability.read_stat_vars()) == wide
 
 
 def test_stat_vars_past_the_cold_read_cap_take_countries_and_settle(monkeypatch):

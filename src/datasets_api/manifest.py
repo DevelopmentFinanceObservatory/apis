@@ -20,22 +20,26 @@ servable renderings.
 Each serve call reads the name, url, licence, source, Data Commons and documentation of every
 dispatched provenance ref once (`materialise.provenance_doc.read_source_citations`), and every
 manifest's citation is built from it. Every manifest carries the `prepared_at` its caller passes,
-the instant of the version's first mint, which a re-mint reads back from the stored record. The
-graph has no processing-level convention, so `processing_level` is `None` and each non-empty citation adds `processing_level_undeclared`. Every new manifest's trace records the
-request's origin catalogue build as `origin_catalogue_build_id`, and a stale catalogue adds
-`origin_catalogue_stale` (`datasets_api.origin`). `facet_default_selected` marks an
-unbound axis when `deployment_fallback` selects `most_observations_over_disagreement`, ranked by
-the bound places or role tuples a facet covers, the window years it covers, observation count,
-recency, and remaining tie-breaks (`docs/datasets-facet-policy.md`).
+the instant of the version's first mint, which a re-mint reads back from the stored record.
+
+A manifest's `diagnostics` are facts about how the response was produced, which a version does
+not store. The graph has no processing-level convention, so `processing_level` is `None` and
+each non-empty citation adds `processing_level_undeclared`. Every new manifest's trace records
+the request's origin catalogue build as `origin_catalogue_build_id`, and a stale catalogue adds
+`origin_catalogue_stale` (`datasets_api.origin`). What a mint chose and summed, and the
+conversion terms it projected, are steps and caveats of the version's description record,
+built from the trace (`datasets_api.description_record`), so a new manifest raises no
+`facet_default_selected`, `stat_vars_summed` or `deflator_projected` warning. A stored manifest
+serves the warnings it was minted with.
 """
 
 from __future__ import annotations
 
 import functools
 import logging
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import replace
-from datetime import datetime
+from datetime import UTC, date, datetime
 from typing import cast
 
 from dfo_frame_grammar import FRAME_GRAMMAR_VERSION
@@ -44,6 +48,7 @@ from code_index.query import CodeIndex
 from dataset_store.snapshot import FrameLineage, ManifestFacts, StoredVersion
 from datasets_api.capabilities import build_capabilities
 from datasets_api.config import DatasetsBuildSettings
+from datasets_api.description_record import mint_steps
 from datasets_api.manifest_models import (
     ArtifactEntryModel,
     ChangeModel,
@@ -55,6 +60,7 @@ from datasets_api.manifest_models import (
     CoverageDimension,
     CoverageModel,
     DefinitionModel,
+    DiagnosticModel,
     Manifest,
     OutputOptionsModel,
     ReleaseModel,
@@ -67,12 +73,14 @@ from datasets_api.timings import phase
 from datasets_api.versions import (
     NULL_VERSION_RECORD_WRITER,
     ArtifactRecord,
+    VersionDescriber,
     VersionRecord,
     VersionRecordWriter,
     unlinked_state,
 )
 from datasets_api.warnings import DATASETS_WARNING_CATALOGUE
 from dc_graph import GraphReadError
+from description.citation import citation_line, figures_processed
 from materialise import MaterialisationResult
 from materialise.bundle import BUNDLE_CODE_CATALOGUE
 from materialise.cadence import cadence_label
@@ -102,39 +110,6 @@ logger = logging.getLogger(__name__)
 _PROCESSING_LEVEL_UNDECLARED_TITLE, _PROCESSING_LEVEL_UNDECLARED_DETAIL = BUNDLE_CODE_CATALOGUE[
     "processing_level_undeclared"
 ]
-_FACET_DEFAULT_SELECTED_TITLE, _FACET_DEFAULT_SELECTED_DETAIL, _FACET_DEFAULT_SELECTED_SEVERITY = (
-    DATASETS_WARNING_CATALOGUE["facet_default_selected"]
-)
-
-# `select_facet` emits this reason when fallback ranks disagreeing candidates.
-_MOST_OBSERVATIONS_OVER_DISAGREEMENT = "most_observations_over_disagreement"
-
-
-def _facet_default_selected_warnings(
-    facets: Sequence[Mapping[str, object]],
-) -> tuple[WarningModel, ...]:
-    """Warns for each facet selected from disagreeing candidates by deployment fallback."""
-    warnings: list[WarningModel] = []
-    for facet in facets:
-        if facet.get("basis") != "deployment_fallback":
-            continue
-        if facet.get("selection_reason") != _MOST_OBSERVATIONS_OVER_DISAGREEMENT:
-            continue
-        axis = cast(str, facet["axis"])
-        warnings.append(
-            WarningModel(
-                code="facet_default_selected",
-                severity=_FACET_DEFAULT_SELECTED_SEVERITY,
-                message=(
-                    f"facet axis {axis!r} had more than one candidate value; this "
-                    f"deployment's default policy selected {facet.get('ref')!r} by its "
-                    "ranking (the bound places or role tuples it covers, then the "
-                    "requested years it covers, then observation count, recency and the "
-                    "remaining tie-breaks)"
-                ),
-            )
-        )
-    return tuple(warnings)
 
 
 def warning_model(warning: Mapping[str, object]) -> WarningModel:
@@ -150,8 +125,6 @@ def reshape_warning_models(warnings: Sequence[Mapping[str, object]]) -> tuple[Wa
     """Formats reshape warnings from this surface's catalogue.
 
     `enrichment_unavailable` adds its column and empty-cell count to the message.
-    `stat_vars_summed` names the contributing member count and StatVar ref in the message and
-    carries them, with the family label, as the warning's structured fields.
     """
     models: list[WarningModel] = []
     for warning in warnings:
@@ -163,22 +136,33 @@ def reshape_warning_models(warnings: Sequence[Mapping[str, object]]) -> tuple[Wa
             count = cast(int, warning["count"])
             plural = "" if count == 1 else "s"
             message = f"{detail} Column {column!r} left {count} cell{plural} empty."
-        elif code == "stat_vars_summed":
-            member_count = cast(int, warning["contributing_member_count"])
-            stat_var_ref = cast(str, warning["stat_var_ref"])
-            models.append(
-                WarningModel(
-                    code=code,
-                    severity=severity,
-                    message=f"{detail} {member_count} StatVars were summed into {stat_var_ref}.",
-                    contributing_member_count=member_count,
-                    stat_var_ref=stat_var_ref,
-                    stat_var_label=cast("str | None", warning["stat_var_label"]),
-                )
-            )
-            continue
         models.append(WarningModel(code=code, severity=severity, message=message))
     return tuple(models)
+
+
+def citation_diagnostics(citation: CitationModel) -> tuple[DiagnosticModel, ...]:
+    """`processing_level_undeclared` when a cited source declares no processing level, which
+    every source does, since the graph has no processing-level convention."""
+    if not any(source.processing_level is None for source in citation.sources):
+        return ()
+    return (
+        DiagnosticModel(
+            code="processing_level_undeclared",
+            severity="info",
+            message=_PROCESSING_LEVEL_UNDECLARED_DETAIL,
+        ),
+    )
+
+
+def _stale_diagnostics() -> tuple[DiagnosticModel, ...]:
+    """`origin_catalogue_stale` when the catalogue bound to this request is past its staleness
+    limit (`datasets_api.origin.stale_warnings`)."""
+    return tuple(
+        DiagnosticModel(
+            code="origin_catalogue_stale", severity=warning.severity, message=warning.message
+        )
+        for warning in stale_warnings()
+    )
 
 
 def coverage_model(coverage: Coverage) -> CoverageModel:
@@ -262,14 +246,20 @@ def build_citation(
     *,
     provenance_refs: Sequence[str],
     source_citations: Mapping[str, SourceCitation],
+    retrieved: date,
+    processed: bool,
     processing_levels: Sequence[str | None] | None = None,
-) -> tuple[CitationModel, tuple[WarningModel, ...]]:
-    """Builds one source per distinct `(ref, processing_level)` in first-seen order.
+) -> tuple[CitationModel, tuple[DiagnosticModel, ...]]:
+    """Builds one source per distinct `(ref, processing_level)` in first-seen order, with its
+    diagnostics (`citation_diagnostics`).
 
-    Levels parallel `provenance_refs` and default to `None`. Non-empty citations add
-    `processing_level_undeclared`. `source_citations` is `read_source_citations` output for at
-    least `provenance_refs`. `label` falls back to the ref, and the licence fields, `url`,
-    `source`, `data_commons` and `documentation` stay `None` where the citation has none.
+    Levels parallel `provenance_refs` and default to `None`. `text` is
+    `description.citation.citation_line` over the distinct source labels, the `retrieved` date
+    and whether the DFO changed the version's figures (`processed`, from
+    `description.citation.figures_processed`). `source_citations` is
+    `read_source_citations` output for at least `provenance_refs`. `label` falls back to the
+    ref, and the licence fields, `url`, `source`, `data_commons` and `documentation` stay
+    `None` where the citation has none.
     """
     levels = processing_levels if processing_levels is not None else [None] * len(provenance_refs)
     sources: list[CitationSource] = []
@@ -282,19 +272,51 @@ def build_citation(
         sources.append(
             cited_source(ref, processing_level=level, citation=source_citations.get(ref))
         )
-    warnings = (
-        (
-            WarningModel(
-                code="processing_level_undeclared",
-                severity="info",
-                message=_PROCESSING_LEVEL_UNDECLARED_DETAIL,
-            ),
-        )
-        if sources
-        else ()
+    citation = CitationModel(
+        text=citation_line(retrieved=retrieved, sources=_labels(sources), processed=processed),
+        sources=sources,
     )
-    text = "; ".join(source.label for source in sources)
-    return CitationModel(text=text, sources=sources), warnings
+    return citation, citation_diagnostics(citation)
+
+
+def _labels(sources: Sequence[CitationSource]) -> list[str]:
+    """The label of each distinct ref among `sources`, in first-seen order."""
+    return list({source.ref: source.label for source in sources}.values())
+
+
+def minted_figures_processed(
+    *, spec_id: str, trace: Mapping[str, object], definition: Mapping[str, object]
+) -> bool:
+    """Whether the DFO changed the figures of a minted version of `spec_id` with `trace` and
+    `definition` (`description.citation.figures_processed`), read from the steps its
+    description record holds (`datasets_api.description_record.mint_steps`). Steps that
+    cannot be built count as unknown, as they do for the description, so the mint goes on
+    and cites the route of a version whose steps are unknown."""
+    try:
+        steps = mint_steps(trace=trace, definition=definition)
+    except Exception:
+        logger.warning(
+            "manifest citation route: steps unbuildable, citing unknown steps spec_id=%s",
+            spec_id,
+            exc_info=True,
+        )
+        steps = []
+    return figures_processed(version_id=spec_id, steps=steps)
+
+
+def collapsed_citation(citation: CitationModel, *, base: Manifest) -> CitationModel:
+    """The citation of a multi-contributor collapse of the version `base` describes, whose
+    citation, as recorded or as this mint assembles it, is `citation`: its sources and
+    `base`'s retrieval date, with the line rewritten for the collapse's steps, which sum the
+    version's variables."""
+    text = citation_line(
+        retrieved=base.prepared_at.astimezone(UTC).date(),
+        sources=_labels(citation.sources),
+        # A collapse always ends in a `sum_variables` step (`collapse_steps`), which
+        # changes figures.
+        processed=True,
+    )
+    return citation.model_copy(update={"text": text})
 
 
 def coverage_facts_of(
@@ -356,6 +378,16 @@ def healed_citation(
         )
         return citation, False
     complete = not any(live[ref].documentation_read_failed for ref in refs if ref in live)
+    return citation_healed_from(citation, live), complete
+
+
+def citation_healed_from(
+    citation: CitationModel, live: Mapping[str, SourceCitation]
+) -> CitationModel:
+    """`citation` with the `None` `HEALED_FIELDS` of each source filled from its `live` citation
+    (`read_source_citations` output), turned into a `CitationSource` by `cited_source` as a
+    first mint does. Every set field stands, and a source `live` does not hold is kept as
+    stored."""
     sources: list[CitationSource] = []
     for stored in citation.sources:
         read = live.get(stored.ref) if _needs_healing(stored) else None
@@ -372,7 +404,7 @@ def healed_citation(
                 }
             )
         )
-    return citation.model_copy(update={"sources": sources}), complete
+    return citation.model_copy(update={"sources": sources})
 
 
 def _code_index_stamp_entry(code_index: CodeIndex) -> dict[str, object]:
@@ -404,17 +436,13 @@ def assemble_manifest(
     Uses the caller's `CodeIndex` for rendering and the trace stamp. `coverage_stamp` is
     admission-time lineage, excluded from `content_version`. `None` leaves it unset.
     `prepared_at` is the version's first-mint instant.
+
+    `warnings` holds the materialisation's warnings, then `extra_warnings`. `diagnostics` holds
+    the citation's (`citation_diagnostics`), then a stale origin catalogue's. A choice of source,
+    a sum and a projected conversion term are no warning: the version's description record
+    states them from the trace (`datasets_api.description_record`).
     """
-    citation, citation_warnings = build_citation(
-        provenance_refs=provenance_refs, source_citations=source_citations
-    )
-    warnings = (
-        [warning_model(w) for w in materialisation.warnings]
-        + list(extra_warnings)
-        + list(citation_warnings)
-        + list(_facet_default_selected_warnings(materialisation.trace.facets))
-        + list(stale_warnings())
-    )
+    warnings = [warning_model(w) for w in materialisation.warnings] + list(extra_warnings)
     capabilities = build_capabilities(
         capability_version=capability_version,
         build=materialiser_build,
@@ -428,22 +456,38 @@ def assemble_manifest(
         code_index_stamp=_code_index_stamp_entry(code_index),
         origin_catalogue_build_id=catalogue_build_id(),
     ).to_dict()
+    definition = DefinitionModel(
+        schema_version=stored.schema_version, spec_id=stored.spec_id, identity=stored.identity
+    )
+    citation, citation_diagnostics_ = build_citation(
+        provenance_refs=provenance_refs,
+        source_citations=source_citations,
+        retrieved=prepared_at.astimezone(UTC).date(),
+        processed=minted_figures_processed(
+            spec_id=stored.spec_id,
+            trace=trace,
+            definition=definition.model_dump(mode="json"),
+        ),
+    )
 
     return Manifest(
-        definition=DefinitionModel(
-            schema_version=stored.schema_version, spec_id=stored.spec_id, identity=stored.identity
-        ),
+        definition=definition,
         content_version=materialisation.content_version,
         prepared_at=prepared_at,
         coverage=coverage_model(materialisation.coverage),
         citation=citation,
         trace=trace,
         warnings=warnings,
+        diagnostics=[*citation_diagnostics_, *_stale_diagnostics()],
         artifacts=list(artifacts),
         # The statistics artifact is in `artifacts`. This field carries only its count.
         series_count=materialisation.series_statistics.series_count,
         output_options=derive_output_options(
-            materialisation.output_profile, capabilities=capabilities
+            materialisation.output_profile,
+            identity=stored.identity,
+            capabilities=capabilities,
+            parties=code_index.parties,
+            datasets=provenance_refs_of(materialisation.trace.facets),
         ),
         series_coverage_stamp=coverage_stamp,
     )
@@ -486,6 +530,13 @@ def manifest_facts(
     )
 
 
+def provenance_refs_of(facets: Iterable[Mapping[str, object]]) -> list[str]:
+    """The provenance refs live or stored `trace.facets` entries select: the one a
+    materialisation dispatched, and none for one whose facet probe was empty
+    (`MaterialisationResult.probe_empty`), which selects no facet."""
+    return [cast(str, facet["ref"]) for facet in facets if facet["axis"] == "provenance"]
+
+
 def stored_manifest_facts(stored: StoredVersion) -> ManifestFacts:
     """The facts of a stored dataset version. A published frame's lineage assembles no
     manifest and raises `TypeError`."""
@@ -516,8 +567,9 @@ def stored_manifest(
     stored: StoredVersion, *, output_options: OutputOptionsModel | None = None
 ) -> Manifest:
     """The manifest a stored dataset version's facts assemble, with no artifacts and
-    `output_options`. Every read of a stored version assembles its manifest here."""
-    return Manifest.model_validate(
+    `output_options`, and its citation's diagnostics (`citation_diagnostics`). Every read of a
+    stored version assembles its manifest here."""
+    manifest = Manifest.model_validate(
         {
             **_stored_manifest_fields(stored),
             "artifacts": [],
@@ -525,6 +577,9 @@ def stored_manifest(
                 output_options.model_dump(mode="json") if output_options is not None else None
             ),
         }
+    )
+    return manifest.model_copy(
+        update={"diagnostics": list(citation_diagnostics(manifest.citation))}
     )
 
 
@@ -547,27 +602,42 @@ def stored_series_conversions(facts: ManifestFacts) -> dict[SeriesKey, SeriesCon
 
 def version_document(stored: StoredVersion) -> dict[str, object]:
     """The JSON document a Presentation frame carries as its manifest: a dataset version's
-    manifest without `artifacts` and `output_options`, or a published frame's `op_spec_hash`
-    (its subject id) and `input_content_versions`."""
+    manifest without `artifacts`, `output_options` and `diagnostics`, or a published frame's
+    `op_spec_hash` (its subject id), `input_content_versions` and `continuations`
+    (`FrameLineage.continuations`): its entries when it stores any, `null` while they are
+    unknown, on a version recorded before versions stored them until `backfill-descriptions`
+    fills them, and left out when nothing continues its series."""
     if isinstance(stored.facts, FrameLineage):
-        return {
+        document: dict[str, object] = {
             "op_spec_hash": stored.subject_id,
             "input_content_versions": list(stored.facts.input_content_versions),
         }
-    return stored_manifest(stored).model_dump(mode="json", exclude={"artifacts", "output_options"})
+        continuations = stored.facts.continuations
+        if continuations is None:
+            document["continuations"] = None
+        elif continuations:
+            document["continuations"] = [dict(entry) for entry in continuations]
+        return document
+    return stored_manifest(stored).model_dump(
+        mode="json", exclude={"artifacts", "output_options", "diagnostics"}
+    )
 
 
 def version_body(record: VersionRecord) -> dict[str, object]:
     """The `immutable_body` `record`'s facts encode, the JSON an image reading bodies reads.
 
     A dataset version's body is its `version_document` with `output_profile`, a non-empty
-    `series_conversions` and a non-null `default_scope_plural` added. A published frame's body adds
-    a non-empty `composed_stat_vars`. An absent fact omits its key. Nothing in this image reads the
+    `series_conversions` and a non-null `default_scope_plural` added. A published frame's body is
+    its `version_document`, which holds its `continuations` when they are known and some continue
+    its series, with a non-empty `composed_stat_vars` added. An absent fact omits its key. Nothing in this image reads the
     body.
     """
     body = version_document(unlinked_state(record).version)
     facts = record.facts
     if isinstance(facts, FrameLineage):
+        if facts.continuations is None:
+            # A body states known continuations only, as the previous image's bodies hold none.
+            del body["continuations"]
         if facts.composed_stat_vars:
             body["composed_stat_vars"] = [dict(entry) for entry in facts.composed_stat_vars]
         return body
@@ -590,26 +660,27 @@ def persisted_manifest(
 
     Every field comes from the stored version's facts (`stored_manifest`), so a re-mint after
     a graph rename keeps the stored citation. From `served` it takes only `artifacts`,
-    `output_options`, and `series_coverage_stamp`. A `call_warnings` entry is appended when no
-    stored warning has its `code` and `message`; on a match the stored entry stands, so a
-    `stat_vars_summed` warning keeps the structured fields and label it was recorded with.
-    `call_warnings` holds this call's reshape warnings and the origin warnings its reads found
-    (`datasets_api.origin`). Stored `origin_catalogue_stale` entries are dropped and replaced
-    by the one for the catalogue bound to this call, as in `assemble_manifest`, so the
-    manifest carries exactly this mint's stale warning.
+    `output_options`, `series_coverage_stamp` and `diagnostics`, this call's. A
+    `call_warnings` entry is appended when no stored warning has its `code` and `message`; on a
+    match the stored entry stands, so a stored `stat_vars_summed` warning keeps the structured
+    fields and label it was recorded with. `call_warnings` holds this call's reshape warnings
+    and the origin warnings its reads found (`datasets_api.origin`). A stored
+    `origin_catalogue_stale` warning is dropped, since this call's diagnostics state the
+    staleness of the catalogue bound to it.
     """
     manifest = stored_manifest(stored)
     warnings = [
         warning for warning in manifest.warnings if warning.code != "origin_catalogue_stale"
     ]
     keys = {(warning.code, warning.message) for warning in warnings}
-    for warning in (*call_warnings, *stale_warnings()):
+    for warning in call_warnings:
         if (warning.code, warning.message) not in keys:
             keys.add((warning.code, warning.message))
             warnings.append(warning)
     return manifest.model_copy(
         update={
             "warnings": warnings,
+            "diagnostics": list(served.diagnostics),
             "artifacts": list(served.artifacts),
             "output_options": served.output_options,
             "series_coverage_stamp": served.series_coverage_stamp,
@@ -668,14 +739,15 @@ def collapsed_head_manifest(
 ) -> Manifest:
     """Patches a raw head manifest for a collapsed identity without a fresh materialisation.
 
-    Updates content version, row count, series count, artifacts, output options, and warnings.
-    Citation, trace,
-    definition and `prepared_at` remain unchanged because collapse preserves provenance and scope
-    and renders from the raw version's record.
+    Updates content version, row count, series count, artifacts, output options, and warnings,
+    and rewrites the citation line for the collapse's sum (`collapsed_citation`). The cited
+    sources, trace, definition and `prepared_at` remain unchanged because collapse preserves
+    provenance and scope and renders from the raw version's record.
     """
     return manifest.model_copy(
         update={
             "content_version": content_version,
+            "citation": collapsed_citation(manifest.citation, base=manifest),
             "coverage": manifest.coverage.model_copy(update={"rows": len(collapse_frame.rows)}),
             "series_count": series_count,
             "warnings": list(manifest.warnings) + list(extra_warnings),
@@ -696,34 +768,37 @@ def record_collapsed_head_version(
     record_only_artifacts: Sequence[ArtifactRecord] = (),
     version_writer: VersionRecordWriter = NULL_VERSION_RECORD_WRITER,
     trace_id: str | None = None,
+    describer_for: Callable[[VersionRecord], VersionDescriber | None] | None = None,
 ) -> bool:
     """Records a head-hit collapse without a fresh materialisation result and returns `False` if
     the record already existed.
 
     `manifest` is already patched. `base_content_version` names the raw materialisation, and
     `output_profile` and `frame_sha256` are the collapsed frame's. `ON CONFLICT DO NOTHING` makes repeated writes
-    idempotent.
+    idempotent. `describer_for` gives the describer that writes the version's description record
+    in the same transaction, from the record this call stores; `None`, or a describer of
+    `None`, writes none.
     """
-    with phase("record"):
-        return version_writer.record_version(
-            VersionRecord(
-                subject_id=subject_id,
-                subject_kind="spec",
-                content_version=manifest.content_version,
-                schema_version=schema_version,
-                facts=manifest_facts(manifest, output_profile=output_profile),
-                artifacts=tuple(
-                    ArtifactRecord(
-                        artifact_digest=artifact.artifact_digest,
-                        rendering=artifact.rendering,
-                        media_type=artifact.media_type,
-                    )
-                    for artifact in manifest.artifacts
-                )
-                + tuple(record_only_artifacts),
-                base_content_version=base_content_version,
-                frame_grammar_version=FRAME_GRAMMAR_VERSION,
-                frame_sha256=frame_sha256,
-            ),
-            trace_id=trace_id,
+    record = VersionRecord(
+        subject_id=subject_id,
+        subject_kind="spec",
+        content_version=manifest.content_version,
+        schema_version=schema_version,
+        facts=manifest_facts(manifest, output_profile=output_profile),
+        artifacts=tuple(
+            ArtifactRecord(
+                artifact_digest=artifact.artifact_digest,
+                rendering=artifact.rendering,
+                media_type=artifact.media_type,
+            )
+            for artifact in manifest.artifacts
         )
+        + tuple(record_only_artifacts),
+        base_content_version=base_content_version,
+        frame_grammar_version=FRAME_GRAMMAR_VERSION,
+        frame_sha256=frame_sha256,
+    )
+    if describer_for is not None:
+        record = replace(record, describer=describer_for(record))
+    with phase("record"):
+        return version_writer.record_version(record, trace_id=trace_id)

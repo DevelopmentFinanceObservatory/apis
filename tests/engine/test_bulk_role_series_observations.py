@@ -17,6 +17,7 @@ from materialise.facets import FacetSelection, UnitRequest
 from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.graph import Facet
 from search.engine.extract import DateRequest
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import RegionResult, resolve_variable
 from search.engine.region.codes import (
     DEFLATOR_MISSING_OMITTED,
@@ -44,7 +45,7 @@ from search.engine.retrieval.facet_election import (
     rank_role_candidates,
     role_n_obs,
 )
-from search.engine.retrieval.read_plan import PlanRoles
+from search.engine.retrieval.read_plan import BulkPlan, PlanRoles
 from search.models import IdentityUnitRequest, TimeWindow
 from search.observations import (
     OBSERVATIONS_CONVERTED_SCOPE_UNSUPPORTED,
@@ -71,6 +72,7 @@ from tests.engine._harness import (
     sdmx_double,
     unit_check_planned,
 )
+from tests.engine._quantity import NO_QUANTITY
 from tests.engine._role_candidates import role_candidate
 from tests.fixtures import FakeGraph, make_resolver
 from tests.materialise.conftest import FakeGraphReader
@@ -590,7 +592,9 @@ def test_merged_candidates_keep_or_drop_whole_and_preview_pairs_in_sorted_order(
     )
     merged = merge_role_candidates({_SV: [usd_narrow, eur, usd_wide]}, [_SV])
     preview = _preview_pairs(
-        merged["F-A"], 10, years=lambda _sv: (None, None), member_year=lambda _sv: 2020
+        BulkPlan(members=(_SV,), years=None, facet_id="F-A", candidates=merged),
+        10,
+        member_year=lambda _sv: 2020,
     )
     assert [pair for pair, _n_obs in preview] == [(_SV, rt) for rt in sorted(role_tuples)]
 
@@ -719,7 +723,7 @@ def test_shared_facet_labels_every_role_pair_with_the_coverage_metadata(monkeypa
         assert series.facet["unit"].ref == "USD"
         assert series.facet["measurementMethod"].ref == "dcAggregate/Usd"
         assert series.facet["provenance"].ref == "dc/base/UsdSource"
-        assert [source.dcid for source in series.source_refs] == ["dc/base/UsdSource"]
+        assert [source.ref for source in series.source_refs] == ["dc/base/UsdSource"]
 
 
 def test_facet_filter_excludes_a_whole_facet_whose_coverage_metadata_disagrees(monkeypatch):
@@ -811,7 +815,7 @@ def test_overflow_facet_filter_keeps_only_the_matching_facets_role_pairs(monkeyp
     # USD filtering happens before top-20 truncation.
     assert all(series.facet["unit"].ref == "USD" for series in observations.series)
     assert all(
-        [source.dcid for source in series.source_refs] == ["dc/base/UsdSource"]
+        [source.ref for source in series.source_refs] == ["dc/base/UsdSource"]
         for series in observations.series
     )
     assert len(sdmx.series_calls) == 1
@@ -1328,7 +1332,9 @@ def test_preview_pairs_takes_stat_vars_newest_year_first_round_robin_up_to_the_l
 
     member_years = {sv_b: 2022, sv_a: 2021, sv_c: 2019}
     preview = _preview_pairs(
-        merged["F1"], 2, years=lambda _sv: (None, None), member_year=member_years.get
+        BulkPlan(members=(sv_b, sv_c, sv_a), years=None, facet_id="F1", candidates=merged),
+        2,
+        member_year=member_years.get,
     )
 
     # sv_b is newest, so it gives its first tuple. sv_a then gives its first before sv_b
@@ -1364,6 +1370,8 @@ class _FixedBindLLM:
     """Elects shape index 0 unconditionally, with no constraint bindings."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
 

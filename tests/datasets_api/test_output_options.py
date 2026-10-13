@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import functools
+
+import pytest
+
 from code_index.shared import get_index
 from datasets_api.capabilities import CapabilityFormat, build_capabilities
 from datasets_api.config import DatasetsBuildSettings
@@ -10,6 +14,13 @@ from materialise.profile import ColumnProfile, EnrichmentCoverage, OutputProfile
 
 _CAPABILITY_VERSION = "cap-v1"
 _BUILD = "build-123"
+_NO_OPEN_ROLE: dict[str, object] = {"entities": {}}
+_DAC2A = "provenance/OECDDAC2A"
+_CRS = "provenance/OECDCreditorReportingSystem"
+
+_derive = functools.partial(derive_output_options, parties=get_index().parties, datasets=())
+"""`derive_output_options` over the packaged index's parties, for a definition whose read
+selected no provenance."""
 
 
 def _capabilities(**overrides):
@@ -83,7 +94,7 @@ def _profile(
 
 class TestCapabilityVersionAndColumns:
     def test_capability_version_comes_from_the_document(self):
-        document = derive_output_options(_profile(), capabilities=_capabilities())
+        document = _derive(_profile(), identity=_NO_OPEN_ROLE, capabilities=_capabilities())
         assert document.capability_version == _CAPABILITY_VERSION
 
     def test_columns_carry_the_profile_verbatim(self):
@@ -91,7 +102,9 @@ class TestCapabilityVersionAndColumns:
             _column("stat_var", "grain", droppable=False, distinct=1),
             _column("value", "value", droppable=True, distinct=None),
         )
-        document = derive_output_options(_profile(columns=columns), capabilities=_capabilities())
+        document = _derive(
+            _profile(columns=columns), identity=_NO_OPEN_ROLE, capabilities=_capabilities()
+        )
 
         assert [(c.name, c.kind, c.droppable, c.distinct) for c in document.columns] == [
             ("stat_var", "grain", False, 1),
@@ -107,7 +120,7 @@ class TestFormatsAndBundle:
                 CapabilityFormat(name="xlsx", live=False),
             ]
         )
-        document = derive_output_options(_profile(), capabilities=capabilities)
+        document = _derive(_profile(), identity=_NO_OPEN_ROLE, capabilities=capabilities)
 
         by_name = {f.name: f for f in document.formats}
         assert by_name["csv"].state == "available"
@@ -116,12 +129,14 @@ class TestFormatsAndBundle:
         assert by_name["xlsx"].reason == "capability_unavailable"
 
     def test_bundle_state_follows_bundle_active(self):
-        active = derive_output_options(_profile(), capabilities=_capabilities(bundle_active=True))
+        active = _derive(
+            _profile(), identity=_NO_OPEN_ROLE, capabilities=_capabilities(bundle_active=True)
+        )
         assert active.bundle.state == "available"
         assert active.bundle.reason is None
 
-        inactive = derive_output_options(
-            _profile(), capabilities=_capabilities(bundle_active=False)
+        inactive = _derive(
+            _profile(), identity=_NO_OPEN_ROLE, capabilities=_capabilities(bundle_active=False)
         )
         assert inactive.bundle.state == "unavailable"
         assert inactive.bundle.reason == "capability_unavailable"
@@ -130,8 +145,8 @@ class TestFormatsAndBundle:
 class TestEnrichments:
     def test_full_coverage_is_available_with_no_missing(self):
         coverage = (_coverage("recipient", "iso3", entities=3, covered=3),)
-        document = derive_output_options(
-            _profile(enrichments=coverage), capabilities=_capabilities()
+        document = _derive(
+            _profile(enrichments=coverage), identity=_NO_OPEN_ROLE, capabilities=_capabilities()
         )
 
         assert len(document.enrichments) == 1
@@ -155,8 +170,8 @@ class TestEnrichments:
                 missing=(("country/UGA", "Uganda"),),
             ),
         )
-        document = derive_output_options(
-            _profile(enrichments=coverage), capabilities=_capabilities()
+        document = _derive(
+            _profile(enrichments=coverage), identity=_NO_OPEN_ROLE, capabilities=_capabilities()
         )
 
         entry = document.enrichments[0]
@@ -169,14 +184,16 @@ class TestEnrichments:
         coverage = (_coverage("recipient", "iso3", entities=3, covered=3),)
         capabilities = _capabilities(enrichment_fields=["label"])
 
-        document = derive_output_options(_profile(enrichments=coverage), capabilities=capabilities)
+        document = _derive(
+            _profile(enrichments=coverage), identity=_NO_OPEN_ROLE, capabilities=capabilities
+        )
 
         assert document.enrichments == []
 
     def test_truncated_flag_passes_through(self):
         coverage = (_coverage("recipient", "iso3", entities=12, covered=1, truncated=True),)
-        document = derive_output_options(
-            _profile(enrichments=coverage), capabilities=_capabilities()
+        document = _derive(
+            _profile(enrichments=coverage), identity=_NO_OPEN_ROLE, capabilities=_capabilities()
         )
 
         assert document.enrichments[0].truncated is True
@@ -193,7 +210,9 @@ class TestPivots:
                 varying=(("provider", 30),),
             ),
         )
-        document = derive_output_options(_profile(pivots=pivots), capabilities=_capabilities())
+        document = _derive(
+            _profile(pivots=pivots), identity=_NO_OPEN_ROLE, capabilities=_capabilities()
+        )
 
         assert len(document.pivots) == 1
         entry = document.pivots[0]
@@ -216,7 +235,9 @@ class TestPivots:
                 varying=(),
             ),
         )
-        document = derive_output_options(_profile(pivots=pivots), capabilities=_capabilities())
+        document = _derive(
+            _profile(pivots=pivots), identity=_NO_OPEN_ROLE, capabilities=_capabilities()
+        )
 
         assert len(document.pivots) == 1
         entry = document.pivots[0]
@@ -227,7 +248,9 @@ class TestPivots:
     def test_a_stringification_collision_is_unavailable_as_not_unique(self):
         # A mint refuses this pair `pivot_not_unique`, so the options document says so.
         pivots = (_pivot("recipient", "time_period", unique=False, varying=()),)
-        document = derive_output_options(_profile(pivots=pivots), capabilities=_capabilities())
+        document = _derive(
+            _profile(pivots=pivots), identity=_NO_OPEN_ROLE, capabilities=_capabilities()
+        )
 
         assert len(document.pivots) == 1
         entry = document.pivots[0]
@@ -248,7 +271,9 @@ class TestPivots:
                 varying=(),
             ),
         )
-        document = derive_output_options(_profile(pivots=pivots), capabilities=_capabilities())
+        document = _derive(
+            _profile(pivots=pivots), identity=_NO_OPEN_ROLE, capabilities=_capabilities()
+        )
 
         assert len(document.pivots) == 1
         entry = document.pivots[0]
@@ -258,7 +283,9 @@ class TestPivots:
 
     def test_not_homogeneous_is_unavailable_with_no_varying(self):
         pivots = (_pivot("provider", "recipient", unique=True, homogeneous=False),)
-        document = derive_output_options(_profile(pivots=pivots), capabilities=_capabilities())
+        document = _derive(
+            _profile(pivots=pivots), identity=_NO_OPEN_ROLE, capabilities=_capabilities()
+        )
 
         entry = document.pivots[0]
         assert entry.state == "unavailable"
@@ -267,7 +294,9 @@ class TestPivots:
 
     def test_feasible_pivot_is_available_with_width_and_cells(self):
         pivots = (_pivot("observationAbout", "time_period", width=11, cells=594),)
-        document = derive_output_options(_profile(pivots=pivots), capabilities=_capabilities())
+        document = _derive(
+            _profile(pivots=pivots), identity=_NO_OPEN_ROLE, capabilities=_capabilities()
+        )
 
         entry = document.pivots[0]
         assert entry.state == "available"
@@ -278,7 +307,9 @@ class TestPivots:
 
     def test_width_over_the_excel_column_cap_is_partial_for_xlsx_only(self):
         pivots = (_pivot("recipient", "time_period", width=16_385, cells=16_385),)
-        document = derive_output_options(_profile(pivots=pivots), capabilities=_capabilities())
+        document = _derive(
+            _profile(pivots=pivots), identity=_NO_OPEN_ROLE, capabilities=_capabilities()
+        )
 
         entry = document.pivots[0]
         assert entry.state == "partial"
@@ -290,7 +321,9 @@ class TestPivots:
             caps=_capabilities().caps.model_copy(update={"pivot_max_output_cells": 100})
         )
         pivots = (_pivot("recipient", "time_period", width=5, cells=101),)
-        document = derive_output_options(_profile(pivots=pivots), capabilities=capabilities)
+        document = _derive(
+            _profile(pivots=pivots), identity=_NO_OPEN_ROLE, capabilities=capabilities
+        )
 
         entry = document.pivots[0]
         assert entry.state == "partial"
@@ -305,7 +338,7 @@ class TestPivots:
 class TestGroupby:
     def test_state_is_unavailable_while_summability_declarations_are_not_live(self):
         capabilities = _capabilities(summability_declarations_live=False)
-        document = derive_output_options(_profile(), capabilities=capabilities)
+        document = _derive(_profile(), identity=_NO_OPEN_ROLE, capabilities=capabilities)
 
         assert document.groupby.state == "unavailable"
         assert document.groupby.reason == "capability_unavailable"
@@ -315,7 +348,7 @@ class TestGroupby:
         capabilities = _capabilities(
             summability_declarations_live=True, summable_axes=["crsPurpose"]
         )
-        document = derive_output_options(_profile(), capabilities=capabilities)
+        document = _derive(_profile(), identity=_NO_OPEN_ROLE, capabilities=capabilities)
 
         assert document.groupby.state == "available"
         assert document.groupby.reason is None
@@ -328,7 +361,7 @@ class TestGroupby:
         capabilities = _capabilities(
             summability_declarations_live=False, summable_axes=["crsPurpose"]
         )
-        document = derive_output_options(_profile(), capabilities=capabilities)
+        document = _derive(_profile(), identity=_NO_OPEN_ROLE, capabilities=capabilities)
 
         assert document.groupby.state == "unavailable"
         assert document.groupby.axes == []
@@ -337,8 +370,8 @@ class TestGroupby:
 class TestZeroRowProfile:
     def test_zero_row_profile_yields_empty_pivots_and_enrichments(self):
         columns = (_column("stat_var", "grain", droppable=False, distinct=1),)
-        document = derive_output_options(
-            _profile(rows=0, columns=columns), capabilities=_capabilities()
+        document = _derive(
+            _profile(rows=0, columns=columns), identity=_NO_OPEN_ROLE, capabilities=_capabilities()
         )
 
         assert document.pivots == []
@@ -396,8 +429,9 @@ class TestDesignWorkedExamples:
             ),
             _coverage("recipient", "label", entities=54, covered=54),
         )
-        document = derive_output_options(
+        document = _derive(
             _profile(columns=columns, pivots=pivots, enrichments=enrichments),
+            identity={"entities": {"origin": ["country/GBR"]}, "open_roles": ["destination"]},
             capabilities=_capabilities(),
         )
 
@@ -411,6 +445,8 @@ class TestDesignWorkedExamples:
         assert by_field["iso3"].coverage.entities == 54
         assert by_field["iso3"].coverage.covered == 51
         assert by_field["label"].state == "available"
+        # Recipients are open, so their total rows leave a long CSV's main table.
+        assert document.long_layout_totals == ["recipient"]
 
         assert document.groupby.state == "available"
         assert document.groupby.reason is None
@@ -430,12 +466,15 @@ class TestDesignWorkedExamples:
             _coverage("observationAbout", "iso3", entities=54, covered=54),
             _coverage("observationAbout", "label", entities=54, covered=54),
         )
-        document = derive_output_options(
-            _profile(pivots=pivots, enrichments=enrichments), capabilities=_capabilities()
+        document = _derive(
+            _profile(pivots=pivots, enrichments=enrichments),
+            identity=_NO_OPEN_ROLE,
+            capabilities=_capabilities(),
         )
 
         assert all(p.state == "available" for p in document.pivots)
         assert all(e.state == "available" for e in document.enrichments)
+        assert document.long_layout_totals == []
         assert all(f.state == "available" for f in document.formats)
         assert document.groupby.axes == [
             {"name": "crsCooperationModality"},
@@ -443,3 +482,48 @@ class TestDesignWorkedExamples:
             {"name": "crsTypeOfFinance"},
             {"name": "crsTypeOfFlow"},
         ]
+
+
+@pytest.mark.parametrize(
+    ("entities", "open_roles", "datasets", "listed"),
+    [
+        pytest.param(
+            {"origin": ["country/GBR"], "destination": ["country/KEN", "country/GHA"]},
+            [],
+            [_DAC2A],
+            [],
+            id="two-bound-countries-hold-no-total",
+        ),
+        pytest.param(
+            {"origin": ["country/GBR"], "destination": ["country/KEN", "DACAfrica"]},
+            [],
+            [_DAC2A],
+            ["recipient"],
+            id="a-bound-total-is-listed",
+        ),
+        pytest.param(
+            {"origin": ["country/GBR"]}, ["destination"], [_DAC2A], ["recipient"], id="open-dac2a"
+        ),
+        pytest.param(
+            {"origin": ["country/GBR"]}, ["destination"], [_CRS], [], id="open-crs-has-no-total"
+        ),
+        pytest.param(
+            {"origin": ["country/GBR"]}, ["destination"], [], ["recipient"], id="open-unread"
+        ),
+    ],
+)
+def test_long_layout_totals_names_only_roles_that_can_hold_a_total(
+    entities, open_roles, datasets, listed
+):
+    """The code index lists the totals each dataset publishes on each axis: DAC2A publishes
+    recipient totals ("Africa, Total"), the CRS none. A read that selected no provenance gives
+    no dataset, so an open role is listed whenever the index has a total on its axis."""
+    document = derive_output_options(
+        _profile(columns=(_column("recipient", "role", droppable=False, distinct=2),)),
+        identity={"entities": entities, "open_roles": open_roles},
+        capabilities=_capabilities(),
+        parties=get_index().parties,
+        datasets=datasets,
+    )
+
+    assert document.long_layout_totals == listed

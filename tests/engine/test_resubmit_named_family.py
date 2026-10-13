@@ -113,7 +113,7 @@ def test_named_family_round_trip_with_no_seed():
         options=walk_options(_graph()),
     )
     assert region.status == "definite"
-    assert [sv.ref.dcid for sv in region.specs[0].resolved.members] == [_B_SV]
+    assert [sv.ref.ref for sv in region.specs[0].resolved.members] == [_B_SV]
 
 
 def test_a_standard_identity_declaring_none_of_its_members_constraints_answers_no_data():

@@ -31,22 +31,26 @@ years for row estimates and preserves `c[TIME_PERIOD]=LATEST` for SDMX request-s
 member that binds no role prices `CoverageIndex.exhaustive_single_axis_filter`, the entity list
 its fetch sends.
 
-Excel estimates include the header row. The writer enforces column and cell
-limits after fetch.
+Excel estimates count data rows against one sheet's room, or two sheets' when the render
+can keep totals on a second sheet (`xlsx_splits_totals`). The writer enforces each sheet's
+rows, columns and cell lengths after fetch.
 """
 
 from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 
+from code_index.types import PartyRow
 from datasets_api.doors.mint_errors import MintBackpressure
+from datasets_api.mint_models import MintOptions
+from datasets_api.output_options import movable_totals_roles
 from datasets_api.timings import count, phase
 from dc_sdmx import ContainedIn
 from materialise.errors import OverCeilingError
-from materialise.formats import EXCEL_MAX_ROWS, ExcelLimitError
+from materialise.formats import EXCEL_MAX_ROWS, ExcelLimitError, check_excel_rows
 from materialise.generation import (
     _time_period_for_window,
     dispatch_lanes,
@@ -422,20 +426,99 @@ def within_sync_budget(
     return estimate.rows <= sync_budget_rows and estimate.requests <= sync_budget_requests
 
 
-def refuse_excel_over_estimate(estimate: Estimate, *, format: str) -> None:
-    """For `xlsx`, raise `ExcelLimitError` (`excel_limit`, 422) before fetch when rows plus
-    the header exceed `EXCEL_MAX_ROWS`.
+def xlsx_splits_totals(
+    options: MintOptions,
+    *,
+    identity: Mapping[str, object],
+    role_columns: Sequence[str],
+    parties: Mapping[str, PartyRow],
+    datasets: Collection[str],
+) -> bool:
+    """Whether an `xlsx` render of `identity` can keep total rows on a second sheet.
 
-    The writer checks columns and cell lengths after fetch.
+    The renderer splits totals (`render._TotalRows.for_render`) for a `csv` or `xlsx` render
+    without a pivot, on the roles of `movable_totals_roles`, and this reads that rule with the
+    same arguments: the frame's `role_columns`, the code index's `parties` and the provenances
+    the read selects, `datasets`. Before fetch a caller passes the identity's role keys
+    (`identity_role_keys`), which name the same axes as the frame's role columns, and the
+    elected provenances (`elected_provenances`), empty when the read can select any, which
+    reads a total on an open axis in any dataset.
     """
-    if format != "xlsx" or estimate.rows + 1 <= EXCEL_MAX_ROWS:
+    return (
+        options.format == "xlsx"
+        and options.pivot is None
+        and bool(movable_totals_roles(identity, role_columns, parties=parties, datasets=datasets))
+    )
+
+
+def identity_role_keys(identity: Mapping[str, object]) -> tuple[str, ...]:
+    """The role keys `identity` binds (`entities`) or leaves open (`open_roles`), in the
+    caller's spelling, as `xlsx_splits_totals` takes them before a frame names its columns."""
+    entities = identity.get("entities")
+    open_roles = identity.get("open_roles")
+    keys = [str(role) for role in entities] if isinstance(entities, Mapping) else []
+    if isinstance(open_roles, Sequence) and not isinstance(open_roles, str):
+        keys.extend(str(role) for role in open_roles)
+    return tuple(dict.fromkeys(keys))
+
+
+def elected_provenances(requests: Sequence[MaterialisationRequest]) -> tuple[str, ...]:
+    """The provenances a read of `requests` can select before fetch: each request's elected
+    dataset (`MaterialisationRequest.dataset`), whose provenance alone its facet selection
+    reads. Empty when a request elects none, since its read can then select any provenance."""
+    if not requests or any(request.dataset is None for request in requests):
+        return ()
+    return tuple(
+        dict.fromkeys(request.dataset.provenance for request in requests if request.dataset)
+    )
+
+
+def _excel_data_row_limit(*, splits_totals: bool) -> int:
+    """The data rows an `xlsx` file holds beside its headers: one sheet's, or two when
+    totals can take a second sheet. How the rows divide between the sheets is known only to
+    the writer, so this is the most any division could hold."""
+    return (2 if splits_totals else 1) * (EXCEL_MAX_ROWS - 1)
+
+
+def _two_sheet_detail(rows: int, *, estimated: bool) -> str:
+    return (
+        f"{'estimated ' if estimated else ''}{rows} data row(s) exceeds the "
+        f"{_excel_data_row_limit(splits_totals=True)} that Excel's {EXCEL_MAX_ROWS}-row limit "
+        "allows on the data sheet and the totals sheet together; request csv or parquet instead"
+    )
+
+
+def refuse_excel_over_estimate(
+    estimate: Estimate, *, format: str, splits_totals: bool = False
+) -> None:
+    """For `xlsx`, raise `ExcelLimitError` (`excel_limit`, 422) before fetch when the
+    estimated rows plus a header exceed `EXCEL_MAX_ROWS`, or, with `splits_totals`
+    (`xlsx_splits_totals`), when they exceed what two sheets hold.
+
+    The estimate counts total rows with the rest, so a split render can fit where one sheet
+    would not. The writer judges each sheet exactly after fetch, along with columns and cell
+    lengths.
+    """
+    if format != "xlsx" or estimate.rows <= _excel_data_row_limit(splits_totals=splits_totals):
         return
+    if splits_totals:
+        raise ExcelLimitError(detail=_two_sheet_detail(estimate.rows, estimated=True))
     raise ExcelLimitError(
         detail=(
             f"estimated {estimate.rows + 1} row(s) (including the header) exceeds Excel's "
             f"{EXCEL_MAX_ROWS}-row limit; request csv or parquet instead"
         )
     )
+
+
+def refuse_excel_over_stored_rows(rows: int, *, splits_totals: bool) -> None:
+    """Raise `ExcelLimitError` when `rows`, a stored version's data rows total rows
+    included, cannot fit an `xlsx` file: the writer's own check for one sheet, or the
+    two-sheet bound with `splits_totals` (`xlsx_splits_totals`)."""
+    if not splits_totals:
+        check_excel_rows(min(rows + 1, EXCEL_MAX_ROWS + 1))
+    elif rows > _excel_data_row_limit(splits_totals=True):
+        raise ExcelLimitError(detail=_two_sheet_detail(rows, estimated=False))
 
 
 def refuse_inline_over_ceiling(estimate: Estimate, *, ceiling: int) -> None:

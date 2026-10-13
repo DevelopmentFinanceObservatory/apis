@@ -221,6 +221,12 @@ def bound_registry_endpoint(endpoint: str | None) -> Iterator[None]:
         _registry_endpoint.reset(token)
 
 
+def bound_endpoint() -> str | None:
+    """The code registry endpoint `bound_registry_endpoint` binds, or `None` where none is
+    bound."""
+    return _registry_endpoint.get()
+
+
 @cache
 def _problem_statuses(code: str) -> Mapping[str, frozenset[int]]:
     """The statuses the code registry gives `code` on each endpoint's problem details."""

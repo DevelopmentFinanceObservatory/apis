@@ -13,8 +13,9 @@ from graph_generation import UNKNOWN_GENERATION, FakeGeneration, GenerationProvi
 from search.engine.bind import _UniversalBindOutput
 from search.engine.core import resolve_async, resolve_events
 from search.engine.degraded_reads import note_degraded_read
-from search.engine.errors import GraphInfraError
+from search.engine.errors import GraphInfraError, LLMInfraError
 from search.engine.extract import ExtractedEntity, Extraction
+from search.engine.quantity_read import QuantityOutput
 from search.engine.response_cache import ResponseCache
 from search.models import (
     ParsedEntity,
@@ -29,6 +30,7 @@ from tests.datasets_api._graph_doubles import FakeMintGraphReader
 from tests.engine._fake_coverage import patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import EMPTY_SDMX, make_request, member_walk_reader
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import PINNED_DATE, FakeGraph, FakeLLM
 
 _QUERY_A = "fertility rate in Kenya"
@@ -105,7 +107,7 @@ def test_identical_requests_share_one_warm_cache():
     cache = ResponseCache()
     r1 = _run(make_request(_QUERY_A), llm=llm, cache=cache)
     r2 = _run(make_request(_QUERY_A), llm=llm, cache=cache)
-    assert llm.calls == ["Extraction", "_UniversalBindOutput"]
+    assert llm.calls == ["Extraction", "_UniversalBindOutput", "QuantityOutput"]
     assert r1.status == "definite"
     assert r2.status == "definite"
     assert r2.parts == r1.parts
@@ -117,7 +119,7 @@ def test_differently_worded_query_hits_layer2():
     cache = ResponseCache()
     r1 = _run(make_request(_QUERY_A), llm=llm, cache=cache)
     r2 = _run(make_request(_QUERY_B), llm=llm, cache=cache)
-    assert llm.calls == ["Extraction", "_UniversalBindOutput", "Extraction"]
+    assert llm.calls == ["Extraction", "_UniversalBindOutput", "QuantityOutput", "Extraction"]
 
     # Each response retains its request's wording.
     assert r2.query_echo.raw_query == _QUERY_B
@@ -146,7 +148,7 @@ def test_buffered_include_observations_is_cached():
     )
     r1 = _run(request, llm=llm, cache=cache)
     r2 = _run(request, llm=llm, cache=cache)
-    assert llm.calls == ["Extraction", "_UniversalBindOutput"]
+    assert llm.calls == ["Extraction", "_UniversalBindOutput", "QuantityOutput"]
     assert r1.status == "definite"
     assert r2.parts == r1.parts
     assert set(r2.diagnostics.timing_ms.by_step or {}) == {"response_cache_layer1"}
@@ -182,15 +184,28 @@ def test_a_transport_with_trailing_events_is_not_cached():
         asyncio.run(_drain())
         kinds = asyncio.run(_drain())
     assert "observations" in kinds
-    assert llm.calls == ["Extraction", "_UniversalBindOutput", "Extraction", "_UniversalBindOutput"]
+    assert llm.calls == [
+        "Extraction",
+        "_UniversalBindOutput",
+        "QuantityOutput",
+        "Extraction",
+        "_UniversalBindOutput",
+        "QuantityOutput",
+    ]
     stats = cache.stats()
     assert stats.hits == stats.misses == stats.entries == 0
 
 
-def test_a_first_answer_that_swallowed_a_read_is_not_stored(monkeypatch):
-    """A read the pipeline swallows with no warning, here the withheld-registry re-read,
-    marks the part degraded, so neither layer stores the answer and the same request runs
-    the pipeline again. Without the lost read the second request is a hit."""
+class _QuantityReadFailsLLM(FakeLLM):
+    """The recorded bank, with every quantity read failing as a transport error does."""
+
+    async def generate_structured(self, *, prompt: str, system: str, schema):
+        if schema is QuantityOutput:
+            raise LLMInfraError("the quantity read failed")
+        return await super().generate_structured(prompt=prompt, system=system, schema=schema)
+
+
+def _lose_withheld_re_read(monkeypatch) -> FakeLLM:
     from search.engine.region import pipeline
 
     async def _lost_re_read(result, graph, *, deadline):
@@ -198,13 +213,34 @@ def test_a_first_answer_that_swallowed_a_read_is_not_stored(monkeypatch):
         return result
 
     monkeypatch.setattr(pipeline, "with_withheld_warning", _lost_re_read)
-    llm = _CountingLLM(FakeLLM())
+    return FakeLLM()
+
+
+def _lose_quantity_read(monkeypatch) -> FakeLLM:
+    return _QuantityReadFailsLLM()
+
+
+@pytest.mark.parametrize(
+    "lose", [_lose_withheld_re_read, _lose_quantity_read], ids=["withheld-re-read", "quantity-read"]
+)
+def test_a_first_answer_that_swallowed_a_read_is_not_stored(monkeypatch, lose):
+    """A read the pipeline swallows with no warning, the withheld-registry re-read or the
+    quantity read, marks the part degraded, so neither layer stores the answer and the same
+    request runs the pipeline again. Without the lost read the second request is a hit."""
+    llm = _CountingLLM(lose(monkeypatch))
     cache = ResponseCache()
     r1 = _run(make_request(_QUERY_A), llm=llm, cache=cache)
     r2 = _run(make_request(_QUERY_A), llm=llm, cache=cache)
     assert r1.status == r2.status == "definite"
     assert r1.diagnostics.warnings == r2.diagnostics.warnings == []
-    assert llm.calls == ["Extraction", "_UniversalBindOutput", "Extraction", "_UniversalBindOutput"]
+    assert llm.calls == [
+        "Extraction",
+        "_UniversalBindOutput",
+        "QuantityOutput",
+        "Extraction",
+        "_UniversalBindOutput",
+        "QuantityOutput",
+    ]
     assert cache.stats().entries == 0
 
 
@@ -251,7 +287,14 @@ def test_cache_disabled_by_config_behaves_as_uncached(search_settings):
     cache = ResponseCache()
     _run(make_request(_QUERY_A), llm=llm, cache=cache)
     _run(make_request(_QUERY_A), llm=llm, cache=cache)
-    assert llm.calls == ["Extraction", "_UniversalBindOutput", "Extraction", "_UniversalBindOutput"]
+    assert llm.calls == [
+        "Extraction",
+        "_UniversalBindOutput",
+        "QuantityOutput",
+        "Extraction",
+        "_UniversalBindOutput",
+        "QuantityOutput",
+    ]
     stats = cache.stats()
     assert stats.hits == 0
     assert stats.misses == 0
@@ -397,6 +440,8 @@ class _FixedExtractionLLM:
                 dropped_qualifiers=[],
             )
             return extraction, None
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema is _UniversalBindOutput
         return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
 
@@ -469,7 +514,14 @@ def test_role_direction_contradiction_is_not_masked_by_a_shared_extraction(monke
         materialise_graph=_role_bearing_member_graph(),
     )
     # The role contradiction changes the layer-2 key, so bind runs again.
-    assert llm.calls == ["Extraction", "_UniversalBindOutput", "Extraction", "_UniversalBindOutput"]
+    assert llm.calls == [
+        "Extraction",
+        "_UniversalBindOutput",
+        "QuantityOutput",
+        "Extraction",
+        "_UniversalBindOutput",
+        "QuantityOutput",
+    ]
     assert r2.status == "no_data", r2
 
 
@@ -496,7 +548,7 @@ def test_role_direction_agreement_still_hits_layer2(monkeypatch):
         sdmx=FakeSdmxClient(observations={}),
         materialise_graph=_role_bearing_member_graph(),
     )
-    assert llm.calls == ["Extraction", "_UniversalBindOutput", "Extraction"]
+    assert llm.calls == ["Extraction", "_UniversalBindOutput", "QuantityOutput", "Extraction"]
     assert r1.status == "definite", r1
     assert r2.status == "definite", r2
     assert r1.parts == r2.parts
@@ -514,7 +566,7 @@ def test_same_query_under_the_same_token_still_hits():
     generation = FakeGeneration(token="gen-a")
     r1 = _run(make_request(_QUERY_A), llm=llm, cache=cache, generation=generation)
     r2 = _run(make_request(_QUERY_A), llm=llm, cache=cache, generation=generation)
-    assert llm.calls == ["Extraction", "_UniversalBindOutput"]
+    assert llm.calls == ["Extraction", "_UniversalBindOutput", "QuantityOutput"]
     assert r1.parts == r2.parts
 
 
@@ -528,7 +580,14 @@ def test_advancing_the_token_between_requests_misses_both_layers():
     generation.advance("gen-b")
     r2 = _run(make_request(_QUERY_A), llm=llm, cache=cache, generation=generation)
 
-    assert llm.calls == ["Extraction", "_UniversalBindOutput", "Extraction", "_UniversalBindOutput"]
+    assert llm.calls == [
+        "Extraction",
+        "_UniversalBindOutput",
+        "QuantityOutput",
+        "Extraction",
+        "_UniversalBindOutput",
+        "QuantityOutput",
+    ]
     # Per-run timing differs; compare stable spec IDs.
     assert [p.spec.spec_id for p in r1.parts] == [p.spec.spec_id for p in r2.parts]
     # Both requests retain separate layer-1 and layer-2 entries.
@@ -543,7 +602,14 @@ def test_unknown_and_known_stamps_never_share_an_entry():
     r2 = _run(
         make_request(_QUERY_A), llm=llm, cache=cache, generation=FakeGeneration(token="gen-a")
     )
-    assert llm.calls == ["Extraction", "_UniversalBindOutput", "Extraction", "_UniversalBindOutput"]
+    assert llm.calls == [
+        "Extraction",
+        "_UniversalBindOutput",
+        "QuantityOutput",
+        "Extraction",
+        "_UniversalBindOutput",
+        "QuantityOutput",
+    ]
     # Per-run timing differs; compare stable spec IDs.
     assert [p.spec.spec_id for p in r1.parts] == [p.spec.spec_id for p in r2.parts]
 

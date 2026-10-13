@@ -81,6 +81,9 @@ a StatVar's declared property; declared labels remain presentation data."""
 NoDataReason = Literal[
     "source_not_resolved",
     "source_ambiguous",
+    "source_code_not_held",
+    "source_code_ambiguous",
+    "source_code_shares_variable",
     "entity_not_resolved",
     "entity_ambiguous",
     "entity_set_too_large",
@@ -99,6 +102,10 @@ NoDataReason = Literal[
     "qualifier_not_bound",
 ]
 NoDataCategory = Literal["unresolved", "absent"]
+QuantityForm = Literal["per_person", "per_head_base", "per_area", "rate", "share"]
+"""A normalised form a question can ask for: per person, per a numbered count of people
+(`per 100,000 people`), per area, a rate (one quantity to another) or a share of a
+whole."""
 DepartureCode = Literal[
     "closest_match",
     "measure_not_applied",
@@ -148,6 +155,9 @@ NoDataGate = Literal[
 NO_DATA_RESOLUTION_ORDER: tuple[NoDataReason, ...] = (
     "source_not_resolved",
     "source_ambiguous",
+    "source_code_not_held",
+    "source_code_ambiguous",
+    "source_code_shares_variable",
     "entity_not_resolved",
     "entity_ambiguous",
     "entity_set_too_large",
@@ -167,7 +177,10 @@ NO_DATA_RESOLUTION_ORDER: tuple[NoDataReason, ...] = (
 )
 """The contract's own no_data resolution order: source (a part's source words
 compile before anything else resolves, so an unmatched wording, then an ambiguous
-one, comes first), entity (entity_ambiguous and
+one, comes first), source code (the part's series code compiles at the door against the
+sources it allows, and a held code whose StatVars cannot answer the part refuses
+source_code_not_held where the part would refuse variable_not_resolved, after the entity
+reasons), entity (entity_ambiguous and
 entity_set_too_large and entity_role_not_admitted sit at the entity position,
 right after entity_not_resolved, in that order: the four run by how far the
 entity got, from no identity, to several candidate identities, to one
@@ -191,6 +204,9 @@ _UNRESOLVED_NO_DATA_REASONS: frozenset[NoDataReason] = frozenset(
     {
         "source_not_resolved",
         "source_ambiguous",
+        "source_code_not_held",
+        "source_code_ambiguous",
+        "source_code_shares_variable",
         "entity_not_resolved",
         "entity_ambiguous",
         "entity_set_too_large",
@@ -204,8 +220,9 @@ _UNRESOLVED_NO_DATA_REASONS: frozenset[NoDataReason] = frozenset(
 (the request could not be read into the graph); every other reason maps to
 "absent" (the read request names a place holding nothing). An explicit set
 rather than a naming-convention check (e.g. a "_not_resolved" suffix), since
-not every reason in this category shares that suffix: source_ambiguous,
-entity_ambiguous, entity_set_too_large and entity_role_not_admitted do not."""
+not every reason in this category shares that suffix: source_ambiguous, the three
+source_code_* reasons, entity_ambiguous, entity_set_too_large and entity_role_not_admitted
+do not."""
 _FLAG_BEARING_NO_DATA_REASONS: frozenset[NoDataReason] = frozenset(
     {"no_observations", "no_matching_slice", "qualifier_not_bound"}
 )
@@ -240,6 +257,11 @@ or, for a unit-request member, the binder's fixed fallback constant)
 supplied it. Shared by ResolvedFacet.basis
 (axis-level) and ResolvedFacet.request_basis (per-member, unit axis only) --
 the same three-value vocabulary either way."""
+PartyKind = Literal["party", "total", "residual"]
+"""What one party of a flow is beside the other parties on its side: a `party` holds figures
+of its own, a `total` holds other parties' figures ("Africa, Total", the G7), so a sum across a
+flow role that counts it counts its members twice, and a `residual` holds figures no other party
+does ("Africa, unallocated by country"). Mirrors `code_index.types.PartyKind` one-for-one."""
 SlotOptionRelation = Literal["child", "parent", "root"]
 """Where a level-scoped `SlotOption` sits in its slot's menu. On a bound slot,
 `"child"`/`"parent"` narrow or widen one step from the bound value in a

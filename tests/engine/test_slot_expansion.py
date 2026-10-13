@@ -101,10 +101,10 @@ def test_slot_expansions_reports_only_what_was_added():
     assert set(expansions) == {"crsPurpose"}
     health_expansion = expansions["crsPurpose"]
     assert isinstance(health_expansion, Expansion)
-    added_dcids = {ref.dcid for ref in health_expansion.added}
+    added_dcids = {ref.ref for ref in health_expansion.added}
     assert _HEALTH not in added_dcids  # Expansion metadata lists descendants only.
     assert _MALARIA_CONTROL in added_dcids
-    malaria_ref = next(ref for ref in health_expansion.added if ref.dcid == _MALARIA_CONTROL)
+    malaria_ref = next(ref for ref in health_expansion.added if ref.ref == _MALARIA_CONTROL)
     assert malaria_ref.label == "malaria control"
 
 

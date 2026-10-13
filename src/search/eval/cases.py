@@ -751,7 +751,10 @@ def unconfirmed_paths(case: Case) -> list[str]:
     return list(_gl_paths(_normalised(case)["expect"], "expect"))
 
 
-def _assertion_checks(block: _Assertions) -> set[CheckName]:
+def assertion_checks(block: _Assertions) -> set[CheckName]:
+    """The part checks a status block asserts, from the fields it sets, and
+    ``materialisation`` under a ``definite`` or ``mixed`` block, whose definite parts it
+    counts."""
     fields = block.model_fields_set
     checks: set[CheckName] = set()
     if block.measure is not None:
@@ -768,6 +771,8 @@ def _assertion_checks(block: _Assertions) -> set[CheckName]:
         checks.add("operations")
     if "warnings" in fields:
         checks.add("warnings")
+    if isinstance(block, DefiniteExpect | MixedExpect):
+        checks.add("materialisation")
     if isinstance(block, DefiniteExpect) and "skills" in fields:
         checks.add("skills")
     if isinstance(block, CandidatesExpect) and "include_families" in fields:
@@ -784,7 +789,7 @@ def _status_keyed_checks(expect: _StatusKeyed) -> set[CheckName]:
     for status in expect.accepted_statuses:
         merged = expect.for_status(status)
         if merged is not None:
-            checks |= _assertion_checks(merged)
+            checks |= assertion_checks(merged)
     return checks
 
 
@@ -794,8 +799,9 @@ def asserted_checks(case: Case) -> frozenset[CheckName]:
     ``disposition`` reads kind, accepted statuses, ``scope_place`` and the problem code.
     ``refusal`` reads the ``no_data``, ``unsupported`` and ``declined`` details. ``request``
     reads ``window`` and ``unit``. ``provenance`` reads an explicit override or the
-    measure's family. The checks that read no case field (``entry_path``, ``structural``,
-    ``groundedness``, ``materialisation``, ``task_outcome``) are left out.
+    measure's family. ``materialisation`` joins under an accepted ``definite`` or ``mixed``
+    status. The checks that read no case field (``entry_path``, ``structural``,
+    ``groundedness``, ``task_outcome``) are left out.
     """
     expect = case.expect
     checks: set[CheckName] = {"disposition"}

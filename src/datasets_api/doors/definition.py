@@ -158,12 +158,14 @@ from materialise.errors import (
     CollectionProbeCeilingExceededError,
     DatasetDisagreementError,
     DefaultFacetUndefinedError,
+    FacetBindingUnsupportedError,
     FacetNotAvailableError,
     MembersNotHeldError,
     MixedGrainError,
     OverCeilingError,
     UpstreamResponseError,
     UpstreamVersionChangedError,
+    VariableBreadthUnreadError,
 )
 from materialise.formats import ExcelIllegalCharacterError, ExcelLimitError, ParquetSizeBoundError
 from materialise.graph import GraphDeadlineExceededError, GraphReadError
@@ -612,6 +614,7 @@ def definition_deps(deps: Deps, *, deadline: float | None) -> DefinitionDeps:
         settings=settings,
         rebuilds=deps.rebuilds,
         version_lister=deps.version_lister,
+        variable_breadth=deps.variable_breadth,
     )
 
 
@@ -840,6 +843,9 @@ _RUN_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
     UpstreamVersionChangedError,
     UpstreamResponseError,
     UnSystemUnavailable,
+    # A rebuild at one place whose tie needs an unread whole-variable breadth refuses rather
+    # than store another facet (`current.serve_current`).
+    VariableBreadthUnreadError,
     # A materialisation and a head-hit render hold a permit of the materialise semaphore.
     MintBackpressure,
     # A frame the grammar refuses, built fresh or read back from the store.
@@ -895,6 +901,7 @@ _MATERIALISING_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
     RecipeNotDeclaredError,
     RateCoverageGapError,
     NonCurrencyUnitError,
+    FacetBindingUnsupportedError,
     RateTableInvalidError,
     SnapshotRevoked,
     *_RUN_EXCEPTION_TYPES,
@@ -1022,6 +1029,7 @@ def build_definition_door(*, deps: DepsCell) -> DoorContribution:
                 "exemplar", cause="currency_unmapped", entities=("CurrencyExemplar",)
             ),
             NonCurrencyUnitError("exemplar", unit="Exemplar"),
+            FacetBindingUnsupportedError("exemplar"),
             RateTableInvalidError("exemplar"),
             DatasetsStoreUnavailable("exemplar"),
             SnapshotRevoked(id="spec_exemplar", content_version="cv_exemplar", reason=None),

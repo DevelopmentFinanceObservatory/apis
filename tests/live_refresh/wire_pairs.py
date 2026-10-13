@@ -12,8 +12,8 @@ everywhere, so the recording is stable and ids still line up across pairs:
 - content versions, derived frame ids, recipe hashes, replay keys, operation ids, component
   ids, and artifact digests are numbered in order of first appearance, in their own grammar
   (`cv_00000000000000000000000000000001`);
-- times read `<timestamp>`, dates `<date>`, and `trace_id` and `capability_version` their own
-  name in angle brackets;
+- times read `<timestamp>`, dates `<date>`, a citation's year `<year>`, and `trace_id` and
+  `capability_version` their own name in angle brackets;
 - the principal header holds `<LIVE_REFRESH_PRINCIPAL>` or `<DATASETS_FIRST_PARTY_PRINCIPAL>`.
 
 A JSON body is recorded whole. A file body is recorded as its first bytes: text for CSV, hex
@@ -83,13 +83,14 @@ _NAMED_VALUES = (
         "<timestamp>",
     ),
     (re.compile(r"\d{4}-\d{2}-\d{2}"), "<date>"),
+    (re.compile(r'("citation": "[^"]*\()\d{4}(\))'), r"\1<year>\2"),
 )
 _ABOUT = (
     "Request and response pairs of the dfo-apis live-refresh routes, recorded from the "
     "composed test app by tests/live_refresh/wire_pairs.py. Ids are numbered stand-ins in "
     "their own grammar, the same id by the same stand-in in every pair. <timestamp>, <date>, "
-    "<trace_id>, <capability_version>, and the two principal names stand for values that "
-    "differ between runs or deployments."
+    "a citation's <year>, <trace_id>, <capability_version>, and the two principal names stand "
+    "for values that differ between runs or deployments."
 )
 
 

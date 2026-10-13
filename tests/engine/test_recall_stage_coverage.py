@@ -10,9 +10,11 @@ from typing import Literal
 from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.graph import Facet
 from search.engine.extract import ExtractedEntity, Extraction
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import make_request, offline_resolve
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph
 
 _QUERY = "Gross disbursements type of finance 110 type of flow 10 to Kenya"
@@ -66,6 +68,8 @@ class _UnfixedExtractionLLM:
                 dates=[],
                 dropped_qualifiers=self._dropped,
             ), None
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0, bindings=[], also_plausible=[], ask=None
@@ -135,10 +139,10 @@ def _bound_value(response, property_dcid: str) -> str | None:
     slot = next(
         s
         for s in part.spec.resolved.slots
-        if s.key.property is not None and s.key.property.dcid == property_dcid
+        if s.key.property is not None and s.key.property.ref == property_dcid
     )
     assert slot.binding.kind == "value"
-    return slot.binding.value.ref.dcid
+    return slot.binding.value.ref.ref
 
 
 def test_coded_qualifier_query_ships_no_dropped_warning_and_binds_both_codes():
@@ -159,13 +163,13 @@ def test_coded_qualifier_codes_are_asserted_on_the_resolved_stat_var():
     """The recalled StatVar's slot values carry both codes."""
     response = _resolve_coded_qualifier_query()
     stat_var = response.parts[0].spec.resolved.members[0]
-    assert stat_var.ref.dcid == _SV_DCID
-    rendered = {sv.key.property.dcid: sv.value.ref.dcid for sv in stat_var.slot_values}
+    assert stat_var.ref.ref == _SV_DCID
+    rendered = {sv.key.property.ref: sv.value.ref.ref for sv in stat_var.slot_values}
     assert rendered[_FINANCE_PROPERTY] == _FINANCE_CODE
     assert rendered[_FLOW_PROPERTY] == _FLOW_CODE
 
     provenance = {
-        f.key.property.dcid: f.provenance
+        f.key.property.ref: f.provenance
         for f in response.parts[0].spec.resolved.trace.slot_filters
         if f.key.property is not None
     }

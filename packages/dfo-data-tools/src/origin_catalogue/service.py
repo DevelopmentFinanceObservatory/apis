@@ -33,13 +33,13 @@ _ARTIFACT_URI_ENV_VAR = "ORIGIN_CATALOGUE_URI"
 DEFAULT_RECHECK_SECONDS = 300.0
 DEFAULT_MAX_RESIDENT_BYTES = 384 * 1024 * 1024
 """The memory budget for one loaded build, against the size its manifest records for its
-tables and its UN tables together. The dfo-dev apis service runs one process in a 4 GiB
-container. Loading a build adds about 2.3 times its recorded size to the resident set (the
-dev build records 115 MiB and adds 247 to 266 MiB), and two builds are resident during a
-swap. The composed app with the Search and graph surfaces starts at about 1,170 MiB without
-the catalogue. A build at the budget then needs 1,170 + 2 x 2.3 x 384 = about 2,940 MiB,
-which leaves about 1.1 GiB for the Datasets surface, whose start the 1,170 MiB leaves out,
-and a coverage index reload."""
+tables, its UN tables and its arc tables together. The dfo-dev apis service runs one process
+in a 4 GiB container. Loading a build adds about 1.52 times its recorded size to the resident
+set (a format-5 build of the dev data records 202 MiB and adds 297 to 317 MiB on macOS), and
+two builds are resident during a swap. The composed app with the Search and graph surfaces
+starts at about 1,170 MiB without the catalogue. A build at the budget then needs
+1,170 + 2 x 1.52 x 384 = about 2,340 MiB, which leaves about 1.7 GiB for the Datasets
+surface, whose start the 1,170 MiB leaves out, and a coverage index reload."""
 
 # Logs the first reload failure and each tenth consecutive failure.
 _FAILURE_LOG_EVERY_N = 10
@@ -60,6 +60,14 @@ class CatalogueSettings(BaseSettings):
         default=DEFAULT_MAX_RESIDENT_BYTES, alias="ORIGIN_CATALOGUE_MAX_RESIDENT_BYTES"
     )
     un_system_enabled: bool = Field(default=True, alias="ORIGIN_CATALOGUE_UN_SYSTEM_ENABLED")
+    warn_pair_stale: bool = Field(default=True, alias="ORIGIN_CATALOGUE_WARN_PAIR_STALE")
+    """Whether a Search answer carries `artifact_pair_stale` when the catalogue and coverage
+    builds it bound read different ingestions. `false` silences the warning; the log line
+    stays."""
+    warn_index_drift: bool = Field(default=True, alias="ORIGIN_CATALOGUE_WARN_INDEX_DRIFT")
+    """Whether a Search answer carries `catalogue_index_drift` when the catalogue's arcs
+    and the packaged code index disagree on a StatVar it serves. `false` silences the
+    warning; the log line stays."""
 
 
 class CatalogueUriMissingError(RuntimeError):
@@ -247,7 +255,7 @@ def get_catalogue_service() -> CatalogueService:
     """The process-wide service, loading the catalogue on first call.
 
     Reads `ORIGIN_CATALOGUE_URI` (required), `ORIGIN_CATALOGUE_RECHECK_SECONDS`
-    (default 300), `ORIGIN_CATALOGUE_MAX_RESIDENT_BYTES` (default 256 MiB)
+    (default 300), `ORIGIN_CATALOGUE_MAX_RESIDENT_BYTES` (default 384 MiB)
     and `ORIGIN_CATALOGUE_UN_SYSTEM_ENABLED` (default true). Raises
     `CatalogueUriMissingError` when the URI is unset. `load_catalogue`'s
     errors propagate for an unloadable build.

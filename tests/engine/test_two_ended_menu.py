@@ -36,6 +36,7 @@ from code_index.query import CodeIndex
 from code_index.shared import get_index
 from code_index.types import DatasetDeclaration, IndexStamp, StatVarRow
 from search.engine.bind import _UniversalBindOutput
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import phase_rank_bind
 from search.engine.region.pipeline import resolve_variable
 from search.models import Operation, RoleAxis
@@ -43,6 +44,7 @@ from series_coverage.schema import RoleNames
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 _KEN = "country/KEN"
@@ -210,6 +212,8 @@ class _ElectFirst:
     """Elects the first shape on the menu with no bindings."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
 
@@ -289,8 +293,34 @@ def test_a_two_ended_query_elects_the_role_bearing_shape(monkeypatch) -> None:
     assert menu == [(_FLOW_SV,)]
     assert result.status == "definite", result
     spec = result.specs[0]
-    assert [item.ref.dcid for item in spec.resolved.members] == [_FLOW_SV]
+    assert [item.ref.ref for item in spec.resolved.members] == [_FLOW_SV]
     assert spec.definition.identity.entities == {"origin": [_CHN], "destination": [_KEN]}
+
+
+@pytest.mark.parametrize(
+    ("recalled", "menu"),
+    [
+        # "Aid from Norway to Ethiopia": the flow ranks first and evicts the subject series.
+        pytest.param(((_CRS_SV, 0.8), (_SUBJECT_SV, 0.7)), [(_CRS_SV,)], id="flow-ranked-first"),
+        # "GDP of Ethiopia" beside it: a flow only the floor's index exemption admits,
+        # ranked below the subject series, evicts nothing.
+        pytest.param(
+            ((_SUBJECT_SV, 0.9), (_CRS_SV, 0.61)),
+            [(_SUBJECT_SV,), (_CRS_SV,)],
+            id="exempt-flow-ranked-below",
+        ),
+    ],
+)
+def test_subject_shapes_leave_only_for_a_role_bearing_shape_that_outranks_them(
+    monkeypatch, recalled, menu
+) -> None:
+    """dq-crs-066 asks for aid from Norway to Ethiopia and GDP of Ethiopia, and the GDP part
+    carries both flow ends."""
+    _result, got = _resolve(
+        monkeypatch, "debt from China to Kenya", ["China", "Kenya"], recalled=recalled
+    )
+
+    assert got == menu
 
 
 @pytest.mark.parametrize(

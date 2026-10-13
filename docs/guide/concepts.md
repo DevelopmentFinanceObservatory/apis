@@ -16,9 +16,9 @@ For the question “ODA disbursements from Germany to Nigeria for basic health c
 
 A spec records the canonical meaning of a question. Its `spec_id` is derived from that canonical definition. The definition includes the selected entities and bound or open dimensions.
 
-A `content_version` identifies a stored materialisation of a spec. Keep the pair when citing or retrieving a result. Repeating a mint can reuse a version when the resolved definition, selected facets, source revision, and data are unchanged. A later materialisation can produce a new version when those inputs differ.
+A `content_version` identifies a stored materialisation of a spec. Keep the pair when citing or retrieving a result. Repeating a request that creates a dataset (a mint) can reuse a version when the resolved definition, selected facets, source revision, and data are unchanged. A later materialisation can produce a new version when those inputs differ.
 
-`GET /api/datasets/{spec_id}/{content_version}` retrieves a stored version while its artifacts remain servable. `GET /api/datasets/{spec_id}` serves a recently confirmed stored head or rechecks the definition and can materialise a newer version.
+`GET /api/v1/datasets/{spec_id}/{content_version}` retrieves a stored version while its artifacts remain servable. `GET /api/v1/datasets/{spec_id}` serves the latest stored version when it was confirmed recently, or rechecks the definition and can materialise a newer version.
 
 ## StatVars, series, and rows
 
@@ -32,7 +32,7 @@ Do not add rows together without checking their dimensions and summability. A ta
 
 A facet identifies the source, measurement method, and unit used for a series. The Search response and Datasets manifest record the selected facet because values with the same StatVar and entities can differ by source or unit.
 
-The Datasets API follows a graph-declared default where one is available. Otherwise it applies a deployment fallback ranking. The fallback ranks candidates by observation count, latest observation, provenance, measurement method, unit, and facet identifier. When observation counts are unavailable, it uses the latest observation. A unit conversion request can select a native-currency input before conversion.
+The Datasets API uses the default facet that the DFO knowledge graph declares for a variable, where one exists. Otherwise it applies a fallback ranking. Candidates that overlap the requested window and come from DFO's preferred sources rank first, then candidates that cover more of the requested places and more years in the window, then those with more observations and a later latest observation, with the facet identifier as the last tiebreak. A unit conversion request can select a native-currency input before conversion.
 
 Bind `scope.facets` when a question requires a particular source, method, or unit. Provenance and measurement method use a `ref`. A unit can use a `ref` or a conversion request.
 

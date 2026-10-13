@@ -12,11 +12,11 @@ from code_index.shared import get_index
 from dc_graph import declared_role_refresh_deadline
 from materialise.roles import roles_by_axis
 from search.engine.clients.graph import EngineGraphClient, Facet
-from search.engine.config import settings
 from search.engine.errors import GraphInfraError, RoleSignatureError
 from search.engine.retrieval.bound_values import (
     bound_values_from_bindings,
     declared_role_signature,
+    held_family_exact,
     index_open_role_keys,
     shape_member_facts,
     shape_query,
@@ -227,25 +227,15 @@ def _refresh_declared_roles(
     """Refresh index roles from the graph; return whether they remain unverified.
 
     Recall-sourced members and populations that elect under no role key, bound or open,
-    need no refresh. On success, live roles replace frozen index roles. On failure,
-    timeout, or a population above ``role_refresh_max_members``, frozen roles
-    remain and the result is marked unverified. Batch reads use 12 dcids per
-    POST; the widest CRS family has 13,090 members (about 417 POSTs). The
-    deadline-aware scheduler stops dispatching when the request budget expires,
-    so partial reads are never treated as verified.
+    need no refresh. The client answers each member the catalogue's arc tables hold from
+    them, so a family of any size refreshes; only members outside the tables are read
+    live, in the graph client's chunks. On success, live roles replace frozen index
+    roles. On failure or timeout, frozen roles remain and the result is marked
+    unverified. The deadline-aware scheduler stops dispatching when the request budget
+    expires, so partial reads are never treated as verified.
     """
     if not (index_sourced and (minted_role_keys or open_role_keys)):
         return False
-
-    if len(surviving_svs) > settings().role_refresh_max_members:
-        logger.warning(
-            "graph_confirm_resolve: the declared-role refresh over %d index-sourced "
-            "member(s) exceeds this deployment's %d-member read cap; keeping the roles "
-            "frozen at export",
-            len(surviving_svs),
-            settings().role_refresh_max_members,
-        )
-        return True
 
     try:
         with declared_role_refresh_deadline(deadline):
@@ -685,7 +675,9 @@ def _admit_population(
         return NoDataDraft(reason="variable_not_resolved")
 
     # Thread exactness because discovery does not receive the ShapeDraft.
-    member_population_exact = index_sourced or shape.sv_arc_facts_complete
+    member_population_exact = (
+        index_sourced or shape.sv_arc_facts_complete or held_family_exact(shape)
+    )
 
     surviving_svs = _filter_and_rank_surviving(member_facts, constraint_values)
     if not surviving_svs:
@@ -923,7 +915,8 @@ def graph_confirm_resolve(
     declares, since recall is a sample of the family. A family with a by-creditor twin
     answers with the twin, and one whose members all lack the axis elects as it would
     without it (`statvar_members.electing_role_keys`). The result's ``open_axes`` holds
-    the identity's open roles (`_AdmittedPopulation.open_axes`).
+    the identity's open roles (`_AdmittedPopulation.open_axes`), as does a no-data
+    outcome over the elected members (`NoDataDraft.open_axes`).
 
     Returns ``Materialised``, ``NoDataDraft``, or ``UnsupportedDraft``. A bound
     destination with no observations returns an unavailable ``Materialised``
@@ -931,7 +924,7 @@ def graph_confirm_resolve(
     cases return named no-data outcomes.
     """
     # Import here to avoid a circular import at module level (retrieve imports role_resolve).
-    from search.engine.retrieval.retrieve import Materialised
+    from search.engine.retrieval.retrieve import Materialised, NoDataDraft
 
     if not is_role_bearing(shape):
         raise ValueError(
@@ -1019,7 +1012,11 @@ def graph_confirm_resolve(
         facet_label=facet_label,
     )
     if not isinstance(confirmation, _RoleBearingConfirmation):
-        if isinstance(confirmation, Materialised):
+        # The elected members declare the open axes whether or not they hold data, so a
+        # no-data outcome over them (`NoDataDraft.sv_dcids`) carries the axes too.
+        if isinstance(confirmation, Materialised) or (
+            isinstance(confirmation, NoDataDraft) and confirmation.sv_dcids
+        ):
             confirmation.open_axes = elected_open_axes
         return confirmation
     confirmed_svs = confirmation.confirmed_svs

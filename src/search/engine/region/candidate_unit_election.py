@@ -20,10 +20,12 @@ from materialise.errors import (
     MaterialisationError,
 )
 from materialise.facets import (
+    BreadthUnread,
     CoverageAdmission,
     ElectedDataset,
     FacetSelection,
     MemberProbe,
+    PendingBreadth,
     PlaceAdmission,
 )
 from materialise.facets import UnitRequest as MaterialiseUnitRequest
@@ -59,6 +61,7 @@ type _ProbeKey = tuple[
     tuple[str, ...],
     bool,
     frozenset[tuple[str, int]] | None,
+    frozenset[tuple[str, int]] | BreadthUnread | PendingBreadth | None,
 ]
 _CandidateUnitElectionKey = tuple[
     str,
@@ -156,8 +159,9 @@ def _candidate_unit_elections(
 
 
 def _probe_key(probe: MemberProbe | None, window: RequestedWindow) -> _ProbeKey | None:
-    """`probe` as the election reads it, hashable: its candidates, admission, places, and
-    series counts under `window`."""
+    """`probe` as the election reads it, hashable: its candidates, admission, places, series
+    counts under `window`, and places across the whole variable, or the `PendingBreadth` that
+    reads them, which keys without reading and is one object per variable per request."""
     if probe is None:
         return None
     admission = probe.admission
@@ -170,4 +174,8 @@ def _probe_key(probe: MemberProbe | None, window: RequestedWindow) -> _ProbeKey 
         probe.places,
         probe.every_place,
         frozenset(breadth.items()) if breadth is not None else None,
+        probe.variable_breadth
+        if probe.variable_breadth is None
+        or isinstance(probe.variable_breadth, BreadthUnread | PendingBreadth)
+        else frozenset(probe.variable_breadth.items()),
     )

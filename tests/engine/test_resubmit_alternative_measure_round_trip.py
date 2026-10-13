@@ -130,7 +130,7 @@ def test_an_identity_padded_with_never_asserted_measure_axes_resolves_with_inapp
         padded_slot = next(
             s
             for s in spec.resolved.slots
-            if s.key.property is not None and s.key.property.dcid == padded_prop
+            if s.key.property is not None and s.key.property.ref == padded_prop
         )
         assert padded_slot.binding.kind == "unbound"
         assert padded_prop in spec.resolved.inapplicable_slots

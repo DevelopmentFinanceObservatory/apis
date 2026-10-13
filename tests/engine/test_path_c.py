@@ -270,8 +270,8 @@ class TestStandardPromote:
         spec = region.specs[0]
         # population_type is the re-read five-tuple anchor
         shape = spec.resolved.shape
-        assert shape.population_type and shape.population_type.dcid == "EconomicActivity"
-        assert shape.measured_property and shape.measured_property.dcid == "amount"
+        assert shape.population_type and shape.population_type.ref == "EconomicActivity"
+        assert shape.measured_property and shape.measured_property.ref == "amount"
 
     @pytest.mark.parametrize(
         ("shape", "entities", "reason"),
@@ -537,7 +537,7 @@ class TestStandardRefine:
         )
         region = _resubmit_refine(inp)
         assert region.status == "definite"
-        assert [sv.ref.dcid for sv in region.specs[0].resolved.members] == [_PERSON_MALE_SV]
+        assert [sv.ref.ref for sv in region.specs[0].resolved.members] == [_PERSON_MALE_SV]
 
     def test_add_constraint_confirms_sibling(self):
         """Adding an Urban residence constraint to a female count confirms
@@ -559,7 +559,7 @@ class TestStandardRefine:
         )
         region = _resubmit_refine(inp)
         assert region.status == "definite"
-        assert [sv.ref.dcid for sv in region.specs[0].resolved.members] == [_PERSON_URBAN_FEMALE_SV]
+        assert [sv.ref.ref for sv in region.specs[0].resolved.members] == [_PERSON_URBAN_FEMALE_SV]
 
     def test_sibling_absent_yields_no_data_not_error(self):
         """An absent sibling returns `no_data`, not a request error."""
@@ -577,15 +577,13 @@ class TestStandardRefine:
         binding_set_slot = Slot(
             key=SlotKey(
                 axis="how",
-                property=GraphRef(
-                    dcid="placeOfResidenceClassification", label="place of residence"
-                ),
+                property=GraphRef(ref="placeOfResidenceClassification", label="place of residence"),
                 label="place of residence",
             ),
             binding=BindingSet(
                 values=[
-                    SlotValue(ref=GraphRef(dcid="Urban", label="Urban"), value_kind="enum_value"),
-                    SlotValue(ref=GraphRef(dcid="Rural", label="Rural"), value_kind="enum_value"),
+                    SlotValue(ref=GraphRef(ref="Urban", label="Urban"), value_kind="enum_value"),
+                    SlotValue(ref=GraphRef(ref="Rural", label="Rural"), value_kind="enum_value"),
                 ]
             ),
         )
@@ -599,7 +597,7 @@ class TestStandardRefine:
         )
         region = _resubmit_refine(inp)
         assert region.status == "definite"
-        dcids = {sv.ref.dcid for sv in region.specs[0].resolved.members}
+        dcids = {sv.ref.ref for sv in region.specs[0].resolved.members}
         assert dcids == {_PERSON_URBAN_FEMALE_SV, _PERSON_RURAL_FEMALE_SV}
 
     def test_promote_regression_unaffected_by_refine_path(self):
@@ -614,7 +612,7 @@ class TestStandardRefine:
         )
         region = _resubmit_refine(inp)
         assert region.status == "definite"
-        assert [sv.ref.dcid for sv in region.specs[0].resolved.members] == [_PERSON_FEMALE_SV]
+        assert [sv.ref.ref for sv in region.specs[0].resolved.members] == [_PERSON_FEMALE_SV]
 
 
 # ---------------------------------------------------------------------------

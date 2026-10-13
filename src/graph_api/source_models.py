@@ -35,8 +35,9 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import Field
 
+from dfo_platform.wire import ResponseModel
 from graph_api.origin_models import DataCommonsRef, SourceNodeRef
 from materialise.provenance_doc import DocumentMember
 
@@ -71,7 +72,7 @@ DocumentErrorReasonWire = Literal[
 ChangeKindWire = Literal["added", "changed", "deprecated", "removed", "fixed", "security"]
 
 
-class SourceDetails(BaseModel):
+class SourceDetails(ResponseModel):
     name_of_source: str | None
     publisher: str | None
     source: SourceNodeRef | None = Field(
@@ -94,7 +95,7 @@ class SourceDetails(BaseModel):
     citation: str | None = Field(description="the source's `licenseAttribution` text")
 
 
-class SourceLicense(BaseModel):
+class SourceLicense(ResponseModel):
     type: str | None
     url: str | None = Field(
         description="the licence text on the publisher's site, the source's `license`"
@@ -104,7 +105,7 @@ class SourceLicense(BaseModel):
     next_expected_update: str | None
 
 
-class ScopeAndUnits(BaseModel):
+class ScopeAndUnits(ResponseModel):
     """`countries` is always `[]`. `years_covered` is filled where the graph
     has it. `currencies` lists every currency unit the coverage index gives the
     source's Provenances, sorted, and `granularity` is filled where it gives
@@ -117,14 +118,14 @@ class ScopeAndUnits(BaseModel):
     currencies: list[str] = Field(default_factory=list)
 
 
-class Methodology(BaseModel):
+class Methodology(ResponseModel):
     description: str | None = Field(
         default=None,
         description="how the publisher collects and compiles the data, as CommonMark",
     )
 
 
-class UsageEntry(BaseModel):
+class UsageEntry(ResponseModel):
     """The shape a non-null `Usage.api_access`/`.python` entry takes. Both
     of its own members are always `None`, and no dcid produces an entry at
     all -- `graph_api.usage`'s own docstring is the record of why.
@@ -134,7 +135,7 @@ class UsageEntry(BaseModel):
     code: str | None = None
 
 
-class Usage(BaseModel):
+class Usage(ResponseModel):
     """`api_access`/`python` are `None` for every source -- an absent
     member, not a stand-in object -- named in `gaps` alongside
     every other absent member. Built by `graph_api.usage.usage_document`,
@@ -145,21 +146,21 @@ class Usage(BaseModel):
     python: UsageEntry | None = None
 
 
-class TransformationLogEntry(BaseModel):
+class TransformationLogEntry(ResponseModel):
     """One step of the pipeline's transformations, in pipeline order."""
 
     transformation: str = Field(description="the step title, plain text")
     description: str = Field(description="what the step does, as CommonMark")
 
 
-class ChangeEntry(BaseModel):
+class ChangeEntry(ResponseModel):
     """One change in a release."""
 
     kind: ChangeKindWire = Field(description="the Keep a Changelog group the change sits under")
     note: str = Field(description="the change, as CommonMark")
 
 
-class VersionHistoryEntry(BaseModel):
+class VersionHistoryEntry(ResponseModel):
     """One release of the pipeline's changelog, newest first."""
 
     date: str = Field(description="the release date, YYYY-MM-DD")
@@ -167,7 +168,7 @@ class VersionHistoryEntry(BaseModel):
     changes: list[ChangeEntry] = Field(description="every change, group by group in order")
 
 
-class DocumentErrorEntry(BaseModel):
+class DocumentErrorEntry(ResponseModel):
     """A Markdown document the source carries that this door could not serve.
     The member it fills is empty and named in `gaps`.
     """
@@ -179,7 +180,7 @@ class DocumentErrorEntry(BaseModel):
     reason: DocumentErrorReasonWire = Field(description="the template rule the document breaks")
 
 
-class SourceDocumentation(BaseModel):
+class SourceDocumentation(ResponseModel):
     """The full `GET /api/graph/documentation/{dcid}` response."""
 
     details: SourceDetails
@@ -204,14 +205,14 @@ class SourceDocumentation(BaseModel):
     )
 
 
-class ProvenanceEntry(BaseModel):
+class ProvenanceEntry(ResponseModel):
     """One admitted provenance: its dcid and the provenance table's name for it."""
 
     ref: str
     label: str
 
 
-class Exclusion(BaseModel):
+class Exclusion(ResponseModel):
     """A provenance a base source holds that this deployment does not admit, because
     another Data Commons supersedes it."""
 
@@ -224,7 +225,7 @@ class Exclusion(BaseModel):
     )
 
 
-class DatasetEntry(BaseModel):
+class DatasetEntry(ResponseModel):
     """A Dataset and the admitted provenances that belong to it. A provenance with
     no Dataset forms its own entry, keyed by the provenance, so `ref` and `label`
     are the provenance's and `provenances` holds that one provenance.
@@ -259,7 +260,7 @@ class DatasetEntry(BaseModel):
     )
 
 
-class SourceCatalogueEntry(BaseModel):
+class SourceCatalogueEntry(ResponseModel):
     """One source on one Data Commons, with the datasets this deployment
     admits under it and the provenances it excludes. DFO provenances and UN
     agencies exclude nothing here."""
@@ -270,7 +271,7 @@ class SourceCatalogueEntry(BaseModel):
     exclusions: list[Exclusion]
 
 
-class SourceCatalogue(BaseModel):
+class SourceCatalogue(ResponseModel):
     """The full `GET /api/graph/sources` response: DFO's sources, then the
     origin registry's base Data Commons entries and UN System Data Commons
     agencies in registry order, each with the provenances the request's

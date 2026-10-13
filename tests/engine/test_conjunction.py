@@ -15,6 +15,7 @@ from search.engine.conjoin import BINDING_FOLDED, VARIABLES_CLAMPED, combine_reg
 from search.engine.envelope import now_ms
 from search.engine.errors import EngineInputError, GraphInfraError
 from search.engine.extract import _EXTRACTION_SYSTEM_PROMPT, Extraction
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import RegionResult
 from search.engine.region.codes import OBSERVATIONS_PROBE_FAILED, QUERY_QUALIFIER_DROPPED
 from search.engine.spec_build import build_spec
@@ -41,6 +42,7 @@ from tests.engine._builders import (
     shape_five_tuple as _shape,
 )
 from tests.engine._harness import PINNED_DATE, make_request, offline_resolve
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, FakeLLM, _load_json
 from tests.fixtures.keys import fixture_key
 
@@ -133,14 +135,14 @@ def test_cross_shape_both_definite():
     population, fertility = result.parts
     assert population.status == "definite"
     assert population.variable_text == "population"
-    assert any(sv.ref.dcid == "Count_Person" for sv in population.spec.resolved.members)
+    assert any(sv.ref.ref == "Count_Person" for sv in population.spec.resolved.members)
     codes = [w.code for w in population.warnings]
     assert BINDING_FOLDED not in codes
 
     assert fertility.status == "definite"
     assert fertility.variable_text == "fertility rate"
     assert any(
-        sv.ref.dcid == "FertilityRate_Person_Female" for sv in fertility.spec.resolved.members
+        sv.ref.ref == "FertilityRate_Person_Female" for sv in fertility.spec.resolved.members
     )
     assert population.spec.spec_id != fertility.spec.spec_id
 
@@ -641,6 +643,8 @@ class _DedupLLM:
                 also_plausible=None,
                 ask=None,
             ), None
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         return await self._fake.generate_structured(prompt=prompt, system=system, schema=schema)
 
 

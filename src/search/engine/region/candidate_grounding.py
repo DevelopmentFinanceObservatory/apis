@@ -73,6 +73,7 @@ from search.engine.region.option_coverage import (
 )
 from search.engine.region.place_context import PlaceContext
 from search.engine.region.place_roles import request_named_groups
+from search.engine.region.requirements import answer_terms
 from search.engine.region.result import FacetAxisFilter, answered_roles
 from search.engine.region.scope import (
     build_scope,
@@ -503,7 +504,7 @@ def _ground_one_candidate(
         cand_mat.population.confirmed if cand_mat.population is not None else None
     )
     cand_stat_vars_member_count_exact = (
-        cand_mat.population.exact if cand_mat.population is not None else True
+        cand_mat.population.member_count_exact if cand_mat.population is not None else True
     )
     cand_shape_model = build_shape_model(
         cand_shape,
@@ -712,6 +713,7 @@ def _finish_candidate(
         coverage_stamp=cand_mat.coverage_stamp,
         scope=cand_scope,
         default_reading=state.default_reading,
+        stated_form=state.stated_form,
         resolved_sources=groundwork.source_refs,
         facets=groundwork.facets,
         stat_vars_member_count=groundwork.stat_vars_member_count,
@@ -747,7 +749,7 @@ def _finish_candidate(
         text_recognized_properties=(
             text_recognized_properties if cand_bindings is state.bindings else frozenset()
         ),
-        query_qualifiers=(state.query_qualifiers if cand_bindings is state.bindings else []),
+        query_qualifiers=answer_terms(state, cand_shape, cand_bindings),
         measure_elected_properties=(
             measure_elected_properties if cand_bindings is state.bindings else frozenset()
         ),

@@ -45,9 +45,9 @@ class PlaceSet:
     # The graph's label for `node`, read for a group and a region. `None` for a place, and
     # when the set has no node or the graph gives it no label.
     label: str | None = None
-    # The set's member dcids, in the order their source gave them: the graph's for a region,
-    # the resolver's for a group. `None` when the set does not expand (a place, or a region
-    # of a type with no member rule). Empty when it expands and the graph records no member.
+    # The set's member dcids, in the order their source gave them: the membership policy's
+    # for a region, the resolver's for a group. `None` when the set does not expand (a place,
+    # or a region the membership policy does not hold).
     members: tuple[str, ...] | None = None
     # The graph type the members share. `None` when the set does not expand.
     member_type: str | None = None

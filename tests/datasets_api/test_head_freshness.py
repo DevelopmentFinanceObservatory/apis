@@ -115,7 +115,7 @@ class _Rig:
             ceiling=1_000_000,
             member_concurrency=4,
             enumerator=MemberEnumerator(),
-            enrichment=EnrichmentLookup(self.graph, type_kinds={}, parties={}),
+            enrichment=EnrichmentLookup(self.graph, parties={}),
             code_index=get_index(),
             rate_cache=RateTableCache(),
             coverage=_coverage_service(),

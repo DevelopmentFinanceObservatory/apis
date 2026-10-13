@@ -11,7 +11,7 @@ import pydantic
 import pytest
 from fastapi.testclient import TestClient
 
-from materialise.facets import ElectedDataset
+from materialise.facets import ElectedDataset, bound_variable_breadth
 from materialise.graph import Facet as MaterialiseFacet
 from materialise.graph import GraphReadError, SubjectPage
 from origin_catalogue import UnReadFailure, note_un_blocked_places
@@ -233,13 +233,20 @@ _PLACE_NODES = {
     "country/ABW": {"label": "Aruba", "type": "Country"},
     "africa": {"label": "Africa", "type": "Continent"},
     "asia": {"label": "Asia", "type": "Continent"},
+    "antarctica": {"label": "Antarctica", "type": "Continent"},
+    "undata-geo/G00134000": {"label": "Americas", "type": "GeoRegion"},
     "Earth": {"label": "World", "type": "Planet"},
     "wikidataId/Q178136": {"label": "Sololá Department", "type": "AdministrativeArea1"},
     "wikidataId/Q21296012": {"label": "Amatitlán Department", "type": "AdministrativeArea1"},
     "wikidataId/Q466061": {"label": "Petén Department", "type": "AdministrativeArea1"},
 }
 
+# Graph containment. The `children` scope reads it for a country's departments. A region's
+# children come from the membership policy, so Aruba under `africa` and `antarctica` is never
+# listed.
 _PLACE_CHILDREN = {
+    "africa": {"Country": ["country/ABW"]},
+    "antarctica": {"Country": ["country/ABW"]},
     "Earth": {
         "Country": ["country/GTM", "country/USA", "country/VAT", "country/ABW"],
         "Continent": ["africa", "asia"],
@@ -300,10 +307,10 @@ class TestObservationAboutPeersScope:
         req = _place_request(entities={"observationAbout": ["country/GTM"]})
         _target, resp = _options_response(req, graph=_place_graph())
         assert resp.options.truncated is False
-        dcids = {i.value.ref.dcid for i in resp.options.items}
+        dcids = {i.value.ref.ref for i in resp.options.items}
         # GTM, USA, ABW have data; VAT does not.
         assert dcids == {"country/GTM", "country/USA", "country/ABW"}
-        labels = {i.value.ref.dcid: i.value.ref.label for i in resp.options.items}
+        labels = {i.value.ref.ref: i.value.ref.label for i in resp.options.items}
         assert labels["country/GTM"] == "Guatemala"
 
     def test_continent_anchor_empty_result_is_valid(self):
@@ -328,7 +335,7 @@ class TestObservationAboutPeersScope:
         """With no anchor, peer options default to countries with data."""
         req = _place_request(entities={})
         _target, resp = _options_response(req, graph=_place_graph())
-        dcids = {i.value.ref.dcid for i in resp.options.items}
+        dcids = {i.value.ref.ref for i in resp.options.items}
         assert dcids == {"country/GTM", "country/USA", "country/ABW"}
 
     def test_several_same_typed_anchors_agree_regardless_of_posted_order(self):
@@ -340,8 +347,8 @@ class TestObservationAboutPeersScope:
         )
         _t1, resp1 = _options_response(req_gtm_first, graph=_place_graph())
         _t2, resp2 = _options_response(req_usa_first, graph=_place_graph())
-        dcids1 = {i.value.ref.dcid for i in resp1.options.items}
-        dcids2 = {i.value.ref.dcid for i in resp2.options.items}
+        dcids1 = {i.value.ref.ref for i in resp1.options.items}
+        dcids2 = {i.value.ref.ref for i in resp2.options.items}
         assert dcids1 == dcids2 == {"country/GTM", "country/USA", "country/ABW"}
 
     def test_differing_anchor_types_refuse_mixed_peers_anchor_types(self):
@@ -354,7 +361,7 @@ class TestObservationAboutPeersScope:
     def test_duplicate_anchor_dcids_do_not_trigger_mixed_peers_anchor_types(self):
         req = _place_request(entities={"observationAbout": ["country/GTM", "country/GTM"]})
         _target, resp = _options_response(req, graph=_place_graph())
-        dcids = {i.value.ref.dcid for i in resp.options.items}
+        dcids = {i.value.ref.ref for i in resp.options.items}
         assert dcids == {"country/GTM", "country/USA", "country/ABW"}
 
     def test_deterministic_ordering(self):
@@ -362,8 +369,8 @@ class TestObservationAboutPeersScope:
         graph = _place_graph()
         _t1, resp1 = _options_response(req, graph=graph)
         _t2, resp2 = _options_response(req, graph=graph)
-        dcids1 = [i.value.ref.dcid for i in resp1.options.items]
-        dcids2 = [i.value.ref.dcid for i in resp2.options.items]
+        dcids1 = [i.value.ref.ref for i in resp1.options.items]
+        dcids2 = [i.value.ref.ref for i in resp2.options.items]
         assert dcids1 == dcids2
         assert dcids1 == ["country/GTM", "country/USA", "country/ABW"]
 
@@ -383,7 +390,7 @@ class TestObservationAboutPeersScope:
             entities={"observationAbout": ["country/GTM"]}, include_coverage=True
         )
         _target2, resp2 = _options_response(req_coverage, graph=_place_graph())
-        by_dcid = {i.value.ref.dcid: i for i in resp2.options.items}
+        by_dcid = {i.value.ref.ref: i for i in resp2.options.items}
         assert by_dcid["country/GTM"].coverage.has_data is True
         assert by_dcid["country/GTM"].coverage.observation_count == 65
 
@@ -435,8 +442,29 @@ class TestObservationAboutChildrenScope:
         graph = _place_graph(obs=_DEPT_UNION_OBS)
         _target, resp = _options_response(req, graph=graph, population_arcs=_GENDER_ARCS)
         assert resp.options.truncated is False
-        dcids = {i.value.ref.dcid for i in resp.options.items}
+        dcids = {i.value.ref.ref for i in resp.options.items}
         assert dcids == {"wikidataId/Q178136", "wikidataId/Q21296012"}
+
+    @pytest.mark.parametrize("region", ["africa", "undata-geo/G00134000"])
+    def test_region_anchor_lists_the_policys_countries_with_data(self, declare_regions, region):
+        """A region's children are the countries the membership policy holds for it that
+        hold data, the members an answer binds for it: Guatemala and the United States, not
+        Vatican City (no data), and not Aruba, which only the graph's containment holds. The
+        policy decides what is a region, whatever its graph type: dev types the Americas a
+        `GeoRegion`, a type the children scope otherwise refuses."""
+        declare_regions({region: ["country/GTM", "country/USA", "country/VAT"]})
+        req = _place_request(entities={"observationAbout": [region]}, scope="children")
+        _target, resp = _options_response(req, graph=_place_graph())
+        assert [i.value.ref.ref for i in resp.options.items] == ["country/GTM", "country/USA"]
+        assert resp.options.truncated is False
+
+    def test_region_the_policy_does_not_hold_lists_no_children(self):
+        """Antarctica holds no country under the membership policy, so its children scope
+        lists none, whatever its graph containment holds."""
+        req = _place_request(entities={"observationAbout": ["antarctica"]}, scope="children")
+        _target, resp = _options_response(req, graph=_place_graph())
+        assert resp.options.items == []
+        assert resp.options.truncated is False
 
     def test_empty_children_is_valid_empty_result(self):
         req = _place_request(
@@ -496,7 +524,7 @@ class TestObservationAboutWindowedCoverage:
             include_coverage=True,
         )
         _target, resp = _options_response(req, graph=_place_graph())
-        item = next(i for i in resp.options.items if i.value.ref.dcid == "country/GTM")
+        item = next(i for i in resp.options.items if i.value.ref.ref == "country/GTM")
         assert isinstance(item.coverage, CoverageBreadth), (
             "a windowed coverage request over materialise's own dateless facet probe must "
             f"demote to CoverageBreadth; got {type(item.coverage).__name__}"
@@ -597,7 +625,7 @@ class TestObservationAboutFacetBoundMembership:
     def test_unit_bound_identity_excludes_non_matching_candidates(self):
         req = _unit_bound_request()
         _target, resp = _options_response(req, graph=_place_graph(obs=_UNIT_BOUND_OBS))
-        dcids = {i.value.ref.dcid for i in resp.options.items}
+        dcids = {i.value.ref.ref for i in resp.options.items}
         assert dcids == {"country/GTM"}
 
     def test_membership_admitted_when_any_one_population_member_satisfies(self):
@@ -607,13 +635,13 @@ class TestObservationAboutFacetBoundMembership:
         req = _unit_bound_request(shape=_GENDER_SHAPE, slots=_GENDER_SLOTS)
         graph = _place_graph(obs=_TWO_SV_UNIT_BOUND_OBS)
         _target, resp = _options_response(req, graph=graph, population_arcs=_GENDER_ARCS)
-        dcids = {i.value.ref.dcid for i in resp.options.items}
+        dcids = {i.value.ref.ref for i in resp.options.items}
         assert dcids == {"country/GTM", "country/USA"}
 
     def test_coverage_reflects_only_matching_facets(self):
         req = _unit_bound_request(include_coverage=True)
         _target, resp = _options_response(req, graph=_place_graph(obs=_UNIT_BOUND_OBS))
-        by_dcid = {i.value.ref.dcid: i for i in resp.options.items}
+        by_dcid = {i.value.ref.ref: i for i in resp.options.items}
         assert set(by_dcid) == {"country/GTM"}
         # The USD facet contributes 5 observations.
         # The EUR facet's 100 observations fall outside the binding.
@@ -646,7 +674,7 @@ class TestObservationAboutFacetBoundMembership:
             include_coverage=True,
         )
         _target, resp = _options_response(req, graph=_place_graph(obs=obs))
-        by_dcid = {i.value.ref.dcid: i for i in resp.options.items}
+        by_dcid = {i.value.ref.ref: i for i in resp.options.items}
         assert set(by_dcid) == {"country/GTM"}
         assert by_dcid["country/GTM"].coverage.observation_count == 5
 
@@ -670,7 +698,7 @@ class TestObservationAboutFacetBoundMembership:
             entities={}, facets={"measurementMethod": IdentityFacetValueAbsent(ref=None)}
         )
         _target, resp = _options_response(req, graph=_place_graph(obs=obs))
-        assert [i.value.ref.dcid for i in resp.options.items] == ["country/GTM"]
+        assert [i.value.ref.ref for i in resp.options.items] == ["country/GTM"]
 
     @pytest.mark.parametrize(
         ("elected", "offered"),
@@ -737,7 +765,7 @@ class TestObservationAboutFacetBoundMembership:
             coverage=empty_coverage_snapshot(),
         )
 
-        by_dcid = {i.value.ref.dcid: i for i in resp.options.items}
+        by_dcid = {i.value.ref.ref: i for i in resp.options.items}
         assert sorted(by_dcid) == offered
         # Coverage counts the one source the plan elects: WHO's, or the larger by ranking.
         expected_count = 5 if elected is not None else 15
@@ -747,7 +775,7 @@ class TestObservationAboutFacetBoundMembership:
         graph = _place_graph(obs=_UNIT_BOUND_OBS)
         req = _place_request(entities={})
         _target, resp = _options_response(req, graph=graph)
-        dcids = {i.value.ref.dcid for i in resp.options.items}
+        dcids = {i.value.ref.ref for i in resp.options.items}
         assert dcids == {"country/GTM", "country/USA"}
 
 
@@ -857,7 +885,7 @@ class TestObservationAboutSetBindingMembership:
         any-member reading. USA, whose StatVar carries both members, stays."""
         req = _set_bound_request(["USD", "EUR"])
         _target, resp = _options_response(req, graph=_place_graph(obs=_SET_BOUND_SINGLE_SV_OBS))
-        dcids = {i.value.ref.dcid for i in resp.options.items}
+        dcids = {i.value.ref.ref for i in resp.options.items}
         assert dcids == {"country/USA"}
 
     def test_multi_stat_var_split_members_excludes_the_candidate(self):
@@ -870,7 +898,7 @@ class TestObservationAboutSetBindingMembership:
         req = _set_bound_request(["USD", "EUR"], shape=_GENDER_SHAPE, slots=_GENDER_SLOTS)
         graph = _place_graph(obs=_SET_BOUND_TWO_SV_OBS)
         _target, resp = _options_response(req, graph=graph, population_arcs=_GENDER_ARCS)
-        dcids = {i.value.ref.dcid for i in resp.options.items}
+        dcids = {i.value.ref.ref for i in resp.options.items}
         assert dcids == {"country/USA"}
 
 
@@ -962,8 +990,15 @@ def _directional_graph() -> FakeGraph:
         "country/UGA": {"label": "Uganda", "type": "Country"},
         "country/FRA": {"label": "France", "type": "Country"},
         "country/DEU": {"label": "Germany", "type": "Country"},
+        "DACAfrica": {"label": "Africa, Total", "type": "DACGroup"},
+        _DIRECTIONAL_GROUP: {"label": "Developing countries, Total", "type": "DACGroup"},
     }
     return FakeGraph(nodes=nodes, obs={}, detect={}, resolve={})
+
+
+_DIRECTIONAL_GROUP = "TESTFIXTURE/OptionsSurfaceRoleAxes/DevelopingCountries"
+"""A recipient group the packaged code index does not list, so it carries no kind whatever
+its graph type."""
 
 
 def _directional_request(
@@ -1075,16 +1110,20 @@ class TestDirectionalOptions:
         assert warning.params["variable_labels"] == [""]
 
     def test_destination_request_returns_coverage_members_with_labels(self, monkeypatch):
+        """Each member carries the party kind the packaged code index lists for it, and a group
+        the index does not list carries none."""
         rows = _directional_coverage_rows(
-            role="destination", members=["country/KEN", "country/UGA"]
+            role="destination",
+            members=["country/KEN", "country/UGA", "DACAfrica", _DIRECTIONAL_GROUP],
         )
         _target, resp, _sdmx = _directional_response(
             role="destination", monkeypatch=monkeypatch, rows=rows
         )
-        dcids = [i.value.ref.dcid for i in resp.options.items]
-        assert dcids == ["country/KEN", "country/UGA"]
-        labels = {i.value.ref.dcid: i.value.ref.label for i in resp.options.items}
+        dcids = [i.value.ref.ref for i in resp.options.items]
+        assert dcids == ["DACAfrica", _DIRECTIONAL_GROUP, "country/KEN", "country/UGA"]
+        labels = {i.value.ref.ref: i.value.ref.label for i in resp.options.items}
         assert labels["country/UGA"] == "Uganda"
+        assert [i.party_kind for i in resp.options.items] == ["total", None, "party", "party"]
         assert resp.options.truncated is False
 
     def test_destination_request_is_windowed_by_the_requested_window(self, monkeypatch):
@@ -1097,7 +1136,7 @@ class TestDirectionalOptions:
         _target, resp, _sdmx = _directional_response(
             role="destination", monkeypatch=monkeypatch, rows=rows, requested_window=window
         )
-        dcids = [i.value.ref.dcid for i in resp.options.items]
+        dcids = [i.value.ref.ref for i in resp.options.items]
         assert dcids == ["country/UGA"]
 
     def test_origin_request_is_filtered_by_the_bound_destination(self, monkeypatch):
@@ -1113,7 +1152,7 @@ class TestDirectionalOptions:
         _target, resp, _sdmx = _directional_response(
             role="origin", monkeypatch=monkeypatch, rows=rows
         )
-        dcids = [i.value.ref.dcid for i in resp.options.items]
+        dcids = [i.value.ref.ref for i in resp.options.items]
         assert dcids == ["country/DEU", "country/FRA"]
 
     def test_empty_coverage_read_is_a_valid_empty_result(self, monkeypatch):
@@ -1159,7 +1198,7 @@ class TestDirectionalOptionsRouteWiring:
         resp = client.post("/api/search/options", json=req.model_dump(by_alias=True, mode="json"))
         assert resp.status_code == 200, resp.text
         items = resp.json()["options"]["items"]
-        assert [i["value"]["ref"]["dcid"] for i in items] == ["country/DEU", "country/FRA"]
+        assert [i["value"]["ref"]["ref"] for i in items] == ["country/DEU", "country/FRA"]
         assert [i["value"]["ref"]["label"] for i in items] == ["Germany", "France"]
 
 
@@ -1374,7 +1413,7 @@ class TestFacetReadNoLongerBoundedByScopeMaxMembers:
 
         # test_membership_admitted_when_any_one_population_member_satisfies'
         # own known-good result: no precheck exists to change it.
-        dcids = {i.value.ref.dcid for i in resp.options.items}
+        dcids = {i.value.ref.ref for i in resp.options.items}
         assert dcids == {"country/GTM", "country/USA"}
 
     def test_coverage_only_probe_also_runs_regardless_of_population_size(self):
@@ -1437,3 +1476,45 @@ class TestFacetReadNoLongerBoundedByScopeMaxMembers:
 
         assert materialise_graph.deadlines, "the facet read must have been issued at all"
         assert all(d == deadline for d in materialise_graph.deadlines)
+
+
+def test_place_options_read_the_variables_whole_breadth_once_by_the_request_deadline():
+    """Each place option is a one-place plan over the same variables, and each ties at its
+    place. A failed breadth read is never stored, so a read per option would start a profile
+    flight per place; the request's binding reads the variable once, by the request's
+    deadline, and every later tie reuses the failure."""
+    places = ["country/FRA", "country/DEU", "country/KEN"]
+    eur = MaterialiseFacet(
+        facet_id="fEUR",
+        provenance_id="P",
+        unit="CurrencyEUR",
+        obs_count=1,
+        earliest_date="2020",
+        latest_date="2020",
+    )
+    usd = dataclasses.replace(eur, facet_id="fUSD", unit="CurrencyUSD")
+    reads: list[tuple[tuple[str, ...], float | None]] = []
+
+    def failing_reader(stat_vars, *, deadline):
+        reads.append((tuple(stat_vars), deadline))
+        return {}
+
+    class _Labels:
+        def node_labels_batch(self, dcids):
+            return {dcid: dcid for dcid in dcids}
+
+    with bound_variable_breadth(failing_reader, refuse_unread=False):
+        options = surface._build_observation_about_options(
+            _Labels(),
+            places,
+            include_coverage=True,
+            facets_batch={"sv": {place: [eur, usd] for place in places}},
+            sv_dcids=["sv"],
+            facet_bindings={},
+            elected_units=None,
+            date_request=None,
+            deadline=123.0,
+        )
+
+    assert [option.value.ref.ref for option in options] == places
+    assert reads == [(("sv",), 123.0)]

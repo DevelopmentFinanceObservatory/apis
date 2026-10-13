@@ -11,6 +11,7 @@ from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING
 
 from search.engine.bind import SlotBindingDraft
+from search.engine.retrieval.bound_values import shape_population_arcs
 from search.engine.retrieval.facts import read_constraints
 from search.engine.retrieval.member_facts import ArcsMemberFacts
 from search.engine.shape import ShapeDraft
@@ -39,9 +40,8 @@ def standard_bindings_from_arcs(
     if not constraint_slots:
         return []
 
-    # Reuse the shape's confirmed arc facts.
-    arc_facts = shape.sv_arc_facts or {}
-    rep_arcs = arc_facts.get(rep_sv_dcid, {})
+    # The representative can be any member the shape stands for.
+    rep_arcs = shape_population_arcs(shape).get(rep_sv_dcid, {})
     sv_constraints = read_constraints(rep_arcs)
 
     result: list[SlotBindingDraft] = []
@@ -140,7 +140,7 @@ def _inapplicable_slots_from_facts(
             continue
         if slot.binding.kind != "unbound":
             continue
-        prop = slot.key.property.dcid
+        prop = slot.key.property.ref
         if prop not in applies:
             result.append(prop)
     return result
@@ -192,7 +192,7 @@ def _unresolved_slots_from_facts(
             continue
         if slot.binding.kind != "unbound":
             continue
-        prop = slot.key.property.dcid
+        prop = slot.key.property.ref
         if prop in unresolved:
             result.append(prop)
     return result

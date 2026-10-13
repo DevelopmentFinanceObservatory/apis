@@ -1,9 +1,10 @@
 """A UN series shape reached through a successor diverts with its registered base twin.
 
 Our resolver recalls the World Bank variable and the superseded base SDG variable, which
-stands as the UN headline variable the registry clusters with the World Bank's. The series'
-breakdown members, which recall did not find, stay out of the shape, so the twin diversion
-compares the headline with the World Bank variable."""
+stands as the UN headline variable the registry clusters with the World Bank's. The shape
+stands for the series the catalogue holds, breakdown members recall did not find included,
+and the twin is offered through its headline alone, so the twin diversion compares the
+headline with the World Bank variable and the twin stands for that one member."""
 
 from __future__ import annotations
 
@@ -11,11 +12,13 @@ import asyncio
 
 from origin_catalogue import BASE, UN_SYSTEM
 from search.engine.bind import _UniversalBindOutput
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.result import RegionResult
 from search.engine.region.state import EngineOptions
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 from tests.origin_catalogue.fake_catalogue import (
     provenance_row,
@@ -95,6 +98,8 @@ class _ElectFirstNamingSecond:
     """Elects the first shape and names the second as also plausible, binding nothing."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
         return _UniversalBindOutput(
             chosen_shape_index=0, bindings=[], also_plausible=[1], ask=None
         ), None
@@ -131,7 +136,7 @@ def _resolve() -> RegionResult:
 
 
 def _members(spec) -> set[str]:
-    return {sv.ref.dcid for sv in spec.resolved.members}
+    return {sv.ref.ref for sv in spec.resolved.members}
 
 
 def test_a_transferred_series_with_breakdown_members_diverts_with_its_base_twin(

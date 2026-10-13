@@ -138,7 +138,7 @@ def _canonical_spec_id(document: dict) -> str:
 def _where_dcid(spec: Spec) -> str | None:
     """The dcid the spec's where slot binds, or None when it binds no value."""
     where = next(slot for slot in spec.resolved.slots if slot.key.axis == "where")
-    return where.binding.value.ref.dcid if isinstance(where.binding, BindingValue) else None
+    return where.binding.value.ref.ref if isinstance(where.binding, BindingValue) else None
 
 
 def test_a_resubmit_naming_the_imputed_dataset_resolves_the_mints_family(monkeypatch):
@@ -163,7 +163,7 @@ def test_a_resubmit_naming_the_imputed_dataset_resolves_the_mints_family(monkeyp
     assert spec.definition.identity.facets == {
         "provenance": IdentityBindingValue(ref=IMPUTED_PROVENANCE)
     }
-    assert {stat_var.ref.dcid for stat_var in spec.resolved.members} == family
+    assert {stat_var.ref.ref for stat_var in spec.resolved.members} == family
     assert spec.resolved.shape.member_digest == member_digest(family)
     # The served members' measure family is read under the dataset the identity names.
     assert [query.source for query in measure_queries] == [IMPUTED_PROVENANCE]
@@ -176,7 +176,7 @@ def _aid_type_binding(spec: Spec) -> object:
     return next(
         slot.binding
         for slot in spec.resolved.slots
-        if slot.key.property is not None and slot.key.property.dcid == AID_TYPE
+        if slot.key.property is not None and slot.key.property.ref == AID_TYPE
     )
 
 
@@ -206,10 +206,10 @@ def test_a_resubmit_leaving_a_pinned_slot_unbound_mints_the_canonical_spec_id(mo
     assert spec.spec_id == pinned_spec_id
     binding = _aid_type_binding(spec)
     assert isinstance(binding, BindingValue)
-    assert binding.value.ref.dcid == IMPUTED_MULTILATERAL
+    assert binding.value.ref.ref == IMPUTED_MULTILATERAL
     pins = elected_pins(get_index(), identity_query(spec.definition.identity))
     assert pins[AID_TYPE] == IMPUTED_MULTILATERAL
-    assert {stat_var.ref.dcid for stat_var in spec.resolved.members} == family
+    assert {stat_var.ref.ref for stat_var in spec.resolved.members} == family
 
 
 def test_a_provenance_set_of_one_names_the_dataset_its_value_spelling_names(monkeypatch):
@@ -230,7 +230,7 @@ def test_a_provenance_set_of_one_names_the_dataset_its_value_spelling_names(monk
     assert region.status == "definite", region.no_data_reason
     spec = region.specs[0]
     assert spec.spec_id == _canonical_spec_id(value_document)
-    assert {stat_var.ref.dcid for stat_var in spec.resolved.members} == family
+    assert {stat_var.ref.ref for stat_var in spec.resolved.members} == family
     assert spec.resolved.shape.member_digest == member_digest(family)
 
 
@@ -326,7 +326,7 @@ def test_a_resubmit_naming_a_source_keeps_its_where_slot_and_its_sentence():
     assert _where_dcid(spec) == _GDP_ENTITY_DCID
     source = next(slot for slot in spec.resolved.slots if slot.key.axis == "source")
     assert isinstance(source.binding, BindingValue)
-    assert source.binding.value.ref.dcid == _PROVENANCE_DCID
+    assert source.binding.value.ref.ref == _PROVENANCE_DCID
     sentence = sentence_from_plan(render_sentence_plan(spec))
     assert sentence.startswith("India's ")
     assert "WorldDevelopmentIndicators" not in sentence
@@ -340,7 +340,7 @@ def test_an_identity_the_mint_walks_states_the_walked_family():
         {"measurementMethod": IdentityBindingValue(ref=_MEASUREMENT_METHOD_A)}
     )
 
-    assert [stat_var.ref.dcid for stat_var in spec.resolved.members] == [_GDP_SV_DCID]
+    assert [stat_var.ref.ref for stat_var in spec.resolved.members] == [_GDP_SV_DCID]
     assert spec.resolved.shape.member_count == 1
     assert spec.resolved.stat_vars.served_count == 1
     assert spec.resolved.shape.member_digest == member_digest([_GDP_SV_DCID])

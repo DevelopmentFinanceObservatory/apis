@@ -80,7 +80,7 @@ class TestBuildShapeModelDenominator:
             shape_draft, slot_keys=[], five_tuple_refs={}, member_count=1, members=None
         )
 
-        assert shape.measurement_denominator == GraphRef(dcid="PerCapita", label="PerCapita")
+        assert shape.measurement_denominator == GraphRef(ref="PerCapita", label="PerCapita")
         assert shape.measurement_denominator_unresolved is True
 
     def test_dcid_less_unresolved_denominator_yields_no_ref_but_the_flag(self):
@@ -100,7 +100,7 @@ class TestBuildShapeModelDenominator:
             shape_draft, slot_keys=[], five_tuple_refs={}, member_count=1, members=None
         )
 
-        assert shape.measurement_denominator == GraphRef(dcid="Count_Person", label="Count_Person")
+        assert shape.measurement_denominator == GraphRef(ref="Count_Person", label="Count_Person")
         assert shape.measurement_denominator_unresolved is False
 
     def test_absent_denominator_yields_no_ref_and_no_flag(self):
@@ -117,7 +117,7 @@ class TestBuildShapeModelDenominator:
 def _stat_vars(n: int) -> list[StatVar]:
     return [
         StatVar(
-            ref=GraphRef(dcid=f"sv{i}", label=f"SV {i}"),
+            ref=GraphRef(ref=f"sv{i}", label=f"SV {i}"),
             shape_id="test-shape",
             slot_values=[],
             constraint_properties=[],
@@ -187,6 +187,37 @@ class TestBuildSpecStatVars:
         ]
 
         assert self._build(stat_vars).resolved.stat_vars.data_date_range == served
+
+    @pytest.mark.parametrize(
+        ("dcids", "codes"),
+        [
+            pytest.param(
+                [
+                    "Amount_FinancialFlow_ServicingPayment_IDSDebtorTypeGG_Nominal",
+                    "Amount_FinancialFlow_ServicingPayment_IDSDebtorTypeGG_ByCreditor_Nominal",
+                ],
+                [
+                    {
+                        "provenance": "provenance/WorldBankInternationalDebtStatistics",
+                        "code": "DT.TDS.DEGG.CD",
+                    }
+                ],
+                id="two-members-one-code",
+            ),
+            pytest.param(["sv0"], None, id="no-code-no-key"),
+        ],
+    )
+    def test_the_served_members_publisher_codes_are_listed_once_or_left_off_the_wire(
+        self, dcids, codes
+    ):
+        stat_vars = [
+            sv.model_copy(update={"ref": GraphRef(ref=dcid, label=dcid)})
+            for sv, dcid in zip(_stat_vars(len(dcids)), dcids, strict=True)
+        ]
+
+        wire = self._build(stat_vars).model_dump(mode="json")["resolved"]["stat_vars"]
+
+        assert wire.get("source_codes") == codes
 
     def test_a_walk_of_the_identitys_own_query_states_the_served_count_and_digest(self):
         unwalked = self._build(_stat_vars(3))
@@ -300,11 +331,9 @@ _FEMALE_URBAN_ARCS = {
 def _gender_slots() -> list[Slot]:
     return [
         Slot(
-            key=SlotKey(axis="how", property=GraphRef(dcid="gender", label="gender"), label="g"),
+            key=SlotKey(axis="how", property=GraphRef(ref="gender", label="gender"), label="g"),
             binding=BindingValue(
-                value=SlotValue(
-                    ref=GraphRef(dcid="Female", label="Female"), value_kind="enum_value"
-                )
+                value=SlotValue(ref=GraphRef(ref="Female", label="Female"), value_kind="enum_value")
             ),
             expansion=None,
         ),
@@ -312,7 +341,7 @@ def _gender_slots() -> list[Slot]:
             key=SlotKey(
                 axis="how",
                 property=GraphRef(
-                    dcid="placeOfResidenceClassification", label="placeOfResidenceClassification"
+                    ref="placeOfResidenceClassification", label="placeOfResidenceClassification"
                 ),
                 label="u",
             ),
@@ -326,16 +355,16 @@ class TestConstraintProperties:
     """Each StatVar lists every constraint property it asserts, bound or not."""
 
     def _built(self) -> dict[str, StatVar]:
-        refs = [GraphRef(dcid=dcid, label=dcid) for dcid in _FEMALE_URBAN_ARCS]
+        refs = [GraphRef(ref=dcid, label=dcid) for dcid in _FEMALE_URBAN_ARCS]
         member_facts = {sv: ArcsMemberFacts(arcs) for sv, arcs in _FEMALE_URBAN_ARCS.items()}
         stat_vars = build_stat_vars(refs, "s", _gender_slots(), member_facts=member_facts)
-        return {sv.ref.dcid: sv for sv in stat_vars}
+        return {sv.ref.ref: sv for sv in stat_vars}
 
     def test_a_member_lists_an_unbound_constraint_that_slot_values_omits(self):
         urban = self._built()["Count_Person_Female_Urban"]
 
         assert urban.constraint_properties == ["gender", "placeOfResidenceClassification"]
-        assert [sv.key.property.dcid for sv in urban.slot_values if sv.key.property] == ["gender"]
+        assert [sv.key.property.ref for sv in urban.slot_values if sv.key.property] == ["gender"]
 
     def test_the_root_lists_only_its_bound_constraint(self):
         assert self._built()["Count_Person_Female"].constraint_properties == ["gender"]
@@ -361,7 +390,7 @@ class TestConstraintProperties:
         self, source, dcid, facts
     ):
         """An empty list would match a root's value-bound slots, so unknown constraints are null."""
-        refs = [GraphRef(dcid=dcid, label="urban")]
+        refs = [GraphRef(ref=dcid, label="urban")]
 
         (stat_var,) = build_stat_vars(refs, "s", _gender_slots(), **{source: facts})
 
@@ -381,15 +410,13 @@ class TestBuildSpecEntityGroups:
 
     def _spec(self, origin_dcids: list[str], *, named_groups: tuple[NamedGroup, ...]):
         origin = EntityRoleDirectional(
-            role=GraphRef(dcid="financingProvider", label="donor"), axis="origin"
+            role=GraphRef(ref="financingProvider", label="donor"), axis="origin"
         )
         destination = EntityRoleDirectional(
-            role=GraphRef(dcid="financingRecipient", label="recipient"), axis="destination"
+            role=GraphRef(ref="financingRecipient", label="recipient"), axis="destination"
         )
-        entities = [Entity(ref=GraphRef(dcid=d, label=d), role=origin) for d in origin_dcids]
-        entities.append(
-            Entity(ref=GraphRef(dcid="country/ETH", label="Ethiopia"), role=destination)
-        )
+        entities = [Entity(ref=GraphRef(ref=d, label=d), role=origin) for d in origin_dcids]
+        entities.append(Entity(ref=GraphRef(ref="country/ETH", label="Ethiopia"), role=destination))
         return build_spec(
             open_roles=(),
             measure_elected_properties=frozenset(),
@@ -423,7 +450,7 @@ class TestBuildSpecEntityGroups:
         spec = self._spec(sorted(baltic.member_dcids), named_groups=groups)
 
         assert spec.resolved.entity_groups == {
-            "origin": EntityGroup(dcid=baltic.dcid, label=baltic.label)
+            "origin": EntityGroup(ref=baltic.dcid, label=baltic.label)
         }
 
     def test_a_grouped_role_mints_the_ungrouped_spec_id_and_states_its_group(self):
@@ -432,7 +459,7 @@ class TestBuildSpecEntityGroups:
         grouped = self._spec(members, named_groups=(self._BALTIC,))
         ungrouped = self._spec(members, named_groups=())
 
-        expected = {"origin": EntityGroup(dcid=None, label="Baltic states")}
+        expected = {"origin": EntityGroup(ref=None, label="Baltic states")}
         assert grouped.spec_id == ungrouped.spec_id
         assert grouped.definition.identity == ungrouped.definition.identity
         assert grouped.resolved.entity_groups == expected
@@ -446,7 +473,7 @@ class TestBuildSpecEntityGroups:
 
         assert spec.resolved.entity_groups == {
             "origin": EntityGroup(
-                dcid="undata-geo/G00000000", label="Baltic states", entity_type=entity_type
+                ref="undata-geo/G00000000", label="Baltic states", entity_type=entity_type
             )
         }
         assert spec_named_groups(spec) == (baltic,)
@@ -486,7 +513,7 @@ class TestBuildSpecEntityGroups:
         spec = self._spec(origin_dcids, named_groups=(g7,))
 
         assert spec.resolved.entity_groups == {
-            "origin": EntityGroup(dcid=None, label="G7", total=total)
+            "origin": EntityGroup(ref=None, label="G7", total=total)
         }
         assert {group.total for group in spec_named_groups(spec)} == {total}
 
@@ -500,7 +527,7 @@ class TestBuildSpecEntityGroups:
 
         assert beside.resolved.entity_groups is None
         assert beside.resolved.named_sets == (
-            ("origin", EntityGroup(dcid=None, label="Baltic states"), self._BALTIC.member_dcids),
+            ("origin", EntityGroup(ref=None, label="Baltic states"), self._BALTIC.member_dcids),
         )
         assert spec_named_groups(beside) == (self._BALTIC,)
         assert partial.resolved.named_sets == ()

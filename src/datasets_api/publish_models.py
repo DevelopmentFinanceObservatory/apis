@@ -24,17 +24,6 @@ gives `structured_unit`. A validator checks row and unit key lengths on the raw 
 refuses a mapping under any row key but `unit`, before any cell is parsed, so no error can
 echo an overlong key into its JSON Pointer.
 
-`composed_stat_vars` describes the StatVars an analysis sum, quotient or share wrote its rows
-under, which the graph does not hold, so Presentation can word them. It takes at most 16
-entries and 64 side refs across them. An entry is `{stat_var, relation, first, second}`:
-`relation` is `quotient` (`first` divided by `second`), `sum`, or `share` (`first` as a
-percentage of `second`). Each side is a non-empty list of StatVar refs, and every ref
-matches `^dcid:.`, is at most 200 characters in NFC, the form the entry is stored in, and
-holds no U+0000, which the version record's `jsonb` `composed_stat_vars` column cannot store.
-`stat_var` values are distinct, and a side ref that names an entry names an earlier one, so the
-list holds no cycle. A side ref no entry describes is valid. The same validator rule applies to
-keys: an entry's keys are checked on the raw body, and a key outside the four is refused there.
-
 `MAX_ROWS` is a parse-time backstop before per-row validation and authorization. The separate
 `PUBLISH_MAX_ROWS` ceiling is 250,000 rows, checked by `publish_frame` after validation and
 authorization. That ceiling returns `over_ceiling` 422. `MAX_ROWS` returns `request_invalid` 400
@@ -46,17 +35,40 @@ analysis-mcp owns. Each series the anchor left out must carry coordinates that n
 (`RecipeLeftOutSeries`), since the recipe store keeps a pair's first recipe and every load of
 the frame labels those series. One recipe is at most `MAX_RECIPE_BYTES` (1,000,000) of compact JSON. That is
 the allowance `doors.publish.MAX_PUBLISH_BODY_BYTES` adds to its row bytes for everything in a
-publish body other than rows, so a recipe never needs more room than the publish body already
-gives it. The same cap applies on the recipe write route.
+publish body other than rows and steps, so a recipe never needs more room than the publish body
+already gives it. The same cap applies on the recipe write route.
+
+`steps` are the frame's step records (`description.steps.Step`), one per operation that computed
+it, in order. A step's shape is the kit's step schema, and its `op` is any bounded name, so an
+operation dfo-spec-kit has not listed yet still publishes. The list meets dfo-spec-kit's structure
+rules (`dfo_descriptions.check_steps`), checked in the kit's order: at most `MAX_STEPS` (62)
+steps, at most `MAX_STEPS_BYTES` (65,536) bytes of RFC 8785 canonical JSON, step ids unique, and every input
+that names a step naming an earlier one, so the steps form no cycle. A version reference is the
+`input` of a `retrieve` step and of nothing else, and at least one step names one, so every
+version the steps name is one of the frame's root inputs, which the record lists, and a record
+with steps lists at least one. `input_content_versions` names the immediate input frames, a
+different list for a chained derivation, so the steps are not checked against it. A
+`continue_series` step states the fact a continuation is read from, so its `params` must hold
+`method`, a non-empty string, and `periods`, two strings, the first and last period the
+continuing series supplies. The byte bound
+is the kit's own. The count bound is `description.steps.MAX_COMPUTED_STEPS`, the kit's 64 less the
+two steps a card drawn from the frame adds, so the card's description stays within the kit's
+bound. The largest chain the nine
+analysis operations plausibly produce is 17 steps and 42,343 bytes: eight labelled retrievals,
+one summing 64 variables and choosing among eight sources, then each operation once, with three
+data gaps and a composed unit each, a rank covering 200 entities, and three steps covering 65
+periods. The steps have their own allowance in `MAX_PUBLISH_BODY_BYTES`, since a recipe alone can
+fill the allowance for everything else.
 """
 
 from __future__ import annotations
 
 import json
 import unicodedata
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from typing import Annotated, Literal, Self
 
+from dfo_descriptions import MAX_STEPS_BYTES, StepsError, StepsErrorReason, check_steps
 from dfo_frame_grammar import (
     FACET_IDENTITY_COLUMNS,
     STAT_VAR_COLUMN,
@@ -72,15 +84,18 @@ from pydantic import (
     Field,
     JsonValue,
     Tag,
+    ValidationError,
     field_validator,
     model_validator,
 )
+from pydantic_core import InitErrorDetails, PydanticCustomError
 
 from datasets_api.models import _require_schema_version_int
+from description.steps import CONTINUE_SERIES_OP, MAX_COMPUTED_STEPS, Step, VersionRef
 
 _OPS_SPEC_ID_PATTERN = r"^ops_[0-9a-f]{6,64}$"
 _OCV_CONTENT_VERSION_PATTERN = r"^ocv_[0-9a-f]{6,64}$"
-_INPUT_CONTENT_VERSION_PATTERN = r"^(?:cv|ocv)_[0-9a-f]{6,64}$"
+_INPUT_CONTENT_VERSION_PATTERN = r"^(?:cv_[0-9a-f]{32}|ocv_[0-9a-f]{6,64})$"
 
 MAX_INPUT_CONTENT_VERSIONS = 256
 MAX_ROLE_KEYS = 16
@@ -93,8 +108,7 @@ CATALOGUE_UNIT_BASE_YEARS = range(1900, 2101)
 MAX_ROWS = 1_000_000
 MAX_RECIPE_BYTES = 1_000_000
 MAX_ECHO_CHARS = 80
-MAX_COMPOSED_STAT_VARS = 16
-MAX_COMPOSED_STAT_VAR_SIDE_REFS = 64
+MAX_STEPS = MAX_COMPUTED_STEPS
 
 _NORMAL_FORM_HASH_PATTERN = r"^rnf_[0-9a-f]{32}$"
 _REPLAY_KEY_PATTERN = r"^rpk_[0-9a-f]{32}$"
@@ -197,32 +211,121 @@ def _bound_unit_values(unit: object) -> None:
             )
 
 
-class ComposedStatVar(BaseModel):
-    """One StatVar an analysis operation wrote its rows under, described by the StatVars it
-    combines."""
+def _named_steps(step: Step) -> list[tuple[tuple[str, ...], str]]:
+    """The step ids a step's inputs name, each with its location in the step, in order. An
+    input that is a version reference names no step."""
+    if isinstance(step.input, str):
+        return [(("input",), step.input)]
+    inputs = step.inputs if isinstance(step.inputs, dict) else {}
+    return [(("inputs", role), named) for role, named in inputs.items() if isinstance(named, str)]
 
-    model_config = ConfigDict(extra="forbid")
 
-    stat_var: _UnitStatVarRef = Field(description="the composed StatVar's `dcid:`-prefixed ref")
-    relation: Literal["quotient", "sum", "share"] = Field(
-        description=(
-            "`quotient` for `first` divided by `second`, `sum` for `first` plus `second`, "
-            "`share` for `first` as a percentage of `second`"
+def _version_refs(step: Step) -> list[tuple[tuple[str, ...], VersionRef]]:
+    """The version references a step's inputs name, each with its location in the step."""
+    if isinstance(step.input, VersionRef):
+        return [(("input",), step.input)]
+    inputs = step.inputs if isinstance(step.inputs, dict) else {}
+    return [
+        (("inputs", role), named) for role, named in inputs.items() if isinstance(named, VersionRef)
+    ]
+
+
+def _continuation_params(params: Mapping[str, object]) -> bool:
+    """Whether `params` state a continuation: `method`, a non-empty string, and `periods`, a
+    list of two strings."""
+    match params.get("method"), params.get("periods"):
+        case str(method), [str(), str()] if method:
+            return True
+        case _:
+            return False
+
+
+def _kit_refusal(error: StepsError, steps: list[Step]) -> ValueError | ValidationError:
+    """Restates the kit's structure refusal. The byte bound is refused at `steps`, and a value
+    JSON cannot carry at `steps` with the kit's reason. Any other rule on the whole list, such
+    as the kit's count bound, which `MAX_STEPS` keeps out of reach, is refused at `steps` under
+    the kit's reason. A step's refusal is located under `steps` at the member it names: the
+    repeated id, a compare's missing or mismatched `sides`, or the first input that names no
+    earlier step."""
+    if error.reason is StepsErrorReason.NOT_I_JSON:
+        return _step_refusal(
+            "not_i_json", f"steps hold a value JSON cannot carry: {error.detail}", loc=(), posted=""
         )
-    )
-    first: list[_UnitStatVarRef] = Field(
-        min_length=1,
-        max_length=MAX_COMPOSED_STAT_VAR_SIDE_REFS,
-        description="the StatVar refs of the first side: a quotient's or share's numerator",
-    )
-    second: list[_UnitStatVarRef] = Field(
-        min_length=1,
-        max_length=MAX_COMPOSED_STAT_VAR_SIDE_REFS,
-        description="the StatVar refs of the second side: a quotient's or share's denominator",
+    if error.reason is StepsErrorReason.STEPS_TOO_LARGE:
+        return ValueError(f"steps exceed MAX_STEPS_BYTES={MAX_STEPS_BYTES}: {error.detail}")
+    if error.step is None:
+        return ValueError(f"steps break dfo-spec-kit's {error.reason} rule: {error.detail}")
+    step = steps[error.step]
+    if error.reason is StepsErrorReason.DUPLICATE_STEP_ID:
+        return _step_refusal(
+            "duplicate_step_id",
+            f"step id {step.id!r} is already taken by an earlier step",
+            loc=(error.step, "id"),
+            posted=step.id,
+        )
+    if error.reason is StepsErrorReason.MISSING_SIDES:
+        return _step_refusal(
+            "missing_sides",
+            f"{step.op} step {step.id!r} records no sides, the entities each input holds",
+            loc=(error.step, "sides"),
+            posted=step.id,
+        )
+    if error.reason is StepsErrorReason.SIDES_ROLES_MISMATCH:
+        return _step_refusal(
+            "sides_roles_mismatch",
+            f"sides of step {step.id!r} are keyed by other roles than its inputs",
+            loc=(error.step, "sides"),
+            posted=step.id,
+        )
+    earlier = {earlier_step.id for earlier_step in steps[: error.step]}
+    loc, named = next((loc, named) for loc, named in _named_steps(step) if named not in earlier)
+    if error.reason is StepsErrorReason.INPUT_NOT_EARLIER:
+        return _step_refusal(
+            "input_not_earlier",
+            f"input names step {named!r}, which is this step or a later one",
+            loc=(error.step, *loc),
+            posted=named,
+        )
+    return _step_refusal(
+        "unknown_input",
+        f"input names step {named!r}, which no step holds",
+        loc=(error.step, *loc),
+        posted=named,
     )
 
 
-_COMPOSED_STAT_VAR_KEYS = frozenset(ComposedStatVar.model_fields)
+def _step_refusal(
+    reason: Literal[
+        "duplicate_step_id",
+        "unknown_input",
+        "input_not_earlier",
+        "missing_sides",
+        "sides_roles_mismatch",
+        "version_not_retrieved",
+        "no_version_retrieved",
+        "not_i_json",
+        "params_invalid",
+    ],
+    message: str,
+    *,
+    loc: tuple[int | str, ...],
+    posted: str,
+) -> ValidationError:
+    """A refusal of one step's member, located under `steps` so its pointer names the member.
+    `reason` is the dfo-spec-kit structure rule the step breaks, or one of this door's three
+    rules: `version_not_retrieved`, that only a `retrieve` step's `input` names a version,
+    `no_version_retrieved`, that the steps name at least one, and `params_invalid`, that a
+    `continue_series` step's `params` state its method and periods (`_continuation_params`)."""
+    return ValidationError.from_exception_data(
+        "steps",
+        [
+            InitErrorDetails(
+                type=PydanticCustomError(reason, "{message}", {"message": message}),
+                loc=loc,
+                input=posted,
+            )
+        ],
+    )
 
 
 class RecipeLeftOutSeries(BaseModel):
@@ -396,84 +499,96 @@ class PublishFrameRequest(BaseModel):
         ),
     )
 
-    composed_stat_vars: list[ComposedStatVar] = Field(
-        default_factory=list,
-        max_length=MAX_COMPOSED_STAT_VARS,
+    steps: list[Step] | None = Field(
+        default=None,
         description=(
-            "the StatVars this frame's rows name that an analysis sum, quotient or share composed, each "
-            "described by its sides so Presentation can label it. At most "
-            f"{MAX_COMPOSED_STAT_VARS} entries and {MAX_COMPOSED_STAT_VAR_SIDE_REFS} side refs "
-            "across them; `stat_var` values are distinct, and a side ref that names an entry "
-            "names an earlier one. Stored with the frame's first publish"
+            "the frame's step records, one per operation that computed it, in order, in the "
+            f"shape of dfo-spec-kit's step schema. `op` is any operation name. At most {MAX_STEPS} "
+            f"steps and {MAX_STEPS_BYTES} bytes of canonical JSON; step ids are distinct, an "
+            "input that names a step names an earlier one, and only a `retrieve` step's "
+            "`input` names a version, which at least one does. The versions `retrieve` steps "
+            "name are the frame's root inputs, which "
+            "`input_content_versions`, the immediate input frames, need not list. Absent when "
+            "the publish carries none"
         ),
     )
 
-    @field_validator("composed_stat_vars", mode="before")
+    @field_validator("steps", mode="before")
     @classmethod
-    def _bound_composed_stat_var_keys(cls, value: object) -> object:
-        """Refuses an entry key outside the model's four, on the raw body, so no unknown or
-        overlong key reaches a JSON Pointer. Other shapes are left to the model."""
-        if not isinstance(value, list):
-            return value
-        for entry in value:
-            if not isinstance(entry, dict):
-                continue
-            for key in entry:
-                if key not in _COMPOSED_STAT_VAR_KEYS:
-                    raise ValueError(
-                        f"composed_stat_vars key {str(key)[:MAX_ECHO_CHARS]!r} is not one of "
-                        f"{sorted(_COMPOSED_STAT_VAR_KEYS)}"
-                    )
+    def _bound_step_count(cls, value: object) -> object:
+        """Refuses more than `MAX_STEPS` steps before any step is parsed."""
+        if isinstance(value, list) and len(value) > MAX_STEPS:
+            raise ValueError(f"steps holds {len(value)} steps, exceeding MAX_STEPS={MAX_STEPS}")
         return value
 
-    @field_validator("composed_stat_vars", mode="after")
+    @field_validator("steps", mode="after")
     @classmethod
-    def _bound_composed_stat_vars(cls, value: list[ComposedStatVar]) -> list[ComposedStatVar]:
-        """Puts every ref in NFC, the form `Frame.build` stores a `stat_var` cell in, and
-        refuses a ref over `MAX_UNIT_STAT_VAR_CHARS` in that form, a ref holding U+0000 (the
-        version's `composed_stat_vars` is a Postgres `jsonb` value, which cannot hold it), more than
-        `MAX_COMPOSED_STAT_VAR_SIDE_REFS` side refs, a repeated `stat_var`, and a side ref that
-        names its own entry or a later one. Messages name an entry by its position."""
-        entries: list[ComposedStatVar] = []
-        for position, entry in enumerate(value):
-            normalised = {
-                "stat_var": unicodedata.normalize("NFC", entry.stat_var),
-                "first": [unicodedata.normalize("NFC", ref) for ref in entry.first],
-                "second": [unicodedata.normalize("NFC", ref) for ref in entry.second],
-            }
-            refs = (normalised["stat_var"], *normalised["first"], *normalised["second"])
-            if any(len(ref) > MAX_UNIT_STAT_VAR_CHARS for ref in refs):
-                raise ValueError(
-                    f"composed_stat_vars entry {position} holds a ref over "
-                    f"{MAX_UNIT_STAT_VAR_CHARS} characters in NFC form"
+    def _check_step_structure(cls, value: list[Step] | None) -> list[Step] | None:
+        """Refuses steps that break dfo-spec-kit's structure rules
+        (`dfo_descriptions.check_steps`) in their stored form: a value JSON
+        cannot carry (a lone surrogate, a non-finite number or an integer past 2**53), more than
+        `MAX_STEPS_BYTES` of RFC 8785 canonical JSON, or the first step whose id repeats an
+        earlier one, whose input names neither an earlier step nor a version, or, for a compare,
+        whose `sides` are missing or keyed by other roles than its inputs, at a pointer to that
+        id, input or `sides`."""
+        if value is None:
+            return value
+        try:
+            check_steps([step.model_dump(mode="json") for step in value])
+        except StepsError as error:
+            raise _kit_refusal(error, value) from error
+        return value
+
+    @field_validator("steps", mode="after")
+    @classmethod
+    def _check_version_refs_are_retrieved(cls, value: list[Step] | None) -> list[Step] | None:
+        """Refuses the first version reference anywhere but a `retrieve` step's `input`, at a
+        pointer to it, then steps that retrieve no version, at `steps`. Every version the steps
+        name is then one the record's inputs hold, and the record holds at least one input."""
+        if value is None:
+            return value
+        retrieved = False
+        for position, step in enumerate(value):
+            for loc, ref in _version_refs(step):
+                if step.op == "retrieve" and loc == ("input",):
+                    retrieved = True
+                    continue
+                raise _step_refusal(
+                    "version_not_retrieved",
+                    f"a {step.op} step names version {ref.id!r} under {'/'.join(loc)}; only a "
+                    "retrieve step's input names a version",
+                    loc=(position, *loc),
+                    posted=ref.content_version,
                 )
-            if any("\x00" in ref for ref in refs):
-                raise ValueError(
-                    f"composed_stat_vars entry {position} holds a ref with U+0000, which the "
-                    "version record cannot store"
-                )
-            entries.append(entry.model_copy(update=normalised))
-        if sum(len(entry.first) + len(entry.second) for entry in entries) > (
-            MAX_COMPOSED_STAT_VAR_SIDE_REFS
-        ):
-            raise ValueError(
-                f"composed_stat_vars holds more than {MAX_COMPOSED_STAT_VAR_SIDE_REFS} side refs"
+        if not retrieved:
+            raise _step_refusal(
+                "no_version_retrieved",
+                "steps retrieve no version; a computed frame's steps hold at least one retrieve "
+                "step naming a version in its input",
+                loc=(),
+                posted="",
             )
-        position_of: dict[str, int] = {}
-        for position, entry in enumerate(entries):
-            if entry.stat_var in position_of:
-                raise ValueError(
-                    f"composed_stat_vars entries {position_of[entry.stat_var]} and {position} "
-                    "name the same stat_var"
+        return value
+
+    @field_validator("steps", mode="after")
+    @classmethod
+    def _check_continuation_params(cls, value: list[Step] | None) -> list[Step] | None:
+        """Refuses the first `continue_series` step whose `params` do not state a continuation
+        (`_continuation_params`), at a pointer to its `params`."""
+        for position, step in enumerate(value or ()):
+            if step.op != CONTINUE_SERIES_OP:
+                continue
+            params = step.params if isinstance(step.params, dict) else None
+            if params is None or not _continuation_params(params):
+                raise _step_refusal(
+                    "params_invalid",
+                    f"a {CONTINUE_SERIES_OP} step's params hold 'method', a non-empty string, "
+                    "and 'periods', a list of two strings, the first and last period the "
+                    "continuing series supplies",
+                    loc=(position, "params"),
+                    posted="",
                 )
-            position_of[entry.stat_var] = position
-        for position, entry in enumerate(entries):
-            if any(position_of.get(ref, -1) >= position for ref in (*entry.first, *entry.second)):
-                raise ValueError(
-                    f"composed_stat_vars entry {position} names itself or a later entry in a "
-                    "side; a side ref that names an entry names an earlier one"
-                )
-        return entries
+        return value
 
     @field_validator("rows", mode="before")
     @classmethod

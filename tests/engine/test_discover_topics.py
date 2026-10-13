@@ -127,10 +127,8 @@ class TestDeriveShapesTopicDecision:
         assert next(iter(shapes[0].sv_arc_facts or {})) == self._OTHER_SV
 
     def test_expansion_does_not_crowd_out_real_aggregate_candidate(self):
-        """The 0.9084 aggregate outranks unscored expanded members at the confirm cap."""
-        from search.engine.config import settings
-
-        n_members = settings().max_confirm_candidates + 5
+        """The 0.9084 aggregate keeps its score beside 45 unscored expanded members."""
+        n_members = 45
         nodes: dict = {
             "dc/topic/GDP": {
                 "arcs": {

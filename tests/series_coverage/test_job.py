@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,7 @@ import pyarrow as pa
 import pydantic
 import pytest
 
+from artifact_publication.jobs import Ingestion
 from dc_sdmx.results import SdmxDataResult, SdmxObservation, observation_schema
 from series_coverage import job, loader
 from series_coverage.compatibility import record_serving_index
@@ -73,6 +75,9 @@ class FakeBigQuery:
             if marker in sql:
                 return rows
         raise AssertionError(f"FakeBigQuery: no canned response matches SQL:\n{sql}")
+
+    def stream(self, sql: str) -> Iterator[dict[str, Any]]:
+        return iter(self.query(sql))
 
 
 def _obs(
@@ -386,6 +391,7 @@ def test_build_coverage_table_grows_the_horizon_past_the_first_word(tmp_path):
         role_names=_ROLE_NAMES,
         facet_metadata=_FACET_METADATA,
         source="test",
+        ingestion=Ingestion(workflow_execution_id="wf-1", creation_timestamp="t1"),
         expected_generation=None,
     )
     loaded = load_coverage(f"file://{tmp_path}")
@@ -1420,6 +1426,7 @@ def _publish(base_uri: str, *, build_id: str, expected_generation: str | None = 
         role_names=_ROLE_NAMES,
         facet_metadata=_FACET_METADATA,
         source="test",
+        ingestion=Ingestion(workflow_execution_id="wf-1", creation_timestamp="t1"),
         expected_generation=expected_generation,
     )
 
@@ -1767,7 +1774,10 @@ def test_run_publishes_end_to_end(tmp_path, capsys):
     assert events[-2]["rows"] == 1
     pointer = read_current(_root(tmp_path) / "current.json")
     assert pointer.build_id == events[-2]["build_id"] == events[-1]["build_id"]
-    assert load_coverage(f"file://{tmp_path}").manifest.build_id == pointer.build_id
+    manifest = load_coverage(f"file://{tmp_path}").manifest
+    assert manifest.build_id == pointer.build_id
+    # The raw IngestionHistory row, which the origin catalogue's manifest records too.
+    assert manifest.ingestion == Ingestion(workflow_execution_id="wf-1", creation_timestamp="t1")
 
 
 def test_run_publishes_a_one_role_variable_beside_a_two_role_one(tmp_path, capsys):

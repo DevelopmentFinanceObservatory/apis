@@ -1,7 +1,8 @@
 """A materialisation reads a pinned identity under its pinned provenances
-(`adapter.pinned_provenance_scope`), before DFO precedence, so a base pin serves at a place
-where a DFO table also holds data. `serve.prewrite_definition` runs its facet probe in that
-scope."""
+(`adapter.pinned_provenance_scope`), and `serve.prewrite_definition` runs its facet probe in that
+scope. Admission keeps every admitted provenance at every place (#1271), so a base pin serves at
+a place where a DFO table also holds data, and inside the scope DFO's facet leads when it is at
+least as broad as the best base facet."""
 
 from __future__ import annotations
 
@@ -13,6 +14,8 @@ import pytest
 from datasets_api.adapter import pinned_provenance_scope
 from dc_sdmx import SdmxClient
 from materialise import FacetBinding, MaterialisationRequest, probe_collection_facets
+from materialise.facets import joint_dispatch_facet_ids
+from materialise.generation import _select_member_facets
 from materialise.window import RequestedWindow
 from origin_catalogue import BASE, DFO
 from origin_catalogue.graph import build_graph_client
@@ -51,17 +54,19 @@ def _sdmx_never_read() -> SdmxClient:
 
 
 @pytest.mark.parametrize(
-    ("pin", "candidates"),
+    ("pin", "candidates", "elected"),
     [
-        pytest.param(None, [_CRS], id="unpinned"),
-        pytest.param({"state": "value", "ref": _WDI}, [_WDI], id="base-value"),
-        pytest.param({"state": "set", "refs": [_WDI, _IMF]}, [_WDI, _IMF], id="base-set"),
-        # A pin holding the DFO table keeps DFO precedence inside the pin.
-        pytest.param({"state": "set", "refs": [_CRS, _WDI]}, [_CRS], id="dfo-in-set"),
+        pytest.param(None, [_CRS, _WDI, _IMF], _CRS, id="unpinned"),
+        pytest.param({"state": "value", "ref": _WDI}, [_WDI], _WDI, id="base-value"),
+        # Equal breadth, count and dates: the provenance id breaks the tie.
+        pytest.param({"state": "set", "refs": [_WDI, _IMF]}, [_WDI, _IMF], _IMF, id="base-set"),
+        # A pin holding the DFO table keeps every pinned provenance, and DFO's facet, as broad
+        # as WDI's at the one place, leads inside the pin.
+        pytest.param({"state": "set", "refs": [_CRS, _WDI]}, [_CRS, _WDI], _CRS, id="dfo-in-set"),
     ],
 )
 def test_the_materialisation_probe_reads_under_the_pinned_provenances(
-    bind_catalogue, pin: dict | None, candidates: list[str]
+    bind_catalogue, pin: dict | None, candidates: list[str], elected: str
 ) -> None:
     bind_catalogue(
         restrictive_catalogue(
@@ -69,7 +74,9 @@ def test_the_materialisation_probe_reads_under_the_pinned_provenances(
                 provenance_row(_CRS, DFO),
                 provenance_row(_WDI, BASE),
                 provenance_row(_IMF, BASE),
-            ]
+            ],
+            dfo_variables=[_VARIABLE],
+            base_variables={_VARIABLE: ([_WDI, _IMF], [])},
         )
     )
     identity = {} if pin is None else {"facets": {"provenance": pin}}
@@ -92,6 +99,10 @@ def test_the_materialisation_probe_reads_under_the_pinned_provenances(
         probe = probe_collection_facets(
             (request,), graph=client, availability=_sdmx_never_read(), settle=True
         )
+        (member,) = probe.members
+        election = _select_member_facets(
+            request, member.candidates, graph=client, breadth=member.breadth_in(request.window)
+        )
 
-    (member,) = probe.members
     assert [facet.provenance_id for facet in member.candidates] == candidates
+    assert joint_dispatch_facet_ids(member.candidates, election, member=0)[0] == elected

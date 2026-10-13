@@ -1,0 +1,301 @@
+{
+ "_comment": "IMF World Economic Outlook nominal GDP read from the dev graph on 2026-10-11 by POST /core/api/v2/observation (select variable, entity, date, value, facet) at France, Kenya, Zimbabwe and Ecuador, and each place's <-nationalCurrencyOf arcs by GET /core/api/v2/node. Facet spans and counts are the whole series; observations are cut to 2016-2030.",
+ "variable": "ValueAdded_EconomicProduction_IncludingProductTaxes_GrossOfFixedCapitalConsumption_Nominal",
+ "facets": {
+  "18375731027645128578": {
+   "provenanceId": "provenance/IMFWorldEconomicOutlook",
+   "unit": "CurrencyEUR",
+   "measurementMethod": "Estimated",
+   "observationPeriod": "P1Y"
+  },
+  "7662166056012033925": {
+   "provenanceId": "provenance/IMFWorldEconomicOutlook",
+   "unit": "CurrencyUSD",
+   "measurementMethod": "Estimated",
+   "observationPeriod": "P1Y"
+  },
+  "11833358152693598258": {
+   "provenanceId": "provenance/IMFWorldEconomicOutlook",
+   "unit": "CurrencyEUR",
+   "measurementMethod": null,
+   "observationPeriod": "P1Y"
+  },
+  "6680142867682665069": {
+   "provenanceId": "provenance/IMFWorldEconomicOutlook",
+   "unit": "CurrencyUSD",
+   "measurementMethod": null,
+   "observationPeriod": "P1Y"
+  },
+  "17544171637773923870": {
+   "provenanceId": "provenance/IMFWorldEconomicOutlook",
+   "unit": "CurrencyKES",
+   "measurementMethod": "Estimated",
+   "observationPeriod": "P1Y"
+  },
+  "8204860929914829073": {
+   "provenanceId": "provenance/IMFWorldEconomicOutlook",
+   "unit": "CurrencyKES",
+   "measurementMethod": null,
+   "observationPeriod": "P1Y"
+  },
+  "9094134641622459115": {
+   "provenanceId": "provenance/IMFWorldEconomicOutlook",
+   "unit": "CurrencyZWG",
+   "measurementMethod": "Estimated",
+   "observationPeriod": "P1Y"
+  },
+  "9440056288347647924": {
+   "provenanceId": "provenance/IMFWorldEconomicOutlook",
+   "unit": "CurrencyZWG",
+   "measurementMethod": null,
+   "observationPeriod": "P1Y"
+  }
+ },
+ "series": [
+  {
+   "place": "country/FRA",
+   "facet": "18375731027645128578",
+   "earliest": "2026",
+   "latest": "2031",
+   "count": 6,
+   "observations": {
+    "2026": 3049556189000,
+    "2027": 3121172212000,
+    "2028": 3217958752000,
+    "2029": 3315953207000,
+    "2030": 3414972485000
+   }
+  },
+  {
+   "place": "country/FRA",
+   "facet": "7662166056012033925",
+   "earliest": "2026",
+   "latest": "2031",
+   "count": 6,
+   "observations": {
+    "2026": 3596094151000,
+    "2027": 3672072655000,
+    "2028": 3775707242000,
+    "2029": 3888624195000,
+    "2030": 4004117684000
+   }
+  },
+  {
+   "place": "country/FRA",
+   "facet": "11833358152693598258",
+   "earliest": "1980",
+   "latest": "2025",
+   "count": 46,
+   "observations": {
+    "2016": 2231819000000,
+    "2017": 2291681000000,
+    "2018": 2355363000000,
+    "2019": 2432207000000,
+    "2020": 2318276000000,
+    "2021": 2508102000000,
+    "2022": 2653997000000,
+    "2023": 2830205000000,
+    "2024": 2921333000000,
+    "2025": 2983085000000
+   }
+  },
+  {
+   "place": "country/FRA",
+   "facet": "6680142867682665069",
+   "earliest": "1980",
+   "latest": "2025",
+   "count": 46,
+   "observations": {
+    "2016": 2469725703000,
+    "2017": 2587955316000,
+    "2018": 2782837927000,
+    "2019": 2723094237000,
+    "2020": 2645806344000,
+    "2021": 2968405421000,
+    "2022": 2796986594000,
+    "2023": 3061094521000,
+    "2024": 3161041745000,
+    "2025": 3368924656000
+   }
+  },
+  {
+   "place": "country/KEN",
+   "facet": "17544171637773923870",
+   "earliest": "2025",
+   "latest": "2031",
+   "count": 7,
+   "observations": {
+    "2025": 17638538826000,
+    "2026": 19498607708000.004,
+    "2027": 21567249635999.996,
+    "2028": 23895307490000,
+    "2029": 26488671852000.004,
+    "2030": 29233394226000
+   }
+  },
+  {
+   "place": "country/KEN",
+   "facet": "7662166056012033925",
+   "earliest": "2025",
+   "latest": "2031",
+   "count": 7,
+   "observations": {
+    "2025": 136454541000,
+    "2026": 147264890000,
+    "2027": 154744059000,
+    "2028": 161991631000,
+    "2029": 171532879000,
+    "2030": 183627690000
+   }
+  },
+  {
+   "place": "country/KEN",
+   "facet": "8204860929914829073",
+   "earliest": "1980",
+   "latest": "2024",
+   "count": 45,
+   "observations": {
+    "2016": 7594063646000,
+    "2017": 8483396463999.999,
+    "2018": 9340306703000,
+    "2019": 10237730000000,
+    "2020": 10715071000000,
+    "2021": 12027662000000,
+    "2022": 13489645000000,
+    "2023": 15033611000000,
+    "2024": 16224477000000
+   }
+  },
+  {
+   "place": "country/KEN",
+   "facet": "6680142867682665069",
+   "earliest": "1980",
+   "latest": "2024",
+   "count": 45,
+   "observations": {
+    "2016": 74816150000,
+    "2017": 81965080000,
+    "2018": 92210817000,
+    "2019": 100328181000,
+    "2020": 100921534000,
+    "2021": 109875059000,
+    "2022": 114732641000,
+    "2023": 108205995000,
+    "2024": 119306610000
+   }
+  },
+  {
+   "place": "country/ZWE",
+   "facet": "7662166056012033925",
+   "earliest": "2025",
+   "latest": "2031",
+   "count": 7,
+   "observations": {
+    "2025": 53474167000,
+    "2026": 56712680000,
+    "2027": 57405713000,
+    "2028": 59826801000,
+    "2029": 62349696000,
+    "2030": 64994166000.00001
+   }
+  },
+  {
+   "place": "country/ZWE",
+   "facet": "9094134641622459115",
+   "earliest": "2025",
+   "latest": "2031",
+   "count": 7,
+   "observations": {
+    "2025": 1428821225000,
+    "2026": 1698799725000,
+    "2027": 1911224813000,
+    "2028": 2151433114000,
+    "2029": 2422165987000,
+    "2030": 2727409710000
+   }
+  },
+  {
+   "place": "country/ZWE",
+   "facet": "6680142867682665069",
+   "earliest": "1990",
+   "latest": "2024",
+   "count": 35,
+   "observations": {
+    "2016": 29256533000,
+    "2017": 31018230000,
+    "2018": 53913637000,
+    "2019": 39775614000,
+    "2020": 39962487000,
+    "2021": 52412921000,
+    "2022": 48570383000,
+    "2023": 44372406000,
+    "2024": 49154371000
+   }
+  },
+  {
+   "place": "country/ZWE",
+   "facet": "9440056288347647924",
+   "earliest": "1990",
+   "latest": "2024",
+   "count": 35,
+   "observations": {
+    "2016": 11709000,
+    "2017": 12414000,
+    "2018": 21576000,
+    "2019": 129740000,
+    "2020": 820409000,
+    "2021": 1857830000,
+    "2022": 7383889000,
+    "2023": 67558758999.99999,
+    "2024": 822938289000
+   }
+  },
+  {
+   "place": "country/ECU",
+   "facet": "7662166056012033925",
+   "earliest": "2026",
+   "latest": "2031",
+   "count": 6,
+   "observations": {
+    "2026": 138194326000,
+    "2027": 144134668000,
+    "2028": 150136098000,
+    "2029": 156660719000,
+    "2030": 163817641000
+   }
+  },
+  {
+   "place": "country/ECU",
+   "facet": "6680142867682665069",
+   "earliest": "1980",
+   "latest": "2025",
+   "count": 46,
+   "observations": {
+    "2016": 97671433000,
+    "2017": 104467486000,
+    "2018": 107478962000,
+    "2019": 107595829000,
+    "2020": 95865474000,
+    "2021": 107179075000,
+    "2022": 116133122000,
+    "2023": 120792801000,
+    "2024": 123802374000,
+    "2025": 130320560000
+   }
+  }
+ ],
+ "national_currency_of": {
+  "country/FRA": [
+   "CurrencyEUR"
+  ],
+  "country/KEN": [
+   "CurrencyKES"
+  ],
+  "country/ZWE": [
+   "CurrencyZWG"
+  ],
+  "country/ECU": [
+   "CurrencyUSD"
+  ]
+ }
+}

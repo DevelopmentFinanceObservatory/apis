@@ -9,7 +9,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from materialise.facets import ElectedDataset
+from materialise.facets import ElectedDataset, bound_variable_breadth
 from materialise.graph import Facet as MaterialiseFacet
 from search.engine.bind import SlotBindingDraft
 from search.engine.extract import DateRequest
@@ -72,7 +72,7 @@ def _by_dcid(options: list[SlotOption]) -> dict[str, SlotOption]:
     result: dict[str, SlotOption] = {}
     for opt in options:
         assert opt.value.ref is not None
-        result[opt.value.ref.dcid] = opt
+        result[opt.value.ref.ref] = opt
     return result
 
 
@@ -112,11 +112,11 @@ def _gender_shape() -> ShapeDraft:
 
 def _gender_slot_options(*genders: str) -> SlotOptions:
     return SlotOptions(
-        key=SlotKey(axis="how", property=GraphRef(dcid="gender", label="gender"), label="gender"),
+        key=SlotKey(axis="how", property=GraphRef(ref="gender", label="gender"), label="gender"),
         options=[
             SlotOption(
                 value=SlotValue(
-                    ref=GraphRef(dcid=g, label=g),
+                    ref=GraphRef(ref=g, label=g),
                     value_kind="enum_value",
                 )
             )
@@ -132,10 +132,10 @@ def _gender_slot_options_with_relation(*genders: str) -> SlotOptions:
     `member_count` too -- the level-scoping fields the coverage rewrap knows
     nothing about and must carry forward unchanged."""
     return SlotOptions(
-        key=SlotKey(axis="how", property=GraphRef(dcid="gender", label="gender"), label="gender"),
+        key=SlotKey(axis="how", property=GraphRef(ref="gender", label="gender"), label="gender"),
         options=[
             SlotOption(
-                value=SlotValue(ref=GraphRef(dcid=g, label=g), value_kind="enum_value"),
+                value=SlotValue(ref=GraphRef(ref=g, label=g), value_kind="enum_value"),
                 relation="child",
                 member_count=idx + 1,
             )
@@ -186,11 +186,9 @@ def _gender_age_shape() -> ShapeDraft:
 
 def _slot_options(prop_dcid: str, *values: str) -> SlotOptions:
     return SlotOptions(
-        key=SlotKey(
-            axis="how", property=GraphRef(dcid=prop_dcid, label=prop_dcid), label=prop_dcid
-        ),
+        key=SlotKey(axis="how", property=GraphRef(ref=prop_dcid, label=prop_dcid), label=prop_dcid),
         options=[
-            SlotOption(value=SlotValue(ref=GraphRef(dcid=v, label=v), value_kind="enum_value"))
+            SlotOption(value=SlotValue(ref=GraphRef(ref=v, label=v), value_kind="enum_value"))
             for v in values
         ],
         truncated=False,
@@ -223,6 +221,54 @@ class TestStandardOptionCoverage:
         assert by_dcid["Male"].coverage.observation_count == 2
         assert isinstance(by_dcid["Female"].coverage, CoverageExact)
         assert by_dcid["Female"].coverage.observation_count == 5
+
+    @pytest.mark.parametrize(
+        ("breadth", "observations"),
+        [
+            # Dollars serve more places across the whole variable, so the option counts the
+            # dollar facet's four points in the window, as the answer at this place serves it.
+            pytest.param({"fUSD": 197, "fEUR": 25}, 4, id="broader-across-the-variable"),
+            pytest.param({"fUSD": 25, "fEUR": 197}, 3, id="narrower-across-the-variable"),
+        ],
+    )
+    def test_an_option_at_one_place_breaks_a_tie_on_whole_variable_breadth(
+        self, breadth, observations
+    ):
+        """At one place the euro and dollar facets tie on the window years their spans cover,
+        their counts and their latest date; the option reports the facet broader across the
+        whole variable."""
+        eur = dataclasses.replace(
+            _facet(obs_count=4, earliest="2010", latest="2021"),
+            facet_id="fEUR",
+            unit="CurrencyEUR",
+            dates=("2010", "2019", "2020", "2021"),
+            dates_complete=True,
+        )
+        usd = dataclasses.replace(
+            _facet(obs_count=4, earliest="2018", latest="2021"),
+            facet_id="fUSD",
+            unit="CurrencyUSD",
+            dates=("2018", "2019", "2020", "2021"),
+            dates_complete=True,
+        )
+        materialise_graph = FakeGraphReader(facets={(_MALE_SV, _RECIPIENT): [eur, usd]})
+
+        with bound_variable_breadth(
+            lambda stat_vars, *, deadline: dict.fromkeys(stat_vars, breadth), refuse_unread=False
+        ):
+            result = standard_option_coverage(
+                shape=_gender_shape(),
+                slot_options=[_gender_slot_options("Male")],
+                entities={"observationAbout": [_RECIPIENT]},
+                materialise_graph=materialise_graph,
+                date_request=DateRequest(
+                    window=TimeWindow(start_year=2018, end_year=2021), latest=False
+                ),
+            )
+
+        coverage = _by_dcid(result[0].options)["Male"].coverage
+        assert isinstance(coverage, CoverageExact)
+        assert coverage.observation_count == observations
 
     def test_an_option_counts_only_its_members_elected_dataset(self):
         """The male member holds two facets and its family elected the dataset of the
@@ -415,7 +461,7 @@ def test_raw_text_include_option_coverage_populates_gender():
     gender_opts = next(
         so
         for so in spec.resolved.slot_options
-        if so.key.property and so.key.property.dcid == "gender"
+        if so.key.property and so.key.property.ref == "gender"
     )
     covered = [o for o in gender_opts.options if o.coverage is not None]
     assert covered, "expected at least the bound gender value to get real coverage"
@@ -947,9 +993,9 @@ def _gdp_arcs(**constraints: str) -> dict:
 
 def _gdp_options(prop: str, *dcids: str) -> SlotOptions:
     return SlotOptions(
-        key=SlotKey(axis="how", property=GraphRef(dcid=prop, label=prop), label=prop),
+        key=SlotKey(axis="how", property=GraphRef(ref=prop, label=prop), label=prop),
         options=[
-            SlotOption(value=SlotValue(ref=GraphRef(dcid=d, label=d), value_kind="enum_value"))
+            SlotOption(value=SlotValue(ref=GraphRef(ref=d, label=d), value_kind="enum_value"))
             for d in dcids
         ],
         truncated=True,
@@ -1012,8 +1058,8 @@ def test_the_probe_counts_the_series_a_pick_serves_and_drops_a_value_no_member_c
 
     assert warn is None
     counts = {
-        so.key.property.dcid: {
-            o.value.ref.dcid: (o.served_rows, o.served_rows_exact) for o in so.options
+        so.key.property.ref: {
+            o.value.ref.ref: (o.served_rows, o.served_rows_exact) for o in so.options
         }
         for so in enriched
     }

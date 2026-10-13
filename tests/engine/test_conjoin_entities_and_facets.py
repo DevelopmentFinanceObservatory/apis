@@ -290,7 +290,7 @@ def test_collapse_same_shape_where_axis_merge_distinct_from_base():
     merged = effective[0].spec
     merged_binding = merged.resolved.slots[0].binding
     assert isinstance(merged_binding, BindingSet)
-    assert {v.ref.dcid for v in merged_binding.values} == {"country/KEN", "country/ETH"}
+    assert {v.ref.ref for v in merged_binding.values} == {"country/KEN", "country/ETH"}
 
     assert merged.spec_id != spec_kenya.spec_id
     assert merged.spec_id != spec_ethiopia.spec_id
@@ -341,7 +341,7 @@ def test_a_merged_answer_states_the_places_no_part_serves(
 
     def places() -> list[Entity]:
         return [
-            Entity(ref=GraphRef(dcid=dcid, label=label), role=EntityRoleSubject())
+            Entity(ref=GraphRef(ref=dcid, label=label), role=EntityRoleSubject())
             for dcid, label in (("country/KEN", "Kenya"), ("country/GHA", "Ghana"))
         ]
 
@@ -523,7 +523,7 @@ def test_collapse_same_shape_reversed_provider_recipient_stays_distinct():
     assert len(merged1) == 1
     assert len(merged2) == 1
     assert merged1[0].spec.spec_id != merged2[0].spec.spec_id
-    served = EntityGroup(dcid=None, label="the test group")
+    served = EntityGroup(ref=None, label="the test group")
     assert merged1[0].spec.resolved.entity_groups == {"origin": served}
     assert merged2[0].spec.resolved.entity_groups == {"destination": served}
 
@@ -933,7 +933,7 @@ def test_merged_facet_options_offer_only_what_a_pin_on_the_merged_spec_serves():
     assert merged.facet_probe is not None
     assert merged.facet_probe.sv_dcids == ("sv_a", "sv_b")
     options = {
-        fo.axis: [o.value.ref.dcid for o in fo.options if o.value.ref is not None]
+        fo.axis: [o.value.ref.ref for o in fo.options if o.value.ref is not None]
         for fo in merged.spec.resolved.facet_options
     }
     assert options["unit"] == ["unit/USDollar"]
@@ -967,7 +967,7 @@ def test_a_merged_probe_reads_every_members_places_and_elected_units():
 
     def _options(probe, graph: FakeGraph) -> dict[str, list[str]]:
         return {
-            fo.axis: [o.value.ref.dcid for o in fo.options if o.value.ref is not None]
+            fo.axis: [o.value.ref.ref for o in fo.options if o.value.ref is not None]
             for fo in _facet_options(
                 probe.sv_dcids,
                 probe.probe_entities,
@@ -1083,7 +1083,7 @@ def test_a_multi_variable_answer_offers_the_merged_facet_options():
 
     response = asyncio.run(_response())
     unit_options = [
-        [o.value.ref.dcid for o in fo.options if o.value.ref is not None]
+        [o.value.ref.ref for o in fo.options if o.value.ref is not None]
         for part in response.parts
         if getattr(part, "spec", None) is not None
         for fo in part.spec.resolved.facet_options
@@ -1161,11 +1161,11 @@ def test_collapse_same_shape_refuses_merge_on_differing_declaration_version():
 
 def test_collapse_same_shape_merge_preserves_slot_expansion():
     """The merge replaces only the slot binding; its expansion metadata must survive."""
-    expansion = Expansion(added=[GraphRef(dcid="added/x", label="X")])
+    expansion = Expansion(added=[GraphRef(ref="added/x", label="X")])
     spec_a = _spec(_PERSON_SHAPE, "ValA", "sv_a")
     patched_slots = [
         s.model_copy(update={"expansion": expansion})
-        if s.key.property is not None and s.key.property.dcid == "constraintProp"
+        if s.key.property is not None and s.key.property.ref == "constraintProp"
         else s
         for s in spec_a.resolved.slots
     ]
@@ -1183,7 +1183,7 @@ def test_collapse_same_shape_merge_preserves_slot_expansion():
     merged_slot = next(
         s
         for s in effective[0].spec.resolved.slots
-        if s.key.property is not None and s.key.property.dcid == "constraintProp"
+        if s.key.property is not None and s.key.property.ref == "constraintProp"
     )
     assert merged_slot.expansion == expansion
 
@@ -1270,7 +1270,7 @@ def test_collapse_same_shape_merge_outcome_invariant_to_facet_population():
         effective, residual = collapse_same_shape([r_a, r_b])
         assert residual == []
         merged_slot = next(s for s in effective[0].spec.resolved.slots if s.key.axis == "what")
-        return frozenset(v.ref.dcid for v in merged_slot.binding.values if v.ref)
+        return frozenset(v.ref.ref for v in merged_slot.binding.values if v.ref)
 
     populated = _merged_what_dcids(facets_a, facets_b)
     empty = _merged_what_dcids({}, {})
@@ -1338,7 +1338,7 @@ def test_a_merged_relaunch_streams_options_over_every_members_places():
 
     events, _warnings = asyncio.run(_events())
     assert [
-        [o.value.ref.dcid for o in event.options if o.value.ref is not None]
+        [o.value.ref.ref for o in event.options if o.value.ref is not None]
         for event in events
         if isinstance(event, FacetOptionsEvent) and event.axis == "unit"
     ] == [["unit/USDollar", "unit/Yen"]]

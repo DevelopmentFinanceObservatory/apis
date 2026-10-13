@@ -4,6 +4,9 @@ Code routes must resolve every registered code.
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from typing import get_args
 
 import pytest
@@ -12,8 +15,7 @@ from fastapi.testclient import TestClient
 
 from code_index.shared import get_index
 from dfo_platform.build import build_commit
-from search.engine import config
-from search.engine.app import _schema_payload
+from search.engine import config, schema
 from search.engine.capabilities import build_capabilities
 from search.engine.codes import CODE_CATALOG
 from search.engine.config import (
@@ -27,6 +29,7 @@ from search.engine.config import (
     SEARCH_MAX_VARIABLE_TEXT_CHARS,
     settings,
 )
+from search.engine.schema import schema_payload
 from search.models import SCHEMA_VERSION, Axis, FacetAxis
 from search.observations import observation_settings
 from tests.engine._fake_sdmx import FakeSdmxClient
@@ -147,12 +150,76 @@ class TestPublishedCapsEqualEnforcedValues:
         assert caps["max_variables"] == settings().max_variables
 
 
+def _renamed_ref_key(document: dict) -> None:
+    graph_ref = document["response"]["$defs"]["GraphRef"]
+    graph_ref["properties"] = {
+        ("dcid" if key == "ref" else key): value for key, value in graph_ref["properties"].items()
+    }
+    graph_ref["required"] = ["dcid" if key == "ref" else key for key in graph_ref["required"]]
+
+
+def _retyped_label(document: dict) -> None:
+    document["response"]["$defs"]["GraphRef"]["properties"]["label"]["type"] = "integer"
+
+
+def _reworded_description(document: dict) -> None:
+    document["response"]["$defs"]["GraphRef"]["properties"]["label"]["description"] = "reworded"
+
+
+_UNREADABLE_INDEX_PROBE = """
+import code_index.shared
+
+def unreadable(source):
+    raise FileNotFoundError("the code index was read")
+
+code_index.shared.load_index = unreadable
+import search.engine.config as config
+print("imported")
+config.settings().capability_version
+"""
+
+
+def test_importing_the_config_reads_no_code_index():
+    """The token hashes the served schema, which reads the code index, so it is computed on
+    first read. An unreadable index lets the import succeed and fails that read."""
+    result = subprocess.run(
+        [sys.executable, "-c", _UNREADABLE_INDEX_PROBE],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "SEARCH_GRAPH_BASE": "https://graph.invalid/core/api"},
+        check=False,
+    )
+
+    assert result.stdout.strip() == "imported", result.stderr
+    assert "the code index was read" in result.stderr
+
+
 class TestCapabilityVersionPerturbation:
     """A cap change must actually rotate capability_version -- not just be
     declared in CapabilityCaps. Proven by perturbing one of the parsed-door
     cap constants and recomputing the version function directly, rather than
     by auditing what the hash claims to cover.
     """
+
+    @pytest.mark.parametrize(
+        ("edit", "moves"),
+        [
+            pytest.param(_renamed_ref_key, True, id="renamed-field"),
+            pytest.param(_retyped_label, True, id="retyped-field"),
+            pytest.param(_reworded_description, False, id="reworded-description"),
+        ],
+    )
+    def test_a_served_schema_change_moves_the_capability_version(self, monkeypatch, edit, moves):
+        original = config.settings()._compute_capability_version()
+        served = schema.schema_payload
+
+        def edited() -> dict:
+            document = served()
+            edit(document)
+            return document
+
+        monkeypatch.setattr(schema, "schema_payload", edited)
+        assert (config.settings()._compute_capability_version() != original) is moves
 
     def test_changing_a_new_cap_moves_the_capability_version(self, monkeypatch):
         original = config.settings()._compute_capability_version()
@@ -400,7 +467,7 @@ class TestSchemaAndCapabilitiesAreFrozenDocuments:
     def test_schema_identity_body_matches_jsonresponse_of_schema_payload(self):
         client = make_client()
         resp = client.get("/api/search/schema", headers={"accept-encoding": "identity"})
-        assert resp.content == JSONResponse(_schema_payload()).body
+        assert resp.content == JSONResponse(schema_payload()).body
 
     def test_capabilities_identity_body_matches_jsonresponse_of_build_capabilities(self):
         client = make_client()

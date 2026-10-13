@@ -53,7 +53,7 @@ class TestAlternateSpecsCarryWhereSlot:
                 "expected a bound entity so the spec self-describes its place"
             )
             assert where.binding.value.ref is not None
-            assert where.binding.value.ref.dcid == _ENTITY_DCID
+            assert where.binding.value.ref.ref == _ENTITY_DCID
 
     def test_every_spec_entities_list_also_carries_kenya(self):
         """The where slot and resolved entity list both identify Kenya."""
@@ -88,7 +88,7 @@ class TestPrimarySpecUnaffected:
         where = _where_slot(spec.resolved.slots)
         assert where is not None
         assert isinstance(where.binding, BindingValue)
-        assert where.binding.value.ref.dcid == "country/IND"
+        assert where.binding.value.ref.ref == "country/IND"
 
 
 # Where-slot binding leaves identity and StatVar values unchanged

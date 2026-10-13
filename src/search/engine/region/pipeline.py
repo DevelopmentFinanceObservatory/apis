@@ -56,6 +56,7 @@ from search.engine.region.phase_rank_bind import (
 )
 from search.engine.region.place_roles import group_request_names
 from search.engine.region.related_read import cancel_related_reads, settle_related_reads
+from search.engine.region.requirements import unbinding_phrases, with_requirement_departures
 from search.engine.region.result import RegionResult
 from search.engine.region.source_choice import (
     allows_un_system,
@@ -66,8 +67,9 @@ from search.engine.region.source_choice import (
 from search.engine.region.state import EngineOptions, ResolveState
 from search.engine.region.un_system import with_un_unavailable_warning
 from search.engine.region.withheld import elected_series, with_withheld_warning
-from search.engine.retrieval.bound_values import RoleClassWalks
+from search.engine.retrieval.bound_values import RoleClassWalks, elects_within, held_family_memo
 from search.engine.role_text import DoorRole
+from search.engine.source_code import SeriesCodeMembers
 from search.engine.source_scope import SourceScope
 from search.models import Operation, RoleAxis, Warning
 from series_coverage.shared import CoverageSnapshot
@@ -131,6 +133,7 @@ async def resolve_variable(
     unit_text: str | None = None,
     unit_text_best_effort: bool = False,
     source_scope: SourceScope | None = None,
+    source_code: SeriesCodeMembers | None = None,
     coverage: CoverageSnapshot,
     options: EngineOptions | None = None,
 ) -> RegionResult:
@@ -166,7 +169,9 @@ async def resolve_variable(
     (`origin_catalogue.Catalogue.scoped`), from the start when it names a source and once
     the pass's menu stands when it only excludes, each answer's identity binds the
     provenances that served it, and a no-data result carries the scope
-    (`RegionResult.source_scope`).
+    (`RegionResult.source_scope`). `source_code` is the StatVars the part's series code names
+    (`search.engine.source_code`), which recall reads in place of the embedding resolve
+    (`ResolveState.source_code`); such a part gets no UN second pass.
     `unit_text` carries a parsed-door request and the raw-text door's typed unit phrase. A bound, expressible unit narrows
     observation facets. With `unit_text_best_effort`, a unit the elected data cannot convert
     to is withdrawn and the leg answers unconverted (`phase_shared.withdraw_typed_unit`).
@@ -241,6 +246,7 @@ async def resolve_variable(
             unit_text=unit_text,
             unit_text_best_effort=unit_text_best_effort,
             scope=source_scope,
+            source_code=source_code,
             pin_served_provenance=source_scope is not None,
             materialise_graph=materialise_graph,
             materialise_sdmx=_options.materialise_sdmx,
@@ -287,6 +293,7 @@ async def resolve_variable(
     # stands (`_run_phases`), and for the withheld warning.
     allowed = None if source_scope is None else source_scope.allowed
     with (
+        held_family_memo(),
         recording_degraded_reads() as lost,
         scoped_reads(allowed if source_scope is not None and source_scope.named else None),
     ):
@@ -294,7 +301,9 @@ async def resolve_variable(
             enter_phase("recall")
             with scoped_reads(allowed):
                 await _phase_recall(state)
-            result = _excluded_from_the_place(await _run_phases(state), state)
+            result = _within_source_code(
+                _excluded_from_the_place(await _run_phases(state), state), state
+            )
             # A superseded variable stands in the first pass as a UN variable the second
             # pass may recall too, so the second pass leaves out the shape the first elected
             # and found without observations, whichever resolver scored it.
@@ -314,6 +323,7 @@ async def resolve_variable(
                 first_sentences=first_sentences,
                 first_measure_class_refused=state.n_measure_class_refused,
                 first_scope_stands=state.scope_settled or not allows_un_system(state.scope),
+                code_named=source_code is not None,
                 second_state=lambda sink, bound: new_state(
                     pool="un_system",
                     emit=sink,
@@ -339,6 +349,26 @@ async def resolve_variable(
         # marks the exclusions that removed nothing.
         result = dataclasses.replace(result, source_scope=state.scope)
     return dataclasses.replace(result, degraded=True) if lost.degraded else result
+
+
+def _within_source_code(result: RegionResult, state: ResolveState) -> RegionResult:
+    """`result`, or the refusal of a part whose series code named its StatVars
+    (`ResolveState.source_code`) and one of whose Specs mints an identity the Datasets mint
+    elects StatVars outside them for, or none it can tell from the index's listed rows
+    (`bound_values.elects_within`). The orchestrator fetches the Spec by its spec_id, so
+    such an answer would serve another series than the code's."""
+    code = state.source_code
+    if code is None:
+        return result
+    for spec in result.specs:
+        if not elects_within(spec.definition.identity, code.dcids):
+            logger.info(
+                "source code %s: spec %s elects no family within its StatVars",
+                code.code,
+                spec.spec_id,
+            )
+            return state.no_data("variable_not_resolved", llm_usage=result.llm_usage)
+    return result
 
 
 def _excluded_from_the_place(result: RegionResult, state: ResolveState) -> RegionResult:
@@ -393,6 +423,7 @@ async def _fill_gap(
     first_sentences: list[SentenceEvent],
     first_measure_class_refused: int,
     first_scope_stands: bool,
+    code_named: bool = False,
     second_state: Callable[[EventSink | None, float | None], ResolveState],
 ) -> RegionResult:
     """`first`, or the answer from a second pass over `rcl.un_candidates` when `first` is
@@ -404,7 +435,8 @@ async def _fill_gap(
     would serve a source the part left out. So does a part whose exclusions left out every
     reading the unscoped question reaches, or the elected reading's data at the places
     (`ResolveState.scope_settled`). Our catalogue holds the measure, so the UN pass has no
-    gap to fill.
+    gap to fill. A part naming a series code (`code_named`) answers from the StatVars the
+    code names, so its `first` stands too.
     The second pass shares recall and the resolved entities, and ends `_SECOND_PASS_RESERVE_S`
     before `deadline`. It first waits for recall's UN resolve, which is bounded by
     `SEARCH_UN_RESOLVE_TIMEOUT_S`, and not past that bound. Its answer stands only when it is
@@ -437,7 +469,9 @@ async def _fill_gap(
         return result
 
     bound = None if deadline is None else deadline - _SECOND_PASS_RESERVE_S
-    skip = await _second_pass_skip(first, rcl=rcl, bound=bound, scope_stands=first_scope_stands)
+    skip = await _second_pass_skip(
+        first, rcl=rcl, bound=bound, scope_stands=first_scope_stands, code_named=code_named
+    )
     if skip is not None:
         _log_gap_fill(
             variable_index,
@@ -533,14 +567,20 @@ async def _fill_gap(
 
 
 async def _second_pass_skip(
-    first: RegionResult, *, rcl: Recall, bound: float | None, scope_stands: bool
+    first: RegionResult,
+    *,
+    rcl: Recall,
+    bound: float | None,
+    scope_stands: bool,
+    code_named: bool = False,
 ) -> str | None:
     """Why the second pass does not run after `first`, or `None` when it runs. `bound` is
     when the second pass must end. `scope_stands` holds when the part's scope settles its
     answer, because it allows no UN System Data Commons provenance or its exclusions left
     out every reading of our catalogue the question reaches, or the elected reading's data
     at the places. A `source_ambiguous` refusal
-    asks the user which reading they meant, so it stands. Only a `no_data` answer that the second pass could
+    asks the user which reading they meant, so it stands, and so does the answer of a part
+    whose series code named its StatVars (`code_named`). Only a `no_data` answer that the second pass could
     fill waits for the UN resolve, and not past `bound`."""
     if first.status != "no_data":
         return "answered"
@@ -548,6 +588,8 @@ async def _second_pass_skip(
         return "entity"
     if first.no_data_reason == "source_ambiguous":
         return "source_ambiguous"
+    if code_named:
+        return "source_code"
     if scope_stands:
         return "source_scope"
     try:
@@ -647,14 +689,18 @@ async def _run_phases(state: ResolveState) -> RegionResult:
                         | state.satisfied_measure_phrases
                         | state.elected_tie_phrases
                         | state.applied_dropped_qualifier_phrases
-                        | state.unapplied_qualifier_phrases
+                        | unbinding_phrases(state.requirements)
                         | state.slot_default_phrases
                         if state.shape_draft is not None
                         else frozenset()
                     )
+                    # Every requirement departs here, once, as the judgement of the part's
+                    # final answer leaves it (`with_requirement_departures`).
                     return _stating_unevaluated(
                         dataclasses.replace(
-                            result,
+                            with_requirement_departures(
+                                result, state.requirements, state.judgement
+                            ),
                             admitted_qualifier_phrases=admitted,
                             scope_unsettled=_scope_unsettled(state),
                             entity_words=group_request_names(state),
@@ -701,8 +747,11 @@ async def _end_related_reads(state: ResolveState) -> None:
 # `_PHASES` follows `NO_DATA_RESOLUTION_ORDER`. Each phase mints reasons ranked after those
 # available earlier, so the first terminal is the earliest applicable reason, with one
 # exception, `entity_set_too_large` for an elected shape, below.
-# `source_not_resolved` and `source_ambiguous` come first. A part's source mentions compile at
-# its door, and a refusal answers the leg before any phase runs (`fanout._stream_one_variable`).
+# `source_not_resolved` and `source_ambiguous` come first, then the part's series code refusals.
+# A part's source mentions and series code compile at its door, and a refusal answers the leg
+# before any phase runs (`fanout._stream_one_variable`). A held code's part mints
+# `source_code_not_held` at every phase that would mint `variable_not_resolved`
+# (`ResolveState.no_data`), so it ranks at the variable position there.
 # Entity errors come from `_phase_check_entities`, which runs before shape derivation and
 # the bind call. `entity_ambiguous` means every unresolved entity has an Ambiguous
 # resolution.
@@ -723,7 +772,7 @@ async def _end_related_reads(state: ResolveState) -> None:
 # `_phase_facet_requests` handles `unit_not_resolved` when a bound unit fails parsing. It also
 # rejects inexpressible units as unsupported.
 # `qualifier_not_bound` comes from definite assembly after identity confirmation or candidates'
-# single-survivor collapse. Both paths call `_unbound_query_qualifiers`. Prune/rank mints it
+# single-survivor collapse. Both paths call `requirements.settle_answer`. Prune/rank mints it
 # for a source scope that leaves no recalled shape.
 # Materialise can mint `no_matching_slice`, deferred to the place-less mint, or `binding_mismatch`.
 # No-data/candidate handlers forward materialised `binding_mismatch` reasons.

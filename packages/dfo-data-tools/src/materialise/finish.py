@@ -21,7 +21,8 @@ from materialise.convert import ConversionRecord
 from materialise.dependencies import Dependencies
 from materialise.enrichment import EnrichmentLookup
 from materialise.errors import MaterialisationUsageError
-from materialise.facets import binds_no_place
+from materialise.facets import FacetSelection, binds_no_place, selected_continued_series
+from materialise.frame_build import fold_method_periods
 
 # `_build_warnings` checks outcome classes at runtime. `generation` imports only the
 # `MaterialisationRequest` annotation under `TYPE_CHECKING`, so these imports create no cycle.
@@ -99,7 +100,38 @@ def _conversion_trace_entry(
         "examples": list(capped_projected),
         "truncated": projected_truncated,
     }
+    if left_out := _left_out(record for _, record in members):
+        entry["left_out"] = left_out
     return entry
+
+
+def _left_out(records: Iterable[ConversionRecord]) -> list[dict[str, object]]:
+    """What the conversions in `records` left out, counted across them: the distinct entities
+    no single currency names (`currency_unmapped`), and the distinct entities and entity-years
+    a missing deflator left out (`deflator_missing`). A reason that left nothing out is
+    absent."""
+    unmapped: set[str] = set()
+    deflated: set[tuple[str, int]] = set()
+    for record in records:
+        unmapped.update(record.omitted_entities)
+        deflated.update(
+            (entity, year) for entity, years in record.deflator_omitted for year in years
+        )
+    left_out: list[dict[str, object]] = []
+    if unmapped:
+        left_out.append({"reason": "currency_unmapped", "count": len(unmapped), "of": "entities"})
+    if deflated:
+        left_out.append(
+            {
+                "reason": "deflator_missing",
+                "count": len({entity for entity, _ in deflated}),
+                "of": "entities",
+            }
+        )
+        left_out.append(
+            {"reason": "deflator_missing", "count": len(deflated), "of": "entity_periods"}
+        )
+    return left_out
 
 
 def _conversion_trace(
@@ -121,6 +153,27 @@ def _conversion_trace(
             by_tables,
             key=lambda t: (t[0], t[1], t[2] is not None, t[2] or ""),
         )
+    )
+
+
+def _choices(selections: Iterable[FacetSelection]) -> tuple[dict[str, object], ...]:
+    """`ManifestTrace.choices`: each selection's `choice_entry`, in axis order, for those the
+    default policy chose over disagreeing candidates."""
+    return tuple(entry for selection in selections if (entry := selection.choice_entry()))
+
+
+def _continuations(
+    selections: Iterable[FacetSelection], method_periods: Mapping[str, tuple[str, str]]
+) -> tuple[dict[str, object], ...]:
+    """`ManifestTrace.continuations`: for each selection whose series a method continues
+    (`FacetSelection.continued_by`), its `axis`, the continuing `method`, and `periods`, the
+    first and last period that method's rows supply in the served frame (`method_periods`),
+    so after the reported value wins any period both hold. A continuing method that supplies
+    no row is left out."""
+    return tuple(
+        {"axis": selection.axis, "method": method, "periods": list(method_periods[method])}
+        for selection in selections
+        if (method := selection.continued_by) is not None and method in method_periods
     )
 
 
@@ -152,7 +205,7 @@ def _finish_member(
     frame_digest = frame_sha256(outcome.frame)
     content_version = mint_version_from_digest(frame_digest)
     # Statistics derive from the frame but do not enter its content-version preimage.
-    statistics_sink = SeriesStatisticsSink()
+    statistics_sink = SeriesStatisticsSink(continuing=selected_continued_series(outcome.selections))
     statistics_sink.write(compute_series_statistics_table(outcome.frame))
     series_statistics = statistics_sink.finish()
     profile_start = time.perf_counter()
@@ -160,6 +213,8 @@ def _finish_member(
         outcome.frame, role_columns=request.declared_roles, enrichment=enrichment
     )
     output_profile_seconds = time.perf_counter() - profile_start
+    method_periods: dict[str, tuple[str, str]] = {}
+    fold_method_periods(method_periods, outcome.frame)
 
     trace = ManifestTrace(
         applied_window=(
@@ -176,6 +231,8 @@ def _finish_member(
         ),
         facets=tuple(selection.as_trace_entry() for selection in outcome.selections.values()),
         normalisations=(),
+        choices=_choices(outcome.selections.values()),
+        continuations=_continuations(outcome.selections.values(), method_periods),
         conversion=(
             _conversion_trace(((request.stat_var, outcome.conversion_record),))
             if outcome.conversion_record is not None
@@ -185,6 +242,7 @@ def _finish_member(
         materialiser_build=materialiser_build,
         capability_version=capability_version,
         family=request.family,
+        coverage_gaps=tuple(gap.as_trace_entry() for gap in outcome.coverage_gaps),
     )
 
     return pipeline.MaterialisationResult(
@@ -283,6 +341,8 @@ def _finish_group(
         resolved_stat_vars=resolved_stat_vars,
         facets=tuple(selection.as_trace_entry() for selection in outcome.selections.values()),
         normalisations=(),
+        choices=_choices(outcome.selections.values()),
+        continuations=_continuations(outcome.selections.values(), outcome.method_periods),
         conversion=_conversion_trace(converted),
         frame_grammar_version=FRAME_GRAMMAR_VERSION,
         materialiser_build=materialiser_build,
@@ -321,10 +381,12 @@ def _build_warnings(
     because it holds no facet at the group's one cadence, or under a range window none with a
     point in it (`_GroupOutcome.off_cadence_members`). One `coverage_below_scope` states every
     cause that applies.
-    `deflator_projected` applies when any conversion record has `projected_count > 0`, and
-    `currency_unmapped_omitted` when any record omitted an entity's rows; an omitted entity
-    the request bound counts as reported there, so `coverage_below_scope` does not name it.
-    `deflator_missing_omitted` applies when any record left out rows for a missing deflator.
+    `currency_unmapped_omitted` applies when any conversion record omitted an entity's rows;
+    an omitted entity the request bound counts as reported there, so `coverage_below_scope`
+    does not name it. `deflator_missing_omitted` applies when any record left out rows for a
+    missing deflator. Values priced from a projected rate or deflator raise no warning: the
+    trace's `conversion[].projected` counts them, and a description states them as an
+    `estimated` caveat.
     Warnings travel on the result. Member, group, and preview outcomes
     supply row counts and served-entity summaries without retaining survivor rows."""
     warnings: list[MaterialisationWarning] = []
@@ -382,9 +444,6 @@ def _build_warnings(
                 range_window=request.window is not None and request.window.kind == "range",
             )
         )
-
-    if any(record.projected_count > 0 for record in converted_records):
-        warnings.append(deflator_projected_warning(converted_records))
 
     if omitted:
         warnings.append(currency_unmapped_omitted_warning(omitted))
@@ -480,7 +539,8 @@ def deflator_projected_warning(
     records: Sequence[_ProjectedConversion],
 ) -> MaterialisationWarning:
     """Reports projected row count and sorted distinct `entity@year` examples across records.
-    Examples are capped, with truncation based on distinct keys rather than row count."""
+    Examples are capped, with truncation based on distinct keys rather than row count. Search's
+    observation answers raise it; a materialisation's warnings do not."""
     _title, detail = MATERIALISE_CODE_CATALOGUE["deflator_projected"]
     total = sum(record.projected_count for record in records)
     examples, truncated = _capped_distinct_examples(

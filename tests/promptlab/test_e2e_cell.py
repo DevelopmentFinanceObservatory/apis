@@ -167,9 +167,9 @@ def test_run_e2e_cell_runs_end_to_end_offline(tmp_path):
 def test_run_e2e_cell_resume_after_kill_matches_a_fresh_run(tmp_path):
     # One case, two seeds: with concurrency=1 the second seed's resolve
     # cannot start until the first's completes and appends, so "kill on the
-    # 3rd generate_structured call" deterministically means "seed 1's own
-    # extract+bind calls both succeeded and were persisted; seed 2 never
-    # got as far as appending anything."
+    # 4th generate_structured call" deterministically means "seed 1's own
+    # extract, bind and quantity read calls all succeeded and were persisted;
+    # seed 2 never got as far as appending anything."
     case_id = _CASE_IDS[0]
     rung = _production_rung(seeds=(1, 2))
     killed_capture = _make_capture(tmp_path / "capture", case_ids=(case_id,))
@@ -177,7 +177,7 @@ def test_run_e2e_cell_resume_after_kill_matches_a_fresh_run(tmp_path):
     out = _make_cell_store(cell_root, rung)
     graph = _graph_cache(tmp_path)
 
-    failing_llm = _FailingLLM(FakeLLM(), fail_after=2)
+    failing_llm = _FailingLLM(FakeLLM(), fail_after=3)
     try:
         asyncio.run(
             run_e2e_cell(
@@ -215,7 +215,7 @@ def test_run_e2e_cell_resume_after_kill_matches_a_fresh_run(tmp_path):
             cases=_CASES,
         )
     )
-    assert resuming_llm.calls == 2, "seed 1 must not be re-run; only seed 2's 2 calls are new"
+    assert resuming_llm.calls == 3, "seed 1 must not be re-run; only seed 2's 3 calls are new"
     assert reopened.is_complete()
     assert reopened.done_keys() == {(case_id, 0, 1), (case_id, 0, 2)}
     resumed_scores = reopened.read_scores()
