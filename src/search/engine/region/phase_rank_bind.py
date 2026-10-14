@@ -1971,10 +1971,11 @@ def _force_qualifier_bindings(
     *,
     variable: str,
     chosen: tuple[QualifierMatch, ...] = (),
-) -> list[SlotBindingDraft]:
+) -> tuple[list[SlotBindingDraft], frozenset[str]]:
     """Replace each admitted property's binding with the codes its matches and the bind
     model's menu choices (`chosen`, `_menu_choices`) combine into (`_combine_matches`), a
-    value for one code and a set for several.
+    value for one code and a set for several, and return the bindings with the properties
+    so replaced.
 
     "refugee costs in donor countries ODA" binds DAC1's in-donor refugee costs, which nest
     under ODA, in either word order. A property whose matches leave each other unresolved
@@ -1999,9 +2000,9 @@ def _force_qualifier_bindings(
         if code_system in axis_by_property
     }
     if not forced:
-        return bindings
+        return bindings, frozenset()
     kept = [b for b in bindings if b.property_dcid not in forced]
-    return kept + list(forced.values())
+    return kept + list(forced.values()), frozenset(forced)
 
 
 def _log_admitted_qualifiers(matches: tuple[QualifierMatch, ...]) -> None:

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import time
 from typing import cast
 from unittest.mock import patch
@@ -35,7 +34,6 @@ from search.engine.extract import (
     ExtractedEntity,
     Extraction,
     ExtractionResult,
-    _log_member_spans,
 )
 from search.engine.surface_resolution import resolve_names
 from search.models import RawTextInput
@@ -84,29 +82,6 @@ def _lookup(
     return dict(zip(names, resolutions, strict=True))
 
 
-_EXTRACT_LOGGER = "search.engine.extract"
-
-
-def _member_cue_reasons(caplog: pytest.LogCaptureFixture) -> list[object]:
-    """The reason of each member-cue warning `_log_member_spans` logged."""
-    return [
-        record.args[0]
-        for record in caplog.records
-        if record.name == _EXTRACT_LOGGER
-        and record.levelno == logging.WARNING
-        and isinstance(record.args, tuple)
-        and record.msg.startswith("extract: members reading")
-    ]
-
-
-def test_member_span_is_nullable_and_defaults_to_none() -> None:
-    entity = ExtractedEntity(text="Asia")
-    schema = ExtractedEntity.model_json_schema()
-
-    assert entity.member_span is None
-    assert schema["properties"]["member_span"]["anyOf"] == [{"type": "string"}, {"type": "null"}]
-
-
 def test_registered_parenthetical_label_recovers_the_full_source_surface() -> None:
     resolver = _Resolver({}, names=("Asia (DAC)",))
     entities = _recover_entity_surfaces(
@@ -127,6 +102,69 @@ def test_registered_full_span_promotes_the_qualified_canonical_identity() -> Non
     )
 
     assert entities == [ExtractedEntity(text="Asia (DAC)", span="Asia (DAC)")]
+
+
+@pytest.mark.parametrize("span", ["Asie", "Asie (DAC)"])
+def test_translated_span_carries_its_qualifier_onto_the_english_name(span: str) -> None:
+    resolver = _Resolver({}, names=("Asia (DAC)",))
+    entities = _recover_entity_surfaces(
+        [ExtractedEntity(text="Asia", span=span)],
+        query="aide de la France à l'Asie (DAC)",
+        resolver=cast(EntityResolver, resolver),
+    )
+
+    assert entities == [ExtractedEntity(text="Asia (DAC)", span="Asie (DAC)")]
+
+
+@pytest.mark.parametrize(
+    ("query", "entities", "expected"),
+    [
+        pytest.param(
+            "ODA from France to Africa (DAC) in 2016",
+            [
+                ExtractedEntity(text="France", span="France"),
+                ExtractedEntity(text="Africa", span="Africa"),
+                ExtractedEntity(text="DAC", span="DAC"),
+            ],
+            [
+                ExtractedEntity(text="France", span="France"),
+                ExtractedEntity(text="Africa (DAC)", span="Africa (DAC)"),
+            ],
+            id="qualifier_read_as_its_own_entity",
+        ),
+        pytest.param(
+            "ODA from the DAC to Africa (DAC)",
+            [
+                ExtractedEntity(text="DAC", span="DAC"),
+                ExtractedEntity(text="Africa", span="Africa"),
+            ],
+            [
+                ExtractedEntity(text="DAC", span="DAC"),
+                ExtractedEntity(text="Africa (DAC)", span="Africa (DAC)"),
+            ],
+            id="qualifier_also_named_on_its_own",
+        ),
+        pytest.param(
+            "DAC2a gross ODA to Africa (DAC)",
+            [
+                ExtractedEntity(text="Africa", span="Africa"),
+                ExtractedEntity(text="DAC", span="DAC"),
+            ],
+            [ExtractedEntity(text="Africa (DAC)", span="Africa (DAC)")],
+            id="qualifier_inside_a_dataset_code",
+        ),
+    ],
+)
+def test_a_qualifier_inside_a_recovered_name_is_no_entity_of_its_own(
+    query: str, entities: list[ExtractedEntity], expected: list[ExtractedEntity]
+) -> None:
+    resolver = _Resolver({}, names=("Africa (DAC)",))
+
+    recovered = _recover_entity_surfaces(
+        entities, query=query, resolver=cast(EntityResolver, resolver)
+    )
+
+    assert recovered == expected
 
 
 def test_unknown_parenthetical_does_not_change_a_bare_place_identity() -> None:
@@ -237,6 +275,14 @@ _COG = Entity(
 )
 _KOR = Entity(dcid="country/KOR", name="South Korea", kind="country", graph_type="Country")
 _PRK = Entity(dcid="country/PRK", name="North Korea", kind="country", graph_type="Country")
+_CAN = Entity(dcid="country/CAN", name="Canada", kind="country", graph_type="Country")
+_NAIROBI = Entity(dcid="wikidataId/Q3870", name="Nairobi", kind="place_other", graph_type="City")
+_NAIROBI_COUNTY = Entity(
+    dcid="wikidataId/Q3335223", name="Nairobi County", kind="place_other", graph_type="County"
+)
+# Two towns named Canadian, in Oklahoma and Texas, which the graph pack holds.
+_CANADIAN_OK = Entity(dcid="geoId/4011450", name="Canadian", kind="place_other", graph_type="City")
+_CANADIAN_TX = Entity(dcid="geoId/4812412", name="Canadian", kind="place_other", graph_type="City")
 
 
 @pytest.mark.parametrize(
@@ -280,18 +326,28 @@ _PRK = Entity(dcid="country/PRK", name="North Korea", kind="country", graph_type
             id="korea",
         ),
         pytest.param(
-            "aid to Congo",
-            ExtractedEntity(text="Kenya", span="Congo"),
+            "how fast has Canadian aid to Haiti grown",
+            ExtractedEntity(text="Canada", span="Canadian"),
             {
-                "Congo": Ambiguous(candidates=(_COD, _COG)),
-                "Kenya": Resolved(entity=_ASIA),
+                "Canadian": Ambiguous(candidates=(_CANADIAN_OK, _CANADIAN_TX)),
+                "Canada": Resolved(entity=_CAN),
             },
-            Ambiguous(candidates=(_COD, _COG)),
-            id="text_outside_candidates",
+            Resolved(entity=_CAN),
+            id="demonym_naming_towns",
+        ),
+        pytest.param(
+            "population of Nairobi county",
+            ExtractedEntity(text="Nairobi", span="Nairobi county"),
+            {
+                "Nairobi county": Resolved(entity=_NAIROBI_COUNTY),
+                "Nairobi": Resolved(entity=_NAIROBI),
+            },
+            Resolved(entity=_NAIROBI_COUNTY),
+            id="surface_adds_words_to_the_name",
         ),
     ],
 )
-def test_an_ambiguous_or_unheld_surface_settles_on_the_text_it_names(
+def test_a_surface_and_its_name_settle_on_the_more_specific_text(
     query: str, entity: ExtractedEntity, answers: dict[str, object], expected: Resolution
 ) -> None:
     resolver = _Resolver(answers)
@@ -424,140 +480,6 @@ def test_preparation_keeps_canonical_keys_and_query_wording_separate() -> None:
     assert list(prep.entity_roles) == ["Asia"]
 
 
-@pytest.mark.parametrize(
-    ("query", "entity"),
-    [
-        (
-            "countries in Asia",
-            ExtractedEntity(text="Asia", span="Asia", members=True, member_span="countries in"),
-        ),
-        (
-            "Asian member states",
-            ExtractedEntity(text="Asia", span="Asian", members=True, member_span="member states"),
-        ),
-        (
-            "pays d'Asie",
-            ExtractedEntity(text="Asia", span="Asie", members=True, member_span="pays d'"),
-        ),
-        (
-            "países de Asia",
-            ExtractedEntity(text="Asia", span="Asia", members=True, member_span="países de"),
-        ),
-    ],
-)
-def test_member_reading_needs_an_adjacent_source_cue(
-    query: str, entity: ExtractedEntity, caplog: pytest.LogCaptureFixture
-) -> None:
-    with caplog.at_level(logging.WARNING, logger=_EXTRACT_LOGGER):
-        _log_member_spans(query, [entity], ["aid"])
-
-    assert _member_cue_reasons(caplog) == []
-
-
-@pytest.mark.parametrize(
-    ("query", "entity"),
-    [
-        (
-            "Länder in Afrika",
-            ExtractedEntity(text="Africa", span="Afrika", members=True, member_span="Länder in"),
-        ),
-        (
-            "بلدان أفريقيا",
-            ExtractedEntity(text="Africa", span="أفريقيا", members=True, member_span="بلدان"),
-        ),
-        (
-            "アジアの国々",
-            ExtractedEntity(text="Asia", span="アジア", members=True, member_span="国々"),
-        ),
-    ],
-    ids=["german", "arabic", "japanese"],
-)
-def test_member_reading_accepts_source_grounded_cues_in_any_language(
-    query: str, entity: ExtractedEntity, caplog: pytest.LogCaptureFixture
-) -> None:
-    with caplog.at_level(logging.WARNING, logger=_EXTRACT_LOGGER):
-        _log_member_spans(query, [entity], ["aid"])
-
-    assert _member_cue_reasons(caplog) == []
-
-
-@pytest.mark.parametrize(
-    ("query", "entities", "variables", "reason"),
-    [
-        (
-            "aid to Asia",
-            [ExtractedEntity(text="Asia", span="Asia", members=True, member_span="to")],
-            ["aid"],
-            "member_span is a direction marker",
-        ),
-        (
-            "aid to member Asia",
-            [
-                ExtractedEntity(
-                    text="Asia",
-                    span="Asia",
-                    flow_role="destination",
-                    role_span="member",
-                    members=True,
-                    member_span="member",
-                )
-            ],
-            ["aid"],
-            "member_span overlaps role_span",
-        ),
-        (
-            "aid in countries to Asia",
-            [ExtractedEntity(text="Asia", span="Asia", members=True, member_span="countries")],
-            ["aid"],
-            "member_span is not adjacent to entity span",
-        ),
-        (
-            "countries in France and Asia",
-            [
-                ExtractedEntity(text="France", span="France"),
-                ExtractedEntity(text="Asia", span="Asia", members=True, member_span="countries in"),
-            ],
-            ["aid"],
-            "member_span crosses another entity's span",
-        ),
-        (
-            "aid to Asia",
-            [ExtractedEntity(text="Asia", span="Asia", members=True)],
-            ["aid"],
-            "members set with no member_span to cite",
-        ),
-        (
-            "health Asia",
-            [ExtractedEntity(text="Asia", span="Asia", members=True, member_span="health")],
-            ["health"],
-            "member_span overlaps a measure",
-        ),
-    ],
-    ids=[
-        "direction_only",
-        "role_overlap",
-        "measure_between",
-        "crosses_entity",
-        "no_citation",
-        "measure_cue",
-    ],
-)
-def test_unsupported_member_claim_is_logged_and_kept(
-    query: str,
-    entities: list[ExtractedEntity],
-    variables: list[str],
-    reason: str,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    before = [entity.model_copy() for entity in entities]
-
-    with caplog.at_level(logging.WARNING, logger=_EXTRACT_LOGGER):
-        _log_member_spans(query, entities, variables)
-
-    assert _member_cue_reasons(caplog) == [reason]
-    assert entities == before
-
-
 def test_registered_graph_pack_name_recovers_the_qualified_source_surface() -> None:
     resolver = _Resolver({}, names=("World Bank (DAC)",))
     entities = _recover_entity_surfaces(
@@ -658,7 +580,6 @@ def test_raw_pipeline_recovers_the_dac_group_before_validating_its_members() -> 
                 flow_role="destination",
                 role_span="to",
                 members=True,
-                member_span="countries",
             ),
         ],
     )
@@ -689,6 +610,25 @@ def test_real_registry_recognizes_a_qualified_registered_name(name: str) -> None
     assert not resolver.is_exact_registered_name("World Bank (unregistered)")
 
 
+def test_raw_pipeline_reads_a_translated_qualified_span_as_its_english_group() -> None:
+    extraction = Extraction(
+        kind="resolution",
+        variables=["APD"],
+        entities=[
+            ExtractedEntity(text="France", span="France", flow_role="origin", role_span="de"),
+            ExtractedEntity(text="Asia", span="Asie (DAC)", flow_role="destination", role_span="à"),
+        ],
+    )
+
+    interpretation, prep, pre_resolved = asyncio.run(
+        _raw_pipeline_capture("APD de la France à l'Asie (DAC)", extraction)
+    )
+
+    assert interpretation.entities == ["France", "Asia (DAC)"]
+    assert prep.entity_words["Asia (DAC)"] == "Asie (DAC)"
+    assert isinstance(pre_resolved["Asia (DAC)"], Group)
+
+
 def test_raw_pipeline_keeps_a_qualified_pack_name_out_of_source_scan() -> None:
     extraction = Extraction(
         kind="resolution",
@@ -713,19 +653,15 @@ def test_raw_pipeline_keeps_a_qualified_pack_name_out_of_source_scan() -> None:
     assert set(pre_resolved) == {"World Bank (DAC)"}
 
 
-def test_raw_pipeline_keeps_a_members_reading_that_cites_no_cue(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+def test_raw_pipeline_keeps_a_members_reading() -> None:
     extraction = Extraction(
         kind="resolution",
         variables=["health spending"],
         entities=[ExtractedEntity(text="Africa", span="African", members=True)],
     )
 
-    with caplog.at_level(logging.WARNING, logger=_EXTRACT_LOGGER):
-        _, prep, _ = asyncio.run(
-            _raw_pipeline_capture("health spending of African countries", extraction)
-        )
+    _, prep, _ = asyncio.run(
+        _raw_pipeline_capture("health spending of African countries", extraction)
+    )
 
     assert prep.member_entities == frozenset({"Africa"})
-    assert _member_cue_reasons(caplog) == ["members set with no member_span to cite"]

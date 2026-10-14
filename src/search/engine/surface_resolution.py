@@ -7,14 +7,19 @@ and settles between the surface's answer and the name's own:
 
 - a qualified surface ("Asia (DAC)" for the name "Asia") is the only text resolved, so a
   named aggregate never widens to the bare place;
-- otherwise the surface and the name are resolved in one batch. The surface's answer
-  stands, except that a `NotFound` or `NotHeld` surface takes the name's answer, and an
-  `Ambiguous` surface takes the name's answer when that is one of its candidates
-  ("Congo" read as "Democratic Republic of the Congo").
+- otherwise the surface and the name are resolved in one batch, and the more specific
+  text leads. A surface that adds words to the name ("Nairobi county" for "Nairobi") leads,
+  since the extractor dropped words the user wrote. A surface the name rewrites ("Canadian"
+  for "Canada", "Congo" for "Democratic Republic of the Congo") follows, since the name is
+  the extractor's reading of it; "Canadian" alone matches two US towns. The leading answer
+  stands, except that a `NotFound` lead takes the other answer, a `NotHeld` lead takes it
+  unless that is `NotFound`, and an `Ambiguous` lead takes it when it is one of the lead's
+  candidates.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 
 from entity_resolution import Ambiguous, EntityResolver, NotFound, NotHeld, Resolution, Resolved
@@ -23,6 +28,14 @@ from entity_resolution import Ambiguous, EntityResolver, NotFound, NotHeld, Reso
 def _is_qualified(surface: str, name: str) -> bool:
     """Whether `surface` carries a parenthetical qualifier `name` lacks."""
     return "(" in surface and "(" not in name
+
+
+def _adds_words(surface: str, name: str) -> bool:
+    """Whether `surface` holds `name` as whole words and more ("Nairobi county", "Nairobi")."""
+    folded = surface.casefold()
+    return folded != name.casefold() and bool(
+        re.search(rf"(?<!\w){re.escape(name.casefold())}(?!\w)", folded)
+    )
 
 
 def _texts(name: str, surface: str | None) -> list[str]:
@@ -42,17 +55,18 @@ def _settle(name: str, surface: str | None, by_text: Mapping[str, Resolution]) -
     if _is_qualified(surface, name):
         return through_surface
     own = by_text[name]
-    if isinstance(through_surface, NotFound):
-        return own
-    if isinstance(through_surface, NotHeld):
-        return through_surface if isinstance(own, NotFound) else own
+    lead, other = (through_surface, own) if _adds_words(surface, name) else (own, through_surface)
+    if isinstance(lead, NotFound):
+        return other
+    if isinstance(lead, NotHeld):
+        return lead if isinstance(other, NotFound) else other
     if (
-        isinstance(through_surface, Ambiguous)
-        and isinstance(own, Resolved)
-        and own.entity.dcid in {candidate.dcid for candidate in through_surface.candidates}
+        isinstance(lead, Ambiguous)
+        and isinstance(other, Resolved)
+        and other.entity.dcid in {candidate.dcid for candidate in lead.candidates}
     ):
-        return own
-    return through_surface
+        return other
+    return lead
 
 
 async def resolve_names(
