@@ -126,7 +126,8 @@ def _closest_match(fact: DepartureFact, _family: FlowFamily | None, shows_data: 
 
 def _measure_not_applied(fact: DepartureFact, _family: FlowFamily | None, shows_data: bool) -> str:
     """A price basis (the unit token's ref) is stated without its leading preposition. Any
-    other dropped phrase is the user's own words, quoted. With no words (`asked` `None`: a
+    other dropped phrase is the user's own words, quoted; one that asked to leave something
+    out (`DepartureFact.left_out`) says the search did not apply it. With no words (`asked` `None`: a
     resubmit, or a value no name exists for) it names what was left out
     (`DepartureFact.values`)."""
     if fact.binding_ref == UNIT_REF:
@@ -142,6 +143,8 @@ def _measure_not_applied(fact: DepartureFact, _family: FlowFamily | None, shows_
             return f"This shows the measure without {values}."
         return f"This check left out {values}."
     asked = f'You asked for "{_asked(fact)}".'
+    if fact.left_out:
+        return f"{asked} The search did not apply it."
     if shows_data:
         return f"{asked} This shows the measure without it."
     return f"{asked} This check left it out."

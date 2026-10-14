@@ -1,8 +1,9 @@
 """Runs the production rung offline against three fixture-backed corpus queries.
 
 The production rung composes prompts byte-identical to the shipped constants, so the recorded
-FakeLLM fixtures answer them; a synthetic rung would not. The cases (maternal-mortality, sdg-03, sdg-04)
-are single-leg queries that resolve cleanly against the offline graph fixtures.
+FakeLLM fixtures answer them; a synthetic rung would not. The cases (maternal-mortality,
+synth-tb-incidence-ethiopia, sdg-04) are single-leg queries that resolve cleanly against the
+offline graph fixtures.
 """
 
 from __future__ import annotations

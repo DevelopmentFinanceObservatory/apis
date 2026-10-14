@@ -119,6 +119,7 @@ def test_records_carry_schema_hashes_output_usage_elapsed_and_thinking_level():
         "variables": ["gdp"],
         "entities": [],
         "operations": [],
+        "exclusions": [],
         "dropped_qualifiers": [],
         "dates": [],
     }

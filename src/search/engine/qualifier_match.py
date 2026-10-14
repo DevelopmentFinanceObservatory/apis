@@ -959,6 +959,44 @@ def is_coded_only_phrase(
     return spans, matches
 
 
+# A party's graph name ends in the name of the list that publishes it: "non-DAC countries
+# (DAC)". Code labels come without it (`CodeRow.label`).
+_PARENTHETICAL_SUFFIX_RE = re.compile(r"\s*\([^()]*\)\s*$")
+
+# Each index's party lookup, by index object id. A weakref finalizer removes the entry
+# before Python can reuse the id.
+_party_lookup_cache: dict[int, TokenLookup[str]] = {}
+
+
+def _party_lookup(index: CodeIndex) -> TokenLookup[str]:
+    """Every party of `index` with a label, found by its label less a trailing
+    parenthetical. Built once per index."""
+    key = id(index)
+    cached = _party_lookup_cache.get(key)
+    if cached is not None:
+        return cached
+    cached = TokenLookup(
+        (_PARENTHETICAL_SUFFIX_RE.sub("", party.label), party.dcid)
+        for party in index.parties.values()
+        if party.label
+    )
+    _party_lookup_cache[key] = cached
+    weakref.finalize(index, _party_lookup_cache.pop, key, None)
+    return cached
+
+
+def names_a_label(text: str, index: CodeIndex, measure_index: MeasureIndex | None) -> bool:
+    """Whether the whole of `text` is one label or synonym of a code row or a measure value,
+    read as `is_coded_only_phrase` reads them (`_candidate_rows`, one trailing "s" allowed),
+    or the label of a party `index` lists: "official development assistance excluding debt
+    relief" (DAC2a aid type 250) and "non-DAC countries" are; "excluding humanitarian aid"
+    is not."""
+    tokens = tokenize(text)
+    if _candidate_rows(tokens, _lexicon(index, measure_index), None) is not None:
+        return True
+    return bool(_party_lookup(index).get(tokens))
+
+
 def match_qualifier_ties(
     query: str, index: CodeIndex, measure_index: MeasureIndex | None = None
 ) -> tuple[QualifierTie, ...]:

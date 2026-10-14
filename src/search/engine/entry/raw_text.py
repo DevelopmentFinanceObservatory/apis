@@ -9,6 +9,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import re
+import unicodedata
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import aclosing
 
@@ -34,6 +35,7 @@ from search.engine.conjoin import VARIABLES_CLAMPED, assemble_region
 from search.engine.deadline import _await_bounded
 from search.engine.departures import (
     WarningKey,
+    exclusion_not_applied,
     measure_not_applied,
     names_request,
     price_basis_not_applied,
@@ -61,6 +63,7 @@ from search.engine.events import (
 from search.engine.extract import (
     DateRequest,
     ExtractedEntity,
+    ExtractedExclusion,
     Extraction,
     ExtractionResult,
     _dedupe_stripped,
@@ -88,7 +91,7 @@ from search.engine.region.sentence_events import answer_events
 from search.engine.response_cache_flow import CacheScope
 from search.engine.role_text import DoorRole, debt_axes
 from search.engine.source_code import PartCode, compile_part_code, scan_source_codes
-from search.engine.source_scan import scan_sources, source_phrases
+from search.engine.source_scan import find_source_hits, scan_sources, source_phrases
 from search.engine.source_scope import (
     SourceRefusal,
     SourceScope,
@@ -369,8 +372,32 @@ async def _run_extract_phase(
     return extract_result, extract_usage, timing_extract
 
 
+def _exclusions_naming_no_source(query: str, extraction: Extraction) -> list[str]:
+    """The phrases `query` asked to leave out (`Extraction.exclusions`), less those that
+    only name a source the query names (`source_scan.source_phrases`)."""
+    phrases = [
+        phrase
+        for phrase in _dedupe_stripped([exclusion.phrase for exclusion in extraction.exclusions])
+        if phrase
+    ]
+    if not phrases:
+        return []
+    hits = find_source_hits(
+        query,
+        dictionary=source_dictionary(current_catalogue()),
+        entity_spans=[entity.span or entity.text for entity in extraction.entities],
+        measures=[],
+        index=get_index(),
+    )
+    naming_sources = source_phrases(
+        phrases, [SourceMention(text=hit.text, polarity=hit.polarity) for hit in hits]
+    )
+    return [phrase for phrase in phrases if phrase not in naming_sources]
+
+
 async def _no_variables_response(
     query: str,
+    extraction: Extraction,
     *,
     start_ms: int,
     params: EntryParams,
@@ -378,7 +405,10 @@ async def _no_variables_response(
     timing_extract: int,
 ) -> AsyncGenerator[Event]:
     """Terminal response when extract() ran but found no variables at all:
-    reports variable_not_resolved with the query's own stripped text.
+    reports variable_not_resolved with the query's own stripped text, and a
+    `query_qualifier_dropped` warning for each phrase the query asked to leave out
+    (`Extraction.exclusions`), which may have removed the only measure. A phrase that only
+    names a source is no qualifier left unapplied, as on a part that answers.
     """
     echo = make_query_echo(query, extract_skipped=False)
     skills_warnings = [
@@ -403,7 +433,10 @@ async def _no_variables_response(
     part = build_no_data_part(
         "variable_not_resolved",
         variable_text=query.strip(),
-        warnings=[],
+        warnings=[
+            _dropped_qualifier_warning(phrase)
+            for phrase in _exclusions_naming_no_source(query, extraction)
+        ],
         include_skills=params.include_skills,
         skills_index=params.skills_index,
     )
@@ -518,8 +551,18 @@ class _ExtractionPrep:
     `unit_text` is the dropped phrases that bind as one unit request
     (`_split_unit_phrases`), which every variable's part carries as the parsed door's
     `ParsedPart.unit_text` does; they stay out of `dropped_qualifier_phrases`.
+    `exclusion_phrases` are the whole phrases the query asked to leave out
+    (`Extraction.exclusions`) that name no source, and `exclusion_warnings` one
+    `query_qualifier_dropped` warning for each, quoting the phrase as shown. They stay out of
+    `dropped_qualifier_phrases`, so bind never reads them as asked for; each leg judges its
+    answers on them, and a warning stands unless every leg's answers leave the phrase out
+    (`surviving`). `exclusions` holds their entries, one for each thing a phrase leaves
+    out, which the legs judge on (`state.exclusion_requirements`). `request_text` is the
+    query without the stretches the exclusions cover
+    (`ExtractionResult.request_text`), the text the legs match and the cache signals read.
     `qualifier_facts` holds the departure of each `qualifier_warnings` entry whose phrase
-    asks for something (`_dropped_phrase_fact`), under its warning's key. `entity_words`
+    asks for something (`_dropped_phrase_fact`), and of each `exclusion_warnings` entry
+    (`departures.exclusion_not_applied`), under its warning's key. `entity_words`
     maps each entity name to the query's own words for it (`ExtractedEntity.span`), first
     mention first. `entity_surfaces` holds those words where they occur in the query and
     differ from the name, which recall resolves the name through (`_entity_surfaces`).
@@ -548,6 +591,10 @@ class _ExtractionPrep:
     dropped_qualifier_phrases: list[str]
     clamp_warnings: list[Warning]
     qualifier_warnings: list[Warning]
+    exclusion_phrases: list[str]
+    exclusion_warnings: list[Warning]
+    exclusions: list[ExtractedExclusion]
+    request_text: str
     qualifier_facts: dict[WarningKey, DepartureFact]
     entity_words: dict[str, str]
     entity_surfaces: dict[str, str]
@@ -558,6 +605,23 @@ class _ExtractionPrep:
     per_variable_source_scopes: list[SourceScope | SourceRefusal | None]
     per_variable_source_codes: list[str | None]
     per_variable_compiled_codes: list[PartCode | None]
+
+    def surviving(self, regions: Sequence[RegionResult]) -> list[Warning]:
+        """The request-wide qualifier warnings that stay true across `regions`: a dropped
+        phrase no region admitted (`_surviving_qualifier_warnings`), and a phrase the query
+        asked to leave out unless every region answers and its answers leave it out
+        (`RegionResult.met_exclusions`). A region that refuses shows nothing that leaves
+        the phrase out, whatever it judged before refusing."""
+        return _surviving_qualifier_warnings(
+            self.qualifier_warnings, self.dropped_qualifier_phrases, regions
+        ) + [
+            warning
+            for warning, phrase in zip(self.exclusion_warnings, self.exclusion_phrases, strict=True)
+            if not (
+                regions
+                and all(region.specs and phrase in region.met_exclusions for region in regions)
+            )
+        ]
 
     def onto(self, region: RegionResult) -> RegionResult:
         """`region` holding what this extraction knows beyond it: the departures raised
@@ -581,6 +645,15 @@ def _split_unit_phrases(phrases: Sequence[str]) -> tuple[str | None, list[str]]:
         else:
             rest.append(phrase)
     return (" ".join(claimed) or None), rest
+
+
+def _dropped_qualifier_warning(phrase: str) -> Warning:
+    """The `query_qualifier_dropped` warning for a phrase extraction dropped."""
+    return Warning(
+        code=QUERY_QUALIFIER_DROPPED,
+        severity="degraded",
+        message=f'The requested qualifier "{phrase}" was not applied.',
+    )
 
 
 def _dropped_phrase_fact(phrase: str) -> DepartureFact | None:
@@ -614,7 +687,11 @@ def _prepare_extraction(
     )
     per_variable_sources = scan.per_measure
     # The extraction names no series code. A token of the query that writes a held one does.
-    per_variable_source_codes = scan_source_codes(query, measures=unique, index=get_index())
+    # The code scan reads the request text, which blanks each stretch the query asked to
+    # leave out. The source scanner above and the entity reads below read the whole query:
+    # "excluding the CRS" is the source scanner's own to read.
+    request_text = extract_result.request_text or query
+    per_variable_source_codes = scan_source_codes(request_text, measures=unique, index=get_index())
     extracted_entities = [
         entity
         for entity in extraction.entities
@@ -664,28 +741,44 @@ def _prepare_extraction(
     ]
 
     # A dropped phrase that only names a source is applied by its mention and raises no
-    # warning.
+    # warning. A phrase the query asked to leave out never binds as a unit request.
     dropped = list(
         dict.fromkeys(
             qualifier.strip() for qualifier in extraction.dropped_qualifiers if qualifier.strip()
         )
     )
     naming_sources = source_phrases(dropped, [m for ms in per_variable_sources for m in ms])
+    # Each exclusion's whole phrase, by the form the dropped qualifiers show, cut to the
+    # display length (`extract._truncate_dropped_qualifiers_for_display`). Answers are
+    # judged on the whole phrase; the warning and the departure quote the shown one.
+    limit = settings().max_dropped_qualifier_length
+    excluded = {
+        exclusion.phrase.strip()[:limit]: exclusion.phrase.strip()
+        for exclusion in extraction.exclusions
+    }
     unit_text, dropped_qualifier_phrases = _split_unit_phrases(
-        [phrase for phrase in dropped if phrase not in naming_sources]
+        [phrase for phrase in dropped if phrase not in naming_sources and phrase not in excluded]
     )
-    qualifier_warnings = [
-        Warning(
-            code=QUERY_QUALIFIER_DROPPED,
-            severity="degraded",
-            message=f'The requested qualifier "{phrase}" was not applied.',
-        )
-        for phrase in dropped_qualifier_phrases
+    shown_exclusions = [
+        phrase for phrase in dropped if phrase in excluded and phrase not in naming_sources
     ]
+    exclusion_phrases = [excluded[phrase] for phrase in shown_exclusions]
+    exclusions = [
+        exclusion.model_copy(update={"phrase": exclusion.phrase.strip()})
+        for exclusion in extraction.exclusions
+        if exclusion.phrase.strip() in exclusion_phrases
+    ]
+    qualifier_warnings = [
+        _dropped_qualifier_warning(phrase) for phrase in dropped_qualifier_phrases
+    ]
+    exclusion_warnings = [_dropped_qualifier_warning(phrase) for phrase in shown_exclusions]
     qualifier_facts = {
         warning_key(warning): fact
         for warning, phrase in zip(qualifier_warnings, dropped_qualifier_phrases, strict=True)
         if (fact := _dropped_phrase_fact(phrase)) is not None
+    } | {
+        warning_key(warning): exclusion_not_applied(asked=phrase)
+        for warning, phrase in zip(exclusion_warnings, shown_exclusions, strict=True)
     }
 
     entity_words: dict[str, str] = {}
@@ -731,6 +824,10 @@ def _prepare_extraction(
         dropped_qualifier_phrases=dropped_qualifier_phrases,
         clamp_warnings=clamp_warnings,
         qualifier_warnings=qualifier_warnings,
+        exclusion_phrases=exclusion_phrases,
+        exclusion_warnings=exclusion_warnings,
+        exclusions=exclusions,
+        request_text=request_text,
         qualifier_facts=qualifier_facts,
         entity_words=entity_words,
         entity_surfaces=entity_surfaces,
@@ -818,7 +915,8 @@ async def _handle_single_variable(
         use_semaphore=False,
         out=out,
         dropped_qualifier_phrases=prep.dropped_qualifier_phrases,
-        query_text=query,
+        exclusions=prep.exclusions,
+        query_text=prep.request_text,
         per_variable_qualifiers=prep.per_variable_qualifiers,
         per_variable_operations=prep.per_variable_operations,
         per_variable_date_requests=prep.per_variable_date_requests,
@@ -844,10 +942,7 @@ async def _handle_single_variable(
     response = assemble_region(
         answered,
         query=query,
-        extra_warnings=prep.clamp_warnings
-        + _surviving_qualifier_warnings(
-            prep.qualifier_warnings, prep.dropped_qualifier_phrases, [region]
-        ),
+        extra_warnings=prep.clamp_warnings + prep.surviving([region]),
         start_ms=start_ms,
         engine_build=build_commit(),
         max_candidates=params.max_candidates,
@@ -947,6 +1042,7 @@ async def _handle_multi_variable(
         use_semaphore=True,
         out=out,
         dropped_qualifier_phrases=prep.dropped_qualifier_phrases,
+        exclusions=prep.exclusions,
         per_variable_qualifiers=prep.per_variable_qualifiers,
         per_variable_operations=prep.per_variable_operations,
         per_variable_date_requests=prep.per_variable_date_requests,
@@ -970,10 +1066,7 @@ async def _handle_multi_variable(
             initial_llm_usage=extract_usage,
             query=query,
             # Filter before merging. same_shape unions admitted phrases per group.
-            extra_warnings=prep.clamp_warnings
-            + _surviving_qualifier_warnings(
-                prep.qualifier_warnings, prep.dropped_qualifier_phrases, out.regions
-            ),
+            extra_warnings=prep.clamp_warnings + prep.surviving(out.regions),
             echo=None,
             timed_out=out.timed_out,
             degraded_leg=out.degraded_leg,
@@ -1004,7 +1097,9 @@ async def handle(
     place_options_pool: PlaceOptionsPool | None = None,
     scope: CacheScope | None = None,
 ) -> AsyncGenerator[Event]:
-    query: str = inp.query
+    # One normal form (NFC) for every reader of the query: extraction's spans, the role and
+    # surface readers, the source scan and the echo.
+    query: str = unicodedata.normalize("NFC", inp.query)
 
     if not query.strip():
         async with aclosing(
@@ -1044,6 +1139,7 @@ async def handle(
         async with aclosing(
             _no_variables_response(
                 query,
+                extraction,
                 start_ms=start_ms,
                 params=params,
                 extract_usage=extract_usage,
@@ -1085,12 +1181,13 @@ async def handle(
             entities=extraction.entities,
             dates=extraction.dates,
             dropped_qualifiers=extraction.dropped_qualifiers,
+            exclusions=extraction.exclusions,
             variable_qualifiers=prep.per_variable_qualifiers,
             operations=prep.per_variable_operations,
             entity_roles=prep.entity_roles,
             sources=prep.per_variable_sources,
             source_codes=prep.per_variable_source_codes,
-            query_text=query if len(prep.unique) == 1 else None,
+            query_text=prep.request_text if len(prep.unique) == 1 else None,
             separate=prep.separate,
             llm_usage=extract_usage,
         )

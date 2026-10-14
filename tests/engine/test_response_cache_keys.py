@@ -9,7 +9,7 @@ from typing import Literal
 import pytest
 
 from search.engine.config import settings
-from search.engine.extract import ExtractedDate, ExtractedEntity
+from search.engine.extract import ExtractedDate, ExtractedEntity, ExtractedExclusion
 from search.engine.qualifier_match import CodedQualifier, QualifierMatch, recall_text
 from search.engine.response_cache_flow import compute_layer2_signals
 from search.engine.response_cache_keys import (
@@ -121,6 +121,7 @@ def _layer2_key(
     source_codes: list[str | None] | None = None,
     separate: list[bool] | None = None,
     written_variable_phrases: list[str | None] | None = None,
+    exclusions: list[ExtractedExclusion] | None = None,
 ) -> str:
     """`layer2_key` with every raw-text signal defaulting to empty, for a
     test that means to vary exactly one argument."""
@@ -168,6 +169,7 @@ def _layer2_key(
         written_variable_phrases=(
             written_variable_phrases if written_variable_phrases is not None else ()
         ),
+        exclusions=exclusions if exclusions is not None else (),
     )
 
 
@@ -571,6 +573,23 @@ def test_dropped_qualifiers_content_alone_changes_layer2_key() -> None:
     with_breadth = _layer2_key(dropped_qualifiers=["across all flows"])
     without_breadth = _layer2_key(dropped_qualifiers=[])
     assert with_breadth != without_breadth
+
+
+def test_a_dropped_phrase_the_query_left_out_changes_layer2_key() -> None:
+    """A dropped phrase the query asked to leave out departs as left out, so it keys apart
+    from the same phrase dropped as a plain qualifier, and the thing it leaves out decides
+    whether the legs judge it, so that keys apart too. None keys as before the field: the
+    literal is the key `layer2_key` gave this request before it read exclusions."""
+    phrase = "excluding humanitarian aid"
+    dropped = [phrase]
+
+    def left_out(*things: str) -> str:
+        exclusions = [ExtractedExclusion(phrase=phrase, left_out=thing) for thing in things]
+        return _layer2_key(dropped_qualifiers=dropped, exclusions=exclusions)
+
+    plain = _layer2_key(dropped_qualifiers=dropped, exclusions=[])
+    assert len({plain, left_out("humanitarian aid"), left_out("aid")}) == 3
+    assert plain == "l2_8cd1bc652a98ed4a5585371160cf775348d9cf28ecde2d0e6f9a3d7636949e1f"
 
 
 def test_operations_change_layer2_key() -> None:

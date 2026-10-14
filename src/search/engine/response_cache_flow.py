@@ -23,7 +23,7 @@ from search.engine.bind_repair import (
 )
 from search.engine.deadline import _await_bounded
 from search.engine.envelope import now_ms
-from search.engine.extract import ExtractedDate, ExtractedEntity
+from search.engine.extract import ExtractedDate, ExtractedEntity, ExtractedExclusion
 from search.engine.qualifier_match import (
     CodedQualifier,
     match_qualifier_readings,
@@ -334,6 +334,7 @@ class CacheScope:
         variable_qualifiers: Sequence[tuple[CodedQualifier, ...]],
         operations: Sequence[tuple[Operation, ...]],
         query: str,
+        exclusions: Sequence[ExtractedExclusion] = (),
         entity_roles: Mapping[str, Sequence[DoorRole]],
         sources: Sequence[tuple[SourceMention, ...]],
         query_text: str | None,
@@ -345,7 +346,8 @@ class CacheScope:
 
         `entity_roles`, `query_text`, and the parallel `variable_qualifiers`, `operations`
         and `sources` are required to build a complete key. `source_codes` runs parallel to
-        `variables` and holds the series code the query writes for each. `separate` runs parallel to
+        `variables` and holds the series code the query writes for each. `exclusions` are
+        the dropped qualifiers the query asked to leave out, each with a thing it leaves out. `separate` runs parallel to
         `variables` and marks each one the raw query compares with another. This lookup
         never waits on a layer-1 lease. The first miss owns the layer-2 lease (`_acquire`).
 
@@ -364,6 +366,7 @@ class CacheScope:
             entities=entities,
             dates=dates,
             dropped_qualifiers=dropped_qualifiers,
+            exclusions=exclusions,
             variable_qualifiers=variable_qualifiers,
             operations=operations,
             sources=sources,

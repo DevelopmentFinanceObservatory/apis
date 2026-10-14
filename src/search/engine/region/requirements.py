@@ -95,12 +95,39 @@ class Judgement:
             zip(self.requirements, self.outcomes[answer], strict=True)
         ):
             held = terms.get(requirement.phrase)
+            if rule_departs_only(requirement.rule):
+                continue
             if outcome == "unmet" and (
                 held is None
                 or _specificity(requirement.rule) > _specificity(self.requirements[held].rule)
             ):
                 terms[requirement.phrase] = j
         return tuple(slot_terms.get(j, self.requirements[j].term) for j in terms.values())
+
+    def met_exclusions(self) -> frozenset[str]:
+        """The phrases the request asked to leave out that every answer leaves out, as the
+        request wrote them. An answer leaves a phrase out when it leaves out every run of
+        its words that names codes (`CodeRule.excluded`): it meets the run's rule on some
+        property and leaves none unmet. A run every property of which the answer's shape
+        lacks is not left out. Empty when no answer was judged."""
+        runs: dict[str, dict[str, list[int]]] = {}
+        for j, requirement in enumerate(self.requirements):
+            rule = requirement.rule
+            if isinstance(rule, CodeRule) and rule.excluded is not None:
+                runs.setdefault(requirement.term.text, {}).setdefault(rule.excluded, []).append(j)
+
+        def leaves_out(outcomes: tuple[Outcome, ...], held: list[int]) -> bool:
+            judged = {outcomes[j] for j in held}
+            return "met" in judged and "unmet" not in judged
+
+        return frozenset(
+            phrase
+            for phrase, by_run in runs.items()
+            if self.outcomes
+            and all(
+                leaves_out(outcomes, held) for outcomes in self.outcomes for held in by_run.values()
+            )
+        )
 
     def departures(self) -> tuple[Departed, ...]:
         """The departures that disclose each phrase some answer does not meet and the
@@ -210,6 +237,13 @@ def _disclosing(
     )
 
 
+def rule_departs_only(rule: RequirementRule) -> bool:
+    """Whether a requirement of `rule` is something the request asked to leave out
+    (`CodeRule.excluded`). An answer that leaves it unmet still answers, so no trace term
+    and no refusal names it."""
+    return isinstance(rule, CodeRule) and rule.excluded is not None
+
+
 def _met_only_by_an_answer(rule: RequirementRule) -> bool:
     """Whether a requirement of `rule` can be met only by an answer that applies it: a
     query record of the elected reading and a value the request names. With no answer
@@ -239,7 +273,9 @@ def judge(
 
     A `CodeRule` is met when the answer's bindings bind one of its codes or a descendant on
     its property, unmet when the answer's shape holds the property and binds none of them,
-    and outside an answer whose shape lacks it. A `ValueRule` is met or unmet as
+    and outside an answer whose shape lacks it. An `excluded` `CodeRule` reads the other
+    way (`CodeRule`), and an answer that leaves it unmet names no term for it
+    (`rule_departs_only`). A `ValueRule` is met or unmet as
     `phase_rank_bind.judge_value_requirements` decides, and an answer leaving it unmet
     names it by its slot when its shape has one (`_value_term`). A value of a drafted set
     (origin ``set_value``) is met when the answer's bindings or some selected member hold
@@ -322,6 +358,13 @@ def _code_outcome(rule: CodeRule, held: frozenset[str], bound: Mapping[str, set[
     if rule.property_dcid not in held:
         return "outside"
     values = bound.get(rule.property_dcid, set())
+    if rule.excluded is not None:
+        holds = any(
+            applies_value(code, value) or applies_value(value, code)
+            for code in rule.codes
+            for value in values
+        )
+        return "met" if values and not holds else "unmet"
     applied = any(applies_value(code, value) for code in rule.codes for value in values)
     return "met" if applied else "unmet"
 

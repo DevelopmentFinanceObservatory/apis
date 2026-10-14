@@ -159,13 +159,13 @@ def test_a_rank_operation_rides_on_its_part_with_the_donor_axis_open_and_no_warn
 
 
 def test_the_recorded_top_5_donors_reading_carries_its_rank_with_no_warning():
-    """The recorded model output for the design's headline query lists the whole query
-    as a dropped qualifier beside the rank; the rank and the variable account for every
-    word of it, so the answer carries the rank and no unapplied-qualifier warning."""
+    """The recorded model output for the design's headline query lists "Top 5" as a
+    dropped qualifier beside the rank "Top 5 donors"; the rank accounts for every word of
+    it, so the answer carries the rank and no unapplied-qualifier warning."""
     response = offline_resolve(make_request("Top 5 donors for education aid"))
 
     assert [p.operations for p in response.parts] == [
-        [Operation(verb="rank", phrase="Top 5", over="origin")]
+        [Operation(verb="rank", phrase="Top 5 donors", over="origin")]
     ]
     assert _query_qualifier_warnings(response) == []
     assert "was not applied" not in (response.rendered_sentence or "")
