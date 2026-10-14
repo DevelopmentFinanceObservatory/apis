@@ -96,7 +96,6 @@ from search.engine.region.phase_place_materialise import (
 )
 from search.engine.region.phase_shared import (
     UNIT_CONVERSION_REFUSALS,
-    _admitted_qualifier_properties,
     _unsupported,
     unit_conversion_refusal,
     withdraw_typed_unit,
@@ -988,7 +987,7 @@ def _build_definite_spec(
         inapplicable_slots=state.inapplicable_slots,
         unresolved_slots=state.unresolved_slots,
         # Use qualifier bindings after election vetting and repair.
-        text_recognized_properties=_admitted_qualifier_properties(state.admitted_qualifiers),
+        text_recognized_properties=state.text_recognized_properties,
         query_qualifiers=answer_terms(state, state.shape_draft, state.bindings),
         facet_bindings=setup.facet_bindings,
         # Record properties forced by measure election.

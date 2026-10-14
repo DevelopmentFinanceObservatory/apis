@@ -15,7 +15,6 @@ from materialise.recipes import (
 )
 from search.engine.bind import SlotBindingDraft
 from search.engine.departures import measure_not_applied, price_basis_not_applied
-from search.engine.qualifier_match import QualifierMatch
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
 from search.engine.region.grounding import (
     _build_entity,
@@ -67,14 +66,6 @@ def _grounded_values(binding: SlotBindingDraft | None) -> list[GraphRef]:
     if binding is None or binding.kind not in ("value", "set"):
         return []
     return [GraphRef(ref=d, label=d) for d in binding.value_dcids]
-
-
-def _admitted_qualifier_properties(matches: tuple[QualifierMatch, ...]) -> frozenset[str]:
-    """Constraint property dcids `_force_qualifier_bindings` forced a value
-    onto, for build_spec's text_recognized_properties, the same code_system
-    key it groups admitted matches by.
-    """
-    return frozenset(m.code_system for m in matches)
 
 
 def _unsupported_definition(
@@ -346,7 +337,7 @@ async def _elected_flagged_match(
         # state.bindings (fed to slots above via slot_expansions) is the same
         # bindings list _phase_settle may have forced a qualifier-match
         # value onto. Every caller runs after that phase, so the forced set is final.
-        text_recognized_properties=_admitted_qualifier_properties(state.admitted_qualifiers),
+        text_recognized_properties=state.text_recognized_properties,
         # Every caller runs from _phase_place_bindings or later (the role refusals and
         # the materialise quantity gate), and all of those phases run after
         # _phase_settle's measure-election splice, so

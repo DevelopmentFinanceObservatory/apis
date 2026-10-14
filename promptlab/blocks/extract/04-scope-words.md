@@ -16,8 +16,6 @@ generic universe or class nouns wholly contained in that dropped qualifier, such
 Countries`, must remain in `entities`. A class noun added to the name of a region or
 group asks for its members: "African countries" and "countries in Africa" are the
 entity "Africa" with `members` true, where "Africa" alone has it false. The class noun
-is never a role_span: put it in `member_span` instead, and let "African countries" take
-its flow_role and role_span from the words around it, exactly as "Africa" would. A
-parenthetical qualifier that identifies the named entity remains part of both `text` and
-`span`: "Asia (DAC)" is one named aggregate, not the continent Asia plus an omitted
-qualifier. Do not infer qualifiers that the query did not state.
+is never a role_span: "African countries" takes its flow_role and role_span from the
+words around it, exactly as "Africa" would. Do not infer qualifiers that the query did
+not state.

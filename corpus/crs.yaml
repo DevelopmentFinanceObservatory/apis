@@ -822,3 +822,14 @@
         family: crs.disbursement_gross
         bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode120}
       entities: [{dcid: country/FRA, role: origin}, {dcid: africa, role: destination, expands: true}]
+
+- id: dq-crs-069
+  query: Emergency response aid to Somalia
+  why: Emergency response is CRS sector 720, which DAC2a does not publish, so the CRS answers with that sector.
+  tags: {theme: humanitarian, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: sector, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure:
+        family: crs.disbursement_gross
+        bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode720}
+      entities: [{dcid: country/SOM, role: destination}]

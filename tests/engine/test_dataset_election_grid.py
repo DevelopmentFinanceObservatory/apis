@@ -1811,7 +1811,8 @@ def test_only_a_sole_option_claim_of_the_bind_reply_is_refuted_by_a_conflict(
     as recall's partition value or a series code's shared value is, claims nothing of
     every member: the minimal set goes, the named sector, which the part then refuses on,
     and the flow stays. The bind reply's own claim is refuted by the member conflicting on
-    it and goes first, silently."""
+    it and goes first, silently. The sector is text-recognised only while it stays bound,
+    so a default or the measure election may bind it afterwards."""
     shape = _flow_shape(_SHARED, roles=_DONOR_RECIPIENT)
     state = _repair_state(shape, _PLACES["donor-recipient"], {"sector": "A"})
     state.bindings = [
@@ -1825,6 +1826,7 @@ def test_only_a_sole_option_claim_of_the_bind_reply_is_refuted_by_a_conflict(
             drafted_by=drafted_by,
         ),
     ]
+    state.text_recognized_properties = frozenset({"sector"})
     state.graph = cast(EngineGraphClient, FakeGraph(nodes={}, obs={}, detect={}, resolve={}))
     monkeypatch.setattr(unrealisable_module, "_resolve_query_qualifiers", lambda state: [])
 
@@ -1839,6 +1841,7 @@ def test_only_a_sole_option_claim_of_the_bind_reply_is_refuted_by_a_conflict(
     )
 
     assert {"sector", "flow"} - _values(state.bindings).keys() == unbound
+    assert state.text_recognized_properties == {"sector"} - unbound
     assert [r.term.slot for r in state.requirements] == refused_on
 
 

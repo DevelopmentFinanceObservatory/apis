@@ -64,7 +64,6 @@ from search.engine.extract import (
     Extraction,
     ExtractionResult,
     _dedupe_stripped,
-    _log_member_spans,
     dates_to_request,
     extract,
     role_cue_pairing,
@@ -176,34 +175,68 @@ def _recover_entity_surfaces(
         if not span or not _grounded(span, query):
             recovered.append(entity)
             continue
-        if "(" in span and resolver.is_exact_registered_name(span):
-            # Historical extraction can already carry the complete source span while
-            # `text` remains its bare English head. The registry confirms the span is
-            # a distinct identity, so make it canonical before every downstream key.
-            recovered.append(entity.model_copy(update={"text": span, "span": span}))
-            continue
-        extension = next(iter(_balanced_parenthetical_extensions(query, span)), None)
-        if extension is None:
-            recovered.append(entity)
-            continue
-        if any(
-            other is not entity and other.span and _normalize(other.span) == _normalize(extension)
-            for other in entities
-        ):
-            # A query can name bare Asia and Asia (DAC). The existing full span owns the
-            # qualified occurrence; a truncated duplicate has no source position to claim it.
-            recovered.append(entity)
-            continue
-        raw_extension = _normalize(entity.text) == _normalize(extension)
-        registered_extension = resolver.is_exact_registered_name(extension)
-        if registered_extension:
+        if "(" in span:
+            # The extraction can carry the complete source span while `text` remains its
+            # bare English head.
+            surface = span
+        else:
+            surface = next(iter(_balanced_parenthetical_extensions(query, span)), None)
+            if surface is None or any(
+                other is not entity and other.span and _normalize(other.span) == _normalize(surface)
+                for other in entities
+            ):
+                # A query can name bare Asia and Asia (DAC). The existing full span owns the
+                # qualified occurrence; a truncated duplicate has no source position to claim it.
+                recovered.append(entity)
+                continue
+        # The English name with the source's qualifier, for a translated span: "Asia (DAC)"
+        # for "Asie (DAC)".
+        qualified_text = f"{entity.text} {surface[surface.index('(') :]}"
+        if resolver.is_exact_registered_name(surface):
             # The registry, rather than a bare parse surface, confirms a distinct entity.
-            recovered.append(entity.model_copy(update={"text": extension, "span": extension}))
-        elif raw_extension:
-            recovered.append(entity.model_copy(update={"span": extension}))
+            recovered.append(entity.model_copy(update={"text": surface, "span": surface}))
+        elif "(" not in entity.text and resolver.is_exact_registered_name(qualified_text):
+            recovered.append(entity.model_copy(update={"text": qualified_text, "span": surface}))
+        elif _normalize(entity.text) == _normalize(surface):
+            recovered.append(entity.model_copy(update={"span": surface}))
         else:
             recovered.append(entity)
-    return recovered
+    return _without_absorbed(recovered, query=query)
+
+
+def _without_absorbed(entities: list[ExtractedEntity], *, query: str) -> list[ExtractedEntity]:
+    """`entities` without one the query names only inside another's parenthetical span.
+
+    "DAC" in "ODA to Africa (DAC)" is part of the name "Africa (DAC)", never a party of its
+    own; "the DAC" named elsewhere in the query stays. A mention is whole words, so "DAC2a"
+    names no DAC.
+    """
+    normalized = _normalize(query)
+
+    def mentions(span: str) -> list[tuple[int, int]]:
+        return [
+            (start, end)
+            for start, end in _all_normalized_text_ranges(span, normalized)
+            if not (start > 0 and normalized[start - 1].isalnum())
+            and not (end < len(normalized) and normalized[end].isalnum())
+        ]
+
+    qualified = [
+        qualified_range
+        for entity in entities
+        if entity.span and "(" in entity.span
+        for qualified_range in mentions(entity.span)
+    ]
+
+    def absorbed(entity: ExtractedEntity) -> bool:
+        if not entity.span or "(" in entity.span:
+            return False
+        ranges = mentions(entity.span)
+        return bool(ranges) and all(
+            any(lo <= start and end <= hi for lo, hi in qualified) for start, end in ranges
+        )
+
+    return [entity for entity in entities if not absorbed(entity)]
 
 
 def _entity_surfaces(entities: list[ExtractedEntity], *, query: str) -> dict[str, str]:
@@ -724,7 +757,7 @@ def _log_unclaimed_words(prep: _ExtractionPrep, extraction: Extraction, *, query
         *(
             text
             for entity in extraction.entities
-            for text in (entity.text, entity.span, entity.role_span, entity.member_span)
+            for text in (entity.text, entity.span, entity.role_span)
             if text
         ),
         *(bound for date in extraction.dates for bound in (date.start, date.end) if bound),
@@ -1030,7 +1063,6 @@ async def handle(
             )
         }
     )
-    _log_member_spans(query, extraction.entities, extraction.variables)
     prep = _prepare_extraction(extraction, extract_result, query=query)
 
     yield InterpretationEvent(

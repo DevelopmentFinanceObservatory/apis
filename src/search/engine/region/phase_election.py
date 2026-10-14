@@ -348,14 +348,21 @@ def _settle_bindings(
     state.menu_choices = choices
     admitted_qualifiers = _unchosen_matches(terms, choices)
     state.admitted_qualifiers = admitted_qualifiers
+    state.text_recognized_properties = frozenset()
     if admitted_qualifiers or choices:
-        bind_result.bindings = _force_qualifier_bindings(
+        bind_result.bindings, forced = _force_qualifier_bindings(
             bind_result.bindings,
             admitted_qualifiers,
             shape_draft,
             variable=state.variable,
             chosen=choices,
         )
+        # A property whose admitted matches leave each other unresolved ("gross ODA, not
+        # net") keeps the model's binding, so the text did not bind it and the measure
+        # election may force it. Intersecting with the admitted matches' systems keeps a
+        # property forced only by a menu choice at `binder` provenance, since the model
+        # chose its code.
+        state.text_recognized_properties = forced & {m.code_system for m in admitted_qualifiers}
         _log_admitted_qualifiers(admitted_qualifiers)
 
     return unresolved, readings
