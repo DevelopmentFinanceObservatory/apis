@@ -1,22 +1,23 @@
-"""The quantity read's prompt, the bind call it stays out of and runs beside, and the
+"""The quantity read's prompt, the bind call it stays out of and runs before, and the
 bases it names."""
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
 
 import pytest
 
-from search.engine.bind import _UNIVERSAL_BIND_SYSTEM_PROMPT, _UniversalBindOutput
-from search.engine.errors import LLMInfraError
+from search.engine.bind import (
+    _UNIVERSAL_BIND_SYSTEM_PROMPT,
+    _build_universal_bind_prompt,
+    _UniversalBindOutput,
+)
 from search.engine.quantity_read import QuantityOutput, build_quantity_prompt
 from search.models import GraphRef
-from tests.engine import _harness
 from tests.engine._harness import make_request, offline_resolve
 from tests.engine._quantity import NO_QUANTITY
+from tests.engine.test_bind import _shape
 from tests.fixtures import FakeLLM
-from tests.fixtures.keys import schema_fingerprint
 
 
 def test_the_prompt_numbers_the_menus_denominators_then_none_of_these():
@@ -38,91 +39,45 @@ def test_the_prompt_numbers_the_menus_denominators_then_none_of_these():
     )
 
 
-def test_the_bind_schema_and_system_prompt_carry_no_quantity_reading():
-    """The bind schema's fingerprint and system prompt hash are those dev's recorded bind
-    fixtures carry, so the quantity read leaves every bind fixture key unchanged.
-    `test_bind.test_no_dropped_phrases_keeps_a_recall_sourced_prompt_byte_identical_to_head`
-    pins the user prompt."""
-    assert schema_fingerprint(_UniversalBindOutput) == "ede71de59275"
-    assert (
-        hashlib.sha1(_UNIVERSAL_BIND_SYSTEM_PROMPT.encode()).hexdigest()
-        == "d40810528851e2109284ca3e184b748b1529eb66"
-    )
+def test_the_bind_schema_and_prompts_carry_no_quantity_reading():
+    """The quantity read is the reading's one carrier: bind's schema has none of its fields,
+    and neither bind prompt lists the denominators or asks for the reading."""
+    assert not set(QuantityOutput.model_fields) & set(_UniversalBindOutput.model_fields)
+    prompt = _build_universal_bind_prompt("widget to GDP", [_shape("widget")])
+    for text in (_UNIVERSAL_BIND_SYSTEM_PROMPT, prompt):
+        assert "DENOMINATORS" not in text
+        assert "PART 3" not in text
 
 
-class _BesideBindLLM(FakeLLM):
-    """The recorded bank, with a bind call that starts only once the quantity read has
-    started, and a quantity read that answers no form once the bind call lets it. With
-    `bind_fails` the bind call fails, as a transport error does, and the quantity read
-    waits until it is cancelled. `events` records each call's start and end."""
+class _OrderLLM(FakeLLM):
+    """The recorded bank, with a quantity read that states no form, recording when each
+    call starts and ends in `events`."""
 
-    def __init__(self, *, bind_fails: bool = False) -> None:
+    def __init__(self) -> None:
         super().__init__()
-        self.bind_fails = bind_fails
         self.events: list[str] = []
-        self.quantity_started: asyncio.Event | None = None
-
-    def _started(self) -> asyncio.Event:
-        if self.quantity_started is None:
-            self.quantity_started = asyncio.Event()
-        return self.quantity_started
 
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             self.events.append("quantity-start")
-            self._started().set()
-            try:
-                await asyncio.sleep(3600 if self.bind_fails else 0)
-            except asyncio.CancelledError:
-                self.events.append("quantity-cancelled")
-                raise
+            await asyncio.sleep(0)
             self.events.append("quantity-end")
             return NO_QUANTITY
         if schema is _UniversalBindOutput:
             self.events.append("bind-start")
-            # A bind awaited before the quantity read starts times out here.
-            await asyncio.wait_for(self._started().wait(), timeout=2)
-            if self.bind_fails:
-                self.events.append("bind-failed")
-                raise LLMInfraError("the bind call failed")
             output = await super().generate_structured(prompt=prompt, system=system, schema=schema)
             self.events.append("bind-end")
             return output
         return await super().generate_structured(prompt=prompt, system=system, schema=schema)
 
 
-def test_the_quantity_read_runs_beside_the_bind_call():
-    """Both calls are in flight before either returns."""
-    llm = _BesideBindLLM()
+def test_the_quantity_read_returns_before_the_bind_call_starts():
+    """Admissibility refuses on the form the read states, so the read ends before the bind
+    menu exists and the part waits for both calls in turn."""
+    llm = _OrderLLM()
     response = offline_resolve(make_request("fertility rate in Kenya"), llm=llm)
     assert response.status == "definite"
-    assert set(llm.events[:2]) == {"bind-start", "quantity-start"}
-    assert sorted(llm.events) == ["bind-end", "bind-start", "quantity-end", "quantity-start"]
-
-
-def test_a_failed_bind_call_cancels_and_awaits_the_quantity_read(monkeypatch):
-    """The bind call fails while the quantity read runs: the part fails with it, and the
-    quantity read is cancelled before the request returns, so no task outlives it to be
-    cancelled when the event loop closes."""
-    llm = _BesideBindLLM(bind_fails=True)
-    resolve = _harness.resolve_async
-
-    async def _resolve_then_return(*args, **kwargs):
-        try:
-            return await resolve(*args, **kwargs)
-        finally:
-            llm.events.append("request-returned")
-
-    monkeypatch.setattr(_harness, "resolve_async", _resolve_then_return)
-    with pytest.raises(LLMInfraError):
-        offline_resolve(make_request("fertility rate in Kenya"), llm=llm)
-    assert llm.events == [
-        "bind-start",
-        "quantity-start",
-        "bind-failed",
-        "quantity-cancelled",
-        "request-returned",
-    ]
+    assert llm.events == ["quantity-start", "quantity-end", "bind-start", "bind-end"]
 
 
 def _answers(response) -> list[dict]:

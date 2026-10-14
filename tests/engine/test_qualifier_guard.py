@@ -1,4 +1,4 @@
-"""Test `_resolve_query_qualifiers` through `_phase_repair_bindings`.
+"""Test `_resolve_query_qualifiers` through `_repair_bindings`.
 
 Cases use the packaged code and measure indexes for real CRS terms, with
 synthetic shapes that prevent measure-family election from changing bindings.
@@ -6,19 +6,18 @@ synthetic shapes that prevent measure-family election from changing bindings.
 
 from __future__ import annotations
 
-import asyncio
 import itertools
 import logging
 from collections.abc import Sequence
 from dataclasses import replace
-from typing import cast
+from typing import Literal, cast
 
 import pytest
 from pydantic import ValidationError
 
 from code_index.shared import get_index, get_measure_index
 from code_index.tokens import tokenize
-from entity_resolution import Admission, EntityResolver
+from entity_resolution import Admission, Entity, EntityResolver, Resolved
 from origin_catalogue import UnTables
 from origin_catalogue.un_mirror import UnVariable
 from search.engine.bind import DraftBindingKind, SlotBindingDraft, _UniversalBindOutput
@@ -31,11 +30,12 @@ from search.engine.function_words import FUNCTION_WORDS
 from search.engine.interpret import Recall
 from search.engine.qualifier_match import QualifierSpan
 from search.engine.region import phase_election
-from search.engine.region.phase_election import _phase_repair_bindings
+from search.engine.region.phase_election import _repair_bindings
 from search.engine.region.phase_rank_bind import (
     _qualifier_disposition,
     _resolve_query_qualifiers,
     _unread_words_beside_codes,
+    judge_value_requirements,
     value_requirements,
 )
 from search.engine.region.requirements import (
@@ -66,6 +66,7 @@ from search.engine.role_text import DoorRole
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.models import GraphRef, NoData, NoDataPart, ResolvedQualifier, Spec
 from tests.conftest import minimal_spec
+from tests.engine._builders import place_sets
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._index_slots import crs_flow_slot_keys, own_variable_spans, read_text
 from tests.fixtures import FakeGraph
@@ -155,8 +156,8 @@ def _state(
 
 
 def _run(state: ResolveState) -> list[ResolvedQualifier]:
-    result = asyncio.run(_phase_repair_bindings(state))
-    assert result is None, "expected _phase_repair_bindings to fall through"
+    result = _repair_bindings(state)
+    assert result is None, "expected _repair_bindings to fall through"
     return state.query_qualifiers
 
 
@@ -231,10 +232,28 @@ def test_a_word_the_shapes_own_reading_leaves_unread_is_recorded_or_warned(
 _CRS_SLOTS = crs_flow_slot_keys()
 _DAC2A_SLOT = SlotKeyDraft(axis="what", property_dcid="dac2aAidType", label="aid type")
 _DAC1_SLOT = SlotKeyDraft(axis="what", property_dcid="dac1AidType", label="aid type")
+_DAC2B_SLOT = SlotKeyDraft(axis="what", property_dcid="dac2bAidType", label="aid type")
 _GRANT_EQUIVALENT_SHAPE = replace(_shape(_DAC1_SLOT), meas_prop_dcid="grantEquivalent")
 _GNI_SHARE_SHAPE = replace(
     _shape(_DAC1_SLOT),
     meas_denom_dcid="PrimaryIncome_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal",
+)
+
+
+def _answering(shape: ShapeDraft, measured_property: str, *datasets: str) -> ShapeDraft:
+    """`shape` as the part answers it from `datasets`, measuring `measured_property`."""
+    return replace(shape, meas_prop_dcid=measured_property, datasets=datasets)
+
+
+_CRS_AMOUNT_SHAPE = _answering(
+    _shape(*_CRS_SLOTS), "amount", "provenance/OECDCreditorReportingSystem"
+)
+_DAC1_AMOUNT_SHAPE = _answering(_shape(_DAC1_SLOT), "amount", "provenance/OECDDAC1")
+_DAC2A_AMOUNT_SHAPE = _answering(_shape(_DAC2A_SLOT), "amount", "provenance/OECDDAC2A")
+_DAC2B_AMOUNT_SHAPE = _answering(_shape(_DAC2B_SLOT), "amount", "provenance/OECDDAC2B")
+_DAC2A_IMPUTED_SHAPE = _answering(_shape(_DAC2A_SLOT), "attributedAmount", "provenance/OECDDAC2A")
+_IMPUTED_SECTORS_SHAPE = _answering(
+    _shape(_DAC2A_SLOT), "attributedAmount", "provenance/ONEImputedMultilateralSectors"
 )
 
 
@@ -312,6 +331,19 @@ _ENTITIES = ("Kenya", "France", "Hong Kong SAR, China", "Côte d'Ivoire")
         ("maternal health", _CRS_SLOTS, [("maternal", ["CRSPurposeCode120"])]),
         ("global health ODA", _CRS_SLOTS, [("global", ["CRSPurposeCode120"])]),
         ("multilateral ODA", _CRS_SLOTS, [("multilateral", ["CRSTypeOfFlow10"])]),
+        # A table states the word every row it publishes of the measure states. Each `amount`
+        # row of the CRS is a flow from one provider to one recipient, so "bilateral"
+        # restricts nothing there. DAC1 reads it as aid type 1015. DAC2a states it only where
+        # the destination is a country, and this state binds no place.
+        ("bilateral ODA", _CRS_AMOUNT_SHAPE, []),
+        ("bilateral ODA", _DAC1_AMOUNT_SHAPE, []),
+        ("bilateral ODA", _DAC2A_AMOUNT_SHAPE, [("bilateral", ["DAC2aAidType206"])]),
+        ("bilateral OOF", _DAC2B_AMOUNT_SHAPE, [("bilateral", ["DAC2bAidType972"])]),
+        # ... and no table states "multilateral", nor "bilateral" for imputed multilateral
+        # aid, whose measure is the attributed amount.
+        ("multilateral ODA", _CRS_AMOUNT_SHAPE, [("multilateral", ["CRSTypeOfFlow10"])]),
+        ("bilateral ODA", _DAC2A_IMPUTED_SHAPE, [("bilateral", ["DAC2aAidType206"])]),
+        ("bilateral ODA", _IMPUTED_SECTORS_SHAPE, [("bilateral", ["DAC2aAidType206"])]),
         # A run reaches past the amount and data words beside it to its neighbour, so the
         # restriction they cut off from the code span still refuses.
         ("maternal data ODA", _CRS_SLOTS, [("maternal", ["CRSTypeOfFlow10"])]),
@@ -351,6 +383,104 @@ def test_an_uncovered_word_beside_a_code_is_a_record(search_settings, variable, 
     assert [variable[q.start : q.end] for q in uncovered if q.start is not None] == [
         text for text, _ in records
     ]
+
+
+_FLOW_ROLES = ("financingProvider", "financingRecipient")
+
+
+def _naming_kenya_as_recipient(
+    state: ResolveState, kind: Literal["country", "organisation"]
+) -> ResolveState:
+    """`state` with Kenya named as the destination, resolved to an entity of `kind`."""
+    state.place_sets = place_sets({"Kenya": "country/KEN"})
+    state.entity_roles = {"Kenya": [DoorRole(axis="destination", span="Kenya")]}
+    entity = Entity(dcid="country/KEN", name="Kenya", kind=kind, graph_type="Country")
+    state.rcl = Recall(candidates=[], resolutions={"Kenya": Resolved(entity=entity)})
+    return state
+
+
+@pytest.mark.parametrize(
+    ("variable", "shape", "recipient", "records"),
+    [
+        # The CRS states "bilateral" of every recipient.
+        ("bilateral ODA to Kenya", _CRS_AMOUNT_SHAPE, "organisation", []),
+        # DAC2a and DAC2b state it of a country recipient only.
+        ("bilateral ODA to Kenya", _DAC2A_AMOUNT_SHAPE, "country", []),
+        (
+            "bilateral ODA to Kenya",
+            _DAC2A_AMOUNT_SHAPE,
+            "organisation",
+            [("bilateral", ["DAC2aAidType206"])],
+        ),
+        ("bilateral OOF to Kenya", _DAC2B_AMOUNT_SHAPE, "country", []),
+        (
+            "bilateral OOF to Kenya",
+            _DAC2B_AMOUNT_SHAPE,
+            "organisation",
+            [("bilateral", ["DAC2bAidType972"])],
+        ),
+        # No table states it of an attributed amount, whatever the recipient.
+        (
+            "bilateral ODA to Kenya",
+            _DAC2A_IMPUTED_SHAPE,
+            "country",
+            [("bilateral", ["DAC2aAidType206"])],
+        ),
+        (
+            "bilateral ODA to Kenya",
+            _IMPUTED_SECTORS_SHAPE,
+            "country",
+            [("bilateral", ["DAC2aAidType206"])],
+        ),
+    ],
+)
+def test_a_word_a_table_states_of_country_recipients_is_read_beside_one(
+    search_settings, variable, shape, recipient, records
+):
+    """The recipient the part names decides whether a table that states "bilateral" of its
+    country flows states it of the part: a country recipient reads the word, and an
+    organisation recipient leaves it as a record naming the aid type code the word reads."""
+    search_settings(qualifier_coverage="refuse")
+    shape = replace(shape, declared_roles=_FLOW_ROLES)
+    state = _naming_kenya_as_recipient(
+        _state(variable=variable, shape_draft=shape, bindings=[], unplaced=[]), recipient
+    )
+    uncovered = [q for q in _resolve_query_qualifiers(state) if q.evidence == "uncovered"]
+    assert [(q.text, [ref.ref for ref in q.named]) for q in uncovered] == records
+
+
+@pytest.mark.parametrize(
+    ("shape", "recipient", "with_state", "unmet"),
+    [
+        (_DAC2A_AMOUNT_SHAPE, "country", True, False),
+        (_CRS_AMOUNT_SHAPE, "organisation", True, False),
+        (_DAC2A_AMOUNT_SHAPE, "organisation", True, True),
+        (_DAC2A_IMPUTED_SHAPE, "country", True, True),
+        # A resubmit gives no state, and the part's places are not read.
+        (_DAC2A_AMOUNT_SHAPE, "country", False, True),
+    ],
+)
+def test_a_value_word_the_answering_table_states_is_met(shape, recipient, with_state, unmet):
+    """A menu shape's constraint value named "bilateral" is met by an answer whose table
+    states the word of the rows the part reads, and left unmet otherwise."""
+    shape = replace(shape, declared_roles=_FLOW_ROLES)
+    state = _naming_kenya_as_recipient(
+        _state(variable="bilateral ODA to Kenya", shape_draft=shape, bindings=[], unplaced=[]),
+        recipient,
+    )
+    requirement = Requirement(
+        term=ResolvedQualifier(
+            text="bilateral",
+            named=[GraphRef(ref="Bilateral", label="Bilateral")],
+            disposition="unbound",
+        ),
+        origin="value",
+        rule=ValueRule(values=frozenset({("creditorType", "Bilateral")})),
+    )
+
+    judged = judge_value_requirements([requirement], shape, [], state if with_state else None)
+
+    assert judged == ((requirement,) if unmet else ())
 
 
 _FINANCE_100 = ("crsTypeOfFinance", ["CRSTypeOfFinance100"])
@@ -779,6 +909,39 @@ def test_unplaced_dataset_label_words(datasets, named, phrase, refused):
     shape = replace(_shape(_FLOW_SLOT), datasets=datasets, named_dataset=named)
     state = _state(
         variable="imputed multilateral grants of ODA to Kenya",
+        shape_draft=shape,
+        bindings=[_binding("crsTypeOfFlow", kind="value", value_dcids=["CRSTypeOfFlow10"])],
+        unplaced=[phrase],
+    )
+    qualifiers = _resolve_query_qualifiers(state)
+    assert [(q.text, q.disposition) for q in qualifiers if q.text != "ODA"] == refused
+
+
+@pytest.mark.parametrize(
+    ("shape", "phrase", "refused"),
+    [
+        # Every row of the CRS is bilateral, so the bare word is placed, and "donors" is
+        # stated by nothing.
+        pytest.param(_CRS_AMOUNT_SHAPE, "bilateral", [], id="word-the-table-states"),
+        pytest.param(
+            _CRS_AMOUNT_SHAPE,
+            "bilateral donors",
+            [("bilateral donors", "no_vocabulary")],
+            id="phrase-reaching-past-the-stated-word",
+        ),
+        pytest.param(
+            _DAC2A_AMOUNT_SHAPE,
+            "bilateral",
+            [("bilateral", "no_vocabulary")],
+            id="word-the-table-states-of-no-recipient",
+        ),
+    ],
+)
+def test_an_unplaced_word_the_answering_dataset_states_is_placed(shape, phrase, refused):
+    """The bind model listed "bilateral" as unplaced on a shape answering from the CRS,
+    every row of which is a flow from one provider to one recipient."""
+    state = _state(
+        variable="bilateral donors of ODA to Kenya",
         shape_draft=shape,
         bindings=[_binding("crsTypeOfFlow", kind="value", value_dcids=["CRSTypeOfFlow10"])],
         unplaced=[phrase],

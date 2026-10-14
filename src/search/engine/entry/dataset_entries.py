@@ -2,8 +2,7 @@
 
 Candidate entries re-materialise each posted candidate through
 `resolve_spec_resubmit` under the request semaphore. `_build_candidates_region`
-sets `candidate_ordering_override` so the combiner preserves posted order instead
-of re-sorting by `near_neighbor_fired`.
+sets `candidate_ordering_override` so the part states the posted ordering.
 
 Parsed entries share the parsed door's interpretation (`parsed.interpret_parts`)
 and per-part fan-out, so identical parts carry the same inputs and warnings on either

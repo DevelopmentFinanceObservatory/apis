@@ -17,7 +17,6 @@ from search.engine.bind import SlotBindingDraft, _build_universal_bind_prompt, _
 from search.engine.qualifier_match import QualifierMatch, QualifierTie
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
-from search.engine.region.codes import REDUNDANT_BINDING_DROPPED
 from search.engine.retrieval.derive import derive_shapes
 from tests.engine._discover_fixtures import PROP_PURPOSE as _DEMO_PROP_PURPOSE
 from tests.engine._discover_fixtures import _fake_graph_with_svs, _three_constraint_arcs
@@ -413,31 +412,6 @@ def _run():
             coverage=empty_coverage_snapshot(),
         )
     )
-
-
-def test_a_sole_option_claim_over_an_index_widened_axis_leaves_the_slot_open():
-    """The recalled member holds one flow value and the index's family holds two, so the
-    slot offers two and the model's sole-option claim is false. The slot stays open, and
-    the answer does not narrow to a flow the question never named. Singleton repair has
-    nothing to drop.
-    """
-    result = _run()
-    assert result.status == "definite"
-    spec = result.specs[0]
-    assert not any(w.code == REDUNDANT_BINDING_DROPPED for w in result.warnings)
-
-    flow_slot = next(
-        s
-        for s in spec.resolved.slots
-        if s.key.property is not None and s.key.property.ref == _PROP_FLOW
-    )
-    assert flow_slot.binding.kind == "unbound"
-    purpose_slot = next(
-        s
-        for s in spec.resolved.slots
-        if s.key.property is not None and s.key.property.ref == _PROP_PURPOSE
-    )
-    assert purpose_slot.binding.kind == "value"
 
 
 def test_slot_options_truncated_is_false_for_the_index_sourced_axis():

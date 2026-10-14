@@ -142,11 +142,6 @@ class GraphReader(Protocol):
         contract."""
         ...
 
-    def declares_facet_defaults(self) -> bool:
-        """Whether `default_facet_policy` can return a policy for any StatVar. When `False`,
-        it returns `None` for every StatVar and axis."""
-        ...
-
     def default_facet_policy(self, *, stat_var: str, axis: str) -> FacetDefaultPolicy | None:
         """Returns `None` when the graph declares no default for the axis."""
         ...

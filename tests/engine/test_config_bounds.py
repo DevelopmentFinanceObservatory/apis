@@ -22,13 +22,14 @@ class TestNumericBounds:
             ("SEARCH_MAX_ENTITIES", "0"),
             ("SEARCH_MAX_ENTITY_OCCURRENCES", "0"),
             ("SEARCH_BIND_TOP_K", "0"),
-            ("SEARCH_MIN_RECALL_BIND_SLOTS", "-1"),
             ("SEARCH_OBS_PREVIEW_CONCURRENCY", "0"),
             ("SEARCH_OBS_PREVIEW_TOTAL_CONCURRENCY", "0"),
             ("SEARCH_SDMX_CHUNK_CONCURRENCY", "0"),
             ("SEARCH_GRAPH_TIMEOUT_S", "0"),
             ("SEARCH_GRAPH_TIMEOUT_S", "-5"),
             ("SEARCH_UN_RESOLVE_TIMEOUT_S", "0"),
+            ("SEARCH_UN_FIRST_PASS_WAIT_S", "0"),
+            ("SEARCH_UN_FIRST_PASS_WAIT_S", "3.5"),
             ("SEARCH_LLM_MAX_CONCURRENCY", "0"),
             ("SEARCH_MAX_QUERY_CHARS", "0"),
             ("SEARCH_REQUEST_TIMEOUT_S", "0"),
@@ -41,6 +42,7 @@ class TestNumericBounds:
             ("SEARCH_RESOLVE_TARGET", "everything"),
             ("SEARCH_UNKNOWN_SCORE_THRESHOLD", "0"),
             ("SEARCH_UNKNOWN_SCORE_THRESHOLD", "1.5"),
+            ("SEARCH_UN_UNKNOWN_SCORE_THRESHOLD", "0"),
             ("SEARCH_TOPIC_EXPAND_MARGIN", "-0.1"),
             ("SEARCH_TOPIC_EXPAND_MAX_MEMBERS", "0"),
             ("SEARCH_MAX_CHILD_PLACES", "0"),
@@ -90,13 +92,6 @@ class TestNumericBounds:
         monkeypatch.setenv("SEARCH_MAX_VARIABLES", "6")
         monkeypatch.setenv("SEARCH_MAX_VARIABLE_CONCURRENCY", "3")
         with pytest.raises(ValueError, match="SEARCH_MAX_VARIABLE_CONCURRENCY"):
-            config.SearchSettings()
-
-    def test_min_recall_bind_slots_above_bind_top_k(self, monkeypatch: pytest.MonkeyPatch):
-        # SEARCH_MIN_RECALL_BIND_SLOTS must be <= SEARCH_BIND_TOP_K.
-        monkeypatch.setenv("SEARCH_BIND_TOP_K", "8")
-        monkeypatch.setenv("SEARCH_MIN_RECALL_BIND_SLOTS", "9")
-        with pytest.raises(ValueError, match="SEARCH_MIN_RECALL_BIND_SLOTS"):
             config.SearchSettings()
 
     def test_sdmx_total_concurrency_below_chunk_concurrency(self, monkeypatch: pytest.MonkeyPatch):

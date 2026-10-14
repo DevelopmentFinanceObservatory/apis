@@ -116,9 +116,11 @@ def _layer2_key(
     unsupported_qualifier_phrases: list[str] | None = None,
     declared_default_trigger_words: list[dict[str, str]] | None = None,
     declared_default_slots_named: list[str] | None = None,
+    query_text_negated_stated_words: list[str] | None = None,
     scope: dict | None = None,
     source_codes: list[str | None] | None = None,
     separate: list[bool] | None = None,
+    written_variable_phrases: list[str | None] | None = None,
 ) -> str:
     """`layer2_key` with every raw-text signal defaulting to empty, for a
     test that means to vary exactly one argument."""
@@ -158,8 +160,14 @@ def _layer2_key(
             declared_default_slots_named if declared_default_slots_named is not None else []
         ),
         scope=scope if scope is not None else _scope(),
+        query_text_negated_stated_words=(
+            query_text_negated_stated_words if query_text_negated_stated_words is not None else ()
+        ),
         source_codes=source_codes if source_codes is not None else (),
         separate=separate if separate is not None else (),
+        written_variable_phrases=(
+            written_variable_phrases if written_variable_phrases is not None else ()
+        ),
     )
 
 
@@ -490,8 +498,8 @@ def test_query_text_some_vocabulary_reads_apart_changes_layer2_key(first, second
 
 
 def test_unsupported_qualifier_phrase_alone_changes_layer2_key() -> None:
-    """ "non-concessional" in the raw query is a closed unsupported-vocabulary
-    term (qualifier_match._UNSUPPORTED_QUALIFIER_TERMS) that
+    """ "non-concessional" in the raw query is a word the flow type declares it has no
+    vocabulary for (`CodeSystemDeclaration.no_vocabulary_terms`) that
     `_resolve_query_qualifiers` reads from `query_text` and turns into a
     `no_vocabulary` disposition, refusing the whole answer via
     `qualifier_not_bound`. Same Extraction, the phrase present on one side
@@ -539,6 +547,23 @@ def test_raw_text_naming_a_defaulted_slot_alone_changes_layer2_key() -> None:
     assert keys[0] != keys[1]
 
 
+def test_raw_text_negating_a_stated_word_alone_changes_layer2_key() -> None:
+    """The stated-word rule reads a negation from the raw query, so equal extractions of
+    "bilateral ODA to Kenya" and "not bilateral ODA to Kenya" key apart, and a query that
+    negates no stated word keys as before the signal existed."""
+    keys = []
+    for raw in ("bilateral ODA to Kenya", "not bilateral ODA to Kenya"):
+        signals = compute_layer2_signals(query=raw, entity_roles={}, query_text=raw)
+        keys.append(
+            _layer2_key(
+                variables=["bilateral ODA"],
+                query_text_negated_stated_words=list(signals.query_text_negated_stated_words),
+            )
+        )
+    assert keys[0] != keys[1]
+    assert keys[0] == _layer2_key(variables=["bilateral ODA"])
+
+
 def test_dropped_qualifiers_content_alone_changes_layer2_key() -> None:
     """A dropped "across all flows" phrase changes the key because it suppresses a default."""
     with_breadth = _layer2_key(dropped_qualifiers=["across all flows"])
@@ -579,6 +604,22 @@ def test_a_series_code_changes_layer2_key() -> None:
     second = _layer2_key(variables=variables, source_codes=[None, "DT.TDS.DEGG.CD"])
     assert len({plain, first, second}) == 3
     assert plain == _layer2_key(variables=variables, source_codes=[None, None])
+
+
+def test_the_written_stretch_of_a_variable_changes_layer2_key() -> None:
+    """ "net flows on external debt for Kenya" and "Kenya external debt net flows" extract
+    alike and write the phrase differently, which the named-member binding reads. No
+    written stretch keys as an extraction without the field."""
+    variables = ["external debt net flows"]
+    plain = _layer2_key(variables=variables)
+    as_named = _layer2_key(
+        variables=variables, written_variable_phrases=["net flows on external debt"]
+    )
+    reordered = _layer2_key(
+        variables=variables, written_variable_phrases=["external debt net flows"]
+    )
+    assert len({plain, as_named, reordered}) == 3
+    assert plain == _layer2_key(variables=variables, written_variable_phrases=[None])
 
 
 def test_both_spellings_of_a_series_code_share_the_parsed_key() -> None:

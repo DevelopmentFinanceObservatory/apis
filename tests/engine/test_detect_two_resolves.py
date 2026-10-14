@@ -517,6 +517,8 @@ def _codes(response) -> list[str]:
 
 
 def test_a_failed_un_resolve_leaves_an_answer_unwarned_and_storable() -> None:
+    """Our pass answers, so the UN pool, which only fills a no-data gap, could not have
+    changed the answer: it neither warns nor stays out of the response cache."""
     baseline = offline_resolve(make_request(_QUERY), materialise_graph=member_walk_reader())
     failed_un = FakeGraph(un_detect=dict.fromkeys(_recorded()))
 

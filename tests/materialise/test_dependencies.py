@@ -18,6 +18,7 @@ from materialise.convert import ConversionRecord
 from materialise.dependencies import (
     Dependencies,
     build_dependencies,
+    decode_dependencies,
     dependency_changes,
     members_digest,
     refreshed_dependencies,
@@ -25,7 +26,7 @@ from materialise.dependencies import (
 from materialise.facets import FacetBinding, ProvenanceRefresh, probe_collection_facets
 from materialise.graph import Facet
 from materialise.recipe_bodies import RECIPE_BODIES
-from materialise.window import RequestedWindow, election_window
+from materialise.window import LatestYear, RequestedWindow, election_window
 from series_coverage.schema import FacetMetadata, RoleNames
 from tests.engine._fake_coverage import build_coverage_index
 
@@ -34,6 +35,11 @@ from .conftest import FakeGraphReader
 _STAT_VAR = "dcid:MalariaGrantDisbursements"
 _BARE_STAT_VAR = "MalariaGrantDisbursements"
 _RECIPE_ID = next(iter(sorted(RECIPE_BODIES)))
+
+_LATEST_A = LatestYear(
+    elected=2024, served=2023, facet_ids=("facet1",), omitted=(("recipient", "country/KEN"),)
+)
+_LATEST_YEARS = (("dcid:A", _LATEST_A),)
 
 _BASE = Dependencies(
     members=members_digest(["A", "B"]),
@@ -101,6 +107,57 @@ def test_dependency_changes_names_each_differing_member(stored, expected):
     assert dependency_changes(stored, _BASE) == expected
 
 
+@pytest.mark.parametrize(
+    ("stored", "expected"),
+    [
+        pytest.param(_stored(latest_years=_LATEST_YEARS), (), id="identical"),
+        pytest.param(
+            _stored(latest_years=(("dcid:A", replace(_LATEST_A, elected=2025)),)),
+            ("latest_years",),
+            id="elected-year",
+        ),
+        pytest.param(_BASE.as_json(), ("latest_years",), id="no-recorded-year"),
+        pytest.param(
+            {**_BASE.as_json(), "latest_years": [{"stat_var": "dcid:A", "elected": "2024"}]},
+            ("schema",),
+            id="malformed",
+        ),
+    ],
+)
+def test_dependency_changes_compares_the_years_a_latest_run_recorded(stored, expected):
+    assert dependency_changes(stored, replace(_BASE, latest_years=_LATEST_YEARS)) == expected
+
+
+def test_build_dependencies_records_each_latest_member_and_the_stored_shape_reads_back():
+    """A `latest` member the run holds no year for records that it elected none, so a check
+    of the same requests names the same members."""
+    latest = RequestedWindow(kind="latest")
+
+    dependencies = build_dependencies(
+        [_request("dcid:B", latest), _request("dcid:A", latest)],
+        source_refs=(),
+        provenance_refresh={},
+        conversion_records=(),
+        latest_years={"dcid:A": _LATEST_A},
+    )
+
+    assert dependencies.latest_years == (
+        ("dcid:A", _LATEST_A),
+        ("dcid:B", LatestYear(elected=None, served=None)),
+    )
+    assert dependencies.as_json()["latest_years"] == [
+        {
+            "stat_var": "dcid:A",
+            "elected": 2024,
+            "served": 2023,
+            "facet_ids": ["facet1"],
+            "omitted": [{"role": "recipient", "entity": "country/KEN"}],
+        },
+        {"stat_var": "dcid:B", "elected": None, "served": None, "facet_ids": [], "omitted": []},
+    ]
+    assert decode_dependencies(dependencies.as_json()) == dependencies
+
+
 def test_a_refreshed_fingerprint_reads_every_stored_ref_in_one_call():
     """The freshness side keeps the stored refs and recipe ids, dates every source and
     conversion source from one `node_arcs_many`, and takes members and window from the
@@ -114,7 +171,7 @@ def test_a_refreshed_fingerprint_reads_every_stored_ref_in_one_call():
     window = election_window(RequestedWindow(kind="range", start_year=2015), clock_year=2026)
 
     refreshed = refreshed_dependencies(
-        _BASE, [_request("A", window), _request("B", window)], graph=graph
+        _BASE, [_request("A", window), _request("B", window)], graph=graph, coverage=None
     )
 
     assert graph.node_arcs_many_calls == [
@@ -177,6 +234,7 @@ def test_build_dependencies_records_what_the_run_dispatched():
             "provenance/W": ProvenanceRefresh(None),
         },
         conversion_records=[record, None, record],
+        latest_years={},
     )
 
     assert dependencies.members == members_digest(["A", "B"])
@@ -207,7 +265,11 @@ def test_build_dependencies_records_what_the_run_dispatched():
 )
 def test_a_window_that_reads_no_clock_has_no_window_member(window):
     dependencies = build_dependencies(
-        [_request(_STAT_VAR, window)], source_refs=(), provenance_refresh={}, conversion_records=()
+        [_request(_STAT_VAR, window)],
+        source_refs=(),
+        provenance_refresh={},
+        conversion_records=(),
+        latest_years={},
     )
     assert dependencies.window is None
 
@@ -224,6 +286,7 @@ def test_a_recipe_without_a_body_records_no_digest():
         source_refs=(),
         provenance_refresh={},
         conversion_records=[_record(recipe_id="NoSuchRecipe", provenance="p", refresh=None)],
+        latest_years={},
     )
     assert dependencies.recipes == (("NoSuchRecipe", None),)
 
@@ -361,5 +424,5 @@ def test_a_refresh_during_the_fetch_records_the_pre_fetch_token_and_the_next_che
 
     assert result.coverage.rows == members
     assert result.dependencies.sources == (("OECD_DAC2A", "2026-10-07"),)
-    current = refreshed_dependencies(result.dependencies, requests, graph=graph)
+    current = refreshed_dependencies(result.dependencies, requests, graph=graph, coverage=None)
     assert dependency_changes(result.dependencies.as_json(), current) == ("sources:OECD_DAC2A",)

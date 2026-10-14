@@ -253,11 +253,19 @@ class SearchSettings(BaseSettings):
     resolve_target: str = "base_and_custom"
 
     # Timeout in seconds for the UN System Data Commons resolve, which starts beside ours in
-    # recall. Only a part whose first pass ends no_data waits for it. On failure or timeout,
-    # search answers from our candidates, and such a part carries un_system_unavailable. The
-    # UN resolve measured 0.72 s.
+    # recall. It is the HTTP call's hard deadline; how long a part waits for it is
+    # un_first_pass_wait_s. The UN resolve measured p50 0.73 s and p95 0.98 s.
     # SEARCH_REQUEST_TIMEOUT_S still bounds the whole request.
     un_resolve_timeout_s: float = 3.0
+
+    # How long a part waits for the UN leg, its resolve and the derivation of its shapes,
+    # from the start of derivation, in seconds. The UN derivation runs beside ours, and only
+    # a part whose own pass ends no_data waits for it. Past it that part keeps our answer
+    # and carries un_system_unavailable. Run
+    # beside ours against the live UN deployment, ten queries' UN legs finished 0.89 to
+    # 1.57 s after derivation began; a 1.0 s wait missed one of the ten. The `un_derive` log
+    # line gives each derivation's time. Must be in (0, un_resolve_timeout_s].
+    un_first_pass_wait_s: float = 1.5
 
     # Timeout in seconds for a definite answer's related-measures reads (`related`), which
     # start beside the answer's other post-election reads. Past it the answer states
@@ -277,27 +285,22 @@ class SearchSettings(BaseSettings):
     # Scores below 0.65 are dropped. A query with no eligible shape returns variable_not_resolved.
     unknown_score_threshold: float = 0.65
 
+    # The same floor for shapes the UN System Data Commons resolver recalls, on its own
+    # scale. Its twins of our series score 0.69 to 0.91 against the same texts, and an
+    # unrelated control tops at 0.53.
+    un_unknown_score_threshold: float = 0.65
+
     # Minimum score for a recalled SV to be treated as confident (non-weak).
     # Only used below as the lower bound of the RETRIEVAL_SCORE_WEAK info-warning band.
     # Equal to unknown_score_threshold. Weak-match warnings start above this cutoff.
     relevance_threshold: float = 0.65
 
-    # Scores between relevance_threshold and this value trigger RETRIEVAL_SCORE_WEAK.
+    # Scores between relevance_threshold and this value trigger RETRIEVAL_SCORE_WEAK, a
+    # warning that lowers confidence and sets no status.
     weak_score_threshold: float = 0.75
 
-    # Below this score gap, a distinct shape becomes a candidate when the elected label
-    # lacks a match to the query. Forest area in Brazil differs by 0.0046.
-    # Fertility rate in Kenya differs by 0.243.
-    near_margin: float = 0.025
-
-    # Token-set Jaccard floor between the query phrase and elected label. At 0.3 it is a
-    # A 0.3 score permits a thin-margin match only when a query token names the elected concept
-    # and is absent from the neighbor's label. Generic queries score 0.40+ against vaccine
-    # siblings, so the neighbor-token check decides. Below 0.3, the match is ambiguous.
-    near_label_similarity: float = 0.3
-
-    # Maximum number of candidate specs returned in a CandidatesPart.
-    # Clamped broadest-first when multiple five-tuple groups survive ranking.
+    # Maximum number of candidate specs returned in a CandidatesPart: the elected reading
+    # and its rivals under the status rule, in menu order.
     max_candidates: int = 6
 
     # Variables above this post-extraction cap are dropped with a VARIABLES_CLAMPED warning.
@@ -326,10 +329,6 @@ class SearchSettings(BaseSettings):
     # Maximum number of candidate shapes (across all families) presented to the universal
     # choose+bind prompt. Retrieval ranks shapes. The LLM elects the winner.
     bind_top_k: int = 8
-
-    # Reserve top-scoring direct recalls before topic-expanded shapes fill the bind menu.
-    # Topic expansions inherit their root's rank. The reserve is clamped to bind_top_k.
-    min_recall_bind_slots: int = 2
 
     # A Topic expands when its score is within this margin of the pool top, including the
     # best non-topic candidate. This lets a specific SDG indicator Topic survive broader
@@ -461,7 +460,8 @@ class SearchSettings(BaseSettings):
     facet_probe_total_concurrency: int = 8
 
     # -- Recall quality, acronym canonicalization, and relevance floor --------
-    # Expand configured acronyms before bare-variable detection. Other fields keep their input.
+    # Expand the code index's variable aliases before bare-variable detection. Other fields
+    # keep their input.
     acronym_canonicalize: bool = True
 
     # Drop candidates below 0.30 before shape derivation. Topic candidates are exempt.
@@ -657,13 +657,6 @@ class SearchSettings(BaseSettings):
             raise ValueError(
                 f"SEARCH_WEAK_SCORE_THRESHOLD must be in (0, 1]; got {self.weak_score_threshold!r}"
             )
-        if self.near_margin < 0:
-            raise ValueError(f"SEARCH_NEAR_MARGIN must be >= 0; got {self.near_margin!r}")
-        if not (0 <= self.near_label_similarity <= 1):
-            raise ValueError(
-                "SEARCH_NEAR_LABEL_SIMILARITY must be in [0, 1]; got "
-                f"{self.near_label_similarity!r}"
-            )
         if self.max_candidates < 1:
             raise ValueError(f"SEARCH_MAX_CANDIDATES must be >= 1; got {self.max_candidates!r}")
         if self.max_variables < 1:
@@ -689,11 +682,6 @@ class SearchSettings(BaseSettings):
             )
         if self.bind_top_k < 1:
             raise ValueError(f"SEARCH_BIND_TOP_K must be >= 1; got {self.bind_top_k!r}")
-        if not (0 <= self.min_recall_bind_slots <= self.bind_top_k):
-            raise ValueError(
-                "SEARCH_MIN_RECALL_BIND_SLOTS must be in [0, SEARCH_BIND_TOP_K]; got "
-                f"{self.min_recall_bind_slots!r} against SEARCH_BIND_TOP_K={self.bind_top_k!r}"
-            )
         if self.detect_k < 1:
             raise ValueError(f"SEARCH_DETECT_K must be >= 1; got {self.detect_k!r}")
         if self.arcs_cache_size < 1:
@@ -716,6 +704,11 @@ class SearchSettings(BaseSettings):
             raise ValueError(
                 "SEARCH_UNKNOWN_SCORE_THRESHOLD must be in (0, 1]; got "
                 f"{self.unknown_score_threshold!r}"
+            )
+        if not (0 < self.un_unknown_score_threshold <= 1):
+            raise ValueError(
+                "SEARCH_UN_UNKNOWN_SCORE_THRESHOLD must be in (0, 1]; got "
+                f"{self.un_unknown_score_threshold!r}"
             )
         if self.topic_expand_margin < 0:
             raise ValueError(
@@ -777,6 +770,11 @@ class SearchSettings(BaseSettings):
         if self.un_resolve_timeout_s <= 0:
             raise ValueError(
                 f"SEARCH_UN_RESOLVE_TIMEOUT_S must be > 0; got {self.un_resolve_timeout_s!r}"
+            )
+        if not (0 < self.un_first_pass_wait_s <= self.un_resolve_timeout_s):
+            raise ValueError(
+                "SEARCH_UN_FIRST_PASS_WAIT_S must be in (0, SEARCH_UN_RESOLVE_TIMEOUT_S]; got "
+                f"{self.un_first_pass_wait_s!r} with {self.un_resolve_timeout_s!r}"
             )
         if self.related_measures_timeout_s <= 0:
             raise ValueError(

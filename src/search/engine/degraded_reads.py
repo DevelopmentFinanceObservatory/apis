@@ -8,7 +8,14 @@ resolution (`pipeline.resolve_variable`, `resubmit.resolve_spec_resubmit`). Any 
 extent notes what it lost with `note_degraded_read`, and the resolution marks its region
 `RegionResult.degraded`. The record travels in the context, so the worker threads a
 resolution starts with `asyncio.to_thread` or `submit_with_context` note into it. A record
-bound inside another passes what it holds to the outer one when it closes.
+bound inside another passes what it holds to the outer one when it closes, unless it is
+detached: the UN leg's reads (`phase_intake._un_shapes`) bear on the answer only when the UN
+pass runs, so `pipeline._fill_gap` notes them then.
+
+Only a read that was made and lost is noted. A fact left unknown because no read was made for
+it is not: a one-shape bind menu skips the availability read over a named set's places
+(`phase_rank_bind._phase_prune_and_rank`), so that shape's availability there is unknown,
+and its region is not degraded.
 """
 
 from __future__ import annotations
@@ -34,8 +41,9 @@ _RECORD: ContextVar[DegradedReads | None] = ContextVar("search_degraded_reads", 
 
 
 @contextmanager
-def recording_degraded_reads() -> Iterator[DegradedReads]:
-    """Collect, for the body of the `with` block, the reads it swallows."""
+def recording_degraded_reads(*, detached: bool = False) -> Iterator[DegradedReads]:
+    """Collect, for the body of the `with` block, the reads it swallows. A `detached` record
+    keeps them from the outer record when it closes."""
     outer = _RECORD.get()
     record = DegradedReads()
     token = _RECORD.set(record)
@@ -43,7 +51,7 @@ def recording_degraded_reads() -> Iterator[DegradedReads]:
         yield record
     finally:
         _RECORD.reset(token)
-        if outer is not None:
+        if outer is not None and not detached:
             outer.reads.extend(record.reads)
 
 

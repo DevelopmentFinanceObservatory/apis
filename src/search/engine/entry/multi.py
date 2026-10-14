@@ -15,9 +15,10 @@ from search.engine.deadline import _await_bounded, _cancel_and_await
 from search.engine.enrichment import _reconcile_after_collapse, _stream_slot_options
 from search.engine.entry.params import EntryParams
 from search.engine.envelope import _sum_usage, now_ms
-from search.engine.events import DoneEvent, DoneTelemetry, Event, LateDepartures, ResponseEvent
+from search.engine.events import DoneEvent, DoneTelemetry, Event, LateDepartures
 from search.engine.region import RegionResult, detect_set_ref
 from search.engine.region.option_coverage import _maybe_build_facet_options
+from search.engine.region.sentence_events import answer_events
 from search.engine.response_cache_flow import CacheScope
 from search.models import QueryEcho, Warning
 
@@ -83,7 +84,8 @@ async def _stream_combined_regions(
             *(_cancel_and_await(task) for task in stale_tasks), return_exceptions=True
         )
 
-        yield ResponseEvent(response=response)
+        for event in answer_events(response):
+            yield event
         warnings: list[Warning] = []
         late_departures: list[LateDepartures] = []
         async for event in _stream_slot_options(

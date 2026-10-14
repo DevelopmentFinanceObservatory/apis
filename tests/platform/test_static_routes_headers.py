@@ -54,6 +54,16 @@ def test_identity_body_matches_the_route_s_own_door_payload(client, route, paylo
     assert resp.content == JSONResponse(payload_builder()).body
 
 
+@pytest.mark.parametrize("route", list(_ROUTE_PAYLOAD_BUILDERS))
+def test_pre_gzipped_body_is_served_with_one_gzip_layer_and_its_strong_etag(client, route):
+    """httpx removes one gzip layer, so a body encoded twice would not equal the payload."""
+    resp = client.get(route, headers={"accept-encoding": "gzip"})
+    assert resp.status_code == 200
+    assert resp.headers["content-encoding"] == "gzip"
+    assert resp.content == JSONResponse(_ROUTE_PAYLOAD_BUILDERS[route]()).body
+    assert not resp.headers["etag"].startswith("W/")
+
+
 def test_vary_covers_accept_encoding_and_origin_with_no_cross_request_accumulation(
     monkeypatch: pytest.MonkeyPatch,
 ):

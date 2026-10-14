@@ -15,10 +15,18 @@ graph read of the `lastDataRefreshDate` of every source and conversion source th
 dependency fingerprint names builds the fingerprint a run would record now
 (`materialise.dependencies.refreshed_dependencies`), and `dependency_changes` compares it with
 the head's source by source: a match confirms and serves the head, a difference rebuilds. A
-head with no fingerprint rebuilds once. The graph serving revision is never compared, since it
-moves on every graph restart. A rebuild materialises the definition
-(`serve.serve_definition`), sharing one rebuild per subject in this process
-(`admission.RebuildFlights`), and breaks a single-place facet tie on the process's
+head with no fingerprint rebuilds once. The fingerprint of a `latest` head also holds the year
+the coverage index elected for each member, and the check elects again from the call's
+coverage snapshot over the series the run counted, so the head rebuilds when the index elects
+another year. A `latest` head whose fingerprint records no year rebuilds once when the index
+elects one for a member, and holds when it elects none, as for a member outside the index. A
+current head whose version is a frame of one year stored before versions held year coverage
+(`manifest_models.year_coverage_counted`) rebuilds once too, inside the recheck window or past
+it, and the rebuild stores that coverage on the version when it makes the same one
+(`version_store.LiveVersionRecordWriter`). The
+graph serving revision is never compared, since it moves on every graph restart. A rebuild
+materialises the definition (`serve.serve_definition`), sharing one rebuild per subject in this
+process (`admission.RebuildFlights`), and breaks a single-place facet tie on the process's
 whole-variable breadth (`DefinitionDeps.variable_breadth`).
 
 A call with no rendering (`options` `None`, the `/options` route) loads the head's version
@@ -77,7 +85,7 @@ from datasets_api.manifest import (
     stored_manifest_facts,
     stored_output_profile,
 )
-from datasets_api.manifest_models import ArtifactEntryModel, Manifest
+from datasets_api.manifest_models import ArtifactEntryModel, Manifest, year_coverage_counted
 from datasets_api.mint_models import MintOptions
 from datasets_api.operation_store import NullOperationStore, OperationStore
 from datasets_api.operations.submit import submit_over_budget
@@ -85,7 +93,7 @@ from datasets_api.operations.task_client import NullTaskClient, TaskClient
 from datasets_api.output_options import derive_output_options
 from datasets_api.query_options import encode_query_options
 from datasets_api.render import (
-    GroupbyCollapseRendering,
+    DerivedVersion,
     artifact_rendering_key,
     is_incomplete_rendering,
     is_statistics_rendering,
@@ -101,6 +109,8 @@ from datasets_api.serve import (
     ServedDefinition,
     ServeDeps,
     bundle_citations,
+    derived_output_profile,
+    derived_statistics_file,
     incomplete_artifact,
     persisted_response,
     raw_fetch_guard,
@@ -127,7 +137,6 @@ from materialise import (
     EnrichmentLookup,
     MaterialisationRequest,
     RowProgress,
-    compute_output_profile,
 )
 from materialise.bundle import ReproducingCall
 from materialise.codes import MaterialisationWarning
@@ -140,6 +149,7 @@ from materialise.dependencies import (
 from materialise.errors import DefaultFacetUndefinedError, FacetNotAvailableError
 from materialise.facets import VariableBreadthReader, bound_variable_breadth
 from materialise.formats import (
+    Frame,
     frame_entity_columns,
     read_stored_frame,
 )
@@ -147,10 +157,6 @@ from materialise.graph import GraphReader
 from materialise.profile import OutputProfile
 from materialise.projection import totals_axes
 from materialise.rate_tables import RateTableCache
-from materialise.statistics import (
-    SeriesStatisticsSink,
-    compute_series_statistics_table,
-)
 from series_coverage.index import CoverageIndex, Estimate
 from series_coverage.shared import CoverageService, CoverageSnapshot
 from spec_registry import SpecRegistry
@@ -361,10 +367,10 @@ def load_stored(
     )
 
 
-def _record_head_hit_collapse(
+def _record_head_hit_derived(
     *,
     manifest: Manifest,
-    collapse: GroupbyCollapseRendering,
+    derived: DerivedVersion,
     artifact: ArtifactEntryModel,
     reshape_warnings: tuple[MaterialisationWarning, ...],
     subject_id: str,
@@ -373,40 +379,37 @@ def _record_head_hit_collapse(
     deps: DefinitionDeps,
     trace_id: str | None,
 ) -> Manifest:
-    """Record and return a head-hit groupby collapse under its collapsed content version.
+    """Record and return a head-hit derived version (`render.DerivedVersion`): a groupby
+    collapse, a party-totals cut, or a collapse of the cut.
 
-    Store the artifact under `collapse.content_version` to match the collapsed identity, and
+    Store the artifact under `derived.content_version` to match the derived identity, and
     link it under its rendering, which is an incomplete one when its graph metadata reads
     failed (`incomplete_artifact`). Recording the same pair again is harmless. When the
-    collapsed version is already on record, return it as a repeat mint does
+    derived version is already on record, return it as a repeat mint does
     (`persisted_response`): its stored body with the artifacts linked for it, so its stored
     warnings stand. An incomplete render gives way to a complete artifact a concurrent call
-    linked under the collapsed version (`with_linked_artifacts`). The base record precedes
-    the render, so every writer dates and cites the collapsed version as the base does. The
-    collapsed version's description record derives from the base version's in the transaction
+    linked under the derived version (`with_linked_artifacts`). The base record precedes
+    the render, so every writer dates and cites the derived version as the base does. The
+    derived version's description record derives from the base version's in the transaction
     that records it (`version_descriptions.collapse_describer`).
     """
-    collapsed_frame_record = render_and_store_canonical_frame(
-        frame_chunks=(collapse.frame,),
+    derived_frame_record = render_and_store_canonical_frame(
+        frame_chunks=derived.frame_chunks(),
         subject_id=subject_id,
-        content_version=collapse.content_version,
+        content_version=derived.content_version,
         artifact_store=deps.artifact_store,
     )
-    collapsed_statistics_sink = SeriesStatisticsSink(
-        continuing=continued_series_of_trace(manifest.trace)
+    derived_statistics = derived_statistics_file(
+        derived, continuing=continued_series_of_trace(manifest.trace)
     )
-    collapsed_statistics_sink.write(compute_series_statistics_table(collapse.frame))
-    collapsed_statistics_file = collapsed_statistics_sink.finish()
-    collapsed_statistics_artifact = render_and_store_series_statistics(
-        data=collapsed_statistics_file.data,
+    derived_statistics_artifact = render_and_store_series_statistics(
+        data=derived_statistics.data,
         subject_id=subject_id,
-        content_version=collapse.content_version,
+        content_version=derived.content_version,
         artifact_store=deps.artifact_store,
     )
     call_warnings = reshape_warning_models(reshape_warnings)
-    output_profile = compute_output_profile(
-        collapse.frame, role_columns=collapse.role_columns, enrichment=deps.enrichment
-    )
+    output_profile = derived_output_profile(derived, enrichment=deps.enrichment)
     capabilities = build_capabilities(
         capability_version=deps.capability_version,
         build=deps.materialiser_build,
@@ -414,13 +417,12 @@ def _record_head_hit_collapse(
         declarations=deps.code_index.declarations,
         settings=deps.settings,
     )
-    collapsed_manifest = collapsed_head_manifest(
+    derived_manifest = collapsed_head_manifest(
         manifest=manifest,
-        collapse_frame=collapse.frame,
+        derived=derived,
         artifact=artifact,
-        statistics_artifact=collapsed_statistics_artifact,
-        series_count=collapsed_statistics_file.series_count,
-        content_version=collapse.content_version,
+        statistics_artifact=derived_statistics_artifact,
+        series_count=derived_statistics.series_count,
         output_options=derive_output_options(
             output_profile,
             identity=manifest.definition.identity,
@@ -433,37 +435,38 @@ def _record_head_hit_collapse(
         extra_warnings=call_warnings,
     )
     created = record_collapsed_head_version(
-        manifest=collapsed_manifest,
+        manifest=derived_manifest,
         subject_id=subject_id,
         schema_version=schema_version,
         base_content_version=base_content_version,
         output_profile=output_profile,
-        frame_sha256=collapse.frame_sha256,
-        record_only_artifacts=[collapsed_frame_record],
+        frame_sha256=derived.frame_sha256,
+        record_only_artifacts=[derived_frame_record],
         version_writer=deps.version_writer,
         trace_id=trace_id,
         describer_for=functools.partial(
             collapse_describer,
-            figures=collapsed_statistics_file.figures,
+            figures=derived_statistics.figures,
             code_index=deps.code_index,
             enrichment=deps.enrichment,
             deadline=deps.deadline,
+            summed=derived.summed,
         ),
     )
     if created and not is_incomplete_rendering(artifact.rendering):
-        return collapsed_manifest
-    state = deps.snapshot_reader.read_version_state(subject_id, collapse.content_version)
+        return derived_manifest
+    state = deps.snapshot_reader.read_version_state(subject_id, derived.content_version)
     if state is None:
-        return collapsed_manifest
+        return derived_manifest
     if created:
         return with_linked_artifacts(
-            collapsed_manifest, subject_id=subject_id, locations=state.locations, now=deps.now()
+            derived_manifest, subject_id=subject_id, locations=state.locations, now=deps.now()
         )
     return persisted_response(
         subject_id=subject_id,
         persisted=state.version,
         locations=state.locations,
-        served=collapsed_manifest,
+        served=derived_manifest,
         call_warnings=call_warnings,
         now=deps.now(),
     )
@@ -502,13 +505,14 @@ def plan_stored_render(
 
     Raise `StoredTraceMissingResolvedStatVars` for a trace without `resolved_stat_vars`,
     which a render needs for the groupby population. A pivot, a groupby, or a plain long `xlsx`
-    whose identity has an axis to split reads the version record once (`read_version`). With no `groupby` and no `columns`, a pivot refuses its caps
-    from the stored pivot facts (`refuse_pivot_over_stored_caps`). A plain long `xlsx` (no
-    `groupby`, no `pivot`, no `columns`) refuses `excel_limit` from the stored row count
-    (`refuse_excel_over_stored_rows`), since the stored count is then the count the writer
-    writes. Where totals can take a second sheet (`_stored_xlsx_splits_totals`), only a count past two
-    sheets' room refuses and the writer judges each sheet; a groupby or pivot changes that count,
-    `columns` refusals come first, and the render decides those.
+    whose identity has an axis to split reads the version record once (`read_version`). With
+    no `groupby`, no `columns` and no party-totals cut, a pivot refuses its caps from the
+    stored pivot facts (`refuse_pivot_over_stored_caps`). A plain long `xlsx` (no `groupby`,
+    no `pivot`, no `columns`, no party-totals cut) refuses `excel_limit` from the stored row
+    count (`refuse_excel_over_stored_rows`), since the stored count is then the count the
+    writer writes. Where totals can take a second sheet (`_stored_xlsx_splits_totals`), only a
+    count past two sheets' room refuses and the writer judges each sheet; a groupby, a cut or a
+    pivot changes that count, `columns` refusals come first, and the render decides those.
     """
     if manifest.trace.get("resolved_stat_vars") is None:
         raise StoredTraceMissingResolvedStatVars(
@@ -516,17 +520,21 @@ def plan_stored_render(
         )
     stored = read_version() if options.pivot is not None or options.groupby is not None else None
     output_profile: OutputProfile | None = None
+    # A groupby, `columns` or a party-totals cut changes what the stored facts count.
+    reshaped = (
+        options.groupby is not None or options.columns is not None or options.without_party_totals
+    )
     if options.pivot is not None:
         output_profile = (
             stored_output_profile(stored_manifest_facts(stored)) if stored is not None else None
         )
-        if options.groupby is None and options.columns is None:
+        if not reshaped:
             refuse_pivot_over_stored_caps(
                 options,
                 output_profile=output_profile,
                 pivot_max_output_cells=deps.settings.pivot_max_output_cells,
             )
-    elif options.groupby is None and options.columns is None and options.format == "xlsx":
+    elif not reshaped and options.format == "xlsx":
         # The writer refuses at the first row past a sheet's limit and names that row.
         refuse_excel_over_stored_rows(
             manifest.coverage.rows,
@@ -585,7 +593,7 @@ def _render_frame(
     frame: StoredFrame,
     plan: StoredRenderPlan,
     locations: Sequence[StoredArtifactLocation] = (),
-) -> Manifest:
+) -> Manifest | None:
     """Render a missing request format from the stored frame `frame` on a head hit. The caller
     holds a materialise permit from before it read `frame` to after this returns.
     `locations` is the version's links when the caller read them to find `frame`.
@@ -596,10 +604,12 @@ def _render_frame(
     version: a pivot reads its stored output profile, and a groupby compares its collapse
     with the recorded frame hash.
 
-    Return the collapsed manifest when groupby changes the frame. A groupby that leaves the
-    frame unchanged is the base version, whatever frame grammar minted its token
-    (`render_and_store`). Record its artifact, and every other one, under the base version and
-    add it to the manifest. Render errors propagate to the shared classifier.
+    Return the derived version's manifest when groupby or a party-totals cut changes the frame
+    (`render.DerivedVersion`). A groupby that leaves the frame unchanged is the base version,
+    whatever frame grammar minted its token (`render_and_store`). Record its artifact, and
+    every other one, under the base version and add it to the manifest. A party-totals cut
+    reads a canonical frame, so a version whose stored frame is a frame1 document returns
+    `None` and the caller rebuilds. Render errors propagate to the shared classifier.
 
     A bundle cites the stored citation with its empty fields filled by a live read
     (`bundle_citations`). A render whose graph metadata reads failed is linked as incomplete
@@ -607,6 +617,8 @@ def _render_frame(
     rendering key when a concurrent call linked one first (`with_linked_artifacts`).
     """
     table = read_stored_frame(frame.data, media_type=frame.location.media_type)
+    if options.without_party_totals and not isinstance(table, Frame):
+        return None
     entity_columns = frame_entity_columns(table.columns)
     facets = cast("list[dict[str, object]]", manifest.trace.get("facets", []))
     provenance_refs = provenance_refs_of(facets)
@@ -669,12 +681,12 @@ def _render_frame(
             else None
         ),
     )
-    artifact, reshape_warnings, collapse = (
+    artifact, reshape_warnings, derived = (
         rendered.artifact,
         rendered.warnings,
-        rendered.collapse,
+        rendered.derived,
     )
-    rendered_content_version = collapse.content_version if collapse is not None else content_version
+    rendered_content_version = derived.content_version if derived is not None else content_version
     if not (documentation_complete and rendered.labels_complete):
         artifact = incomplete_artifact(
             artifact,
@@ -684,10 +696,10 @@ def _render_frame(
             documentation_complete=documentation_complete,
             labels_complete=rendered.labels_complete,
         )
-    if collapse is not None and rendered_content_version != content_version:
-        return _record_head_hit_collapse(
+    if derived is not None:
+        return _record_head_hit_derived(
             manifest=manifest,
-            collapse=collapse,
+            derived=derived,
             artifact=artifact,
             reshape_warnings=reshape_warnings,
             subject_id=subject_id,
@@ -936,19 +948,26 @@ def _head_is_fresh(head: SubjectHead, *, now: datetime, deps: DefinitionDeps) ->
 _NO_HEAD = "no_head"
 _MAX_AGE = "max_age"
 _UNSERVABLE = "unservable"
+_YEAR_COVERAGE = "year_coverage"
 
 
 def _fingerprint_changes(
-    head: SubjectHead, requests: Sequence[MaterialisationRequest], *, graph: GraphReader
+    head: SubjectHead,
+    requests: Sequence[MaterialisationRequest],
+    *,
+    graph: GraphReader,
+    coverage: CoverageIndex,
 ) -> tuple[str, ...]:
     """The members of `head`'s dependency fingerprint that differ from the one a run over
-    `requests` would record now, read in one graph call (`refreshed_dependencies`). A head with
-    no readable fingerprint differs on `schema` and reads nothing."""
+    `requests` would record now, read in one graph call and elected from `coverage`
+    (`refreshed_dependencies`). A head with no readable fingerprint differs on `schema` and
+    reads nothing."""
     stored = decode_dependencies(head.dependencies) if head.dependencies is not None else None
     if stored is None:
         return ("schema",)
     return dependency_changes(
-        head.dependencies, refreshed_dependencies(stored, requests, graph=graph)
+        head.dependencies,
+        refreshed_dependencies(stored, requests, graph=graph, coverage=coverage),
     )
 
 
@@ -967,12 +986,14 @@ def _judge_head(
     requests: Callable[[], Sequence[MaterialisationRequest]],
     now: datetime,
     deps: DefinitionDeps,
+    coverage: CoverageIndex,
 ) -> _Freshness:
     """Whether `head`, the head of the served definition `stored`, is current (`serve_current`'s
     head rule). A head past the recheck window and younger than `head_max_age` whose
     fingerprint matches is confirmed, and the verdict serves the head the confirmation wrote,
-    or the head a concurrent update left. The fingerprint read runs under the definition's
-    pinned provenances (`adapter.pinned_provenance_scope`), as its materialisation does."""
+    or the head a concurrent update left. The fingerprint read and its election from
+    `coverage` run under the definition's pinned provenances
+    (`adapter.pinned_provenance_scope`), as its materialisation does."""
     subject_id = stored.spec_id
     if head is None:
         return _Freshness(head=None, rebuild_reason=_NO_HEAD)
@@ -981,7 +1002,7 @@ def _judge_head(
     if now - head.materialised_at >= deps.head_max_age:
         return _Freshness(head=None, rebuild_reason=_MAX_AGE)
     with pinned_provenance_scope(stored.identity), phase("fingerprint"):
-        changes = _fingerprint_changes(head, requests(), graph=deps.graph)
+        changes = _fingerprint_changes(head, requests(), graph=deps.graph, coverage=coverage)
     if changes:
         return _Freshness(head=None, rebuild_reason=",".join(changes))
     written = deps.head_store.confirm_head(
@@ -1005,10 +1026,13 @@ def _serve_head(
     load_head: HeadLoader | None,
     render: bool = True,
     revoked_under: Sequence[str] = (),
-) -> Manifest | None:
+) -> Manifest | str:
     """The stored manifest answering the call from `served_head`, stamped `served_from: head`,
-    or `None` when the head cannot answer it. `load_head` replaces `head_rendering`, and
-    `revoked_under` is `load_stored`'s."""
+    or the reason the call rebuilds: `_UNSERVABLE` when the head cannot answer it, and
+    `_YEAR_COVERAGE` when its version is a frame of one year whose year coverage was never
+    counted (`year_coverage_counted`). The rebuild counts it, on the stored version when it
+    makes the same one (`VersionRecordWriter.write_version`), so a head rebuilds once for it.
+    `load_head` replaces `head_rendering`, and `revoked_under` is `load_stored`'s."""
     if load_head is not None:
         manifest = load_head(served_head.content_version, coverage_snapshot)
     else:
@@ -1023,7 +1047,14 @@ def _serve_head(
             revoked_under=revoked_under,
         )
     if manifest is None:
-        return None
+        return _UNSERVABLE
+    window = manifest.coverage.window or {}
+    if (
+        window.get("start_year") is not None
+        and window.get("start_year") == window.get("end_year")
+        and not year_coverage_counted(manifest.coverage.model_dump(mode="json"))
+    ):
+        return _YEAR_COVERAGE
     return stamp_trace(
         manifest,
         served_from="head",
@@ -1084,7 +1115,7 @@ def serve_fresh_head(
         render=False,
         revoked_under=revoked_under,
     )
-    if served is None:
+    if isinstance(served, str):
         return HeadRead(stored=stored, head=head)
     return _labelled(served, trigger=trigger)
 
@@ -1111,7 +1142,14 @@ def serve_current_head(
     """
     with phase("head_read"):
         head = deps.head_store.read_head(stored.spec_id)
-    verdict = _judge_head(head, stored=stored, requests=lambda: requests, now=deps.now(), deps=deps)
+    verdict = _judge_head(
+        head,
+        stored=stored,
+        requests=lambda: requests,
+        now=deps.now(),
+        deps=deps,
+        coverage=coverage_snapshot.index,
+    )
     if verdict.head is None:
         return HeadRead(stored=stored, head=head, verdict=verdict)
     served = _serve_head(
@@ -1125,7 +1163,7 @@ def serve_current_head(
         render=False,
         revoked_under=revoked_under,
     )
-    if served is None:
+    if isinstance(served, str):
         return HeadRead(stored=stored, head=head, verdict=verdict)
     return _labelled(served, trigger=trigger)
 
@@ -1150,7 +1188,8 @@ def serve_current(
     the head when the head cannot answer. A head answers under `load_stored`'s
     `revoked_under`.
 
-    One coverage snapshot serves each pass's admission estimate, fetch, and response stamp:
+    One coverage snapshot serves each pass's head check, admission estimate, fetch, and response
+    stamp:
     `coverage_snapshot` when given, else the service's. A pass that reaches its materialise
     permit after a reload replaced the snapshot raises `StaleCoverageSnapshot` to the caller
     that passed `coverage_snapshot`, which starts again on the served one
@@ -1244,7 +1283,9 @@ def _check_currency(
     verdict = (
         head_read.verdict
         if head_read is not None and head_read.verdict is not None
-        else _judge_head(head, stored=stored, requests=requests, now=now, deps=deps)
+        else _judge_head(
+            head, stored=stored, requests=requests, now=now, deps=deps, coverage=snapshot.index
+        )
     )
     rebuild_reason = verdict.rebuild_reason
     if verdict.head is not None:
@@ -1258,9 +1299,9 @@ def _check_currency(
             load_head=load_head,
             revoked_under=revoked_under,
         )
-        if served is not None:
+        if not isinstance(served, str):
             return served
-        rebuild_reason = _UNSERVABLE
+        rebuild_reason = served
     rebuild_requests = requests()
     with deps.rebuilds.turn(
         subject_id,

@@ -21,6 +21,7 @@ from search.engine.region.observations.dispatch import (
     _observations_relaunch_closure,
     _resolve_spec_observations,
 )
+from search.engine.region.phase_answer import _phase_outcome
 from search.engine.region.state import ResolveState
 from search.engine.region.un_system import NO_LABELS
 from search.models import Spec, omitted_observations
@@ -219,7 +220,8 @@ def _resolve_candidates_in_pass(
     monkeypatch: pytest.MonkeyPatch, body: Callable[[ResolveState], Awaitable[None]]
 ) -> None:
     """Runs the lone-survivor bound-unit candidate fixture, set to stream its preview, and
-    runs `body` on its state in place of `resolve_candidates`, inside the live pass. The
+    runs `body` on its state in place of the outcome stage (`phase_answer._phase_outcome`),
+    whose first step is `resolve_candidates`, inside the live pass. The
     pass cancels its queued member walks when it ends (`pipeline._cancel_queued_reads`), so
     `body` must await `resolve_candidates` before then."""
 
@@ -229,8 +231,7 @@ def _resolve_candidates_in_pass(
         raise _PassEnded
 
     patched_phases = tuple(
-        _run_body_and_end if phase is resolve_candidates else phase
-        for phase in region_pipeline._PHASES
+        _run_body_and_end if phase is _phase_outcome else phase for phase in region_pipeline._PHASES
     )
     monkeypatch.setattr(region_pipeline, "_PHASES", patched_phases)
     with pytest.raises(_PassEnded):

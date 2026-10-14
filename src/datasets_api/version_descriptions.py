@@ -136,12 +136,14 @@ class MintDescriber:
 
 @dataclass(frozen=True)
 class CollapseDescriber:
-    """A multi-contributor collapse's record, derived from its base version's stored record.
-    A base that holds no record leaves the collapse without one."""
+    """A derived version's record, derived from its base version's stored record. A base that
+    holds no record leaves the derived version without one. `summed` is set for a
+    multi-contributor collapse (`description_record.collapsed_record`)."""
 
     figures: SeriesFigures
     labels: Mapping[str, str]
     read: datetime.date
+    summed: bool = True
 
     def describe(
         self, version: VersionRecord, *, base: DescriptionRecord | None
@@ -155,7 +157,7 @@ class CollapseDescriber:
                 version.base_content_version,
             )
             return None
-        record = collapsed_record(base, version, figures=self.figures)
+        record = collapsed_record(base, version, figures=self.figures, summed=self.summed)
         return with_labels(record, self.labels, read=self.read)
 
     def settle(self, stored: DescriptionRecord, *, version: VersionRecord) -> LateFields | None:
@@ -179,16 +181,18 @@ def mint_describers(
     code_index: CodeIndex,
     enrichment: EnrichmentLookup,
     deadline: float | None,
+    collapsed_summed: bool = True,
 ) -> MintDescribers:
-    """The describers of a mint of `version`, and of the collapse it renders, with the labels
-    both records name read in one batch, and the title they compose. A build that fails gives
-    neither."""
+    """The describers of a mint of `version`, and of the derived version it renders, which
+    `collapsed_summed` says sums the definition's variables, with the labels both records name
+    read in one batch, and the title they compose. A build that fails gives neither."""
 
     def build() -> MintDescribers:
         return _mint_describers(
             version,
             figures=figures,
             collapsed=collapsed,
+            collapsed_summed=collapsed_summed,
             code_index=code_index,
             enrichment=enrichment,
             deadline=deadline,
@@ -206,13 +210,19 @@ def _mint_describers(
     code_index: CodeIndex,
     enrichment: EnrichmentLookup,
     deadline: float | None,
+    collapsed_summed: bool,
 ) -> MintDescribers:
     provisional = mint_record(version, figures=figures, code_index=code_index, title=None)
     refs = named_refs(provisional)
     if collapsed is not None:
         collapsed_version, collapsed_figures = collapsed
         refs += named_refs(
-            collapsed_record(provisional, collapsed_version, figures=collapsed_figures)
+            collapsed_record(
+                provisional,
+                collapsed_version,
+                figures=collapsed_figures,
+                summed=collapsed_summed,
+            )
         )
     labels = read_labels(enrichment, refs, deadline=deadline)
     read = utc_now().date()
@@ -225,7 +235,9 @@ def _mint_describers(
         ),
         collapsed=None
         if collapsed is None
-        else CollapseDescriber(figures=collapsed[1], labels=labels, read=read),
+        else CollapseDescriber(
+            figures=collapsed[1], labels=labels, read=read, summed=collapsed_summed
+        ),
     )
 
 
@@ -236,18 +248,20 @@ def collapse_describer(
     code_index: CodeIndex,
     enrichment: EnrichmentLookup,
     deadline: float | None,
+    summed: bool = True,
 ) -> CollapseDescriber | None:
-    """The describer of a collapsed head's `version`, with the labels of what it sums, or
-    `None` when building it failed. The version's facts hold its base's trace, which stands in
-    for the base's record here."""
+    """The describer of a head's derived `version`, which `summed` says sums the definition's
+    variables, with the labels of what it names, or `None` when building it failed. The
+    version's facts hold its base's trace, which stands in for the base's record here."""
 
     def build() -> CollapseDescriber:
         base = mint_record(version, figures=figures, code_index=code_index, title=None)
-        refs = named_refs(collapsed_record(base, version, figures=figures))
+        refs = named_refs(collapsed_record(base, version, figures=figures, summed=summed))
         return CollapseDescriber(
             figures=figures,
             labels=read_labels(enrichment, refs, deadline=deadline),
             read=utc_now().date(),
+            summed=summed,
         )
 
     return _guarded(version, build)

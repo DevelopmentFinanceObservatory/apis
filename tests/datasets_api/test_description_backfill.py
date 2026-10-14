@@ -61,6 +61,7 @@ from tests.materialise._canonical_frame import (
 )
 
 from . import test_serve_groupby_collapse as family_fixture
+from . import test_serve_party_totals as party_fixture
 from ._artifact_doubles import FakeArtifactStore
 from ._description_doubles import (
     FAMILY_AXIS,
@@ -968,6 +969,37 @@ def test_a_collapse_is_backfilled_from_its_base_versions_record() -> None:
     assert record.variables == minted.variables
     assert record.variables is not None
     assert record.variables.dimensions == []
+
+
+def test_a_party_totals_cut_is_backfilled_from_its_base_without_a_sum_step() -> None:
+    """A cut version sums nothing, so its backfilled record keeps its base's steps, as the
+    record its mint wrote does."""
+    client, store, spec_id, sidecar = party_fixture._rig()
+    cut = party_fixture._mint(client, spec_id=spec_id, sidecar=sidecar, options=party_fixture._CUT)
+    content_version = cut["content_version"]
+    (base_version,) = version_rows(store, spec_id) - {content_version}
+    minted = read_record(store, subject_id=spec_id, content_version=content_version)
+    assert minted is not None
+    assert "sum_variables" not in [step.op for step in minted.known_steps]
+    for version in version_rows(store, spec_id):
+        forget_record(store, subject_id=spec_id, content_version=version)
+
+    assert (
+        run_backfill_descriptions(
+            store=store,
+            artifact_store=FakeArtifactStore(),
+            code_index=party_fixture._code_index(),
+            now=lambda: _BACKFILL_AT,
+        )
+        == 0
+    )
+    record = read_record(store, subject_id=spec_id, content_version=content_version)
+    base = read_record(store, subject_id=spec_id, content_version=base_version)
+
+    assert record is not None and base is not None
+    assert record.basis == "backfill"
+    assert record.known_steps == base.known_steps
+    assert "sum_variables" not in [step.op for step in record.known_steps]
 
 
 def test_a_collapse_whose_base_failed_waits_for_a_run_that_backfills_the_base(

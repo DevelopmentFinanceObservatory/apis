@@ -11,25 +11,35 @@ on the population's own values of its narrowest role), and the preview shows the
 under a conversion into each entity's own currency, the call reads only
 `role_bulk_series_max` pairs chosen from coverage, StatVars newest year first and taken
 round-robin (`fixed`), since the full population can reach 1.6M pairs. A range reads the
-plan's year list. A `latest` read reads each pair's latest point with SDMX `LATEST` and
-serves each member its own latest period alone (`materialise.window.latest_period`), in the
-year coverage dates it (`BulkPlan.member_year`).
+plan's year list. A `latest` read serves each member its one period alone, in the year
+the plan dates it (`BulkPlan.member_year`). It reads each pair's latest point with SDMX
+`LATEST`, then reads again the members one of whose pairs ends after the year its member
+elected (`_ending_after_elected`), one read per year they elected naming that year alone
+(`_by_elected_year`), as a mint reads a member again at its elected year. Those reads run
+together, at most `sdmx_chunk_concurrency` at once (`_read_each_year`). A member that elected no year serves its own latest period
+(`materialise.window.latest_period`). A member whose elected year the reads return no
+point in serves the newest period among the `LATEST` rows of every pair the read returned
+for it (`_without_elected_points`), as a mint falls back
+(`materialise.columnar.elected_rows`).
 """
 
 from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 
 from code_index.shared import get_index
-from dc_sdmx import SdmxCapExceededError
+from dc_sdmx import SdmxCapExceededError, is_observed
+from dfo_platform.executor import submit_with_context
 from materialise.method_status import status_of
 from materialise.window import latest_periods
 from search.engine.clients.graph import EngineGraphClient, Facet
 from search.engine.clients.sdmx import (
     EngineSdmxClient,
+    RoleTimePeriod,
     RoleTuple,
 )
 from search.engine.config import settings
@@ -60,7 +70,7 @@ from search.engine.region.result import FacetAxisFilter
 from search.engine.retrieval.facet_election import (
     RoleBulkCandidate,
 )
-from search.engine.retrieval.read_plan import BulkPlan
+from search.engine.retrieval.read_plan import BulkPlan, year_of
 from search.models import (
     PreviewOrder,
     SpecObservations,
@@ -78,6 +88,9 @@ from search.observations import (
 )
 
 logger = logging.getLogger(__name__)
+
+# One `role_series` read: each variable's facets by role tuple.
+type _RoleRows = Mapping[str, Mapping[RoleTuple, Sequence[Facet]]]
 
 # Bulk requests can hit role or facet limits that the bounded confirm read avoids.
 _FETCH_FAILURE_EXCEPTIONS = (
@@ -114,26 +127,30 @@ def _bulk_fetch_timed_out(
 
 
 def _points_from_facets(facets: list[Facet]) -> list[tuple[str, float | None]]:
-    """Return all date-value points of `facets`."""
-    return [(d, v) for f in facets for d, v in zip(f.dates, f.values, strict=True)]
+    """The date-value points of `facets` that hold an observation (`dc_sdmx.is_observed`),
+    the rule a mint drops a row by (`materialise.columnar.survivor_mask`). `role_series`
+    parses each row's value by it, so an empty or unparseable value holds none."""
+    return [
+        (d, v) for f in facets for d, v in zip(f.dates, f.values, strict=True) if is_observed(v)
+    ]
 
 
 def _served_points(
     facets: list[Facet], *, lead: str, estimated: frozenset[str]
 ) -> tuple[list[tuple[str, float | None]], bool]:
-    """One pair's points from the facets the read returned for it: those of the elected
-    facet `lead`, then those of the facets continuing it dated after the last of them, or
-    all of theirs where `lead` holds none, as `materialise.columnar.continuation_mask`
-    keeps a mint's rows. Also whether a served point comes from one of the `estimated`
-    facet ids."""
+    """One pair's points from the facets the read returned for it, each holding an
+    observation (`_points_from_facets`): those of the elected facet `lead`, then those of
+    the facets continuing it dated after the last of them, or all of theirs where `lead`
+    holds none, as `materialise.columnar.continuation_mask` keeps a mint's rows. Also
+    whether a served point comes from one of the `estimated` facet ids."""
     led = [f for f in facets if f.facet_id == lead]
     points = _points_from_facets(led)
     last = max((date for date, _value in points), default=None)
-    held = {f.facet_id for f in led if f.dates}
+    held = {lead} if points else set()
     for f in facets:
         if f.facet_id == lead:
             continue
-        kept = [(d, v) for d, v in zip(f.dates, f.values, strict=True) if last is None or d > last]
+        kept = [(d, v) for d, v in _points_from_facets([f]) if last is None or d > last]
         if kept:
             points.extend(kept)
             held.add(f.facet_id)
@@ -418,10 +435,14 @@ def _bulk_role_series(
     The read elects nothing: `plan` already narrowed to any facet filter, and with no elected
     facet the read returns `OBSERVATIONS_NO_MATCHING_SOURCE` under `facet_filter`, else
     `OBSERVATIONS_NO_DISPATCHABLE_FACET`. A range reads the plan's year list
-    (`BulkPlan.read_years`); `latest` reads each dispatched pair's latest point with SDMX
-    `LATEST` for pairs with a point in their member's latest year (`BulkPlan.member_year`)
-    and keeps each member's points at its latest period alone (`_at_member_latest`); a
-    dateless read takes every year.
+    (`BulkPlan.read_years`); `latest` reads the pairs with a point in their member's year
+    (`BulkPlan.member_year`), each pair's latest point with SDMX `LATEST` and then the
+    members a pair of which ends after its member's elected year (`_ending_after_elected`),
+    one read per year they elected naming that year alone (`_by_elected_year`), and keeps
+    each member's points at its one period alone
+    (`_at_member_latest`). A member that elected a year the reads return no point in
+    (`_without_elected_points`) costs no further read and serves the newest period among
+    the `LATEST` rows of every pair returned for it. A dateless read takes every year.
 
     A plan that dispatches no pair reads nothing and returns `OBSERVATIONS_NO_POINTS`.
     Read failures in `_FETCH_FAILURE_EXCEPTIONS` return `OBSERVATIONS_BULK_FETCH_FAILED`
@@ -506,22 +527,74 @@ def _read_and_assemble(
     # included (the role index binds every role the shape places), so each row matches its
     # pair on the full role tuple, whether or not the read filtered on the open role.
     dispatched_pairs = set(fetch_plan.to_fetch)
-    try:
-        series_by_variable = sdmx.role_series(
-            variables=fetch_plan.facet_svs,
+
+    def read(variables: Sequence[str], time_period: RoleTimePeriod) -> _RoleRows:
+        return sdmx.role_series(
+            variables=variables,
             entities=fetch_plan.entities_for_series,
             facet_ids={best.facet_id, *plan.continuing},
-            time_period=(
-                "LATEST"
-                if latest
-                else list(plan.read_years)
-                if plan.read_years is not None
-                else None
-            ),
+            time_period=time_period,
             max_rows=settings().sdmx_max_rows,
             max_bytes=settings().sdmx_max_bytes,
             deadline=deadline,
         )
+
+    estimated_ids = frozenset(
+        c.facet_id
+        for c in (best, *(plan.candidates[facet_id] for facet_id in plan.continuing))
+        if status_of(c.measurement_method, c.provenance_id) == "estimated"
+    )
+
+    def served(
+        rows: _RoleRows, *, every_pair_of: Collection[str] = ()
+    ) -> tuple[
+        dict[tuple[str, RoleTuple], list[tuple[str, float | None]]], set[tuple[str, RoleTuple]]
+    ]:
+        """Each dispatched pair's points in `rows`, and the pairs serving a point of an
+        estimated method. A member in `every_pair_of` serves every pair `rows` holds for it
+        that the plan does not omit (`_omitted`)."""
+        pair_points: dict[tuple[str, RoleTuple], list[tuple[str, float | None]]] = {}
+        estimated: set[tuple[str, RoleTuple]] = set()
+        for sv in fetch_plan.facet_svs:
+            for role_tuple, facets in rows.get(sv, {}).items():
+                if (sv, role_tuple) not in dispatched_pairs and (
+                    sv not in every_pair_of or _omitted(plan, sv, role_tuple)
+                ):
+                    continue
+                points, holds_estimates = _served_points(
+                    facets, lead=best.facet_id, estimated=estimated_ids
+                )
+                if points:
+                    pair_points[(sv, role_tuple)] = points
+                    if holds_estimates:
+                        estimated.add((sv, role_tuple))
+        return pair_points, estimated
+
+    fell_back: Sequence[str] = ()
+    try:
+        if latest:
+            newest = read(fetch_plan.facet_svs, "LATEST")
+            rows = dict(newest)
+            pair_points, estimated = served(rows)
+            if lagging := _ending_after_elected(plan, pair_points):
+                rows.update(_read_each_year(read, _by_elected_year(plan, lagging)))
+                pair_points, estimated = served(rows)
+            fell_back = _without_elected_points(plan, fetch_plan.facet_svs, pair_points)
+            if fell_back:
+                logger.warning(
+                    "coverage index and the bulk role read disagree: %r returned no point "
+                    "in the year coverage elects; serving their newest period",
+                    fell_back,
+                )
+                rows.update({sv: newest.get(sv, {}) for sv in fell_back})
+                pair_points, estimated = served(rows, every_pair_of=fell_back)
+        else:
+            pair_points, estimated = served(
+                read(
+                    fetch_plan.facet_svs,
+                    list(plan.read_years) if plan.read_years is not None else None,
+                )
+            )
     except _FETCH_FAILURE_EXCEPTIONS:
         logger.warning(
             "bulk role-keyed series read failed for sv_dcids=%r facet_id=%r; "
@@ -543,30 +616,14 @@ def _read_and_assemble(
         # narrowed series read crossed this call's shared deadline.
         return _bulk_fetch_timed_out(sv_dcids, "series", facet_id=best.facet_id)
 
-    estimated_ids = frozenset(
-        c.facet_id
-        for c in (best, *(plan.candidates[facet_id] for facet_id in plan.continuing))
-        if status_of(c.measurement_method, c.provenance_id) == "estimated"
-    )
-    pair_points: dict[tuple[str, RoleTuple], list[tuple[str, float | None]]] = {}
-    estimated: set[tuple[str, RoleTuple]] = set()
-    for sv in fetch_plan.facet_svs:
-        for role_tuple, facets in series_by_variable.get(sv, {}).items():
-            if (sv, role_tuple) not in dispatched_pairs:
-                continue
-            points, holds_estimates = _served_points(
-                facets, lead=best.facet_id, estimated=estimated_ids
-            )
-            if points:
-                pair_points[(sv, role_tuple)] = points
-                if holds_estimates:
-                    estimated.add((sv, role_tuple))
     if latest:
-        at_latest = _at_member_latest(plan, pair_points)
-        if short := sorted(pair_points.keys() - at_latest.keys()):
+        at_latest = _at_member_latest(plan, pair_points, undated=fell_back)
+        if short := sorted(
+            pair for pair in pair_points.keys() - at_latest.keys() if pair[0] not in fell_back
+        ):
             # The plan serves every dispatched pair in its member's latest year, so a pair
             # left short means coverage and SDMX disagree. The truncation warning counts it
-            # as not shown.
+            # as not shown. A member that fell back is logged above.
             logger.warning(
                 "coverage index and the bulk role read disagree: %d dispatched pairs held "
                 "no point at their member's latest period and are not served: %r",
@@ -593,21 +650,109 @@ def _read_and_assemble(
     )
 
 
+def _ending_after_elected(
+    plan: BulkPlan,
+    pair_points: Mapping[tuple[str, RoleTuple], list[tuple[str, float | None]]],
+) -> list[str]:
+    """The members that elected a year (`BulkPlan.elected_years`) one of whose pairs in
+    `pair_points`, each pair's `LATEST` row, is dated after: the `LATEST` read cannot
+    return that pair's point in the elected year, so the member is read again there. In
+    member order."""
+    elected = plan.elected_years or {}
+    after = {
+        sv
+        for (sv, _role_tuple), points in pair_points.items()
+        if (year := elected.get(sv)) is not None
+        and any((held := year_of(date)) is not None and held > year for date, _value in points)
+    }
+    return [sv for sv in plan.members if sv in after]
+
+
+def _by_elected_year(plan: BulkPlan, variables: Sequence[str]) -> list[tuple[int, list[str]]]:
+    """`variables` grouped by the year each elected (`BulkPlan.elected_years`), oldest year
+    first, each group in `variables` order: the reads that name each variable its own year
+    alone. SDMX filters variables and periods as a product, so one read naming several
+    years would return each variable's rows in every one of them. The reads number the
+    distinct years `variables` elected, at most one per variable."""
+    elected = plan.elected_years or {}
+    grouped: dict[int, list[str]] = {}
+    for sv in variables:
+        grouped.setdefault(elected[sv], []).append(sv)
+    return sorted(grouped.items())
+
+
+def _read_each_year(
+    read: Callable[[Sequence[str], RoleTimePeriod], _RoleRows],
+    groups: Sequence[tuple[int, list[str]]],
+) -> dict[str, Mapping[RoleTuple, Sequence[Facet]]]:
+    """The rows of one `read` per group of `groups` (`_by_elected_year`), each naming its
+    variables that one year, merged by variable. The reads run together in a pool of at
+    most `sdmx_chunk_concurrency` workers, the width one SDMX call spreads its own chunks
+    over, and every GET they make holds a slot of the process-wide `SDMX_TOTAL_SEMAPHORE`
+    (`search.engine.clients.sdmx`). Each carries the caller's deadline. The first read to
+    fail raises its error here: the reads not yet started are cancelled and those in
+    flight are waited for, so none outlives the call and no partial result is returned."""
+    merged: dict[str, Mapping[RoleTuple, Sequence[Facet]]] = {}
+    with ThreadPoolExecutor(
+        max_workers=max(1, min(settings().sdmx_chunk_concurrency, len(groups))),
+        thread_name_prefix="bulk-role-year",
+    ) as pool:
+        futures = [
+            submit_with_context(pool, read, variables, [str(year)]) for year, variables in groups
+        ]
+        try:
+            for future in as_completed(futures):
+                merged.update(future.result())
+        finally:
+            pool.shutdown(wait=True, cancel_futures=True)
+    return merged
+
+
+def _omitted(plan: BulkPlan, sv: str, role_tuple: RoleTuple) -> bool:
+    """Whether `role_tuple` binds an entity whose rows the plan leaves out of `sv`
+    (`BulkPlan.omitted`)."""
+    return any((sv, role, dcid) in plan.omitted for role, dcid in role_tuple)
+
+
+def _without_elected_points(
+    plan: BulkPlan,
+    variables: Sequence[str],
+    pair_points: Mapping[tuple[str, RoleTuple], list[tuple[str, float | None]]],
+) -> list[str]:
+    """Those of `variables` that elected a year (`BulkPlan.elected_years`) in which none of
+    their pairs in `pair_points` serves a point: coverage dates them a year SDMX holds no
+    row in. A member one of whose pairs holds the year keeps it."""
+    elected = plan.elected_years or {}
+    held = {
+        sv
+        for (sv, _role_tuple), points in pair_points.items()
+        if any(year_of(date) == elected.get(sv) for date, _value in points)
+    }
+    return [sv for sv in variables if sv in elected and sv not in held]
+
+
 def _at_member_latest(
-    plan: BulkPlan, pair_points: Mapping[tuple[str, RoleTuple], list[tuple[str, float | None]]]
+    plan: BulkPlan,
+    pair_points: Mapping[tuple[str, RoleTuple], list[tuple[str, float | None]]],
+    *,
+    undated: Collection[str] = (),
 ) -> dict[tuple[str, RoleTuple], list[tuple[str, float | None]]]:
-    """`pair_points` at each member's latest period, as a mint keeps a StatVar's rows
-    (`materialise.columnar.latest_rows`): coverage fixes the member's year
-    (`BulkPlan.member_year`), and the newest period its points hold inside that year
-    (`materialise.window.latest_periods`) is the one served. A pair left with no point is
-    dropped, and so is every pair of a member coverage dates no year for."""
+    """`pair_points` at each member's one period, as a mint keeps a StatVar's rows
+    (`materialise.columnar.latest_rows`): the plan fixes the member's year
+    (`BulkPlan.member_year`, the year it elected or else the year coverage dates its
+    latest period in), and the newest period its points hold inside that year
+    (`materialise.window.latest_periods`) is the one served. A member in `undated` serves
+    the newest period its points hold in any year. A pair left with no point is dropped,
+    and so is every other pair of a member coverage dates no year for."""
     years = {
         sv: str(year)
         for sv in {sv for sv, _rt in pair_points}
         if (year := plan.member_year(sv)) is not None
     }
     in_year = {
-        pair: [point for point in points if point[0][:4] == years.get(pair[0])]
+        pair: [
+            point for point in points if pair[0] in undated or point[0][:4] == years.get(pair[0])
+        ]
         for pair, points in pair_points.items()
     }
     latest = latest_periods(

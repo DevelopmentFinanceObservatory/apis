@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from .base import StrictModel
 from .grammar import GraphRef
@@ -92,7 +92,10 @@ class EntityGroup(StrictModel):
     ("EU member states"). The members themselves are the role's dcids in
     `BaseIdentity.entities`. This records only that they were asked for as one
     group, so the heading can say "the 27 EU member states" after any edit that
-    keeps the role's members. A group whose `ref` is a continent or subregion
+    keeps the role's members. A group the graph holds no node for, read from the
+    membership registry ("Asia (DAC)"), names the registry's id for it in
+    `group_id`, so a resubmit restores it and the total its dataset publishes for it.
+    A group whose `ref` is a continent or subregion
     that the membership policy holds or omits (`MembershipPolicy.holds_region`)
     reads as its countries ("the 54 countries in Africa"), whatever its graph
     type. `entity_type` is informational, and the reading keys on `ref`. When
@@ -126,3 +129,17 @@ class EntityGroup(StrictModel):
             "members"
         ),
     )
+    group_id: IdentityString | None = Field(
+        default=None,
+        description=(
+            "the membership registry's id for a group the graph holds no node for, e.g. "
+            "groups/OECD.DAC.Region.Asia; null when ref is set or the group "
+            "is no registry group"
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _one_id(self) -> EntityGroup:
+        if self.ref is not None and self.group_id is not None:
+            raise ValueError("a group carries ref or group_id, not both")
+        return self

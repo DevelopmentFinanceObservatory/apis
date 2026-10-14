@@ -40,7 +40,6 @@ from search.engine.events import (
     Event,
     InterpretationEvent,
     LateDepartures,
-    ResponseEvent,
 )
 from search.engine.extract import DateRequest, ExtractedDate, dates_to_request
 from search.engine.fanout import (
@@ -55,6 +54,7 @@ from search.engine.options.population_memo import OptionsPopulationMemo
 from search.engine.region.place_options import PlaceOptionsPool
 from search.engine.region.refs import confirm_dcids_present
 from search.engine.region.result import RegionResult
+from search.engine.region.sentence_events import answer_events
 from search.engine.response_cache_flow import CacheScope
 from search.engine.retrieval.read_plan import current_year
 from search.engine.role_text import (
@@ -647,7 +647,8 @@ async def handle(
             llm_usage=total_usage,
             echo=echo,
         )
-        yield ResponseEvent(response=response)
+        for event in answer_events(response):
+            yield event
         slot_options_warnings: list[Warning] = []
         late_departures: list[LateDepartures] = []
         async for ev in _stream_slot_options(

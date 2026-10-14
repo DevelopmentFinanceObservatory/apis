@@ -252,52 +252,89 @@ def test_index_family_reads_as_what_every_row_shares(dcid, name, expected):
 _MORT = "undata/who/SERIES-MORT_U5_RATE"
 _MORT_TOTAL = "undata/who/MORT_U5_RATE"
 _MORT_FEMALE = "undata/who/MORT_U5_RATE.SEX--F"
+_MORT_MALE = "undata/who/MORT_U5_RATE.SEX--M"
+_MORT_NAMES = {
+    _MORT_TOTAL: "Under-five mortality rate",
+    _MORT_FEMALE: "Under-five mortality rate [Sex=Female]",
+    _MORT_MALE: "Under-five mortality rate [Sex=Male]",
+}
+_MORT_SEX = {_MORT_FEMALE: ("undata/SEX-F", "Female"), _MORT_MALE: ("undata/SEX-M", "Male")}
 
 
-class _BindFemaleLLM:
-    """Elects the first shape and binds its sex slot to female."""
+class _BindSexLLM:
+    """Elects the first shape and binds its sex slot to `sexes`."""
+
+    def __init__(self, sexes: list[str]) -> None:
+        self._sexes = sexes
 
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
-        female = SlotBindingDraft(
-            axis="how", property_dcid="undataSex", kind="value", value_dcids=["undata/SEX-F"]
+        sex = SlotBindingDraft(
+            axis="how",
+            property_dcid="undataSex",
+            kind="value" if len(self._sexes) == 1 else "set",
+            value_dcids=self._sexes,
         )
-        return _UniversalBindOutput(chosen_shape_index=0, bindings=[female], ask=None), None
+        return _UniversalBindOutput(chosen_shape_index=0, bindings=[sex], ask=None), None
 
 
-def test_a_resubmit_labels_a_held_family_as_its_first_answer_does(bind_catalogue):
-    """A UN series the catalogue holds reads as its total's name on a first answer that binds
-    the by-sex member, and the resubmit of that answer's identity, whose members are the
-    by-sex member alone, reads the same."""
+@pytest.mark.parametrize(
+    ("sexes", "served", "expected"),
+    [
+        pytest.param(
+            ["undata/SEX-F", "undata/SEX-M"],
+            [_MORT_FEMALE, _MORT_MALE],
+            _MORT_NAMES[_MORT_TOTAL],
+            id="two-series-read-as-the-family",
+        ),
+        pytest.param(
+            ["undata/SEX-F"],
+            [_MORT_FEMALE],
+            _MORT_NAMES[_MORT_FEMALE],
+            id="one-series-reads-as-itself",
+        ),
+    ],
+)
+def test_a_resubmit_labels_a_held_family_as_its_first_answer_does(
+    bind_catalogue, sexes: list[str], served: list[str], expected: str
+):
+    """A UN series the catalogue holds reads as its total's name on a first answer that
+    serves two by-sex members, and the resubmit of that answer's identity, whose members
+    are the by-sex members alone, reads the same. An answer that serves one by-sex member
+    reads as that member's name, first and resubmitted."""
     bind_catalogue(
         restrictive_catalogue(
             provenances=[provenance_row("undata/p/WHO", UN_SYSTEM, segment="who")],
             un_mirror=un_mirror(
                 {
-                    _MORT_TOTAL: un_variable(_MORT, name="Under-five mortality rate"),
-                    _MORT_FEMALE: un_variable(
-                        _MORT,
-                        name="Under-five mortality rate [Sex=Female]",
-                        constraints={"undataSex": ("Sex", "undata/SEX-F", "Female")},
-                    ),
+                    _MORT_TOTAL: un_variable(_MORT, name=_MORT_NAMES[_MORT_TOTAL]),
+                    **{
+                        dcid: un_variable(
+                            _MORT,
+                            name=_MORT_NAMES[dcid],
+                            constraints={"undataSex": ("Sex", *value)},
+                        )
+                        for dcid, value in _MORT_SEX.items()
+                    },
                 }
             ),
         )
     )
-    query = "female under-five mortality in Kenya"
+    query = "under-five mortality by sex in Kenya"
     facet = {"earliestDate": "2015", "latestDate": "2020", "obsCount": 5}
     graph = FakeGraph(
         nodes={
             **{dcid: {"label": label} for dcid, label in _UN_LABELS.items()},
             "country/KEN": {"label": "Kenya", "type": "Country"},
             _MORT: {"label": "Under-five mortality rate"},
-            _MORT_TOTAL: _un_member("Under-five mortality rate", _MORT, {}),
-            _MORT_FEMALE: _un_member(
-                "Under-five mortality rate [Sex=Female]", _MORT, {"undataSex": "undata/SEX-F"}
-            ),
+            _MORT_TOTAL: _un_member(_MORT_NAMES[_MORT_TOTAL], _MORT, {}),
+            **{
+                dcid: _un_member(_MORT_NAMES[dcid], _MORT, {"undataSex": value})
+                for dcid, (value, _label) in _MORT_SEX.items()
+            },
         },
-        obs={f"{dcid}|country/KEN": [facet] for dcid in (_MORT_TOTAL, _MORT_FEMALE)},
+        obs={f"{dcid}|country/KEN": [facet] for dcid in _MORT_NAMES},
         detect={query: {"svs": [_MORT_FEMALE], "cosine_scores": [0.9]}},
         resolve={"Kenya": "country/KEN"},
     )
@@ -314,7 +351,7 @@ def test_a_resubmit_labels_a_held_family_as_its_first_answer_does(bind_catalogue
             graph=graph,
             resolver=make_resolver(graph),
             sdmx=sdmx,
-            llm=_BindFemaleLLM(),
+            llm=_BindSexLLM(sexes),
             base_timing={},
             coverage=empty_coverage_snapshot(),
             options=EngineOptions(deadline=None),
@@ -330,6 +367,7 @@ def test_a_resubmit_labels_a_held_family_as_its_first_answer_does(bind_catalogue
     )
     (again,) = resubmit.specs
 
-    assert [sv.ref.ref for sv in again.resolved.members] == [_MORT_FEMALE]
-    assert answer.resolved.shape.label == "Under-five mortality rate"
-    assert again.resolved.shape.label == answer.resolved.shape.label
+    assert sorted(sv.ref.ref for sv in answer.resolved.members) == served
+    assert sorted(sv.ref.ref for sv in again.resolved.members) == served
+    assert answer.resolved.shape.label == expected
+    assert again.resolved.shape.label == expected

@@ -203,7 +203,8 @@ dfo-data-tools = { workspace = true }
 # `{"numerator": part, "denominator": part}`, for a quotient of two measures,
 # and the components catalogue's `unit` slot takes the matching `composed_unit`.
 # It registers the search.resolve warnings `denominator_unverified`,
-# `artifact_pair_stale`, and `catalogue_index_drift`.
+# `artifact_pair_stale`, `catalogue_index_drift`, and `slot_default_not_applied`,
+# and retires `starved_axis_binding_restored`.
 # The descriptions package ships the step and description schemas, the operation
 # list, `check_steps`, `steps_bytes` (a stored step list's RFC 8785 bytes) and
 # `MAX_CITE_TEXT_LENGTH`. The components envelope admits a card's `description`,
@@ -226,11 +227,13 @@ dfo-data-tools = { workspace = true }
 # The registry refuses a part's `source_code` on search.resolve with
 # `source_code_not_held`, `source_code_ambiguous`, and
 # `source_code_shares_variable`.
-# The pin is `739caf6`, the head of dfo-spec-kit's branch
-# feat/source-code-refusals.
+# The pin is `5d381d8`, the head of dfo-spec-kit's main. It holds
+# dfo-spec-kit#131, which registers slot_default_not_applied and retires
+# starved_axis_binding_restored, and dfo-spec-kit#138, which registers the
+# three source-code refusals.
 # Follow-up: move all five to a real spec-kit tag once one is cut, so a
 # future force-push or GC on spec-kit's main can't silently break this lock.
-dfo-spec-kit = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git", rev = "739caf69e7ae2fca083ce6781990b912f5e6dc8c", subdirectory = "python/spec-kit" }
+dfo-spec-kit = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git", rev = "5d381d8322288dc77411baa70c0dcff323ba6c7f", subdirectory = "python/spec-kit" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

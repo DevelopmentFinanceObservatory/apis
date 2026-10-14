@@ -2,7 +2,7 @@
 reads, and state their result on its Spec.
 
 A read starts once materialisation names the elected shape's members. On the single-shape
-path it starts as grounding does (`phase_answer._phase_ground_answer`), on the candidates
+path it starts as grounding does (`phase_answer._ground_elected_answer`), on the candidates
 path before candidates are grounded (`candidate_collapse.assemble_candidates`), and on the
 resubmit door as grounding starts (`promote_ground._phase_ground_build`). On the first two
 it runs in a task, which the definite answer takes when it reads the same StatVar, starting

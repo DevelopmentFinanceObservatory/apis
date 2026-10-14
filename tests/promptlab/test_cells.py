@@ -249,7 +249,18 @@ def test_shape_election_score_accepts_any_of_the_expected_shapes():
 @pytest.mark.parametrize(
     ("shape", "measurement_denominator", "matches"),
     [
-        pytest.param({"measurement_denominator": "PerCapita"}, "PerCapita", True, id="dcid"),
+        pytest.param(
+            {"measurement_denominator": "PerCapita"}, "per person", True, id="schema-term"
+        ),
+        pytest.param(
+            {"measurement_denominator": "Count_Person"},
+            "per person",
+            True,
+            id="schema-term-other-spelling",
+        ),
+        pytest.param(
+            {"measurement_denominator": "GiniIndex"}, "GiniIndex", True, id="statvar-dcid"
+        ),
         pytest.param(
             {"measurement_denominator": "PerCapita"},
             "(present, unresolved)",
@@ -259,9 +270,9 @@ def test_shape_election_score_accepts_any_of_the_expected_shapes():
         pytest.param({"measurement_denominator": "PerCapita"}, None, False, id="absent"),
         pytest.param({"measurement_denominator": None}, None, True, id="asserted-absent"),
         pytest.param(
-            {"measurement_denominator": None}, "PerCapita", False, id="asserted-absent-but-present"
+            {"measurement_denominator": None}, "per person", False, id="asserted-absent-but-present"
         ),
-        pytest.param({}, "PerCapita", True, id="unasserted-dimension-is-not-compared"),
+        pytest.param({}, "per person", True, id="unasserted-dimension-is-not-compared"),
     ],
 )
 def test_shape_matches_compares_only_asserted_dimensions(shape, measurement_denominator, matches):
@@ -420,8 +431,8 @@ def test_run_capture_completes_end_to_end(tmp_path: Path):
     bind_by_case: dict[str, list[int]] = {}
     for record in store.bind_records():
         bind_by_case.setdefault(record.case_id, []).append(record.leg)
-    # conj-01 has two variables. sdg-03's SDG code is a dropped qualifier, not a second measure.
-    assert sorted(bind_by_case["sdg-03"]) == [0]
+    # The recorded sdg-03 and conj-01 extractions each name two variables.
+    assert sorted(bind_by_case["sdg-03"]) == [0, 1]
     assert sorted(bind_by_case["life-expectancy"]) == [0]
     assert sorted(bind_by_case["conj-01"]) == [0, 1]
 

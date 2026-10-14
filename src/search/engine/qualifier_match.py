@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import re
 import weakref
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
 from itertools import pairwise
@@ -182,10 +182,6 @@ class _RawSpan:
 # lowercase or digit characters after it, or a run of lowercase or digit characters.
 # "crsCooperationModality" yields ["crs", "Cooperation", "Modality"].
 _CAMEL_WORD_RE = re.compile(r"[A-Z][a-z0-9]*|[a-z0-9]+")
-
-# Distinctions the deployed taxonomy cannot express, each an exact word token
-# `match_unsupported_qualifier_phrases` checks.
-_UNSUPPORTED_QUALIFIER_TERMS = frozenset({"non-concessional"})
 
 # Tokens that join two code spans of one variable, casefolded. A union connective reads
 # the two codes together ("health and education", "health & education", and "health
@@ -383,17 +379,14 @@ def slot_noun_named(phrase: str, plain_names: Iterable[str]) -> str | None:
     return named.pop() if len(named) == 1 else None
 
 
-def match_unsupported_qualifier_phrases(text: str) -> tuple[str, ...]:
-    """Return exact unsupported qualifier terms occurring in ``text``.
+def match_unsupported_qualifier_phrases(text: str, *, terms: Collection[str]) -> tuple[str, ...]:
+    """Return each word of ``text`` that is one of ``terms``, the words a code system declares
+    it has no vocabulary for (`CodeSystemDeclaration.no_vocabulary_terms`), in text order.
 
     Each term is compared with whole word tokens, so ``non-concessionality`` and
-    ``non-concessional-like`` do not inherit the unsupported term's outcome.
+    ``non-concessional-like`` do not match the term ``non-concessional``.
     """
-    return tuple(
-        token.text
-        for token in word_tokens(text)
-        if _normalize(token.text) in _UNSUPPORTED_QUALIFIER_TERMS
-    )
+    return tuple(token.text for token in word_tokens(text) if _normalize(token.text) in terms)
 
 
 def _row_system(row: MatchableRow) -> str:

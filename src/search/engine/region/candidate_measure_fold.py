@@ -8,7 +8,7 @@ from code_index.labels import compose_measure_label
 from code_index.shared import get_measure_index
 from search.engine.clients.graph import Facet
 from search.engine.retrieval.bound_values import MeasurePartition, mint_sibling_identity
-from search.engine.shape import ShapeDraft
+from search.engine.shape import ShapeDraft, role_class
 from search.engine.spec_build import measure_axis_values
 from search.models import Spec, SpecAlternativeMeasure, SpecDefinition
 
@@ -32,7 +32,7 @@ def _shapes_are_measure_siblings(a: ShapeDraft, b: ShapeDraft) -> bool:
         and a.meas_qual_dcid == b.meas_qual_dcid
         and a.meas_denom_dcid == b.meas_denom_dcid
         and a.meas_denom_unresolved == b.meas_denom_unresolved
-        and a.declared_roles == b.declared_roles
+        and role_class(a) == role_class(b)
         and a.optional_roles == b.optional_roles
     )
 

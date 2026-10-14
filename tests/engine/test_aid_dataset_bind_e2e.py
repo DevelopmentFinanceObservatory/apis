@@ -28,6 +28,7 @@ from code_index.query import CodeIndex, row_five_tuple
 from code_index.shared import get_index
 from code_index.types import DatasetDeclaration
 from datasets_api.adapter import resolve_definition_members
+from entity_resolution import EntityResolutionError
 from origin_catalogue import DFO, Catalogue, ProvenanceRow, SourceRef
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.extract import ExtractedEntity, Extraction
@@ -954,6 +955,35 @@ def test_raw_text_source_words_that_leave_a_part_no_source_refuse_that_part_alon
     ] == [[CRS_PROVENANCE]]
     assert llm.calls["Extraction"] == 1
     assert len(llm.bind_prompts) == 1
+
+
+@pytest.mark.parametrize("resolver_down", [False, True], ids=["resolver_up", "resolver_down"])
+def test_a_raw_text_part_its_source_words_leave_no_source_calls_no_resolver(
+    monkeypatch: pytest.MonkeyPatch, source_catalogue: None, resolver_down: bool
+):
+    """The query asks for aid from the CRS but not from the OECD, whose tables hold the CRS.
+    The part's words leave it nothing to answer from, so it answers `qualifier_not_bound`
+    naming the CRS and runs no step, which leaves its answer standing when the entity
+    resolver fails."""
+    if resolver_down:
+
+        async def _resolver_down(self, texts, **kwargs):
+            raise EntityResolutionError("resolver down")
+
+        monkeypatch.setattr("entity_resolution.EntityResolver.resolve", _resolver_down)
+    llm = _ScriptedLLM("aid")
+
+    response = _resolve_scripted(
+        "aid to Kenya, not from the OECD but from the CRS", llm, graph=_graph("aid")
+    )
+
+    (part,) = response.parts
+    assert isinstance(part, NoDataPart)
+    assert part.no_data.reason == "qualifier_not_bound"
+    assert [[ref.ref for ref in unbound.named] for unbound in part.no_data.unbound_qualifiers] == [
+        [CRS_PROVENANCE]
+    ]
+    assert llm.bind_prompts == []
 
 
 # The UN System Data Commons' official development assistance series, derived from the CRS.

@@ -2,8 +2,8 @@
 
 Each scenario resolves one query part through `resolve_variable` on the offline graph and SDMX
 doubles. The scenarios cover first elections with and without a named place, flagged
-alternates and mixed menus of subject-only and role-bearing shapes, near-neighbour ties that
-widen the search, zero-observation re-elections that adopt one sibling or offer several,
+alternates and mixed menus of subject-only and role-bearing shapes, zero-observation re-elections
+that adopt one sibling or offer several,
 index-sourced shapes that take no default scope, places over the bound a Spec binds, regions
 and directed places.
 
@@ -64,6 +64,7 @@ from search.engine.bind import _UniversalBindOutput
 from search.engine.clients import materialise_bridge
 from search.engine.conjoin import assemble_region
 from search.engine.envelope import now_ms
+from search.engine.extract import DateRequest
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import (
     candidate_grounding,
@@ -83,7 +84,7 @@ from tests.engine._fake_coverage import FakeCoverageService, build_coverage_inde
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query
 from tests.engine._quantity import NO_QUANTITY
-from tests.engine._request_log import _plain, _RequestLog
+from tests.engine._request_log import _UNRECORDED_METHODS, _plain, _RequestLog
 from tests.engine._virtual_clock import VirtualRequests
 from tests.fixtures import FakeGraph, make_resolver
 
@@ -99,13 +100,13 @@ _EXECUTORS = (
     (phase_place_materialise, "_WALK_POOL"),
 )
 # The doubles' methods the live graph client answers without a request
-# (`dc_graph.GraphClient.default_facet_policy`, `generation_stamp`, `source_key`,
-# `un_availability`), which take no tick of the virtual clock.
+# (`dc_graph.GraphClient.default_facet_policy`, `generation_stamp`, `observation_read_groups`,
+# `source_key`, `un_availability`), which take no tick of the virtual clock.
 _FREE_CALLS = frozenset(
     {
-        "declares_facet_defaults",
         "default_facet_policy",
         "generation_stamp",
+        "observation_read_groups",
         "source_key",
         "un_availability",
     }
@@ -123,7 +124,9 @@ _EARTH = "Earth"
 _SOURCE = "dc/base/ScenarioFixture"
 
 # A subject-only family: the elected count, two qualifier siblings, and an unrelated reading
-# the bind step can flag.
+# the bind step can flag. The unrelated reading's label holds every word of the query, so the
+# question does not pick the elected count over it, and a nomination of it is a rival
+# (status rule 2(b)).
 _MORT = "Count_MortalityEventScenario"
 _MORT_EST = "Count_MortalityEventEstimatedScenario"
 _MORT_PROJ = "Count_MortalityEventProjectedScenario"
@@ -131,18 +134,15 @@ _FAR = "Count_UnrelatedTopicScenario"
 # An estimated per-capita reading of the unrelated population. No scenario recalls it. It is
 # part of the graph every scenario's member walk reads.
 _FAR_PC_EST = "Count_UnrelatedTopicPerCapitaEstimatedScenario"
-# A reading of another population whose label repeats the query's words, so it ties with the
-# elected count.
+# A reading of another population whose label repeats the query's words and scores close to
+# the elected count.
 _LIVESTOCK = "Count_LivestockMortalityScenario"
-# Two more members of that reading, and one more of the unrelated reading: the menu of a
-# placeless near-neighbour tie whose tied reading and widened search each hold several
-# members.
-_LIVESTOCK_CATTLE = "Count_LivestockMortalityScenario_Cattle"
-_LIVESTOCK_GOATS = "Count_LivestockMortalityScenario_Goats"
-_FAR_RURAL = "Count_UnrelatedTopicScenario_Rural"
 
 # Gross national income: two role-bearing IDS series (one by creditor) and three subject-only
-# readings. All five are qualifier variants of one another.
+# readings. All five are qualifier variants of one another. The IDS series read at a price
+# basis off the declared default one, so a question naming none leaves the price basis open
+# beside them, and each other reading the bind step names is a rival (status rule 2(a)).
+_IDS_QUALIFIER = "CurrentPricesScenario"
 _IDS = "Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
 _IDS_BC = "Amount_EconomicActivity_GrossNationalIncome_Nominal_ByCreditorScenario"
 _REAL = "Amount_EconomicActivity_GrossNationalIncome_RealValueScenario"
@@ -222,14 +222,14 @@ _NODES = {
         ),
     ),
     _FAR: _sv(
-        "Unrelated topic count",
-        _mortality_arcs("Unrelated topic count", pop_type="UnrelatedThing"),
+        "Mortality count of an unrelated topic",
+        _mortality_arcs("Mortality count of an unrelated topic", pop_type="UnrelatedThing"),
     ),
     _FAR_PC_EST: _sv(
-        "Estimated unrelated topic count per capita",
+        "Estimated mortality count of an unrelated topic per capita",
         {
             **_mortality_arcs(
-                "Estimated unrelated topic count per capita",
+                "Estimated mortality count of an unrelated topic per capita",
                 pop_type="UnrelatedThing",
                 meas_qual="Estimated",
             ),
@@ -240,34 +240,10 @@ _NODES = {
         "Mortality count of livestock",
         _mortality_arcs("Mortality count of livestock", pop_type="LivestockMortality"),
     ),
-    _LIVESTOCK_CATTLE: _sv(
-        "Mortality count of livestock, cattle",
-        _constrained(
-            _mortality_arcs("Mortality count of livestock", pop_type="LivestockMortality"),
-            "livestockType",
-            "Cattle",
-        ),
-    ),
-    _LIVESTOCK_GOATS: _sv(
-        "Mortality count of livestock, goats",
-        _constrained(
-            _mortality_arcs("Mortality count of livestock", pop_type="LivestockMortality"),
-            "livestockType",
-            "Goats",
-        ),
-    ),
-    _FAR_RURAL: _sv(
-        "Unrelated topic count, rural",
-        _constrained(
-            _mortality_arcs("Unrelated topic count", pop_type="UnrelatedThing"),
-            "placeOfResidenceClassification",
-            "Rural",
-        ),
-    ),
     _IDS: _sv(
         "Gross national income (current US$)",
         _income_arcs(
-            "Nominal",
+            _IDS_QUALIFIER,
             {
                 "economicActivityType": "GrossNationalIncome",
             },
@@ -277,7 +253,7 @@ _NODES = {
     _IDS_BC: _sv(
         "Gross national income (current US$), by creditor",
         _income_arcs(
-            "Nominal",
+            _IDS_QUALIFIER,
             {
                 "economicActivityType": "GrossNationalIncome",
             },
@@ -355,6 +331,7 @@ class _Scenario:
     # StatVars whose shapes the code index is reported to source, so those shapes can take no
     # default scope (`_index_sourced`).
     index_sourced: tuple[str, ...] = ()
+    date_request: DateRequest | None = None
 
 
 class _Bind:
@@ -426,39 +403,6 @@ _SCENARIOS: dict[str, _Scenario] = {
     "placeless-empty-elected-flagged-alternate-data": _Scenario(
         _MORTALITY, (), (_MORT, _FAR), (0.90, 0.84), _at(_FAR, _KEN), also_plausible=(1,)
     ),
-    # A near-neighbour tie with no place named. The tied reading has no data, so the search
-    # widens to the unrelated count.
-    "placeless-tie-widened-within-scope": _Scenario(
-        _MORTALITY,
-        (),
-        (_MORT, _LIVESTOCK, _FAR),
-        (0.90, 0.89, 0.84),
-        {**_at(_MORT, _KEN), **_at(_FAR, _KEN)},
-    ),
-    "placeless-tie-widened-elsewhere": _Scenario(
-        _MORTALITY,
-        (),
-        (_MORT, _LIVESTOCK, _FAR),
-        (0.90, 0.89, 0.84),
-        {**_at(_MORT, _KEN), **_at(_FAR, _TZA)},
-    ),
-    # The menu of the placeless tie on the golden corpus (children-stunting-global): the
-    # elected one-member reading holds data at Earth and in countries, the tied reading of
-    # three members and the widened search's reading of two hold none.
-    "placeless-tie-golden-menu": _Scenario(
-        _MORTALITY,
-        (),
-        (_MORT, _LIVESTOCK, _LIVESTOCK_CATTLE, _LIVESTOCK_GOATS, _FAR, _FAR_RURAL),
-        (0.90, 0.89, 0.885, 0.88, 0.84, 0.835),
-        _at(_MORT, _EARTH, _KEN, _GHA),
-    ),
-    "placeless-tie-neighbour-has-data": _Scenario(
-        _MORTALITY,
-        (),
-        (_MORT, _LIVESTOCK, _FAR),
-        (0.90, 0.89, 0.84),
-        {**_at(_MORT, _KEN), **_at(_LIVESTOCK, _KEN), **_at(_FAR, _KEN)},
-    ),
     # The elected count holds data beside a qualifier sibling, no place named. Re-election
     # does not run. The sibling's StatVar rides the elected count's presence read.
     "placeless-definite-beside-sibling": _Scenario(
@@ -476,14 +420,6 @@ _SCENARIOS: dict[str, _Scenario] = {
         _SIBLING_SCORES[:2],
         _at(_MORT, _KEN),
         index_sourced=(_MORT_EST,),
-    ),
-    "placeless-tie-neighbour-has-data-index-sourced-cascade": _Scenario(
-        _MORTALITY,
-        (),
-        (_MORT, _LIVESTOCK, _FAR),
-        (0.90, 0.89, 0.84),
-        {**_at(_MORT, _KEN), **_at(_LIVESTOCK, _KEN), **_at(_FAR, _KEN)},
-        index_sourced=(_FAR,),
     ),
     "placeless-index-sourced-flagged-alternate-empty": _Scenario(
         _MORTALITY,
@@ -710,13 +646,6 @@ _SCENARIOS: dict[str, _Scenario] = {
         _SIBLINGS,
         _SIBLING_SCORES,
         {**_at(_MORT_EST, _KEN), **_at(_MORT_PROJ, _KEN)},
-    ),
-    "named-tie-widened": _Scenario(
-        "mortality count in Kenya",
-        ("Kenya",),
-        (_MORT, _LIVESTOCK, _FAR),
-        (0.90, 0.89, 0.84),
-        {**_at(_MORT, _KEN), **_at(_FAR, _KEN)},
     ),
     "named-flagged-alternate": _Scenario(
         "mortality count in Kenya",
@@ -971,7 +900,7 @@ def _resolve_scenario(
         resolve_variable(
             scenario.query,
             entities=entities,
-            date_request=None,
+            date_request=scenario.date_request,
             detect_query=scenario.query,
             role_query=scenario.query,
             entity_roles=(
@@ -1208,7 +1137,11 @@ def test_first_answer_matches_its_snapshot(scenario_id, monkeypatch, search_sett
     log = _RequestLog()
     for owner in _RECORDED_CLASSES:
         for name, method in list(vars(owner).items()):
-            if not name.startswith("_") and inspect.isfunction(method):
+            if (
+                not name.startswith("_")
+                and name not in _UNRECORDED_METHODS
+                and inspect.isfunction(method)
+            ):
                 monkeypatch.setattr(owner, name, log.wrap(owner, name, method))
     reads = _ObservationEntities()
     for module in (phase_answer, candidate_grounding, phase_place_materialise):
@@ -1244,14 +1177,7 @@ _SERIAL_STEPS_ADDED: dict[str, int] = {}
 
 # The serial steps a scenario takes beyond its baseline depth while giving the baseline's
 # status, each for a shape the baseline leaves out of the election.
-_SERIAL_STEPS_ADDED_FOR_A_SHAPE_THE_BASELINE_DROPS: dict[str, int] = {
-    # With no place named, the baseline leaves a shape whose members each declare one role
-    # out of the election. Here the one-role sibling stays in it: re-election materialises
-    # it over the recipients coverage discovers and labels them, and it holds no data
-    # either. Its subject siblings' availability lists no place, so their scope takes no
-    # check of listed places, which saves one of those two steps.
-    "placeless-reelect-role-bearing-sibling-only": 1,
-}
+_SERIAL_STEPS_ADDED_FOR_A_SHAPE_THE_BASELINE_DROPS: dict[str, int] = {}
 
 # The serial steps a scenario saves against its baseline depth, each with the reason its
 # group gives. A saving needs no changed answer.
@@ -1261,11 +1187,9 @@ _SERIAL_STEPS_SAVED: dict[str, int] = {
     "named-over-bound": 6,
     # A sibling is walked before it is materialised, so an adopted sibling is materialised
     # once, where the baseline materialises it, walks it, and materialises it again.
-    "income-reelect-subject-from-role-bearing": 5,
     "named-directed-reelect": 5,
     "named-reelect-adopt": 5,
     "named-reelect-adopt-observations": 5,
-    "named-region-reelect": 5,
     # As above, and the default scopes of the elected shape and its siblings come from one
     # presence read beside the elected walk, where the baseline reads availability for each
     # shape's StatVars in turn. A candidate answer also grounds its candidates side by side.
@@ -1284,8 +1208,6 @@ _SERIAL_STEPS_SAVED: dict[str, int] = {
     # reads are made once.
     "named-reelect-menu": 6,
     "placeless-reelect-earth-sibling-and-country-sibling": 9,
-    "placeless-reelect-menu-beside-flagged-alternate": 12,
-    "placeless-reelect-menu-beside-flagged-alternate-together": 8,
     "placeless-reelect-two-siblings-apart": 9,
     "placeless-reelect-two-siblings-apart-option-coverage": 9,
     "placeless-reelect-two-siblings-together": 6,
@@ -1305,11 +1227,6 @@ _SERIAL_STEPS_SAVED: dict[str, int] = {
     "placeless-flagged-alternate-elsewhere-option-coverage": 4,
     "placeless-flagged-alternate-empty": 2,
     "placeless-reelect-no-data": 2,
-    "placeless-tie-golden-menu": 3,
-    "placeless-tie-neighbour-has-data": 4,
-    "placeless-tie-neighbour-has-data-index-sourced-cascade": 4,
-    "placeless-tie-widened-elsewhere": 5,
-    "placeless-tie-widened-within-scope": 5,
     "placeless-worldwide-elected-country-alternate": 4,
     # A StatVar whose availability lists no place takes the empty scope without the check of
     # listed places the baseline makes after each listing.
@@ -1319,15 +1236,30 @@ _SERIAL_STEPS_SAVED: dict[str, int] = {
     "placeless-index-sourced-flagged-alternate-empty": 2,
     "placeless-index-sourced-flagged-alternate-elsewhere": 6,
     "placeless-reelect-index-sourced-sibling": 12,
-    # An alternate probed over its own places holds no data where the elected shape's places
-    # held some, so the answer loses a candidate and the reads that ground it.
-    "income-discovered-recipients-subject-alternate-at-recipient": 3,
+    # An alternate derive reads no data for at the named place has a confirmed absence, so
+    # the status rule offers it nothing and admission neither walks nor materialises it.
+    "income-discovered-recipients-subject-alternate-at-recipient": 5,
+    # Status rule 1 tries no sibling of another role class in the elected shape's place, so
+    # no such sibling is walked, materialised or grounded. Where the baseline adopts one or
+    # offers several, the part answers no data.
+    "income-reelect-directed-two-places": 9,
+    "income-reelect-siblings-in-separate-scopes": 13,
+    "income-reelect-subject-from-role-bearing": 7,
+    "placeless-reelect-role-bearing-sibling-only": 1,
+    "placeless-role-bearing-elected-subject-siblings": 5,
+    # Several qualifier siblings with data are offered without the elected shape and its
+    # flagged alternate, so the alternate is neither materialised nor grounded beside them.
+    "placeless-reelect-menu-beside-flagged-alternate": 14,
+    "placeless-reelect-menu-beside-flagged-alternate-together": 10,
+    # A part naming a set reads its menu's availability at the set's node and members before
+    # bind (`availability.read_menu_availability`): one step in series, which leaves four of
+    # the five steps an adopted sibling saves above.
+    "named-region-reelect": 4,
     # The candidates of an answer are grounded side by side, where the baseline grounds them
     # one after another, and the alternates' walks start beside the elected shape's.
     "income-role-bearing-elected-subject-alternate": 3,
     "income-subject-elected-role-bearing-alternate": 6,
     "named-flagged-alternate": 3,
-    "named-tie-widened": 3,
     # An answer that binds several places reads their types in one request and the labels
     # of those types in one more, where the baseline reads each place's type and its label
     # in turn, which saves two steps for a second place. Three of these also save the steps their
@@ -1338,14 +1270,10 @@ _SERIAL_STEPS_SAVED: dict[str, int] = {
     # where the baseline asks of the region and then of the country in turn, which saves
     # the country's two-step class walk.
     "named-region-and-country": 4,
-    "income-reelect-directed-two-places": 7,
-    "income-reelect-siblings-in-separate-scopes": 10,
     "income-role-bearing-elected-subject-alternate-at-both": 7,
     # With no place named, the elected one-role shape stays in the election, and its subject
     # siblings take fewer reads in series than the baseline's subject-only answer, or join
     # it as candidates grounded side by side.
-    "placeless-role-bearing-elected-subject-siblings": 6,
-    "placeless-role-bearing-elected-with-data-subject-siblings": 3,
     "placeless-reelect-role-bearing-sibling-widens-scope": 7,
     "placeless-reelect-subject-and-role-bearing-siblings": 7,
     "placeless-subject-elected-role-bearing-alternate": 1,
@@ -1356,7 +1284,6 @@ _SERIAL_STEPS_SAVED: dict[str, int] = {
 # dropped shape holds nothing the baseline's answer rests on.
 _ANSWERS_AS_THE_BASELINE_BESIDE_AN_INDEX_SOURCED_SHAPE = (
     "placeless-definite-beside-index-sourced-sibling",
-    "placeless-tie-neighbour-has-data-index-sourced-cascade",
     "placeless-index-sourced-flagged-alternate-empty",
 )
 
@@ -1541,7 +1468,7 @@ def test_a_shape_the_walk_makes_subject_only_takes_the_default_scope_of_its_own_
     subject = _sv(
         "Gross national income (current US$), subject",
         _income_arcs(
-            "Nominal",
+            _IDS_QUALIFIER,
             {
                 "economicActivityType": "GrossNationalIncome",
             },
@@ -1583,7 +1510,7 @@ def test_a_bound_recipient_keeps_the_recipient_only_shape_beside_a_subject_only_
         _sv(
             "Gross national income, subject",
             _income_arcs(
-                "Nominal",
+                _IDS_QUALIFIER,
                 {
                     "economicActivityType": "GrossNationalIncome",
                 },

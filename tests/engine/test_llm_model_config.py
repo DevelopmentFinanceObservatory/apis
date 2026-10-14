@@ -244,8 +244,8 @@ class TestForStageWiring:
         offline_resolve(make_request("total population India"), llm=recorder)
         assert recorder.calls == [
             ("Extraction", None),
-            ("_UniversalBindOutput", "minimal"),
             ("QuantityOutput", "minimal"),
+            ("_UniversalBindOutput", "minimal"),
         ]
 
 

@@ -1,4 +1,4 @@
-"""Tests recall-score provenance in grouping, neighbour checks, prompts, and confidence.
+"""Tests recall-score provenance in grouping, prompts, and confidence.
 
 Topic-expanded members carry no measured score, including in mixed groups."""
 
@@ -6,11 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from search.engine.bind import _build_universal_bind_prompt
-from search.engine.region.near_neighbor import (
-    _near_neighbor_check,
-    _representative_score_is_weak,
-)
+from search.engine.region.weak_score import _representative_score_is_weak
 from search.engine.retrieval.derive import derive_shapes
 from search.engine.shape import ShapeDraft
 from tests.engine._discover_fixtures import _std_sv_arcs
@@ -110,54 +106,9 @@ def _shape(shape_id: str, *, meas_prop: str, score: float | None, label: str = "
     )
 
 
-def test_near_neighbor_check_returns_a_tuple_when_both_shapes_are_scored():
-    chosen = _shape("chosen", meas_prop="area", score=0.8230, label="Area Forest")
-    other = _shape("other", meas_prop="count", score=0.8184, label="Count Person")
-    result = _near_neighbor_check("forest area", chosen, 0, [chosen, other])
-    assert result is not None
-    neighbor_index, margin, _similarity = result
-    assert neighbor_index == 1
-    assert margin == pytest.approx(0.8230 - 0.8184)
-
-
-def test_near_neighbor_check_none_when_chosen_shape_is_unscored():
-    """An unscored chosen shape has no margin to compare."""
-    chosen = _shape("chosen", meas_prop="area", score=None)
-    other = _shape("other", meas_prop="count", score=0.8)
-    assert _near_neighbor_check("forest area", chosen, 0, [chosen, other]) is None
-
-
-def test_near_neighbor_check_skips_an_unscored_neighbour():
-    """The margin uses the next scored, distinct shape."""
-    chosen = _shape("chosen", meas_prop="area", score=0.8230)
-    unscored = _shape("unscored", meas_prop="count", score=None)
-    scored = _shape("scored", meas_prop="count", score=0.5)
-    result = _near_neighbor_check("forest area", chosen, 0, [chosen, unscored, scored])
-    assert result is not None
-    neighbor_index, margin, _similarity = result
-    assert neighbor_index == 2
-    assert margin == pytest.approx(0.8230 - 0.5)
-
-
-def test_near_neighbor_check_none_when_every_distinct_neighbour_is_unscored():
-    """Without a scored neighbour, the check returns ``None``."""
-    chosen = _shape("chosen", meas_prop="area", score=0.8230)
-    unscored = _shape("unscored", meas_prop="count", score=None)
-    assert _near_neighbor_check("forest area", chosen, 0, [chosen, unscored]) is None
-
-
 def test_representative_score_is_weak_false_for_an_unscored_shape():
     """An absent score yields ``False`` for weakness."""
     assert _representative_score_is_weak(None) is False
-
-
-def test_bind_prompt_omits_the_score_line_for_an_unscored_shape():
-    scored = _shape("scored", meas_prop="count", score=0.912, label="Scored shape")
-    unscored = _shape("unscored", meas_prop="area", score=None, label="Unscored shape")
-    prompt = _build_universal_bind_prompt("gdp per capita", [scored, unscored])
-    blocks = prompt.split("Shape ")
-    assert "  retrieval_score: 0.912\n" in blocks[1]
-    assert "retrieval_score" not in blocks[2]
 
 
 def _family_shape(shape_id: str, *, score: float | None) -> ShapeDraft:
@@ -330,16 +281,27 @@ def test_candidate_branch_grades_each_provenance_case(score, retrieved, expected
     assert confidence == expected
 
 
-def test_candidate_branch_weak_score_with_near_neighbor_stays_low():
-    """A relevant near-neighbour lowers a weak candidate to low confidence."""
+@pytest.mark.parametrize(
+    ("score", "rival", "sole", "expected"),
+    [
+        (0.10, True, False, "low"),  # weak beside a structural or nominated rival
+        (0.10, False, False, "medium"),  # weak alone
+        (0.90, True, False, "high"),  # strong beside a rival
+        (0.10, False, True, "high"),  # the only admissible reading with data
+    ],
+)
+def test_a_rival_lowers_and_a_sole_reading_raises_confidence(score, rival, sole, expected):
+    """Scores set no status and reach confidence only: a weak score beside a rival is low,
+    and the only admissible reading with data is high whatever its score."""
     from search.engine.region.grounding import _place_confidence
 
     _available, confidence = _place_confidence(
         destination_dcid="country/KEN",
         available_at_place=True,
-        representative_score=0.10,
+        representative_score=score,
         candidate=True,
-        near_neighbor_relevant=True,
+        rival=rival,
+        sole_reading=sole,
         retrieved=True,
     )
-    assert confidence == "low"
+    assert confidence == expected

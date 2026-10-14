@@ -658,10 +658,10 @@ requires-dist = [
     { name = "dfo-data-tools", extras = ["generation"], marker = "extra == 'resolve'", editable = "packages/dfo-data-tools" },
     { name = "dfo-data-tools", extras = ["sdmx"], marker = "extra == 'coverage'", editable = "packages/dfo-data-tools" },
     { name = "dfo-data-tools", extras = ["sdmx"], marker = "extra == 'formats'", editable = "packages/dfo-data-tools" },
-    { name = "dfo-spec-kit-components", git = "https://github.com/ONEcampaign/dfo-spec-kit.git?subdirectory=python%2Fdfo-spec-kit-components&rev=739caf69e7ae2fca083ce6781990b912f5e6dc8c" },
-    { name = "dfo-spec-kit-descriptions", git = "https://github.com/ONEcampaign/dfo-spec-kit.git?subdirectory=python%2Fdescriptions&rev=739caf69e7ae2fca083ce6781990b912f5e6dc8c" },
-    { name = "dfo-spec-kit-frame-grammar", extras = ["arrow"], git = "https://github.com/ONEcampaign/dfo-spec-kit.git?subdirectory=python%2Fframe-grammar&rev=739caf69e7ae2fca083ce6781990b912f5e6dc8c" },
-    { name = "dfo-spec-kit-provenance-docs", git = "https://github.com/ONEcampaign/dfo-spec-kit.git?subdirectory=python%2Fprovenance-docs&rev=739caf69e7ae2fca083ce6781990b912f5e6dc8c" },
+    { name = "dfo-spec-kit-components", git = "https://github.com/ONEcampaign/dfo-spec-kit.git?subdirectory=python%2Fdfo-spec-kit-components&rev=5d381d8322288dc77411baa70c0dcff323ba6c7f" },
+    { name = "dfo-spec-kit-descriptions", git = "https://github.com/ONEcampaign/dfo-spec-kit.git?subdirectory=python%2Fdescriptions&rev=5d381d8322288dc77411baa70c0dcff323ba6c7f" },
+    { name = "dfo-spec-kit-frame-grammar", extras = ["arrow"], git = "https://github.com/ONEcampaign/dfo-spec-kit.git?subdirectory=python%2Fframe-grammar&rev=5d381d8322288dc77411baa70c0dcff323ba6c7f" },
+    { name = "dfo-spec-kit-provenance-docs", git = "https://github.com/ONEcampaign/dfo-spec-kit.git?subdirectory=python%2Fprovenance-docs&rev=5d381d8322288dc77411baa70c0dcff323ba6c7f" },
     { name = "fastapi", marker = "extra == 'surface'", specifier = ">=0.138" },
     { name = "google-auth", extras = ["requests"], marker = "extra == 'generation'", specifier = ">=2.55" },
     { name = "google-cloud-bigquery", marker = "extra == 'coverage'", specifier = ">=3.27" },
@@ -675,7 +675,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.13" },
     { name = "pydantic-settings", specifier = ">=2.10" },
     { name = "pyyaml", specifier = ">=6.0" },
-    { name = "resolvekit", extras = ["parsing"], marker = "extra == 'resolve'", specifier = "==0.1.12" },
+    { name = "resolvekit", extras = ["parsing"], marker = "extra == 'resolve'", specifier = "==0.1.13" },
     { name = "rfc8785", specifier = ">=0.1.4" },
     { name = "starlette", marker = "extra == 'surface'" },
     { name = "uvicorn", marker = "extra == 'surface'" },
@@ -685,7 +685,7 @@ provides-extras = ["sdmx", "formats", "surface", "resolve", "generation", "cover
 [[package]]
 name = "dfo-spec-kit"
 version = "0.2.0"
-source = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git?subdirectory=python%2Fspec-kit&rev=739caf69e7ae2fca083ce6781990b912f5e6dc8c#739caf69e7ae2fca083ce6781990b912f5e6dc8c" }
+source = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git?subdirectory=python%2Fspec-kit&rev=5d381d8322288dc77411baa70c0dcff323ba6c7f#5d381d8322288dc77411baa70c0dcff323ba6c7f" }
 dependencies = [
     { name = "rfc8785" },
 ]
@@ -693,7 +693,7 @@ dependencies = [
 [[package]]
 name = "dfo-spec-kit-components"
 version = "0.1.0"
-source = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git?subdirectory=python%2Fdfo-spec-kit-components&rev=739caf69e7ae2fca083ce6781990b912f5e6dc8c#739caf69e7ae2fca083ce6781990b912f5e6dc8c" }
+source = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git?subdirectory=python%2Fdfo-spec-kit-components&rev=5d381d8322288dc77411baa70c0dcff323ba6c7f#5d381d8322288dc77411baa70c0dcff323ba6c7f" }
 dependencies = [
     { name = "dfo-spec-kit-descriptions" },
 ]
@@ -701,7 +701,7 @@ dependencies = [
 [[package]]
 name = "dfo-spec-kit-descriptions"
 version = "0.1.0"
-source = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git?subdirectory=python%2Fdescriptions&rev=739caf69e7ae2fca083ce6781990b912f5e6dc8c#739caf69e7ae2fca083ce6781990b912f5e6dc8c" }
+source = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git?subdirectory=python%2Fdescriptions&rev=5d381d8322288dc77411baa70c0dcff323ba6c7f#5d381d8322288dc77411baa70c0dcff323ba6c7f" }
 dependencies = [
     { name = "rfc8785" },
 ]
@@ -709,7 +709,7 @@ dependencies = [
 [[package]]
 name = "dfo-spec-kit-frame-grammar"
 version = "0.1.0"
-source = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git?subdirectory=python%2Fframe-grammar&rev=739caf69e7ae2fca083ce6781990b912f5e6dc8c#739caf69e7ae2fca083ce6781990b912f5e6dc8c" }
+source = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git?subdirectory=python%2Fframe-grammar&rev=5d381d8322288dc77411baa70c0dcff323ba6c7f#5d381d8322288dc77411baa70c0dcff323ba6c7f" }
 dependencies = [
     { name = "dfo-spec-kit" },
     { name = "pyarrow" },
@@ -719,7 +719,7 @@ dependencies = [
 [[package]]
 name = "dfo-spec-kit-provenance-docs"
 version = "0.1.0"
-source = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git?subdirectory=python%2Fprovenance-docs&rev=739caf69e7ae2fca083ce6781990b912f5e6dc8c#739caf69e7ae2fca083ce6781990b912f5e6dc8c" }
+source = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git?subdirectory=python%2Fprovenance-docs&rev=5d381d8322288dc77411baa70c0dcff323ba6c7f#5d381d8322288dc77411baa70c0dcff323ba6c7f" }
 dependencies = [
     { name = "markdown-it-py" },
 ]
@@ -2357,7 +2357,7 @@ wheels = [
 
 [[package]]
 name = "resolvekit"
-version = "0.1.12"
+version = "0.1.13"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "packaging" },
@@ -2366,9 +2366,9 @@ dependencies = [
     { name = "rapidfuzz" },
     { name = "symspellpy" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/88/65/5444338e89679c2743561549490d7fb10bc08c529b12a297f46c294f5b49/resolvekit-0.1.12.tar.gz", hash = "sha256:70c2ced98bc3a07c577dfeddc72aaac7009b97c24636f6a574469a78230ec061", size = 2359162, upload-time = "2026-06-15T11:44:20.674Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/3b/33/0db0398f21a3ad5ab94bcf1c92ebaa123435e13f44c46e528a5fc97d7c24/resolvekit-0.1.13.tar.gz", hash = "sha256:edaf968b033c189f5f67460654a45f6e3c5aecd592ea63f343260a304c83de54", size = 2323435, upload-time = "2026-10-12T17:32:22.654Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ae/10/812e595188edb861534307d1d9c1a9af8cf073197470294c008c27257472/resolvekit-0.1.12-py3-none-any.whl", hash = "sha256:73810c0f4f41b97bf4165dada67d2e99a9a7fed5b1800adb025b9cbb7837be56", size = 2521282, upload-time = "2026-06-15T11:44:18.971Z" },
+    { url = "https://files.pythonhosted.org/packages/31/b8/f644f16ef60f826da958020e9bafb9c81a4dfc4adb175bd5ba5b1a6551ac/resolvekit-0.1.13-py3-none-any.whl", hash = "sha256:3756b945f9be45e08d0556848f5ccc7bc2fa289f9fb1d3de1ebbaacc12af481b", size = 2458228, upload-time = "2026-10-12T17:32:21.027Z" },
 ]
 
 [package.optional-dependencies]
@@ -2624,7 +2624,7 @@ requires-dist = [
     { name = "dfo-data-tools", extras = ["resolve", "sdmx"], marker = "extra == 'graph'", editable = "packages/dfo-data-tools" },
     { name = "dfo-data-tools", extras = ["sdmx"], marker = "extra == 'sdmx'", editable = "packages/dfo-data-tools" },
     { name = "dfo-data-tools", extras = ["surface", "resolve", "coverage", "sdmx"], marker = "extra == 'engine'", editable = "packages/dfo-data-tools" },
-    { name = "dfo-spec-kit", marker = "extra == 'engine'", git = "https://github.com/ONEcampaign/dfo-spec-kit.git?subdirectory=python%2Fspec-kit&rev=739caf69e7ae2fca083ce6781990b912f5e6dc8c" },
+    { name = "dfo-spec-kit", marker = "extra == 'engine'", git = "https://github.com/ONEcampaign/dfo-spec-kit.git?subdirectory=python%2Fspec-kit&rev=5d381d8322288dc77411baa70c0dcff323ba6c7f" },
     { name = "fastapi", marker = "extra == 'api'", specifier = ">=0.138" },
     { name = "google-auth", marker = "extra == 'datasets'", specifier = ">=2.34" },
     { name = "google-cloud-storage", marker = "extra == 'datasets'", specifier = ">=2.18" },

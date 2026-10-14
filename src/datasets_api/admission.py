@@ -27,7 +27,11 @@ is uncovered and is priced as the same request naming each country would be: zer
 materialiser's row ceiling as its bound. Over-budget requests face separate async row and request
 ceilings. `ContainedIn` bindings are unbound to avoid a graph read. A range window clips the row
 estimate only: requests are priced across all years, as the fetch sends them. `latest` uses all
-years for row estimates and preserves `c[TIME_PERIOD]=LATEST` for SDMX request-size estimates. A
+years for row estimates and preserves `c[TIME_PERIOD]=LATEST` for SDMX request-size estimates. It
+also prices one more read at one year of each covered member that can make it, the read a
+member makes when a series of it ends after the year it elects
+(`materialise.elected_latest_year`). A member whose series all end in one year, at or before
+the index's build year, makes one read and is priced one (`_members_read_twice`). A
 member that binds no role prices `CoverageIndex.exhaustive_single_axis_filter`, the entity list
 its fetch sends.
 
@@ -328,8 +332,8 @@ def _bare_dcid(stat_var: str) -> str:
     return stat_var.removeprefix(_STAT_VAR_PREFIX)
 
 
-def _bound_roles(request: MaterialisationRequest, *, index: CoverageIndex) -> BoundRoles:
-    """Map declared roles to coverage's donor/recipient labels.
+def bound_roles(request: MaterialisationRequest, *, index: CoverageIndex) -> BoundRoles:
+    """Map `request`'s bound declared roles to coverage's donor/recipient labels.
 
     Omit unbound roles and `ContainedIn` filters.
     """
@@ -352,6 +356,33 @@ def _window_years(request: MaterialisationRequest) -> tuple[int | None, int | No
     return None, None
 
 
+def _members_read_twice(
+    variables: Sequence[str], *, bound: BoundRoles, index: CoverageIndex
+) -> frozenset[str]:
+    """The `variables` a `latest` read under `bound` can read a second time, at the year
+    the member elected (`materialise.generation._with_elected_year`): those the index holds
+    a series of under `bound` and the source scope in context, unless every such series
+    ends in one year at or before `CoverageIndex.build_year`.
+
+    A member whose series all end in one year elects that year over any of its facets and
+    less any entity a conversion leaves out, since every series it keeps holds the year and
+    none holds a later one. Its `LATEST` rows then hold no row after the year, so it reads
+    once. A member that elects no year reads once as well, and is still counted here when
+    its series end in different years, as which facets it dispatches is known only to the
+    mint.
+    """
+    ends: dict[str, tuple[int, int]] = {}
+    for (variable, _facet_id), span in index.facet_spans(variables=variables, bound=bound).items():
+        earliest, newest = ends.get(variable, (span.first_series_end, span.last_year))
+        ends[variable] = (min(earliest, span.first_series_end), max(newest, span.last_year))
+    build_year = index.build_year
+    return frozenset(
+        variable
+        for variable, (earliest, newest) in ends.items()
+        if earliest != newest or (build_year is not None and newest > build_year)
+    )
+
+
 def sync_estimate(
     requests: Sequence[MaterialisationRequest],
     *,
@@ -368,7 +399,10 @@ def sync_estimate(
     Group by dispatch key and window years, then use the same lanes and
     StatVar chunks as materialisation. Estimate each chunk with `lanes=1`,
     using the first member's roles and window. The `latest` window keeps
-    `LATEST` in request-size estimates while coverage prices all years.
+    `LATEST` in request-size estimates while coverage prices all years, and
+    adds the requests of one read alone at one year of each member that can
+    make it (`_members_read_twice`): a member with a series ending after the
+    year it elects is read again at that year.
     """
     lanes = dispatch_lanes(member_concurrency, len(requests))
     groups: dict[
@@ -396,9 +430,16 @@ def sync_estimate(
     total_rows = 0
     total_requests = 0
     for (_batch_key, first_year, last_year), members in groups.items():
-        bound = _bound_roles(members[0], index=index)
+        bound = bound_roles(members[0], index=index)
         variables = [_bare_dcid(member.stat_var) for member in members]
         time_period = _time_period_for_window(members[0].window)
+        # Every year is asked for by four digits, so any year prices the read of one.
+        elected_period = _time_period_for_window(members[0].window, year=index.horizon.max_year)
+        read_twice = (
+            _members_read_twice(variables, bound=bound, index=index)
+            if members[0].window.kind == "latest"
+            else frozenset()
+        )
         for position_group in stat_var_chunk_positions(variables, lanes=lanes):
             chunk_variables = [variables[position] for position in position_group]
             chunk_estimate = index.estimate(
@@ -411,6 +452,13 @@ def sync_estimate(
             )
             total_rows += chunk_estimate.rows
             total_requests += chunk_estimate.requests
+            total_requests += sum(
+                index.estimate(
+                    variables=[variable], bound=bound, lanes=1, time_period=elected_period
+                ).requests
+                for variable in chunk_variables
+                if variable in read_twice
+            )
     return Estimate(rows=total_rows, requests=total_requests, uncovered_requests=uncovered_requests)
 
 

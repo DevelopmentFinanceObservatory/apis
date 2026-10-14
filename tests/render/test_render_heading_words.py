@@ -31,7 +31,11 @@ def _recorded() -> dict[str, dict]:
 
 
 def _segments(key: str) -> tuple[str, str]:
-    plan = render_sentence_plan(recorded_spec(_recorded()[key]))
+    return _spec_segments(_recorded()[key])
+
+
+def _spec_segments(recorded: dict) -> tuple[str, str]:
+    plan = render_sentence_plan(recorded_spec(recorded))
     heading = sentence_from_plan([t for t in plan if t.segment == "heading"])
     byline = sentence_from_plan([t for t in plan if t.segment == "byline"]).strip()
     return heading, byline
@@ -131,6 +135,22 @@ def test_a_unit_reads_once(key: str, heading: str, byline: str):
     """An authored noun replaces a graph name carrying "(current US$)", and the byline
     leaves out a US-dollar unit the graph name the heading uses already states."""
     assert _segments(key) == (heading, byline)
+
+
+def test_a_series_netting_servicing_payments_reads_net_transfers():
+    """dq-ids-047: the one series netting servicing payments off disbursements reads its
+    own noun, where the one netting principal repayments (`ids-031-1`) reads "net flows"."""
+    net_flows = json.dumps(_recorded()["ids-031-1"])
+    net_transfers = json.loads(
+        net_flows.replace("PrincipalRepayment", "ServicingPayment")
+        .replace("principal repayment", "servicing payment")
+        .replace("Net flows on", "Net transfers on")
+    )
+
+    assert _spec_segments(net_transfers) == (
+        "Ghana's net transfers on external debt for short-term maturity, 1970 to 2024.",
+        f"Current US dollars · {_IDS}.",
+    )
 
 
 @pytest.mark.parametrize(

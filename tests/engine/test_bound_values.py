@@ -29,12 +29,15 @@ def _binding(
     kind: DraftBindingKind = "value",
     evidence: DraftBindingEvidence = "mentioned",
 ) -> SlotBindingDraft:
-    return SlotBindingDraft(
+    """A draft, built unvalidated: the bind response refuses a value or set draft naming no
+    dcid at parse, and these rows hold the reader to drafts code builds without that check."""
+    return SlotBindingDraft.model_construct(
         axis="how",
         property_dcid=prop,
         kind=kind,
         value_dcids=values,
         evidence=evidence,
+        requested_all_phrase=None,
     )
 
 

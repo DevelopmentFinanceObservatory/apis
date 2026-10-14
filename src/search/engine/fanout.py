@@ -54,7 +54,9 @@ from search.engine.source_code import (
     without_code_words,
 )
 from search.engine.source_scope import SourceRefusal, SourceScope, without_source_words
+from search.engine.surface_resolution import resolve_names
 from search.models import (
+    EntryPath,
     IdentityBindingValue,
     Operation,
     ParsedEntity,
@@ -438,6 +440,7 @@ async def _stream_one_variable(
     landed: list[RegionResult],
     sem: asyncio.Semaphore | None,
     degrade_on_error: bool,
+    entity_surfaces: dict[str, str] | None = None,
     include_option_coverage: bool = False,
     stream_slot_options: bool = False,
     include_observations: bool = False,
@@ -462,6 +465,7 @@ async def _stream_one_variable(
     place_options_pool: PlaceOptionsPool | None = None,
     coverage: CoverageSnapshot,
     phase: LegPhase,
+    door: EntryPath = "parsed",
 ) -> None:
     """Run one variable leg, queue its events, then send one terminal marker.
 
@@ -476,6 +480,7 @@ async def _stream_one_variable(
     (`source_refusal_result`, `empty_scope_result`). `source_code` is the leg's compiled
     series code: its StatVars are the leg's recall, its words leave `v` too, and a refusal
     answers the leg no_data after the source refusals (`source_code_refusal_result`).
+    `entity_surfaces` maps an entity name to the query words its recall resolves it through.
     `member_entities` are the entities asked for as their members
     (`ResolveState.member_entities`), which the restatement states.
     `entity_roles` also supplies the axes written into the leg's restatement, which carries
@@ -487,7 +492,8 @@ async def _stream_one_variable(
     the answer drops (`with_dropped_open_roles`). `separate` marks a leg compared with the
     others (`RegionResult.separate`). The final region is appended to `landed` before
     its terminal marker is queued. `phase` records the step the leg is in
-    (`search.engine.leg_phase`).
+    (`search.engine.leg_phase`). `door` is the door the leg was posted on
+    (`resolve_variable`).
     """
     track_leg_phase(phase)
     v = _measure_words(v, source_scope, source_code)
@@ -532,9 +538,11 @@ async def _stream_one_variable(
             sdmx=sdmx,
             base_timing=base_timing,
             pre_resolved=pre_resolved,
+            entity_surfaces=entity_surfaces,
             variable_index=i,
             emit=emit,
             coverage=coverage,
+            door=door,
             options=EngineOptions(
                 deadline=deadline,
                 include_option_coverage=include_option_coverage,
@@ -648,6 +656,7 @@ class _LegOverrides:
     date_request: DateRequest | None
     query: str
     pre_resolved: dict[str, Resolution] | None
+    entity_surfaces: dict[str, str] | None
     entity_roles: dict[str, list[DoorRole]] | None
     member_entities: frozenset[str]
     per_variable_entities: list[list[str]] | None
@@ -664,6 +673,7 @@ class _LegOverrides:
     per_variable_operations: list[tuple[Operation, ...]] | None
     per_variable_open_axes: list[frozenset[RoleAxis]] | None
     per_variable_separate: list[bool] | None
+    door: EntryPath
 
 
 def _leg_entities(overrides: _LegOverrides, i: int) -> list[str]:
@@ -853,6 +863,7 @@ def _launch_variable_tasks(
                 deadline=deadline,
                 base_timing=base_timing,
                 pre_resolved=_leg_pre_resolved(overrides, i),
+                entity_surfaces=overrides.entity_surfaces,
                 queue=queue,
                 landed=landed,
                 sem=sem,
@@ -885,6 +896,7 @@ def _launch_variable_tasks(
                 place_options_pool=place_options_pool,
                 coverage=coverage,
                 phase=phases[i],
+                door=overrides.door,
             )
         )
         for i, v in enumerate(unique)
@@ -949,6 +961,7 @@ async def _run_variables_streaming(
     stream_slot_options: bool = False,
     include_observations: bool = False,
     stream_observations: bool = False,
+    entity_surfaces: dict[str, str] | None = None,
     entity_roles: dict[str, list[DoorRole]] | None = None,
     member_entities: frozenset[str] = frozenset(),
     per_variable_entities: list[list[str]] | None = None,
@@ -973,6 +986,7 @@ async def _run_variables_streaming(
     population_memo: OptionsPopulationMemo | None = None,
     place_options_pool: PlaceOptionsPool | None = None,
     coverage: CoverageSnapshot,
+    door: EntryPath = "parsed",
 ) -> AsyncIterator[Event]:
     """Run one task per variable and yield each leg's events as they arrive.
 
@@ -985,7 +999,8 @@ async def _run_variables_streaming(
     Per-variable entity, date, role-query, role, unit, source, qualifier, and
     pre-resolution values override their broadcast counterparts by index.
     `None` broadcasts the shared value. `per_variable_pre_resolved` replaces
-    the shared map; parsed-door callers merge pins before passing it. Dropped
+    the shared map; parsed-door callers merge pins before passing it. `entity_surfaces`
+    maps an entity name to the query words every leg's recall resolves it through. Dropped
     qualifier phrases and request-level dependencies are broadcast unchanged.
     `per_variable_operations` gives each leg its own operations, which ride on its
     region and restatement and join its bind's dropped phrases; `None` gives every
@@ -998,6 +1013,7 @@ async def _run_variables_streaming(
     gives each leg its own.
     `query_text` is supplied only for a single-variable request.
     `unit_text_best_effort` marks every leg's unit text as the raw-text door's typed phrase.
+    `door` is the door every leg was posted on (`resolve_variable`).
     """
     overrides = _LegOverrides(
         unique=unique,
@@ -1005,6 +1021,7 @@ async def _run_variables_streaming(
         date_request=date_request,
         query=query,
         pre_resolved=pre_resolved,
+        entity_surfaces=entity_surfaces,
         entity_roles=entity_roles,
         member_entities=member_entities,
         per_variable_entities=per_variable_entities,
@@ -1021,6 +1038,7 @@ async def _run_variables_streaming(
         per_variable_operations=per_variable_operations,
         per_variable_open_axes=per_variable_open_axes,
         per_variable_separate=per_variable_separate,
+        door=door,
     )
 
     queue: asyncio.Queue = asyncio.Queue()
@@ -1105,12 +1123,13 @@ async def _run_variables_streaming(
             raise progress.first_failure
     except BaseException:
         # `out.regions` is never assigned on this path, so these handles
-        # reach no caller. The two passes stay separate: this exception can
-        # be, or be shadowed by, this generator's own pending cancellation,
-        # and an interleaved cancel-then-await per region gives that
-        # cancellation its first landing point inside region 0's await,
-        # leaking every later region. `task.cancel()` awaits nothing, so the
-        # first pass runs to completion whatever happens to the second.
+        # reach no caller. Cancelling every task and awaiting them stay two
+        # loops: this exception can be, or be shadowed by, this generator's
+        # own pending cancellation, and an interleaved cancel-then-await per
+        # region gives that cancellation its first landing point inside
+        # region 0's await, leaking every later region. `task.cancel()`
+        # awaits nothing, so every task is cancelled whatever happens to the
+        # awaits.
         await _cancel_trailing_tasks(landed)
         raise
 
@@ -1145,21 +1164,41 @@ def _log_unfinished_legs(tasks: Sequence[asyncio.Task], phases: Sequence[LegPhas
             )
 
 
+def leg_runs(
+    source_scope: SourceScope | SourceRefusal | None, source_code: PartCode | None
+) -> bool:
+    """Whether a leg with this source scope and series code runs its pipeline.
+
+    A source refusal, a scope allowing nothing, or a series-code refusal settles the leg
+    no_data before any step runs (`_stream_one_variable`).
+    """
+    return not (
+        isinstance(source_scope, SourceRefusal)
+        or (source_scope is not None and not source_scope.allowed)
+        or isinstance(source_code, SourceCodeRefusal)
+    )
+
+
 async def _resolve_entities_bounded(
     unique_entities: list[str],
     *,
     resolver: EntityResolver,
     deadline: float,
+    surfaces: Mapping[str, str] | None = None,
 ) -> dict[str, Resolution]:
     """Resolve the deduplicated names in one resolver call before fan-out.
 
     Caller-side limits cap parsed-door input at 96 entities by default
     (`SEARCH_MAX_PARTS * SEARCH_MAX_PART_ENTITIES`) and raw-text input at
-    `SEARCH_MAX_ENTITIES`. `_await_bounded` bounds the wait by the shared
+    `SEARCH_MAX_ENTITIES`. `surfaces` maps a name to the query words it resolves through
+    (`surface_resolution.resolve_names`). `_await_bounded` bounds the wait by the shared
     monotonic deadline.
     """
     if not unique_entities:
         return {}
 
-    resolutions = await _await_bounded(resolver.resolve(unique_entities), deadline=deadline)
+    resolutions = await _await_bounded(
+        resolve_names(unique_entities, resolver=resolver, surfaces=surfaces or {}),
+        deadline=deadline,
+    )
     return dict(zip(unique_entities, resolutions, strict=True))

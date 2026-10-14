@@ -29,6 +29,7 @@ from search.engine.retrieval.coverage import (
     CoverageForm,
     answer_coverage,
     answer_headline,
+    plan_election,
     scope_members,
 )
 from search.engine.retrieval.elected_dataset import (
@@ -642,6 +643,7 @@ def _read_scope(
         ),
         member_probes=lambda read: member_probes(coverage_index, variables=read, bound=bound),
         roles=PlanRoles(bound=bound, role_names=role_names),
+        elect=plan_election(coverage_index),
     )
     plan = in_elected_datasets(plan, member_facts)
     return _ScopeRead(members, confirmed_svs, role_index_by_sv, plan)

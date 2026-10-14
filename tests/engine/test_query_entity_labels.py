@@ -16,7 +16,7 @@ from search.engine.retrieval.read_plan import plan_standard
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.engine.spec_build import build_shape_model
 from search.render.heading import heading_from_parts
-from search.render.plan import render_sentence
+from search.render.plan import render_sentence, render_sentence_plan
 from search.render.tokens import plan_tokens, sentence_from_plan
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
@@ -215,5 +215,4 @@ def test_pipeline_threads_accepted_place_text_to_resolved_entity_and_sentence() 
     spec = result.specs[0]
     assert spec.resolved.entities[0].label == "Eswatini"
     assert render_sentence(spec).startswith("Eswatini's ")
-    sentence_event = next(event for event in events if event.kind == "sentence")
-    assert sentence_from_plan(sentence_event.sentence_plan).startswith("Eswatini's ")
+    assert sentence_from_plan(render_sentence_plan(spec)).startswith("Eswatini's ")

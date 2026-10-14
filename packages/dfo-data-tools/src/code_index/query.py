@@ -24,9 +24,13 @@ from code_index.types import (
     DatasetDeclaration,
     IndexStamp,
     LevelOption,
+    MeasureClassDeclaration,
+    PartlyStatedValue,
     PartyKind,
     PartyRow,
+    ShapeSlotDefault,
     SourceCodeRow,
+    StatTypeWordDeclaration,
     StatVarRow,
     party_kind,
 )
@@ -90,6 +94,42 @@ def _datasets_by_five_tuple(
         five_tuple: tuple(sorted(provenances, key=serving_order))
         for five_tuple, provenances in publishers.items()
         if provenances
+    }
+
+
+def partly_stated_five_tuples(
+    statvars: Iterable[StatVarRow], declared: PartlyStatedValue
+) -> frozenset[FiveTuple]:
+    """The five-tuples `declared` is stated partly on: those where a row of its dataset states
+    the property with the declared value and another row of the dataset states nothing on the
+    property. A five-tuple whose dataset rows all state the property, or none state the value,
+    is not among them. The loader refuses a declaration with no such five-tuple."""
+    stating: set[FiveTuple] = set()
+    silent: set[FiveTuple] = set()
+    for row in statvars:
+        if declared.provenance not in row.provenances:
+            continue
+        stated = row.constraint_properties.get(declared.property_dcid)
+        if stated == declared.value_dcid:
+            stating.add(row_five_tuple(row))
+        elif stated is None:
+            silent.add(row_five_tuple(row))
+    return frozenset(stating & silent)
+
+
+def _partly_stated_by_five_tuple(
+    statvars: Iterable[StatVarRow], declared: Iterable[PartlyStatedValue]
+) -> dict[FiveTuple, dict[str, frozenset[tuple[str, str]]]]:
+    """Maps each five-tuple to the declared (property, value) pairs each dataset states
+    partly on it (`partly_stated_five_tuples`)."""
+    statvars = tuple(statvars)
+    partly: dict[FiveTuple, dict[str, set[tuple[str, str]]]] = defaultdict(lambda: defaultdict(set))
+    for value in declared:
+        for five_tuple in partly_stated_five_tuples(statvars, value):
+            partly[five_tuple][value.provenance].add((value.property_dcid, value.value_dcid))
+    return {
+        five_tuple: {provenance: frozenset(pairs) for provenance, pairs in by_provenance.items()}
+        for five_tuple, by_provenance in partly.items()
     }
 
 
@@ -324,6 +364,7 @@ class CodeIndex:
         "_codes_by_tokens",
         "_codes_by_word",
         "_members_by_source_code",
+        "_partly_stated_by_five_tuple",
         "_source_codes_by_dcid",
         "_statvars_by_dcid",
         "_words_by_code",
@@ -337,14 +378,19 @@ class CodeIndex:
         "family_by_dcid",
         "listed_by_five_tuple",
         "listed_statvars",
+        "measure_classes",
         "parties",
+        "partly_stated_values",
         "party_types",
+        "shape_slot_defaults",
         "source_code_provenances",
         "source_codes",
         "stamp",
+        "stat_type_words",
         "statvars",
         "totals_by_group",
         "value_parents",
+        "variable_aliases",
         "variables_by_provenance",
     )
 
@@ -359,10 +405,29 @@ class CodeIndex:
         party_types: Mapping[str, PartyKind | None] | None = None,
         parties: Iterable[PartyRow] = (),
         listed_statvars: Iterable[StatVarRow] = (),
+        shape_slot_defaults: Iterable[ShapeSlotDefault] = (),
+        partly_stated_values: Iterable[PartlyStatedValue] = (),
+        measure_classes: Iterable[MeasureClassDeclaration] = (),
+        variable_aliases: Mapping[str, str] | None = None,
+        stat_type_words: Iterable[StatTypeWordDeclaration] = (),
         source_codes: Iterable[SourceCodeRow] = (),
         value_parents: Mapping[str, str] | None = None,
     ) -> None:
         self.stamp = stamp
+        self.shape_slot_defaults = tuple(shape_slot_defaults)
+        """The open-slot defaults declared per `populationType` for properties outside the
+        code systems, in declaration order."""
+        self.partly_stated_values = tuple(partly_stated_values)
+        """The constraint values a dataset states on only some of its series
+        (`PartlyStatedValue`), in declaration order."""
+        self.measure_classes = tuple(measure_classes)
+        """The patterns naming each measure class, in declaration order."""
+        self.variable_aliases: dict[str, str] = dict(variable_aliases or {})
+        """Lowercase words recall reads as the full term each stands for, applied to the
+        variable query alone."""
+        self.stat_type_words = tuple(stat_type_words)
+        """The patterns naming a statType other than `measuredValue`, in declaration order;
+        the frame reads the first that matches (`search.engine.frame`)."""
         self.codes = tuple(codes)
         self.statvars = tuple(statvars)
         self.listed_statvars = tuple(listed_statvars)
@@ -396,7 +461,7 @@ class CodeIndex:
         total holds."""
         self.totals_by_group: dict[str, PartyRow] = {}
         """The total that holds each group (`PartyRow.totals`), by the group as search names
-        it."""
+        it, whether or not it equals the sum of the group's members (`PartyRow.sums_members`)."""
         for party in parties:
             if party.dcid in self.parties:
                 raise DuplicateDcid(f"party dcid {party.dcid!r} appears more than once")
@@ -493,6 +558,9 @@ class CodeIndex:
         """Each code system's rows, ordered by `CodeRow.code` as a string, so a hierarchy
         such as `crsPurpose` reads parent before child ("100", "110", "111", "11110")."""
 
+        self._partly_stated_by_five_tuple = _partly_stated_by_five_tuple(
+            self.statvars + self.listed_statvars, self.partly_stated_values
+        )
         self._statvars_by_dcid = statvars_by_dcid
         self._codes_by_dcid = codes_by_dcid
         self._codes_by_system_code = codes_by_system_code
@@ -526,6 +594,14 @@ class CodeIndex:
         }
 
     # --- Lookup ---
+
+    def partly_stated_on(self, five_tuple: FiveTuple) -> Mapping[str, frozenset[tuple[str, str]]]:
+        """Each dataset mapped to the (property, value) pairs it states partly on `five_tuple`:
+        the ones it declares (`partly_stated_values`) where one of its rows on the five-tuple
+        states the value and another states nothing on the property. A five-tuple where every
+        row of the dataset states the property, or none states the value, holds none. Empty
+        for a five-tuple no declaring dataset states a value partly on."""
+        return MappingProxyType(self._partly_stated_by_five_tuple.get(five_tuple, {}))
 
     def family_of(self, five_tuple: FiveTuple, keys: AbstractSet[str]) -> IndexFamily | None:
         """The family of `five_tuple` that constraint properties `keys` select: the one

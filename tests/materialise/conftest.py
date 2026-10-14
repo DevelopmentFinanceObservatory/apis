@@ -165,9 +165,6 @@ class FakeGraphReader:
             for stat_var in variable_dcids
         }
 
-    def declares_facet_defaults(self) -> bool:
-        return bool(self._policies)
-
     def default_facet_policy(self, *, stat_var: str, axis: str) -> FacetDefaultPolicy | None:
         self._count("default_facet_policy")
         return self._policies.get((stat_var, axis))

@@ -52,7 +52,7 @@ class SnapshotNotFound(Refusal):
 
 
 class SnapshotRevoked(Refusal):
-    """A taken-down version, or a collapsed version whose base version was taken down. It maps
+    """A taken-down version, or a derived version whose base version was taken down. It maps
     to `snapshot_revoked`, 410, on snapshot retrieval, pin and download.
     """
 

@@ -101,13 +101,13 @@ def _run(
 
 
 def test_identical_requests_share_one_warm_cache():
-    """Two identical requests cost two LLM calls in total, not four: one
-    extract and one bind on the first, zero on the second."""
+    """Two identical requests cost three LLM calls in total, not six: one extract, one
+    quantity read and one bind on the first, none on the second."""
     llm = _CountingLLM(FakeLLM())
     cache = ResponseCache()
     r1 = _run(make_request(_QUERY_A), llm=llm, cache=cache)
     r2 = _run(make_request(_QUERY_A), llm=llm, cache=cache)
-    assert llm.calls == ["Extraction", "_UniversalBindOutput", "QuantityOutput"]
+    assert llm.calls == ["Extraction", "QuantityOutput", "_UniversalBindOutput"]
     assert r1.status == "definite"
     assert r2.status == "definite"
     assert r2.parts == r1.parts
@@ -119,7 +119,7 @@ def test_differently_worded_query_hits_layer2():
     cache = ResponseCache()
     r1 = _run(make_request(_QUERY_A), llm=llm, cache=cache)
     r2 = _run(make_request(_QUERY_B), llm=llm, cache=cache)
-    assert llm.calls == ["Extraction", "_UniversalBindOutput", "QuantityOutput", "Extraction"]
+    assert llm.calls == ["Extraction", "QuantityOutput", "_UniversalBindOutput", "Extraction"]
 
     # Each response retains its request's wording.
     assert r2.query_echo.raw_query == _QUERY_B
@@ -138,8 +138,8 @@ def test_differently_worded_query_hits_layer2():
 
 def test_buffered_include_observations_is_cached():
     """A buffered request carries its observations in the response it stores, so two
-    identical requests cost one extract and one bind, and the hit equals the fresh
-    answer except for its timing."""
+    identical requests cost one extract, one quantity read and one bind, and the hit equals
+    the fresh answer except for its timing."""
     llm = _CountingLLM(FakeLLM())
     cache = ResponseCache()
     request = ResolveRequest(
@@ -148,7 +148,7 @@ def test_buffered_include_observations_is_cached():
     )
     r1 = _run(request, llm=llm, cache=cache)
     r2 = _run(request, llm=llm, cache=cache)
-    assert llm.calls == ["Extraction", "_UniversalBindOutput", "QuantityOutput"]
+    assert llm.calls == ["Extraction", "QuantityOutput", "_UniversalBindOutput"]
     assert r1.status == "definite"
     assert r2.parts == r1.parts
     assert set(r2.diagnostics.timing_ms.by_step or {}) == {"response_cache_layer1"}
@@ -186,11 +186,11 @@ def test_a_transport_with_trailing_events_is_not_cached():
     assert "observations" in kinds
     assert llm.calls == [
         "Extraction",
-        "_UniversalBindOutput",
         "QuantityOutput",
+        "_UniversalBindOutput",
         "Extraction",
-        "_UniversalBindOutput",
         "QuantityOutput",
+        "_UniversalBindOutput",
     ]
     stats = cache.stats()
     assert stats.hits == stats.misses == stats.entries == 0
@@ -235,11 +235,11 @@ def test_a_first_answer_that_swallowed_a_read_is_not_stored(monkeypatch, lose):
     assert r1.diagnostics.warnings == r2.diagnostics.warnings == []
     assert llm.calls == [
         "Extraction",
-        "_UniversalBindOutput",
         "QuantityOutput",
+        "_UniversalBindOutput",
         "Extraction",
-        "_UniversalBindOutput",
         "QuantityOutput",
+        "_UniversalBindOutput",
     ]
     assert cache.stats().entries == 0
 
@@ -289,11 +289,11 @@ def test_cache_disabled_by_config_behaves_as_uncached(search_settings):
     _run(make_request(_QUERY_A), llm=llm, cache=cache)
     assert llm.calls == [
         "Extraction",
-        "_UniversalBindOutput",
         "QuantityOutput",
+        "_UniversalBindOutput",
         "Extraction",
-        "_UniversalBindOutput",
         "QuantityOutput",
+        "_UniversalBindOutput",
     ]
     stats = cache.stats()
     assert stats.hits == 0
@@ -516,11 +516,11 @@ def test_role_direction_contradiction_is_not_masked_by_a_shared_extraction(monke
     # The role contradiction changes the layer-2 key, so bind runs again.
     assert llm.calls == [
         "Extraction",
-        "_UniversalBindOutput",
         "QuantityOutput",
+        "_UniversalBindOutput",
         "Extraction",
-        "_UniversalBindOutput",
         "QuantityOutput",
+        "_UniversalBindOutput",
     ]
     assert r2.status == "no_data", r2
 
@@ -548,7 +548,7 @@ def test_role_direction_agreement_still_hits_layer2(monkeypatch):
         sdmx=FakeSdmxClient(observations={}),
         materialise_graph=_role_bearing_member_graph(),
     )
-    assert llm.calls == ["Extraction", "_UniversalBindOutput", "QuantityOutput", "Extraction"]
+    assert llm.calls == ["Extraction", "QuantityOutput", "_UniversalBindOutput", "Extraction"]
     assert r1.status == "definite", r1
     assert r2.status == "definite", r2
     assert r1.parts == r2.parts
@@ -566,7 +566,7 @@ def test_same_query_under_the_same_token_still_hits():
     generation = FakeGeneration(token="gen-a")
     r1 = _run(make_request(_QUERY_A), llm=llm, cache=cache, generation=generation)
     r2 = _run(make_request(_QUERY_A), llm=llm, cache=cache, generation=generation)
-    assert llm.calls == ["Extraction", "_UniversalBindOutput", "QuantityOutput"]
+    assert llm.calls == ["Extraction", "QuantityOutput", "_UniversalBindOutput"]
     assert r1.parts == r2.parts
 
 
@@ -582,11 +582,11 @@ def test_advancing_the_token_between_requests_misses_both_layers():
 
     assert llm.calls == [
         "Extraction",
-        "_UniversalBindOutput",
         "QuantityOutput",
+        "_UniversalBindOutput",
         "Extraction",
-        "_UniversalBindOutput",
         "QuantityOutput",
+        "_UniversalBindOutput",
     ]
     # Per-run timing differs; compare stable spec IDs.
     assert [p.spec.spec_id for p in r1.parts] == [p.spec.spec_id for p in r2.parts]
@@ -604,11 +604,11 @@ def test_unknown_and_known_stamps_never_share_an_entry():
     )
     assert llm.calls == [
         "Extraction",
-        "_UniversalBindOutput",
         "QuantityOutput",
+        "_UniversalBindOutput",
         "Extraction",
-        "_UniversalBindOutput",
         "QuantityOutput",
+        "_UniversalBindOutput",
     ]
     # Per-run timing differs; compare stable spec IDs.
     assert [p.spec.spec_id for p in r1.parts] == [p.spec.spec_id for p in r2.parts]

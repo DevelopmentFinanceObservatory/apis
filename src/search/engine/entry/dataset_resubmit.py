@@ -81,12 +81,13 @@ from search.engine.entry.multi import _stream_combined_regions
 from search.engine.entry.params import EntryParams
 from search.engine.envelope import _terminal_events, now_ms
 from search.engine.errors import EngineInputError
-from search.engine.events import DoneEvent, DoneTelemetry, Event, LateDepartures, ResponseEvent
+from search.engine.events import DoneEvent, DoneTelemetry, Event, LateDepartures
 from search.engine.options.population_memo import OptionsPopulationMemo
 from search.engine.region import RegionResult, resolve_spec_resubmit
 from search.engine.region.place_options import PlaceOptionsPool
 from search.engine.region.promote_relaunch import bind_relaunches
 from search.engine.region.result import with_runnable_operations
+from search.engine.region.sentence_events import answer_events, response_sentence_events
 from search.engine.region.state import EngineOptions
 from search.engine.response_cache_flow import PartMemoScope
 from search.models import (
@@ -462,12 +463,15 @@ async def handle(
             echo=echo,
         )
         if not params.stream_option_coverage and not params.stream_observations:
+            for ev in response_sentence_events(response):
+                yield ev
             for ev in _terminal_events(
                 response, start_ms=start_ms, degraded_leg=degraded_leg, llm_usage=total_usage
             ):
                 yield ev
             return
-        yield ResponseEvent(response=response)
+        for event in answer_events(response):
+            yield event
         slot_options_warnings: list[Warning] = []
         late_departures: list[LateDepartures] = []
         async for ev in _stream_slot_options(

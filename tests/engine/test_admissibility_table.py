@@ -1,10 +1,13 @@
-"""Alternate admissibility: one parametrized case per elected and alternate shape pair.
+"""Admissibility, of a part's readings before bind and of an alternate beside the elected
+reading.
 
-Each row pairs an elected shape with an alternate under a query and asserts the reason code
-the alternate guard returns (`None` when the alternate is admitted). Rows whose shapes come
-from another test file reproduce that file's fixture. A row decided before bind by the
-default-reading collapse asserts the guard's own decision for the same pair, which is the
-decision the guard takes when the pair reaches it.
+The interpretation table judges each reading of a corpus question under its frame
+(`region.admissibility`) and asserts the refusal it names, with the pinned part it fails,
+or that it is admitted. The alternate table pairs an elected shape with an alternate under a
+query and asserts the reason code the alternate guard returns (`None` when the alternate is
+admitted). Rows whose shapes come from another test file reproduce that file's fixture. A
+row decided before bind by the default-reading collapse asserts the guard's own decision
+for the same pair, which is the decision the guard takes when the pair reaches it.
 """
 
 from __future__ import annotations
@@ -12,18 +15,27 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 from collections.abc import Collection, Mapping, Sequence
-from typing import Literal, NamedTuple
+from typing import Literal, NamedTuple, cast
 
 import pytest
 
 from code_index.shared import get_index, get_measure_index
+from entity_resolution import Admission, EntityResolver
 from search.engine.bind import DraftBindingEvidence, SlotBindingDraft, _UniversalBindOutput
+from search.engine.clients.graph import EngineGraphClient
+from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.extract import DateRequest
+from search.engine.interpretation import Interpretation, InterpretationSet
 from search.engine.qualifier_match import QualifierMatch, QualifierReadings
-from search.engine.quantity import NO_REQUIREMENT, quantity_requirement
+from search.engine.quantity import quantity_requirement
 from search.engine.quantity_read import QuantityOutput
 from search.engine.reading_coverage import ObservedYears
 from search.engine.region import alternate_guard, resolve_variable
+from search.engine.region.admissibility import (
+    judge_measure_and_roles,
+    judge_pinned_parts,
+    pinned_code_records,
+)
 from search.engine.region.alternate_guard import (
     AlternateJudge,
     QueryPins,
@@ -34,24 +46,25 @@ from search.engine.region.alternate_guard import (
     query_pins,
     twin_alternates,
 )
-from search.engine.region.availability import _prune_availability_siblings
 from search.engine.region.candidates import alternate_representative
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
 from search.engine.region.equivalent_series import CLUSTER_BY_MEMBER, EquivalentCluster
-from search.engine.region.phase_rank_bind import _has_strong_rate_intent
-from search.engine.region.state import shape_vocabulary
+from search.engine.region.state import ResolveState
+from search.engine.region.status_rule import CLOSED_AXES, OpenAxes
 from search.engine.retrieval.bound_values import (
     DefaultReading,
     collapse_measure_families,
     index_member_rows,
     price_basis_order,
 )
+from search.engine.role_text import DoorRole
 from search.engine.shape import ShapeDraft, SlotKeyDraft
-from search.models import CandidatesPart, Resolution, TimeWindow
+from search.models import CandidatesPart, Operation, Resolution, RoleAxis, TimeWindow
+from tests.engine._builders import place_sets
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import make_request, offline_resolve, ref_dcid
-from tests.engine._quantity import NO_QUANTITY
+from tests.engine._quantity import NO_QUANTITY, QuantityReadOnlyLLM
 from tests.engine.test_count_units import _MORTALITY, _REPORTED_CASES
 from tests.fixtures import FakeGraph, make_resolver
 
@@ -279,8 +292,9 @@ _GROWTH_REAL = _gdp(
 
 class Row(NamedTuple):
     """One table row: the query, the elected and alternate shapes, the pins beyond the
-    query's words, and the expected reason code. `both_orders` also judges the pair with
-    the roles swapped."""
+    query's words, and the expected reason code. `open_axes` are the measure axes the status
+    rule reads as open for the elected shape. `both_orders` also judges the pair with the
+    roles swapped."""
 
     query: str
     elected: ShapeDraft
@@ -290,6 +304,7 @@ class Row(NamedTuple):
     qualifiers: tuple[str, ...] = ()
     elected_has_data: bool = False
     both_orders: bool = False
+    open_axes: OpenAxes = CLOSED_AXES
 
     def pins(self) -> QueryPins:
         return query_pins(
@@ -298,6 +313,7 @@ class Row(NamedTuple):
             bindings=self.bindings,
             qualifier_matches=[_qualifier(dcid) for dcid in self.qualifiers],
             elected_has_data=self.elected_has_data,
+            open_axes=self.open_axes,
         )
 
 
@@ -1068,6 +1084,44 @@ ROWS = [
         id="gdp-refuses-a-growth-rate",
     ),
     pytest.param(
+        Row("GDP growth of Kenya", _GDP_GROWTH, _NOMINAL_GDP, "concept:statType", _GDP_MENTIONED),
+        id="a-growth-rate-on-a-closed-stat-type-refuses-the-level",
+    ),
+    pytest.param(
+        Row(
+            "GDP of Kenya",
+            _GDP_GROWTH,
+            _NOMINAL_GDP,
+            None,
+            _GDP_MENTIONED,
+            open_axes=OpenAxes(stat_type=True, denominator=False, price_basis=True),
+        ),
+        id="a-growth-rate-on-an-open-stat-type-admits-the-level",
+    ),
+    pytest.param(
+        Row(
+            "GDP of Kenya",
+            _REAL_GDP,
+            _INFLATION_ADJUSTED_GDP,
+            "default:qualifier",
+            _GDP_MENTIONED,
+            elected_has_data=True,
+        ),
+        id="real-with-data-on-a-closed-price-basis-refuses-inflation-adjusted-gdp",
+    ),
+    pytest.param(
+        Row(
+            "GDP of Kenya",
+            _REAL_GDP,
+            _INFLATION_ADJUSTED_GDP,
+            None,
+            _GDP_MENTIONED,
+            elected_has_data=True,
+            open_axes=OpenAxes(stat_type=False, denominator=False, price_basis=True),
+        ),
+        id="real-with-data-on-an-open-price-basis-admits-inflation-adjusted-gdp",
+    ),
+    pytest.param(
         Row("GDP India", _INFLATION_ADJUSTED_GDP, _IMF_GDP, None, _GDP_SOLE_OPTION),
         id="inflation-adjusted-gdp-admits-imf-gdp",
     ),
@@ -1469,56 +1523,14 @@ def test_the_national_poverty_shape_is_offered_through_its_total():
     assert list(offered.sv_arc_facts or {}) == ["sdg/SI_POV_NAHC"]
 
 
-def test_an_empty_count_gives_way_to_its_same_cohort_rate():
-    count = _availability_shape("Under-five mortality count", place_available=False)
-    rate = _availability_shape("Under-five mortality rate", place_available=True)
-
-    kept, _ = _prune_availability_siblings(
-        [rate, count], named_place=True, quantity=NO_REQUIREMENT, denominator_kinds={}
-    )
-
-    assert kept == [rate]
-
-
-def test_a_rural_survivor_does_not_stand_in_for_a_general_rate():
+def test_a_rural_reading_is_no_reading_of_a_general_rate():
     general = _availability_shape("Under-five mortality rate", place_available=False)
     rural = _availability_shape("Rural under-five mortality rate", place_available=True)
     pins = query_pins(
         "under-five mortality rate", quantity=quantity_requirement(["under-five mortality rate"])
     )
 
-    kept, substitutions = _prune_availability_siblings(
-        [general, rural],
-        named_place=True,
-        variable="under-five mortality rate",
-        quantity=quantity_requirement(["under-five mortality rate"]),
-        denominator_kinds={},
-    )
-
-    assert kept == [general, rural]
-    assert substitutions == []
     assert _code(inadmissible_reason(pins, general, rural)) == "specialisation:residence"
-
-
-def test_a_registered_twin_stands_in_despite_its_residence_label():
-    general = _availability_shape(
-        "Under-five mortality rate",
-        place_available=False,
-        members=("MortalityRate_Person_Upto4Years_AsFractionOf_Count_BirthEvent_LiveBirth",),
-    )
-    rural = _availability_shape(
-        "Rural under-five mortality rate", place_available=True, members=("worldBank/SH_DYN_MORT",)
-    )
-
-    kept, _ = _prune_availability_siblings(
-        [general, rural],
-        named_place=True,
-        variable="under-five mortality rate",
-        quantity=quantity_requirement(["under-five mortality rate"]),
-        denominator_kinds={},
-    )
-
-    assert kept == [rural]
 
 
 def test_an_unresolved_per_capita_spelling_stands_in_for_an_empty_one():
@@ -1533,36 +1545,6 @@ def test_an_unresolved_per_capita_spelling_stands_in_for_an_empty_one():
         )
         is None
     )
-
-
-@pytest.mark.parametrize(
-    "variable,substituted",
-    [("under-five mortality incidence", False), ("under-five mortality", True)],
-)
-def test_a_raw_count_does_not_stand_in_for_a_named_rate(variable, substituted):
-    """A rate the query names is not answered by its cohort's raw count. With no rate word
-    the count stands in."""
-    rate = _with_taxonomy(
-        _shape(
-            "Person",
-            "",
-            None,
-            "Count_BirthEvent_LiveBirth",
-            label="Under-five mortality rate",
-            place_available=False,
-        )
-    )
-    count = _availability_shape("Under-five mortality count", place_available=True)
-
-    kept, _ = _prune_availability_siblings(
-        [rate, count],
-        named_place=True,
-        variable=variable,
-        quantity=quantity_requirement([variable]),
-        denominator_kinds={},
-    )
-
-    assert kept == ([count] if substituted else [rate, count])
 
 
 def test_the_nominal_shape_is_represented_by_nominal_gdp():
@@ -1620,10 +1602,6 @@ def test_the_reason_depends_on_the_binding():
     )
 
 
-def test_a_rate_phrasing_removes_the_raw_count_before_bind():
-    assert _has_strong_rate_intent("birth rate Ethiopia")
-
-
 # GNI at purchasing power parity is a different concept from GDP and is refused at every
 # entry point.
 
@@ -1638,22 +1616,13 @@ def test_973_nominated_alternate():
     assert _code(result[1]) == "concept:activitySource"
 
 
-def test_973_availability_substitute():
-    """An empty nominal GDP does not give way to GNI with data, by its member values."""
+def test_973_gni_is_no_reading_of_gdp():
+    """GNI with data is no reading of nominal GDP, by its member values."""
     empty_gdp = _gdp(
         "Nominal", "Count_Person", members=_activity("GDP_PC", _GDP), place_available=False
     )
     gni = _gdp("Nominal", unresolved=True, members=_activity("GNI_PC", _GNI), place_available=True)
 
-    kept, _ = _prune_availability_siblings(
-        [empty_gdp, gni],
-        named_place=True,
-        variable="GDP of Kenya",
-        quantity=quantity_requirement(["GDP of Kenya"]),
-        denominator_kinds={},
-    )
-
-    assert kept == [empty_gdp, gni]
     assert (
         _code(
             inadmissible_reason(
@@ -1664,25 +1633,6 @@ def test_973_availability_substitute():
         )
         == "concept:activitySource"
     )
-
-
-@pytest.mark.parametrize("named", [True, False], ids=["nominal-named", "nothing-named"])
-def test_973_availability_substitute_under_a_qualifier_pin(named):
-    """A named price basis pins the availability substitute: a PPP reading with data does
-    not stand in for an empty nominal one the query names."""
-    nominal = _with_taxonomy(_gdp("Nominal", label="GDP rate", place_available=False))
-    ppp = _with_taxonomy(_gdp("PurchasingPowerParity", label="GDP rate", place_available=True))
-
-    kept, _ = _prune_availability_siblings(
-        [nominal, ppp],
-        named_place=True,
-        variable="nominal GDP rate",
-        quantity=quantity_requirement(["nominal GDP rate"]),
-        qualifier_matches={shape_vocabulary(nominal): (_qualifier("Nominal"),) if named else ()},
-        denominator_kinds={},
-    )
-
-    assert kept == ([nominal, ppp] if named else [ppp])
 
 
 _KEN = "country/KEN"
@@ -2541,12 +2491,12 @@ def test_cover_is_per_place():
     assert collapsed == [_entry(_NOMINAL_GDP), _entry(_REAL_GDP)]
 
 
-def test_real_gdp_of_zambia_keeps_its_named_price_basis_in_the_gap_fill():
+def test_real_gdp_of_zambia_keeps_its_named_price_basis_in_the_un_pass():
     """ "real GDP of Zambia", replayed from its recording. Bind elects the RealValue GDP
     shape, whose members hold no Zambia data on the dev graph. The World Bank's constant
     US dollar series is `worldBank/NY_GDP_MKTP_KD`, which declares no qualifier and is not
     recalled. The qualifier pin refuses every Nominal sibling, so nominal GDP, which has
-    Zambia data, is kept out, and the UN gap fill answers with UNIDO's constant-price
+    Zambia data, is kept out, and the UN pass answers with UNIDO's constant-price
     series first. UN series declare no qualifier, so "real" reads as not applied and the
     current-price series stays beside it."""
     result = offline_resolve(make_request("real GDP of Zambia"))
@@ -2559,3 +2509,289 @@ def test_real_gdp_of_zambia_keeps_its_named_price_basis_in_the_gap_fill():
         "undata/unido/SERIES-NA_GDPCUD",
     ]
     assert QUERY_QUALIFIER_DROPPED in [warning.code for warning in part.warnings]
+
+
+# Interpretation admissibility: each rule refuses one reading of a corpus question and admits
+# another, each refusal under the reason a part with no admissible reading answers with.
+
+_ADM_KENYA = "country/KEN"
+_ADM_FRANCE = "country/FRA"
+_ADM_FLOW_ROLES = ("financingProvider", "financingRecipient")
+_ADM_GDP_NOMINAL = "Amount_EconomicActivity_GrossDomesticProduction_Nominal"
+_ADM_GNI_NOMINAL = "Amount_EconomicActivity_GrossNationalIncome_Nominal"
+_ADM_HEALTH_CODE = QualifierMatch(
+    code_system="expenditureType",
+    code_dcid="HealthcareExpenditure",
+    label="Healthcare expenditure",
+    source="label",
+    matched_text="health expenditure",
+)
+
+
+def _flow(label: str, roles: tuple[str, ...]) -> ShapeDraft:
+    return _shape("FinancialFlow", "amount", "Nominal", None, label=label, roles=roles)
+
+
+def _with_slot(shape: ShapeDraft, prop: str, members: dict[str, dict]) -> ShapeDraft:
+    return dataclasses.replace(
+        shape,
+        slot_keys=(SlotKeyDraft(axis="how", property_dcid=prop, label=prop),),
+        sv_arc_facts=members,
+    )
+
+
+def _class_named(shape: ShapeDraft, name: str) -> ShapeDraft:
+    return dataclasses.replace(shape, pop_type_name=name)
+
+
+def _part(
+    variable: str,
+    *,
+    places: Mapping[str, tuple[str, Sequence[RoleAxis]]] | None = None,
+    operations: Sequence[Operation] = (),
+) -> ResolveState:
+    """The state a part reaches admissibility in: `variable`, and each place by its name,
+    with its dcid and the flow axes the door gave it."""
+
+    places = places or {}
+    state = ResolveState(
+        variable=variable,
+        entities=list(places),
+        date_request=None,
+        detect_query=variable,
+        role_query=variable,
+        dropped_qualifier_phrases=[],
+        pac=True,
+        graph=cast(EngineGraphClient, None),
+        resolver=cast(EntityResolver, None),
+        admission=cast(Admission, None),
+        llm=QuantityReadOnlyLLM(),
+        sdmx=cast(EngineSdmxClient, None),
+        deadline=None,
+        pre_resolved=None,
+        variable_index=0,
+        emit=None,
+        include_option_coverage=False,
+        stream_slot_options=False,
+        include_observations=False,
+        stream_observations=False,
+        unit_text=None,
+        materialise_graph=None,
+        materialise_sdmx=None,
+        timing={},
+        warnings=[],
+        coverage=empty_coverage_snapshot(),
+        operations=list(operations),
+    )
+    state.place_sets = place_sets({name: dcid for name, (dcid, _axes) in places.items()})
+    state.entity_roles = {
+        name: [DoorRole(axis=axis, span=name) for axis in axes]
+        for name, (_dcid, axes) in places.items()
+    }
+    state.role_bearing_outranks = True
+    return state
+
+
+def _judged(
+    state: ResolveState,
+    shape: ShapeDraft,
+    matches: Mapping[frozenset[str], tuple[QualifierMatch, ...]] | None = None,
+) -> Interpretation:
+    (judged,) = judge_measure_and_roles(state, [shape])
+    (judged,) = judge_pinned_parts(state, [judged], matches or {})
+    return judged
+
+
+_ADM_TO_KENYA = {"Kenya": (_ADM_KENYA, ("destination",))}
+_ADM_FRANCE_TO_KENYA = {
+    "France": (_ADM_FRANCE, ("origin",)),
+    "Kenya": (_ADM_KENYA, ("destination",)),
+}
+_ADM_EDUCATION_SHARE = _with_slot(
+    _gdp(None, _ADM_GDP_NOMINAL, label="percent of nominal GDP spent on education"),
+    "expenditureType",
+    {"worldBank/SE_XPD_TOTL_GD_ZS": _arcs({"expenditureType": "EducationExpenditure"})},
+)
+_ADM_HEALTH_SHARE = _with_slot(
+    _gdp(None, _ADM_GDP_NOMINAL, label="Current health expenditure (% of GDP)"),
+    "expenditureType",
+    {"worldBank/SH_XPD_CHEX_GD_ZS": _arcs({"expenditureType": "HealthcareExpenditure"})},
+)
+
+INTERPRETATION_CASES = [
+    pytest.param(
+        _part("HIV prevalence in Nigeria"),
+        _class_named(
+            _shape("SDG_SH_HIV_INCD", "value", None, None, label="HIV incidence"),
+            "Number of new HIV infections per 1,000 uninfected population",
+        ),
+        ("variable_not_resolved", None),
+        id="hiv-prevalence-refuses-a-new-infections-series-on-its-measure-class",
+    ),
+    pytest.param(
+        _part("HIV prevalence in Nigeria"),
+        _class_named(
+            _shape("SDG_SH_HIV_PREV", "value", None, None, label="HIV prevalence"),
+            "Prevalence of HIV",
+        ),
+        (None, None),
+        id="hiv-prevalence-admits-a-prevalence-series",
+    ),
+    pytest.param(
+        _part("aid from France to Kenya", places=_ADM_FRANCE_TO_KENYA),
+        _gdp("Nominal", label="Nominal gross domestic product"),
+        ("role_incompatible", None),
+        id="both-flow-ends-refuse-a-subject-only-series",
+    ),
+    pytest.param(
+        _part("aid from France to Kenya", places=_ADM_FRANCE_TO_KENYA),
+        _flow("official development assistance", _ADM_FLOW_ROLES),
+        (None, None),
+        id="both-flow-ends-admit-a-flow-with-both-roles",
+    ),
+    pytest.param(
+        _part("aid to Kenya", places=_ADM_TO_KENYA),
+        _flow("donor totals", ("financingProvider",)),
+        ("role_incompatible", None),
+        id="a-recipient-refuses-a-provider-only-flow",
+    ),
+    pytest.param(
+        _part("aid to Kenya", places=_ADM_TO_KENYA),
+        _gdp("Nominal", label="Nominal gross domestic product"),
+        (None, None),
+        id="a-directed-place-is-a-subject-only-series-subject",
+    ),
+    pytest.param(
+        _part(
+            "external debt by creditor",
+            places=_ADM_TO_KENYA,
+            operations=[Operation(verb="rank", phrase="top 5 creditors", over="origin")],
+        ),
+        _flow("external debt stocks", ("financingRecipient",)),
+        ("role_incompatible", None),
+        id="a-rank-over-creditors-refuses-a-recipient-only-debt-series",
+    ),
+    pytest.param(
+        _part("debt to GDP ratio", places={"Ghana": ("country/GHA", ())}),
+        _shape(
+            "FinancialPosition",
+            "amount",
+            "Nominal",
+            None,
+            label="Outstanding public or publicly guaranteed external debt owed by the general "
+            "government (current US$)",
+        ),
+        ("denominator_not_available", "form"),
+        id="a-ratio-refuses-the-dollar-debt-level-on-its-form",
+    ),
+    pytest.param(
+        _part("debt to GDP ratio", places={"Ghana": ("country/GHA", ())}),
+        _shape(
+            "FinancialPosition",
+            "amount",
+            None,
+            _ADM_GNI_NOMINAL,
+            label="Outstanding external debt (% of GNI)",
+        ),
+        (None, None),
+        id="a-ratio-admits-the-share-of-gni-whose-denominator-bind-judges",
+    ),
+    pytest.param(
+        _part("measles incidence rate Kenya", places={"Kenya": (_ADM_KENYA, ())}),
+        _REPORTED_CASES,
+        ("denominator_not_available", "form"),
+        id="an-incidence-rate-refuses-the-reported-case-count",
+    ),
+    pytest.param(
+        _part("measles incidence rate Kenya", places={"Kenya": (_ADM_KENYA, ())}),
+        _MORTALITY,
+        (None, None),
+        id="an-incidence-rate-admits-the-mortality-rate",
+    ),
+    pytest.param(
+        _part("birth rate Ethiopia", places={"Ethiopia": ("country/ETH", ())}),
+        _shape("BirthEvent", "count", None, None, label="Count of birth events"),
+        ("denominator_not_available", "form"),
+        id="a-birth-rate-refuses-the-raw-birth-count",
+    ),
+    pytest.param(
+        _part("Current health expenditure as share of GDP", places={"Kenya": (_ADM_KENYA, ())}),
+        _ADM_EDUCATION_SHARE,
+        ("qualifier_not_bound", "pinned_code"),
+        id="health-expenditure-refuses-the-education-share-on-the-code-it-names",
+    ),
+    pytest.param(
+        _part("Current health expenditure as share of GDP", places={"Kenya": (_ADM_KENYA, ())}),
+        _ADM_HEALTH_SHARE,
+        (None, None),
+        id="health-expenditure-admits-the-health-share",
+    ),
+]
+
+
+@pytest.mark.parametrize(("state", "shape", "expected"), INTERPRETATION_CASES)
+def test_each_rule_admits_or_refuses_a_reading(state, shape, expected):
+    judged = _judged(state, shape, {frozenset({"expenditureType"}): (_ADM_HEALTH_CODE,)})
+
+    assert (judged.reason, judged.pinned_failure) == expected
+    assert judged.admissible is (expected[0] is None)
+
+
+def test_a_reading_refused_on_a_pinned_code_names_the_codes_it_cannot_bind():
+    state = _part("Current health expenditure as share of GDP", places={"Kenya": (_ADM_KENYA, ())})
+
+    judged = _judged(
+        state, _ADM_EDUCATION_SHARE, {frozenset({"expenditureType"}): (_ADM_HEALTH_CODE,)}
+    )
+
+    assert judged.pinned_codes == (_ADM_HEALTH_CODE,)
+    (record,) = pinned_code_records(judged)
+    assert (record.text, record.slot, record.disposition) == (
+        "health expenditure",
+        "expenditureType",
+        "unbound",
+    )
+    assert [ref.ref for ref in record.named] == ["HealthcareExpenditure"]
+
+
+@pytest.mark.parametrize(
+    ("reasons", "elected"),
+    [
+        (("denominator_not_available", "role_incompatible"), "role_incompatible"),
+        (("qualifier_not_bound", "denominator_not_available"), "qualifier_not_bound"),
+        (("denominator_not_available", "variable_not_resolved"), "variable_not_resolved"),
+        ((), None),
+    ],
+)
+def test_a_part_with_no_admissible_reading_refuses_with_the_first_reason_in_order(reasons, elected):
+    """The no-data resolution order elects the reason among the refused readings'."""
+    interpretations = InterpretationSet(
+        interpretations=tuple(
+            Interpretation(shape=_gdp(None, label=f"reading {i}"), reason=reason)
+            for i, reason in enumerate(reasons)
+        )
+    )
+
+    assert interpretations.refusal_reason() == elected
+
+
+def test_a_declined_reading_flagged_in_place_of_its_family_names_the_reading_asked():
+    """corpus nn-05: the model declines every admissible reading of "measles incidence rate"
+    and names the reported case counts, refused on the rate the question names. The flagged
+    match names measles, the condition the phrase states, and not every condition the
+    family counts."""
+    from tests.engine._harness import make_request, offline_resolve
+
+    response = offline_resolve(make_request("measles incidence rate Kenya"))
+
+    (part,) = response.parts
+    assert part.status == "no_data"
+    assert part.no_data.reason == "denominator_not_available"
+    flagged = part.no_data.flagged_match
+    assert flagged is not None
+    condition = next(
+        slot for slot in flagged.resolved.slots if slot.key.property.ref == "medicalCondition"
+    )
+    assert condition.binding.kind == "value"
+    assert condition.binding.value.ref.ref == "Measles"
+    assert flagged.resolved.stat_vars.member_count == 1

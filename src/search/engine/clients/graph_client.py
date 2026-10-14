@@ -87,6 +87,16 @@ _UN_RESOLVE_POOL: Final = ThreadPoolExecutor(
 )
 
 
+def _log_un_leg(done: Future[tuple[DetectedSV, ...] | None], started: float) -> None:
+    """One line per UN resolve: its time from submission, queue included, and whether it
+    answered. A part waits `SEARCH_UN_FIRST_PASS_WAIT_S` for it, a bound set from these
+    times."""
+    answered = not done.cancelled() and done.exception() is None and done.result() is not None
+    logger.info(
+        "un_resolve ms=%d answered=%s", round((time.monotonic() - started) * 1000), answered
+    )
+
+
 def _first_type_of(raw_type_of: object) -> str | None:
     if isinstance(raw_type_of, list):
         first = raw_type_of[0] if raw_type_of else None
@@ -409,9 +419,6 @@ class LiveGraphClient:
         """The wrapped origin client's backends."""
         return self._client.source_key()
 
-    def declares_facet_defaults(self) -> bool:
-        return self._client.declares_facet_defaults()
-
     def default_facet_policy(
         self, *, stat_var: str, axis: str
     ) -> dc_graph.FacetDefaultPolicy | None:
@@ -535,7 +542,9 @@ class LiveGraphClient:
                 deadline=time.monotonic() + self._un_resolve_timeout_s,
             )
             self._un_resolves[query] = resolve
+        started = time.monotonic()
         resolve.add_done_callback(lambda done: self._forget_un(query, done))
+        resolve.add_done_callback(lambda done: _log_un_leg(done, started))
         return resolve
 
     def _forget_un(self, query: str, done: Future[tuple[DetectedSV, ...] | None]) -> None:
@@ -586,6 +595,13 @@ class LiveGraphClient:
             needs_dates or _force_full_facets.get(),
             max_bytes=max_bytes,
             deadline=deadline,
+        )
+
+    def observation_read_groups(
+        self, stat_vars: list[str], entities: list[str], needs_dates: bool = False
+    ) -> list[list[str]]:
+        return self._client.observation_read_groups(
+            stat_vars, entities, needs_dates or _force_full_facets.get()
         )
 
     def node_subjects_many(

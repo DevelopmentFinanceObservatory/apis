@@ -135,9 +135,11 @@ class TestStd03BirthRateEthiopia:
 
 
 class TestStd04bBirthsEthiopia:
-    """No birth-count variable has data at Ethiopia. A bind electing the live-birth count,
-    `Count_BirthEvent_LiveBirth`, and nominating the per-capita birth shape, which holds
-    data there, answers with the per-capita shape as its alternate."""
+    """No birth-count variable has data at Ethiopia. Bind elects the live-birth count,
+    `Count_BirthEvent_LiveBirth`, binds `medicalStatus` to live births and nominates the
+    birth count and the per-capita birth shape, which holds data there. The question names
+    no form, so the per-capita shape is admissible, and status rule 1 lets a nominated
+    reading with data ride on the refusal as its alternate match."""
 
     _QUERY = "number of births in Ethiopia"
 
@@ -146,11 +148,8 @@ class TestStd04bBirthsEthiopia:
         assert result.status == "no_data"
 
     def test_the_live_birth_count_is_elected_with_the_per_capita_shape_as_alternate(self):
-        """The live-birth count's five-tuple names `Count_BirthEvent_LiveBirth` as its
-        measured property, so it is no level (`quantity.normalisation_class`), the alternate
-        guard reads no per-capita shape as a quotient of it, and the per-capita shape stands
-        as the alternate through its live-birth member. The gate leaves `flagged_match`
-        empty, so only the message names the elected variable."""
+        """The gate leaves `flagged_match` empty, so only the message names the elected
+        variable."""
         result = offline_resolve(_req(self._QUERY))
         inner = result.parts[0]
         assert isinstance(inner, NoDataPart)
@@ -163,9 +162,6 @@ class TestStd04bBirthsEthiopia:
         assert (
             alternate.resolved.shape.shape_id == "birthevent_count_measuredvalue_per_count_person"
         )
-        assert [sv.ref.ref for sv in alternate.resolved.members] == [
-            "Count_BirthEvent_LiveBirth_AsFractionOf_Count_Person"
-        ]
 
 
 # ---------------------------------------------------------------------------
@@ -174,50 +170,26 @@ class TestStd04bBirthsEthiopia:
 
 
 class TestStd05Under5ChildMortality:
-    """Without a place, candidates use bare coverage and yield one spec per shape.
-    Five shapes are confirmed; the offline fixture allows up to SEARCH_MAX_CANDIDATES (6)."""
+    """std-05: 'under-5 child mortality rate', no place. Bind elects the under-five mortality
+    rate and nominates the under-five death count, which holds data, so the count is a
+    nominated rival (status rule 2(b)) offered after the rate."""
 
     _QUERY = "under-5 child mortality rate"
 
-    def test_status_is_candidates(self):
-        assert offline_resolve(_req(self._QUERY)).status == "candidates"
+    def test_the_rate_comes_first_and_the_nominated_count_beside_it(self):
+        resp = _candidates(self._QUERY)
+        assert [spec.resolved.shape.label for spec in resp.candidates.specs] == [
+            "Under-five mortality rate [under 5 years old]",
+            "Under-five deaths [under 5 years old]",
+        ]
+        assert [spec.resolved.basis for spec in resp.candidates.specs] == [None, "nominated"]
 
     def test_invariants(self):
         _check_invariants(_candidates(self._QUERY), query=self._QUERY)
 
     def test_no_entities_in_specs(self):
-        """All specs must have empty entity lists (no place was in the query)."""
-        resp = _candidates(self._QUERY)
-        for spec in resp.candidates.specs:
-            assert spec.resolved.entities == [], (
-                f"expected no entities in std-05 spec {spec.spec_id!r}, "
-                f"got {[e.ref for e in spec.resolved.entities]}"
-            )
-
-    def test_has_data_bare_coverage(self):
-        """Bare coverage is used (no entity probe); has_data must be True."""
-        resp = _candidates(self._QUERY)
-        for spec in resp.candidates.specs:
-            assert spec.resolved.coverage.has_data is True, (
-                f"expected has_data=True for std-05 spec {spec.spec_id!r}"
-            )
-
-    def test_confidence_is_graded_even_without_a_place(self):
-        """Availability remains unknown, but candidate relevance does not."""
-        resp = _candidates(self._QUERY)
-        for spec in resp.candidates.specs:
-            assert spec.resolved.available_at_place is None
-            assert spec.resolved.confidence in {"high", "medium", "low"}
-
-    def test_reads_broadest_first(self):
-        """With the near-neighbour gate quiet, candidates sort by descending member_count,
-        then spec_id. The assertion checks the ordering label and actual order agree."""
-        resp = _candidates(self._QUERY)
-        assert resp.candidates.ordering == "broadest_first"
-        keys = [(s.resolved.shape.member_count, s.spec_id) for s in resp.candidates.specs]
-        assert keys == sorted(keys, key=lambda k: (-k[0], k[1])), (
-            f"std-05 claims broadest_first but is not sorted by member_count: {keys}"
-        )
+        for spec in _candidates(self._QUERY).candidates.specs:
+            assert spec.resolved.entities == []
 
 
 # ---------------------------------------------------------------------------

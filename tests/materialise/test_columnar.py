@@ -296,6 +296,48 @@ def test_latest_rows_keeps_every_row_tied_at_the_latest_period():
     assert result.num_rows == 2
 
 
+@pytest.mark.parametrize(
+    ("year", "kept", "served"),
+    [
+        pytest.param(None, ["2020", "2020"], ["2020", "2020"], id="no-year-elected"),
+        pytest.param(2019, ["2019", "2020", "2020"], ["2019"], id="an-earlier-year"),
+        pytest.param(2020, ["2020", "2020"], ["2020", "2020"], id="the-newest-year"),
+        pytest.param(2018, ["2020", "2020"], ["2020", "2020"], id="a-year-no-row-holds"),
+    ],
+)
+def test_latest_rows_keep_the_elected_year_beside_the_latest_period(
+    year: int | None, kept: list[str], served: list[str]
+):
+    """Two series end in 2020 and one in 2019. A StatVar that elected 2019 keeps that row
+    beside the two at the newest period, and serves it alone. One that elected a year no row
+    holds, or no year, serves the two at the newest period."""
+    rows = (
+        _row(role_values={"recipient": "country/KEN"}, time_period="2019", value="3"),
+        _row(role_values={"recipient": "country/TGO"}, time_period="2020", value="1"),
+        _row(role_values={"recipient": "country/USA"}, time_period="2020", value="2"),
+    )
+
+    beside = columnar.latest_rows(_table(rows), year=year)
+
+    assert beside["TIME_PERIOD"].to_pylist() == kept
+    assert columnar.elected_rows(beside, year=year)["TIME_PERIOD"].to_pylist() == served
+
+
+def test_year_mask_keeps_the_rows_of_one_year():
+    rows = tuple(
+        _row(role_values={"recipient": "country/TGO"}, time_period=period, value="1")
+        for period in ("2019", "2020-06", None, "20a5", "2020")
+    )
+
+    assert columnar.year_mask(_table(rows), year=2020).to_pylist() == [
+        False,
+        True,
+        False,
+        False,
+        True,
+    ]
+
+
 def test_latest_rows_all_unparseable_input_is_empty():
     rows = (
         _row(role_values={"recipient": "country/TGO"}, time_period="20a5", value="1"),
@@ -646,6 +688,14 @@ def test_differential_against_reference_implementations():
         latest_table = columnar.latest_rows(table)
         latest_oracle = _row_oracle._latest_rows(rows)
         assert latest_table.equals(_table(latest_oracle))
+
+        # latest_rows and elected_rows, for a StatVar that elected a year
+        year = rng.choice((2014, 2015, 2016, 2017))
+        beside = columnar.latest_rows(table, year=year)
+        elected_oracle = _row_oracle._latest_rows(rows, year=year)
+        assert columnar.elected_rows(beside, year=year).equals(_table(elected_oracle))
+        assert columnar.elected_rows(beside, year=None).equals(beside)
+        assert {*latest_table["TIME_PERIOD"].to_pylist()} <= {*beside["TIME_PERIOD"].to_pylist()}
 
         # selection_mask
         selections = _random_selections(rng, rows)

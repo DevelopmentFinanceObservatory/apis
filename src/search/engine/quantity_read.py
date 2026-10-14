@@ -1,9 +1,10 @@
-"""Read the quantity a variable phrase asks for in one small LLM call per part, beside bind.
+"""Read the quantity a variable phrase asks for in one small LLM call per part, before bind.
 
 The call sees the variable phrase, less the words that name the part's places, and the
-numbered StatVar denominators the bind menu's shapes divide by. It says which form
+numbered StatVar denominators the shapes admitted on their measure and roles divide by. It says which form
 the phrase names and which denominator it divides by, quoting the words that name the base
-(`QuantityOutput`). It elects nothing. Bind's own prompt and schema never carry the reading.
+(`QuantityOutput`). It elects nothing. It runs before the admissibility form rule, which
+refuses on the form it states, and bind's own prompt and schema never carry the reading.
 A call that fails or returns output that fails validation reads as a phrase that names
 neither, and marks the answer degraded (`read_stated_quantity`).
 """

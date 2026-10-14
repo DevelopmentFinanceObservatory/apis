@@ -69,11 +69,12 @@ type RunFailure = Literal[
 
 
 DATA_DESCRIBING_DEPARTURES: Final[frozenset[DepartureCode]] = frozenset(
-    {"modelled_values", "group_read_as_members", "scope_limited"}
+    {"modelled_values", "group_read_as_members", "direction_inferred", "scope_limited"}
 )
 """Departures that describe the data the answer shows without changing what
 was asked: the values are modelled, a named group was read as its members, a
-check covered only some values. An example may carry them."""
+place named without a direction was read in the one direction holding data
+there, a check covered only some values. An example may carry them."""
 
 REFUSING_DEPARTURES: Final[frozenset[DepartureCode]] = frozenset(
     {

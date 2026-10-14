@@ -15,7 +15,7 @@ from search.engine.config import SearchSettings
 from search.engine.conjoin import assemble_region
 from search.engine.envelope import now_ms
 from search.engine.quantity_read import QuantityOutput
-from search.engine.region import NEAR_NEIGHBOR_AMBIGUOUS, resolve_variable
+from search.engine.region import resolve_variable
 from search.engine.region.codes import ELECTED_SHAPE_NO_DATA
 from search.engine.region.state import EngineOptions
 from tests.engine._fake_coverage import empty_coverage_snapshot
@@ -34,6 +34,11 @@ _ELEC_SDG = "undata/sdg/EG_ACS_ELEC"
 _MORT_WB = "worldBank/SH_DYN_MORT"
 _MORT_SDG = "undata/sdg/SH_DYN_MORT.AGE--Y0T4"
 _MORT_DFO = "MortalityRate_Person_Upto4Years_AsFractionOf_Count_BirthEvent_LiveBirth"
+
+# The registry's maternal mortality cluster: two UN publishers' copies of one series, the
+# SDG Global Database's preferred.
+_MMR_UNICEF = "undata/unicef/MNCH_MMR.SEX--F"
+_MMR_SDG = "undata/sdg/SH_STA_MORT.SEX--F"
 
 # An unregistered StatVar serves as a competing alternate.
 _UNRELATED_SV = "Count_Person_Employed"
@@ -68,6 +73,8 @@ _NODES = {
     _MORT_WB: _node("Person", "mortalityWorldBank"),
     _MORT_SDG: _node("Person", "mortalitySdg"),
     _MORT_DFO: _node("Person", "mortalityDfo"),
+    _MMR_UNICEF: _node("undata/unicef/SERIES-MNCH_MMR", "value"),
+    _MMR_SDG: _node("undata/sdg/SERIES-SH_STA_MORT", "value"),
     _UNRELATED_SV: _node("Person", "employedCount"),
 }
 
@@ -232,10 +239,32 @@ def test_mortality_triplet_diverts_both_twins():
     assert {sv for t in twins for sv in _sv_refs(t)} == {_MORT_SDG, _MORT_DFO}
 
 
-# Candidate scores track surviving specs. A diverted twin has no score entry.
+def test_an_elected_publisher_copy_answers_with_the_preferred_series():
+    """The model elects UNICEF's maternal mortality ratio and nominates the SDG series, the
+    same estimates. The SDG series, the cluster's preferred member, answers, and UNICEF's
+    copy is listed as its equivalent reading."""
+    result = _run(
+        svs=[_MMR_UNICEF, _MMR_SDG],
+        scores=[0.90, 0.85],
+        chosen_shape_index=0,
+        also_plausible=[1],
+        obs={
+            f"{_MMR_UNICEF}|country/KEN": [_facet(provenance_id="undata/p/UNICEF")],
+            f"{_MMR_SDG}|country/KEN": [_facet(provenance_id="undata/p/SDG")],
+        },
+    )
+    assert result.status == "definite"
+    (served,) = result.specs
+    assert _sv_refs(served) == {_MMR_SDG}
+    twins = served.resolved.equivalent_readings
+    assert twins is not None
+    assert [_sv_refs(t) for t in twins] == [{_MMR_UNICEF}]
 
 
-def test_diverted_twin_pruned_from_candidate_scores():
+# A diverted twin leaves the candidate set and is listed on the elected spec.
+
+
+def test_a_diverted_twin_leaves_the_candidate_set():
     result = _run(
         svs=[_ELEC_WB, _ELEC_SDG, _UNRELATED_SV],
         scores=[0.90, 0.85, 0.80],
@@ -252,8 +281,6 @@ def test_diverted_twin_pruned_from_candidate_scores():
     elected = next(s for s in result.specs if _sv_refs(s) == {_ELEC_WB})
     twins = elected.resolved.equivalent_readings
     assert twins is not None and _sv_refs(twins[0]) == {_ELEC_SDG}
-    assert result.candidate_scores is not None
-    assert set(result.candidate_scores) == {s.spec_id for s in result.specs}
 
 
 # A twin with data answers for an elected shape with no observations.
@@ -347,7 +374,6 @@ def test_gate_fires_on_diverted_shape_suppresses_warning():
     twins = elected.resolved.equivalent_readings
     assert twins is not None and len(twins) == 1
     assert _sv_refs(twins[0]) == {_ELEC_SDG}
-    assert NEAR_NEIGHBOR_AMBIGUOUS not in _warning_codes(result)
 
 
 def test_diverted_gate_twin_clears_confidence_and_ordering_state():
@@ -372,19 +398,14 @@ def test_diverted_gate_twin_clears_confidence_and_ordering_state():
     assert elected.resolved.confidence == "high"
     assert twins[0].resolved.confidence == "high"
     assert unrelated.resolved.confidence == "high"
-    assert NEAR_NEIGHBOR_AMBIGUOUS not in _warning_codes(result)
-    assert result.candidate_near_neighbor_spec_ids == frozenset()
-    assert result.near_neighbor_fired is False
 
 
-# The 0.89 unrelated candidate triggers the near-neighbor warning.
-# The lower-scoring twin diverts through the model's `also_plausible` signal.
+# An unrelated reading nobody nominated is no rival, however close its score: the answer is
+# the elected reading with its nominated twin listed as an equivalent reading.
 
 
-def test_gate_fires_on_surviving_candidate_leaves_warning_when_other_shape_diverts():
+def test_an_unnominated_close_scorer_is_no_rival_beside_a_diverted_twin():
     result = _run(
-        # The unrelated StatVar scores 0.89 against 0.90 and triggers the gate.
-        # The model's `also_plausible` signal includes the lower-scoring twin.
         svs=[_ELEC_WB, _UNRELATED_SV, _ELEC_SDG],
         scores=[0.90, 0.89, 0.70],
         chosen_shape_index=0,
@@ -395,16 +416,14 @@ def test_gate_fires_on_surviving_candidate_leaves_warning_when_other_shape_diver
             f"{_ELEC_SDG}|country/KEN": [_facet(provenance_id="source/SDG")],
         },
     )
-    assert result.status == "candidates"
-    assert len(result.specs) == 2
-    elected = next(s for s in result.specs if _sv_refs(s) == {_ELEC_WB})
+    assert result.status == "definite"
+    (elected,) = result.specs
+    assert _sv_refs(elected) == {_ELEC_WB}
     twins = elected.resolved.equivalent_readings
     assert twins is not None and _sv_refs(twins[0]) == {_ELEC_SDG}
-    assert any(_sv_refs(s) == {_UNRELATED_SV} for s in result.specs)
-    assert NEAR_NEIGHBOR_AMBIGUOUS in _warning_codes(result)
 
 
-def test_divert_without_near_neighbor_warning_is_unaffected():
+def test_a_nominated_twin_with_data_lists_on_a_definite_answer():
     result = _run(
         svs=[_ELEC_WB, _ELEC_SDG],
         scores=[0.90, 0.85],
@@ -418,7 +437,6 @@ def test_divert_without_near_neighbor_warning_is_unaffected():
     assert result.status == "definite"
     elected = result.specs[0]
     assert elected.resolved.equivalent_readings is not None
-    assert NEAR_NEIGHBOR_AMBIGUOUS not in _warning_codes(result)
 
 
 # A twin carries no rendered sentence and no facet_options, even when

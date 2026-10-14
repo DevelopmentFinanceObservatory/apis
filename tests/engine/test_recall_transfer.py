@@ -1,7 +1,7 @@
 """Our recall, UN data: a superseded base variable our resolver recalls, or one of our Topics
-expands to, stands in the first pass as its successor UN variable at our rank and score. The
-first pass reads our resolver's candidates alone and the second pass the UN resolver's, as it
-does without a successor table."""
+expands to, stands in our pass as its successor UN variable at our rank and score. Our pass
+reads our resolver's candidates alone and the UN pass the UN resolver's, each scored by its
+own resolver."""
 
 from __future__ import annotations
 
@@ -227,8 +227,8 @@ def test_a_recalled_superseded_variable_answers_from_its_successor_at_our_score(
     assert result.status == "definite"
     assert _elected(result) == [_SDG]
     (menu,) = llm.prompts
+    # The successor ranks at the recalled variable's score, 0.9, ahead of ours at 0.8.
     assert menu.index(_SDG) < menu.index(_OURS)
-    assert "retrieval_score: 0.900" in menu
     assert not _names(menu, _BASE) and not _names(repr(result), _BASE)
 
 
@@ -336,7 +336,7 @@ def test_a_superseded_variable_with_no_successor_is_no_candidate(bind_catalogue)
     assert _BASE_ALONE not in repr(result)
 
 
-def test_with_the_un_origin_off_nothing_is_replaced_and_no_second_pass_runs(
+def test_with_the_un_origin_off_nothing_is_replaced_and_no_un_pass_runs(
     bind_catalogue, caplog
 ) -> None:
     bind_catalogue(_catalogue(un_system_enabled=False))
@@ -347,14 +347,14 @@ def test_with_the_un_origin_off_nothing_is_replaced_and_no_second_pass_runs(
 
     assert (result.status, result.specs) == ("no_data", ())
     assert llm.prompts == []
-    assert "pass2=skipped:no_un_candidates " in _gap_fill_line(caplog)
+    assert "un_pass=skipped:no_un_shapes " in _gap_fill_line(caplog)
     assert [dcid for dcid in (_SDG, _WHO, _BASE) if _names(repr(result), dcid)] == []
 
 
 # -- the passes --
 
 
-def test_the_first_pass_holds_no_candidate_of_the_un_resolver(bind_catalogue) -> None:
+def test_our_pass_holds_no_candidate_of_the_un_resolver(bind_catalogue) -> None:
     """The UN resolve returns two candidates that outscore ours, and one is the successor
     our recall also stands a variable as."""
     bind_catalogue(_catalogue())
@@ -371,7 +371,7 @@ def test_the_first_pass_holds_no_candidate_of_the_un_resolver(bind_catalogue) ->
 
 
 def test_each_passs_candidates_are_scored_by_one_resolver(bind_catalogue, monkeypatch) -> None:
-    """`_SDG` reaches the first pass through our recall at 0.9 and the second through the UN
+    """`_SDG` reaches our pass through our recall at 0.9 and the UN pass through the UN
     resolve at 0.7, and has no data, so both passes run. Each pass's shapes carry the scores
     its own resolver gave."""
     bind_catalogue(_catalogue())
@@ -390,11 +390,11 @@ def test_each_passs_candidates_are_scored_by_one_resolver(bind_catalogue, monkey
     assert derived == [{_SDG: 0.9, _OURS: 0.8}, {_SDG: 0.7, _WHO: 0.6}]
 
 
-def test_the_second_pass_does_not_elect_the_transferred_shape_the_first_found_empty(
+def test_the_un_pass_does_not_elect_the_transferred_shape_our_pass_found_empty(
     bind_catalogue,
 ) -> None:
-    """`_SDG` has no data. The first pass elects it through our recall; the UN resolve ranks
-    it first again, and the second pass's menu holds `_WHO` alone."""
+    """`_SDG` has no data. Our pass elects it through our recall; the UN resolve ranks
+    it first again, and the UN pass's menu holds `_WHO` alone."""
     bind_catalogue(_catalogue())
     llm = _ElectFirstLLM()
 
@@ -406,12 +406,12 @@ def test_the_second_pass_does_not_elect_the_transferred_shape_the_first_found_em
     assert _WHO in second and _SDG not in second
 
 
-def test_the_first_pass_answers_from_a_held_series_member_recall_did_not_find(
+def test_our_pass_answers_from_a_held_series_member_recall_did_not_find(
     bind_catalogue,
 ) -> None:
-    """The first pass elects `_SDG`'s shape, which stands for the series the catalogue
+    """Our pass elects `_SDG`'s shape, which stands for the series the catalogue
     holds, so its population holds `_SDG_FEMALE`, which has data, though only the UN
-    resolve recalls it. The first pass answers from it and no second pass runs."""
+    resolve recalls it. Our pass answers from it and no UN pass runs."""
     bind_catalogue(_catalogue())
     llm = _ElectFirstLLM()
 

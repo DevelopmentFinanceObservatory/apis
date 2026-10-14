@@ -13,6 +13,7 @@ from materialise.place_scope import DefaultPlaceScope, DefaultPresence
 from search.engine.clients.materialise_bridge import _FACET_PROBE_MAX_PAIRS_PER_POST
 from search.engine.place import is_worldwide_scope
 from search.engine.retrieval.bound_values import (
+    RoleKeys,
     _bound_value_conflicts,
     _bound_value_filter_facts,
     _collapse_bindings,
@@ -20,6 +21,7 @@ from search.engine.retrieval.bound_values import (
     bound_values_from_bindings,
     entity_role_keys,
     held_family_exact,
+    query_bound_values,
     shape_member_facts,
     shape_query,
 )
@@ -32,7 +34,11 @@ from search.engine.retrieval.elected_dataset import (
 )
 from search.engine.retrieval.facet_policy import refuse_declared_defaults
 from search.engine.retrieval.facts import read_constraints
-from search.engine.retrieval.member_facts import IndexMemberFacts, asserted_constraint_properties
+from search.engine.retrieval.member_facts import (
+    IndexMemberFacts,
+    asserted_constraint_properties,
+    member_name,
+)
 from search.engine.retrieval.read_plan import (
     PairPlan,
     PlanYears,
@@ -47,6 +53,7 @@ from search.engine.retrieval.read_plan import (
 from search.engine.shape import is_role_bearing
 from search.models import SlotOption, SlotOptions, TimeWindow
 from statvar_members import antichain_minimal_ids
+from statvar_members.enumerate import dominates_constraint_keys
 
 if TYPE_CHECKING:
     from materialise import GraphReader
@@ -158,6 +165,41 @@ def family_totals(
     `stated_values`, by the rule `_elect_family` elects by."""
     return _totals(
         {sv: _read_assertions(facts, stated_values) for sv, facts in member_facts.items()}
+    )
+
+
+def holds_broader_reading(
+    member_facts: Mapping[str, MemberFacts],
+    stated_values: Mapping[str, list[str]],
+    prop: str,
+    value: str,
+) -> bool:
+    """Whether `member_facts` hold a reading of the part without `value` on `prop`: a
+    member that states nothing on `prop` and whose every constraint a member asserting
+    `value` shares, so the mint keeps it in place of that member while `prop` stays open
+    (`dominates_constraint_keys`).
+
+    The part is the members stating one of the `stated_values` on each bound property. A
+    member whose constraints are unknown or unresolved is no witness. A family that splits
+    on a slot the part leaves open holds no total (`family_totals`), and each side's
+    broadest member is the reading an open `prop` serves there: "net transfers on external
+    debt" beside the series for long-term debt without IMF credit."""
+    readings = absent_readings(get_index())
+    part: list[Mapping[str, str]] = []
+    for facts in member_facts.values():
+        properties = asserted_constraint_properties(facts)
+        constraints = facts.read_constraints()
+        if properties is None or properties != constraints.keys():
+            continue
+        if all(constraints.get(bound) in values for bound, values in stated_values.items()):
+            part.append(constraints)
+    asserting = [member for member in part if member.get(prop) == value]
+    return any(
+        prop not in broader
+        and broader.items() <= narrower.items()
+        and dominates_constraint_keys(frozenset(broader), frozenset(narrower), readings=readings)
+        for broader in part
+        for narrower in asserting
     )
 
 
@@ -433,26 +475,185 @@ def _recalled_partition_values(
     (`ShapeDraft.scored_members`) that the family admits states that value; a slot whose
     scored members state two or more values, or that no scored member reaches, is left
     out."""
-    closed = admitted.bound_values.keys() | {
-        b.property_dcid for b in bindings if b.evidence == "requested_all"
-    }
     constraints = {
         sv: admitted.member_facts[sv].read_constraints() for sv in admitted.family.members
     }
     recalled = [constraints[sv] for sv in constraints if sv in shape.scored_members]
     values: dict[str, str] = {}
-    for slot in shape.slot_keys:
-        prop = slot.property_dcid
-        if prop is None or slot.axis not in ("what", "how") or prop in closed:
-            continue
-        if not all(prop in member for member in constraints.values()):
-            continue
-        if len({member[prop] for member in constraints.values()}) < 2:
-            continue
+    for prop in _partition_properties(shape, bindings, list(constraints.values())):
         evidenced = {member[prop] for member in recalled}
         if len(evidenced) == 1:
             values[prop] = evidenced.pop()
     return values
+
+
+def _partition_properties(
+    shape: ShapeDraft,
+    bindings: Sequence[SlotBindingDraft],
+    constraints: Sequence[Mapping[str, str]],
+    *,
+    operation_slots: Collection[str] = (),
+) -> list[str]:
+    """Each what or how slot property of `shape` that partitions the members whose
+    `constraints` these are, in slot-key order: one `bindings` leave open on which every
+    member states a value, with two or more values among them. Such members hold no total
+    over the slot. A slot `bindings` bind to a value, or leave open as `requested_all` (a
+    phrase asking for every value), is not open, and neither is one of `operation_slots`,
+    the slots an operation reads, whatever binding it holds."""
+    closed = (
+        bound_values_from_bindings(bindings).keys()
+        | {b.property_dcid for b in bindings if b.evidence == "requested_all"}
+        | set(operation_slots)
+    )
+    return [
+        prop
+        for slot in shape.slot_keys
+        if (prop := slot.property_dcid) is not None
+        and slot.axis in ("what", "how")
+        and prop not in closed
+        and all(prop in member for member in constraints)
+        and len({member[prop] for member in constraints}) >= 2
+    ]
+
+
+def _served_under(
+    shape: ShapeDraft, bindings: list[SlotBindingDraft], role_keys: RoleKeys
+) -> dict[str, MemberFacts]:
+    """The members a part over `shape` would serve under `bindings` and `role_keys`, read
+    from the population it holds before any walk settles one. A role-bearing shape serves
+    the members a role-bearing answer lists (`role_resolve.role_members_served`) of the
+    population `shape_member_facts` gives, the read `_admit_population` makes. Any other
+    serves from the family `_admit_standard_members` admits. Empty for a role-bearing
+    population the code index decides, whose rows carry no name, and for bindings that
+    admit no family."""
+    from search.engine.retrieval.role_resolve import role_members_served
+
+    if not is_role_bearing(shape):
+        admitted = _admit_standard_members(shape, bindings, role_keys.bound)
+        if not isinstance(admitted, _AdmittedStandardMembers):
+            return {}
+        return {sv: admitted.member_facts[sv] for sv in admitted.family.members}
+    query = shape_query(shape, bindings, role_keys.bound, open_role_keys=role_keys.open)
+    member_facts, index_sourced = shape_member_facts(shape, query)
+    if index_sourced:
+        return {}
+    served = role_members_served(
+        member_facts, query_bound_values(query), role_keys.bound, role_keys.open
+    )
+    return {sv: member_facts[sv] for sv in served}
+
+
+def _without_spanning_sets(
+    shape: ShapeDraft,
+    bindings: list[SlotBindingDraft],
+    role_keys: RoleKeys,
+    *,
+    operation_slots: Collection[str],
+) -> list[SlotBindingDraft]:
+    """`bindings` without each `set` binding that narrows nothing: one whose values every
+    member the part would serve without it (`_served_under`) states on its property. Such
+    a slot reads as an open one. A set that leaves out a served member's value, or whose
+    property some served member does not state, narrows the part and stays. So does a set
+    on one of `operation_slots`, a slot an operation reads: its values are the breakdown
+    the reader asked for."""
+    kept = list(bindings)
+    for binding in bindings:
+        prop = binding.property_dcid
+        if binding.kind != "set" or prop is None or prop in operation_slots:
+            continue
+        without = [b for b in kept if b is not binding]
+        served = _served_under(shape, without, role_keys)
+        values = bound_values_from_bindings([binding]).get(prop, ())
+        if served and all(
+            member.read_constraints().get(prop) in values for member in served.values()
+        ):
+            kept = without
+    return kept
+
+
+def bind_named_member_values(
+    shape: ShapeDraft,
+    bindings: Sequence[SlotBindingDraft],
+    role_keys: RoleKeys,
+    *,
+    variable: str,
+    written: str | None = None,
+    operation_slots: Collection[str] = (),
+) -> tuple[list[SlotBindingDraft], list[SlotBindingDraft]]:
+    """Bind each open slot that partitions the members a part would serve to the value of
+    the one served member the variable phrase names.
+
+    Served members that all state a value on an open slot, with two or more values among
+    them, hold no total over it (`_partition_properties`), so the answer lists one series
+    for each value. A phrase equal to the graph name of exactly one of those members asks
+    for that member: "net transfers on external debt" is the name of the member netting
+    servicing payments, beside one netting principal repayments. Every such slot then
+    binds to the named member's value. Names compare as `bind.normalised_key` reads them,
+    lowercased with only their alphanumeric characters. A slot bound to a set that every
+    served member satisfies narrows nothing and reads as open (`_without_spanning_sets`),
+    so the named member's value replaces the set. A slot of `operation_slots`, one an
+    operation ranks or breaks down over (`phase_rank_bind.operation_slot_phrases`), is the
+    reader's breakdown and never binds here, whether it arrives unbound or as a set.
+
+    The variable phrase is extraction's reading of the request and can reorder its words:
+    "net flows on external debt for Kenya" arrives as "external debt net flows". Where the
+    phrase equals no served member's name, `written` names the member when it equals one
+    name, compared the same way: the stretch of the request that writes the phrase
+    (`written_phrase.written_phrase`), "net flows on external debt". A single-variable
+    raw-text request carries one, and the layer-2 response cache keys it
+    (`response_cache_flow.compute_layer2_signals`).
+
+    A phrase and a written stretch equal to no served member's name, or to the names of
+    two, bind nothing, and so does a population holding a served member with no name, where
+    one match cannot be told from two. A recalled or held member carries its name in its arcs
+    (`ArcsMemberFacts`); a code index row carries none. The members are the ones
+    `_served_under` reads, and binding a slot can leave a further slot partitioning the
+    members still served, so slots bind until none does.
+
+    Returns the bindings with each such slot bound as a `mentioned` value, since the
+    phrase named the member that states it, and the bindings added, in the order they
+    bound."""
+    from search.engine.bind import SlotBindingDraft, normalised_key
+
+    bound = list(bindings)
+    added: list[SlotBindingDraft] = []
+    asked = normalised_key(variable)
+    written_key = normalised_key(written or "")
+    axis_of = {slot.property_dcid: slot.axis for slot in shape.slot_keys}
+    while asked:
+        unnarrowed = _without_spanning_sets(
+            shape, bound, role_keys, operation_slots=operation_slots
+        )
+        served = _served_under(shape, unnarrowed, role_keys)
+        constraints = {sv: member.read_constraints() for sv, member in served.items()}
+        partitions = _partition_properties(
+            shape, unnarrowed, list(constraints.values()), operation_slots=operation_slots
+        )
+        if not partitions:
+            break
+        names = {sv: member_name(member) for sv, member in served.items()}
+        if any(name is None for name in names.values()):
+            break
+        named = [sv for sv, name in names.items() if name and normalised_key(name) == asked]
+        if not named and written_key:
+            named = [
+                sv for sv, name in names.items() if name and normalised_key(name) == written_key
+            ]
+        if len(named) != 1:
+            break
+        named_bindings = [
+            SlotBindingDraft(
+                axis=axis_of[prop],
+                property_dcid=prop,
+                kind="value",
+                value_dcids=[constraints[named[0]][prop]],
+                evidence="mentioned",
+            )
+            for prop in partitions
+        ]
+        bound = [b for b in bound if b.property_dcid not in partitions] + named_bindings
+        added.extend(named_bindings)
+    return bound, added
 
 
 def bind_partition_values(
@@ -722,7 +923,10 @@ def facets_at_own_places(
 
     `settled`, given the facets read so far, says whether the caller needs no more of
     them. The reads stop after the first read it accepts, and the StatVars no read reached
-    are left out of the result.
+    are left out of the result. Each read is then split into the groups the graph sends
+    apart (`EngineGraphClient.observation_read_groups`), so `settled` is asked after every
+    request: the UN System Data Commons reads by GET, about 70 StatVars to a request, and
+    a read of a 2,896-member family at one place is 40 of them.
     """
     by_places: dict[tuple[str, ...], list[str]] = {}
     for sv, places in places_of.items():
@@ -737,6 +941,12 @@ def facets_at_own_places(
         [(chunk, tuple(union)) for chunk in _facet_reads(read_svs, union)] if union else []
     )
     reads = union_reads if len(union_reads) < len(per_scope) else per_scope
+    if settled is not None:
+        reads = [
+            (group, places)
+            for chunk, places in reads
+            for group in graph.observation_read_groups(chunk, list(places), needs_dates)
+        ]
 
     facets: dict[str, dict[str, list[Facet]]] = {
         sv: {} for sv, places in places_of.items() if not places
@@ -1148,7 +1358,8 @@ def standard_resolve(
     it, and every other member counts only toward the confirmed population, read at the
     union of the scopes of the kept members that can answer (`DefaultPresence.facet_entities`).
     The result carries the union of the scopes of the StatVars it names as
-    ``default_scope``. A presence read that lacks one of those members raises
+    ``default_scope``, and none when no member asserts every bound property, since it then
+    serves no StatVar. A presence read that lacks one of those members raises
     `AssertionError`; a subject entity beside it raises too.
 
     With no place, return bare coverage after requiring an explicit match for
@@ -1211,6 +1422,10 @@ def standard_resolve(
         exact=exact,
     )
     if scope_check.terminal is not None:
+        # With no member asserting every bound property the result serves no StatVar: it
+        # names its representative only to flag it, and settles on no default scope.
+        if not admitted.family.members:
+            return scope_check.terminal
         return scoped(scope_check.terminal)
 
     probe_key = _standard_probe_key(list(member_facts), place_dcid, date_request, place_dcids)

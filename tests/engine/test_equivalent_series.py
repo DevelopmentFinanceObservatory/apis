@@ -28,10 +28,27 @@ _GDP_CURRENT_PRICES = (
     "ValueAdded_EconomicProduction_IncludingProductTaxes_GrossOfFixedCapitalConsumption_Nominal",
 )
 
+# Two UN publishers' copies of one indicator, the SDG Global Database's preferred.
+_PUBLISHER_COPIES = {
+    "maternal-mortality": ("undata/unicef/MNCH_MMR.SEX--F", "undata/sdg/SH_STA_MORT.SEX--F"),
+    "adolescent-births": (
+        "undata/unicef/MNCH_ABR.AGE--Y15T19",
+        "undata/sdg/SP_DYN_ADKL.AGE--Y15T19__SEX--F",
+    ),
+    "hiv-incidence": ("undata/unaids/HIV_INC", "undata/sdg/SH_HIV_INCD"),
+    "hiv-incidence-women": ("undata/unaids/HIV_INC.SEX--F", "undata/sdg/SH_HIV_INCD.SEX--F"),
+    "bribery": ("undata/unodc/VIC_BRIBE_PCT", "undata/sdg/IU_COR_BRIB"),
+    "malaria-incidence": ("undata/who/MAL_EST_INCID", "undata/sdg/SH_STA_MALR"),
+}
+
 _UNKNOWN_DCID = "worldBank/NOT_A_REGISTERED_TWIN"
 
 
-@pytest.mark.parametrize("pair", [_ELECTRICITY_ACCESS, _GDP_CURRENT_PRICES], ids=["elec", "gdp"])
+@pytest.mark.parametrize(
+    "pair",
+    [_ELECTRICITY_ACCESS, _GDP_CURRENT_PRICES, *_PUBLISHER_COPIES.values()],
+    ids=["elec", "gdp", *_PUBLISHER_COPIES],
+)
 def test_same_cluster_pair_matches(pair: tuple[str, str]) -> None:
     a, b = pair
     match = shared_cluster([a], [b])
@@ -39,12 +56,23 @@ def test_same_cluster_pair_matches(pair: tuple[str, str]) -> None:
     assert match.members == set(pair)
 
 
-@pytest.mark.parametrize("pair", [_ELECTRICITY_ACCESS, _GDP_CURRENT_PRICES], ids=["elec", "gdp"])
+@pytest.mark.parametrize(
+    "pair",
+    [_ELECTRICITY_ACCESS, _GDP_CURRENT_PRICES, *_PUBLISHER_COPIES.values()],
+    ids=["elec", "gdp", *_PUBLISHER_COPIES],
+)
 def test_same_cluster_pair_matches_reversed(pair: tuple[str, str]) -> None:
     a, b = pair
     match = shared_cluster([b], [a])
     assert match is not None
     assert match.members == set(pair)
+
+
+@pytest.mark.parametrize(("copy", "sdg"), _PUBLISHER_COPIES.values(), ids=_PUBLISHER_COPIES)
+def test_a_publisher_copy_prefers_the_sdg_series(copy: str, sdg: str) -> None:
+    match = shared_cluster([copy], [sdg])
+    assert match is not None
+    assert match.preferred == sdg
 
 
 def test_under5_mortality_triplet_every_pairing_matches() -> None:

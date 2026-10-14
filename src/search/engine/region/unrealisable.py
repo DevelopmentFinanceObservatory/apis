@@ -1,12 +1,13 @@
 """Unbind bound values that match no member together, so the answer reads what holds.
 
-The standard resolve refuses bound values that together exclude every member of the
-shape (`retrieve.BoundValuesUnrealisable`), naming each member's conflicting properties.
-The elected shape's door then unbinds a minimal set, one member's conflicts chosen by
-`BoundValuesUnrealisable.relaxation`, and resolves again. The values the request named
-weigh first, so a declared default or the elected measure partition gives way before
-them; the engine-chosen values go silently, and each request-named one is recorded as a
-code requirement (`region.state.Requirement`) on a property the shape holds, so the answer
+A resolve refuses bound values that together exclude every member of the shape
+(`retrieve.BoundValuesUnrealisable`), naming each member's conflicting properties. The
+elected shape's door then unbinds a set chosen by `BoundValuesUnrealisable.relaxation` and
+resolves again. A declared default or the elected measure partition gives way first, then
+every value bound as its slot's sole option that some member conflicts on, then a minimal
+set of the values the request named. The engine-chosen and sole-option values go
+silently, with what the engine derived from them (`ResolveState.forget_bound`), and each
+request-named one is recorded as a code requirement (`region.state.Requirement`) on a property the shape holds, so the answer
 read without it refuses `qualifier_not_bound` with that answer as its flagged match, and
 a candidate set departs it `measure_not_applied` unless every answer applies it
 (`region.requirements.judge`). A resubmit binds only values its request posted, so every
@@ -47,11 +48,14 @@ from search.models import GraphRef, ResolvedQualifier, Warning
 
 
 def unbind_unrealisable(state: ResolveState, unrealisable: BoundValuesUnrealisable) -> None:
-    """Unbind a minimal set of the values of `unrealisable` and leave `state` to resolve again.
+    """Unbind values of `unrealisable` and leave `state` to resolve again.
 
     The set is `unrealisable.relaxation` with the engine-chosen properties (a declared
-    default, the elected measure partition) weighed after the request-named ones. Its
-    engine-chosen properties go silently. Each term the request named for a request-named
+    default, the elected measure partition) and the ones bound as a slot's sole option
+    (`_sole_option_properties`) giving way before the request-named ones. Its properties of
+    those two classes go silently, each slot shown unbound: the request's words named
+    neither. What the engine derived from every unbound property goes with it
+    (`ResolveState.forget_bound`). Each term the request named for a request-named
     one becomes a code requirement on the codes it names (`_asked_terms`), departing
     `measure_not_applied` (`binding_ref` `how:<property>`, `asked` the term's text) if the
     final answer leaves it unapplied. The values the request named in no recorded term
@@ -64,8 +68,9 @@ def unbind_unrealisable(state: ResolveState, unrealisable: BoundValuesUnrealisab
     nothing.
     """
     engine_chosen = state.measure_elected_properties | state.defaulted_properties
-    properties = unrealisable.relaxation(engine_chosen=engine_chosen)
-    for prop in sorted(properties - engine_chosen):
+    unnamed = _sole_option_properties(state.bindings)
+    properties = unrealisable.relaxation(engine_chosen=engine_chosen, unnamed=unnamed)
+    for prop in sorted(properties - engine_chosen - unnamed):
         values = _bound_values(state.bindings, prop)
         terms = _asked_terms(state, prop)
         if not terms:
@@ -109,12 +114,30 @@ def unbind_unrealisable(state: ResolveState, unrealisable: BoundValuesUnrealisab
                 )
             _require(state, requirements)
     state.bindings = without_values(state.bindings, properties)
-    state.measure_elected_properties -= properties
-    state.defaulted_properties -= properties
+    state.forget_bound(properties)
     state.admitted_qualifiers = tuple(
         match for match in state.admitted_qualifiers if match.code_system not in properties
     )
     record_reading(state, _resolve_query_qualifiers(state))
+
+
+def _sole_option_properties(bindings: Iterable[SlotBindingDraft]) -> frozenset[str]:
+    """The properties the bind reply bound to a value only because the slot offered no
+    other (`SlotBindingDraft.evidence` ``sole_option``, `drafted_by` the reply): the
+    request's words name none of them, and each claims that every member asserts its
+    value, which a member conflicting on it refutes. A ``sole_option`` value the engine
+    wrote makes no such claim: a partition value (`standard.bind_partition_values`) sits
+    on a slot the members differ on, and a series code's shared values
+    (`bound_values.bind_member_values`) are shared by that code's StatVars alone. Those
+    give way as values the request named."""
+    return frozenset(
+        b.property_dcid
+        for b in bindings
+        if b.kind == "value"
+        and b.evidence == "sole_option"
+        and b.drafted_by == "reply"
+        and b.property_dcid is not None
+    )
 
 
 def _unapplied(asked: str, prop: str) -> Departed:

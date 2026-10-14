@@ -84,14 +84,12 @@ def test_assemble_region_supplied_echo_used_verbatim():
     assert response.query_echo.raw_query is None
 
 
-def test_assemble_region_candidates_moves_loose_readings_after_strong_ones():
-    """When the near-neighbour gate fires, bind order ranks loose readings behind strong ones.
-    Retrieval scores disagree with bind order in this fixture.
-    """
+def test_assemble_region_candidates_keep_the_status_rules_order():
+    """A candidates region states the elected reading first and its rivals in menu order,
+    and assembly keeps that order whatever the retrieval scores, as `intent_rank`."""
     spec_a = _spec(_PERSON_SHAPE, "any", sv_dcid="sv_a")
     spec_b = _spec(_ECON_SHAPE, "any", sv_dcid="sv_b")
     spec_c = _spec(_PERSON_SHAPE, "other", sv_dcid="sv_c")
-    scores = {spec_a.spec_id: 0.9, spec_b.spec_id: 0.5, spec_c.spec_id: 0.3}
 
     region = RegionResult(
         variable_text="test variable",
@@ -100,15 +98,17 @@ def test_assemble_region_candidates_moves_loose_readings_after_strong_ones():
         no_data_reason=None,
         warnings=(),
         timing_by_step={},
-        candidate_scores=scores,
-        near_neighbor_fired=True,
     )
 
     response = assemble_region(region, **_assemble_kwargs(region))
     part = response.parts[0]
     assert isinstance(part, CandidatesPart)
-    ordered_ids = [s.spec_id for s in part.candidates.specs]
-    assert ordered_ids == [spec_a.spec_id, spec_b.spec_id, spec_c.spec_id]
+    assert [s.spec_id for s in part.candidates.specs] == [
+        spec_b.spec_id,
+        spec_c.spec_id,
+        spec_a.spec_id,
+    ]
+    assert part.candidates.ordering == "intent_rank"
 
 
 def test_combine_regions_default_echo_uses_raw_text():
@@ -193,6 +193,39 @@ def test_assemble_region_threads_every_unresolved_entity_term():
         'Could not use "Atlantis" and "El Dorado" as places for this query. '
         "Try a different place name."
     )
+
+
+def test_assemble_region_entity_not_resolved_keeps_ambiguous_candidates_off_the_wire():
+    """The entity check names an ambiguous entity with its candidates whatever reason it
+    elects. The wire carries candidates only on entity_ambiguous, the one reason whose part
+    a client can post back with a candidate pinned."""
+    region = RegionResult(
+        variable_text="population",
+        status="no_data",
+        specs=(),
+        no_data_reason="entity_not_resolved",
+        warnings=(),
+        timing_by_step={},
+        unresolved_entity_names=("Congo", "Atlantis"),
+        ambiguous_entities=(
+            AmbiguousEntity(
+                text="Congo",
+                candidates=(
+                    AmbiguousEntityCandidate(
+                        dcid="country/COD", name="Congo [DRC]", kind="Country"
+                    ),
+                    AmbiguousEntityCandidate(
+                        dcid="country/COG", name="Congo [Republic]", kind="Country"
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    part = _entity_terms_part(region)
+
+    assert part.no_data.entity_terms == ["Congo", "Atlantis"]
+    assert part.no_data.ambiguous_entities == []
 
 
 def test_assemble_region_threads_every_ambiguous_entity_term():

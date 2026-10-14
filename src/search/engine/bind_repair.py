@@ -1,111 +1,22 @@
-"""Repair draft bindings when taxonomy shape or availability hides a requested value.
+"""Apply declared defaults to draft bindings, and read the slots they bind.
 
-``repair_draft_bindings`` removes only an unasked ``kind="value"`` binding whose
-``sole_option`` evidence matches a verified singleton in ``slot_taxonomy``. This repairs
-one axis recorded under multiple properties, such as ``ageGroupClassification=Infant`` and
-``age=Years0``. Mentioned values stay bound. Shape-level co-occurrence looks the same for a
-duplicate spelling and independent axes, so it risks dropping a real constraint.
-
-The normal fail-open resolver check must reject the original draft. After eligible drops,
-at least one bound value must remain and the remainder must pass strict realizability. This
-prevents an empty constraint set from selecting an arbitrary member and prevents a repaired
-answer from contradicting a retained value. Otherwise the original draft stays unchanged.
-
-``restore_starved_axis_binding`` handles empty taxonomies caused by the place-availability
-floor. It restores a value only for a place-available shape, an open empty slot, a property
-with disagreeing unscoped member values, and exactly one whole-word label match outside a
-negation or exclusion. The full binding set must remain realizable. On success, the binding
-and taxonomy use the matched value and the complete unscoped value list.
-
-Both repairs follow binding order and arc-fact insertion order.
+``apply_declared_defaults`` binds an open slot to its declared default code when the
+variable, the raw query or another binding triggers it, and ``apply_shape_slot_defaults``
+binds the code index's default for a slot of a population type. The helpers that match a
+value's label as a whole word outside a negation or exclusion serve the bind phase too.
 """
 
 from __future__ import annotations
 
 import re
 from collections.abc import Sequence
-from dataclasses import dataclass
 
 from code_index.query import CodeIndex
+from code_index.types import ShapeSlotDefault
 from search.engine.bind import SlotBindingDraft
 from search.engine.qualifier_match import QualifierMatch, QualifierTie, names_plain_name
-from search.engine.retrieval.bound_values import (
-    bound_realizable_members,
-    bound_values_from_bindings,
-    shape_population_arcs,
-)
 from search.engine.retrieval.facts import read_constraints
-from search.engine.retrieval.representative import _shape_disagreement_props
-from search.engine.retrieval.standard import _is_degenerate_binding
 from search.engine.shape import ShapeDraft
-
-
-def repair_draft_bindings(
-    bindings: Sequence[SlotBindingDraft],
-    members: Sequence[str],
-    sv_arc_facts: dict[str, dict],
-    slot_taxonomy: dict[str, list[str]],
-) -> tuple[list[SlotBindingDraft], list[SlotBindingDraft]]:
-    """Drop verified sole-option bindings when they block resolution.
-
-    The repair applies only when the original fails the normal resolver check. Eligible
-    drops must leave a bound value and pass strict realizability.
-
-    Returns the listified input and ``[]`` when unchanged. Otherwise the repaired list keeps
-    dropped slots as ``unbound`` and returns their original drafts separately. Iteration
-    follows binding order.
-    """
-    bindings = list(bindings)
-    bound_values = bound_values_from_bindings(bindings)
-    if bound_realizable_members(members, sv_arc_facts, bound_values):
-        return bindings, []
-
-    sole_option_indices = []
-    for i, b in enumerate(bindings):
-        if not (b.property_dcid and b.kind == "value" and b.evidence == "sole_option"):
-            continue
-        if len(b.value_dcids) != 1:
-            # A multi-value draft cannot itself be a verified singleton.
-            continue
-        taxonomy_values = slot_taxonomy.get(f"{b.axis}:{b.property_dcid}")
-        if taxonomy_values is None or len(taxonomy_values) != 1:
-            continue
-        if taxonomy_values[0] != b.value_dcids[0]:
-            continue
-        sole_option_indices.append(i)
-    if not sole_option_indices:
-        return bindings, []
-
-    repaired = list(bindings)
-    dropped: list[SlotBindingDraft] = []
-    for i in sole_option_indices:
-        dropped.append(repaired[i])
-        repaired[i] = repaired[i].model_copy(update={"kind": "unbound", "value_dcids": []})
-
-    repaired_bound_values = bound_values_from_bindings(repaired)
-    if not repaired_bound_values:
-        # An empty remainder would realise against any member with data.
-        return bindings, []
-
-    if bound_realizable_members(members, sv_arc_facts, repaired_bound_values, strict=True):
-        return repaired, dropped
-    return bindings, []
-
-
-def detect_degenerate_bindings(
-    bindings: Sequence[SlotBindingDraft],
-) -> tuple[list[SlotBindingDraft], list[SlotBindingDraft]]:
-    """Find ``value`` or ``set`` bindings with no values.
-
-    These schema-valid drafts would become open probes if downgraded to ``unbound``. The
-    pipeline and resolver reject them before materialisation. Non-empty ``value``/``set``
-    mismatches and all ``unbound``/``absent`` bindings pass through.
-
-    Returns the unchanged, listified bindings and degenerate entries in input order.
-    """
-    bindings = list(bindings)
-    degenerate = [b for b in bindings if _is_degenerate_binding(b)]
-    return bindings, degenerate
 
 
 def _label_named_in_text(label: str, text: str) -> bool:
@@ -152,89 +63,35 @@ def _label_negated_in_text(label: str, text: str) -> bool:
     return False
 
 
-def _unscoped_property_values(shape_draft: ShapeDraft, property_dcid: str) -> list[str]:
-    """Return distinct values across the members the shape stands for
-    (`shape_population_arcs`), including those without place data, in first-occurrence order.
+def _label_has_negated_occurrence(label: str, text: str) -> bool:
+    """Whether any whole-word occurrence is negated, including mixed wording."""
+    pattern = r"\b" + re.escape(label) + r"\b"
+    for match in re.finditer(pattern, text, re.IGNORECASE):
+        prefix = text[: match.start()]
+        prefix_words = list(re.finditer(r"[\w']+", prefix))
+        context_start = prefix_words[-3].start() if len(prefix_words) >= 3 else 0
+        context = prefix[context_start:]
+        context = re.sub(pattern, "", context, flags=re.IGNORECASE)
+        context = f"{context}{text[match.start() : match.end()]}"
+        if _label_negated_in_text(label, context):
+            return True
+    return False
+
+
+def stated_words_negated(text: str, *, index: CodeIndex) -> tuple[str, ...]:
+    """The words datasets state of their own rows (`DatasetDeclaration.stated_words`) that an
+    occurrence in `text` negates or excludes (`_label_has_negated_occurrence`), sorted.
+
+    The response cache key includes them because the stated-word rule reads them from the
+    verbatim query, which an equal extraction can leave behind: "not bilateral ODA to
+    Kenya" and "bilateral ODA to Kenya" can extract alike.
     """
-    values: list[str] = []
-    seen: set[str] = set()
-    for arcs in shape_population_arcs(shape_draft).values():
-        value = read_constraints(arcs).get(property_dcid)
-        if value is not None and value not in seen:
-            seen.add(value)
-            values.append(value)
-    return values
-
-
-def restore_starved_axis_binding(
-    bindings: Sequence[SlotBindingDraft],
-    shape_draft: ShapeDraft,
-    variable: str,
-) -> tuple[list[SlotBindingDraft], list[SlotBindingDraft]]:
-    """Restore a place-starved binding when the query names its value.
-
-    A restore requires a place-available shape, an open binding with an empty or missing
-    place-scoped taxonomy, and multiple observed values for the property across all members.
-    Exactly one value label must match ``variable`` as an unnegated, unexcluded whole word.
-    The complete binding set must remain realizable.
-
-    On success, set the binding to ``value``/``mentioned`` and restore the slot taxonomy in
-    place to all unscoped values. This keeps grounding options aligned with the binding.
-    The draft stays open when matches are ambiguous, excluded, or unrealizable. Under-firing
-    is acceptable; over-firing is not.
-
-    Returns the listified input and ``[]`` when unchanged. Otherwise returns a repaired copy
-    and the original drafts for restored slots. Iteration follows binding and arc-fact
-    insertion order.
-    """
-    bindings = list(bindings)
-    if shape_draft.place_available is not True:
-        return bindings, []
-    if shape_draft.slot_taxonomy is None:
-        return bindings, []
-
-    disagreement_props = _shape_disagreement_props(shape_draft)
-    value_labels = shape_draft.value_labels or {}
-
-    result = list(bindings)
-    restored: list[SlotBindingDraft] = []
-    for i, b in enumerate(result):
-        if b.kind not in ("unbound", "absent") or b.value_dcids:
-            continue
-        if b.property_dcid is None or b.property_dcid not in disagreement_props:
-            continue
-        taxonomy_key = f"{b.axis}:{b.property_dcid}"
-        if shape_draft.slot_taxonomy.get(taxonomy_key):
-            continue
-
-        values = _unscoped_property_values(shape_draft, b.property_dcid)
-        matches = [
-            v
-            for v in values
-            if (label := value_labels.get(v))
-            and _label_named_in_text(label, variable)
-            and not _label_negated_in_text(label, variable)
-        ]
-        if len(matches) != 1:
-            continue  # Zero matches leave the slot open. Multiple matches are ambiguous.
-
-        fired = b.model_copy(
-            update={"kind": "value", "evidence": "mentioned", "value_dcids": [matches[0]]}
-        )
-        trial = list(result)
-        trial[i] = fired
-        trial_bound_values = bound_values_from_bindings(trial)
-        population = shape_population_arcs(shape_draft)
-        if not bound_realizable_members(list(population), population, trial_bound_values):
-            continue
-
-        result[i] = fired
-        shape_draft.slot_taxonomy[taxonomy_key] = values
-        restored.append(b)
-
-    if not restored:
-        return bindings, []
-    return result, restored
+    words = {
+        stated.word
+        for declaration in index.datasets.values()
+        for stated in declaration.stated_words
+    }
+    return tuple(sorted(word for word in words if _label_has_negated_occurrence(word, text)))
 
 
 def _slot_open_to_default(
@@ -334,8 +191,9 @@ def apply_declared_defaults(
     Exclude engine-authored properties from the binding trigger because their default
     evidence is ``mentioned``. Text triggers remain independent.
 
-    Only ``crsTypeOfFlow`` gets the pipeline's separate ``qualifier_not_bound`` refusal
-    for no-vocabulary qualifiers. Every declaration reads the same original bindings, so
+    A word a code system declares it has no vocabulary for
+    (``CodeSystemDeclaration.no_vocabulary_terms``) gets the pipeline's separate
+    ``qualifier_not_bound`` refusal. Every declaration reads the same original bindings, so
     trigger decisions are order-independent. The wire records fired defaults as ``declared_default``
     provenance. A fired default with a declared note states it (``defaulted_slot_notes``);
     one without warns only where the query names its slot (``defaulted_slots_named``).
@@ -390,55 +248,34 @@ def apply_declared_defaults(
     return result, defaulted
 
 
-@dataclass(frozen=True, slots=True)
-class ShapeSlotDefault:
-    """The value an open constraint slot takes on every shape of one ``populationType``.
-
-    The packaged code index declares defaults for the code systems it carries
-    (``CodeSystemDeclaration.default``). This declares one for a graph property outside it.
-    """
-
-    population_type: str
-    property_dcid: str
-    value_dcid: str
-
-
-# A birth in demographic statistics is a live birth, and the crude birth rate is live births
-# per person. A births question that names no status reads live births.
-SHAPE_SLOT_DEFAULTS: tuple[ShapeSlotDefault, ...] = (
-    ShapeSlotDefault(
-        population_type="BirthEvent", property_dcid="medicalStatus", value_dcid="LiveBirth"
-    ),
-)
-
-
 def apply_shape_slot_defaults(
     bindings: Sequence[SlotBindingDraft],
     shape_draft: ShapeDraft,
     *,
-    defaults: Sequence[ShapeSlotDefault] = SHAPE_SLOT_DEFAULTS,
-) -> tuple[list[SlotBindingDraft], list[SlotBindingDraft]]:
-    """Bind each open slot that ``defaults`` declares for ``shape_draft``'s ``populationType``.
+    index: CodeIndex,
+) -> tuple[list[SlotBindingDraft], list[SlotBindingDraft], list[ShapeSlotDefault]]:
+    """Bind each open slot the code index declares a default for on ``shape_draft``'s
+    ``populationType`` (``CodeIndex.shape_slot_defaults``).
 
     A slot takes its default under the conditions ``apply_declared_defaults`` puts on a slot:
     it is unbound or absent, carries no ``requested_all`` evidence, and its taxonomy holds
     the default value. The availability read at the queried place must also have run
-    (``ShapeDraft.place_available`` is true or false). Where it succeeded, the taxonomy
-    holds the values of the members with data there, so where the family's total has data
-    and no member carrying the default has, the slot stays open and the total answers.
-    Where the read failed, was skipped, or had no place to read (``place_available`` is
-    ``None``), the taxonomy lists every member whether or not it has data, so the slot
-    stays open and the total answers. Where no member has data, the default binds and the
-    answer is no data. A slot the binder gave a value keeps it.
+    (``ShapeDraft.place_available`` is true or false); where it failed, was skipped, or had
+    no place to read (``None``), the slot stays open and the family's total answers. Where
+    the read found data on some member but on none that holds the default value
+    (`_default_has_no_data`), the default is not applied either: the slot stays open, the
+    total answers, and the default is returned as relaxed. A slot the binder gave a value
+    keeps it.
 
-    Returns the listified input and ``[]`` when unchanged. Otherwise returns the repaired
-    bindings and the pre-default entries. Iteration follows declaration order.
+    Returns the repaired bindings, the pre-default entries of the slots that took a default,
+    and the defaults not applied for want of data, each in declaration order.
     """
     result = list(bindings)
     defaulted: list[SlotBindingDraft] = []
+    relaxed: list[ShapeSlotDefault] = []
     if shape_draft.place_available is None:
-        return result, defaulted
-    for default in defaults:
+        return result, defaulted, relaxed
+    for default in index.shape_slot_defaults:
         if default.population_type != shape_draft.pop_type_dcid:
             continue
         target_index = next(
@@ -450,11 +287,34 @@ def apply_shape_slot_defaults(
             result[target_index], shape_draft, default.property_dcid, default.value_dcid
         ):
             continue
+        if _default_has_no_data(shape_draft, default):
+            relaxed.append(default)
+            continue
         defaulted.append(result[target_index])
         result[target_index] = result[target_index].model_copy(
             update={"kind": "value", "value_dcids": [default.value_dcid]}
         )
-    return result, defaulted
+    return result, defaulted, relaxed
+
+
+def _default_has_no_data(shape_draft: ShapeDraft, default: ShapeSlotDefault) -> bool:
+    """Whether the availability read found data at the queried place on some member of
+    ``shape_draft`` and on none that reads ``default``'s value. False where the read holds
+    no per-member coverage (``ShapeDraft.member_coverage`` is None), as for a role-bearing
+    shape, where no member has data, since the default reading then has as much data as the
+    total, and where a member with data has no arcs read, since it may hold the value."""
+    coverage = shape_draft.member_coverage
+    if coverage is None:
+        return False
+    with_data = [sv for sv, places in coverage.items() if places]
+    if not with_data:
+        return False
+    arcs = shape_draft.sv_arc_facts or {}
+    # A member whose arcs were not read may hold the value.
+    return all(
+        arcs.get(sv) and read_constraints(arcs[sv]).get(default.property_dcid) != default.value_dcid
+        for sv in with_data
+    )
 
 
 def defaulted_slots_named(

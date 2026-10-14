@@ -7,7 +7,7 @@
 Result types:
   Materialised           - confirmed SV dcids, their facets, the read plan and coverage.
   NoDataDraft            - named reason why no data can be returned.
-  BoundValuesUnrealisable - the standard path's bound values match no member together.
+  BoundValuesUnrealisable - the bound values match no member together.
   MaterialisedCandidates - multiple Materialised results, one per surviving shape.
 """
 
@@ -27,7 +27,7 @@ from search.engine.retrieval.read_plan import preview_years
 from search.engine.retrieval.role_resolve import graph_confirm_resolve
 from search.engine.retrieval.standard import FacetBatch, standard_resolve
 from search.engine.shape import ShapeDraft, is_role_bearing, role_names_by_axis
-from search.models import Coverage, Headline
+from search.models import Coverage, Headline, NoDataReason
 
 if TYPE_CHECKING:
     from materialise.place_scope import DefaultPlaceScope, DefaultPresence
@@ -143,7 +143,7 @@ class Materialised:
     scope_member_dcids: list[str] | None = None
     # The default place scope a standard resolve derived from a presence read: that of the
     # StatVars in `sv_dcids`, the scope a resubmit of them derives. None when no presence
-    # read was given.
+    # read was given, or when no member asserts every bound property.
     default_scope: DefaultPlaceScope | None = None
     # Scope discovered for an unbound role axis; None when no discovery ran.
     discovered_scope: DiscoveredScope | None = None
@@ -194,7 +194,7 @@ class UnsupportedDraft:
 class NoDataDraft:
     """Named no-data outcome from the materialise stage."""
 
-    reason: str  # "no_observations" | "denominator_not_available" | "variable_not_resolved"
+    reason: NoDataReason
     # Confirmed SVs when identity was checked before the no-data outcome.
     sv_dcids: list[str] | None = None
     # Role path: the flow axes the request left open that the elected members declare, as
@@ -206,9 +206,14 @@ class NoDataDraft:
 
 @dataclass(frozen=True)
 class MemberConflict:
-    """The bound properties one member's asserted values contradict
-    (`bound_values._bound_value_conflicts`), and whether the member asserts every bound
-    property, as a probe requires (`bound_values._fully_bound_members_facts`)."""
+    """The bound properties that keep one member out of the answer, and whether the member
+    asserts every bound property, as a probe requires
+    (`bound_values._fully_bound_members_facts`).
+
+    The standard path names the properties the member's asserted values contradict
+    (`bound_values._bound_value_conflicts`). The role path names those and the bound
+    properties the member does not assert (`role_resolve._mint_conflicts`), since the mint
+    serves no member silent on a bound property."""
 
     properties: frozenset[str]
     fully_bound: bool
@@ -216,11 +221,12 @@ class MemberConflict:
 
 @dataclass
 class BoundValuesUnrealisable(NoDataDraft):
-    """The standard path's bound values match no member together (`binding_mismatch`).
+    """The bound values match no member together (`binding_mismatch`), and unbinding some
+    of them admits one.
 
-    `conflicts` holds each member's conflict, in recall order and without repeats. Every
-    member contradicts some bound value, so each set is non-empty. A caller that can
-    unbind values unbinds a minimal set (`relaxation`) and resolves again
+    `conflicts` holds each member's conflict, in population order and without repeats.
+    Each set is non-empty: every member it describes is kept out by some bound value. A
+    caller that can unbind values unbinds a minimal set (`relaxation`) and resolves again
     (`region.unrealisable`); any other caller reads the outcome as the `binding_mismatch`
     refusal it is.
     """
@@ -228,20 +234,31 @@ class BoundValuesUnrealisable(NoDataDraft):
     reason: str = "binding_mismatch"
     conflicts: tuple[MemberConflict, ...] = ()
 
-    def relaxation(self, *, engine_chosen: AbstractSet[str] = frozenset()) -> frozenset[str]:
-        """The bound properties to unbind next, one member's conflict set.
+    def relaxation(
+        self,
+        *,
+        engine_chosen: AbstractSet[str] = frozenset(),
+        unnamed: AbstractSet[str] = frozenset(),
+    ) -> frozenset[str]:
+        """The bound properties to unbind next.
 
-        Unbinding a member's set lifts every contradiction that member carries, so the
-        candidates are the members' sets. The policy picks the set with the fewest
-        properties the request named (those outside `engine_chosen`: a declared default or
-        the elected measure partition), then the fewest engine-chosen ones, then a member
-        that asserts every bound property, then the earliest member in recall order. The
-        two counts make the pick inclusion-minimal: a strict subset of a set is smaller in
-        one count and no larger in the other. A caller with no request/engine split passes
+        Unbinding a member's conflict set lifts every conflict that member carries, so the
+        candidates are the members' sets, ranked by the fewest properties the request named
+        (those in neither class below), then the fewest `unnamed` ones, then the fewest
+        `engine_chosen` ones (a declared default or the elected measure partition), then a
+        member that asserts every bound property, then the earliest member in population
+        order. The counts make the pick inclusion-minimal: a strict subset of a set is
+        smaller in one count and no larger in the others.
+
+        The classes give way in that order. A set of engine-chosen values alone is unbound
+        first. Otherwise every `unnamed` value in any member's set is unbound at once: such
+        a value binds because its slot offered no other, a claim that every member asserts
+        it, and a member conflicting on it refutes the claim. Otherwise the ranked set goes,
+        which then holds a value the request named. A caller with no such split passes
         nothing, so the smallest set wins.
 
-        Unbinding the set is not guaranteed to admit the member. The next resolve can
-        draw a different population and refuse again, which is why callers loop.
+        Unbinding is not guaranteed to admit a member. The next resolve can draw a
+        different population and refuse again, which is why callers loop.
 
         Raises:
             ValueError: there is no conflict, or the chosen set is empty, so unbinding it
@@ -249,10 +266,12 @@ class BoundValuesUnrealisable(NoDataDraft):
         """
         if not self.conflicts:
             raise ValueError("binding_mismatch names no member conflict")
+        unnamed = unnamed - engine_chosen
         _, chosen = min(
             enumerate(self.conflicts),
             key=lambda ranked: (
-                len(ranked[1].properties - engine_chosen),
+                len(ranked[1].properties - engine_chosen - unnamed),
+                len(ranked[1].properties & unnamed),
                 len(ranked[1].properties & engine_chosen),
                 not ranked[1].fully_bound,
                 ranked[0],
@@ -260,7 +279,10 @@ class BoundValuesUnrealisable(NoDataDraft):
         )
         if not chosen.properties:
             raise ValueError("binding_mismatch names a member no bound value contradicts")
-        return chosen.properties
+        if chosen.properties <= engine_chosen:
+            return chosen.properties
+        refuted = frozenset().union(*(conflict.properties & unnamed for conflict in self.conflicts))
+        return refuted or chosen.properties
 
 
 @dataclass

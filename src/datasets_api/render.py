@@ -1,6 +1,9 @@
 """Renders materialised frames as CSV, XLSX, or Parquet, optionally packaged as a Frictionless
-Data Package. Decode, groupby, selection, enrichment, and pivot run before the writer. Reshaping
-preserves the materialisation's `content_version`.
+Data Package. The party-totals cut, decode, groupby, selection, enrichment, and pivot run before
+the writer, in that order. Selection, enrichment and pivot preserve the version's
+`content_version`. A cut that leaves rows out (`options.without_party_totals`,
+`datasets_api.party_totals`) and a groupby collapse to a frame of its own each mint a version of
+their own (`DerivedVersion`); a groupby over a cut frame sums the members the cut kept.
 
 Decode runs first and adds `stat_var_{code_system}` columns, so selection and pivot can name them.
 `options.columns` resolves a token to a real or decoded column first, then to an enabled
@@ -111,6 +114,7 @@ from datasets_api.manifest_models import (
 )
 from datasets_api.mint_models import MintOptions
 from datasets_api.output_options import movable_totals_roles
+from datasets_api.party_totals import CutFrame, cut_frame, cut_party_totals, open_party_roles
 from datasets_api.query_options import QueryOptionsInvalid
 from datasets_api.timings import phase
 from datasets_api.unit_labels import unit_currency, unit_label
@@ -253,6 +257,28 @@ class ReshapeResult:
     warnings: tuple[MaterialisationWarning, ...]
     collapse: GroupbyCollapseRendering | None
     warning_order: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class DerivedVersion:
+    """A version a rendering mints of its own, beside the version of the frame it read: a
+    `groupby` collapse's frame, the frame `without_party_totals` cut (`datasets_api.party_totals`),
+    or a collapse of the cut frame. `frame_chunks` returns a fresh pass over its frame, whose
+    role columns are `role_columns`. `rows` counts its rows and `distinct` the distinct values of
+    each coverage dimension the cut changed, empty for a collapse of an uncut frame.
+    `frame_sha256` hashes the frame and `content_version` is minted from that hash alone.
+    `summed` is set when the frame is a collapse, which sums the definition's variables.
+    `party_totals_left_out` holds the trace entries of the totals the cut left out
+    (`PartyTotalsCut.trace_entries`), empty when none."""
+
+    frame_chunks: Callable[[], Iterator[Frame]]
+    role_columns: tuple[str, ...]
+    rows: int
+    distinct: Mapping[str, int]
+    frame_sha256: str
+    content_version: str
+    summed: bool
+    party_totals_left_out: tuple[dict[str, object], ...]
 
 
 def check_options_supported(options: MintOptions, *, code_index: CodeIndex | None) -> None:
@@ -2444,8 +2470,9 @@ def _reshape_stream(
 @dataclass(frozen=True)
 class RenderedDefinition:
     """The `render_and_store` result. `collapse` is set for a groupby collapse to a frame.
-    `datasets_api.serve` uses it to write the collapsed version's canonical frame and version
-    record.
+    `derived` is set when the artifact belongs to a version of its own (`DerivedVersion`), and
+    `datasets_api.serve` and `datasets_api.current` use it to write that version's canonical
+    frame, statistics and version record.
     `labels_complete` is `False` when a bundle's code label read
     (`BundleCodes.label_read_complete`) or a long output's name read failed, and the caller
     then links the artifact as incomplete (`incomplete_rendering`)."""
@@ -2454,6 +2481,7 @@ class RenderedDefinition:
     warnings: tuple[MaterialisationWarning, ...]
     collapse: GroupbyCollapseRendering | None
     labels_complete: bool = True
+    derived: DerivedVersion | None = None
 
 
 def render_and_store(
@@ -2509,10 +2537,35 @@ def render_and_store(
     exactly when the frames are equal.
     The family ref a summed collapse writes in `stat_var` is labelled with
     `code_index.labels.family_label` over `spec`'s identity.
+
+    `options.without_party_totals` cuts the group totals of the open party roles of `spec`'s
+    identity out of the frame before any reshape (`datasets_api.party_totals`), reading the
+    kinds from `enrichment.parties`. A cut that leaves rows out renders from the cut frame,
+    which is a version of its own, so the artifact and any collapse of it belong to a version
+    minted from their own frame (`RenderedDefinition.derived`). A cut that leaves nothing out
+    renders the frame as it is. Every chunk `frame_chunks` yields is then a `Frame`.
     """
     check_options_supported(options, code_index=code_index)
     subject_id = str(spec.get("spec_id"))
     identity = spec.get("identity")
+    # A cut reads `Frame` chunks, which `datasets_api.current` and `datasets_api.serve` pass.
+    frames = cast("Callable[[], Iterator[Frame]]", frame_chunks)
+    party_cut = (
+        cut_party_totals(
+            frames,
+            roles=open_party_roles(identity, entity_columns),
+            parties=enrichment.parties,
+        )
+        if options.without_party_totals
+        else None
+    )
+    cut = (
+        cut_frame(frames, party_cut, role_columns=entity_columns)
+        if party_cut is not None and party_cut.left_out
+        else None
+    )
+    if cut is not None:
+        frame_chunks = cut.frame_chunks
     subject_label = (
         family_label(
             cast("Mapping[str, object]", identity),
@@ -2566,8 +2619,11 @@ def render_and_store(
         collapse = streamed.collapse
         if collapse is not None and collapse.frame_sha256 == base_frame_sha256:
             collapse = replace(collapse, content_version=content_version)
+        derived = _derived_version(
+            collapse, cut=cut, content_version=content_version, entity_columns=entity_columns
+        )
         effective_content_version = (
-            collapse.content_version if collapse is not None else content_version
+            derived.content_version if derived is not None else content_version
         )
 
     sources = _sources(provenance_refs, citations)
@@ -2703,7 +2759,52 @@ def render_and_store(
         content_version=effective_content_version,
     )
     return RenderedDefinition(
-        artifact=artifact, warnings=warnings, collapse=collapse, labels_complete=labels_complete
+        artifact=artifact,
+        warnings=warnings,
+        collapse=collapse,
+        labels_complete=labels_complete,
+        derived=derived,
+    )
+
+
+def _derived_version(
+    collapse: GroupbyCollapseRendering | None,
+    *,
+    cut: CutFrame | None,
+    content_version: str,
+    entity_columns: Sequence[str],
+) -> DerivedVersion | None:
+    """The version a render's artifact belongs to when it is not `content_version`, the version
+    of the frame the render read: the collapse when it is a frame of its own, else the cut
+    frame, else `None`. A collapse equal to the frame it summed (one contributor, nothing
+    kept) is that frame, so a collapse of the cut frame equal to it is the cut frame."""
+    if collapse is not None and collapse.content_version == content_version:
+        return None
+    cut_version = mint_version_from_digest(cut.frame_sha256) if cut is not None else None
+    left_out = cut.left_out if cut is not None else ()
+    if collapse is not None and collapse.content_version != cut_version:
+        frame = collapse.frame
+        return DerivedVersion(
+            frame_chunks=lambda: iter((frame,)),
+            role_columns=collapse.role_columns,
+            rows=frame.num_rows,
+            distinct={},
+            frame_sha256=collapse.frame_sha256,
+            content_version=collapse.content_version,
+            summed=True,
+            party_totals_left_out=left_out,
+        )
+    if cut is None or cut_version is None:
+        return None
+    return DerivedVersion(
+        frame_chunks=cut.frame_chunks,
+        role_columns=tuple(entity_columns),
+        rows=cut.rows,
+        distinct=cut.distinct,
+        frame_sha256=cut.frame_sha256,
+        content_version=cut_version,
+        summed=False,
+        party_totals_left_out=left_out,
     )
 
 
@@ -2713,6 +2814,9 @@ their contents for unchanged data and settings (a file added, renamed or reworde
 code described differently), so every version renders and links a new bundle on its next
 request while each old bundle stays listed under its own rendering key. Version 3 writes
 integer years and keeps total rows out of a CSV or XLSX data table (`_TotalRows`)."""
+
+_WITHOUT_PARTY_TOTALS_KEY = "without_party_totals"
+"""The rendering key `options.without_party_totals` is recorded under, present only when true."""
 
 RENDITION_KEY = "rendition"
 """The bundle rendering's rendition token (`rendition_token`). A bare rendering has none."""
@@ -2762,7 +2866,9 @@ def artifact_rendering(options: MintOptions, *, site: PublicSiteSettings) -> dic
     """The `rendering` an artifact rendered under `options` is stored, linked and matched under.
 
     It is `options` without unset fields (`exclude_none=True`, so a defaulted `format` or
-    `bundle` always appears and an unset reshape never does), plus `RENDITION_KEY` for a bundle
+    `bundle` always appears and an unset reshape never does) and without a false
+    `without_party_totals`, so a rendering that leaves no totals out has the key of the same
+    options with no such field, plus `RENDITION_KEY` for a bundle
     and `LAYOUT_KEY = DATA_LAYOUT_VERSION` for a bare file in the long layout. A frame-layout
     request's `options` already carry `LAYOUT_KEY = FRAME_LAYOUT`, so its rendering is the
     options dump as sent. The rendering key hashes this dict
@@ -2770,6 +2876,8 @@ def artifact_rendering(options: MintOptions, *, site: PublicSiteSettings) -> dic
     key and leaves old links matching only themselves.
     """
     rendering = options.model_dump(mode="json", exclude_none=True)
+    if not options.without_party_totals:
+        del rendering[_WITHOUT_PARTY_TOTALS_KEY]
     if options.bundle:
         rendering[RENDITION_KEY] = rendition_token(site)
     elif options.layout is None:

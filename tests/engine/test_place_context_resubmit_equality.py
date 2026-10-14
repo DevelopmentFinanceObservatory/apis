@@ -7,13 +7,14 @@ with the facets in one of two ways (`_LIES`). Country facets run 2015 to 2022 an
 hold one and not the other.
 
 The routes are a first election with one shape of two members (unbound, and with gender
-bound to female), a flagged alternate (candidates, a lone alternate, a flagged no-data
-match), a flagged alternate of three members, a zero-observation re-election that adopts a
-sibling, a sibling menu, a sibling menu beside a flagged alternate, a near-neighbour tie
-that widens the search, a role-bearing sibling beside a subject sibling, a role-bearing
-elected shape beside a subject alternate, and two named controls: income from Norway, whose
-by-creditor series discovers its recipients beside a subject alternate with data in
-Norway, and income of Ghana from Norway, with the subject alternate's data at both.
+bound to female), a nominated alternate (candidates, a lone alternate, a flagged no-data
+match), a nominated alternate of three members that the query's wording does not rival, a
+zero-observation re-election that adopts a sibling, a sibling menu, a sibling menu beside a
+nominated alternate, close-scoring readings of other measures the model does not nominate,
+a role-bearing sibling beside a subject sibling, a role-bearing elected shape beside a
+subject alternate, and two named controls: income from Norway, whose by-creditor series
+discovers its recipients beside a subject alternate with data in Norway, and income of
+Ghana from Norway, with the subject alternate's data at both.
 
 For every case the test checks:
 
@@ -232,7 +233,7 @@ _ROUTES = (
         (0.90, 0.84, 0.835, 0.83),
         placed=(_TOTAL, _FEMALE, _MALE),
         also_plausible=(1,),
-        reaches=(_menu(_M, _TOTAL), "definite", "alternate_match", "no_data"),
+        reaches=(_menu(_M, _TOTAL), "definite", "alternate_match"),
     ),
     _Route(
         "adopted-sibling",
@@ -259,7 +260,6 @@ _ROUTES = (
         also_plausible=(3,),
         reaches=(
             _menu(_EST, _PROJ),
-            _menu(_EST, _PROJ, _FAR),
             _menu(_EST, _FAR),
             "definite",
             "alternate_match",
@@ -267,12 +267,12 @@ _ROUTES = (
         ),
     ),
     _Route(
-        "near-neighbour-cascade",
+        "unnominated-other-measures",
         scenarios._MORTALITY,
         (_M, _LIVE, _FAR),
         (0.90, 0.89, 0.84),
-        placed=(_M, _LIVE, _FAR),
-        reaches=(_menu(_M, _LIVE), _menu(_M, _FAR), "definite", "alternate_match", "no_data"),
+        placed=(_M, _LIVE),
+        reaches=("definite", "flagged_match", "no_data"),
     ),
     _Route(
         "role-bearing-sibling",
@@ -281,7 +281,7 @@ _ROUTES = (
         (0.85, 0.84, 0.83),
         placed=(_PPP,),
         coverage_rows=_IDS_AT_USA,
-        reaches=(_menu(_PPP, _IDS), "alternate_match", "flagged_match"),
+        reaches=(_menu(_PPP, _IDS), "definite", "flagged_match"),
     ),
     _Route(
         "role-bearing-elected-subject-alternate",
@@ -478,41 +478,45 @@ def _answer(case: _Case) -> _Answer | None:
     if name == "two-member-shape-bound-female":
         return _with_nearest(_single(_reading(case, [_FEMALE])), _reading(case, [_FEMALE, _MALE]))
     if name == "flagged-alternate":
-        return _with_alternates(_reading(case, [_M]), [_reading(case, [_FAR])])
+        # The nominated alternate is a rival (status rule 2(b)) and rides on a refusal
+        # (rule 1).
+        far = _reading(case, [_FAR])
+        return _with_alternates(_reading(case, [_M]), [far], riders=[far])
     if name == "flagged-three-member-alternate":
         # The family election keeps the total, which every gendered member's constraints
-        # extend, so the alternate answers through the total alone.
-        return _with_alternates(_reading(case, [_M]), [_reading(case, [_TOTAL])])
+        # extend, so the alternate answers through the total alone. The nominated total is
+        # a rival (status rule 2(b)) and rides on a refusal (rule 1).
+        total = _reading(case, [_TOTAL])
+        return _with_alternates(_reading(case, [_M]), [total], riders=[total])
     if name == "adopted-sibling":
-        return _reelection(_reading(case, [_M]), [_reading(case, [_EST])], [])
+        return _reelection(_reading(case, [_M]), [_reading(case, [_EST])])
     if name == "sibling-menu":
-        return _reelection(
-            _reading(case, [_M]), [_reading(case, [_EST]), _reading(case, [_PROJ])], []
-        )
+        return _reelection(_reading(case, [_M]), [_reading(case, [_EST]), _reading(case, [_PROJ])])
     if name == "sibling-menu-beside-flagged-alternate":
+        far = _reading(case, [_FAR])
         return _reelection(
             _reading(case, [_M]),
             [_reading(case, [_EST]), _reading(case, [_PROJ])],
-            [_reading(case, [_FAR])],
+            rivals=[far],
+            riders=[far],
         )
-    if name == "near-neighbour-cascade":
-        elected, tied, far = (_reading(case, [sv]) for sv in (_M, _LIVE, _FAR))
-        if elected.has_data and not tied.has_data:
-            return _with_alternates(elected, [far])
-        return _with_alternates(elected, [tied])
+    if name == "unnominated-other-measures":
+        # Readings of other measures the model does not nominate are never offered,
+        # however close their scores (status rules 2 and 5).
+        return _single(_reading(case, [_M]))
     if name == "role-bearing-sibling":
+        # The elected Atlas reading has no data, so its one qualifier-only sibling, GNI PPP,
+        # answers in its place (status rule 1). PPP's price basis is not the declared
+        # default, so the IDS series, differing from it on that open axis, is its rival
+        # (rule 2(a)). The IDS series is no stand-in for the Atlas reading, being
+        # role-bearing, and the model nominates nothing to ride on the refusal.
         ppp = _reading(case, [_PPP])
-        offered = {_IDS} if _role_has_data(case) else set()
-        if ppp.has_data:
-            offered.add(_PPP)
-        readings = {_PPP: ppp} if ppp.has_data else {}
-        if len(offered) == 2:
-            return _Answer("candidates", frozenset(offered), readings)
-        if offered == {_PPP}:
-            return _Answer("definite", frozenset(offered), readings)
-        if offered == {_IDS}:
-            return _Answer("alternate_match", frozenset(offered))
-        return _Answer("flagged_match", frozenset())
+        if not ppp.has_data:
+            return _Answer("flagged_match", frozenset())
+        readings = {_PPP: ppp}
+        if _role_has_data(case):
+            return _Answer("candidates", frozenset({_PPP, _IDS}), readings)
+        return _Answer("definite", frozenset({_PPP}), readings)
     if name == "role-bearing-elected-subject-alternate":
         ppp = _reading(case, [_PPP])
         readings = {_PPP: ppp} if ppp.has_data else {}
@@ -537,43 +541,50 @@ def _single(elected: _Expected) -> _Answer:
     return _with_alternates(elected, [])
 
 
-def _with_alternates(elected: _Expected, alternates: Sequence[_Expected]) -> _Answer:
-    """The elected reading and the alternates admitted beside it: every one with data is
-    offered. An elected reading without data leaves a lone alternate as the alternate
-    match. With none, a reading whose data sits outside the years read answers no data for
-    the window, and one with no data at its places offers its representative as the
-    flagged match."""
-    with_data = [r for r in (elected, *alternates) if r.has_data]
-    readings = {r.stat_var: r for r in with_data}
-    if not elected.has_data:
-        if not with_data:
-            kind = "no_data" if elected.held else "flagged_match"
-            return _Answer(kind, frozenset(), {elected.stat_var: elected})
-        if len(with_data) == 1:
-            return _Answer("alternate_match", frozenset(readings), readings)
-    if len(with_data) == 1:
-        return _Answer("definite", frozenset(readings), readings)
-    return _Answer("candidates", frozenset(readings), readings)
+def _with_alternates(
+    elected: _Expected, rivals: Sequence[_Expected], *, riders: Sequence[_Expected] = ()
+) -> _Answer:
+    """The elected reading beside its rivals and the nominated readings that ride on a
+    refusal (status rules 1 to 3). An elected reading with data is offered with every rival
+    with data. One without data offers the first rider with data as the alternate match.
+    With none, a reading whose data sits outside the years read answers no data for the
+    window, and one with no data at its places offers its representative as the flagged
+    match."""
+    if elected.has_data:
+        with_data = [r for r in (elected, *rivals) if r.has_data]
+        readings = {r.stat_var: r for r in with_data}
+        kind = "definite" if len(with_data) == 1 else "candidates"
+        return _Answer(kind, frozenset(readings), readings)
+    rider = next((r for r in riders if r.has_data), None)
+    if rider is not None:
+        return _Answer("alternate_match", frozenset({rider.stat_var}), {rider.stat_var: rider})
+    kind = "no_data" if elected.held else "flagged_match"
+    return _Answer(kind, frozenset(), {elected.stat_var: elected})
 
 
 def _reelection(
-    elected: _Expected, siblings: Sequence[_Expected], alternates: Sequence[_Expected]
+    elected: _Expected,
+    siblings: Sequence[_Expected],
+    *,
+    rivals: Sequence[_Expected] = (),
+    riders: Sequence[_Expected] = (),
 ) -> _Answer:
-    """A zero-observation re-election: an elected reading with data at none of its probe
-    places tries its siblings. One sibling with data is adopted as the shape in play; more
-    join the menu beside the flagged alternates."""
+    """A zero-observation re-election (status rule 1): an elected reading with data at none
+    of its probe places tries its siblings that differ from it only on the measurement
+    qualifier. One sibling with data answers as the shape in play, beside `rivals`; several
+    are offered as candidates without the elected reading or its rivals. With none, the
+    elected reading answers, a rider with data riding on its refusal."""
     if elected.has_data or elected.held:
-        return _with_alternates(elected, alternates)
+        return _with_alternates(elected, rivals, riders=riders)
     found = [s for s in siblings if s.has_data]
     if len(found) == 1:
-        return _with_alternates(found[0], alternates)
+        return _with_alternates(found[0], rivals)
     if not found:
-        return _with_alternates(elected, alternates)
-    with_data = [*found, *(a for a in alternates if a.has_data)]
+        return _with_alternates(elected, [], riders=riders)
     return _Answer(
         "candidates",
-        frozenset(r.stat_var for r in with_data),
-        {r.stat_var: r for r in with_data},
+        frozenset(r.stat_var for r in found),
+        {r.stat_var: r for r in found},
     )
 
 
@@ -882,10 +893,10 @@ def _expected_warning(scope: DefaultPlaceScope) -> list[tuple[str, str]]:
 
 
 # The StatVars whose availability a first answer reads, by route. A subject-only
-# elected shape's read covers its flagged alternates, its re-election siblings and, when a
-# tie fired, the shapes the widened search would add, whether or not the answer reaches
-# them. A role-bearing elected shape makes none; its subject-only alternate's read covers
-# the alternate alone.
+# elected shape's read covers its rivals, the nominated readings that ride on a refusal
+# and its re-election siblings, whether or not the answer reaches them, and no reading the
+# status rule never offers. A role-bearing elected shape makes none; its subject-only
+# alternate's read covers the alternate alone.
 _FIRST_ANSWER_READ: dict[str, frozenset[str]] = {
     "two-member-shape": frozenset({_FEMALE, _MALE}),
     "two-member-shape-bound-female": frozenset({_FEMALE, _MALE}),
@@ -894,7 +905,7 @@ _FIRST_ANSWER_READ: dict[str, frozenset[str]] = {
     "adopted-sibling": frozenset({_M, _EST}),
     "sibling-menu": frozenset({_M, _EST, _PROJ}),
     "sibling-menu-beside-flagged-alternate": frozenset({_M, _EST, _PROJ, _FAR}),
-    "near-neighbour-cascade": frozenset({_M, _LIVE, _FAR}),
+    "unnominated-other-measures": frozenset({_M}),
     "role-bearing-sibling": frozenset({_ATLAS, _PPP}),
     "role-bearing-elected-subject-alternate": frozenset({_PPP}),
 }

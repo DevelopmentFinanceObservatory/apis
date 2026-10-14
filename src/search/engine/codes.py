@@ -230,11 +230,15 @@ WARNING_CODES: frozenset[str] = frozenset(
         "skills_index_incomplete",
         # Region pipeline (region/codes.py).
         "retrieval_score_weak",
-        "redundant_binding_dropped",
+        # The bind schema refuses a binding that names no value, and the part refuses
+        # with this warning (region/phase_rank_bind.py).
         "degenerate_binding_detected",
-        "starved_axis_binding_restored",
+        # Registered, and no stage emits these three: the status rule
+        # (region/status_rule.py) decides candidates without a score margin.
+        "redundant_binding_dropped",
         "near_neighbor_ambiguous",
         "near_neighbor_pool_widened",
+        # Region pipeline outcomes.
         "alternates_unevaluated",
         "entity_label_unresolved",
         "elected_shape_no_data",
@@ -261,6 +265,9 @@ WARNING_CODES: frozenset[str] = frozenset(
         "role_scope_defaulted",
         # A declared default fixed a slot the query names (region/codes.py).
         "slot_defaulted",
+        # A population type's slot default no member with data at the place reads was not
+        # applied (region/codes.py).
+        "slot_default_not_applied",
         # The single member an answer names is not its family's total
         # (region/codes.py).
         "family_total_absent",

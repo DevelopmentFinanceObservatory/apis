@@ -502,7 +502,9 @@ class TestBuildSpecEntityGroups:
     )
     def test_a_role_binding_a_groups_total_names_the_total(self, origin_dcids, total):
         """A role binding exactly the total a dataset publishes for a group carries the group
-        with that total, and a role binding the members carries it with none."""
+        with that total. A role binding the members carries it with none and keeps the total
+        aside (`ResolvedSpec.group_totals`), so the one group a same-shape merge rebuilds from
+        it still has the total."""
         g7 = NamedGroup(
             label="G7",
             dcid=None,
@@ -515,7 +517,8 @@ class TestBuildSpecEntityGroups:
         assert spec.resolved.entity_groups == {
             "origin": EntityGroup(ref=None, label="G7", total=total)
         }
-        assert {group.total for group in spec_named_groups(spec)} == {total}
+        assert spec.resolved.group_totals == ({} if total else {"origin": "GroupOfSeven"})
+        assert [group.total for group in spec_named_groups(spec)] == ["GroupOfSeven"]
 
     def test_a_role_names_each_set_it_binds_whole(self):
         """A role binding a group's members beside another place carries no group and

@@ -14,15 +14,39 @@ from dfo_platform.roles import RoleAxis
 from materialise.roles import axis_for_role
 
 
+def _is_none(value: object) -> bool:
+    return value is None
+
+
+class DimensionNoun(BaseModel):
+    """What one member of a flow dimension is called, and several of them."""
+
+    model_config = ConfigDict(extra="forbid")
+    singular: str
+    plural: str
+
+
 class CoverageDimension(BaseModel):
     """One coverage dimension. `axis` is `axis_for_role(label)`: the flow axis of a dimension
     labelled by a declared role, and `None` for `years` and unmapped roles. Validation derives
-    it, so a stored body written without it carries it once loaded."""
+    it, so a stored body written without it carries it once loaded. `noun` is set at the mint
+    from the version's flow family (`dfo_platform.roles.role_wording`), which the label and
+    axis do not fix, so a body stored without it carries none (`year_coverage_counted`): a
+    `None` noun is left out of every dump."""
 
     model_config = ConfigDict(extra="forbid")
     label: str
     count: int
     axis: RoleAxis | None = None
+    noun: DimensionNoun | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "what the members this dimension counts are called, by the frame's flow family: "
+            "provider and recipient for aid, creditor and debtor for debt. Absent for a "
+            "dimension on no flow axis, such as `years`, and on a version stored without it"
+        ),
+    )
 
     @model_validator(mode="after")
     def _derive_axis(self) -> CoverageDimension:
@@ -30,11 +54,79 @@ class CoverageDimension(BaseModel):
         return self
 
 
+def year_coverage_counted(coverage: Mapping[str, object]) -> bool:
+    """Whether the mint that stored `coverage` counted its year members
+    (`datasets_api.manifest.year_coverage`), stating them or finding none to state.
+
+    That mint names the members of every dimension on a flow axis (`CoverageDimension.noun`)
+    in the same assembly, so a flow dimension with no noun marks a coverage stored before
+    versions held either. A coverage with no flow dimension has no year members to count and
+    reads as counted.
+    """
+    dimensions = coverage.get("dimensions")
+    return all(
+        not isinstance(dimension, Mapping)
+        or dimension.get("noun") is not None
+        or not isinstance(label := dimension.get("label"), str)
+        or axis_for_role(label) is None
+        for dimension in (dimensions if isinstance(dimensions, list) else ())
+    )
+
+
+class YearCoverage(BaseModel):
+    """What the coverage index counts in one calendar year over the series a frame's
+    requests read: the series holding an observation in it and, under `role_counts`, the
+    distinct members of each role those series carry. A role is keyed by the `label` of its
+    entry in the frame's `coverage.dimensions`."""
+
+    model_config = ConfigDict(extra="forbid")
+    year: int
+    series: int
+    role_counts: dict[str, int]
+
+
 class CoverageModel(BaseModel):
+    """A frame's row and dimension counts and its applied window.
+
+    `recent_years`, `elected_year` and `fullest_year` set the frame's one year beside the
+    years around it (`datasets_api.manifest.year_coverage`). They are counted once, when
+    the version is minted, and stored with it, all three or none, so every read of the
+    version states the same ones. A `None` member is left out of every dump."""
+
     model_config = ConfigDict(extra="forbid")
     rows: int
     dimensions: list[CoverageDimension]
     window: dict[str, object] | None = None
+    recent_years: list[YearCoverage] | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "three calendar years, newest first, each with the counts the coverage index "
+            "held of the series the frame's run read when the version was minted. They end "
+            "at the newest year a counted series held up to the year the index was built "
+            "in, so a year after the frame's can hold data the frame leaves out. Stated "
+            "for a latest window and for a named year at or after the year a latest window "
+            "serves, and absent for an earlier named year"
+        ),
+    )
+    elected_year: int | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "the year a latest window served when the version was minted. It is the "
+            "frame's year under a latest window. A frame of a named year after it holds a "
+            "year a latest window passes over"
+        ),
+    )
+    fullest_year: YearCoverage | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "the year holding the most series of the ten calendar years ending at the "
+            "newest of `recent_years`, stated when it is earlier than those three and the "
+            "frame's year holds under the share of its series a latest window's year must hold"
+        ),
+    )
 
 
 class CitedSourceNode(BaseModel):
@@ -163,10 +255,6 @@ class CitationModel(BaseModel):
         for source in self.sources:
             by_ref.setdefault(source.ref, source)
         return by_ref
-
-
-def _is_none(value: object) -> bool:
-    return value is None
 
 
 class WarningModel(BaseModel):

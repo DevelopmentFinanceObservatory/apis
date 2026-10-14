@@ -38,6 +38,7 @@ from search.models import (
     NearestRealSpec,
     NoDataDenominator,
     NoDataGate,
+    NoDataReason,
     Operation,
     Ordering,
     ParsedPart,
@@ -52,6 +53,7 @@ from search.models import (
 )
 
 if TYPE_CHECKING:
+    from search.engine.bind import SlotBindingDraft
     from search.engine.region.option_coverage import RoleServedFilter
     from search.engine.region.promote_relaunch import PromoteRelaunch
     from search.engine.retrieval.read_plan import ReadPlan
@@ -115,7 +117,7 @@ class RegionResult:
     variable_text: str | None
     status: StatusLiteral
     specs: tuple[Spec, ...]  # definite: 1, candidates: 2+, no_data/unsupported: 0
-    no_data_reason: str | None
+    no_data_reason: NoDataReason | None
     warnings: tuple[Warning, ...]
     timing_by_step: dict[str, int]
     earliest_index: int = 0
@@ -138,9 +140,11 @@ class RegionResult:
     # Confirmed StatVars for the elected shape on no-data outcomes.
     # Matches `flagged_match` on no-member gates. Differs for `only_alternate_has_data`.
     elected_stat_vars: list[GraphRef] | None = None
-    # Input entity names the answer could not place, in input order: those that did not
-    # resolve for `entity_not_resolved`, and those whose flow direction the query does not
-    # tell for `role_not_resolved` (`place_roles.untold_direction_names`). Empty otherwise.
+    # Input entity names the answer could not place, in input order: on a refusal of the
+    # entity check (`phase_intake._phase_check_entities`), every name that resolved to no
+    # single node, ambiguous ones included, and for `role_not_resolved` those whose flow
+    # direction the query does not tell (`place_roles.untold_direction_names`). Empty
+    # otherwise.
     unresolved_entity_names: tuple[str, ...] = ()
     # Query qualifiers without a final binding, including terms absent from the
     # index vocabulary. Populated only for `qualifier_not_bound`. Full records
@@ -155,8 +159,8 @@ class RegionResult:
     # `pipeline.resolve_variable` on every no-data result of a part with source mentions, so
     # the outcome names the sources that limited it. `None` on every other result.
     source_scope: SourceScope | None = None
-    # Ambiguous query wordings and their candidates, populated only for
-    # `entity_ambiguous`.
+    # Ambiguous query wordings and their candidates, on a refusal of the entity check,
+    # whatever reason it elects. The wire carries them only for `entity_ambiguous`.
     ambiguous_entities: tuple[AmbiguousEntity, ...] = ()
     # The source wordings a `source_not_resolved` or `source_ambiguous` outcome rests on, in
     # mention order (`source_scope.SourceRefusal.terms`), and the series code a
@@ -184,6 +188,11 @@ class RegionResult:
     # Computed from resolved entities after shape construction. `{}` for
     # subject-only shapes or earlier no-data outcomes. This read makes no graph call.
     no_data_bound_role_dcids: Mapping[EntityRoleKey, tuple[str, ...]] = field(default_factory=dict)
+    # The answer a refusal raised on behalf of a candidate is about, as its shape and
+    # bindings: the candidates door answers with that candidate's refusal. `None` for a
+    # refusal about the elected reading. A refusal that judged no answer is judged on it
+    # (`phase_shared.settle_unjudged_refusal`).
+    refused_answer: tuple[ShapeDraft, tuple[SlotBindingDraft, ...]] | None = None
     # Stripped, case-folded qualifier spans forced into bindings by this region, or
     # answered by a slot default it warns about. Same-shape merges union the sets.
     # The entry door uses them to retain or drop `QUERY_QUALIFIER_DROPPED` warnings
@@ -202,27 +211,20 @@ class RegionResult:
     # years asked (`departures.window_gap_fact`). It holds the years asked and the span the
     # series runs. No warning discloses it, so it rides outside `departure_facts`.
     window_gap_fact: DepartureFact | None = None
+    # The departures of a definite answer that no warning discloses: the direction it reads
+    # a place named without one on, the one direction that holds data
+    # (`departures.direction_inferred`).
+    inferred_facts: tuple[DepartureFact, ...] = ()
     # This region's LLM token usage. A same-shape merge keeps the first
     # member's value. Request-wide totals are aggregated separately.
     llm_usage: dict | None = None
-    # Candidate scores by spec id. `None` marks candidates outside the loose group.
-    # Assembly uses scores for confidence and loose-last ordering.
-    candidate_scores: dict[str, float | None] | None = None
-    # Elected and nearby candidate ids from a fired near-neighbour gate.
-    # Includes candidates that survive final assembly, or is empty.
-    candidate_near_neighbor_spec_ids: frozenset[str] = frozenset()
     # True when the candidate budget drops an eligible distinct shape before
     # materialisation. Excludes retrieval top-K and score-floor filtering.
     # Candidate assembly combines this with its own cap for `truncated`.
     candidate_budget_truncated: bool = False
-    # True when the near-neighbour margin gate adds a close candidate to an
-    # otherwise definite result. Candidate assembly preserves the elected/fired
-    # pair's order before loose-last sorting. A same-shape merge keeps the first
-    # member's value. False for earlier ambiguity and non-candidate results.
-    near_neighbor_fired: bool = False
-    # Preserve the client's candidate order when a dataset resubmit reasserts
-    # a candidate set. Ranking state stays internal, so
-    # this override also prevents assembly from sorting that set again.
+    # The ordering a dataset resubmit posted back with a candidate set, which its part
+    # states. A candidate set the status rule builds is `intent_rank`: the elected reading
+    # first, then its rivals in menu order. Assembly keeps the specs' order either way.
     candidate_ordering_override: Ordering | None = None
     # Unawaited coverage probe for streamed slot options, sent after `response`.
     # It leaves `specs[].slot_options` and the buffered response unchanged.
@@ -363,7 +365,7 @@ class RegionResult:
         unevaluated because its presence read did not complete. The fan-out reports such a
         leg as degraded (`_FanOutResult.degraded_leg`) so it is not cached. Reading the
         warning keeps the statement and the cache exclusion in step on every path, a
-        gap-fill or a same-shape merge included."""
+        same-shape merge included."""
         return any(warning.code == ALTERNATES_UNEVALUATED for warning in self.warnings)
 
     @property

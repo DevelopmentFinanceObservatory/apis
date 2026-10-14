@@ -11,19 +11,12 @@ from search.engine.events import (
     ObservationsEvent,
     SlotOptionsEvent,
 )
-from search.models import NO_DATA_RESOLUTION_ORDER, Warning
+from search.models import NoDataReason, Warning, elect_no_data_reason
 
 RETRIEVAL_SCORE_WEAK = "retrieval_score_weak"
-# The independent near-neighbour check found a distinct shape within
-# SEARCH_NEAR_MARGIN of the chosen score and with low query/label overlap.
-NEAR_NEIGHBOR_AMBIGUOUS = "near_neighbor_ambiguous"
-# A distinct near-neighbour triggered the check but had no data. The search
-# widened beyond NEAR_MARGIN while excluding shapes similar to the chosen one,
-# and found another distinct shape with data for the candidates response.
-NEAR_NEIGHBOR_POOL_WIDENED = "near_neighbor_pool_widened"
 # An alternate reading that passed the admission guards was not evaluated: the presence
-# read its default scope needs did not complete. The elected answer is served, a fired
-# near-neighbour tie stays stated, and the response is not cached.
+# read its default scope needs did not complete. The elected answer is served and the
+# response is not cached.
 ALTERNATES_UNEVALUATED = "alternates_unevaluated"
 # The elected shape had no data and only an alternate survived. Return that
 # Return the surviving shape through NoData.alternate_match.
@@ -61,21 +54,19 @@ OBSERVATIONS_CLIENTS_UNAVAILABLE = "observations_clients_unavailable"
 # the omission. Coverage may report observations for the same selection, so
 # an empty preview can coexist with a non-empty data slice.
 OBSERVATIONS_NO_POINTS = "observations_no_points"
-# The pre-election sibling-availability probe failed. Its candidates reset to
-# unknown, so this warning accompanies an unprunable set.
+# The availability read over the menu at the places a part names failed, so whether each
+# reading has data there stays unknown (`availability.read_menu_availability`).
 AVAILABILITY_PROBE_FAILED = "availability_probe_failed"
 # A resubmit's source constraint matched no fetched facet. The fetch completed,
 # distinguishing this from OBSERVATIONS_PROBE_FAILED and OBSERVATIONS_NO_POINTS.
 OBSERVATIONS_NO_MATCHING_SOURCE = "observations_no_matching_source"
-# A sole-option binding blocked every member that met the other bindings, so
-# repair drops it as redundant. The slot stays unbound. One warning fires per slot.
+# Registered in the warning vocabulary, and no stage emits it: a sole-option binding is
+# never dropped, since the catalogue gives every taxonomy whole.
 REDUNDANT_BINDING_DROPPED = "redundant_binding_dropped"
-# A value or set binding has no dcids. The binding stays unchanged, but every
-# family is refused before materialisation. REDUNDANT_BINDING_DROPPED is separate.
+# The bind response named a value or set binding with no dcids, which its schema refuses at
+# parse (`bind.SlotBindingDraft`), so the part refuses `variable_not_resolved`. Raised by
+# the bind phase (`phase_rank_bind._phase_bind`).
 DEGENERATE_BINDING_DETECTED = "degenerate_binding_detected"
-# The availability floor hid a constraint axis whose unscoped taxonomy value
-# matched the query. The binding and slot taxonomy are restored. One warning fires per slot.
-STARVED_AXIS_BINDING_RESTORED = "starved_axis_binding_restored"
 # A resolved role has no ->name label. Keep its dcid as the fallback label.
 # Spec identity hashes dcids, so this preserves the entity's identity.
 # One warning names all missed dcids.
@@ -96,6 +87,11 @@ ROLE_SCOPE_DEFAULTED = "role_scope_defaulted"
 # flows"), so the answer covers one value where the reader may expect them all.
 # Raised by the election of a first answer; a resubmit posts the default and raises none.
 SLOT_DEFAULTED = "slot_defaulted"
+# A slot default the code index declares for the elected shape's population type was not
+# applied, because no member reading the default value has data at the queried places while
+# another member has, so the slot stays open and the family's total answers. Raised by the
+# settle stage (`phase_election._repair_bindings`).
+SLOT_DEFAULT_NOT_APPLIED = "slot_default_not_applied"
 # The single member an answer names is not its family's total: the family holds
 # none, or its total had no data at the place. Raised by the election of a first
 # answer; a resubmit posts the member and raises none.
@@ -186,10 +182,10 @@ _INCOHERENT_WITH_GROUNDED_NEAR_MATCH = frozenset({"entity_not_resolved", "variab
 
 
 def _elect_no_data_reason(
-    *candidates: str | None,
-    fallback: str,
+    *candidates: NoDataReason | None,
+    fallback: NoDataReason,
     grounded_near_match: bool = False,
-) -> str:
+) -> NoDataReason:
     """Return the highest-priority candidate or ``fallback``.
 
     Ignore ``None`` candidates. ``fallback`` is always included. With a
@@ -200,4 +196,4 @@ def _elect_no_data_reason(
     live = [c for c in candidates if c is not None]
     if grounded_near_match:
         live = [c for c in live if c not in _INCOHERENT_WITH_GROUNDED_NEAR_MATCH]
-    return min([*live, fallback], key=NO_DATA_RESOLUTION_ORDER.index)
+    return elect_no_data_reason([*live, fallback])

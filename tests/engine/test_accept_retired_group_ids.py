@@ -95,6 +95,17 @@ def test_a_posted_retired_group_id_is_refused_at_its_pointer(retired):
     assert refused.value.pointer == "/input/entity_groups/observationAbout/ref"
 
 
+@pytest.mark.parametrize(
+    "group_id", ["groups/NoSuchGroup", "groups/G7"], ids=["unknown", "retired"]
+)
+def test_a_posted_group_id_the_registry_does_not_hold_is_refused_at_its_pointer(group_id):
+    with pytest.raises(EngineInputError) as refused:
+        _resubmit(EntityGroup(group_id=group_id, label="G7"))
+
+    assert refused.value.code == "request_invalid"
+    assert refused.value.pointer == "/input/entity_groups/observationAbout/group_id"
+
+
 def test_a_retired_group_id_on_a_posted_candidate_is_refused_at_that_candidates_pointer():
     entry = ResubmitCandidatesEntry(
         variable_text="population",

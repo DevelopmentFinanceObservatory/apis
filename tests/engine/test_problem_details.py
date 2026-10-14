@@ -921,7 +921,7 @@ class TestInfraRefusals:
     def test_upstream_4xx_is_upstream_error_502(self):
         class _UpstreamErrorGraph(FakeGraph):
             def __init__(self):
-                pass
+                super().__init__()
 
             def detect_svs(self, query):
                 from search.engine.errors import GraphInfraError
@@ -950,7 +950,7 @@ class TestInfraRefusals:
     def test_transient_infra_failure_is_service_unavailable_503(self):
         class _ErrorGraph(FakeGraph):
             def __init__(self):
-                pass
+                super().__init__()
 
             def detect_svs(self, query):
                 from search.engine.errors import GraphInfraError

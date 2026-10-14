@@ -84,7 +84,7 @@ from description.steps import (
 from description.steps_text import bound_entities
 from description.stored import LONG_TEXT_MAX_LENGTH, TEXT_MAX_LENGTH, clipped
 from description.vocabulary import Vocabulary
-from dfo_platform.roles import axis_for_role, declared_role_for
+from dfo_platform.roles import FlowFamily, axis_for_role, declared_role_for
 from materialise.continued_series import continued_series_of_entries
 from materialise.statistics import (
     RoleFigure,
@@ -226,17 +226,24 @@ def mint_record(
 
 
 def collapsed_record(
-    base: DescriptionRecord, collapsed: VersionRecord, *, figures: SeriesFigures
+    base: DescriptionRecord,
+    collapsed: VersionRecord,
+    *,
+    figures: SeriesFigures,
+    summed: bool = True,
 ) -> DescriptionRecord:
-    """The record of a multi-contributor collapse, derived from its base version's record.
+    """The record of a derived version (`datasets_api.render.DerivedVersion`), derived from
+    its base version's record.
 
     It keeps the base's population, sources and builds, takes its series facts and its
-    dimensions from the collapse's own figures and coverage (`_collapsed_variables`), and adds
-    a `sum_variables` step naming the variables with data that were summed. Its caveats are
-    the base's as they hold for the sum (`_collapsed_caveats`), and the base's labels stay for
-    the refs the collapse still names. A base whose steps are unknown leaves the steps before
-    the sum unknown, and the record holds the sum as the step known to follow them
-    (`DescriptionRecord.steps_after_unknown`).
+    dimensions from the derived version's own figures and coverage (`_collapsed_variables`).
+    A `summed` version, a multi-contributor collapse, adds a `sum_variables` step naming the
+    variables with data that were summed. Its caveats are the base's as they hold for the sum
+    (`_collapsed_caveats`), and the base's labels stay for the refs the collapse still names.
+    A base whose steps are unknown leaves the steps before the sum unknown, and the record
+    holds the sum as the step known to follow them (`DescriptionRecord.steps_after_unknown`).
+    A version that is not `summed`, a party-totals cut of the base's frame, keeps the base's
+    steps and caveats.
 
     Raises:
         ValueError: `collapsed` holds a published frame's lineage, or names another subject.
@@ -254,6 +261,7 @@ def collapsed_record(
             periods=_coverage_years(facts.coverage) if figures.grain == "year" else None,
         ),
         columns=_collapse_columns(facts, figures),
+        summed=summed,
     )
 
 
@@ -264,25 +272,36 @@ def _collapsed(
     content_version: str,
     series: SeriesFacts,
     columns: Mapping[str, RoleFigure | None] | None,
+    summed: bool,
 ) -> DescriptionRecord:
-    """`base` as the record of the collapse `content_version`, holding `series`, the
-    dimensions its role `columns` keep and, after the base's steps, a `sum_variables` step
-    naming the variables with data in the trace (`collapse_steps`). Where the base's steps are
-    unknown, the sum is the step known to follow them."""
-    summed = _summed_refs(facts.trace)
-    steps = collapse_steps(base.known_steps, trace=facts.trace)
-    record = base.model_copy(
-        update={
-            "content_version": content_version,
-            "variables": None
-            if base.variables is None
-            else _collapsed_variables(base.variables, columns=columns),
-            "series": series,
+    """`base` as the record of the derived version `content_version`, holding `series` and the
+    dimensions its role `columns` keep. A `summed` version adds, after the base's steps, a
+    `sum_variables` step naming the variables with data in the trace (`collapse_steps`), and
+    where the base's steps are unknown the sum is the step known to follow them. Any other
+    keeps the base's steps and caveats."""
+    variables = (
+        None
+        if base.variables is None
+        else _collapsed_variables(base.variables, columns=columns, summed=summed)
+    )
+    if summed:
+        summed_refs = _summed_refs(facts.trace)
+        steps = collapse_steps(base.known_steps, trace=facts.trace)
+        update: dict[str, object] = {
             "steps": None if base.steps is None else steps,
             "steps_after_unknown": steps if base.steps is None else MISSING,
             "caveats": None
             if base.caveats is None
-            else _collapsed_caveats(base.caveats, variable=base.id, summed=summed),
+            else _collapsed_caveats(base.caveats, variable=base.id, summed=summed_refs),
+        }
+    else:
+        update = {}
+    record = base.model_copy(
+        update={
+            "content_version": content_version,
+            "variables": variables,
+            "series": series,
+            **update,
             "late_fields": [],
         }
     )
@@ -310,16 +329,18 @@ def _collapse_columns(
 
 
 def _collapsed_variables(
-    variables: VariableFacts, *, columns: Mapping[str, RoleFigure | None] | None
+    variables: VariableFacts, *, columns: Mapping[str, RoleFigure | None] | None, summed: bool
 ) -> VariableFacts:
-    """A collapse's population: the base's, with the dimensions its frame keeps.
+    """A derived version's population: the base's, with the dimensions its frame keeps.
 
     A collapse keeps each role as a column, and each code axis its groupby keeps as the column
     `stat_var_<property>` (`datasets_api.render.GroupbyCollapseRendering`); every other axis
-    is summed away. A kept dimension takes its values from the collapse's figure for its
-    column, unknown where the figure is not held. A summed-away dimension narrowed `within` a
-    code is that code's total, so the code becomes a fixed value. With `columns` `None` the
-    collapse's columns are unknown, and so are its dimensions.
+    is summed away. A kept dimension takes its values from the derived version's figure for its
+    column, unknown where the figure is not held. In a `summed` version, a summed-away
+    dimension narrowed `within` a code is that code's total, so the code becomes a fixed value;
+    a version that is not `summed` keeps every dimension it holds no column for as the base
+    states it. With `columns` `None` the derived version's columns are unknown, and so are its
+    dimensions.
     """
     if variables.dimensions is None:
         return variables
@@ -348,6 +369,8 @@ def _collapsed_variables(
             dimensions.append(
                 kept.model_copy(update={"property": dimension.property, "within": dimension.within})
             )
+        elif not summed:
+            dimensions.append(dimension)
         elif dimension.within is not None:
             fixed.append(FixedValue(property=dimension.property, value=dimension.within))
     return variables.model_copy(update={"fixed": fixed, "dimensions": dimensions})
@@ -531,6 +554,7 @@ def backfill_record(
     recorded_at: datetime.datetime,
     backfilled_at: datetime.datetime,
     base: DescriptionRecord | None = None,
+    summed: bool = True,
 ) -> BackfilledRecord:
     """The record of a version made before records existed, with basis `backfill`.
 
@@ -564,6 +588,8 @@ def backfill_record(
         recorded_at: when the version row was recorded, an `ops_` version's computed date.
         backfilled_at: when the backfill runs.
         base: a collapse's base version's record; `None` when `version` is no collapse.
+        summed: whether a collapse's frame sums the definition's variables
+            (`collapsed_record`).
 
     Raises:
         ValueError: a `spec_` version's stored facts state no series count and `statistics`
@@ -591,7 +617,9 @@ def backfill_record(
             if base is None:
                 raise ValueError("a collapse is backfilled from its base version's record")
             record, unstated = (
-                _backfilled_collapse(record, facts, base=base, statistics=statistics),
+                _backfilled_collapse(
+                    record, facts, base=base, statistics=statistics, summed=summed
+                ),
                 [],
             )
     labels = {ref: row.label for ref in named_refs(record) if (row := code_index.code_by_dcid(ref))}
@@ -651,6 +679,7 @@ def _backfilled_collapse(
     *,
     base: DescriptionRecord,
     statistics: SeriesFigures | None,
+    summed: bool,
 ) -> DescriptionRecord:
     """A collapse's backfilled record: derived from `base` with `own`'s series facts and the
     dimensions its `statistics`, else its stored output profile, say its frame keeps."""
@@ -660,6 +689,7 @@ def _backfilled_collapse(
         content_version=own.content_version,
         series=own.series,
         columns=_collapse_columns(facts, statistics),
+        summed=summed,
     )
     return record.model_copy(update={"basis": "backfill"})
 
@@ -949,12 +979,26 @@ def variable_facts(
         admitted_at_mint=admitted,
         admitted_from=admitted_from,
         with_data=with_data,
-        family=flow_family(
-            index=code_index,
-            population_type=bounded_text(shape.get("population_type")),
-            stat_vars=counted,
-            members=[row.constraint_properties for row in rows],
-        ),
+        family=minted_flow_family(identity, trace, code_index=code_index),
+    )
+
+
+def minted_flow_family(
+    identity: Mapping[str, object], trace: Mapping[str, object], *, code_index: CodeIndex
+) -> FlowFamily | None:
+    """The flow family of a `spec_` version with `identity` and `trace` (`flow_family`), over
+    the variables the trace resolved with data, or every resolved variable where it records
+    no observation counts. `None` reads as `GENERIC_ROLE_WORDING`."""
+    resolved = _resolved(trace)
+    counts_known = all(count is not None for _, count in resolved)
+    counted = [ref for ref, count in resolved if count or not counts_known]
+    rows = [row for ref in counted if (row := code_index.statvar_by_dcid(ref)) is not None]
+    shape = cast("Mapping[str, object]", identity.get("shape", {}))
+    return flow_family(
+        index=code_index,
+        population_type=bounded_text(shape.get("population_type")),
+        stat_vars=counted,
+        members=[row.constraint_properties for row in rows],
     )
 
 

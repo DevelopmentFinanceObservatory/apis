@@ -19,6 +19,11 @@ from materialise import place_scope
 from origin_catalogue import Catalogue, bound_catalogue, unbind_catalogue
 from origin_catalogue import bind_catalogue as _bind
 from statvar_members import shared_enumerator
+from tests.file_shards import (  # noqa: F401  (hooks pytest collects here)
+    pytest_addoption,
+    pytest_collect_file,
+    pytest_sessionstart,
+)
 from tests.llm_miss_guard import (  # noqa: F401  (hooks pytest collects here)
     pytest_runtest_makereport,
     pytest_runtest_setup,

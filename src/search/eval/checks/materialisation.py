@@ -15,7 +15,11 @@ Reads, on each definite part's spec (``parts[].spec``):
 A bare answer passes on ``has_data`` and a breadth answer on every dimension counting
 something. An exact count is checked, within 5 percent, against the oracle's own count of
 the facets the answer states it serves, inside the coverage window, and under a ``latest``
-request at each StatVar's latest period from the series reaching it. A series whose
+request at each StatVar's one period. A role-bearing answer's StatVar serves the year the
+coverage index elects for it over those facets and the bound roles
+(``CoverageIndex.elected_years``), from the series holding that year. A place-keyed
+answer's StatVar, and a role-bearing one the index elects no year for, serves its latest
+period from the series reaching it. A series whose
 stated facets end before the coverage window does also counts the points after its last
 one from the same source's estimates continuing it (``materialise.facets.continuation``),
 which the answer serves without stating their method. The StatVars are those
@@ -38,7 +42,7 @@ runs it on the modal sample alone.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from dc_graph import Facet
@@ -220,12 +224,35 @@ def _latest_totals(series_latest: Sequence[Sequence[str | None]], window: TimeWi
     return totals
 
 
+def _elected_totals(
+    series_groups: Sequence[Sequence[Sequence[Facet]]], year: int, window: TimeWindow | None
+) -> int:
+    """The totals one StatVar's series give under `latest` when the StatVar serves the
+    elected `year`, as a bitset, from each series' stated groups.
+
+    A series serves one point when its group holds a point in `year` and nothing
+    otherwise (`search.engine.retrieval.read_plan.PairPlan.served`), so a series left with
+    several groups branches on each. A year outside `window` gives nothing.
+    """
+    if not in_window(str(year), window):
+        return 1
+    at_year = TimeWindow(start_year=year, end_year=year)
+    totals = 1
+    for groups in series_groups:
+        points = 0
+        for group in groups:
+            points |= 1 << min(1, _group_points(group, window=at_year))
+        totals = _add_totals(totals, points or 1)
+    return totals
+
+
 def _reachable_totals(
     facets_by_series: Sequence[tuple[str, Sequence[Facet]]],
     stated: Mapping[str, _Stated],
     *,
     window: TimeWindow | None,
     latest: bool,
+    elected: Mapping[str, int],
 ) -> int | None:
     """The totals the stated facets can give across `facets_by_series`, each series keyed by
     its StatVar, as a bitset whose bit `t` is set when one stated group per series sums to
@@ -235,19 +262,27 @@ def _reachable_totals(
     (`_stated_groups`, `_series_points`), and nothing when no facet matches. A series
     pinned to one group adds its points to every total, and a series left with several
     groups branches into one total per group.
-    Under `latest` each StatVar's series count together (`_latest_totals`). The set holds
-    at most one bit per observation the largest groups hold together.
+    Under `latest` each StatVar's series count together: at the year `elected` holds for
+    it (`_elected_totals`), and for a StatVar absent from `elected` at its latest period
+    (`_latest_totals`). The set holds at most one bit per observation the largest groups
+    hold together.
     """
     if not any(facets for _sv, facets in facets_by_series):
         return None
     totals = 1
     if latest:
-        by_sv: dict[str, list[list[str | None]]] = {}
+        by_sv: dict[str, list[list[list[Facet]]]] = {}
         for sv, facets in facets_by_series:
-            groups = _stated_groups(facets, stated).values()
-            by_sv.setdefault(sv, []).append([_group_latest(g) for g in groups] or [None])
-        for series_latest in by_sv.values():
-            totals = _add_totals(totals, _latest_totals(series_latest, window))
+            by_sv.setdefault(sv, []).append(list(_stated_groups(facets, stated).values()))
+        for sv, series_groups in by_sv.items():
+            if sv in elected:
+                served = _elected_totals(series_groups, elected[sv], window)
+            else:
+                series_latest = [
+                    [_group_latest(g) for g in groups] or [None] for groups in series_groups
+                ]
+                served = _latest_totals(series_latest, window)
+            totals = _add_totals(totals, served)
         return totals
     for _sv, facets in facets_by_series:
         points = 0
@@ -307,6 +342,24 @@ def _role_series_facets(
         (sv, [facet_from_coverage(facet, metadata.get(facet.facet_id)) for facet in facets])
         for (sv, _dcids), facets in per_pair.items()
     ]
+
+
+def _stated_admits(
+    stated: Mapping[str, _Stated], coverage: CoverageSnapshot
+) -> Callable[[str, str], bool]:
+    """Whether a coverage row's facet is one the answer states it serves on every axis
+    (`_axis_admits`), given the row's variable and facet id, as `_stated_groups` admits
+    the facets of a series."""
+    metadata = coverage.index.facet_metadata
+
+    def admits(_variable: str, facet_id: str) -> bool:
+        meta = metadata.get(facet_id)
+        return all(
+            _axis_admits(stated.get(axis), getattr(meta, field, None))
+            for axis, field in _FACET_AXIS_FIELDS.items()
+        )
+
+    return admits
 
 
 def _spec_warning_codes(response: Mapping[str, Any], spec_id: str, ctx: ScoreContext) -> set[str]:
@@ -435,8 +488,21 @@ def _exact(spec: SpecView, response: Mapping[str, Any], ctx: ScoreContext) -> Re
                 coverage_role = _COVERAGE_ROLE_FOR_AXIS[role]
                 bound[coverage_role] = bound.get(coverage_role, frozenset()) | {ref}
         facets_by_series = _role_series_facets(stat_vars, bound, snapshot)
+        # The rows a conversion leaves out of the election make the answer unchecked above.
+        elected = (
+            snapshot.index.elected_years(
+                variables=stat_vars, bound=bound, admits=_stated_admits(stated, snapshot)
+            )
+            if latest
+            else {}
+        )
         # Coverage holding no row of the bound tuples reaches a total of 0 alone.
-        totals = _reachable_totals(facets_by_series, stated, window=window, latest=latest) or 1
+        totals = (
+            _reachable_totals(
+                facets_by_series, stated, window=window, latest=latest, elected=elected
+            )
+            or 1
+        )
         return _count_result(totals, expected_count)
 
     places = _served_places(spec, ctx, preview_complete=not warning_codes & _PARTIAL_PREVIEW_CODES)
@@ -458,6 +524,7 @@ def _exact(spec: SpecView, response: Mapping[str, Any], ctx: ScoreContext) -> Re
         stated,
         window=window,
         latest=latest,
+        elected={},
     )
     if totals is None:
         return _unchecked("no_records", f"the graph holds no facet at {len(places)} place(s)")

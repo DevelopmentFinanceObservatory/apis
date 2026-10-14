@@ -270,8 +270,9 @@ class RoleServedFilter:
     at the answer's bound roles with a point inside `years` in a facet its elected dataset
     publishes, the rows the role paths elect a facet from
     (`materialise.role_bearing_facets`). Its rows are the years those facets hold, ORed,
-    and under `latest` its StatVar's latest year alone, from the series holding it, as the
-    download counts them (`CoverageIndex.series_years`). `probe_entities` maps each
+    and under `latest` the one year its StatVar elects over those rows
+    (`CoverageIndex.elected_years`), from the series holding it, as the download counts
+    them (`CoverageIndex.series_years`). `probe_entities` maps each
     declared role name to its bound entities (`coverage_probe_role_entities`); a role it
     omits stays open. No graph or SDMX request is made.
 
@@ -324,13 +325,18 @@ class RoleServedFilter:
                 for role, name in (("recipient", names.recipient), ("donor", names.donor))
                 if name is not None
             }
+            bound = self._bound(names)
             found = self.coverage.series_years(
                 variables=svs,
-                bound=self._bound(names),
+                bound=bound,
                 admits=admits,
                 first_year=window.start_year if window is not None else None,
                 last_year=window.end_year if window is not None else None,
-                latest=latest,
+                latest=(
+                    self.coverage.elected_years(variables=svs, bound=bound, admits=admits)
+                    if latest
+                    else None
+                ),
                 kept_years=(
                     coverage_kept_years(counted, role_names) if counted is not None else None
                 ),

@@ -1,5 +1,6 @@
 self-hosted-runner:
-  labels: []
+  # The organisation's 4-core hosted runner, which actionlint has no list of.
+  labels: [ubuntu-latest-m]
 paths:
   .github/workflows/deploy-{dev,prod}.yml:
     ignore:

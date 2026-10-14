@@ -38,26 +38,16 @@ _UNGATED_FLAGGED_MATCH_REASONS: frozenset[NoDataReason] = frozenset(
 class CandidateSet(StrictModel):
     """A set of 2..N competing Specs, presented in the order named by ``ordering``.
 
-    ``ordering="intent_rank"``: the near-neighbor margin gate downgraded a
-    would-be "definite" answer to this candidates response -- a genuinely close
-    call the model's own elected shape didn't flag. Order is the engine's own
-    estimate of intent match, best first: the elected shape, then the
-    near-winning reading that triggered the downgrade, then any remaining
-    also_plausible/cascade alternates in bind's own ranked order. Which of
-    those readings is present is a separate question from the order they sit
-    in -- a reading carrying no data for the requested entity is dropped, the
-    elected shape and the near-winning reading included, and the pool-widening
-    cascade's next-best distinct reading takes the vacated slot. So
-    ``intent_rank`` names the ranking rule, not a fixed cast of positions.
+    ``ordering="intent_rank"``: the order the status rule offers the readings in. A first
+    answer always uses it. The elected reading comes first, then its rivals in menu order,
+    each stating why it is offered (``ResolvedSpec.basis``). Where the elected reading holds
+    no data and several siblings differing from it only on the measurement qualifier do,
+    those siblings are the set, in menu order, without it. Where a place named without a
+    direction holds data under both, the elected reading under each direction is offered.
 
-    ``ordering="broadest_first"``: this candidates response was ambiguous from
-    the start (bind's own also_plausible; the gate never ran). Order is
-    descending breadth (more candidate StatVars grouped under the shape),
-    with spec_id lexicographic as the deterministic tie-break.
-
-    Both ordering rules apply within relevance bands. Candidates that pass the
-    retrieval/near-neighbor quality gate come first; loose candidates remain
-    visible afterward, preserving their base order within that band.
+    ``ordering="broadest_first"``: a posted candidates entry that names it
+    (``ResubmitCandidatesEntry``) keeps its posted order and states this ordering back. No
+    first answer uses it.
 
     Each candidate carries its own heading and byline inside its own
     ``resolved.rendered_sentence``/``resolved.sentence_plan``. There is no separate parallel sentence array, and a
@@ -67,17 +57,11 @@ class CandidateSet(StrictModel):
     """
 
     ordering: Ordering = Field(
-        description=(
-            "how `specs` below is ordered within relevance bands -- see the two orderings "
-            "described above"
-        )
+        description=("how `specs` below is ordered -- see the two orderings described above")
     )
     max_candidates: int = Field(description="the maximum number of candidates applied")
     specs: Annotated[list[Spec], Field(min_length=2)] = Field(
-        description=(
-            "2 <= len <= max_candidates; full Specs, ordered per `ordering` above within "
-            "relevance bands"
-        )
+        description=("2 <= len <= max_candidates; full Specs, ordered per `ordering` above")
     )
     truncated: bool = Field(
         description=(

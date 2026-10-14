@@ -70,6 +70,7 @@ from search.models import (
     SourceMention,
 )
 from series_coverage.shared import CoverageSnapshot
+from tests.engine import test_pool_election as pools
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
@@ -347,7 +348,7 @@ def test_a_part_scoped_to_a_source_the_index_holds_no_rows_of_elects_its_pin_s_q
 # ---------------------------------------------------------------------------
 
 
-def test_the_un_second_pass_runs_only_under_a_scope_allowing_a_un_provenance(bind_catalogue):
+def test_the_un_pass_runs_only_under_a_scope_allowing_a_un_provenance(bind_catalogue):
     bind_catalogue(
         FakeCatalogue(
             provenances={_WDI: _row(_WDI), _UN_ROW: _row(_UN_ROW, data_commons=UN_SYSTEM)}
@@ -812,6 +813,62 @@ def test_a_part_excluding_a_source_that_publishes_none_of_its_shapes_answers_and
     assert answered.restatement.sources == [excluded]
 
 
+_NUMERATE = "Percent_Person_Numerate"
+
+
+class _NominatingLLM(pools._ElectLLM):
+    """Elects the literacy rate and nominates the numeracy rate beside it."""
+
+    async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
+        output, usage = await super().generate_structured(
+            prompt=prompt, system=system, schema=schema
+        )
+        nominated = [i for i, block in enumerate(pools._menu_blocks(prompt)) if _NUMERATE in block]
+        return output.model_copy(update={"also_plausible": nominated}), usage
+
+
+@pytest.mark.parametrize(
+    ("sources", "elected"),
+    [
+        ([], [pools._OURS, _NUMERATE]),
+        ([SourceMention(ref=_WDI, polarity="exclude")], [pools._OURS]),
+    ],
+    ids=["no-mention", "exclude-wdi"],
+)
+def test_a_reading_whose_only_data_is_an_excluded_source_has_none_where_asked(
+    bind_catalogue, sources, elected
+):
+    """The literacy rate holds Kenya's data under the census and the nominated numeracy
+    rate under the World Development Indicators alone; the index declares neither table.
+    Unscoped, both have data, so the part offers both. Excluding the World Development
+    Indicators, both tables stay, and the availability read through the scoped catalogue
+    finds no numeracy data at Kenya, so the status rule leaves it out and the literacy
+    rate answers alone."""
+    catalogue = FakeCatalogue(provenances={p: _row(p) for p in (_WDI, _CENSUS)})
+    bind_catalogue(catalogue)
+    scope = compile_sources(
+        sources, catalogue=catalogue, pointers=[f"/sources/{i}" for i in range(len(sources))]
+    )
+    assert scope is None or isinstance(scope, SourceScope)
+    graph = _ScopedFakeGraph(
+        nodes={**pools._NODES, _NUMERATE: pools._sv_node(_NUMERATE, meas_prop="numeracyRate")},
+        obs={
+            f"{pools._OURS}|{pools._KEN}": [{**pools._FACET, "provenanceId": _CENSUS}],
+            f"{_NUMERATE}|{pools._KEN}": [{**pools._FACET, "provenanceId": _WDI}],
+        },
+        detect={pools._QUERY: pools._leg((pools._OURS, 0.9), (_NUMERATE, 0.88))},
+        un_detect={pools._QUERY: pools._leg()},
+        resolve={"Kenya": pools._KEN},
+    )
+
+    result = pools._resolve(graph, llm=_NominatingLLM(pools._OURS), source_scope=scope)
+
+    assert result.status == ("candidates" if len(elected) > 1 else "definite"), result
+    assert pools._elected(result) == elected
+
+
 # ---------------------------------------------------------------------------
 # An exclusion chooses among the unscoped menu
 # ---------------------------------------------------------------------------
@@ -986,7 +1043,7 @@ def test_an_exclusion_ranks_on_the_evidence_the_unscoped_question_reaches(
         assert [ref.ref for record in result.unbound_sources for ref in record.named] == [_WEO]
         assert result.source_scope == scope
         (line,) = [r.getMessage() for r in caplog.records if r.getMessage().startswith("gap_fill ")]
-        assert "pass2=skipped:source_scope" in line
+        assert "un_pass=skipped:source_scope " in line
 
 
 def test_an_exclusion_whose_prunes_leave_no_reading_refuses_the_variable(bind_catalogue):
@@ -1075,20 +1132,40 @@ class _AskLLM(_MenuLLM):
 
 
 @pytest.mark.parametrize(
-    ("polarity", "source", "allowed"),
+    ("polarity", "source", "allowed", "un_allowed", "un_pass_skipped"),
     [
-        ("include", _DAC2A, frozenset({_DAC2A})),
-        ("exclude", _CRS, frozenset({_DAC2A, _WDI})),
+        ("include", _DAC2A, frozenset({_DAC2A}), False, True),
+        ("exclude", _CRS, frozenset({_DAC2A, _WDI}), False, True),
+        ("exclude", _CRS, frozenset({_DAC2A, _WDI}), True, True),
+        ("include", _DAC2A, frozenset({_DAC2A}), True, False),
     ],
-    ids=["naming-dac2a", "excluding-crs"],
+    ids=[
+        "naming-dac2a",
+        "excluding-crs",
+        "excluding-crs-with-a-un-source-allowed",
+        "naming-dac2a-and-a-un-source",
+    ],
 )
 def test_a_bind_declining_a_part_whose_scope_removed_shapes_refuses_naming_its_sources(
-    polarity: Literal["include", "exclude"], source: str, allowed: frozenset[str]
+    bind_catalogue,
+    caplog,
+    polarity: Literal["include", "exclude"],
+    source: str,
+    allowed: frozenset[str],
+    un_allowed: bool,
+    un_pass_skipped: bool,
 ):
     """Recall reaches CRS and DAC2a flows. Naming DAC2a removes the CRS shape at candidacy;
     excluding the CRS removes it from the ranked menu. Bind declines the DAC2a shape left.
     Readings exist outside the scope and none inside is accepted, so the part refuses
-    `qualifier_not_bound` naming the source it mentions."""
+    `qualifier_not_bound` naming the source it mentions.
+
+    The refusal of the part that excludes the CRS settles its answer: the UN pass does not
+    run though the scope allows a UN System Data Commons source. The part that names a UN
+    source beside DAC2a is not settled by its refusal, so the UN pass runs for it."""
+    if un_allowed:
+        bind_catalogue(FakeCatalogue(provenances={_UN_ROW: _row(_UN_ROW, data_commons=UN_SYSTEM)}))
+        allowed |= {_UN_ROW}
     mention = SourceMention(text=source, ref=source, polarity=polarity)
     scope = SourceScope(
         allowed=allowed,
@@ -1099,10 +1176,16 @@ def test_a_bind_declining_a_part_whose_scope_removed_shapes_refuses_naming_its_s
     )
     llm = _AskLLM()
 
-    result = _resolve_flow(
-        scope, {_family_member(_CRS): 0.66, _family_member(_DAC2A): 0.61}, llm, "aid"
-    )
+    with caplog.at_level(logging.INFO, logger="search.engine.region.pipeline"):
+        result = _resolve_flow(
+            scope, {_family_member(_CRS): 0.66, _family_member(_DAC2A): 0.61}, llm, "aid"
+        )
 
-    assert len(llm.prompts) == 1
     assert result.no_data_reason == "qualifier_not_bound"
     assert [ref.ref for record in result.unbound_sources for ref in record.named] == [source]
+    (line,) = [r.getMessage() for r in caplog.records if r.getMessage().startswith("gap_fill ")]
+    if un_pass_skipped:
+        assert "un_pass=skipped:source_scope " in line
+        assert len(llm.prompts) == 1
+    else:
+        assert "un_pass=ran:" in line

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Literal, get_args
 
 from dfo_platform import RoleAxis  # noqa: F401 -- re-exported by search.models
@@ -116,6 +117,7 @@ DepartureCode = Literal[
     "modelled_values",
     "group_read_as_members",
     "direction_discarded",
+    "direction_inferred",
     "scope_limited",
 ]
 """Every way an answer can differ from what its request asked (see
@@ -199,7 +201,22 @@ facet. When several reasons could apply, the first one in this order is what
 `reason` reports. This documents the contract sequence; it is not the
 enforcement mechanism. Each failure site in the pipeline returns immediately
 (region/pipeline.py, region/resubmit.py), so this constant can drift from
-actual behaviour if a check is reordered without updating it."""
+actual behaviour if a check is reordered without updating it. Every site that picks one
+reason from several applies it through `elect_no_data_reason`."""
+
+
+def elect_no_data_reason(reasons: Iterable[NoDataReason]) -> NoDataReason:
+    """The reason `NO_DATA_RESOLUTION_ORDER` ranks first among `reasons`.
+
+    The result depends only on the set of reasons, and adding a reason ranked lower never
+    changes it.
+
+    Raises:
+        ValueError: `reasons` is empty, or holds a string outside the order.
+    """
+    return min(reasons, key=NO_DATA_RESOLUTION_ORDER.index)
+
+
 _UNRESOLVED_NO_DATA_REASONS: frozenset[NoDataReason] = frozenset(
     {
         "source_not_resolved",
@@ -239,6 +256,14 @@ reason stops short of a graph-confirmed identity, so elected_count stays
 None there."""
 Confidence = Literal["high", "medium", "low"]
 Ordering = Literal["broadest_first", "intent_rank"]
+CandidateBasis = Literal["structural", "nominated", "twin", "direction"]
+"""Why the status rule offers a reading as a candidate beside the elected one:
+`structural`, a reading of the same population type and measured property that differs
+only on a stat type, price basis or denominator the question leaves open; `nominated`, a
+reading the bind model named as a genuine reading of the phrase that the question does not
+rule out; `twin`, an equivalent reading of the elected one that answers where the elected
+one holds no data; `direction`, the same reading with the other direction for a place the
+question names without one, where both directions hold data."""
 PreviewOrder = Literal["ranked", "fixed"]
 """How a role-bearing bulk preview chose its series: `ranked` reads every series and shows
 the first by `search.observations.series_rank`; `fixed` reads a selection made before any

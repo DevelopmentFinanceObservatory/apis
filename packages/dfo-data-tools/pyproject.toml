@@ -49,7 +49,7 @@ surface = ["fastapi>=0.138", "starlette", "uvicorn"]
 # group span from inside a longer phrase (e.g. "G7 countries").
 # entity_resolution also imports graph_generation directly (its own shared
 # GenerationStamp), so `resolve` carries `generation`'s own dependencies too.
-resolve = ["resolvekit[parsing]==0.1.12", "dfo-data-tools[generation]"]
+resolve = ["resolvekit[parsing]==0.1.13", "dfo-data-tools[generation]"]
 # graph_generation.source.CloudRunGenerationSource authenticates its Cloud
 # Run Admin API read with Application Default Credentials --
 # google.auth.default() plus a bearer-token refresh, the same shape as
@@ -81,10 +81,10 @@ coverage = [
 [tool.uv.sources]
 # See the root pyproject.toml's dfo-spec-kit source comment for the
 # pin-consistency invariant this rev must satisfy.
-dfo-spec-kit-frame-grammar = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git", rev = "739caf69e7ae2fca083ce6781990b912f5e6dc8c", subdirectory = "python/frame-grammar" }
-dfo-spec-kit-components = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git", rev = "739caf69e7ae2fca083ce6781990b912f5e6dc8c", subdirectory = "python/dfo-spec-kit-components" }
-dfo-spec-kit-provenance-docs = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git", rev = "739caf69e7ae2fca083ce6781990b912f5e6dc8c", subdirectory = "python/provenance-docs" }
-dfo-spec-kit-descriptions = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git", rev = "739caf69e7ae2fca083ce6781990b912f5e6dc8c", subdirectory = "python/descriptions" }
+dfo-spec-kit-frame-grammar = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git", rev = "5d381d8322288dc77411baa70c0dcff323ba6c7f", subdirectory = "python/frame-grammar" }
+dfo-spec-kit-components = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git", rev = "5d381d8322288dc77411baa70c0dcff323ba6c7f", subdirectory = "python/dfo-spec-kit-components" }
+dfo-spec-kit-provenance-docs = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git", rev = "5d381d8322288dc77411baa70c0dcff323ba6c7f", subdirectory = "python/provenance-docs" }
+dfo-spec-kit-descriptions = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git", rev = "5d381d8322288dc77411baa70c0dcff323ba6c7f", subdirectory = "python/descriptions" }
 
 [build-system]
 requires = ["uv_build>=0.11,<0.12"]

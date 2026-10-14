@@ -79,6 +79,18 @@ class LLMInfraError(EngineInfraError):
     """LLM-specific infrastructure failure (transport, API error, schema validation)."""
 
 
+class LLMOutputRefused(LLMInfraError):
+    """The model answered with JSON its response schema refuses on purpose, such as a
+    binding that names no value (`clients.llm.SCHEMA_REFUSAL`). Gemini leaves the parsed
+    response empty for it. A caller whose schema refuses an answer on purpose can answer
+    for it; every other caller sees an `LLMInfraError`. `usage` is the refused call's token
+    usage, `None` when the model reported none."""
+
+    def __init__(self, message: str, *, usage: dict | None = None) -> None:
+        super().__init__(message)
+        self.usage = usage
+
+
 class GraphInfraError(EngineInfraError):
     """Graph transport, status, JSON, or timeout failure.
 
@@ -157,8 +169,8 @@ class DeclaredDefaultUnsupportedError(EngineInputError):
     raises it at resolve time, before the shape's coverage is built and before any sentence
     of the part is sent (the pipeline holds sentences until the answer stands), as the
     registered `facet_binding_unsupported` refusal (501, not retryable): a facet axis this
-    deployment recognises but cannot honour. The fan-out and the UN gap-fill pass re-raise it rather
-    than degrade it to no data.
+    deployment recognises but cannot honour. The fan-out re-raises it rather than degrade it
+    to no data.
     """
 
     def __init__(self, message: str) -> None:
