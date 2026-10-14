@@ -18,9 +18,12 @@ Both carry the antichain-minimal members the preview reads and the years it read
 (`plan_years`). The years apply before anything is counted, ranked or built: a per-pair
 plan builds only the series holding a point in them, and under `latest` serves each
 StatVar's one latest period from the series holding it (`PairPlan.served`), as a mint of
-the answer's Spec does. Every election ranks a facet by the series it holds a point at in
-them, then by the years of them its span covers, then by its count
-(`materialise.facets.rank_candidates`, the election a mint of the answer's Spec runs under
+the answer's Spec does. A role-bearing plan elects that year for each member once, over
+the rows it holds before any reduction (`elected_years`), and each of its `latest`
+reductions, the headline and the download read the year there. Every facet election ranks
+a facet by the series it holds a point at in the years, then by the years of them its span
+covers, then by its count (`materialise.facets.rank_candidates`, the election a mint of
+the answer's Spec runs under
 the same window). A request's facet filter narrows a plan once (`narrowed`), and
 every consumer reads the narrowed plan. A unit request is decided over the same probes
 (`region.convertibility.decide_part_unit`), its elected units narrow the plan, and its
@@ -88,6 +91,11 @@ a conversion into each entity's own currency leaves out because no single curren
 entity (`region.convertibility.UnitCoverage.omitted`)."""
 
 type Omissions = frozenset[Omission]
+
+type Election = Callable[[ReadPlan], Mapping[str, int]]
+"""The year each member of a role-bearing plan elects for a `latest` read, counted over the
+rows that plan holds before any reduction (`retrieval.coverage.plan_election`). A member
+that elects no year is absent and serves its own latest period."""
 
 
 def _omitted_by_role(omitted: Omissions, stat_var: str) -> dict[str, frozenset[str]]:
@@ -537,6 +545,20 @@ def _group_of(candidates: Sequence[Facet], group: Sequence[str]) -> tuple[Facet,
     )
 
 
+def _elected_years(plan: ReadPlan) -> Mapping[str, int] | None:
+    """The year each member of `plan` elects for a `latest` read (`plan.elect`), or None
+    for a plan holding no election or reading a range or every date, which no election
+    dates."""
+    if plan.elect is None or plan.roles is None or plan.years != "latest":
+        return None
+    return plan.elect(plan)
+
+
+def holds_year(series: PlanSeries, year: int) -> bool:
+    """Whether `series`' group holds a point in `year` (`has_points`)."""
+    return has_points(series.group, TimeWindow(start_year=year, end_year=year))
+
+
 @dataclass(frozen=True)
 class PairPlan:
     """A per-series read: every candidate series of `members` with its member's elected
@@ -544,8 +566,10 @@ class PairPlan:
 
     `held` keeps the series whose group has a point under `years`, and `served` those of them
     the preview dispatches. That is every one, except that under `latest` a StatVar serves
-    one period, the newest its held series reach, from the series reaching it. A
-    scope-defaulted read (`scope`) serves `scope_facet_id` at every place.
+    one period, from the series holding it: the year it elected (`elected_years`), or
+    without one the newest period its held series reach. `elect` is the election a
+    role-bearing plan was built with, which every plan derived from it runs over its own
+    rows. A scope-defaulted read (`scope`) serves `scope_facet_id` at every place.
     `selections` holds each member's facet ids a mint of the answer's Spec serves before any
     continuation: those sharing the elected facet's provenance, method, unit and cadence. A
     series' group holds all of them, a scope read's only `scope_facet_id`.
@@ -568,6 +592,7 @@ class PairPlan:
     places: tuple[str, ...] = ()
     omitted: Omissions = frozenset()
     probes: Mapping[str, MemberProbe] = field(default_factory=dict, compare=False)
+    elect: Election | None = field(default=None, compare=False, repr=False)
 
     @property
     def held(self) -> tuple[PlanSeries, ...]:
@@ -575,19 +600,57 @@ class PairPlan:
         series fetches before a `latest` window reduces them."""
         return tuple(s for s in self.series if has_points(s.group, self.years))
 
+    @cached_property
+    def elected_years(self) -> Mapping[str, int] | None:
+        """The year each member elects for a `latest` read of this plan, counted once over
+        its held series less the rows it omits (`elect`). A member absent from it serves
+        its own latest period. None for a plan that is not role-bearing, holds no election
+        or reads a range or every date."""
+        return _elected_years(self)
+
+    def elected_year(self, sv: str) -> int | None:
+        """The year this plan's `latest` read serves `sv` in by election (`elected_years`),
+        or None when the plan reads other years or `sv` elected none."""
+        if self.years != "latest":
+            return None
+        return (self.elected_years or {}).get(sv)
+
     @property
     def served(self) -> tuple[PlanSeries, ...]:
         """The series the preview reads and the answer states. Under `latest`, the held
-        series at their StatVar's latest period (`materialise.window.latest_periods` over
-        each one's `PlanSeries.latest_period`), as a mint keeps a StatVar's rows at that
-        period alone (`materialise.columnar.latest_rows`). A series whose own latest period
-        is earlier serves nothing. A StatVar none of whose held series states a latest date
-        keeps them all. Otherwise every held series."""
+        series at their StatVar's one period, as a mint keeps a StatVar's rows at that
+        period alone (`materialise.columnar.latest_rows`). A member that elected its year
+        (`elected_year`) serves the series whose group holds a point in it (`holds_year`).
+        Any other serves the series at its latest period
+        (`materialise.window.latest_periods` over each one's `PlanSeries.latest_period`): a
+        series whose own latest period is earlier serves nothing, and a StatVar none of
+        whose held series states a latest date keeps them all. Otherwise every held
+        series."""
         held = self.held
         if self.years != "latest":
             return held
-        latest = latest_periods((s.stat_var, s.latest_period) for s in held)
-        return tuple(s for s in held if latest.get(s.stat_var) in (None, s.latest_period))
+        elected = self.elected_years or {}
+        latest = latest_periods(
+            (s.stat_var, s.latest_period) for s in held if s.stat_var not in elected
+        )
+        return tuple(
+            s
+            for s in held
+            if (
+                holds_year(s, elected[s.stat_var])
+                if s.stat_var in elected
+                else latest.get(s.stat_var) in (None, s.latest_period)
+            )
+        )
+
+    def series_dates(self, series: PlanSeries) -> ServedDates | None:
+        """The first and last dates of the points this plan serves of `series`, one of its
+        served series: the year its member elected (`elected_year`), else the dates
+        `series_dates` reads under the plan's years."""
+        year = self.elected_year(series.stat_var)
+        if year is not None:
+            return str(year), str(year)
+        return series_dates(series, self.years)
 
     @property
     def unservable(self) -> tuple[PlanSeries, ...]:
@@ -619,7 +682,8 @@ class PairPlan:
         """This plan without the series binding an entity whose rows `omitted` leaves out of
         their StatVar. Every group stays as elected, as the read elects over the member's
         whole probe before it leaves those rows out. Under `latest` the rest then decide
-        each StatVar's latest period (`served`), as a read omits before it reduces."""
+        each StatVar's period (`elected_years`, `served`), as a read omits before it
+        reduces."""
         if not omitted:
             return self
         return replace(
@@ -650,6 +714,7 @@ class PairPlan:
                 for sv, probe in self.probes.items()
             }
             or None,
+            elect=self.elect,
         )
         return replace(narrowed, omitted=self.omitted)
 
@@ -670,6 +735,7 @@ class PairPlan:
             roles=self.roles,
             places=self.places,
             probes=self.probes or None,
+            elect=self.elect,
         )
         return replace(dated, omitted=self.omitted)
 
@@ -686,8 +752,10 @@ class BulkPlan:
     beside it, as a mint of the answer's Spec does (`_role_election`). `omitted` are the
     rows a conversion leaves out (`omitting`), whose pairs the candidates no longer hold,
     and `omitted_served` the members one of whose omitted rows falls in their years
-    (`member_years`). Under `latest` each member serves its own latest year, as a mint
-    reduces each StatVar to its own latest period.
+    (`member_years`). Under `latest` each member serves one year of its own
+    (`member_year`), as a mint reduces each StatVar to its own period. `elect` is the
+    election the plan was built with, which every plan derived from it runs over its own
+    rows (`elected_years`).
     """
 
     members: tuple[str, ...]
@@ -699,6 +767,15 @@ class BulkPlan:
     roles: PlanRoles | None = None
     omitted: Omissions = frozenset()
     omitted_served: frozenset[str] = frozenset()
+    elect: Election | None = field(default=None, compare=False, repr=False)
+
+    @cached_property
+    def elected_years(self) -> Mapping[str, int] | None:
+        """The year each member elects for a `latest` read of this plan, counted once over
+        every pair of the facets it dispatches less the rows it omits (`elect`). A member
+        absent from it serves its own latest year (`member_year`). None for a plan that
+        holds no election or reads a range or every date."""
+        return _elected_years(self)
 
     @property
     def elected(self) -> RoleBulkCandidate | None:
@@ -717,20 +794,24 @@ class BulkPlan:
         return tuple(sv for sv in self.members if sv in best.by_sv)
 
     def member_year(self, sv: str) -> int | None:
-        """The year of `sv`'s latest period under the elected facet: the leading year of
-        `materialise.window.latest_period` over its pairs' latest dates, read after any
-        omission (`omitting`). Coverage knows only years, so the plan fixes the year and the
-        bulk read reduces `sv`'s points within it by the same definition. None for a member
-        the elected facet holds no dated pair of."""
+        """The year a `latest` read serves `sv` in: the year it elected (`elected_years`),
+        or for a member that elected none the year of its latest period under the elected
+        facet, the leading year of `materialise.window.latest_period` over its pairs'
+        latest dates. Both are read after any omission (`omitting`). Coverage knows only
+        years, so the plan fixes the year and the bulk read reduces `sv`'s points within it
+        by the same definition. None for a member the elected facet holds no dated pair
+        of."""
         best = self.elected
         if best is None:
             return None
+        if (year := (self.elected_years or {}).get(sv)) is not None:
+            return year
         return year_of(latest_period(c.latest_date for c in best.by_sv.get(sv, ())))
 
     def member_years(self, sv: str) -> YearBounds:
-        """The years the read serves `sv` in: under `latest` its own latest year alone
-        (`member_year`), as a mint reduces each StatVar to its own latest period, else the
-        plan's range, unbounded for a dateless read."""
+        """The years the read serves `sv` in: under `latest` its one year alone
+        (`member_year`), as a mint reduces each StatVar to its own period, else the plan's
+        range, unbounded for a dateless read."""
         if self.years == "latest":
             year = self.member_year(sv)
             return year, year
@@ -899,8 +980,9 @@ class BulkPlan:
         whose rows `omitted` leaves out of their StatVar (`RolePairs.excluding`). The facet
         and its continuation stay elected, as the read elects them before it leaves those
         rows out. A member whose omitted entity held a pair in its years under the facets the
-        read dispatches (`served_candidates`, `member_years`) joins `omitted_served`; under `latest` a member's year moves to the newest of its
-        remaining pairs, so an omission in another year confirms nothing there."""
+        read dispatches (`served_candidates`, `member_years`) joins `omitted_served`; under
+        `latest` a member's year is the one its remaining pairs elect, so an omission in
+        another year confirms nothing there."""
         if not omitted:
             return self
         candidates: dict[str, RoleBulkCandidate] = {}
@@ -930,7 +1012,13 @@ class BulkPlan:
                 for c in self.served_candidates(sv)
             ):
                 served.add(sv)
-        return replace(narrowed, omitted_served=self.omitted_served | served)
+        if served <= self.omitted_served:
+            return narrowed
+        stated = replace(narrowed, omitted_served=self.omitted_served | served)
+        if "elected_years" in vars(narrowed):
+            # `omitted_served` selects no row, so the election `narrowed` ran stands.
+            vars(stated)["elected_years"] = narrowed.elected_years
+        return stated
 
 
 def _role_election(
@@ -1096,9 +1184,9 @@ def facets_served(plan: ReadPlan) -> list[Facet]:
 def series_dates(series: PlanSeries, years: PlanYears) -> ServedDates | None:
     """The first and last dates of the points `series` serves under `years`, or None when
     its group states none. Under `latest` that is its group's latest period alone
-    (`PlanSeries.latest_period`), which a served series shares with its StatVar
-    (`PairPlan.served`), and otherwise the dates its group's facets hold under `years`
-    (`facet_dates`)."""
+    (`PlanSeries.latest_period`), which a served series shares with its StatVar unless the
+    StatVar elected its year (`PairPlan.series_dates`), and otherwise the dates its group's
+    facets hold under `years` (`facet_dates`)."""
     if years == "latest":
         latest = series.latest_period
         return (latest, latest) if latest is not None else None
@@ -1109,8 +1197,9 @@ def served_dates(plan: ReadPlan) -> dict[str, ServedDates]:
     """Each StatVar's first and last dates among the points `plan` serves: across its
     served series (`series_dates`), or in bulk across the pairs of the facets the read
     dispatches (`BulkPlan.served_candidates`) inside the member's years
-    (`BulkPlan.member_years`), at year grain, which under `latest` is the
-    member's own latest year alone. A StatVar the plan serves no dated point of is absent.
+    (`BulkPlan.member_years`), at year grain, which under `latest` is the member's one
+    year alone (`BulkPlan.member_year`). A StatVar the plan serves no dated point of is
+    absent.
 
     Coverage states its window from these dates and every answer dates its StatVars from
     them (`spec_build.build_stat_vars`), so the years a sentence names are years the
@@ -1118,7 +1207,7 @@ def served_dates(plan: ReadPlan) -> dict[str, ServedDates]:
     if isinstance(plan, PairPlan):
         by_sv: dict[str, list[ServedDates]] = {}
         for s in plan.served:
-            if (dates := series_dates(s, plan.years)) is not None:
+            if (dates := plan.series_dates(s)) is not None:
                 by_sv.setdefault(s.stat_var, []).append(dates)
         return {sv: hull for sv, spans in by_sv.items() if (hull := _hull(spans)) is not None}
     best = plan.elected
@@ -1354,13 +1443,15 @@ def plan_pairs(
     probes: Mapping[str, MemberProbe] | None = None,
     places: Sequence[str] = (),
     deadline: float | None = None,
+    elect: Election | None = None,
 ) -> PairPlan:
     """A per-series plan over `series`, each member's group elected under `years` from its
     probe: `probes`, or with none each member's own series (`series_probes`), which a plan
     asked for one place and no scope builds with each variable's whole breadth, read by
     `deadline` if a tie needs it. A role-bearing
     plan passes the coverage probe a mint reads (`materialise.facets.coverage_probe`), since
-    its series are only the role tuples holding a point in the years."""
+    its series are only the role tuples holding a point in the years, and `elect`, the
+    election of the year its `latest` read serves each member in."""
     series = list(series)
     if probes is None:
         probes = series_probes(
@@ -1381,6 +1472,7 @@ def plan_pairs(
         roles=roles,
         probes=probes,
         places=tuple(places),
+        elect=elect,
     )
 
 
@@ -1395,6 +1487,7 @@ def plan_role_read(
     pair_series: Callable[[Sequence[str]], Iterable[PlanSeries]],
     member_probes: Callable[[Sequence[str]], Mapping[str, MemberProbe]],
     roles: PlanRoles,
+    elect: Election,
 ) -> ReadPlan:
     """Plan a role-bearing preview's read over `sv_dcids`.
 
@@ -1410,7 +1503,8 @@ def plan_role_read(
     `member_probes(members)` each member's election input, so neither is built for a plan
     that reads in bulk. Above the cap one bulk read serves the facet
     `facet_election.select_role_candidate` elects from `candidates(members)` inside
-    `read_years`.
+    `read_years`. Either plan holds `elect`, the one election of the year its `latest` read
+    serves each member in (`PairPlan.elected_years`, `BulkPlan.elected_years`).
     """
     members = tuple(sv_dcids)
     mode = preview_mode(
@@ -1426,6 +1520,7 @@ def plan_role_read(
             years=years,
             roles=roles,
             probes=member_probes(members),
+            elect=elect,
         )
     merged = candidates(members)
     listed = tuple(read_years) if read_years is not None else None
@@ -1438,6 +1533,7 @@ def plan_role_read(
         continuing=continuing,
         candidates=merged,
         roles=roles,
+        elect=elect,
     )
 
 

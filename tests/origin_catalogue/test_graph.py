@@ -295,7 +295,9 @@ class _Graph:
         return sent
 
 
-def _client(graph: _Graph, *, today: Callable[[], date] | None = None) -> OriginGraphClient:
+def _client(
+    graph: _Graph, *, today: Callable[[], date] | None = None, un_budget: int = 7_000
+) -> OriginGraphClient:
     transport = httpx.MockTransport(graph.handler)
     return OriginGraphClient(
         ours=GraphClient(
@@ -309,7 +311,7 @@ def _client(graph: _Graph, *, today: Callable[[], date] | None = None) -> Origin
             base_url=f"https://{_UN_HOST}/core/api",
             transport=transport,
             generation=UnGeneration(today=today),
-            observation_get_url_budget_bytes=7_000,
+            observation_get_url_budget_bytes=un_budget,
             obs_cache_size=64,
         ),
     )
@@ -917,6 +919,33 @@ def test_our_facet_reads_send_the_admitted_hostnames_and_the_un_reads_none(
     [un] = graph.observation_requests(_UN_HOST)
     assert un.method == "GET"
     assert "filter.domains" not in un.url.params
+
+
+def test_read_groups_start_at_each_un_request_and_keep_the_input_order(
+    graph: _Graph, bind_catalogue
+) -> None:
+    """Under a URL budget that fits one UN variable to a GET, a read of two UN variables
+    among ours is two groups, each sending one UN request, and a read naming none is one."""
+    bind_catalogue(_catalogue())
+    stat_vars = [_POPULATION, _UN_MORTALITY, _GDP, _UN_MORTALITY_FEMALE, _CRS_VARIABLE]
+
+    with _client(graph, un_budget=150) as client:
+        groups = client.observation_read_groups(stat_vars, ["country/KEN"])
+        planned_without_a_request = not graph.requests
+        for group in groups:
+            client.observation_facets_batch(group, ["country/KEN"])
+        ours_alone = client.observation_read_groups([_POPULATION, _GDP], ["country/KEN"])
+
+    assert planned_without_a_request
+    assert groups == [
+        [_POPULATION, _UN_MORTALITY, _GDP],
+        [_UN_MORTALITY_FEMALE, _CRS_VARIABLE],
+    ]
+    assert [
+        request.url.params.get_list("variable.dcids")
+        for request in graph.observation_requests(_UN_HOST)
+    ] == [[_UN_MORTALITY], [_UN_MORTALITY_FEMALE]]
+    assert ours_alone == [[_POPULATION, _GDP]]
 
 
 def test_the_domain_filter_is_part_of_the_observation_cache_key(

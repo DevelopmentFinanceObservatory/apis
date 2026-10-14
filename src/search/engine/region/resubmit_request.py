@@ -12,8 +12,9 @@ from code_index.shared import get_index
 from dfo_platform.executor import submit_with_context
 from dfo_platform.roles import role_key_axis
 from entity_resolution import shared_membership_policy
-from entity_resolution.membership import MembershipPolicy
+from entity_resolution.membership import Membership, MembershipPolicy, UnknownMembership
 from entity_resolution.regions import replacing_group_id
+from entity_resolution.shared import shared_memberships
 from materialise import facet_axis_value
 from origin_catalogue import scoped_reads
 from search.engine.axis import classify_axis
@@ -389,15 +390,61 @@ def _refuse_retired_group_id(group: EntityGroup, role: str) -> None:
     would otherwise miss the total and members keyed by the current id.
 
     Raises:
-        EngineInputError: `group.ref` is a retired group id.
+        EngineInputError: `group.ref` or `group.group_id` is a retired group id.
     """
-    if group.ref is None or (current := replacing_group_id(group.ref)) is None:
-        return
-    raise EngineInputError(
-        f"group id {group.ref!r} is retired; post {current!r}",
-        code="request_invalid",
-        status=422,
-        pointer=f"/input/entity_groups/{role}/ref",
+    for field, posted in (("ref", group.ref), ("group_id", group.group_id)):
+        if posted is None or (current := replacing_group_id(posted)) is None:
+            continue
+        raise EngineInputError(
+            f"group id {posted!r} is retired; post {current!r}",
+            code="request_invalid",
+            status=422,
+            pointer=f"/input/entity_groups/{role}/{field}",
+        )
+
+
+def _registry_group(group: EntityGroup, role: str) -> Membership | None:
+    """The membership registry's group `group.group_id` names, `None` when it posts none.
+
+    Raises:
+        EngineInputError: the registry holds no group with that id.
+    """
+    if group.group_id is None:
+        return None
+    try:
+        return shared_memberships().groups.get(group.group_id)
+    except UnknownMembership:
+        raise EngineInputError(
+            f"group id {group.group_id!r} names no group the resolver knows",
+            code="request_invalid",
+            status=422,
+            pointer=f"/input/entity_groups/{role}/group_id",
+        ) from None
+
+
+def _registry_named_group(
+    group: EntityGroup, registry_group: Membership, role: str, role_entities: frozenset[str]
+) -> NamedGroup | None:
+    """`group` read as the members of its registry group, with the total the code index
+    declares for that group (`CodeIndex.totals_by_group`) kept aside, as a first answer keeps
+    it (`ResolvedSpec.group_totals`). `None` when the registry's members under the default
+    projection are not the role's entities."""
+    members = registry_group.members()
+    if not isinstance(members, tuple) or frozenset(members) != role_entities:
+        logger.info(
+            "resubmit dropped group %s on role %s: its registry members differ from the "
+            "role's entities",
+            group.group_id,
+            role,
+        )
+        return None
+    total = get_index().totals_by_group.get(registry_group.ref)
+    return NamedGroup(
+        label=group.label,
+        dcid=None,
+        member_dcids=role_entities,
+        total=None if total is None else total.dcid,
+        group_id=group.group_id,
     )
 
 
@@ -416,10 +463,13 @@ def resubmit_named_groups(
     group posted under a retired group id refuses (`_refuse_retired_group_id`). A kept group with a dcid
     takes the graph's type and label for the node, as a first answer does
     (`place_roles.request_named_groups`). The posted type is ignored, and the posted label
-    stands only where the graph gives none, or for a total's group that posts no dcid, as a
-    resolver group does ("G7"), whose total ties it to the role. Any other group posting no
-    dcid drops, since nothing ties its label to the role's entities, and so does a group on a
-    role the identity binds no entity on. The posted dcids' types and labels are read side
+    stands only where the graph gives none, or for a group that posts no dcid, as a resolver
+    group does ("G7"). Such a group is kept when its total ties it to the role, or when it
+    posts a `group_id` the membership registry holds and the registry's members are the
+    role's entities, which restores the total the code index declares for it
+    (`_registry_named_group`). A posted `group_id` the registry does not hold refuses
+    (`_registry_group`). Any other group posting no dcid drops, since nothing ties its label
+    to the role's entities, and so does a group on a role the identity binds no entity on. The posted dcids' types and labels are read side
     by side, one batch each, and their members after the types. Each dropped group is logged
     at info with the reason. A `GraphInfraError` on any of the reads drops the groups it
     covers, logged at warning and noted as a lost read (`degraded_reads.note_degraded_read`),
@@ -430,6 +480,7 @@ def resubmit_named_groups(
     entities = inp.identity.entities
     for role, group in (inp.entity_groups or {}).items():
         _refuse_retired_group_id(group, role)
+        registry_group = _registry_group(group, role)
         if role not in entities:
             logger.info(
                 "resubmit dropped group %s on role %s: the identity binds no entity there",
@@ -452,9 +503,16 @@ def resubmit_named_groups(
             if total is not None:
                 named.append(
                     NamedGroup(
-                        label=group.label, dcid=None, member_dcids=role_entities, total=total
+                        label=group.label,
+                        dcid=None,
+                        member_dcids=role_entities,
+                        total=total,
+                        group_id=group.group_id,
                     )
                 )
+            elif registry_group is not None:
+                if restored := _registry_named_group(group, registry_group, role, role_entities):
+                    named.append(restored)
             else:
                 logger.info(
                     "resubmit dropped group %r on role %s: it names no graph node",
@@ -514,15 +572,16 @@ def resubmit_named_groups(
 
 def _bound_total(group: EntityGroup, role: str, role_entities: frozenset[str]) -> str | None:
     """The one party `role` binds when the code index declares it the total
-    (`PartyRow.totals`) of the group the posted `group.ref` names, or of any group when it
-    posts none, published on `role`'s flow axis (`PartyRow.axes`), and `group` posts that
-    party as its `total` or no total. `None` otherwise, so a subject role, which names no
-    flow axis, binds no total."""
+    (`PartyRow.totals`) of the group the posted `group.ref` or `group.group_id` names, or of
+    any group when it posts neither, published on `role`'s flow axis (`PartyRow.axes`), and
+    `group` posts that party as its `total` or no total. `None` otherwise, so a subject role,
+    which names no flow axis, binds no total."""
     if len(role_entities) != 1:
         return None
     (party,) = role_entities
     row = get_index().parties.get(party)
-    if row is None or row.totals is None or group.ref not in (None, row.totals):
+    posted = group.ref or group.group_id
+    if row is None or row.totals is None or posted not in (None, row.totals):
         return None
     if role_key_axis(role) not in row.axes:
         return None

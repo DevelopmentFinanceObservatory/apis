@@ -50,7 +50,6 @@ def _electing(
     world_module.carry_logical_clock(monkeypatch)
     world_module.log_unit_decisions(monkeypatch)
     world_module.log_phases(monkeypatch)
-    world_module.emit_bind_stage_sentence(monkeypatch)
     search_settings(obs_preview_max_pairs=1 if route.endswith("bulk") else 120)
     world = world_module.world(route, "overlap", "definite")
     (stat_var,) = world.stat_vars

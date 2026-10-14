@@ -568,6 +568,19 @@ _CASES: list[tuple[DepartureFact, str | None, str]] = [
         "aid",
         "You asked for the EU. This shows its members, each on its own.",
     ),
+    # DAC1 publishes the DAC's own figure, which one built from its members can differ from.
+    (
+        DepartureFact(
+            code="group_read_as_members",
+            binding_ref="origin:",
+            asked="DAC",
+            group_dcid="groups/OECD.DAC",
+            sum_differs=True,
+        ),
+        "aid",
+        "You asked for DAC. This shows its members, each on its own, and the source publishes "
+        "its own figure for the group, which can differ from one built from its members.",
+    ),
     # A resubmit of crs-006 posts no words for the group.
     (
         DepartureFact(
@@ -586,6 +599,15 @@ _CASES: list[tuple[DepartureFact, str | None, str]] = [
         None,
         "You named Kenya as a recipient. This measure has no recipients, so this shows the "
         "place itself.",
+    ),
+    # An undirected place whose data sits under one direction alone.
+    (
+        DepartureFact(
+            code="direction_inferred", binding_ref="where:", asked="Kenya", over="destination"
+        ),
+        "aid",
+        "You named Kenya without a direction. Only the data with Kenya as the recipient "
+        "holds values, so this reads it as the recipient.",
     ),
     # crs-010: the check covered only the ODA default the engine chose.
     (
@@ -718,6 +740,19 @@ _NO_DATA_CASES: list[tuple[DepartureFact, str | None, str]] = [
         DepartureFact(
             code="group_read_as_members",
             binding_ref="origin:",
+            group="DAC",
+            group_size=32,
+            group_dcid="groups/OECD.DAC",
+            sum_differs=True,
+        ),
+        "aid",
+        "This checked the 32 DAC members, each on its own, and the source publishes its own "
+        "figure for the group, which can differ from one built from its members.",
+    ),
+    (
+        DepartureFact(
+            code="group_read_as_members",
+            binding_ref="origin:",
             group="European Union",
             group_size=27,
         ),
@@ -731,6 +766,14 @@ _NO_DATA_CASES: list[tuple[DepartureFact, str | None, str]] = [
         None,
         "You named Kenya as a recipient. This measure has no recipients, so this checked the "
         "place itself.",
+    ),
+    (
+        DepartureFact(
+            code="direction_inferred", binding_ref="where:", asked="Kenya", over="destination"
+        ),
+        "aid",
+        "You named Kenya without a direction. Only the data with Kenya as the recipient "
+        "holds values, so this reads it as the recipient.",
     ),
     (
         DepartureFact(code="scope_limited", binding_ref="how:crsTypeOfFlow", limits=("ODA",)),

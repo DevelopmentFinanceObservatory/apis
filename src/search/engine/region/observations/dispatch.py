@@ -3,19 +3,24 @@
 Shared helpers attach warnings, resolved facets, and coverage evidence to buffered results.
 
 A preview reads the plan resolve recorded (`plan`, see `retrieval.read_plan`). Under
-`latest` each StatVar serves one period, the newest any of its served series holds
-(`materialise.window.latest_period`), on every route, and only the series holding it, as a
-mint of the same Spec does. Coverage dates each route the same way (`retrieval.coverage`):
+`latest` each StatVar serves one period, on every route, and only the series holding it, as
+a mint of the same Spec does: in the year a role-bearing plan elected for it
+(`ReadPlan.elected_years`), or without one the newest period any of its served series holds
+(`materialise.window.latest_period`). Coverage dates each route the same way
+(`retrieval.coverage`):
 
-- Named series within the pair cap fetch their actual latest rows with SDMX `LATEST`.
-  Once admission and currency omissions have run, Search selects each StatVar's one
-  period across its reads and converts the rows holding it. Coverage dates remain
+- Named series within the pair cap fetch their latest rows with SDMX `LATEST`, and a
+  StatVar that elected its year the rows in that year when a series ends after it. Once
+  admission and currency omissions have run, Search selects the StatVar's one period
+  across its reads, the newest in the elected year when a read holds a row there and else
+  the newest any read holds, and converts the rows holding it. Coverage dates remain
   index-derived, and returned points outside those dates are logged
   (`_served_outside_planned_years`).
-- A bulk role preview, a population above the cap, serves each member its own latest year
-  alone (`BulkPlan.member_year`), read with SDMX `LATEST`. The headline names the latest
-  year any served row reaches and counts the members whose own year is that year. A pair
-  whose read holds no point in that year is dropped and logged.
+- A bulk role preview, a population above the cap, serves each member its one year alone
+  (`BulkPlan.member_year`), read in that year for a member that elected it and with SDMX
+  `LATEST` for any other. The headline names the newest year any member serves and counts
+  the members serving it. A pair whose read holds no point in its member's year is dropped
+  and logged.
 
 A scope-defaulted bulk preview (`bulk_scope`) reads each place's latest point of its one
 facet and serves each variable the places holding its one period, so coverage names the span

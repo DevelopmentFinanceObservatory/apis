@@ -1,15 +1,16 @@
-"""Tests that a wire shape label describes the served measure partition.
+"""Tests that a wire shape label describes the members a reading serves.
 
 Labels combine the partition phrase with bound or shared axes. An unlabelled partition falls back
-to shared values, then to a confirmed member's name.
+to shared values, then to a confirmed member's name. A reading with no partition takes the name
+of the one member it serves.
 """
 
 from __future__ import annotations
 
+import pytest
+
 from code_index.shared import get_index, get_measure_index
-from search.engine.region import _near_neighbor_check
 from search.engine.retrieval.bound_values import MeasurePartition, OpenAxisFact, _measure_axis_value
-from search.engine.shape import ShapeDraft
 from search.engine.spec_build import build_spec
 from search.models import (
     CoverageBare,
@@ -137,6 +138,56 @@ def test_a_shape_with_no_measure_family_keeps_its_own_label_object_unchanged():
 
     assert spec.resolved.shape is shape
     assert spec.resolved.shape.label == "Test"
+
+
+_TOTAL = ("SV_total", "Outstanding external debt")
+_SHORT_TERM = ("SV_short_term", "Outstanding short-term external debt")
+
+
+@pytest.mark.parametrize(
+    ("served", "expected"),
+    [
+        pytest.param([_TOTAL], _TOTAL[1], id="one-named-member-names-the-reading"),
+        pytest.param([("SV_total", None)], _SHORT_TERM[1], id="one-unnamed-member"),
+        pytest.param([_TOTAL, _SHORT_TERM], _SHORT_TERM[1], id="several-members"),
+    ],
+)
+def test_a_reading_with_no_partition_is_labelled_by_the_one_series_it_serves(
+    served: list[tuple[str, str | None]], expected: str
+):
+    """A shape arrives named after a sibling recall ranked first. The wire label is the
+    served member's graph name when the reading serves one named member, else the shape's."""
+    shape = Shape(
+        shape_id="FinancialPosition/amount/Nominal/",
+        label=_SHORT_TERM[1],
+        population_type=gref("FinancialPosition"),
+        measured_property=gref("amount"),
+        stat_type=gref("measuredValue"),
+        measurement_qualifier=gref("Nominal"),
+        slot_keys=[],
+        member_count=2,
+    )
+
+    spec = build_spec(
+        open_roles=(),
+        measure_elected_properties=frozenset(),
+        shape=shape,
+        slots=[],
+        stat_vars=[
+            StatVar(
+                ref=gref(dcid, name),
+                shape_id=shape.shape_id,
+                slot_values=[],
+                constraint_properties=[],
+            )
+            for dcid, name in served
+        ],
+        entities=[],
+        coverage=CoverageBare(has_data=True),
+    )
+
+    assert spec.resolved.measure_label is None
+    assert spec.resolved.shape.label == expected
 
 
 def test_an_unlabelled_partition_composes_a_label_from_what_the_group_shares():
@@ -310,73 +361,31 @@ def test_relabelling_never_moves_spec_id():
     assert relabelled.definition == unlabelled.definition
 
 
-def test_near_neighbor_reads_the_same_shape_draft_before_and_after_build_spec_runs():
-    """Composing a wire label leaves `ShapeDraft.label` unchanged for near-neighbour checks.
+def test_a_served_member_name_never_moves_spec_id():
+    """The served member's name on a reading with no partition is display text only."""
+    shape = shape_five_tuple("FinancialPosition", "amount", "Nominal")
 
-    The draft label matches the Net row; `build_spec` composes the Gross wire label.
-    """
-    chosen = ShapeDraft(
-        shape_id="chosen",
-        label=_NET_CATALOG_NAME,
-        pop_type_dcid="FinancialFlow",
-        meas_prop_dcid="amount",
-        stat_type_dcid="measuredValue",
-        meas_qual_dcid="Nominal",
-        meas_denom_dcid=None,
-        slot_keys=(),
-        representative_score=0.8,
-    )
-    neighbor = ShapeDraft(
-        shape_id="neighbor",
-        label="fertility rate",
-        pop_type_dcid="Person",
-        meas_prop_dcid="fertilityRate",
-        stat_type_dcid="measuredValue",
-        meas_qual_dcid=None,
-        meas_denom_dcid=None,
-        slot_keys=(),
-        representative_score=0.6,
-    )
-    capped = [chosen, neighbor]
+    def spec_serving(name: str | None):
+        return build_spec(
+            open_roles=(),
+            measure_elected_properties=frozenset(),
+            shape=shape,
+            slots=[],
+            stat_vars=[
+                StatVar(
+                    ref=gref("SV_total", name),
+                    shape_id=shape.shape_id,
+                    slot_values=[],
+                    constraint_properties=[],
+                )
+            ],
+            entities=[],
+            coverage=CoverageBare(has_data=True),
+        )
 
-    before = _near_neighbor_check("disbursements to Kenya", chosen, 0, capped)
+    unnamed = spec_serving(None)
+    named = spec_serving("Outstanding external debt")
 
-    gross_partition = _real_partition(_GROSS_DCID)
-    net_partition = _real_partition(_NET_DCID)
-    wire_shape = Shape(
-        shape_id=chosen.shape_id,
-        label=chosen.label,
-        population_type=gref(chosen.pop_type_dcid),
-        measured_property=gref(chosen.meas_prop_dcid),
-        stat_type=gref(chosen.stat_type_dcid),
-        measurement_qualifier=gref(chosen.meas_qual_dcid),
-        slot_keys=[],
-        member_count=2,
-    )
-    spec = build_spec(
-        open_roles=(),
-        measure_elected_properties=frozenset(),
-        shape=wire_shape,
-        slots=[],
-        stat_vars=[
-            StatVar(
-                ref=gref(_GROSS_DCID, _GROSS_CATALOG_NAME),
-                shape_id=wire_shape.shape_id,
-                slot_values=[],
-                constraint_properties=[],
-            )
-        ],
-        entities=[],
-        coverage=CoverageBare(has_data=True),
-        measure_partition=gross_partition,
-        measure_siblings=(net_partition,),
-    )
-    # build_spec did compose a new wire shape label...
-    assert spec.resolved.shape.label == "gross disbursements"
-    assert spec.resolved.shape.label != _GROSS_CATALOG_NAME
-    # ...but never touched the ShapeDraft near_neighbor reads.
-    assert chosen.label == _NET_CATALOG_NAME
-
-    after = _near_neighbor_check("disbursements to Kenya", chosen, 0, capped)
-
-    assert before == after
+    assert named.resolved.shape.label != unnamed.resolved.shape.label
+    assert named.spec_id == unnamed.spec_id
+    assert named.definition == unnamed.definition

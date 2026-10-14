@@ -567,10 +567,9 @@ class ResubmitCandidatesEntry(StrictModel):
     """One part re-materialised from a posted set of competing candidate
     identities, through the promote path, in posted order, always. `ordering`
     names the display rule this set already used, restated rather than
-    recomputed: neither ordering rule is reproducible from posted state alone
-    (`intent_rank` is one LLM call's output; `broadest_first`'s loose-last
-    band comes from candidate_scores that do not round-trip) -- see
-    `Ordering` and `outcomes.CandidateSet`. This entry carries no
+    recomputed: the order rests on the bind model's election and the availability
+    reads of the first answer, which do not round-trip -- see `Ordering` and
+    `outcomes.CandidateSet`. This entry carries no
     `max_candidates` field: `CandidateSet.max_candidates` on the response is
     not posted back and is always server-computed, never client-supplied.
     """

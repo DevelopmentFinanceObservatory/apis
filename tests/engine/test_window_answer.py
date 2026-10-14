@@ -193,18 +193,16 @@ def test_a_second_shape_with_no_data_leaves_the_window_answer_standing(also: lis
     _assert_window_answer(result, "2025 to 2026", (2000, 2004))
 
 
-@pytest.mark.parametrize("also", [None, [1]], ids=["tie", "also_plausible"])
-def test_a_window_answer_showing_an_alternate_with_data_states_no_year_departure(
-    also: list[int] | None,
-):
-    """Households, elected, holds 2000 to 2004 at Zeta and Population holds 2025 and 2026:
-    the answer shows Population, which holds the years asked, so the part carries no
-    `year_unavailable` departure for the elected series."""
+def test_a_window_answer_showing_an_alternate_with_data_states_no_year_departure():
+    """Households, elected, holds 2000 to 2004 at Zeta and Population, nominated, holds 2025
+    and 2026: the answer shows Population as the reading riding on the refusal, which holds
+    the years asked, so the part carries no `year_unavailable` departure for the elected
+    series."""
     result = _standard_answer(
         [_facet("fP", range(2025, 2027))],
         _since(2025),
         household=[_facet("fH", range(2000, 2005))],
-        also=also,
+        also=[1],
     )
     assert result.no_data_reason == "no_observations"
     assert result.gate == "only_alternate_has_data"

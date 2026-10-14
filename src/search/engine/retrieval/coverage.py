@@ -16,9 +16,12 @@ the part a preview delivers (`read_plan`):
 The window a range or `latest` answer states spans the years of the dates the plan serves
 (`read_plan.served_dates`), the dates each StatVar is dated from.
 
-The headline counts the plan's served rows (`served_rows`) inside the plan's years. Option
-coverage plans each option's facets the same way. This module performs no I/O beyond the
-coverage index lookups the headline and bulk counts make.
+The headline counts the plan's served rows (`served_rows`) inside the plan's years. Under
+`latest` a role-bearing plan elects each member's year once, over the rows it holds
+before any reduction (`plan_election`, which the plan runs as `elected_years`), and the
+plan's reductions, the headline and the download read it there (`latest_election`,
+`counted_rows`). Option coverage plans each option's facets the same way. This module
+performs no I/O beyond the coverage index lookups the headline and bulk counts make.
 """
 
 from __future__ import annotations
@@ -30,11 +33,12 @@ from typing import TYPE_CHECKING
 from search.engine.clients.graph import Facet
 from search.engine.retrieval.read_plan import (
     BulkPlan,
+    Election,
     PairPlan,
+    PlanYears,
     ReadPlan,
     dated_without_complete_dates,
     facets_served,
-    series_dates,
     series_points,
     served_dates,
     year_of,
@@ -180,8 +184,8 @@ def _pair_coverage(
         )
 
     if plan.years == "latest" and window is not None:
-        # Each served series serves one point, its StatVar's latest period.
-        per_series = [1 for s in served if series_dates(s, plan.years) is not None]
+        # Each served series serves one point, at its StatVar's one period.
+        per_series = [1 for s in served if plan.series_dates(s) is not None]
     else:
         per_series = [series_points(s, read) for s in served]
     observation_count, obs_dim_count = sum(per_series), max(per_series, default=0)
@@ -259,25 +263,83 @@ def served_rows(plan: ReadPlan) -> frozenset[ServedRow]:
     )
 
 
+def held_rows(plan: ReadPlan) -> frozenset[ServedRow]:
+    """The coverage rows `plan` holds before a `latest` window reduces them, the rows its
+    members elect their year over (`plan_election`): each held series' group facets
+    at its recipient and donor (`PairPlan.held`), or in bulk every pair of the facets the
+    read dispatches (`served_rows`)."""
+    if isinstance(plan, BulkPlan):
+        return served_rows(plan)
+    return frozenset(
+        (s.stat_var, facet_id, *(s.rows or (None, None)))
+        for s in plan.held
+        for facet_id in s.group_ids
+    )
+
+
+def plan_election(coverage_index: CoverageIndex) -> Election:
+    """The election a role-bearing plan is built with (`read_plan.plan_role_read`): the
+    year each of its members elects for a `latest` read (`CoverageIndex.elected_years`),
+    over the rows the plan holds before any reduction (`held_rows`) less those a conversion
+    leaves out. A member the index cannot elect for is absent and serves its own latest
+    period. The plan runs it once (`PairPlan.elected_years`, `BulkPlan.elected_years`), and
+    nothing else elects for a plan."""
+
+    def elect(plan: ReadPlan) -> Mapping[str, int]:
+        assert plan.roles is not None  # only a role-bearing plan holds an election
+        return coverage_index.elected_years(
+            variables=plan.members,
+            bound=plan.roles.bound,
+            served=held_rows(plan),
+            excluded=coverage_exclusions(plan),
+        )
+
+    return elect
+
+
+def latest_election(plan: ReadPlan, years: PlanYears) -> Mapping[str, int] | None:
+    """The year each member of `plan` elected, for a count of it under `years`
+    (`ReadPlan.elected_years`). None unless `years` is `latest`. A plan holding no
+    election elects nothing, and each of its members serves its own latest period."""
+    return (plan.elected_years or {}) if years == "latest" else None
+
+
+def counted_rows(plan: ReadPlan, elected: Mapping[str, int] | None) -> frozenset[ServedRow]:
+    """The coverage rows the headline and the download count of `plan`: a member that
+    elected its year (`elected`, from `latest_election`) counts the rows it holds, of
+    which a read serves those holding that year, and any other member the rows the plan
+    serves (`served_rows`)."""
+    served = served_rows(plan)
+    if not elected:
+        return served
+    return frozenset(row for row in served if row[0] not in elected) | frozenset(
+        row for row in held_rows(plan) if row[0] in elected
+    )
+
+
 def answer_headline(
     plan: ReadPlan, coverage_index: CoverageIndex, *, date_request: DateRequest | None
 ) -> Headline | None:
     """The headline of a role-bearing plan: the latest year its served rows reach inside its
-    years, with that year's counts. The rows a conversion leaves out (`ReadPlan.omitted`)
-    count for nothing. None for a plan that is not role-bearing."""
+    years, with that year's counts, and under `latest` the newest year a member elected
+    (`latest_election`), with the counts of the members serving it. The rows a conversion
+    leaves out (`ReadPlan.omitted`) count for nothing. None for a plan that is not
+    role-bearing."""
     if plan.roles is None:
         return None
     window = plan.years if isinstance(plan.years, TimeWindow) else None
+    elected = latest_election(plan, plan.years)
     return headline_from_coverage_index(
         coverage_index,
         variables=plan.members,
         bound=plan.roles.bound,
         role_dcid_by_coverage_role=plan.roles.role_names,
         date_request=date_request,
-        served=served_rows(plan),
+        served=counted_rows(plan, elected),
         excluded=coverage_exclusions(plan),
         first_year=window.start_year if window is not None else None,
         last_year=window.end_year if window is not None else None,
+        elected=elected,
     )
 
 
@@ -306,10 +368,12 @@ def headline_from_coverage_index(
     excluded: Iterable[tuple[str, CoverageRole, str]] = (),
     first_year: int | None = None,
     last_year: int | None = None,
+    elected: Mapping[str, int] | None = None,
 ) -> Headline | None:
     """Build the exact latest-year headline for `variables` under `bound`, counting only the
     `served` rows inside `[first_year, last_year]` less the `excluded` `(variable, role,
-    dcid)` rows, so the headline names the year the preview's points reach.
+    dcid)` rows, so the headline names the year the preview's points reach. A `latest`
+    read passes the year each variable `elected` (`CoverageIndex.headline`).
 
     Return `None` when no candidate survives. Map coverage labels such as
     `donor` and `recipient` to Data Commons role dcids for the wire; omit roles
@@ -328,6 +392,7 @@ def headline_from_coverage_index(
         excluded=excluded,
         first_year=first_year,
         last_year=last_year,
+        elected=elected,
     )
     if result is None:
         return None

@@ -586,10 +586,16 @@
 
 - id: dq-crs-048
   query: aid per capita from Norway
-  why: No CRS series carries a per-capita denominator for aid, so the answer is denominator_not_available.
+  why: DAC2a publishes net ODA per person of the recipient's population, so the per-capita reading answers with Norway as origin.
   reuse: panel/crs-039
-  tags: {theme: aid, entity: country, direction: origin_only, unit: unsupported, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
-  expect: {no_data: {reason: denominator_not_available, category: absent}}
+  tags: {theme: aid, entity: country, direction: origin_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure:
+        shape: {population_type: FinancialFlow, measured_property: amount, stat_type: measuredValue, measurement_qualifier: Nominal, measurement_denominator: Count_Person}
+        bound: {dac2aAidType: DAC2aAidType206, financialFlowType: Disbursement, nettingBasis: Net}
+      entities: [{dcid: country/NOR, role: origin}]
+      provenance: {origin: dfo, dataset: provenance/OECDDAC2A}
 
 - id: dq-crs-049
   query: share of ODA going to Kenya out of all German aid 2015 to 2020

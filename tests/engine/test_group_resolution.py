@@ -7,6 +7,7 @@ Most tests inject resolutions; `TestG7RealResolverSettlement` uses the shared re
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 from dfo_spec_kit.identity import spec_id_from_value
@@ -18,9 +19,16 @@ from search.engine.config import settings
 from search.engine.core import resolve_async
 from search.engine.departures import spec_departure_facts
 from search.engine.quantity_read import QuantityOutput
+from search.engine.region import resolve_spec_resubmit
 from search.engine.region.pipeline import resolve_variable
 from search.engine.role_text import DoorRole
-from search.models import EntityGroup, RawTextInput, ResolveRequest
+from search.models import (
+    EntityGroup,
+    RawTextInput,
+    ResolvedFacet,
+    ResolveRequest,
+    ResubmitIdentityPayload,
+)
 from series_coverage.schema import RoleNames
 from series_coverage.shared import CoverageSnapshot
 from tests.engine._fake_coverage import (
@@ -29,6 +37,7 @@ from tests.engine._fake_coverage import (
     patch_coverage,
 )
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._harness import walk_options
 from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, FakeLLM, make_resolver
 
@@ -216,9 +225,16 @@ class TestGroupRoleBearingExpansion:
         _country("country/T2", "Testland Two"),
     )
 
-    def _graph(self, *, group_label: str | None = None, children: dict | None = None) -> FakeGraph:
+    def _graph(
+        self,
+        *,
+        group_label: str | None = None,
+        children: dict | None = None,
+        countries: tuple[str, ...] = (),
+    ) -> FakeGraph:
         """`group_label` is the graph's label for the group's own node, which the graph
-        holds only when it is set. `children` are a region's member places by type."""
+        holds only when it is set. `children` are a region's member places by type, and
+        `countries` the country nodes the graph holds."""
         sv_arcs = {
             "populationType": {"nodes": [{"dcid": "EconomicActivity"}]},
             "measuredProperty": {"nodes": [{"dcid": "amount"}]},
@@ -236,6 +252,7 @@ class TestGroupRoleBearingExpansion:
                 "financingProvider": {"arcs": {"rangeIncludes": {"nodes": [{"dcid": "Country"}]}}},
                 "financingRecipient": {"arcs": {"rangeIncludes": {"nodes": [{"dcid": "Country"}]}}},
                 **({"TestlandUnion": {"label": group_label}} if group_label is not None else {}),
+                **{dcid: {"label": dcid, "type": "Country"} for dcid in countries},
             },
             obs={},
             detect={"gdp": {"svs": [_GDP_SV], "cosine_scores": [0.95]}},
@@ -342,34 +359,45 @@ class TestGroupRoleBearingExpansion:
         assert asked == ["Testland Union"]
 
     @pytest.mark.parametrize(
-        ("published", "origins", "total"),
+        ("name", "group", "party"),
         [
-            pytest.param(True, ["GroupOfSeven"], "GroupOfSeven", id="the-dataset-publishes-it"),
-            pytest.param(False, ["country/T1", "country/T2"], None, id="the-dataset-does-not"),
+            pytest.param("G7", "GroupOfSeven", "GroupOfSeven", id="a-summing-total"),
+            # "DAC countries, total" can differ from the sum over the DAC's members.
+            pytest.param("DAC", "groups/OECD.DAC", "DACCountriesTotal", id="a-published-total"),
+        ],
+    )
+    @pytest.mark.parametrize(
+        ("published", "members"),
+        [
+            pytest.param(True, False, id="the-dataset-publishes-it"),
+            pytest.param(False, True, id="the-dataset-does-not"),
         ],
     )
     def test_a_group_binds_the_total_its_dataset_publishes(
-        self, monkeypatch, published, origins, total
+        self, monkeypatch, name, group, party, published, members
     ):
-        """The code index declares GroupOfSeven the total of the resolver's G7
-        (`CodeIndex.totals_by_group`). Where the elected series publishes it as a donor, the
-        origin binds that one row and keeps the G7 as its group, naming the total, with no
-        `group_read_as_members` departure. Otherwise the origin binds the members."""
+        """The code index declares GroupOfSeven the total of the resolver's G7, and
+        DACCountriesTotal that of the DAC (`CodeIndex.totals_by_group`). Where the elected
+        series publishes it as a donor, the origin binds that one row and keeps the group,
+        naming the total, with no `group_read_as_members` departure. Otherwise the origin binds
+        the members."""
+        origins = ["country/T1", "country/T2"] if members else [party]
+        total = None if members else party
         rows = [
             (_GDP_SV, "f1", "country/T1", "country/KEN", [2020]),
             (_GDP_SV, "f1", "country/T2", "country/KEN", [2020]),
         ]
         if published:
-            rows.append((_GDP_SV, "f1", "GroupOfSeven", "country/KEN", [2020]))
+            rows.append((_GDP_SV, "f1", party, "country/KEN", [2020]))
         index = patch_coverage(monkeypatch, rows, role_names={_GDP_SV: _FINANCING_ROLE_NAMES})
         result = _run(
-            entities=["G7", "Kenya"],
+            entities=[name, "Kenya"],
             pre_resolved={
-                "G7": Group(members=self._MEMBERS, entity=None, dcid="GroupOfSeven"),
+                name: Group(members=self._MEMBERS, entity=None, dcid=group),
                 "Kenya": Resolved(entity=_country("country/KEN", "Kenya")),
             },
             entity_roles={
-                "G7": [DoorRole(axis="origin", span="from")],
+                name: [DoorRole(axis="origin", span="from")],
                 "Kenya": [DoorRole(axis="destination", span="to")],
             },
             graph=self._graph(),
@@ -381,9 +409,196 @@ class TestGroupRoleBearingExpansion:
         assert result.status == "definite", result
         (spec,) = result.specs
         assert sorted(e.ref for e in spec.resolved.entities if e.role == "origin") == origins
-        assert spec.resolved.entity_groups == {"origin": EntityGroup(label="G7", total=total)}
+        assert spec.resolved.entity_groups == {
+            "origin": EntityGroup(label=name, total=total, group_id=group)
+        }
+        assert spec.resolved.group_totals == ({"origin": party} if members else {})
         codes = [fact.code for fact in spec_departure_facts(spec, operations=())]
-        assert ("group_read_as_members" in codes) is (total is None)
+        assert ("group_read_as_members" in codes) is members
+
+    @pytest.mark.parametrize(
+        ("published", "destinations", "total", "kept"),
+        [
+            pytest.param(True, ["DACAsia"], "DACAsia", {}, id="the-dataset-publishes-it"),
+            pytest.param(
+                False,
+                ["country/T1", "country/T2"],
+                None,
+                {"destination": "DACAsia"},
+                id="the-dataset-does-not",
+            ),
+        ],
+    )
+    def test_a_dac_region_binds_its_total_or_keeps_it_beside_the_members(
+        self, monkeypatch, published, destinations, total, kept
+    ):
+        """The code index declares DACAsia the total of resolvekit's "Asia (DAC)", a group with
+        no node of its own. Where the elected series publishes it as a recipient, the
+        destination binds that row. Otherwise it binds the members and keeps the total aside
+        (`ResolvedSpec.group_totals`), for the departure naming what the members leave out."""
+        rows = [
+            (_GDP_SV, "f1", "country/KEN", "country/T1", [2020]),
+            (_GDP_SV, "f1", "country/KEN", "country/T2", [2020]),
+        ]
+        if published:
+            rows.append((_GDP_SV, "f1", "country/KEN", "DACAsia", [2020]))
+        index = patch_coverage(monkeypatch, rows, role_names={_GDP_SV: _FINANCING_ROLE_NAMES})
+        result = _run(
+            entities=["Kenya", "Asia (DAC)"],
+            pre_resolved={
+                "Kenya": Resolved(entity=_country("country/KEN", "Kenya")),
+                "Asia (DAC)": Group(
+                    members=self._MEMBERS, entity=None, dcid="groups/OECD.DAC.Region.Asia"
+                ),
+            },
+            entity_roles={
+                "Kenya": [DoorRole(axis="origin", span="from")],
+                "Asia (DAC)": [DoorRole(axis="destination", span="to")],
+            },
+            graph=self._graph(),
+            sdmx=FakeSdmxClient(observations={}),
+            llm=_FixedBindLLM(),
+            coverage=FakeCoverageService(index).snapshot(),
+        )
+
+        assert result.status == "definite", result
+        (spec,) = result.specs
+        bound = sorted(e.ref for e in spec.resolved.entities if e.role == "destination")
+        assert bound == destinations
+        assert spec.resolved.entity_groups == {
+            "destination": EntityGroup(
+                label="Asia (DAC)", total=total, group_id="groups/OECD.DAC.Region.Asia"
+            )
+        }
+        assert spec.resolved.group_totals == kept
+        if kept:
+            # Served from the CRS, the members' departure names the regional amounts the kept
+            # total counts beside them.
+            crs = ResolvedFacet(
+                basis="fallback", ref="provenance/OECDCreditorReportingSystem", label="CRS"
+            )
+            facets = {**(spec.resolved.facets or {}), "provenance": crs}
+            served = spec.model_copy(
+                update={"resolved": spec.resolved.model_copy(update={"facets": facets})}
+            )
+            (fact,) = (
+                f
+                for f in spec_departure_facts(served, operations=())
+                if f.code == "group_read_as_members"
+            )
+            assert "Asia, unallocated by country (DAC)" in fact.excluded
+
+    def test_africa_dac_binds_the_total_its_dataset_publishes(self, monkeypatch):
+        """The shared resolver gives "Africa (DAC)" the id of the graph place `africa`
+        (`group_ids.json`), whose members are the DAC region's, so the code index's total
+        for that place, DACAfrica, holds it, and the destination binds that row."""
+        graph = self._graph()
+        (africa,) = asyncio.run(make_resolver(graph).resolve(["Africa (DAC)"]))
+        assert isinstance(africa, Group)
+        members = [member.dcid for member in africa.members]
+        rows = [(_GDP_SV, "f1", "country/FRA", dcid, [2016]) for dcid in members]
+        rows.append((_GDP_SV, "f1", "country/FRA", "DACAfrica", [2016]))
+        index = patch_coverage(monkeypatch, rows, role_names={_GDP_SV: _FINANCING_ROLE_NAMES})
+        result = _run(
+            entities=["France", "Africa (DAC)"],
+            pre_resolved={
+                "France": Resolved(entity=_country("country/FRA", "France")),
+                "Africa (DAC)": africa,
+            },
+            entity_roles={
+                "France": [DoorRole(axis="origin", span="from")],
+                "Africa (DAC)": [DoorRole(axis="destination", span="to")],
+            },
+            graph=graph,
+            sdmx=FakeSdmxClient(observations={}),
+            llm=_FixedBindLLM(),
+            coverage=FakeCoverageService(index).snapshot(),
+        )
+
+        assert result.status == "definite", result
+        (spec,) = result.specs
+        assert spec.definition.identity.entities["destination"] == ["DACAfrica"]
+        assert spec.resolved.entity_groups["destination"].total == "DACAfrica"
+
+    @pytest.mark.parametrize(
+        ("name", "group_role", "other", "total"),
+        [
+            pytest.param("G7", "origin", ("Kenya", "country/KEN"), "GroupOfSeven", id="g7"),
+            pytest.param(
+                "Asia (DAC)",
+                "destination",
+                ("France", "country/FRA"),
+                "DACAsia",
+                id="asia-dac",
+            ),
+        ],
+    )
+    def test_a_members_read_of_a_nodeless_group_survives_a_resubmit(
+        self, monkeypatch, name, group_role, other, total
+    ):
+        """A first answer reads a group the graph holds no node for as its members, on a
+        dataset that does not publish the group's total. The served Spec, serialised and
+        posted back, resubmits to the same `spec_id` with the same group, the total kept
+        aside, and the same departures."""
+        (group,) = asyncio.run(make_resolver(self._graph()).resolve([name]))
+        assert isinstance(group, Group)
+        assert group.entity is None
+        other_name, other_dcid = other
+        graph = self._graph(countries=(other_dcid, *(m.dcid for m in group.members)))
+        other_role = "destination" if group_role == "origin" else "origin"
+        rows = [
+            (
+                _GDP_SV,
+                "f1",
+                *((m.dcid, other_dcid) if group_role == "origin" else (other_dcid, m.dcid)),
+                [2020],
+            )
+            for m in group.members
+        ]
+        index = patch_coverage(monkeypatch, rows, role_names={_GDP_SV: _FINANCING_ROLE_NAMES})
+        coverage = FakeCoverageService(index).snapshot()
+        first = _run(
+            entities=[name, other_name],
+            pre_resolved={
+                name: group,
+                other_name: Resolved(entity=_country(other_dcid, other_name)),
+            },
+            entity_roles={
+                name: [DoorRole(axis=group_role, span="from")],
+                other_name: [DoorRole(axis=other_role, span="to")],
+            },
+            graph=graph,
+            sdmx=FakeSdmxClient(observations={}),
+            llm=_FixedBindLLM(),
+            coverage=coverage,
+        )
+        assert first.status == "definite", first
+        (served,) = first.specs
+        assert served.resolved.entity_groups[group_role].group_id == group.dcid
+        assert served.resolved.group_totals == {group_role: total}
+
+        wire = json.loads(served.model_dump_json(exclude_none=True))
+        region = resolve_spec_resubmit(
+            inp=ResubmitIdentityPayload.model_validate(
+                {
+                    "identity": wire["definition"]["identity"],
+                    "entity_groups": wire["resolved"]["entity_groups"],
+                }
+            ),
+            graph=graph,
+            sdmx=FakeSdmxClient(observations={}),
+            coverage=coverage,
+            options=walk_options(graph),
+        )
+
+        assert region.status == "definite", region
+        (spec,) = region.specs
+        assert spec.spec_id == served.spec_id
+        assert spec.resolved.entity_groups == served.resolved.entity_groups
+        assert spec.resolved.group_totals == {group_role: total}
+        codes = [fact.code for fact in spec_departure_facts(spec, operations=())]
+        assert "group_read_as_members" in codes
+        assert codes == [fact.code for fact in spec_departure_facts(served, operations=())]
 
     def test_a_region_on_a_role_that_admits_only_its_members_binds_them(
         self, monkeypatch, declare_regions
@@ -605,19 +820,52 @@ class TestGroupCapBoundary:
         assert result.no_data_reason == "entity_set_too_large"
         assert result.unresolved_entity_names == ()
 
-    def test_group_past_the_cap_beside_an_unresolved_name_is_not_listed_unresolved(self):
-        """The unresolved name decides the reason, and the group, which resolved, is not
-        among the unresolved names."""
+    _CONGO = Ambiguous(
+        candidates=(
+            _country("country/COD", "Congo (DRC)"),
+            _country("country/COG", "Congo (Republic)"),
+        )
+    )
+
+    @pytest.mark.parametrize(
+        ("entities", "reason", "ambiguous", "unresolved"),
+        [
+            (
+                ["G7", "Congo"],
+                "entity_ambiguous",
+                {"Congo": ["country/COD", "country/COG"]},
+                ("Congo",),
+            ),
+            (
+                ["Congo", "Atlantis"],
+                "entity_not_resolved",
+                {"Congo": ["country/COD", "country/COG"]},
+                ("Congo", "Atlantis"),
+            ),
+            (["G7", "Atlantis"], "entity_not_resolved", {}, ("Atlantis",)),
+        ],
+        ids=["ambiguous-and-too-large", "ambiguous-and-not-found", "too-large-and-not-found"],
+    )
+    def test_mixed_entity_refusals_elect_one_reason_and_name_every_entity(
+        self, entities, reason, ambiguous, unresolved
+    ):
+        """`NO_DATA_RESOLUTION_ORDER` elects the reason over the ones the names mint, and
+        the refusal names an ambiguous name with its candidates and every name that resolved
+        to no single node as unresolved. A group past the cap resolved, so it is never among
+        the unresolved."""
+        group = Group(members=self._members(settings().max_child_places + 1), entity=None)
         result = _run(
-            entities=["G7", "Atlantis"],
-            pre_resolved={
-                "G7": Group(members=self._members(settings().max_child_places + 1), entity=None)
-            },
+            entities=entities,
+            pre_resolved={"G7": group, "Congo": self._CONGO},
             graph=_gdp_graph({}),
         )
         assert result.status == "no_data"
-        assert result.no_data_reason == "entity_not_resolved"
-        assert result.unresolved_entity_names == ("Atlantis",)
+        assert result.no_data_reason == reason
+        assert {
+            entity.text: [candidate.dcid for candidate in entity.candidates]
+            for entity in result.ambiguous_entities
+        } == ambiguous
+        assert result.unresolved_entity_names == unresolved
 
 
 class TestG7RealResolverSettlement:

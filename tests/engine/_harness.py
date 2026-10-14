@@ -8,9 +8,12 @@ import itertools
 import json
 import math
 import re
-from collections.abc import Mapping, Sequence
+import time
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import date
+from types import SimpleNamespace
 from typing import cast
 from unittest.mock import patch
 
@@ -25,11 +28,15 @@ from materialise.graph import SubjectPage
 from materialise.rate_tables import RateTableCache
 from materialise.window import Coverage as MaterialisePreviewCoverage
 from search.engine import config
+from search.engine import deadline as deadline_mod
+from search.engine import envelope as envelope_mod
+from search.engine import fanout as fanout_mod
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient, RoleFacetIndex
-from search.engine.core import resolve_async
+from search.engine.core import resolve_async, resolve_events
 from search.engine.errors import GraphInfraError
+from search.engine.events import Event
 from search.engine.extract import DateRequest
 from search.engine.region.bound_unit_gate import UnitEvidence, plan_unit_evidence
 from search.engine.region.convertibility import elected_unit_refs
@@ -758,6 +765,29 @@ _FAKE_LLM = FakeLLM()
 EMPTY_SDMX = FakeSdmxClient(observations={}, availability={})
 _FAKE_SDMX = EMPTY_SDMX
 
+# The timeout tests advance the 30-second request budget with the fake clock.
+DEADLINE_TIMEOUT_S = 30.0
+
+
+class FakeClock:
+    """A settable monotonic clock for tests that advance time without sleeping."""
+
+    def __init__(self, start: float) -> None:
+        self.now = start
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def frozen_monotonic_clock(monkeypatch) -> FakeClock:
+    """Patch monotonic time across envelope, deadline, and fan-out modules."""
+    clock = FakeClock(time.monotonic())
+    fake_time = SimpleNamespace(monotonic=clock)
+    monkeypatch.setattr(envelope_mod, "time", fake_time)
+    monkeypatch.setattr(deadline_mod, "time", fake_time)
+    monkeypatch.setattr(fanout_mod, "time", fake_time)
+    return clock
+
 
 def run_pinned(coro):
     with patch("search.engine.extract.date") as mock_date:
@@ -965,45 +995,82 @@ def offline_resolve(
     its members from the identity.
     """
     graph = _FAKE_GRAPH if graph is None else graph
+    with _offline(pac):
+        return asyncio.run(
+            resolve_async(
+                request,
+                graph=graph,
+                llm=_FAKE_LLM if llm is None else llm,
+                sdmx=_FAKE_SDMX if sdmx is None else sdmx,
+                materialise_graph=_materialise_graph(request, graph, materialise_graph),
+                materialise_sdmx=materialise_sdmx,
+                rate_cache=rate_cache,
+                part_memo=part_memo,
+            )
+        )
+
+
+def offline_events(
+    request: ResolveRequest,
+    *,
+    graph: EngineGraphClient | None = None,
+    llm: SupportsLLM | None = None,
+    sdmx: EngineSdmxClient | None = None,
+    materialise_graph: GraphReader | None = None,
+    materialise_sdmx: MaterialiseSdmxClient | None = None,
+    rate_cache: RateTableCache | None = None,
+) -> list[Event]:
+    """Every event `resolve_events` streams for `request`, in order, under the shared fakes
+    and the pinned extraction date `offline_resolve` runs with. `graph` and `llm` replace
+    the shared fakes for this call."""
+    graph = _FAKE_GRAPH if graph is None else graph
+
+    async def collect() -> list[Event]:
+        return [
+            event
+            async for event in resolve_events(
+                request,
+                graph=graph,
+                llm=_FAKE_LLM if llm is None else llm,
+                sdmx=_FAKE_SDMX if sdmx is None else sdmx,
+                materialise_graph=_materialise_graph(request, graph, materialise_graph),
+                materialise_sdmx=materialise_sdmx,
+                rate_cache=rate_cache,
+            )
+        ]
+
+    with _offline(None):
+        return asyncio.run(collect())
+
+
+def _materialise_graph(
+    request: ResolveRequest, graph: EngineGraphClient, materialise_graph: GraphReader | None
+) -> GraphReader | None:
+    """`materialise_graph`, else for a dataset_resubmit over a fixture graph the mint's
+    member enumeration over that graph's nodes (`member_walk_reader`)."""
     if (
         materialise_graph is None
         and request.input.kind == "dataset_resubmit"
         and isinstance(graph, FakeGraph)
     ):
-        materialise_graph = member_walk_reader(graph)
-    llm = _FAKE_LLM if llm is None else llm
-    sdmx = _FAKE_SDMX if sdmx is None else sdmx
+        return member_walk_reader(graph)
+    return materialise_graph
+
+
+@contextmanager
+def _offline(pac: bool | None) -> Iterator[None]:
+    """Pin the extraction date, so fixture keys stay stable across calendar days, and set
+    `seam_default` to `pac` when given."""
     with patch("search.engine.extract.date") as mock_date:
         mock_date.today.return_value = PINNED_DATE
         # Preserve real `date(*args)` construction during the patch.
         mock_date.side_effect = lambda *args, **kwargs: date(*args, **kwargs)
         if pac is None:
-            return asyncio.run(
-                resolve_async(
-                    request,
-                    graph=graph,
-                    llm=llm,
-                    sdmx=sdmx,
-                    materialise_graph=materialise_graph,
-                    materialise_sdmx=materialise_sdmx,
-                    rate_cache=rate_cache,
-                    part_memo=part_memo,
-                )
-            )
+            yield
+            return
         base = config.settings().model_dump(
             exclude={"capability_version_override", "max_entity_occurrences"}
         )
         overridden = config.SearchSettings.model_validate({**base, "seam_default": pac})
         with patch.object(config, "_SETTINGS", overridden):
-            return asyncio.run(
-                resolve_async(
-                    request,
-                    graph=graph,
-                    llm=llm,
-                    sdmx=sdmx,
-                    materialise_graph=materialise_graph,
-                    materialise_sdmx=materialise_sdmx,
-                    rate_cache=rate_cache,
-                    part_memo=part_memo,
-                )
-            )
+            yield

@@ -15,14 +15,20 @@ import pytest
 from materialise.roles import RoleAxis
 from search.engine.clients.sdmx import RoleFacetCandidate
 from search.engine.extract import DateRequest
-from search.engine.region.observations.bulk_role_series import _plan_role_bulk_fetch
+from search.engine.region.observations.bulk_role_series import (
+    _bulk_role_series,
+    _plan_role_bulk_fetch,
+)
 from search.engine.retrieval.facet_election import rank_role_candidates, window_of
 from search.engine.retrieval.read_plan import BulkPlan
 from search.engine.retrieval.retrieve import Materialised
 from search.engine.retrieval.role_scope import discover_role_scope
 from search.models import TimeWindow
+from search.observations import observation_settings
 from series_coverage.loader import load_coverage
 from series_coverage.shared import CoverageSnapshot
+from tests.engine._fake_sdmx import CountingSdmxClient, plan_observations
+from tests.fixtures import FakeGraph
 
 _FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 _SLICE_URI = f"file://{_FIXTURES / 'coverage_slice'}"
@@ -220,3 +226,32 @@ def test_open_oda_discovery_matches_the_golden(
     assert _summary(projected) == expected["summary"]
     assert _digest(projected) == expected["sha256"]
     assert _bulk_preview(result, date_name) == expected["bulk_preview"]
+
+
+def test_a_latest_bulk_read_of_open_oda_names_years_only_for_members_ending_after_theirs(
+    _snapshot: CoverageSnapshot,
+) -> None:
+    """The members elect 48 distinct years. The read asks `LATEST` of every member, 26,994
+    rows, one a series, then reads again the 83 members a series of which ends after the
+    year its member elected, one read for each of the 9 years they elect, naming each
+    member its own year alone. Those reads return 356 rows, fewer than the answer keeps,
+    the count the `ranked` gate admitted."""
+    plan = _discover(_snapshot, "latest", "destination").read_plan
+    assert isinstance(plan, BulkPlan) and plan.elected_years is not None
+    fetch = _plan_role_bulk_fetch(plan)
+    sdmx = CountingSdmxClient(observations=plan_observations(plan))
+
+    _bulk_role_series(plan, list(plan.members), sdmx=sdmx, graph=FakeGraph(), facet_filter=None)
+
+    newest, *named = sdmx.series_calls
+    assert (newest["variables"], newest["time_period"]) == (fetch.facet_svs, "LATEST")
+    assert len({plan.elected_years[sv] for sv in fetch.facet_svs}) == 48
+    read_again = [sv for call in named for sv in call["variables"]]
+    assert (newest["rows"], len(named), len(read_again)) == (26_994, 9, 83)
+    assert set(read_again) < set(fetch.facet_svs)
+    for call in named:
+        assert all(call["time_period"] == [str(plan.elected_years[sv])] for sv in call["variables"])
+    rows_again = sum(call["rows"] for call in named)
+    assert fetch.order == "ranked"
+    assert rows_again == 356
+    assert rows_again < fetch.population_n_obs <= observation_settings().role_bulk_rank_max_rows

@@ -8031,5 +8031,133 @@
     }
   ],
   "undata/unido/INDSTAT3_11T14_M.ECONOMIC_ACTIVITY--ISIC3_D__VALUATION_METHOD--BASIC_PRICES|country/ZMB": [],
-  "undata/unido/IIP_52.ECONOMIC_ACTIVITY--ISIC4_C|country/ZMB": []
+  "undata/unido/IIP_52.ECONOMIC_ACTIVITY--ISIC4_C|country/ZMB": [],
+  "undata/sdg/DC_ODA_TOTL|country/KEN": [],
+  "undata/sdg/DC_ODA_TOTG|country/KEN": [],
+  "undata/sdg/DC_ODA_TOTLGE|country/KEN": [],
+  "undata/sdg/DC_ODA_TOTGGE|country/KEN": [],
+  "undata/unicef/ECON_ODA_OUTFLOW_USD|country/KEN": [],
+  "undata/sdg/DC_ODA_BDVDL|country/KEN": [],
+  "undata/unicef/ECON_ODA_OUTFLOW_PTGNI|country/KEN": [],
+  "undata/sdg/DC_ODA_LDCS|country/KEN": [],
+  "undata/sdg/DC_ODA_LDCG|country/KEN": [],
+  "undata/sdg/DC_ODA_POVDLG|country/KEN": [],
+  "undata/sdg/DC_ODA_LLDC|country/KEN": [],
+  "undata/unicef/ECON_ODA_INFLOW_USD|country/KEN": [
+    {
+      "earliestDate": "2024",
+      "latestDate": "2024",
+      "obsCount": 1,
+      "provenanceId": "undata/p/UNICEF",
+      "unit": "undata/UNIT_MEASURE-CR_USD",
+      "facetId": "15681139658922190378"
+    }
+  ],
+  "undata/sdg/DC_ODA_LLDCG|country/KEN": [],
+  "undata/sdg/DC_ODA_BDVL|country/KEN": [
+    {
+      "earliestDate": "2002",
+      "latestDate": "2024",
+      "obsCount": 23,
+      "provenanceId": "undata/p/SDG",
+      "unit": "undata/UNIT_MEASURE-CR_USD_K",
+      "facetId": "15769886300705950419"
+    }
+  ],
+  "undata/unicef/ECON_ODA_INFLOW_PTGNI|country/KEN": [
+    {
+      "earliestDate": "2024",
+      "latestDate": "2024",
+      "obsCount": 1,
+      "provenanceId": "undata/p/UNICEF",
+      "unit": "Percent",
+      "facetId": "15005650441306304968"
+    }
+  ],
+  "undata/sdg/DC_ODA_POVLG|country/KEN": [
+    {
+      "earliestDate": "2000",
+      "latestDate": "2024",
+      "obsCount": 25,
+      "provenanceId": "undata/p/SDG",
+      "unit": "Percent",
+      "facetId": "3722936608695937273"
+    }
+  ],
+  "Amount_FinancialFlow_Net_Disbursement_DAC1AidType1015_Nominal|country/KEN": [],
+  "Amount_FinancialFlow_Gross_Disbursement_DAC1AidType1015_Nominal|country/KEN": [],
+  "Amount_FinancialFlow_Net_Disbursement_DAC1AidType99999_Nominal|country/KEN": [],
+  "Amount_FinancialFlow_Net_Disbursement_DAC1AidType2000_Nominal|country/KEN": [],
+  "Amount_FinancialFlow_Gross_Disbursement_DACTypeOfFinanceNonGrants_DAC1AidType1015_Nominal|country/KEN": [],
+  "Amount_FinancialFlow_Net_Disbursement_DAC1AidType210_Nominal|country/KEN": [],
+  "Amount_FinancialObligation_Commitment_DAC1AidType1015_Nominal|country/KEN": [],
+  "Amount_FinancialObligation_Commitment_DACTypeOfFinanceNonGrants_DAC1AidType1015_Nominal|country/KEN": [],
+  "Amount_FinancialFlow_Gross_Disbursement_DACTypeOfFinanceGrants_DAC1AidType1015_Nominal|country/KEN": [],
+  "Amount_FinancialFlow_Net_Disbursement_DAC1AidType11030_Nominal|country/KEN": [],
+  "Amount_FinancialFlow_Net_Disbursement_DAC1AidType1900_Nominal|country/KEN": [],
+  "Amount_FinancialObligation_Commitment_DACTypeOfFinanceGrants_DAC1AidType1015_Nominal|country/KEN": [],
+  "GrantEquivalent_FinancialFlow_Disbursement_DAC1AidType1015_Nominal|country/KEN": [],
+  "Amount_FinancialFlow_Gross_Disbursement_DAC1AidType99999_Nominal|country/KEN": [],
+  "Amount_FinancialFlow_Gross_Disbursement_DAC1AidType2000_Nominal|country/KEN": [],
+  "Amount_FinancialObligation_Commitment_DACTypeOfFinanceGrants_DAC1AidType99999_Nominal|country/KEN": [],
+  "Amount_FinancialObligation_Commitment_DAC1AidType99999_Nominal|country/KEN": [],
+  "Amount_FinancialFlow_Gross_Disbursement_DACTypeOfFinanceNonGrants_DAC1AidType99999_Nominal|country/KEN": [],
+  "Amount_FinancialObligation_Commitment_DACTypeOfFinanceNonGrants_DAC1AidType99999_Nominal|country/KEN": [],
+  "Amount_FinancialFlow_Gross_Disbursement_DACTypeOfFinanceGrants_DAC1AidType99999_Nominal|country/KEN": [],
+  "Amount_FinancialFlow_Net_Disbursement_DAC1AidType1200_Nominal|country/KEN": [],
+  "Amount_FinancialFlow_Gross_Disbursement_DACTypeOfFinanceNonGrants_DAC1AidType2000_Nominal|country/KEN": [],
+  "Amount_FinancialFlow_Gross_Disbursement_DAC1AidType11030_Nominal|country/KEN": [],
+  "Amount_FinancialFlow_Net_Disbursement_DAC1AidType1904_Nominal|country/KEN": [],
+  "GrantEquivalent_FinancialFlow_Disbursement_DAC1AidType11016_Nominal|country/KEN": [],
+  "Amount_FinancialFlow_Gross_Disbursement_DACTypeOfFinanceGrants_DAC1AidType2000_Nominal|country/KEN": [],
+  "GrantEquivalent_FinancialFlow_Disbursement_DAC1AidType11017_Nominal|country/KEN": [],
+  "Amount_FinancialObligation_Commitment_DAC1AidType2000_Nominal|country/KEN": [],
+  "Amount_FinancialFlow_Net_Disbursement_DAC1AidType2108_Nominal|country/KEN": [],
+  "Amount_FinancialFlow_Net_Disbursement_ServicingPayment_IDSCreditorTypeBLAT_IDSDebtorTypeOPS_Nominal|country/KEN": [
+    {
+      "earliestDate": "1970",
+      "latestDate": "2024",
+      "obsCount": 55,
+      "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+      "unit": "CurrencyUSD",
+      "facetId": "2052749850102211920"
+    }
+  ],
+  "Amount_FinancialFlow_Net_Disbursement_DAC1AidType2100_Nominal|country/KEN": [],
+  "GrantEquivalent_FinancialFlow_Disbursement_DAC1AidType2000_Nominal|country/KEN": [],
+  "Amount_FinancialFlow_Net_Disbursement_DAC1AidType8000_Nominal|country/KEN": [],
+  "Amount_FinancialObligation_Commitment_DAC1AidType11030_Nominal|country/KEN": [],
+  "Amount_FinancialObligation_Commitment_DACTypeOfFinanceNonGrants_DAC1AidType2000_Nominal|country/KEN": [],
+  "Amount_FinancialObligation_Commitment_DAC1AidType1900_Nominal|country/KEN": [],
+  "Amount_FinancialFlow_Net_Disbursement_PrincipalRepayment_IDSCreditorTypeBLAT_IDSDebtorTypeOPS_Nominal|country/KEN": [
+    {
+      "earliestDate": "1970",
+      "latestDate": "2024",
+      "obsCount": 55,
+      "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+      "unit": "CurrencyUSD",
+      "facetId": "2052749850102211920"
+    }
+  ],
+  "Amount_FinancialObligation_Commitment_DACTypeOfFinanceGrants_DAC1AidType2000_Nominal|country/KEN": [],
+  "Amount_FinancialObligation_Commitment_DACTypeOfFinanceGrants_DAC1AidType1900_Nominal|country/KEN": [],
+  "Amount_FinancialFlow_Gross_Disbursement_DACTypeOfFinanceNonGrants_DAC1AidType11030_Nominal|country/KEN": [],
+  "Amount_FinancialFlow_Gross_Disbursement_DACTypeOfFinanceGrants_DAC1AidType11030_Nominal|country/KEN": [],
+  "Amount_FinancialFlow_Net_Disbursement_DAC2aAidType206_Nominal|country/KEN": [],
+  "AttributedAmount_FinancialFlow_Gross_Disbursement_DAC2aAidType106_Nominal|country/KEN": [],
+  "Amount_FinancialObligation_Commitment_DACTypeOfFinanceNonGrants_DAC1AidType1900_Nominal|country/KEN": [],
+  "Amount_FinancialFlow_Net_Disbursement_DAC1AidType3320_Nominal|country/KEN": [],
+  "Amount_FinancialFlow_Net_Disbursement_DAC2aAidType250_Nominal|country/KEN": [],
+  "GrantEquivalent_FinancialFlow_Disbursement_DAC1AidType11030_Nominal|country/KEN": [],
+  "Amount_FinancialFlow_Net_Disbursement_DACTypeOfFinanceNonGrants_DAC2aAidType215_Nominal|country/KEN": [],
+  "Amount_FinancialFlow_Net_Disbursement_DACTypeOfFinanceNonGrants_DAC2aAidType205_Nominal|country/KEN": [],
+  "Amount_FinancialFlow_Net_Disbursement_DACTypeOfFinanceGrants_DAC2aAidType219_Nominal|country/KEN": [],
+  "Amount_FinancialFlow_Net_Disbursement_DACTypeOfFinanceNonGrants_DAC2aAidType209_Nominal|country/KEN": [],
+  "Amount_FinancialFlow_Net_Disbursement_DACTypeOfFinanceNonGrants_DAC2aAidType217_Nominal|country/KEN": [],
+  "Amount_FinancialFlow_Net_Disbursement_DACTypeOfFinanceNonGrants_DAC2aAidType218_Nominal|country/KEN": [],
+  "Amount_FinancialFlow_Net_Disbursement_DAC2aAidType206_Nominal_AsAFractionOf_Count_Person|country/KEN": [],
+  "Amount_FinancialFlow_Net_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance510_CRSPurposeCode24020_Nominal|country/KEN": [],
+  "Amount_FinancialFlow_Net_Disbursement_DAC2bAidType972_Nominal|country/KEN": [],
+  "Amount_FinancialFlow_Net_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance510_CRSPurposeCode31120_Nominal|country/KEN": [],
+  "sdg/DC_ODA_BDVDL|country/KEN": []
 }

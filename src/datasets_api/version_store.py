@@ -5,6 +5,9 @@ facts go in their own columns (`dataset_store.snapshot.VERSION_FACT_COLUMNS`), a
 holds the body those facts encode (`datasets_api.manifest.version_body`). Nothing in this image
 reads the column; the writer keeps filling it for any image that decodes version bodies from it.
 Version inserts use `ON CONFLICT DO NOTHING`, so records are immutable and retries are idempotent.
+Two facts a version stored before versions held them are filled once, by a later write of the
+same version: a published frame's `continuations` (`_write_description`), and the year members
+and member nouns of a dataset version's `coverage` (`_fill_year_coverage`).
 Every version insert goes through `_insert_version`, which also writes the version's description
 record (`datasets.description_record`) in the same transaction when the record carries a
 `VersionDescriber` (`_record_description`), so a failed record insert rolls the version row back.
@@ -66,6 +69,7 @@ from dataset_store import DatasetStore, Transaction
 from dataset_store.snapshot import (
     VERSION_FACT_COLUMNS,
     WORKING_TIER_RETENTION,
+    ManifestFacts,
     StoredArtifactLocation,
     VersionState,
     version_fact_values,
@@ -77,6 +81,7 @@ from datasets_api.description_store import (
     read_description,
 )
 from datasets_api.manifest import version_body
+from datasets_api.manifest_models import year_coverage_counted
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.versions import (
     RENDERED_FACT_FIELDS,
@@ -130,8 +135,8 @@ _VERSION_LINK_LOCK_CLASS = 0x4446_4F4C  # "DFOL" packed into an int4
 
 
 def lock_version_links(tx: Transaction, *, subject_id: str, content_version: str) -> None:
-    """Serialise this transaction with every other link write and pin reference write for one
-    version, until it ends.
+    """Serialise this transaction with every other link write, pin reference write and
+    coverage fill (`_fill_year_coverage`) for one version, until it ends.
 
     Run it as its own statement before the statement it guards. Under READ COMMITTED the next
     statement then takes its snapshot after the lock, so it sees every row a previous holder
@@ -235,9 +240,50 @@ def _insert_version(
             now=now,
         )
     created = inserted_row is not None
+    if not created:
+        _fill_year_coverage(tx, record)
     if record.describer is not None:
         _record_description(tx, record, created=created, now=now)
     return created
+
+
+def _fill_year_coverage(tx: Transaction, record: VersionRecord) -> None:
+    """Store `record`'s `coverage` on its version, already on record, when the stored one was
+    never counted (`year_coverage_counted`) and `record`'s was. The column and the `coverage`
+    of `immutable_body` take it whole: the two describe one frame, so they differ only in
+    the year members and the member nouns.
+
+    The read and the write run under the version's link lock, so of two writers the second
+    reads the first's coverage, finds it counted and writes nothing, and both read back one
+    record.
+    """
+    facts = record.facts
+    if not isinstance(facts, ManifestFacts) or not year_coverage_counted(facts.coverage):
+        return
+    key = (record.subject_id, record.content_version)
+    lock_version_links(tx, subject_id=record.subject_id, content_version=record.content_version)
+    row = tx.fetch_one(
+        "SELECT coverage, immutable_body FROM datasets.version_record "
+        "WHERE subject_id = %s AND content_version = %s",
+        key,
+    )
+    stored = None if row is None else row["coverage"]
+    if not isinstance(stored, Mapping) or year_coverage_counted(
+        cast("Mapping[str, object]", stored)
+    ):
+        return
+    assert row is not None
+    coverage = dict(facts.coverage)
+    body = row["immutable_body"]
+    tx.execute(
+        "UPDATE datasets.version_record SET coverage = %s, immutable_body = %s "
+        "WHERE subject_id = %s AND content_version = %s",
+        (
+            json.dumps(coverage),
+            json.dumps({**body, "coverage": coverage} if isinstance(body, Mapping) else body),
+            *key,
+        ),
+    )
 
 
 def _record_description(

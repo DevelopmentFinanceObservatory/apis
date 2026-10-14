@@ -14,7 +14,6 @@ import threading
 import weakref
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -33,7 +32,6 @@ from origin_catalogue.graph import _wire
 from origin_catalogue.un_mirror import EMPTY_UN_MIRROR
 from scripts.stage_origin_catalogue_fixture import stage_fixture
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
-from search.engine.bind_repair import _unscoped_property_values, restore_starved_axis_binding
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.graph_client import LiveGraphClient
 from search.engine.clients.llm import SupportsLLM
@@ -64,8 +62,9 @@ from search.engine.region.phase_place_materialise import (
 )
 from search.engine.region.phase_rank_bind import (
     _family_constraints,
-    _menu_value_spans,
+    _named_value_bindings,
     _selected_members,
+    _value_label_spans,
     value_requirements,
 )
 from search.engine.region.phase_shared import _elected_flagged_match
@@ -643,22 +642,14 @@ def _value_state(shape: ShapeDraft) -> ResolveState:
             id="disagreement-axes",
         ),
         pytest.param(
-            lambda shape: _unscoped_property_values(shape, "creditorType"),
-            ["Bondholders", "IMF"],
-            id="repair-axis-values",
-        ),
-        pytest.param(
             _flagged_member_constraint_properties,
             [["creditorType", "debtorType"]],
             id="flagged-identity-constraints",
         ),
         pytest.param(
-            lambda shape: _menu_value_spans(
-                cast("ResolveState", SimpleNamespace(capped_shapes=[shape])),
-                tokenize(_OWED_TO_THE_IMF),
-            ),
+            lambda shape: _value_label_spans([shape], tokenize(_OWED_TO_THE_IMF)),
             [(17, 20)],
-            id="menu-value-spans",
+            id="value-label-spans",
         ),
         pytest.param(
             lambda shape: [
@@ -704,26 +695,9 @@ def _value_state(shape: ShapeDraft) -> ResolveState:
             id="representative-bindings",
         ),
         pytest.param(
-            lambda shape: [
-                binding.value_dcids
-                for binding in restore_starved_axis_binding(
-                    [
-                        SlotBindingDraft(
-                            axis="how", property_dcid="creditorType", kind="unbound", value_dcids=[]
-                        )
-                    ],
-                    # Recall found the total alone, which asserts no creditor type.
-                    replace(
-                        shape,
-                        sv_arc_facts={_TOTAL: _DEBT[_TOTAL]},
-                        place_available=True,
-                        slot_taxonomy={},
-                    ),
-                    _OWED_TO_THE_IMF,
-                )[0]
-            ],
-            [["IMF"]],
-            id="starved-axis-restore",
+            lambda shape: _named_value_bindings(shape, "external debt owed to the IMF"),
+            [_imf()],
+            id="named-value-bindings",
         ),
     ],
 )

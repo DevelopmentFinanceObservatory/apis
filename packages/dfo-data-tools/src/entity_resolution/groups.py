@@ -2,7 +2,7 @@
 
 Each group's rows are read from the geo store's `member_of` relations, dated where the curated
 data dates them, so `members(projection, as_of)` answers any date without calling resolvekit
-again. 13 of the 33 groups date their rows; the rest are undated lists and refuse `as_of`.
+again. 13 of the 55 groups date their rows; the rest are undated lists and refuse `as_of`.
 A group's id is its resolvekit entity id through `regions.identity_to_dcid`.
 
 Build with `build_group_registry` on the thread that opened its resolver, since resolvekit's

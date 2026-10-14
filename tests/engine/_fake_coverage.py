@@ -29,8 +29,10 @@ def build_coverage_index(
     *,
     role_names: Mapping[str, RoleNames],
     facet_metadata: Mapping[str, FacetMetadata] | None = None,
+    build_year: int | None = None,
 ) -> CoverageIndex:
-    """Build an in-memory index from `rows`.
+    """Build an in-memory index from `rows`, built in `build_year` (no year by default, so
+    no year counts as a projection).
 
     `facet_metadata` mirrors an artifact's `facets.json`; supply it when tests resolve
     provenance, unit, or measurement method from coverage. A facet it leaves out gets a
@@ -53,7 +55,9 @@ def build_coverage_index(
         for facet_id, found in datasets.items()
     }
     metadata.update(facet_metadata or {})
-    return CoverageIndex(table, role_names, facet_metadata=metadata, horizon=horizon)
+    return CoverageIndex(
+        table, role_names, facet_metadata=metadata, horizon=horizon, build_year=build_year
+    )
 
 
 class FakeCoverageService:

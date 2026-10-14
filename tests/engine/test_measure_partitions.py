@@ -12,9 +12,7 @@ import pytest
 
 from code_index import CodeIndex, IndexStamp, StatVarRow
 from code_index.types import MeasureAxis, MeasurePartitionLabel
-from search.engine.config import settings
 from search.engine.qualifier_match import QualifierMatch
-from search.engine.region import _best_near_neighbor_index
 from search.engine.retrieval.bound_values import (
     MeasurePartition,
     PartitionLabelMatch,
@@ -443,6 +441,17 @@ def test_grant_equivalent_family_collapses_to_its_own_elected_member():
     assert collapsed == (shapes["t5"],)
 
 
+def test_a_family_collapses_whatever_arc_order_its_shapes_declare_their_roles_in():
+    shapes = _worked_example_shapes()
+    roles = ("financingProvider", "financingRecipient")
+    nominal = replace(shapes["t1"], declared_roles=roles)
+    real = replace(shapes["t2"], declared_roles=roles[::-1])
+
+    collapsed = collapse_measure_families([nominal, real], _index(_WORKED_EXAMPLE), _MEASURE_AXES)
+
+    assert collapsed == (nominal,)
+
+
 def test_collapse_ignores_which_members_the_sv_arc_facts_sample_happens_to_hold():
     # Gross, Net, and empty recall samples give the same result;
     # membership follows the five-tuple.
@@ -641,8 +650,6 @@ def test_survivor_scores_as_family_max_and_reaches_the_cap_past_crowding_unrelat
     assert collapsed[0].shape_id == "t1_ff_amount_nominal"
     assert collapsed[0].representative_score == pytest.approx(0.6615)
     assert len(collapsed) == 9  # ten in, one family member folded away
-    capped = collapsed[: settings().bind_top_k]
-    assert capped[0].shape_id == "t1_ff_amount_nominal"
 
 
 def test_preferred_member_already_top_scored_is_unchanged():
@@ -671,28 +678,6 @@ def test_collapsed_list_stays_score_descending():
 
     scores = [s.representative_score for s in collapsed]
     assert scores == sorted(scores, reverse=True)
-
-
-def test_near_neighbor_on_the_collapsed_result_still_finds_the_expected_match():
-    # Score elevation preserves the first distinct concept and changes only its reported margin.
-    shapes = _worked_example_shapes()
-    index = _index(_WORKED_EXAMPLE)
-    t1 = replace(shapes["t1"], representative_score=0.6605)
-    t2 = replace(shapes["t2"], representative_score=0.6615)
-    unrelated = [_unrelated(i, representative_score=0.6614 - i * 0.0001) for i in range(8)]
-    ranked_shapes = [t2, *unrelated, t1]
-
-    collapsed = collapse_measure_families(ranked_shapes, index, _MEASURE_AXES)
-    capped = list(collapsed[: settings().bind_top_k])
-
-    neighbor_index = _best_near_neighbor_index(capped[0], 0, capped)
-
-    # unrelated0 (a different meas_prop_dcid) is the first genuinely
-    # distinct concept behind the survivor in capped order.
-    assert neighbor_index == 1
-    assert capped[neighbor_index].shape_id == "unrelated0"
-    margin = capped[0].representative_score - capped[neighbor_index].representative_score
-    assert margin == pytest.approx(0.6615 - 0.6614)
 
 
 # Query matches narrow each group before election; an unmatched group keeps its default partition.

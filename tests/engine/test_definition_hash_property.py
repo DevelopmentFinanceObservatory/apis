@@ -100,7 +100,7 @@ def test_place_constraint_off_spec_definition_hashes_to_spec_id():
 
 def test_candidates_response_specs_definitions_hash_to_their_spec_ids():
     """Every candidate definition hashes to its own ``spec_id``."""
-    result = offline_resolve(make_request("under-5 child mortality rate")).parts[0]
+    result = offline_resolve(make_request("remittances as percentage of GDP in Nigeria")).parts[0]
     assert isinstance(result, CandidatesPart)
     assert len(result.candidates.specs) >= 2
     for spec in result.candidates.specs:
@@ -200,8 +200,14 @@ def _served_definitions(node: object) -> list[dict]:
             {"ref": "EuropeanUnion", "label": "European Union", "entity_type": "Place"},
             False,
         ),
-        (_group_graph, "gdp", "G7", {"label": "G7"}, False),
-        (_related_measures_graph, "population", "G7", {"label": "G7"}, True),
+        (_group_graph, "gdp", "G7", {"label": "G7", "group_id": "GroupOfSeven"}, False),
+        (
+            _related_measures_graph,
+            "population",
+            "G7",
+            {"label": "G7", "group_id": "GroupOfSeven"},
+            True,
+        ),
     ],
     ids=[
         "no_group",
@@ -362,7 +368,7 @@ def test_standard_resubmit_definition_hashes_to_spec_id():
 
 def test_emitted_definition_hashes_to_its_own_spec_id():
     """An emitted candidate definition hashes to its own ``spec_id``."""
-    result = offline_resolve(make_request("under-5 child mortality rate")).parts[0]
+    result = offline_resolve(make_request("remittances as percentage of GDP in Nigeria")).parts[0]
     assert isinstance(result, CandidatesPart)
     _assert_definition_hashes_to_spec_id(result.candidates.specs[0])
 

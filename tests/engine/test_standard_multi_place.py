@@ -354,12 +354,8 @@ def test_single_named_place_stays_scalar_value_binding():
 
 
 def test_sentence_event_carries_both_places():
-    """Count_Person emits a post-materialisation event whose where slot keeps both places."""
-    events: list = []
-
-    async def _emit(event):
-        events.append(event)
-
+    """Count_Person's answer keeps both places in its where slot, the slots its part's
+    sentence event carries (`sentence_events.response_sentence_events`)."""
     obs = {
         f"{_SV}|country/GTM": [
             {"earliestDate": "2020", "latestDate": "2020", "obsCount": 1, "provenanceId": _SOURCE},
@@ -369,12 +365,9 @@ def test_sentence_event_carries_both_places():
         ["Guatemala", "El Salvador"],
         role_query="population Guatemala El Salvador",
         obs=obs,
-        emit=_emit,
     )
     assert result.status == "definite"
-    sentence_events = [e for e in events if type(e).__name__ == "SentenceEvent"]
-    assert sentence_events, "expected at least one SentenceEvent"
-    where = next(s for s in sentence_events[0].slots if s.key.axis == "where")
+    where = next(s for s in result.specs[0].resolved.slots if s.key.axis == "where")
     assert isinstance(where.binding, BindingSet)
     assert {v.ref.ref for v in where.binding.values} == {"country/GTM", "country/SLV"}
 

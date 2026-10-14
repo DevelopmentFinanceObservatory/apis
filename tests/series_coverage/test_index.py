@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import tracemalloc
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, cast
 
@@ -22,6 +22,7 @@ from series_coverage.index import (
     KeptFacets,
     PairRows,
     ProvenanceShape,
+    elected_year,
 )
 from series_coverage.loader import load_coverage
 from series_coverage.schema import (
@@ -576,6 +577,265 @@ def test_headline_window_picks_the_latest_year_but_not_the_years_counted(boundar
     )
 
 
+@pytest.mark.parametrize(
+    ("series_by_year", "expected"),
+    [
+        pytest.param({2025: 9, 2024: 85, 2023: 91}, 2024, id="thin-newest-year"),
+        pytest.param({2025: 89, 2024: 94, 2023: 120}, 2025, id="newest-over-half"),
+        pytest.param({2025: 45, 2024: 90, 2023: 60}, 2025, id="exactly-half"),
+        pytest.param({2025: 44, 2024: 85, 2023: 91}, 2024, id="just-under-half"),
+        pytest.param({2021: 1, 2019: 1, 2006: 5, 2003: 10}, 2021, id="sparse"),
+        pytest.param({2026: 1, 2025: 1, 2024: 100}, 2024, id="full-year-in-reach"),
+        pytest.param({2027: 1, 2026: 1, 2025: 1, 2024: 100}, 2027, id="full-year-out-of-reach"),
+        pytest.param({2025: 0, 2024: 3}, 2024, id="empty-year-holds-nothing"),
+        pytest.param({}, None, id="no-series"),
+    ],
+)
+def test_elected_year_is_the_newest_recent_year_half_as_full_as_the_fullest(
+    series_by_year: dict[int, int], expected: int | None
+) -> None:
+    assert elected_year(series_by_year) == expected
+
+
+_SECOND_SV = "FixtureStatVar_SecondElection"
+_ELECTION_ROLE_NAMES = {
+    sv: RoleNames(donor="financingProvider", recipient="financingRecipient")
+    for sv in (_WINDOW_SV, _SECOND_SV)
+}
+
+
+def _donor(i: int) -> str:
+    return f"country/D{i:03d}"
+
+
+def _donor_rows(
+    variable: str, series_by_year: Mapping[int, int], *, facet_id: str = _WINDOW_FACET
+) -> list[tuple[str, str, str, str, list[int]]]:
+    """One series per donor into Kenya, the first `series_by_year[year]` donors holding
+    `year`."""
+    return [
+        (variable, facet_id, _donor(i), KEN, [y for y, held in series_by_year.items() if i < held])
+        for i in range(max(series_by_year.values()))
+    ]
+
+
+def _election_index(
+    rows: list[tuple[str, str, str, str, list[int]]],
+    facet_metadata: Mapping[str, FacetMetadata] | None = None,
+    *,
+    build_year: int | None = None,
+) -> CoverageIndex:
+    table, horizon = coverage_table(rows)
+    return CoverageIndex(
+        table,
+        _ELECTION_ROLE_NAMES,
+        facet_metadata or {},
+        horizon=horizon,
+        build_year=build_year,
+    )
+
+
+def test_a_latest_read_serves_and_heads_the_year_elected_over_the_series_it_holds() -> None:
+    """Five donors hold 2025, nine 2024 and eleven 2023, so the variable elects 2024. The
+    read serves the nine holding it and the headline counts them, beside the raw counts of
+    all three years. The nine alone would elect 2025, which five of them hold, so every
+    count takes the year elected over all eleven."""
+    idx = _election_index(_donor_rows(_WINDOW_SV, {2025: 5, 2024: 9, 2023: 11}))
+
+    elected = idx.elected_years(variables=[_WINDOW_SV])
+    served = idx.series_years(variables=[_WINDOW_SV], latest=elected)
+    headline = idx.headline(variables=[_WINDOW_SV], elected=elected)
+
+    assert elected == {_WINDOW_SV: 2024}
+    assert served is not None
+    epoch = idx.horizon.epoch_year
+    assert dict(zip(served.keys(), served.year_bits(), strict=True)) == {
+        (_WINDOW_SV, KEN, _donor(i)): 1 << (2024 - epoch) for i in range(9)
+    }
+    assert headline is not None
+    assert (headline.year, headline.series, dict(headline.role_counts)) == (
+        2024,
+        9,
+        {"donor": 9, "recipient": 1},
+    )
+    assert _recent(headline) == [
+        (2025, 5, {"donor": 5, "recipient": 1}),
+        (2024, 9, {"donor": 9, "recipient": 1}),
+        (2023, 11, {"donor": 11, "recipient": 1}),
+    ]
+    survivors = [(_WINDOW_SV, _WINDOW_FACET, KEN, _donor(i)) for i in range(9)]
+    assert idx.elected_years(variables=[_WINDOW_SV], served=survivors) == {_WINDOW_SV: 2025}
+    by_year = idx.series_by_year(variables=[_WINDOW_SV], first_year=2022, last_year=2025)
+    assert by_year == {2022: 0, **{c.year: c.series for c in headline.recent_years}}
+    assert idx.series_by_year(
+        variables=[_WINDOW_SV], served=survivors, first_year=2025, last_year=2025
+    ) == {2025: 5}
+    assert idx.series_by_year(variables=["Unknown"], first_year=2024, last_year=2025) == {
+        2024: 0,
+        2025: 0,
+    }
+
+
+def test_a_latest_read_elects_no_year_after_the_one_the_index_was_built_in() -> None:
+    """An index built in 2026 holds one variable at three donors in 2024, one in 2025 and
+    2026, and all six in projections for 2027 and 2030, and another in projections alone.
+    The first elects 2024 and the headline's recent years end at 2026. The second elects
+    nothing and serves its own latest year, which heads it alone and sets no year beside
+    the first. A window from 2025 to 2030 heads 2030 with six series. An index
+    stating no build year elects the projected 2030."""
+    rows = [
+        *_donor_rows(_WINDOW_SV, {2030: 6, 2027: 6, 2026: 1, 2025: 1, 2024: 3}),
+        *_donor_rows(_SECOND_SV, {2030: 3, 2029: 3}),
+    ]
+    idx = _election_index(rows, build_year=2026)
+    variables = [_WINDOW_SV, _SECOND_SV]
+
+    elected = idx.elected_years(variables=variables)
+    headline = idx.headline(variables=[_WINDOW_SV], elected=elected)
+    both = idx.headline(variables=variables, elected=elected)
+    alone = idx.headline(variables=[_SECOND_SV], elected=elected)
+    projected = idx.series_years(variables=[_SECOND_SV], latest=elected)
+    named = idx.headline(variables=[_WINDOW_SV], first_year=2025, last_year=2030)
+
+    assert elected == {_WINDOW_SV: 2024}
+    assert headline is not None
+    assert (headline.year, headline.series) == (2024, 3)
+    assert [(c.year, c.series) for c in headline.recent_years] == [(2026, 1), (2025, 1), (2024, 3)]
+    assert both is not None and alone is not None
+    assert (both.year, both.series, both.recent_years) == (2024, 3, headline.recent_years)
+    assert (alone.year, alone.series) == (2030, 3)
+    assert projected is not None
+    epoch = idx.horizon.epoch_year
+    assert set(projected.year_bits()) == {1 << (2030 - epoch)}
+    assert named is not None
+    assert (named.year, named.series, [c.year for c in named.recent_years]) == (
+        2030,
+        6,
+        [2030, 2029, 2028],
+    )
+    assert _election_index(rows).elected_years(variables=variables) == {
+        _WINDOW_SV: 2030,
+        _SECOND_SV: 2030,
+    }
+
+
+def test_elected_years_count_the_series_the_read_selects() -> None:
+    """Two donors hold 2025 and eight 2024 in one facet, and two more hold 2025 in
+    another. Both facets elect 2025, four of eight, and the first alone 2024, as do both
+    without one of the 2025 donors and both at four donors of whom one holds 2025."""
+    idx = _election_index(
+        [
+            *_donor_rows(_WINDOW_SV, {2025: 2, 2024: 8}),
+            (_WINDOW_SV, _OTHER_FACET, _donor(2), KEN, [2025]),
+            (_WINDOW_SV, _OTHER_FACET, _donor(3), KEN, [2025]),
+        ]
+    )
+
+    assert idx.elected_years(variables=[_WINDOW_SV]) == {_WINDOW_SV: 2025}
+    assert idx.elected_years(
+        variables=[_WINDOW_SV], admits=lambda _variable, facet: facet == _WINDOW_FACET
+    ) == {_WINDOW_SV: 2024}
+    assert idx.elected_years(
+        variables=[_WINDOW_SV], served=[(_WINDOW_SV, _WINDOW_FACET, None, None)]
+    ) == {_WINDOW_SV: 2024}
+    assert idx.elected_years(
+        variables=[_WINDOW_SV], excluded=[(_WINDOW_SV, "donor", _donor(0))]
+    ) == {_WINDOW_SV: 2024}
+    assert idx.series_by_year(
+        variables=[_WINDOW_SV],
+        excluded=[(_WINDOW_SV, "donor", _donor(0))],
+        first_year=2024,
+        last_year=2025,
+    ) == {2024: 7, 2025: 3}
+    assert idx.elected_years(
+        variables=[_WINDOW_SV], bound={"donor": frozenset(map(_donor, (0, 5, 6, 7)))}
+    ) == {_WINDOW_SV: 2024}
+
+
+def test_a_variable_the_index_cannot_elect_for_is_absent_and_serves_its_own_latest() -> None:
+    """A variable with a monthly facet elects no year, as the index cannot find a latest
+    month, and neither does a variable the index holds no row of. The monthly variable
+    serves and heads its own latest year, 2025, where two of its six donors hold data."""
+    idx = _election_index(
+        [
+            *_donor_rows(_WINDOW_SV, {2025: 2, 2024: 6}, facet_id=_MONTHLY_FACET),
+            *_donor_rows(_SECOND_SV, {2025: 2, 2024: 6}),
+        ],
+        {
+            _MONTHLY_FACET: FacetMetadata(provenance_id="p", observation_period="P1M"),
+            _WINDOW_FACET: FacetMetadata(provenance_id="p", observation_period="P1Y"),
+        },
+    )
+
+    elected = idx.elected_years(variables=[_WINDOW_SV, _SECOND_SV, "Unknown"])
+    served = idx.series_years(variables=[_WINDOW_SV], latest=elected)
+    headline = idx.headline(variables=[_WINDOW_SV], elected=elected)
+
+    assert elected == {_SECOND_SV: 2024}
+    assert served is not None and served.series == 2
+    assert headline is not None
+    assert (headline.year, headline.series) == (2025, 2)
+
+
+@pytest.mark.parametrize("build_year", [2026, None])
+def test_a_monthly_variable_heads_its_recent_year_beside_older_elected_ones(
+    build_year: int | None,
+) -> None:
+    """A monthly variable holds 2025 at two donors and elects nothing. An annual one ends
+    in 2021 and elects it. The headline names 2025, one of its `recent_years`, with the
+    monthly variable's two series, whether or not the index states a build year."""
+    idx = _election_index(
+        [
+            *_donor_rows(_WINDOW_SV, {2025: 2, 2024: 6}, facet_id=_MONTHLY_FACET),
+            *_donor_rows(_SECOND_SV, {2021: 4, 2020: 4}),
+        ],
+        {
+            _MONTHLY_FACET: FacetMetadata(provenance_id="p", observation_period="P1M"),
+            _WINDOW_FACET: FacetMetadata(provenance_id="p", observation_period="P1Y"),
+        },
+        build_year=build_year,
+    )
+    variables = [_WINDOW_SV, _SECOND_SV]
+
+    elected = idx.elected_years(variables=variables)
+    headline = idx.headline(variables=variables, elected=elected)
+
+    assert elected == {_SECOND_SV: 2021}
+    assert headline is not None
+    assert (headline.year, headline.series) == (2025, 2)
+    assert [c.year for c in headline.recent_years] == [2025, 2024, 2023]
+
+
+def test_a_two_variable_headline_names_the_newest_elected_year_and_counts_its_variable() -> None:
+    """One variable holds 2025 at four of five donors and elects it. The other holds 2025
+    at one of six and elects 2024. The headline names 2025 with the four series serving it,
+    where `recent_years` counts all five that hold it."""
+    idx = _election_index(
+        [
+            *_donor_rows(_WINDOW_SV, {2025: 4, 2024: 5}),
+            *_donor_rows(_SECOND_SV, {2025: 1, 2024: 6}),
+        ]
+    )
+    variables = [_WINDOW_SV, _SECOND_SV]
+
+    elected = idx.elected_years(variables=variables)
+    headline = idx.headline(variables=variables, elected=elected)
+    extent = idx.served_extent(variables=variables, latest=elected)
+
+    assert elected == {_WINDOW_SV: 2025, _SECOND_SV: 2024}
+    assert headline is not None
+    assert (headline.year, headline.series, dict(headline.role_counts)) == (
+        2025,
+        4,
+        {"donor": 4, "recipient": 1},
+    )
+    assert _recent(headline)[:2] == [
+        (2025, 5, {"donor": 4, "recipient": 1}),
+        (2024, 11, {"donor": 6, "recipient": 1}),
+    ]
+    assert extent == ServedExtent(rows=10, series=10, first_year=2024, last_year=2025)
+
+
 @pytest.mark.parametrize("offset", [0, 1])
 def test_headline_recent_years_stop_at_the_horizon(offset) -> None:
     """The artifact holds no year before its epoch, so `recent_years` lists none."""
@@ -924,7 +1184,11 @@ _OTHER_FACET = "window-test-other-facet"
     ("read", "expected"),
     [
         ({}, ServedExtent(rows=6, series=2, first_year=2018, last_year=2024)),
-        ({"latest": True}, ServedExtent(rows=1, series=1, first_year=2024, last_year=2024)),
+        ({"latest": {}}, ServedExtent(rows=1, series=1, first_year=2024, last_year=2024)),
+        (
+            {"latest": {_WINDOW_SV: 2020}},
+            ServedExtent(rows=1, series=1, first_year=2020, last_year=2020),
+        ),
         (
             {"first_year": 2019, "last_year": 2021},
             ServedExtent(rows=3, series=1, first_year=2019, last_year=2021),
@@ -938,14 +1202,15 @@ _OTHER_FACET = "window-test-other-facet"
             ServedExtent(rows=5, series=1, first_year=2018, last_year=2022),
         ),
     ],
-    ids=["every_year", "latest", "range", "served", "excluded"],
+    ids=["every_year", "own_latest", "elected_latest", "range", "served", "excluded"],
 )
 def test_served_extent_counts_each_series_years_once_across_its_facets(
     read: dict[str, Any], expected: ServedExtent
 ) -> None:
     """Kenya's series holds 2018 to 2020 in one facet and 2020 to 2022 in another, five
     distinct years where the facets hold six observations; Ethiopia's holds 2024, past
-    the first mask word."""
+    the first mask word. A `latest` read serves the variable's elected year from the
+    series holding it, and with none elected the variable's own latest year."""
     idx = _window_index(
         [
             (_WINDOW_SV, _WINDOW_FACET, FRA, KEN, [2018, 2019, 2020]),
@@ -1540,10 +1805,16 @@ _MONTHLY_FACET = "monthly-facet"
             id="a-range",
         ),
         pytest.param(
-            {"latest": True},
+            {"latest": {}},
             {(_WINDOW_SV, KEN, FRA): [2022]},
             KeptFacets(frozenset({_WINDOW_FACET, _MONTHLY_FACET}), groups=2, sub_annual=True),
             id="latest-keeps-the-variables-latest-year",
+        ),
+        pytest.param(
+            {"latest": {_WINDOW_SV: 2005}},
+            {(_WINDOW_SV, KEN, FRA): [2005]},
+            KeptFacets(frozenset({_WINDOW_FACET, _MONTHLY_FACET}), groups=2, sub_annual=True),
+            id="latest-keeps-the-elected-year",
         ),
         pytest.param(
             {"admits": lambda _variable, facet: facet != _WINDOW_FACET},
@@ -1557,7 +1828,8 @@ def test_series_years_or_each_series_facets(read, expected, kept) -> None:
     """KEN holds the annual facet from FRA in 2005 and 2020 to 2022 and a monthly facet
     with another method in 2005 alone. ETH holds the annual facet from DEU in 2000. Each
     series ORs the years of the facets it keeps. Under `latest` the variable serves 2022
-    alone, so ETH, whose latest year is 2000, serves nothing."""
+    alone, so ETH, whose latest year is 2000, serves nothing, and elected at 2005 it
+    serves that year from KEN, which holds it."""
     table, horizon = coverage_table(
         [
             (_WINDOW_SV, _WINDOW_FACET, FRA, KEN, [2005, 2020, 2021, 2022]),

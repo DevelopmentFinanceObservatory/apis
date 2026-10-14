@@ -161,9 +161,6 @@ class GraphCache:
     def node_type(self, dcid: str) -> str | None:
         return self._lookup("node_type", (dcid,), lambda: self._inner.node_type(dcid))
 
-    def declares_facet_defaults(self) -> bool:
-        return self._inner.declares_facet_defaults()
-
     def default_facet_policy(self, *, stat_var: str, axis: str) -> FacetDefaultPolicy | None:
         # Passed through uncached: the live client answers from no wire read, and captures
         # recorded before resolve asked hold no rows for it.
@@ -530,6 +527,18 @@ class GraphCache:
                 )
                 result[sv][entity] = facets
         return result
+
+    def observation_read_groups(
+        self, stat_vars: list[str], entities: list[str], needs_dates: bool = False
+    ) -> list[list[str]]:
+        """The inner client's request groups for the read, cached so a replay of an
+        early-stopping read stops where its capture did."""
+        resolved = needs_dates or _force_full_facets.get()
+        return self._lookup(
+            "observation_read_groups",
+            (stat_vars, entities, resolved),
+            lambda: self._inner.observation_read_groups(stat_vars, entities, needs_dates),
+        )
 
     def child_dcids(self, parent_dcid: str) -> list[str]:
         return self._lookup(

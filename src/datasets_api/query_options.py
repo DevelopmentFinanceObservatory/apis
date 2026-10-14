@@ -19,7 +19,8 @@ from dfo_platform.validation import pointer_segment
 
 # Each closed-namespace query key's equivalent (top-level field, nested
 # key) in the mint body's `options` object. A top-level scalar field
-# (`format`, `bundle`, `columns`, `layout`) carries `None` as its nested key.
+# (`format`, `bundle`, `columns`, `layout`, `without_party_totals`) carries `None` as its
+# nested key.
 # Extending the namespace -- a new option, or a dotted key for a field
 # that gains its own sub-structure -- means adding one row here.
 _NAMESPACE: dict[str, tuple[str, str | None]] = {
@@ -32,6 +33,7 @@ _NAMESPACE: dict[str, tuple[str, str | None]] = {
     "pivot.columns": ("pivot", "columns"),
     "columns": ("columns", None),
     "layout": ("layout", None),
+    "without_party_totals": ("without_party_totals", None),
 }
 # `groupby.by` is a comma-separated list like `columns`. The other nested keys are strings.
 _COMMA_JOINED_NESTED_KEYS: frozenset[str] = frozenset({"groupby.by"})
@@ -133,7 +135,8 @@ def _parse_levels(value: str) -> dict[str, int]:
 
 def encode_query_options(options: MintOptions) -> dict[str, str]:
     """Encodes applied options as the flat query map accepted by `GET /api/datasets/{id}`.
-    `format` and `bundle` are always present. Other keys appear only when set. `columns` and
+    `format` and `bundle` are always present. Other keys appear only when set, and
+    `without_party_totals` only when true. `columns` and
     `groupby.by` are comma-joined, and their closed grammars exclude commas from entries.
     `groupby.levels` joins its `<code_system>:<depth>` pairs in code-system order."""
     encoded: dict[str, str] = {}
@@ -164,4 +167,6 @@ def encode_query_options(options: MintOptions) -> dict[str, str]:
             encoded[key] = ",".join(options.columns)
         elif field == "layout" and options.layout is not None:
             encoded[key] = options.layout
+        elif field == "without_party_totals" and options.without_party_totals:
+            encoded[key] = "true"
     return encoded

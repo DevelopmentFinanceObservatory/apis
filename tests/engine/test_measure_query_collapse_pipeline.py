@@ -17,14 +17,13 @@ from code_index.types import MeasureAxis
 from entity_resolution import Admission, EntityResolver
 from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.graph import EngineGraphClient
-from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.departures import warning_key
 from search.engine.qualifier_match import QualifierMatch
 from search.engine.reading_coverage import ObservedYears
 from search.engine.region.alternate_guard import leaves_price_basis_unread
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
-from search.engine.region.phase_election import _phase_vet_election
+from search.engine.region.phase_election import _vet_election
 from search.engine.region.phase_rank_bind import _measure_query_matches, _phase_prune_and_rank
 from search.engine.region.qualifier_readings import match_query_readings
 from search.engine.region.state import ResolveState
@@ -34,6 +33,7 @@ from search.heading.departure_fact import DepartureFact
 from search.models import TraceDefaultReading
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._index_slots import index_slot_keys
+from tests.engine._quantity import QuantityReadOnlyLLM
 from tests.engine._requirements import depart_requirements
 from tests.engine.test_admissibility_table import _node, _resolve_gdp_of_kenya
 
@@ -118,7 +118,7 @@ def _state(
         graph=cast(EngineGraphClient, None),
         resolver=cast(EntityResolver, None),
         admission=cast(Admission, None),
-        llm=cast(SupportsLLM, None),
+        llm=QuantityReadOnlyLLM(),
         sdmx=cast(EngineSdmxClient, None),
         deadline=None,
         pre_resolved=None,
@@ -146,8 +146,8 @@ def _run_prune_and_elect(state: ResolveState) -> None:
     state.bind_result = _UniversalBindOutput(
         chosen_shape_index=0, bindings=[], also_plausible=[], ask=None
     )
-    result = asyncio.run(_phase_vet_election(state))
-    assert result is None, "expected _phase_vet_election to fall through"
+    result = _vet_election(state)
+    assert result is None, "expected _vet_election to fall through"
     depart_requirements(state)
 
 
@@ -413,7 +413,7 @@ def _elect_reading_ppp(variable: str, shape: ShapeDraft) -> ResolveState:
     state.bind_result = _UniversalBindOutput(
         chosen_shape_index=0, bindings=[], also_plausible=[], ask=None
     )
-    assert asyncio.run(_phase_vet_election(state)) is None
+    assert _vet_election(state) is None
     depart_requirements(state)
     return state
 

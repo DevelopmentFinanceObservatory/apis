@@ -116,6 +116,17 @@ GOLDEN_TABLE: list[tuple[str, dict[str, object], str | None]] = [
         "/options/layout",
     ),
     ("format=parquet&layout=frame", {"format": "parquet", "layout": "frame"}, "/options/layout"),
+    ("without_party_totals=true", {"without_party_totals": True}, None),
+    (
+        "groupby.by=recipient&groupby.op=sum&without_party_totals=true",
+        {"groupby": {"by": ["recipient"], "op": "sum"}, "without_party_totals": True},
+        None,
+    ),
+    (
+        "without_party_totals=maybe",
+        {"without_party_totals": "maybe"},
+        "/options/without_party_totals",
+    ),
     # Both validators report the same pointer for unknown keys.
     ("foo=bar", {"foo": "bar"}, "/options/foo"),
 ]
@@ -256,6 +267,13 @@ _ROUND_TRIP_OPTIONS: list[MintOptions] = [
         bundle=False,
         groupby={"by": ["time_period"], "op": "sum"},
         columns=["observationAbout_type"],
+        layout="frame",
+    ),
+    MintOptions(
+        format="parquet",
+        bundle=False,
+        groupby={"by": ["time_period"], "op": "sum"},
+        without_party_totals=True,
         layout="frame",
     ),
 ]

@@ -31,6 +31,7 @@ from datasets_api.operation_store import LiveOperationStore
 from datasets_api.operations.task_client import FakeTaskClient
 from datasets_api.operations.worker import run_operation
 from datasets_api.recipe_store import LiveRecipeStore
+from datasets_api.recorded_rendering import MintingOptions, recorded_mintings
 from datasets_api.render import CANONICAL_FRAME_RENDERING, servable_frame_location
 from datasets_api.version_store import (
     LiveVersionLister,
@@ -47,6 +48,7 @@ from spec_registry.reader import LiveSpecReader
 from statvar_members import MemberEnumerator
 
 from . import test_serve_groupby_collapse as collapse_fixture
+from . import test_serve_party_totals as party_fixture
 from ._app_factories import make_client
 from ._frame_doubles import link_frame1_only
 from ._operation_store import FakeOperationDatasetStore
@@ -655,6 +657,49 @@ def test_a_collapsed_frame_with_no_file_recording_its_groupby_refuses():
     assert resp.json()["code"] == "rendering_not_recorded"
     listed = collapsed.rig.listed_versions(collapsed.spec_id)[collapsed.collapsed_content_version]
     assert (listed["rendering"], listed["groupby"]) == ("not_recorded", None)
+
+
+# --- Frames minted without their party totals ---
+
+
+_CUT_FRAME = {"format": "parquet", "bundle": False, "layout": "frame", "without_party_totals": True}
+
+
+def test_a_rebuild_moves_a_cut_frame_to_the_cut_of_the_new_head():
+    """A frame minted without its party totals refreshes to the cut of the current data, which
+    the refresh mints with the option again and records under the new head."""
+    rig = _rig(
+        graph=party_fixture._graph(),
+        coverage=party_fixture._coverage_service(),
+        body=party_fixture._CSV_BODY,
+        code_index=party_fixture._code_index(),
+    )
+    spec_id, sidecar = party_fixture._spec_id_and_sidecar()
+    minted = party_fixture._mint(rig.client, spec_id=spec_id, sidecar=sidecar, options=_CUT_FRAME)
+    base = rig.head_store.head_for(spec_id).content_version
+    assert minted["content_version"] != base
+
+    current = rig.refresh(spec_id=spec_id, content_version=minted["content_version"])
+    assert current.json()["status"] == "current", current.text
+
+    rig.body["text"] = party_fixture._CSV_BODY.replace(",100,", ",300,")
+    rig.head_store.age_head(spec_id, age=_PAST_MAX_AGE)
+    moved = rig.refresh(spec_id=spec_id, content_version=minted["content_version"])
+
+    assert moved.status_code == 200, moved.text
+    assert moved.json()["status"] == "moved"
+    moved_to = moved.json()["frame"]["content_version"]
+    new_head = rig.head_store.head_for(spec_id).content_version
+    assert new_head != base
+    reader = LiveSnapshotReader(store=rig.version_store)
+    version = reader.read_version(spec_id, moved_to)
+    assert version is not None and version.base_content_version == new_head
+    assert recorded_mintings(
+        location.rendering for location in reader.read_artifact_locations(spec_id, moved_to)
+    ) == [MintingOptions(without_party_totals=True)]
+    snapshot = rig.client.get(f"/api/datasets/{spec_id}/{moved_to}")
+    assert snapshot.json()["trace"]["party_totals_left_out"] == party_fixture._LEFT_OUT
+    assert snapshot.json()["coverage"]["rows"] == 1
 
 
 # --- A sum that left the frame unchanged shares the raw version ---

@@ -22,7 +22,7 @@ from search.engine.qualifier_match import (
     recall_text,
 )
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
-from search.engine.region.phase_election import _phase_vet_election
+from search.engine.region.phase_election import _vet_election
 from search.engine.region.phase_rank_bind import (
     _admit_qualifier_matches,
     _admit_qualifier_ties,
@@ -201,8 +201,8 @@ def test_sidecar_only_tie_left_unresolved_produces_query_qualifier_dropped():
         admitted_ties=admitted_ties,
         variable_matched_qualifier_phrases=owned_phrases,
     )
-    result = asyncio.run(_phase_vet_election(state))
-    assert result is None, "expected _phase_vet_election to fall through"
+    result = _vet_election(state)
+    assert result is None, "expected _vet_election to fall through"
     depart_requirements(state)
     assert len(state.warnings) == 1
     assert state.warnings[0].code == QUERY_QUALIFIER_DROPPED
@@ -231,7 +231,7 @@ def test_sidecar_tie_owned_elsewhere_stays_silent():
         admitted_ties=admitted_ties,
         variable_matched_qualifier_phrases=frozenset(),
     )
-    result = asyncio.run(_phase_vet_election(state))
+    result = _vet_election(state)
     assert result is None
     depart_requirements(state)
     assert state.warnings == []
@@ -449,9 +449,9 @@ def _run_qualifier_pipeline(
         ),
         coverage=empty_coverage_snapshot(),
     )
-    fell_through = asyncio.run(_phase_vet_election(state))
+    fell_through = _vet_election(state)
     depart_requirements(state)
-    # Mirrors _phase_repair_bindings' own `state.bindings = list(state.
+    # Mirrors _repair_bindings' own `state.bindings = list(state.
     # bind_result.bindings)` -- _resolve_query_qualifiers reads state.
     # bindings, not state.bind_result.bindings, for its own bound/unbound
     # disposition call.

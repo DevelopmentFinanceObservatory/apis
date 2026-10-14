@@ -105,18 +105,19 @@ class HeadlineYear(StrictModel):
 
 
 class Headline(StrictModel):
-    """The exact, latest-year summary of a role-bearing answer's own served
-    population: the year `CoverageIndex.headline` (series_coverage) found
-    the most recent observation in, whether that year was the one the
-    question named, the exact observation and series count in that year
-    alone, and how many distinct dcids each role carries in it. `series_coverage
-    .index.Headline`'s own docstring is the source of truth for why
-    `observations` and `series` are always equal under this schema.
+    """The exact, one-year summary of a role-bearing answer's own served
+    population: the year `CoverageIndex.headline` (series_coverage) heads the
+    answer with, whether that year was the one the question named, the exact
+    observation and series count in that year alone, and how many distinct dcids
+    each role carries in it. `series_coverage.index.Headline`'s own docstring is
+    the source of truth for why `observations` and `series` are always equal
+    under this schema.
 
-    The counts are those of the latest year the answer's read plan serves inside the
-    years it reads: the latest year with data, or under a named window the latest year
-    with data in that window, so a question naming 2015 to 2020 counts the latest of
-    those years with data. `named_window` carries the years it named.
+    The counts are those of the year the answer's read plan serves. Under a `latest`
+    window that is the year its variables elect (`CoverageIndex.elected_years`), which
+    the preview and a mint of the Spec serve too. Under a named window it is the latest
+    year with data in that window, so a question naming 2015 to 2020 counts the latest
+    of those years with data. `named_window` carries the years it named.
 
     Attached to every role-bearing answer (named-destination confirmed and
     open-axis discovered alike), never to a non-role-bearing one: coverage
@@ -129,8 +130,12 @@ class Headline(StrictModel):
 
     year: int = Field(
         description=(
-            "the latest year any served series has an observation, inside the named "
-            "window when the request names one"
+            "the year the counts are for. For a latest window it is the elected year: of "
+            "the three calendar years ending at the newest year a variable's series hold, "
+            "at or before the year the coverage artifact was built, the newest one that at "
+            "least half as many series hold as the fullest of the three, and with several "
+            "variables the newest year any of them elects. For a named window it is the "
+            "latest year any served series has an observation inside the window"
         )
     )
     year_named: bool = Field(
@@ -160,12 +165,20 @@ class Headline(StrictModel):
     recent_years: list[HeadlineYear] = Field(
         min_length=1,
         description=(
-            "the counts for `year` and the two calendar years before it, newest first, so a "
-            "latest year with far fewer observations than the years before it reads as "
-            "incomplete. A year with no data is kept with zero counts. The list stops at the "
-            "first year the coverage artifact represents, so it can hold fewer than three "
-            "entries. The first entry repeats `observations`, `series` and `role_counts`. The "
-            "earlier years count whether or not `named_window` reaches them"
+            "the counts for three calendar years, newest first, so a newest year with far "
+            "fewer series than the years before it reads as incomplete. For a latest window "
+            "they are raw counts over every series the answer holds, ending at the newest "
+            "year any of them holds at or before the year the coverage artifact was built, or "
+            "at the newest year any holds when none holds a year that early; `year` is one of "
+            "the three: the newest year a variable heads, which is the year it elected or, for "
+            "a variable that elects none, such as one of monthly data, its newest year at or "
+            "before the build year. When no variable holds a year that early, each heads its "
+            "newest year. `observations`, `series` and `role_counts` count only the variables "
+            "heading it. For a named window they end at "
+            "`year`, the first entry repeats `observations`, `series` and `role_counts`, and "
+            "the earlier years count whether or not `named_window` reaches them. A year with "
+            "no data is kept with zero counts. The list stops at the first year the coverage "
+            "artifact represents, so it can hold fewer than three entries"
         ),
     )
 

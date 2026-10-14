@@ -294,7 +294,7 @@ def test_materialise_confirms_when_only_the_second_named_origin_has_data(monkeyp
     assert result.sv_dcids == [_SV_DCID]
 
 
-def test_no_origin_entity_skips_the_second_pass(monkeypatch):
+def test_no_matching_coverage_reads_no_sdmx_series(monkeypatch):
     """No matching coverage returns an unavailable carrier without an SDMX request."""
     shape = _shape(declared_roles=("creditor", "debtor"))
     coverage = _patch_coverage_snapshot(monkeypatch, [], role_names={})

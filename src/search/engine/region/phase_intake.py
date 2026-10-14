@@ -4,15 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Mapping
-from typing import cast
+import time
+from collections.abc import Mapping, Sequence
+from dataclasses import replace
+from typing import Final, cast
 
+import dc_graph
 from code_index.shared import get_index
 from entity_resolution import Ambiguous, Group, Resolved
-from search.engine.clients.graph import force_full_facets
+from origin_catalogue import recording_un_blocked_places
+from search.engine.clients.graph import DetectedSV, force_full_facets
 from search.engine.config import settings
+from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.envelope import _emit_step, now_ms
-from search.engine.errors import RoleSignatureError
+from search.engine.errors import EngineInfraError, RoleSignatureError
 from search.engine.interpret import Recall, recall
 from search.engine.place import expand_places
 from search.engine.region.place_roles import (
@@ -30,16 +35,39 @@ from search.engine.region.result import (
     RegionResult,
     RoleNotAdmittedEntity,
 )
-from search.engine.region.state import ResolveState
+from search.engine.region.source_choice import allows_un_system
+from search.engine.region.state import ResolveState, UnLeg, UnPool
 from search.engine.retrieval.derive import derive_shapes
 from search.engine.shape import ShapeDraft, role_names_by_axis
-from search.models import EntityRoleKey, RoleAxis
-
-logger = logging.getLogger(__name__)
+from search.models import EntityRoleKey, NoDataReason, RoleAxis, elect_no_data_reason
 
 # Full-facet probing is capped at 6 candidates. This phase checks raw recall count before
 # expansion. derive_shapes checks the confirmed count to bound the actual read.
 _FLOOR_PROBE_FULL_FACETS_MAX_CANDIDATES = 6
+
+logger = logging.getLogger(__name__)
+
+# Failures of a UN shape derivation that mean an upstream read failed or hit a capacity
+# limit. The part has no UN pass. Any other exception is a defect and raises.
+_UPSTREAM_FAILURES: Final = (
+    EngineInfraError,
+    TimeoutError,
+    dc_graph.GraphReadError,
+    dc_graph.GraphCapExceededError,
+)
+
+_UN_LATE: Final = (
+    "The search over the UN System Data Commons' variables and their reads did not finish "
+    "in time; candidates come from our Data Commons only."
+)
+_UN_RESOLVE_FAILED: Final = (
+    "The UN System Data Commons did not answer the variable search; "
+    "candidates come from our Data Commons only."
+)
+_UN_READS_FAILED: Final = (
+    "The UN System Data Commons' variables could not be read; "
+    "candidates come from our Data Commons only."
+)
 
 
 async def _phase_recall(state: ResolveState) -> None:
@@ -52,6 +80,7 @@ async def _phase_recall(state: ResolveState) -> None:
         resolver=state.resolver,
         raw_query=state.detect_query,
         pre_resolved=state.pre_resolved,
+        entity_surfaces=state.entity_surfaces,
         members=None if state.source_code is None else state.source_code.dcids,
     )
     state.rcl = rcl
@@ -101,7 +130,7 @@ async def _phase_resolve_places(state: ResolveState) -> None:
     membership = state.resolver.membership
     regions = [entity for entity in resolved.values() if membership.holds_region(entity.dcid)]
 
-    # Preserve recall's country set for derive_shapes' availability floor. Groups and
+    # Preserve recall's country set for derive_shapes' place-availability probe. Groups and
     # regions stay off it. Their nodes and members enter the later sibling probe sample.
     state.recall_only_place_dcids = (
         list(dict.fromkeys(e.dcid for e in resolved.values() if e.kind == "country")) or None
@@ -143,6 +172,7 @@ async def _phase_resolve_places(state: ResolveState) -> None:
             member_names={member.dcid: member.name for member in group.members},
             reading=reading(name),
             total=total(group.dcid or (None if node is None else node.dcid)),
+            group_id=group.dcid,
         )
     for name, entity in resolved.items():
         region = membership.holds_region(entity.dcid)
@@ -176,59 +206,68 @@ async def _phase_check_entities(state: ResolveState) -> RegionResult | None:
     """Refuse a part naming an entity that did not resolve, before shape derivation and
     the bind call.
 
-    Report ``entity_ambiguous`` only when every unresolved name is ambiguous, and
-    ``entity_set_too_large`` only when every unresolved name is an oversized Group.
-    Otherwise report ``entity_not_resolved``. Keep names and candidates in query order.
-    The place sets are final once `_phase_resolve_places` has run, so every later phase
-    sees only resolved entities.
+    Each name with no place set mints one reason: ``entity_ambiguous`` for an Ambiguous
+    resolution, ``entity_set_too_large`` for a Group with more members than a Spec binds,
+    and ``entity_not_resolved`` otherwise. The part refuses with the reason
+    `elect_no_data_reason` elects over them, and names, whatever the elected reason, an
+    ambiguous name with its candidates (``ambiguous_entities``) and every name that resolved
+    to no single node, ambiguous ones included, as unresolved (``unresolved_entity_names``).
+    An oversized group resolved, so it is never among the unresolved. Both keep query
+    order. The place sets are final once `_phase_resolve_places` has run,
+    so every later phase sees only resolved entities.
     """
     rcl = cast(Recall, state.rcl)
-    still_unresolved = set(state.entities) - state.place_sets.keys()
-    if still_unresolved:
-        still_unresolved_ordered = tuple(
-            dict.fromkeys(name for name in state.entities if name in still_unresolved)
-        )
-        if all(isinstance(rcl.resolutions.get(name), Ambiguous) for name in still_unresolved):
-            ambiguous_entities = tuple(
-                AmbiguousEntity(
-                    text=name,
-                    candidates=tuple(
-                        AmbiguousEntityCandidate(
-                            dcid=candidate.dcid, name=candidate.name, kind=candidate.kind
-                        )
-                        for candidate in cast(Ambiguous, rcl.resolutions[name]).candidates
-                    ),
-                    role=_sole_axis(state, name),
+    # One reason per name, in query order.
+    reasons: dict[str, NoDataReason] = {
+        name: _entity_reason(rcl.resolutions.get(name))
+        for name in state.entities
+        if name not in state.place_sets
+    }
+    if not reasons:
+        return None
+    ambiguous_entities = tuple(
+        AmbiguousEntity(
+            text=name,
+            candidates=tuple(
+                AmbiguousEntityCandidate(
+                    dcid=candidate.dcid, name=candidate.name, kind=candidate.kind
                 )
-                for name in still_unresolved_ordered
-            )
-            # A group, and a set read as its members, stay unpinned: re-resolving the text
-            # keeps the members, whether an alias row or the part's flag asked for them.
-            resolved_entity_dcids = {
-                name: place_set.node.dcid
-                for name in dict.fromkeys(state.entities)
-                if (place_set := state.place_sets.get(name)) is not None
-                and place_set.kind != "group"
-                and place_set.reading != "members"
-                and place_set.node is not None
-            }
-            return state.no_data(
-                "entity_ambiguous",
-                ambiguous_entities=ambiguous_entities,
-                resolved_entity_dcids=resolved_entity_dcids,
-            )
-        if all(_is_oversized_group(rcl.resolutions.get(name)) for name in still_unresolved):
-            return state.no_data("entity_set_too_large")
-        # An oversized group resolved, so it is not among the names that did not.
-        return state.no_data(
-            "entity_not_resolved",
-            unresolved_entity_names=tuple(
-                name
-                for name in still_unresolved_ordered
-                if not _is_oversized_group(rcl.resolutions.get(name))
+                for candidate in cast(Ambiguous, rcl.resolutions[name]).candidates
             ),
+            role=_sole_axis(state, name),
         )
-    return None
+        for name, name_reason in reasons.items()
+        if name_reason == "entity_ambiguous"
+    )
+    # The part's `data_query` pins these on an `entity_ambiguous` refusal. A group, and a
+    # set read as its members, stay unpinned: re-resolving the text keeps the members,
+    # whether an alias row or the part's flag asked for them.
+    resolved_entity_dcids = {
+        name: place_set.node.dcid
+        for name in dict.fromkeys(state.entities)
+        if (place_set := state.place_sets.get(name)) is not None
+        and place_set.kind != "group"
+        and place_set.reading != "members"
+        and place_set.node is not None
+    }
+    reason = elect_no_data_reason(reasons.values())
+    return state.no_data(
+        reason,
+        ambiguous_entities=ambiguous_entities,
+        resolved_entity_dcids=resolved_entity_dcids if reason == "entity_ambiguous" else None,
+        unresolved_entity_names=tuple(
+            name for name, name_reason in reasons.items() if name_reason != "entity_set_too_large"
+        ),
+    )
+
+
+def _entity_reason(resolution: object) -> NoDataReason:
+    """The reason one entity name with no place set mints, from its resolution."""
+    if isinstance(resolution, Ambiguous):
+        return "entity_ambiguous"
+    if _is_oversized_group(resolution):
+        return "entity_set_too_large"
+    return "entity_not_resolved"
 
 
 async def _prune_shapes_by_admission(
@@ -358,71 +397,117 @@ def not_admitted_entity(place_set: PlaceSet) -> RoleNotAdmittedEntity:
     )
 
 
-def _found_empty(state: ResolveState, shape: ShapeDraft) -> bool:
-    """Whether `shape` holds only members of the excluded shape of its id."""
-    empty = state.excluded_shapes.get(shape.shape_id)
-    return empty is not None and set(shape.sv_arc_facts or {}) <= empty
+async def _derive_pool(state: ResolveState, pool: Sequence[DetectedSV]) -> list[ShapeDraft]:
+    """The shapes `pool`'s candidates derive, off the event loop. Raises
+    `RoleSignatureError` when no candidate group has a consistent entity-role signature."""
+    pool_svs = [c.dcid for c in pool]
+    # Dated observation reads use ``needs_dates=True``. This scope lets the availability
+    # probe share that cache key when raw recall has at most 6 candidates. derive_shapes
+    # rechecks the limit after confirmation and Topic expansion, bounding the full-history
+    # read to 6 confirmed StatVars. The context propagates through ``to_thread``.
+    with force_full_facets(
+        state.date_request is not None and len(pool_svs) <= _FLOOR_PROBE_FULL_FACETS_MAX_CANDIDATES
+    ):
+        return await asyncio.to_thread(
+            derive_shapes,
+            confirmed_svs=pool_svs,
+            graph=state.graph,
+            sv_scores={c.dcid: c.score for c in pool},
+            sv_types={c.dcid: c.type_of for c in pool},
+            rival_svs=frozenset(c.dcid for c in pool if c.rival),
+            # Use recall's country snapshot. Place sets and Group members stay off the floor.
+            place_dcids=state.recall_only_place_dcids,
+            full_facets_max_candidates=_FLOOR_PROBE_FULL_FACETS_MAX_CANDIDATES,
+            deadline=state.deadline,
+        )
+
+
+async def _un_shapes(state: ResolveState, rcl: Recall) -> UnPool:
+    """The shapes the UN System Data Commons' candidates derive, each stamped with its
+    pool, and why the part has no UN pool to fill a gap with, `None` when it need not. A UN
+    pool whose derivation finds no consistent role signature adds no shape and needs no
+    reason. A failed resolve or upstream read adds none and gives its reason. The
+    derivation's reads note what they could not serve under the leg's own records, which
+    the pool carries (`UnPool`)."""
+    await rcl.settle_un()
+    if rcl.un_unavailable:
+        return UnPool(shapes=[], missed=_UN_RESOLVE_FAILED)
+    candidates = rcl.un_candidates
+    if not candidates:
+        return UnPool(shapes=[])
+    started = time.monotonic()
+    with (
+        recording_un_blocked_places() as un_blocked,
+        recording_degraded_reads(detached=True) as lost,
+    ):
+        try:
+            shapes = await _derive_pool(state, candidates)
+        except RoleSignatureError:
+            shapes, missed = [], None
+        except _UPSTREAM_FAILURES as exc:
+            logger.warning("UN System Data Commons shape derivation failed: %s", exc)
+            shapes, missed = [], _UN_READS_FAILED
+        else:
+            shapes, missed = [replace(shape, pool="un_system") for shape in shapes], None
+        finally:
+            logger.info(
+                "un_derive ms=%d candidates=%d",
+                round((time.monotonic() - started) * 1000),
+                len(candidates),
+            )
+    return UnPool(
+        shapes=shapes, missed=missed, unserved=un_blocked.snapshot(), lost=tuple(lost.reads)
+    )
+
+
+async def un_pool_shapes(leg: UnLeg, *, bound: float | None) -> UnPool:
+    """The UN leg's pool (`_un_shapes`), waiting for the leg until its own end
+    (`UnLeg.ends`) or `bound`, whichever comes first. A leg still running then is cancelled
+    and the pool's reason says it was late; its derivation thread runs on until its reads
+    end."""
+    ends = leg.ends if bound is None else min(leg.ends, bound)
+    done, _ = await asyncio.wait({leg.task}, timeout=max(0.0, ends - time.monotonic()))
+    if not done:
+        leg.task.cancel()
+        return UnPool(shapes=[], missed=_UN_LATE)
+    return leg.task.result()
 
 
 async def _phase_derive_shapes(state: ResolveState) -> RegionResult | None:
-    """Confirm recall candidates and derive role-compatible shapes.
+    """Confirm the pass's recall candidates and derive role-compatible shapes.
 
-    Return ``role_signature_incompatible`` or ``variable_not_resolved`` when derivation
-    fails, and ``entity_role_not_admitted`` when all shapes fail role checks. A part whose
+    Our pass derives from our candidates, and starts the UN System Data Commons' resolve
+    and shape derivation as one task beside it (`ResolveState.un_leg`) when the part's
+    scope allows a UN provenance (`source_choice.allows_un_system`) and the part names no
+    series code, since a code part's answer stands without a UN pass
+    (`pipeline._un_pass_skip`). Our pass never waits
+    for that task; the UN pass, which runs only when ours ends no_data
+    (`pipeline._fill_gap`), takes its shapes, already in `state.shapes_found`. Return
+    ``role_signature_incompatible`` or ``variable_not_resolved`` when the pass derives no
+    shape, and ``entity_role_not_admitted`` when all shapes fail role checks. A part whose
     series code named its candidates (`ResolveState.source_code`) and derives no shape from
     them refuses ``source_code_not_held`` in place of ``variable_not_resolved``
     (`ResolveState.no_data`). Surviving
-    shapes proceed to ranking. A shape whose id ``state.excluded_shapes`` names and whose
-    members are all among the members recorded there is dropped as soon as it is derived.
-    It holds only members the first pass read and found empty.
+    shapes proceed to ranking.
     """
     rcl = cast(Recall, state.rcl)
-    # The first pass derives from our resolve's hits under their own dcids, superseded ones
-    # included, and ranks them under those dcids; derivation reads each as its successor
-    # (`derive_shapes`).
-    if state.pool == "ours":
-        pool = rcl.candidates if rcl.hits is None else rcl.hits
-    else:
-        pool = rcl.un_candidates
-    pool_svs = [c.dcid for c in pool]
-
-    # Confirm candidates and derive shapes off the event loop.
     t0 = state.shape_t0 = now_ms()
-    sv_scores_map = {c.dcid: c.score for c in pool}
-    sv_types_map = {c.dcid: c.type_of for c in pool}
-    try:
-        # Dated observation reads use ``needs_dates=True``. This scope lets the availability
-        # probe share that cache key when raw recall has at most 6 candidates. derive_shapes
-        # rechecks the limit after confirmation and Topic expansion, bounding the full-history
-        # read to 6 confirmed StatVars. The context propagates through ``to_thread``.
-        with force_full_facets(
-            state.date_request is not None
-            and len(pool_svs) <= _FLOOR_PROBE_FULL_FACETS_MAX_CANDIDATES
-        ):
-            shapes_found: list[ShapeDraft] = await asyncio.to_thread(
-                derive_shapes,
-                confirmed_svs=pool_svs,
-                graph=state.graph,
-                sv_scores=sv_scores_map,
-                sv_types=sv_types_map,
-                rival_svs=frozenset(c.dcid for c in pool if c.rival),
-                # Use recall's country snapshot. Place sets and Group members stay off the floor.
-                place_dcids=state.recall_only_place_dcids,
-                full_facets_max_candidates=_FLOOR_PROBE_FULL_FACETS_MAX_CANDIDATES,
-                deadline=state.deadline,
+    signature_refused = False
+    if state.pool == "ours":
+        if state.source_code is None and allows_un_system(state.scope):
+            state.un_leg = UnLeg(
+                task=asyncio.create_task(_un_shapes(state, rcl)),
+                ends=time.monotonic() + settings().un_first_pass_wait_s,
             )
-            shapes_found = [s for s in shapes_found if not _found_empty(state, s)]
-            state.shapes_found = shapes_found
-    except RoleSignatureError:
-        # No candidate group has a consistent entity-role signature.
-        state.timing["shape"] = now_ms() - t0
-        await _emit_step(
-            state.emit,
-            state.variable_index,
-            "shape",
-            ms=state.timing["shape"],
-        )
-        return state.no_data("role_signature_incompatible")
+        # Our resolve's hits under their own dcids, so the confirm cap counts a superseded
+        # hit as it did while its provenance was admitted; derivation reads each as its
+        # successor.
+        ours = rcl.candidates if rcl.hits is None else rcl.hits
+        try:
+            state.shapes_found = await _derive_pool(state, ours)
+        except RoleSignatureError:
+            state.shapes_found, signature_refused = [], True
+    shapes_found = state.shapes_found
 
     # No confirmed StatVar means there is no shape to bind.
     if not shapes_found:
@@ -433,6 +518,9 @@ async def _phase_derive_shapes(state: ResolveState) -> RegionResult | None:
             "shape",
             ms=state.timing["shape"],
         )
+        if signature_refused:
+            # No candidate group has a consistent entity-role signature.
+            return state.no_data("role_signature_incompatible")
         if state.source_code is not None:
             logger.info(
                 "source code %s: no shape derives from its StatVars %s",

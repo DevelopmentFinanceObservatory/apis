@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from dfo_platform import ProblemDetails
 from search.engine.extract import ExtractedDate
+from search.engine.frame import Frame
 from search.models import (
     Departure,
     PipelineStepName,
@@ -37,6 +38,7 @@ __all__ = [
     "Event",
     "EventSink",
     "FacetOptionsEvent",
+    "FrameEvent",
     "InterpretationEvent",
     "LateDepartures",
     "ObservationsEvent",
@@ -51,7 +53,10 @@ __all__ = [
 
 
 class InterpretationEvent(BaseModel):
-    """Extraction outcome; fires once, right after the extract step succeeds."""
+    """Extraction outcome; fires once, right after the extract step succeeds.
+
+    It carries the request's door-time reading. Each part's completed frame follows after
+    its recall (`FrameEvent`)."""
 
     model_config = ConfigDict(frozen=True)
     kind: Literal["interpretation"] = "interpretation"
@@ -63,16 +68,50 @@ class InterpretationEvent(BaseModel):
     )
 
 
-class ShapeEvent(BaseModel):
-    """Per-variable skeleton, fired after derive_shapes + the K-cap — before bind returns.
+class FrameEvent(BaseModel):
+    """One part's completed frame: the interpretation's second firing, per part.
 
-    Carries the top-ranked candidate shape as a best-effort projection: bind()'s LLM
-    call runs concurrently and may elect a different shape. The ``sentence`` event
-    carries the confirmed pick once bind returns.
+    Fires once per part on the raw_text and parsed doors, after recall and before the
+    part's `shape` event, once the recalled shapes' vocabularies have read its words. The
+    frame adds the post-recall fields to the door-time ones: the codes the words match in
+    each recalled vocabulary, the normalisation form, and what the frame could not settle.
+    Every field read from the question's words carries who stated it (`stated_by`). A part
+    that ends before its shapes are read (an unresolved entity, a source refusal, no shape
+    recalled) and a part answered from the response cache send none, and so does the
+    dataset_resubmit door, which sends no interpretation.
+    """
+
+    model_config = ConfigDict(frozen=True)
+    kind: Literal["frame"] = "frame"
+    variable_index: int = Field(
+        description="the index of the part this event describes in the final response's parts list"
+    )
+    frame: Frame = Field(description="the part's frame, door-time and post-recall fields")
+    denominators_on_offer: list[str] = Field(
+        description=(
+            "the distinct measurementDenominator dcids the part's eligible shapes carry, "
+            "sorted; empty when none divides"
+        )
+    )
+
+
+class ShapeEvent(BaseModel):
+    """Per-variable skeleton, fired after admissibility and the menu cap, while bind runs.
+
+    Carries the top admissible reading as a best-effort projection: the bind call runs
+    concurrently and may elect another reading, and the status rule may answer with
+    another. The ``sentence`` event carries the part's answer once its plan is minted.
     """
 
     model_config = ConfigDict(frozen=True)
     kind: Literal["shape"] = "shape"
+    provisional: Literal[True] = Field(
+        default=True,
+        description=(
+            "always true: the shape is the top admissible reading while bind runs, and the "
+            "part's sentence event names what it answers with"
+        ),
+    )
     variable_index: int = Field(
         description="the index of the part this event describes in the final response's parts list"
     )
@@ -99,29 +138,16 @@ class ShapeEvent(BaseModel):
 
 
 class SentenceEvent(BaseModel):
-    """Per-variable confirmed sentence.
+    """A part's sentence, sent once per part, just ahead of the `response` event of a
+    resolution that ran. A response served from the response cache goes out without one.
 
-    Fires in up to two phases carrying the SAME variable_index (see
-    region/sentence_events.py's module docstring for the full rationale): a FIRST
-    emission built at the bind stage of a measure-elected family -- its when/source
-    tokens are empty placeholders -- and, on every path whose RegionResult.status
-    ends up "definite", a SECOND emission once materialise assembles the final Spec,
-    superseding the first. The first emission goes out while materialise runs. Over a
-    graph that can declare a default facet, each resolve pass holds its emissions until
-    the part's answer stands (`region.pipeline._fill_gap`), so none reaches the stream
-    ahead of a declared-default refusal; a UN second pass always holds its own. Only the
-    standing pass's held emissions are sent.
-    spec_id names the Spec each emission describes and is not guaranteed to
-    match between the two: post-bind machinery that swaps in a different
-    sibling's Spec after the first event ships -- a zero-observation
-    re-election, or an also_plausible single-survivor collapse -- carries a
-    different spec_id on the second emission. An integrator keys its live
-    sentence off variable_index and overwrites on receipt, so neither the
-    second frame nor a changed spec_id needs special-casing. Only a genuine
-    "candidates" response (2+ surviving specs) skips the second emission --
-    there, each spec's final sentence ships inside the `response` event's own
-    CandidateSet.specs[*].resolved.rendered_sentence/sentence_plan instead
-    (no separate parallel sentence array).
+    It carries the sentence of the Spec the part answers with: the definite answer, the
+    first candidate of a candidates part, or the flagged match a refusal carries. It is
+    built from the response, so its `spec_id` equals the one the `response` event states for
+    the part, a Spec two parts share after the same-shape merge included. A part with none
+    of these (a refusal that flags nothing, an unsupported part) sends none. Each
+    candidate's own sentence ships inside the `response` event's
+    `CandidateSet.specs[*].resolved.rendered_sentence`/`sentence_plan`.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -466,6 +492,7 @@ class ErrorEvent(ProblemDetails):
 
 Event = Annotated[
     InterpretationEvent
+    | FrameEvent
     | ShapeEvent
     | SentenceEvent
     | StepEvent

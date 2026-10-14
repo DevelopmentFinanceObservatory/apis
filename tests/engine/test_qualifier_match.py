@@ -138,10 +138,13 @@ def test_bare_grants_alone_never_matches_a_finance_type():
         assert "crsTypeOfFinance" not in by_system, query
 
 
-def test_non_concessional_is_the_only_exact_unsupported_phrase_recognised():
-    assert match_unsupported_qualifier_phrases("non-concessional aid") == ("non-concessional",)
-    assert match_unsupported_qualifier_phrases("non-concessionality aid") == ()
-    assert match_unsupported_qualifier_phrases("non-concessional-like aid") == ()
+def test_a_no_vocabulary_term_matches_only_as_a_whole_word():
+    terms = frozenset({"non-concessional"})
+    assert match_unsupported_qualifier_phrases("non-concessional aid", terms=terms) == (
+        "non-concessional",
+    )
+    assert match_unsupported_qualifier_phrases("non-concessionality aid", terms=terms) == ()
+    assert match_unsupported_qualifier_phrases("non-concessional-like aid", terms=terms) == ()
 
 
 # ---------------------------------------------------------------------------

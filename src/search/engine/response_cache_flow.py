@@ -16,7 +16,11 @@ import search.engine.config as config  # module-attribute access for runtime-res
 from code_index.shared import get_index, get_measure_index
 from graph_generation import UNKNOWN_GENERATION, GenerationProvider
 from origin_catalogue import current_catalogue
-from search.engine.bind_repair import declared_default_slots_named, declared_default_words_named
+from search.engine.bind_repair import (
+    declared_default_slots_named,
+    declared_default_words_named,
+    stated_words_negated,
+)
 from search.engine.deadline import _await_bounded
 from search.engine.envelope import now_ms
 from search.engine.extract import ExtractedDate, ExtractedEntity
@@ -46,6 +50,7 @@ from search.engine.response_cache_keys import (
 from search.engine.response_cache_memo import PartMemo
 from search.engine.role_text import DoorRole, contradicts
 from search.engine.unit.conversion_catalogue import current_conversion_catalogue
+from search.engine.written_phrase import written_phrase
 from search.models import (
     Operation,
     ParsedInput,
@@ -86,6 +91,8 @@ class Layer2Signals:
     unsupported_qualifier_phrases: tuple[str, ...]
     declared_default_trigger_words: tuple[dict[str, str], ...]
     declared_default_slots_named: tuple[str, ...]
+    written_variable_phrases: tuple[str | None, ...]
+    query_text_negated_stated_words: tuple[str, ...]
 
 
 def _role_contradiction(name: str, role: DoorRole, *, query: str) -> dict[str, object]:
@@ -104,10 +111,13 @@ def compute_layer2_signals(
     query: str,
     entity_roles: Mapping[str, Sequence[DoorRole]],
     query_text: str | None,
+    variables: Sequence[str] = (),
 ) -> Layer2Signals:
     """`query` supplies every leg's raw role signal; `entity_roles` lists its
     door-provided occurrences in mention order. `query_text` is set only for a
-    single-variable request, matching the pipeline's own raw-text readers.
+    single-variable request, matching the pipeline's own raw-text readers. Each of
+    `variables` gives the stretch of `query_text` that writes it (`written_phrase`), which
+    the named-member binding reads.
     """
     role_contradictions = tuple(
         _role_contradiction(name, role, query=query)
@@ -124,6 +134,8 @@ def compute_layer2_signals(
             unsupported_qualifier_phrases=(),
             declared_default_trigger_words=(),
             declared_default_slots_named=(),
+            written_variable_phrases=(),
+            query_text_negated_stated_words=(),
         )
     index = get_index()
     measure_index = get_measure_index()
@@ -136,12 +148,23 @@ def compute_layer2_signals(
         query_text_qualifier_ties=tuple(asdict(tie) for tie in ties),
         query_text_qualifier_readings=tuple(asdict(reading) for reading in readings),
         query_text_qualifier_occurrences=qualifier_occurrences(query_text, index, measure_index),
-        unsupported_qualifier_phrases=match_unsupported_qualifier_phrases(query_text),
+        unsupported_qualifier_phrases=match_unsupported_qualifier_phrases(
+            query_text,
+            terms=frozenset(
+                term
+                for declaration in index.declarations.values()
+                for term in declaration.no_vocabulary_terms
+            ),
+        ),
         declared_default_trigger_words=tuple(
             {"code_system": code_system, "word": word}
             for code_system, word in declared_default_words_named(query_text, index=index)
         ),
         declared_default_slots_named=declared_default_slots_named(query_text, index=index),
+        written_variable_phrases=tuple(
+            written_phrase(variable, query_text) for variable in variables
+        ),
+        query_text_negated_stated_words=stated_words_negated(query_text, index=index),
     )
 
 
@@ -334,7 +357,7 @@ class CacheScope:
             return None
         assert self._scope is not None
         signals = compute_layer2_signals(
-            query=query, entity_roles=entity_roles, query_text=query_text
+            query=query, entity_roles=entity_roles, query_text=query_text, variables=variables
         )
         key = layer2_key(
             variables=variables,
@@ -353,6 +376,8 @@ class CacheScope:
             unsupported_qualifier_phrases=signals.unsupported_qualifier_phrases,
             declared_default_trigger_words=signals.declared_default_trigger_words,
             declared_default_slots_named=signals.declared_default_slots_named,
+            written_variable_phrases=signals.written_variable_phrases,
+            query_text_negated_stated_words=signals.query_text_negated_stated_words,
             scope=self._scope,
             separate=separate,
         )

@@ -58,6 +58,9 @@ class PlaceSet:
     # the code index declares it (`CodeIndex.totals_by_group`). `None` for a set no total
     # holds. A flow role can bind it in place of the members (`place_roles.set_choices`).
     total: str | None = None
+    # A group's id in the membership registry (`entity_resolution.Group.dcid`), such as
+    # `groups/OECD.DAC.Region.Asia`. `None` for a place and a region.
+    group_id: str | None = None
 
     @property
     def expands(self) -> bool:

@@ -15,7 +15,9 @@ wire and outside the content-version preimage, and `stored_series_conversions` r
 definition also stores whether the mint's default place scope was plural
 (`ManifestFacts.default_scope_plural`), which decides the stored version's preview mode. Definition
 records include a canonical frame artifact that the response omits. Snapshot manifests list all
-servable renderings.
+servable renderings. A version's `coverage` also sets its frame's one year beside the years
+around it, counted from the coverage index its run elected over (`year_coverage`) and stored
+with the version.
 
 Each serve call reads the name, url, licence, source, Data Commons and documentation of every
 dispatched provenance ref once (`materialise.provenance_doc.read_source_citations`), and every
@@ -40,15 +42,17 @@ import logging
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, date, datetime
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from dfo_frame_grammar import FRAME_GRAMMAR_VERSION
+from dfo_frame_grammar.rolling import ANCHOR_SHARE
 
 from code_index.query import CodeIndex
 from dataset_store.snapshot import FrameLineage, ManifestFacts, StoredVersion
+from datasets_api.admission import bound_roles
 from datasets_api.capabilities import build_capabilities
 from datasets_api.config import DatasetsBuildSettings
-from datasets_api.description_record import mint_steps
+from datasets_api.description_record import mint_steps, minted_flow_family
 from datasets_api.manifest_models import (
     ArtifactEntryModel,
     ChangeModel,
@@ -61,14 +65,17 @@ from datasets_api.manifest_models import (
     CoverageModel,
     DefinitionModel,
     DiagnosticModel,
+    DimensionNoun,
     Manifest,
     OutputOptionsModel,
     ReleaseModel,
     TransformationStepModel,
     WarningModel,
+    YearCoverage,
 )
 from datasets_api.origin import catalogue_build_id, stale_warnings
 from datasets_api.output_options import derive_output_options
+from datasets_api.party_totals import TRACE_KEY
 from datasets_api.timings import phase
 from datasets_api.versions import (
     NULL_VERSION_RECORD_WRITER,
@@ -81,10 +88,11 @@ from datasets_api.versions import (
 from datasets_api.warnings import DATASETS_WARNING_CATALOGUE
 from dc_graph import GraphReadError
 from description.citation import citation_line, figures_processed
-from materialise import MaterialisationResult
+from dfo_platform.roles import FlowFamily, axis_for_role, role_wording
+from materialise import MaterialisationRequest, MaterialisationResult
 from materialise.bundle import BUNDLE_CODE_CATALOGUE
 from materialise.cadence import cadence_label
-from materialise.formats import Frame
+from materialise.generation import bare_stat_var_ref
 from materialise.graph import GraphReader
 from materialise.profile import OutputProfile
 from materialise.provenance_doc import (
@@ -102,8 +110,12 @@ from materialise.series_conversion import (
 )
 from materialise.window import Coverage
 from origin_catalogue import current_catalogue
-from series_coverage.index import CoverageIndex
+from series_coverage.coverage_types import YearCount
+from series_coverage.index import CoverageIndex, Role
 from spec_registry.reader import StoredDefinition
+
+if TYPE_CHECKING:
+    from datasets_api.render import DerivedVersion
 
 logger = logging.getLogger(__name__)
 
@@ -165,16 +177,166 @@ def _stale_diagnostics() -> tuple[DiagnosticModel, ...]:
     )
 
 
-def coverage_model(coverage: Coverage) -> CoverageModel:
-    """Converts materialisation coverage to the wire model."""
+def coverage_model(coverage: Coverage, *, family: FlowFamily | None) -> CoverageModel:
+    """Converts materialisation coverage to the wire model. A dimension on a flow axis is
+    named by the wording of `family` (`role_wording`), the generic one for `None`."""
+    wording = role_wording(family)
+
+    def _noun(label: str) -> DimensionNoun | None:
+        axis = axis_for_role(label)
+        if axis is None:
+            return None
+        noun = wording.noun(axis)
+        return DimensionNoun(singular=noun.singular, plural=noun.plural)
+
     return CoverageModel(
         rows=coverage.rows,
         dimensions=[
-            CoverageDimension(label=cast(str, dim["label"]), count=cast(int, dim["count"]))
+            CoverageDimension(
+                label=cast(str, dim["label"]),
+                count=cast(int, dim["count"]),
+                noun=_noun(cast(str, dim["label"])),
+            )
             for dim in coverage.dimensions
         ],
         window=coverage.window,
     )
+
+
+# The calendar years `coverage.fullest_year` is the fullest of, the frame's newest included.
+_FULLEST_YEAR_SPAN = 10
+
+
+def year_coverage(
+    result: MaterialisationResult,
+    *,
+    requests: Sequence[MaterialisationRequest],
+    index: CoverageIndex | None,
+) -> dict[str, object]:
+    """The `recent_years`, `elected_year` and `fullest_year` of the `coverage` of the frame
+    `result` holds, as `index`, the one its run elected over, counts them over the series
+    `requests` read. They are the members that set the frame's one year beside the years
+    around it, counted once at the mint and stored with the version. Empty when they are
+    not stated.
+
+    They are stated for a frame of one year whose requests ask for `latest` or for one
+    named year, and whose StatVars the index holds under one pair of role names. The counts
+    cover the series each request's run read (`MaterialisationResult.read_series`): those of
+    its StatVar's selected facets, less the entities a conversion omitted.
+
+    Under `latest` each StatVar must have served the year it elected
+    (`MaterialisationResult.latest_years`), since the index's counts otherwise describe
+    other rows than the frame's. A named year states the members a `latest` frame of the
+    requests would: the StatVars must elect one year between them over the series read
+    (`CoverageIndex.elected_years`), at or before the named year, which the index's build
+    year must not precede. An earlier named year states nothing, and neither does a StatVar
+    the index elects no year for, as one of a facet finer than a year.
+
+    `recent_years` is `CoverageIndex.headline`'s three calendar years, newest first, up to
+    the index's build year, and `elected_year` the newest year a request's StatVar elected.
+    `fullest_year` counts the year holding the most series of the ten ending at the newest
+    of `recent_years`, the newest of them on a tie, and is `None` unless that year is
+    earlier than the three and the frame's year holds under `ANCHOR_SHARE` of it. When one
+    of the three is the fullest, `elected_year` already names a year holding at least that
+    share.
+
+    Each `role_counts` is keyed by the role's graph name, the `label` of the role's entry in
+    `coverage.dimensions`.
+    """
+    window = result.coverage.window or {}
+    year = window.get("start_year")
+    asked = requests[0].window
+    latest = asked.kind == "latest"
+    named = asked.kind == "range" and asked.start_year == asked.end_year and not asked.end_unstated
+    if (
+        index is None
+        or not isinstance(year, int)
+        or window.get("end_year") != year
+        or not (latest or named)
+    ):
+        return {}
+    variables = [bare_stat_var_ref(request.stat_var) for request in requests]
+    names = index.role_names.get(variables[0])
+    bound = bound_roles(requests[0], index=index)
+    read = result.read_series
+    if names is None or any(
+        index.role_names.get(variable) != names
+        or set(names.declared) != set(request.declared_roles)
+        or bound_roles(request, index=index) != bound
+        or request.stat_var not in read
+        for variable, request in zip(variables, requests, strict=True)
+    ):
+        return {}
+    labels: dict[Role, str | None] = {"donor": names.donor, "recipient": names.recipient}
+    coverage_role = {label: role for role, label in labels.items()}
+    served = [
+        (variable, facet_id, None, None)
+        for variable, request in zip(variables, requests, strict=True)
+        for facet_id in read[request.stat_var].facet_ids
+    ]
+    excluded = [
+        (variable, coverage_role[role], entity)
+        for variable, request in zip(variables, requests, strict=True)
+        for role, entity in read[request.stat_var].omitted
+        if role in coverage_role
+    ]
+    elected: dict[str, int] = {}
+    if latest:
+        for variable, request in zip(variables, requests, strict=True):
+            recorded = result.latest_years.get(request.stat_var)
+            if recorded is None or recorded.elected is None or recorded.served != recorded.elected:
+                return {}
+            elected[variable] = recorded.elected
+    else:
+        elected = index.elected_years(
+            variables=variables, bound=bound, served=served, excluded=excluded
+        )
+        if (
+            any(variable not in elected for variable in variables)
+            or len(set(elected.values())) > 1
+            or year < elected[variables[0]]
+            or (index.build_year is not None and year > index.build_year)
+        ):
+            return {}
+    counted = functools.partial(
+        index.headline, variables=variables, bound=bound, served=served, excluded=excluded
+    )
+    headline = counted(elected=elected)
+    recent = headline.recent_years if headline is not None else ()
+    held = next((entry for entry in recent if entry.year == year), None)
+    if held is None:
+        return {}
+
+    def _entry(count: YearCount) -> YearCoverage:
+        return YearCoverage(
+            year=count.year,
+            series=count.series,
+            role_counts={
+                label: count.role_counts[role]
+                for role, label in labels.items()
+                if label is not None and role in count.role_counts
+            },
+        )
+
+    fullest: YearCount | None = None
+    newest = recent[0].year
+    holding = index.series_by_year(
+        variables=variables,
+        bound=bound,
+        served=served,
+        excluded=excluded,
+        first_year=newest - _FULLEST_YEAR_SPAN + 1,
+        last_year=newest,
+    )
+    fullest_year = max(holding, key=lambda year: (holding[year], year))
+    if fullest_year < recent[-1].year and held.series < ANCHOR_SHARE * holding[fullest_year]:
+        at_fullest = counted(first_year=fullest_year, last_year=fullest_year)
+        fullest = at_fullest.recent_years[0] if at_fullest is not None else None
+    return {
+        "recent_years": [_entry(count) for count in recent],
+        "elected_year": max(elected.values()),
+        "fullest_year": _entry(fullest) if fullest is not None else None,
+    }
 
 
 def cited_documentation(doc: ProvenanceDoc) -> CitedDocumentation:
@@ -430,8 +592,12 @@ def assemble_manifest(
     settings: DatasetsBuildSettings,
     extra_warnings: Sequence[WarningModel] = (),
     coverage_stamp: str | None = None,
+    year_coverage: Mapping[str, object] | None = None,
 ) -> Manifest:
     """Builds a definition manifest. `definition_version_record` encodes it for storage.
+
+    `year_coverage` holds the year members of its `coverage` (`year_coverage`), counted by
+    the caller that ran the materialisation; `None` states none.
 
     Uses the caller's `CodeIndex` for rendering and the trace stamp. `coverage_stamp` is
     admission-time lineage, excluded from `content_version`. `None` leaves it unset.
@@ -474,7 +640,10 @@ def assemble_manifest(
         definition=definition,
         content_version=materialisation.content_version,
         prepared_at=prepared_at,
-        coverage=coverage_model(materialisation.coverage),
+        coverage=coverage_model(
+            materialisation.coverage,
+            family=minted_flow_family(stored.identity, trace, code_index=code_index),
+        ).model_copy(update=dict(year_coverage or {})),
         citation=citation,
         trace=trace,
         warnings=warnings,
@@ -729,26 +898,47 @@ def definition_version_record(
 def collapsed_head_manifest(
     *,
     manifest: Manifest,
-    collapse_frame: Frame,
+    derived: DerivedVersion,
     artifact: ArtifactEntryModel,
     statistics_artifact: ArtifactEntryModel,
     series_count: int,
-    content_version: str,
     output_options: OutputOptionsModel,
     extra_warnings: Sequence[WarningModel] = (),
 ) -> Manifest:
-    """Patches a raw head manifest for a collapsed identity without a fresh materialisation.
+    """Patches a raw head manifest for a derived identity (`render.DerivedVersion`) without a
+    fresh materialisation.
 
-    Updates content version, row count, series count, artifacts, output options, and warnings,
-    and rewrites the citation line for the collapse's sum (`collapsed_citation`). The cited
-    sources, trace, definition and `prepared_at` remain unchanged because collapse preserves
-    provenance and scope and renders from the raw version's record.
+    Updates content version, row count and the dimension counts the derived frame counts anew,
+    series count, artifacts, output options, and warnings. A party-totals cut adds the totals it
+    left out to the trace (`party_totals.TRACE_KEY`), and a collapse rewrites the citation line
+    for its sum (`collapsed_citation`). The cited sources, the rest of the trace, definition and
+    `prepared_at` remain unchanged because a derived version preserves provenance and scope and
+    renders from the raw version's record.
     """
+    coverage = manifest.coverage.model_copy(
+        update={
+            "rows": derived.rows,
+            "dimensions": [
+                dimension.model_copy(
+                    update={"count": derived.distinct.get(dimension.label, dimension.count)}
+                )
+                for dimension in manifest.coverage.dimensions
+            ],
+        }
+    )
+    trace = (
+        {**manifest.trace, TRACE_KEY: list(derived.party_totals_left_out)}
+        if derived.party_totals_left_out
+        else manifest.trace
+    )
     return manifest.model_copy(
         update={
-            "content_version": content_version,
-            "citation": collapsed_citation(manifest.citation, base=manifest),
-            "coverage": manifest.coverage.model_copy(update={"rows": len(collapse_frame.rows)}),
+            "content_version": derived.content_version,
+            "citation": collapsed_citation(manifest.citation, base=manifest)
+            if derived.summed
+            else manifest.citation,
+            "coverage": coverage,
+            "trace": trace,
             "series_count": series_count,
             "warnings": list(manifest.warnings) + list(extra_warnings),
             "artifacts": [artifact, statistics_artifact],

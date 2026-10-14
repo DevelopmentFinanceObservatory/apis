@@ -11,8 +11,10 @@ Routes:
 - `GET /api/datasets/{spec_id}/versions` lists a `spec_` dataset's stored versions, newest
   first. A dataset with no stored version, registered or not, answers an empty list. Each
   version states its `rendering`: `plain` for a raw version, `groupby` with the `groupby` a
-  collapse was summed by, and `not_recorded` for a collapse with no linked file recording one.
-  The groupby is read as the frame refresh reads it (`datasets_api.recorded_rendering`).
+  collapse was summed by, `without_party_totals` for a party-totals cut that sums nothing, and
+  `not_recorded` for a derived version with no linked file recording its options. A version
+  whose frame leaves party totals out says so in `without_party_totals`. The options are read
+  as the frame refresh reads them (`datasets_api.recorded_rendering`).
 
 Every route requires the `publish` grant (`datasets_api.principals`), checked before FastAPI
 validates the path or reads a body, so a caller lacking it gets `publish_not_permitted` (403)
@@ -38,7 +40,14 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Path
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, field_serializer
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    field_serializer,
+    model_serializer,
+)
 
 from datasets_api.backpressure import Backpressure
 from datasets_api.config import DatasetsBuildSettings
@@ -54,7 +63,7 @@ from datasets_api.recipe_store import (
     RecipeStore,
     ReplayKeyHeld,
 )
-from datasets_api.recorded_rendering import recorded_groupby
+from datasets_api.recorded_rendering import recorded_minting
 from datasets_api.timings import door_call, run_with_timings
 from datasets_api.versions import ListedVersion, VersionLister
 from dfo_platform import ProblemSpec
@@ -121,14 +130,17 @@ class DatasetVersion(BaseModel):
     content_version: str
     base_content_version: str | None = Field(
         description=(
-            "the raw version a full groupby collapse was rendered from; null on every other version"
+            "the raw version a derived version (a full groupby collapse, a party-totals cut, "
+            "or both) was rendered from; null on every other version"
         )
     )
-    rendering: Literal["plain", "groupby", "not_recorded"] = Field(
+    rendering: Literal["plain", "groupby", "without_party_totals", "not_recorded"] = Field(
         description=(
-            "plain: a raw version, which is also what a groupby sum that left the frame "
-            "unchanged is stored under. groupby: a collapse, summed by `groupby`. "
-            "not_recorded: a collapse with no linked file recording its groupby"
+            "plain: a raw version, which is also what a groupby sum or a party-totals cut "
+            "that left the frame unchanged is stored under. groupby: a collapse, summed by "
+            "`groupby`, of the frame or of its party-totals cut when `without_party_totals` "
+            "is true. without_party_totals: the frame without its party totals, unsummed. "
+            "not_recorded: a derived version with no linked file recording its options"
         )
     )
     groupby: GroupbyOptions | None = Field(
@@ -137,6 +149,22 @@ class DatasetVersion(BaseModel):
             "unless `rendering` is groupby"
         )
     )
+    without_party_totals: bool = Field(
+        default=False,
+        description=(
+            "true when the derived version's frame leaves out the group totals of its open "
+            "party roles, as its file's rendering records it; absent when false"
+        ),
+    )
+
+    @model_serializer(mode="wrap")
+    def _without_party_totals_when_true(self, handler: SerializerFunctionWrapHandler):
+        """Leave a false `without_party_totals` out, so a version that keeps its party totals
+        lists without the field."""
+        dumped = handler(self)
+        if not self.without_party_totals:
+            dumped.pop("without_party_totals", None)
+        return dumped
 
     @field_serializer("groupby")
     def _groupby_as_recorded(self, groupby: GroupbyOptions | None):
@@ -177,18 +205,21 @@ def _list_versions(*, spec_id: str, version_lister: VersionLister) -> DatasetVer
 
 
 def _dataset_version(version: ListedVersion) -> DatasetVersion:
-    groupby = (
-        recorded_groupby(version.renderings) if version.base_content_version is not None else None
+    minting = (
+        recorded_minting(version.renderings) if version.base_content_version is not None else None
     )
     if version.base_content_version is None:
         rendering = "plain"
+    elif minting is None:
+        rendering = "not_recorded"
     else:
-        rendering = "groupby" if groupby is not None else "not_recorded"
+        rendering = "groupby" if minting.groupby is not None else "without_party_totals"
     return DatasetVersion(
         content_version=version.content_version,
         base_content_version=version.base_content_version,
         rendering=rendering,
-        groupby=groupby,
+        groupby=minting.groupby if minting is not None else None,
+        without_party_totals=minting is not None and minting.without_party_totals,
     )
 
 

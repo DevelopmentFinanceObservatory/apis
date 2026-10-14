@@ -41,6 +41,7 @@ from dfo_platform.codes import (
     CodeRegistryEntry,
     merge_catalogues,
 )
+from dfo_platform.compression import BufferedGzipMiddleware
 from dfo_platform.config import executor_max_workers as _default_executor_max_workers
 from dfo_platform.executor import SaturationTrackingExecutor, current_thread_is_owned_by
 from dfo_platform.problem import (
@@ -996,6 +997,12 @@ def create_app(
     # Put trace IDs outside CORS so preflight responses are stamped. The image's
     # build commit is fixed, so resolve it once for the app's lifetime.
     _install_trace_id_outermost_middleware_stack(app, commit=build_commit())
+
+    # Add gzip first so it sits innermost, wrapping only the router and its exception
+    # handlers. The admission and trace-ID layers re-emit every response as a stream and
+    # gzip leaves streams unencoded, so gzip has to see responses before they do. CORS
+    # and the trace-ID layer then stamp their headers on the encoded response.
+    app.add_middleware(BufferedGzipMiddleware)
 
     # Cloud Run is the sole ingress and terminates TLS, so its
     # X-Forwarded-Proto is trusted. The leftmost X-Forwarded-For entry is

@@ -14,7 +14,14 @@ from entity_resolution import acquire_shared, release_shared
 from entity_resolution import resolver as entity_resolver
 from entity_resolution.membership import NotRecorded
 from search.engine.extract import ExtractedEntity, ExtractedOperation
-from search.models import EntityGroup, Operation, ParsedEntity, ParsedPart, ResolveResponse
+from search.models import (
+    EntityGroup,
+    Operation,
+    ParsedEntity,
+    ParsedPart,
+    Resolution,
+    ResolveResponse,
+)
 from tests.engine import _place_set_world as world
 from tests.engine._place_set_world import (
     AFRICA,
@@ -151,9 +158,13 @@ def test_raw_text_that_asks_for_africas_members_binds_them(doors: Doors) -> None
     of Africa fold to one reading, and the one that asks for the members decides it, under
     the same spelling or another."""
     query = "how much do African countries spend on their own health care?"
-    as_members = ExtractedEntity(text="Africa", span="African", members=True)
+    as_members = ExtractedEntity(
+        text="Africa", span="African", members=True, member_span="countries"
+    )
     as_one_place = ExtractedEntity(text="Africa", span="African")
-    respelled = ExtractedEntity(text="africa", span="African", members=True)
+    respelled = ExtractedEntity(
+        text="africa", span="African", members=True, member_span="countries"
+    )
 
     asked = doors.raw_text(query, WHO, as_members)
     spec = the_spec(asked)
@@ -220,17 +231,24 @@ def test_africa_and_kenya_are_read_as_the_node_and_the_country(doors: Doors) -> 
     check_first_answer(doors, WHO, spec)
 
 
-def test_a_rank_over_recipients_cannot_place_africa_named_with_no_direction(
+def test_a_rank_over_recipients_offers_both_readings_of_africa_named_with_no_direction(
     doors: Doors,
 ) -> None:
     """The series requires a provider and a recipient. Africa named with no direction
-    beside a rank over the recipients can scope the ranked recipients or name the
-    providers, so the answer is `no_data` with `role_not_resolved`."""
+    beside a rank over the recipients can name the providers or scope the ranked recipients,
+    and both hold data, so the answer offers both, the second as a `direction` candidate:
+    a client asks which direction was meant."""
     most = Operation(verb="rank", phrase="received the most", over="destination")
 
     response = doors.first_answer(AID, "Africa", operations=[most])
 
-    assert no_data_reason(response) == "role_not_resolved"
+    assert isinstance(response, Resolution)
+    (part,) = response.parts
+    assert part.status == "candidates"
+    assert [
+        (spec.resolved.basis, sorted(spec.definition.identity.entities))
+        for spec in part.candidates.specs
+    ] == [(None, ["origin"]), ("direction", ["destination"])]
 
 
 def test_a_rank_over_recipients_binds_the_members_of_africa_named_as_the_recipient(

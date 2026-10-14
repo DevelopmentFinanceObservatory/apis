@@ -377,14 +377,16 @@ def test_scope_narrows_to_admitted_entities_when_unit_is_bound():
 
 _SV_A = "TEST/ResolvedScope_Population"
 _SV_B = "TEST/ResolvedScope_Household"
+# The household reading's label holds every word of the population's, so the query picks
+# neither and the nomination is a rival (status rule 2(b)).
 _CANDIDATES_NODES: dict = {
     **_NODES,
     _SV_B: {
-        "label": "Test Household",
+        "label": "Test Household Population",
         "type": "StatisticalVariable",
         "arcs": {
             "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
-            "name": {"nodes": [{"value": "Test Household"}]},
+            "name": {"nodes": [{"value": "Test Household Population"}]},
             "populationType": {"nodes": [{"dcid": "Household"}]},
             "measuredProperty": {"nodes": [{"dcid": "count"}]},
             "statType": {"nodes": [{"dcid": "measuredValue"}]},

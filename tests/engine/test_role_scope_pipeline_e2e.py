@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 
 import pytest
 
 from materialise.roles import axis_for_role
-from search.engine.bind import _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.clients.graph import Facet
 from search.engine.concurrency import scoped_concurrency
 from search.engine.extract import DateRequest
@@ -894,9 +895,10 @@ def _served_points(spec) -> list[tuple[str, list[str]]]:
 
 
 def test_bulk_latest_request_serves_only_the_facets_latest_year(monkeypatch, search_settings):
-    """Above the pair cap the preview reads the elected facet with SDMX `LATEST` and serves
-    its latest year only, the headline's year: Norway's 2021 point, not Kenya's 2020 one.
-    Coverage and the `when` slot name that one year."""
+    """Above the pair cap the preview reads the latest point of the elected facet's pairs
+    in the year the variable elects, in one read, and serves that year only. That is the
+    headline's year, Norway's 2021, and Kenya's 2020 point is left out. Coverage and the
+    `when` slot name that one year."""
     search_settings(obs_preview_max_pairs=1)
     sdmx = FakeSdmxClient(observations=_KENYA_2020_NORWAY_2021, availability={})
 
@@ -917,8 +919,9 @@ def test_latest_request_reads_the_recorded_facets_year_past_a_projection_facet(
 ):
     """Recorded `f-rec` runs 2010-2024 and the `Estimated` projection `f-est` runs 2025-2032,
     both at Kenya and Norway. Equal pair counts leave the observation count to elect `f-rec`,
-    so the preview reads `f-rec` with `LATEST` and serves each pair's 2024 point, and
-    coverage, the `when` slot and the headline name 2024, never the projection's 2032."""
+    so the preview reads `f-rec` alone, whose pairs end in 2024, the year they elect, and
+    serves each pair's 2024 point, and coverage, the `when` slot and the headline name
+    2024, the last recorded year."""
     search_settings(obs_preview_max_pairs=1)
     recorded = list(range(2010, 2025))
     projected = list(range(2025, 2033))
@@ -1053,6 +1056,48 @@ def test_empty_discovery_reports_no_observations_naming_the_recipient_axis():
     assert result.status == "no_data", result
     assert result.no_data_reason == "no_observations"
     assert result.no_data_role_axis == "destination"
+
+
+class _StrayBindLLM:
+    """Elects shape index 0 and drafts `gender` Female, a property the shape has no slot
+    for."""
+
+    async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
+        assert schema.__name__ == "_UniversalBindOutput"
+        stray = SlotBindingDraft(
+            axis="how", property_dcid="gender", kind="value", value_dcids=["Female"]
+        )
+        return _UniversalBindOutput(chosen_shape_index=0, bindings=[stray]), None
+
+
+def test_empty_discovery_with_a_stray_value_refuses_naming_it(monkeypatch):
+    """Discovery finds no recipient with data, which refuses `no_observations` before any
+    answer is judged. The bind drafted Female on a slot the elected shape lacks, which the
+    elected answer leaves unmet, and `qualifier_not_bound` ranks first, so the part refuses
+    naming it (`phase_shared.settle_unjudged_refusal`), with the elected answer as its
+    flagged match, whose trace records the term, and keeps the recipient axis discovery
+    left open. Nothing departs."""
+    monkeypatch.setattr(sys.modules[__name__], "_FixedBindLLM", _StrayBindLLM)
+
+    result = _run(
+        entities=[],
+        sv_dcid=_SV_DCID,
+        sv_arcs=_declaring_arcs(observation_properties=["creditor", "debtor"]),
+        resolve={},
+        sv_score=0.9,
+        role_query="aid disbursed",
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+    )
+
+    assert (result.status, result.no_data_reason) == ("no_data", "qualifier_not_bound")
+    assert [q.text for q in result.unbound_qualifiers] == ["Female"]
+    (flagged,) = result.flagged_match or ()
+    assert [m.ref.ref for m in flagged.resolved.members] == [_SV_DCID]
+    assert list(flagged.resolved.trace.query_qualifiers) == list(result.unbound_qualifiers)
+    assert result.no_data_role_axis == "destination"
+    assert result.departure_facts == {}
 
 
 # ---------------------------------------------------------------------------

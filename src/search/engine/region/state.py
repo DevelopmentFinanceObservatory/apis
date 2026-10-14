@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from concurrent.futures import Future
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal, cast
@@ -21,6 +22,7 @@ from materialise import GraphReader
 from materialise.facets import FacetSelection
 from materialise.place_scope import DefaultPresence
 from materialise.rate_tables import RateTableCache
+from origin_catalogue import UnUnserved
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
@@ -34,7 +36,9 @@ from search.engine.departures import (
 from search.engine.errors import GraphInfraError
 from search.engine.events import EventSink
 from search.engine.extract import DateRequest
-from search.engine.interpret import Recall
+from search.engine.frame import Frame, door_frame
+from search.engine.interpret import PinnedResolved, Recall
+from search.engine.interpretation import Interpretation, InterpretationSet
 from search.engine.place import read_default_presence
 from search.engine.qualifier_match import (
     CodedQualifier,
@@ -71,6 +75,7 @@ from search.engine.region.result import (
     RoleNotAdmittedEntity,
     source_code_refusal_result,
 )
+from search.engine.region.status_rule import CLOSED_AXES, OpenAxes, StatusPlan
 from search.engine.retrieval.bound_values import (
     MeasurePartition,
     RoleClassWalks,
@@ -97,16 +102,18 @@ from search.engine.retrieval.retrieve import (
 from search.engine.retrieval.role_resolve import role_members_served
 from search.engine.retrieval.standard import default_scope_members
 from search.engine.role_text import DoorRole
-from search.engine.shape import ShapeDraft, is_role_bearing, role_names_by_axis
+from search.engine.shape import Pool, ShapeDraft, is_role_bearing, role_names_by_axis
 from search.engine.source_code import SeriesCodeMembers, not_held
 from search.engine.source_scope import SourceScope
 from search.engine.unit.bind import BoundUnitRequest, RequestBasis
 from search.heading.departure_fact import DepartureFact
 from search.models import (
     BaseIdentity,
+    CandidateBasis,
     Coverage,
     Entity,
     EntityRoleKey,
+    EntryPath,
     FacetBasis,
     GraphRef,
     Headline,
@@ -114,6 +121,7 @@ from search.models import (
     NearestRealSpec,
     NoDataDenominator,
     NoDataGate,
+    NoDataReason,
     Operation,
     ProvenanceRef,
     ResolvedFacet,
@@ -145,7 +153,7 @@ if TYPE_CHECKING:
     # `requirements` imports this module.
     from search.engine.region.requirements import Judgement
 
-__all__ = ["EngineOptions", "ResolveState", "raised_facts"]
+__all__ = ["EngineOptions", "ResolveState", "UnLeg", "raised_facts"]
 
 
 # A served measure partition and its sibling partitions (`bound_values.observed_measure_family`).
@@ -431,9 +439,13 @@ class ValueRule:
 
 # Where a requirement was recorded: a model tie the bindings leave unresolved ("tie"), the
 # elected reading's own measure phrases, coverage words and query records ("bind"), a run
-# naming a value by its graph label ("value"), a request-named value unbinding drops
-# ("unbinding"), or a value a resubmit posts and cannot apply ("posted").
-type RequirementOrigin = Literal["tie", "bind", "value", "unbinding", "posted"]
+# naming a value by its graph label ("value"), a value the bind drafted on a slot the
+# elected reading lacks ("stray"), each value of such a set of two or more ("set_value"), a
+# request-named value unbinding drops ("unbinding"), or a value a resubmit posts and cannot
+# apply ("posted").
+type RequirementOrigin = Literal[
+    "tie", "bind", "value", "stray", "set_value", "unbinding", "posted"
+]
 
 # How an answer is judged on a requirement: by its codes (`CodeRule`), by the values its
 # words name (`ValueRule`), as unmet on every answer ("unbound", a query record of the
@@ -560,6 +572,41 @@ def merge_lists[T](lists: Iterable[Iterable[T]]) -> tuple[T, ...]:
     return tuple(merged)
 
 
+@dataclass(frozen=True, slots=True)
+class UnPool:
+    """What the UN leg gives (`phase_intake._un_shapes`): the UN pool's shapes, why the part
+    has none to fill a gap with (`None` when it need not), and what the leg's own reads could
+    not serve, the UN places they named that the UN front door refuses and their failed UN
+    reads (`unserved`), and the reads they swallowed (`lost`). Those reads describe the UN
+    pool alone, so they join the part's records only when the UN pass runs
+    (`pipeline._fill_gap`)."""
+
+    shapes: list[ShapeDraft]
+    missed: str | None = None
+    unserved: UnUnserved = field(default_factory=UnUnserved)
+    lost: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class UnLeg:
+    """The UN System Data Commons' resolve and the derivation of its shapes, running as one
+    task beside our pass (`phase_intake._un_shapes`), and the monotonic time the wait for
+    it ends: `SEARCH_UN_FIRST_PASS_WAIT_S` past the start of our derivation."""
+
+    task: asyncio.Task[UnPool]
+    ends: float
+
+
+@dataclass(frozen=True, slots=True)
+class SlotDefaultDisclosure:
+    """What one declared default that fired states (`phase_election._repair_bindings`): its
+    `slot_defaulted` warnings, and the normalised dropped phrases it answers, whose
+    entry-level warning those replace."""
+
+    warnings: tuple[Warning, ...] = ()
+    phrases: frozenset[str] = frozenset()
+
+
 @dataclass(slots=True, kw_only=True)
 class ResolveState:
     """Per-variable state for the stages extracted out of resolve_variable.
@@ -607,6 +654,9 @@ class ResolveState:
     sdmx: EngineSdmxClient
     deadline: float | None
     pre_resolved: dict[str, Resolution] | None
+    # The query words naming an entity, which recall resolves it through
+    # (`surface_resolution.resolve_names`). The raw-text door alone supplies them.
+    entity_surfaces: dict[str, str] = field(default_factory=dict)
     variable_index: int
     emit: EventSink | None
     include_option_coverage: bool
@@ -628,13 +678,18 @@ class ResolveState:
     # One request snapshot shared by materialisation, unit selection, and observations.
     # Required so consumers cannot take inconsistent coverage-service reads.
     coverage: CoverageSnapshot
-    # The recall pool shapes derive from: our candidates, or the UN System Data Commons'
-    # on the gap-fill pass that runs when ours end no_data (`region.pipeline`).
-    pool: Literal["ours", "un_system"] = "ours"
-    # The shape the gap-fill pass leaves out of its menu, by id with its members: the one
-    # the first pass elected and found without observations. A shape of that id holding
-    # only those members has nothing the first pass did not read (`phase_intake._found_empty`).
-    excluded_shapes: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    # The door the leg was posted on, which decides who states each frame field
+    # (`frame.door_frame`). The dataset_resubmit door's parsed entries resolve as parsed.
+    door: EntryPath = "parsed"
+    # The recall pool the pass elects over: our candidates, or the UN System Data Commons'
+    # on the pass that runs when ours ends no_data (`pipeline._fill_gap`).
+    pool: Pool = "ours"
+
+    # What the part asks (`frame.Frame`): its door-time fields from construction, completed
+    # with what the offered readings' vocabularies read in its words once the part seats a
+    # reading or refuses on a source exclusion (`phase_rank_bind._hold_offer`), or with the
+    # refused readings' when it offers none (`phase_rank_bind._refused_menu`).
+    frame: Frame = field(init=False)
 
     # --- (b) evolving pipeline state ------------------------------------------
     timing: dict[str, int]
@@ -663,7 +718,7 @@ class ResolveState:
     unit_request: IdentityUnitRequest | None = None
     bound_facet_axes: dict[str, FacetBasis] = field(default_factory=dict)
     unit_request_basis: dict[str, RequestBasis] | None = None
-    # Per-StatVar unit election from `_phase_ground_answer`; later scope and
+    # Per-StatVar unit election from `phase_answer._ground_elected_answer`; later scope and
     # observation reads reuse it to avoid repeating the graph/SDMX lookup.
     unit_elected_selections: Mapping[str, tuple[Mapping[str, FacetSelection], ...]] | None = None
     # The per-variable recall() result: candidate stat-vars and the
@@ -684,18 +739,19 @@ class ResolveState:
     role_bearing_outranks: bool = False
     # The normalisation this leg names, read from its variable and its sidecar qualifier
     # phrases (`quantity.quantity_requirement`), with the form the quantity read states
-    # joined after bind when no phrase named one (`quantity.with_stated_form`).
+    # joined before admissibility when no phrase named one (`quantity.with_stated_form`).
     quantity_requirement: QuantityRequirement = field(init=False)
-    # The kind and name of each StatVar denominator the eligible shapes divide by, read in
-    # one batch before bind (`phase_rank_bind._read_denominators`). The quantity read
-    # lists them (`quantity_read.read_stated_quantity`).
+    # The kind and name of each StatVar denominator the shapes admitted on their measure
+    # and roles divide by, read in one batch before the form rule
+    # (`phase_rank_bind._read_denominators`). The quantity read lists them
+    # (`quantity_read.read_stated_quantity`).
     denominator_reads: dict[str, DenominatorRead] = field(default_factory=dict)
     # The error a failed denominator read raised on a leg that named no form, held so the
     # read fails the part once the quantity read states a form or names a denominator
     # (`phase_rank_bind._read_quantity_answer`). `None` when the read succeeded.
     denominator_read_failure: GraphInfraError | None = None
-    # The kinds of those denominators, held once the requirement names a form: before bind
-    # from the leg's phrases, after bind from the form the quantity read states. Materialise and
+    # The kinds of those denominators, held once the requirement names a form, from the
+    # leg's phrases or the form the quantity read states. Admissibility, materialise and
     # the alternate guard read them.
     denominator_kinds: dict[str, DenominatorKind] = field(default_factory=dict)
     # The form the quantity read stated when no phrase named one, joined to
@@ -705,27 +761,36 @@ class ResolveState:
     # (`quantity.NamedDenominator`). `None` when the question names none. Materialise
     # holds the elected shape to it (`quantity.check_denominator`).
     named_denominator: NamedDenominator | None = None
-    # Top-K eligible shapes, after score-floor and denominator-availability pruning.
+    # The admissible shapes the narrowing leaves before the measure-family collapse, less
+    # those a source exclusion removes; written once the menu seats one of them or the
+    # exclusion leaves none.
     eligible_shapes: list[ShapeDraft] = field(default_factory=list)
-    # Empty measure-head shapes the availability prune dropped, each with the sibling holding
-    # data that stayed; the election warns `elected_shape_no_data` when bind elects a sibling.
-    measure_head_substitutions: list[tuple[ShapeDraft, ShapeDraft]] = field(default_factory=list)
-    # Confirmed shapes the score floor dropped from eligibility, for the gap-fill log line.
-    n_below_score_floor: int = 0
-    # Shapes past the floor whose population type's name names another measure class than
-    # the query, for the gap-fill log line.
-    n_measure_class_refused: int = 0
-    # Ranked by recall or topic-root score, then breadth and shape id; measure-family
-    # siblings of the indexed default are collapsed before the bind cap.
+    # The admissible shapes the menu is seated from, uncut: in rank order (recall or
+    # topic-root score, then breadth and shape id), with measure-family siblings of the
+    # indexed default collapsed and a part's excluded sources out. No engine code reads
+    # it after the phase that writes it; tests and diagnostics do.
     ranked_shapes: list[ShapeDraft] = field(default_factory=list)
-    # Bind prompt's top-K shapes; `chosen_shape_index` indexes this ranked list.
+    # The seated bind menu, at most `bind_top_k` shapes; `chosen_shape_index` indexes it.
     capped_shapes: list[ShapeDraft] = field(default_factory=list)
+    # Every reading of the part, admitted or refused, with the admissible ones the bind
+    # menu shows and the ones refused only on a pinned part (`region.admissibility`).
+    interpretations: InterpretationSet = field(default_factory=InterpretationSet)
+    # The reading refused on a pinned part that the bind model named as nearest when it
+    # declined every admissible one. It stands in as the elected shape so the refusal can
+    # flag it with its bindings and places settled, and the part refuses before
+    # materialise (`phase_place_materialise._declined_refusal`). `None` otherwise.
+    declined: Interpretation | None = None
     # Recognised qualifiers from the variable, query text, dropped phrases and the typed
     # sidecar, one list per vocabulary (`shape_vocabulary`) among the eligible shapes, each
     # read in that vocabulary's code systems alone. Computed once before measure collapse
     # and reused for narrowing and admission; `for_shape` reads one shape's list and
     # `all_qualifier_matches` their union.
     query_qualifier_matches: dict[frozenset[str], tuple[QualifierMatch, ...]] = field(
+        default_factory=dict
+    )
+    # The query's code matches in the vocabulary of every reading judged on the pinned parts
+    # (`admissibility.judge_pinned_parts`), those refused on one included.
+    pinned_part_matches: dict[frozenset[str], tuple[QualifierMatch, ...]] = field(
         default_factory=dict
     )
     # Every recognised span in `variable`, including ambiguities, as each candidate
@@ -751,17 +816,25 @@ class ResolveState:
     # reads in place of the embedding resolve (`interpret.recall`), or `None` when the part
     # names no code.
     source_code: SeriesCodeMembers | None = None
-    # Whether the part refused because its exclusions left out every reading the unscoped
-    # question reaches (`phase_rank_bind._phase_prune_and_rank`), or the elected reading's
-    # data at the places (`pipeline._excluded_from_the_place`). Our catalogue holds the
-    # measure and the part left its publishers out, so the UN pass, which fills gaps in our
-    # catalogue, does not run (`pipeline._second_pass_skip`).
-    scope_settled: bool = False
     # Whether the part's scope removed a reading where it applies: candidacy for a part that
-    # names a source, the ranked menu for one that only excludes
+    # names a source, and for one that only excludes a reading the menu would have offered
+    # without the exclusion and does not offer with it
     # (`phase_rank_bind._phase_prune_and_rank`). A part left with no reading it accepts
     # refuses naming its sources only then (`phase_rank_bind._declined_terminal`).
     scope_removed_readings: bool = False
+    # Whether the part, which only excludes sources, refused `qualifier_not_bound` on its
+    # exclusion (`phase_rank_bind.exclusion_records`, the one place that sets it): the
+    # exclusion left no reading that seats, the model declined what it left, or the scoped
+    # read found the elected reading's data excluded at the places. Our catalogue holds the
+    # measure and the part left its publishers out, so the UN pass, which fills gaps in our
+    # catalogue, does not run (`pipeline._un_pass_skip`). A part naming a source never sets
+    # it, and nor does a refusal of the election for codes or rows the part's tables lack
+    # (`phase_election._vet_election`, `phase_election._unserved_sources`).
+    scope_settled: bool = False
+    # The UN System Data Commons' resolve and shape derivation, started beside our pool's
+    # derivation (`phase_intake._phase_derive_shapes`), `None` on the UN pass and on a part
+    # whose scope allows no UN provenance or that ended before derivation.
+    un_leg: UnLeg | None = None
     # Whether the part posted source mentions, so each answer's identity binds the
     # provenances that served it (`spec_build.build_spec`'s `pin_served_provenance`).
     pin_served_provenance: bool = False
@@ -816,17 +889,31 @@ class ResolveState:
     bind_result: _UniversalBindOutput = field(default=cast(_UniversalBindOutput, None))
     # Shape selected by the bind call.
     shape_draft: ShapeDraft = field(default=cast(ShapeDraft, None))
-    # Shape flagged by the near-neighbour gate; the candidate fan-out uses it
-    # to distinguish an empty tie-proving alternate from another refusal.
-    near_neighbor_fired_index: int | None = None
-    # Warning instance retracted by identity if the shape becomes an equivalent-reading annotation.
-    near_neighbor_warning: Warning | None = None
+    # What each bind menu shape stated of data at the places the part names, in
+    # `capped_shapes` order (`phase_rank_bind._phase_bind`). Empty when the part names no
+    # place, so the menu stated none.
+    menu_availability: list[bool | None] = field(default_factory=list)
+    # The capped-shape index of the shape in play: at election, the first shape the menu
+    # states as the reading the model chose (`bind.rank_elected`,
+    # `phase_election._vet_election`), and the winner's once re-election installs a
+    # stand-in (`phase_place_materialise._install_shape`). Every reader of which menu
+    # reading is P reads it; `bind_result.chosen_shape_index` stays the model's answer.
+    # -1 before election.
+    elected_index: int = -1
     # The chosen shape's own constraint bindings from the universal bind call.
     bindings: list[SlotBindingDraft] = field(default_factory=list)
+    # One requirement per value the bind drafted on a property the elected shape has no
+    # slot for, judged as a value the request names and named by its label
+    # (`phase_rank_bind._stray_requirements`). The drafts leave the bind output, bind
+    # records these in the ledger, and `_resolve_query_qualifiers` records their terms. A
+    # part whose answer leaves one unapplied refuses `qualifier_not_bound` naming it, and a
+    # `qualifier_not_bound` refusal of settlement, which judges no answer, names it too
+    # (`requirements.settle_unanswered`).
+    stray_requirements: tuple[Requirement, ...] = ()
     # Open constraint axes the elected measure's members do not declare; added to
     # `inapplicable_slots` because they are absent from the shape's slot keys.
     measure_dropped_axes: tuple[str, ...] = ()
-    # Bind-time measure election used to label the first sentence event. The
+    # The bind-time measure election (`bound_values.elect_measure_family`). The
     # materialised rows elect the served partition independently.
     measure_elected_partition: MeasurePartition | None = None
     # The served partition and its siblings (`bound_values.observed_measure_family`), read
@@ -843,9 +930,8 @@ class ResolveState:
     measure_elected_properties: frozenset[str] = frozenset()
     # Properties defaulted by `apply_declared_defaults`; `build_spec` marks their provenance.
     defaulted_properties: frozenset[str] = frozenset()
-    # Normalised dropped phrases a named slot default answers ("flows" when the flow
-    # defaults to ODA); the part's `slot_defaulted` warning replaces their entry-level one.
-    slot_default_phrases: frozenset[str] = frozenset()
+    # What each declared default that fired states, by its property (`slot_default_phrases`).
+    slot_defaults: dict[str, SlotDefaultDisclosure] = field(default_factory=dict)
     # Each named narrowing term and its outcome; build_spec records these, and
     # coverage and final assembly use them for their guards.
     query_qualifiers: list[ResolvedQualifier] = field(default_factory=list)
@@ -885,9 +971,34 @@ class ResolveState:
     # each alternate that takes none is left out. `_phase_place_bindings` assigns them once.
     alternate_place_roles: dict[int, PlaceAssignment] = field(default_factory=dict)
     unbindable_alternates: dict[int, str] = field(default_factory=dict)
-    # The capped-shape indices of the siblings zero-observation re-election tries when the
-    # elected shape has no observations at its places (`_reelection_siblings`).
+    # What the status rule makes of the elected shape's menu (`status_rule.plan_status`),
+    # planned once its alternates' places are bound and again once the elected shape's
+    # read settles its own data (`phase_place_materialise._plan_status`).
+    status_plan: StatusPlan = field(default_factory=StatusPlan)
+    # The measure axes the question leaves open for the shape in play
+    # (`phase_place_materialise._open_axes`), set each time the status rule plans its menu.
+    # The status rule and the alternate guard both read it (`QueryPins.open_axes`). Every
+    # axis is closed until the first plan.
+    open_measure_axes: OpenAxes = field(default=CLOSED_AXES)
+    # Why the status rule offers each alternate it plans to materialise, by capped-shape
+    # index. A candidate built from one carries it (`_Candidate.basis`).
+    offer_bases: dict[int, CandidateBasis] = field(default_factory=dict)
+    # The elected shape read with the other direction of a place the question names without
+    # one, by capped-shape index of its copy, when both directions hold data: offered beside
+    # it as a `direction` candidate (`phase_place_materialise._settle_direction`).
+    direction_rivals: dict[int, PlaceAssignment] = field(default_factory=dict)
+    # The departures a definite answer states that no warning discloses: the direction it
+    # reads a place named without one on (`RegionResult.inferred_facts`).
+    inferred_facts: list[DepartureFact] = field(default_factory=list)
+    # The capped-shape indices of the readings status rule 1 tries in the elected shape's
+    # place when it has no observations at its places: its equivalent readings, then its
+    # measurement-qualifier siblings (`phase_place_materialise._stand_in_indices`).
     reelection_siblings: list[int] = field(default_factory=list)
+    # The `elected_shape_no_data` warning of a stand-in that re-election installed in the
+    # elected shape's place, held in `warnings`. Its `elected` lists the stand-in's draft
+    # label until a Spec is built for the stand-in, whose shape label it then lists
+    # (`state_reelected_reading`).
+    reelection_warning: Warning | None = None
     # The presence read a role-bearing elected shape's alternates need, running beside its
     # materialisation (`_start_alternates_presence_read`). Candidate admission awaits it;
     # `None` when none was started or once it is taken.
@@ -916,8 +1027,7 @@ class ResolveState:
     alternate_judges: list[AlternateJudge] = field(default_factory=list)
     # Why the alternates' presence read did not complete, once one has not in this pass
     # (`_read_alternates_presence`). The pass tries no other optional presence read after
-    # it, whichever alternates it would have served. The UN System pass starts from a fresh
-    # state and reads its own upstream, so a failure here does not stop its reads.
+    # it, whichever alternates it would have served.
     alternates_presence_failure: AlternateUnevaluatedReason | None = None
     # The alternates that passed the admission guards and were left unevaluated by that
     # failure, by capped-shape index, each with its reason. The result of the pass states
@@ -983,13 +1093,45 @@ class ResolveState:
         self.quantity_requirement = quantity_requirement(
             [self.variable, *(coded.phrase for coded in self.qualifiers or ())]
         )
+        self.frame = door_frame(
+            door=self.door,
+            variable=self.variable,
+            entities=self.entities,
+            entity_roles=self.entity_roles,
+            member_entities=self.member_entities,
+            pins={
+                name: resolution.entity.dcid
+                for name, resolution in (self.pre_resolved or {}).items()
+                if isinstance(resolution, PinnedResolved)
+            },
+            date_request=self.date_request,
+            unit_text=self.unit_text,
+            scope=self.scope,
+            operations=self.operations,
+            open_axes=self.open_axes,
+        )
 
     @property
-    def tie_unresolved(self) -> bool:
-        """Whether a near-neighbour tie fired and an alternate is unevaluated. Unread data is
-        no evidence against the other reading, so the tie's warning and its effect on
-        confidence stay, whichever answer shape is served."""
-        return self.near_neighbor_fired_index is not None and bool(self.unevaluated_alternates)
+    def slot_default_phrases(self) -> frozenset[str]:
+        """Normalised dropped phrases a named slot default answers ("flows" when the flow
+        defaults to ODA); the part's `slot_defaulted` warning replaces their entry-level
+        one."""
+        return frozenset().union(*(default.phrases for default in self.slot_defaults.values()))
+
+    def forget_bound(self, properties: AbstractSet[str]) -> None:
+        """Drop what the engine derived from binding `properties`, once they are unbound:
+        their place among the defaulted and measure-elected properties, each fired
+        default's warnings and the phrases it answers (`slot_defaults`), and, when a
+        measure-elected property goes, the measure election's partition and dropped axes,
+        which describe a family the bindings no longer select."""
+        if properties & self.measure_elected_properties:
+            self.measure_elected_partition = None
+            self.measure_dropped_axes = ()
+        self.measure_elected_properties -= properties
+        self.defaulted_properties -= properties
+        stale = [self.slot_defaults.pop(prop) for prop in properties if prop in self.slot_defaults]
+        dropped = {id(warning) for default in stale for warning in default.warnings}
+        self.warnings[:] = [warning for warning in self.warnings if id(warning) not in dropped]
 
     @property
     def standard_place_dcids(self) -> list[str]:
@@ -1034,6 +1176,21 @@ class ResolveState:
         """Append `warning` and record `fact`, the departure it discloses, under its key."""
         self.warnings.append(warning)
         self.departure_facts[warning_key(warning)] = fact
+
+    def state_reelected_reading(self, spec: Spec) -> None:
+        """Make `elected` of the re-election warning (`reelection_warning`) the shape label
+        of `spec`, the Spec built for the stand-in. The warning keeps its position in
+        `warnings`. Without a re-election this does nothing."""
+        warning = self.reelection_warning
+        if warning is None:
+            return
+        stated = warning.model_copy(
+            update={"params": {**(warning.params or {}), "elected": [spec.resolved.shape.label]}}
+        )
+        self.warnings[:] = [stated if kept is warning else kept for kept in self.warnings]
+        # The candidates path can build the stand-in's Spec and hand the part back to
+        # definite assembly, which states its own Spec.
+        self.reelection_warning = stated
 
     def codes_named(self, asked: str, prop: str) -> list[GraphRef]:
         """The code rows on `prop` that the query's qualifier matches, ties and admitted
@@ -1136,7 +1293,7 @@ class ResolveState:
 
     def no_data(
         self,
-        reason: str,
+        reason: NoDataReason,
         *,
         flagged_match: tuple[Spec, ...] | None = None,
         gate: NoDataGate | None = None,
@@ -1226,5 +1383,8 @@ class ResolveState:
                 _bound_role_dcids(_shape, _place.roles.resolved_entities)
                 if isinstance(_shape, ShapeDraft)
                 else {}
+            ),
+            refused_answer=(
+                None if candidate is None else (candidate.shape, tuple(candidate.bindings))
             ),
         )

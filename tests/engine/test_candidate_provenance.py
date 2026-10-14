@@ -198,17 +198,17 @@ def test_elected_candidate_carries_measure_elected_alt_does_not():
     """
     import search.engine.region.pipeline as pipeline_module
 
-    _orig_repair = pipeline_module._phase_repair_bindings
+    _orig_settle = pipeline_module._phase_settle
     _orig_phases = pipeline_module._PHASES
 
-    async def _repair_and_force_election(state):
-        outcome = await _orig_repair(state)
+    async def _settle_and_force_election(state):
+        outcome = await _orig_settle(state)
         state.measure_elected_properties = frozenset({"financialFlowType"})
         return outcome
 
     # `resolve_variable` iterates `_PHASES`, so replace the tuple entry.
     pipeline_module._PHASES = tuple(
-        _repair_and_force_election if phase is _orig_repair else phase for phase in _orig_phases
+        _settle_and_force_election if phase is _orig_settle else phase for phase in _orig_phases
     )
     try:
         result = _run(_QUERY, _ElectShape0AlsoPlausibleShape1LLM())

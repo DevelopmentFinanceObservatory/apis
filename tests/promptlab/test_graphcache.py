@@ -33,7 +33,6 @@ _EXPECTED_METHODS = (
     "node_label",
     "node_arcs",
     "node_type",
-    "declares_facet_defaults",
     "default_facet_policy",
     "node_arcs_many",
     "node_names_many",
@@ -51,6 +50,7 @@ _EXPECTED_METHODS = (
     "node_arcs_batch",
     "node_observation_properties_batch",
     "observation_facets_batch",
+    "observation_read_groups",
     "child_dcids",
     "enum_members",
     "currency_units",
@@ -161,6 +161,10 @@ class _CountingGraph:
         return self._inner.observation_facets_batch(
             stat_vars, entities, needs_dates=needs_dates, max_bytes=max_bytes
         )
+
+    def observation_read_groups(self, stat_vars, entities, needs_dates=False):
+        self.calls["observation_read_groups"] += 1
+        return self._inner.observation_read_groups(stat_vars, entities, needs_dates)
 
     def child_dcids(self, parent_dcid):
         self.calls["child_dcids"] += 1

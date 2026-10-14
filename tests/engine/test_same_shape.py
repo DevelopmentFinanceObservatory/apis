@@ -12,13 +12,14 @@ import pytest
 
 from search.engine.region.result import RegionResult
 from search.engine.same_shape import collapse_same_shape
-from search.engine.spec_build import RoleAxisFactInput, build_spec
+from search.engine.spec_build import NamedGroup, RoleAxisFactInput, build_spec
 from search.heading.departure_fact import DepartureFact
 from search.models import (
     BindingUnbound,
     BindingValue,
     CoverageBare,
     Entity,
+    EntityGroup,
     EntityOptions,
     EntityRoleDirectional,
     GraphRef,
@@ -470,3 +471,60 @@ def test_what_axis_merge_publishes_the_floor_when_a_member_is_truncated_or_inexa
     merged = effective[0].spec.resolved.stat_vars
     assert merged.member_count == 6
     assert merged.member_count_exact is False
+
+
+_G7 = NamedGroup(
+    label="G7",
+    dcid=None,
+    member_dcids=frozenset({"country/CAN", "country/FRA"}),
+    total="GroupOfSeven",
+)
+
+
+def _g7_region(recipient_dcid: str, *, earliest_index: int) -> RegionResult:
+    """Aid from the G7, read as its members, to one recipient."""
+    shape = _recipient_only_shape()
+    where_slot = Slot(
+        key=SlotKey(axis="where", property=_gr(_RECIPIENT_PROP), label="recipient"),
+        binding=BindingValue(value=SlotValue(ref=_gr(recipient_dcid), value_kind="entity")),
+    )
+    donor = EntityRoleDirectional(role=_gr("financingProvider"), axis="origin")
+    entities = [
+        Entity(
+            ref=_gr(recipient_dcid),
+            role=EntityRoleDirectional(role=_gr(_RECIPIENT_PROP), axis="destination"),
+        ),
+        *(Entity(ref=_gr(dcid), role=donor) for dcid in sorted(_G7.member_dcids)),
+    ]
+    spec = build_spec(
+        open_roles=(),
+        measure_elected_properties=frozenset(),
+        shape=shape,
+        slots=[where_slot],
+        stat_vars=[
+            StatVar(
+                ref=_gr(f"sv_{recipient_dcid}"),
+                shape_id=shape.shape_id,
+                slot_values=[],
+                constraint_properties=[],
+            )
+        ],
+        entities=entities,
+        coverage=CoverageBare(has_data=True),
+        named_groups=(_G7,),
+    )
+    return _region(spec, f"aid from the G7 to {recipient_dcid}", earliest_index=earliest_index)
+
+
+def test_a_merged_answer_keeps_the_total_its_members_reading_leaves_aside():
+    """Each member reads the node-less G7 as its members and keeps its total aside
+    (`ResolvedSpec.group_totals`). The merged answer, rebuilt from the members' groups,
+    keeps it too, so its departure can still name what the members leave out."""
+    first = _g7_region("country/KEN", earliest_index=0)
+    second = _g7_region("country/UGA", earliest_index=1)
+    assert first.spec.resolved.group_totals == {"origin": "GroupOfSeven"}
+
+    (merged,), _ = collapse_same_shape([first, second])
+
+    assert (merged.spec.resolved.entity_groups or {}).get("origin") == EntityGroup(label="G7")
+    assert merged.spec.resolved.group_totals == {"origin": "GroupOfSeven"}

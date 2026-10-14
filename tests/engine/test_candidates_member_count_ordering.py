@@ -104,15 +104,15 @@ def _sv_node(
 
 
 def _synthetic_sv_node(
-    dcid: str, *, pop_type: str, meas_prop: str, stat_type: str, meas_qual: str
+    dcid: str, *, label: str, pop_type: str, meas_prop: str, stat_type: str, meas_qual: str
 ) -> dict:
     """Build an unconstrained node for a five-tuple absent from the packaged index."""
     return {
-        "label": dcid,
+        "label": label,
         "type": "StatisticalVariable",
         "arcs": {
             "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
-            "name": {"nodes": [{"value": dcid}]},
+            "name": {"nodes": [{"value": label}]},
             "populationType": {"nodes": [{"dcid": pop_type}]},
             "measuredProperty": {"nodes": [{"dcid": meas_prop}]},
             "statType": {"nodes": [{"dcid": stat_type}]},
@@ -153,8 +153,10 @@ _NODES = {
         for p, v in _recalled1_row.constraint_properties.items()
         if p in _SHAPE1_BOUND_PROPS
     },
+    # The query names this reading's words, so its nomination is a rival (status rule 2(b)).
     _BARE_SV2: _synthetic_sv_node(
         _BARE_SV2,
+        label="Fabricated test measure",
         pop_type=_POP_TYPE_2,
         meas_prop=_MEAS_PROP_2,
         stat_type=_STAT_TYPE_2,
@@ -229,8 +231,9 @@ def _spec_for(specs, sv_dcid: str):
     )
 
 
-def test_broad_candidate_reports_its_real_population_and_sorts_first():
-    """The two-member index-sourced population sorts ahead of the one-member non-indexed shape."""
+def test_broad_candidate_reports_its_real_population_in_menu_order():
+    """The two-member index-sourced population reports its real member count and keeps its
+    menu place ahead of the one-member non-indexed shape."""
     result = _run()
     assert result.status == "candidates"
     specs = result.specs
@@ -248,7 +251,7 @@ def test_broad_candidate_reports_its_real_population_and_sorts_first():
     assert broad_count > narrow_count
 
     assert specs.index(broad_spec) < specs.index(narrow_spec), (
-        "broadest-first: the wider candidate must sort ahead of the narrower one"
+        "menu order: the candidate ranked first on the menu comes first"
     )
 
 

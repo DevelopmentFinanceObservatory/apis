@@ -1754,7 +1754,7 @@ class GraphClient:
             return {}
         stamp = self._generation.stamp()
         result: dict[str, dict[str, list[Facet]]] = {sv: {} for sv in stat_vars}
-        miss_pairs: set[tuple[str, str]] = set()
+        miss_pairs: list[tuple[str, str]] = []
         for sv in stat_vars:
             for entity in entities:
                 cache_key = (stamp.key, sv, entity, needs_dates, domains)
@@ -1766,7 +1766,7 @@ class GraphClient:
                             continue
                         self._obs_counters.misses += 1
                 result[sv][entity] = []
-                miss_pairs.add((sv, entity))
+                miss_pairs.append((sv, entity))
         if not miss_pairs:
             return result
 
@@ -1792,6 +1792,36 @@ class GraphClient:
                         self._obs_cache[cache_key] = facets
                 result[sv][entity] = facets
         return result
+
+    def observation_read_groups(
+        self,
+        stat_vars: Sequence[str],
+        entities: Sequence[str],
+        needs_dates: bool = False,
+        *,
+        domains: tuple[str, ...] | None = None,
+    ) -> list[list[str]]:
+        """`stat_vars` split, in order, into the groups an `observation_facets_batch` read of
+        them at `entities` sends apart. A POST read names every StatVar in one request, so it
+        is one group. A GET read packs the StatVars under the URL budget
+        (`_pack_observation_query`), so each group is one request, or one per entity group
+        when the entities need packing too. A caller that may stop reading early reads a
+        group at a time. Entities the front door refuses are left out, as the read leaves
+        them out. Empty `stat_vars` returns `[]`.
+        """
+        if not stat_vars:
+            return []
+        budget = self._observation_get_url_budget_bytes
+        blocked = self.blocked_observation_entities()
+        allowed = [entity for entity in entities if entity not in blocked]
+        if budget is None or not allowed:
+            return [list(stat_vars)]
+        fixed = _observation_get_fixed(
+            _facet_select(needs_dates), all_dates=needs_dates, domains=domains
+        )
+        packed = _pack_observation_query(stat_vars, allowed, fixed=fixed, budget=budget)
+        # Every variable group meets every entity group, so each repeats once per entity group.
+        return [list(group) for group in dict.fromkeys(tuple(group) for group, _ in packed)]
 
     def observation_facets_batch_many(
         self,
@@ -1828,15 +1858,10 @@ class GraphClient:
         domains: tuple[str, ...] | None = None,
     ) -> dict[str, dict[str, list[Facet]]]:
         """Read facets for every pair, uncached, with blocks sharing a `facet_id` merged."""
-        select = (
-            ["variable", "entity", "date", "value", "facet"]
-            if with_dates
-            else ["variable", "entity", "facet"]
-        )
         body = self._read_observations(
             stat_vars,
             entities,
-            select=select,
+            select=_facet_select(with_dates),
             all_dates=with_dates,
             max_bytes=max_bytes,
             deadline=deadline,
@@ -1890,11 +1915,7 @@ class GraphClient:
                 _OBSERVATION_PATH, payload, max_bytes=max_bytes, deadline=deadline
             )
 
-        fixed = [("select", field) for field in select]
-        if all_dates:
-            fixed.append(("date", ""))
-        if domains is not None:
-            fixed.extend(("filter.domains", domain) for domain in domains)
+        fixed = _observation_get_fixed(select, all_dates=all_dates, domains=domains)
         stamp = self._generation.stamp()
         blocked = self._blocked_observation_entities_for(stamp)
         by_variable: dict[str, dict] = {}
@@ -2003,10 +2024,6 @@ class GraphClient:
         return self.observation_facets_batch_many(
             stat_vars=[stat_var], entities=entities, deadline=deadline, domains=domains
         ).get(stat_var, {})
-
-    def declares_facet_defaults(self) -> bool:
-        """Whether `default_facet_policy` can return a policy. Always `False`."""
-        return False
 
     def default_facet_policy(self, *, stat_var: str, axis: str) -> FacetDefaultPolicy | None:
         """Always `None`. No declared-default graph convention exists yet."""
@@ -2422,6 +2439,26 @@ def _reject_unsafe_token(token: str, unsafe_chars: frozenset[str]) -> None:
 def _chunked(seq: Sequence[str], size: int) -> Iterator[list[str]]:
     for i in range(0, len(seq), size):
         yield list(seq[i : i + size])
+
+
+def _facet_select(with_dates: bool) -> list[str]:
+    """The fields a facet read selects, with each observation's date and value under
+    `with_dates`."""
+    if with_dates:
+        return ["variable", "entity", "date", "value", "facet"]
+    return ["variable", "entity", "facet"]
+
+
+def _observation_get_fixed(
+    select: Sequence[str], *, all_dates: bool, domains: tuple[str, ...] | None
+) -> list[tuple[str, str]]:
+    """The query params every request of one GET observation read carries."""
+    fixed = [("select", field) for field in select]
+    if all_dates:
+        fixed.append(("date", ""))
+    if domains is not None:
+        fixed.extend(("filter.domains", domain) for domain in domains)
+    return fixed
 
 
 def _pack_observation_query(

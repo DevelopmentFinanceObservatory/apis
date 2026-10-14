@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, cast
 from dfo_platform import Cause
 from dfo_platform.roles import FlowFamily
 from search.engine.closest_match import spec_closest_match_fact, substituted_readings_fact
-from search.engine.config import settings
 from search.engine.departures import (
     NO_ENTITY_WORDS,
     merged_entity_facts,
@@ -20,12 +19,9 @@ from search.engine.departures import (
 )
 from search.engine.qualifier_match import _normalize
 from search.engine.region.codes import (
-    ALTERNATES_UNEVALUATED,
     ELECTED_SHAPE_NO_DATA,
-    NEAR_NEIGHBOR_AMBIGUOUS,
     RETRIEVAL_SCORE_WEAK,
 )
-from search.engine.region.near_neighbor import NEAR_NEIGHBOR_UNRESOLVED_MESSAGE
 from search.engine.skills import match_spec_skills
 from search.heading.departure_fact import DepartureFact, ordered_facts
 from search.models import (
@@ -712,46 +708,6 @@ def build_unsupported_part(
     )
 
 
-def _with_final_near_neighbor_message(
-    warnings: list[Warning],
-    clamped: list[Spec],
-    near_neighbor_spec_ids: frozenset[str],
-) -> list[Warning]:
-    """Use final candidate labels in the near-neighbour warning.
-
-    The bind-time warning uses provisional labels. Rebuild it after clamping. With fewer
-    than two named specs surviving, drop it, or keep it with
-    `NEAR_NEIGHBOR_UNRESOLVED_MESSAGE` when the part states an unevaluated alternate, whose
-    unread data leaves the tie standing. Other warning codes pass through unchanged.
-    """
-    near_neighbor_labels = [
-        spec.resolved.shape.label for spec in clamped if spec.spec_id in near_neighbor_spec_ids
-    ]
-    unevaluated = any(warning.code == ALTERNATES_UNEVALUATED for warning in warnings)
-    rebuilt: list[Warning] = []
-    for warning in warnings:
-        if warning.code != NEAR_NEIGHBOR_AMBIGUOUS:
-            rebuilt.append(warning)
-            continue
-        if len(near_neighbor_labels) < 2:
-            if unevaluated:
-                rebuilt.append(
-                    warning.model_copy(update={"message": NEAR_NEIGHBOR_UNRESOLVED_MESSAGE})
-                )
-            continue
-        rebuilt.append(
-            warning.model_copy(
-                update={
-                    "message": (
-                        f"{near_neighbor_labels[0]!r} and {near_neighbor_labels[1]!r} scored "
-                        "closely enough to be ambiguous; surfacing both as candidates."
-                    )
-                }
-            )
-        )
-    return rebuilt
-
-
 def build_candidates_part(
     specs: list[Spec],
     *,
@@ -761,11 +717,8 @@ def build_candidates_part(
     timing_ms: Timing | None = None,
     max_candidates: int | None = None,
     include_observations: bool = False,
-    bind_ranked: bool = False,
     budget_truncated: bool = False,
-    candidate_scores: Mapping[str, float | None] | None = None,
-    near_neighbor_spec_ids: frozenset[str] = frozenset(),
-    ordering: Ordering | None = None,
+    ordering: Ordering = "intent_rank",
     restatement: ParsedPart | None = None,
     operations: Sequence[Operation] = (),
     include_skills: bool = False,
@@ -773,20 +726,14 @@ def build_candidates_part(
     departure_facts: Sequence[DepartureFact] = (),
     request_words: bool = True,
 ) -> CandidatesPart:
-    """Build a candidates part from competing specs.
+    """Build a candidates part from competing specs, in the order given: the elected
+    reading first and its rivals in menu order (`region.status_rule`), or the order a
+    resubmit posted. ``ordering`` is the wire label, `intent_rank` unless a resubmit posted
+    another.
 
-    The default ``broadest_first`` order sorts by descending member count, then ``spec_id``.
-    ``bind_ranked`` preserves the elected-first order from the near-neighbour downgrade path,
-    with its near-winning reading next. Bind's preference outranks retrieval score. An
-    Explicit ``ordering`` sets the wire label and preserves posted order when the source
-    ranking is unavailable.
-
-    Loose readings follow stronger ones, preserving each group's order. A reading is loose
-    when its score falls below ``settings().weak_score_threshold`` or its id is in
-    ``near_neighbor_spec_ids``. A scoreless candidate is demoted only when its id is flagged.
-    The cap defaults to the input length and applies after this partition. ``budget_truncated``
-    records upstream omissions and combines with the local cap for ``CandidateSet.truncated``.
-    The summary omits a possible-total count when upstream omissions make it unknown.
+    The cap defaults to the input length. ``budget_truncated`` records upstream omissions
+    and combines with the local cap for ``CandidateSet.truncated``. The summary omits a
+    possible-total count when upstream omissions make it unknown.
 
     Sentence rendering preserves differing how-axis values, states shared departures once, and marks
     the remaining distinctions. ``include_observations`` adds a warning because no candidate
@@ -799,29 +746,9 @@ def build_candidates_part(
     ``request_words`` is false on a door that holds no words of the request (a resubmit).
     """
     cap = max_candidates if max_candidates is not None else len(specs)
-
-    if ordering is not None or bind_ranked:
-        # Preserve the supplied ranking. Posted candidates lack scores for recomputing it.
-        sorted_specs = list(specs)
-    else:
-        sorted_specs = sorted(specs, key=lambda s: (-s.resolved.shape.member_count, s.spec_id))
-
-    def is_loose(spec: Spec) -> bool:
-        score = candidate_scores.get(spec.spec_id) if candidate_scores is not None else None
-        # Topic-expanded candidates without a score lack a weak-match signal.
-        return spec.spec_id in near_neighbor_spec_ids or (
-            score is not None and score < settings().weak_score_threshold
-        )
-
-    # The cap follows the stable partition, so stronger candidates fill it first.
-    ranked_specs = [spec for spec in sorted_specs if not is_loose(spec)]
-    ranked_specs.extend(spec for spec in sorted_specs if is_loose(spec))
-    clamped = ranked_specs[:cap]
-    resolved_ordering: Ordering = (
-        ordering if ordering is not None else ("intent_rank" if bind_ranked else "broadest_first")
-    )
+    clamped = list(specs)[:cap]
     # Report either upstream budget omissions or this function's own cap.
-    truncated = budget_truncated or len(ranked_specs) > cap
+    truncated = budget_truncated or len(specs) > cap
 
     keep_how_properties = sibling_how_properties(clamped)
     clamped = [with_sentence(spec, keep_how_properties=keep_how_properties) for spec in clamped]
@@ -850,11 +777,11 @@ def build_candidates_part(
         departures=departures,
         truncated=truncated,
         # Show the pre-clamp total only when no upstream budget hid candidates.
-        total=len(ranked_specs) if not budget_truncated else None,
+        total=len(specs) if not budget_truncated else None,
     )
     rendered = sentence_from_plan(plan)
 
-    part_warnings = _with_final_near_neighbor_message(warnings, clamped, near_neighbor_spec_ids)
+    part_warnings = list(warnings)
     if include_observations:
         part_warnings.append(
             Warning(code=OBSERVATIONS_OMITTED, severity="warn", message=_observations_omitted_msg())
@@ -866,7 +793,7 @@ def build_candidates_part(
         warnings=part_warnings,
         timing_ms=timing_ms,
         candidates=CandidateSet(
-            ordering=resolved_ordering,
+            ordering=ordering,
             max_candidates=cap,
             specs=clamped,
             truncated=truncated,

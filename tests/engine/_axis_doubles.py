@@ -125,9 +125,6 @@ class AxisConfirmingGraphReader:
             "variable_facets_batch", stat_var=stat_var, entities=entities, deadline=deadline
         )
 
-    def declares_facet_defaults(self) -> bool:
-        return bool(self._delegate("declares_facet_defaults"))
-
     def default_facet_policy(self, *, stat_var: str, axis: str):
         return self._delegate("default_facet_policy", stat_var=stat_var, axis=axis)
 

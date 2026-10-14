@@ -267,8 +267,9 @@ def _re_render(
     """Render `clicked`'s rendering again from the stored frame it was rendered from, through
     the definition head path (`current.head_rendering`), which links the result.
 
-    A groupby collapse (`base_content_version` set) renders from its base version's frame, as
-    its mint did, and the head path links the result under the collapse again. A frame past
+    A derived version (`base_content_version` set: a groupby collapse or a party-totals cut)
+    renders from its base version's frame, as its mint did, and the head path links the result
+    under the derived version again. A frame past
     retention renews first (`_reupload`) and the render takes the renewed bytes, reading the
     frame once: one materialise slot holds from before the read to the end of the render, and
     the coverage snapshot is taken inside it. A frame still in retention is read by the head

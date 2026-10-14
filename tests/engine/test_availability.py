@@ -7,22 +7,37 @@ and entity-less confidence grading (#305).
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from typing import ClassVar
+
+import pytest
 
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.config import settings
+from search.engine.degraded_reads import recording_degraded_reads
+from search.engine.errors import GraphCapExceededError, GraphInfraError
+from search.engine.extract import DateRequest
 from search.engine.quantity_read import QuantityOutput
+from search.engine.reading_coverage import observed_years
 from search.engine.region import resolve_spec_resubmit, resolve_variable
+from search.engine.region.availability import (
+    _subject_has_data,
+    has_data_where_asked,
+    menu_read_places,
+    read_menu_availability,
+)
 from search.engine.region.codes import NO_MEMBER_HAS_DATA_AT_PLACE
+from search.engine.region.place_set import PlaceNode, PlaceSet
 from search.engine.retrieval.retrieve import Materialised
 from search.engine.retrieval.standard import standard_resolve
 from search.engine.shape import ShapeDraft
-from search.models import RawTextInput, ResolveRequest, ResubmitIdentityPayload
+from search.models import RawTextInput, ResolveRequest, ResubmitIdentityPayload, TimeWindow
 from tests.engine._base_identity import make_identity
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import offline_resolve, walk_options
 from tests.engine._quantity import NO_QUANTITY
+from tests.engine.test_admission import _pruning_state, _set
 from tests.fixtures import FakeGraph, make_resolver
 
 _RECIPIENT = "country/XYZ"
@@ -396,8 +411,10 @@ class TestEntityLessDefiniteConfidenceFreshPath:
         assert spec.resolved.available_at_place is None
         assert spec.resolved.confidence == "high"
 
-    def test_weak_match_grades_medium_not_low(self):
-        """Without a named place, a below-threshold score grades medium."""
+    def test_a_weak_match_that_is_the_only_reading_with_data_grades_high(self):
+        """Without a named place, a below-threshold score on the only admissible reading
+        with data grades high: the frame admitting one reading corroborates it, and scores
+        reach confidence only beside a rival (status rule 5)."""
         query = "test no entity incidence rate weak"
         graph = _no_entity_graph(query=query, cosine_score=settings().weak_score_threshold - 0.1)
         result = asyncio.run(
@@ -422,7 +439,7 @@ class TestEntityLessDefiniteConfidenceFreshPath:
         assert result.status == "definite"
         spec = result.specs[0]
         assert spec.resolved.available_at_place is None
-        assert spec.resolved.confidence == "medium"
+        assert spec.resolved.confidence == "high"
 
 
 class TestEntityLessDefiniteConfidenceResubmitPath:
@@ -466,3 +483,131 @@ class TestEntityLessDefiniteConfidenceResubmitPath:
         spec = region.specs[0]
         assert spec.resolved.available_at_place is None
         assert spec.resolved.confidence is not None
+
+
+# The menu availability read over a named set's places (`availability.read_menu_availability`)
+
+
+_SET_MEMBERS = [f"country/S{i:02d}" for i in range(54)]
+_SPAN_SV = "TESTFIXTURE/Availability/From2005"
+
+
+def _span_graph(places: list[str]) -> FakeGraph:
+    """One StatVar observed 2005-2020 at each of `places`."""
+    facet = {"earliestDate": "2005", "latestDate": "2020", "obsCount": 16}
+    return FakeGraph(nodes={}, obs={f"{_SPAN_SV}|{p}": [facet] for p in places})
+
+
+class _BoundedGraph:
+    """A graph whose facet read fails as a slow or oversized read does, keeping the bounds
+    it was given."""
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+        self.bounds: dict[str, object] = {}
+
+    def observation_facets_batch(self, stat_vars, entities, needs_dates=False, **bounds):
+        self.bounds = bounds
+        raise self.error
+
+
+class TestMenuAvailabilityRead:
+    @pytest.mark.parametrize(
+        "error",
+        [
+            GraphInfraError("read past its deadline"),
+            GraphCapExceededError("too big", cap_kind="bytes", cap=1, observed=2),
+        ],
+        ids=["slow", "oversized"],
+    )
+    def test_a_slow_or_oversized_read_leaves_availability_unknown(self, error):
+        """The read of every set member is bounded by the request deadline and the byte
+        cap; a read past either leaves D unknown, never absent, and is noted as lost. An
+        absence derive found at the named country stays unknown too, since the set's other
+        members went unread; it settles D where the country is the only place asked."""
+        shape = dataclasses.replace(
+            _synthetic_shape("from-2005", members=[_SPAN_SV]),
+            place_available=False,
+            member_coverage={_SPAN_SV: {}},
+            availability_places=frozenset({_SET_MEMBERS[0]}),
+        )
+        graph = _BoundedGraph(error)
+
+        with recording_degraded_reads() as record:
+            (read,), failed = read_menu_availability(
+                [shape], graph=graph, places=_SET_MEMBERS, deadline=123.0
+            )
+
+        assert graph.bounds == {"max_bytes": settings().sdmx_max_bytes, "deadline": 123.0}
+        assert failed is True
+        assert read.named_place_coverage is None
+        assert _subject_has_data(read, None, asked=_SET_MEMBERS) is None
+        assert _subject_has_data(read, None, asked=_SET_MEMBERS[:1]) is False
+        # Data at the named country outside the requested years is no absence at the set.
+        dates = DateRequest(window=TimeWindow(start_year=1990, end_year=1995), latest=False)
+        facets = _span_graph(_SET_MEMBERS[:1]).observation_facets(
+            stat_var=_SPAN_SV, entity=_SET_MEMBERS[0]
+        )
+        outside = dataclasses.replace(
+            read,
+            place_available=True,
+            member_coverage={_SPAN_SV: {_SET_MEMBERS[0]: observed_years(facets)}},
+        )
+        assert _subject_has_data(outside, dates, asked=_SET_MEMBERS) is None
+        assert _subject_has_data(outside, dates, asked=_SET_MEMBERS[:1]) is False
+        assert record.reads == ["menu availability"]
+
+    @pytest.mark.parametrize(
+        ("start", "end", "has_data"),
+        [(1990, 1995, False), (2010, 2015, True)],
+        ids=["window-before-series", "window-inside-series"],
+    )
+    def test_a_set_place_reads_the_requested_years_as_one_country_does(self, start, end, has_data):
+        """A 1990-1995 question on a series starting in 2005 has no data in range at a
+        named set, as it has none at a named country."""
+        dates = DateRequest(window=TimeWindow(start_year=start, end_year=end), latest=False)
+        shape = _synthetic_shape("from-2005", members=[_SPAN_SV])
+        (at_set,), failed = read_menu_availability(
+            [shape], graph=_span_graph(_SET_MEMBERS), places=_SET_MEMBERS, deadline=None
+        )
+        facets = _span_graph(["country/GHA"]).observation_facets(
+            stat_var=_SPAN_SV, entity="country/GHA"
+        )
+        at_country = dataclasses.replace(
+            shape,
+            place_available=True,
+            member_coverage={_SPAN_SV: {"country/GHA": observed_years(facets)}},
+            availability_places=frozenset({"country/GHA"}),
+        )
+
+        assert failed is False
+        assert _subject_has_data(at_set, dates, asked=_SET_MEMBERS) is has_data
+        assert _subject_has_data(at_country, dates, asked=["country/GHA"]) is has_data
+
+
+def test_an_absence_read_at_the_named_country_alone_is_unknown_for_a_set_and_notes_nothing():
+    """A part naming Kenya and Africa whose menu holds one shape makes no menu read over
+    Africa's places (`phase_rank_bind`), though they are unread (`menu_read_places`). The
+    shape keeps derive's absence at Kenya, which settles nothing at Africa: D is unknown,
+    and since no read was made and lost, no degraded read is noted."""
+    state = _pruning_state(
+        {
+            "Kenya": PlaceSet(
+                name="Kenya", kind="place", node=PlaceNode(dcid="country/KEN", graph_type="Country")
+            ),
+            "Africa": _set("Africa", ("africa", "Continent"), "Country"),
+        }
+    )
+    shape = dataclasses.replace(
+        _synthetic_shape("absent-at-kenya", members=[_SPAN_SV]),
+        place_available=False,
+        member_coverage={_SPAN_SV: {}},
+        availability_places=frozenset({"country/KEN"}),
+    )
+
+    with recording_degraded_reads() as record:
+        has_data = has_data_where_asked(state, shape)
+
+    assert menu_read_places(state.place_sets, ["country/KEN"]) != []
+    assert has_data is None
+    assert record.reads == []

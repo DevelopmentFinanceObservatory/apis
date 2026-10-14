@@ -1,4 +1,10 @@
 {
+  "DACMultilaterals": ["multilaterals"],
+  "DACOfficialDonors": ["official donors"],
+  "DACOtherMultilateralOrganisations": ["other multilateral organisations"],
+  "DACPrivateDonors": ["private donors"],
+  "DACRegionalDevelopmentBanks": ["regional development banks"],
+  "DACUnitedNations": ["UN agencies", "UN entities"],
   "InternationalBankForReconstructionAndDevelopment": ["World Bank"],
   "InternationalDevelopmentAssociation": ["World Bank"],
   "InternationalMonetaryFund": ["IMF"],

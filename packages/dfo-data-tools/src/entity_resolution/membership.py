@@ -492,9 +492,27 @@ def build_regions(
 
 
 def build_policy(resolver: Resolver, *, groups: GroupRegistry) -> MembershipPolicy:
-    """The policy over `groups` and resolvekit's regions, sharing the groups' sovereignty."""
+    """The policy over `groups` and resolvekit's regions, sharing the groups' sovereignty.
+
+    A group whose id `group_ids.json` maps to a region the policy holds ("Africa (DAC)" to
+    `africa`) is answered by that region, so the policy holds the region alone under the id.
+
+    Raises:
+        ValueError: such a group's members under the default projection differ from the
+            region's.
+    """
     regions, omitted = build_regions(resolver, sovereignty=groups.sovereignty)
-    return MembershipPolicy([*groups, *regions], omitted_regions=omitted)
+    regions_by_ref = {region.ref: region for region in regions}
+    kept: list[Membership] = []
+    for group in groups:
+        region = regions_by_ref.get(group.ref)
+        if region is None:
+            kept.append(group)
+        elif group.members() != region.members():
+            raise ValueError(
+                f"group {group.entity_id!r} maps to region {group.ref!r} but their members differ"
+            )
+    return MembershipPolicy([*kept, *regions], omitted_regions=omitted)
 
 
 def _countries_within(resolver: Resolver, container: str) -> list[EntityRecord]:

@@ -66,6 +66,7 @@ from tests.engine._harness import (
     _csv_row,
     walk_options,
 )
+from tests.engine._request_log import _UNRECORDED_METHODS
 from tests.engine.test_cited_sources import (
     _ALAND,
     _ALT,
@@ -85,7 +86,11 @@ from tests.fixtures import FakeGraph
 from tests.materialise.conftest import FakeGraphReader
 
 _CLAND = "country/CCC"
-_GRAPH_METHODS = frozenset(name for name in dir(EngineGraphClient) if not name.startswith("_"))
+_GRAPH_METHODS = frozenset(
+    name
+    for name in dir(EngineGraphClient)
+    if not name.startswith("_") and name not in _UNRECORDED_METHODS
+)
 
 
 def _year_unavailable_shown(spec: Spec) -> list[str | None]:
@@ -216,8 +221,6 @@ _DISCOVERED_PINNED_RESUBMIT = [
     "node_labels_batch",
 ]
 _STANDARD_FIRST = [
-    # The engine entry resolves through the event stream (`core.resolve_events`).
-    "declares_facet_defaults",
     "detect_svs",
     "node_arcs_many",
     "node_arcs_batch",

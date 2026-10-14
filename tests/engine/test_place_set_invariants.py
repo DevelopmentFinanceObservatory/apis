@@ -726,6 +726,7 @@ def test_a_set_named_by_two_texts_binds_its_members_when_either_asks(
             "label": LABEL[node],
             "entity_type": NODE_TYPE[node],
             "total": None,
+            "group_id": None,
         }
 
 
@@ -761,6 +762,7 @@ def test_a_set_on_a_flow_role_asked_for_its_members_binds_them(
         "label": LABEL[node],
         "entity_type": NODE_TYPE[node],
         "total": None,
+        "group_id": None,
     }
     check_three_doors(doors, AID, asked)
 
@@ -937,6 +939,7 @@ def test_a_role_carries_a_group_only_when_it_binds_that_sets_members(
             "label": LABEL[carrier],
             "entity_type": NODE_TYPE[carrier],
             "total": None,
+            "group_id": None,
         }
     )
 
@@ -956,6 +959,7 @@ def test_a_region_named_in_other_words_carries_the_graphs_label(doors: Doors) ->
         "label": LABEL[AFRICA],
         "entity_type": NODE_TYPE[AFRICA],
         "total": None,
+        "group_id": None,
     }
 
 
@@ -1046,15 +1050,19 @@ _SSA_TEXTS = [LABEL[SUB_SAHARAN], SUB_SAHARAN_ALIAS]
     ],
 )
 def test_a_direction_refusal_names_each_untold_set_once(
-    doors: Doors,
+    monkeypatch: pytest.MonkeyPatch,
     texts: list[str | ParsedEntity],
     others: list[str | ParsedEntity],
     untold: list[str] | None,
     reverse: bool,
 ) -> None:
-    """Aid needs each place's direction. A set no text of which is directed is named once,
-    by a text the request posted for it. A pin's key is not used, and a set one text
-    directs is not named. With no `untold` given, the name is the first text posted."""
+    """Aid needs each place's direction. With no aid flow in either direction, no reading of
+    an unstated direction holds data, so the answer refuses. A set no text of which is
+    directed is named once, by a text the request posted for it. A pin's key is not used,
+    and a set one text directs is not named. With no `untold` given, the name is the first
+    text posted."""
+    monkeypatch.setattr(world, "FLOW_DATA", {**world.FLOW_DATA, AID: ()})
+    doors = Doors(monkeypatch)
     ordered = texts[::-1] if reverse else texts
 
     response = doors.first_answer(AID, *ordered, *others)
@@ -1062,6 +1070,22 @@ def test_a_direction_refusal_names_each_untold_set_once(
     first = ordered[0]
     expected = untold or [first if isinstance(first, str) else first.text]
     assert no_data_terms(response) == ("role_not_resolved", expected)
+
+
+def test_a_set_named_without_a_direction_takes_the_one_role_left_that_holds_data(
+    doors: Doors,
+) -> None:
+    """France gives aid, and Africa, named with no direction, can only receive it: the
+    providing role is France's. Aid flows from France to Africa's members, so the answer
+    reads Africa as the recipient and states the direction it inferred."""
+    response = doors.first_answer(AID, "Africa", origin("France"))
+
+    spec = the_spec(response)
+    assert sorted(bound(spec)) == ["destination", "origin"]
+    (part,) = response.parts
+    assert [(d.code, d.asked) for d in part.departures if d.code == "direction_inferred"] == [
+        ("direction_inferred", "Africa")
+    ]
 
 
 def test_a_groups_pinned_node_alone_is_one_place(doors: Doors) -> None:
@@ -1258,6 +1282,7 @@ def test_a_resubmit_states_a_kept_group_as_the_graph_does(doors: Doors, node: st
         "label": LABEL[node],
         "entity_type": NODE_TYPE[node],
         "total": None,
+        "group_id": None,
     }
 
 

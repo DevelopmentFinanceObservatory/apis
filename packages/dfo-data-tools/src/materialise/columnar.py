@@ -10,7 +10,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 
 from dc_sdmx.errors import SdmxResponseError
-from dc_sdmx.results import ATTRIBUTE_COLUMNS, VALUE_COLUMN, VARIABLE_COLUMN
+from dc_sdmx.results import ATTRIBUTE_COLUMNS, VALUE_COLUMN, VARIABLE_COLUMN, observed_value
 from materialise.facets import CoverageAdmission, FacetSelection, PlaceAdmission, RowAdmission
 from materialise.window import (
     AppliedWindow,
@@ -89,10 +89,11 @@ def _map_dictionary_values(
 
 
 def observed_values(values: pa.Array | pa.ChunkedArray) -> pa.Array:
-    """Parses `OBS_VALUE` as `float64`. Nulls, empty strings, and invalid values become null.
-    Matches `SdmxObservation.value_as_float`: NaN and infinities count as observations.
-    `pc.cast` handles `_NUMERIC_RE` matches. Python `float()` handles residual whitespace
-    and digit-grouping underscores, with `ValueError` mapped to null."""
+    """Parses `OBS_VALUE` as `float64` by the rule of `dc_sdmx.results.observed_value`:
+    nulls, empty strings, and invalid values become null, and NaN and infinities count as
+    observations. `pc.cast` handles `_NUMERIC_RE` matches, which parse alike, and
+    `observed_value` itself the residual cells, such as those with whitespace or
+    digit-grouping underscores."""
     if not isinstance(values, pa.Array):
         values = values.combine_chunks()
     is_valid = pc.is_valid(values)
@@ -119,16 +120,7 @@ def observed_values(values: pa.Array | pa.ChunkedArray) -> pa.Array:
     is_residual = residual.to_pylist()
     merged: list[float | None] = []
     for raw_value, cast_value, residual_flag in zip(raw, cast_values, is_residual, strict=True):
-        if not residual_flag:
-            merged.append(cast_value)
-            continue
-        if raw_value is None:
-            merged.append(None)
-            continue
-        try:
-            merged.append(float(raw_value))
-        except ValueError:
-            merged.append(None)
+        merged.append(observed_value(raw_value) if residual_flag else cast_value)
     return pa.array(merged, type=pa.float64())
 
 
@@ -160,16 +152,40 @@ def range_window_mask(table: pa.Table, *, window: RequestedWindow) -> pa.Boolean
     return pc.and_(lower_ok, upper_ok)
 
 
-def latest_rows(table: pa.Table) -> pa.Table:
+def year_mask(table: pa.Table, *, year: int) -> pa.BooleanArray:
+    """Keeps rows whose `TIME_PERIOD` leads with `year`. Null or unparseable years fail."""
+    in_year = _as_boolean_array(pc.equal(leading_years(table), pa.scalar(year, type=pa.int64())))
+    return _as_boolean_array(pc.fill_null(in_year, _FALSE_SCALAR))
+
+
+def latest_rows(table: pa.Table, *, year: int | None = None) -> pa.Table:
     """Keeps the rows at the table's latest period (`window.latest_period` over its distinct
     `TIME_PERIOD`s), in input order. A table holding one StatVar's rows keeps the one period
-    its `latest` window serves, and only the series holding it. Rows without a parseable
-    period are dropped. Empty input returns empty."""
+    its `latest` window serves when it elected no year, and only the series holding it. With
+    `year`, the year the StatVar elected, the rows at the newest period in `year` are kept
+    beside them, for `elected_rows` to choose between. Rows without a parseable period are
+    dropped. Empty input returns empty."""
     periods = table[_TIME_PERIOD_COLUMN]
-    latest = latest_period(pc.unique(periods).to_pylist())
-    if latest is None:
-        return table.slice(0, 0)
-    return table.filter(pc.equal(periods, pa.scalar(latest, type=pa.string())))
+    distinct = pc.unique(periods).to_pylist()
+    kept = [
+        period
+        for period in (latest_period(distinct), latest_period(distinct, year=year))
+        if period is not None
+    ]
+    return table.filter(pc.is_in(periods, value_set=pa.array(kept, type=pa.string())))
+
+
+def elected_rows(table: pa.Table, *, year: int | None) -> pa.Table:
+    """The rows a `latest` window serves of `table`, one StatVar's rows after `latest_rows`.
+    These are the rows at the newest period in `year`, the year the StatVar elected, or all
+    of `table` when no row falls in `year` or `year` is None. `table` then holds the newest
+    period any series holds alone, which a StatVar whose elected year no row holds falls
+    back to."""
+    periods = table[_TIME_PERIOD_COLUMN]
+    elected = latest_period(pc.unique(periods).to_pylist(), year=year) if year is not None else None
+    if elected is None:
+        return table
+    return table.filter(pc.equal(periods, pa.scalar(elected, type=pa.string())))
 
 
 def selection_mask(table: pa.Table, *, selections: Mapping[str, FacetSelection]) -> pa.BooleanArray:

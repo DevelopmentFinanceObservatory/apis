@@ -54,7 +54,6 @@ from search.engine.region import (
     resolve_spec_resubmit,
     resubmit_promote,
 )
-from search.engine.region.candidates import resolve_candidates
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.result import RegionResult
 from search.engine.region.state import EngineOptions
@@ -188,9 +187,9 @@ _MAX_CANDIDATES = 10
 # hands back the UN deployment's availability client, whose reads are the wire calls.
 _NO_WIRE = frozenset(
     {
-        "declares_facet_defaults",
         "default_facet_policy",
         "generation_stamp",
+        "observation_read_groups",
         "scope_availability",
         "source_key",
         "un_availability",
@@ -315,13 +314,6 @@ class _Recording:
 
 class _Graph(_Recording, FakeGraph):
     _client = "graph"
-
-
-class _DeclaringGraph(_Graph):
-    """A graph that can declare a default facet, and declares none."""
-
-    def declares_facet_defaults(self) -> bool:
-        return True
 
 
 class _Sdmx(_Recording, FakeSdmxClient):
@@ -521,21 +513,6 @@ def log_unit_decisions(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(module, "decide_part_unit", decide)
 
 
-def emit_bind_stage_sentence(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Have every first pass emit a sentence before its phases run, as a measure-elected
-    bind stage does while its materialise runs."""
-    real = pipeline._run_phases
-
-    async def run(state):
-        if state.pool == "ours" and state.emit is not None:
-            await state.emit(
-                SentenceEvent(variable_index=0, spec_id="bind_stage", sentence_plan=[], slots=[])
-            )
-        return await real(state)
-
-    monkeypatch.setattr(pipeline, "_run_phases", run)
-
-
 def log_relaxation_walks(monkeypatch: pytest.MonkeyPatch) -> None:
     """Log the requests each nearest-real relaxation's member walk makes
     (`grounding._walked_relaxations`), and the ticks it starts and ends at."""
@@ -597,13 +574,10 @@ def log_facet_options(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def log_phases(monkeypatch: pytest.MonkeyPatch) -> None:
     """Log, as each phase of either door begins, how many requests the answer has made
-    (`Recorder.phases`). `resolve_candidates` stays as it is: the first door picks it out by
-    identity."""
+    (`Recorder.phases`), and as the first door's grounding of its elected shape begins
+    (`phase_answer._ground_elected_answer`), a step of its outcome stage."""
 
     def logged(phase):
-        if phase is resolve_candidates:
-            return phase
-
         def begin() -> None:
             if _ACTIVE:
                 _ACTIVE[-1].phases.append((phase.__name__, len(_ACTIVE[-1].requests)))
@@ -623,6 +597,9 @@ def log_phases(monkeypatch: pytest.MonkeyPatch) -> None:
         return run
 
     monkeypatch.setattr(pipeline, "_PHASES", tuple(logged(p) for p in pipeline._PHASES))
+    monkeypatch.setattr(
+        phase_answer, "_ground_elected_answer", logged(phase_answer._ground_elected_answer)
+    )
     monkeypatch.setattr(
         resubmit_promote,
         "_PROMOTE_PHASES",
@@ -655,7 +632,8 @@ class Row:
     """A series of `stat_var` under `facet_id` at `place`, from `creditor` on a role route.
 
     `years` are the years the coverage index and the graph state. `sdmx_years`, when given,
-    are the years SDMX returns instead, for an index ahead of or behind SDMX."""
+    are the years SDMX returns instead, for an index ahead of or behind SDMX. SDMX returns
+    the rows of `blank_years` with an empty value."""
 
     stat_var: str
     facet_id: str
@@ -663,6 +641,7 @@ class Row:
     years: tuple[int, ...]
     creditor: str = CREDITOR
     sdmx_years: tuple[int, ...] | None = None
+    blank_years: tuple[int, ...] = ()
 
     @property
     def read_years(self) -> tuple[int, ...]:
@@ -891,24 +870,22 @@ class World:
         return obs
 
     @cached_property
-    def _graphs(self) -> dict[tuple[str | None, bool], FakeGraph]:
+    def _graphs(self) -> dict[str | None, FakeGraph]:
         return {}
 
-    def graph(self, query: str | None = None, *, declares_defaults: bool = False) -> FakeGraph:
+    def graph(self, query: str | None = None) -> FakeGraph:
         """The graph a door reads, detecting the world's variables for `query`. One graph
         serves every answer to the same query."""
-        if (query, declares_defaults) not in self._graphs:
+        if query not in self._graphs:
             scores = [0.9 - 0.05 * i for i in range(len(self.stat_vars))]
             detect = {query: {"svs": list(self.stat_vars), "cosine_scores": scores}}
-            self._graphs[query, declares_defaults] = (
-                _DeclaringGraph if declares_defaults else _Graph
-            )(
+            self._graphs[query] = _Graph(
                 nodes=self._nodes,
                 obs=self._graph_obs,
                 detect=detect if query else {},
                 resolve={name: dcid for dcid, name in PLACE_NAMES.items()},
             )
-        return self._graphs[query, declares_defaults]
+        return self._graphs[query]
 
     @cached_property
     def sdmx(self) -> FakeSdmxClient:
@@ -929,7 +906,9 @@ class World:
                     latest_date=dates[-1],
                     obs_count=len(dates),
                     dates=dates,
-                    values=(1.0,) * len(dates),
+                    values=tuple(
+                        None if year in row.blank_years else 1.0 for year in row.read_years
+                    ),
                 )
             )
         return _Sdmx(
@@ -940,7 +919,8 @@ class World:
 
     def _materialise_rows(self, request: httpx.Request) -> httpx.Response:
         """Serve the rows a materialise read names: its variable, bound roles and facet
-        ids, each series' latest row alone under `LATEST`."""
+        ids, each series' latest row alone under `LATEST` and its rows at the periods the
+        read names."""
         params = request.url.params
         stat_var = params.get("c[variableMeasured]", "").removeprefix("dcid:")
         _record("materialise_sdmx", "GET" + RATE_TABLE_READ if stat_var == _RATES else "GET")
@@ -954,19 +934,22 @@ class World:
         place_key = "c[debtor]" if self.role else "c[observationAbout]"
         places = params[place_key].split(",") if place_key in params else None
         facet_ids = params["c[facetId]"].split(",") if "c[facetId]" in params else None
-        latest = params.get("c[TIME_PERIOD]") == "LATEST"
+        period = params.get("c[TIME_PERIOD]")
         for row in self.rows:
             if row.stat_var != stat_var or (places is not None and row.place not in places):
                 continue
             if facet_ids is not None and row.facet_id not in facet_ids:
                 continue
-            for year in row.read_years[-1:] if latest else row.read_years:
+            years = row.read_years[-1:] if period == "LATEST" else row.read_years
+            if period not in (None, "LATEST"):
+                years = tuple(year for year in years if str(year) in period.split(","))
+            for year in years:
                 body += _csv_row(
                     stat_var=row.stat_var,
                     role_dcids=[row.creditor, row.place] if self.role else [row.place],
                     fixture=_fixture(row.facet_id),
                     date_str=str(year),
-                    value=1.0,
+                    value=None if year in row.blank_years else 1.0,
                 )
         return httpx.Response(200, text=body, headers={"content-type": _SDMX_CSV_CONTENT_TYPE})
 
@@ -1035,17 +1018,15 @@ class World:
         *,
         preview: bool,
         unit_text: str | None,
-        declares_defaults: bool = False,
     ) -> Answer:
         """The first door: a query naming `places` in that order, or none when the route
-        discovers its destinations, over a graph that can declare a default facet when
-        `declares_defaults`."""
+        discovers its destinations."""
         names = [] if self.discovered else [PLACE_NAMES[p] for p in places]
         if self.role:
             query = "debt flows" + (f" to {' and '.join(names)}" if names else "")
         else:
             query = "amount in " + " and ".join(names)
-        graph = self.graph(query, declares_defaults=declares_defaults)
+        graph = self.graph(query)
         pre_resolved = self._resolved_places
         bindings = (
             [

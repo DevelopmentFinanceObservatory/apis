@@ -677,9 +677,6 @@ class OriginGraphClient:
     def currency_units(self, *, deadline: float | None = None) -> dict[str, str]:
         return self._ours.currency_units(deadline=deadline)
 
-    def declares_facet_defaults(self) -> bool:
-        return self._ours.declares_facet_defaults()
-
     def default_facet_policy(self, *, stat_var: str, axis: str) -> FacetDefaultPolicy | None:
         return self._ours.default_facet_policy(stat_var=stat_var, axis=axis)
 
@@ -712,6 +709,32 @@ class OriginGraphClient:
                 part, entities, needs_dates, max_bytes=max_bytes, domains=domains, deadline=deadline
             ),
         )
+
+    def observation_read_groups(
+        self, stat_vars: Sequence[str], entities: Sequence[str], needs_dates: bool = False
+    ) -> list[list[str]]:
+        """`stat_vars` split, in order, into the groups an `observation_facets_batch` read of
+        them at `entities` sends apart: a new group starts at each StatVar that starts a
+        request group of the UN backend, which reads by GET under a URL budget
+        (`GraphClient.observation_read_groups`). Our mixer names every StatVar of a read in
+        one POST, so a read naming none of the UN's admitted variables is one group. A
+        caller that may stop reading early reads a group at a time."""
+        if not stat_vars:
+            return []
+        catalogue = current_catalogue()
+        _, un = self._split_variables(catalogue, stat_vars)
+        if not un:
+            return [list(stat_vars)]
+        un_groups = self._un_observations(catalogue).observation_read_groups(
+            un, entities, needs_dates
+        )
+        starts = {group[0] for group in un_groups[1:]}
+        groups: list[list[str]] = [[]]
+        for stat_var in stat_vars:
+            if stat_var in starts:
+                groups.append([])
+            groups[-1].append(stat_var)
+        return groups
 
     def observation_facets_batch_many(
         self,

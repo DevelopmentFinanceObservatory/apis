@@ -1,7 +1,7 @@
 """UN System Data Commons rows read through the graph reader the served search app builds:
 `LiveGraphClient.from_search_settings`, as `_open_search_deps` builds it. It returns the
-origin client's UN reader, so a UN preview and the gap fill's second pass read rows through
-it, embedded in a buffered answer and in the streamed answer's trailing observations
+origin client's UN reader, so a UN preview and an answer electing a UN series read rows
+through it, embedded in a buffered answer and in the streamed answer's trailing observations
 event."""
 
 from __future__ import annotations
@@ -17,12 +17,10 @@ import search.engine.clients.graph_client as graph_client_module
 from dc_sdmx import SdmxClient
 from materialise.graph import GraphReader
 from origin_catalogue.graph import OriginGraphClient, build_graph_client
-from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.graph_client import LiveGraphClient
 from search.engine.clients.materialise_bridge import build_materialise_sdmx_client
 from search.engine.concurrency import scoped_concurrency
 from search.engine.config import settings
-from search.engine.quantity_read import QuantityOutput
 from search.engine.region.codes import _ObsProbeResult
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.result import RegionResult
@@ -30,7 +28,7 @@ from search.engine.region.state import EngineOptions
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import build_observations_planned
-from tests.engine._quantity import NO_QUANTITY
+from tests.engine.test_pool_election import _ElectLLM
 from tests.fixtures import FakeGraph, make_resolver
 from tests.materialise.un_deployment import (
     OURS_API,
@@ -118,14 +116,14 @@ def test_a_un_preview_reads_its_rows_through_the_served_reader(
     assert [(p.date, p.value) for p in series.points] == UN_SERIES[_KEN]
 
 
-def _sv_node(dcid: str) -> dict:
+def _sv_node(dcid: str, *, population_type: str) -> dict:
     return {
         "label": dcid,
         "type": "StatisticalVariable",
         "arcs": {
             "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
             "name": {"nodes": [{"value": dcid}]},
-            "populationType": {"nodes": [{"dcid": "Person"}]},
+            "populationType": {"nodes": [{"dcid": population_type}]},
             "measuredProperty": {"nodes": [{"dcid": "mortalityRate"}]},
             "statType": {"nodes": [{"dcid": "measuredValue"}]},
             "constraintProperties": {"nodes": []},
@@ -133,20 +131,12 @@ def _sv_node(dcid: str) -> dict:
     }
 
 
-class _ElectFirstLLM:
-    async def generate_structured(self, *, prompt, system, schema):
-        if schema is QuantityOutput:
-            return NO_QUANTITY
-        usage = {"input_tokens": 1, "output_tokens": 1, "cached_tokens": 0}
-        return _UniversalBindOutput(chosen_shape_index=0, bindings=[], ask=None), usage
-
-
-def _gap_fill_graph() -> FakeGraph:
+def _un_answer_graph() -> FakeGraph:
     return FakeGraph(
         nodes={
             _KEN: {"label": "Kenya", "type": "Country"},
-            _OURS_VARIABLE: _sv_node(_OURS_VARIABLE),
-            UN_VARIABLE: _sv_node(UN_VARIABLE),
+            _OURS_VARIABLE: _sv_node(_OURS_VARIABLE, population_type="Person"),
+            UN_VARIABLE: _sv_node(UN_VARIABLE, population_type=f"{UN_VARIABLE}/series"),
         },
         # Resolve reads the facet the UN deployment serves the preview.
         obs={
@@ -167,8 +157,8 @@ def _gap_fill_graph() -> FakeGraph:
     )
 
 
-async def _gap_fill(options: EngineOptions) -> RegionResult:
-    graph = _gap_fill_graph()
+async def _un_answer(options: EngineOptions) -> RegionResult:
+    graph = _un_answer_graph()
     return await resolve_variable(
         _QUERY,
         entities=["Kenya"],
@@ -179,18 +169,18 @@ async def _gap_fill(options: EngineOptions) -> RegionResult:
         graph=graph,
         resolver=make_resolver(graph),
         sdmx=FakeSdmxClient(observations={}, availability={}),
-        llm=_ElectFirstLLM(),
+        llm=_ElectLLM(UN_VARIABLE),
         base_timing={},
         coverage=empty_coverage_snapshot(),
         options=options,
     )
 
 
-def test_the_buffered_gap_fill_embeds_un_rows_read_through_the_served_reader(
+def test_a_buffered_un_answer_embeds_un_rows_read_through_the_served_reader(
     served_graph: LiveGraphClient, served_sdmx: SdmxClient
 ) -> None:
     result = asyncio.run(
-        _gap_fill(
+        _un_answer(
             EngineOptions(
                 include_observations=True,
                 materialise_graph=served_graph,
@@ -207,12 +197,12 @@ def test_the_buffered_gap_fill_embeds_un_rows_read_through_the_served_reader(
     assert [p.value for p in series.points] == [value for _, value in UN_SERIES[_KEN]]
 
 
-def test_the_streamed_gap_fill_enriches_with_un_rows_read_through_the_served_reader(
+def test_a_streamed_un_answer_enriches_with_un_rows_read_through_the_served_reader(
     served_graph: LiveGraphClient, served_sdmx: SdmxClient
 ) -> None:
     async def resolve_and_enrich() -> tuple[RegionResult, _ObsProbeResult]:
         async with scoped_concurrency():
-            result = await _gap_fill(
+            result = await _un_answer(
                 EngineOptions(
                     include_observations=True,
                     stream_observations=True,

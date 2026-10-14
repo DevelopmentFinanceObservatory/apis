@@ -170,9 +170,10 @@ class TestResolveEndpoint:
         from search.engine.errors import GraphInfraError
 
         class ErrorGraph(FakeGraph):
-            # Skip fixture loading. Every graph operation raises below.
+            # Keep FakeGraph's base state for resolver batch confirmation; the intended
+            # detect_svs failure below still controls this test's error path.
             def __init__(self):
-                pass
+                super().__init__()
 
             def node_label(self, dcid):
                 raise GraphInfraError("simulated error")
@@ -314,9 +315,10 @@ class TestResolveEndpoint:
         from search.engine.errors import GraphInfraError
 
         class _UpstreamErrorGraph(FakeGraph):
-            # Skip fixture loading so the overrides handle each graph call.
+            # Keep FakeGraph's base state for resolver batch confirmation; the intended
+            # detect_svs failure below still controls this test's error path.
             def __init__(self):
-                pass
+                super().__init__()
 
             def node_label(self, dcid):
                 raise GraphInfraError("not found", upstream_status=404)
@@ -363,9 +365,10 @@ class TestResolveEndpoint:
         from search.engine.errors import GraphInfraError
 
         class _ServerErrorGraph(FakeGraph):
-            # Skip fixture loading so the overrides handle each graph call.
+            # Keep FakeGraph's base state for resolver batch confirmation; the intended
+            # detect_svs failure below still controls this test's error path.
             def __init__(self):
-                pass
+                super().__init__()
 
             def node_label(self, dcid):
                 raise GraphInfraError("server error", upstream_status=500)

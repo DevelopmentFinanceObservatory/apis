@@ -42,8 +42,10 @@ from datasets_api.manifest_models import (
     Manifest,
     TransformationStepModel,
 )
+from datasets_api.render import DerivedVersion
 from datasets_api.versions import VersionRecord
 from description.citation import citation_line
+from dfo_platform.roles import FlowFamily, role_wording
 from materialise import (
     EnrichmentLookup,
     MaterialisationResult,
@@ -1032,11 +1034,19 @@ def test_a_manifest_citation_routes_through_the_dfo_as_the_version_s_steps_do(
         assert manifest.output_options is not None
         manifest = collapsed_head_manifest(
             manifest=manifest,
-            collapse_frame=frame,
+            derived=DerivedVersion(
+                frame_chunks=lambda: iter((frame,)),
+                role_columns=(),
+                rows=frame.num_rows,
+                distinct={},
+                frame_sha256="",
+                content_version="cv_fixture_collapsed",
+                summed=True,
+                party_totals_left_out=(),
+            ),
             artifact=_ARTIFACT_ENTRY,
             statistics_artifact=_ARTIFACT_ENTRY,
             series_count=1,
-            content_version="cv_fixture_collapsed",
             output_options=manifest.output_options,
         )
 
@@ -1252,7 +1262,12 @@ def test_assemble_manifest_reports_the_injected_declarations_not_the_singletons(
     assert axes == {"syntheticAxis"}
 
 
-def test_coverage_dimensions_name_the_flow_axis_of_their_declared_role() -> None:
+@pytest.mark.parametrize("family", [None, "aid", "debt_service", "debt_stock", "debt_lending"])
+def test_coverage_dimensions_name_their_flow_axis_and_its_members(
+    family: FlowFamily | None,
+) -> None:
+    """The family words the members a flow dimension counts (`role_wording`), which its
+    label does not: `financingProvider` counts providers of aid and creditors of debt."""
     coverage = Coverage(
         rows=3,
         dimensions=(
@@ -1263,13 +1278,31 @@ def test_coverage_dimensions_name_the_flow_axis_of_their_declared_role() -> None
         window=None,
     )
 
-    model = coverage_model(coverage)
+    dumped = coverage_model(coverage, family=family).model_dump(mode="json")["dimensions"]
 
-    assert [(d.label, d.axis) for d in model.dimensions] == [
-        ("financingProvider", "origin"),
-        ("financingRecipient", "destination"),
-        ("years", None),
+    wording = role_wording(family)
+    assert dumped == [
+        {
+            "label": "financingProvider",
+            "count": 2,
+            "axis": "origin",
+            "noun": {"singular": wording.origin.singular, "plural": wording.origin.plural},
+        },
+        {
+            "label": "financingRecipient",
+            "count": 1,
+            "axis": "destination",
+            "noun": {
+                "singular": wording.destination.singular,
+                "plural": wording.destination.plural,
+            },
+        },
+        {"label": "years", "count": 3, "axis": None},
     ]
+    assert (dumped[0]["noun"]["plural"] == "creditors") == (family in _DEBT_FAMILIES)
+
+
+_DEBT_FAMILIES = ("debt_service", "debt_stock", "debt_lending")
 
 
 def test_a_stored_coverage_dimension_without_an_axis_carries_it_once_loaded() -> None:

@@ -708,7 +708,7 @@
   "latest/destination": {
     "bulk_preview": {
       "entities": {
-        "financingProvider": 86
+        "financingProvider": 87
       },
       "facet_id": "17650800455313554206",
       "order": "ranked",
@@ -720,13 +720,13 @@
       ],
       "time_period": null,
       "to_fetch": {
-        "pairs": 8952,
-        "sha256": "fdf7334a57d09143e861eb0f8044082747cebfe51a20b3511b9b8e3e0e41c5df"
+        "pairs": 9192,
+        "sha256": "4541149150cc34b5035cc24dcf2b3fd2f3e2fe957c8ee4513fe1ae012b4d3428"
       },
-      "total_population": 8952,
+      "total_population": 9192,
       "unshipped_obs": 0
     },
-    "sha256": "89829baeceeb6ede4e9f79b294cf50a6c99344e147dacf204672f4f25e8eae28",
+    "sha256": "73788e76fec935ee99aee743a934bbaac30695c62a50819f8697c2be66b788ad",
     "summary": {
       "candidate_count": 3913,
       "coverage": {
@@ -759,7 +759,7 @@
       },
       "headline": {
         "named_window": null,
-        "observations": 6179,
+        "observations": 6092,
         "recent_years": [
           {
             "observations": 6179,
@@ -793,7 +793,7 @@
           "financingProvider": 84,
           "financingRecipient": 150
         },
-        "series": 6179,
+        "series": 6092,
         "year": 2024,
         "year_named": false
       },
@@ -805,7 +805,7 @@
   "latest/origin": {
     "bulk_preview": {
       "entities": {
-        "financingProvider": 86
+        "financingProvider": 87
       },
       "facet_id": "17650800455313554206",
       "order": "ranked",
@@ -817,19 +817,19 @@
       ],
       "time_period": null,
       "to_fetch": {
-        "pairs": 8952,
-        "sha256": "fdf7334a57d09143e861eb0f8044082747cebfe51a20b3511b9b8e3e0e41c5df"
+        "pairs": 9192,
+        "sha256": "4541149150cc34b5035cc24dcf2b3fd2f3e2fe957c8ee4513fe1ae012b4d3428"
       },
-      "total_population": 8952,
+      "total_population": 9192,
       "unshipped_obs": 0
     },
-    "sha256": "384c0d05436021768e6941d07b355cf27f1e6162a23213ece51192d0d6d5e039",
+    "sha256": "862b64db51250cefd1fe042c3e06af5759d004079d93ab7536db17ef6b5ccee2",
     "summary": {
       "candidate_count": 3913,
       "coverage": {
         "dimensions": [
           {
-            "count": 86,
+            "count": 87,
             "label": "providers"
           },
           {
@@ -856,7 +856,7 @@
       },
       "headline": {
         "named_window": null,
-        "observations": 6179,
+        "observations": 6092,
         "recent_years": [
           {
             "observations": 6179,
@@ -890,7 +890,7 @@
           "financingProvider": 84,
           "financingRecipient": 150
         },
-        "series": 6179,
+        "series": 6092,
         "year": 2024,
         "year_named": false
       },

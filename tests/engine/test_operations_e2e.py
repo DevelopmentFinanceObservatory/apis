@@ -624,7 +624,8 @@ def test_an_operation_over_another_category_leaves_the_flow_default_in_place():
 
 def test_an_operation_phrase_sends_bind_the_prompt_a_dropped_qualifier_did():
     """A phrase extract records as an operation instead of a dropped qualifier renders
-    into the same bind prompt, so a recorded bind response still replays."""
+    into the same bind prompt but for the frame, which states the operation and the axis it
+    opens."""
     as_dropped = _ScriptedLLM(_extraction(dropped_qualifiers=["top 5 donors"]))
     as_operation = _ScriptedLLM(
         _extraction(
@@ -641,8 +642,14 @@ def test_an_operation_phrase_sends_bind_the_prompt_a_dropped_qualifier_did():
             sdmx=_EMPTY_SDMX,
         )
 
-    assert "DROPPED QUALIFIERS" in as_operation.bind_prompts[_QUERY]
-    assert as_operation.bind_prompts == as_dropped.bind_prompts
+    operation_prompt = as_operation.bind_prompts[_QUERY]
+    assert "DROPPED QUALIFIERS" in operation_prompt
+    assert "  operations: rank over origin [extraction]\n" in operation_prompt
+    assert "  open roles: origin [extraction]\n" in operation_prompt
+    as_frame_without = operation_prompt.replace(
+        "  operations: rank over origin [extraction]\n", "  operations: none [extraction]\n"
+    ).replace("  open roles: origin [extraction]\n", "  open roles: none [extraction]\n")
+    assert as_frame_without == as_dropped.bind_prompts[_QUERY]
 
 
 def test_only_the_variable_an_operation_names_carries_it_or_sends_it_to_bind():

@@ -196,23 +196,26 @@ def _grade_confidence(
     has_data: bool,
     available_at_place: bool,
     retrieved: bool = True,
-    near_neighbor_relevant: bool = False,
+    rival: bool = False,
+    sole_reading: bool = False,
 ) -> Confidence:
-    """Grade available results against `weak_score_threshold`.
+    """Grade a reading's confidence. Scores set no status (`status_rule`); they reach
+    confidence only here.
 
-    Unavailable data is low confidence. An unscored retrieved shape is medium. A
-    client-posted identity (`retrieved=False`) with data is high because it has no retrieval
-    score to assess. A relevant near-neighbour tie caps a retrieved shape at medium, and
-    a weak score beside it is low.
+    Unavailable data is low. A reading with data that is the only admissible reading with
+    data where the question asks (`sole_reading`) is high, since the frame admitting one
+    reading corroborates it, and so is a client-posted identity (`retrieved=False`) with
+    data, which has no retrieval score to assess. Otherwise a weak or missing score is
+    medium, and a weak score low beside a structural or nominated rival (`rival`).
     """
     if not available_at_place:
         return "low"
-    if has_data and not retrieved:
+    if has_data and (not retrieved or sole_reading):
         return "high"
     weak = not has_data or score is None or score < settings().weak_score_threshold
-    if weak and near_neighbor_relevant and score is not None:
+    if weak and rival and score is not None:
         return "low"
-    if weak or near_neighbor_relevant:
+    if weak:
         return "medium"
     return "high"
 
@@ -223,18 +226,17 @@ def _place_confidence(
     available_at_place: bool | None,
     representative_score: float | None,
     candidate: bool = False,
-    near_neighbor_relevant: bool = False,
+    rival: bool = False,
+    sole_reading: bool = False,
     has_data: bool = True,
     retrieved: bool = True,
 ) -> tuple[bool | None, Confidence | None]:
     """Derive place availability and confidence from one materialised result.
 
     Without a destination, availability is None. Confidence is also None when `has_data`
-    is false. Retrieved shapes without a score cap at medium, while un-retrieved posted
-    identities grade from availability alone. Unavailable data is low. Weak retrieval plus
-    a relevant near-neighbour is low, and either signal alone is medium
-    (`_grade_confidence`). `near_neighbor_relevant` is set for a candidate in a fired tie
-    and for a definite answer whose tie stands unresolved (`ResolveState.tie_unresolved`).
+    is false. Unavailable data is low; otherwise `_grade_confidence` grades it, with
+    `rival` set for a reading the status rule offers beside a structural or nominated rival
+    and `sole_reading` for the only admissible reading with data.
     """
     if available_at_place is False and (candidate or destination_dcid is not None):
         return False, "low"
@@ -246,7 +248,8 @@ def _place_confidence(
         has_data=True,
         available_at_place=True,
         retrieved=retrieved,
-        near_neighbor_relevant=near_neighbor_relevant,
+        rival=rival,
+        sole_reading=sole_reading,
     )
 
 

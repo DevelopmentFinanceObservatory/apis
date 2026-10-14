@@ -19,6 +19,8 @@ its method-less rows say nothing of their status.
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 from materialise import OverCeilingError
@@ -380,4 +382,35 @@ def test_each_series_continues_past_its_own_last_reported_year(
         (place, str(year)): ESTIMATED if (place, str(year)) in estimated else None
         for place in PLACES
         for year in range(2020, end_year + 1)
+    }
+
+
+@pytest.mark.parametrize("group", [False, True], ids=["member", "group"])
+def test_a_continuation_that_serves_no_row_is_left_out_of_the_series_read(group: bool):
+    """Kenya's and Zimbabwe's estimates hold no value in 2025, so the estimated method
+    continues their series and serves no row. The trace names no continuation, and the
+    series read are those of the facets the trace names as dispatched."""
+    values = recorded_values()
+    for place in (KENYA, ZIMBABWE):
+        estimated = facet_id(place, unit=_USD, method=ESTIMATED)
+        values[(place, estimated)] = {
+            year: value for year, value in values[(place, estimated)].items() if year != "2025"
+        }
+
+    window = RequestedWindow(kind="range", start_year=2020, end_year=2025)
+
+    minted = (
+        mint_group(
+            PLACES, variables=(GDP, _HOLDS_NOTHING), holding=(GDP,), window=window, values=values
+        )
+        if group
+        else mint(PLACES, window=window, values=values)
+    )
+
+    trace = minted.trace.to_dict()
+    read = minted.read_series[f"dcid:{GDP}"]
+    assert "continuations" not in trace
+    assert set(read.facet_ids) == {
+        cast(str, facet["dispatch_facet_id"])
+        for facet in cast(list[dict[str, object]], trace["facets"])
     }

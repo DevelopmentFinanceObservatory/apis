@@ -154,7 +154,7 @@ DEBT = "Amount_PlaceSetExternalDebt"
 AID = "Amount_PlaceSetAid"
 UN_SERIES = "undata/placeset/HealthIndex"
 VARIABLE_TEXT: Mapping[str, str] = {
-    WDI: "health spending",
+    WDI: "total health spending",
     WHO: "government health spending",
     DEBT: "external debt stocks",
     AID: "aid",
@@ -253,7 +253,10 @@ def _place(dcid: str) -> dict:
 
 _NODES: dict = {
     **{dcid: _place(dcid) for dcid in (*LABEL, _CITY, *EU_MEMBERS, *AFRICAN_UNION)},
-    WDI: _statvar(WDI, "Health spending"),
+    # Each health series' label holds a word the other's lacks, so a question naming both
+    # picks neither, and the reading bind names beside the elected one is a rival (status
+    # rule 2(b)).
+    WDI: _statvar(WDI, "Total health spending"),
     WHO: _statvar(WHO, "Government health spending"),
     DEBT: _statvar(DEBT, "External debt stocks", (RECIPIENT,)),
     AID: _statvar(AID, "Aid disbursements", (PROVIDER, RECIPIENT)),

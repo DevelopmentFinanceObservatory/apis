@@ -29,7 +29,7 @@ def _q(parts: list[str]) -> float:
     return 1.0
 
 
-def _accepts_gzip(header: str) -> bool:
+def accepts_gzip(header: str) -> bool:
     """Use a `gzip`/`x-gzip` q-value, then `*`.
 
     Missing entries mean 0."""
@@ -110,7 +110,7 @@ class FrozenJSON:
         `Accept-Encoding` names neither supported encoding, serve identity under RFC 9110's
         available-representation rule."""
         accept_encoding = ", ".join(request.headers.getlist("accept-encoding"))
-        use_gzip = self.gzip is not None and _accepts_gzip(accept_encoding)
+        use_gzip = self.gzip is not None and accepts_gzip(accept_encoding)
         body = self.gzip if use_gzip else self.identity
         etag = self.etag_gzip if use_gzip else self.etag_identity
         assert body is not None
@@ -178,9 +178,11 @@ def dynamic_public_json(
 ) -> Response:
     """Encode a changing payload per request and serve it with a strong ETag.
 
-    This uses identity encoding because gzip on the event loop costs too much above roughly
-    100 KB, so offload compression for larger bodies. `cache_control` is caller-defined. The
-    default `public, no-cache` permits storage but requires revalidation before reuse."""
+    The body leaves here identity-encoded, and the `ETag` covers those identity bytes.
+    `dfo_platform.compression` gzips the body for a client that accepts gzip and sends that
+    `ETag` as a weak validator (`W/` prefix), on the gzip body and on the 304 that answers
+    it. `cache_control` is caller-defined. The default `public, no-cache` permits storage but
+    requires revalidation before reuse."""
     body, etag = encode_json_body(payload)
     resolved_cache_control = (
         cache_control if cache_control is not None else _DEFAULT_DYNAMIC_CACHE_CONTROL

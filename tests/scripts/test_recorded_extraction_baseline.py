@@ -29,8 +29,9 @@ def test_raw_model_output_scores_exactly_as_recorded_in_the_readme():
 
 def test_guarded_extraction_scores_exactly_as_recorded_in_the_readme():
     """`guarded_extraction` applies `_validate_role_spans` to the same
-    recorded entities `raw_extraction` scores unmodified. Two of the six
+    recorded entities `raw_extraction` scores unmodified. Three of the seven
     wrong labels here are the guard's own cost: it downgrades
+    dir-passive-02 (Uganda, no `role_span` to cite),
     dir-leading-unevidenced-01 (Kenya, no `role_span` to cite) and
     dir-leading-unevidenced-02 (Ethiopia, a `role_span` the query does not
     evidence) from correct to `"unspecified"` (see corpus/direction/README.md).
@@ -41,7 +42,7 @@ def test_guarded_extraction_scores_exactly_as_recorded_in_the_readme():
     assert result["entity_count"] == 88
     assert result["unspecified_count"] == 23
     correct = sum(1 for v in result["verdicts"] if v["correct"])
-    assert correct == 82
+    assert correct == 81
     assert result["accuracy"] == correct / 88
     assert result["false_confident_rate"] == 0.0
     assert result["confidently_wrong_count"] == 1
@@ -50,6 +51,7 @@ def test_guarded_extraction_scores_exactly_as_recorded_in_the_readme():
     assert [(v["case_id"], v["surface"]) for v in wrong] == [
         ("dir-three-plus-list-01", "the United States"),
         ("dir-possessive-01", "the Marshall Islands"),
+        ("dir-passive-02", "Uganda"),
         ("dir-leading-unevidenced-01", "Kenya"),
         ("dir-leading-unevidenced-02", "Ethiopia"),
         ("dir-leading-unevidenced-02", "the United States"),

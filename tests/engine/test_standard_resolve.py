@@ -218,8 +218,10 @@ class TestBoundValuesUnrealisable:
 
 
 class TestRelaxation:
-    """A refusal unbinds one member's conflict set: fewest request-named properties, then
-    fewest engine-chosen, then a member asserting every bound property, then recall order."""
+    """A refusal unbinds a set of defaults alone first, else every value drafted as a sole
+    option that a member conflicts on, else one member's conflict set: fewest request-named
+    properties, then fewest engine-chosen, then a member asserting every bound property,
+    then recall order."""
 
     @pytest.mark.parametrize(
         ("conflicts", "engine_chosen", "relaxed"),
@@ -264,6 +266,43 @@ class TestRelaxation:
         unrealisable = BoundValuesUnrealisable(conflicts=conflicts)
 
         assert unrealisable.relaxation(engine_chosen=engine_chosen) == relaxed
+
+    @pytest.mark.parametrize(
+        ("conflicts", "relaxed"),
+        [
+            # A drafted value the words do not name gives way before a named one.
+            pytest.param((_conflict("gender"), _conflict("age")), {"age"}, id="before-named"),
+            # A default gives way before it.
+            pytest.param(
+                (_conflict("age"), _conflict("residence")), {"residence"}, id="after-default"
+            ),
+            # With no set of defaults alone, the draft goes alone, leaving the default.
+            pytest.param(
+                (_conflict("gender"), _conflict("age", "residence")),
+                {"age"},
+                id="draft-before-mixed-set",
+            ),
+            # Every draft any member conflicts on goes at once, whatever the minimal set.
+            pytest.param(
+                (_conflict("age"), _conflict("maturity"), _conflict("gender")),
+                {"age", "maturity"},
+                id="every-refuted-draft",
+            ),
+        ],
+    )
+    def test_a_sole_option_draft_gives_way_between_a_default_and_a_named_value(
+        self, conflicts, relaxed
+    ):
+        """A sole-option draft claims every member asserts it, so a member conflicting on
+        it refutes the claim: every such draft gives way in one step, after a set of
+        defaults alone and before any named value."""
+        unrealisable = BoundValuesUnrealisable(conflicts=conflicts)
+
+        relaxation = unrealisable.relaxation(
+            engine_chosen={"residence"}, unnamed={"age", "maturity"}
+        )
+
+        assert relaxation == relaxed
 
     @pytest.mark.parametrize("conflicts", [(), (_conflict(),)], ids=["none", "empty-set"])
     def test_refuses_to_unbind_nothing(self, conflicts):
@@ -334,12 +373,16 @@ class TestFullyBoundMembersExcludesUnresolved:
 
 
 class TestDegenerateBindingFailsClosed:
-    """Empty value/set bindings return variable_not_resolved despite broader Male data."""
+    """Empty value/set drafts return variable_not_resolved despite broader Male data. The
+    bind response refuses them at parse, so only a draft built without that check reaches
+    the resolver."""
 
     def test_degenerate_value_binding_refuses_despite_positive_data_for_broadened_member(self):
         shape = _male_only_shape()
         bindings = [
-            SlotBindingDraft(axis="how", property_dcid="gender", kind="value", value_dcids=[]),
+            SlotBindingDraft.model_construct(
+                axis="how", property_dcid="gender", kind="value", value_dcids=[]
+            ),
         ]
         result = materialise(
             shape,
@@ -356,7 +399,9 @@ class TestDegenerateBindingFailsClosed:
     def test_degenerate_set_binding_also_refuses(self):
         shape = _male_only_shape()
         bindings = [
-            SlotBindingDraft(axis="how", property_dcid="gender", kind="set", value_dcids=[]),
+            SlotBindingDraft.model_construct(
+                axis="how", property_dcid="gender", kind="set", value_dcids=[]
+            ),
         ]
         result = materialise(
             shape,
@@ -2492,9 +2537,11 @@ def _hold_activity_family(bind_catalogue, arcs: dict[str, dict]) -> None:
     )
 
 
-def _activity_graph(arcs: dict[str, dict], places: dict[str, str]) -> FakeGraph:
-    """`arcs` with data at each place of `places`, a name to its dcid, and "GDP" recalling
-    the nominal GDP member alone."""
+def _activity_graph(
+    arcs: dict[str, dict], places: dict[str, str], recall: dict[str, list[str]] | None = None
+) -> FakeGraph:
+    """`arcs` with data at each place of `places`, a name to its dcid, and each phrase of
+    `recall` recalling its members: "GDP" the nominal GDP member alone by default."""
     return FakeGraph(
         nodes={
             **{
@@ -2510,7 +2557,9 @@ def _activity_graph(arcs: dict[str, dict], places: dict[str, str]) -> FakeGraph:
             for sv in arcs
             for dcid in places.values()
         },
-        detect={"GDP": {"svs": [_GDP_NOMINAL]}},
+        detect={
+            phrase: {"svs": svs} for phrase, svs in (recall or {"GDP": [_GDP_NOMINAL]}).items()
+        },
         resolve=places,
     )
 
@@ -2682,16 +2731,380 @@ class TestPartitionSlotBinding:
         assert _bound_slot(region, "activitySource").value.ref.ref == "GrossValueAdded"
 
 
-def _resolve_gdp(bind_catalogue, place: str, dcid: str, binding: SlotBindingDraft):
-    """Resolve "GDP" at `place` over the held nominal family, the binder drafting `binding`
-    on the activity source."""
+_NET_TRANSFERS = "Amount_DebtFlow_Net_ServicingPayment"
+_NET_FLOWS = "Amount_DebtFlow_Net_PrincipalRepayment"
+_TRANSFERS_NAME = "Net transfers on external debt"
+
+
+def _named_arcs(name: str | None, *, roles: tuple[str, ...] = (), **constraints: str) -> dict:
+    """A member of a population type the code index does not carry, with its graph name."""
+    return {
+        **({"name": {"nodes": [{"value": name}]}} if name is not None else {}),
+        "populationType": {"nodes": [{"dcid": "DebtFlow"}]},
+        "measuredProperty": {"nodes": [{"dcid": "amount"}]},
+        "statType": {"nodes": [{"dcid": "measuredValue"}]},
+        "constraintProperties": {"nodes": [{"dcid": prop} for prop in constraints]},
+        **({"observationProperties": {"nodes": [{"dcid": r} for r in roles]}} if roles else {}),
+        **{prop: {"nodes": [{"dcid": value}]} for prop, value in constraints.items()},
+    }
+
+
+def _named_shape(members: dict[str, dict], prop: str = "netOf") -> ShapeDraft:
+    """A recall sample of `members` with one what slot on `prop`."""
+    from search.engine.shape import SlotKeyDraft
+
+    return ShapeDraft(
+        shape_id="test_named_member_shape",
+        label="Debt flow",
+        pop_type_dcid="DebtFlow",
+        meas_prop_dcid="amount",
+        stat_type_dcid="measuredValue",
+        meas_qual_dcid=None,
+        meas_denom_dcid=None,
+        slot_keys=(SlotKeyDraft(axis="what", property_dcid=prop, label=prop),),
+        sv_arc_facts=members,
+        representative_score=0.9,
+    )
+
+
+def _net_members(roles: tuple[str, ...] = (), **extra: dict) -> dict[str, dict]:
+    """The two net members, one netting each value, and `extra`."""
+    return {
+        _NET_TRANSFERS: _named_arcs(_TRANSFERS_NAME, roles=roles, netOf="ServicingPayment"),
+        _NET_FLOWS: _named_arcs(
+            "Net flows on external debt", roles=roles, netOf="PrincipalRepayment"
+        ),
+        **extra,
+    }
+
+
+def _net_of(kind: str, *values: str, **kwargs: str) -> SlotBindingDraft:
+    return SlotBindingDraft(
+        axis="what", property_dcid="netOf", kind=kind, value_dcids=list(values), **kwargs
+    )
+
+
+class TestNamedMemberBinding:
+    """A variable phrase equal to the graph name of one member the part would serve binds
+    each open slot that partitions the served members to that member's value."""
+
+    @pytest.mark.parametrize(
+        "roles",
+        [
+            pytest.param((), id="standard"),
+            pytest.param(("financingRecipient",), id="role_bearing"),
+        ],
+    )
+    def test_the_named_member_binds_the_partition_slot_and_is_served_alone(self, roles):
+        """dq-ids-047: "net transfers on external debt" is the name of one of two members
+        that differ on what they net, and no member totals the two."""
+        from search.engine.retrieval.bound_values import RoleKeys
+        from search.engine.retrieval.standard import _served_under, bind_named_member_values
+
+        shape = _named_shape(_net_members(roles))
+        keys = RoleKeys(bound=frozenset({"destination"})) if roles else RoleKeys()
+        assert list(_served_under(shape, [_net_of("unbound")], keys)) == [
+            _NET_TRANSFERS,
+            _NET_FLOWS,
+        ]
+
+        bound, added = bind_named_member_values(
+            shape, [_net_of("unbound")], keys, variable="net transfers on  External-Debt"
+        )
+
+        assert added == bound == [_net_of("value", "ServicingPayment", evidence="mentioned")]
+        assert list(_served_under(shape, bound, keys)) == [_NET_TRANSFERS]
+
+    @pytest.mark.parametrize(
+        ("variable", "written", "value"),
+        [
+            pytest.param(
+                "external debt net flows",
+                "net flows on external debt",
+                "PrincipalRepayment",
+                id="the_request_writes_the_name_the_phrase_reorders",
+            ),
+            pytest.param(
+                _TRANSFERS_NAME,
+                "net flows on external debt",
+                "ServicingPayment",
+                id="a_phrase_equal_to_a_name_outranks_the_written_stretch",
+            ),
+        ],
+    )
+    def test_the_written_stretch_names_the_member_where_the_phrase_equals_no_name(
+        self, variable, written, value
+    ):
+        """dq-ids-062: extraction reads "net flows on external debt for Kenya" as "external
+        debt net flows", which equals no member's name. The request writes the net flows
+        name."""
+        from search.engine.retrieval.bound_values import RoleKeys
+        from search.engine.retrieval.standard import bind_named_member_values
+
+        bound, added = bind_named_member_values(
+            _named_shape(_net_members()),
+            [_net_of("unbound")],
+            RoleKeys(),
+            variable=variable,
+            written=written,
+        )
+
+        assert added == bound == [_net_of("value", value, evidence="mentioned")]
+
+    def test_a_set_every_served_member_satisfies_reads_as_open(self):
+        """A set naming both nettings narrows nothing, so the named member's value
+        replaces it."""
+        from search.engine.retrieval.bound_values import RoleKeys
+        from search.engine.retrieval.standard import bind_named_member_values
+
+        spanning = _net_of("set", "ServicingPayment", "PrincipalRepayment")
+
+        bound, added = bind_named_member_values(
+            _named_shape(_net_members()), [spanning], RoleKeys(), variable=_TRANSFERS_NAME
+        )
+
+        assert added == bound == [_net_of("value", "ServicingPayment", evidence="mentioned")]
+
+    @pytest.mark.parametrize(
+        ("members", "bindings", "variable"),
+        [
+            pytest.param(
+                _net_members(), [_net_of("unbound")], "net debt flows", id="no_member_named"
+            ),
+            pytest.param(
+                _net_members(
+                    Amount_DebtFlow_Net_InterestPayment=_named_arcs(
+                        _TRANSFERS_NAME, netOf="InterestPayment"
+                    )
+                ),
+                [_net_of("unbound")],
+                _TRANSFERS_NAME,
+                id="two_members_share_the_name",
+            ),
+            pytest.param(
+                _net_members(Amount_DebtFlow=_named_arcs("Debt flows")),
+                [_net_of("unbound")],
+                _TRANSFERS_NAME,
+                id="a_family_with_a_total",
+            ),
+            pytest.param(
+                _net_members(
+                    Amount_DebtFlow_Net_InterestPayment=_named_arcs(None, netOf="InterestPayment")
+                ),
+                [_net_of("unbound")],
+                _TRANSFERS_NAME,
+                id="a_served_member_with_no_name",
+            ),
+            pytest.param(
+                _net_members(),
+                [_net_of("unbound", evidence="requested_all", requested_all_phrase="by netting")],
+                _TRANSFERS_NAME,
+                id="a_slot_asked_in_full",
+            ),
+            pytest.param(
+                _net_members(),
+                [_net_of("value", "PrincipalRepayment")],
+                _TRANSFERS_NAME,
+                id="a_bound_slot",
+            ),
+            pytest.param(
+                _net_members(),
+                [_net_of("set", "ServicingPayment", "PrincipalRepayment")],
+                "net debt flows",
+                id="a_spanning_set_and_no_member_named",
+            ),
+            pytest.param(
+                _net_members(
+                    Amount_DebtFlow_Net_InterestPayment=_named_arcs(
+                        "Net of interest", netOf="InterestPayment"
+                    )
+                ),
+                [_net_of("set", "PrincipalRepayment", "InterestPayment")],
+                _TRANSFERS_NAME,
+                id="a_narrowing_set",
+            ),
+        ],
+    )
+    def test_binds_nothing(self, members, bindings, variable):
+        from search.engine.retrieval.bound_values import RoleKeys
+        from search.engine.retrieval.standard import bind_named_member_values
+
+        shape = _named_shape(members)
+
+        assert bind_named_member_values(shape, bindings, RoleKeys(), variable=variable) == (
+            bindings,
+            [],
+        )
+
+    @pytest.mark.parametrize(
+        "written",
+        [
+            pytest.param(None, id="no_written_stretch"),
+            pytest.param("net debt flows", id="equal_to_no_name"),
+            pytest.param("net flows on external debt and net transfers", id="longer_than_a_name"),
+        ],
+    )
+    def test_a_written_stretch_equal_to_no_name_binds_nothing(self, written):
+        from search.engine.retrieval.bound_values import RoleKeys
+        from search.engine.retrieval.standard import bind_named_member_values
+
+        bindings = [_net_of("unbound")]
+
+        assert bind_named_member_values(
+            _named_shape(_net_members()),
+            bindings,
+            RoleKeys(),
+            variable="external debt net flows",
+            written=written,
+        ) == (bindings, [])
+
+    def test_a_slot_an_operation_opens_stays_open(self):
+        """ "top 5 flow types" asks for every flow type, so the slot stays open under a
+        phrase that names one member."""
+        from search.engine.region.phase_rank_bind import _open_operation_slots
+        from search.engine.retrieval.bound_values import RoleKeys
+        from search.engine.retrieval.standard import bind_named_member_values
+        from search.models import Operation
+
+        shape = _named_shape(
+            {
+                "Flow_Grants": _named_arcs("Grant flows", crsTypeOfFlow="CRSTypeOfFlow11"),
+                "Flow_Loans": _named_arcs("Loan flows", crsTypeOfFlow="CRSTypeOfFlow13"),
+            },
+            prop="crsTypeOfFlow",
+        )
+        open_slot = SlotBindingDraft(axis="what", property_dcid="crsTypeOfFlow", kind="unbound")
+        _bound, added = bind_named_member_values(
+            shape, [open_slot], RoleKeys(), variable="grant flows"
+        )
+        assert [b.value_dcids for b in added] == [["CRSTypeOfFlow11"]]
+
+        opened = _open_operation_slots(
+            [open_slot], [Operation(verb="rank", phrase="top 5 flow types", over="category")], shape
+        )
+
+        assert bind_named_member_values(shape, opened, RoleKeys(), variable="grant flows") == (
+            opened,
+            [],
+        )
+
+    @pytest.mark.parametrize(
+        ("phrase", "added"),
+        [
+            pytest.param("top 5 flow types", [], id="the_operation_reads_the_set_slot"),
+            pytest.param(
+                "the three largest modalities",
+                [("crsTypeOfFlow", ["CRSTypeOfFlow11"])],
+                id="the_operation_reads_another_slot",
+            ),
+        ],
+    )
+    def test_a_set_on_a_slot_an_operation_reads_stays(self, phrase, added):
+        """The binder drafts both flow types as a set, which every served member
+        satisfies. "top 5 flow types" ranks that slot, so the set is the breakdown asked
+        for and stays under a phrase naming one member. An operation over the modality
+        slot leaves the flow type to the name."""
+        from search.engine.region.phase_rank_bind import operation_slot_phrases
+        from search.engine.retrieval.bound_values import RoleKeys
+        from search.engine.retrieval.standard import bind_named_member_values
+        from search.engine.shape import SlotKeyDraft
+        from search.models import Operation
+
+        modality = {"crsCooperationModality": "CRSCooperationModalityC01"}
+        shape = _named_shape(
+            {
+                "Flow_Grants": _named_arcs(
+                    "Grant flows", crsTypeOfFlow="CRSTypeOfFlow11", **modality
+                ),
+                "Flow_Loans": _named_arcs(
+                    "Loan flows", crsTypeOfFlow="CRSTypeOfFlow13", **modality
+                ),
+            },
+            prop="crsTypeOfFlow",
+        )
+        shape = replace(
+            shape,
+            slot_keys=(
+                *shape.slot_keys,
+                SlotKeyDraft(axis="what", property_dcid="crsCooperationModality", label="modality"),
+            ),
+        )
+        both = SlotBindingDraft(
+            axis="what",
+            property_dcid="crsTypeOfFlow",
+            kind="set",
+            value_dcids=["CRSTypeOfFlow11", "CRSTypeOfFlow13"],
+        )
+        operation = Operation(verb="rank", phrase=phrase, over="category")
+
+        _bound, bound_by_name = bind_named_member_values(
+            shape,
+            [both],
+            RoleKeys(),
+            variable="grant flows",
+            operation_slots=operation_slot_phrases([operation], shape),
+        )
+
+        assert [(b.property_dcid, b.value_dcids) for b in bound_by_name] == added
+
+    def test_the_named_member_answers_over_recall(self, bind_catalogue):
+        """Recall scores the GDP and the gross value added member, so its evidence binds
+        nothing (`bind_partition_values`). The phrase is the second one's name, so the
+        part serves it, definite, with the activity source bound."""
+        arcs = {
+            **_ACTIVITY_ARCS,
+            _GVA_NOMINAL: {
+                **_ACTIVITY_ARCS[_GVA_NOMINAL],
+                "name": {"nodes": [{"value": "Gross value added"}]},
+            },
+        }
+
+        region = _resolve_gdp(
+            bind_catalogue,
+            "India",
+            "country/IND",
+            _activity_source("unbound"),
+            variable="gross value added",
+            arcs=arcs,
+            recalled=[_GDP_NOMINAL, _GVA_NOMINAL],
+        )
+
+        assert region.status == "definite"
+        assert _served(region) == [_GVA_NOMINAL]
+        assert _bound_slot(region, "activitySource").value.ref.ref == "GrossValueAdded"
+        assert _slot_provenance(region, "activitySource") == "binder"
+
+
+def _slot_provenance(region, prop: str) -> str:
+    """The provenance the first Spec's filter on `prop` states."""
+    (found,) = [
+        f
+        for f in region.specs[0].resolved.trace.slot_filters
+        if f.key.property is not None and f.key.property.ref == prop
+    ]
+    return found.provenance
+
+
+def _resolve_gdp(
+    bind_catalogue,
+    place: str,
+    dcid: str,
+    binding: SlotBindingDraft,
+    *,
+    variable: str = "GDP",
+    arcs: dict[str, dict] = _ACTIVITY_ARCS,
+    recalled: list[str] | None = None,
+):
+    """Resolve `variable` at `place` over the held nominal family of `arcs`, the binder
+    drafting `binding` on the activity source. Recall returns `recalled`, the nominal GDP
+    member alone by default."""
     import asyncio
 
     from search.engine.bind import _UniversalBindOutput
     from search.engine.region import resolve_variable
 
-    _hold_activity_family(bind_catalogue, _ACTIVITY_ARCS)
-    graph = _activity_graph(_ACTIVITY_ARCS, {place: dcid})
+    _hold_activity_family(bind_catalogue, arcs)
+    graph = _activity_graph(arcs, {place: dcid}, recalled and {variable: recalled})
 
     class _BindLLM:
         async def generate_structured(self, *, prompt, system, schema):
@@ -2704,11 +3117,11 @@ def _resolve_gdp(bind_catalogue, place: str, dcid: str, binding: SlotBindingDraf
 
     return asyncio.run(
         resolve_variable(
-            "GDP",
+            variable,
             entities=[place],
             date_request=None,
-            detect_query="GDP",
-            role_query=f"GDP {place}",
+            detect_query=variable,
+            role_query=f"{variable} {place}",
             pac=True,
             graph=graph,
             resolver=make_resolver(graph),
