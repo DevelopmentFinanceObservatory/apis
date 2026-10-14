@@ -475,6 +475,7 @@ def _state(
         SimpleNamespace(
             entities=[place_set.name for place_set in sets],
             place_sets={place_set.name: place_set for place_set in sets},
+            party_sets={},
             entity_roles=roles,
             operations=tuple(operations),
             open_axes=frozenset(),

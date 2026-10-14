@@ -18363,5 +18363,37 @@
     "operations": [],
     "dropped_qualifiers": [],
     "dates": []
+  },
+  "QuantityOutput@a3c624b93c02:a1b817b3ac4638e5bc747201afe1c4d4fdac7cd0": {
+    "base_words": null,
+    "denominator_index": null,
+    "stated_form": null
+  },
+  "_UniversalBindOutput@8310907ee8a6:978a6e334b7ca45b10fcefc5ee22170dab5c33e5": {
+    "chosen_shape_index": 0,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "dac2aAidType",
+        "kind": "value",
+        "value_dcids": [
+          "DAC2aAidType206"
+        ],
+        "evidence": "sole_option",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "dacTypeOfFinance",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": null,
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": []
   }
 }

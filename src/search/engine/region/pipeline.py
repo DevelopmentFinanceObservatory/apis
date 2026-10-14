@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import functools
 import logging
 import time
 from collections.abc import Awaitable, Callable, Sequence
@@ -11,14 +12,19 @@ from contextlib import ExitStack
 from typing import Final
 
 import dc_graph
+from code_index.types import PartyWord
 from dc_sdmx import SdmxCapExceededError
 from entity_resolution import Admission, EntityResolver, Resolution
 from materialise.member_conversion import request_conversion_reader
 from origin_catalogue import note_un_unserved, recording_un_blocked_places, scoped_reads
 from search.engine.clients.graph import EngineGraphClient
-from search.engine.clients.llm import SupportsLLM
+from search.engine.clients.llm import SupportsLLM, recording_llm_usage
 from search.engine.clients.sdmx import EngineSdmxClient
-from search.engine.degraded_reads import note_degraded_read, recording_degraded_reads
+from search.engine.degraded_reads import (
+    DegradedReads,
+    note_degraded_read,
+    recording_degraded_reads,
+)
 from search.engine.envelope import _sum_usage, now_ms
 from search.engine.errors import (
     RATE_TABLE_REFUSALS,
@@ -26,12 +32,13 @@ from search.engine.errors import (
     DefaultScopeIndexSourcedError,
     EngineInfraError,
 )
-from search.engine.events import EventSink
+from search.engine.events import Event, EventSink
 from search.engine.extract import DateRequest
 from search.engine.leg_phase import enter_phase
 from search.engine.qualifier_match import CodedQualifier
 from search.engine.region.candidate_admission import alternates_unevaluated_warning
 from search.engine.region.codes import ALTERNATES_UNEVALUATED, UN_SYSTEM_UNAVAILABLE
+from search.engine.region.decisions import PartyReadingWithdrawn
 from search.engine.region.phase_answer import _phase_outcome
 from search.engine.region.phase_election import _phase_settle
 from search.engine.region.phase_intake import (
@@ -53,7 +60,7 @@ from search.engine.region.phase_rank_bind import (
     exclusion_records,
 )
 from search.engine.region.phase_shared import settle_unjudged_refusal
-from search.engine.region.place_roles import group_request_names
+from search.engine.region.place_roles import group_request_names, stated_party_words
 from search.engine.region.related_read import cancel_related_reads, settle_related_reads
 from search.engine.region.requirements import unbinding_phrases, with_requirement_departures
 from search.engine.region.result import RegionResult
@@ -90,15 +97,24 @@ _ENTITY_TERMINALS: Final = frozenset(
 # answer.
 _UN_PASS_RESERVE_S: Final = 3.0
 
-# UN pass failures that mean an upstream read failed or hit a capacity limit. Each leaves
-# our pass's answer standing with `un_system_unavailable`. Any other exception is a defect,
-# logged with its traceback, and leaves our answer standing unwarned.
+# Failures that mean an upstream read failed or hit a capacity limit. In the UN pass each
+# leaves our pass's answer standing with `un_system_unavailable`; any other exception there
+# is a defect, logged with its traceback, and leaves our answer standing unwarned. In a
+# party reading each is a failed read, noted as degraded when the reading is withdrawn
+# (`resolve_variable`).
 _UPSTREAM_FAILURES: Final = (
     EngineInfraError,
     TimeoutError,
     dc_graph.GraphReadError,
     dc_graph.GraphCapExceededError,
     SdmxCapExceededError,
+)
+
+# Refusals of the whole request that a pass raises on purpose (`_fill_gap`).
+_REQUEST_REFUSALS: Final = (
+    DeclaredDefaultUnsupportedError,
+    DefaultScopeIndexSourcedError,
+    *RATE_TABLE_REFUSALS,
 )
 
 _UN_PASS_INCOMPLETE: Final = (
@@ -218,9 +234,15 @@ async def resolve_variable(
     )
 
     def new_state(
-        *, pool: Pool, emit: EventSink | None, deadline: float | None, timing: dict[str, int]
+        *,
+        pool: Pool,
+        emit: EventSink | None,
+        deadline: float | None,
+        timing: dict[str, int],
+        party_words_off: bool,
     ) -> ResolveState:
         return ResolveState(
+            party_words_off=party_words_off,
             variable=variable,
             entities=entities,
             date_request=date_request,
@@ -274,56 +296,155 @@ async def resolve_variable(
             unit_facet_filter=None,
         )
 
-    state = new_state(pool="ours", emit=emit, deadline=_options.deadline, timing=dict(base_timing))
-    # A read the pass swallows marks the part degraded, so no cache stores it. A part whose
-    # scope names a source reads through the catalogue scoped to it throughout. One that only
-    # excludes sources ranks on the evidence the unscoped question reaches
-    # (`_phase_prune_and_rank`): its scope binds for recall, which reads it only to recall
-    # in-scope families past the cut (`with_rival_families`), for each pass once its menu
-    # stands (`_run_phases`), and for the withheld warning.
-    allowed = None if source_scope is None else source_scope.allowed
-    with (
-        held_family_memo(),
-        recording_degraded_reads() as lost,
-        scoped_reads(allowed if source_scope is not None and source_scope.named else None),
-    ):
-        with recording_un_blocked_places() as un_blocked:
-            enter_phase("recall")
-            with scoped_reads(allowed):
-                await _phase_recall(state)
-            try:
-                result = _within_source_code(
-                    _excluded_from_the_place(await _run_phases(state), state), state
+    async def attempt(
+        *, party_words_off: bool, sink: EventSink | None, carried: Sequence[str] = ()
+    ) -> tuple[RegionResult, tuple[str, ...]]:
+        """One resolution of the part and the reads it swallowed, read with or without the
+        words that name a party. `carried` are reads an abandoned resolution
+        swallowed, noted on this one."""
+        state = new_state(
+            pool="ours",
+            emit=sink,
+            deadline=_options.deadline,
+            timing=dict(base_timing),
+            party_words_off=party_words_off,
+        )
+        # A read the pass swallows marks the part degraded, so no cache stores it. A part whose
+        # scope names a source reads through the catalogue scoped to it throughout. One that only
+        # excludes sources ranks on the evidence the unscoped question reaches
+        # (`_phase_prune_and_rank`): its scope binds for recall, which reads it only to recall
+        # in-scope families past the cut (`with_rival_families`), for each pass once its menu
+        # stands (`_run_phases`), and for the withheld warning.
+        allowed = None if source_scope is None else source_scope.allowed
+        lost = DegradedReads()
+        try:
+            with (
+                held_family_memo(),
+                recording_degraded_reads() as lost,
+                scoped_reads(allowed if source_scope is not None and source_scope.named else None),
+            ):
+                for read in carried:
+                    note_degraded_read(read)
+                with recording_un_blocked_places() as un_blocked:
+                    enter_phase("recall")
+                    with scoped_reads(allowed):
+                        await _phase_recall(state)
+                    try:
+                        result = _within_source_code(
+                            _excluded_from_the_place(await _run_phases(state), state), state
+                        )
+                        enter_phase("fill_gap")
+                        result = await _fill_gap(
+                            result,
+                            first=state,
+                            deadline=_options.deadline,
+                            un_state=lambda bound: new_state(
+                                pool="un_system",
+                                emit=None,
+                                deadline=bound,
+                                timing={},
+                                party_words_off=True,
+                            ),
+                        )
+                    finally:
+                        if state.un_leg is not None:
+                            state.un_leg.task.cancel()
+                result = with_un_unavailable_warning(result, un_blocked)
+                # The withheld re-read runs once per request (`claim_withheld_read`) and serves
+                # only a subject-only no-data answer (`withheld.elected_series`). A party
+                # reading stands only when it answers with the party on its axis
+                # (`binds_each_party`), so it never needs the re-read, and one it is withdrawn
+                # from must leave the re-read to the reading that answers.
+                if party_words_off:
+                    with scoped_reads(allowed):
+                        result = await with_withheld_warning(
+                            result, state.graph, deadline=state.deadline
+                        )
+        except PartyReadingWithdrawn as exc:
+            raise PartyReadingWithdrawn(lost=tuple(lost.reads)) from exc
+        except Exception as exc:
+            # A party reading that fails or refuses is withdrawn, whatever the cause: the
+            # resolution without party words makes the reads and elections the base makes,
+            # and fails or refuses as it does. Only a failed read marks the part degraded,
+            # and any other exception than a failed read or a refusal is a defect.
+            if party_words_off:
+                raise
+            failed_read = isinstance(exc, _UPSTREAM_FAILURES)
+            if failed_read or isinstance(exc, _REQUEST_REFUSALS):
+                logger.warning(
+                    "the party reading of part %d (%r) withdrawn on %s: %s",
+                    variable_index,
+                    variable,
+                    type(exc).__name__,
+                    exc,
                 )
-                enter_phase("fill_gap")
-                result = await _fill_gap(
-                    result,
-                    first=state,
-                    deadline=_options.deadline,
-                    un_state=lambda bound: new_state(
-                        pool="un_system", emit=None, deadline=bound, timing={}
-                    ),
+            else:
+                logger.exception(
+                    "the party reading of part %d (%r) failed", variable_index, variable
                 )
-            finally:
-                if state.un_leg is not None:
-                    state.un_leg.task.cancel()
-        result = with_un_unavailable_warning(result, un_blocked)
-        with scoped_reads(allowed):
-            result = await with_withheld_warning(result, state.graph, deadline=state.deadline)
-    if result.specs and state.scope is not None and state.scope.named:
-        # An included source none of whose provenances the answer binds served nothing of
-        # it, and only the read knows which provenances served.
-        served = answer_provenances(result.specs)
-        if served is not None:
-            marked = with_idle_inclusions(state.scope, served)
-            warnings = (*result.warnings, *idle_inclusion_warnings(marked))
-            result = dataclasses.replace(result, warnings=warnings)
-    if result.status == "no_data" and state.scope is not None:
-        # Every no-data outcome of a scoped part, from candidacy, election or the read, names
-        # the sources that limited it. A no-data result is our pass's, whose scope marks
-        # the exclusions that removed nothing.
-        result = dataclasses.replace(result, source_scope=state.scope)
-    return dataclasses.replace(result, degraded=True) if lost.degraded else result
+            raise PartyReadingWithdrawn(
+                lost=(*lost.reads, "party reading") if failed_read else tuple(lost.reads),
+            ) from exc
+        if result.specs and state.scope is not None and state.scope.named:
+            # An included source none of whose provenances the answer binds served nothing of
+            # it, and only the read knows which provenances served.
+            served = answer_provenances(result.specs)
+            if served is not None:
+                marked = with_idle_inclusions(state.scope, served)
+                warnings = (*result.warnings, *idle_inclusion_warnings(marked))
+                result = dataclasses.replace(result, warnings=warnings)
+        if result.status == "no_data" and state.scope is not None:
+            # Every no-data outcome of a scoped part, from candidacy, election or the read, names
+            # the sources that limited it. A no-data result is our pass's, whose scope marks
+            # the exclusions that removed nothing.
+            result = dataclasses.replace(result, source_scope=state.scope)
+        result = dataclasses.replace(result, degraded=True) if lost.degraded else result
+        return result, tuple(lost.reads)
+
+    # A part stating a word that names a party (`place_roles.stated_party_words`) is read
+    # with it first. The answer stands only when every Spec binds the party on the word's
+    # axis. Otherwise the part is resolved again without party words, which is the reading
+    # of a request that states none, so nothing of the first reading reaches the reply: its
+    # events are held back until it stands. The reply reports the model usage of both
+    # readings, the first's read from every call it made wherever it ended
+    # (`recording_llm_usage`), and notes the reads the first swallowed or failed.
+    probe = new_state(
+        pool="ours", emit=None, deadline=_options.deadline, timing={}, party_words_off=False
+    )
+    named = stated_party_words(probe)
+    if not named:
+        result, _lost = await attempt(party_words_off=True, sink=emit)
+        return result
+    held: list[Event] = []
+
+    async def hold(event: Event) -> None:
+        held.append(event)
+
+    with recording_llm_usage() as spent:
+        try:
+            first, carried = await attempt(
+                party_words_off=False, sink=None if emit is None else hold
+            )
+        except PartyReadingWithdrawn as withdrawn:
+            carried = withdrawn.lost
+        else:
+            if binds_each_party(first, named):
+                if emit is not None:
+                    for event in held:
+                        await emit(event)
+                return first
+    result, _lost = await attempt(party_words_off=True, sink=emit, carried=carried)
+    usage = functools.reduce(_sum_usage, spent.calls, result.llm_usage)
+    return dataclasses.replace(result, llm_usage=usage)
+
+
+def binds_each_party(result: RegionResult, named: Sequence[PartyWord]) -> bool:
+    """Whether `result` answers, and every Spec it holds binds the party of one of `named`
+    alone on that word's axis."""
+    return bool(result.specs) and all(
+        any(spec.definition.identity.entities.get(word.axis) == [word.party] for word in named)
+        for spec in result.specs
+    )
 
 
 def _within_source_code(result: RegionResult, state: ResolveState) -> RegionResult:
@@ -467,10 +588,7 @@ async def _fill_gap(
             un_pass=f"error:{type(exc).__name__}",
             un_ms=now_ms() - t0,
         )
-        if isinstance(
-            exc,
-            (DeclaredDefaultUnsupportedError, DefaultScopeIndexSourcedError, *RATE_TABLE_REFUSALS),
-        ):
+        if isinstance(exc, _REQUEST_REFUSALS):
             raise
         if isinstance(exc, _UPSTREAM_FAILURES):
             return _with_un_search_warning(result, _UN_PASS_INCOMPLETE)

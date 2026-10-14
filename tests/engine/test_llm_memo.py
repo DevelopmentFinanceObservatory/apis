@@ -24,6 +24,7 @@ from search.engine.clients.llm import (
     build_memo,
     for_stage,
     generate_structured_async,
+    recording_llm_usage,
 )
 from search.engine.errors import LLMInfraError, LLMOutputRefused
 from search.engine.extract import Extraction
@@ -1014,3 +1015,34 @@ def test_for_stage_clone_keys_apart_from_its_parent(monkeypatch):
     assert len(client.models.calls) == 2
     # Parent and clone are separate memo entries, so neither evicted the other.
     assert memo.stats().entries == 2
+
+
+class _AnsweringThenRefusing:
+    """An LLM double answering its first call and refusing every later one, each with the
+    usage `_LIVE_USAGE`."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def generate_structured(self, *, prompt, system, schema):
+        self.calls += 1
+        if self.calls > 1:
+            raise LLMOutputRefused("refused", usage=dict(_LIVE_USAGE))
+        return schema(value=1), dict(_LIVE_USAGE)
+
+
+def test_the_usage_record_holds_every_call_inside_it_a_refused_one_included():
+    """`recording_llm_usage` collects the usage of each call made inside it, an answer the
+    schema refuses included, and its enclosing record gains them when it closes."""
+    llm = _AnsweringThenRefusing()
+
+    async def calls() -> None:
+        await generate_structured_async(llm, prompt="p", system="s", schema=_DummySchema)
+        with pytest.raises(LLMOutputRefused):
+            await generate_structured_async(llm, prompt="p", system="s", schema=_DummySchema)
+
+    with recording_llm_usage() as outer, recording_llm_usage() as inner:
+        asyncio.run(calls())
+
+    assert inner.calls == [_LIVE_USAGE, _LIVE_USAGE]
+    assert outer.calls == inner.calls

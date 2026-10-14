@@ -408,6 +408,10 @@ def test_world_bank_ambiguous_between_ibrd_and_ida(shared_resolver):
         ("United Nations agencies", "DACUnitedNations", "United Nations entities (DAC)"),
         ("United Nations entities", "DACUnitedNations", "United Nations entities (DAC)"),
         ("multilaterals", "DACMultilaterals", "multilaterals (DAC)"),
+        ("multilateral organisations", "DACMultilaterals", "multilaterals (DAC)"),
+        ("multilateral agencies", "DACMultilaterals", "multilaterals (DAC)"),
+        ("multilateral institutions", "DACMultilaterals", "multilaterals (DAC)"),
+        ("multilateral donors", "DACMultilaterals", "multilaterals (DAC)"),
         ("private donors", "DACPrivateDonors", "private donors (DAC)"),
         (
             "regional development banks",

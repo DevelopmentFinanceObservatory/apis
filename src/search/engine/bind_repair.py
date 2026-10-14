@@ -3,18 +3,27 @@
 ``apply_declared_defaults`` binds an open slot to its declared default code when the
 variable, the raw query or another binding triggers it, and ``apply_shape_slot_defaults``
 binds the code index's default for a slot of a population type. The helpers that match a
-value's label as a whole word outside a negation or exclusion serve the bind phase too.
+value's label as a whole word outside a negation or exclusion serve the bind phase too, and
+so does the test of whether a part states a word a dataset declares (`word_stated`).
 """
 
 from __future__ import annotations
 
 import re
 from collections.abc import Sequence
+from collections.abc import Set as AbstractSet
 
 from code_index.query import CodeIndex
+from code_index.tokens import tokenize
 from code_index.types import ShapeSlotDefault
 from search.engine.bind import SlotBindingDraft
-from search.engine.qualifier_match import QualifierMatch, QualifierTie, names_plain_name
+from search.engine.function_words import FUNCTION_WORDS
+from search.engine.qualifier_match import (
+    CONNECTIVES,
+    QualifierMatch,
+    QualifierTie,
+    names_plain_name,
+)
 from search.engine.retrieval.facts import read_constraints
 from search.engine.shape import ShapeDraft
 
@@ -79,19 +88,47 @@ def _label_has_negated_occurrence(label: str, text: str) -> bool:
 
 
 def stated_words_negated(text: str, *, index: CodeIndex) -> tuple[str, ...]:
-    """The words datasets state of their own rows (`DatasetDeclaration.stated_words`) that an
-    occurrence in `text` negates or excludes (`_label_has_negated_occurrence`), sorted.
+    """The words datasets state of their own rows (`DatasetDeclaration.stated_words`) or name
+    a party for (`DatasetDeclaration.party_words`) that an occurrence in `text` negates or
+    excludes (`_label_has_negated_occurrence`), sorted.
 
-    The response cache key includes them because the stated-word rule reads them from the
-    verbatim query, which an equal extraction can leave behind: "not bilateral ODA to
-    Kenya" and "bilateral ODA to Kenya" can extract alike.
+    The response cache key includes them because the rules reading those words read them
+    from the verbatim query, which an equal extraction can leave behind: "not bilateral ODA
+    to Kenya" and "bilateral ODA to Kenya" can extract alike, and so can "not multilateral
+    ODA to Kenya" and "multilateral ODA to Kenya".
     """
     words = {
-        stated.word
+        declared.word
         for declaration in index.datasets.values()
-        for stated in declaration.stated_words
+        for declared in (*declaration.stated_words, *declaration.party_words)
     }
     return tuple(sorted(word for word in words if _label_has_negated_occurrence(word, text)))
+
+
+def word_stated(word: str, texts: Sequence[str], *, negated: AbstractSet[str]) -> bool:
+    """Whether `texts`, a part's variable and typed qualifier phrases, state the casefolded
+    `word` as a modifier of the measure (`_modifies_the_measure`), with no occurrence in them
+    negated or excluded (`_label_has_negated_occurrence`), and `word` is not among
+    `negated`, the declared words the verbatim query negates (`stated_words_negated`, which
+    reaches a negation the extraction left out of the variable, as "not bilateral ODA")."""
+    if word in negated or not any(_modifies_the_measure(word, text) for text in texts):
+        return False
+    return not any(_label_has_negated_occurrence(word, text) for text in texts)
+
+
+def _modifies_the_measure(word: str, text: str) -> bool:
+    """Whether the casefolded `word` is a whole word of `text` with nothing before it but
+    other words of the measure phrase: no function word (`FUNCTION_WORDS`), connective
+    (`CONNECTIVES`) or separator. "Bilateral" modifies the measure in "gross bilateral ODA
+    disbursements" and in "bilateral aid for health". In "ODA net of bilateral flows" and
+    "ODA, bilateral excluded" it belongs to a clause that restricts the measure."""
+    for token in tokenize(text):
+        folded = token.text.casefold()
+        if token.kind != "word" or folded in FUNCTION_WORDS or folded in CONNECTIVES:
+            return False
+        if folded == word:
+            return True
+    return False
 
 
 def _slot_open_to_default(

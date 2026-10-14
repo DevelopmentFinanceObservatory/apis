@@ -547,21 +547,23 @@ def test_raw_text_naming_a_defaulted_slot_alone_changes_layer2_key() -> None:
     assert keys[0] != keys[1]
 
 
-def test_raw_text_negating_a_stated_word_alone_changes_layer2_key() -> None:
-    """The stated-word rule reads a negation from the raw query, so equal extractions of
-    "bilateral ODA to Kenya" and "not bilateral ODA to Kenya" key apart, and a query that
-    negates no stated word keys as before the signal existed."""
+@pytest.mark.parametrize("word", ["bilateral", "multilateral"])
+def test_raw_text_negating_a_stated_word_alone_changes_layer2_key(word: str) -> None:
+    """The stated-word and party-word rules read a negation from the raw query, so equal
+    extractions of "bilateral ODA to Kenya" and "not bilateral ODA to Kenya" key apart, as
+    do those of "multilateral ODA to Kenya" and "not multilateral ODA to Kenya", and a query
+    that negates no declared word keys as before the signal existed."""
     keys = []
-    for raw in ("bilateral ODA to Kenya", "not bilateral ODA to Kenya"):
+    for raw in (f"{word} ODA to Kenya", f"not {word} ODA to Kenya"):
         signals = compute_layer2_signals(query=raw, entity_roles={}, query_text=raw)
         keys.append(
             _layer2_key(
-                variables=["bilateral ODA"],
+                variables=[f"{word} ODA"],
                 query_text_negated_stated_words=list(signals.query_text_negated_stated_words),
             )
         )
     assert keys[0] != keys[1]
-    assert keys[0] == _layer2_key(variables=["bilateral ODA"])
+    assert keys[0] == _layer2_key(variables=[f"{word} ODA"])
 
 
 def test_dropped_qualifiers_content_alone_changes_layer2_key() -> None:

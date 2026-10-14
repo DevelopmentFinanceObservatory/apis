@@ -15,7 +15,7 @@ from entity_resolution import Ambiguous, Group, Resolved
 from origin_catalogue import recording_un_blocked_places
 from search.engine.clients.graph import DetectedSV, force_full_facets
 from search.engine.config import settings
-from search.engine.degraded_reads import recording_degraded_reads
+from search.engine.degraded_reads import note_degraded_read, recording_degraded_reads
 from search.engine.envelope import _emit_step, now_ms
 from search.engine.errors import EngineInfraError, RoleSignatureError
 from search.engine.interpret import Recall, recall
@@ -24,9 +24,11 @@ from search.engine.region.place_roles import (
     PlaceAssignment,
     SetChoice,
     bind_place_roles,
+    held_party_words,
     part_sets,
     place_key,
     set_choices,
+    stated_party_words,
 )
 from search.engine.region.place_set import PlaceNode, PlaceReading, PlaceSet
 from search.engine.region.result import (
@@ -71,7 +73,9 @@ _UN_READS_FAILED: Final = (
 
 
 async def _phase_recall(state: ResolveState) -> None:
-    """Run recall and record its candidates for place-set resolution."""
+    """Run recall and record its candidates for place-set resolution. Recall searches the
+    part's text without each word that names a party on an axis the request leaves unnamed
+    (`place_roles.stated_party_words`)."""
     t0 = now_ms()
     rcl: Recall = await recall(
         state.variable,
@@ -82,6 +86,7 @@ async def _phase_recall(state: ResolveState) -> None:
         pre_resolved=state.pre_resolved,
         entity_surfaces=state.entity_surfaces,
         members=None if state.source_code is None else state.source_code.dcids,
+        party_words=frozenset(named.word for named in stated_party_words(state)),
     )
     state.rcl = rcl
     state.timing["recall"] = now_ms() - t0
@@ -108,7 +113,8 @@ async def _phase_resolve_places(state: ResolveState) -> None:
     graph's label for it, read in one batch. A set takes the members reading when the door
     asks for the name's members (`ResolveState.member_entities`) or the resolver read the name
     as its members (`reading`). Recall's country dcids are snapshotted for the availability
-    floor.
+    floor. The party each word of the part names on an unnamed axis gets a set of its node
+    (`ResolveState.party_sets`, `_party_word_sets`).
     """
     # The type checker narrows locals, while state attributes need this explicit cast.
     rcl = cast(Recall, state.rcl)
@@ -188,6 +194,39 @@ async def _phase_resolve_places(state: ResolveState) -> None:
             total=total(entity.dcid) if expansion is not None else None,
         )
     state.place_sets = place_sets
+    state.party_sets = await _party_word_sets(state)
+
+
+async def _party_word_sets(state: ResolveState) -> dict[str, PlaceSet]:
+    """The place set of the party of each word the part states on an axis the request leaves
+    unnamed (`place_roles.stated_party_words`), by the party's dcid: its node, typed by one
+    batched graph read, and named by the code index's label for the party
+    (`code_index.types.PartyRow.label`). No read runs when the part states no such word.
+
+    The index declares each party, so one the graph gives no type has left the graph since
+    the index was built. It gets no set, the word then names no party on any shape, and the
+    read is logged and noted as degraded (`degraded_reads.note_degraded_read`)."""
+    parties = sorted({named.party for named in stated_party_words(state)})
+    if not parties:
+        return {}
+    types = await asyncio.to_thread(state.graph.node_types_batch, parties)
+    untyped = [dcid for dcid in parties if dcid not in types]
+    if untyped:
+        logger.warning("declared parties with no graph type: %s", ", ".join(untyped))
+        note_degraded_read("party word types")
+    rows = get_index().parties
+
+    def label(dcid: str) -> str:
+        row = rows.get(dcid)
+        return row.label if row is not None and row.label else dcid
+
+    return {
+        dcid: PlaceSet(
+            name=label(dcid), kind="place", node=PlaceNode(dcid=dcid, graph_type=types[dcid])
+        )
+        for dcid in parties
+        if dcid in types
+    }
 
 
 def _sole_axis(state: ResolveState, name: str) -> RoleAxis | None:
@@ -274,7 +313,8 @@ async def _prune_shapes_by_admission(
     state: ResolveState, shapes: list[ShapeDraft]
 ) -> tuple[list[ShapeDraft], list[RoleNotAdmittedEntity]]:
     """Keep shapes that can serve every place set the part names, each once however many
-    texts name it (`place_roles.part_sets`).
+    texts name it (`place_roles.part_sets`), and the set of each party a word of the part
+    names on the shape (`place_roles.held_party_words`).
 
     A shape serves a set when a declared role admits the type of a reading the set can
     take: its node's or the one its members share, so a continent passes on a role that
@@ -288,7 +328,8 @@ async def _prune_shapes_by_admission(
 
     Every question settling can need is asked here first, in one gathered batch: each
     declared role of each shape, with the node type and the member type of each set that
-    holds members (`place_roles.set_choices`). The answers are recorded by role and type
+    holds members (`place_roles.set_choices`) and the type of each party a word of the part
+    can name (`ResolveState.party_sets`). The answers are recorded by role and type
     (`state.node_admissions`), so settling reads them in hand and a member type's class
     walk runs beside a node type's. A set with no member needs no question of settling, and
     is judged as before, a role and type at a time until one admits it.
@@ -297,7 +338,8 @@ async def _prune_shapes_by_admission(
     names all entities when each is admitted somewhere but no single shape admits all.
     """
     place_sets = list(part_sets(state).values())
-    if not place_sets or not shapes:
+    parties = list(state.party_sets.values())
+    if not place_sets and not parties:
         return shapes, []
 
     unasked = sorted(
@@ -305,8 +347,7 @@ async def _prune_shapes_by_admission(
             (role, graph_type)
             for shape in shapes
             for role in shape.declared_roles or ("observationAbout",)
-            for place_set in place_sets
-            if place_set.members
+            for place_set in (*(named for named in place_sets if named.members), *parties)
             for graph_type in _set_types(place_set)
         }
         - state.node_admissions.keys()
@@ -315,6 +356,16 @@ async def _prune_shapes_by_admission(
         *[state.admission.admits(role, graph_type) for role, graph_type in unasked]
     )
     state.node_admissions.update(zip(unasked, answers, strict=True))
+    # Read once the answers are in hand: a word names its party on a shape by the kinds
+    # the named places read as there (`place_roles.held_party_words`), which the roles'
+    # answers decide.
+    sets_of = {
+        id(shape): [
+            *place_sets,
+            *(state.party_sets[named.party] for named in held_party_words(state, shape)),
+        ]
+        for shape in shapes
+    }
 
     async def _admits(role: str, graph_type: str) -> bool:
         asked = (role, graph_type)
@@ -344,16 +395,21 @@ async def _prune_shapes_by_admission(
         return set_choices(assignment, admits=admits)
 
     survivors: list[ShapeDraft] = []
-    admitted_anywhere = {place_key(place_set): False for place_set in place_sets}
+    # Every set some shape must serve, by place key, and whether one does.
+    judged: dict[str, PlaceSet] = {}
+    admitted_anywhere: dict[str, bool] = {}
     for shape in shapes:
         roles = shape.declared_roles or ("observationAbout",)
         readings = _readings(shape)
         shape_admits_all = True
-        for place_set in place_sets:
-            served = readings.get(place_key(place_set), "node") is not None
+        for place_set in sets_of[id(shape)]:
+            key = place_key(place_set)
+            judged[key] = place_set
+            served = readings.get(key, "node") is not None
             if served and await _admits_any(roles, place_set):
-                admitted_anywhere[place_key(place_set)] = True
+                admitted_anywhere[key] = True
             else:
+                admitted_anywhere.setdefault(key, False)
                 shape_admits_all = False
         if shape_admits_all:
             survivors.append(shape)
@@ -361,7 +417,7 @@ async def _prune_shapes_by_admission(
     if survivors:
         return survivors, []
 
-    refused = [s for s in place_sets if not admitted_anywhere[place_key(s)]] or place_sets
+    refused = [s for key, s in judged.items() if not admitted_anywhere[key]] or place_sets
     return [], [not_admitted_entity(place_set) for place_set in refused]
 
 

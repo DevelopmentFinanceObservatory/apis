@@ -362,22 +362,30 @@ def _rows(svs: tuple[DetectedSV, ...] | None) -> list[tuple[str, float, bool]]:
 
 class TestWithoutStatedWords:
     @pytest.mark.parametrize(
-        ("text", "expected"),
+        ("text", "party_words", "expected"),
         [
-            pytest.param("bilateral ODA", ("ODA", {"bilateral"}), id="leading_word"),
+            pytest.param("bilateral ODA", (), ("ODA", {"bilateral"}), id="leading_word"),
             pytest.param(
                 "Bilateral ODA to  Kenya",
+                (),
                 ("ODA to Kenya", {"bilateral"}),
                 id="casefolded_and_whitespace_collapsed",
             ),
-            pytest.param("ODA to Kenya", None, id="no_stated_word"),
-            pytest.param("bilateral", None, id="nothing_left_without_it"),
-            pytest.param("bilateral-only aid", None, id="hyphenated_token_is_another_word"),
-            pytest.param("non-bilateral ODA", None, id="negated_token_is_another_word"),
+            pytest.param("ODA to Kenya", (), None, id="no_stated_word"),
+            pytest.param("bilateral", (), None, id="nothing_left_without_it"),
+            pytest.param("bilateral-only aid", (), None, id="hyphenated_token_is_another_word"),
+            pytest.param("non-bilateral ODA", (), None, id="negated_token_is_another_word"),
+            pytest.param(
+                "multilateral ODA to Kenya",
+                ("multilateral",),
+                ("ODA to Kenya", {"multilateral"}),
+                id="party_word_on_an_unnamed_axis",
+            ),
+            pytest.param("multilateral ODA from France", (), None, id="party_word_on_a_named_axis"),
         ],
     )
-    def test_text_less_the_stated_words(self, text, expected):
-        result = _without_stated_words(text, get_index())
+    def test_text_less_the_stated_words(self, text, party_words, expected):
+        result = _without_stated_words(text, get_index(), frozenset(party_words))
 
         if expected is None:
             assert result is None
@@ -389,25 +397,58 @@ class TestWithoutStatedWords:
 
 class TestStatesAWord:
     @pytest.mark.parametrize(
-        ("provenance", "measured_property", "words", "expected"),
+        ("provenance", "measured_property", "words", "party_words", "expected"),
         [
-            pytest.param(_CRS, "amount", {"bilateral"}, True, id="crs_amount"),
-            pytest.param(_CRS, "grantEquivalent", {"bilateral"}, True, id="crs_grant_equivalent"),
-            pytest.param(_DAC2A, "amount", {"bilateral"}, True, id="dac2a_amount"),
-            pytest.param(_CRS, "amount", {"multilateral"}, False, id="another_word"),
-            pytest.param(_DAC1, "amount", {"bilateral"}, False, id="dac1_codes_the_word"),
-            pytest.param(_DAC2A, "attributedAmount", {"bilateral"}, False, id="dac2a_imputed_row"),
+            pytest.param(_CRS, "amount", {"bilateral"}, (), True, id="crs_amount"),
             pytest.param(
-                _IDS, "amount", {"bilateral"}, False, id="listed_row_of_an_undeclared_table"
+                _CRS, "grantEquivalent", {"bilateral"}, (), True, id="crs_grant_equivalent"
+            ),
+            pytest.param(_DAC2A, "amount", {"bilateral"}, (), True, id="dac2a_amount"),
+            pytest.param(_CRS, "amount", {"multilateral"}, (), False, id="another_word"),
+            pytest.param(_DAC1, "amount", {"bilateral"}, (), False, id="dac1_codes_the_word"),
+            pytest.param(
+                _DAC2A, "attributedAmount", {"bilateral"}, (), False, id="dac2a_imputed_row"
+            ),
+            pytest.param(
+                _IDS, "amount", {"bilateral"}, (), False, id="listed_row_of_an_undeclared_table"
+            ),
+            pytest.param(
+                _DAC2A,
+                "amount",
+                {"multilateral"},
+                {"multilateral"},
+                True,
+                id="dac2a_names_the_party",
+            ),
+            pytest.param(
+                _DAC2A,
+                "amount",
+                {"multilateral"},
+                (),
+                False,
+                id="dac2a_party_on_a_named_axis",
+            ),
+            pytest.param(
+                _CRS, "amount", {"multilateral"}, {"multilateral"}, False, id="crs_names_none"
+            ),
+            pytest.param(
+                _DAC2A,
+                "attributedAmount",
+                {"multilateral"},
+                {"multilateral"},
+                False,
+                id="dac2a_imputed_row_names_none",
             ),
         ],
     )
     def test_a_row_joins_when_its_table_states_the_word_of_its_measured_property(
-        self, provenance, measured_property, words, expected
+        self, provenance, measured_property, words, party_words, expected
     ):
+        """A row joins when its table states the word of the row's measured property, or
+        names a party for it on an axis the request leaves unnamed (`party_words`)."""
         dcid = _dcid_of(provenance, measured_property)
 
-        assert _states_a_word(dcid, words, get_index()) is expected
+        assert _states_a_word(dcid, words, get_index(), frozenset(party_words)) is expected
 
     def test_a_dcid_the_index_holds_no_row_for_states_nothing(self):
         assert _states_a_word("sv/NotInTheIndex", {"bilateral"}, get_index()) is False
@@ -533,6 +574,50 @@ class TestStatedWordSearch:
         run(recall(text, [], graph=graph, resolver=make_resolver(graph), raw_query=text))
 
         assert sorted(graph.detect_calls) == sorted(searched)
+
+    @pytest.mark.parametrize(
+        ("party_words", "searched"),
+        [
+            pytest.param((), ["multilateral ODA to Kenya"], id="axis_named"),
+            pytest.param(
+                ("multilateral",),
+                ["ODA to Kenya", "multilateral ODA to Kenya"],
+                id="axis_unnamed",
+            ),
+        ],
+    )
+    def test_a_party_word_is_searched_without_only_where_its_axis_is_unnamed(
+        self, party_words, searched
+    ):
+        """Intake passes the words that name a party on an axis the request leaves unnamed
+        (`place_roles.stated_party_words`); recall searches without those alone."""
+        dac2a = _dcid_of(_DAC2A, "amount")
+        crs = _dcid_of(_CRS, "amount")
+        text = "multilateral ODA to Kenya"
+        graph = _CountingGraph(
+            nodes={},
+            obs={},
+            resolve={},
+            detect={
+                text: {"svs": [crs], "cosine_scores": [0.8]},
+                "ODA to Kenya": {"svs": [dac2a, crs], "cosine_scores": [0.7, 0.7]},
+            },
+        )
+
+        result = run(
+            recall(
+                text,
+                [],
+                graph=graph,
+                resolver=make_resolver(graph),
+                raw_query=text,
+                party_words=frozenset(party_words),
+            )
+        )
+
+        assert sorted(graph.detect_calls) == sorted(searched)
+        recalled = {c.dcid for c in result.candidates if not c.rival}
+        assert (dac2a in recalled) is bool(party_words)
 
     def test_a_series_only_the_search_without_the_word_returns_joins_when_its_table_states_it(self):
         crs = _dcid_of(_CRS, "amount")

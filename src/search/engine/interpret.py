@@ -151,16 +151,22 @@ def _above_recall_floor(candidates: Sequence[DetectedSV]) -> list[DetectedSV]:
     return [c for c in candidates if c.score >= floor or is_topic_candidate(c.dcid, c.type_of)]
 
 
-def _without_stated_words(text: str, index: CodeIndex) -> tuple[str, frozenset[str]] | None:
+def _without_stated_words(
+    text: str, index: CodeIndex, party_words: AbstractSet[str] = frozenset()
+) -> tuple[str, frozenset[str]] | None:
     """`text` less each word some declared dataset states of its rows
-    (`DatasetDeclaration.stated_words`), with its whitespace collapsed, and the words
-    removed, casefolded. A word is a whole token (`word_tokens`), so "non-bilateral" holds
-    no stated word. `None` when `text` holds none, or nothing else.
+    (`DatasetDeclaration.stated_words`) and each of `party_words`, with its whitespace
+    collapsed, and the words removed, casefolded. A word is a whole token (`word_tokens`),
+    so "non-bilateral" holds no stated word. `None` when `text` holds none, or nothing else.
 
     The graph's text search matches a variable's name. "Bilateral ODA" returns the DAC1
     series whose names hold "bilateral" and none of the CRS or DAC2a series, which state
-    the word of every row without naming it, so those tables never become candidates."""
-    stated = {word.word for dataset in index.datasets.values() for word in dataset.stated_words}
+    the word of every row without naming it, so those tables never become candidates.
+    "Multilateral ODA" returns no DAC2a series either, though DAC2a's provider
+    `DACMultilaterals` is what the word names (`DatasetDeclaration.party_words`)."""
+    stated = {
+        word.word for dataset in index.datasets.values() for word in dataset.stated_words
+    } | party_words
     tokens = word_tokens(text)
     removed = [token for token in tokens if token.text.casefold() in stated]
     if not removed or len(removed) == len(tokens):
@@ -174,16 +180,29 @@ def _without_stated_words(text: str, index: CodeIndex) -> tuple[str, frozenset[s
     return " ".join("".join(kept).split()), frozenset(token.text.casefold() for token in removed)
 
 
-def _states_a_word(dcid: str, words: AbstractSet[str], index: CodeIndex) -> bool:
+def _states_a_word(
+    dcid: str,
+    words: AbstractSet[str],
+    index: CodeIndex,
+    party_words: AbstractSet[str] = frozenset(),
+) -> bool:
     """Whether the index row of `dcid` (`CodeIndex.statvar_by_dcid`) belongs to a dataset
-    that states one of `words` of the row's measured property. A series the index holds no
-    row for states nothing."""
+    that states one of `words` of the row's measured property, or names a party for one of
+    them that is also among `party_words` (`DatasetDeclaration.party_words`). A series the
+    index holds no row for states nothing."""
     row = index.statvar_by_dcid(dcid)
     return row is not None and any(
-        stated.word in words and stated.measured_property == row.measured_property
+        declared.word in words and declared.measured_property == row.measured_property
         for provenance in row.provenances
         if provenance in index.datasets
-        for stated in index.datasets[provenance].stated_words
+        for declared in (
+            *index.datasets[provenance].stated_words,
+            *(
+                named
+                for named in index.datasets[provenance].party_words
+                if named.word in party_words
+            ),
+        )
     )
 
 
@@ -225,14 +244,16 @@ def _pooled(first: Detection, second: Detection, joins: Callable[[str], bool]) -
     return replace(first, candidates=union(first.candidates, second.candidates), hits=hits)
 
 
-async def _detect(graph: EngineGraphClient, text: str) -> Detection:
+async def _detect(
+    graph: EngineGraphClient, text: str, party_words: AbstractSet[str] = frozenset()
+) -> Detection:
     """The graph's detection of `text` (`EngineGraphClient.detect_svs`). When `text` holds a
-    word some declared dataset states (`_without_stated_words`), the graph is searched
-    concurrently on the text without it, and the series of the datasets that state a
-    removed word join the pool (`_states_a_word`, `_pooled`). A failure of either search
-    raises."""
+    word some declared dataset states, or one of `party_words` (`_without_stated_words`),
+    the graph is searched concurrently on the text without it, and the series of the
+    datasets that state or name a party for a removed word join the pool (`_states_a_word`,
+    `_pooled`). A failure of either search raises."""
     index = get_index()
-    unstated = _without_stated_words(text, index)
+    unstated = _without_stated_words(text, index, party_words)
     if unstated is None:
         return await asyncio.to_thread(graph.detect_svs, text)
     rest, removed = unstated
@@ -240,7 +261,7 @@ async def _detect(graph: EngineGraphClient, text: str) -> Detection:
         asyncio.to_thread(graph.detect_svs, text),
         asyncio.to_thread(graph.detect_svs, rest),
     )
-    return _pooled(first, second, lambda dcid: _states_a_word(dcid, removed, index))
+    return _pooled(first, second, lambda dcid: _states_a_word(dcid, removed, index, party_words))
 
 
 def _member_detection(members: Sequence[str]) -> Detection:
@@ -267,6 +288,7 @@ async def recall(
     pre_resolved: dict[str, Resolution] | None = None,
     entity_surfaces: Mapping[str, str] | None = None,
     members: Sequence[str] | None = None,
+    party_words: AbstractSet[str] = frozenset(),
 ) -> Recall:
     """Recall candidate StatVars and resolve entity names concurrently.
 
@@ -282,7 +304,9 @@ async def recall(
     materialise stage reads the graph.
 
     A text holding a word some declared dataset states is also searched without it, for
-    the series of the tables that state the word (`_detect`).
+    the series of the tables that state the word (`_detect`), and so is one holding a word
+    of `party_words`, the words that name a party on an axis the request leaves unnamed
+    (`region.place_roles.stated_party_words`), for the series of the tables that declare it.
 
     `members` are the StatVars a part's series code names (`search.engine.source_code`).
     They are the candidates, each at score 1.0 and admitted by the request's catalogue as a
@@ -299,7 +323,7 @@ async def recall(
         miss_resolutions = await resolve_names(misses, resolver=resolver, surfaces=surfaces)
     else:
         detection, miss_resolutions = await asyncio.gather(
-            _detect(graph, _canonicalize_acronyms(detect_query)),
+            _detect(graph, _canonicalize_acronyms(detect_query), party_words),
             resolve_names(misses, resolver=resolver, surfaces=surfaces),
         )
     candidates = _above_recall_floor(detection.candidates)
