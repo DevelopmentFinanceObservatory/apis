@@ -107,7 +107,7 @@ def test_sidecar_match_reaches_admitted_qualifiers_and_forced_bindings():
     admitted = _admit_qualifier_matches([_FINANCE_SHAPE], read.matches)
     assert {m.code_dcid for m in admitted} == {"CRSTypeOfFinance110"}
 
-    forced = _force_qualifier_bindings([], admitted, _FINANCE_SHAPE, variable="aid to Kenya")
+    forced, _ = _force_qualifier_bindings([], admitted, _FINANCE_SHAPE, variable="aid to Kenya")
     by_property = {b.property_dcid: b for b in forced}
     assert by_property["crsTypeOfFinance"].kind == "value"
     assert by_property["crsTypeOfFinance"].value_dcids == ["CRSTypeOfFinance110"]

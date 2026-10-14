@@ -77,7 +77,6 @@ from search.engine.region.observations.fetch import _build_observations
 from search.engine.region.phase_election import _settle_served_dataset
 from search.engine.region.phase_intake import not_admitted_entity
 from search.engine.region.phase_shared import (
-    _admitted_qualifier_properties,
     _elected_flagged_match,
     _role_incompatible_no_data,
     _role_not_resolved_no_data,
@@ -1973,7 +1972,7 @@ async def _nearest_real_for(
         role_class_walks=state.role_class_walks,
         query_entity_text_by_dcid=state.entity_label_text_by_dcid,
         # Preserve qualifier, measure, and default provenance on untouched bindings.
-        text_recognized_properties=_admitted_qualifier_properties(state.admitted_qualifiers),
+        text_recognized_properties=state.text_recognized_properties,
         measure_elected_properties=state.measure_elected_properties,
         defaulted_properties=state.defaulted_properties,
         named_groups=request_named_groups(state, state.place.roles),

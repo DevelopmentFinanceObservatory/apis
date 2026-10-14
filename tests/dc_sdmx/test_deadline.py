@@ -240,8 +240,8 @@ def test_availability_read_seconds_counts_from_when_the_get_holds_its_slot() -> 
     transport = _AvailabilityRecordingTransport()
     client = SdmxClient(base_url=_BASE_URL, transport=transport, total_concurrency=slots)
     slots.acquire()
-    threading.Timer(0.3, slots.release).start()
     started = time.monotonic()
+    threading.Timer(0.3, slots.release).start()
 
     client.availability(variables=["Count_Person"], component="observationAbout", read_seconds=0.2)
 

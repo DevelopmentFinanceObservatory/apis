@@ -944,7 +944,7 @@ def ground_candidates(state: ResolveState, candidates: list[_Candidate]) -> _Gro
     measure_family_cache: dict[MeasureFamilyCacheKey, tuple[MeasurePartition, ...]] = {}
     # These forced qualifier, measure, and default bindings belong only to candidates that
     # reuse the elected ``state.bindings`` list.
-    text_recognized_properties = frozenset(m.code_system for m in state.admitted_qualifiers)
+    text_recognized_properties = state.text_recognized_properties
     measure_elected_properties = state.measure_elected_properties
     defaulted_properties = state.defaulted_properties
     rivalled = any(

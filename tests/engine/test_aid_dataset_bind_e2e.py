@@ -902,6 +902,64 @@ def test_a_plain_question_binding_codes_no_crs_row_holds_together_is_not_resolve
     assert part.no_data.unbound_qualifiers == []
 
 
+def _provenance(spec: Spec) -> dict[str, str]:
+    """The provenance of each slot filter in the spec's trace, by constraint property."""
+    return {
+        f.key.property.ref: f.provenance
+        for f in spec.resolved.trace.slot_filters
+        if f.key.property is not None
+    }
+
+
+@pytest.mark.parametrize(
+    ("query", "variables", "dropped"),
+    [
+        pytest.param(
+            "gross ODA, not net, to Kenya in 2022", ("gross ODA",), ("net",), id="one-variable"
+        ),
+        pytest.param(
+            "ODA and aid to Kenya, gross not net",
+            ("ODA", "aid"),
+            ("gross", "net"),
+            id="two-variables",
+        ),
+    ],
+)
+def test_a_part_naming_gross_and_net_takes_the_netting_basis_from_the_measure_election(
+    query: str, variables: tuple[str, ...], dropped: tuple[str, ...]
+):
+    """The words "gross" and "net" both admit on `nettingBasis` and leave each other
+    unresolved, so the text binds no netting basis. The measure election forces the CRS's
+    preferred `Gross` on each part, and the trace credits it to the election alone."""
+    response = _resolve_scripted(
+        query,
+        _ScriptedLLM(*variables, dropped=dropped),
+        graph=_graph(*variables, members=(_CRS_MEMBER,)),
+    )
+
+    specs = _specs(response)
+    assert len(specs) == len(variables)
+    for spec in specs:
+        assert _bound(spec)["nettingBasis"] == "Gross"
+        assert _provenance(spec)["nettingBasis"] == "measure_elected"
+
+
+def test_an_excluded_code_leaves_its_slot_to_the_binder():
+    """The exclusion in "ODA excluding health" drops every `crsPurpose` match, so the text
+    forces nothing there and the purpose slot keeps the model's binding, while ODA binds
+    from the text."""
+    variable = "ODA excluding health"
+    response = _resolve_scripted(
+        f"{variable} to Kenya",
+        _ScriptedLLM(variable),
+        graph=_graph(variable, members=(_CRS_MEMBER,)),
+    )
+
+    provenance = _provenance(_held_spec(response.parts[0]))
+    assert provenance["crsPurpose"] == "binder"
+    assert provenance["crsTypeOfFlow"] == "text_recognized"
+
+
 def test_raw_text_words_that_name_no_source_scope_nothing(source_catalogue: None):
     """Raw-text source words that match no admitted name are no source mention: the part
     answers unscoped and restates no source."""

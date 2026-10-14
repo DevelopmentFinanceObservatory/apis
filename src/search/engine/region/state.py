@@ -926,6 +926,9 @@ class ResolveState:
     # Every related-measures read the pass started, including ones a later read replaced in
     # `related_read`. The pass waits for them all before it returns (`pipeline._run_phases`).
     related_reads: list[RelatedRead] = field(default_factory=list)
+    # Properties whose admitted qualifier matches bound the slot
+    # (`phase_rank_bind._force_qualifier_bindings`); `build_spec` marks their provenance.
+    text_recognized_properties: frozenset[str] = frozenset()
     # Measure properties inserted by family election; `build_spec` marks their provenance.
     measure_elected_properties: frozenset[str] = frozenset()
     # Properties defaulted by `apply_declared_defaults`; `build_spec` marks their provenance.
@@ -1120,13 +1123,14 @@ class ResolveState:
 
     def forget_bound(self, properties: AbstractSet[str]) -> None:
         """Drop what the engine derived from binding `properties`, once they are unbound:
-        their place among the defaulted and measure-elected properties, each fired
-        default's warnings and the phrases it answers (`slot_defaults`), and, when a
-        measure-elected property goes, the measure election's partition and dropped axes,
-        which describe a family the bindings no longer select."""
+        their place among the text-recognised, defaulted and measure-elected properties,
+        each fired default's warnings and the phrases it answers (`slot_defaults`), and,
+        when a measure-elected property goes, the measure election's partition and dropped
+        axes, which describe a family the bindings no longer select."""
         if properties & self.measure_elected_properties:
             self.measure_elected_partition = None
             self.measure_dropped_axes = ()
+        self.text_recognized_properties -= properties
         self.measure_elected_properties -= properties
         self.defaulted_properties -= properties
         stale = [self.slot_defaults.pop(prop) for prop in properties if prop in self.slot_defaults]

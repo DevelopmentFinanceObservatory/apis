@@ -158,13 +158,9 @@ def test_raw_text_that_asks_for_africas_members_binds_them(doors: Doors) -> None
     of Africa fold to one reading, and the one that asks for the members decides it, under
     the same spelling or another."""
     query = "how much do African countries spend on their own health care?"
-    as_members = ExtractedEntity(
-        text="Africa", span="African", members=True, member_span="countries"
-    )
+    as_members = ExtractedEntity(text="Africa", span="African", members=True)
     as_one_place = ExtractedEntity(text="Africa", span="African")
-    respelled = ExtractedEntity(
-        text="africa", span="African", members=True, member_span="countries"
-    )
+    respelled = ExtractedEntity(text="africa", span="African", members=True)
 
     asked = doors.raw_text(query, WHO, as_members)
     spec = the_spec(asked)

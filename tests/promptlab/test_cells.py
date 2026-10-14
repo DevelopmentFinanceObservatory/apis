@@ -431,8 +431,8 @@ def test_run_capture_completes_end_to_end(tmp_path: Path):
     bind_by_case: dict[str, list[int]] = {}
     for record in store.bind_records():
         bind_by_case.setdefault(record.case_id, []).append(record.leg)
-    # The recorded sdg-03 and conj-01 extractions each name two variables.
-    assert sorted(bind_by_case["sdg-03"]) == [0, 1]
+    # conj-01 has two variables. sdg-03's SDG code is a dropped qualifier, not a second measure.
+    assert sorted(bind_by_case["sdg-03"]) == [0]
     assert sorted(bind_by_case["life-expectancy"]) == [0]
     assert sorted(bind_by_case["conj-01"]) == [0, 1]
 
