@@ -32,6 +32,7 @@ from code_index.types import (
     PartlyStatedValue,
     PartyKind,
     PartyRow,
+    PartyWord,
     ShapeSlotDefault,
     SourceCodeRow,
     StatedWord,
@@ -68,7 +69,9 @@ def parse_index(payload: Mapping, *, source: object = "<document>") -> CodeIndex
 
     Raises `IndexFormatError` for missing or malformed fields, invalid
     dataset declarations, dataset declarations the StatVar rows contradict
-    (`_check_datasets`), or an invalid `default.when_named`. Duplicate
+    (`_check_datasets`), a party word naming a party the `parties` block does not
+    list for its dataset and axis (`_check_party_words`), or an invalid
+    `default.when_named`. Duplicate
     dcids or code pairs raise `DuplicateDcid`. Parent cycles raise
     `CyclicParent`. Cross-system parents raise `CrossSystemParent`.
     Invalid defaults raise `InvalidDeclaredDefault` when their code is
@@ -113,6 +116,7 @@ def parse_index(payload: Mapping, *, source: object = "<document>") -> CodeIndex
     except (KeyError, TypeError) as exc:
         raise IndexFormatError(f"malformed code_index export at {source!r}: {exc}") from exc
     _check_datasets(datasets, statvars)
+    _check_party_words(datasets, parties)
     _check_source_codes(source_codes, [*statvars, *listed_statvars])
     _check_partly_stated_values(partly_stated_values, [*statvars, *listed_statvars])
     return CodeIndex(
@@ -335,29 +339,77 @@ def _parse_stated_words(provenance: str, rows: Sequence[Mapping]) -> tuple[State
     checks each measured property against the dataset's rows."""
     stated: list[StatedWord] = []
     for row in rows:
-        word, prop, where = row["word"], row["measured_property"], dict(row.get("where", {}))
-        if invalid_when_named_entry([word]) is not None or len(word.split()) != 1:
-            raise IndexFormatError(
-                f"datasets row for {provenance!r} states {word!r}, "
-                "which is not a single lowercase word"
-            )
-        if not isinstance(prop, str) or not prop:
-            raise IndexFormatError(
-                f"datasets row for {provenance!r} states {word!r} for {prop!r}, "
-                "which is not a measured property"
-            )
-        if unknown := sorted(set(where) - AXIS_LABELS):
-            raise IndexFormatError(
-                f"datasets row for {provenance!r} states {word!r} where {unknown!r}, "
-                f"outside {sorted(AXIS_LABELS)!r}"
-            )
-        if (invalid := invalid_when_named_entry(list(where.values()))) is not None:
-            raise IndexFormatError(
-                f"datasets row for {provenance!r} states {word!r} where a party is "
-                f"{list(where.values())[invalid]!r}, which is not a non-empty lowercase string"
-            )
+        word, prop = row["word"], row["measured_property"]
+        _check_declared_word(provenance, word, prop)
+        where = _parse_where(provenance, word, row.get("where", {}))
         stated.append(StatedWord(word=word, measured_property=prop, where=where))
     return tuple(stated)
+
+
+def _parse_party_words(provenance: str, rows: Sequence[Mapping]) -> tuple[PartyWord, ...]:
+    """A datasets row's `party_words`, refusing what `_parse_stated_words` refuses of a
+    stated word, an axis outside `AXIS_LABELS`, a party that is not a non-empty string, and
+    a word declared twice for one measured property and axis, which would name two parties
+    there. Absent reads as empty. `_check_datasets` checks each measured property against the
+    dataset's rows, and `_check_party_words` each party against the `parties` block."""
+    named: list[PartyWord] = []
+    for row in rows:
+        word, prop, axis, party = row["word"], row["measured_property"], row["axis"], row["party"]
+        _check_declared_word(provenance, word, prop)
+        if axis not in AXIS_LABELS:
+            raise IndexFormatError(
+                f"datasets row for {provenance!r} names a party for {word!r} on {axis!r}, "
+                f"outside {sorted(AXIS_LABELS)!r}"
+            )
+        if not isinstance(party, str) or not party:
+            raise IndexFormatError(
+                f"datasets row for {provenance!r} names {party!r} for {word!r}, "
+                "which is not a party dcid"
+            )
+        if any(
+            (word, prop, axis) == (other.word, other.measured_property, other.axis)
+            for other in named
+        ):
+            raise IndexFormatError(
+                f"datasets row for {provenance!r} names two parties for {word!r} on {axis!r} "
+                f"of {prop!r}"
+            )
+        where = _parse_where(provenance, word, row.get("where", {}))
+        named.append(
+            PartyWord(word=word, measured_property=prop, axis=axis, party=party, where=where)
+        )
+    return tuple(named)
+
+
+def _check_declared_word(provenance: str, word: str, prop: str) -> None:
+    """Refuses a declared word that is not a single lowercase word, and a measured
+    property that is not a non-empty string."""
+    if invalid_when_named_entry([word]) is not None or len(word.split()) != 1:
+        raise IndexFormatError(
+            f"datasets row for {provenance!r} states {word!r}, which is not a single lowercase word"
+        )
+    if not isinstance(prop, str) or not prop:
+        raise IndexFormatError(
+            f"datasets row for {provenance!r} states {word!r} for {prop!r}, "
+            "which is not a measured property"
+        )
+
+
+def _parse_where(provenance: str, word: str, where: Mapping) -> dict:
+    """A declared word's `where`, refusing an axis outside `AXIS_LABELS` and a kind that is
+    not a non-empty lowercase string."""
+    where = dict(where)
+    if unknown := sorted(set(where) - AXIS_LABELS):
+        raise IndexFormatError(
+            f"datasets row for {provenance!r} states {word!r} where {unknown!r}, "
+            f"outside {sorted(AXIS_LABELS)!r}"
+        )
+    if (invalid := invalid_when_named_entry(list(where.values()))) is not None:
+        raise IndexFormatError(
+            f"datasets row for {provenance!r} states {word!r} where a party is "
+            f"{list(where.values())[invalid]!r}, which is not a non-empty lowercase string"
+        )
+    return where
 
 
 def _parse_datasets(rows: Sequence[Mapping]) -> list[DatasetDeclaration]:
@@ -365,7 +417,8 @@ def _parse_datasets(rows: Sequence[Mapping]) -> list[DatasetDeclaration]:
     `absent_observation` value outside `{"zero", "unknown"}`, an `account`
     outside `dfo_platform.roles.FlowAccount`, an `opt_in` that is not a boolean,
     a `rank` that is not an integer, an empty `label`, an empty `description`,
-    a `stated_words` row `_parse_stated_words` refuses (the key is optional), or a
+    a `stated_words` row `_parse_stated_words` refuses or a `party_words` row
+    `_parse_party_words` refuses (both keys are optional), or a
     `provenance` or `rank` repeated across rows. Each raises
     `IndexFormatError` naming the offending row (or the repeated value)."""
     datasets: list[DatasetDeclaration] = []
@@ -383,6 +436,7 @@ def _parse_datasets(rows: Sequence[Mapping]) -> list[DatasetDeclaration]:
                 rank=row["rank"],
                 invariants=dict(row["invariants"]),
                 stated_words=_parse_stated_words(row["provenance"], row.get("stated_words", ())),
+                party_words=_parse_party_words(row["provenance"], row.get("party_words", ())),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise IndexFormatError(f"malformed datasets row {row!r}: {exc}") from exc
@@ -435,8 +489,9 @@ def _check_datasets(datasets: Sequence[DatasetDeclaration], statvars: Sequence[S
     declares, a row of a dataset does not carry one of its declared
     `invariants` explicitly (an absent property fails whatever its
     `absent_reading`), a declared dataset has no row, or a dataset states a
-    word (`DatasetDeclaration.stated_words`) of a measured property none of
-    its rows has. A row with no provenance belongs to no dataset and passes."""
+    word (`DatasetDeclaration.stated_words`) or names a party for one
+    (`DatasetDeclaration.party_words`) of a measured property none of its rows
+    has. A row with no provenance belongs to no dataset and passes."""
     invariants = {dataset.provenance: dataset.invariants for dataset in datasets}
     populated: set[str] = set()
     measured: dict[str, set[str]] = {}
@@ -466,6 +521,33 @@ def _check_datasets(datasets: Sequence[DatasetDeclaration], statvars: Sequence[S
                     f"dataset {dataset.provenance!r} states {stated.word!r} of "
                     f"{stated.measured_property!r}, a measured property none of its rows has "
                     f"(has: {sorted(measured[dataset.provenance])!r})"
+                )
+        for named in dataset.party_words:
+            if named.measured_property not in measured[dataset.provenance]:
+                raise IndexFormatError(
+                    f"dataset {dataset.provenance!r} names a party for {named.word!r} of "
+                    f"{named.measured_property!r}, a measured property none of its rows has "
+                    f"(has: {sorted(measured[dataset.provenance])!r})"
+                )
+
+
+def _check_party_words(datasets: Sequence[DatasetDeclaration], parties: Sequence[PartyRow]) -> None:
+    """Raises `IndexFormatError` when a dataset names a party for a word
+    (`DatasetDeclaration.party_words`) that the `parties` block does not list for that
+    dataset on that axis (`PartyRow.datasets`, `PartyRow.axes`)."""
+    by_dcid = {party.dcid: party for party in parties}
+    for dataset in datasets:
+        for named in dataset.party_words:
+            party = by_dcid.get(named.party)
+            if (
+                party is None
+                or dataset.provenance not in party.datasets
+                or named.axis not in party.axes
+            ):
+                raise IndexFormatError(
+                    f"dataset {dataset.provenance!r} names {named.party!r} for {named.word!r} "
+                    f"on {named.axis!r}, which the parties block does not list for that "
+                    "dataset and axis"
                 )
 
 

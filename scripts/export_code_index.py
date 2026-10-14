@@ -87,6 +87,7 @@ from code_index.types import (
     MeasurePartitionLabel,
     PartlyStatedValue,
     PartyKind,
+    PartyWord,
     ShapeSlotDefault,
     StatedWord,
     StatTypeWordDeclaration,
@@ -332,7 +333,18 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
 # its recipient is a country, since a flow to a multilateral organisation is a core
 # contribution, so those tables state it where the destination is a country. DAC2a's
 # `attributedAmount` row, imputed multilateral aid, and DAC1, whose aid types split bilateral
-# from multilateral, state nothing.
+# from multilateral, state nothing. "Multilateral" names a party of DAC2a and DAC2b
+# (`DatasetDeclaration.party_words`): their provider `DACMultilaterals` is the DAC's published
+# total of the multilateral organisations' own outflows, so a DAC2a or DAC2b `amount` row to a
+# country is multilateral where its provider is that total. DAC1, whose aid type 2000 codes the
+# word as donors' contributions, the CRS and the imputed table name no party.
+_MULTILATERAL_PROVIDER = PartyWord(
+    word="multilateral",
+    measured_property="amount",
+    axis="origin",
+    party="DACMultilaterals",
+    where={"destination": "country"},
+)
 DATASETS: tuple[DatasetDeclaration, ...] = (
     DatasetDeclaration(
         provenance=_CRS,
@@ -392,6 +404,7 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
                 word="bilateral", measured_property="amount", where={"destination": "country"}
             ),
         ),
+        party_words=(_MULTILATERAL_PROVIDER,),
     ),
     DatasetDeclaration(
         provenance=_DAC2B,
@@ -409,6 +422,7 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
                 word="bilateral", measured_property="amount", where={"destination": "country"}
             ),
         ),
+        party_words=(_MULTILATERAL_PROVIDER,),
     ),
 )
 
@@ -2926,6 +2940,16 @@ def _stated_word_to_dict(stated: StatedWord) -> dict:
     }
 
 
+def _party_word_to_dict(named: PartyWord) -> dict:
+    return {
+        "word": named.word,
+        "measured_property": named.measured_property,
+        "axis": named.axis,
+        "party": named.party,
+        **({"where": dict(sorted(named.where.items()))} if named.where else {}),
+    }
+
+
 def _dataset_to_dict(dataset: DatasetDeclaration) -> dict:
     return {
         "provenance": dataset.provenance,
@@ -2939,6 +2963,11 @@ def _dataset_to_dict(dataset: DatasetDeclaration) -> dict:
         **(
             {"stated_words": [_stated_word_to_dict(w) for w in dataset.stated_words]}
             if dataset.stated_words
+            else {}
+        ),
+        **(
+            {"party_words": [_party_word_to_dict(w) for w in dataset.party_words]}
+            if dataset.party_words
             else {}
         ),
     }

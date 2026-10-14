@@ -240,14 +240,18 @@ def test_declared_default_slot_named_against_the_real_index() -> None:
         ("not bilateral ODA to Kenya", ("bilateral",)),
         ("non-bilateral ODA to Kenya", ("bilateral",)),
         ("bilateral ODA to Kenya", ()),
+        ("not multilateral ODA to Kenya", ("multilateral",)),
+        ("ODA to Kenya excluding multilateral and bilateral flows", ("bilateral", "multilateral")),
+        ("multilateral ODA to Kenya", ()),
         (None, ()),
     ],
 )
 def test_negated_stated_words_against_the_real_index(
     query_text: str | None, expected: tuple[str, ...]
 ) -> None:
-    """The real index has the CRS state "bilateral" of its rows; a raw query negating it
-    carries the word, and one stating it, or a request of several variables, carries none."""
+    """The real index has the CRS state "bilateral" of its rows and DAC2a name a party for
+    "multilateral"; a raw query negating either carries the word, and one stating it, or a
+    request of several variables, carries none."""
     signals = compute_layer2_signals(query=query_text or "", entity_roles={}, query_text=query_text)
     assert signals.query_text_negated_stated_words == expected
 

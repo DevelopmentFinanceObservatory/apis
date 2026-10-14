@@ -30,7 +30,6 @@ from search.engine.bind_repair import (
     _label_has_negated_occurrence,
     _label_named_in_text,
     _label_negated_in_text,
-    stated_words_negated,
 )
 from search.engine.config import settings
 from search.engine.degraded_reads import note_degraded_read
@@ -98,10 +97,13 @@ from search.engine.region.availability import (
     series_at_places,
 )
 from search.engine.region.codes import AVAILABILITY_PROBE_FAILED, DEGENERATE_BINDING_DETECTED
+from search.engine.region.decisions import PartyReadingWithdrawn
 from search.engine.region.grounding import _shape_with_taxonomy
 from search.engine.region.place_roles import (
     bind_place_roles,
+    held_party_words,
     names_a_place,
+    part_states,
     parties_of_kind,
     without_open_axis_gaps,
     without_unasked_axes,
@@ -133,6 +135,7 @@ from search.engine.retrieval.bound_values import (
     bound_realizable_members,
     bound_values_from_bindings,
     collapse_measure_families,
+    declared_datasets,
     elect_five_tuple_family,
     five_tuple_member_facts,
     held_family_exact,
@@ -140,6 +143,7 @@ from search.engine.retrieval.bound_values import (
     other_families_properties,
     part_datasets,
     part_member_rows,
+    phrases_within,
     price_basis_order,
     query_phrases_read,
     shape_constraint_values,
@@ -582,10 +586,12 @@ def _read_offer(
     query_qualifier_matches = merge_lists(query_qualifiers.matches.values())
     # Families of one five-tuple and role class are rival readings, and the one reading the
     # most of the query reaches the election; of families reading alike, one with no series
-    # at the named places leaves for one with a series there. Then a role-bearing shape
-    # publishing on an axis the query does not ask for leaves for one reading as much
-    # without it (`without_unasked_axes`).
+    # at the named places leaves for one with a series there. On a part read with a word
+    # naming a party, the shapes binding it are the pool first, or the reading is withdrawn
+    # (`with_party_reading`). Then a role-bearing shape publishing on an axis the query
+    # does not ask for leaves for one reading as much without it (`without_unasked_axes`).
     phrases_read = _phrases_reader(state, query_qualifiers)
+    eligible_shapes = with_party_reading(state, eligible_shapes, phrases_read)
     eligible_shapes = elect_five_tuple_family(
         eligible_shapes,
         phrases_read,
@@ -2116,9 +2122,9 @@ def _dataset_stated_words(
 ) -> frozenset[str]:
     """The words of the part that every dataset `shape` answers from states of the rows the
     part reads on it (`DatasetDeclaration.stated_words`). The datasets are those the shape
-    names or candidacy stamped on it (`_answering_datasets`), and before candidacy, as in
-    the family election, those publishing its family (`shape_datasets`), none for a shape
-    the index does not carry.
+    names or candidacy stamped on it, and before candidacy, as in the family election, those
+    publishing its family (`bound_values.declared_datasets`), none for a shape the index
+    does not carry.
 
     A dataset states a word of the rows with one measured property, and where it names a
     kind of party, of those whose party on that flow axis is of the kind. "bilateral" holds
@@ -2128,29 +2134,26 @@ def _dataset_stated_words(
     contributions. It holds on no DAC2a shape whose recipient the part leaves open.
 
     The part states a word where its variable or a typed qualifier phrase holds it as a
-    modifier of the measure (`_modifies_the_measure`): "bilateral ODA", "net bilateral
+    modifier of the measure (`place_roles.part_states`): "bilateral ODA", "net bilateral
     ODA". A word inside another ("non-bilateral"), one an occurrence negates or excludes
-    in those texts (`_label_has_negated_occurrence`) or in the verbatim query
-    (`stated_words_negated`, which reaches a negation the extraction left out of the
-    variable, as "not bilateral ODA", and keys the response cache),
-    and one standing past a function word or a connective ("ODA net of bilateral flows")
-    names something else and is not stated. A part holding none of the words the datasets
-    declare reads no place, and so does a call with no `state`, as a resubmit makes."""
+    in those texts or in the verbatim query (`bind_repair.stated_words_negated`, which
+    reaches a negation the extraction left out of the variable, as "not bilateral ODA", and
+    keys the response cache), and one standing past a function word or a connective ("ODA
+    net of bilateral flows") names something else and is not stated. A part holding none
+    of the words the datasets declare reads no place, and so does a call with no `state`,
+    as a resubmit makes.
+
+    A word naming a party `shape` binds (`place_roles.held_party_words`) is read too:
+    "multilateral" in "multilateral ODA to Kenya" on a DAC2a shape, whose provider it binds
+    to the multilaterals total."""
     if state is None:
         return frozenset()
-    texts = (state.variable, *(coded.phrase for coded in state.qualifiers or ()))
-    query_text = state.query_text
-    negated = frozenset(stated_words_negated(query_text, index=index) if query_text else ())
     where_holds: dict[tuple[tuple[str, str], ...], bool] = {}
 
     def holds(stated: StatedWord) -> bool:
         if stated.measured_property != shape.meas_prop_dcid:
             return False
-        if not any(_modifies_the_measure(stated.word, text) for text in texts):
-            return False
-        if stated.word in negated or any(
-            _label_has_negated_occurrence(stated.word, text) for text in texts
-        ):
+        if not part_states(state, stated.word):
             return False
         if not stated.where:
             return True
@@ -2159,30 +2162,69 @@ def _dataset_stated_words(
             where_holds[key] = parties_of_kind(state, shape, stated.where)
         return where_holds[key]
 
-    if shape.named_dataset is None and shape.datasets is None:
-        datasets = [index.datasets[dataset] for dataset in shape_datasets(shape, index)]
-    else:
-        datasets = _answering_datasets(shape, index)
     declared = [
         frozenset(stated.word for stated in dataset.stated_words if holds(stated))
-        for dataset in datasets
+        for dataset in declared_datasets(shape, index)
     ]
-    return frozenset.intersection(*declared) if declared else frozenset()
+    stated = frozenset.intersection(*declared) if declared else frozenset()
+    return stated | {named.word for named in held_party_words(state, shape)}
 
 
-def _modifies_the_measure(word: str, text: str) -> bool:
-    """Whether the casefolded `word` is a whole word of `text` with nothing before it but
-    other words of the measure phrase: no function word (`FUNCTION_WORDS`), connective
-    (`CONNECTIVES`) or separator. "Bilateral" modifies the measure in "gross bilateral ODA
-    disbursements" and in "bilateral aid for health". In "ODA net of bilateral flows" and
-    "ODA, bilateral excluded" it belongs to a clause that restricts the measure."""
-    for token in tokenize(text):
-        folded = token.text.casefold()
-        if token.kind != "word" or folded in FUNCTION_WORDS or folded in CONNECTIVES:
-            return False
-        if folded == word:
-            return True
-    return False
+def with_party_reading(
+    state: ResolveState,
+    shapes: Sequence[ShapeDraft],
+    phrases_read: Callable[[ShapeDraft], AbstractSet[str]],
+) -> list[ShapeDraft]:
+    """`shapes`, or, on a part read with a word naming a party (`ResolveState.party_sets`),
+    the shapes that bind the party (`place_roles.held_party_words`) and read every phrase
+    any other pooled shape reads.
+
+    A shape binding the party reads the word as it reads a phrase of its codes
+    (`phrases_read`, `phrases_within`). "Multilateral ODA to Kenya" reads "ODA" on the CRS
+    and "ODA" and "multilateral" on DAC2a, so DAC2a's shapes are the pool and every answer
+    comes from the multilaterals total. The party reading is withdrawn
+    (`PartyReadingWithdrawn`) where no pooled shape binds the party, where another shape
+    reads a phrase no binding shape reads, as the CRS reads the sector of "multilateral aid
+    for education to Kenya", and where another shape reads the word as a value of its own,
+    in a phrase of its codes or by a graph label (`_holds_value_labelled`), as a World Bank
+    IDS creditor type in "multilateral loans to Kenya"."""
+    if not state.party_sets:
+        return list(shapes)
+    index = get_index()
+    words = {
+        id(shape): frozenset(named.word for named in held_party_words(state, shape))
+        for shape in shapes
+    }
+
+    def keeps_the_reading(binder: ShapeDraft) -> bool:
+        read = phrases_read(binder) | words[id(binder)]
+        return all(
+            phrases_within(phrases_read(other), read)
+            and not any(
+                phrases_within({word}, phrases_read(other))
+                or _holds_value_labelled(other, word, index)
+                for word in words[id(binder)] - words[id(other)]
+            )
+            for other in shapes
+            if other is not binder
+        )
+
+    kept = [shape for shape in shapes if words[id(shape)] and keeps_the_reading(shape)]
+    if not kept:
+        raise PartyReadingWithdrawn
+    return kept
+
+
+def _holds_value_labelled(shape: ShapeDraft, word: str, index: CodeIndex) -> bool:
+    """Whether a member `shape` stands for holds a constraint value
+    (`shape_constraint_values`) whose graph label (`ShapeDraft.value_labels`) holds the
+    casefolded `word`. A value the code index knows is read in a phrase of its code and
+    counts for nothing here, as in `value_requirements`."""
+    labels = shape.value_labels or {}
+    return any(
+        index.code_by_dcid(value) is None and word in _casefolded_words(labels.get(value, ""))
+        for _prop, value in shape_constraint_values(shape)
+    )
 
 
 # Four digits standing alone as a word, a year the part's window reads.

@@ -78,6 +78,7 @@ from code_index.shared import get_index, get_measure_index
 from code_index.types import (
     Bound,
     BoundSet,
+    DatasetDeclaration,
     MeasureAxis,
     MeasurePartitionLabel,
     PartitionLabelMatch,
@@ -2005,6 +2006,20 @@ def shape_datasets(shape: ShapeDraft, index: CodeIndex | None = None) -> tuple[s
     debt series beside CRS flows, whose family no declared dataset publishes."""
     family = shape_family(shape, index)
     return family.datasets if family is not None else ()
+
+
+def declared_datasets(shape: ShapeDraft, index: CodeIndex) -> list[DatasetDeclaration]:
+    """The declared datasets `shape` answers from: the dataset it names
+    (`ShapeDraft.named_dataset`), else those candidacy stamped on it (`ShapeDraft.datasets`),
+    and before candidacy, as in the family election, those publishing its family
+    (`shape_datasets`), none for a shape the index does not carry."""
+    if shape.named_dataset is not None:
+        provenances: Sequence[str] = (shape.named_dataset,)
+    elif shape.datasets is not None:
+        provenances = shape.datasets
+    else:
+        provenances = shape_datasets(shape, index)
+    return [index.datasets[dataset] for dataset in provenances if dataset in index.datasets]
 
 
 def part_datasets(

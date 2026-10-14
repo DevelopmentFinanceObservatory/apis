@@ -271,6 +271,25 @@ class StatedWord:
 
 
 @dataclass(frozen=True, slots=True)
+class PartyWord:
+    """One word that names a party of a table's rows (`DatasetDeclaration.party_words`).
+
+    `word` is one lowercase word, `measured_property` the measured-property dcid of the
+    rows it selects, one the table has a row for, `axis` the flow axis the party stands
+    on, and `party` the dcid of a `PartyRow` that lists the dataset and the axis. The word
+    selects the rows whose party on `axis` is `party`. `where` maps a flow axis to the
+    entity kind the row's party on that axis must have, as `StatedWord.where` does; empty,
+    every row with the measured property is selected.
+    """
+
+    word: str
+    measured_property: str
+    axis: RoleAxis
+    party: str
+    where: Mapping[RoleAxis, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
 class DatasetDeclaration:
     """One published table, keyed by the provenance its observations carry.
 
@@ -318,6 +337,12 @@ class DatasetDeclaration:
     contribution. A query word the table states restricts nothing on those rows, so
     search reads it there without a code. A word belongs here only when the table's
     import guarantees it of every such row.
+
+    `party_words` lists the words that name a party of the table's rows (`PartyWord`).
+    "Multilateral" names DAC2a's and DAC2b's provider `DACMultilaterals`, the DAC's
+    published total of the multilateral organisations, on `amount` rows to a country. Such
+    a word restricts the rows, so a query that states it and leaves the axis unnamed binds
+    the party there.
     """
 
     provenance: str
@@ -329,6 +354,7 @@ class DatasetDeclaration:
     rank: int
     invariants: Mapping[str, str] = field(default_factory=dict)
     stated_words: tuple[StatedWord, ...] = ()
+    party_words: tuple[PartyWord, ...] = ()
 
 
 PartyKind = Literal["party", "total", "residual"]
