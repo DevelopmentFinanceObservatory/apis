@@ -27,7 +27,7 @@ from code_index import (
     parse_index,
 )
 from code_index.query import row_five_tuple
-from code_index.types import PartlyStatedValue, StatedWord
+from code_index.types import PartlyStatedValue, PartyWord, StatedWord
 from entity_resolution.types import KINDS
 
 from .conftest import FIXTURE_PATH
@@ -227,6 +227,92 @@ def test_loader_rejects_a_stated_word_that_is_malformed(row: dict):
         parse_index(payload)
 
 
+_MULTILATERALS = {
+    "dcid": "DACMultilaterals",
+    "kind": "total",
+    "totals": None,
+    "datasets": [_CRS_PROVENANCE],
+    "axes": ["origin"],
+}
+_MULTILATERAL = {
+    "word": "multilateral",
+    "measured_property": "amount",
+    "axis": "origin",
+    "party": "DACMultilaterals",
+    "where": {"destination": "country"},
+}
+
+
+def test_loader_reads_the_words_a_dataset_names_a_party_for():
+    payload = _fixture()
+    payload["parties"] = [_MULTILATERALS]
+    payload["datasets"][0]["party_words"] = [_MULTILATERAL]
+
+    index = parse_index(payload)
+
+    assert index.datasets[_CRS_PROVENANCE].party_words == (
+        PartyWord(
+            word="multilateral",
+            measured_property="amount",
+            axis="origin",
+            party="DACMultilaterals",
+            where={"destination": "country"},
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("row", "party"),
+    [
+        ({**_MULTILATERAL, "word": "Multilateral"}, _MULTILATERALS),
+        ({**_MULTILATERAL, "measured_property": ""}, _MULTILATERALS),
+        ({**_MULTILATERAL, "measured_property": "grantEquivalent"}, _MULTILATERALS),
+        ({**_MULTILATERAL, "axis": "sideways"}, _MULTILATERALS),
+        ({**_MULTILATERAL, "party": ""}, _MULTILATERALS),
+        ({**_MULTILATERAL, "where": {"destination": "Country"}}, _MULTILATERALS),
+        (_MULTILATERAL, None),
+        (_MULTILATERAL, {**_MULTILATERALS, "datasets": [_DAC2A_PROVENANCE]}),
+        (_MULTILATERAL, {**_MULTILATERALS, "axes": ["destination"]}),
+    ],
+    ids=[
+        "uppercase",
+        "empty-property",
+        "property-no-row-has",
+        "unknown-axis",
+        "empty-party",
+        "uppercase-kind",
+        "party-not-listed",
+        "party-of-another-dataset",
+        "party-on-another-axis",
+    ],
+)
+def test_loader_rejects_a_party_word_that_is_malformed(row: dict, party: dict | None):
+    """The last three rows are well formed, but the `parties` block does not list the party
+    for the fixture's one dataset on the word's axis, which `_check_party_words` refuses."""
+    payload = _fixture()
+    payload["parties"] = [] if party is None else [party]
+    payload["datasets"][0]["party_words"] = [row]
+
+    with pytest.raises(IndexFormatError):
+        parse_index(payload)
+
+
+def test_loader_rejects_one_word_naming_two_parties_on_an_axis():
+    """One word names one party on an axis of a measured property. The same word on the
+    other axis loads."""
+    payload = _fixture()
+    payload["parties"] = [{**_MULTILATERALS, "axes": ["origin", "destination"]}]
+    payload["datasets"][0]["party_words"] = [
+        _MULTILATERAL,
+        {**_MULTILATERAL, "axis": "destination", "where": {}},
+    ]
+    assert len(parse_index(payload).datasets[_CRS_PROVENANCE].party_words) == 2
+
+    payload["datasets"][0]["party_words"] = [_MULTILATERAL, {**_MULTILATERAL, "where": {}}]
+    with pytest.raises(IndexFormatError):
+        parse_index(payload)
+
+
 def test_loader_rejects_a_document_missing_the_datasets_block():
     payload = _fixture()
     del payload["datasets"]
@@ -394,6 +480,20 @@ def test_the_packaged_index_declares_crs_and_the_dac_tables_and_the_opt_in_imput
         _DAC2A_PROVENANCE: (("bilateral", "amount", to_countries),),
         _DAC2B_PROVENANCE: (("bilateral", "amount", to_countries),),
     }
+    multilateral = ("multilateral", "amount", "origin", "DACMultilaterals", to_countries)
+    assert {
+        provenance: tuple(
+            (n.word, n.measured_property, n.axis, n.party, dict(n.where))
+            for n in dataset.party_words
+        )
+        for provenance, dataset in index.datasets.items()
+    } == {
+        _CRS_PROVENANCE: (),
+        _IMPUTED_PROVENANCE: (),
+        _DAC1_PROVENANCE: (),
+        _DAC2A_PROVENANCE: (multilateral,),
+        _DAC2B_PROVENANCE: (multilateral,),
+    }
     assert index.datasets[_DAC2A_PROVENANCE].invariants == {}
     assert index.datasets[_DAC2A_PROVENANCE].label == "OECD DAC2a"
     assert index.datasets[_DAC2B_PROVENANCE].invariants == {}
@@ -408,14 +508,14 @@ def test_the_packaged_index_declares_crs_and_the_dac_tables_and_the_opt_in_imput
     assert index.datasets[_IMPUTED_PROVENANCE].label == "ONE Imputed Multilateral Sectors"
 
 
-def test_every_packaged_stated_word_names_an_entity_kind_the_resolver_assigns():
+def test_every_packaged_declared_word_names_an_entity_kind_the_resolver_assigns():
     index = load_index(default_index_path())
 
     kinds = {
         kind
         for dataset in index.datasets.values()
-        for stated in dataset.stated_words
-        for kind in stated.where.values()
+        for declared in (*dataset.stated_words, *dataset.party_words)
+        for kind in declared.where.values()
     }
     assert kinds
     assert kinds <= set(KINDS)

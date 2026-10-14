@@ -730,6 +730,16 @@ class ResolveState:
     # first, then places and regions, each in recall's order. Set by `_phase_resolve_places`. A name
     # with no entry did not resolve.
     place_sets: dict[str, PlaceSet] = field(default_factory=dict)
+    # The place set of the party each word of the part names on an axis the request leaves
+    # unnamed (`place_roles.stated_party_words`), by the party's dcid. Set by
+    # `_phase_resolve_places`; `place_roles.bind_place_roles` binds one on a shape whose
+    # datasets declare the word.
+    party_sets: dict[str, PlaceSet] = field(default_factory=dict)
+    # Whether the part is read without any word naming a party
+    # (`place_roles.stated_party_words` then returns none): the reading
+    # `pipeline.resolve_variable` falls back to when the party reading binds no party, and
+    # the reading of every UN pass.
+    party_words_off: bool = False
     # Start tick for the shape timing span, including derivation and ranking.
     shape_t0: int = 0
     # All confirmed shapes, before eligibility and ranking filters.

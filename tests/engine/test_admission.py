@@ -20,6 +20,7 @@ from search.engine.region.state import ResolveState
 from search.engine.shape import ShapeDraft
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._harness import door_roles_for_test_query
 from tests.engine._quantity import NO_QUANTITY, QuantityReadOnlyLLM
 from tests.fixtures import FakeGraph, make_resolver
 
@@ -366,6 +367,49 @@ def test_a_set_neither_of_whose_types_a_role_admits_is_refused(
 
     assert survivors == []
     assert [(e.text, e.dcid, e.graph_type) for e in never_admitted] == [(place_set.name, *reported)]
+
+
+@pytest.mark.parametrize(
+    "recipient",
+    [
+        PlaceSet(name="Kenya", kind="place", node=PlaceNode("country/KEN", "Country")),
+        _set("Africa", ("africa", "Continent"), "Country", "region"),
+    ],
+    ids=["country", "region-of-countries"],
+)
+@pytest.mark.parametrize(
+    ("graph_type", "survives"),
+    [("Organization", True), ("Continent", False)],
+    ids=["admitted", "not-admitted"],
+)
+def test_the_party_a_word_names_passes_role_admission_like_a_named_set(
+    recipient, graph_type, survives
+):
+    """ "Multilateral funding to Kenya" binds DAC2a's provider to the multilaterals total
+    (`place_roles.held_party_words`). The flow roles admit organisations and no continent,
+    so a party of either type survives or is refused, and the refusal names it, as a set
+    the query names would be. A region reads as its countries once the recipient role has
+    refused its own node, so the party is judged beside it too."""
+    state = _pruning_state({recipient.name: recipient})
+    state.variable = "multilateral funding"
+    state.entity_roles = door_roles_for_test_query(
+        f"multilateral funding to {recipient.name}", [recipient.name]
+    )
+    state.party_sets = {
+        "DACMultilaterals": PlaceSet(
+            name="multilaterals (DAC)",
+            kind="place",
+            node=PlaceNode(dcid="DACMultilaterals", graph_type=graph_type),
+        )
+    }
+    shape = dataclasses.replace(_ROLE_BEARING_SHAPE, datasets=("provenance/OECDDAC2A",))
+
+    survivors, never_admitted = asyncio.run(_prune_shapes_by_admission(state, [shape]))
+
+    assert survivors == ([shape] if survives else [])
+    assert [(e.text, e.dcid) for e in never_admitted] == (
+        [] if survives else [("multilaterals (DAC)", "DACMultilaterals")]
+    )
 
 
 @pytest.mark.parametrize(

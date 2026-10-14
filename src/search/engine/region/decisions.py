@@ -75,6 +75,18 @@ class PlaceSetTooLargeError(PlaceSetRefusedError):
         self.bound = bound
 
 
+class PartyReadingWithdrawn(Exception):
+    """A part read with a word naming a party (`place_roles.stated_party_words`) cannot
+    answer from that party: no pooled shape binds it, or another shape reads a phrase the
+    shapes binding it do not (`phase_rank_bind.with_party_reading`), or a read failed. The
+    part is resolved again without the party reading (`pipeline.resolve_variable`), which
+    notes `lost`, the reads the withdrawn reading swallowed or failed."""
+
+    def __init__(self, *, lost: tuple[str, ...] = ()) -> None:
+        super().__init__("party reading withdrawn")
+        self.lost = lost
+
+
 class PlaceSetNotAdmittedError(PlaceSetRefusedError):
     """Sets of a shape that no reading serves: the request asks for the members of each and
     a role it fills does not admit their type, or no reading's type is admitted on every

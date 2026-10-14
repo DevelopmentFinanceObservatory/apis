@@ -16,9 +16,12 @@ the other tests script the model.
 from __future__ import annotations
 
 import dataclasses
+import json
+import logging
 import sys
 from collections import Counter
 from collections.abc import Callable, Mapping
+from typing import Any, cast
 
 import pytest
 
@@ -28,11 +31,21 @@ from code_index.query import CodeIndex, row_five_tuple
 from code_index.shared import get_index
 from code_index.types import DatasetDeclaration
 from datasets_api.adapter import resolve_definition_members
+from dc_graph.client import FacetDefaultPolicy
 from entity_resolution import EntityResolutionError
+from materialise.errors import UpstreamVersionChangedError
+from materialise.rate_tables import RateTableInvalidError
 from origin_catalogue import DFO, Catalogue, ProvenanceRow, SourceRef
+from search.engine import degraded_reads as degraded_reads_module
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
-from search.engine.extract import ExtractedEntity, Extraction
+from search.engine.errors import (
+    DeclaredDefaultUnsupportedError,
+    DefaultScopeIndexSourcedError,
+    GraphInfraError,
+)
+from search.engine.extract import ExtractedEntity, ExtractedOperation, Extraction
 from search.engine.quantity_read import QuantityOutput
+from search.engine.region import phase_rank_bind as rank_bind_module
 from search.engine.region import pipeline as pipeline_module
 from search.engine.region.phase_rank_bind import _phase_prune_and_rank
 from search.engine.region.state import ResolveState
@@ -51,6 +64,7 @@ from search.models import (
     Spec,
 )
 from search.models.response import Part
+from series_coverage.index import ABSENT_ENTITY
 from series_coverage.schema import FacetMetadata, RoleNames
 from statvar_members import MemberEnumerator, member_digest
 from tests.code_index.aid_identity import (
@@ -68,7 +82,7 @@ from tests.datasets_api._graph_doubles import FakeMintGraphReader
 from tests.datasets_api._member_bounds import mint_bounds
 from tests.engine._fake_coverage import patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._harness import make_request, offline_resolve
+from tests.engine._harness import make_request, offline_events, offline_resolve
 from tests.engine._quantity import NO_QUANTITY
 from tests.engine._source_scopes import part_scope
 from tests.fixtures import FakeGraph, FakeLLM
@@ -604,6 +618,451 @@ def test_a_question_excluding_the_crs_answers_from_dac2a_in_its_menu(
     assert _sources(spec) == [_DAC2A]
 
 
+_MULTILATERALS = "DACMultilaterals"
+
+
+def _party_graph(
+    variable: str, without_word: str, *, typed: bool = True, dac2a_first: bool = False
+) -> FakeGraph:
+    """A graph whose search finds the CRS alone for `variable`, or DAC2a before it with
+    `dac2a_first`, and DAC2a before the CRS for `without_word`, the text recall searches
+    once "multilateral" is taken out. It holds the multilaterals total as an organisation
+    unless `typed` is false."""
+    recalled = _graph(without_word, members=(_DAC2A_MEMBER, _CRS_MEMBER))
+    party = {_MULTILATERALS: {"label": "multilaterals (DAC)", "type": "Organization"}}
+    found = [_DAC2A_MEMBER, _CRS_MEMBER] if dac2a_first else [_CRS_MEMBER]
+    return FakeGraph(
+        nodes={**recalled._nodes, **(party if typed else {}), _DAC2A: {"label": "OECD DAC2a"}},
+        detect={
+            **recalled._detect,
+            variable: {
+                "svs": found,
+                "cosine_scores": [0.9 - 0.05 * rank for rank in range(len(found))],
+            },
+        },
+        resolve={"Kenya": _KEN},
+        obs={},
+    )
+
+
+def _party_coverage(monkeypatch: pytest.MonkeyPatch, *, from_the_party: bool = True) -> None:
+    """DAC2a holds series to Kenya from France and, unless told otherwise, from the
+    multilaterals total, and the CRS from France."""
+    names = RoleNames(donor="financingProvider", recipient="financingRecipient")
+    party = [(_DAC2A_MEMBER, "dac2a", _MULTILATERALS, _KEN, [2019, 2020, 2021])]
+    patch_coverage(
+        monkeypatch,
+        [
+            *(party if from_the_party else []),
+            (_DAC2A_MEMBER, "dac2a", _FRA, _KEN, [2019, 2020, 2021]),
+            (_CRS_MEMBER, "crs", _FRA, _KEN, [2019, 2020, 2021]),
+        ],
+        role_names=dict.fromkeys((_DAC2A_MEMBER, _CRS_MEMBER), names),
+        facet_metadata={
+            "dac2a": FacetMetadata(provenance_id=_DAC2A, unit="USD"),
+            "crs": FacetMetadata(provenance_id=CRS_PROVENANCE, unit="USD"),
+        },
+    )
+
+
+@pytest.fixture
+def party_coverage(monkeypatch: pytest.MonkeyPatch) -> None:
+    _party_coverage(monkeypatch)
+
+
+@pytest.mark.parametrize(
+    ("variable", "without_word", "source", "providers"),
+    [
+        pytest.param("multilateral ODA", "ODA", _DAC2A, [_MULTILATERALS], id="party"),
+        pytest.param("ODA", "ODA", None, None, id="no-word"),
+    ],
+)
+def test_a_word_naming_a_party_answers_from_the_table_declaring_it(
+    party_coverage: None, variable, without_word, source, providers
+):
+    """The graph's search finds the CRS alone for "multilateral ODA" and DAC2a for "ODA".
+    DAC2a declares that "multilateral" names its provider `DACMultilaterals`, so recall
+    adds its series, the DAC2a shape binds that party beside Kenya and reads all the CRS
+    reads, and the part answers from DAC2a with the multilaterals total as its provider
+    and departs nothing. Without the word no provider is bound."""
+    response = _resolve_scripted(
+        f"{variable} to Kenya", _ScriptedLLM(variable), graph=_party_graph(variable, without_word)
+    )
+
+    (spec,) = _specs(response)
+    assert spec.definition.identity.entities.get("origin") == providers
+    assert spec.definition.identity.entities["destination"] == [_KEN]
+    if source is not None:
+        assert _sources(spec) == [source]
+        assert _unapplied(response) == []
+
+
+def _reply(response: ResolveResponse) -> dict:
+    """`response` as the wire carries it, less its timings and trace id."""
+
+    def scrubbed(node: object) -> object:
+        if isinstance(node, dict):
+            return {
+                key: scrubbed(value)
+                for key, value in node.items()
+                if key not in ("timing_ms", "trace_id")
+            }
+        return [scrubbed(item) for item in node] if isinstance(node, list) else node
+
+    return cast(dict, scrubbed(response.model_dump(mode="json")))
+
+
+@pytest.mark.parametrize("dac2a_first", [False, True], ids=["crs-first", "dac2a-first"])
+@pytest.mark.parametrize(
+    ("variable", "named", "typed", "from_the_party"),
+    [
+        pytest.param("multilateral education aid", (), True, True, id="sector"),
+        pytest.param("multilateral aid for education", (), True, True, id="for-sector"),
+        pytest.param("multilateral development bank ODA", (), True, True, id="a-kind-of-lender"),
+        pytest.param("multilateral aid", ("CRS",), True, True, id="a-table-declaring-no-party"),
+        pytest.param("multilateral aid", (), False, True, id="party-left-the-graph"),
+        pytest.param("multilateral ODA", (), True, False, id="no-series-from-the-party"),
+    ],
+)
+def test_a_party_word_that_binds_no_party_leaves_the_reply_as_without_the_rule(
+    monkeypatch: pytest.MonkeyPatch,
+    source_catalogue: None,
+    variable,
+    named,
+    typed,
+    from_the_party,
+    dac2a_first,
+):
+    """A part stating "multilateral" either answers from the multilaterals total or replies
+    as an index declaring no party word does, whichever shape the search ranks first for
+    the scripted model to elect. DAC2a reads no sector and no "development bank", the CRS
+    declares no such party, a party the graph gives no type has no set, and a DAC2a holding
+    no series from the party answers nothing: each reply equals the one read without
+    party words, and none holds the party."""
+    _party_coverage(monkeypatch, from_the_party=from_the_party)
+    without_word = variable.removeprefix("multilateral ")
+    query = _query(variable, tuple(_naming(text) for text in named))
+
+    def resolve() -> dict:
+        graph = _party_graph(variable, without_word, typed=typed, dac2a_first=dac2a_first)
+        return _reply(_resolve_scripted(query, _ScriptedLLM(variable), graph=graph))
+
+    reply = resolve()
+    with monkeypatch.context() as patched:
+        patched.setattr(pipeline_module, "stated_party_words", lambda state: ())
+        assert reply == resolve()
+    assert _MULTILATERALS not in json.dumps(reply["parts"])
+
+
+_DAC1 = "provenance/OECDDAC1"
+# DAC1 aid type 2100, "multilateral contribution", from a donor to all recipients.
+_DAC1_CONTRIBUTIONS = "Amount_FinancialFlow_Gross_Disbursement_DAC1AidType2100_Nominal"
+
+
+class _FailingGraph(FakeGraph):
+    """A graph whose read `fails` raises, as a failed transport does: the party's type read,
+    or the search of the text without the party word."""
+
+    def __init__(self, *args: Any, fails: str, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._fails = fails
+
+    def node_types_batch(self, dcids):
+        if self._fails == "party-type" and _MULTILATERALS in dcids:
+            raise GraphInfraError("party type read failed")
+        return super().node_types_batch(dcids)
+
+    def detect_svs(self, text, *args, **kwargs):
+        if self._fails == "search-without-the-word" and text == "ODA":
+            raise GraphInfraError("search failed")
+        return super().detect_svs(text, *args, **kwargs)
+
+
+# A default unit the graph declares on the DAC2a member alone.
+_DAC2A_DEFAULT_UNIT = {
+    (f"dcid:{_DAC2A_MEMBER}", "unit"): FacetDefaultPolicy(
+        resolved_ref="USD", policy_node="p", policy_version="1", selection_reason="r"
+    )
+}
+
+
+def _refusing_party_reading(refusal: Exception) -> Callable[..., list]:
+    """`with_party_reading` raising `refusal` on a part read with a party."""
+    elect = rank_bind_module.with_party_reading
+
+    def refusing(state, shapes, phrases_read):
+        if state.party_sets:
+            raise refusal
+        return elect(state, shapes, phrases_read)
+
+    return refusing
+
+
+@pytest.mark.parametrize(
+    ("fails", "noted_as"),
+    [
+        pytest.param("party-type", ["party reading"], id="party-type-read"),
+        pytest.param("search-without-the-word", ["party reading"], id="search-without-the-word"),
+        pytest.param("party-table-declares-a-default", [], id="party-table-declares-a-default"),
+        pytest.param(
+            DeclaredDefaultUnsupportedError("default"), [], id="declared-default-unsupported"
+        ),
+        pytest.param(DefaultScopeIndexSourcedError("scope"), [], id="default-scope-index-sourced"),
+        pytest.param(RateTableInvalidError("table"), [], id="rate-table-invalid"),
+        pytest.param(UpstreamVersionChangedError("moved"), [], id="upstream-version-changed"),
+        pytest.param(ValueError("defect"), [], id="defect"),
+    ],
+)
+def test_a_party_reading_that_fails_or_refuses_leaves_the_base_reply(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    party_coverage: None,
+    fails,
+    noted_as,
+):
+    """The party's type read and the search of the text without the word are made only when
+    the part is read with the party, and a refusal can come from the shape only that reading
+    elects, as DAC2a declaring a default unit the CRS does not. Any of them withdraws the
+    party reading: the reply equals the one read without party words, a failed read is
+    noted as degraded, and a refusal is not. Any other exception is a defect, logged with
+    its traceback."""
+    noted: list[str] = []
+    note = pipeline_module.note_degraded_read
+
+    def noting(read: str) -> None:
+        noted.append(read)
+        note(read)
+
+    monkeypatch.setattr(pipeline_module, "note_degraded_read", noting)
+    if isinstance(fails, Exception):
+        monkeypatch.setattr(rank_bind_module, "with_party_reading", _refusing_party_reading(fails))
+
+    def resolve() -> dict:
+        recalled = _party_graph("multilateral ODA", "ODA")
+        graph = _FailingGraph(
+            nodes=recalled._nodes,
+            detect=recalled._detect,
+            resolve={"Kenya": _KEN},
+            obs={},
+            facet_policies=_DAC2A_DEFAULT_UNIT
+            if fails == "party-table-declares-a-default"
+            else None,
+            fails=fails if isinstance(fails, str) else "",
+        )
+        query = "multilateral ODA to Kenya"
+        return _reply(_resolve_scripted(query, _ScriptedLLM("multilateral ODA"), graph=graph))
+
+    with caplog.at_level(logging.WARNING, logger=pipeline_module.__name__):
+        reply = resolve()
+    assert noted == noted_as
+    errors = [record for record in caplog.records if record.levelno >= logging.ERROR]
+    if isinstance(fails, ValueError):
+        (error,) = errors
+        assert error.exc_info is not None and error.exc_info[1] is fails
+    else:
+        assert errors == []
+    if fails == "party-table-declares-a-default":
+        assert [part["status"] for part in reply["parts"]] == ["no_data"]
+    with monkeypatch.context() as patched:
+        patched.setattr(pipeline_module, "stated_party_words", lambda state: ())
+        assert reply == resolve()
+
+
+def test_a_withdrawn_party_reading_carries_the_reads_it_swallowed(
+    monkeypatch: pytest.MonkeyPatch, party_coverage: None
+):
+    """A read the party reading swallowed before it was withdrawn at election marks the
+    reply degraded: the resolution without party words notes it again."""
+    noted: list[str] = []
+    note = pipeline_module.note_degraded_read
+
+    def noting(read: str) -> None:
+        noted.append(read)
+        note(read)
+
+    elect = rank_bind_module.with_party_reading
+
+    def swallowing(state, shapes, phrases_read):
+        degraded_reads_module.note_degraded_read("a swallowed read")
+        return elect(state, shapes, phrases_read)
+
+    monkeypatch.setattr(pipeline_module, "note_degraded_read", noting)
+    monkeypatch.setattr(rank_bind_module, "with_party_reading", swallowing)
+    variable = "multilateral education aid"
+
+    _resolve_scripted(
+        f"{variable} to Kenya",
+        _ScriptedLLM(variable),
+        graph=_party_graph(variable, "education aid"),
+    )
+
+    assert noted == ["a swallowed read"]
+
+
+@pytest.mark.parametrize(
+    ("variable", "from_the_party"),
+    [
+        pytest.param("multilateral ODA", True, id="stands"),
+        pytest.param("multilateral ODA", False, id="withdrawn-after-the-answer"),
+        pytest.param("multilateral education aid", True, id="withdrawn-at-election"),
+        pytest.param("ODA", True, id="no-party-word"),
+    ],
+)
+def test_the_reply_reports_the_model_usage_of_every_reading(
+    monkeypatch: pytest.MonkeyPatch, variable, from_the_party
+):
+    """A withdrawn party reading spends model calls before the part is read again, and the
+    reply reports them with the second reading's: one token per call made."""
+    _party_coverage(monkeypatch, from_the_party=from_the_party)
+    llm = _CountingLLM(variable)
+    graph = _party_graph(variable, variable.removeprefix("multilateral "))
+
+    response = _resolve_scripted(f"{variable} to Kenya", llm, graph=graph)
+
+    usage = response.diagnostics.llm_usage
+    assert usage is not None
+    assert usage["input_tokens"] == usage["output_tokens"] == sum(llm.calls.values())
+
+
+@pytest.mark.parametrize(
+    ("variable", "entities"),
+    [
+        pytest.param(
+            "contributions to multilateral organisations",
+            (
+                ExtractedEntity(
+                    text="Germany", span="Germany", flow_role="origin", role_span="from"
+                ),
+            ),
+            id="the-phrase-in-the-variable",
+        ),
+        pytest.param(
+            "contributions",
+            (
+                ExtractedEntity(
+                    text="multilateral organisations",
+                    span="multilateral organisations",
+                    flow_role="destination",
+                    role_span="to",
+                ),
+                ExtractedEntity(
+                    text="Germany", span="Germany", flow_role="origin", role_span="from"
+                ),
+            ),
+            id="the-phrase-as-a-recipient",
+        ),
+    ],
+)
+def test_contributions_to_multilateral_organisations_keep_their_dac1_reading(
+    monkeypatch: pytest.MonkeyPatch, variable, entities
+):
+    """ "Contributions to multilateral organisations from Germany" states no party word:
+    "multilateral" follows a preposition. Kept in the variable, the phrase reads DAC1's
+    multilateral contributions from Germany; lifted as a recipient, the alias names the
+    multilaterals total as the recipient. Either reply equals the one read without party
+    words, so the party reading leaves the question alone."""
+    patch_coverage(
+        monkeypatch,
+        [(_DAC1_CONTRIBUTIONS, "dac1", _DEU, ABSENT_ENTITY, [2019, 2020, 2021])],
+        role_names={_DAC1_CONTRIBUTIONS: RoleNames(donor="financingProvider", recipient=None)},
+        facet_metadata={"dac1": FacetMetadata(provenance_id=_DAC1, unit="USD")},
+    )
+
+    def resolve() -> ResolveResponse:
+        graph = FakeGraph(
+            nodes={
+                _DEU: {"label": "Germany", "type": "Country"},
+                _MULTILATERALS: {"label": "multilaterals (DAC)", "type": "Organization"},
+                _DAC1: {"label": "OECD DAC1"},
+                _DAC1_CONTRIBUTIONS: {
+                    "label": _DAC1_CONTRIBUTIONS,
+                    "type": "StatisticalVariable",
+                    "arcs": _arcs(_DAC1_CONTRIBUTIONS),
+                },
+            },
+            detect={variable: {"svs": [_DAC1_CONTRIBUTIONS], "cosine_scores": [0.9]}},
+            resolve={"Germany": _DEU},
+            obs={},
+        )
+        llm = _ScriptedLLM(variable, entities=entities)
+        return _resolve_scripted(
+            "contributions to multilateral organisations from Germany", llm, graph=graph
+        )
+
+    response = resolve()
+    with monkeypatch.context() as patched:
+        patched.setattr(pipeline_module, "stated_party_words", lambda state: ())
+        assert _reply(response) == _reply(resolve())
+    if len(entities) == 1:
+        (spec,) = _specs(response)
+        assert _sources(spec) == [_DAC1]
+        assert spec.definition.identity.entities == {"origin": [_DEU]}
+
+
+@pytest.mark.parametrize(
+    "recipient", ["multilaterals", "multilateral institutions", "multilateral organisations"]
+)
+def test_an_alias_of_the_party_reads_as_its_name_does(
+    monkeypatch: pytest.MonkeyPatch, party_coverage: None, recipient
+):
+    """ "Germany's ODA to multilateral institutions" names the multilaterals total as the
+    recipient through an alias, exactly as "Germany's ODA to multilaterals" does through the
+    party's own alias: the same outcome and the same identity."""
+
+    def outcome(text: str) -> tuple:
+        llm = _ScriptedLLM(
+            "ODA",
+            entities=(
+                ExtractedEntity(text="Germany", span="Germany", flow_role="origin", role_span="'s"),
+                ExtractedEntity(text=text, span=text, flow_role="destination", role_span="to"),
+            ),
+        )
+        graph = _party_graph("ODA", "ODA")
+        graph._resolve = {**graph._resolve, "Germany": _DEU}
+        graph._nodes = {**graph._nodes, _DEU: {"label": "Germany", "type": "Country"}}
+        (part,) = _resolve_scripted(f"Germany's ODA to {text}", llm, graph=graph).parts
+        held = (
+            _held_spec(part)
+            if not isinstance(part, NoDataPart) or part.no_data.flagged_match
+            else None
+        )
+        return (
+            type(part).__name__,
+            getattr(getattr(part, "no_data", None), "reason", None),
+            None if held is None else dict(held.definition.identity.entities),
+        )
+
+    assert outcome(recipient) == outcome("multilaterals")
+
+
+def test_a_party_word_keeps_its_party_under_an_operation_search_does_not_run(
+    party_coverage: None,
+):
+    """ "Multilateral ODA as a share of total ODA to Kenya" asks a share of two amounts.
+    The share runs across no axis, so the first part still answers the multilaterals total
+    and departs the operation, and the second answers every provider."""
+    graph = _party_graph("multilateral ODA", "ODA")
+    graph._detect["total ODA"] = graph._detect["ODA"]
+    llm = _ScriptedLLM(
+        "multilateral ODA",
+        "total ODA",
+        operations=(ExtractedOperation(verb="share_of", variable=0, phrase="as a share of"),),
+    )
+
+    response = _resolve_scripted(
+        "multilateral ODA as a share of total ODA to Kenya", llm, graph=graph
+    )
+
+    share, total = _specs(response)
+    assert share.definition.identity.entities.get("origin") == [_MULTILATERALS]
+    assert total.definition.identity.entities.get("origin") is None
+    assert [[departure.code for departure in part.departures or ()] for part in response.parts] == [
+        ["operation_not_applied"],
+        [],
+    ]
+    assert share.definition.identity.shape.measurement_denominator is None
+
+
 def test_an_included_table_that_serves_nothing_of_the_answer_warns(source_catalogue: None):
     """A part naming the CRS and the imputed table whose recall reaches only the CRS answers
     from the CRS and warns `query_qualifier_dropped` that the imputed table served
@@ -651,8 +1110,11 @@ def test_a_source_the_query_names_is_no_dropped_phrase(
     assert all(_OTHER_PHRASE in phrase for phrase in reported)
 
 
+_TO_KENYA = ExtractedEntity(text="Kenya", span="Kenya", flow_role="destination", role_span="to")
+
+
 class _ScriptedLLM:
-    """Extract the given variables to Kenya, and elect the first
+    """Extract the given variables to Kenya, or among `entities`, and elect the first
     shape with every slot open but those `drafted` binds, nominating the shapes
     `also_plausible` indexes beside it, or ask `ask` and elect none. Each bind prompt is
     kept in call order."""
@@ -664,8 +1126,12 @@ class _ScriptedLLM:
         drafted: tuple[SlotBindingDraft, ...] = (),
         also_plausible: list[int] | None = None,
         ask: str | None = None,
+        operations: tuple[ExtractedOperation, ...] = (),
+        entities: tuple[ExtractedEntity, ...] = (_TO_KENYA,),
     ) -> None:
         self._variables = list(variables)
+        self._entities = list(entities)
+        self._operations = list(operations)
         self._ask = ask
         self._also_plausible = also_plausible
         self._dropped = list(dropped)
@@ -679,12 +1145,9 @@ class _ScriptedLLM:
             return Extraction(
                 kind="resolution",
                 variables=self._variables,
-                entities=[
-                    ExtractedEntity(
-                        text="Kenya", span="Kenya", flow_role="destination", role_span="to"
-                    )
-                ],
+                entities=self._entities,
                 dropped_qualifiers=self._dropped,
+                operations=self._operations,
             ), None
         if schema is QuantityOutput:
             return NO_QUANTITY
@@ -695,6 +1158,224 @@ class _ScriptedLLM:
             also_plausible=self._also_plausible,
             ask=self._ask,
         ), None
+
+
+class _TypeCountingGraph(FakeGraph):
+    """A graph counting the reads of the multilaterals total's type alone, which a pass
+    reading the part with the party makes once."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.party_type_reads = 0
+
+    def node_types_batch(self, dcids):
+        self.party_type_reads += list(dcids) == [_MULTILATERALS]
+        return super().node_types_batch(dcids)
+
+
+def test_the_un_pass_reads_without_the_party_word(monkeypatch: pytest.MonkeyPatch):
+    """The UN pass binds no party, so it reads a part as one stating no party word. Here
+    our pass's party reading is withdrawn and the UN series answers; the party's type is
+    read once, by that reading."""
+    _party_coverage(monkeypatch, from_the_party=False)
+    recalled = _party_graph("multilateral ODA", "ODA")
+    un = _graph("multilateral ODA", "ODA", members=(), un_members=(_UN_ODA,))
+    graph = _TypeCountingGraph(
+        nodes={**recalled._nodes, **un._nodes},
+        detect=recalled._detect,
+        un_detect=un._un_detect,
+        resolve={"Kenya": _KEN},
+        obs=un._obs,
+    )
+
+    _resolve_scripted("multilateral ODA to Kenya", _ScriptedLLM("multilateral ODA"), graph=graph)
+
+    assert graph.party_type_reads == 1
+
+
+@pytest.mark.parametrize(
+    ("variable", "un_pass"),
+    [
+        pytest.param(
+            "multilateral ODA", "answers-then-a-step-fails", id="failing-after-the-un-pass"
+        ),
+        pytest.param("multilateral aid", "refuses", id="the-un-pass-refuses"),
+    ],
+)
+def test_a_withdrawn_party_reading_reports_the_usage_of_its_un_pass(
+    monkeypatch: pytest.MonkeyPatch, variable, un_pass
+):
+    """A party reading withdrawn after its UN pass made model calls reports them with the
+    rest, one token per call made: whether a later step fails, or the UN pass itself refuses
+    the request, as on a UN series declaring a default unit."""
+    _party_coverage(monkeypatch, from_the_party=False)
+    without_word = variable.removeprefix("multilateral ")
+    recalled = _party_graph(variable, without_word)
+    un = _graph(variable, without_word, members=(), un_members=(_UN_ODA,))
+    default_unit = FacetDefaultPolicy(
+        resolved_ref="USD", policy_node="p", policy_version="1", selection_reason="r"
+    )
+    graph = FakeGraph(
+        nodes={**recalled._nodes, **un._nodes},
+        detect=recalled._detect,
+        un_detect=un._un_detect,
+        resolve={"Kenya": _KEN},
+        obs=un._obs,
+        facet_policies={(f"dcid:{_UN_ODA}", "unit"): default_unit}
+        if un_pass == "refuses"
+        else None,
+    )
+    if un_pass == "answers-then-a-step-fails":
+        warn = pipeline_module.with_un_unavailable_warning
+        calls = 0
+
+        def failing_once(result, blocked):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise ValueError("defect after the UN pass")
+            return warn(result, blocked)
+
+        monkeypatch.setattr(pipeline_module, "with_un_unavailable_warning", failing_once)
+    llm = _CountingLLM(variable)
+
+    response = _resolve_scripted(f"{variable} to Kenya", llm, graph=graph)
+
+    usage = response.diagnostics.llm_usage
+    assert usage is not None
+    assert usage["input_tokens"] == sum(llm.calls.values())
+
+
+def _stream(query: str, variable: str) -> list[dict]:
+    """The events `query` streams, less their timings."""
+
+    def scrubbed(node: object) -> object:
+        if isinstance(node, dict):
+            return {key: scrubbed(value) for key, value in node.items() if key not in _UNTIMED}
+        if isinstance(node, list):
+            return [scrubbed(value) for value in node]
+        return node
+
+    events = offline_events(
+        make_request(query),
+        graph=_party_graph(variable, variable.removeprefix("multilateral ")),
+        llm=_ScriptedLLM(variable),
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+    )
+    return [cast(dict, scrubbed(event.model_dump(mode="json"))) for event in events]
+
+
+# Event fields that vary from run to run.
+_UNTIMED = frozenset({"ms", "elapsed_ms", "timing_ms", "trace_id"})
+
+
+def test_a_withdrawn_party_reading_streams_none_of_its_events(
+    monkeypatch: pytest.MonkeyPatch, party_coverage: None
+):
+    """ "Multilateral education aid to Kenya" is read with the party first and withdrawn: the
+    CRS reads the sector DAC2a does not. Its stream is the stream of the question read
+    without party words, event for event."""
+    query = "multilateral education aid to Kenya"
+    streamed = _stream(query, "multilateral education aid")
+    with monkeypatch.context() as patched:
+        patched.setattr(pipeline_module, "stated_party_words", lambda state: ())
+        assert streamed == _stream(query, "multilateral education aid")
+
+
+def test_a_party_reading_that_stands_streams_its_events_in_order(party_coverage: None):
+    """ "Multilateral ODA to Kenya" answers with the party bound, and streams the held events
+    of that reading: its shape, then the sentence of the Spec the reply holds."""
+    streamed = _stream("multilateral ODA to Kenya", "multilateral ODA")
+
+    (reply,) = [event["response"] for event in streamed if event["kind"] == "response"]
+    (spec,) = [part["spec"] for part in reply["parts"]]
+    assert spec["definition"]["identity"]["entities"]["origin"] == [_MULTILATERALS]
+    kinds = [event["kind"] for event in streamed if event.get("variable_index") == 0]
+    (sentence,) = [event for event in streamed if event["kind"] == "sentence"]
+    assert sentence["spec_id"] == spec["spec_id"]
+    assert kinds.index("shape") < kinds.index("sentence")
+    assert streamed[-2]["kind"] == "response"
+
+
+class _WithholdingGraph(FakeGraph):
+    """A graph whose registry withholds every series it is asked about, under one source,
+    and which records each re-read."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.withheld_reads: list[tuple[list[str], list[str]]] = []
+
+    def withheld_provenances(self, variables, entities, *, deadline=None):
+        self.withheld_reads.append((list(variables), list(entities)))
+        return (_WITHHELD_SOURCE,)
+
+
+_WITHHELD_SOURCE = "dc/base/Excluded"
+# A subject-only aid series the search finds, with no admitted data at Kenya.
+_SUBJECT_ONLY = "dc/SubjectOnlyAidSeries"
+
+
+def test_a_withdrawn_party_reading_leaves_the_withheld_re_read_to_the_answer(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The graph gives the multilaterals total no type and the search finds only a
+    subject-only series whose data the registry withholds at Kenya. The party reading binds
+    no party and is withdrawn, and the reply equals the one read without party words,
+    `withheld_by_registry` and its departure included: the re-read the request makes once is
+    the answering reading's."""
+    _party_coverage(monkeypatch, from_the_party=False)
+
+    def resolve() -> tuple[dict, _WithholdingGraph]:
+        graph = _WithholdingGraph(
+            nodes={
+                _SUBJECT_ONLY: _un_node(_SUBJECT_ONLY),
+                _KEN: {"label": "Kenya", "type": "Country"},
+                _WITHHELD_SOURCE: {"label": "Excluded Survey"},
+            },
+            detect={
+                text: {"svs": [_SUBJECT_ONLY], "cosine_scores": [0.9]}
+                for text in ("multilateral ODA", "ODA")
+            },
+            resolve={"Kenya": _KEN},
+            obs={},
+        )
+        llm = _ScriptedLLM("multilateral ODA")
+        return _reply(_resolve_scripted("multilateral ODA to Kenya", llm, graph=graph)), graph
+
+    reply, graph = resolve()
+    (part,) = reply["parts"]
+    assert "withheld_by_registry" in [warning["code"] for warning in part["warnings"]]
+    assert graph.withheld_reads == [([_SUBJECT_ONLY], [_KEN])]
+    with monkeypatch.context() as patched:
+        patched.setattr(pipeline_module, "stated_party_words", lambda state: ())
+        assert reply == resolve()[0]
+
+
+def test_a_party_reading_that_stands_makes_no_withheld_re_read(party_coverage: None):
+    """A party reading that stands answers with the party bound, which the withheld re-read
+    never serves, so the reading makes none."""
+    recalled = _party_graph("multilateral ODA", "ODA")
+    graph = _WithholdingGraph(
+        nodes=recalled._nodes, detect=recalled._detect, resolve={"Kenya": _KEN}, obs={}
+    )
+
+    response = _resolve_scripted(
+        "multilateral ODA to Kenya", _ScriptedLLM("multilateral ODA"), graph=graph
+    )
+
+    (spec,) = _specs(response)
+    assert spec.definition.identity.entities["origin"] == [_MULTILATERALS]
+    assert graph.withheld_reads == []
+
+
+class _CountingLLM(_ScriptedLLM):
+    """`_ScriptedLLM` reporting one input and one output token per call."""
+
+    async def generate_structured(self, *, prompt, system, schema):
+        answer, _usage = await super().generate_structured(
+            prompt=prompt, system=system, schema=schema
+        )
+        return answer, {"input_tokens": 1, "output_tokens": 1, "cached_tokens": 0}
 
 
 def _resolve_scripted(

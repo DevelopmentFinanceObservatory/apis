@@ -185,14 +185,12 @@
 
 - id: dataset-multilateral-aid-kenya
   query: multilateral aid to Kenya
-  why: Multilateral aid reaching a recipient is what the imputed table measures, so bind elects its measure and the provenance is bound.
+  why: '"Multilateral" before the measure, with a recipient named and no provider, reads as the multilateral agencies'' own outflows, which DAC2a publishes as the provider total "multilaterals (DAC)".'
   tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: described}
-  known_failure: {issue: 1164, checks: [measure, provenance]}
   expect:
     definite:
-      measure: {family: mls.imputed}
-      provenance: {bound: true}
-      entities: [{dcid: country/KEN, role: destination}]
+      measure: {family: dac2a.oda_gross_received}
+      entities: [{dcid: DACMultilaterals, role: origin}, {dcid: country/KEN, role: destination}]
       operations: []
 
 - id: dataset-germany-aid-kenya-through-multilaterals
@@ -383,14 +381,12 @@
 
 - id: dataset-multilateral-aid-kenya-es
   query: ayuda multilateral a Kenia
-  why: Spanish for "multilateral aid to Kenya", which the imputed table measures, as in the English case.
+  why: Spanish for "multilateral aid to Kenya", which reads as the multilateral agencies' own outflows, as in the English case.
   tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: described, language: es}
-  known_failure: {issue: 1164, checks: [measure, provenance]}
   expect:
     definite:
-      measure: {family: mls.imputed}
-      provenance: {bound: true}
-      entities: [{dcid: country/KEN, role: destination}]
+      measure: {family: dac2a.oda_gross_received}
+      entities: [{dcid: DACMultilaterals, role: origin}, {dcid: country/KEN, role: destination}]
       operations: []
 
 - id: dataset-inputed-aid-kenya

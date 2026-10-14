@@ -2,10 +2,12 @@
 a Spec binds for it.
 
 The elected shape and every alternate assign through `bind_place_roles`, so an alternate's
-role keys follow its own role declaration. The elected shape turns a refusal into its
-no-data outcome; an alternate that refuses is dropped from the candidates. An assignment
-holds each set whole. `settle_place_sets` then gives each set of one Spec one reading, its
-node or its members, and `settled_roles` builds the Spec's binding from the result.
+role keys follow its own role declaration. Beside the places the query names, a shape binds
+the party a word of the part names on an axis the query leaves unnamed (`held_party_words`).
+The elected shape turns a refusal into its no-data outcome; an alternate that refuses is
+dropped from the candidates. An assignment holds each set whole. `settle_place_sets` then
+gives each set of one Spec one reading, its node or its members, and `settled_roles` builds
+the Spec's binding from the result.
 
 A set is one place key (`place_key`): two texts of one request that name one node are one
 set, on every role and in every reading.
@@ -22,15 +24,26 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 from code_index.members import family_declares_roles
-from code_index.shared import get_index
+from code_index.shared import get_index, get_measure_index
+from code_index.tokens import Token, tokenize, word_tokens
+from code_index.types import PartyWord
 from entity_resolution.types import Kind, Resolved, entity_kind
 from materialise.roles import axis_for_role
 from search.engine.bind import SlotBindingDraft
+from search.engine.bind_repair import stated_words_negated, word_stated
+from search.engine.function_words import (
+    AMOUNT_WORDS,
+    DATA_WORDS,
+    FLOW_VERBS,
+    FUNCTION_WORDS,
+)
 from search.engine.interpret import PinnedResolved
+from search.engine.qualifier_match import CONNECTIVES, read_by_vocabulary
 from search.engine.region.decisions import PlaceSetNotAdmittedError, PlaceSetTooLargeError
 from search.engine.region.place_set import PlaceSet
 from search.engine.retrieval.bound_values import (
     RoleKeys,
+    declared_datasets,
     phrases_within,
     shape_family,
     shape_five_tuple,
@@ -550,14 +563,24 @@ def place_set_kinds(
 
 
 def parties_of_kind(state: ResolveState, shape: ShapeDraft, where: Mapping[RoleAxis, str]) -> bool:
-    """Whether the places `bind_place_roles` assigns `shape` fill every axis of `where` with
-    sets whose every reading is of the named kind (`place_set_kinds`). An axis the part
-    leaves open, one no set fills, and a part `bind_place_roles` refuses do not satisfy it.
-    A role admission the request has not asked (`ResolveState.node_admissions`) counts as
-    admitted, so a reading it might allow is judged too."""
-    assignment = bind_place_roles(state, shape)
-    if isinstance(assignment, str):
-        return False
+    """Whether the places the query names, as `assign_named_places` assigns them to `shape`,
+    fill every axis of `where` with sets whose every reading is of the named kind
+    (`place_set_kinds`). An axis the part leaves open, one no set fills, and a part
+    `assign_named_places` refuses do not satisfy it. A role admission the request has not
+    asked (`ResolveState.node_admissions`) counts as admitted, so a reading it might allow is
+    judged too."""
+    assignment = assign_named_places(state, shape)
+    return not isinstance(assignment, str) and _fills_with_kind(state, shape, assignment, where)
+
+
+def _fills_with_kind(
+    state: ResolveState,
+    shape: ShapeDraft,
+    assignment: PlaceAssignment,
+    where: Mapping[RoleAxis, str],
+) -> bool:
+    """Whether `assignment` fills every axis of `where` with sets of the named kind, as
+    `parties_of_kind` reads it. An empty `where` holds."""
     names = role_names_by_axis(shape)
 
     def admits(key: EntityRoleKey, graph_type: str) -> bool:
@@ -582,7 +605,167 @@ def parties_of_kind(state: ResolveState, shape: ShapeDraft, where: Mapping[RoleA
     )
 
 
+def stated_party_words(state: ResolveState) -> tuple[PartyWord, ...]:
+    """The words declared datasets name a party for (`DatasetDeclaration.party_words`) that
+    the part states (`bind_repair.word_stated`, read in its variable and typed qualifier
+    phrases) on a flow axis the request leaves unnamed: no name of the part is directed to
+    it, no operation runs across it, and the part does not ask every member of it
+    (`ResolveState.open_axes`), while a name is directed to each axis of the declaration's
+    `where`. Each declaration once, in index order.
+
+    Recall searches the part's text without these words as it does without a stated word
+    (`interpret.recall`), and intake reads the place set of each one's party
+    (`ResolveState.party_sets`). "Multilateral ODA to Kenya" states "multilateral" on the
+    unnamed provider axis; "multilateral ODA from France" and "multilateral ODA to Kenya by
+    donor" name or open it, and "multilateral ODA" names no recipient for the word's `where`
+    to read. A part read without party words (`ResolveState.party_words_off`) states
+    none."""
+    if state.party_words_off:
+        return ()
+    index = get_index()
+    directed = {role.axis for name in state.entities for role in state.entity_roles.get(name) or ()}
+    taken = directed | {operation.over for operation in state.operations} | state.open_axes
+    declared: list[PartyWord] = []
+    for dataset in index.datasets.values():
+        declared.extend(
+            named
+            for named in dataset.party_words
+            if named.axis not in taken
+            and directed.issuperset(named.where)
+            and named not in declared
+        )
+    return tuple(named for named in declared if part_states(state, named.word))
+
+
+def part_states(state: ResolveState, word: str) -> bool:
+    """Whether the part states the casefolded `word`, one a declared dataset states of its
+    rows or names a party for, as a modifier of its measure (`bind_repair.word_stated`),
+    read in its variable and typed qualifier phrases with the declared words the verbatim
+    query negates (`bind_repair.stated_words_negated`), which key the response cache."""
+    texts = (state.variable, *(coded.phrase for coded in state.qualifiers or ()))
+    query_text = state.query_text
+    negated = stated_words_negated(query_text, index=get_index()) if query_text else ()
+    return word_stated(word, texts, negated=frozenset(negated))
+
+
+def held_party_words(state: ResolveState, shape: ShapeDraft) -> tuple[PartyWord, ...]:
+    """The words of the part that name a party `shape` binds (`bind_place_roles`), as the
+    places the query names assign to it (`assign_named_places`). Empty when they refuse, and
+    with no assignment when the part states no such word."""
+    if not state.party_sets:
+        return ()
+    assignment = assign_named_places(state, shape)
+    if isinstance(assignment, str):
+        return ()
+    return _held_party_words(state, shape, assignment)
+
+
+def _held_party_words(
+    state: ResolveState, shape: ShapeDraft, assignment: PlaceAssignment
+) -> tuple[PartyWord, ...]:
+    """The words of the part (`stated_party_words`) that name a party on `shape` beside the
+    named places `assignment` gives it.
+
+    A word names its party on a role-bearing shape when every dataset the shape answers from
+    (`bound_values.declared_datasets`) declares it for the shape's measured property, the
+    named places fill the axes of its `where` with parties of the kind it names
+    (`_fills_with_kind`), intake read the party's place set (`ResolveState.party_sets`), and
+    the shape declares the word's axis and no place fills it there, an undirected one
+    included. The part states the word only on an axis the request leaves unnamed
+    (`stated_party_words`). "Multilateral ODA to Kenya" names `DACMultilaterals`, the DAC's
+    total of the multilateral organisations, as DAC2a's provider, as "ODA from multilaterals
+    to Kenya" does, and names no party on a CRS shape, whose datasets declare none.
+
+    The word must also stand apart from any word the shape does not read
+    (`_beside_words_read`): "multilateral development bank ODA to Kenya" names a kind of
+    lender no table declares, so the word names no party there."""
+    if not state.party_sets or not is_role_bearing(shape):
+        return ()
+    datasets = declared_datasets(shape, get_index())
+    if not datasets:
+        return ()
+    unnamed = role_names_by_axis(shape).keys() - assignment.sets.keys()
+    stated = stated_party_words(state)
+
+    def holds(named: PartyWord) -> bool:
+        return (
+            named in stated
+            and named.party in state.party_sets
+            and named.axis in unnamed
+            and named.measured_property == shape.meas_prop_dcid
+            and all(named in dataset.party_words for dataset in datasets[1:])
+            and _fills_with_kind(state, shape, assignment, named.where)
+            and _beside_words_read(state.variable, shape, named.word)
+        )
+
+    return tuple(named for named in datasets[0].party_words if holds(named))
+
+
+def _beside_words_read(variable: str, shape: ShapeDraft, word: str) -> bool:
+    """Whether `shape` reads every word of `variable` next to an occurrence of the
+    casefolded `word`, with no separator between them. A phrase of the shape's own code
+    systems or a measure value (`qualifier_match.read_by_vocabulary`) reads the words it
+    spans. A function word, a connective, an amount or data noun, a flow verb
+    (`function_words`), a word of the plain name of a code system the shape declares, and a
+    word that system's default reads (`DefaultDeclaration.when_named`) are read anywhere.
+
+    "Multilateral" stands beside "ODA", a DAC2a aid type, in "net multilateral ODA" and
+    beside "aid", DAC2a's "aid type", in "multilateral aid". In "multilateral development
+    bank ODA" and "multilateral education aid" it stands beside a word a DAC2a shape does
+    not read."""
+    index = get_index()
+    # `state.shape_vocabulary`, which this module cannot import.
+    vocabulary = frozenset(slot.property_dcid for slot in shape.slot_keys if slot.property_dcid)
+    (reading,) = read_by_vocabulary(
+        [variable], index, get_measure_index(), vocabularies=[vocabulary]
+    )
+    spans = reading.by_vocabulary[vocabulary].spans
+    declarations = [index.declarations[prop] for prop in vocabulary if prop in index.declarations]
+    known = set(FUNCTION_WORDS | CONNECTIVES | AMOUNT_WORDS | DATA_WORDS | FLOW_VERBS)
+    for declaration in declarations:
+        known |= {token.text.casefold() for token in word_tokens(declaration.plain_name)}
+        if declaration.default is not None:
+            known |= {named.casefold() for named in declaration.default.when_named}
+
+    def read(token: Token) -> bool:
+        return token.text.casefold() in known or any(
+            span.start <= token.start and token.end <= span.end for span in spans
+        )
+
+    tokens = tokenize(variable)
+    return all(
+        read(tokens[beside])
+        for position, token in enumerate(tokens)
+        if token.kind == "word" and token.text.casefold() == word
+        for beside in (position - 1, position + 1)
+        if 0 <= beside < len(tokens) and tokens[beside].kind == "word"
+    )
+
+
 def bind_place_roles(
+    state: ResolveState, shape: ShapeDraft, *, direction: RoleAxis | None = None
+) -> PlaceAssignment | PlaceRoleRefusal:
+    """Assign the query's place sets to `shape`'s roles (`assign_named_places`), or name the
+    refusal, and on each flow axis they leave unnamed the party a word of the part names
+    there (`_held_party_words`) as the axis's one set: "multilateral ODA to Kenya" fills the
+    provider axis of a DAC2a shape with its multilaterals total. The axes keep the order
+    `assign_named_places` gives them, destination first. `direction` is
+    `assign_named_places`'s."""
+    assignment = assign_named_places(state, shape, direction=direction)
+    if isinstance(assignment, str):
+        return assignment
+    parties: dict[EntityRoleKey, tuple[PlaceSet, ...]] = {
+        named.axis: (state.party_sets[named.party],)
+        for named in _held_party_words(state, shape, assignment)
+    }
+    if not parties:
+        return assignment
+    sets = {**assignment.sets, **parties}
+    ordered = {axis: sets[axis] for axis in ("destination", "origin") if axis in sets}
+    return dataclasses.replace(assignment, sets=ordered)
+
+
+def assign_named_places(
     state: ResolveState, shape: ShapeDraft, *, direction: RoleAxis | None = None
 ) -> PlaceAssignment | PlaceRoleRefusal:
     """Assign the query's place sets to `shape`'s roles, or name the refusal.

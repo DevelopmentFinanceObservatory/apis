@@ -1,5 +1,11 @@
 {
-  "DACMultilaterals": ["multilaterals"],
+  "DACMultilaterals": [
+    "multilaterals",
+    "multilateral organisations",
+    "multilateral agencies",
+    "multilateral institutions",
+    "multilateral donors"
+  ],
   "DACOfficialDonors": ["official donors"],
   "DACOtherMultilateralOrganisations": ["other multilateral organisations"],
   "DACPrivateDonors": ["private donors"],

@@ -38,6 +38,7 @@ from materialise.graph import Facet as MaterialiseFacet
 from materialise.graph import SubjectPage
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.core import resolve_async
+from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.errors import GraphInfraError
 from search.engine.extract import Extraction
 from search.engine.interpret import Recall
@@ -53,12 +54,19 @@ from search.engine.region import (
     place_roles,
 )
 from search.engine.region.candidates import _AlternatesRead
+from search.engine.region.decisions import PartyReadingWithdrawn
+from search.engine.region.phase_intake import _party_word_sets
 from search.engine.region.phase_place_materialise import _phase_place_bindings
-from search.engine.region.phase_rank_bind import _dataset_stated_words
+from search.engine.region.phase_rank_bind import (
+    _dataset_stated_words,
+    with_party_reading,
+)
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.place_roles import (
     bind_place_roles,
+    held_party_words,
     lacks_query_axis,
+    stated_party_words,
     subject_shapes_refused,
     where_binding,
 )
@@ -910,11 +918,19 @@ def _state_naming(variable: str, party: str | None, axis: str = "destination") -
     return state
 
 
+# The aid type each DAC2 table's series hold, which reads "ODA" on DAC2a and "OOF" on DAC2b.
+_AID_TYPES = {
+    "OECDDAC2A": {"dac2aAidType": "DAC2aAidType206"},
+    "OECDDAC2B": {"dac2bAidType": "DAC2bAidType972"},
+}
+
+
 def _flow_shape(provenance: str, measured_property: str = "amount") -> ShapeDraft:
-    """A financial flow shape declaring both flow roles, answered from `provenance`."""
+    """A financial flow shape declaring both flow roles, answered from `provenance`, with
+    the aid type slot of a DAC2 table."""
     roles = ("financingProvider", "financingRecipient")
     return dataclasses.replace(
-        _shape_for(_economic_activity_arcs("Nominal", {}, roles)),
+        _shape_for(_economic_activity_arcs("Nominal", _AID_TYPES.get(provenance, {}), roles)),
         meas_prop_dcid=measured_property,
         datasets=(f"provenance/{provenance}",),
     )
@@ -1042,16 +1058,403 @@ def test_a_dataset_states_a_word_where_the_parts_party_is_of_the_kind_it_names(
     assert _dataset_stated_words(shape, get_index(), None) == _NOTHING
 
 
-def test_a_negation_the_variable_left_out_is_read_from_the_query() -> None:
+@pytest.mark.parametrize(
+    ("variable", "party", "provenance", "words", "query_text"),
+    [
+        pytest.param(
+            "bilateral ODA", None, _CRS, _STATED, "not bilateral ODA to Kenya", id="stated"
+        ),
+        pytest.param(
+            "multilateral ODA",
+            "country",
+            "OECDDAC2A",
+            frozenset({"multilateral"}),
+            "not multilateral ODA to Kenya",
+            id="party",
+        ),
+    ],
+)
+def test_a_negation_the_variable_left_out_is_read_from_the_query(
+    variable, party, provenance, words, query_text
+) -> None:
     """The extraction can leave a negation out of the variable, and the verbatim query
-    still holds it."""
-    state = _state_naming("bilateral ODA", None)
-    shape = _flow_shape(_CRS)
-    assert _dataset_stated_words(shape, get_index(), state) == _STATED
+    still holds it, for a word a dataset states and one that names a party alike."""
+    state = _with_multilaterals(_state_naming(variable, party))
+    shape = _flow_shape(provenance)
+    assert _dataset_stated_words(shape, get_index(), state) == words
 
-    state.query_text = "not bilateral ODA to Kenya in 2022"
+    state.query_text = query_text
 
     assert _dataset_stated_words(shape, get_index(), state) == _NOTHING
+    assert held_party_words(state, shape) == ()
+
+
+_MULTILATERALS = "DACMultilaterals"
+_FRA = "country/FRA"
+
+
+def _with_multilaterals(state: ResolveState) -> ResolveState:
+    """`state` holding the place set intake reads for the party "multilateral" names on
+    DAC2a and DAC2b (`ResolveState.party_sets`)."""
+    state.party_sets = {
+        _MULTILATERALS: PlaceSet(
+            name="multilaterals (DAC)",
+            kind="place",
+            node=PlaceNode(dcid=_MULTILATERALS, graph_type="DACGroup"),
+        )
+    }
+    return state
+
+
+def _naming_france_as_provider(state: ResolveState) -> ResolveState:
+    """`state` with France named as the provider beside its own places."""
+    state.place_sets = {**state.place_sets, **place_sets({"France": _FRA})}
+    state.entities = ["France", *state.entities]
+    state.entity_roles = {**state.entity_roles, "France": [_door_role("origin", "France")]}
+    return state
+
+
+@pytest.mark.parametrize(
+    ("datasets", "measured_property", "variable", "recipient", "change", "held"),
+    [
+        pytest.param(
+            ("OECDDAC2A",), "amount", "multilateral ODA", "country", None, True, id="dac2a"
+        ),
+        pytest.param(
+            ("OECDDAC2B",), "amount", "multilateral OOF", "country", None, True, id="dac2b"
+        ),
+        pytest.param(
+            ("OECDDAC2A", "OECDDAC2B"),
+            "amount",
+            "multilateral ODA",
+            "country",
+            None,
+            True,
+            id="every-dataset-declares-it",
+        ),
+        pytest.param(
+            ("OECDDAC2A", _CRS),
+            "amount",
+            "multilateral ODA",
+            "country",
+            None,
+            False,
+            id="one-dataset-declares-nothing",
+        ),
+        pytest.param((_CRS,), "amount", "multilateral ODA", "country", None, False, id="crs"),
+        pytest.param(
+            ("OECDDAC1",), "amount", "multilateral ODA", "country", None, False, id="dac1"
+        ),
+        pytest.param(
+            ("OECDDAC2A",),
+            "attributedAmount",
+            "imputed multilateral ODA",
+            "country",
+            None,
+            False,
+            id="dac2a-attributed",
+        ),
+        pytest.param(
+            ("OECDDAC2A",), "amount", "net multilateral ODA", "country", None, True, id="net"
+        ),
+        pytest.param(
+            ("OECDDAC2A",), "amount", "multilateral ODA", "region", None, True, id="region"
+        ),
+        pytest.param(
+            ("OECDDAC2A",),
+            "amount",
+            "multilateral ODA",
+            "organisation",
+            None,
+            False,
+            id="organisation-recipient",
+        ),
+        pytest.param(
+            ("OECDDAC2A",), "amount", "multilateral ODA", None, None, False, id="recipient-open"
+        ),
+        pytest.param(
+            ("OECDDAC2A",),
+            "amount",
+            "multilateral ODA",
+            "country",
+            "named-provider",
+            False,
+            id="named-provider",
+        ),
+        pytest.param(
+            ("OECDDAC2A",),
+            "amount",
+            "multilateral ODA",
+            "country",
+            "by-donor",
+            False,
+            id="operation-over-the-provider",
+        ),
+        pytest.param(
+            ("OECDDAC2A",),
+            "amount",
+            "multilateral ODA",
+            "country",
+            "every-provider",
+            False,
+            id="provider-axis-open",
+        ),
+        pytest.param(
+            ("OECDDAC2A",),
+            "amount",
+            "multilateral ODA",
+            "country",
+            "recipient-only-shape",
+            False,
+            id="shape-declares-no-provider",
+        ),
+        pytest.param(
+            ("OECDDAC2A",),
+            "amount",
+            "non-multilateral ODA",
+            "country",
+            None,
+            False,
+            id="hyphen",
+        ),
+        pytest.param(
+            ("OECDDAC2A",),
+            "amount",
+            "ODA excluding multilateral flows",
+            "country",
+            None,
+            False,
+            id="excluded",
+        ),
+        pytest.param(
+            ("OECDDAC2A",),
+            "amount",
+            "multilateral ODA",
+            "country",
+            "no-party-set",
+            False,
+            id="no-party-set",
+        ),
+    ],
+)
+def test_a_word_names_a_party_where_every_dataset_declares_it_and_its_axis_is_unnamed(
+    datasets, measured_property, variable, recipient, change, held
+) -> None:
+    """DAC2a and DAC2b name `DACMultilaterals` the provider of an `amount` row to a country
+    where the part states "multilateral". The shape binds the party as its provider, beside
+    the recipient the part names, when every dataset it answers from declares the word, the
+    recipient is a country or a region of countries, and the provider axis is unnamed: no
+    place, no operation across it, and no request for its every member, on a shape that
+    declares it. The word then reads as stated. A part intake read no party set for binds
+    none."""
+    state = _with_multilaterals(_state_naming(variable, recipient))
+    if change == "named-provider":
+        _naming_france_as_provider(state)
+    elif change == "by-donor":
+        state.operations = (Operation(verb="rank", phrase="by donor", over="origin"),)
+    elif change == "every-provider":
+        state.open_axes = frozenset({"origin"})
+    elif change == "no-party-set":
+        state.party_sets = {}
+    shape = dataclasses.replace(
+        _flow_shape(datasets[0], measured_property),
+        datasets=tuple(f"provenance/{dataset}" for dataset in datasets),
+    )
+    if change == "recipient-only-shape":
+        shape = dataclasses.replace(shape, declared_roles=("financingRecipient",))
+
+    assignment = bind_place_roles(state, shape)
+
+    assert not isinstance(assignment, str)
+    assert [named.word for named in held_party_words(state, shape)] == (
+        ["multilateral"] if held else []
+    )
+    assert ("multilateral" in _dataset_stated_words(shape, get_index(), state)) == held
+    providers = [place_set.name for place_set in assignment.sets.get("origin", ())]
+    if held:
+        assert providers == ["multilaterals (DAC)"]
+    else:
+        assert "multilaterals (DAC)" not in providers
+
+
+@pytest.mark.parametrize(
+    ("variable", "change", "words"),
+    [
+        pytest.param("multilateral ODA", None, ["multilateral"], id="recipient-named"),
+        pytest.param("multilateral ODA", "named-provider", [], id="provider-named"),
+        pytest.param("multilateral ODA", "by-donor", [], id="operation-over-the-provider"),
+        pytest.param("multilateral ODA", "every-provider", [], id="provider-axis-open"),
+        pytest.param("multilateral ODA", "negated-in-the-query", [], id="negated"),
+        pytest.param("ODA from multilaterals", None, [], id="another-word"),
+        pytest.param("multi-bi aid", None, [], id="another-token"),
+        pytest.param(
+            "contributions to multilateral organisations", None, [], id="after-a-preposition"
+        ),
+        pytest.param("multilateral ODA", "no-recipient", [], id="no-recipient-for-its-where"),
+        pytest.param("multilateral ODA", "untyped", ["multilateral"], id="party-left-the-graph"),
+        pytest.param("multilateral ODA", "party-words-off", [], id="read-without-party-words"),
+    ],
+)
+def test_intake_reads_the_party_of_a_word_stated_on_an_unnamed_axis(
+    variable, change, words, caplog
+):
+    """Recall searches without each word the part states on an axis the request leaves
+    unnamed, by the door's directions alone, and intake reads its party's node type in one
+    graph read, naming the set by the index's label. A part stating none reads nothing:
+    one naming no recipient for the word's `where`, and "contributions to multilateral
+    organisations", where the word follows a preposition, and one the pipeline reads
+    without party words (`ResolveState.party_words_off`). A declared party the graph gives
+    no type gets no set, and the read is logged with its dcid and noted as degraded."""
+    state = _state_naming(variable, None if change == "no-recipient" else "country")
+    if change == "named-provider":
+        _naming_france_as_provider(state)
+    elif change == "by-donor":
+        state.operations = (Operation(verb="rank", phrase="by donor", over="origin"),)
+    elif change == "every-provider":
+        state.open_axes = frozenset({"origin"})
+    elif change == "negated-in-the-query":
+        state.query_text = "not multilateral ODA to Kenya"
+    elif change == "party-words-off":
+        state.party_words_off = True
+    state.place_sets = {}
+    typed = change != "untyped"
+    # A part stating no word has no graph to read.
+    state.graph = (
+        FakeGraph(nodes={_MULTILATERALS: {"type": "DACGroup"}} if typed else {}) if words else None
+    )
+
+    assert [named.word for named in stated_party_words(state)] == words
+    with recording_degraded_reads() as lost, caplog.at_level(logging.WARNING):
+        sets = asyncio.run(_party_word_sets(state))
+    assert {dcid: (s.name, s.node) for dcid, s in sets.items()} == (
+        {_MULTILATERALS: ("multilaterals (DAC)", PlaceNode(_MULTILATERALS, "DACGroup"))}
+        if words and typed
+        else {}
+    )
+    assert lost.degraded == (not typed)
+    assert [_MULTILATERALS in record.getMessage() for record in caplog.records] == (
+        [] if typed else [True]
+    )
+
+
+_IDS = "WorldBankInternationalDebtStatistics"
+_IMPUTED = "ONEImputedMultilateralSectors"
+
+
+def _debt_shape(creditor: str | None) -> ShapeDraft:
+    """A by-creditor debt series of a table the index does not declare, whose one member
+    holds the creditor type `creditor`, a value the graph labels and the code index does
+    not know."""
+    roles = ("financingProvider", "financingRecipient")
+    constraints = {} if creditor is None else {"creditorType": "TestCreditorType"}
+    return dataclasses.replace(
+        _shape_for(_economic_activity_arcs("Nominal", constraints, roles)),
+        shape_id=_IDS,
+        datasets=None,
+        value_labels={} if creditor is None else {"TestCreditorType": creditor},
+    )
+
+
+_CRS_FLOW = (
+    "Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_"
+    "CRSPurposeCode11110_Nominal"
+)
+_DAC2A_ODA = "Amount_FinancialFlow_Gross_Disbursement_DAC2aAidType206_Nominal"
+
+
+@pytest.mark.parametrize(
+    ("variable", "creditor", "readings", "kept"),
+    [
+        pytest.param(
+            "multilateral ODA",
+            None,
+            {_CRS: ("oda",), "OECDDAC2A": ("oda",)},
+            ["OECDDAC2A"],
+            id="the-binding-shape-reads-all-the-others-read",
+        ),
+        pytest.param(
+            "multilateral aid for education",
+            None,
+            {_CRS: ("education",)},
+            None,
+            id="another-shape-reads-a-sector",
+        ),
+        pytest.param(
+            "multilateral development bank ODA",
+            None,
+            {_CRS: ("oda",), "OECDDAC2A": ("oda",)},
+            None,
+            id="no-shape-binds-beside-an-unread-word",
+        ),
+        pytest.param(
+            "multilateral funding",
+            "Multilateral creditors",
+            {},
+            None,
+            id="another-shape-holds-a-value-the-graph-labels-by-the-word",
+        ),
+        pytest.param(
+            "multilateral funding",
+            "Bilateral creditors",
+            {},
+            ["OECDDAC2A"],
+            id="another-value-does-not",
+        ),
+        pytest.param(
+            "multilateral funding",
+            None,
+            {_IDS: ("multilateral funding",)},
+            None,
+            id="another-shape-codes-the-word",
+        ),
+        pytest.param(
+            "multilateral funding",
+            None,
+            {_IDS: ("multilateral",)},
+            None,
+            id="another-shape-codes-the-word-alone",
+        ),
+        pytest.param(
+            "imputed multilateral ODA",
+            _IMPUTED,
+            {_IMPUTED: ("imputed multilateral oda",)},
+            None,
+            id="the-imputed-code-holds-the-word",
+        ),
+        pytest.param("ODA", "no-party-set", {}, [_CRS, "OECDDAC2A", _IDS], id="no-party-reading"),
+    ],
+)
+def test_a_party_reading_stands_where_a_binding_shape_reads_all_any_other_reads(
+    variable, creditor, readings, kept
+) -> None:
+    """Of the shapes recall offers "multilateral ... to Kenya", a DAC2a shape binds the
+    multilaterals total as its provider and so reads the word. Where it reads every phrase
+    the others read, it alone is the pool. The reading is withdrawn (`kept` is `None`) where
+    a CRS shape reads a sector DAC2a does not, where the word stands beside one DAC2a does
+    not read so no shape binds, and where another shape reads the word as a value of its
+    own: by a graph label, as a World Bank IDS creditor type, or in a phrase of its codes,
+    as the imputed multilateral aid type. A part with no party set keeps every shape."""
+    state = _with_multilaterals(_state_naming(variable, "country"))
+    if creditor == "no-party-set":
+        state.party_sets = {}
+    if creditor == _IMPUTED:
+        rival = dataclasses.replace(_flow_shape(_IMPUTED, "attributedAmount"), shape_id=_IMPUTED)
+    else:
+        rival = _debt_shape(creditor if creditor and creditor.endswith("creditors") else None)
+    shapes = [
+        dataclasses.replace(_index_member_shape(_CRS_FLOW), shape_id=_CRS),
+        dataclasses.replace(_index_member_shape(_DAC2A_ODA), shape_id="OECDDAC2A"),
+        rival,
+    ]
+
+    def phrases_read(shape: ShapeDraft) -> frozenset[str]:
+        return frozenset(readings.get(shape.shape_id, ()))
+
+    if kept is None:
+        with pytest.raises(PartyReadingWithdrawn):
+            with_party_reading(state, shapes, phrases_read)
+        return
+    assert [s.shape_id for s in with_party_reading(state, shapes, phrases_read)] == kept
 
 
 def test_a_pinned_recipient_keeps_its_kind() -> None:
@@ -1072,6 +1475,7 @@ def test_a_part_holding_no_declared_word_binds_no_place(monkeypatch) -> None:
         raise AssertionError("bound the part's places")
 
     monkeypatch.setattr(place_roles, "bind_place_roles", refuse)
+    monkeypatch.setattr(place_roles, "assign_named_places", refuse)
     monkeypatch.setattr(phase_rank_bind, "parties_of_kind", refuse)
     shape = _flow_shape("OECDDAC2A")
 
@@ -1138,6 +1542,78 @@ def _index_member_shape(dcid: str) -> ShapeDraft:
         confirmed_svs=[dcid], graph=FakeGraph(nodes=nodes, obs={}, detect={}, resolve={})
     )
     return shape
+
+
+@pytest.mark.parametrize(
+    ("variable", "member", "providers"),
+    [
+        pytest.param(
+            "multilateral ODA",
+            "Amount_FinancialFlow_Gross_Disbursement_DAC2aAidType206_Nominal",
+            [_MULTILATERALS],
+            id="dac2a-oda",
+        ),
+        pytest.param(
+            "multilateral OOF",
+            "Amount_FinancialFlow_Net_Disbursement_DAC2bAidType972_Nominal",
+            [_MULTILATERALS],
+            id="dac2b-oof",
+        ),
+        pytest.param(
+            "multilateral ODA",
+            "Amount_FinancialFlow_Net_Disbursement_DAC2bAidType972_Nominal",
+            [],
+            id="dac2b-reads-no-oda",
+        ),
+        pytest.param(
+            "multilateral development bank ODA",
+            "Amount_FinancialFlow_Gross_Disbursement_DAC2aAidType206_Nominal",
+            [],
+            id="beside-an-unread-word",
+        ),
+        pytest.param(
+            "multilateral education aid",
+            "Amount_FinancialFlow_Gross_Disbursement_DAC2aAidType206_Nominal",
+            [],
+            id="beside-a-sector",
+        ),
+        pytest.param(
+            "multilateral aid for education",
+            "Amount_FinancialFlow_Gross_Disbursement_DAC2aAidType206_Nominal",
+            [_MULTILATERALS],
+            id="beside-the-aid-noun",
+        ),
+        pytest.param(
+            "total multilateral funding",
+            "Amount_FinancialFlow_Gross_Disbursement_DAC2aAidType206_Nominal",
+            [_MULTILATERALS],
+            id="beside-amount-words",
+        ),
+        pytest.param(
+            "multilateral ODA",
+            "Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_"
+            "CRSPurposeCode11110_Nominal",
+            [],
+            id="crs-flow",
+        ),
+    ],
+)
+def test_an_index_shape_binds_the_party_its_family_datasets_declare(
+    variable, member, providers
+) -> None:
+    """Before candidacy stamps its datasets, a shape recall confirmed from the packaged
+    index answers from the datasets publishing its family: DAC2a's binds the multilaterals
+    total as the provider of "multilateral ODA to Kenya", DAC2b's of "multilateral OOF to
+    Kenya", and the CRS's none. The word names the party only beside words the shape reads
+    (`place_roles._beside_words_read`): a DAC2b shape reads no "ODA", and no DAC2a shape
+    reads "development" or "education"."""
+    state = _with_multilaterals(_state_naming(variable, "country"))
+
+    assignment = bind_place_roles(state, _index_member_shape(member))
+
+    assert not isinstance(assignment, str)
+    assert [s.node.dcid for s in assignment.sets.get("origin", ()) if s.node] == providers
+    assert [s.name for s in assignment.sets["destination"]] == ["Kenya"]
 
 
 @pytest.mark.parametrize(

@@ -19,6 +19,9 @@ import json
 import logging
 import re
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Literal, Protocol, TypeVar
 
 import httpx
@@ -284,7 +287,57 @@ class SupportsLLM(Protocol):
     ) -> tuple[_SchemaT, dict | None]: ...
 
 
+class SpentUsage:
+    """The token usage of each model call made inside `recording_llm_usage`."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+
+_SPENT: ContextVar[SpentUsage | None] = ContextVar("llm_spent_usage", default=None)
+
+
+@contextmanager
+def recording_llm_usage() -> Iterator[SpentUsage]:
+    """Collect, for the body of the `with` block and the tasks it starts, the usage of every
+    call `generate_structured_async` makes, a refused answer's included. An enclosing record
+    gains them when the block closes."""
+    outer = _SPENT.get()
+    record = SpentUsage()
+    token = _SPENT.set(record)
+    try:
+        yield record
+    finally:
+        _SPENT.reset(token)
+        if outer is not None:
+            outer.calls.extend(record.calls)
+
+
+def _note_spent(usage: dict | None) -> None:
+    record = _SPENT.get()
+    if record is not None and usage is not None:
+        record.calls.append(usage)
+
+
 async def generate_structured_async[SchemaT: BaseModel](
+    llm: SupportsLLM,
+    *,
+    prompt: str,
+    system: str,
+    schema: type[SchemaT],
+) -> tuple[SchemaT, dict | None]:
+    """Run one structured-output request through `_generate_structured`, and note its usage
+    in the enclosing `recording_llm_usage` record."""
+    try:
+        answer, usage = await _generate_structured(llm, prompt=prompt, system=system, schema=schema)
+    except LLMOutputRefused as refusal:
+        _note_spent(refusal.usage)
+        raise
+    _note_spent(usage)
+    return answer, usage
+
+
+async def _generate_structured[SchemaT: BaseModel](
     llm: SupportsLLM,
     *,
     prompt: str,
