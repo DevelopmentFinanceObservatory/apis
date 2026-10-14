@@ -665,3 +665,22 @@
     definite:
       measure: {family: ids.net_flows, stat_vars: [Amount_FinancialFlow_Net_Disbursement_PrincipalRepayment_Nominal]}
       entities: [{dcid: country/KEN, role: destination}]
+
+- id: dq-ids-063
+  query: PPG external debt service of Georgia
+  why: '"of Georgia" states no direction, so Georgia takes the debtor role, the one role the PPG debt service total declares.'
+  tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical}
+  expect:
+    definite:
+      measure: {family: ids.debt_service, stat_vars: [Amount_FinancialFlow_ServicingPayment_PublicOrPubliclyGuaranteed_Nominal]}
+      entities: [{dcid: country/GEO, role: destination}]
+
+- id: dq-ids-064
+  query: Georgia's debt service on PPG external debt
+  why: Georgia owes the debt it services, so it is the debtor, which IDS places on the destination role.
+  tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure: {family: ids.debt_service, stat_vars: [Amount_FinancialFlow_ServicingPayment_PublicOrPubliclyGuaranteed_Nominal]}
+      entities: [{dcid: country/GEO, role: destination}]

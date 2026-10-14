@@ -997,10 +997,11 @@ def test_forced_binding_overrides_an_existing_llm_drafted_binding():
         SlotBindingDraft(axis="how", property_dcid="crsPurpose", kind="unbound", value_dcids=[]),
     ]
     matches = _admit("ODA standard grants for health", [_CRS_SHAPE])
-    forced = _force_qualifier_bindings(
+    forced, properties = _force_qualifier_bindings(
         existing, matches, _CRS_SHAPE, variable="ODA standard grants for health"
     )
     by_property = {b.property_dcid: b for b in forced}
+    assert properties == {m.code_system for m in matches}
     assert by_property["crsTypeOfFinance"].kind == "value"
     assert by_property["crsTypeOfFinance"].value_dcids == ["CRSTypeOfFinance110"]
     assert by_property["crsPurpose"].kind == "value"
@@ -1012,7 +1013,7 @@ def test_forced_binding_overrides_an_existing_llm_drafted_binding():
 
 def test_forced_binding_added_when_the_llm_drafted_no_binding_at_all():
     matches = _admit("ODA grants for malaria control", [_CRS_SHAPE])
-    forced = _force_qualifier_bindings(
+    forced, _ = _force_qualifier_bindings(
         [], matches, _CRS_SHAPE, variable="ODA grants for malaria control"
     )
     by_property = {b.property_dcid: b for b in forced}
@@ -1021,7 +1022,7 @@ def test_forced_binding_added_when_the_llm_drafted_no_binding_at_all():
 
 def test_private_development_finance_forces_its_flow_value():
     matches = _admit("private development finance to Kenya", [_CRS_SHAPE])
-    forced = _force_qualifier_bindings(
+    forced, _ = _force_qualifier_bindings(
         [], matches, _CRS_SHAPE, variable="private development finance to Kenya"
     )
     by_property = {binding.property_dcid: binding for binding in forced}
@@ -1047,7 +1048,7 @@ def test_two_nested_matches_on_one_property_force_the_descendant(variable: str):
         "DAC1AidType1820",
     }
 
-    forced = _force_qualifier_bindings([], matches, dac1, variable=variable)
+    forced, _ = _force_qualifier_bindings([], matches, dac1, variable=variable)
 
     assert [b.value_dcids for b in forced if b.property_dcid == "dac1AidType"] == [
         ["DAC1AidType1820"]
@@ -1301,8 +1302,9 @@ def test_no_admitted_matches_leaves_bindings_untouched():
     existing = [
         SlotBindingDraft(axis="how", property_dcid="crsPurpose", kind="unbound", value_dcids=[])
     ]
-    forced = _force_qualifier_bindings(existing, (), _CRS_SHAPE, variable="health")
+    forced, properties = _force_qualifier_bindings(existing, (), _CRS_SHAPE, variable="health")
     assert forced == existing
+    assert properties == frozenset()
 
 
 # ---------------------------------------------------------------------------
@@ -1316,7 +1318,7 @@ def test_net_oda_forces_netting_basis_through_admission_and_forcing():
     assert by_system["nettingBasis"].code_dcid == "Net"
     assert by_system["crsTypeOfFlow"].code_dcid == "CRSTypeOfFlow10"
 
-    forced = _force_qualifier_bindings(
+    forced, _ = _force_qualifier_bindings(
         [], matches, _CRS_SHAPE_WITH_MEASURE, variable="net ODA to Kenya"
     )
     by_property = {b.property_dcid: b for b in forced}
@@ -1347,12 +1349,22 @@ def test_dropped_phrase_naming_a_measure_is_admitted_and_forced():
     by_system = _by_system(matches)
     assert by_system["nettingBasis"].code_dcid == "Net"
 
-    forced = _force_qualifier_bindings(
+    forced, properties = _force_qualifier_bindings(
         [], matches, _CRS_SHAPE_WITH_MEASURE, variable="ODA to Kenya"
     )
     by_property = {b.property_dcid: b for b in forced}
     assert by_property["nettingBasis"].kind == "value"
     assert by_property["nettingBasis"].value_dcids == ["Net"]
+    assert properties == {"crsTypeOfFlow", "nettingBasis"}
+
+    # A rival dropped phrase leaves the two unresolved, so the text forces no basis.
+    rivals = _admit("ODA to Kenya", [_CRS_SHAPE_WITH_MEASURE], ["net", "gross"])
+    assert {m.code_dcid for m in rivals if m.code_system == "nettingBasis"} == {"Net", "Gross"}
+    forced, properties = _force_qualifier_bindings(
+        [], rivals, _CRS_SHAPE_WITH_MEASURE, variable="ODA to Kenya"
+    )
+    assert properties == {"crsTypeOfFlow"}
+    assert "nettingBasis" not in {b.property_dcid for b in forced}
 
 
 def test_dropped_phrase_naming_a_code_system_value_is_admitted_the_same_way():
@@ -1417,7 +1429,7 @@ def test_query_text_match_is_admitted_and_forced_the_same_way_a_variable_match_i
     by_system = _by_system(matches)
     assert by_system["crsPurpose"].code_dcid == "CRSPurposeCode311"
 
-    forced = _force_qualifier_bindings([], matches, _CRS_SHAPE, variable="agricultural funding")
+    forced, _ = _force_qualifier_bindings([], matches, _CRS_SHAPE, variable="agricultural funding")
     by_property = {b.property_dcid: b for b in forced}
     assert by_property["crsPurpose"].kind == "value"
     assert by_property["crsPurpose"].value_dcids == ["CRSPurposeCode311"]
@@ -2457,7 +2469,8 @@ def test_e2e_a_menu_choice_binds_and_the_confirmation_sentence_names_it(
 ):
     """No code reads "school governance". Its menu offers 11110 through the synonym
     "education governance", the model chooses it, and the part answers definite with 11110
-    bound and named in its sentence, the phrase recorded with evidence "model"."""
+    bound and named in its sentence, the phrase recorded with evidence "model". The model
+    chose the code, so the slot's provenance is the binder's."""
     search_settings(qualifier_coverage="refuse")
     result = _run_e2e(
         caplog, monkeypatch, variable="school governance ODA to Kenya", llm=_MenuChoosingLLM()
@@ -2471,3 +2484,9 @@ def test_e2e_a_menu_choice_binds_and_the_confirmation_sentence_names_it(
     assert "education policy and administrative management" in render_sentence(spec)
     record = next(q for q in spec.resolved.trace.query_qualifiers if q.evidence == "model")
     assert (record.text, record.disposition) == ("school governance", "bound")
+    purpose_filter = next(
+        f
+        for f in spec.resolved.trace.slot_filters
+        if f.key.property is not None and f.key.property.ref == "crsPurpose"
+    )
+    assert purpose_filter.provenance == "binder"
