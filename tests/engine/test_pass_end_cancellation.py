@@ -18,12 +18,12 @@ from dfo_platform.executor import submit_with_context
 from entity_resolution import Admission, EntityResolver
 from materialise.place_scope import DefaultPresence
 from search.engine.clients.graph import EngineGraphClient
-from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.region import phase_place_materialise, pipeline
 from search.engine.region.result import RegionResult
 from search.engine.region.state import ResolveState
 from tests.engine._fake_coverage import empty_coverage_snapshot
+from tests.engine._quantity import QuantityReadOnlyLLM
 
 type _Phase = Callable[[ResolveState], Awaitable[RegionResult | None]]
 
@@ -93,7 +93,7 @@ def _state() -> ResolveState:
         graph=cast(EngineGraphClient, None),
         resolver=cast(EntityResolver, None),
         admission=cast(Admission, None),
-        llm=cast(SupportsLLM, None),
+        llm=QuantityReadOnlyLLM(),
         sdmx=cast(EngineSdmxClient, None),
         deadline=None,
         pre_resolved=None,
@@ -202,7 +202,7 @@ def test_cancelling_the_pass_cancels_the_queued_walk(
 def test_a_timeout_around_the_pass_cancels_the_queued_walk(
     pool: _Pool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The second pass runs `_run_phases` inside `asyncio.timeout` (`_fill_gap`)."""
+    """A deadline that cancels `_run_phases` inside `asyncio.timeout`."""
     state = _state()
     monkeypatch.setattr(
         pipeline, "_PHASES", (_start_walk(pool), _waits(asyncio.Event()), _terminal)

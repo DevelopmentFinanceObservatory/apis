@@ -36,6 +36,7 @@ from datasets_api.manifest import (
     version_document,
 )
 from datasets_api.manifest_models import ArtifactEntryModel, Manifest, WarningModel
+from datasets_api.render import DerivedVersion
 from datasets_api.versions import VersionRecord
 from materialise.series_conversion import encode_series_conversions
 from tests.datasets_api._legacy_conversion_trace import MIGRATED_CONVERSION
@@ -193,11 +194,19 @@ def _written_records() -> dict[str, VersionRecord]:
     manifest = _manifest(result)
     collapsed = collapsed_head_manifest(
         manifest=manifest,
-        collapse_frame=frame,
+        derived=DerivedVersion(
+            frame_chunks=lambda: iter((frame,)),
+            role_columns=(),
+            rows=frame.num_rows,
+            distinct={},
+            frame_sha256="",
+            content_version="cv_golden_collapsed",
+            summed=True,
+            party_totals_left_out=(),
+        ),
         artifact=_ARTIFACT,
         statistics_artifact=_STATS,
         series_count=1,
-        content_version="cv_golden_collapsed",
         output_options=manifest.output_options,
         extra_warnings=reshape_warning_models(
             [{"code": "enrichment_unavailable", "column": "recipient_name", "count": 2}]

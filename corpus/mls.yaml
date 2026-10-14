@@ -53,14 +53,14 @@
 
 - id: dq-mls-006
   query: Imputed multilateral ODA from DAC donors
-  why: No graph node holds DAC membership, so 'DAC donors' reads as its member countries; the question names no sector, so DAC2a's imputed multilateral line answers.
+  why: "'DAC donors' names the DAC as the donor, and DAC2a publishes the DAC countries' total on its imputed multilateral line; the question names no sector, so that line answers."
   reuse: panel/mls-009
   tags: {theme: aid, entity: region_group, direction: origin_only, unit: default, time: none, operation: aggregate, breakdown: none, door: raw_text, phrasing: technical}
   known_failure: {issue: 1156, checks: [disposition, entities]}
   expect:
     definite:
       measure: {family: dac2a.imputed_multilateral}
-      entities: [{label: DAC donors, role: origin, expands: true}]
+      entities: [{dcid: DACCountriesTotal, role: origin}]
 
 - id: dq-mls-007
   query: Imputed multilateral ODA from EU members
@@ -221,12 +221,12 @@
 
 - id: dq-mls-022
   query: Norway's bilateral-only aid to Kenya, not counting what goes through multilaterals
-  why: CRS excludes core contributions, so the default family is the bilateral-only answer.
+  why: A flow from a donor to a recipient country is bilateral on DAC2a, so the word restricts nothing and the plain donor-to-recipient family answers.
   reuse: panel/mls-033
   tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, overlap: [mls]}
   expect:
     definite:
-      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      measure: {family: dac2a.oda_gross_received}
       entities: [{dcid: country/NOR, role: origin}, {dcid: country/KEN, role: destination}]
 
 - id: dq-mls-023
@@ -263,15 +263,15 @@
 
 - id: dq-mls-026
   query: bilateral and imputed multilateral aid from Norway to Kenya in 2022
-  why: CRS and MLS do not double count, so the caller may add the two parts.
+  why: Norway's flows to Kenya on DAC2a and its imputed multilateral share do not double count, so the caller may add the two parts.
   tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: year, operation: none, breakdown: none, door: raw_text, phrasing: casual, overlap: [crs]}
   expect:
     parts:
       - definite:
-          measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+          measure: {family: dac2a.oda_gross_received}
           entities: [{dcid: country/NOR, role: origin}, {dcid: country/KEN, role: destination}]
           window: {kind: range, start: 2022, end: 2022}
       - definite:
-          measure: {family: mls.imputed}
+          measure: {family: dac2a.imputed_multilateral}
           entities: [{dcid: country/NOR, role: origin}, {dcid: country/KEN, role: destination}]
           window: {kind: range, start: 2022, end: 2022}

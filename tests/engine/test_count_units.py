@@ -2,20 +2,15 @@
 count unit.
 
 SDG and UN System series measure `value`, so live "measles incidence rate Kenya" kept the WHO
-reported-cases count (`undata/UNIT_MEASURE-COUNT_CASES`) past the explicit-rate prune and
-elected it.
+reported-cases count (`undata/UNIT_MEASURE-COUNT_CASES`) on the menu and elected it.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from search.engine.quantity import quantity_requirement
+from search.engine.quantity import quantity_requirement, serves_every_form
 from search.engine.region.alternate_guard import inadmissible_alternates, query_pins
-from search.engine.region.phase_rank_bind import (
-    _is_unnormalised_raw_count,
-    _prune_explicit_rate_raw_counts,
-)
 from search.engine.retrieval.derive import derive_shapes
 from search.engine.shape import ShapeDraft, measures_count
 from search.engine.unit.count import is_count_unit
@@ -132,10 +127,13 @@ class TestDerivedShapesCarryPlaceUnits:
     def test_no_place_leaves_units_unknown(self) -> None:
         assert all(s.place_units is None for s in _derive(None))
 
-    def test_the_reported_cases_series_is_a_raw_count(self) -> None:
+    def test_the_reported_cases_series_serves_no_rate(self) -> None:
+        """The form rule of admissibility refuses the case count for "measles incidence
+        rate" and admits the mortality rate (`admissibility.judge_pinned_parts`)."""
         by_label = {s.label: s for s in _derive([_KENYA])}
-        assert _is_unnormalised_raw_count(by_label["cases"])
-        assert not _is_unnormalised_raw_count(by_label["rate"])
+        rate = quantity_requirement(["measles incidence rate"])
+        assert not serves_every_form(rate, by_label["cases"])
+        assert serves_every_form(rate, by_label["rate"])
 
 
 _REPORTED_CASES = _value_shape(
@@ -146,11 +144,6 @@ _MORTALITY = _value_shape(
     "Cause-specific mortality rate among children [Measles]",
     units=frozenset({_MORTALITY_RATE}),
 )
-
-
-def test_explicit_rate_prunes_a_count_unit_series() -> None:
-    kept = _prune_explicit_rate_raw_counts([_REPORTED_CASES, _MORTALITY], "measles incidence rate")
-    assert kept == [_MORTALITY]
 
 
 def test_rate_query_rejects_a_count_unit_alternate() -> None:

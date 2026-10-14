@@ -9,13 +9,10 @@ import asyncio
 from code_index.shared import get_index
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.clients.graph import Facet
-from search.engine.departures import warning_key
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
-from search.engine.region.codes import ELECTED_SHAPE_NO_DATA, NEAR_NEIGHBOR_AMBIGUOUS
-from search.heading.departure_fact import DepartureFact
+from search.engine.region.codes import ELECTED_SHAPE_NO_DATA
 from search.models import Spec
-from search.render.heading import heading_for
 from series_coverage.schema import RoleNames
 from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
@@ -225,8 +222,7 @@ def test_the_folded_sibling_rides_alternative_measures_not_a_second_menu_entry(m
 
 def test_no_stale_candidates_warning_survives_the_fold(monkeypatch):
     result = _run(monkeypatch)
-    # A measure fold returns one survivor without a near-neighbour warning.
-    assert not any(w.code == NEAR_NEIGHBOR_AMBIGUOUS for w in result.warnings)
+    # A measure fold returns one survivor without a candidates warning.
     assert not any(
         "candidate" in w.message.lower() and "surfac" in w.message.lower() for w in result.warnings
     )
@@ -244,48 +240,18 @@ _SDMX_OBS_ELECTED_HAS_NO_DATA = {
 }
 
 
-def test_s8_a_measure_sibling_with_data_answers_instead_of_refusing(monkeypatch):
-    """A data-bearing measure sibling answers when the elected measure has no data."""
+def test_s8_a_measure_sibling_with_data_rides_on_the_refusal(monkeypatch):
+    """Status rule 1: when the elected measure has no data, only an equivalent reading or a
+    sibling differing on the price basis answers in its place. A sibling of another
+    measured property is neither, so the part refuses, and the nominated sibling with data
+    rides on the refusal as its alternate match."""
     result = _run(
         monkeypatch,
         obs=_SDMX_OBS_ELECTED_HAS_NO_DATA,
         coverage_rows=_COVERAGE_ROWS_ELECTED_HAS_NO_DATA,
     )
-    assert result.status == "definite"
-    assert len(result.specs) == 1
-    survivor = result.specs[0]
-    assert any(sv.ref.ref == _ALT_SV for sv in survivor.resolved.members)
-
-
-def test_s8_answers_disclose_the_measure_substitution(monkeypatch):
-    """The response warns when it answers on an unselected measure."""
-    result = _run(
-        monkeypatch,
-        obs=_SDMX_OBS_ELECTED_HAS_NO_DATA,
-        coverage_rows=_COVERAGE_ROWS_ELECTED_HAS_NO_DATA,
-    )
-    assert result.status == "definite"
-    survivor = result.specs[0]
-    assert survivor.resolved.measure_label is not None
-
-    matching = [w for w in result.warnings if w.code == ELECTED_SHAPE_NO_DATA]
-    assert len(matching) == 1
-    warning = matching[0]
-    # The warning names the elected shape by its family label, failure reason, and served
-    # measure.
-    elected_label = "Financial flow grant equivalents, OECD Creditor Reporting System (CRS)"
-    assert elected_label in warning.message
-    assert "no_observations" in warning.message
-    assert survivor.resolved.measure_label in warning.message
-    # The warning discloses a closest_match departure naming the measure the heading
-    # shows ("gross ODA disbursements"), the part's other closest_match wording.
-    assert result.departure_facts[warning_key(warning)] == DepartureFact(
-        code="closest_match",
-        binding_ref=None,
-        asked=result.variable_text,
-        shown=heading_for(survivor).heading.noun.inline_text,
-    )
-    assert warning.params == {
-        "no_data": [elected_label],
-        "elected": [survivor.resolved.measure_label],
-    }
+    assert (result.status, result.no_data_reason) == ("no_data", "no_observations")
+    assert result.gate == "only_alternate_has_data"
+    assert result.alternate_match is not None
+    assert any(sv.ref.ref == _ALT_SV for sv in result.alternate_match.resolved.members)
+    assert ELECTED_SHAPE_NO_DATA not in [w.code for w in result.warnings]

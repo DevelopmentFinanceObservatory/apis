@@ -145,6 +145,7 @@ from datasets_api.operation_store import (
     utc_now,
 )
 from datasets_api.reconciliation import sweep
+from datasets_api.recorded_rendering import derived_version_sums
 from datasets_api.render import (
     CANONICAL_FRAME_RENDERING,
     is_statistics_rendering,
@@ -765,6 +766,11 @@ def run_backfill_descriptions(
                 recorded_at=recorded_at,
                 backfilled_at=backfilled_at,
                 base=base,
+                summed=isinstance(state.version.facts, FrameLineage)
+                or derived_version_sums(
+                    state.version.facts.trace,
+                    (location.rendering for location in state.locations),
+                ),
             )
             with store.transaction() as tx:
                 written = insert_description(tx, record, recorded_at=backfilled_at)

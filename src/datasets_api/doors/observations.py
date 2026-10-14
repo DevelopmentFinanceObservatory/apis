@@ -11,9 +11,10 @@ The path id resolves to the served ids the registry binds to it, and a version r
 the posted id itself answers too (`doors.snapshot.read_under_served_id`). Refusals follow the
 snapshot door (`read_stored_version`): `spec_not_found`, `identity_quarantined`,
 `snapshot_not_found`, `snapshot_revoked` before expiry, and `artifact_expired` once no listable
-rendering is servable. A groupby collapse (`base_content_version` set), a converted version
-that stores no per-series conversion record for a converted series, and a version whose
-preview needs rows but which holds no servable stored frame refuse `observations_unavailable`. A
+rendering is servable. A derived version (`base_content_version` set: a groupby collapse or a
+party-totals cut), a converted version that stores no per-series conversion record for a
+converted series, and a version whose preview needs rows but which holds no servable stored
+frame refuse `observations_unavailable`. A
 graph read failure refuses retryable `service_unavailable`. The route takes `spec_` ids alone
 (`routing.SpecIdConvertor`), as every Datasets route does, so any other id matches no route and
 answers the platform's `not_found`.
@@ -399,7 +400,8 @@ def read_snapshot_observations(*, id: str, content_version: str, deps: Deps) -> 
         raise ObservationsUnavailable(
             id=id,
             content_version=content_version,
-            reason="is a groupby collapse, which no live preview shows",
+            reason="is a derived version (a groupby collapse or a party-totals cut), which no "
+            "live preview shows",
         )
     facts = stored_manifest_facts(stored.version)
     manifest = stored_manifest(stored.version)

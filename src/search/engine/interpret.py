@@ -13,14 +13,19 @@ is itself async and awaited directly alongside the to_thread coroutine.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from concurrent.futures import Future
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from code_index.query import CodeIndex
+from code_index.shared import get_index
+from code_index.tokens import word_tokens
 from entity_resolution import EntityResolver, Resolution, Resolved
 from origin_catalogue import current_catalogue
 from search.engine.clients.graph import (
@@ -30,9 +35,11 @@ from search.engine.clients.graph import (
     cut_hits,
     settled_un,
     stand_candidates,
+    stand_in,
 )
 from search.engine.config import settings
 from search.engine.retrieval.topics import is_topic_candidate
+from search.engine.surface_resolution import resolve_names
 
 logger = logging.getLogger(__name__)
 
@@ -48,31 +55,28 @@ class PinnedResolved(Resolved):
     """
 
 
-# Expand acronyms with demonstrated retrieval confusion before bare-variable recall.
-# GNI scores 0.6342 for GiniIndex_EconomicActivity; its full term finds the aggregate.
-# U5MR and IMR hit unrelated SVs, while their full terms find the mortality variables.
-# CO2's full term scores higher than the acronym. GDP recalls correctly without expansion.
-# PPG recalls no SV for "debt service for PPG debt" (variable_not_resolved); its full term
-# finds the public and publicly guaranteed debt service series.
-_ACRONYM_EXPANSIONS: dict[str, str] = {
-    "gni": "gross national income",
-    "co2": "carbon dioxide emissions",
-    "u5mr": "under five mortality rate",
-    "imr": "infant mortality rate",
-    "ppg": "public and publicly guaranteed",
-}
-_ACRONYM_RE = re.compile(r"\b(" + "|".join(_ACRONYM_EXPANSIONS) + r")\b", re.IGNORECASE)
+@functools.cache
+def _alias_pattern(aliases: tuple[str, ...]) -> re.Pattern[str] | None:
+    """The whole-word, case-insensitive pattern matching any of `aliases`."""
+    if not aliases:
+        return None
+    return re.compile(r"\b(" + "|".join(map(re.escape, aliases)) + r")\b", re.IGNORECASE)
 
 
 def _canonicalize_acronyms(text: str) -> str:
-    """Expand known acronyms at word boundaries, preserving surrounding text.
+    """Expand the aliases the code index declares (`CodeIndex.variable_aliases`) at word
+    boundaries, preserving surrounding text.
 
     Case-insensitive and controlled by `settings().acronym_canonicalize`.
     Applied only to recall's variable query, not entities or displayed fields.
     """
     if not settings().acronym_canonicalize:
         return text
-    return _ACRONYM_RE.sub(lambda m: _ACRONYM_EXPANSIONS[m.group(0).lower()], text)
+    aliases = get_index().variable_aliases
+    pattern = _alias_pattern(tuple(aliases))
+    if pattern is None:
+        return text
+    return pattern.sub(lambda m: aliases[m.group(0).lower()], text)
 
 
 class Recall(BaseModel):
@@ -97,11 +101,12 @@ class Recall(BaseModel):
     candidates: list[DetectedSV]  # descending by score (detect_svs's contract)
     resolutions: dict[str, Resolution]  # surface name → Resolution (hit or miss)
     # The UN System Data Commons' admitted candidates, None when its resolve failed. The
-    # resolve may still be running: only the gap-fill pass waits for it (`settle_un`,
-    # region/pipeline.py), and `un_candidates` and `un_unavailable` read it once settled.
+    # resolve may still be running: the UN leg beside our shape derivation waits for it
+    # (`settle_un`, region/phase_intake.py), and `un_candidates` and `un_unavailable` read
+    # it once settled.
     un_leg: Future[tuple[DetectedSV, ...] | None] = Field(default_factory=lambda: settled_un(()))
     # Our resolve's hits under their own dcids, above the recall floor (`Detection.hits`):
-    # the first pass's derivation confirms these. `None` reads as `candidates`.
+    # our pool's derivation confirms these. `None` reads as `candidates`.
     hits: list[DetectedSV] | None = None
 
     async def settle_un(self) -> None:
@@ -146,6 +151,98 @@ def _above_recall_floor(candidates: Sequence[DetectedSV]) -> list[DetectedSV]:
     return [c for c in candidates if c.score >= floor or is_topic_candidate(c.dcid, c.type_of)]
 
 
+def _without_stated_words(text: str, index: CodeIndex) -> tuple[str, frozenset[str]] | None:
+    """`text` less each word some declared dataset states of its rows
+    (`DatasetDeclaration.stated_words`), with its whitespace collapsed, and the words
+    removed, casefolded. A word is a whole token (`word_tokens`), so "non-bilateral" holds
+    no stated word. `None` when `text` holds none, or nothing else.
+
+    The graph's text search matches a variable's name. "Bilateral ODA" returns the DAC1
+    series whose names hold "bilateral" and none of the CRS or DAC2a series, which state
+    the word of every row without naming it, so those tables never become candidates."""
+    stated = {word.word for dataset in index.datasets.values() for word in dataset.stated_words}
+    tokens = word_tokens(text)
+    removed = [token for token in tokens if token.text.casefold() in stated]
+    if not removed or len(removed) == len(tokens):
+        return None
+    kept: list[str] = []
+    position = 0
+    for token in removed:
+        kept.append(text[position : token.start])
+        position = token.end
+    kept.append(text[position:])
+    return " ".join("".join(kept).split()), frozenset(token.text.casefold() for token in removed)
+
+
+def _states_a_word(dcid: str, words: AbstractSet[str], index: CodeIndex) -> bool:
+    """Whether the index row of `dcid` (`CodeIndex.statvar_by_dcid`) belongs to a dataset
+    that states one of `words` of the row's measured property. A series the index holds no
+    row for states nothing."""
+    row = index.statvar_by_dcid(dcid)
+    return row is not None and any(
+        stated.word in words and stated.measured_property == row.measured_property
+        for provenance in row.provenances
+        if provenance in index.datasets
+        for stated in index.datasets[provenance].stated_words
+    )
+
+
+def _pooled(first: Detection, second: Detection, joins: Callable[[str], bool]) -> Detection:
+    """`first` with the series of `second` that `joins` admits by the dcid each stands as
+    (`stand_in`). `candidates` and `hits` each hold a series once, a recalled row before a
+    rival-family row (`DetectedSV.rival`) and then at its higher score, in descending
+    score. A rival-family row of `second` does not join. A `hits` of `None` reads as that
+    detection's `candidates` and stays `None` only when both are.
+
+    The pool is not cut again, so it holds at most twice `SEARCH_DETECT_K` hits: the two
+    scores rate different texts, and a cut would let one search displace the other. The UN
+    leg is `first`'s, the resolve of the text as asked."""
+    catalogue = current_catalogue()
+
+    def joining(svs: Sequence[DetectedSV]) -> list[DetectedSV]:
+        return [
+            sv
+            for sv in svs
+            if not sv.rival
+            and (standing := stand_in(sv.dcid, catalogue=catalogue)) is not None
+            and joins(standing)
+        ]
+
+    def union(ours: Sequence[DetectedSV], theirs: Sequence[DetectedSV]) -> tuple[DetectedSV, ...]:
+        best: dict[str, DetectedSV] = {}
+        for sv in (*ours, *joining(theirs)):
+            held = best.get(sv.dcid)
+            if held is None or (sv.rival, -sv.score) < (held.rival, -held.score):
+                best[sv.dcid] = sv
+        return tuple(sorted(best.values(), key=lambda sv: sv.score, reverse=True))
+
+    hits = None
+    if first.hits is not None or second.hits is not None:
+        hits = union(
+            first.candidates if first.hits is None else first.hits,
+            second.candidates if second.hits is None else second.hits,
+        )
+    return replace(first, candidates=union(first.candidates, second.candidates), hits=hits)
+
+
+async def _detect(graph: EngineGraphClient, text: str) -> Detection:
+    """The graph's detection of `text` (`EngineGraphClient.detect_svs`). When `text` holds a
+    word some declared dataset states (`_without_stated_words`), the graph is searched
+    concurrently on the text without it, and the series of the datasets that state a
+    removed word join the pool (`_states_a_word`, `_pooled`). A failure of either search
+    raises."""
+    index = get_index()
+    unstated = _without_stated_words(text, index)
+    if unstated is None:
+        return await asyncio.to_thread(graph.detect_svs, text)
+    rest, removed = unstated
+    first, second = await asyncio.gather(
+        asyncio.to_thread(graph.detect_svs, text),
+        asyncio.to_thread(graph.detect_svs, rest),
+    )
+    return _pooled(first, second, lambda dcid: _states_a_word(dcid, removed, index))
+
+
 def _member_detection(members: Sequence[str]) -> Detection:
     """`members` as a detection whose hits the request's catalogue admits (`cut_hits`),
     standing as `detect_svs` stands its own (`stand_candidates`), with no UN candidate."""
@@ -168,6 +265,7 @@ async def recall(
     resolver: EntityResolver,
     raw_query: str | None = None,
     pre_resolved: dict[str, Resolution] | None = None,
+    entity_surfaces: Mapping[str, str] | None = None,
     members: Sequence[str] | None = None,
 ) -> Recall:
     """Recall candidate StatVars and resolve entity names concurrently.
@@ -175,11 +273,16 @@ async def recall(
     `raw_query` overrides `variable` for graph detection; callers use it to
     add coded-qualifier retrieval hints. Those hints do not constrain the
     population. `pre_resolved` supplies entity results shared across variables;
-    only missing names go to one resolver call alongside `detect_svs`.
+    only missing names go to one resolver call alongside `detect_svs`. `entity_surfaces`
+    maps a name to the query words that name it, which that call resolves it through
+    (`surface_resolution.resolve_names`).
 
     Candidates stay in descending score order. The recall floor drops low
     scores except Topic candidates. Results remain unconfirmed until the
     materialise stage reads the graph.
+
+    A text holding a word some declared dataset states is also searched without it, for
+    the series of the tables that state the word (`_detect`).
 
     `members` are the StatVars a part's series code names (`search.engine.source_code`).
     They are the candidates, each at score 1.0 and admitted by the request's catalogue as a
@@ -189,14 +292,15 @@ async def recall(
     _pre = pre_resolved or {}
     cache_hits = {name: _pre[name] for name in entities if name in _pre}
     misses = [name for name in entities if name not in _pre]
+    surfaces = entity_surfaces or {}
 
     if members is not None:
         detection = _member_detection(members)
-        miss_resolutions = await resolver.resolve(misses)
+        miss_resolutions = await resolve_names(misses, resolver=resolver, surfaces=surfaces)
     else:
         detection, miss_resolutions = await asyncio.gather(
-            asyncio.to_thread(graph.detect_svs, _canonicalize_acronyms(detect_query)),
-            resolver.resolve(misses),
+            _detect(graph, _canonicalize_acronyms(detect_query)),
+            resolve_names(misses, resolver=resolver, surfaces=surfaces),
         )
     candidates = _above_recall_floor(detection.candidates)
     resolutions: dict[str, Resolution] = dict(cache_hits)

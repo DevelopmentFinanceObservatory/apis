@@ -1,8 +1,7 @@
 """Match labels to the concept named by an explicit rate request.
 
-`pipeline.py` uses matches to prune raw counts. `availability.py` pairs shapes
-with a shared rate head. This leaf module depends only on `ShapeDraft` to avoid a
-cycle between those callers.
+`availability.py` pairs shapes with a shared rate head. This leaf module depends only
+on `ShapeDraft`.
 """
 
 from __future__ import annotations

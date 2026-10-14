@@ -337,9 +337,6 @@ class _RaiseOnAny:
     def node_type(self, dcid: str) -> str | None:
         raise GraphInfraError(f"FakeGraph(raise=True): simulated transport error for {dcid!r}")
 
-    def declares_facet_defaults(self) -> bool:
-        return False
-
     def default_facet_policy(self, *, stat_var: str, axis: str) -> FacetDefaultPolicy | None:
         # No transport read to fail: the live client answers from no wire call
         # (`dc_graph.GraphClient.default_facet_policy`), so paths that read no graph still
@@ -428,6 +425,11 @@ class _RaiseOnAny:
         deadline: float | None = None,
     ) -> dict[str, dict[str, list[Facet]]]:
         raise GraphInfraError("FakeGraph(raise=True): simulated transport error")
+
+    def observation_read_groups(
+        self, stat_vars: list[str], entities: list[str], needs_dates: bool = False
+    ) -> list[list[str]]:
+        return [list(stat_vars)]
 
     def un_availability(self) -> None:
         raise GraphInfraError("FakeGraph(raise=True): simulated transport error")
@@ -569,13 +571,6 @@ class FakeGraph:
 
     def generation_stamp(self) -> GenerationStamp:
         return self._generation.stamp()
-
-    def declares_facet_defaults(self) -> bool:
-        # Read by attribute default: a test double subclassing this one may skip `__init__`.
-        impl = getattr(self, "_impl", None)
-        if impl is not None:
-            return impl.declares_facet_defaults()
-        return bool(getattr(self, "_facet_policies", None))
 
     def default_facet_policy(self, *, stat_var: str, axis: str) -> FacetDefaultPolicy | None:
         if self._impl is not None:
@@ -978,6 +973,14 @@ class FakeGraph:
                     stat_var=sv, entity=entity, needs_dates=needs_dates
                 )
         return result
+
+    def observation_read_groups(
+        self, stat_vars: list[str], entities: list[str], needs_dates: bool = False
+    ) -> list[list[str]]:
+        """One group: the fixture reads every StatVar of a read together, as a POST does."""
+        if self._impl is not None:
+            return self._impl.observation_read_groups(stat_vars, entities, needs_dates)
+        return [list(stat_vars)]
 
     def exists(self, dcid: str) -> bool:
         if self._impl is not None:

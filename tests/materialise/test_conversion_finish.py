@@ -11,6 +11,7 @@ from dfo_frame_grammar import canonical_frame_bytes
 
 from dc_sdmx import SdmxClient
 from materialise import (
+    elected_latest_year,
     materialise_group,
     materialise_preview,
     materialise_spec,
@@ -33,7 +34,7 @@ from materialise.pipeline import (
 from materialise.rate_tables import RateTableCache
 from materialise.recipe_bodies import RECIPE_BODIES
 from materialise.recipes import RateCoverageGapError
-from materialise.window import RequestedWindow
+from materialise.window import LatestYear, RequestedWindow
 from series_coverage.index import CoverageIndex
 from series_coverage.schema import FacetMetadata, RoleNames
 from tests.engine._fake_coverage import build_coverage_index
@@ -911,6 +912,271 @@ def test_an_over_ceiling_request_refuses_over_ceiling_before_a_conversion_refusa
             unrated={"country/SEN": "CurrencyXOF"},
             unrated_type=unrated_type,
         )
+
+
+@dataclass(frozen=True)
+class _LatestMint:
+    """A destination-currency `latest` read through one entry, its requests and index, and
+    the `(recipient, period)` of every row it serves."""
+
+    result: MaterialisationResult | PreviewResult
+    requests: list[MaterialisationRequest]
+    coverage: CoverageIndex
+    served: list[tuple[str, str]]
+
+
+def _destination_latest(
+    entry: str,
+    held: dict[str, tuple[int, ...]],
+    *,
+    currencies: dict[str, str],
+    blank: frozenset[tuple[str, int]] = frozenset(),
+    rate_years: tuple[int, ...] = (2022,),
+    unindexed: frozenset[str] = frozenset(),
+) -> _LatestMint:
+    """Read each recipient of `held` from France over the years it holds, valued but at
+    `blank`, converted into each recipient's own currency. `currencies` names the ones a
+    currency names. The rate table holds `rate_years` alone, so a row of another year
+    refuses. The coverage index holds every recipient's series but those of `unindexed`."""
+    stat_vars = (_BARE_STAT_VAR, _BARE_STAT_VAR_B) if entry == "group" else (_BARE_STAT_VAR,)
+    arcs = _base_arcs(bare_stat_vars=stat_vars)
+    for entity, code in currencies.items():
+        arcs[f"Currency{code}"] = {"typeOf": ("CurrencyUnit",), "nationalCurrencyOf": (entity,)}
+
+    def role_handler(request: httpx.Request) -> httpx.Response:
+        params = request.url.params
+        period = params.get("c[TIME_PERIOD]")
+        body = _ROLE_HEADER
+        for bare in params["c[variableMeasured]"].split(","):
+            for recipient, years in held.items():
+                if period == "LATEST":
+                    years = years[-1:]
+                elif period is not None:
+                    years = tuple(year for year in years if str(year) in period.split(","))
+                for year in years:
+                    body += _role_row(
+                        stat_var=bare,
+                        recipient=recipient,
+                        year=str(year),
+                        value=".." if (recipient, year) in blank else "100",
+                    )
+        return httpx.Response(
+            200, text=body, headers={"content-type": "application/vnd.sdmx.data+csv;version=2.0.0"}
+        )
+
+    rate_body = _SUBJECT_HEADER + "".join(
+        _rate_row(stat_var=_EXCHANGE_VAR, entity=f"Currency{code}", year=str(year), value=rate)
+        for year in rate_years
+        for code, rate in (("USD", "1.0"), *((code, "2.0") for code in currencies.values()))
+    )
+    sdmx = RateTableServer({_EXCHANGE_VAR: rate_body}, fallback=role_handler).client(
+        base_url=_BASE_URL
+    )
+    coverage = build_coverage_index(
+        [
+            (bare, "f1", "country/FRA", recipient, list(years))
+            for bare in stat_vars
+            for recipient, years in held.items()
+            if recipient not in unindexed
+        ],
+        role_names=dict.fromkeys(
+            stat_vars, RoleNames(donor="financingProvider", recipient="financingRecipient")
+        ),
+        facet_metadata={
+            "f1": FacetMetadata(
+                provenance_id=_MEMBER_PROVENANCE,
+                measurement_method="GrantEquivalent",
+                unit="CurrencyUSD",
+            )
+        },
+    )
+    requests = [
+        _request(
+            stat_var=f"dcid:{bare}",
+            unit=FacetBinding(state="request", request=UnitRequest("destination", "current")),
+            window=RequestedWindow(kind="latest"),
+            role_bindings={"financingProvider": ["country/FRA"], "financingRecipient": [*held]},
+        )
+        for bare in stat_vars
+    ]
+    graph = _graph(arcs)
+    result: MaterialisationResult | PreviewResult
+    if entry == "preview":
+        result = materialise_preview(
+            requests[0],
+            sdmx=sdmx,
+            graph=graph,
+            coverage=coverage,
+            limit=100,
+            rate_cache=RateTableCache(),
+        )
+        frames = [result.frame]
+    else:
+        result = materialise_group(
+            requests,
+            sdmx=sdmx,
+            graph=graph,
+            materialiser_build="test-build",
+            capability_version="v1",
+            enrichment=EnrichmentLookup(graph, parties={}),
+            rate_cache=RateTableCache(),
+            coverage=coverage,
+        )
+        frames = list(result.frame_chunks())
+    served = sorted(
+        (recipient, period)
+        for frame in frames
+        for recipient, period in zip(
+            frame.table["financingRecipient"].to_pylist(),
+            frame.table["time_period"].to_pylist(),
+            strict=True,
+        )
+    )
+    return _LatestMint(result=result, requests=requests, coverage=coverage, served=served)
+
+
+@pytest.mark.parametrize("entry", _ENTRIES)
+@pytest.mark.parametrize(
+    "kenya_2023", [pytest.param("100", id="newest-value"), pytest.param("..", id="newest-blank")]
+)
+def test_destination_currency_latest_elects_its_year_without_the_omitted_recipients(
+    entry: str, kenya_2023: str
+):
+    """Kenya and a region no currency names hold 2021 to 2023, and Uganda and Tanzania 2021
+    and 2022. The three converted series elect 2022, since one of three reaches 2023. With
+    the region counted two of four would, and 2023 would stand. The read serves the three
+    at 2022, reading it again for Kenya, and leaves the region's 2022 row out. Kenya's 2022
+    row converts whether or not its 2023 value parses."""
+    currencies = {"country/KEN": "KES", "country/UGA": "UGX", "country/TZA": "TZS"}
+    mint = _destination_latest(
+        entry,
+        {
+            "country/KEN": (2021, 2022, 2023),
+            "country/UGA": (2021, 2022),
+            "country/TZA": (2021, 2022),
+            "africaRegion": (2021, 2022, 2023),
+        },
+        currencies=currencies,
+        blank=frozenset({("country/KEN", 2023)}) if kenya_2023 == ".." else frozenset(),
+    )
+
+    if isinstance(mint.result, MaterialisationResult):
+        assert set(mint.result.latest_years.values()) == {
+            LatestYear(
+                elected=2022,
+                served=2022,
+                facet_ids=("f1",),
+                omitted=(("financingRecipient", "africaRegion"),),
+            )
+        }
+        # The recorded facets and omissions elect the same year again from the same index.
+        assert {
+            elected_latest_year(
+                request, latest.omitted, coverage=mint.coverage, facet_ids=latest.facet_ids
+            )
+            for request in mint.requests
+            for latest in [mint.result.latest_years[request.stat_var]]
+        } == {2022}
+    per_stat_var = len(mint.requests)
+    assert mint.served == sorted(
+        (recipient, "2022") for recipient in currencies for _ in range(per_stat_var)
+    )
+
+
+_NAMED_BY_A_CURRENCY = {"country/KEN": "KES", "country/UGA": "UGX", "country/TZA": "TZS"}
+
+
+@pytest.mark.parametrize("entry", _MINT_ENTRIES)
+@pytest.mark.parametrize(
+    ("held", "served", "warned"),
+    [
+        pytest.param({"africaRegion": (2023,)}, [], {"empty_result"}, id="alone"),
+        pytest.param(
+            {
+                **dict.fromkeys(_NAMED_BY_A_CURRENCY, (2021, 2022)),
+                "africaRegion": (2023,),
+            },
+            [(recipient, "2022") for recipient in _NAMED_BY_A_CURRENCY],
+            {"coverage_below_scope"},
+            id="beside-named-recipients",
+        ),
+    ],
+)
+def test_a_recipient_no_currency_names_and_holding_no_value_is_reported_as_not_served(
+    entry: str, held: dict[str, tuple[int, ...]], served: list[tuple[str, str]], warned: set[str]
+):
+    """The region's one row holds no value, so it serves nothing and is reported as not
+    served, not as left out for its currency. The year is elected without its series, which
+    no conversion could serve, and the run records it as omitted. Beside three recipients
+    holding 2022, 2022 stands."""
+    mint = _destination_latest(
+        entry, held, currencies=_NAMED_BY_A_CURRENCY, blank=frozenset({("africaRegion", 2023)})
+    )
+
+    assert isinstance(mint.result, MaterialisationResult)
+    assert mint.served == sorted(served * len(mint.requests))
+    assert {w["code"] for w in mint.result.warnings} == warned
+    assert {latest.omitted for latest in mint.result.latest_years.values()} == {
+        (("financingRecipient", "africaRegion"),)
+    }
+
+
+@pytest.mark.parametrize("entry", _ENTRIES)
+def test_a_recipient_no_currency_names_is_left_out_before_the_year_is_elected(entry: str):
+    """Kenya and Uganda hold 2023, three more recipients hold 2022 alone, and a region no
+    currency names holds 2023 in the index with no value in it. Without the region two of
+    five series reach 2023, under half, so 2022 is elected and all five serve it, as
+    Search plans; counting the region, three of six would elect 2023."""
+    currencies = {
+        "country/KEN": "KES",
+        "country/UGA": "UGX",
+        "country/TZA": "TZS",
+        "country/RWA": "RWF",
+        "country/ETH": "ETB",
+    }
+    mint = _destination_latest(
+        entry,
+        {
+            "country/KEN": (2021, 2022, 2023),
+            "country/UGA": (2021, 2022, 2023),
+            "country/TZA": (2021, 2022),
+            "country/RWA": (2021, 2022),
+            "country/ETH": (2021, 2022),
+            "africaRegion": (2021, 2022, 2023),
+        },
+        currencies=currencies,
+        blank=frozenset({("africaRegion", 2023)}),
+        rate_years=(2022, 2023),
+    )
+
+    assert mint.served == sorted((r, "2022") for r in currencies for _ in mint.requests)
+    if isinstance(mint.result, MaterialisationResult):
+        assert {
+            (latest.elected, latest.served, latest.omitted)
+            for latest in mint.result.latest_years.values()
+        } == {(2022, 2022, (("financingRecipient", "africaRegion"),))}
+        assert {w["code"] for w in mint.result.warnings} == {"currency_unmapped_omitted"}
+
+
+def test_an_omitted_recipient_the_index_holds_no_series_of_is_logged(caplog):
+    """The region holds a 2022 value the index holds no series of. The election counts the
+    index's series, so it stands, and the region's row is left out and recorded."""
+    with caplog.at_level("WARNING", logger="materialise.generation"):
+        mint = _destination_latest(
+            "member",
+            {**dict.fromkeys(_NAMED_BY_A_CURRENCY, (2021, 2022)), "africaRegion": (2021, 2022)},
+            currencies=_NAMED_BY_A_CURRENCY,
+            unindexed=frozenset({"africaRegion"}),
+        )
+
+    assert isinstance(mint.result, MaterialisationResult)
+    assert mint.served == sorted((recipient, "2022") for recipient in _NAMED_BY_A_CURRENCY)
+    assert {(latest.elected, latest.omitted) for latest in mint.result.latest_years.values()} == {
+        (2022, (("financingRecipient", "africaRegion"),))
+    }
+    assert [
+        record.args[0] for record in caplog.records if record.name == "materialise.generation"
+    ] == [1]
 
 
 # ---------------------------------------------------------------------------

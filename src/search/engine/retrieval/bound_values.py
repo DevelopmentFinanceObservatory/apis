@@ -117,11 +117,11 @@ from search.engine.retrieval.member_facts import (
 )
 from search.engine.shape import (
     ShapeDraft,
-    _declared_role_names,
     declares_shape_roles,
     family_label,
     identity_shape_for,
     is_role_bearing,
+    role_class,
 )
 from search.engine.spec_id import mint_identity
 from search.models import (
@@ -360,7 +360,7 @@ def _family_key(
         shape.stat_type_dcid,
         shape.meas_denom_dcid,
         shape.meas_denom_unresolved,
-        shape.declared_roles,
+        role_class(shape),
         shape.optional_roles,
         tuple(getattr(shape, _MEASURE_AXIS_DRAFT_FIELDS[axis.axis]) for axis in basis_shape_axes),
     )
@@ -460,7 +460,7 @@ def _reading_group_key(shape: ShapeDraft) -> tuple[object, ...]:
         shape.stat_type_dcid,
         shape.meas_denom_dcid,
         shape.meas_denom_unresolved,
-        _declared_role_names(shape),
+        role_class(shape),
         shape.optional_roles,
         shape.pop_type_dcid,
         shape.meas_prop_dcid,
@@ -1529,6 +1529,26 @@ class OptionServedFact:
         return served_rows(self.served.get(value, {}))
 
 
+def applies_value(requested: str, held: str | None) -> bool:
+    """Whether a member or binding holding `held` applies the value `requested` the
+    request names: `held` is `requested` or, in a system whose parent-coded records are
+    apart from its children's, one of its descendants, as a binding of `requested` reads
+    (`CodeIndex.expansion`). The one rule for every value the request names, a code term
+    (`requirements.judge` on a `CodeRule`), a value named by its graph label or drafted on a
+    slot the elected reading lacks (`phase_rank_bind.judge_value_requirements`), and the
+    stray values the alternate guard pins (`alternate_guard.AlternateJudge`)."""
+    return held is not None and held in get_index().expansion(requested)
+
+
+def applies_one_of(requested: Iterable[str], held: str | None) -> bool:
+    """Whether a member or binding holding `held` applies a set of values the request names
+    together, as a set bound on a slot reads: by membership, `held` applying one of them
+    (`applies_value`). The one rule for a value or set the bind drafted on a slot the
+    elected reading lacks, in the alternate guard (`AlternateJudge._stray_refusal`) and in
+    the ledger (`phase_rank_bind.judge_value_requirements`)."""
+    return any(applies_value(value, held) for value in requested)
+
+
 def members_by_value(
     member_values: Mapping[str, str | None], values: Iterable[str]
 ) -> dict[str, list[str]]:
@@ -2042,6 +2062,15 @@ def shape_listed_rows(shape: ShapeDraft, index: CodeIndex | None = None) -> tupl
     return index.listed_by_five_tuple.get(_member_five_tuple(shape_five_tuple(shape)), ())
 
 
+def shape_partly_stated(
+    shape: ShapeDraft, index: CodeIndex | None = None
+) -> Mapping[str, frozenset[tuple[str, str]]]:
+    """Each dataset mapped to the (property, value) pairs it states partly on `shape`'s
+    five-tuple (`CodeIndex.partly_stated_on`)."""
+    index = index or get_index()
+    return index.partly_stated_on(_member_five_tuple(shape_five_tuple(shape)))
+
+
 def shape_part_datasets(shape: ShapeDraft, index: CodeIndex) -> tuple[str, ...]:
     """The datasets stamped on `shape` (`ShapeDraft.datasets`), else every dataset
     publishing it (`_publishing_datasets`)."""
@@ -2219,9 +2248,8 @@ def apply_slot_summability(slots: list[Slot], identity: BaseIdentity) -> list[Sl
     slot: one with no property, one on a code system not declared summable, and every
     slot of a family with no elected dataset or with a dataset that declares no absence
     reading, where a member with no rows refuses the sum.
-    The binding does not enter. Order-preserving. ``build_spec`` and the bind-time
-    sentence event (``_build_sentence_event``) call this on every slots list they
-    assemble, so every served slot carries the flag.
+    The binding does not enter. Order-preserving. ``build_spec`` calls this on every
+    slots list it assembles, so every served slot carries the flag.
     """
     index = get_index()
     summable: frozenset[str] = (
@@ -2542,10 +2570,10 @@ def held_family_exact(shape: ShapeDraft) -> bool:
 async def read_held_families(shapes: Iterable[ShapeDraft]) -> None:
     """Read the family each of `shapes` stands for (`ShapeDraft.held_family`) into the
     request's memo (`held_family_memo`) off the event loop, so a reader that runs on it
-    finds the family read. The phases call it before their first on-loop reader: the
-    raw-count prune before it reads its shapes, and binding repair over the bind menu and
-    the elected shape, which candidate admission, the alternates' walks and refusals read
-    after it. Reads nothing with no memo bound or every family already read."""
+    finds the family read. The phases call it before their first on-loop reader: settling
+    the election reads the bind menu's, the elected shape's among them, which candidate
+    admission, the alternates' walks and refusals read after it. Reads nothing with no
+    memo bound or every family already read."""
     memo = _held_family_memo.get()
     if memo is None:
         return
@@ -2775,6 +2803,11 @@ class MembershipResolution[T]:
     value: T
     authority: MembershipAuthority
     walked: WalkedMembers | None = None
+    no_member: bool = False
+    """Whether the walk, or the catalogue's tables in its place, read the family whole and
+    found no member under the query: the mint serves none for the same identity. Such a
+    resolution is `FAILED`, and false on every other one, including a walk that could not
+    read the family."""
 
 
 @dataclass(frozen=True)
@@ -2788,6 +2821,9 @@ class WalkedFamily:
 
 _WALK_FAILED: MembershipResolution[WalkedFamily | None] = MembershipResolution(
     None, MembershipAuthority.FAILED
+)
+_WALK_FOUND_NONE: MembershipResolution[WalkedFamily | None] = MembershipResolution(
+    None, MembershipAuthority.FAILED, no_member=True
 )
 
 
@@ -2854,7 +2890,10 @@ class RoleClassWalks:
         nothing, a `FAILED` resolution with no group, when it runs past that bound, when a
         graph read fails, when it truncates without proof or leaves a candidate unread, and
         when it finds no member. The first two also note a degraded read
-        (`degraded_reads.note_degraded_read`).
+        (`degraded_reads.note_degraded_read`), and the last, a family read whole that holds
+        no member under the query, says so (`MembershipResolution.no_member`). A reverse read
+        holding no candidate is such a read whatever the seeds left unsettled, since the
+        mint reads no seed.
 
         A resubmit's walk ignores `candidates`, reads its first page under `deadline` and
         its full read under `ResubmitWalk.full_read_deadline`. It raises a failed read as
@@ -2957,13 +2996,20 @@ class RoleClassWalks:
                     "five-tuple and bound values"
                 )
             return _WALK_FAILED
+        if not group.members and not group.candidates_considered and not group.truncated:
+            # The reverse read under the query holds no candidate, and the mint walks that
+            # read alone, with no seed, so it serves no member for the identity whatever a
+            # seed the walk could not settle reads.
+            return _WALK_FOUND_NONE
         if group.undismissed_candidates and resubmit is not None:
             return FamilyNotResolvableError(
                 f"the member walk of {query.five_tuple!r} left candidates undismissed: "
                 f"{list(group.undismissed_candidates)}"
             )
-        if not group.members or group.undismissed_candidates:
+        if group.undismissed_candidates:
             return _WALK_FAILED
+        if not group.members:
+            return _WALK_FOUND_NONE
         authority = (
             MembershipAuthority.PROVEN if group.truncated else MembershipAuthority.AUTHORITATIVE
         )
@@ -3121,9 +3167,9 @@ def elected_role_class_shape(
             if held_group.error is None:
                 return MembershipResolution(narrowed, MembershipAuthority.FAILED)
             raise held_group.error(held_group.message)
-        if not held_group.members or not set(held_group.family) <= (
-            shape_population_arcs(narrowed).keys()
-        ):
+        if not held_group.members:
+            return MembershipResolution(narrowed, MembershipAuthority.FAILED, no_member=True)
+        if not set(held_group.family) <= shape_population_arcs(narrowed).keys():
             return MembershipResolution(narrowed, MembershipAuthority.FAILED)
         return MembershipResolution(
             narrowed, MembershipAuthority.AUTHORITATIVE, WalkedMembers.of(query, held_group)
@@ -3137,7 +3183,7 @@ def elected_role_class_shape(
     )
     walked = walks.family(query, seeds, deadline=deadline)
     if walked.value is None:
-        return MembershipResolution(narrowed, walked.authority)
+        return MembershipResolution(narrowed, walked.authority, no_member=walked.no_member)
     group = walked.value.group
     recalled = narrowed.sv_arc_facts or {}
     settled = WalkedMembers.of(query, group)
@@ -3194,8 +3240,7 @@ def walked_family_label(
 ) -> str | None:
     """The label of a shape whose membership the graph walk decides, the one rule derive,
     the mint's walk (`elected_role_class_shape`) and a resubmit
-    (`promote_shape._phase_build_shape`) name such a shape by, so one shape id carries one
-    label.
+    (`promote_shape._phase_build_shape`) name such a shape by.
 
     `held` is the shape's family as the catalogue's tables hold it (`Catalogue.held_family`),
     and `members` maps the shape's members to their arcs in the caller's order. A member's
@@ -3204,7 +3249,9 @@ def walked_family_label(
     a multi-member UN family with no total as its population type and the values every member
     shares (`shape.family_label`), given `population_type_label`. Without a held family,
     several UN members read that way over their own values. Otherwise the shape reads as the
-    first of `members` with a name. None when none has one."""
+    first of `members` with a name, so a held family with no total and no UN membership takes
+    a label that follows the caller's order, and one shape id can carry the name of any of
+    its members. None when no member has a name."""
     if held is not None and held.total_name is not None:
         return held.total_name
     un_family = (
@@ -3237,8 +3284,9 @@ def _shape_held_family(shape: ShapeDraft) -> FamilySummary | None:
 def _walked_label(shape: ShapeDraft, group: MemberGroup, members: Mapping[str, dict]) -> str:
     """The label of `shape` once the walk settles `group`, whose arcs `members` holds. A
     family the catalogue's tables hold keeps the label derive or a resubmit gave it by
-    `walked_family_label`, which reads the family alone; any other reads as the first
-    member of `group`, least constrained first, with a name, else `shape`'s label."""
+    `walked_family_label`, which for a family with no total and no UN membership is the
+    name of the first member in the caller's order; any other reads as the first member
+    of `group`, least constrained first, with a name, else `shape`'s label."""
     if _shape_held_family(shape) is not None:
         return shape.label
     return (
@@ -3633,6 +3681,7 @@ def elect_five_tuple_family(
     phrases_read: Callable[[ShapeDraft], AbstractSet[str]],
     *,
     series_at_places: Callable[[ShapeDraft], bool | None] | None = None,
+    stated_words: Callable[[ShapeDraft], AbstractSet[str]] | None = None,
 ) -> list[ShapeDraft]:
     """Keep the family of a five-tuple and role class that reads the most of the query, and
     return the shapes that remain, in order.
@@ -3646,8 +3695,18 @@ def elect_five_tuple_family(
        (`query_phrases_read`). "Imputed multilateral ODA to basic education" reads the
        sector only on the sectors table, so DAC2a's imputed multilateral total leaves, and
        "net disbursements" reads a netting basis only the CRS rows hold, so the debt
-       series leaves. The rule holds for every pair, indexed or not.
-    2. Between families reading the same phrases, one holding no series at the places the
+       series leaves. The rule holds for every pair, indexed or not. `stated_words` gives
+       the query words a family's datasets state of every row it would read. The family
+       reads such a word as a phrase beside a rival the index carries whose phrases hold
+       the word nowhere. "Bilateral ODA from Germany by recipient" reads "ODA" on DAC2a
+       and on the CRS, and the CRS, whose every row is bilateral, reads "bilateral" too,
+       so DAC2a, which holds core contributions to multilateral organisations, leaves. A
+       stated word adds nothing beside a rival that codes it, as DAC1 reads "bilateral
+       ODA" as one aid type, and nothing beside a rival the index does not carry, whose
+       series name what they hold in words no phrase records: a debt series by bilateral
+       creditors compares with the CRS as it does without the word.
+    2. Between families reading the same phrases, as rule 1 reads them, one holding no
+       series at the places the
        part names leaves when another holds one. `series_at_places` says whether a family
        holds a series there on the roles the places bind, or `None` when it cannot tell:
        the part names no place, or the coverage index holds none of the family's members.
@@ -3659,7 +3718,8 @@ def elect_five_tuple_family(
        one.
 
     Each rule runs among the families the rules before it keep. Reading fewer is a strict
-    partial order, rule 2 drops a family only beside one that holds a series and stays, and
+    partial order, with a stated word too, since it counts only beside a rival that reads
+    it in no phrase. Rule 2 drops a family only beside one that holds a series and stays, and
     recall score is a total order, so each leaves a family standing, and families no rule
     separates all stay, for bind to choose among.
     """
@@ -3675,11 +3735,22 @@ def elect_five_tuple_family(
     def score(shape: ShapeDraft) -> float:
         return -1.0 if shape.representative_score is None else shape.representative_score
 
+    def read(shape: ShapeDraft, rival: ShapeDraft) -> AbstractSet[str]:
+        """The phrases `shape` reads beside `rival`: those its codes read, and, beside a
+        rival the index carries, each word its datasets state that lies in no phrase
+        `rival` reads."""
+        phrases = phrases_read(shape)
+        stated = stated_words(shape) if stated_words is not None else ()
+        if not stated or not index_carries_shape(rival, index):
+            return phrases
+        theirs = phrases_read(rival)
+        return phrases | {word for word in stated if not phrases_within({word}, theirs)}
+
     read_most = [
         shape
         for shape in shapes
         if not any(
-            rivals(shape, other) and reads_fewer(phrases_read(shape), phrases_read(other))
+            rivals(shape, other) and reads_fewer(read(shape, other), read(other, shape))
             for other in shapes
         )
     ]
@@ -3697,8 +3768,8 @@ def elect_five_tuple_family(
             other
             for other in read_most
             if rivals(shape, other)
-            and phrases_within(phrases_read(shape), phrases_read(other))
-            and phrases_within(phrases_read(other), phrases_read(shape))
+            and phrases_within(read(shape, other), read(other, shape))
+            and phrases_within(read(other, shape), read(shape, other))
         ]
         return (
             bool(alike)
@@ -3904,7 +3975,7 @@ def bound_realizable_members(
     first (a repair caller may pass a subset of a larger sv_arc_facts dict).
     standard_resolve itself always passes its own full member set, so this is a
     strict generalisation, not a behaviour change. Shared with
-    engine.bind_repair.repair_draft_bindings so a repair and the standard
+    region.phase_rank_bind._named_value_bindings so a stand-in's bindings and the standard
     resolve path resolve these cases the same way. The role-bearing path
     (retrieval.role_resolve.graph_confirm_resolve) does not call this; see
     bound_value_filter's docstring for how its own filter differs.

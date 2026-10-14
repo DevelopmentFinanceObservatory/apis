@@ -27,6 +27,7 @@ from materialise.facets import (
     role_bearing_facet_candidates,
     role_bearing_facets,
 )
+from materialise.generation import elected_latest_year
 from materialise.graph import GraphReader
 from materialise.pipeline import (
     DEFAULT_MEMBER_CONCURRENCY,
@@ -51,7 +52,7 @@ from materialise.profile import (
 from materialise.progress import MaterialisationCancelled, RowProgress
 from materialise.reshape import ColumnUnknownError, ParsedColumns, parse_column_tokens
 from materialise.trace import ManifestTrace, ResolvedStatVar
-from materialise.window import Coverage, RequestedWindow
+from materialise.window import Coverage, LatestYear, ReadSeries, RequestedWindow
 
 __all__ = [
     "DEFAULT_MEMBER_CONCURRENCY",
@@ -70,6 +71,7 @@ __all__ = [
     "FacetNotAvailableError",
     "GraphReadError",
     "GraphReader",
+    "LatestYear",
     "ManifestTrace",
     "MaterialisationCancelled",
     "MaterialisationError",
@@ -83,6 +85,7 @@ __all__ = [
     "ParsedColumns",
     "PreparedPreview",
     "PreviewResult",
+    "ReadSeries",
     "RequestedWindow",
     "ResolvedStatVar",
     "RowProgress",
@@ -90,6 +93,7 @@ __all__ = [
     "UpstreamVersionChangedError",
     "compute_output_profile",
     "decide_member_unit",
+    "elected_latest_year",
     "facet_axis_value",
     "finish_materialise_preview",
     "materialise_group",

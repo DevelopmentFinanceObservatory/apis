@@ -248,7 +248,12 @@ class Shape(StrictModel):
     """The structural family chosen for the query."""
 
     shape_id: str = Field(description="stable id of this structural family")
-    label: str = Field(description="plain-language family name, e.g. development finance flows")
+    label: str = Field(
+        description=(
+            "plain-language name of what the reading serves: a composed measure label, the "
+            "served series' name, or the family's name"
+        )
+    )
     population_type: GraphRef | None = Field(
         default=None,
         description=(

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import re
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import aclosing
 
@@ -55,7 +56,6 @@ from search.engine.events import (
     Event,
     InterpretationEvent,
     LateDepartures,
-    ResponseEvent,
     StepEvent,
 )
 from search.engine.extract import (
@@ -64,16 +64,28 @@ from search.engine.extract import (
     Extraction,
     ExtractionResult,
     _dedupe_stripped,
+    _log_member_spans,
     dates_to_request,
     extract,
     role_cue_pairing,
 )
-from search.engine.fanout import _FanOutResult, _resolve_entities_bounded, _run_variables_streaming
+from search.engine.fanout import (
+    _FanOutResult,
+    _resolve_entities_bounded,
+    _run_variables_streaming,
+    leg_runs,
+)
 from search.engine.options.population_memo import OptionsPopulationMemo
-from search.engine.qualifier_match import CodedQualifier, recall_text
+from search.engine.qualifier_match import (
+    CodedQualifier,
+    _all_normalized_text_ranges,
+    _normalize,
+    recall_text,
+)
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
 from search.engine.region.place_options import PlaceOptionsPool
 from search.engine.region.result import RegionResult, with_departure_facts, with_entity_words
+from search.engine.region.sentence_events import answer_events
 from search.engine.response_cache_flow import CacheScope
 from search.engine.role_text import DoorRole, debt_axes
 from search.engine.source_code import PartCode, compile_part_code, scan_source_codes
@@ -112,6 +124,106 @@ _POSSESSIVE_CUES: frozenset[str] = frozenset({"'s", "'", "\u2019s", "\u2019", "o
 _PREPOSITIONS: frozenset[str] = frozenset(
     {"to", "from", "by", "of", "on", "for", "in", "into", "through", "towards", "via", "with"}
 )
+
+
+def _entity_key(entity: ExtractedEntity) -> str:
+    """Return the canonical entity identity used by bind, roles, and response data."""
+    return entity.text.strip()
+
+
+def _grounded(span: str, query: str) -> bool:
+    """Whether `span` occurs in `query`, casefolded as role-span validation reads it."""
+    return bool(_all_normalized_text_ranges(span, _normalize(query)))
+
+
+def _balanced_parenthetical_extensions(query: str, span: str) -> list[str]:
+    """Return source surfaces made by one immediately adjacent balanced parenthetical."""
+    if not _grounded(span, query):
+        return []
+
+    extensions: list[str] = []
+    for match in re.finditer(re.escape(span), query, flags=re.IGNORECASE):
+        cursor = match.end()
+        while cursor < len(query) and query[cursor].isspace():
+            cursor += 1
+        if cursor == len(query) or query[cursor] != "(":
+            continue
+        depth = 0
+        end = cursor
+        while end < len(query):
+            if query[end] == "(":
+                depth += 1
+            elif query[end] == ")":
+                depth -= 1
+                if depth == 0:
+                    extensions.append(query[match.start() : end + 1])
+                    break
+            end += 1
+    return extensions
+
+
+def _recover_entity_surfaces(
+    entities: list[ExtractedEntity], *, query: str, resolver: EntityResolver
+) -> list[ExtractedEntity]:
+    """Recover a source-qualified entity surface before scans or cache keys read it.
+
+    Only a span that occurs in `query` (`_grounded`) is read; an ungrounded span leaves the
+    entity unchanged.
+    """
+    recovered: list[ExtractedEntity] = []
+    for entity in entities:
+        span = (entity.span or "").strip()
+        if not span or not _grounded(span, query):
+            recovered.append(entity)
+            continue
+        if "(" in span and resolver.is_exact_registered_name(span):
+            # Historical extraction can already carry the complete source span while
+            # `text` remains its bare English head. The registry confirms the span is
+            # a distinct identity, so make it canonical before every downstream key.
+            recovered.append(entity.model_copy(update={"text": span, "span": span}))
+            continue
+        extension = next(iter(_balanced_parenthetical_extensions(query, span)), None)
+        if extension is None:
+            recovered.append(entity)
+            continue
+        if any(
+            other is not entity and other.span and _normalize(other.span) == _normalize(extension)
+            for other in entities
+        ):
+            # A query can name bare Asia and Asia (DAC). The existing full span owns the
+            # qualified occurrence; a truncated duplicate has no source position to claim it.
+            recovered.append(entity)
+            continue
+        raw_extension = _normalize(entity.text) == _normalize(extension)
+        registered_extension = resolver.is_exact_registered_name(extension)
+        if registered_extension:
+            # The registry, rather than a bare parse surface, confirms a distinct entity.
+            recovered.append(entity.model_copy(update={"text": extension, "span": extension}))
+        elif raw_extension:
+            recovered.append(entity.model_copy(update={"span": extension}))
+        else:
+            recovered.append(entity)
+    return recovered
+
+
+def _entity_surfaces(entities: list[ExtractedEntity], *, query: str) -> dict[str, str]:
+    """Map each entity name to the query words its first mention cites, where they differ.
+
+    A span counts only when it occurs in `query` (`_grounded`); recall resolves the name
+    through it (`surface_resolution.resolve_names`). A name with an ungrounded span, or
+    none, resolves as itself.
+    """
+    surfaces: dict[str, str] = {}
+    seen: set[str] = set()
+    for entity in entities:
+        key = _entity_key(entity)
+        if key in seen:
+            continue
+        seen.add(key)
+        span = (entity.span or "").strip()
+        if span and _normalize(span) != _normalize(key) and _grounded(span, query):
+            surfaces[key] = span
+    return surfaces
 
 
 def _cue_states_direction(
@@ -153,17 +265,17 @@ def _entity_roles(
     """
     places: dict[str, list[str]] = {}
     for entity in entities:
-        places.setdefault(entity.text.strip(), []).append(entity.span or entity.text)
+        places.setdefault(_entity_key(entity), []).append(entity.span or entity.text)
     # A place extraction put on both axes has no single extracted axis.
     axes_by_place: dict[str, set[RoleAxis]] = {}
     for entity in entities:
         if entity.flow_role != "unspecified":
-            axes_by_place.setdefault(entity.text.strip(), set()).add(entity.flow_role)
+            axes_by_place.setdefault(_entity_key(entity), set()).add(entity.flow_role)
     directed = {name: next(iter(axes)) for name, axes in axes_by_place.items() if len(axes) == 1}
     debt = debt_axes(query, measures=measures, places=places, directed=directed)
     roles: dict[str, list[DoorRole]] = {}
     for entity in entities:
-        name = entity.text.strip()
+        name = _entity_key(entity)
         axis = debt.get(name)
         if axis is None:
             if entity.flow_role == "unspecified":
@@ -376,7 +488,9 @@ class _ExtractionPrep:
     `qualifier_facts` holds the departure of each `qualifier_warnings` entry whose phrase
     asks for something (`_dropped_phrase_fact`), under its warning's key. `entity_words`
     maps each entity name to the query's own words for it (`ExtractedEntity.span`), first
-    mention first. `member_entities` are the entity names the query asks for as their
+    mention first. `entity_surfaces` holds those words where they occur in the query and
+    differ from the name, which recall resolves the name through (`_entity_surfaces`).
+    `member_entities` are the entity names the query asks for as their
     members (`ResolveState.member_entities`). `separate` runs parallel to `unique` and
     marks each variable the raw query compares with another (`source_spans.read_sources`),
     as `ParsedPart.separate` does. `read_connectives` are the offsets of the comparison
@@ -403,6 +517,7 @@ class _ExtractionPrep:
     qualifier_warnings: list[Warning]
     qualifier_facts: dict[WarningKey, DepartureFact]
     entity_words: dict[str, str]
+    entity_surfaces: dict[str, str]
     unit_text: str | None
     separate: list[bool]
     read_connectives: frozenset[int]
@@ -472,7 +587,7 @@ def _prepare_extraction(
         for entity in extraction.entities
         if (entity.span or entity.text) not in scan.source_entities
     ]
-    entities: list[str] = list(dict.fromkeys(e.text.strip() for e in extracted_entities))
+    entities: list[str] = list(dict.fromkeys(_entity_key(e) for e in extracted_entities))
     entity_roles = _entity_roles(extracted_entities, query=query, measures=unique)
 
     # Compare distinct model measures with the cap, before emitting a warning.
@@ -542,8 +657,8 @@ def _prepare_extraction(
 
     entity_words: dict[str, str] = {}
     for entity in extracted_entities:
-        if entity.span and entity.span.strip():
-            entity_words.setdefault(entity.text.strip(), entity.span.strip())
+        entity_words.setdefault(_entity_key(entity), (entity.span or entity.text).strip())
+    entity_surfaces = _entity_surfaces(extracted_entities, query=query)
 
     reading = read_sources(query, interpretation_variables)
 
@@ -575,7 +690,7 @@ def _prepare_extraction(
         entities=entities,
         entity_roles=entity_roles,
         # One text holds one reading: a mention that asks for the members decides it.
-        member_entities=frozenset(e.text.strip() for e in extracted_entities if e.members),
+        member_entities=frozenset(_entity_key(e) for e in extracted_entities if e.members),
         per_variable_qualifiers=per_variable_qualifiers,
         per_variable_operations=per_variable_operations,
         per_variable_date_requests=per_variable_date_requests,
@@ -585,6 +700,7 @@ def _prepare_extraction(
         qualifier_warnings=qualifier_warnings,
         qualifier_facts=qualifier_facts,
         entity_words=entity_words,
+        entity_surfaces=entity_surfaces,
         unit_text=unit_text,
         separate=list(reading.separate),
         read_connectives=reading.read_connectives,
@@ -608,7 +724,7 @@ def _log_unclaimed_words(prep: _ExtractionPrep, extraction: Extraction, *, query
         *(
             text
             for entity in extraction.entities
-            for text in (entity.text, entity.span, entity.role_span)
+            for text in (entity.text, entity.span, entity.role_span, entity.member_span)
             if text
         ),
         *(bound for date in extraction.dates for bound in (date.start, date.end) if bound),
@@ -663,6 +779,7 @@ async def _handle_single_variable(
         place_options_pool=place_options_pool,
         base_timing={"extract": timing_extract},
         pre_resolved=None,
+        entity_surfaces=prep.entity_surfaces,
         deadline=params.deadline,
         degrade_on_error=False,
         use_semaphore=False,
@@ -676,6 +793,7 @@ async def _handle_single_variable(
         per_variable_source_scopes=prep.per_variable_source_scopes,
         per_variable_source_codes=prep.per_variable_compiled_codes,
         unit_text_best_effort=True,
+        door="raw_text",
         include_option_coverage=params.include_option_coverage,
         stream_slot_options=params.stream_option_coverage,
         include_observations=params.include_observations,
@@ -705,7 +823,8 @@ async def _handle_single_variable(
         skills_index=params.skills_index,
         llm_usage=total_usage,
     )
-    yield ResponseEvent(response=response)
+    for event in answer_events(response):
+        yield event
     slot_options_warnings: list[Warning] = []
     late_departures: list[LateDepartures] = []
     async for ev in _stream_slot_options(
@@ -750,12 +869,25 @@ async def _handle_multi_variable(
     """Resolve shared entities once, fan out variables concurrently, then combine.
 
     Non-infrastructure leg errors become no-data parts. Infrastructure failures
-    fail the request.
+    fail the request. The shared resolver call runs only when some leg runs its pipeline
+    (`leg_runs`), so a request whose every leg a source settles calls no resolver.
     """
-    pre_resolved = await _resolve_entities_bounded(
-        prep.entities, resolver=resolver, deadline=params.deadline
+    runs = any(
+        leg_runs(source_scope, source_code)
+        for source_scope, source_code in zip(
+            prep.per_variable_source_scopes, prep.per_variable_compiled_codes, strict=True
+        )
     )
-
+    pre_resolved = (
+        await _resolve_entities_bounded(
+            prep.entities,
+            resolver=resolver,
+            deadline=params.deadline,
+            surfaces=prep.entity_surfaces,
+        )
+        if runs
+        else {}
+    )
     out = _FanOutResult()
     async for ev in _run_variables_streaming(
         prep.unique,
@@ -790,6 +922,7 @@ async def _handle_multi_variable(
         per_variable_source_codes=prep.per_variable_compiled_codes,
         unit_text_best_effort=True,
         per_variable_separate=prep.separate,
+        door="raw_text",
         include_option_coverage=params.include_option_coverage,
         stream_slot_options=params.stream_option_coverage,
         include_observations=params.include_observations,
@@ -888,6 +1021,16 @@ async def handle(
                 yield ev
         return
 
+    extraction = extraction.model_copy(
+        update={
+            "entities": _recover_entity_surfaces(
+                extraction.entities,
+                query=query,
+                resolver=resolver,
+            )
+        }
+    )
+    _log_member_spans(query, extraction.entities, extraction.variables)
     prep = _prepare_extraction(extraction, extract_result, query=query)
 
     yield InterpretationEvent(

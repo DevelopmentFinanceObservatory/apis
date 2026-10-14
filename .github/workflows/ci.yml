@@ -2,11 +2,14 @@ name: CI
 
 on:
   # A push runs on dev only. Branch protection lets a PR merge without
-  # updating to dev's latest tip, so the push run is the only test of the
-  # merged tree. It is also the run deploy-dev.yml waits on, and the run that
-  # records the test durations the shards split by. main moves either by
-  # fast-forward to a dev commit that already ran here or through a pull
-  # request whose own run tested the merge, so a push there runs nothing.
+  # updating to dev's latest tip, so a merged tree can be one that no pull
+  # request run tested, and the push run tests it. A merged tree that a run
+  # already passed has a record, and the push run skips the suite (see the
+  # `passed-tree` job). The push run is also the run deploy-dev.yml waits on,
+  # and when its shards run it records the test durations they split by. main
+  # moves either by fast-forward to a dev commit that already ran here or
+  # through a pull request whose own run tested the merge, so a push there
+  # runs nothing.
   push:
     branches: [dev]
   pull_request:
@@ -56,6 +59,86 @@ env:
   UV_NO_SYNC: "1"
 
 jobs:
+  # Looks for a record that the tree under test already passed every job
+  # below (.github/scripts/passed_tree.py). Each of those jobs needs this one
+  # and skips when it reports `passed == 'true'`. GitHub counts a skipped
+  # required check as satisfied, which is the intent here: `lint` and
+  # `docker` skip, and `test` passes on the record. A squash merge of a PR
+  # that was level with dev has the tree the PR's run tested, so its push run
+  # ends in seconds and deploy-dev.yml starts on it.
+  #
+  # Those jobs skip on this job's `passed` output and nothing else about it,
+  # and only 'true' skips them. A lookup that fails leaves the output empty, and
+  # `!cancelled()` runs them whatever result the failed job reports.
+  # `continue-on-error` keeps a failed lookup from failing a run whose suite
+  # passed, which on dev would hold back the deploy. The steps after the
+  # lookup run whether or not it failed, because every shard needs the
+  # durations artifact they upload.
+  passed-tree:
+    # The jobs this one gates run in ONEcampaign only, and skip on a draft.
+    continue-on-error: true
+    if: >-
+      github.repository_owner == 'ONEcampaign' &&
+      github.event.pull_request.draft != true &&
+      (github.event_name != 'pull_request' || github.event.pull_request.state == 'open')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      # Lists the repository's artifacts.
+      actions: read
+    outputs:
+      tree: ${{ steps.lookup.outputs.tree }}
+      passed: ${{ steps.lookup.outputs.passed }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Look for a record of this tree
+        id: lookup
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          REPO_ID: ${{ github.repository_id }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: python3 .github/scripts/passed_tree.py lookup
+
+      # Every shard of a run has to split the test files by one durations file,
+      # and so does a shard that "Re-run failed jobs" runs alone hours later. A
+      # shard splitting by a newer file leaves out files it held the first
+      # time, and no other shard runs them. So this job reads the durations
+      # once and hands them to the shards as an artifact, and a shard fails
+      # without it. They are the per-test durations of the latest push to dev
+      # whose shards ran (the `test` job saves them). The key matches only on
+      # a re-run of that push, so restore-keys takes the newest entry; a PR
+      # reads dev's entries because dev is the default branch.
+      - name: Restore recorded test durations
+        if: ${{ !cancelled() && steps.lookup.outputs.passed != 'true' }}
+        uses: actions/cache/restore@v6
+        with:
+          path: .test_durations
+          key: test-durations-${{ github.sha }}
+          restore-keys: test-durations-
+
+      # With no entry the shards get an empty record and split by path alone.
+      - name: Record that no durations exist
+        if: ${{ !cancelled() && steps.lookup.outputs.passed != 'true' }}
+        run: test -f .test_durations || echo '{}' > .test_durations
+
+      # A day covers a re-run of failed jobs. Later, a shard fails on the
+      # missing artifact and "Re-run all jobs" uploads a fresh one.
+      - name: Hand the durations to the shards
+        if: ${{ !cancelled() && steps.lookup.outputs.passed != 'true' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: shard-split-durations
+          path: .test_durations
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
   lint:
     # Runs ruff and ty together, so branch protection's single `lint` check
     # still fails on a type error. Installs the lint and typecheck groups
@@ -64,7 +147,10 @@ jobs:
     # Mints a dfo-reader token, which prod keeps only in main-limited
     # environments, so this runs in ONEcampaign only. The identical tree
     # ran it here before it was synced.
+    needs: passed-tree
     if: >-
+      !cancelled() &&
+      needs.passed-tree.outputs.passed != 'true' &&
       github.repository_owner == 'ONEcampaign' &&
       github.event.pull_request.draft != true &&
       (github.event_name != 'pull_request' || github.event.pull_request.state == 'open')
@@ -101,8 +187,10 @@ jobs:
 
   # One shard of the suite per matrix entry, each on its own runner. Splitting
   # across machines instead of adding cores to one keeps every shard inside a
-  # fresh 4 vCPU / 16 GB box, so one shard's four xdist workers never compete
-  # with another shard's for memory. Five shards because three ran 14, 13 and
+  # fresh runner, so one shard's xdist workers never compete with another
+  # shard's for memory. `ubuntu-latest-m` is the organisation's 4 vCPU / 16 GB
+  # runner, which gives `-n auto` four workers and bills at twice the rate of
+  # `ubuntu-latest`. Five shards because three ran 14, 13 and
   # 10 minutes on a dev push, and timing-sensitive tests fail on a shard that
   # long; billing rounds each job up to a whole minute, which costs at most a
   # few minutes per run at this length. `fail-fast: false` because a failing
@@ -112,11 +200,14 @@ jobs:
     # Mints a dfo-reader token, which prod keeps only in main-limited
     # environments, so this runs in ONEcampaign only. The identical tree
     # ran it here before it was synced.
+    needs: passed-tree
     if: >-
+      !cancelled() &&
+      needs.passed-tree.outputs.passed != 'true' &&
       github.repository_owner == 'ONEcampaign' &&
       github.event.pull_request.draft != true &&
       (github.event_name != 'pull_request' || github.event.pull_request.state == 'open')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-m
     strategy:
       fail-fast: false
       matrix:
@@ -169,18 +260,13 @@ jobs:
       - name: Install dependencies
         run: uv sync ${{ env.UV_SYNC_ARGS }} --no-default-groups --group test
 
-      # The per-test durations pytest-split divides the shards by, as the
-      # latest push to dev recorded them (the `test` job saves them). The key
-      # never matches, so restore-keys takes the newest entry; a PR reads dev's
-      # entries because dev is the default branch. With no entry the shards
-      # divide by test count, which left a dev run's shards at 829s, 661s and
-      # 241s.
-      - name: Restore recorded test durations
-        uses: actions/cache/restore@v6
+      # The per-test durations `--shard` weighs each test file by, as
+      # `passed-tree` read them for this run. A file with no recorded test
+      # goes to a shard by a checksum of its path.
+      - name: Download the durations this run splits by
+        uses: actions/download-artifact@v8
         with:
-          path: .test_durations
-          key: test-durations-${{ github.sha }}
-          restore-keys: test-durations-
+          name: shard-split-durations
 
       - name: Run tests
         env:
@@ -190,14 +276,15 @@ jobs:
           DFO_SPEC_KIT_REQUIRED: "1"
         # -n auto lives here rather than in [tool.pytest.ini_options] addopts
         # so it never applies to a targeted single-test run, where it would
-        # interleave output and break pdb. The `--splits` count has to match the
-        # matrix length above by hand, as GitHub exposes no expression for it.
-        # A test id missing from the restored durations is weighed at their
-        # mean, so tests added since the last dev push shift the balance only
-        # slightly. `--clean-durations` rewrites the file with the timings of
-        # this shard's tests alone, so the `test` job's union of the five files
+        # interleave output and break pdb. `--shard` runs this group's test
+        # files and imports no others (tests/file_shards.py), and
+        # `strategy.job-total` is the matrix length above. A file with no test
+        # in the restored durations goes by a checksum of its path, so files
+        # added since the last dev push shift the balance only slightly.
+        # `--clean-durations` rewrites the file with the timings of this
+        # shard's tests alone, so the `test` job's union of the five files
         # holds every current test and none that was deleted.
-        run: uv run pytest -q -n auto --splits 5 --group ${{ matrix.group }} --store-durations --clean-durations
+        run: uv run pytest -q -n auto --shard ${{ matrix.group }}/${{ strategy.job-total }} --store-durations --clean-durations
 
       - name: Upload this shard's durations
         if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
@@ -213,8 +300,11 @@ jobs:
   # `test-shard (1)` and so on, so this fan-in holds that name and stays the one
   # to require. `always()` is load-bearing: without it a failing shard leaves
   # this job skipped, and GitHub counts a skipped required check as satisfied.
+  # On a tree `passed-tree` found a record for, the shards skip and this job
+  # passes on the record.
   test:
-    # Waits on test-shard, which runs in ONEcampaign only; a skipped shard would fail this job.
+    # Waits on test-shard, which runs in ONEcampaign only; a skipped shard
+    # fails this job unless `passed-tree` found a record.
     # `always()` runs this job even when the shards skipped on a draft, so it
     # repeats their draft clause.
     if: >-
@@ -222,28 +312,35 @@ jobs:
       github.repository_owner == 'ONEcampaign' &&
       github.event.pull_request.draft != true &&
       (github.event_name != 'pull_request' || github.event.pull_request.state == 'open')
-    needs: test-shard
+    needs: [passed-tree, test-shard]
     runs-on: ubuntu-latest
     steps:
-      - name: Require every shard to have passed
+      - name: Require every shard to have passed, in this run or on record
+        env:
+          PASSED: ${{ needs.passed-tree.outputs.passed }}
+          SHARDS: ${{ needs.test-shard.result }}
         run: |
-          result='${{ needs.test-shard.result }}'
-          if [ "$result" != "success" ]; then
-            echo "test shards reported: $result"
+          if [ "$PASSED" = "true" ] && [ "$SHARDS" = "skipped" ]; then
+            echo "this tree has a record of passing; see the passed-tree job"
+            exit 0
+          fi
+          if [ "$SHARDS" != "success" ]; then
+            echo "test shards reported: $SHARDS"
             exit 1
           fi
           echo "all test shards passed"
 
-      # A push to dev saves the shards' timings for the next runs to split by.
-      # The count of 5 matches the matrix above.
+      # A push to dev whose shards ran saves their timings for the next runs
+      # to split by; a push that passed on a record has none to save. The
+      # count of 5 matches the matrix above.
       - name: Download the shards' durations
-        if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.test-shard.result == 'success'
         uses: actions/download-artifact@v8
         with:
           pattern: test-durations-*
 
       - name: Merge the shards' durations
-        if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.test-shard.result == 'success'
         run: |
           python3 - <<'PY'
           import json, pathlib, sys
@@ -258,7 +355,7 @@ jobs:
           PY
 
       - name: Save the merged durations
-        if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.test-shard.result == 'success'
         uses: actions/cache/save@v6
         with:
           path: .test_durations
@@ -271,7 +368,10 @@ jobs:
     # Mints a dfo-reader token, which prod keeps only in main-limited
     # environments, so this runs in ONEcampaign only. The identical tree
     # ran it here before it was synced.
+    needs: passed-tree
     if: >-
+      !cancelled() &&
+      needs.passed-tree.outputs.passed != 'true' &&
       github.repository_owner == 'ONEcampaign' &&
       github.event.pull_request.draft != true &&
       (github.event_name != 'pull_request' || github.event.pull_request.state == 'open')
@@ -306,7 +406,10 @@ jobs:
     # Mints a dfo-reader token, which prod keeps only in main-limited
     # environments, so this runs in ONEcampaign only. The identical tree
     # ran it here before it was synced.
+    needs: passed-tree
     if: >-
+      !cancelled() &&
+      needs.passed-tree.outputs.passed != 'true' &&
       github.repository_owner == 'ONEcampaign' &&
       github.event.pull_request.draft != true &&
       (github.event_name != 'pull_request' || github.event.pull_request.state == 'open')
@@ -339,7 +442,10 @@ jobs:
     # Mints a dfo-reader token, which prod keeps only in main-limited
     # environments, so this runs in ONEcampaign only. The identical tree
     # ran it here before it was synced.
+    needs: passed-tree
     if: >-
+      !cancelled() &&
+      needs.passed-tree.outputs.passed != 'true' &&
       github.repository_owner == 'ONEcampaign' &&
       github.event.pull_request.draft != true &&
       (github.event_name != 'pull_request' || github.event.pull_request.state == 'open')
@@ -431,7 +537,10 @@ jobs:
     # Mints a dfo-reader token, which prod keeps only in main-limited
     # environments, so this runs in ONEcampaign only. The identical tree
     # ran it here before it was synced.
+    needs: passed-tree
     if: >-
+      !cancelled() &&
+      needs.passed-tree.outputs.passed != 'true' &&
       github.repository_owner == 'ONEcampaign' &&
       github.event.pull_request.draft != true &&
       (github.event_name != 'pull_request' || github.event.pull_request.state == 'open')
@@ -551,3 +660,55 @@ jobs:
             echo "::error::/api/graph/healthz did not carry x-dfo-commit: ${{ github.sha }}"
             exit 1
           fi
+
+  # Records that this run's tree passed, for `passed-tree` to find in a later
+  # run: an artifact named for the tree, holding this job's GitHub OIDC token
+  # and the commit it checked out (.github/scripts/passed_tree.py). GitHub
+  # signs the token's claims, which name that commit and the commit this
+  # workflow file came from, so a record vouches only for a tree whose own
+  # ci.yml ran on it. A pull request into a branch other than dev restores
+  # caches that branch's own runs saved, so its run writes no record and the
+  # lookup refuses a token from one. The `if` names every job's result because
+  # a job that skipped, as each does on a draft, tested nothing. A run that
+  # passed on a record writes none, so every record comes from a run that ran
+  # the suite. A re-run writes none either, and the lookup refuses a token
+  # from one, so seven days bounds how long a record outlives the inputs a tree
+  # leaves unnamed: the runner image, the Docker base images, the uv release,
+  # and the actions pinned by major tag. `continue-on-error` keeps a failed
+  # upload from failing a run whose suite passed.
+  record-passed-tree:
+    continue-on-error: true
+    needs: [passed-tree, lint, test-shard, test, install, datasets_only_install, package-install, docker]
+    if: >-
+      github.run_attempt == 1 &&
+      (github.event_name == 'push' || github.base_ref == github.event.repository.default_branch) &&
+      needs.passed-tree.outputs.passed == 'false' &&
+      needs.lint.result == 'success' &&
+      needs.test-shard.result == 'success' &&
+      needs.test.result == 'success' &&
+      needs.install.result == 'success' &&
+      needs.datasets_only_install.result == 'success' &&
+      needs.package-install.result == 'success' &&
+      needs.docker.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      # Requests this job's OIDC token.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Write the record
+        id: record
+        run: python3 .github/scripts/passed_tree.py record "$RUNNER_TEMP/record"
+
+      - name: Upload the record
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.record.outputs.name }}
+          path: ${{ runner.temp }}/record/
+          if-no-files-found: error
+          retention-days: 7

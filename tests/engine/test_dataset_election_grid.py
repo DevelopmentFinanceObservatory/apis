@@ -23,7 +23,7 @@ fourth, `_BROAD`'s donor-and-recipient rows and `_DONORS`' donor-only rows diffe
 measure axis `netting`. On a fifth, `_TOTALS` publishes donor-only rows without `sector`
 beside `_BROAD`'s rows by sector and channel, so the two are separate families. The
 perturbation tests show which cells the rank order, opt-in and the exact-role-set preference
-decide. The repair-phase tests drive `_phase_repair_bindings` from places the question
+decide. The repair-step tests drive `_repair_bindings` from places the question
 names. The drill-down tests read the answer's slot menus (`offers_slot`) and each option's
 coverage under the dataset its election serves (`option_families`) on the fifth five-tuple,
 for each of its families.
@@ -78,17 +78,18 @@ from search.engine.bind import (
     _UniversalBindOutput,
 )
 from search.engine.clients.graph import EngineGraphClient
-from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.conjoin import _unbound_terms
+from search.engine.departures import WarningKey, warning_key
 from search.engine.interpret import Recall
 from search.engine.options.population import options_population
-from search.engine.qualifier_match import QualifierMatch
+from search.engine.qualifier_match import QualifierMatch, _normalize
 from search.engine.quantity import quantity_requirement
 from search.engine.region import option_coverage as option_coverage_module
 from search.engine.region import phase_election as phase_election_module
 from search.engine.region import phase_rank_bind as phase_rank_bind_module
 from search.engine.region import related_read as related_read_module
+from search.engine.region import unrealisable as unrealisable_module
 from search.engine.region.alternate_guard import AlternateJudge, inadmissible_reason, query_pins
 from search.engine.region.candidates import walk_alternate
 from search.engine.region.grounding import _ground_answer
@@ -97,15 +98,17 @@ from search.engine.region.option_coverage import (
     _maybe_enrich_slot_options,
     option_axis_facts,
 )
-from search.engine.region.phase_election import _phase_repair_bindings, _phase_vet_election
+from search.engine.region.phase_election import _phase_settle, _repair_bindings, _vet_election
 from search.engine.region.phase_rank_bind import (
     _dataset_candidates,
     _out_of_scope_records,
     _phase_prune_and_rank,
     _resolve_query_qualifiers,
+    _stray_requirements,
     _undeclared_qualifiers,
     _unheld_bound_codes,
 )
+from search.engine.region.phase_shared import settle_unjudged_refusal
 from search.engine.region.place_context import empty_place_context
 from search.engine.region.place_roles import (
     PlaceAssignment,
@@ -114,9 +117,20 @@ from search.engine.region.place_roles import (
     lacks_query_axis,
 )
 from search.engine.region.related_read import start_elected_related_read
+from search.engine.region.requirements import judge
 from search.engine.region.result import RegionResult
 from search.engine.region.sentence_events import _build_shape_event
-from search.engine.region.state import ResolveState, shape_vocabulary
+from search.engine.region.state import (
+    Requirement,
+    ResolveState,
+    ValueRule,
+    code_requirement,
+    shape_vocabulary,
+    unapplied_departure,
+    unjudged_requirement,
+    with_requirement,
+)
+from search.engine.region.unrealisable import unbind_unrealisable
 from search.engine.retrieval.bound_values import (
     PartNotServed,
     RoleKeys,
@@ -142,7 +156,12 @@ from search.engine.retrieval.bound_values import (
 )
 from search.engine.retrieval.member_facts import IndexMemberFacts, MemberFacts
 from search.engine.retrieval.read_plan import PairPlan
-from search.engine.retrieval.retrieve import Materialised, NoDataDraft
+from search.engine.retrieval.retrieve import (
+    BoundValuesUnrealisable,
+    Materialised,
+    MemberConflict,
+    NoDataDraft,
+)
 from search.engine.retrieval.role_resolve import _admit_population, _AdmittedPopulation
 from search.engine.role_text import DoorRole
 from search.engine.shape import (
@@ -156,6 +175,7 @@ from search.engine.source_scope import SourceReference, SourceScope
 from search.engine.spec_build import build_slot, pair_slot_drafts, with_served_provenance
 from search.engine.spec_id import build_spec_identity, mint_identity
 from search.models import (
+    NO_DATA_RESOLUTION_ORDER,
     BaseIdentity,
     CoverageExact,
     DatasetResubmitInput,
@@ -163,6 +183,8 @@ from search.models import (
     Entity,
     GraphRef,
     IdentityBindingValue,
+    NearestRealSpec,
+    ResolvedQualifier,
     ResolveRequest,
     ResubmitIdentityEntry,
     SlotKey,
@@ -182,6 +204,7 @@ from tests.engine._builders import place_sets, settled_place_roles
 from tests.engine._fake_coverage import empty_coverage_snapshot, patch_coverage
 from tests.engine._harness import offline_resolve
 from tests.engine._index_slots import read_text
+from tests.engine._quantity import QuantityReadOnlyLLM
 from tests.engine._source_scopes import part_scope
 from tests.fixtures import FakeGraph
 from tests.materialise.conftest import FakeGraphReader
@@ -515,7 +538,7 @@ def _first_resolve(
         SlotBindingDraft(axis="how", property_dcid=prop, kind="value", value_dcids=[value])
         for prop, value in model.items()
     ]
-    # Vetting names the dataset the elected shape names (`_phase_vet_election`).
+    # Vetting names the dataset the elected shape names (`_vet_election`).
     if shape.named_dataset is not None:
         drafted.append(source_binding(shape.named_dataset))
     return _minted(shape, drafted, roles, window=window)
@@ -1046,7 +1069,7 @@ def _worded_resolve(
     or exclude the `_excluded` one (`_worded_scope`), where the bind model binds `model` and
     the query text matches the codes `admitted`: candidacy under the scope
     (`_dataset_candidates`), whose refusal names the scope's sources
-    (`_out_of_scope_records`), then vetting (`_phase_vet_election`). The minted outcome, or
+    (`_out_of_scope_records`), then vetting (`_vet_election`). The minted outcome, or
     the refusal."""
     scope = _worded_scope(source)
     assert scope is not None
@@ -1068,7 +1091,7 @@ def _worded_resolve(
     state.scope = scope
     state.query_qualifier_matches = {shape_vocabulary(shape): admitted}
     state.admitted_qualifiers = admitted
-    result = asyncio.run(_phase_vet_election(state))
+    result = _vet_election(state)
     if result is not None:
         return result
     return _minted(state.shape_draft, list(state.bind_result.bindings), roles)
@@ -1233,7 +1256,7 @@ def test_an_alternate_under_an_exclusion_mints_the_identity_a_fresh_question_min
     state.capped_shapes = [pinned, shared]
     state.bind_result.also_plausible = [1]
     state.scope = scope
-    assert asyncio.run(_phase_vet_election(state)) is None
+    assert _vet_election(state) is None
     alternate = state.capped_shapes[1]
     roles = bind_place_roles(state, alternate)
     assert isinstance(roles, PlaceAssignment)
@@ -1443,7 +1466,7 @@ def test_a_named_part_refuses_a_code_only_another_table_holds_once_bound(
         )
         if record.evidence == "unavailable"
     ]
-    vetted = asyncio.run(_phase_vet_election(state))
+    vetted = _vet_election(state)
 
     assert unavailable == ([[sector]] if refused else [])
     if refused:
@@ -1454,7 +1477,7 @@ def test_a_named_part_refuses_a_code_only_another_table_holds_once_bound(
         ]
     else:
         assert vetted is None
-        assert asyncio.run(_phase_repair_bindings(state)) is None
+        assert _repair_bindings(state) is None
         assert [b.value_dcids for b in state.bindings if b.property_dcid == "sector"] == [[sector]]
 
 
@@ -1590,7 +1613,7 @@ def _flow_shape(
 def _repair_state(
     shape: ShapeDraft, places: Mapping[str, RoleAxis], model: Mapping[str, str]
 ) -> ResolveState:
-    """The state `_phase_repair_bindings` reads, for a question naming `places` whose bind
+    """The state `_repair_bindings` reads, for a question naming `places` whose bind
     model binds `model` on `shape`."""
     return ResolveState(
         variable="aid",
@@ -1602,7 +1625,7 @@ def _repair_state(
         graph=cast(EngineGraphClient, None),
         resolver=cast(EntityResolver, None),
         admission=cast(Admission, None),
-        llm=cast(SupportsLLM, None),
+        llm=QuantityReadOnlyLLM(),
         sdmx=cast(EngineSdmxClient, None),
         deadline=None,
         pre_resolved=None,
@@ -1640,7 +1663,7 @@ def _repair_state(
 def _repair(
     monkeypatch: pytest.MonkeyPatch, state: ResolveState, *axes: MeasureAxis
 ) -> list[SlotBindingDraft]:
-    """Run `_phase_repair_bindings` under the measure `axes`, and return the bindings the
+    """Run `_repair_bindings` under the measure `axes`, and return the bindings the
     qualifier dispositions read."""
     monkeypatch.setattr(
         phase_election_module,
@@ -1654,7 +1677,7 @@ def _repair(
         return []
 
     monkeypatch.setattr(phase_election_module, "_resolve_query_qualifiers", _dispositions)
-    assert asyncio.run(_phase_repair_bindings(state)) is None
+    assert _repair_bindings(state) is None
     (bindings,) = disposed
     assert bindings == state.bindings
     return bindings
@@ -1731,6 +1754,92 @@ def test_a_question_naming_no_place_elects_under_no_role_key_at_every_door(index
     assert families["A"].provenance == _BROAD
     assert [row.dcid for row in families["A"].rows] == ["broad_a"]
     _assert_doors_agree(outcome, index)
+
+
+def test_unbinding_a_default_and_the_measure_partition_takes_back_what_they_stated(monkeypatch):
+    """A donor-only question names the sector slot and binds none, so the declared default
+    binds sector A and warns, answering the dropped phrase "sector", and the measure vote
+    forces net. When no member holds them together with the rest and both give way
+    (`unbind_unrealisable`), the default's warning and the phrase it answered go, and so
+    do the measure election's partition and dropped axes."""
+    default = DeclaredDefault(code="A", when_bound_under=(), when_open=True)
+    _use_index(monkeypatch, _index(defaults={"sector": default}))
+    shape = _flow_shape(_MEASURED, roles=_DONOR_RECIPIENT)
+    state = _repair_state(shape, _PLACES["donor-recipient"], {})
+    state.bind_result.bindings = [
+        SlotBindingDraft(axis="how", property_dcid="sector", kind="unbound")
+    ]
+    state.dropped_qualifier_phrases = ["sector"]
+    _repair(monkeypatch, state, _NETTING)
+    assert (state.defaulted_properties, state.measure_elected_properties) == (
+        {"sector"},
+        {"netting"},
+    )
+    assert [w.code for w in state.warnings] == ["slot_defaulted"]
+    assert state.slot_default_phrases == {"sector"}
+    assert state.measure_elected_partition is not None
+    monkeypatch.setattr(unrealisable_module, "_resolve_query_qualifiers", lambda state: [])
+
+    unbind_unrealisable(
+        state,
+        BoundValuesUnrealisable(
+            conflicts=(
+                MemberConflict(properties=frozenset({"sector", "netting"}), fully_bound=True),
+            )
+        ),
+    )
+
+    assert _values(state.bindings) == {}
+    assert (state.defaulted_properties, state.measure_elected_properties) == (set(), set())
+    assert state.warnings == []
+    assert state.slot_default_phrases == frozenset()
+    assert (state.measure_elected_partition, state.measure_dropped_axes) == (None, ())
+
+
+@pytest.mark.parametrize(
+    ("drafted_by", "unbound", "refused_on"),
+    [
+        pytest.param("engine", {"sector"}, ["sector"], id="engine-written"),
+        pytest.param("reply", {"flow"}, [], id="reply-claim"),
+    ],
+)
+def test_only_a_sole_option_claim_of_the_bind_reply_is_refuted_by_a_conflict(
+    index, monkeypatch, drafted_by, unbound, refused_on
+):
+    """Flow F1 is bound as a sole option and sector A is named. One member conflicts on
+    the sector alone and another on both. A value the engine wrote under that evidence,
+    as recall's partition value or a series code's shared value is, claims nothing of
+    every member: the minimal set goes, the named sector, which the part then refuses on,
+    and the flow stays. The bind reply's own claim is refuted by the member conflicting on
+    it and goes first, silently."""
+    shape = _flow_shape(_SHARED, roles=_DONOR_RECIPIENT)
+    state = _repair_state(shape, _PLACES["donor-recipient"], {"sector": "A"})
+    state.bindings = [
+        *state.bind_result.bindings,
+        SlotBindingDraft(
+            axis="how",
+            property_dcid="flow",
+            kind="value",
+            value_dcids=["F1"],
+            evidence="sole_option",
+            drafted_by=drafted_by,
+        ),
+    ]
+    state.graph = cast(EngineGraphClient, FakeGraph(nodes={}, obs={}, detect={}, resolve={}))
+    monkeypatch.setattr(unrealisable_module, "_resolve_query_qualifiers", lambda state: [])
+
+    unbind_unrealisable(
+        state,
+        BoundValuesUnrealisable(
+            conflicts=(
+                MemberConflict(properties=frozenset({"sector"}), fully_bound=True),
+                MemberConflict(properties=frozenset({"sector", "flow"}), fully_bound=True),
+            )
+        ),
+    )
+
+    assert {"sector", "flow"} - _values(state.bindings).keys() == unbound
+    assert [r.term.slot for r in state.requirements] == refused_on
 
 
 def test_the_measure_vote_reads_the_dataset_the_role_keys_elect(index, monkeypatch):
@@ -3258,18 +3367,15 @@ def _part_state(
 
 
 def _settle(monkeypatch: pytest.MonkeyPatch, state: ResolveState) -> RegionResult | None:
-    """Run vetting and binding repair on `state`, under no measure axis: the refusal of
-    either, or `None` once `state.shape_draft` and `state.bindings` are final."""
+    """Run settlement (`_phase_settle`) on `state`, under no measure axis: its refusal,
+    or `None` once `state.shape_draft` and `state.bindings` are final."""
     monkeypatch.setattr(
         phase_election_module,
         "get_measure_index",
         lambda: MeasureIndex(axes=(), values=(), partition_labels=()),
     )
     monkeypatch.setattr(phase_election_module, "_resolve_query_qualifiers", lambda _state: [])
-    refused = asyncio.run(_phase_vet_election(state))
-    if refused is not None:
-        return refused
-    return asyncio.run(_phase_repair_bindings(state))
+    return asyncio.run(_phase_settle(state))
 
 
 def _refused_names(result: RegionResult | None) -> list[list[str]]:
@@ -3390,6 +3496,280 @@ def test_a_part_whose_keys_select_another_family_refuses_naming_its_codes(monkey
     assert _refused_names(result) == [["A"]]
 
 
+def _record_stray_female(state: ResolveState) -> None:
+    """Record in `state`'s ledger the requirement bind records for `gender` Female drafted
+    on a slot the elected shape lacks (`_stray_requirements`)."""
+    stray = SlotBindingDraft(
+        axis="how", property_dcid="gender", kind="value", value_dcids=["Female"]
+    )
+    labels = SimpleNamespace(capped_shapes=[], label_dcids=lambda values: values)
+    for requirement in asyncio.run(_stray_requirements(cast(ResolveState, labels), [stray])):
+        state.requirements = with_requirement(state.requirements, requirement)
+
+
+def _ledger_dispositions(state: ResolveState, result: RegionResult) -> dict[str, list[str]]:
+    """How the part's final result discloses each phrase of its ledger, sorted: named by
+    the refusal, met by every answer judged, and once per departure that discloses it, so
+    a phrase disclosed exactly once reads as one entry. What departs is the judgement's
+    own `departures()`, as the pipeline emits them (`with_requirement_departures`). A
+    departure discloses each phrase whose requirement carries its warning, as its own
+    departure or the one disclosing it alone; a generic one, which names no phrase,
+    discloses each phrase of its requirements left neither named nor met."""
+    judgement = state.judgement or judge(state.requirements, ())
+    departed = {warning_key(warning) for warning, _fact in judgement.departures()}
+    named = {_normalize(term.text) for term in result.unbound_qualifiers}
+    met: set[str] = set()
+    if judgement.outcomes:
+        met = set.intersection(
+            *(
+                {phrase for phrase, held in judgement._phrase_outcomes(i).items() if held == "met"}
+                for i in range(len(judgement.outcomes))
+            )
+        )
+    disclosing: dict[str, set[WarningKey]] = {}
+    for requirement in state.requirements:
+        keys = disclosing.setdefault(requirement.phrase, set())
+        carried = [requirement.departure, requirement.alone]
+        if requirement.phrase not in named | met:
+            carried.append(requirement.generic)
+        keys.update(
+            key
+            for departure in carried
+            if departure is not None and (key := warning_key(departure[0])) in departed
+        )
+    return {
+        phrase: sorted(
+            [
+                *(["named"] if phrase in named else []),
+                *(["met"] if phrase in met else []),
+                *(["departs"] * len(keys)),
+            ]
+        )
+        for phrase, keys in disclosing.items()
+    }
+
+
+@pytest.mark.parametrize("twice", [False, True], ids=["once", "twice"])
+def test_the_ledger_dispositions_count_each_departure_disclosing_a_phrase(twice):
+    """A value carries its own departure, shared with another value, and the one
+    disclosing it alone. Where the judgement departs one of them the phrase reads as
+    departing once; where it departs both, twice, which the invariant tests reject."""
+    joined = unapplied_departure("female and male", asked="female and male", property_dcid="gender")
+    alone = unapplied_departure("female", asked="female", property_dcid="gender")
+    female = Requirement(
+        term=ResolvedQualifier(text="female", named=[], disposition="unbound"),
+        origin="value",
+        rule=ValueRule(values=frozenset({("gender", "Female")})),
+        departure=joined,
+        alone=alone,
+    )
+    departures = (joined, alone) if twice else (alone,)
+    state = cast(
+        ResolveState,
+        SimpleNamespace(
+            requirements=(female,),
+            judgement=SimpleNamespace(outcomes=(), departures=lambda: departures),
+        ),
+    )
+    refusal = cast(RegionResult, SimpleNamespace(unbound_qualifiers=()))
+
+    assert _ledger_dispositions(state, refusal) == {
+        "female": ["departs", "departs"] if twice else ["departs"]
+    }
+
+
+def _early_refusal_state(monkeypatch: pytest.MonkeyPatch, case: str) -> ResolveState:
+    """The state of a part that settlement refuses before any answer is judged: a part
+    naming `_DETAIL` that binds sector A, which no row of it holds (`_unheld_bound_codes`);
+    one binding sector C and channel K1, which `_DETAIL` holds on no one row
+    (`_settle_served_dataset`, naming the table); one whose keys select `_THIRD`'s family
+    (naming the code); and a plain part binding no code that no table serves, which has
+    no source or code to name."""
+    if case == "keys-select-another-family":
+        part = _NAMED_PARTS["keys-select-a-default-family-that-alone-holds-the-code"]
+        _axis_index(monkeypatch, part.rows)
+        (shape,) = _dataset_candidates(
+            [dataclasses.replace(_named_part_shape(part), declared_roles=_DONOR_RECIPIENT)], None
+        )
+        return _part_state(shape, "donor-recipient", {"sector": "A"})
+    _use_index(monkeypatch, _index(rows=_ROWS))
+    if case == "no-table-serves-a-part-binding-no-code":
+
+        def _not_served(*_args: object) -> None:
+            raise PartNotServed
+
+        monkeypatch.setattr(phase_election_module, "_name_served_dataset", _not_served)
+        shape = _flow_shape(_SHARED, roles=_DONOR_RECIPIENT, index_rows=_ROWS)
+        return _part_state(shape, "donor-recipient", {})
+    model = {"sector": "A"} if case == "unheld-code" else {"sector": "C", "channel": "K1"}
+    scope = part_scope(_DETAIL)
+    shape = _flow_shape(_SHARED, roles=_DONOR_RECIPIENT, index_rows=_ROWS, scope=scope)
+    return _part_state(shape, "donor-recipient", model, scope=scope)
+
+
+@pytest.mark.parametrize(
+    ("case", "refused"),
+    [
+        ("unheld-code", [["A"], ["Female"]]),
+        ("named-table-lacks-the-codes-together", [["Female"], [_DETAIL]]),
+        ("keys-select-another-family", [["A"], ["Female"]]),
+        ("no-table-serves-a-part-binding-no-code", [["Female"]]),
+    ],
+    ids=[
+        "unheld-code",
+        "named-table-lacks-the-codes-together",
+        "keys-select-another-family",
+        "no-table-serves-a-part-binding-no-code",
+    ],
+)
+def test_a_refusal_before_any_answer_names_a_stray_value_and_departs_nothing_for_it(
+    monkeypatch, case, refused
+):
+    """The bind drafted `gender` Female on a slot the elected shape lacks, and recorded it
+    in the ledger (`_stray_requirements`). Each refusal settlement makes before any answer
+    is judged names it beside its own records (`requirements.settle_unanswered`), as a
+    refusal on a judged answer would, and nothing departs for it. A part with no source
+    or code to name names it alone, and refuses `qualifier_not_bound` in place of
+    `variable_not_resolved`."""
+    state = _early_refusal_state(monkeypatch, case)
+    _record_stray_female(state)
+
+    result = _settle(monkeypatch, state)
+
+    assert _refused_names(result) == refused
+    assert result is not None
+    assert _ledger_dispositions(state, result) == {"female": ["named"]}
+
+
+def test_a_part_no_table_serves_with_nothing_to_name_does_not_resolve(monkeypatch):
+    """Without a stray value, the plain part binding no code that no table serves has no
+    source, code or requirement to name, and refuses `variable_not_resolved`."""
+    state = _early_refusal_state(monkeypatch, "no-table-serves-a-part-binding-no-code")
+
+    result = _settle(monkeypatch, state)
+
+    assert result is not None
+    assert result.no_data_reason == "variable_not_resolved"
+
+
+def _settled_ledger_state(monkeypatch: pytest.MonkeyPatch) -> ResolveState:
+    """A part naming `_DETAIL` and binding sector D and channel K1, settled, with a ledger
+    holding one requirement of each rule: the stray value Female (`ValueRule`), sector D,
+    which the answer binds, and sector C, which it does not (`CodeRule`), the query record
+    "widgets" ("unbound") and the term "gizmos" no answer is judged on (`None`)."""
+    _use_index(monkeypatch, _index(rows=_ROWS))
+    scope = part_scope(_DETAIL)
+    shape = _flow_shape(_SHARED, roles=_DONOR_RECIPIENT, index_rows=_ROWS, scope=scope)
+    state = _part_state(shape, "donor-recipient", {"sector": "D", "channel": "K1"}, scope=scope)
+    _record_stray_female(state)
+    assert _settle(monkeypatch, state) is None
+    # The flagged match a refusal giving way to `qualifier_not_bound` carries reads labels.
+    state.graph = cast(EngineGraphClient, FakeGraph())
+    for code in ("D", "C"):
+        state.requirements = with_requirement(
+            state.requirements,
+            code_requirement(
+                property_dcid="sector",
+                codes=(code,),
+                asked=f"{code} sector",
+                named=[GraphRef(ref=code, label=code)],
+                departure=unapplied_departure(
+                    f"{code.lower()} sector", asked=f"{code} sector", property_dcid="sector"
+                ),
+                origin="tie",
+            ),
+        )
+    widgets = ResolvedQualifier(text="widgets", named=[], disposition="unbound")
+    state.requirements = with_requirement(
+        state.requirements,
+        Requirement(
+            term=widgets,
+            origin="bind",
+            rule="unbound",
+            departure=unapplied_departure("widgets", asked="widgets", property_dcid=None),
+        ),
+    )
+    state.requirements = with_requirement(
+        state.requirements,
+        unjudged_requirement("gizmos", asked="gizmos", property_dcid=None, origin="bind"),
+    )
+    return state
+
+
+_OUTRANKED = NO_DATA_RESOLUTION_ORDER[NO_DATA_RESOLUTION_ORDER.index("qualifier_not_bound") + 1 :]
+
+
+@pytest.mark.parametrize("reason", [*NO_DATA_RESOLUTION_ORDER, "unsupported"], ids=str)
+def test_every_refusal_of_a_settled_part_names_or_departs_each_requirement_once(
+    monkeypatch, reason
+):
+    """A refusal returned once the bindings are final that judged no answer is judged on
+    the elected answer (`settle_unjudged_refusal`). Every phrase of the ledger is then
+    named by the refusal, departs or is met by the answer, exactly one of these. A reason
+    `NO_DATA_RESOLUTION_ORDER` ranks after `qualifier_not_bound` gives way to it, naming
+    the terms the answer leaves unmet, with the elected answer as its flagged match whose
+    trace records them; any other reason stands and those terms depart."""
+    state = _settled_ledger_state(monkeypatch)
+    if reason == "unsupported":
+        refusal = dataclasses.replace(
+            state.no_data("no_observations"), status="unsupported", no_data_reason=None
+        )
+    else:
+        # The nearest readings with data the refusal found, which a refusal giving way
+        # to `qualifier_not_bound` keeps; their content is not read here.
+        nearest = cast(tuple[NearestRealSpec, ...], (SimpleNamespace(),))
+        refusal = state.no_data(reason, nearest_real=nearest)
+
+    result = asyncio.run(settle_unjudged_refusal(state, refusal))
+
+    assert result.nearest_real is refusal.nearest_real
+    unmet = "named" if reason in _OUTRANKED else "departs"
+    assert result.no_data_reason == (
+        "qualifier_not_bound" if reason in _OUTRANKED else refusal.no_data_reason
+    )
+    assert _ledger_dispositions(state, result) == {
+        "female": [unmet],
+        "d sector": ["met"],
+        "c sector": [unmet],
+        "widgets": [unmet],
+        "gizmos": ["departs"],
+    }
+    if reason in _OUTRANKED:
+        (flagged,) = result.flagged_match or ()
+        assert [q.text for q in flagged.resolved.trace.query_qualifiers] == [
+            q.text for q in result.unbound_qualifiers
+        ]
+
+
+def test_a_refusal_raised_for_a_candidate_is_judged_on_that_candidate(monkeypatch):
+    """A refusal the candidates door answers with on a candidate's behalf
+    (`RegionResult.refused_answer`) is judged on that candidate, here the elected shape
+    read under sector C in place of D: sector C is met and sector D departs, though the
+    elected answer meets D and leaves C unmet."""
+    state = _settled_ledger_state(monkeypatch)
+    candidate_bindings = tuple(
+        binding.model_copy(update={"value_dcids": ["C"]})
+        if binding.property_dcid == "sector"
+        else binding
+        for binding in state.bindings
+    )
+    refusal = dataclasses.replace(
+        state.no_data("rate_coverage_gap"),
+        refused_answer=(state.shape_draft, candidate_bindings),
+    )
+
+    result = asyncio.run(settle_unjudged_refusal(state, refusal))
+
+    assert result.no_data_reason == "rate_coverage_gap"
+    assert _ledger_dispositions(state, result) == {
+        "female": ["departs"],
+        "d sector": ["departs"],
+        "c sector": ["met"],
+        "widgets": ["departs"],
+        "gizmos": ["departs"],
+    }
+
+
 def test_an_excluded_table_does_not_serve_after_a_slot_default(monkeypatch):
     """`sector` declares the default D, which only `_DETAIL` holds. A part excluding
     `_DETAIL` carries the shape of the tables that remain and the codes their rows hold, so
@@ -3416,7 +3796,7 @@ def test_an_excluded_table_does_not_serve_after_a_slot_default(monkeypatch):
         *state.bind_result.bindings,
     ]
 
-    assert asyncio.run(_phase_vet_election(state)) is None
+    assert _vet_election(state) is None
     assert state.scope is not None
     assert _DETAIL not in state.scope.allowed
     assert state.shape_draft.datasets == (_BROAD,)

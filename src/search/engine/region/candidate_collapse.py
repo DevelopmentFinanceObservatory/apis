@@ -24,7 +24,6 @@ from search.engine.region.candidate_grounding import (
 from search.engine.region.candidate_measure_fold import (
     _facet_provenance_ids,
     _fold_measure_sibling_candidates,
-    _shapes_are_measure_siblings,
 )
 from search.engine.region.candidate_options import (
     _attach_candidate_entity_options,
@@ -33,10 +32,9 @@ from search.engine.region.candidate_options import (
     _candidate_facet_probe,
     _elected_no_data_twin_substituted_warning,
     _elected_no_data_warning,
+    _elected_sibling_warning,
     _make_slot_options_relaunch,
     _make_slot_options_task,
-    _without_near_neighbor_confidence,
-    depart_to_measure_sibling,
 )
 
 # _UNIT_CHECK_NOT_PROBED and _Candidate live in region/candidates.py,
@@ -82,17 +80,18 @@ from search.engine.region.related_read import (
 )
 from search.engine.region.relaunch import _relaunch_place_options
 from search.engine.region.requirements import (
+    meets_stray_values,
     settle_answer,
     settle_candidate_set,
     settle_flagged,
 )
 from search.engine.region.result import RegionResult
-from search.engine.region.sentence_events import _build_definite_sentence_event
 from search.engine.region.state import ResolveState, raised_facts
 from search.engine.retrieval.read_plan import ReadPlan, plan_coverage, serves_nothing
 from search.engine.retrieval.retrieve import Materialised, NoDataDraft
 from search.engine.unit.bind import with_unit_lexicon_version
 from search.models import (
+    CandidateBasis,
     IdentityUnitRequest,
     Spec,
 )
@@ -193,11 +192,17 @@ def _handle_sparse_survivors(
     state: ResolveState,
     unique_specs: list[Spec],
     grounded: _GroundedCandidates,
-    served_twin_id: str | None,
-) -> RegionResult | None:
-    """Handle zero survivors and a lone non-elected survivor after twin diversion. Return a
-    terminal result or `None` when at least two candidates, the elected survivor, or the twin
-    answering for an elected shape with no data (`served_twin_id`) remain.
+    served_twin: Spec | None,
+) -> list[Spec] | RegionResult:
+    """Settle the part under status rule 1 when the elected shape has no data, and handle
+    zero survivors and a flagged-unavailable lone survivor. Return a terminal result, or the
+    specs the part answers with.
+
+    With no data on the elected shape, a registry twin that answers for it
+    (`served_twin`) answers. Else the stand-ins re-election offered answer: one alone,
+    several as candidates (`_Candidate.basis` `structural`). Else the part refuses with the
+    elected shape's reason, and the first nominated reading with data rides on it as its
+    alternate match.
     """
     if len(unique_specs) == 0:
         # Prefer the elected shape's earlier-ranked failure, such as `no_matching_slice`, over the
@@ -217,45 +222,49 @@ def _handle_sparse_survivors(
             gate=NO_MEMBER_HAS_DATA_AT_PLACE,
             llm_usage=state.var_usage,
         )
-    if len(unique_specs) == 1 and not state.elected_has_data:
-        if unique_specs[0].spec_id == served_twin_id:
-            # A registry twin reads the elected indicator itself (`_apply_twin_diversion`).
-            state.warnings.append(
-                _elected_no_data_twin_substituted_warning(
-                    state, unique_specs[0].resolved.shape.label
-                )
+    if state.elected_has_data:
+        return unique_specs
+    if served_twin is not None:
+        # A registry twin reads the elected indicator itself (`_apply_twin_diversion`).
+        state.warnings.append(
+            _elected_no_data_twin_substituted_warning(state, served_twin.resolved.shape.label)
+        )
+        return [served_twin]
+    # Rule 1 installs only re-election's siblings as stand-ins (`_offered`). A registry twin
+    # the diversion did not serve and a nominated rider stand in for nothing.
+    stand_ins = [
+        spec
+        for spec in unique_specs
+        if grounded.cand_candidates[spec.spec_id].basis == "structural"
+    ]
+    if len(stand_ins) == 1:
+        # One stand-in answers in the elected shape's place, as re-election installs one.
+        # Definite assembly judges every requirement on its own shape and bindings
+        # (`_assemble_definite`).
+        state.warnings.append(
+            _elected_sibling_warning(
+                no_data=[state.shape_draft.label], elected=[stand_ins[0].resolved.shape.label]
             )
-            return None
-        _survivor_shape_for_sibling_check, _, _ = grounded.cand_role_axis_facts[
-            unique_specs[0].spec_id
-        ]
-        _survivor_is_measure_sibling_of_elected = (
-            _shapes_are_measure_siblings(state.shape_draft, _survivor_shape_for_sibling_check)
-            and unique_specs[0].resolved.measure_label is not None
         )
-        if _survivor_is_measure_sibling_of_elected:
-            # A real measure sibling can answer when the elected shape has no data, since no elected
-            # Spec exists to carry it as an alternative measure. Require `measure_label`.
-            # The warning and its closest_match departure record the substitution.
-            depart_to_measure_sibling(state, unique_specs[0])
-            return None
-        # `CandidateSet` requires at least two specs. A lone unelected survivor yields no-data with
-        # the elected shape's failure and the materialised alternate. `grounded_near_match` keeps
-        # unresolved-entity and unresolved-variable reasons from contradicting that match.
-        _elected_reason = _elect_no_data_reason(
-            state.mat_result.reason if isinstance(state.mat_result, NoDataDraft) else None,
-            fallback="no_observations",
-            grounded_near_match=True,
-        )
-        _offer_place_warnings(state, grounded, unique_specs)
-        _settle_lone_survivor(state, grounded, unique_specs[0])
-        return state.no_data(
-            _elected_reason,
-            alternate_match=unique_specs[0],
-            gate=ONLY_ALTERNATE_HAS_DATA,
-            llm_usage=state.var_usage,
-        )
-    return None
+        return stand_ins
+    if stand_ins:
+        return stand_ins
+    # Nothing answers for the elected shape: the part refuses with its failure, and the
+    # first nominated reading with data rides on it. `grounded_near_match` keeps
+    # unresolved-entity and unresolved-variable reasons from contradicting that match.
+    _elected_reason = _elect_no_data_reason(
+        state.mat_result.reason if isinstance(state.mat_result, NoDataDraft) else None,
+        fallback="no_observations",
+        grounded_near_match=True,
+    )
+    _offer_place_warnings(state, grounded, unique_specs[:1])
+    _settle_lone_survivor(state, grounded, unique_specs[0])
+    return state.no_data(
+        _elected_reason,
+        alternate_match=unique_specs[0],
+        gate=ONLY_ALTERNATE_HAS_DATA,
+        llm_usage=state.var_usage,
+    )
 
 
 def _settle_lone_survivor(state: ResolveState, grounded: _GroundedCandidates, spec: Spec) -> None:
@@ -309,15 +318,43 @@ def _preferred_twin(
     return None
 
 
+def _meeting_stray_values(
+    state: ResolveState, unique_specs: list[Spec], grounded: _GroundedCandidates
+) -> list[Spec]:
+    """`unique_specs` without each answer that leaves unmet a value the bind drafted on a
+    slot the elected reading lacks (`requirements.meets_stray_values`), the elected reading
+    among them. When none meets them, the first answer alone, the elected one when it has
+    data, which the definite path then refuses `qualifier_not_bound` on
+    (`requirements.settle_answer`)."""
+    meeting = [
+        spec
+        for spec in unique_specs
+        if meets_stray_values(
+            state.requirements,
+            grounded.cand_candidates[spec.spec_id].shape,
+            grounded.cand_candidates[spec.spec_id].bindings,
+        )
+    ]
+    return meeting or unique_specs[:1]
+
+
+def answers_for_the_elected_reading(basis: CandidateBasis | None) -> bool:
+    """Whether a lone survivor offered on `basis` answers when the elected reading, which has
+    data, leaves for a stray value (`_meeting_stray_values`): when it reads the elected
+    measure in the asked direction. A `structural` reading differs from it only on an axis
+    the question leaves open, and a `twin` is a registry encoding of the elected indicator
+    itself. A `nominated` reading reads another measure, a `direction` reading the other
+    direction, and a survivor offered on no basis was offered on no reading of the elected
+    one, so none of these answers by elimination."""
+    return basis in ("structural", "twin")
+
+
 def _apply_twin_diversion(
-    state: ResolveState,
-    unique_specs: list[Spec],
-    grounded: _GroundedCandidates,
-    near_neighbor_fired_spec_id: str | None,
-) -> tuple[list[Spec], str | None, str | None]:
+    state: ResolveState, unique_specs: list[Spec], grounded: _GroundedCandidates
+) -> tuple[list[Spec], Spec | None]:
     """Move registry-confirmed encodings of the elected indicator into `equivalent_readings`.
-    Return the remaining specs, any surviving near-neighbour fired-spec id, and the id of the
-    twin that answers for an elected shape with no data, if one does.
+    Return the remaining specs and the twin, among them, that answers for an elected shape
+    with no data, if one does.
 
     When the elected spec survives with data, the registry's preferred twin (`_preferred_twin`)
     answers in its place, with the elected spec listed among its equivalent readings, when it
@@ -336,7 +373,7 @@ def _apply_twin_diversion(
         _elected_sv_dcids = state.mat_result.sv_dcids or []
         _elected_facets = []
     else:
-        return unique_specs, near_neighbor_fired_spec_id, None
+        return unique_specs, None
     _elected_provenance_ids = _facet_provenance_ids(_elected_facets)
     _twins: list[Spec] = []
     _preferred_members: set[str] = set()
@@ -368,25 +405,12 @@ def _apply_twin_diversion(
             if cluster.preferred in _candidate_sv_dcids:
                 _preferred_members.add(s.spec_id)
     if not _twins and not _dropped_ids:
-        return unique_specs, near_neighbor_fired_spec_id, None
+        return unique_specs, None
     # Preserve the elected spec's real bind result; only non-elected survivors can become twins.
     _twin_ids = {t.spec_id for t in _twins}
-    # Retract the warning when its fired shape becomes an `equivalent_readings` annotation, an
-    # answer in the elected shape's place, or is dropped. Warnings for remaining candidates
-    # stay valid.
-    if near_neighbor_fired_spec_id in _twin_ids | _dropped_ids:
-        # Clear the fired index and warning, then regrade both readings without the gate's penalty.
-        if state.near_neighbor_warning is not None:
-            state.warnings.remove(state.near_neighbor_warning)
-        state.near_neighbor_warning = None
-        state.near_neighbor_fired_index = None
-        near_neighbor_fired_spec_id = None
-        if _elected_spec is not None:
-            _elected_spec = _without_near_neighbor_confidence(state, grounded, _elected_spec)
-        _twins = [_without_near_neighbor_confidence(state, grounded, twin) for twin in _twins]
     # The answer takes the place of the first reading: the elected spec, or the first twin
     # standing for an elected shape with no data.
-    _served_twin_id: str | None = None
+    _served_twin: Spec | None = None
     _listed: list[Spec] = []
     if _elected_spec is not None or _twins:
         if _elected_spec is not None:
@@ -395,7 +419,6 @@ def _apply_twin_diversion(
         else:
             _readings = _twins
             _primary = next((t for t in _twins if t.spec_id in _preferred_members), _twins[0])
-            _served_twin_id = _primary.spec_id
         _listed = [r for r in _readings if r is not _primary]
         if _listed:
             _primary = _primary.model_copy(
@@ -405,6 +428,8 @@ def _apply_twin_diversion(
                     )
                 }
             )
+        if _elected_spec is None:
+            _served_twin = _primary
         _anchor_id = _readings[0].spec_id
         unique_specs = [
             _primary if s.spec_id == _anchor_id else s
@@ -419,7 +444,7 @@ def _apply_twin_diversion(
     grounded.cand_retrieved = {
         k: v for k, v in grounded.cand_retrieved.items() if k not in _listed_ids
     }
-    return unique_specs, near_neighbor_fired_spec_id, _served_twin_id
+    return unique_specs, _served_twin
 
 
 async def _assemble_definite(
@@ -433,9 +458,9 @@ async def _assemble_definite(
     or registry-twin substitution.
     A survivor from an alternate answers over its own place context, so its place warnings
     become the answer's own (`install_place_warnings`). The survivor is judged on every
-    requirement on its own shape and bindings (`requirements.settle_answer`), since an
-    alternate or a measure sibling binds its values from its own representative and can
-    hold a code the elected shape dropped, bind another code on the same property, or, as a
+    requirement on its own shape and bindings (`requirements.settle_answer`), since a
+    stand-in or an alternate binds its values from its own representative and can hold a
+    code the elected shape dropped, bind another code on the same property, or, as a
     sibling every member of which holds Female, apply "female". Its refusal names the terms
     its flagged match's trace records (`requirements.answer_terms`): the elected reading's
     unbound query terms, which no answer is shown to apply, and each code and value
@@ -516,12 +541,6 @@ async def _assemble_definite(
     _survivor_spec = await _attach_candidate_entity_options(state, grounded, _survivor_spec)
     state.timing["options"] = now_ms() - _options_t0
     _family = state.family_total_absent_departures((_survivor_spec,))
-    # Emit the final sentence after facet options, matching the single-shape response. Rendering
-    # uses no observations, which SSE sends in a later event.
-    if state.emit is not None:
-        await state.emit(
-            _build_definite_sentence_event(_survivor_spec, variable_index=state.variable_index)
-        )
     # Place-option tasks run only when `materialise_graph` is available.
     _place_options_materialise_graph = state.materialise_graph
     # Bind the identity confirmed by materialisation. Candidate merging preserves that identity.
@@ -592,15 +611,25 @@ async def _assemble_candidate_set(
     state: ResolveState,
     unique_specs: list[Spec],
     grounded: _GroundedCandidates,
-    near_neighbor_fired_spec_id: str | None,
     candidate_budget_truncated: bool,
 ) -> RegionResult:
-    """Build a candidate response from two or more distinct survivors. When the elected shape has no
-    data, add a warning describing its failure; assembly states its `closest_match`
+    """Build a candidate response from two or more distinct survivors, each but the elected
+    one stating why the status rule offers it (`ResolvedSpec.basis`). When the elected shape
+    has no data, add a warning describing its failure; assembly states its `closest_match`
     departure (`assemble._with_readings_substituted`). Each candidate the search could not
     check against the denominator the question names warns under its own spec_id
     (`note_denominator_unverified`).
     """
+    unique_specs = [
+        spec.model_copy(
+            update={
+                "resolved": spec.resolved.model_copy(
+                    update={"basis": grounded.cand_candidates[spec.spec_id].basis}
+                )
+            }
+        )
+        for spec in unique_specs
+    ]
     _offer_place_warnings(state, grounded, unique_specs)
     if not state.elected_has_data:
         state.warnings.append(_elected_no_data_warning(state, unique_specs))
@@ -638,16 +667,6 @@ async def _assemble_candidate_set(
         for spec in _candidate_specs
         if (omitted := grounded.cand_unit_omitted.get(spec.spec_id)) is not None
     )
-    _surviving_candidate_ids = {spec.spec_id for spec in _candidate_specs}
-    candidate_near_neighbor_spec_ids = (
-        frozenset(
-            spec_id
-            for spec_id in (grounded.elected_spec_id, near_neighbor_fired_spec_id)
-            if spec_id is not None and spec_id in _surviving_candidate_ids
-        )
-        if state.near_neighbor_fired_index is not None
-        else frozenset()
-    )
     _family = state.family_total_absent_departures(_candidate_specs)
     return RegionResult(
         variable_text=state.variable,
@@ -658,10 +677,7 @@ async def _assemble_candidate_set(
         departure_facts={**state.departure_facts, **raised_facts(_family)},
         timing_by_step=dict(state.timing),
         llm_usage=state.var_usage,
-        candidate_scores=grounded.cand_scores,
-        candidate_near_neighbor_spec_ids=candidate_near_neighbor_spec_ids,
         candidate_budget_truncated=candidate_budget_truncated,
-        near_neighbor_fired=state.near_neighbor_fired_index is not None,
         slot_options_task=_make_slot_options_task(state, grounded, unique_specs),
         answered_roles=grounded.cand_answered_roles[_candidate_specs[0].spec_id],
     )
@@ -709,11 +725,25 @@ async def assemble_candidates(
     # loop, where the request deadline and other requests keep running.
     grounded = await asyncio.to_thread(ground_candidates, state, candidates)
     unique_specs = grounded.specs
+    # The stand-in that re-election installed is the elected candidate here.
+    for spec in unique_specs:
+        if spec.spec_id == grounded.elected_spec_id:
+            state.state_reelected_reading(spec)
 
     _filtered = _apply_bound_unit_filter(state, unique_specs, grounded)
     if isinstance(_filtered, RegionResult):
         return _filtered
     unique_specs = _filtered
+
+    # The stray filter runs before the fold, so each reading is judged on its own shape and
+    # a sibling that applies the value is not folded into one that leaves.
+    _met = _meeting_stray_values(state, unique_specs, grounded)
+    # The elected Spec, when it left for a stray value another reading meets.
+    _elected_left = next(
+        (s for s in unique_specs if s.spec_id == grounded.elected_spec_id and s not in _met),
+        None,
+    )
+    unique_specs = _met
 
     unique_specs = _fold_measure_sibling_candidates(
         unique_specs,
@@ -721,24 +751,12 @@ async def assemble_candidates(
         grounded.cand_measure_partitions,
     )
 
-    # Ambiguity warnings describe competing candidates. With fewer than two survivors, remove the
-    # warning before returning no-data or definite. A tie beside an unevaluated alternate stays.
-    if (
-        state.near_neighbor_fired_index is not None
-        and len(unique_specs) < 2
-        and state.near_neighbor_warning is not None
-        and not state.tie_unresolved
-    ):
-        state.warnings.remove(state.near_neighbor_warning)
-        state.near_neighbor_warning = None
-        state.near_neighbor_fired_index = None
-
     if (
         not unique_specs
         and isinstance(state.mat_result, Materialised)
         and state.mat_result.window_gap is not None
     ):
-        # The window answer is the elected shape's alone (`phase_answer._phase_ground_answer`).
+        # The window answer is the elected shape's alone (`phase_answer._ground_elected_answer`).
         return None
 
     state.timing["answer"] = now_ms() - grounded.answer_t0
@@ -749,12 +767,11 @@ async def assemble_candidates(
         ms=state.timing["answer"],
     )
 
-    unique_specs, near_neighbor_fired_spec_id, _served_twin_id = _apply_twin_diversion(
-        state, unique_specs, grounded, grounded.near_neighbor_fired_spec_id
-    )
     if state.quantity_refusal is not None:
         # The elected shape does not serve the quantity, so the part offers only the readings
-        # that do, and refuses when none survived.
+        # that do, and refuses when none survived. The filter runs before the twin diversion,
+        # so a twin that misses the quantity, as the elected shape's registry twins do, is
+        # neither served nor listed as an equivalent reading.
         unique_specs = [
             s
             for s in unique_specs
@@ -762,9 +779,23 @@ async def assemble_candidates(
         ]
         if not unique_specs:
             return await refuse_unserved_quantity(state)
-    _sparse = _handle_sparse_survivors(state, unique_specs, grounded, _served_twin_id)
-    if _sparse is not None:
-        return _sparse
+    unique_specs, _served_twin = _apply_twin_diversion(state, unique_specs, grounded)
+    _settled = _handle_sparse_survivors(state, unique_specs, grounded, _served_twin)
+    if isinstance(_settled, RegionResult):
+        return _settled
+    unique_specs = _settled
+    if (
+        len(unique_specs) == 1
+        and _elected_left is not None
+        and not answers_for_the_elected_reading(
+            grounded.cand_candidates[unique_specs[0].spec_id].basis
+        )
+    ):
+        # A lone survivor reading another measure or direction does not answer by
+        # elimination. The elected reading stands alone, and the definite path refuses
+        # `qualifier_not_bound` on the stray value it leaves unmet, with it as the flagged
+        # match (`requirements.settle_answer`).
+        unique_specs = [_elected_left]
 
     # The discovered-scope warning speaks for the candidates the response keeps.
     restate_scope_warning(
@@ -778,9 +809,5 @@ async def assemble_candidates(
     if len(unique_specs) == 1:
         return await _assemble_definite(state, unique_specs, grounded, rate_cache)
     return await _assemble_candidate_set(
-        state,
-        unique_specs,
-        grounded,
-        near_neighbor_fired_spec_id,
-        admission.candidate_budget_truncated,
+        state, unique_specs, grounded, admission.candidate_budget_truncated
     )

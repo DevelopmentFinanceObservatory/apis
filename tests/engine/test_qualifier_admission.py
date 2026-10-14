@@ -11,7 +11,7 @@ import dataclasses
 import logging
 import time
 from collections.abc import Sequence
-from typing import cast
+from typing import Literal, cast
 from unittest.mock import patch
 
 import pytest
@@ -19,7 +19,7 @@ import pytest
 from code_index.query import CodeIndex
 from code_index.shared import get_index, get_measure_index
 from code_index.types import CodeRow, CodeSystemDeclaration, IndexStamp, MeasureValueRow
-from entity_resolution import Admission, EntityResolver
+from entity_resolution import Admission, Entity, EntityResolver, Resolved
 from search.engine.bind import (
     CandidateMenu,
     SlotBindingDraft,
@@ -31,6 +31,7 @@ from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.departures import warning_key
 from search.engine.fanout import _FanOutResult, _run_variables_streaming
+from search.engine.interpret import Recall
 from search.engine.qualifier_match import (
     QualifierMatch,
     QualifierReadings,
@@ -43,7 +44,7 @@ from search.engine.qualifier_match import (
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import RegionResult
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
-from search.engine.region.phase_election import _phase_vet_election
+from search.engine.region.phase_election import _vet_election
 from search.engine.region.phase_rank_bind import (
     _admit_qualifier_matches,
     _admit_qualifier_matches_against_elected_shape,
@@ -51,6 +52,7 @@ from search.engine.region.phase_rank_bind import (
     _candidate_menus,
     _coverage_records,
     _dataset_candidates,
+    _dataset_stated_words,
     _filter_admitted_matches,
     _force_qualifier_bindings,
     _log_admitted_qualifiers,
@@ -79,7 +81,7 @@ from tests.engine._index_slots import (
     query_qualifiers,
     read_text,
 )
-from tests.engine._quantity import NO_QUANTITY
+from tests.engine._quantity import NO_QUANTITY, QuantityReadOnlyLLM
 from tests.engine._requirements import depart_requirements
 from tests.engine._source_scopes import part_scope
 from tests.engine.test_two_ended_menu import _CRS_SV as _TWO_ENDED_CRS_SV
@@ -90,6 +92,8 @@ from tests.engine.test_two_ended_menu import _resolve as _resolve_two_ended
 from tests.fixtures import FakeGraph, FakeLLM, make_resolver
 
 _REAL_INDEX = get_index()
+_CRS_PROVENANCE = "provenance/OECDCreditorReportingSystem"
+_DAC2A_PROVENANCE = "provenance/OECDDAC2A"
 
 
 def _admit(
@@ -327,23 +331,72 @@ def test_a_code_no_row_holds_claims_no_word_on_a_shape(variable, everywhere, own
 # ---------------------------------------------------------------------------
 
 
+_FLOW_ROLES = ("financingProvider", "financingRecipient")
+
+
+def _flow_family_shape(slots: Literal["crs", "dac2a"], measured_property: str) -> ShapeDraft:
+    """A financial flow shape of the CRS flow family or of DAC2a's, by its slot keys, with
+    both flow roles and no dataset stamped."""
+    flow_row = next(row for row in _REAL_INDEX.statvars if row.population_type == "FinancialFlow")
+    slot_keys = (
+        crs_flow_slot_keys()
+        if slots == "crs"
+        else (SlotKeyDraft(axis="what", property_dcid="dac2aAidType", label="aid type"),)
+    )
+    return ShapeDraft(
+        shape_id="amount",
+        label="amount",
+        pop_type_dcid="FinancialFlow",
+        meas_prop_dcid=measured_property,
+        stat_type_dcid=flow_row.stat_type,
+        meas_qual_dcid="Nominal",
+        meas_denom_dcid=None,
+        slot_keys=slot_keys,
+        declared_roles=_FLOW_ROLES,
+    )
+
+
+def _part_state(
+    variable: str,
+    shapes: list[ShapeDraft],
+    recipient: Literal["country", "organisation"] | None = None,
+) -> ResolveState:
+    """The state of a part reading `variable` on `shapes`. With a `recipient` kind it names
+    Kenya as the destination, resolved to an entity of that kind."""
+    state = _vet_state(
+        variable=variable,
+        capped_shapes=shapes,
+        chosen_shape_index=0,
+        bindings=[],
+        admitted_ties=(),
+    )
+    if recipient is not None:
+        entity = Entity(dcid="country/KEN", name="Kenya", kind=recipient, graph_type="Country")
+        state.entities = ["Kenya"]
+        state.place_sets = place_sets({"Kenya": "country/KEN"})
+        state.entity_roles = door_roles_for_test_query("aid to Kenya", ["Kenya"])
+        state.rcl = Recall(candidates=[], resolutions={"Kenya": Resolved(entity=entity)})
+    return state
+
+
 @pytest.mark.parametrize(
     ("variable", "refused"),
     [
         ("OOF budget support to Kenya", []),
         ("multilateral ODA to Kenya", ["multilateral ODA"]),
         ("multilateral ODA loans to Kenya", ["multilateral ODA loans"]),
-        ("bilateral ODA grants to Kenya", ["bilateral ODA grants"]),
+        ("bilateral ODA grants to Kenya", []),
         ("DAC1 aid type 1010", ["1010"]),
     ],
 )
 def test_a_part_naming_the_crs_refuses_only_terms_its_own_reading_cannot_hold(variable, refused):
     """Read in every code system, each term names a DAC1 aid type no CRS row holds. The CRS
     shape holds "OOF budget support" all the same, since its own reading holds both "OOF"
-    (flow type 21) and the "budget support" tie, covering every word. "multilateral ODA",
-    "multilateral ODA loans" and "bilateral ODA grants" each leave a word the CRS reading
-    does not hold, so the part refuses `qualifier_not_bound` on them, as a DAC1 code with
-    no CRS reading of its words does."""
+    (flow type 21) and the "budget support" tie, covering every word. "multilateral ODA"
+    and "multilateral ODA loans" each leave a word the CRS reading does not hold, so the
+    part refuses `qualifier_not_bound` on them, as a DAC1 code with no CRS reading of its
+    words does. "bilateral ODA grants" is held: "bilateral" is a word the CRS states of
+    every row, and the CRS reading holds "grants"."""
     flow_row = next(row for row in _REAL_INDEX.statvars if row.population_type == "FinancialFlow")
     shape = ShapeDraft(
         shape_id="crs-amount",
@@ -362,9 +415,85 @@ def test_a_part_naming_the_crs_refuses_only_terms_its_own_reading_cannot_hold(va
         read_text(variable, _REAL_INDEX, get_measure_index()).everywhere.spans,
         candidates,
         own_variable_spans(variable, *candidates),
+        state=_part_state(variable, candidates),
     )
 
     assert [record.text for record in undeclared] == refused
+
+
+@pytest.mark.parametrize(
+    ("provenance", "slots", "measured_property", "variable", "recipient", "refused"),
+    [
+        # Every `amount` row of the CRS is a flow from one provider to one recipient, so a
+        # part naming it reads "bilateral" without a code, whoever the recipient is.
+        (_CRS_PROVENANCE, "crs", "amount", "bilateral ODA grants to Kenya", None, []),
+        (_CRS_PROVENANCE, "crs", "amount", "bilateral ODA to Kenya", "organisation", []),
+        # DAC2a states "bilateral" only where the destination is a country.
+        (_DAC2A_PROVENANCE, "dac2a", "amount", "bilateral ODA to Kenya", "country", []),
+        (_DAC2A_PROVENANCE, "dac2a", "amount", "bilateral ODA", None, ["bilateral ODA"]),
+        (
+            _DAC2A_PROVENANCE,
+            "dac2a",
+            "amount",
+            "bilateral ODA to Kenya",
+            "organisation",
+            ["bilateral ODA"],
+        ),
+        # No table states "multilateral", and DAC2a's attributed amount, imputed
+        # multilateral aid, states no "bilateral".
+        (_CRS_PROVENANCE, "crs", "amount", "multilateral ODA to Kenya", None, ["multilateral ODA"]),
+        (
+            _DAC2A_PROVENANCE,
+            "dac2a",
+            "attributedAmount",
+            "bilateral ODA to Kenya",
+            "country",
+            ["bilateral ODA"],
+        ),
+    ],
+)
+def test_a_part_naming_a_table_that_states_a_word_does_not_refuse_it(
+    provenance, slots, measured_property, variable, recipient, refused
+):
+    """A word every row of the named table states for the measure restricts nothing there,
+    so the part reads it as the table's own reading reads a code. A word the table states
+    only where a party is of one kind (`StatedWord.where`) holds when the part names a
+    recipient of that kind, and the part refuses it where the recipient is left open or is
+    another kind."""
+    candidates = _dataset_candidates(
+        [_flow_family_shape(slots, measured_property)], part_scope(provenance)
+    )
+
+    undeclared = _undeclared_qualifiers(
+        variable,
+        read_text(variable, _REAL_INDEX, get_measure_index()).everywhere.spans,
+        candidates,
+        own_variable_spans(variable, *candidates),
+        state=_part_state(variable, candidates, recipient),
+    )
+
+    assert [record.text for record in undeclared] == refused
+
+
+@pytest.mark.parametrize(
+    ("slots", "recipient", "stated"),
+    [
+        ("crs", None, {"bilateral"}),
+        ("dac2a", "country", {"bilateral"}),
+        ("dac2a", None, set()),
+    ],
+)
+def test_a_shape_no_candidacy_stamped_states_what_the_tables_of_its_family_state(
+    slots, recipient, stated
+):
+    """The family election reads each shape before candidacy stamps its datasets, so a
+    shape with none reads the tables publishing its family."""
+    shape = _flow_family_shape(slots, "amount")
+    assert shape.datasets is None
+
+    state = _part_state("bilateral ODA", [shape], recipient)
+
+    assert _dataset_stated_words(shape, _REAL_INDEX, state) == stated
 
 
 @pytest.mark.parametrize("named_at", ["ref", "words"])
@@ -414,7 +543,7 @@ def test_a_term_the_elected_crs_shape_reads_in_part_is_unavailable(named_at, var
         vocabulary: own.spans for vocabulary, own in reading.by_vocabulary.items()
     }
 
-    assert asyncio.run(_phase_vet_election(state)) is None
+    assert _vet_election(state) is None
     assert state.settled_dataset() == crs
     state.bindings = list(state.bind_result.bindings)
 
@@ -644,7 +773,7 @@ def test_a_term_naming_codes_no_row_holds_follows_the_coverage_mode(
 
 
 # ---------------------------------------------------------------------------
-# _phase_vet_election verifies the binder's choice for admitted ties.
+# _vet_election verifies the binder's choice for admitted ties.
 # ---------------------------------------------------------------------------
 
 
@@ -669,7 +798,7 @@ def _vet_state(
         graph=cast(EngineGraphClient, None),
         resolver=cast(EntityResolver, None),
         admission=cast(Admission, None),
-        llm=cast(SupportsLLM, None),
+        llm=QuantityReadOnlyLLM(),
         sdmx=cast(EngineSdmxClient, None),
         deadline=None,
         pre_resolved=None,
@@ -697,8 +826,8 @@ def _vet_state(
 
 
 def _run_vet(state: ResolveState) -> None:
-    result = asyncio.run(_phase_vet_election(state))
-    assert result is None, "expected _phase_vet_election to fall through"
+    result = _vet_election(state)
+    assert result is None, "expected _vet_election to fall through"
     depart_requirements(state)
 
 
@@ -755,7 +884,7 @@ def test_vet_election_drops_a_tie_the_model_never_bound():
 def test_vet_election_zero_count_stays_silent_when_the_tie_is_owned_elsewhere():
     # variable_matched_qualifier_phrases empty here mirrors a tie found only
     # in a dropped_qualifier_phrase -- entry/raw_text.py already warns on
-    # that phrase unconditionally, so _phase_vet_election must not warn a
+    # that phrase unconditionally, so _vet_election must not warn a
     # second time.
     state = _vet_state(
         variable="ODA to Kenya",
@@ -1413,18 +1542,13 @@ def test_prompt_is_byte_identical_to_the_no_admission_form_when_nothing_is_admit
         "CANDIDATE SHAPES (1 total):\n\n"
         "Shape 0:\n"
         "  label: test shape\n"
+        "  origin: our Data Commons\n"
         "  family: standard Data Commons\n"
         "  five_tuple: populationType=FinancialFlow, measuredProperty=grantEquivalent, "
         "statType=measuredValue\n"
         "    measurementQualifier=Nominal, measurementDenominator=(none)\n"
         "  constraint_slots: (none)\n"
     )
-
-
-def test_prompt_renders_the_score_line_for_a_scored_shape():
-    scored = dataclasses.replace(_PROMPT_SHAPE, representative_score=0.912)
-    prompt = _build_universal_bind_prompt("test variable", [scored])
-    assert "  retrieval_score: 0.912\n" in prompt
 
 
 def test_prompt_renders_admitted_ties_as_query_named_alternatives_without_matched_text():
@@ -1842,7 +1966,7 @@ def test_e2e_admitted_matches_reach_the_wire_as_forced_value_slots(caplog, monke
     # crsTypeOfFlow and crsTypeOfFinance are pinned to the admitted values
     # above, the real packaged index carries no FinancialFlow row without
     # financialFlowType=Disbursement, so the constraint measure axis election
-    # in _phase_repair_bindings forces it. This binding is engine-authored,
+    # in _repair_bindings forces it. This binding is engine-authored,
     # not an admitted match.
     flow_type_slot = _slot("financialFlowType")
     assert flow_type_slot.binding.kind == "value"

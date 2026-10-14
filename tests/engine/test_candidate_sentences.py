@@ -8,11 +8,11 @@ from tests.render._helpers import assert_round_trip
 
 
 def test_candidate_sentences_index_aligned_and_distinct():
-    """The query returns distinct candidate sentences. Each plan round-trips and marks its `what`
-    token as distinguishing.
+    """The query returns distinct candidate sentences. Each plan round-trips, marks its `what`
+    token as distinguishing, and leaves the place both readings share unmarked.
     """
     req = ResolveRequest(
-        input=RawTextInput(query="under-5 child mortality rate"),
+        input=RawTextInput(query="remittances as percentage of GDP in Nigeria"),
         response_options=ResolveOptions(),
     )
     result = offline_resolve(req).parts[0]
@@ -31,7 +31,7 @@ def test_candidate_sentences_index_aligned_and_distinct():
         what_tok = next(t for t in spec.resolved.sentence_plan if t.axis == "what")
         assert what_tok.distinguishes is True
         for tok in spec.resolved.sentence_plan:
-            if tok.axis != "what":
+            if tok.axis == "where":
                 assert tok.distinguishes is None
     assert len(set(rendered)) == len(rendered), (
         f"expected distinct candidate sentences, got {rendered}"

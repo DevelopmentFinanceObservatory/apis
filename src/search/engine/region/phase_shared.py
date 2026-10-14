@@ -25,7 +25,7 @@ from search.engine.region.grounding import (
     role_bindings,
 )
 from search.engine.region.place_roles import request_named_groups, untold_direction_names
-from search.engine.region.requirements import settle_flagged
+from search.engine.region.requirements import refusal_terms, settle_answer, settle_flagged
 from search.engine.region.result import RegionResult
 from search.engine.region.state import ResolveState
 from search.engine.retrieval.bound_values import (
@@ -35,6 +35,7 @@ from search.engine.retrieval.bound_values import (
     shape_population_arcs,
     slot_expansions,
 )
+from search.engine.retrieval.retrieve import Materialised
 from search.engine.shape import identity_shape_for
 from search.engine.spec_build import (
     build_shape_model,
@@ -53,6 +54,7 @@ from search.models import (
     Spec,
     Unsupported,
     Warning,
+    elect_no_data_reason,
 )
 
 if TYPE_CHECKING:
@@ -155,6 +157,9 @@ def _unsupported(
             detail=detail,
             cause=cause,
             definition=_unsupported_definition(state, facets, candidate=candidate),
+        ),
+        refused_answer=(
+            None if candidate is None else (candidate.shape, tuple(candidate.bindings))
         ),
     )
 
@@ -339,12 +344,12 @@ async def _elected_flagged_match(
         identity_entities=identity_entities,
         open_roles=open_roles,
         # state.bindings (fed to slots above via slot_expansions) is the same
-        # bindings list _phase_vet_election may have forced a qualifier-match
+        # bindings list _phase_settle may have forced a qualifier-match
         # value onto. Every caller runs after that phase, so the forced set is final.
         text_recognized_properties=_admitted_qualifier_properties(state.admitted_qualifiers),
         # Every caller runs from _phase_place_bindings or later (the role refusals and
         # the materialise quantity gate), and all of those phases run after
-        # _phase_repair_bindings' measure-election splice, so
+        # _phase_settle's measure-election splice, so
         # state.measure_elected_properties already carries any forced
         # pairs, as on the definite path below.
         measure_elected_properties=state.measure_elected_properties,
@@ -354,6 +359,50 @@ async def _elected_flagged_match(
         query_qualifiers=settle_flagged(state, state.shape_draft, state.bindings),
     )
     return apply_declaration_version(spec, state.bindings)
+
+
+async def settle_unjudged_refusal(state: ResolveState, result: RegionResult) -> RegionResult:
+    """Settle `result`, a no-data or unsupported terminal returned once the part's bindings
+    are final that judged no answer, on the answer it is about: the candidate it was
+    raised for (`RegionResult.refused_answer`), else the elected answer, `state.shape_draft`
+    read under `state.bindings`.
+
+    When the elected answer leaves terms unmet, `qualifier_not_bound` is a reason the part
+    could also give, and the part reports the one `elect_no_data_reason` elects from the
+    two. Where that is `qualifier_not_bound`, the part refuses naming the terms, with the
+    elected answer as its flagged match (`_elected_flagged_match`), whose trace records
+    them, as `_declined_refusal` refuses on a declined reading. The refusal keeps the
+    nearest readings with data the original found (`nearest_real`); `state.no_data`
+    states the open role axis an empty discovery leaves (`no_data_role_axis`) from the
+    materialised result whatever the reason, and the years fact (`window_gap_fact`)
+    belongs to `no_observations` alone. Otherwise `result` stands, names no term, and each
+    requirement its answer does not meet departs (`settle_flagged`). No refusal raised
+    for a candidate gives a reason ranked after `qualifier_not_bound`, so a candidate's
+    refusal always stands. Either way every requirement is named, departs or is met,
+    once."""
+    if result.refused_answer is not None:
+        shape, bindings = result.refused_answer
+        settle_flagged(state, shape, bindings)
+        return result
+    reason = result.no_data_reason
+    if (
+        result.status == "no_data"
+        and reason is not None
+        and refusal_terms(state, state.shape_draft, state.bindings)
+        and elect_no_data_reason((reason, "qualifier_not_bound")) != reason
+    ):
+        mat_result = state.mat_result
+        members = mat_result.sv_dcids if isinstance(mat_result, Materialised) else None
+        flagged = await _elected_flagged_match(state, members=members)
+        return state.no_data(
+            "qualifier_not_bound",
+            flagged_match=(flagged,),
+            nearest_real=result.nearest_real,
+            unbound_qualifiers=settle_answer(state, state.shape_draft, state.bindings),
+            llm_usage=result.llm_usage,
+        )
+    settle_flagged(state, state.shape_draft, state.bindings)
+    return result
 
 
 async def _role_incompatible_no_data(state: ResolveState) -> RegionResult:

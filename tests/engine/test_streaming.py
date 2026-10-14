@@ -63,7 +63,13 @@ from search.models import (
 from search.render.tokens import sentence_from_plan
 from tests.engine._base_identity import subject_entity
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._harness import EMPTY_SDMX, make_request
+from tests.engine._harness import (
+    DEADLINE_TIMEOUT_S,
+    EMPTY_SDMX,
+    FakeClock,
+    frozen_monotonic_clock,
+    make_request,
+)
 from tests.engine._search_app import search_app
 from tests.fixtures import FakeGraph, FakeLLM, make_resolver
 
@@ -120,6 +126,13 @@ def _mock_extract(variables: list[str]):
         )
 
     return _inner
+
+
+async def _pass_the_deadline(clock: FakeClock, kwargs: dict[str, Any]) -> None:
+    """Move the fake clock past the request deadline and wake the fan-out loop, whose own wait
+    is bounded by the same clock, without waiting for anything real."""
+    clock.now += DEADLINE_TIMEOUT_S * 10
+    await kwargs["emit"](StepEvent(step="materialise", ran=True))
 
 
 def test_dropped_qualifier_note_matches_raw_text_sentence_event(monkeypatch):
@@ -335,21 +348,25 @@ def test_shape_event_option_labels_come_from_the_code_index_not_the_raw_graph_na
 
 
 def test_soft_deadline_yields_partial_response_with_timed_out_done(monkeypatch, search_settings):
-    """A slow leg yields one partial response and `done(timed_out=True)`."""
-    search_settings(request_timeout_s=0.05)
+    """A slow leg yields one partial response and `done(timed_out=True)`. The fake clock passes
+    the deadline once the fast leg has finished, so no stage of the request races it."""
+    clock = frozen_monotonic_clock(monkeypatch)
+    search_settings(request_timeout_s=DEADLINE_TIMEOUT_S)
     monkeypatch.setattr("search.engine.entry.raw_text.extract", _mock_extract(["fast", "slow"]))
 
     cancelled: list[str] = []
+    fast_done = asyncio.Event()
 
     async def _stub(variable, **kwargs):
         try:
             if variable == "slow":
-                await asyncio.sleep(10)
-            else:
-                await asyncio.sleep(0.01)
+                await fast_done.wait()
+                await _pass_the_deadline(clock, kwargs)
+                await asyncio.Event().wait()
         except asyncio.CancelledError:
             cancelled.append(variable)
             raise
+        fast_done.set()
         return _no_data_region(variable)
 
     monkeypatch.setattr("search.engine.fanout.resolve_variable", _stub)
@@ -378,12 +395,15 @@ def test_soft_deadline_yields_partial_response_with_timed_out_done(monkeypatch, 
 
 
 def test_soft_deadline_single_variable_n1_path(monkeypatch, search_settings):
-    """A hung single leg ends with a timed-out response and done event."""
-    search_settings(request_timeout_s=0.05)
+    """A hung single leg ends with a timed-out response and done event. The fake clock passes
+    the deadline once the leg has started."""
+    clock = frozen_monotonic_clock(monkeypatch)
+    search_settings(request_timeout_s=DEADLINE_TIMEOUT_S)
     monkeypatch.setattr("search.engine.entry.raw_text.extract", _mock_extract(["only"]))
 
     async def _stub(variable, **kwargs):
-        await asyncio.sleep(10)
+        await _pass_the_deadline(clock, kwargs)
+        await asyncio.Event().wait()
         return _no_data_region(variable)  # pragma: no cover — never reached
 
     monkeypatch.setattr("search.engine.fanout.resolve_variable", _stub)
@@ -408,12 +428,20 @@ def test_soft_deadline_single_variable_n1_path(monkeypatch, search_settings):
 
 
 def test_resolve_async_surfaces_timed_out_in_diagnostics(monkeypatch, search_settings):
-    """Buffered responses expose the stream's timeout state in diagnostics."""
-    search_settings(request_timeout_s=0.05)
+    """Buffered responses expose the stream's timeout state in diagnostics. The fake clock
+    passes the deadline once the fast leg has finished."""
+    clock = frozen_monotonic_clock(monkeypatch)
+    search_settings(request_timeout_s=DEADLINE_TIMEOUT_S)
     monkeypatch.setattr("search.engine.entry.raw_text.extract", _mock_extract(["fast", "slow"]))
 
+    fast_done = asyncio.Event()
+
     async def _stub(variable, **kwargs):
-        await asyncio.sleep(10 if variable == "slow" else 0.01)
+        if variable == "slow":
+            await fast_done.wait()
+            await _pass_the_deadline(clock, kwargs)
+            await asyncio.Event().wait()
+        fast_done.set()
         return _no_data_region(variable)
 
     monkeypatch.setattr("search.engine.fanout.resolve_variable", _stub)
@@ -1429,6 +1457,7 @@ def test_resubmit_deadline_exceeded_yields_sse_terminal_error(monkeypatch, searc
         coverage=None,
         options: EngineOptions | None = None,
         full_read_deadline: float | None = None,
+        frame=None,
     ):
         time.sleep(0.3)
         return _no_data_region("test var")  # pragma: no cover -- deadline fires first
@@ -1572,8 +1601,10 @@ def _mock_extract_with_entities(variables: list[str], entities: list[str]):
 def test_parsed_door_entity_pre_resolution_deadline_exceeded_yields_sse_terminal_error(
     monkeypatch, search_settings
 ):
-    """A parsed-door pre-resolution timeout follows its `interpretation` event."""
-    search_settings(request_timeout_s=0.02)
+    """A parsed-door pre-resolution timeout follows its `interpretation` event. The frozen clock
+    keeps the request from reaching the deadline before the stand-in resolver starts."""
+    frozen_monotonic_clock(monkeypatch)
+    search_settings(request_timeout_s=0.02, finalise_grace_s=DEADLINE_TIMEOUT_S)
 
     fake_graph = FakeGraph()
     monkeypatch.setattr("entity_resolution.EntityResolver.resolve", _slow_resolver_resolve)
@@ -1632,7 +1663,9 @@ def test_parsed_door_entity_pre_resolution_deadline_exceeded_returns_504_on_buff
 def test_parsed_door_entity_pre_resolution_deadline_leaves_no_orphaned_tasks(
     monkeypatch, search_settings
 ):
-    """Deadline cancellation awaits every asyncio task created for pre-resolution."""
+    """Deadline cancellation awaits every asyncio task created for pre-resolution. The frozen
+    clock keeps the request from reaching the deadline before the stand-in resolver starts."""
+    frozen_monotonic_clock(monkeypatch)
     search_settings(request_timeout_s=0.02)
 
     fake_graph = FakeGraph()
@@ -1654,8 +1687,11 @@ def test_parsed_door_entity_pre_resolution_deadline_leaves_no_orphaned_tasks(
 def test_raw_text_entity_pre_resolution_deadline_exceeded_yields_sse_terminal_error(
     monkeypatch, search_settings
 ):
-    """A raw-text pre-resolution timeout follows its extract and interpretation events."""
-    search_settings(request_timeout_s=0.02)
+    """A raw-text pre-resolution timeout follows its extract and interpretation events. The
+    frozen clock keeps the request from reaching the deadline before the stand-in resolver
+    starts."""
+    frozen_monotonic_clock(monkeypatch)
+    search_settings(request_timeout_s=0.02, finalise_grace_s=DEADLINE_TIMEOUT_S)
     monkeypatch.setattr(
         "search.engine.entry.raw_text.extract",
         _mock_extract_with_entities(["v0", "v1"], ["E0", "E1"]),
@@ -1703,10 +1739,46 @@ def test_raw_text_entity_pre_resolution_deadline_exceeded_returns_504_on_buffere
     assert body["code"] == "timeout"
 
 
+def test_raw_text_single_variable_entity_resolution_deadline_times_out_softly(
+    monkeypatch, search_settings
+):
+    """A single-variable raw-text request resolves its entities inside its leg, beside
+    recall, so a resolver that outlasts the deadline ends in `done(timed_out=True)`. The
+    hung resolver makes the test wait out the 0.2 s deadline."""
+    search_settings(request_timeout_s=0.2)
+    monkeypatch.setattr(
+        "search.engine.entry.raw_text.extract",
+        _mock_extract_with_entities(["v0"], ["E0"]),
+    )
+
+    async def _hung_resolve(self, texts, **kwargs):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr("entity_resolution.EntityResolver.resolve", _hung_resolve)
+
+    async def _body():
+        events = await _collect(
+            resolve_events(
+                make_request("test raw_text single variable entity deadline"),
+                graph=FakeGraph(),
+                llm=FakeLLM(),
+                sdmx=EMPTY_SDMX,
+            )
+        )
+        dones = [e for e in events if isinstance(e, DoneEvent)]
+        assert len(dones) == 1
+        assert dones[0].timed_out is True
+        _assert_no_orphaned_tasks({asyncio.current_task()})
+
+    _run(_body())
+
+
 def test_raw_text_entity_pre_resolution_deadline_leaves_no_orphaned_tasks(
     monkeypatch, search_settings
 ):
-    """Raw-text deadline cancellation awaits every asyncio pre-resolution task."""
+    """Raw-text deadline cancellation awaits every asyncio pre-resolution task. The frozen
+    clock keeps the request from reaching the deadline before the stand-in resolver starts."""
+    frozen_monotonic_clock(monkeypatch)
     search_settings(request_timeout_s=0.02)
     monkeypatch.setattr(
         "search.engine.entry.raw_text.extract",

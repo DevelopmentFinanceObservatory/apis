@@ -65,7 +65,7 @@ def stream_observation_batches(
     variables: Sequence[str],
     entities: Mapping[str, EntityFilter],
     facet_ids: Sequence[str] | None = None,
-    time_period: Literal["LATEST"] | None = None,
+    time_period: Literal["LATEST"] | Sequence[str] | None = None,
     roles: Sequence[str] | None = None,
     max_rows: int | None = None,
     deadline: float | None = None,
@@ -73,8 +73,9 @@ def stream_observation_batches(
     """Yields `(roles, batches)` for `variables`, as `SdmxClient.stream_data_batches` does.
 
     Variables with no UN dcid stream through `sdmx` with every argument
-    passed on. A subject place list too long for one request's URL budget
-    is read in slices (`dc_sdmx.place_slices`) one after another, every
+    passed on, `time_period` as `LATEST` or a list of exact periods. A UN read takes
+    `LATEST` alone and returns every period for a list, which its caller filters. A subject
+    place list too long for one request's URL budget is read in slices (`dc_sdmx.place_slices`) one after another, every
     slice under the first slice's roles and the rows of all of them counted
     against one `max_rows`. UN variables are read by `un_observation_batches` from
     `graph.un_observation_reader()`, which is `None` unless `graph` is or wraps
@@ -128,7 +129,7 @@ def _stream_place_slices(
     variables: Sequence[str],
     entities: Mapping[str, EntityFilter],
     facet_ids: Sequence[str] | None,
-    time_period: Literal["LATEST"] | None,
+    time_period: Literal["LATEST"] | Sequence[str] | None,
     roles: Sequence[str] | None,
     max_rows: int | None,
     deadline: float | None,

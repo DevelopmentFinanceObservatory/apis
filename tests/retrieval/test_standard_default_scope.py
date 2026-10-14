@@ -85,9 +85,10 @@ def _facets(start: str = "2015", end: str = "2022") -> list[dict]:
 
 
 class _BatchRecordingGraph(FakeGraph):
-    """Records the StatVars and entities of every facet batch."""
+    """Records the StatVars and entities of every facet batch. With `request_size` it sends a
+    read apart in groups of that many StatVars, as a deployment reading by GET does."""
 
-    def __init__(self, obs: dict[str, list[dict]]) -> None:
+    def __init__(self, obs: dict[str, list[dict]], *, request_size: int | None = None) -> None:
         super().__init__(
             nodes={},
             obs=obs,
@@ -96,10 +97,15 @@ class _BatchRecordingGraph(FakeGraph):
             children={_EARTH: {"Country": [_GHA, _KEN, _TZA]}},
         )
         self.batches: list[tuple[list[str], list[str]]] = []
+        self._request_size = request_size
 
     def observation_facets_batch(self, stat_vars, entities, *args, **kwargs):
         self.batches.append((list(stat_vars), list(entities)))
         return super().observation_facets_batch(stat_vars, entities, *args, **kwargs)
+
+    def observation_read_groups(self, stat_vars, entities, needs_dates=False):
+        size = self._request_size or len(stat_vars)
+        return [list(stat_vars[i : i + size]) for i in range(0, len(stat_vars), size)]
 
 
 def _at(stat_var: str, *places: str, start: str = "2015", end: str = "2022") -> dict:
@@ -473,19 +479,22 @@ _THREE = (_GHA, _KEN, _TZA)
 
 
 @pytest.mark.parametrize(
-    ("total_has_data", "sv_dcids"),
+    ("total_has_data", "request_size", "reads"),
     [
-        pytest.param(True, [_TOTAL], id="the-total-answers"),
-        pytest.param(False, [_TOTAL], id="the-total-has-no-data"),
+        pytest.param(True, None, [[_TOTAL, _BREAKDOWNS[0]]], id="the-total-answers"),
+        pytest.param(False, None, [[_TOTAL, _BREAKDOWNS[0]]], id="the-total-has-no-data"),
+        pytest.param(True, 1, [[_TOTAL]], id="a-read-sent-in-several-requests-stops-between-them"),
     ],
 )
 def test_an_answer_naming_one_member_reads_the_family_only_until_its_election_settles(
-    monkeypatch, total_has_data: bool, sv_dcids: list[str]
+    monkeypatch, total_has_data: bool, request_size: int | None, reads: list[list[str]]
 ) -> None:
     """ "Latest life expectancy data" leaves every slot of the 351-member family open, so the
     total answers alone. The reads run in election order, the total first, and stop once the
     total is read, with or without data: no breakdown can be elected over it. The confirmed
-    count is then a floor."""
+    count is then a floor. A graph that sends one read as several requests is asked no
+    request past the one that settles the election: "refugees from Somalia" on the UN System
+    Data Commons reads 1 of the 40 GETs its 2,896-member family takes."""
     monkeypatch.setattr(standard, "_FACET_PROBE_MAX_PAIRS_PER_POST", 6)
     members = [_TOTAL, *_BREAKDOWNS]
     obs = {
@@ -494,7 +503,7 @@ def test_an_answer_naming_one_member_reads_the_family_only_until_its_election_se
         if sv != _TOTAL or total_has_data
         for key, facets in _at(sv, *_THREE).items()
     }
-    graph = _BatchRecordingGraph(obs)
+    graph = _BatchRecordingGraph(obs, request_size=request_size)
     shape = ShapeDraft(
         shape_id="death_count_default_scope",
         label="Deaths",
@@ -520,10 +529,10 @@ def test_an_answer_naming_one_member_reads_the_family_only_until_its_election_se
         default_presence=_presence(dict.fromkeys(members, _THREE)),
     )
 
-    assert [stat_vars for stat_vars, _places in graph.batches] == [[_TOTAL, _BREAKDOWNS[0]]]
-    assert result.sv_dcids == sv_dcids
+    assert [stat_vars for stat_vars, _places in graph.batches] == reads
+    assert result.sv_dcids == [_TOTAL]
     assert result.population is not None
     assert (result.population.confirmed, result.population.member_count_exact) == (
-        int(total_has_data) + 1,
+        sum(sv != _TOTAL or total_has_data for sv in reads[0]),
         False,
     )

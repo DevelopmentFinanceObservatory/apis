@@ -31,8 +31,10 @@ typed only `ProvisionalNode` and non-StatisticalVariables raise. Constraint and 
 properties are list-valued. Export validates rows before the mint door trusts them.
 
 Authored config supplies system declarations, defaults, measure axes and labels, the IDS and WEO
-measure nouns, synonyms, and dataset declarations. Graph reads supply codes, StatVars, and
-measure values on those rows. Every observed measure partition needs one authored label.
+measure nouns, synonyms, dataset declarations, the shape slot defaults, the constraint values a
+dataset states on only some of its series, the measure class patterns, the variable aliases
+recall expands, and the words naming a stat type. Graph reads supply codes, StatVars, and measure
+values on those rows. Every observed measure partition needs one authored label.
 
 The published series coverage build supplies each StatVar's provenances: `coverage.parquet` maps a
 variable to its facet ids and `facets.json` maps a facet id to its provenance. The stamp records
@@ -42,8 +44,9 @@ StatVar row aborts the export.
 The same build names every donor and recipient of a declared or listed dataset. Each party's graph
 types give it a kind (party, total or residual) under the authored `PARTY_TYPE_KINDS`, except a
 party the authored `PARTY_KIND_OVERRIDES` names. Its graph name is its label, and its row lists the
-datasets that publish it and the flow axes they publish it on. The authored `TOTAL_GROUPS` names the group each total holds and the
-residuals it counts beside the group's members. A party with an undeclared type, or whose types
+datasets that publish it and the flow axes they publish it on. The authored `TOTAL_GROUPS` names the group each total holds, whether
+the total equals the sum of the group's members plus the residuals it counts beside them, and those
+residuals. A party with an undeclared type, or whose types
 give no single kind, aborts the export, as does a `TOTAL_GROUPS` or `PARTY_KIND_OVERRIDES` row
 naming a party no declared or listed dataset publishes (a `TOTAL_GROUPS` row also needs that party to be a
 total, and each residual it names to be a published residual).
@@ -80,8 +83,13 @@ from code_index.types import (
     DatasetDeclaration,
     DeclaredDefault,
     MeasureAxis,
+    MeasureClassDeclaration,
     MeasurePartitionLabel,
+    PartlyStatedValue,
     PartyKind,
+    ShapeSlotDefault,
+    StatedWord,
+    StatTypeWordDeclaration,
     invalid_when_named_entry,
     label_for_pairs,
     party_kind,
@@ -156,7 +164,9 @@ class CodeSystemConfig:
 
     `plain_name` is the singular lowercase noun used after "any". A default code belongs to this
     system, scope codes belong to other systems, and `when_named` entries are lowercase and
-    non-empty. Export validates these conditions before writing.
+    non-empty. Export validates these conditions before writing. `no_vocabulary_terms` lists
+    the lowercase words naming a distinction of this axis no code expresses
+    (`CodeSystemDeclaration.no_vocabulary_terms`).
     """
 
     code_system: str
@@ -168,6 +178,7 @@ class CodeSystemConfig:
     declared_by_every_statvar_of: tuple[str, ...]
     plain_name: str
     default: DeclaredDefault | None = None
+    no_vocabulary_terms: tuple[str, ...] = ()
 
 
 _CRS = "provenance/OECDCreditorReportingSystem"
@@ -231,6 +242,9 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
             when_bound_under=("CRSTypeOfFinance100",),
             when_named=("aid",),
         ),
+        # No CRS flow type separates non-concessional flows from concessional ones, so a
+        # question naming them on a CRS shape refuses the qualifier.
+        no_vocabulary_terms=("non-concessional",),
     ),
     # Imputed multilateral and DAC2a StatVars carry `dac2aAidType`; CRS StatVars do not. DAC2a
     # aid types nest totals over their parts ("ODA grants" under "ODA"), and a net total holds
@@ -310,7 +324,15 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
 # imputed rows, so each forms families of its own (`CodeIndex.family_of`) and its rank orders it
 # against no other table. Every imputed row is an ODA flow of the imputed multilateral aid type,
 # declared as invariants the loader checks against every row. Each of the five is a table a
-# provider reports, so each gives the provider's account of a flow.
+# provider reports, so each gives the provider's account of a flow. Every row of the CRS is a
+# flow from one provider to one recipient, which the OECD calls bilateral whatever the provider
+# is: the CRS import leaves out the rows that record a core contribution to a multilateral
+# organisation. So the CRS states "bilateral" of both measured properties it publishes
+# (`DatasetDeclaration.stated_words`). A DAC2a or DAC2b `amount` row is bilateral only where
+# its recipient is a country, since a flow to a multilateral organisation is a core
+# contribution, so those tables state it where the destination is a country. DAC2a's
+# `attributedAmount` row, imputed multilateral aid, and DAC1, whose aid types split bilateral
+# from multilateral, state nothing.
 DATASETS: tuple[DatasetDeclaration, ...] = (
     DatasetDeclaration(
         provenance=_CRS,
@@ -323,6 +345,10 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
         absent_observation="zero",
         account="provider",
         rank=0,
+        stated_words=(
+            StatedWord(word="bilateral", measured_property="amount"),
+            StatedWord(word="bilateral", measured_property="grantEquivalent"),
+        ),
     ),
     DatasetDeclaration(
         provenance=_IMPUTED_MULTILATERAL_SECTORS,
@@ -361,6 +387,11 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
         absent_observation="unknown",
         account="provider",
         rank=30,
+        stated_words=(
+            StatedWord(
+                word="bilateral", measured_property="amount", where={"destination": "country"}
+            ),
+        ),
     ),
     DatasetDeclaration(
         provenance=_DAC2B,
@@ -373,6 +404,11 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
         absent_observation="unknown",
         account="provider",
         rank=40,
+        stated_words=(
+            StatedWord(
+                word="bilateral", measured_property="amount", where={"destination": "country"}
+            ),
+        ),
     ),
 )
 
@@ -450,11 +486,16 @@ PARTY_KIND_OVERRIDES: Mapping[str, KindOverride] = {
 
 @dataclass(frozen=True)
 class TotalGroup:
-    """The group one total holds, as search names the group, and the residuals the total
-    counts beside the group's members, sorted."""
+    """The group one total holds, as search names the group, and how it holds it.
+
+    With `sums_members` true the total equals the sum of the group's members plus
+    `residuals`, the residuals it counts beside them, sorted. With `sums_members` false the
+    total is the figure the source publishes for the group, which can differ from that sum,
+    and it counts no residuals."""
 
     group: str
     residuals: tuple[str, ...] = ()
+    sums_members: bool = True
 
 
 def _unallocated(*regions: str) -> tuple[str, ...]:
@@ -463,16 +504,23 @@ def _unallocated(*regions: str) -> tuple[str, ...]:
 
 
 # The group each total holds, as search names the group: a graph place, or a resolver group's
-# dcid (`entity_resolution.regions.identity_to_dcid`), and the residuals it counts beside the
-# group's members. The graph links no total to its group, so this table is reviewed by hand. A
-# row stands when, in every year from 2000 to 2023, the total equals the sum of the group's
-# members plus its residuals: France's DAC2A ODA disbursements for the recipient totals, DAC1 ODA
-# by donor for the donor ones. A continent's residuals include those of its subregions ("South of
-# Sahara, unallocated by country" within Africa). Totals that fail the test hold no group: DAC's
-# Asia and Europe place Georgia, Armenia and Türkiye differently from the graph, and its Eastern,
-# Middle and Western Africa, North and South of Sahara, South America, lower and upper middle
-# income, small island states and DAC countries totals differ from the sums over the graph's or
-# the resolver's members.
+# dcid (`entity_resolution.regions.identity_to_dcid`). The graph links no total to its group, so
+# this table is reviewed by hand. A row holds its group in one of two ways. A summing row
+# (`sums_members` true) stands when, in every year from 2000 to 2023, the total equals the sum of
+# the group's members plus the residuals the row counts beside them: France's DAC2A ODA
+# disbursements for the recipient totals, DAC1 ODA by donor for the donor ones. A published row
+# (`sums_members` false) names the figure the source publishes for a group whose members' sum
+# differs from it, and counts no residuals: DAC countries, total, which DAC1, DAC2A and DAC2B
+# publish as a donor, differs from the sum over the DAC's members where members report late.
+# A continent's residuals include those of its subregions ("South of Sahara, unallocated by
+# country" within Africa). The DAC regions whose members differ from the graph's places (Asia,
+# Europe, North and South of Sahara, among others) hold resolvekit's DAC region groups, which
+# list the DAC's own members. A region already keyed to a graph place stays there, since a total
+# holds one group. The East African Community and the Indus Basin count inside DAC's Eastern
+# Africa and South and Central Asia, but they are parties, not residuals, and their amounts stop
+# before 1994, so no row counts them. Totals that hold no group: DAC's lower and upper middle
+# income and small island states totals differ from the sums over the resolver's members, and
+# Northern America has no amounts after 1996.
 TOTAL_GROUPS: Mapping[str, TotalGroup] = {
     "DACAfrica": TotalGroup(
         "africa",
@@ -492,16 +540,72 @@ TOTAL_GROUPS: Mapping[str, TotalGroup] = {
             "America", "Caribbean", "CaribbeanAndCentralAmerica", "CentralAmerica", "SouthAmerica"
         ),
     ),
+    "DACAsia": TotalGroup(
+        "groups/OECD.DAC.Region.Asia",
+        tuple(
+            sorted(
+                (
+                    *_unallocated(
+                        "Asia",
+                        "CentralAsia",
+                        "FarEastAsia",
+                        "MiddleEast",
+                        "SouthAndCentralAsia",
+                        "SouthAsia",
+                    ),
+                    "DACMekongDeltaProject",
+                )
+            )
+        ),
+    ),
     "DACCaribbean": TotalGroup("Caribbean", _unallocated("Caribbean")),
+    "DACCaribbeanAndCentralAmerica": TotalGroup(
+        "groups/OECD.DAC.Region.CaribbeanAndCentralAmerica",
+        _unallocated("Caribbean", "CaribbeanAndCentralAmerica", "CentralAmerica"),
+    ),
     "DACCentralAmerica": TotalGroup("CentralAmerica", _unallocated("CentralAmerica")),
+    "DACCountriesTotal": TotalGroup("groups/OECD.DAC", sums_members=False),
+    "DACEasternAfrica": TotalGroup(
+        "groups/OECD.DAC.Region.EasternAfrica", _unallocated("EasternAfrica")
+    ),
+    "DACEurope": TotalGroup(
+        "groups/OECD.DAC.Region.Europe", _unallocated("Europe", "ExYugoslavia")
+    ),
+    "DACFarEastAsia": TotalGroup(
+        "groups/OECD.DAC.Region.FarEastAsia",
+        tuple(sorted((*_unallocated("FarEastAsia"), "DACMekongDeltaProject"))),
+    ),
     "DACMelanesia": TotalGroup("Melanesia", _unallocated("Melanesia")),
     "DACMicronesia": TotalGroup("Micronesia", _unallocated("Micronesia")),
+    "DACMiddleAfrica": TotalGroup(
+        "groups/OECD.DAC.Region.MiddleAfrica", _unallocated("MiddleAfrica")
+    ),
+    "DACMiddleEast": TotalGroup("groups/OECD.DAC.Region.MiddleEast", _unallocated("MiddleEast")),
     "DACNonDACCountries": TotalGroup("groups/OECD.NonDAC"),
+    "DACNorthOfSahara": TotalGroup(
+        "groups/OECD.DAC.Region.NorthOfSahara", _unallocated("NorthOfSahara")
+    ),
     "DACOceania": TotalGroup(
         "oceania", _unallocated("Melanesia", "Micronesia", "Oceania", "Polynesia")
     ),
     "DACPolynesia": TotalGroup("Polynesia", _unallocated("Polynesia")),
+    "DACSouthAmerica": TotalGroup(
+        "groups/OECD.DAC.Region.SouthAmerica", _unallocated("SouthAmerica")
+    ),
+    "DACSouthAndCentralAsia": TotalGroup(
+        "groups/OECD.DAC.Region.SouthAndCentralAsia",
+        _unallocated("CentralAsia", "SouthAndCentralAsia", "SouthAsia"),
+    ),
+    "DACSouthOfSahara": TotalGroup(
+        "groups/OECD.DAC.Region.SouthOfSahara",
+        _unallocated(
+            "EasternAfrica", "MiddleAfrica", "SouthOfSahara", "SouthernAfrica", "WesternAfrica"
+        ),
+    ),
     "DACSouthernAfrica": TotalGroup("SouthernAfrica", _unallocated("SouthernAfrica")),
+    "DACWesternAfrica": TotalGroup(
+        "groups/OECD.DAC.Region.WesternAfrica", _unallocated("WesternAfrica")
+    ),
     "GroupOfSeven": TotalGroup("GroupOfSeven"),
     "UNLandlockedDevelopingCountries": TotalGroup("groups/UN.LLDC"),
     "UNLeastDevelopedCountries": TotalGroup("groups/UN.LDC"),
@@ -620,6 +724,7 @@ def export_parties(
                 "label": _first_or_none(party_arcs.get("name", ())),
                 "totals": None if total is None else total.group,
                 "residuals": [] if total is None else sorted(total.residuals),
+                "sums_members": True if total is None else total.sums_members,
                 "datasets": sorted(parties[dcid].datasets),
                 "axes": sorted(parties[dcid].axes),
             }
@@ -1169,7 +1274,8 @@ _MEASURE_NOUNS: tuple[MeasurePartitionLabel, ...] = (
             "external debt."
         ),
     ),
-    # Every IDS StatVar declaring `netOf` nets principal repayments off disbursements.
+    # An IDS StatVar declaring `netOf` nets one of two things off disbursements: principal
+    # repayments, or servicing payments (principal and interest). Each value has its noun.
     _noun(
         "net flows on external debt",
         *_IDS_FLOW,
@@ -1181,6 +1287,18 @@ _MEASURE_NOUNS: tuple[MeasurePartitionLabel, ...] = (
         definition=(
             "Disbursements on external debt received by borrowers in a year, less the principal "
             "they repaid in it."
+        ),
+    ),
+    _noun(
+        "net transfers on external debt",
+        *_IDS_FLOW,
+        ("financialFlowType", "Disbursement"),
+        ("netOf", "ServicingPayment"),
+        ("nettingBasis", "Net"),
+        # DT.NTR.DLXF.CD: "Net transfers are net flows minus interest payments during the year"
+        definition=(
+            "Disbursements on external debt received by borrowers in a year, less the principal "
+            "and interest they paid in it."
         ),
     ),
     # The four IDS StatVars declaring `includesIMFCredit = WithIMFCredit` are long-term
@@ -1666,6 +1784,94 @@ def _reject_cross_system_parents(
             )
 
 
+# A birth in demographic statistics is a live birth, and the crude birth rate is live births
+# per person. A births question that names no status reads live births.
+SHAPE_SLOT_DEFAULTS: tuple[ShapeSlotDefault, ...] = (
+    ShapeSlotDefault(
+        population_type="BirthEvent", property_dcid="medicalStatus", value_dcid="LiveBirth"
+    ),
+)
+
+# The lender-named IDS debt series state financingResource=DebtInstrument and the debt totals
+# state no financingResource, though both hold debt instruments. The export refuses a
+# declaration with no five-tuple where the dataset has a row stating the value and a row
+# stating nothing on the property (`code_index.loader._check_partly_stated_values`).
+PARTLY_STATED_VALUES: tuple[PartlyStatedValue, ...] = (
+    PartlyStatedValue(
+        provenance=_IDS,
+        property_dcid="financingResource",
+        value_dcid="DebtInstrument",
+    ),
+)
+
+# The words naming each measure class, read whole-word from a lowercase phrase or label.
+# Incidence also reads from "new" followed within three tokens by "infection(s)" or
+# "case(s)", as in "Number of new HIV infections per 1,000 uninfected population" and
+# "Number Of New Reported Cases Of ...". A bare "cases" names no class: most "Number of X
+# Cases" series are notified or cumulative counts. "Living with" names a population ("people
+# living with HIV"), which is a prevalence only when no measure word names another class:
+# "Deaths among people living with HIV" is a mortality.
+MEASURE_CLASSES: tuple[MeasureClassDeclaration, ...] = (
+    MeasureClassDeclaration("prevalence", re.compile(r"\bprevalence\b")),
+    MeasureClassDeclaration(
+        "incidence",
+        re.compile(r"\bincidence\b|\bnew(?:\s+\S+){0,3}?\s+(?:infections?|cases?)\b"),
+    ),
+    MeasureClassDeclaration(
+        "mortality", re.compile(r"\b(?:mortality|deaths|death\s+rates?|dying)\b")
+    ),
+    MeasureClassDeclaration("prevalence", re.compile(r"\bliving\s+with\b"), fallback=True),
+)
+
+# The words naming a statType other than measuredValue, read whole-word from a lowercase
+# variable phrase: "GDP growth" asks for the growth rate.
+STAT_TYPE_WORDS: tuple[StatTypeWordDeclaration, ...] = (
+    StatTypeWordDeclaration(re.compile(r"\bgrowth\b"), "growthRate"),
+)
+
+# Acronyms recall confuses, expanded in the variable query before recall. GNI scores 0.6342 for
+# GiniIndex_EconomicActivity; its full term finds the aggregate. U5MR and IMR hit unrelated
+# variables, while their full terms find the mortality variables. CO2's full term scores higher
+# than the acronym. GDP recalls correctly without expansion. PPG recalls no variable for "debt
+# service for PPG debt"; its full term finds the public and publicly guaranteed debt service
+# series.
+VARIABLE_ALIASES: Mapping[str, str] = {
+    "gni": "gross national income",
+    "co2": "carbon dioxide emissions",
+    "u5mr": "under five mortality rate",
+    "imr": "infant mortality rate",
+    "ppg": "public and publicly guaranteed",
+}
+
+
+def _shape_slot_default_to_dict(default: ShapeSlotDefault) -> dict:
+    return {
+        "population_type": default.population_type,
+        "property": default.property_dcid,
+        "value": default.value_dcid,
+    }
+
+
+def _partly_stated_value_to_dict(declared: PartlyStatedValue) -> dict:
+    return {
+        "provenance": declared.provenance,
+        "property": declared.property_dcid,
+        "value": declared.value_dcid,
+    }
+
+
+def _measure_class_to_dict(declaration: MeasureClassDeclaration) -> dict:
+    return {
+        "class": declaration.measure_class,
+        "pattern": declaration.pattern.pattern,
+        "fallback": declaration.fallback,
+    }
+
+
+def _stat_type_word_to_dict(declaration: StatTypeWordDeclaration) -> dict:
+    return {"pattern": declaration.pattern.pattern, "stat_type": declaration.stat_type}
+
+
 def export_code_system(
     reader: GraphReader, config: CodeSystemConfig, *, max_results: int = _DEFAULT_MAX_RESULTS
 ) -> tuple[dict, list[dict]]:
@@ -1712,6 +1918,7 @@ def export_code_system(
         "plain_name": config.plain_name,
         "default": _declared_default_to_dict(config.default),
         "enum_dcid": config.enum_dcid,
+        "no_vocabulary_terms": list(config.no_vocabulary_terms),
     }
     return declaration, rows
 
@@ -2711,6 +2918,14 @@ def _measure_partition_label_to_dict(partition_label: MeasurePartitionLabel) -> 
     }
 
 
+def _stated_word_to_dict(stated: StatedWord) -> dict:
+    return {
+        "word": stated.word,
+        "measured_property": stated.measured_property,
+        **({"where": dict(sorted(stated.where.items()))} if stated.where else {}),
+    }
+
+
 def _dataset_to_dict(dataset: DatasetDeclaration) -> dict:
     return {
         "provenance": dataset.provenance,
@@ -2721,6 +2936,11 @@ def _dataset_to_dict(dataset: DatasetDeclaration) -> dict:
         "account": dataset.account,
         "rank": dataset.rank,
         "invariants": dict(sorted(dataset.invariants.items())),
+        **(
+            {"stated_words": [_stated_word_to_dict(w) for w in dataset.stated_words]}
+            if dataset.stated_words
+            else {}
+        ),
     }
 
 
@@ -2776,6 +2996,11 @@ def export_graph_blocks(
     datasets: Sequence[DatasetDeclaration] = DATASETS,
     party_type_kinds: Mapping[str, PartyKind | None] = PARTY_TYPE_KINDS,
     listed: Collection[str] = (),
+    shape_slot_defaults: Sequence[ShapeSlotDefault] = SHAPE_SLOT_DEFAULTS,
+    partly_stated_values: Sequence[PartlyStatedValue] = PARTLY_STATED_VALUES,
+    measure_classes: Sequence[MeasureClassDeclaration] = MEASURE_CLASSES,
+    variable_aliases: Mapping[str, str] = VARIABLE_ALIASES,
+    stat_type_words: Sequence[StatTypeWordDeclaration] = STAT_TYPE_WORDS,
 ) -> dict:
     """Build every document block the graph and the authored config determine, sorted.
 
@@ -2845,6 +3070,11 @@ def export_graph_blocks(
         "party_types": [
             {"type": type_, "kind": kind} for type_, kind in sorted(party_type_kinds.items())
         ],
+        "shape_slot_defaults": [_shape_slot_default_to_dict(d) for d in shape_slot_defaults],
+        "partly_stated_values": [_partly_stated_value_to_dict(v) for v in partly_stated_values],
+        "measure_classes": [_measure_class_to_dict(d) for d in measure_classes],
+        "variable_aliases": dict(variable_aliases),
+        "stat_type_words": [_stat_type_word_to_dict(d) for d in stat_type_words],
     }
 
 
@@ -2879,6 +3109,7 @@ def export_index(
     measure_nouns: Sequence[MeasurePartitionLabel] = _MEASURE_NOUNS,
     datasets: Sequence[DatasetDeclaration] = DATASETS,
     party_type_kinds: Mapping[str, PartyKind | None] = PARTY_TYPE_KINDS,
+    partly_stated_values: Sequence[PartlyStatedValue] = PARTLY_STATED_VALUES,
     party_kind_overrides: Mapping[str, KindOverride] = PARTY_KIND_OVERRIDES,
     total_groups: Mapping[str, TotalGroup] = TOTAL_GROUPS,
     listed_datasets: Collection[str] = (),
@@ -2901,6 +3132,7 @@ def export_index(
         measure_nouns=measure_nouns,
         datasets=datasets,
         party_type_kinds=party_type_kinds,
+        partly_stated_values=partly_stated_values,
         listed=listed_dcids(coverage.provenances, listed_datasets),
     )
     statvars_without_coverage = _join_provenances(blocks["statvars"], coverage)

@@ -19,13 +19,13 @@ import json
 import logging
 import re
 import threading
-from typing import TYPE_CHECKING, Literal, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, Literal, Protocol, TypeVar
 
 import httpx
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 import search.engine.config as config  # module-attribute access for runtime-resolved values
-from search.engine.errors import LLMInfraError
+from search.engine.errors import LLMInfraError, LLMOutputRefused
 from search.engine.response_cache import Lease, ResponseCache
 
 if TYPE_CHECKING:
@@ -245,6 +245,33 @@ def _thinking_config_for_model(
     return None
 
 
+SCHEMA_REFUSAL = "schema_refusal"
+"""The pydantic error type of a rule a response schema refuses an answer on, raised as
+`pydantic_core.PydanticCustomError(SCHEMA_REFUSAL, ...)`. Such an answer is the model's,
+so it raises `LLMOutputRefused`, which a caller may answer for and the response cache
+stores; any other validation error is an infrastructure failure."""
+
+
+def _parse[SchemaT: BaseModel](
+    text: str | bytes | None, schema: type[SchemaT], *, model: str, usage: dict | None
+) -> SchemaT:
+    """Validate the model's `text` against `schema`, the one parse every holder of a call
+    runs: the live caller, a memo leader, its followers and a memo hit.
+
+    Raises `LLMOutputRefused` with `usage` when every validation error is of type
+    `SCHEMA_REFUSAL`. Empty or unparsable text, a missing field, a wrong type, or a value
+    past a length limit raises `LLMInfraError`."""
+    detail = f"LLM output failed schema validation (model={model!r}, schema={schema.__name__!r})"
+    if not text:
+        raise LLMInfraError(detail)
+    try:
+        return schema.model_validate_json(text)
+    except ValidationError as exc:
+        if all(error["type"] == SCHEMA_REFUSAL for error in exc.errors()):
+            raise LLMOutputRefused(detail, usage=usage) from exc
+        raise LLMInfraError(detail) from exc
+
+
 class SupportsLLM(Protocol):
     """Structural interface for injected LLM clients and test doubles."""
 
@@ -268,8 +295,10 @@ async def generate_structured_async[SchemaT: BaseModel](
 
     The resolved request forms the memo key. A hit returns freshly validated
     JSON with zero usage. One leader calls Gemini in a shielded task and
-    publishes the result. Followers wait up to ``llm_timeout_s``. Leader
-    failures reach followers as ``LLMInfraError`` without another Gemini call.
+    publishes the model's text, an answer its schema refuses included. Followers
+    wait up to ``llm_timeout_s`` and parse that text as the leader did, so a
+    refusal reaches them as ``LLMOutputRefused``. Other leader failures reach
+    followers as ``LLMInfraError`` without another Gemini call.
 
     Every holder releases its lease on success, failure, timeout, or
     cancellation. The leader serves followers until its last lease is released.
@@ -287,7 +316,7 @@ async def generate_structured_async[SchemaT: BaseModel](
     if stored is not None:
         logger.info("LLM memo hit: schema=%s", schema.__name__)
         # Each hit builds a fresh instance so callers can mutate their results independently.
-        return schema.model_validate_json(stored), dict(_MEMO_HIT_USAGE)
+        return _served(stored, schema, model=llm._model), dict(_MEMO_HIT_USAGE)
 
     assert lease is not None  # acquire() returns a lease exactly when it missed
     if lease.is_leader:
@@ -311,7 +340,13 @@ async def generate_structured_async[SchemaT: BaseModel](
     value, _timed_out, _storable = published
     # Followers report zero usage. The leader's live call reports its token cost.
     logger.info("LLM memo hit: schema=%s", schema.__name__)
-    return schema.model_validate_json(value), dict(_MEMO_HIT_USAGE)
+    return _served(value, schema, model=llm._model), dict(_MEMO_HIT_USAGE)
+
+
+def _served[SchemaT: BaseModel](text: bytes, schema: type[SchemaT], *, model: str) -> SchemaT:
+    """Parse the model's text the memo holds, for a caller that made no call. A refusal
+    reaches that caller as `LLMOutputRefused` with zero usage."""
+    return _parse(text, schema, model=model, usage=dict(_MEMO_HIT_USAGE))
 
 
 # The loop keeps weak task refs. This set retains leaders serving followers after cancellation.
@@ -333,15 +368,10 @@ async def _lead[SchemaT: BaseModel](
     followers. The orphan callback cancels it when the last holder leaves.
     """
 
-    async def lead_and_settle():
+    async def publish(text: str) -> None:
+        # Preserve the caller's outcome if memo publication fails.
         try:
-            parsed, usage = await llm._fetch_structured(prompt=prompt, schema=schema, config=config)
-        except BaseException:
-            await memo.abandon(lease)
-            raise
-        # Preserve a successful answer if memo publication fails.
-        try:
-            payload = parsed.model_dump_json().encode()
+            payload = text.encode()
             await memo.publish(lease, payload, size=len(payload))
         except BaseException:
             logger.exception(
@@ -349,6 +379,23 @@ async def _lead[SchemaT: BaseModel](
                 "this caller's answer uncached and freeing the key"
             )
             await memo.abandon(lease)
+
+    async def lead_and_settle():
+        try:
+            text, usage = await llm._fetch_text(prompt=prompt, config=config)
+        except BaseException:
+            await memo.abandon(lease)
+            raise
+        try:
+            parsed = _parse(text, schema, model=llm._model, usage=usage)
+        except LLMOutputRefused:
+            # A refusal is the model's answer, so the memo stores it like any other.
+            await publish(text)
+            raise
+        except BaseException:
+            await memo.abandon(lease)
+            raise
+        await publish(text)
         return parsed, usage
 
     task = asyncio.create_task(lead_and_settle())
@@ -387,7 +434,7 @@ def warm() -> None:
     _get_client()
 
 
-# LLMMemo stores parsed JSON bytes by `_memo_key`. ResponseCache supplies the
+# LLMMemo stores the model's text as bytes by `_memo_key`. ResponseCache supplies the
 # byte limits, TTL, and single-flight behavior.
 LLMMemo = ResponseCache
 
@@ -520,22 +567,19 @@ class LLM:
         when Gemini omits usage metadata. This method always makes a live call.
         the engine uses ``generate_structured_async`` for memoisation.
         Cancellation stops the underlying HTTP request. Transport/API errors
-        and a missing parsed response raise ``LLMInfraError``.
+        and text the schema cannot read raise ``LLMInfraError``; an answer the
+        schema refuses on purpose raises ``LLMOutputRefused``.
         """
-        return await self._fetch_structured(
-            prompt=prompt,
-            schema=schema,
-            config=self._resolve_config(system=system, schema=schema),
+        text, usage = await self._fetch_text(
+            prompt=prompt, config=self._resolve_config(system=system, schema=schema)
         )
+        return _parse(text, schema, model=self._model, usage=usage), usage
 
-    async def _fetch_structured(
-        self,
-        *,
-        prompt: str,
-        schema: type[_SchemaT],
-        config: GenerateContentConfig,
-    ) -> tuple[_SchemaT, dict | None]:
-        """One live generate_content call, parsed. See generate_structured."""
+    async def _fetch_text(
+        self, *, prompt: str, config: GenerateContentConfig
+    ) -> tuple[str, dict | None]:
+        """One live generate_content call: the model's text, empty when it sent none, and
+        its usage. `_parse` reads the text against the request's schema."""
         client = self._client()
         try:
             response = await client.aio.models.generate_content(
@@ -569,11 +613,4 @@ class LLM:
                 cache_hit_pct,
             )
 
-        parsed = response.parsed
-        if parsed is None:
-            raise LLMInfraError(
-                f"LLM output failed schema validation; response.parsed is None "
-                f"(model={self._model!r}, schema={schema.__name__!r})"
-            )
-        # cast recovers the concrete type from the genai stub's wider BaseModel | dict | Enum.
-        return cast(schema, parsed), usage
+        return response.text or "", usage

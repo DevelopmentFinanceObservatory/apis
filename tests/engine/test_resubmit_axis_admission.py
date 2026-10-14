@@ -333,9 +333,6 @@ class _CountingGraphReader:
     def observation_facets_batch(self, *args, **kwargs):
         return self.inner.observation_facets_batch(*args, **kwargs)
 
-    def declares_facet_defaults(self) -> bool:
-        return self.inner.declares_facet_defaults()
-
     def default_facet_policy(self, *args, **kwargs):
         return self.inner.default_facet_policy(*args, **kwargs)
 

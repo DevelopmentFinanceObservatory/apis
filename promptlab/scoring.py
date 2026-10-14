@@ -12,6 +12,7 @@ from langfuse import Evaluation
 
 from promptlab.bindmenu import MenuEntry
 from promptlab.expectations import LegExpectation
+from search.engine.bind import menu_denominator
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.retrieval.facts import read_five_tuple
 from search.eval.runner import Sample, modal_sample
@@ -38,19 +39,6 @@ def seed_flip_rate(outputs: Sequence[Mapping]) -> float | None:
     ]
     _index, n_agreeing = modal_sample(samples)
     return 1 - n_agreeing / len(outputs)
-
-
-# How the bind menu shows a denominator arc whose target is unresolved, whatever its dcid.
-UNRESOLVED_DENOMINATOR = "(present, unresolved)"
-
-
-def menu_denom_display(dcid: str | None, unresolved: bool) -> str | None:
-    """Match bind-menu encoding: unresolved sentinel, resolved dcid, or None for absent."""
-    if unresolved:
-        return UNRESOLVED_DENOMINATOR
-    if dcid:
-        return dcid
-    return None
 
 
 def menu_five_tuple(
@@ -83,7 +71,7 @@ def _resolve_menu_index(
             target.meas_prop_dcid or None,
             target.stat_type_dcid or None,
             target.meas_qual_dcid,
-            menu_denom_display(target.meas_denom_dcid, target.meas_denom_unresolved),
+            menu_denominator(target.meas_denom_dcid, unresolved=target.meas_denom_unresolved),
         )
         for entry in menu:
             if menu_five_tuple(entry) == target_tuple:

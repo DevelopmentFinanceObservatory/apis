@@ -1,7 +1,12 @@
-"""Ground the elected shape and assemble a definite response.
+"""Mint the plan and set the part's status over the evidence materialisation read
+(`_phase_outcome`).
 
-A bound unit is checked before grounding. Assembly then builds the Spec, applies no-data
-carve-outs, and attaches buffered or streamed options and observations.
+Candidates come first, where the status rule offers readings beside the elected shape
+(`candidates.resolve_candidates`). Else the elected shape's own read answers: no data or
+unsupported (`_no_data_answer`), or grounding (`_ground_elected_answer`) and the definite
+Spec (`_assemble_definite_answer`). A bound unit is checked before grounding. Assembly
+builds the Spec, applies no-data carve-outs, and attaches buffered or streamed options
+and observations.
 """
 
 from __future__ import annotations
@@ -23,6 +28,7 @@ from search.engine.region.arcs import (
     unresolved_slots_from_member_facts,
 )
 from search.engine.region.bound_unit_gate import bound_unit_gate_reason
+from search.engine.region.candidates import resolve_candidates
 from search.engine.region.codes import (
     NO_MEMBER_ASSERTS_BOUND_PROPERTIES,
     NO_MEMBER_HAS_DATA_AT_PLACE,
@@ -68,6 +74,7 @@ from search.engine.region.observations.entities import (
     _flat_obs_entities,
     _observation_entities,
     coverage_probe_role_entities,
+    open_role_axis,
     scope_axis_dcids,
 )
 from search.engine.region.observations.fetch import _build_observations
@@ -85,10 +92,12 @@ from search.engine.region.option_coverage import (
 from search.engine.region.phase_place_materialise import (
     _nearest_real_for,
     note_denominator_unverified,
+    refuse_unserved_quantity,
 )
 from search.engine.region.phase_shared import (
     UNIT_CONVERSION_REFUSALS,
     _admitted_qualifier_properties,
+    _unsupported,
     unit_conversion_refusal,
     withdraw_typed_unit,
 )
@@ -103,7 +112,6 @@ from search.engine.region.scope import (
     scope_axis,
     stated_scope_members,
 )
-from search.engine.region.sentence_events import _build_definite_sentence_event
 from search.engine.region.state import MeasureFamily, ResolveState, raised_facts
 from search.engine.region.un_system import member_labels
 from search.engine.retrieval.bound_values import (
@@ -118,7 +126,7 @@ from search.engine.retrieval.bound_values import (
 )
 from search.engine.retrieval.elected_dataset import elected_datasets
 from search.engine.retrieval.read_plan import ReadPlan, plan_probes
-from search.engine.retrieval.retrieve import Materialised
+from search.engine.retrieval.retrieve import Materialised, NoDataDraft, UnsupportedDraft
 from search.engine.spec_build import (
     RoleAxisFactInput,
     bind_when_slot,
@@ -143,6 +151,7 @@ from search.models import (
     IdentityFacetBinding,
     IdentityFacetValueRequest,
     IdentityUnitRequest,
+    NearestRealSpec,
     Slot,
     SlotOptions,
     Spec,
@@ -373,7 +382,7 @@ def _runs_unit_conversion(
     return gate.reason is None
 
 
-async def _phase_ground_answer(state: ResolveState) -> RegionResult | None:
+async def _ground_elected_answer(state: ResolveState) -> RegionResult | None:
     """Check bound-unit convertibility, then ground facets, slots, refs, and entities.
 
     Recompute slot status from resolved member facts. Assembly builds the Spec.
@@ -620,7 +629,7 @@ def _start_assemble_definite(state: ResolveState, mat_result: Materialised) -> _
         representative_score=state.shape_draft.representative_score,
         has_data=mat_result.has_data,
         retrieved=state.shape_draft.retrieved,
-        near_neighbor_relevant=state.tie_unresolved,
+        sole_reading=state.status_plan.sole,
     )
 
     # Probe the region members confirmed during materialisation.
@@ -1083,10 +1092,6 @@ async def _finalize_definite_result(
         )
 
     family = state.family_total_absent_departures((spec,))
-    # The completed sentence matches the response, so emit it before the terminal event.
-    if state.emit is not None:
-        await state.emit(_build_definite_sentence_event(spec, variable_index=state.variable_index))
-
     relaunch_slot_options = functools.partial(
         _relaunch_slot_options,
         state=state,
@@ -1183,7 +1188,7 @@ async def _finalize_definite_result(
     )
 
 
-async def _phase_assemble_definite(state: ResolveState) -> RegionResult:
+async def _assemble_definite_answer(state: ResolveState) -> RegionResult:
     """Build the Spec, apply no-data gates, and return the terminal result."""
     mat_result = cast(Materialised, state.mat_result)
 
@@ -1226,6 +1231,7 @@ async def _phase_assemble_definite(state: ResolveState) -> RegionResult:
     definite_spec = await asyncio.to_thread(
         _build_definite_spec, state, mat_result, slots, setup, coverage
     )
+    state.state_reelected_reading(definite_spec.spec)
 
     early = await _assemble_carve_outs(state, mat_result, definite_spec.spec)
     if early is not None:
@@ -1233,3 +1239,79 @@ async def _phase_assemble_definite(state: ResolveState) -> RegionResult:
     note_denominator_unverified(state, state.shape_draft, spec_id=definite_spec.spec.spec_id)
 
     return await _finalize_definite_result(state, mat_result, setup, coverage, definite_spec)
+
+
+async def _phase_outcome(state: ResolveState) -> RegionResult:
+    """The part's terminal result over the evidence materialisation read.
+
+    The status rule offers candidates when ambiguity yields data
+    (`candidates.resolve_candidates`). Otherwise the elected shape answers alone: its
+    no-data or unsupported read refuses (`_no_data_answer`), a bound unit it cannot convert
+    to or a window holding no point refuses at grounding (`_ground_elected_answer`), and
+    else the definite Spec is minted (`_assemble_definite_answer`).
+    """
+    result = await resolve_candidates(state, rate_cache=state.rate_cache)
+    if result is None:
+        result = await _no_data_answer(state)
+    if result is None:
+        result = await _ground_elected_answer(state)
+    if result is None:
+        result = await _assemble_definite_answer(state)
+    return result
+
+
+async def _no_data_answer(state: ResolveState) -> RegionResult | None:
+    """The elected shape's no-data or unsupported result, ``None`` when materialisation
+    found data.
+
+    Attach nearest-real suggestions for ``no_observations``. An elected shape the quantity
+    gate found does not serve the leg's quantity answers nothing alone, so the refusal the
+    gate deferred to the fan-out stands when the fan-out left the elected shape's path
+    (`refuse_unserved_quantity`).
+    """
+    if (refused := await refuse_unserved_quantity(state)) is not None:
+        return refused
+    mat_result = state.mat_result
+
+    if isinstance(mat_result, NoDataDraft):
+        # Relax constraint bindings to suggest nearby data when observations are missing.
+        nearest_real: tuple[NearestRealSpec, ...] | None = None
+        if mat_result.reason == "no_observations":
+            nearest_real = await _nearest_real_for(state)
+        if (
+            refused := state.source_code_no_data(mat_result.reason, llm_usage=state.var_usage)
+        ) is not None:
+            return refused
+        return RegionResult(
+            variable_text=state.variable,
+            status="no_data",
+            specs=(),
+            no_data_reason=mat_result.reason,
+            warnings=tuple(state.warnings),
+            departure_facts=dict(state.departure_facts),
+            timing_by_step=dict(state.timing),
+            settled_dataset=state.settled_dataset(),
+            nearest_real=nearest_real,
+            llm_usage=state.var_usage,
+            no_data_role_axis=(
+                open_role_axis(state.shape_draft, state.place.roles.resolved_entities)
+                if mat_result.reason == "no_observations"
+                else None
+            ),
+        )
+
+    if isinstance(mat_result, UnsupportedDraft):
+        return _unsupported(
+            state,
+            mat_result.code,
+            pointer=mat_result.pointer,
+            detail=mat_result.detail,
+            llm_usage=state.var_usage,
+            facets=mat_result.facets,
+        )
+
+    # Treat unexpected resolver outcomes as ``no_observations``.
+    if not isinstance(mat_result, Materialised):
+        return state.no_data("no_observations", llm_usage=state.var_usage)
+
+    return None

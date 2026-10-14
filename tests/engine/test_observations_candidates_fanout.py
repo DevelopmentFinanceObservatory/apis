@@ -145,8 +145,9 @@ _LONE_SURVIVOR_WRONG_UNIT_OBS = {
         }
     ],
 }
-# Same shape as _LONE_SURVIVOR_WRONG_UNIT_OBS, except SV_A's facet carries
-# USD -- the bound unit matches, so the lone survivor collapses to "definite".
+# SV_A's facet carries USD, so the bound unit matches. SV_B holds data in Kenya too, so the
+# status rule offers it beside SV_A, but only in EUR, which declares no conversion recipe:
+# the bound-unit filter drops it, and SV_A, the lone survivor, collapses to "definite".
 _LONE_SURVIVOR_MATCHED_UNIT_OBS = {
     f"{_UNIT_CAND_SV_A}|country/KEN": [
         {
@@ -157,6 +158,17 @@ _LONE_SURVIVOR_MATCHED_UNIT_OBS = {
             "unit": "CurrencyUSD",
             "dates": ["2020"],
             "values": [10.0],
+        }
+    ],
+    f"{_UNIT_CAND_SV_B}|country/KEN": [
+        {
+            "earliestDate": "2020",
+            "latestDate": "2020",
+            "obsCount": 1,
+            "provenanceId": "dc/base/SrcB",
+            "unit": "CurrencyEUR",
+            "dates": ["2020"],
+            "values": [20.0],
         }
     ],
 }

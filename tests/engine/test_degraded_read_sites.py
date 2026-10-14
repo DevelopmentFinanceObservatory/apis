@@ -4,16 +4,21 @@ to the failure it swallows."""
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
 import search.engine.place as place
+from search.engine.bind import SlotBindingDraft
 from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.errors import GraphInfraError, RoleSignatureError
 from search.engine.region import grounding
 from search.engine.region import state as region_state
+from search.engine.region.phase_rank_bind import _stray_requirements
+from search.engine.region.state import ResolveState
 from search.engine.retrieval import derive
 from search.engine.unit import refs
 
@@ -88,6 +93,18 @@ def _relaxed_suggestion(monkeypatch: pytest.MonkeyPatch) -> None:
     assert suggestion == (None, None, None, None)
 
 
+def _stray_value_labels() -> None:
+    """A stray value no menu shape or code index labels, named in words from its dcid when
+    the graph's label read fails, so no dcid reaches the refusal's prose."""
+    stray = SlotBindingDraft(
+        axis="how", property_dcid="gender", kind="value", value_dcids=["dc/g/SexFemale"]
+    )
+    state = SimpleNamespace(capped_shapes=[], label_dcids=_raise_graph_failure)
+    (requirement,) = asyncio.run(_stray_requirements(cast(ResolveState, state), [stray]))
+    assert requirement.term.text == "sex female"
+    assert [ref.label for ref in requirement.term.named] == ["sex female"]
+
+
 @pytest.mark.parametrize(
     ("swallow", "read"),
     [
@@ -96,8 +113,9 @@ def _relaxed_suggestion(monkeypatch: pytest.MonkeyPatch) -> None:
         (_relaxation_walk, "nearest-real relaxation walk"),
         (_relaxations_presence, "nearest-real presence"),
         (_relaxed_suggestion, "nearest-real suggestion"),
+        (lambda _mp: _stray_value_labels(), "stray value labels"),
     ],
-    ids=["availability", "currency", "walk", "presence", "suggestion"],
+    ids=["availability", "currency", "walk", "presence", "suggestion", "stray-labels"],
 )
 def test_a_swallowed_read_is_noted(
     swallow: Callable[[pytest.MonkeyPatch], None], read: str, monkeypatch

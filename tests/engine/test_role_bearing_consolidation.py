@@ -5,14 +5,8 @@ Changing `declared_roles` flips every gate together, so all gates share one pred
 
 from __future__ import annotations
 
-import dataclasses
-
 from search.engine.clients.graph import Facet
-from search.engine.quantity import NO_REQUIREMENT
-from search.engine.region.availability import (
-    _prune_availability_siblings,
-    _resolve_sibling_availability,
-)
+from search.engine.region.availability import read_menu_availability
 from search.engine.retrieval.retrieve import materialise
 from search.engine.retrieval.role_resolve import graph_confirm_resolve
 from search.engine.shape import ShapeDraft, is_role_bearing
@@ -54,51 +48,35 @@ def _shape(*, declared_roles: tuple[str, ...]) -> ShapeDraft:
     )
 
 
-class TestIsRoleBearingDeclarationPerturbation:
-    def test_non_declaring_shape_flips_every_consolidated_gate(self):
-        """Clearing the role declaration changes the consolidated gate to non-role-bearing."""
+_KENYA_OBS = {f"{_SV_DCID}|country/KEN": [{"obsCount": 5}]}
+
+
+class TestMenuAvailabilityDeclarationPerturbation:
+    """The availability read over the menu reads a subject-only shape's StatVars and leaves
+    a role-bearing one as it is: its observations are not subject facets."""
+
+    def test_declaring_shape_is_not_read(self):
+        shape = _shape(declared_roles=("creditor", "debtor"))
+        graph = FakeGraph(obs=_KENYA_OBS, nodes={})
+
+        (read,), failed = read_menu_availability(
+            [shape], graph=graph, places=["country/KEN"], deadline=None
+        )
+
+        assert failed is False
+        assert read is shape
+
+    def test_non_declaring_shape_is_read_at_the_places(self):
         shape = _shape(declared_roles=("observationAbout",))
         assert is_role_bearing(shape) is False
+        graph = FakeGraph(obs=_KENYA_OBS, nodes={})
 
-        to_survive, _ = _prune_availability_siblings(
-            [shape], named_place=True, quantity=NO_REQUIREMENT, denominator_kinds={}
-        )
-        assert to_survive == [shape]
-
-
-class TestResolveSiblingAvailabilityDeclarationPerturbation:
-    """Declared pairs skip availability probes. Undeclared pairs reach them."""
-
-    def _sibling_pair(self, shape: ShapeDraft) -> tuple[ShapeDraft, ShapeDraft]:
-        # Keep the class key fixed and vary denominator resolution only.
-        unresolved = dataclasses.replace(
-            shape,
-            shape_id="sib_unresolved",
-            meas_denom_dcid=None,
-            meas_denom_unresolved=True,
-            sv_arc_facts={"sv_unresolved": {}},
-        )
-        resolved = dataclasses.replace(
-            shape,
-            shape_id="sib_resolved",
-            meas_denom_dcid="Count_Person",
-            meas_denom_unresolved=False,
-            sv_arc_facts={"sv_resolved": {}},
-        )
-        return unresolved, resolved
-
-    def test_declaring_pair_never_reaches_the_probe(self):
-        shape = _shape(declared_roles=("creditor", "debtor"))
-        unresolved, resolved = self._sibling_pair(shape)
-        graph = FakeGraph(obs={"sv_unresolved|country/KEN": [{"obsCount": 5}]}, nodes={})
-
-        result, probe_failed = _resolve_sibling_availability(
-            [unresolved, resolved], graph=graph, named_place=True, probe_places=["country/KEN"]
+        (read,), failed = read_menu_availability(
+            [shape], graph=graph, places=["country/KEN"], deadline=None
         )
 
-        assert probe_failed is False
-        # A role-bearing pair leaves place_available unset.
-        assert all(s.place_available is None for s in result)
+        assert failed is False
+        assert set(read.named_place_coverage[_SV_DCID]) == {"country/KEN"}
 
 
 class TestGraphConfirmResolveDeclarationPerturbation:

@@ -1125,7 +1125,7 @@
           "type": "/codes/rendering_not_recorded",
           "title": "Rendering Not Recorded",
           "status": 422,
-          "detail": "the rendering of 'spec_176b1b132147fff98b37810b759f6f90' at content_version 'cv_00000000000000000000000000000002' is ambiguous: the version links a groupby sum and a plain file, and the two renderings of the current data are no longer one frame",
+          "detail": "the rendering of 'spec_176b1b132147fff98b37810b759f6f90' at content_version 'cv_00000000000000000000000000000002' is ambiguous: the version links a groupby sum or party-totals cut and a plain file, and the renderings of the current data are no longer one frame",
           "code": "rendering_not_recorded",
           "trace_id": "<trace_id>",
           "capability_version": "<capability_version>",

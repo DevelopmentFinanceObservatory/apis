@@ -489,9 +489,10 @@ def _served_keys(plan: ReadPlan) -> dict[str, dict[_FacetKey, Callable[[], _Serv
     expansion of those rows (`_ServedRows`), which runs only for a key whose rows convert.
 
     A per-series read keys each served series' group facets, and under `latest` reads each
-    series in the year of its StatVar's latest period alone, the one period a latest read
-    serves and every served series holds (`PairPlan.served`). A bulk read keys its served
-    members under the elected facet, which the facets continuing it share."""
+    series in the year of its StatVar's one period alone (`PairPlan.series_dates`), the
+    period a latest read serves and every served series holds (`PairPlan.served`). A bulk
+    read keys its served members under the elected facet, which the facets continuing it
+    share."""
     if isinstance(plan, BulkPlan):
         best = plan.elected
         if best is None:
@@ -505,7 +506,8 @@ def _served_keys(plan: ReadPlan) -> dict[str, dict[_FacetKey, Callable[[], _Serv
     for series in plan.served:
         years = plan.years
         if years == "latest":
-            latest = year_of(series.latest_period)
+            dates = plan.series_dates(series)
+            latest = year_of(dates[1]) if dates is not None else None
             if latest is None:
                 continue
             years = TimeWindow(start_year=latest, end_year=latest)
@@ -835,10 +837,11 @@ def _fetched_entities(
     """Each StatVar's facet keys among the rows `plan`'s read fetches before it omits any,
     each with the entities those rows bind on a graph role. A bulk read fetches its served
     members' pairs under the elected facet and the facets continuing it
-    (`BulkPlan.served_candidates`), over every year under `latest`, before the
-    read reduces each member to its latest period, and the member's years
-    (`BulkPlan.member_years`) otherwise. A per-series read fetches its held series
-    (`PairPlan.held`), every series with data under `latest`, under their group facets."""
+    (`BulkPlan.served_candidates`), over every year under `latest`, the pairs each
+    member's year is elected or dated from before the read reduces it to that year, and
+    the member's years (`BulkPlan.member_years`) otherwise. A per-series read fetches its
+    held series (`PairPlan.held`), every series with data under `latest`, under their group
+    facets."""
     if isinstance(plan, BulkPlan):
         best = plan.elected
         if best is None:

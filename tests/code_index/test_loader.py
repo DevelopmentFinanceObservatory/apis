@@ -162,6 +162,26 @@ def test_refuses_a_document_missing_a_required_key(tmp_path, block, key):
             DuplicateDcid,
             "DACAfrica",
         ),
+        (
+            [],
+            [{"dcid": "DACCountriesTotal", "kind": "total", "totals": None, "sums_members": False}],
+            IndexFormatError,
+            "claims no sum",
+        ),
+        (
+            [],
+            [
+                {
+                    "dcid": "DACAfrica",
+                    "kind": "total",
+                    "totals": "africa",
+                    "residuals": ["DACAfricaUnallocated"],
+                    "sums_members": False,
+                }
+            ],
+            IndexFormatError,
+            "claims no sum",
+        ),
     ],
     ids=[
         "type-kind",
@@ -170,6 +190,8 @@ def test_refuses_a_document_missing_a_required_key(tmp_path, block, key):
         "party-axis",
         "group-on-a-party",
         "party-twice",
+        "no-sum-without-a-group",
+        "no-sum-beside-residuals",
     ],
 )
 def test_refuses_a_malformed_party_declaration(tmp_path, party_types, parties, error, message):
@@ -179,6 +201,43 @@ def test_refuses_a_malformed_party_declaration(tmp_path, party_types, parties, e
     broken = tmp_path / "parties.json"
     broken.write_text(json.dumps(payload))
     with pytest.raises(error, match=message):
+        load_index(broken)
+
+
+@pytest.mark.parametrize(
+    ("block", "value", "message"),
+    [
+        ("measure_classes", [{"class": "incidence", "pattern": "(new"}], "does not compile"),
+        (
+            "measure_classes",
+            [{"class": "prevalence", "pattern": "living", "fallback": "yes"}],
+            "not a boolean",
+        ),
+        ("variable_aliases", {"GNI": "gross national income"}, "lowercase"),
+        ("variable_aliases", {"gni": ""}, "expands to"),
+        (
+            "stat_type_words",
+            [{"pattern": "(growth", "stat_type": "growthRate"}],
+            "does not compile",
+        ),
+    ],
+    ids=["pattern", "fallback", "alias-case", "alias-empty", "stat-type-pattern"],
+)
+def test_refuses_a_malformed_authored_block(tmp_path, block, value, message):
+    payload = json.loads(FIXTURE_PATH.read_text())
+    payload[block] = value
+    broken = tmp_path / "authored.json"
+    broken.write_text(json.dumps(payload))
+    with pytest.raises(IndexFormatError, match=message):
+        load_index(broken)
+
+
+def test_refuses_a_no_vocabulary_term_that_is_not_lowercase(tmp_path):
+    payload = json.loads(FIXTURE_PATH.read_text())
+    payload["declarations"][0]["no_vocabulary_terms"] = ["Non-concessional"]
+    broken = tmp_path / "terms.json"
+    broken.write_text(json.dumps(payload))
+    with pytest.raises(IndexFormatError, match="no_vocabulary_terms"):
         load_index(broken)
 
 
@@ -321,6 +380,15 @@ def test_the_packaged_index_declares_the_crs_type_of_flow_default():
     assert default.when_named == ("aid",)
     assert default.when_open is False
     assert default.note is None
+
+
+def test_the_packaged_index_declares_non_concessional_as_the_flow_type_s_unexpressed_word():
+    index = load_index(default_index_path())
+    assert {
+        system: declaration.no_vocabulary_terms
+        for system, declaration in index.declarations.items()
+        if declaration.no_vocabulary_terms
+    } == {"crsTypeOfFlow": ("non-concessional",)}
 
 
 @pytest.mark.parametrize(

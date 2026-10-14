@@ -11,8 +11,11 @@ from search.models import (
     BindingSet,
     BindingValue,
     CoverageBare,
+    Entity,
     EntityOptions,
+    EntityRoleDirectional,
     ResolvedQualifier,
+    Slot,
     SlotKey,
     SlotOption,
     SlotOptions,
@@ -598,6 +601,87 @@ def test_collapse_same_shape_spec_id_recomputed():
     merged_id = effective[0].spec.spec_id
     assert merged_id != spec_a.spec_id
     assert merged_id != spec_b.spec_id
+
+
+_FAMILY_LABEL = "Under-five mortality rate"
+_FEMALE_NAME = "Under-five mortality rate, female"
+_RECIPIENT = "DevelopmentFinanceRecipient"
+
+
+def _named_member_region(slot: Slot, sv_dcid: str, name: str, index: int, *places: str):
+    """A definite region of one member named `name`, on a shape labelled `_FAMILY_LABEL`."""
+    slot_key = SlotKey(axis=slot.key.axis, property=slot.key.property, label=slot.key.label)
+    shape = _PERSON_SHAPE.model_copy(update={"label": _FAMILY_LABEL, "slot_keys": [slot_key]})
+    spec = build_spec(
+        open_roles=(),
+        measure_elected_properties=frozenset(),
+        shape=shape,
+        slots=[slot],
+        stat_vars=[
+            StatVar(
+                ref=_gr(sv_dcid, name),
+                shape_id=shape.shape_id,
+                slot_values=[],
+                constraint_properties=[],
+            )
+        ],
+        entities=[
+            Entity(
+                ref=_gr(place),
+                role=EntityRoleDirectional(role=_gr(_RECIPIENT), axis="destination"),
+            )
+            for place in places
+        ],
+        coverage=CoverageBare(has_data=True),
+    )
+    assert spec.resolved.shape.label == name
+    return _region(spec, name, earliest_index=index)
+
+
+def _recipient_slot(place: str) -> Slot:
+    return Slot(
+        key=SlotKey(axis="where", property=_gr(_RECIPIENT), label="recipient"),
+        binding=BindingValue(value=SlotValue(ref=_gr(place), value_kind="entity")),
+    )
+
+
+@pytest.mark.parametrize(
+    ("regions", "members", "label"),
+    [
+        pytest.param(
+            [
+                _named_member_region(_cv_slot("gender", "Female"), "sv_f", _FEMALE_NAME, 0),
+                _named_member_region(_cv_slot("gender", "Male"), "sv_m", "male name", 1),
+            ],
+            ["sv_f", "sv_m"],
+            _FAMILY_LABEL,
+            id="two-series",
+        ),
+        pytest.param(
+            [
+                _named_member_region(
+                    _recipient_slot("country/KEN"), "sv_f", _FEMALE_NAME, 0, "country/KEN"
+                ),
+                _named_member_region(
+                    _recipient_slot("country/ETH"), "sv_f", _FEMALE_NAME, 1, "country/ETH"
+                ),
+            ],
+            ["sv_f"],
+            _FEMALE_NAME,
+            id="one-series-two-places",
+        ),
+    ],
+)
+def test_a_merged_reading_is_labelled_for_the_members_it_serves(regions, members, label):
+    """Each part serves one named series, so each part's label is that series' name. Two
+    series merged read as the shape was labelled before either part named its own series,
+    and one series merged over two places keeps its name."""
+    effective, residual = collapse_same_shape(regions)
+
+    assert residual == []
+    (merged,) = effective
+    assert [sv.ref.ref for sv in merged.spec.resolved.members] == members
+    assert merged.spec.resolved.shape.label == label
 
 
 def test_collapse_same_shape_earliest_index_is_min():

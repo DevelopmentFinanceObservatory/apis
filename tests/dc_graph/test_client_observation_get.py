@@ -138,10 +138,19 @@ def test_get_groups_fit_the_budget_and_cover_every_pair_once(
     server = _ObservationServer(get_only=True)
     client = _client(server, budget=budget)
 
+    groups = client.observation_read_groups(variables, entities)
+    assert server.requests == []
     result = client.observation_facets_batch(variables, entities)
 
     requests = server.observation_requests()
     assert all(len(request.url.query) <= budget for request in requests)
+    # The plan names the variable groups the read sends, in order, without a request.
+    assert groups == [
+        list(group)
+        for group in dict.fromkeys(
+            tuple(request.url.params.get_list("variable.dcids")) for request in requests
+        )
+    ]
     pairs = Counter(
         (variable, entity)
         for request in requests
@@ -177,6 +186,8 @@ def test_post_mode_never_sends_a_get():
     client.entities_with_data(["sv/A"], ["country/KEN"])
 
     assert {request.method for request in server.observation_requests()} == {"POST"}
+    variables = _long_dcids("sv", 200)
+    assert client.observation_read_groups(variables, ["country/KEN"]) == [variables]
 
 
 def test_node_reads_stay_post_under_the_get_option():

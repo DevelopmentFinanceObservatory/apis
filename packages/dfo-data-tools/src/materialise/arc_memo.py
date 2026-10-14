@@ -207,9 +207,6 @@ class MemoGraphReader:
             variable_dcids, entity_dcids, deadline=deadline
         )
 
-    def declares_facet_defaults(self) -> bool:
-        return self._reader.declares_facet_defaults()
-
     def default_facet_policy(self, *, stat_var: str, axis: str) -> FacetDefaultPolicy | None:
         return self._reader.default_facet_policy(stat_var=stat_var, axis=axis)
 

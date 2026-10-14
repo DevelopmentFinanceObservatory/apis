@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
-from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -27,7 +26,6 @@ from search.engine.departures import (
     price_basis_not_applied,
 )
 from search.engine.qualifier_match import QualifierMatch
-from search.engine.region.candidate_options import depart_to_measure_sibling
 from search.engine.region.phase_answer import _assemble_carve_outs
 from search.engine.region.requirements import (
     record_reading,
@@ -436,30 +434,18 @@ def test_each_requested_code_is_judged_alone(requested, bound, unbound):
         ("EducationExpenditure", [("expenditureType", _ASKED)]),
         ("HealthcareExpenditure", []),
     ],
-    ids=["sibling-binds-another-code", "sibling-binds-the-code"],
+    ids=["stand-in-binds-another-code", "stand-in-binds-the-code"],
 )
-def test_a_measure_sibling_is_judged_on_the_code_the_request_named(monkeypatch, bound, unbound):
-    """The elected shape dropped "health expenditure" and its measure sibling answers. A
-    sibling binding education on the same property leaves the health requirement unmet,
-    so definite assembly refuses on it, naming it once; one binding health meets it. In
-    neither case does it depart."""
-    from search.engine.region import candidate_options
-
-    # The sibling's heading noun is beside the point here; the stub stands in for a
-    # Spec rendered from a full resolve.
-    noun = SimpleNamespace(inline_text="education share")
-    monkeypatch.setattr(
-        candidate_options,
-        "heading_for",
-        lambda _spec: SimpleNamespace(heading=SimpleNamespace(noun=noun)),
-    )
+def test_a_stand_in_is_judged_on_the_code_the_request_named(bound, unbound):
+    """The elected shape dropped "health expenditure" and one stand-in answers in its
+    place. Definite assembly judges the stand-in's own shape and bindings
+    (`candidate_collapse._assemble_definite`): one binding education on the same property
+    leaves the health requirement unmet and refuses on it, naming it once as a term; one
+    binding health meets it. In neither case does it depart."""
     state = _state((_ASKED, "expenditureType"))
-    served = Spec.model_validate(minimal_spec()).model_copy(deep=True)
-    served.resolved.measure_label = "education share"
-    sibling = _education_share()
+    stand_in = _education_share()
 
-    depart_to_measure_sibling(state, served)
-    refused = settle_answer(state, sibling, _binding(bound))
+    refused = settle_answer(state, stand_in, _binding(bound))
 
     assert [(t.slot, t.text) for t in refused] == unbound
-    assert [fact.code for fact in _departed(state)] == ["closest_match"]
+    assert _departed(state) == []

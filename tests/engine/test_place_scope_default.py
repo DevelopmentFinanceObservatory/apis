@@ -44,6 +44,8 @@ from tests.engine._harness import materialise_double_from_obs, member_walk_reade
 from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 from tests.materialise._scope_availability import ScopeAvailability
+from tests.origin_catalogue.fake_catalogue import FakeCatalogue
+from tests.origin_catalogue.support import build_arc_tables
 
 _SV = "TEST/PlaceScopeDefault_Population"
 _DETECT_QUERY = "test place scope population"
@@ -360,13 +362,14 @@ _SV_B = "TEST/PlaceScopeDefault_Household"
 _CANDIDATES_NODES: dict = {
     _SV_A: _NODES[_SV],
     # A genuinely distinct five-tuple (populationType differs) so this groups
-    # into a SECOND ShapeDraft, not the same shape as _SV_A.
+    # into a SECOND ShapeDraft, not the same shape as _SV_A. Its label holds every word of
+    # _SV_A's, so the query picks neither and the nomination is a rival (status rule 2(b)).
     _SV_B: {
-        "label": "Test Household",
+        "label": "Test Household Population",
         "type": "StatisticalVariable",
         "arcs": {
             "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
-            "name": {"nodes": [{"value": "Test Household"}]},
+            "name": {"nodes": [{"value": "Test Household Population"}]},
             "populationType": {"nodes": [{"dcid": "Household"}]},
             "measuredProperty": {"nodes": [{"dcid": "count"}]},
             "statType": {"nodes": [{"dcid": "measuredValue"}]},
@@ -499,6 +502,51 @@ _BOUND_NODES: dict = {
     },
 }
 _BOUND_DETECT: dict = {_BOUND_DETECT_QUERY: {"svs": [_BOUND_SV]}}
+_BOUND_FEMALE_SV = "TEST/PlaceScopeDefault_FemaleIncidence"
+_BOUND_OLD_SV = "TEST/PlaceScopeDefault_OldIncidence"
+
+
+def _bound_family_catalogue() -> FakeCatalogue:
+    """Holds the bare aggregate and two unrecalled siblings, one asserting `testSex=Female`
+    and one `testAge=Old`, so the shape recall builds from the aggregate has a `testSex` and
+    a `testAge` slot and its family no member asserting both (`derive.held_family`)."""
+
+    def target(dcid: str, *types: str) -> dict:
+        return {"nodes": [{"dcid": dcid, "name": dcid, "types": list(types)}]}
+
+    def arcs(name: str, *, asserts: tuple[str, str, str] | None = None) -> dict:
+        constraint = {}
+        if asserts is not None:
+            prop, value, value_type = asserts
+            constraint = {
+                "constraintProperties": target(prop, "Property"),
+                prop: target(value, value_type),
+            }
+        return {
+            "typeOf": target("StatisticalVariable", "Class"),
+            "name": {"nodes": [{"value": name}]},
+            "populationType": target("TestIncidenceEvent", "Class"),
+            "measuredProperty": target("testIncidence", "Property"),
+            "statType": target("measuredValue", "Property"),
+            "constraintProperties": {"nodes": []},
+            **constraint,
+        }
+
+    return FakeCatalogue(
+        arcs=build_arc_tables(
+            dfo={},
+            base={
+                _BOUND_SV: arcs("Test Bare Incidence"),
+                _BOUND_FEMALE_SV: arcs(
+                    "Test Female Incidence", asserts=("testSex", "Female", "TestSexEnum")
+                ),
+                _BOUND_OLD_SV: arcs(
+                    "Test Old Incidence", asserts=("testAge", "Old", "TestAgeEnum")
+                ),
+            },
+            schema={},
+        )
+    )
 
 
 class _BindFemaleLLM:
@@ -525,8 +573,38 @@ class _BindFemaleLLM:
         ), None
 
 
-def test_no_member_asserts_bound_property_reports_no_matching_slice_zero_probes():
-    """The unasserted `testSex` binding rejects the member before any probe."""
+class _BindFemaleOldLLM:
+    """Bind `testSex=Female` and `testAge=Old`, which no member of the family asserts
+    together."""
+
+    async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
+        assert schema.__name__ == "_UniversalBindOutput"
+        from search.engine.bind import SlotBindingDraft
+
+        return _UniversalBindOutput(
+            chosen_shape_index=0,
+            bindings=[
+                SlotBindingDraft(
+                    axis="what", property_dcid="testSex", kind="value", value_dcids=["Female"]
+                ),
+                SlotBindingDraft(
+                    axis="what", property_dcid="testAge", kind="value", value_dcids=["Old"]
+                ),
+            ],
+            also_plausible=None,
+            ask=None,
+        ), None
+
+
+def test_no_member_asserts_bound_property_reports_no_matching_slice_zero_probes(
+    bind_catalogue,
+):
+    """The `testSex` and `testAge` bindings, slots of the shape's family that no member
+    asserts together, reject every member before any probe: the recalled aggregate asserts
+    neither, and each sibling asserts one."""
+    bind_catalogue(_bound_family_catalogue())
     obs = {
         f"{_BOUND_SV}|country/A1": [
             {
@@ -554,7 +632,7 @@ def test_no_member_asserts_bound_property_reports_no_matching_slice_zero_probes(
             pac=True,
             graph=graph,
             resolver=make_resolver(graph),
-            llm=_BindFemaleLLM(),
+            llm=_BindFemaleOldLLM(),
             base_timing={},
             sdmx=FakeSdmxClient(
                 observations={}, availability={}, scope_availability=graph.scope_availability
@@ -569,6 +647,50 @@ def test_no_member_asserts_bound_property_reports_no_matching_slice_zero_probes(
     assert result.gate == NO_MEMBER_ASSERTS_BOUND_PROPERTIES
     assert graph.probe_calls == 0  # the eligibility check short-circuits before any probe
     assert any(w.code == PLACE_SCOPE_DEFAULTED for w in result.warnings)
+
+
+def test_a_value_bound_on_an_aggregate_without_its_slot_refuses_naming_it():
+    """Recall builds only the bare aggregate, which has no `testSex` slot, and the bind
+    model binds `testSex=Female` on it. The stray value is dropped, so the aggregate
+    answers no narrower question, and the part refuses `qualifier_not_bound` with the
+    aggregate flagged, naming Female."""
+    obs = {
+        f"{_BOUND_SV}|country/A1": [
+            {
+                "earliestDate": "2020",
+                "latestDate": "2020",
+                "obsCount": 1,
+                "provenanceId": _OBS_PROVENANCE,
+            }
+        ],
+    }
+    graph = _CountingFakeGraph(
+        nodes=_BOUND_NODES, detect=_BOUND_DETECT, resolve={}, obs=obs, children=_EARTH_CHILDREN
+    )
+    result = asyncio.run(
+        resolve_variable(
+            _BOUND_DETECT_QUERY,
+            entities=[],
+            date_request=None,
+            detect_query=_BOUND_DETECT_QUERY,
+            role_query=_BOUND_DETECT_QUERY,
+            pac=True,
+            graph=graph,
+            resolver=make_resolver(graph),
+            llm=_BindFemaleLLM(),
+            base_timing={},
+            sdmx=FakeSdmxClient(
+                observations={}, availability={}, scope_availability=graph.scope_availability
+            ),
+            coverage=empty_coverage_snapshot(),
+        )
+    )
+
+    assert (result.status, result.no_data_reason) == ("no_data", "qualifier_not_bound")
+    assert result.flagged_match is not None
+    (flagged,) = result.flagged_match
+    assert [m.ref.ref for m in flagged.resolved.members] == [_BOUND_SV]
+    assert [[ref.ref for ref in term.named] for term in result.unbound_qualifiers] == [["Female"]]
 
 
 # ---------------------------------------------------------------------------
@@ -978,7 +1100,11 @@ def test_each_member_is_counted_and_grounded_at_its_own_scope(answer, monkeypatc
         obs[f"{_SV_B}|country/A3"] = facet("2021")
     if answer == "lone_alternate":
         # As in `test_an_alternate_that_answers_states_its_own_scope`.
-        monkeypatch.setattr(candidate_collapse, "_handle_sparse_survivors", lambda *_a, **_k: None)
+        monkeypatch.setattr(
+            candidate_collapse,
+            "_handle_sparse_survivors",
+            lambda _state, specs, *_a, **_k: specs,
+        )
     graph = _ProbeLogGraph(
         nodes={
             _SV_B: _CANDIDATES_NODES[_SV_B],
@@ -1079,10 +1205,14 @@ def test_a_lone_alternate_match_states_its_own_scope_beside_the_elected_one():
 
 
 def test_an_alternate_that_answers_states_its_own_scope(monkeypatch):
-    # A lone alternate answers when it is a measure sibling of an elected shape with no data
-    # (`candidate_collapse._handle_sparse_survivors`). The shipped measure index holds no
-    # subject-only measure, so this lets the alternate through that gate.
-    monkeypatch.setattr(candidate_collapse, "_handle_sparse_survivors", lambda *_a, **_k: None)
+    # A lone nominated alternate rides on the refusal of an elected shape with no data
+    # (`candidate_collapse._handle_sparse_survivors`); this lets it answer, to read the
+    # scope it states.
+    monkeypatch.setattr(
+        candidate_collapse,
+        "_handle_sparse_survivors",
+        lambda _state, specs, *_a, **_k: specs,
+    )
 
     result = _alternate_only_run()
 

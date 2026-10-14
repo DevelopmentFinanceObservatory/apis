@@ -20,8 +20,9 @@ from google.genai.types import HttpOptions
 from pydantic import BaseModel
 
 import search.engine.clients.llm as llm_module
+from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.llm import LLM, LLMMemo, generate_structured_async
-from search.engine.errors import LLMInfraError
+from search.engine.errors import LLMInfraError, LLMOutputRefused
 
 # Captured at import, before the autouse `_guard_outbound_http` fixture swaps
 # the class attribute for its refusal.
@@ -92,6 +93,82 @@ def closing_listener() -> Iterator[tuple[int, list[int]]]:
         stop.set()
         thread.join()
         sock.close()
+
+
+def _generate_body(text: str) -> bytes:
+    return json.dumps(
+        {
+            "candidates": [{"content": {"role": "model", "parts": [{"text": text}]}}],
+            "modelVersion": "loopback-model",
+        }
+    ).encode()
+
+
+@pytest.fixture
+def answer_listener(request: pytest.FixtureRequest) -> Iterator[int]:
+    """Answers every POST with a model reply whose text is the test's parameter."""
+    body = _generate_body(request.param)
+
+    class _Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_POST(self) -> None:
+            self.rfile.read(int(self.headers.get("content-length", 0)))
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: object) -> None:
+            return None
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server.server_address[1]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+_EMPTY_VALUE_BINDING = json.dumps(
+    {
+        "chosen_shape_index": 0,
+        "bindings": [
+            {"axis": "how", "property_dcid": "gender", "kind": "value", "value_dcids": []}
+        ],
+    }
+)
+
+
+@pytest.mark.usefixtures("live_client_env", "loopback_transport")
+@pytest.mark.parametrize(
+    ("answer_listener", "refused"),
+    [
+        (_EMPTY_VALUE_BINDING, True),
+        (json.dumps({"chosen_shape_index": 0, "ask": "x" * 600}), False),
+        ('{"chosen_shape_index": "one"}', False),
+        ("not json", False),
+    ],
+    ids=["empty-value-binding", "ask-over-its-length", "wrong-type", "unreadable"],
+    indirect=["answer_listener"],
+)
+def test_only_an_answer_the_schema_refuses_on_purpose_is_refused(
+    monkeypatch: pytest.MonkeyPatch, answer_listener: int, refused: bool
+):
+    """Gemini leaves the parsed response empty for each. A binding that names no value
+    breaks the rule the bind schema refuses on purpose (`SCHEMA_REFUSAL`) and raises
+    `LLMOutputRefused`, which a caller may answer for, with the call's usage. Any other
+    validation error, and an unreadable answer, stay an infrastructure failure, which the
+    response cache never stores."""
+    _point_at(monkeypatch, answer_listener)
+    llm = LLM(model="gemini-3.5-flash-lite")
+    with pytest.raises(LLMInfraError, match="failed schema validation") as caught:
+        asyncio.run(llm.generate_structured(prompt="p", system="s", schema=_UniversalBindOutput))
+    assert isinstance(caught.value, LLMOutputRefused) is refused
 
 
 @pytest.fixture

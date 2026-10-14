@@ -16,6 +16,7 @@ import dataclasses
 from collections.abc import Collection, Mapping, Sequence
 
 from search.engine.retrieval.read_plan import BulkPlan, ReadPlan
+from search.models import NoDataReason
 
 
 @dataclasses.dataclass(frozen=True)
@@ -67,7 +68,7 @@ def bound_unit_gate_reason(
     plan: ReadPlan | None,
     obs_entities: Mapping[str, Sequence[str]],
     sv_dcids: Collection[str],
-) -> str | None:
+) -> NoDataReason | None:
     """The no-data reason a bound unit request answers over `plan`, or None when honoured.
 
     A request with no probe entity cannot honour a unit filter, and otherwise every resolved

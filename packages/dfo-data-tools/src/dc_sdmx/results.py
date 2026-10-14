@@ -66,6 +66,25 @@ def observation_schema(roles: Sequence[str]) -> pa.Schema:
     return pa.schema([(name, pa.string()) for name in observation_columns(roles)])
 
 
+def observed_value(cell: str | None) -> float | None:
+    """The observation an `OBS_VALUE` cell holds: the float it parses as, or `None` for an
+    absent, empty or unparseable cell, which holds none. NaN and the infinities parse, so
+    they are observations. Every reader of a value takes this rule: a row parsed here
+    (`SdmxObservation.value_as_float`), a column of cells
+    (`materialise.columnar.observed_values`) and a parsed point (`is_observed`)."""
+    if not cell:
+        return None
+    try:
+        return float(cell)
+    except ValueError:
+        return None
+
+
+def is_observed(value: float | None) -> bool:
+    """Whether `value`, a cell parsed by `observed_value`, holds an observation."""
+    return value is not None
+
+
 @pydantic.dataclasses.dataclass(frozen=True)
 class SdmxObservation:
     """One SDMX-CSV data row.
@@ -88,13 +107,8 @@ class SdmxObservation:
     facet_id: str | None
 
     def value_as_float(self) -> float | None:
-        """Parse `value` as a float, or `None` if it's empty or unparseable."""
-        if not self.value:
-            return None
-        try:
-            return float(self.value)
-        except ValueError:
-            return None
+        """The observation `value` holds (`observed_value`), or `None` if it holds none."""
+        return observed_value(self.value)
 
 
 @pydantic.dataclasses.dataclass(frozen=True)

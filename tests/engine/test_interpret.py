@@ -3,12 +3,24 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import Future
 
 import pytest
 
+from code_index.shared import get_index
 from entity_resolution import Resolved
-from search.engine.interpret import Recall, recall
+from search.engine.clients.graph import DetectedSV, Detection, settled_un
+from search.engine.errors import GraphInfraError
+from search.engine.interpret import (
+    Recall,
+    _detect,
+    _pooled,
+    _states_a_word,
+    _without_stated_words,
+    recall,
+)
 from tests.fixtures import FakeGraph, make_resolver
+from tests.origin_catalogue.fake_catalogue import FakeCatalogue
 
 
 def run(coro):
@@ -305,3 +317,254 @@ class TestRelevanceFloor:
         )
         result = run(recall("q", [], graph=graph, resolver=make_resolver(graph), raw_query="q"))
         assert result.candidate_svs == []
+
+
+_CRS = "provenance/OECDCreditorReportingSystem"
+_DAC1 = "provenance/OECDDAC1"
+_DAC2A = "provenance/OECDDAC2A"
+_IDS = "provenance/WorldBankInternationalDebtStatistics"
+
+
+def _dcid_of(provenance: str, measured_property: str) -> str:
+    """The first packaged index row of `provenance` with `measured_property`, StatVars the
+    index lists included."""
+    index = get_index()
+    return next(
+        row.dcid
+        for row in (*index.statvars, *index.listed_statvars)
+        if row.provenances == (provenance,) and row.measured_property == measured_property
+    )
+
+
+def _sv(dcid: str, score: float, *, rival: bool = False) -> DetectedSV:
+    return DetectedSV(
+        dcid=dcid, score=score, type_of="StatisticalVariable", sentence=None, rival=rival
+    )
+
+
+def _detection(
+    candidates: list[DetectedSV],
+    *,
+    hits: list[DetectedSV] | None = None,
+    un: Future | None = None,
+) -> Detection:
+    return Detection(
+        candidates=tuple(candidates),
+        un=settled_un(()) if un is None else un,
+        hits=None if hits is None else tuple(hits),
+    )
+
+
+def _rows(svs: tuple[DetectedSV, ...] | None) -> list[tuple[str, float, bool]]:
+    assert svs is not None
+    return [(sv.dcid, sv.score, sv.rival) for sv in svs]
+
+
+class TestWithoutStatedWords:
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            pytest.param("bilateral ODA", ("ODA", {"bilateral"}), id="leading_word"),
+            pytest.param(
+                "Bilateral ODA to  Kenya",
+                ("ODA to Kenya", {"bilateral"}),
+                id="casefolded_and_whitespace_collapsed",
+            ),
+            pytest.param("ODA to Kenya", None, id="no_stated_word"),
+            pytest.param("bilateral", None, id="nothing_left_without_it"),
+            pytest.param("bilateral-only aid", None, id="hyphenated_token_is_another_word"),
+            pytest.param("non-bilateral ODA", None, id="negated_token_is_another_word"),
+        ],
+    )
+    def test_text_less_the_stated_words(self, text, expected):
+        result = _without_stated_words(text, get_index())
+
+        if expected is None:
+            assert result is None
+        else:
+            assert result is not None
+            rest, removed = result
+            assert (rest, set(removed)) == expected
+
+
+class TestStatesAWord:
+    @pytest.mark.parametrize(
+        ("provenance", "measured_property", "words", "expected"),
+        [
+            pytest.param(_CRS, "amount", {"bilateral"}, True, id="crs_amount"),
+            pytest.param(_CRS, "grantEquivalent", {"bilateral"}, True, id="crs_grant_equivalent"),
+            pytest.param(_DAC2A, "amount", {"bilateral"}, True, id="dac2a_amount"),
+            pytest.param(_CRS, "amount", {"multilateral"}, False, id="another_word"),
+            pytest.param(_DAC1, "amount", {"bilateral"}, False, id="dac1_codes_the_word"),
+            pytest.param(_DAC2A, "attributedAmount", {"bilateral"}, False, id="dac2a_imputed_row"),
+            pytest.param(
+                _IDS, "amount", {"bilateral"}, False, id="listed_row_of_an_undeclared_table"
+            ),
+        ],
+    )
+    def test_a_row_joins_when_its_table_states_the_word_of_its_measured_property(
+        self, provenance, measured_property, words, expected
+    ):
+        dcid = _dcid_of(provenance, measured_property)
+
+        assert _states_a_word(dcid, words, get_index()) is expected
+
+    def test_a_dcid_the_index_holds_no_row_for_states_nothing(self):
+        assert _states_a_word("sv/NotInTheIndex", {"bilateral"}, get_index()) is False
+
+
+class TestPooled:
+    @pytest.mark.parametrize(
+        ("first_score", "second_score"),
+        [pytest.param(0.6, 0.9, id="second_higher"), pytest.param(0.9, 0.4, id="first_higher")],
+    )
+    def test_a_series_both_searches_return_appears_once_at_the_higher_score(
+        self, first_score, second_score
+    ):
+        first = _detection([_sv("sv/A", first_score)])
+        second = _detection([_sv("sv/A", second_score)])
+
+        pooled = _pooled(first, second, lambda dcid: True)
+
+        assert _rows(pooled.candidates) == [("sv/A", max(first_score, second_score), False)]
+
+    def test_a_recalled_row_replaces_a_rival_family_row_of_the_same_series(self):
+        first = _detection([_sv("sv/A", 0.8), _sv("sv/R", 0.7, rival=True)])
+        second = _detection([_sv("sv/R", 0.4)])
+
+        pooled = _pooled(first, second, lambda dcid: True)
+
+        assert _rows(pooled.candidates) == [("sv/A", 0.8, False), ("sv/R", 0.4, False)]
+
+    def test_only_the_second_series_the_predicate_admits_join(self):
+        first = _detection([_sv("sv/A", 0.6), _sv("sv/B", 0.5), _sv("sv/C", 0.4)])
+        second = _detection([_sv("sv/D", 0.7), _sv("sv/E", 0.9), _sv("sv/F", 0.8, rival=True)])
+
+        pooled = _pooled(first, second, lambda dcid: dcid in {"sv/D", "sv/F"})
+
+        assert _rows(pooled.candidates) == [
+            ("sv/D", 0.7, False),
+            ("sv/A", 0.6, False),
+            ("sv/B", 0.5, False),
+            ("sv/C", 0.4, False),
+        ]
+
+    def test_the_predicate_reads_the_dcid_a_series_stands_as(self, bind_catalogue):
+        bind_catalogue(FakeCatalogue(successors={"sv/Old": "sv/New"}))
+        seen: list[str] = []
+
+        def joins(dcid: str) -> bool:
+            seen.append(dcid)
+            return True
+
+        _pooled(_detection([]), _detection([_sv("sv/Old", 0.5)]), joins)
+
+        assert seen == ["sv/New"]
+
+    def test_the_first_searchs_un_leg_is_kept(self):
+        un = settled_un((_sv("sv/Un", 0.5),))
+        first = _detection([_sv("sv/A", 0.6)], un=un)
+        second = _detection([_sv("sv/B", 0.9)])
+
+        assert _pooled(first, second, lambda dcid: True).un is un
+
+    @pytest.mark.parametrize(
+        ("first_hits", "second_hits", "expected_hits"),
+        [
+            pytest.param(None, None, None, id="both_none"),
+            pytest.param(
+                [_sv("sv/A", 0.6), _sv("sv/R", 0.2, rival=True)],
+                None,
+                [("sv/B", 0.9, False), ("sv/A", 0.6, False), ("sv/R", 0.2, True)],
+                id="only_the_first_has_hits",
+            ),
+            pytest.param(
+                None,
+                [_sv("sv/B", 0.9), _sv("sv/Z", 0.1)],
+                [("sv/B", 0.9, False), ("sv/A", 0.6, False), ("sv/Z", 0.1, False)],
+                id="only_the_second_has_hits",
+            ),
+        ],
+    )
+    def test_hits_read_as_candidates_where_a_detection_has_none(
+        self, first_hits, second_hits, expected_hits
+    ):
+        first = _detection([_sv("sv/A", 0.6)], hits=first_hits)
+        second = _detection([_sv("sv/B", 0.9)], hits=second_hits)
+
+        pooled = _pooled(first, second, lambda dcid: True)
+
+        if expected_hits is None:
+            assert pooled.hits is None
+        else:
+            assert _rows(pooled.hits) == expected_hits
+
+
+class _FailingGraph(_CountingGraph):
+    """A counting graph whose `detect_svs` raises on one text."""
+
+    def __init__(self, fails_on: str):
+        super().__init__()
+        self._fails_on = fails_on
+
+    def detect_svs(self, query: str):
+        detection = super().detect_svs(query)
+        if query == self._fails_on:
+            raise GraphInfraError(f"simulated transport error for {query!r}")
+        return detection
+
+
+class TestStatedWordSearch:
+    @pytest.mark.parametrize(
+        ("text", "searched"),
+        [
+            pytest.param("ODA to Kenya", ["ODA to Kenya"], id="no_stated_word"),
+            pytest.param("bilateral", ["bilateral"], id="nothing_left_without_the_word"),
+            pytest.param(
+                "bilateral ODA to Kenya",
+                ["ODA to Kenya", "bilateral ODA to Kenya"],
+                id="stated_word",
+            ),
+        ],
+    )
+    def test_the_graph_is_searched_once_unless_the_text_holds_a_stated_word(self, text, searched):
+        graph = _CountingGraph()
+
+        run(recall(text, [], graph=graph, resolver=make_resolver(graph), raw_query=text))
+
+        assert sorted(graph.detect_calls) == sorted(searched)
+
+    def test_a_series_only_the_search_without_the_word_returns_joins_when_its_table_states_it(self):
+        crs = _dcid_of(_CRS, "amount")
+        dac1 = _dcid_of(_DAC1, "amount")
+        ids = _dcid_of(_IDS, "amount")
+        graph = _CountingGraph(
+            nodes={},
+            obs={},
+            resolve={},
+            detect={
+                "bilateral ODA to Kenya": {"svs": [dac1], "cosine_scores": [0.8]},
+                "ODA to Kenya": {"svs": [crs, ids], "cosine_scores": [0.7, 0.6]},
+            },
+        )
+
+        result = run(
+            recall(
+                "bilateral ODA to Kenya",
+                [],
+                graph=graph,
+                resolver=make_resolver(graph),
+                raw_query="bilateral ODA to Kenya",
+            )
+        )
+
+        recalled = {c.dcid for c in result.candidates if not c.rival}
+        assert recalled >= {crs, dac1}
+        assert ids not in recalled
+
+    @pytest.mark.parametrize("fails_on", ["ODA to Kenya", "bilateral ODA to Kenya"])
+    def test_a_failure_of_either_search_fails_the_request(self, fails_on):
+        graph = _FailingGraph(fails_on)
+
+        with pytest.raises(GraphInfraError):
+            run(_detect(graph, "bilateral ODA to Kenya"))

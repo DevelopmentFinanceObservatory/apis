@@ -964,11 +964,11 @@ class _MemoFakeUsageMeta:
 
 
 class _MemoFakeResponse:
-    """Stands in for the genai response `LLM._fetch_structured` reads:
-    `.parsed`, `.model_version`, `.usage_metadata`."""
+    """Stands in for the genai response `LLM._fetch_text` reads:
+    `.text`, `.model_version`, `.usage_metadata`."""
 
     def __init__(self, *, parsed: Extraction) -> None:
-        self.parsed = parsed
+        self.text = parsed.model_dump_json()
         self.model_version = "gemini-3.5-flash-lite-007"
         self.usage_metadata = _MemoFakeUsageMeta()
 
@@ -988,7 +988,7 @@ class _MemoCountingClient:
 
     def __init__(self, answer: _MemoFakeResponse) -> None:
         self.models = self._Models(answer)
-        # `_fetch_structured` uses `client.aio.models`; sharing `models` records calls on both paths.
+        # `_fetch_text` uses `client.aio.models`; sharing `models` records calls on both paths.
         self.aio = SimpleNamespace(models=self.models)
 
 

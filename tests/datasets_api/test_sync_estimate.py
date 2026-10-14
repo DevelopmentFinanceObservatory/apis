@@ -109,18 +109,115 @@ def test_range_window_narrows_to_the_bound_years():
     assert estimate.requests == 1
 
 
-def test_latest_window_is_estimated_the_same_as_all_a_safe_over_estimate():
-    all_window = _request(stat_var="Amount_Crs_A", donor="country/DEU", recipient="country/KEN")
-    latest_window = _request(
-        stat_var="Amount_Crs_A",
-        donor="country/DEU",
-        recipient="country/KEN",
-        window=RequestedWindow(kind="latest"),
+@pytest.mark.parametrize(
+    ("stat_vars", "donor", "second_reads"),
+    [
+        pytest.param(["Amount_Crs_A"], "country/DEU", 1, id="both-roles-bound"),
+        pytest.param(["Amount_Crs_A"], None, 1, id="every-donor-to-one-recipient"),
+        pytest.param(["Amount_Crs_A", "Amount_Uncovered"], "country/DEU", 1, id="one-uncovered"),
+    ],
+)
+def test_latest_window_prices_all_years_and_one_more_read_of_a_member_ending_in_several_years(
+    stat_vars: list[str], donor: str | None, second_reads: int
+):
+    """A `latest` member with a series ending after the year it elects is read once more at
+    that year, so a member holding coverage rows that end in different years is priced a
+    second read."""
+
+    def _estimate(window: RequestedWindow) -> Estimate:
+        return sync_estimate(
+            [
+                _request(stat_var=stat_var, donor=donor, recipient="country/KEN", window=window)
+                for stat_var in stat_vars
+            ],
+            index=_INDEX,
+            member_concurrency=_SETTINGS.mint_member_max_concurrency,
+        )
+
+    every_year, latest = _estimate(_ALL_WINDOW), _estimate(RequestedWindow(kind="latest"))
+
+    assert (every_year.rows, every_year.requests) == (3, 1)
+    assert latest == dataclasses.replace(every_year, requests=every_year.requests + second_reads)
+
+
+_ONE_YEAR = [[2022, 2023], [2023]]
+_NEWER_PARTIAL_YEAR = [[2022, 2023], [2023, 2024]]
+# Nine series reach 2025 and 85 end in 2024, the year the member elects.
+_NEWEST_YEAR_THIN = [*([[2024, 2025]] * 9), *([[2023, 2024]] * 85)]
+
+
+def _latest_estimates(
+    members: list[list[list[int]]], *, build_year: int | None = None, facets: int = 1
+) -> tuple[Estimate, Estimate]:
+    """The `all` and `latest` estimates of one request per entry of `members`, each a
+    variable holding one series per list of years, spread over `facets` facets, from its
+    own donor to Kenya."""
+    stat_vars = [f"Amount_Crs_Latest{position}" for position in range(len(members))]
+    index = build_coverage_index(
+        [
+            (stat_var, f"facet{donor % facets}", f"country/D{donor:03d}", "country/KEN", years)
+            for stat_var, series in zip(stat_vars, members, strict=True)
+            for donor, years in enumerate(series)
+        ],
+        role_names=dict.fromkeys(stat_vars, _CRS_ROLES),
+        build_year=build_year,
     )
-    assert sync_estimate(
-        (latest_window,), index=_INDEX, member_concurrency=_SETTINGS.mint_member_max_concurrency
-    ) == sync_estimate(
-        (all_window,), index=_INDEX, member_concurrency=_SETTINGS.mint_member_max_concurrency
+    every_year, latest = (
+        sync_estimate(
+            [_request(stat_var=sv, recipient="country/KEN", window=window) for sv in stat_vars],
+            index=index,
+            member_concurrency=_SETTINGS.mint_member_max_concurrency,
+        )
+        for window in (_ALL_WINDOW, RequestedWindow(kind="latest"))
+    )
+    return every_year, latest
+
+
+@pytest.mark.parametrize(
+    ("members", "build_year", "facets", "second_reads", "requests"),
+    [
+        pytest.param([_ONE_YEAR] * 40, 2026, 1, 0, 5, id="forty-ending-in-one-year"),
+        pytest.param([_ONE_YEAR], None, 2, 0, 1, id="two-facets-ending-in-one-year"),
+        pytest.param([_NEWER_PARTIAL_YEAR], 2026, 1, 1, 2, id="a-newer-partial-year"),
+        pytest.param(
+            [*([_ONE_YEAR] * 37), *([_NEWER_PARTIAL_YEAR] * 3)], 2026, 1, 3, 8, id="mixed-group"
+        ),
+        pytest.param([_NEWEST_YEAR_THIN], 2026, 1, 1, 2, id="newest-year-thin"),
+        pytest.param([_ONE_YEAR], 2022, 1, 1, 2, id="one-year-after-the-build-year"),
+    ],
+)
+def test_latest_window_prices_a_second_read_only_for_a_member_that_can_make_it(
+    members: list[list[list[int]]],
+    build_year: int | None,
+    facets: int,
+    second_reads: int,
+    requests: int,
+):
+    """A member whose series all end in one year, at or before the build year, elects that
+    year and reads once, so it is priced as an `all` window is. Any other covered member
+    can hold a row after the year it elects and is priced one more read."""
+    every_year, latest = _latest_estimates(members, build_year=build_year, facets=facets)
+
+    assert latest == dataclasses.replace(every_year, requests=every_year.requests + second_reads)
+    assert latest.requests == requests
+
+
+def test_members_ending_in_one_year_keep_the_budgets_an_all_window_meets():
+    """At the default budgets 37 `latest` members whose series end in one year run inline
+    and 715 are accepted as an operation, as the same members are under an `all` window."""
+    _, inline = _latest_estimates([_ONE_YEAR] * 37, build_year=2026)
+    _, queued = _latest_estimates([_ONE_YEAR] * 715, build_year=2026)
+
+    assert within_sync_budget(
+        inline,
+        sync_budget_rows=_SETTINGS.sync_budget_rows,
+        sync_budget_requests=_SETTINGS.sync_budget_requests,
+    )
+    assert queued.requests > _SETTINGS.sync_budget_requests
+    refuse_async_over_ceiling(
+        queued,
+        async_max_rows=_SETTINGS.async_max_rows,
+        async_max_requests=_SETTINGS.async_max_requests,
     )
 
 

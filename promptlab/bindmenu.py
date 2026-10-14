@@ -1,8 +1,8 @@
 """Parse and truncate the candidate-shape menu in bind prompts.
 
-`parse_menu` accepts the builder's exact format and skips fixed-context, dropped-
-qualifier, and taxonomy-label blocks. `truncate_menu` keeps the original text and
-limits the shape count and header.
+`parse_menu` accepts the builder's exact format and skips the frame, fixed-context, dropped-
+qualifier, availability, taxonomy-label and not-electable blocks. `truncate_menu` keeps the
+original text and limits the shape count and header.
 """
 
 from __future__ import annotations
@@ -10,6 +10,8 @@ from __future__ import annotations
 import ast
 import re
 from dataclasses import dataclass
+
+from search.engine.bind import AVAILABILITY_LABEL
 
 _NONE = "(none)"
 
@@ -22,8 +24,10 @@ class BindMenuError(ValueError):
 class MenuEntry:
     """One candidate shape read back from a bind prompt's menu.
 
-    `five_tuple` uses the five identity keys. `None` represents `(none)`.
-    `(present, unresolved)` marks a denominator arc with an unresolved target.
+    `five_tuple` uses the five identity keys. `None` represents `(none)`. The denominator
+    is the menu's text for it (`bind.menu_denominator`): "per person" or "per area" for a
+    schema term, `(present, unresolved)` for any other arc with an unresolved target.
+    `retrieval_score` is read from captures whose prompts still listed it, else `None`.
     """
 
     index: int
@@ -37,6 +41,8 @@ _VARIABLE_RE = re.compile(r"Variable phrase: (?P<variable>.*)")
 _HEADER_RE = re.compile(r"CANDIDATE SHAPES \((?P<count>\d+) total\):")
 _SHAPE_RE = re.compile(r"Shape (?P<index>\d+):")
 _LABEL_RE = re.compile(r"  label: (?P<label>.*)")
+_ORIGIN_RE = re.compile(r"  origin: .*")
+_AVAILABILITY_RE = re.compile(rf"  {re.escape(AVAILABILITY_LABEL)}: (yes|no|unknown)")
 _FAMILY_RE = re.compile(r"  family: .*")
 _FIVE_TUPLE_RE = re.compile(
     r"  five_tuple: populationType=(?P<pt>.*), measuredProperty=(?P<mp>.*), statType=(?P<st>.*)"
@@ -72,6 +78,13 @@ _SLOT_AXIS_RE = re.compile(
 _SLOT_TAXONOMY_RE = re.compile(r"      taxonomy: (?P<values>.*)")
 _SLOT_LABELS_RE = re.compile(r"      labels: .*")
 _SAMPLE_RE = re.compile(r"  sample_member_dcids: (?P<values>.*)")
+_FRAME_HEADER_LINE = "FRAME (what the query asks besides the variable phrase; [who stated it]):"
+_FRAME_ENTRY_RE = re.compile(r"  [a-z ]+: .*")
+_NOT_ELECTABLE_HEADER_LINE = (
+    "NOT ELECTABLE (each fails a part the query pins; never elect one, and when you ask, "
+    "nearest_refused_index names one):"
+)
+_NOT_ELECTABLE_ENTRY_RE = re.compile(r"  (?P<index>\d+): .+ \(fails .+\)")
 
 
 def _none_or(raw: str) -> str | None:
@@ -122,6 +135,14 @@ def _parse_shape(lines: list[str], pos: int, idx: int) -> tuple[MenuEntry, int]:
 
     match, pos = _match(lines, pos, _LABEL_RE, "a 'label:' line")
     label = match.group("label")
+
+    # Captures made before the menu stated each shape's origin have no origin line.
+    if pos < len(lines) and _ORIGIN_RE.fullmatch(lines[pos]):
+        pos += 1
+    # A part naming no place, and captures made before the menu stated it, have no
+    # availability line.
+    if pos < len(lines) and _AVAILABILITY_RE.fullmatch(lines[pos]):
+        pos += 1
 
     _, pos = _match(lines, pos, _FAMILY_RE, "a 'family:' line")
 
@@ -191,9 +212,8 @@ def parse_menu(prompt: str) -> tuple[str, tuple[MenuEntry, ...]]:
 
     Raises `BindMenuError` on a malformed line, count mismatch, or trailing content.
 
-    Optional `FIXED CONTEXT` and `DROPPED QUALIFIERS` blocks, and each shape's
-    `fixed_context` lines, are parsed and skipped. `QUERY-NAMED ALTERNATIVES` raise
-    `BindMenuError`.
+    Optional `FRAME`, `FIXED CONTEXT` and `DROPPED QUALIFIERS` blocks, each shape's
+    `fixed_context` lines, and the closing `NOT ELECTABLE` block are parsed and skipped. `QUERY-NAMED ALTERNATIVES` raise `BindMenuError`.
     """
     lines = prompt.split("\n")
     if not lines or lines[-1] != "":
@@ -204,6 +224,12 @@ def parse_menu(prompt: str) -> tuple[str, tuple[MenuEntry, ...]]:
     match, pos = _match(lines, pos, _VARIABLE_RE, "a 'Variable phrase:' line")
     variable = match.group("variable")
     pos = _literal(lines, pos, "")
+
+    if pos < len(lines) and lines[pos] == _FRAME_HEADER_LINE:
+        pos += 1
+        while pos < len(lines) and _FRAME_ENTRY_RE.fullmatch(lines[pos]):
+            pos += 1
+        pos = _literal(lines, pos, "")
 
     if pos < len(lines) and lines[pos] == _FIXED_CONTEXT_HEADER_LINE:
         pos = _literal(lines, pos + 1, "")
@@ -229,6 +255,13 @@ def parse_menu(prompt: str) -> tuple[str, tuple[MenuEntry, ...]]:
         if idx < declared_count - 1:
             pos = _literal(lines, pos, "")
 
+    # A blank line precedes the NOT ELECTABLE block. On an empty menu it is the blank
+    # line after the count header, already read.
+    if declared_count == 0 and pos < len(lines) and lines[pos] == _NOT_ELECTABLE_HEADER_LINE:
+        pos = _skip_not_electable(lines, pos + 1)
+    elif declared_count > 0 and pos < len(lines) and lines[pos] == "":
+        pos = _skip_not_electable(lines, _literal(lines, pos + 1, _NOT_ELECTABLE_HEADER_LINE))
+
     if pos != len(lines):
         raise BindMenuError(
             f"line {pos}: unexpected content after {declared_count} declared shapes"
@@ -237,11 +270,24 @@ def parse_menu(prompt: str) -> tuple[str, tuple[MenuEntry, ...]]:
     return variable, tuple(entries)
 
 
+def _skip_not_electable(lines: list[str], pos: int) -> int:
+    """Read past the NOT ELECTABLE entries at `pos`, numbered from 0."""
+    number = 0
+    while pos < len(lines) and (match := _NOT_ELECTABLE_ENTRY_RE.fullmatch(lines[pos])):
+        if int(match.group("index")) != number:
+            raise BindMenuError(f"line {pos}: not-electable {match.group('index')} out of order")
+        number += 1
+        pos += 1
+    if number == 0:
+        raise BindMenuError(f"line {pos}: 'NOT ELECTABLE' header with no entries")
+    return pos
+
+
 def truncate_menu(prompt: str, k: int) -> str:
-    """Keep the first `k` shapes and update the count header. Pre-shape text stays
-    unchanged, and slices preserve the builder's formatting. When `k` covers the
-    full menu, return `prompt` unchanged. Raises `BindMenuError` for malformed
-    prompts or `k < 1`."""
+    """Keep the first `k` shapes and update the count header. Pre-shape text and the
+    NOT ELECTABLE block stay unchanged, so its indices keep their meaning, and slices
+    preserve the builder's formatting. When `k` covers the full menu, return
+    `prompt` unchanged. Raises `BindMenuError` for malformed prompts or `k < 1`."""
     _variable, entries = parse_menu(prompt)
     total = len(entries)
     if k < 1:
@@ -263,5 +309,7 @@ def truncate_menu(prompt: str, k: int) -> str:
         if i > 0:
             new_lines.append("")
         new_lines.extend(lines[shape_starts[i] : end])
+    if _NOT_ELECTABLE_HEADER_LINE in lines:
+        new_lines.extend(["", *lines[lines.index(_NOT_ELECTABLE_HEADER_LINE) :]])
 
     return "\n".join(new_lines) + "\n"

@@ -10,10 +10,10 @@ import io
 import logging
 import math
 import threading
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
-from functools import partial
+from functools import cache, partial
 from typing import TYPE_CHECKING, Literal
 
 import pyarrow as pa
@@ -60,6 +60,7 @@ from materialise.facets import (
     RowAdmission,
     VariableBreadth,
     _alternatives,
+    _bound_roles_for_coverage,
     _probe_provenance_refresh,
     admitted_candidates,
     cadences_by_member,
@@ -101,6 +102,7 @@ from materialise.member_conversion import (
     conversion_graph_reader,
     omit_unmapped_rows,
     plan_member_conversion,
+    without_unmapped,
 )
 from materialise.national_currency import CoverageGap, narrow_to_national_currency
 from materialise.observation_rows import stream_observation_batches
@@ -117,17 +119,21 @@ from materialise.statistics import (
 from materialise.window import (
     AppliedWindow,
     Coverage,
+    LatestYear,
+    ReadSeries,
     RequestedWindow,
     compute_applied_window,
     latest_period,
 )
 from origin_catalogue.graph import is_un_dcid
+from series_coverage.schema import ABSENT_ENTITY, RoleNames
 
 if TYPE_CHECKING:
     from materialise.pipeline import MaterialisationRequest
 
     # Annotation-only import. `series_coverage.index` requires NumPy, absent
     # from `materialise`'s pure install.
+    from series_coverage.coverage_types import BoundRoles, Role
     from series_coverage.index import CoverageIndex
 
 logger = logging.getLogger(__name__)
@@ -137,7 +143,7 @@ logger = logging.getLogger(__name__)
 _STAT_VAR_REF_PREFIX = "dcid:"
 
 
-def _bare_stat_var_ref(stat_var: str) -> str:
+def bare_stat_var_ref(stat_var: str) -> str:
     """Returns the bare dcid used by graph probes and SDMX filters.
 
     Requests keep the `dcid:` prefix required by `build_frame_from_table`.
@@ -148,7 +154,8 @@ def _bare_stat_var_ref(stat_var: str) -> str:
 # Raw SDMX rows are capped at 20 x `ceiling`. All/range reads fetch full
 # histories, so survivor limits cannot bound responses whose filters retain
 # few rows. Latest reads fetch one row per matched series, then reduce again
-# to the member's globally latest period.
+# to the member's one period. A member read again at the year it elected
+# (`_with_elected_year`) returns at most one row per series the first read held.
 #
 # A single-member fetch gets its own 20 x allowance. Group chunks share one
 # 20 x `ceiling` total across workers. The total bounds
@@ -180,13 +187,193 @@ class _RawRowBudget:
             return self._used
 
 
-def _time_period_for_window(window: RequestedWindow) -> Literal["LATEST"] | None:
-    """Uses server-side `LATEST` for latest windows and no time filter otherwise.
+def _time_period_for_window(
+    window: RequestedWindow, *, year: int | None = None
+) -> Literal["LATEST"] | list[str] | None:
+    """Uses server-side `LATEST` for latest windows and no time filter otherwise. With
+    `year`, the year a latest read's member elected, the exact period of that year.
 
-    The client still selects the member's globally latest period because SDMX
-    returns one latest row per matched series.
+    The client still selects the member's one period because SDMX returns one latest row
+    per matched series. SDMX takes exact period strings alone, so a year is asked for by
+    its four digits, the period a yearly facet dates it by. A member elects a year only
+    when no facet of its states a period finer than a year.
     """
+    if year is not None:
+        return [str(year)]
     return "LATEST" if window.kind == "latest" else None
+
+
+type _Election = Callable[[Sequence[tuple[str, str]]], int | None]
+"""The year a `latest` read of one member elected, None when it elects none. It is given
+the `(graph role, entity)` rows a conversion leaves out of the member's rows, since the
+year is counted over the series the read keeps."""
+
+
+@dataclass(frozen=True)
+class _ElectedRead:
+    """How a `latest` read of one member learns the year it elected (`elect`) and reads the
+    member's rows at a year (`read`), which hands them over as the `LATEST` rows arrived:
+    under the member's dispatched facets and the read's own row filters. `counted` gives
+    the entities on a graph role whose series the election counts (`elected_entities`), so
+    a conversion's omissions among them are known before it elects; None for an election
+    that leaves its own omissions out, as Search's plan does."""
+
+    elect: _Election
+    read: Callable[[int], pa.Table]
+    counted: Callable[[str], Sequence[str]] | None = None
+
+
+def elected_latest_year(
+    request: MaterialisationRequest,
+    omitted: Sequence[tuple[str, str]],
+    *,
+    coverage: CoverageIndex | None,
+    facet_ids: Sequence[str],
+) -> int | None:
+    """The year a `latest` read of role-bearing `request` serves, elected by the coverage
+    index (`CoverageIndex.elected_years`): over the series of `facet_ids`, the facets the
+    read dispatches, under the request's bound roles and the source scope in context, less
+    the `omitted` `(graph role, entity)` rows a conversion leaves out. None for a window
+    other than `latest`, a subject-only request, one read without coverage or dispatching
+    no facet, and a StatVar the index cannot elect for, which all serve the newest period
+    any series holds.
+
+    A mint calls it once per member and records the year with `facet_ids` and `omitted`
+    (`window.LatestYear`), so a later call with those arguments tells whether the index
+    still elects that year."""
+    scope = _election_scope(request, coverage=coverage, facet_ids=facet_ids)
+    if scope is None:
+        return None
+    stat_var, names, bound = scope
+    assert coverage is not None  # `_election_scope` holds none without it
+    coverage_role: dict[str | None, Role] = {names.donor: "donor", names.recipient: "recipient"}
+    return coverage.elected_years(
+        variables=[stat_var],
+        bound=bound,
+        served=[(stat_var, facet_id, None, None) for facet_id in facet_ids],
+        excluded=[
+            (stat_var, coverage_role[role], entity)
+            for role, entity in omitted
+            if role in coverage_role
+        ],
+    ).get(stat_var)
+
+
+def elected_entities(
+    request: MaterialisationRequest,
+    graph_role: str,
+    *,
+    coverage: CoverageIndex | None,
+    facet_ids: Sequence[str],
+) -> tuple[str, ...]:
+    """The entities on `graph_role` of the series `elected_latest_year` counts for
+    `request` over `facet_ids`, in dcid order, whether or not a row of theirs holds a
+    value. Empty where it elects nothing, and for a role the index does not key."""
+    scope = _election_scope(request, coverage=coverage, facet_ids=facet_ids)
+    if scope is None:
+        return ()
+    stat_var, names, bound = scope
+    assert coverage is not None  # `_election_scope` holds none without it
+    position = {names.recipient: 1, names.donor: 2}.get(graph_role)
+    found = coverage.series_years(
+        variables=[stat_var],
+        bound=bound,
+        served=[(stat_var, facet_id, None, None) for facet_id in facet_ids],
+    )
+    if position is None or found is None:
+        return ()
+    series = found.keys()
+    return tuple(sorted({key[position] for key in series} - {ABSENT_ENTITY}))
+
+
+def _election_scope(
+    request: MaterialisationRequest, *, coverage: CoverageIndex | None, facet_ids: Sequence[str]
+) -> tuple[str, RoleNames, BoundRoles] | None:
+    """`request`'s bare StatVar, the index's role names for it and its bound roles, for a
+    `latest` read of a role-bearing request over some dispatched facet of a StatVar the
+    index holds role names for; None otherwise."""
+    stat_var = bare_stat_var_ref(request.stat_var)
+    if (
+        request.window.kind != "latest"
+        or coverage is None
+        or not facet_ids
+        or request.declared_roles == _SUBJECT_ROLE_ONLY
+    ):
+        return None
+    names = coverage.role_names.get(stat_var)
+    bound = _bound_roles_for_coverage(request.role_bindings, coverage=coverage, stat_var=stat_var)
+    if names is None or bound is None:
+        return None
+    return stat_var, names, bound
+
+
+def _omitted_rows(
+    conversion_plan: MemberConversionPlan | None,
+    currencies: EntityCurrencies | None,
+    *,
+    also: Collection[str] = (),
+) -> tuple[tuple[str, str], ...]:
+    """The `(graph role, entity)` rows a role-shaped conversion leaves out, in dcid order:
+    the entities `currencies` holds as unmapped (`omit_unmapped_rows`) and `also`, on the
+    plan's role."""
+    if conversion_plan is None or conversion_plan.graph_role is None or currencies is None:
+        return ()
+    role = conversion_plan.graph_role
+    return tuple((role, entity) for entity in sorted({*currencies.unmapped, *also}))
+
+
+def _continuing_facet_ids(
+    candidates: Sequence[Facet], election: FacetElection, *, member: int
+) -> tuple[str, ...]:
+    """The dispatch IDs (`joint_dispatch_facet_ids`) of the method that continues the
+    selected series past its last year (`FacetSelection.continued_by`), none when nothing
+    continues it. A range window alone continues a series, and its rows serve only the
+    years after that series' last one (`columnar.continuation_mask`)."""
+    method = election.selections.get("measurementMethod")
+    if method is None or method.continued_by is None:
+        return ()
+    by_id = {c.facet_id: c for c in candidates}
+    return tuple(
+        facet_id
+        for facet_id in joint_dispatch_facet_ids(candidates, election, member=member)
+        if by_id[facet_id].measurement_method == method.continued_by
+    )
+
+
+def _read_series(
+    dispatch_ids: Sequence[str], continuing_ids: Sequence[str], omitted: Sequence[tuple[str, str]]
+) -> ReadSeries:
+    """The series a member's read holds of its selection: those of `dispatch_ids` less the
+    facets of a method continuing them (`continuing_ids`), less `omitted`. They are the
+    series a `latest` read of the request holds, which no method continues, so a named
+    year's counts are those a `latest` frame states."""
+    continuing = set(continuing_ids)
+    return ReadSeries(
+        facet_ids=tuple(facet_id for facet_id in dispatch_ids if facet_id not in continuing),
+        omitted=tuple(omitted),
+    )
+
+
+def _latest_years(
+    request: MaterialisationRequest,
+    *,
+    elected: int | None,
+    applied_window: AppliedWindow | None,
+    read: ReadSeries,
+) -> dict[str, LatestYear]:
+    """`request`'s entry of a result's `latest_years`: the year it elected over the series
+    it `read`, and the year its rows hold (`applied_window`). Empty for a window other than
+    `latest`."""
+    if request.window.kind != "latest":
+        return {}
+    return {
+        request.stat_var: LatestYear(
+            elected=elected,
+            served=applied_window.end_year if applied_window is not None else None,
+            facet_ids=read.facet_ids,
+            omitted=read.omitted,
+        )
+    }
 
 
 @dataclass(frozen=True)
@@ -203,7 +390,8 @@ class _MemberOutcome:
     candidate, and the outcome then holds no row and no selection. `provenance_refresh` holds
     the dispatched provenance's refresh dates, read before the fetch (`_dispatch_refresh`).
     `coverage_gaps` holds the places a national-currency unit binding serves no row at
-    (`_national_currency_probe`).
+    (`_national_currency_probe`). `latest_years` holds the member's year under a `latest`
+    window (`_latest_years`), and `read_series` the series its read holds under any window.
     """
 
     frame: Frame
@@ -218,6 +406,8 @@ class _MemberOutcome:
     probe_empty: bool = False
     provenance_refresh: Mapping[str, ProvenanceRefresh] = field(default_factory=dict)
     coverage_gaps: tuple[CoverageGap, ...] = ()
+    latest_years: Mapping[str, LatestYear] = field(default_factory=dict)
+    read_series: Mapping[str, ReadSeries] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -237,7 +427,9 @@ class _GroupOutcome:
     candidate, and the outcome then holds no row and no selection. `provenance_refresh` is
     `_MemberOutcome.provenance_refresh` for the group's shared selection. `method_periods`
     maps each `measurementMethod` the rows name to the earliest and latest period its rows
-    hold (`frame_build.fold_method_periods`).
+    hold (`frame_build.fold_method_periods`). `latest_years` holds each member's year under
+    a `latest` window (`_latest_years`), and `read_series` the series each member's read
+    holds under any window.
     """
 
     frame_chunks: Callable[[], Iterator[Frame]]
@@ -257,6 +449,8 @@ class _GroupOutcome:
     probe_empty: bool = False
     provenance_refresh: Mapping[str, ProvenanceRefresh] = field(default_factory=dict)
     method_periods: Mapping[str, tuple[str, str]] = field(default_factory=dict)
+    latest_years: Mapping[str, LatestYear] = field(default_factory=dict)
+    read_series: Mapping[str, ReadSeries] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -302,7 +496,9 @@ class _PreparedPreview:
 
     Search uses this short-lived state to choose one actual latest period across
     several reads.  It is deliberately kept internal: ``pipeline`` exposes only
-    the period needed for that coordination and finalises it into a PreviewResult.
+    the periods needed for that coordination and finalises it into a PreviewResult.
+    `year` is the year a `latest` read elected, None when it elected none. `table` then
+    holds the rows in that year beside each series' latest (`columnar.latest_rows`).
     """
 
     request: MaterialisationRequest
@@ -317,6 +513,7 @@ class _PreparedPreview:
     mint_full_frame: bool
     series_roles: tuple[str, ...]
     series_limit: int | None
+    year: int | None = None
 
     @property
     def latest_period(self) -> str | None:
@@ -324,6 +521,14 @@ class _PreparedPreview:
         if not self.table.num_rows:
             return None
         return latest_period(pc.unique(self.table["TIME_PERIOD"]).to_pylist())
+
+    @property
+    def elected_period(self) -> str | None:
+        """The newest retained period in the year the read elected. None when it elected
+        none or retains no row in that year."""
+        if self.year is None or not self.table.num_rows:
+            return None
+        return latest_period(pc.unique(self.table["TIME_PERIOD"]).to_pylist(), year=self.year)
 
 
 def _admitted(probe: MemberProbe, candidate_filter: Callable[[Facet], bool] | None) -> MemberProbe:
@@ -490,7 +695,7 @@ def _validate_empty_member_probe(
     ):
         return
     candidates = role_bearing_facet_candidates(
-        stat_var=_bare_stat_var_ref(request.stat_var),
+        stat_var=bare_stat_var_ref(request.stat_var),
         role_bindings=request.role_bindings,
         coverage=coverage,
     )
@@ -585,7 +790,7 @@ def _convert_by_series(
     converted, record, records = apply_member_conversion_by_series(
         plan, table, declared_roles=roles, currencies=currencies
     )
-    bare_stat_var = _bare_stat_var_ref(request.stat_var)
+    bare_stat_var = bare_stat_var_ref(request.stat_var)
     return (
         converted,
         record,
@@ -623,15 +828,46 @@ def _most_recent_rows(table: pa.Table, limit: int) -> pa.Table:
     return indexed.take(order[-limit:]).drop_columns(["_row_index"])
 
 
+def _with_elected_year(
+    table: pa.Table, *, year: int, admission: RowAdmission, read: Callable[[int], pa.Table]
+) -> pa.Table:
+    """`table`, a `LATEST` read's rows of one member, holding every row of the member in
+    `year`, the year it elected.
+
+    A `LATEST` read holds each series at its newest period, so a series ending after
+    `year` shows no row in it. When an admitted row is newer than `year`, `read(year)`
+    reads the member at that year, and its rows replace those `table` holds in `year`,
+    which the second read returns again. When no series ends after `year` the first read
+    holds every row in it and no second read is made. A series ending before `year` holds
+    no row in it on either read.
+    """
+    bounds = columnar.served_year_bounds(
+        table.filter(columnar.admission_mask(table, admission=admission))
+    )
+    if bounds is None or bounds[1] <= year:
+        return table
+
+    again = read(year)
+    return pa.concat_tables(
+        [
+            table.filter(pc.invert(columnar.year_mask(table, year=year))),
+            again.filter(columnar.year_mask(again, year=year)),
+        ]
+    )
+
+
 def _apply_latest_reduction(
     table: pa.Table,
     *,
     window: RequestedWindow,
     selections: Mapping[str, FacetSelection],
     admission: RowAdmission,
+    year: int | None = None,
 ) -> pa.Table:
     """Reduces latest-window rows to the member's one latest period (`columnar.latest_rows`,
-    by `window.latest_period`), then filters them.
+    by `window.latest_period`), then filters them. With `year`, the year the member
+    elected, the rows at the newest period in `year` stay beside them, and
+    `columnar.elected_rows` chooses between the two once the rows are filtered.
 
     SDMX's `LATEST` filter returns one row per series. Admission filters
     before the reduction, so a withheld row cannot set the member's latest
@@ -640,7 +876,7 @@ def _apply_latest_reduction(
     if window.kind != "latest":
         return table
     table = table.filter(columnar.admission_mask(table, admission=admission))
-    table = columnar.latest_rows(table)
+    table = columnar.latest_rows(table, year=year)
     return table.filter(
         columnar.survivor_mask(table, selections=selections, window=window, admission=admission)
     )
@@ -654,38 +890,109 @@ def _servable_rows(
     admission: RowAdmission,
     conversion_plan: MemberConversionPlan | None,
     ceiling_check: Callable[[pa.Table], None] | None = None,
-) -> tuple[pa.Table, EntityCurrencies | None]:
+    elected: _ElectedRead | None = None,
+) -> tuple[pa.Table, EntityCurrencies | None, int | None, tuple[tuple[str, str], ...]]:
     """Omits the rows of entities no single currency names (`omit_unmapped_rows`), then
     reduces latest-window rows (`_apply_latest_reduction`), so a member's latest period is
     one a converted row holds, then keeps a continuing method's rows only past each
-    series' last served period (`columnar.continuation_mask`). Returns the rows and the currencies `apply_member_conversion`
-    converts them into.
+    series' last served period (`columnar.continuation_mask`). Returns the rows, the
+    currencies `apply_member_conversion` converts them into, the year a `latest` read
+    elected, and the `(graph role, entity)` rows the election counted without
+    (`_omitted_rows`).
+
+    A `latest` read given `elected` asks it for the member's year, counted without the
+    omitted entities, and reads the rows in that year a `LATEST` read lacks
+    (`_with_elected_year`). The returned rows then hold the newest period in that year
+    beside the newest period any series holds, and the caller serves the first when a row
+    holds it (`columnar.elected_rows`). A member that elects no year, and a read given no
+    `elected`, keep the newest period any series holds alone.
 
     A latest window's rows arrive unfiltered, so currencies resolve for the rows that pass
-    the window, facet and admission filters; other window kinds arrive filtered. When the
-    currency read fails on a filtered window (a `NonCurrencyUnitError`, a graph read or the
-    deadline), `ceiling_check` runs on the rows before omission, a continuing method's
-    earlier rows left out, and its `OverCeilingError` wins, then the failure re-raises: those
-    are the rows that would serve had no entity been omitted. A latest window converts before
-    its ceiling check, so its failure raises as it is.
+    the facet and admission filters, whatever their value. These are each series' newest
+    row, and so every entity the read of the elected year can add a row of. They resolve in
+    the same read for the entities the election counts (`_ElectedRead.counted`), and the
+    election runs once, before any row's value is read, without the ones no currency names.
+    The returned currencies name as unmapped only the entities a row of either read holds a
+    value for (`_holding_a_value`), which warnings and the empty result report, and one of
+    those the election did not count is logged. Other window kinds arrive filtered. When the currency read fails on a filtered window
+    (a `NonCurrencyUnitError`, a graph read or the deadline), `ceiling_check` runs on the
+    rows before omission, a continuing method's earlier rows left out, and its
+    `OverCeilingError` wins, then the failure re-raises. Those are the rows that would serve
+    had no entity been omitted. A latest window converts before its ceiling check, so its
+    failure raises as it is.
     """
     served = (
         table.filter(
-            columnar.survivor_mask(table, selections=selections, window=window, admission=admission)
+            pc.and_(
+                columnar.selection_mask(table, selections=selections),
+                columnar.admission_mask(table, admission=admission),
+            )
         )
         if window.kind == "latest"
         else table
     )
+    role = conversion_plan.graph_role if conversion_plan is not None else None
+    counted = (
+        elected.counted(role)
+        if elected is not None
+        and elected.counted is not None
+        and role is not None
+        and window.kind == "latest"
+        else ()
+    )
     try:
-        table, currencies = omit_unmapped_rows(conversion_plan, table, served=served)
+        _, resolved = omit_unmapped_rows(conversion_plan, table, served=served, entities=counted)
     except Exception:
         if ceiling_check is not None and window.kind != "latest":
             ceiling_check(table.filter(columnar.continuation_mask(table, selections=selections)))
         raise
+    currencies = _holding_a_value(resolved, conversion_plan, served)
+    table = without_unmapped(conversion_plan, table, currencies)
+    left_out = set(counted).intersection(resolved.unmapped) if resolved is not None else set()
+    year = None
+    if elected is not None and window.kind == "latest":
+        year = elected.elect(tuple((role, entity) for entity in sorted(left_out) if role))
+        if year is not None:
+            read = _with_elected_year(table, year=year, admission=admission, read=elected.read)
+            currencies = _holding_a_value(resolved, conversion_plan, served, read)
+            table = without_unmapped(conversion_plan, read, currencies)
+        if elected.counted is not None and currencies is not None:
+            uncounted = sorted(set(currencies.unmapped) - left_out)
+            if uncounted:
+                # The election counts the index's series, so an entity the index holds no
+                # series of changes no count. Its rows are left out as any unmapped entity's.
+                logger.warning(
+                    "latest read omits %d entities no currency names that the coverage "
+                    "index holds no series of, so the election did not leave them out: %s",
+                    len(uncounted),
+                    uncounted[:10],
+                )
     table = _apply_latest_reduction(
-        table, window=window, selections=selections, admission=admission
+        table, window=window, selections=selections, admission=admission, year=year
     )
-    return table.filter(columnar.continuation_mask(table, selections=selections)), currencies
+    rows = table.filter(columnar.continuation_mask(table, selections=selections))
+    return rows, currencies, year, _omitted_rows(conversion_plan, currencies, also=left_out)
+
+
+def _holding_a_value(
+    currencies: EntityCurrencies | None,
+    conversion_plan: MemberConversionPlan | None,
+    *tables: pa.Table,
+) -> EntityCurrencies | None:
+    """`currencies` with only the unmapped entities that some row of `tables` binds, on the
+    plan's role, with a value (`columnar.observed_mask`). An entity with no such row serves
+    nothing, and a conversion leaves nothing of it out."""
+    if currencies is None or conversion_plan is None or conversion_plan.graph_role is None:
+        return currencies
+    role = conversion_plan.graph_role
+    holding = {
+        entity
+        for table in tables
+        for entity in table.filter(columnar.observed_mask(table))[role].to_pylist()
+    }
+    return replace(
+        currencies, unmapped=tuple(entity for entity in currencies.unmapped if entity in holding)
+    )
 
 
 def _counts_after_conversion(conversion_plan: MemberConversionPlan | None) -> bool:
@@ -802,8 +1109,10 @@ def _fetch_member_batches(
     deadline: float | None,
     progress: RowProgress | None = None,
     streaming_ceiling: int | None,
+    year: int | None = None,
 ) -> tuple[pa.Schema, list[pa.RecordBatch]]:
-    """Fetches one member under a raw-row cap of `20 * ceiling`.
+    """Fetches one member under a raw-row cap of `20 * ceiling`. With `year`, the year a
+    `latest` read's member elected, it fetches the member's rows at that year alone.
 
     Checks header roles before consuming batches. Coverage supplies roles and
     an exhaustive entity filter for unbound role requests. A subject-only
@@ -831,7 +1140,7 @@ def _fetch_member_batches(
             variables=[bare_stat_var],
             entities=entities,
             facet_ids=dispatch_ids,
-            time_period=_time_period_for_window(request.window),
+            time_period=_time_period_for_window(request.window, year=year),
             roles=dispatch_roles,
             max_rows=raw_guard,
             deadline=deadline,
@@ -888,7 +1197,7 @@ def _probe_member(
     if precomputed_probe is not None:
         return precomputed_probe.members[0]
     return probe_facets(
-        stat_var=_bare_stat_var_ref(request.stat_var),
+        stat_var=bare_stat_var_ref(request.stat_var),
         bound_entities=_flatten_bound_entities(request.role_bindings),
         graph=graph,
         availability=availability,
@@ -992,7 +1301,7 @@ def _generate_member(
     probe counts and fetch filters. `deadline` is an absolute monotonic time
     passed to SDMX. `progress` tracks non-latest survivors.
     """
-    bare_stat_var = _bare_stat_var_ref(request.stat_var)
+    bare_stat_var = bare_stat_var_ref(request.stat_var)
     probe, coverage_gaps = _national_currency_probe(
         request,
         _probe_member(
@@ -1018,7 +1327,15 @@ def _generate_member(
             currencies=None,
             default_scope=probe.scope,
         )
-        return replace(empty, probe_empty=True, coverage_gaps=coverage_gaps)
+        return replace(
+            empty,
+            probe_empty=True,
+            coverage_gaps=coverage_gaps,
+            latest_years=_latest_years(
+                request, elected=None, applied_window=None, read=ReadSeries()
+            ),
+            read_series={request.stat_var: ReadSeries()},
+        )
 
     election = _select_member_facets(
         request,
@@ -1040,8 +1357,10 @@ def _generate_member(
         selections, precomputed_probe=precomputed_probe, graph=graph
     )
     dispatch_ids = joint_dispatch_facet_ids(probe.candidates, election, member=0)
+    elected: _ElectedRead | None = None
     if dispatch_ids:
-        schema, batches = _fetch_member_batches(
+        fetch = partial(
+            _fetch_member_batches,
             request,
             sdmx=sdmx,
             graph=graph,
@@ -1054,6 +1373,12 @@ def _generate_member(
             deadline=deadline,
             progress=progress,
             streaming_ceiling=_streaming_ceiling(conversion_plan, selections, ceiling),
+        )
+        schema, batches = fetch()
+        elected = _ElectedRead(
+            elect=partial(elected_latest_year, request, coverage=coverage, facet_ids=dispatch_ids),
+            read=lambda year: pa.Table.from_batches(fetch(year=year)[1], schema=schema),
+            counted=partial(elected_entities, request, coverage=coverage, facet_ids=dispatch_ids),
         )
     else:
         # No probed candidate's (provenance, measurementMethod, unit) jointly
@@ -1069,7 +1394,7 @@ def _generate_member(
         batches = []
 
     fetched = pa.Table.from_batches(batches, schema=schema)
-    table, currencies = _servable_rows(
+    table, currencies, year, omitted = _servable_rows(
         fetched,
         window=request.window,
         selections=selections,
@@ -1082,17 +1407,29 @@ def _generate_member(
             conversion_plan=conversion_plan,
             ceiling=ceiling,
         ),
+        elected=elected,
     )
     outcome = _finish_member_table(
         request,
         selections,
-        table,
+        columnar.elected_rows(table, year=year),
         ceiling=ceiling,
         conversion_plan=conversion_plan,
         currencies=currencies,
         default_scope=probe.scope,
     )
-    return replace(outcome, provenance_refresh=provenance_refresh, coverage_gaps=coverage_gaps)
+    read = _read_series(
+        dispatch_ids, _continuing_facet_ids(probe.candidates, election, member=0), omitted
+    )
+    return replace(
+        outcome,
+        provenance_refresh=provenance_refresh,
+        coverage_gaps=coverage_gaps,
+        latest_years=_latest_years(
+            request, elected=year, applied_window=outcome.applied_window, read=read
+        ),
+        read_series={request.stat_var: read},
+    )
 
 
 def _surviving_tables(
@@ -1213,6 +1550,8 @@ class _MemberFetchPlan:
     """Holds one member's selections, dispatch IDs, admission, and conversion plan.
 
     Group plans carry the group's shared selections and each member's own admission.
+    `continuing_ids` holds the dispatch IDs of the method continuing the selected series
+    (`_continuing_facet_ids`).
     """
 
     selections: dict[str, FacetSelection]
@@ -1220,6 +1559,7 @@ class _MemberFetchPlan:
     admission: RowAdmission
     conversion_plan: MemberConversionPlan | None
     default_scope: DefaultPlaceScope = NO_DEFAULT_SCOPE
+    continuing_ids: tuple[str, ...] = ()
 
 
 def request_batch_key(request: MaterialisationRequest) -> tuple[object, ...]:
@@ -1232,7 +1572,7 @@ def request_batch_key(request: MaterialisationRequest) -> tuple[object, ...]:
     and scope are `facets.request_scope_key`, which also groups the facet probe.
     """
     return (
-        is_un_dcid(_bare_stat_var_ref(request.stat_var)),
+        is_un_dcid(bare_stat_var_ref(request.stat_var)),
         *request_scope_key(request),
         request.window.kind == "latest",
     )
@@ -1286,7 +1626,7 @@ def _plan_collection_chunks(
         role_bindings = fetch_role_bindings(
             first.role_bindings, first.declared_roles, places=places[indices[0]]
         )
-        bare_stat_vars = [_bare_stat_var_ref(requests[i][1].stat_var) for i in indices]
+        bare_stat_vars = [bare_stat_var_ref(requests[i][1].stat_var) for i in indices]
         for position_group in stat_var_chunk_positions(bare_stat_vars, lanes=lanes):
             chunk_indices = [indices[position] for position in position_group]
             chunks.append(_build_shape_chunk(chunk_indices, requests, role_bindings=role_bindings))
@@ -1324,7 +1664,7 @@ def _build_shape_chunk(
     role_bindings: Mapping[str, EntityFilter],
 ) -> _ShapeChunk:
     member_indices = tuple(indices)
-    bare_stat_vars = tuple(_bare_stat_var_ref(requests[i][1].stat_var) for i in member_indices)
+    bare_stat_vars = tuple(bare_stat_var_ref(requests[i][1].stat_var) for i in member_indices)
     index_by_stat_var = dict(zip(bare_stat_vars, member_indices, strict=True))
     return _ShapeChunk(
         member_indices=member_indices,
@@ -1339,10 +1679,13 @@ class _MemberFetchResult:
     """One routed member table, using the chunk header's schema.
 
     Non-latest tables hold survivors. Latest tables hold raw rows for later
-    reduction. Members with no rows still receive an empty, typed table.
+    reduction. Members with no rows still receive an empty, typed table. `read_year` reads
+    a fetched `latest` member's rows at one year (`_ElectedRead.read`), and is None for
+    every other member.
     """
 
     table: pa.Table
+    read_year: Callable[[int], pa.Table] | None = None
 
 
 def _generate_chunk(
@@ -1380,7 +1723,9 @@ def _generate_chunk(
     `raw_budget` is shared by every group chunk. Each stream
     uses `raw_budget.total` as `max_rows`, while each arriving batch draws
     from the shared total. A batch can overshoot that total before the check
-    raises `OverCeilingError`. An SDMX cap error raises the same error.
+    raises `OverCeilingError`. An SDMX cap error raises the same error. A `latest`
+    member read again at the year it elected (`_MemberFetchResult.read_year`) is one more
+    request naming that member alone, and its rows draw on the same total.
 
     SDMX rejects a chunk whose StatVars disagree on observation properties. A
     StatVar with no graph node has none, so one absent member breaks the whole
@@ -1429,39 +1774,82 @@ def _generate_chunk(
         bare_stat_vars=chunk.bare_stat_vars,
         coverage=coverage,
     )
+
+    def draw(batch: pa.RecordBatch) -> None:
+        """Counts `batch` against the shared raw-row budget."""
+        used = raw_budget.consume(batch.num_rows)
+        if used > raw_budget.total:
+            message, detail = _raw_guard_message(
+                chunk,
+                member_requests,
+                observed=used,
+                cap_kind="rows",
+                raw_budget=raw_budget,
+                ceiling=ceiling,
+            )
+            raise OverCeilingError(
+                message, detail=detail, ceiling_kind="rows", count=used, cap=raw_budget.total
+            )
+
+    def over_cap(exc: SdmxCapExceededError) -> OverCeilingError:
+        message, detail = _raw_guard_message(
+            chunk,
+            member_requests,
+            observed=exc.observed,
+            cap_kind=exc.cap_kind,
+            raw_budget=raw_budget,
+            ceiling=ceiling,
+        )
+        return OverCeilingError(
+            message,
+            detail=detail,
+            ceiling_kind="bytes" if exc.cap_kind == "bytes" else "rows",
+            count=exc.observed,
+            cap=exc.cap,
+        )
+
+    stream = partial(
+        stream_observation_batches,
+        sdmx=sdmx,
+        graph=graph,
+        entities=entities,
+        roles=dispatch_roles,
+        max_rows=raw_budget.total,
+        deadline=deadline,
+    )
+
+    def read_year(index: int, schema: pa.Schema, year: int) -> pa.Table:
+        """Member `index`'s rows at `year`, under its own dispatch ids."""
+        plan = plans[index]
+        try:
+            with stream(
+                variables=[bare_stat_var_ref(member_requests[index].stat_var)],
+                facet_ids=plan.dispatch_ids,
+                time_period=_time_period_for_window(member_requests[index].window, year=year),
+            ) as (_roles, sdmx_batches):
+                batches: list[pa.RecordBatch] = []
+                for batch in sdmx_batches:
+                    draw(batch)
+                    batches.append(
+                        columnar.dispatched_rows(
+                            batch, facet_ids=plan.dispatch_ids, admission=plan.admission
+                        )
+                    )
+        except SdmxCapExceededError as exc:
+            raise over_cap(exc) from exc
+        return pa.Table.from_batches(batches, schema=schema)
+
     try:
-        with stream_observation_batches(
-            sdmx=sdmx,
-            graph=graph,
+        with stream(
             variables=list(chunk.bare_stat_vars),
-            entities=entities,
             facet_ids=chunk_facet_ids,
             time_period=time_period,
-            roles=dispatch_roles,
-            max_rows=raw_budget.total,
-            deadline=deadline,
         ) as (roles, sdmx_batches):
             for i in chunk.member_indices:
                 _check_role_divergence(roles, member_requests[i])
             schema = observation_schema(roles)
             for batch in sdmx_batches:
-                used = raw_budget.consume(batch.num_rows)
-                if used > raw_budget.total:
-                    message, detail = _raw_guard_message(
-                        chunk,
-                        member_requests,
-                        observed=used,
-                        cap_kind="rows",
-                        raw_budget=raw_budget,
-                        ceiling=ceiling,
-                    )
-                    raise OverCeilingError(
-                        message,
-                        detail=detail,
-                        ceiling_kind="rows",
-                        count=used,
-                        cap=raw_budget.total,
-                    )
+                draw(batch)
                 routed = columnar.split_by_variable(
                     batch, index_by_bare_stat_var=chunk.index_by_stat_var
                 )
@@ -1511,25 +1899,14 @@ def _generate_chunk(
                             cap=ceiling,
                         )
             result = {
-                i: _MemberFetchResult(table=pa.Table.from_batches(parts[i], schema=schema))
+                i: _MemberFetchResult(
+                    table=pa.Table.from_batches(parts[i], schema=schema),
+                    read_year=partial(read_year, i, schema) if i in latest_indices else None,
+                )
                 for i in chunk.member_indices
             }
     except SdmxCapExceededError as exc:
-        message, detail = _raw_guard_message(
-            chunk,
-            member_requests,
-            observed=exc.observed,
-            cap_kind=exc.cap_kind,
-            raw_budget=raw_budget,
-            ceiling=ceiling,
-        )
-        raise OverCeilingError(
-            message,
-            detail=detail,
-            ceiling_kind="bytes" if exc.cap_kind == "bytes" else "rows",
-            count=exc.observed,
-            cap=exc.cap,
-        ) from exc
+        raise over_cap(exc) from exc
     except SdmxIncompatibleVariablesError as exc:
         try:
             absent = _absent_stat_vars(chunk.bare_stat_vars, graph=graph, deadline=deadline)
@@ -1831,6 +2208,7 @@ def _plan_group_members(
             dispatch_ids=joint_dispatch_facet_ids(probes[index].candidates, election, member=index),
             admission=probes[index].admission,
             conversion_plan=conversion_plans[index],
+            continuing_ids=_continuing_facet_ids(probes[index].candidates, election, member=index),
         )
         for index in range(len(requests))
     ]
@@ -1880,9 +2258,7 @@ def _order_group_by_dcid(
     produce singleton chunks. Group roles must agree, while entity bindings
     may vary by member.
     """
-    dcid_order = sorted(
-        range(len(requests)), key=lambda i: _bare_stat_var_ref(requests[i].stat_var)
-    )
+    dcid_order = sorted(range(len(requests)), key=lambda i: bare_stat_var_ref(requests[i].stat_var))
     dcid_requests = [
         (str(original_index), requests[original_index]) for original_index in dcid_order
     ]
@@ -1898,12 +2274,15 @@ def _order_group_by_dcid(
 
 @dataclass(frozen=True)
 class _ConvertedMember:
-    """One group member's converted rows and records, from its chunk's pool worker."""
+    """One group member's converted rows and records, and the year its `latest` read
+    elected less the `omitted` rows (`_omitted_rows`), from its chunk's pool worker."""
 
     table: pa.Table
     conversion_record: ConversionRecord | None
     recipe_id: str | None
     series_conversions: dict[SeriesKey, SeriesConversion]
+    elected_year: int | None = None
+    omitted: tuple[tuple[str, str], ...] = ()
 
 
 class _GroupRowStreamer:
@@ -1954,6 +2333,8 @@ class _GroupRowStreamer:
         self.conversion_recipe_ids: dict[str, str | None] = {}
         self.series_conversions: dict[SeriesKey, SeriesConversion] = {}
         self.latest_windows: list[AppliedWindow | None] = []
+        self.latest_years: dict[str, LatestYear] = {}
+        self.read_series: dict[str, ReadSeries] = {}
         self.frame_columns: list[tuple[str, ...]] = []
         self.grains: dict[str, str] = {}
         self.method_periods: dict[str, tuple[str, str]] = {}
@@ -1987,7 +2368,7 @@ class _GroupRowStreamer:
         for index, fetch_result in fetch_results.items():
             request = self._dcid_requests[index][1]
             plan = self._dcid_plans[index]
-            table, currencies = _servable_rows(
+            table, currencies, year, omitted = _servable_rows(
                 fetch_result.table,
                 window=request.window,
                 selections=plan.selections,
@@ -2000,7 +2381,27 @@ class _GroupRowStreamer:
                     conversion_plan=plan.conversion_plan,
                     ceiling=self._ceiling,
                 ),
+                elected=(
+                    _ElectedRead(
+                        elect=partial(
+                            elected_latest_year,
+                            request,
+                            coverage=self._coverage_index,
+                            facet_ids=plan.dispatch_ids,
+                        ),
+                        read=fetch_result.read_year,
+                        counted=partial(
+                            elected_entities,
+                            request,
+                            coverage=self._coverage_index,
+                            facet_ids=plan.dispatch_ids,
+                        ),
+                    )
+                    if fetch_result.read_year is not None
+                    else None
+                ),
             )
+            table = columnar.elected_rows(table, year=year)
             _check_servable_ceiling(
                 request,
                 table,
@@ -2021,6 +2422,8 @@ class _GroupRowStreamer:
                 conversion_record=conversion_record,
                 recipe_id=recipe_id,
                 series_conversions=series_conversions,
+                elected_year=year,
+                omitted=omitted,
             )
         return outcomes
 
@@ -2139,10 +2542,20 @@ class _GroupRowStreamer:
                     self.conversion_records[request.stat_var] = member.conversion_record
                     self.conversion_recipe_ids[request.stat_var] = member.recipe_id
                     self.series_conversions.update(member.series_conversions)
+                    plan = self._dcid_plans[index]
+                    read = _read_series(plan.dispatch_ids, plan.continuing_ids, member.omitted)
+                    self.read_series[request.stat_var] = read
                     if request.window.kind == "latest":
-                        self.latest_windows.append(
-                            compute_applied_window(
-                                request.window, columnar.served_year_bounds(table)
+                        applied_window = compute_applied_window(
+                            request.window, columnar.served_year_bounds(table)
+                        )
+                        self.latest_windows.append(applied_window)
+                        self.latest_years.update(
+                            _latest_years(
+                                request,
+                                elected=member.elected_year,
+                                applied_window=applied_window,
+                                read=read,
                             )
                         )
                     pending_members[index] = (request, table)
@@ -2240,6 +2653,8 @@ def _assemble_group_outcome(
         off_cadence_members=off_cadence_members,
         probe_empty=probe_empty,
         method_periods=streamer.method_periods,
+        latest_years=streamer.latest_years,
+        read_series=streamer.read_series,
     )
 
 
@@ -2403,6 +2818,7 @@ def _prepare_preview_member(
     series_roles: Sequence[str] = (),
     series_limit: int | None = None,
     allowed_series_keys: frozenset[tuple[str, ...]] | None = None,
+    elect: _Election | None = None,
 ) -> _PreparedPreview:
     """Runs the exact facet-selection/dispatch machinery `_generate_member`
     runs for the same `MaterialisationRequest`: `_probe_member`,
@@ -2437,6 +2853,14 @@ def _prepare_preview_member(
     not decidable per batch. It gets the same true-count-then-truncate
     treatment.
 
+    A `"latest"` read elects its year as a mint of the request does
+    (`elected_latest_year`) and reads it the same way (`_servable_rows`), one more request
+    under the same guard when a series ends after that year. `elect`, when given, is the
+    election in its place, for a caller reading one StatVar over several previews that
+    elected over all of them. The prepared rows hold the elected year's period beside the newest one
+    (`_PreparedPreview.year`), and `_finish_preview_member` serves the first when a row
+    holds it. A read with `series_roles` and no `elect` elects no year.
+
     `mint_full_frame`, when true, also builds `_PreviewOutcome.full_frame`
     over every survivor row. That build is the same one a mint's own
     `_finish_member_table` runs, so it is what a caller needs to mint a
@@ -2469,7 +2893,7 @@ def _prepare_preview_member(
     `_PreviewOutcome.series_total_rows` counts each series' survivors before
     that cut. `ceiling` still sizes the raw-fetch guard.
     """
-    bare_stat_var = _bare_stat_var_ref(request.stat_var)
+    bare_stat_var = bare_stat_var_ref(request.stat_var)
     probe, _ = _national_currency_probe(
         request,
         (
@@ -2509,6 +2933,8 @@ def _prepare_preview_member(
     )
 
     dispatch_ids = joint_dispatch_facet_ids(probe.candidates, election, member=0)
+    read_year: Callable[[int], pa.Table] | None = None
+    counted: Callable[[str], Sequence[str]] | None = None
 
     if dispatch_ids:
         raw_guard = _RAW_FETCH_ROWS_GUARD_MULTIPLIER * ceiling
@@ -2521,16 +2947,17 @@ def _prepare_preview_member(
             bare_stat_vars=(bare_stat_var,),
             coverage=coverage_index,
         )
-        with stream_observation_batches(
+        stream = partial(
+            stream_observation_batches,
             sdmx=sdmx,
             graph=graph,
             variables=[bare_stat_var],
             entities=entities,
             facet_ids=dispatch_ids,
-            time_period=_time_period_for_window(request.window),
             max_rows=raw_guard,
             deadline=deadline,
-        ) as (roles, sdmx_batches):
+        )
+        with stream(time_period=_time_period_for_window(request.window)) as (roles, sdmx_batches):
             _check_role_divergence(roles, request)
             schema = observation_schema(roles)
             if request.window.kind == "latest":
@@ -2556,6 +2983,25 @@ def _prepare_preview_member(
                     )
                     for batch in table.to_batches()
                 ]
+
+        def read_year(year: int) -> pa.Table:
+            with stream(time_period=_time_period_for_window(request.window, year=year)) as (
+                _roles,
+                year_batches,
+            ):
+                return _admitted_series_rows(
+                    pa.Table.from_batches(list(year_batches), schema=schema),
+                    series_roles,
+                    allowed_series_keys,
+                )
+
+        if elect is None and not series_roles:
+            elect = partial(
+                elected_latest_year, request, coverage=coverage_index, facet_ids=dispatch_ids
+            )
+            counted = partial(
+                elected_entities, request, coverage=coverage_index, facet_ids=dispatch_ids
+            )
     else:
         # Mirrors `_generate_member`'s own no-dispatch-ids degrade: no
         # probed candidate jointly matches all three selected refs at once,
@@ -2573,25 +3019,47 @@ def _prepare_preview_member(
     # finish; conversion must see only that period.
     currencies: EntityCurrencies | None = None
     series_currencies: dict[tuple[str, ...], EntityCurrencies | None] = {}
+    year: int | None = None
     if series_roles and table.num_rows:
+        none = table.slice(0, 0)
+
+        @cache
+        def series_rows_at(year: int) -> dict[tuple[str, ...], pa.Table]:
+            """Each series' rows at `year`, from one read of the member however many
+            series end after it."""
+            assert read_year is not None  # a table with rows was fetched
+            return dict(_split_by_roles(read_year(year), series_roles))
+
         prepared_tables: list[pa.Table] = []
         for key, rows in _split_by_roles(table, series_roles):
-            rows, series_currencies[key] = _servable_rows(
+            rows, series_currencies[key], year, _omitted = _servable_rows(
                 rows,
                 window=request.window,
                 selections=selections,
                 admission=probe.admission,
                 conversion_plan=conversion_plan,
+                elected=(
+                    _ElectedRead(
+                        elect=elect, read=lambda at, key=key: series_rows_at(at).get(key, none)
+                    )
+                    if elect is not None
+                    else None
+                ),
             )
             prepared_tables.append(rows)
         table = pa.concat_tables(prepared_tables)
     else:
-        table, currencies = _servable_rows(
+        table, currencies, year, _omitted = _servable_rows(
             table,
             window=request.window,
             selections=selections,
             admission=probe.admission,
             conversion_plan=conversion_plan,
+            elected=(
+                _ElectedRead(elect=elect, read=read_year, counted=counted)
+                if elect is not None and read_year is not None
+                else None
+            ),
         )
     return _PreparedPreview(
         request=request,
@@ -2606,17 +3074,21 @@ def _prepare_preview_member(
         mint_full_frame=mint_full_frame,
         series_roles=tuple(series_roles),
         series_limit=series_limit,
+        year=year,
     )
 
 
 def _finish_preview_member(
     prepared: _PreparedPreview, *, time_period: str | None = None
 ) -> _PreviewOutcome:
-    """Apply conversion after an optional exact period filter to a prepared preview."""
+    """Apply conversion to a prepared preview's rows at `time_period`, or with none given
+    at the period a mint of the request serves (`columnar.elected_rows`)."""
     request = prepared.request
     table = prepared.table
     if time_period is not None:
         table = table.filter(pc.equal(table["TIME_PERIOD"], pa.scalar(time_period)))
+    else:
+        table = columnar.elected_rows(table, year=prepared.year)
     conversion_plan = prepared.conversion_plan
     series_conversion_records: dict[tuple[str, ...], ConversionRecord] = {}
     if prepared.series_roles and (table.num_rows or prepared.series_currencies):

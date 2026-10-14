@@ -9,7 +9,6 @@ from __future__ import annotations
 import dataclasses
 import gzip
 import json
-from collections import defaultdict
 
 import pytest
 
@@ -21,7 +20,6 @@ from scripts.export_code_index import content_hash
 from search.engine.bind import SlotBindingDraft
 from search.engine.options.population import options_population
 from search.engine.options.population_memo import _population_key
-from search.engine.region.availability import _are_availability_siblings
 from search.engine.region.grounding import _shape_with_taxonomy
 from search.engine.retrieval.bound_values import (
     declaration_version,
@@ -255,52 +253,6 @@ def test_standard_resolve_confirms_an_index_sourced_member_never_in_the_recall_p
     assert isinstance(result, Materialised)
     assert result.has_data is True
     assert result.sv_dcids == [extra_sv]
-
-
-def test_no_two_index_carried_five_tuples_form_an_availability_sibling_pair():
-    """Indexed rows currently have `meas_denom_unresolved=False`, so this passes vacuously.
-
-    The guard fails if an indexed five-tuple gains an unresolved denominator that pairs with a
-    resolved one, which could bypass availability pruning during index widening.
-    """
-    index = get_index()
-    groups: dict[tuple[str, str, str, str | None, str | None], set[str]] = defaultdict(set)
-    for row in index.statvars:
-        key = (
-            row.population_type or "",
-            row.measured_property,
-            row.stat_type or "",
-            row.measurement_qualifier,
-            row.measurement_denominator,
-        )
-        groups[key].update(row.constraint_properties)
-
-    assert len(groups) > 1, "expected the packaged index to carry more than one five-tuple"
-
-    shapes = [
-        ShapeDraft(
-            shape_id=f"idx-five-tuple-{i}",
-            label="index five-tuple",
-            pop_type_dcid=pop_type,
-            meas_prop_dcid=meas_prop,
-            stat_type_dcid=stat_type,
-            meas_qual_dcid=meas_qual,
-            meas_denom_dcid=meas_denom,
-            meas_denom_unresolved=False,
-            slot_keys=tuple(
-                SlotKeyDraft(axis="how", property_dcid=prop, label=prop) for prop in sorted(props)
-            ),
-        )
-        for i, ((pop_type, meas_prop, stat_type, meas_qual, meas_denom), props) in enumerate(
-            groups.items()
-        )
-    ]
-
-    for a in shapes:
-        for b in shapes:
-            if a is b:
-                continue
-            assert not _are_availability_siblings(a, b), (a.shape_id, b.shape_id)
 
 
 # ---------------------------------------------------------------------------

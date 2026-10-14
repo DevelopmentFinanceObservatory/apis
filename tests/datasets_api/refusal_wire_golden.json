@@ -2432,7 +2432,7 @@
   "code": "rendering_not_recorded",
   "constraint_id": null,
   "count": null,
-  "detail": "'spec_exemplar' at content_version 'cv_exemplar' is a groupby collapse, and no file linked under it records its groupby",
+  "detail": "'spec_exemplar' at content_version 'cv_exemplar' is a derived version, and no file linked under it records the groupby or party-totals cut it was minted with",
   "headers": null,
   "issues": null,
   "pointer": null,

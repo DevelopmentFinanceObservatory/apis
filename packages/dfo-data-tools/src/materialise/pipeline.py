@@ -34,7 +34,6 @@ from materialise.finish import (
 )
 from materialise.frame_build import Frame
 from materialise.generation import (
-    _bare_stat_var_ref,
     _finish_preview_member,
     _flatten_bound_entities,
     _generate_group,
@@ -43,6 +42,7 @@ from materialise.generation import (
     _PreparedPreview,
     _PreviewOutcome,
     _select_member_facets,
+    bare_stat_var_ref,
     dispatched_provenances,
 )
 from materialise.graph import Facet, GraphReader
@@ -54,7 +54,7 @@ from materialise.reshape import TableLike
 from materialise.series_conversion import SeriesConversion, SeriesKey
 from materialise.statistics import SeriesStatisticsFile
 from materialise.trace import ManifestTrace, MemberFamily
-from materialise.window import Coverage, RequestedWindow
+from materialise.window import Coverage, LatestYear, ReadSeries, RequestedWindow
 from origin_catalogue import note_un_unserved
 
 if TYPE_CHECKING:
@@ -125,6 +125,13 @@ class MaterialisationResult:
     `dependencies` is the run's dependency fingerprint (`materialise.dependencies`), built from
     what it dispatched, so identical inputs give identical fingerprints whoever ran them. Its
     source tokens are the refresh dates the generation read before its first SDMX request.
+    `latest_years` maps each request's `stat_var` to the year a `latest` window served it
+    (`window.LatestYear`): the year the coverage index elected for it, the facets and
+    omissions that election counted, the year its rows hold, and whether it fell back to
+    the newest period any series holds. Empty for every other window.
+    `read_series` maps each request's `stat_var` to the series its read holds under any
+    window (`window.ReadSeries`): the facets it dispatched and the rows a conversion left
+    out. No dependency fingerprint holds it outside a `latest` window's `latest_years`.
     """
 
     frame_chunks: Callable[[], Iterator[Frame]]
@@ -143,6 +150,8 @@ class MaterialisationResult:
     default_scope: tuple[str, ...] = ()
     series_conversions: Mapping[SeriesKey, SeriesConversion] = field(default_factory=dict)
     probe_empty: bool = False
+    latest_years: Mapping[str, LatestYear] = field(default_factory=dict)
+    read_series: Mapping[str, ReadSeries] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -216,6 +225,12 @@ class PreparedPreview:
         return self._prepared.latest_period
 
     @property
+    def elected_period(self) -> str | None:
+        """The newest period the read holds in the year it was told its StatVar elected,
+        None when it was told none or holds no row in that year."""
+        return self._prepared.elected_period
+
+    @property
     def selections(self) -> Mapping[str, FacetSelection]:
         """Selected facets, for a caller validating its planned dispatch group."""
         return self._prepared.selections
@@ -257,6 +272,13 @@ def materialise_group(
     One request uses the member path. Multiple requests select a shared facet, group members with
     the same entity scope and `latest` status, and fetch each chunk with one SDMX call. At most
     `member_concurrency` chunks run at once. The aggregate row ceiling applies to the group.
+
+    A `latest` window serves each role-bearing member at the year `coverage` elects for it
+    (`CoverageIndex.elected_years`) over the facets the member dispatches, under its bound
+    roles and the request's source scope, less the entities a conversion omits. The read
+    stays `LATEST`, and a member with a series ending after its year is read once more at
+    that year. A member whose elected year no row holds serves the newest period any of its
+    series holds, as a member that elects no year does, and `latest_years` records both.
 
     `precomputed_probe` must match requests in order, and generation reuses it. What its UN reads
     could not serve joins the caller's `recording_un_blocked_places` record. Groups above the
@@ -315,6 +337,7 @@ def materialise_group(
                 source_refs=dispatched_provenances(outcome.selections),
                 provenance_refresh=outcome.provenance_refresh,
                 conversion_records=(outcome.conversion_record,),
+                latest_years=outcome.latest_years,
             ),
         )
 
@@ -345,6 +368,7 @@ def materialise_group(
             source_refs=dispatched_provenances(outcome.selections),
             provenance_refresh=outcome.provenance_refresh,
             conversion_records=outcome.member_conversion_records.values(),
+            latest_years=outcome.latest_years,
         ),
     )
 
@@ -412,7 +436,7 @@ def decide_member_unit(
     """
     if precomputed is None:
         probe = probe_facets(
-            stat_var=_bare_stat_var_ref(request.stat_var),
+            stat_var=bare_stat_var_ref(request.stat_var),
             bound_entities=_flatten_bound_entities(request.role_bindings),
             graph=graph,
             availability=sdmx,
@@ -449,11 +473,19 @@ def prepare_materialise_preview(
     series_roles: Sequence[str] = (),
     series_limit: int | None = None,
     allowed_series_keys: frozenset[tuple[str, ...]] | None = None,
+    elected_year: int | None = None,
 ) -> PreparedPreview:
     """Read and reduce a preview without applying conversion arithmetic.
 
     ``finish_materialise_preview`` may select one exact period before it
     converts.  This is intended for coordinated Search latest reads.
+
+    `elected_year` is the year the caller's plan elected for the StatVar under a `latest`
+    window, None when it elected none. The read is a mint's (`materialise_group`): `LATEST`
+    rows, and the rows at that year when a series ends after it. The prepared rows hold
+    that year's period beside the newest period of each series, so the caller can serve
+    the year when any read of the StatVar holds it (`PreparedPreview.elected_period`) and
+    the newest period otherwise. The read itself elects nothing from `coverage`.
     """
     if limit < 1:
         raise MaterialisationUsageError(f"materialise_preview requires limit >= 1, got {limit!r}")
@@ -488,6 +520,7 @@ def prepare_materialise_preview(
         series_roles=series_roles,
         series_limit=series_limit,
         allowed_series_keys=allowed_series_keys,
+        elect=lambda _omitted: elected_year,
     )
     return PreparedPreview(prepared)
 
@@ -495,7 +528,8 @@ def prepare_materialise_preview(
 def finish_materialise_preview(
     prepared: PreparedPreview, *, time_period: str | None = None
 ) -> PreviewResult:
-    """Convert and render a prepared preview, optionally at one exact period."""
+    """Convert and render a prepared preview at one exact period, or with none given at
+    its elected period when it holds a row there, else at every period it holds."""
     outcome = _finish_preview_member(prepared._prepared, time_period=time_period)
     return _preview_result(outcome, prepared._prepared.request)
 
@@ -537,8 +571,9 @@ def materialise_preview(
     skips the probe (`facets.probe_facets`); `request.candidate_filter` still narrows them.
 
     `series_roles` names roles the request leaves open whose every dcid is one series of the
-    caller's: a `latest` window keeps each series' own latest period, where a mint keeps the
-    member's one, and conversion records each series (`PreviewResult.series_conversion_records`).
+    caller's: a `latest` window keeps each series' own latest period and elects no year, where
+    a mint keeps the member's one, and conversion records each series
+    (`PreviewResult.series_conversion_records`).
     Each series keeps its own most recent `series_limit` rows, which such a read requires, and
     `PreviewResult.series_total_rows` counts each series before the cut. `ceiling` sizes the raw
     fetch guard, so the caller sizes it for the whole read.

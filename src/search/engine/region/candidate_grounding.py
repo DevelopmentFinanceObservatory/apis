@@ -24,7 +24,6 @@ from search.engine.region.arcs import (
     inapplicable_slots_from_member_facts,
     unresolved_slots_from_member_facts,
 )
-from search.engine.region.availability import _shape_group_key
 from search.engine.region.candidate_unit_election import (
     _candidate_unit_elections,
     _CandidateUnitElectionMemo,
@@ -602,7 +601,6 @@ class _GroundedCandidate:
 
     spec: Spec
     is_elected: bool
-    is_fired_neighbor: bool
     score: float | None
     retrieved: bool
     population: MemberPopulation | None
@@ -637,8 +635,12 @@ def _finish_candidate(
     text_recognized_properties: frozenset[str],
     measure_elected_properties: frozenset[str],
     defaulted_properties: frozenset[str],
+    rivalled: bool,
 ) -> _GroundedCandidate:
     """Assemble one candidate's Spec and the metadata used by candidate collapse.
+
+    `rivalled` holds when the status rule offers a structural or nominated rival beside
+    the elected reading.
 
     The candidate's probes, observation reads and bulk read follow its own place context.
     """
@@ -646,18 +648,18 @@ def _finish_candidate(
     # Candidate triples contain data. Flagged-unavailable results may have
     # ``available_at_place=False``. Place-less coverage uses ``None``.
     cand_is_elected = cand_index == 0 and state.elected_has_data
-    cand_is_fired_neighbor = state.near_neighbor_fired_index is not None and _shape_group_key(
-        cand_shape
-    ) == _shape_group_key(state.capped_shapes[state.near_neighbor_fired_index])
-    cand_is_near_neighbor_relevant = state.near_neighbor_fired_index is not None and (
-        cand_is_elected or cand_is_fired_neighbor
+    # A reading the status rule offers on a structural or nominated basis is a rival, and
+    # so are the elected reading and its other directions beside one (`rivalled`).
+    cand_has_rival = cand.basis in ("structural", "nominated") or (
+        rivalled and (cand_is_elected or cand.basis == "direction")
     )
     cand_available_at_place, cand_confidence = _place_confidence(
         destination_dcid=state.destination_dcid,
         available_at_place=cand_mat.available_at_place,
         representative_score=cand_shape.representative_score,
         candidate=True,
-        near_neighbor_relevant=cand_is_near_neighbor_relevant,
+        rival=cand_has_rival,
+        sole_reading=cand_is_elected and state.status_plan.sole,
         retrieved=cand_shape.retrieved,
     )
     # Probe the candidate's own places: its resolved region members, default scope or
@@ -792,7 +794,6 @@ def _finish_candidate(
     return _GroundedCandidate(
         spec=cand_spec,
         is_elected=cand_is_elected,
-        is_fired_neighbor=cand_is_fired_neighbor,
         score=cand_shape.representative_score,
         retrieved=cand_shape.retrieved,
         population=cand_mat.population,
@@ -825,7 +826,6 @@ class _GroundedCandidates:
 
     specs: list[Spec]
     elected_spec_id: str | None
-    near_neighbor_fired_spec_id: str | None
     cand_scores: dict[str, float | None]
     cand_retrieved: dict[str, bool]
     cand_populations: dict[str, MemberPopulation | None]
@@ -947,11 +947,13 @@ def ground_candidates(state: ResolveState, candidates: list[_Candidate]) -> _Gro
     text_recognized_properties = frozenset(m.code_system for m in state.admitted_qualifiers)
     measure_elected_properties = state.measure_elected_properties
     defaulted_properties = state.defaulted_properties
+    rivalled = any(
+        alternative.basis in ("structural", "nominated") for alternative in state.status_plan.rivals
+    )
 
     specs: list[Spec] = []
     seen_spec_ids: set[str] = set()
     elected_spec_id: str | None = None
-    near_neighbor_fired_spec_id: str | None = None
     cand_scores: dict[str, float | None] = {}
     cand_retrieved: dict[str, bool] = {}
     cand_populations: dict[str, MemberPopulation | None] = {}
@@ -995,6 +997,7 @@ def ground_candidates(state: ResolveState, candidates: list[_Candidate]) -> _Gro
             text_recognized_properties=text_recognized_properties,
             measure_elected_properties=measure_elected_properties,
             defaulted_properties=defaulted_properties,
+            rivalled=rivalled,
         )
         spec_id = grounded.spec.spec_id
         if entity_warnings is None:
@@ -1005,8 +1008,6 @@ def ground_candidates(state: ResolveState, candidates: list[_Candidate]) -> _Gro
             role_unverified = role_unverified or grounded.role_declaration_unverified
             open_origin_defaulted = open_origin_defaulted or grounded.open_origin_defaulted
             membership_unverified = membership_unverified or grounded.membership_unverified
-        if grounded.is_fired_neighbor:
-            near_neighbor_fired_spec_id = spec_id
         if grounded.obs_warning is not None:
             obs_warnings.append(grounded.obs_warning)
         if spec_id not in seen_spec_ids:
@@ -1056,7 +1057,6 @@ def ground_candidates(state: ResolveState, candidates: list[_Candidate]) -> _Gro
     return _GroundedCandidates(
         specs=specs,
         elected_spec_id=elected_spec_id,
-        near_neighbor_fired_spec_id=near_neighbor_fired_spec_id,
         cand_scores=cand_scores,
         cand_retrieved=cand_retrieved,
         cand_populations=cand_populations,

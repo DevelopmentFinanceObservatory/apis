@@ -63,7 +63,7 @@ def test_committed_records_have_expected_population():
     organisations = [r for r in records if r["kind"] == "organisation"]
     aggregates = [r for r in records if r["kind"] == "aggregate"]
     assert len(organisations) == 195
-    assert len(aggregates) == 37
+    assert len(aggregates) == 50
 
     dcids = [r["dcid"] for r in records]
     assert len(dcids) == len(set(dcids)), "committed records carry a duplicate dcid"
@@ -146,6 +146,8 @@ def test_build_pack_refuses_a_curated_alias_naming_an_unknown_dcid(tmp_path: Pat
         ("IMF", "InternationalMonetaryFund"),
         ("WHO", "WorldHealthOrganization"),
         ("Asian Development Bank", "AsianDevelopmentBank"),
+        ("official donors", "DACOfficialDonors"),
+        ("official donors (DAC)", "DACOfficialDonors"),
     ],
 )
 def test_pack_resolves_expected_top_candidate(composed_resolver, query: str, expected_dcid: str):

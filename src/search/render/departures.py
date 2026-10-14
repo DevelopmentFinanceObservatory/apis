@@ -368,8 +368,10 @@ def _group_read_as_members(
     """The group asked for, read as its members, which a region group names as the places
     in it (`labels.group_members_text`), and the residuals its total counts that the members
     leave out (`DepartureFact.excluded`), separated by semicolons since each label holds a
-    comma. A door holding no words for the group (a resubmit, `asked` is `None`) states only
-    the members shown, as the heading names them (`labels.group_text`)."""
+    comma, or that the source publishes its own figure for the group, which can differ from
+    one built from its members (`DepartureFact.sum_differs`). A door holding no words for the
+    group (a resubmit, `asked` is `None`) states only the members shown, as the heading names
+    them (`labels.group_text`)."""
     verb = "shows" if shows_data else "checked"
     left_out = (
         f", and {'leaves' if shows_data else 'left'} out what the data allocates to no single "
@@ -378,6 +380,11 @@ def _group_read_as_members(
         if fact.excluded
         else ""
     )
+    if fact.sum_differs:
+        left_out += (
+            ", and the source publishes its own figure for the group, "
+            "which can differ from one built from its members"
+        )
     if fact.asked is not None:
         members = group_members_text(fact.group_dcid)
         return f"You asked for {_asked(fact)}. This {verb} {members}, each on its own{left_out}."
@@ -396,6 +403,16 @@ def _direction_discarded(fact: DepartureFact, _family: FlowFamily | None, shows_
     return (
         f"You named {_asked(fact)} as a {noun.singular}. This measure has no "
         f"{noun.plural}, so this {'shows' if shows_data else 'checked'} the place itself."
+    )
+
+
+def _direction_inferred(fact: DepartureFact, family: FlowFamily | None, _shows_data: bool) -> str:
+    if fact.over is None:
+        raise ValueError("direction_inferred needs the flow axis the place was read on")
+    noun = role_wording(family).noun(fact.over).singular
+    return (
+        f"You named {_asked(fact)} without a direction. Only the data with {_asked(fact)} as "
+        f"the {noun} holds values, so this reads it as the {noun}."
     )
 
 
@@ -421,6 +438,7 @@ _TEXT_BY_CODE: Final[Mapping[DepartureCode, _TextWriter]] = MappingProxyType(
         "modelled_values": _modelled_values,
         "group_read_as_members": _group_read_as_members,
         "direction_discarded": _direction_discarded,
+        "direction_inferred": _direction_inferred,
         "scope_limited": _scope_limited,
     }
 )

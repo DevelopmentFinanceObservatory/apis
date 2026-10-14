@@ -71,6 +71,11 @@ def test_export_matches_committed_index():
         "source_codes",
         "value_parents",
         "party_types",
+        "shape_slot_defaults",
+        "partly_stated_values",
+        "measure_classes",
+        "variable_aliases",
+        "stat_type_words",
     ):
         assert fresh[block] == committed[block], block
     for block in ("measure_axes", "measure_values", "measure_partition_labels", "measure_nouns"):

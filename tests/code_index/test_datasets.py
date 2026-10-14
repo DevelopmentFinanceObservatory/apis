@@ -27,6 +27,8 @@ from code_index import (
     parse_index,
 )
 from code_index.query import row_five_tuple
+from code_index.types import PartlyStatedValue, StatedWord
+from entity_resolution.types import KINDS
 
 from .conftest import FIXTURE_PATH
 
@@ -35,6 +37,7 @@ _IMPUTED_PROVENANCE = "provenance/ONEImputedMultilateralSectors"
 _DAC1_PROVENANCE = "provenance/OECDDAC1"
 _DAC2A_PROVENANCE = "provenance/OECDDAC2A"
 _DAC2B_PROVENANCE = "provenance/OECDDAC2B"
+_IDS_PROVENANCE = "provenance/WorldBankInternationalDebtStatistics"
 _EVIDENCE_PATH = FIXTURE_PATH.parent / "absent_observation_evidence.json"
 _EMPTY_STAMP = IndexStamp(
     graph_endpoint="https://fake.example",
@@ -171,6 +174,56 @@ def test_loader_rejects_a_dataset_with_an_empty_label_or_description(field: str)
     payload["datasets"][0][field] = ""
 
     with pytest.raises(IndexFormatError, match=f"no {field}"):
+        parse_index(payload)
+
+
+def test_loader_reads_the_words_a_dataset_states():
+    payload = _fixture()
+    payload["datasets"][0]["stated_words"] = [
+        {"word": "bilateral", "measured_property": "amount"},
+        {"word": "domestic", "measured_property": "amount", "where": {"origin": "country"}},
+    ]
+
+    index = parse_index(payload)
+
+    assert index.datasets[_CRS_PROVENANCE].stated_words == (
+        StatedWord(word="bilateral", measured_property="amount"),
+        StatedWord(word="domestic", measured_property="amount", where={"origin": "country"}),
+    )
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        {"word": "", "measured_property": "amount"},
+        {"word": "Bilateral", "measured_property": "amount"},
+        {"word": "bilateral oda", "measured_property": "amount"},
+        {"word": None, "measured_property": "amount"},
+        {"word": "bilateral", "measured_property": ""},
+        {"word": "bilateral", "measured_property": "amount", "where": {"sideways": "country"}},
+        {"word": "bilateral", "measured_property": "amount", "where": {"destination": ""}},
+        {"word": "bilateral", "measured_property": "amount", "where": {"destination": "Country"}},
+        {"word": "bilateral", "measured_property": "grantEquivalent"},
+    ],
+    ids=[
+        "empty-word",
+        "uppercase",
+        "two-words",
+        "not-a-string",
+        "empty-property",
+        "unknown-axis",
+        "empty-kind",
+        "uppercase-kind",
+        "property-no-row-has",
+    ],
+)
+def test_loader_rejects_a_stated_word_that_is_malformed(row: dict):
+    """The last row is well formed, but no row of the fixture's one dataset has that measured
+    property, which `_check_datasets` refuses."""
+    payload = _fixture()
+    payload["datasets"][0]["stated_words"] = [row]
+
+    with pytest.raises(IndexFormatError):
         parse_index(payload)
 
 
@@ -328,6 +381,19 @@ def test_the_packaged_index_declares_crs_and_the_dac_tables_and_the_opt_in_imput
         _DAC2B_PROVENANCE: (False, "unknown", "provider", 40),
     }
     assert index.datasets[_DAC1_PROVENANCE].invariants == {}
+    to_countries = {"destination": "country"}
+    assert {
+        provenance: tuple(
+            (s.word, s.measured_property, dict(s.where)) for s in dataset.stated_words
+        )
+        for provenance, dataset in index.datasets.items()
+    } == {
+        _CRS_PROVENANCE: (("bilateral", "amount", {}), ("bilateral", "grantEquivalent", {})),
+        _IMPUTED_PROVENANCE: (),
+        _DAC1_PROVENANCE: (),
+        _DAC2A_PROVENANCE: (("bilateral", "amount", to_countries),),
+        _DAC2B_PROVENANCE: (("bilateral", "amount", to_countries),),
+    }
     assert index.datasets[_DAC2A_PROVENANCE].invariants == {}
     assert index.datasets[_DAC2A_PROVENANCE].label == "OECD DAC2a"
     assert index.datasets[_DAC2B_PROVENANCE].invariants == {}
@@ -340,6 +406,19 @@ def test_the_packaged_index_declares_crs_and_the_dac_tables_and_the_opt_in_imput
     }
     assert index.datasets[_CRS_PROVENANCE].label == "OECD Creditor Reporting System (CRS)"
     assert index.datasets[_IMPUTED_PROVENANCE].label == "ONE Imputed Multilateral Sectors"
+
+
+def test_every_packaged_stated_word_names_an_entity_kind_the_resolver_assigns():
+    index = load_index(default_index_path())
+
+    kinds = {
+        kind
+        for dataset in index.datasets.values()
+        for stated in dataset.stated_words
+        for kind in stated.where.values()
+    }
+    assert kinds
+    assert kinds <= set(KINDS)
 
 
 def test_every_packaged_row_belongs_to_the_family_its_own_keys_select():
@@ -429,3 +508,136 @@ def test_the_packaged_index_holds_the_aid_type_code_row():
     assert aid_type is not None
     assert aid_type.code_system == "dac2aAidType"
     assert aid_type.label == "imputed multilateral ODA"
+
+
+def _ids_row(dcid: str, *, measured_property: str, resource: str | None) -> dict:
+    """A listed row of the debt statistics, stating `financingResource=resource` unless
+    `resource` is `None`."""
+    constraints = {} if resource is None else {"financingResource": resource}
+    return {
+        "dcid": dcid,
+        "population_type": "DebtStatistics",
+        "measured_property": measured_property,
+        "stat_type": "measuredValue",
+        "measurement_qualifier": None,
+        "measurement_denominator": None,
+        "observation_properties": [],
+        "constraint_properties": constraints,
+        "provenances": [_IDS_PROVENANCE],
+    }
+
+
+def _debt_statistics(*rows: dict, partly_stated: list[dict] | None = None) -> dict:
+    """The fixture plus debt statistics `rows` listed under an IDS dataset, and the
+    `partly_stated_values` block when `partly_stated` is given."""
+    payload = _fixture()
+    payload["listed_statvars"] = list(rows)
+    if partly_stated is not None:
+        payload["partly_stated_values"] = partly_stated
+    return payload
+
+
+_DEBT_INSTRUMENT = {
+    "provenance": _IDS_PROVENANCE,
+    "property": "financingResource",
+    "value": "DebtInstrument",
+}
+# One five-tuple (`service`) where a lender series states the value and a total does not, and
+# one (`stock`) where both state it.
+_PARTLY_STATED_ROWS = (
+    _ids_row("Service_ByLender", measured_property="service", resource="DebtInstrument"),
+    _ids_row("Service_Total", measured_property="service", resource=None),
+    _ids_row("Stock_ByLender", measured_property="stock", resource="DebtInstrument"),
+    _ids_row("Stock_Total", measured_property="stock", resource="DebtInstrument"),
+)
+
+
+def test_loader_parses_partly_stated_values_and_an_absent_block_declares_none():
+    declared = parse_index(_debt_statistics(*_PARTLY_STATED_ROWS, partly_stated=[_DEBT_INSTRUMENT]))
+    undeclared = parse_index(_debt_statistics(*_PARTLY_STATED_ROWS))
+
+    assert declared.partly_stated_values == (
+        PartlyStatedValue(
+            provenance=_IDS_PROVENANCE,
+            property_dcid="financingResource",
+            value_dcid="DebtInstrument",
+        ),
+    )
+    assert undeclared.partly_stated_values == ()
+
+
+def test_partly_stated_on_names_the_pairs_of_a_five_tuple_a_row_leaves_unsaid():
+    index = parse_index(_debt_statistics(*_PARTLY_STATED_ROWS, partly_stated=[_DEBT_INSTRUMENT]))
+    by_dcid = {row.dcid: row for row in index.listed_statvars}
+    service = row_five_tuple(by_dcid["Service_Total"])
+    stock = row_five_tuple(by_dcid["Stock_Total"])
+    crs = row_five_tuple(index.statvars[0])
+
+    assert index.partly_stated_on(service) == {
+        _IDS_PROVENANCE: frozenset({("financingResource", "DebtInstrument")})
+    }
+    assert index.partly_stated_on(stock) == {}
+    assert index.partly_stated_on(crs) == {}
+
+
+def test_partly_stated_on_ignores_a_five_tuple_whose_rows_all_leave_the_property_unsaid():
+    index = parse_index(
+        _debt_statistics(
+            *_PARTLY_STATED_ROWS,
+            _ids_row("Ratio_ByLender", measured_property="ratio", resource=None),
+            _ids_row("Ratio_Total", measured_property="ratio", resource=None),
+            partly_stated=[_DEBT_INSTRUMENT],
+        )
+    )
+    ratio = row_five_tuple(index.listed_statvars[-1])
+
+    assert index.partly_stated_on(ratio) == {}
+
+
+def test_partly_stated_on_is_empty_without_a_declaration():
+    index = parse_index(_debt_statistics(*_PARTLY_STATED_ROWS))
+    service = row_five_tuple(index.listed_statvars[1])
+
+    assert index.partly_stated_on(service) == {}
+
+
+@pytest.mark.parametrize(
+    ("rows", "declared"),
+    [
+        pytest.param(
+            (_ids_row("Total", measured_property="service", resource=None),),
+            [_DEBT_INSTRUMENT],
+            id="no-row-states-the-value",
+        ),
+        pytest.param(
+            (
+                _ids_row("Lender", measured_property="service", resource="DebtInstrument"),
+                _ids_row("Total", measured_property="stock", resource="DebtInstrument"),
+            ),
+            [_DEBT_INSTRUMENT],
+            id="every-row-states-the-property",
+        ),
+        pytest.param(
+            (
+                _ids_row("Lender", measured_property="service", resource="DebtInstrument"),
+                _ids_row("Total", measured_property="stock", resource=None),
+            ),
+            [_DEBT_INSTRUMENT],
+            id="states-and-leaves-unsaid-on-different-five-tuples",
+        ),
+        pytest.param(
+            (
+                _ids_row("Lender", measured_property="service", resource="Other"),
+                _ids_row("Total", measured_property="service", resource=None),
+            ),
+            [_DEBT_INSTRUMENT],
+            id="the-property-holds-another-value",
+        ),
+        pytest.param(_PARTLY_STATED_ROWS, [_DEBT_INSTRUMENT, _DEBT_INSTRUMENT], id="duplicate"),
+    ],
+)
+def test_loader_rejects_a_partly_stated_value_the_rows_do_not_bear_out(
+    rows: tuple[dict, ...], declared: list[dict]
+):
+    with pytest.raises(IndexFormatError):
+        parse_index(_debt_statistics(*rows, partly_stated=declared))

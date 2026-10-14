@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Literal
 
 from code_index.members import family_declares_roles
 from code_index.shared import get_index
+from entity_resolution.types import Kind, Resolved, entity_kind
 from materialise.roles import axis_for_role
 from search.engine.bind import SlotBindingDraft
 from search.engine.interpret import PinnedResolved
@@ -153,14 +154,15 @@ def _undirected_place_axis(
     the other axis: "top creditors of external debt of Kenya" reads Kenya as the debtor.
     This holds for the elected shape and every alternate alike. A group can read either way
     ("top recipients of aid in Africa" scopes the ranked recipients, "top creditors of
-    external debt of Africa" names the debtors), so it skips this rule. Otherwise a shape
-    that requires two roles takes
-    the axis the elected shape (`state.shape_draft`) assigned the place to, when it declares
-    a role on that axis: an alternate reads the variable another way, not the place, so a
-    debt total's recipient stays the recipient of a by-creditor alternate. That axis is
-    read from the elected shape's assignment as admitted (`state.elected_place_roles`), taken
-    before the role-class election narrowed it, since the narrowed shape can require two
-    roles.
+    external debt of Africa" names the debtors), so it skips this rule. Otherwise an
+    alternate takes the axis the elected shape (`state.shape_draft`) assigned the place to,
+    when it declares a role on that axis: an alternate reads the variable another way, not
+    the place, so a debt total's recipient stays the recipient of a by-creditor alternate,
+    and a place the elected shape reads on the one direction with data
+    (`phase_place_materialise._settle_direction`) keeps that direction on every alternate
+    the status rule weighs. That axis is read from the elected shape's assignment as
+    admitted (`state.elected_place_roles`), taken before the role-class election narrowed
+    it, since the narrowed shape can require two roles.
     """
     axis = _required_role_axis(shape)
     if axis is not None:
@@ -192,6 +194,37 @@ def _undirected_place_axis(
     return elected_axis if elected_axis in role_names_by_axis(shape) else None
 
 
+def direction_assignments(
+    state: ResolveState, shape: ShapeDraft
+) -> tuple[tuple[RoleAxis, PlaceAssignment], ...]:
+    """The readings of a direction the question leaves unstated: when `shape` refuses the
+    query's places only because one set is named without a direction that no rule places
+    (`_undirected_place_axis`), the assignment placing that set on each axis the shape
+    declares and no directed set holds, origin first, each with its axis. Empty when the
+    places bind without one, or refuse for another reason."""
+    if not is_role_bearing(shape) or bind_place_roles(state, shape) != "role_not_resolved":
+        return ()
+    readings: list[tuple[RoleAxis, PlaceAssignment]] = []
+    for axis in ("origin", "destination"):
+        assignment = bind_place_roles(state, shape, direction=axis)
+        if isinstance(assignment, PlaceAssignment):
+            readings.append((axis, assignment))
+    return tuple(readings)
+
+
+def undirected_place_name(state: ResolveState) -> str | None:
+    """The request's text for the one place set it names without a direction, `None` when
+    it names none or several."""
+    named = part_sets(state)
+    directed = {
+        place_key(state.place_sets[name])
+        for name in state.entities
+        if name in state.place_sets and state.entity_roles.get(name)
+    }
+    undirected = [key for key in named if key not in directed]
+    return named[undirected[0]].name if len(undirected) == 1 else None
+
+
 def subject_shapes_refused(state: ResolveState) -> bool:
     """Whether every subject-only shape refuses ``role_incompatible`` for this query.
 
@@ -199,7 +232,7 @@ def subject_shapes_refused(state: ResolveState) -> bool:
     (`ResolveState.role_bearing_outranks`) and the query's resolved places name both flow
     ends. A subject-only shape has one subject slot, so it cannot hold an origin and a
     destination at once. `bind_place_roles` refuses subject-only shapes on this predicate,
-    and `_phase_prune_and_rank` drops them from election on it.
+    and admissibility refuses them before bind (`admissibility.judge_measure_and_roles`).
     """
     if not state.role_bearing_outranks:
         return False
@@ -252,9 +285,10 @@ def _declares_axes(shape: ShapeDraft, axes: frozenset[RoleAxis]) -> bool:
 def lacks_query_axis(state: ResolveState, shape: ShapeDraft) -> bool:
     """Whether role-bearing `shape` declares no role on an axis the query needs
     (`query_role_axes`, read by `_declares_axes`): a provider-only shape for "aid to
-    Kenya" or "top recipients of US aid". `bind_place_roles` would refuse it
-    `role_incompatible`, or its answer could not run the operation. A subject-only shape
-    lacks no axis: it binds a directed place as its subject."""
+    Kenya" or "top recipients of US aid". It could not place the query's places, or its
+    answer could not run the operation, so admissibility refuses it `role_incompatible`
+    (`admissibility.judge_measure_and_roles`). A subject-only shape lacks no axis: it binds
+    a directed place as its subject."""
     axes = query_role_axes(state)
     return bool(axes) and is_role_bearing(shape) and not _declares_axes(shape, axes)
 
@@ -466,7 +500,91 @@ def _members_asked(
     return frozenset(asked)
 
 
-def bind_place_roles(state: ResolveState, shape: ShapeDraft) -> PlaceAssignment | PlaceRoleRefusal:
+def _node_kind(state: ResolveState, place_set: PlaceSet) -> Kind | None:
+    """The kind of the entity resolved to `place_set`'s node, found by dcid since a pinned
+    place's set is named by its graph label and its resolution by the caller's text
+    (`part_sets`), else the kind of the node's own graph type (`entity_kind`)."""
+    node = place_set.node
+    if node is None:
+        return None
+    resolutions = state.rcl.resolutions.values() if state.rcl is not None else ()
+    return next(
+        (
+            resolution.entity.kind
+            for resolution in resolutions
+            if isinstance(resolution, Resolved) and resolution.entity.dcid == node.dcid
+        ),
+        entity_kind((node.graph_type,)) if node.graph_type else None,
+    )
+
+
+def place_set_kinds(
+    state: ResolveState,
+    place_set: PlaceSet,
+    choice: SetChoice | None,
+    roles: Sequence[EntityRoleKey],
+    *,
+    admits: Callable[[EntityRoleKey, str], bool],
+) -> frozenset[Kind | None]:
+    """The entity kinds (`entity_resolution.types.Entity.kind`) of every reading
+    `place_set` can settle to on `roles` (`choice`, from `set_choices`), `None` for one
+    nothing states.
+
+    Members, and the total a dataset publishes for them (`_wholes`), have the kind of the
+    graph type the members share (`PlaceSet.member_type`, read as the resolver reads a
+    node's types). A node has its own kind (`_node_kind`). A group that can settle whole at
+    a node the roles admit has both kinds, since the Spec's read decides which it binds: the
+    EU's members are countries and its node an organisation. A set with no reading has no
+    kind."""
+    members = entity_kind((place_set.member_type,)) if place_set.member_type else None
+    if choice is None:
+        return frozenset()
+    if choice == "members":
+        return frozenset({members})
+    if choice == "node":
+        return frozenset({_node_kind(state, place_set)})
+    node = place_set.node
+    if node is not None and all(admits(role, node.graph_type) for role in roles):
+        return frozenset({members, _node_kind(state, place_set)})
+    return frozenset({members})
+
+
+def parties_of_kind(state: ResolveState, shape: ShapeDraft, where: Mapping[RoleAxis, str]) -> bool:
+    """Whether the places `bind_place_roles` assigns `shape` fill every axis of `where` with
+    sets whose every reading is of the named kind (`place_set_kinds`). An axis the part
+    leaves open, one no set fills, and a part `bind_place_roles` refuses do not satisfy it.
+    A role admission the request has not asked (`ResolveState.node_admissions`) counts as
+    admitted, so a reading it might allow is judged too."""
+    assignment = bind_place_roles(state, shape)
+    if isinstance(assignment, str):
+        return False
+    names = role_names_by_axis(shape)
+
+    def admits(key: EntityRoleKey, graph_type: str) -> bool:
+        role = "observationAbout" if key == "observationAbout" else names[key]
+        return state.node_admissions.get((role, graph_type), True)
+
+    choices = set_choices(assignment, admits=admits)
+    return all(
+        bool(sets := assignment.sets.get(axis))
+        and all(
+            place_set_kinds(
+                state,
+                place_set,
+                choices[place_key(place_set)],
+                assignment.roles_of(place_set),
+                admits=admits,
+            )
+            == {kind}
+            for place_set in sets
+        )
+        for axis, kind in where.items()
+    )
+
+
+def bind_place_roles(
+    state: ResolveState, shape: ShapeDraft, *, direction: RoleAxis | None = None
+) -> PlaceAssignment | PlaceRoleRefusal:
     """Assign the query's place sets to `shape`'s roles, or name the refusal.
 
     ``role_incompatible`` covers a subject-only shape when the query names both flow ends
@@ -492,6 +610,9 @@ def bind_place_roles(state: ResolveState, shape: ShapeDraft) -> PlaceAssignment 
 
     A role-bearing shape leaves open each axis of `state.open_axes` that no set fills. A
     filled axis wins over an open one (`PlaceAssignment.open_axes`).
+
+    `direction` places a set named without a direction that no rule places on that axis,
+    one reading of the direction the question leaves unstated (`direction_assignments`).
     """
     place_sets = state.place_sets
     named = part_sets(state)
@@ -511,7 +632,9 @@ def bind_place_roles(state: ResolveState, shape: ShapeDraft) -> PlaceAssignment 
         if undirected:
             if len(undirected) > 1:
                 return "role_not_resolved"
-            undirected_axis = _undirected_place_axis(state, shape, named[undirected[0]])
+            undirected_axis = (
+                _undirected_place_axis(state, shape, named[undirected[0]]) or direction
+            )
             directed_axes = {axis for axes in axes_of.values() for axis in axes}
             if undirected_axis is None or undirected_axis in directed_axes:
                 return "role_not_resolved"
@@ -844,7 +967,7 @@ def request_named_groups(state: ResolveState, roles: PlaceRoles) -> tuple[NamedG
     `build_spec` names a role by one of these when the role binds exactly its members or its
     total (`PlaceSet.total`). A group with its own graph node takes that node's type and the
     graph's label for it. One without, or one the graph gives no label, keeps the query's
-    name. Each states the
+    name, and one without names its registry id (`PlaceSet.group_id`). Each states the
     members the query also named as places of their own, on the role `roles`, one Spec's
     binding, puts each of those places on (`PlaceRoles.named_alone`).
     """
@@ -858,6 +981,7 @@ def request_named_groups(state: ResolveState, roles: PlaceRoles) -> tuple[NamedG
                 (role, dcid) for role, dcid in roles.named_alone if dcid in place_set.members
             ),
             total=place_set.total,
+            group_id=place_set.group_id if place_set.node is None else None,
         )
         for place_set in part_sets(state).values()
         if place_set.members

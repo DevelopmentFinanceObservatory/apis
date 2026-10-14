@@ -17,6 +17,7 @@ from search.engine.retrieval.facts import (
     read_declared_constraint_properties,
     read_declared_roles,
     read_five_tuple,
+    read_name,
     read_unresolved_constraints,
 )
 
@@ -43,6 +44,12 @@ def asserted_constraint_properties(facts: MemberFacts) -> frozenset[str] | None:
     if not facts.constraints_known():
         return None
     return frozenset(facts.read_constraints()) | facts.read_unresolved_constraints()
+
+
+def member_name(facts: MemberFacts) -> str | None:
+    """The graph name of a member whose fetched arcs `facts` holds (`ArcsMemberFacts`).
+    None for a member with no name arc and for a packaged index row, which carries none."""
+    return read_name(facts.arcs) if isinstance(facts, ArcsMemberFacts) else None
 
 
 @dataclass(frozen=True, slots=True)

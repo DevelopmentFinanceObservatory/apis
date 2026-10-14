@@ -8,6 +8,8 @@ from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
 from promptlab.bindmenu import BindMenuError, parse_menu, truncate_menu
 from search.engine import bind as bind_module
 from search.engine.bind import _build_universal_bind_prompt
+from search.engine.frame import door_frame
+from search.engine.interpretation import Interpretation
 from search.engine.qualifier_match import QualifierMatch
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 
@@ -212,14 +214,19 @@ SHAPES: list[ShapeDraft] = [
 ]
 
 
+# The menu's denominator text per shape: a schema term by its meaning, resolved or not.
+_MENU_DENOMINATORS = {
+    "s0": "per person",
+    "s1": "(present, unresolved)",
+    "s4": "GiniIndex",
+    "s5": "Count_Household",
+    "s8": "per person",
+}
+
+
 def _expected_five_tuple(shape: ShapeDraft) -> dict[str, str | None]:
     """Build the five-tuple text representation emitted by the prompt builder."""
-    if shape.meas_denom_unresolved:
-        denominator = "(present, unresolved)"
-    elif shape.meas_denom_dcid:
-        denominator = shape.meas_denom_dcid
-    else:
-        denominator = None
+    denominator = _MENU_DENOMINATORS.get(shape.shape_id)
     return {
         "population_type": shape.pop_type_dcid or None,
         "measured_property": shape.meas_prop_dcid or None,
@@ -236,14 +243,34 @@ def _expected_sample_dcids(shape: ShapeDraft) -> tuple[str, ...]:
     return tuple(list(shape.sv_arc_facts)[:5])
 
 
-def _expected_retrieval_score(shape: ShapeDraft) -> float:
-    """Round the displayed retrieval score to three decimal places."""
-    return float(f"{shape.representative_score:.3f}")
-
-
 @pytest.fixture
 def prompt() -> str:
     return _build_universal_bind_prompt(VARIABLE, SHAPES)
+
+
+def _framed_prompt(shapes: list[ShapeDraft]) -> str:
+    """A prompt with the frame block, an availability line on each shape, and a
+    not-electable list."""
+    frame = door_frame(
+        door="parsed",
+        variable=VARIABLE,
+        entities=["Ghana"],
+        entity_roles={},
+        member_entities=frozenset(),
+        pins={},
+        date_request=None,
+        unit_text=None,
+        scope=None,
+        operations=(),
+        open_axes=frozenset(),
+    )
+    refused = [
+        Interpretation(shape=SHAPES[2], reason="qualifier_not_bound", pinned_failure="pinned_code")
+    ]
+    availability = [(True, False, None)[i % 3] for i in range(len(shapes))]
+    return _build_universal_bind_prompt(
+        VARIABLE, shapes, frame=frame, refused=refused, availability=availability
+    )
 
 
 @pytest.fixture
@@ -277,10 +304,29 @@ def test_parse_menu_recovers_sample_dcids_for_every_shape(prompt: str) -> None:
         assert entry.sample_dcids == _expected_sample_dcids(shape), shape.label
 
 
-def test_parse_menu_recovers_retrieval_score_for_every_shape(prompt: str) -> None:
+def test_parse_menu_reads_a_retrieval_score_only_from_a_capture_that_lists_one(
+    prompt: str,
+) -> None:
     _variable, entries = parse_menu(prompt)
-    for entry, shape in zip(entries, SHAPES, strict=True):
-        assert entry.retrieval_score == _expected_retrieval_score(shape), shape.label
+    assert [entry.retrieval_score for entry in entries] == [None] * len(SHAPES)
+    denominator_line = "    measurementQualifier=(none), measurementDenominator=per person\n"
+    captured = prompt.replace(denominator_line, f"{denominator_line}  retrieval_score: 0.912\n", 1)
+    _variable, entries = parse_menu(captured)
+    assert entries[0].retrieval_score == 0.912
+
+
+@pytest.mark.parametrize("shapes", [SHAPES, []], ids=["shapes", "empty-menu"])
+def test_parse_menu_skips_the_frame_and_not_electable_blocks(shapes: list[ShapeDraft]) -> None:
+    """An empty menu puts the NOT ELECTABLE block straight after the count header's blank
+    line, as the refused-menu bind sends it."""
+    variable, entries = parse_menu(_framed_prompt(shapes))
+    assert variable == VARIABLE
+    assert [entry.label for entry in entries] == [shape.label for shape in shapes]
+
+
+@pytest.mark.parametrize("k", range(1, len(SHAPES)))
+def test_truncate_menu_keeps_the_frame_and_not_electable_blocks(k: int) -> None:
+    assert truncate_menu(_framed_prompt(SHAPES), k) == _framed_prompt(SHAPES[:k])
 
 
 def test_parse_menu_handles_the_present_unresolved_denominator_branch(prompt: str) -> None:
@@ -352,8 +398,8 @@ def test_parse_menu_requires_exactly_one_trailing_newline(prompt: str) -> None:
 
 
 def test_parse_menu_raises_on_an_unrecognised_line(prompt: str) -> None:
-    corrupted = prompt.replace("  retrieval_score: 0.912", "  retrieval_score is 0.912")
-    with pytest.raises(BindMenuError, match="retrieval_score"):
+    corrupted = prompt.replace("  constraint_slots: (none)", "  constraint slots: none")
+    with pytest.raises(BindMenuError, match="constraint slots"):
         parse_menu(corrupted)
 
 

@@ -40,9 +40,10 @@ from tests.materialise.conftest import FakeGraphReader
 _RECORD_ENV = "SEARCH_RECORD_REQUESTS"
 _REQUESTS_DIR = Path(__file__).parent.parent / "fixtures" / "requests"
 _RECORDED_CLASSES: tuple[type, ...] = (FakeGraph, FakeSdmxClient, FakeGraphReader)
-# Test-side builders on the doubles, which no engine code calls: `FakeGraph.member_arcs`
-# builds the member walk's reader (`_harness.member_walk_reader`).
-_UNRECORDED_METHODS = frozenset({"member_arcs"})
+# Methods that make no request. `FakeGraph.member_arcs` is a test-side builder no engine code
+# calls: it builds the member walk's reader (`_harness.member_walk_reader`).
+# `FakeGraph.observation_read_groups` plans a facet read; the read itself is recorded.
+_UNRECORDED_METHODS = frozenset({"member_arcs", "observation_read_groups"})
 # Each related read ends by its deadline, at most `SEARCH_RELATED_MEASURES_TIMEOUT_S` (1 s).
 _RELATED_JOIN_TIMEOUT_S = 10.0
 

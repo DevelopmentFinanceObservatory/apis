@@ -80,12 +80,17 @@ class ExtractedDate(BaseModel):
 
 _ENTITY_TEXT_DESCRIPTION = (
     "Place name in ENGLISH, translated from the query's own language if needed "
-    '(e.g. "España" → "Spain", "Deutschland" → "Germany", "Kenia" → "Kenya").'
+    '(e.g. "España" → "Spain", "Deutschland" → "Germany", "Kenia" → "Kenya"). '
+    "Keep every semantic qualifier that identifies a different named place or group: "
+    '"Asia (DAC)" is "Asia (DAC)", never just "Asia". Do not include nearby words that '
+    "merely ask for the place's members."
 )
 
 _ENTITY_SPAN_DESCRIPTION = (
     "The verbatim query substring naming this place, copied character-for-character "
-    "from the query text exactly as written (not translated, not normalised). Null "
+    "from the query text exactly as written (not translated, not normalised), including "
+    "an adjacent parenthetical qualifier that is part of its name (for example, "
+    '"Asia (DAC)", not only "Asia"). Null '
     "only when the place is named exclusively through translation and no substring "
     "of the query names it directly."
 )
@@ -95,7 +100,17 @@ _ENTITY_MEMBERS_DESCRIPTION = (
     'its own right ("African countries", "countries in Africa", "each Sub-Saharan '
     'country", "EU member states"). False when it asks about the region or group as '
     'one place ("Africa", "Africa as a whole", "the EU"), and for a single place. '
-    '`text` stays the name of the region or group either way ("Africa").'
+    '`text` stays the name of the region or group either way ("Africa"). When true, '
+    "also fill `member_span` with the adjacent query words that explicitly ask for its "
+    "members; otherwise leave `member_span` null."
+)
+
+_MEMBER_SPAN_DESCRIPTION = (
+    "The verbatim query substring that explicitly asks for this named place or group's "
+    'members, copied character-for-character and excluding the entity name itself: "countries "'
+    'in" in "countries in Africa", "countries" in "African countries", or "pays d\'" '
+    'in "pays d\'Afrique". Set it only when `members` is true. Never use a flow-direction '
+    'word such as "to", "from", or "by" as this span, and never translate or invent it.'
 )
 
 _FLOW_ROLE_DESCRIPTION = """\
@@ -183,6 +198,7 @@ class ExtractedEntity(BaseModel):
     )
     role_span: str | None = Field(default=None, description=_ROLE_SPAN_DESCRIPTION)
     members: bool = Field(default=False, description=_ENTITY_MEMBERS_DESCRIPTION)
+    member_span: str | None = Field(default=None, description=_MEMBER_SPAN_DESCRIPTION)
 
 
 class ExtractedOperation(BaseModel):
@@ -255,7 +271,7 @@ class Extraction(BaseModel):
             "every named geographic or group scope, even when it may not resolve in "
             "the graph. Empty list only when the query genuinely names no place or "
             "group scope. Each entry's own field descriptions (text/span/flow_role/"
-            "role_span/members) define how to fill it; follow those exactly."
+            "role_span/members/member_span) define how to fill it; follow those exactly."
         ),
     )
     operations: list[ExtractedOperation] = Field(
@@ -397,9 +413,11 @@ generic universe or class nouns wholly contained in that dropped qualifier, such
 Countries`, must remain in `entities`. A class noun added to the name of a region or
 group asks for its members: "African countries" and "countries in Africa" are the
 entity "Africa" with `members` true, where "Africa" alone has it false. The class noun
-is never a role_span: "African countries" takes its flow_role and role_span from the
-words around it, exactly as "Africa" would. Do not infer qualifiers that the query did
-not state.
+is never a role_span: put it in `member_span` instead, and let "African countries" take
+its flow_role and role_span from the words around it, exactly as "Africa" would. A
+parenthetical qualifier that identifies the named entity remains part of both `text` and
+`span`: "Asia (DAC)" is one named aggregate, not the continent Asia plus an omitted
+qualifier. Do not infer qualifiers that the query did not state.
 
 Example — "health ODA grants from USA to Ethiopia":
 {"variables": ["health ODA grants"], "entities": ["USA", "Ethiopia"], "dates": []}
@@ -510,6 +528,12 @@ def _system_instruction() -> str:
 _LIST_SEPARATOR_WORDS = frozenset({"and", "or"})
 # Words that may stand between a cue and the span it attaches to.
 _ADJACENT_FILLER_WORDS = _LIST_SEPARATOR_WORDS | {"the"}
+# These are directional markers, never names for the members of a place. Membership
+# validation intentionally does not carry a language-specific allowlist: the model cites
+# the source member phrase, which may be in any language or script.
+_DIRECTION_ONLY_MEMBER_SPANS = frozenset(
+    {"to", "from", "by", "of", "on", "for", "in", "into", "through", "towards", "via", "with"}
+)
 
 
 def _char_script(char: str) -> str | None:
@@ -804,6 +828,86 @@ def _validate_role_spans(
         )
         validated.append(entity.model_copy(update={"flow_role": "unspecified", "role_span": None}))
     return validated
+
+
+def _member_span_reason(
+    normalized_query: str,
+    entity: ExtractedEntity,
+    entities: list[ExtractedEntity],
+    variables: list[str],
+) -> str | None:
+    """Return why a members reading lacks a grounded, adjacent member cue."""
+    if not entity.member_span or not entity.member_span.strip():
+        return "members set with no member_span to cite"
+    if not entity.span:
+        return "members set with no entity span to attach to"
+
+    if _normalize(entity.member_span) in _DIRECTION_ONLY_MEMBER_SPANS:
+        return "member_span is a direction marker"
+
+    own_ranges = _all_normalized_text_ranges(entity.span, normalized_query)
+    cue_ranges = _genuine_role_ranges(entity.member_span, normalized_query, own_ranges)
+    if not cue_ranges:
+        return "member_span not found outside entity span"
+    measure_ranges = [
+        measure_range
+        for variable in variables
+        for measure_range in _all_normalized_text_ranges(variable, normalized_query)
+    ]
+    if any(
+        _ranges_overlap(member_range, measure_range)
+        for member_range in cue_ranges
+        for measure_range in measure_ranges
+    ):
+        return "member_span overlaps a measure"
+    if entity.role_span and any(
+        _ranges_overlap(member_range, role_range)
+        for member_range in cue_ranges
+        for role_range in _all_normalized_text_ranges(entity.role_span, normalized_query)
+    ):
+        return "member_span overlaps role_span"
+    if not own_ranges:
+        return "entity span not found in query"
+
+    cue_range, own_range = _nearest_range_pair(cue_ranges, own_ranges)
+    lo, hi = (
+        (cue_range[1], own_range[0])
+        if cue_range[1] <= own_range[0]
+        else (own_range[1], cue_range[0])
+    )
+    between = normalized_query[lo:hi]
+    if _crossing_entities(between, entity, entities):
+        return "member_span crosses another entity's span"
+    if between.strip(" ,") and not _cue_script_has_no_spaces(entity.member_span):
+        return "member_span is not adjacent to entity span"
+    return None
+
+
+def _log_member_spans(query: str, entities: list[ExtractedEntity], variables: list[str]) -> None:
+    """Log each members reading that cites no grounded, adjacent member cue.
+
+    The log records the reason (`_member_span_reason`); the entity keeps its reading.
+    """
+    normalized_query = _normalize(query)
+    for entity in entities:
+        if not entity.members:
+            continue
+        reason = _member_span_reason(normalized_query, entity, entities, variables)
+        if reason is None:
+            continue
+        trace_id = get_trace_id()
+        logger.warning(
+            "extract: members reading has no grounded member cue (%s); trace_id=%s",
+            reason,
+            trace_id,
+        )
+        logger.debug(
+            "extract: member cue detail trace_id=%s text=%r member_span=%r span=%r",
+            trace_id,
+            entity.text,
+            entity.member_span,
+            entity.span,
+        )
 
 
 # Keep caps offline so Gemini receives the unchanged schema. Bound output before scans.

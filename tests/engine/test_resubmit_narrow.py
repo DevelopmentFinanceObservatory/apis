@@ -452,13 +452,14 @@ class TestShapeLabel:
         assert shape.label != shape.shape_id
 
     def test_representative_without_name_arc_falls_back_to_standard_label_not_raw_id(self):
-        """A missing name arc uses `STANDARD_SHAPE_LABEL`, not the shape ID (#629)."""
+        """A member with no name uses `STANDARD_SHAPE_LABEL`, not the shape ID (#629)."""
         fixtures_dir = Path(__file__).parent.parent / "fixtures"
         nodes = json.loads((fixtures_dir / "graph_nodes.json").read_text())
         obs = json.loads((fixtures_dir / "graph_obs.json").read_text())
 
         nameless_nonbinary = _synthetic_gender_sv("NonBinary", "Nonbinary population")
         del nameless_nonbinary["arcs"]["name"]
+        del nameless_nonbinary["label"]
         nodes[_PERSON_NONBINARY_SV] = nameless_nonbinary
         obs[f"{_PERSON_NONBINARY_SV}|{_ENTITY_DCID}"] = [
             {
@@ -482,6 +483,8 @@ class TestShapeLabel:
             options=walk_options(graph),
         )
         assert region.status == "definite"
+        (member,) = region.specs[0].resolved.members
+        assert member.ref.label == _PERSON_NONBINARY_SV
         shape = region.specs[0].resolved.shape
         assert shape.label == STANDARD_SHAPE_LABEL
         assert shape.label != shape.shape_id

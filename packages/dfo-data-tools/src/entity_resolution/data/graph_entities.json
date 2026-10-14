@@ -513,6 +513,31 @@
     "dac_code": "619"
   },
   {
+    "dcid": "DACCountriesTotal",
+    "name": "DACCountriesTotal",
+    "kind": "aggregate",
+    "aliases": [],
+    "dac_code": "20001"
+  },
+  {
+    "dcid": "DACEUMembers",
+    "name": "DAC EU members",
+    "kind": "aggregate",
+    "aliases": [
+      "DAC EU Members, Total"
+    ],
+    "dac_code": "20011"
+  },
+  {
+    "dcid": "DACEUMembersAndEUInstitutions",
+    "name": "DAC EU members and EU institutions",
+    "kind": "aggregate",
+    "aliases": [
+      "DAC EU Members + EC, Total"
+    ],
+    "dac_code": "20004"
+  },
+  {
     "dcid": "DACEasternAfricaUnallocated",
     "name": "Eastern Africa, unallocated by country (DAC)",
     "kind": "aggregate",
@@ -610,6 +635,15 @@
     "dac_code": "105"
   },
   {
+    "dcid": "DACMultilaterals",
+    "name": "multilaterals (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "Multilaterals, Total"
+    ],
+    "dac_code": "20002"
+  },
+  {
     "dcid": "DACNewIndependentStatesUnallocated",
     "name": "New Independent States of the former Soviet Union, unallocated by country (DAC)",
     "kind": "aggregate",
@@ -617,6 +651,13 @@
       "NIS Unspecified"
     ],
     "dac_code": "102"
+  },
+  {
+    "dcid": "DACNonDACCountries",
+    "name": "DACNonDACCountries",
+    "kind": "aggregate",
+    "aliases": [],
+    "dac_code": "20006"
   },
   {
     "dcid": "DACNorthOfSaharaUnallocated",
@@ -639,6 +680,24 @@
     "dac_code": "889"
   },
   {
+    "dcid": "DACOfficialDonors",
+    "name": "official donors (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "Official Donors, Total"
+    ],
+    "dac_code": "20005"
+  },
+  {
+    "dcid": "DACOtherDonorCountries",
+    "name": "other donor countries (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "Other donor countries"
+    ],
+    "dac_code": "20007"
+  },
+  {
     "dcid": "DACOtherEUInstitutions",
     "name": "other EU institutions (DAC)",
     "kind": "aggregate",
@@ -646,6 +705,15 @@
       "Other EU institutions"
     ],
     "dac_code": "927"
+  },
+  {
+    "dcid": "DACOtherMultilateralOrganisations",
+    "name": "other multilateral organisations (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "Other Multilateral, Total"
+    ],
+    "dac_code": "20034"
   },
   {
     "dcid": "DACOtherMultilateralPartII",
@@ -712,6 +780,24 @@
     "dac_code": "1035"
   },
   {
+    "dcid": "DACPrivateDonors",
+    "name": "private donors (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "Private Donors, Total"
+    ],
+    "dac_code": "21600"
+  },
+  {
+    "dcid": "DACRegionalDevelopmentBanks",
+    "name": "regional development banks (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "Regional Development Banks, Total"
+    ],
+    "dac_code": "20022"
+  },
+  {
     "dcid": "DACSouthAmericaUnallocated",
     "name": "South America, unallocated by country (DAC)",
     "kind": "aggregate",
@@ -762,6 +848,15 @@
     "dac_code": "1029"
   },
   {
+    "dcid": "DACUnitedNations",
+    "name": "United Nations entities (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "United Nations, Total"
+    ],
+    "dac_code": "20021"
+  },
+  {
     "dcid": "DACWesternAfricaUnallocated",
     "name": "Western Africa, unallocated by country (DAC)",
     "kind": "aggregate",
@@ -770,6 +865,15 @@
       "Western Africa, regional"
     ],
     "dac_code": "1030"
+  },
+  {
+    "dcid": "DACWorldBank",
+    "name": "World Bank (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "World Bank, Total"
+    ],
+    "dac_code": "20033"
   },
   {
     "dcid": "DavidAndLucilePackardFoundation",
@@ -1105,6 +1209,13 @@
       "GCF"
     ],
     "dac_code": "1016"
+  },
+  {
+    "dcid": "GroupOfSeven",
+    "name": "GroupOfSeven",
+    "kind": "aggregate",
+    "aliases": [],
+    "dac_code": "20003"
   },
   {
     "dcid": "HAndMFoundation",

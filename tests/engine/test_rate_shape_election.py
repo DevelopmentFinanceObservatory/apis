@@ -1,9 +1,9 @@
-"""An explicit rate request filters raw-count shapes before ranking and the single bind call."""
+"""An explicit rate request refuses raw-count shapes on their form before ranking and the
+single bind call (`admissibility.judge_pinned_parts`)."""
 
 from __future__ import annotations
 
 import asyncio
-from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -12,15 +12,7 @@ from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.config import settings
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
-from search.engine.region.phase_rank_bind import (
-    _has_strong_rate_intent,
-    _is_unnormalised_raw_count,
-    _mentioned_raw_qualifier_props,
-    _prune_explicit_rate_raw_counts,
-    _raw_count_is_pending_joint_slice,
-)
 from search.engine.region.result import RegionResult
-from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.models import Binding, BindingSet, BindingUnbound, BindingValue
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
@@ -71,35 +63,6 @@ def _node(label: str, **kwargs: Any) -> dict:
     return {"label": label, "type": "StatisticalVariable", "arcs": _arcs(label, **kwargs)}
 
 
-def _shape_with_members(
-    *,
-    shape_id: str,
-    label: str,
-    denominator: str | None,
-    properties: tuple[str, ...],
-    members: list[dict[str, str]],
-    value_labels: dict[str, str],
-) -> ShapeDraft:
-    return ShapeDraft(
-        shape_id=shape_id,
-        label=label,
-        pop_type_dcid="Person",
-        meas_prop_dcid="count",
-        stat_type_dcid="measuredValue",
-        meas_qual_dcid=None,
-        meas_denom_dcid=denominator,
-        slot_keys=tuple(
-            SlotKeyDraft(axis="how", property_dcid=property_dcid, label=property_dcid)
-            for property_dcid in properties
-        ),
-        sv_arc_facts={
-            f"{shape_id}_{index}": _arcs(label, constraints=constraints)
-            for index, constraints in enumerate(members)
-        },
-        value_labels=value_labels,
-    )
-
-
 class _RecordingBindLLM:
     def __init__(
         self,
@@ -107,11 +70,13 @@ class _RecordingBindLLM:
         chosen_shape_index: int = 0,
         bindings: list[SlotBindingDraft] | None = None,
         ask: str | None = None,
+        nearest_refused_index: int | None = None,
         usage: dict | None = None,
     ) -> None:
         self.chosen_shape_index = chosen_shape_index
         self.bindings = [] if bindings is None else bindings
         self.ask = ask
+        self.nearest_refused_index = nearest_refused_index
         self.usage = usage
         self.prompts: list[str] = []
 
@@ -125,18 +90,10 @@ class _RecordingBindLLM:
                 chosen_shape_index=self.chosen_shape_index,
                 bindings=self.bindings,
                 ask=self.ask,
+                nearest_refused_index=self.nearest_refused_index,
             ),
             self.usage,
         )
-
-
-class _UnreachableLLM:
-    def __init__(self) -> None:
-        self.calls = 0
-
-    async def generate_structured(self, **_kwargs):
-        self.calls += 1
-        raise AssertionError("the pre-bind rate filter must stop before the universal binder")
 
 
 def _run(
@@ -178,6 +135,16 @@ def _run(
     )
 
 
+def _menu(prompt: str) -> str:
+    """The electable part of a bind prompt: everything before the NOT ELECTABLE list."""
+    return prompt.partition("NOT ELECTABLE")[0]
+
+
+def _not_electable(prompt: str) -> str:
+    """The NOT ELECTABLE list of a bind prompt, empty when it has none."""
+    return prompt.partition("NOT ELECTABLE")[2].partition("DENOMINATORS")[0]
+
+
 def _slots_by_property(result: RegionResult) -> dict[str, Binding]:
     return {
         slot.key.property.ref: slot.binding
@@ -215,7 +182,9 @@ def test_explicit_rate_filter_precedes_top_k_ranking() -> None:
     assert len(llm.prompts) == 1
     assert "CANDIDATE SHAPES (1 total)" in llm.prompts[0]
     assert "rate below raw top-k" in llm.prompts[0]
-    assert all(f"raw count {index}" not in llm.prompts[0] for index in range(len(raw_stat_vars)))
+    assert all(
+        f"raw count {index}" not in _menu(llm.prompts[0]) for index in range(len(raw_stat_vars))
+    )
     denominator = result.spec.resolved.shape.measurement_denominator
     assert denominator is not None
     assert denominator.ref == "Count_Person"
@@ -245,21 +214,26 @@ def test_multiple_rate_candidates_remain_for_the_single_model_election() -> None
     assert "CANDIDATE SHAPES (2 total)" in llm.prompts[0]
     assert "rate per person" in llm.prompts[0]
     assert "rate per household" in llm.prompts[0]
-    assert "raw count" not in llm.prompts[0]
+    assert "raw count" not in _menu(llm.prompts[0])
+    assert "raw count (fails the form the query asks for)" in _not_electable(llm.prompts[0])
     denominator = result.spec.resolved.shape.measurement_denominator
     assert denominator is not None
     assert denominator.ref == "Count_Household"
 
 
 @pytest.mark.parametrize(
-    ("variable", "status"),
-    [("illustrative count", "definite"), ("illustrative rate count", "no_data")],
+    ("variable", "status", "denominator"),
+    [
+        ("illustrative count", "definite", None),
+        ("illustrative rate count", "no_data", "Count_Person"),
+    ],
 )
-def test_count_or_ambiguous_rate_count_keeps_raw_count_candidates(
-    variable: str, status: str
+def test_a_named_rate_refuses_the_raw_count_and_a_count_elects_it(
+    variable: str, status: str, denominator: str | None
 ) -> None:
-    """Bind is offered the raw count either way. "Rate" names a rate, which an elected raw
-    count does not serve, so that election refuses at materialise."""
+    """A count question is offered the raw count and elects it. "Rate" names a rate, which
+    a raw count does not serve, so the raw count is not electable and bind elects the rate,
+    which has no data at the place."""
     raw_stat_var = "RawCount"
     rate_stat_var = "RatePerPerson"
     llm = _RecordingBindLLM()
@@ -278,9 +252,10 @@ def test_count_or_ambiguous_rate_count_keeps_raw_count_candidates(
 
     assert result.status == status
     assert len(llm.prompts) == 1
-    assert "raw count" in llm.prompts[0]
+    assert ("raw count" in _menu(llm.prompts[0])) is (denominator is None)
     answer = result.spec if status == "definite" else result.flagged_match[0]
-    assert answer.resolved.shape.measurement_denominator is None
+    found = answer.resolved.shape.measurement_denominator
+    assert (found.ref if found is not None else None) == denominator
 
 
 @pytest.mark.parametrize(
@@ -307,12 +282,25 @@ def test_rate_filter_preserves_non_raw_count_shapes(label: str, node_kwargs: dic
     )
 
     assert len(llm.prompts) == 1
-    assert label in llm.prompts[0]
-    assert "raw count" not in llm.prompts[0]
+    assert label in _menu(llm.prompts[0])
+    assert "raw count" not in _menu(llm.prompts[0])
 
 
-def test_no_rate_eligible_shape_stops_before_the_model() -> None:
-    llm = _UnreachableLLM()
+@pytest.mark.parametrize(
+    ("nearest_refused_index", "flagged"),
+    [(0, ["RawCount"]), (None, [])],
+    ids=["names-the-refused-reading", "names-none"],
+)
+def test_a_part_with_only_refused_readings_binds_over_the_not_electable_list(
+    nearest_refused_index: int | None, flagged: list[str]
+) -> None:
+    """The one reading fails the form "%" names, so no shape is admissible. Bind runs over
+    an empty menu with the reading listed as not electable, and the part refuses on that
+    form. The reading the model names as nearest is the flagged match, with the
+    denominator asked beside the one found; a model that names none flags nothing."""
+    llm = _RecordingBindLLM(
+        ask="no shape is a percentage", nearest_refused_index=nearest_refused_index
+    )
 
     result = _run(
         "illustrative %",
@@ -323,9 +311,14 @@ def test_no_rate_eligible_shape_stops_before_the_model() -> None:
     )
 
     assert result.status == "no_data"
-    assert result.no_data_reason == "variable_not_resolved"
-    assert llm.calls == 0
-    assert "bind" not in result.timing_by_step
+    assert result.no_data_reason == "denominator_not_available"
+    assert [
+        member.ref.ref for spec in result.flagged_match or () for member in spec.resolved.members
+    ] == flagged
+    assert (result.denominator is not None) == bool(flagged)
+    (prompt,) = llm.prompts
+    assert "CANDIDATE SHAPES (0 total)" in prompt
+    assert "  0: raw count (fails the form the query asks for)" in prompt
 
 
 def test_structural_rate_filter_keeps_ordinary_normalized_menu_order() -> None:
@@ -353,6 +346,12 @@ def test_structural_rate_filter_keeps_ordinary_normalized_menu_order() -> None:
     assert "CANDIDATE SHAPES (2 total)" in llm.prompts[0]
     assert "incidence rate" in llm.prompts[0]
     assert "immunization rate" in llm.prompts[0]
+    # Each menu shape states whether it has data at Kenya, in menu order.
+    assert [
+        line.removeprefix("  data at the named places: ")
+        for line in llm.prompts[0].splitlines()
+        if line.startswith("  data at the named places: ")
+    ] == ["yes", "no"]
 
 
 class _CountingFixtureLLM:
@@ -381,15 +380,16 @@ def test_hiv_incidence_retains_raw_menu_and_elects_pinned_sdg_shape() -> None:
     ]
 
 
-def test_recorded_measles_menu_retains_raw_count_and_refuses_its_form() -> None:
-    """Bind elects the measles case count, which serves no rate, so the answer refuses
-    `denominator_not_available`, flagging the one count materialise elected."""
+def test_recorded_measles_menu_lists_the_case_count_as_nearest_and_refuses_its_form() -> None:
+    """The case count serves no rate, so it is not electable beside the immunization
+    coverage, which measures something else. Bind declines the coverage and names the case
+    count as nearest, so the answer refuses `denominator_not_available` flagging the measles
+    case count alone: the reading the question asked for, settled on the condition it names."""
     response = offline_resolve(make_request("measles incidence rate Kenya"), llm=FakeLLM())
 
     assert response.status == "no_data"
     part = response.parts[0]
     assert part.no_data.reason == "denominator_not_available"
-    assert part.no_data.elected_count == 1
     assert part.no_data.flagged_match is not None
     assert [sv.ref.ref for sv in part.no_data.flagged_match.resolved.members] == [
         "Count_MedicalConditionIncident_ConditionMeasles"
@@ -407,126 +407,22 @@ def test_recorded_hiv_prevalence_menu_refuses_the_sdg_incidence_shape() -> None:
     assert all("SDG_SH_HIV_INCD" not in prompt for prompt in llm.bind_prompts)
 
 
-def test_recorded_female_urban_menu_retains_joint_slice_carrier() -> None:
+def test_recorded_female_urban_menu_refuses_the_values_the_literacy_rate_lacks() -> None:
+    """The female literate population count serves no rate and is not electable. Bind
+    elects the literacy rate of people aged ten and over, which has no gender or residence
+    slot, so the answer leaves the values the phrase names unmet and refuses
+    `qualifier_not_bound` naming female and urban, flagging the rate it elected: a
+    refusal names each requirement its flagged match leaves unmet."""
     response = offline_resolve(make_request("female urban literacy rate"), llm=FakeLLM())
 
     assert response.status == "no_data"
     part = response.parts[0]
-    assert part.no_data.reason == "no_matching_slice"
-    assert part.no_data.gate == "no_member_asserts_bound_properties"
-    assert part.no_data.elected_count == 1
-
-
-def test_joint_slice_deferral_keeps_data_bearing_alternate_when_raw_is_unavailable() -> None:
-    """A fully bound raw member with no data is not a missing joint slice.
-
-    The default place scope contains data for the model-nominated alternate,
-    while the elected raw family has a real Female+Urban member that lacks
-    observations. Its Materialised carrier is therefore availability=False,
-    not the availability=None missing-slice case that may force the
-    single-shape path. The raw count serves no rate, but the nominated rate
-    alternate does, so the quantity gate lets the fan-out offer it.
-    """
-    variable = "female urban literacy rate"
-    raw_female_urban = "RawFemaleUrbanLiteracy"
-    raw_male_rural = "RawMaleRuralLiteracy"
-    normalized_literacy = "NormalizedLiteracy"
-    data_bearing_neighbor = "DataBearingNeighbor"
-
-    class _FullyBoundRawLLM:
-        async def generate_structured(self, *, prompt, system, schema):
-            if schema is QuantityOutput:
-                return NO_QUANTITY
-            assert schema.__name__ == "_UniversalBindOutput"
-            return (
-                _UniversalBindOutput(
-                    chosen_shape_index=0,
-                    bindings=[
-                        SlotBindingDraft(
-                            axis="how",
-                            property_dcid="gender",
-                            kind="value",
-                            value_dcids=["Female"],
-                        ),
-                        SlotBindingDraft(
-                            axis="how",
-                            property_dcid="residence",
-                            kind="value",
-                            value_dcids=["Urban"],
-                        ),
-                    ],
-                    also_plausible=[1],
-                ),
-                None,
-            )
-
-    nodes = {
-        raw_female_urban: _node(
-            "Female urban literacy count",
-            constraints={"gender": "Female", "residence": "Urban"},
-        ),
-        raw_male_rural: _node(
-            "Male rural literacy count",
-            constraints={"gender": "Male", "residence": "Rural"},
-        ),
-        normalized_literacy: _node("Literacy rate", denominator="Count_Person"),
-        data_bearing_neighbor: _node(
-            "Female urban unemployment rate",
-            population_type="Unemployment",
-            denominator="Count_Person",
-            constraints={"gender": "Female", "residence": "Urban"},
-        ),
-        "Female": {"label": "Female", "type": "GenderType"},
-        "Male": {"label": "Male", "type": "GenderType"},
-        "Urban": {"label": "Urban", "type": "ResidenceType"},
-        "Rural": {"label": "Rural", "type": "ResidenceType"},
-    }
-    graph = FakeGraph(
-        nodes=nodes,
-        detect={
-            variable: {
-                "svs": [
-                    raw_female_urban,
-                    raw_male_rural,
-                    data_bearing_neighbor,
-                    normalized_literacy,
-                ],
-                "cosine_scores": [0.90, 0.89, 0.885, 0.85],
-            }
-        },
-        resolve={},
-        obs={
-            f"{data_bearing_neighbor}|country/A1": [
-                {"earliestDate": "2020", "latestDate": "2020", "obsCount": 1}
-            ]
-        },
-        children={"Earth": {"Country": ["country/A1"]}},
-    )
-
-    result = asyncio.run(
-        resolve_variable(
-            variable,
-            entities=[],
-            date_request=None,
-            detect_query=variable,
-            role_query=variable,
-            pac=True,
-            graph=graph,
-            resolver=make_resolver(graph),
-            llm=_FullyBoundRawLLM(),
-            base_timing={},
-            sdmx=FakeSdmxClient(
-                observations={}, availability={}, scope_availability=graph.scope_availability
-            ),
-            coverage=empty_coverage_snapshot(),
-        )
-    )
-
-    assert result.status == "no_data"
-    assert result.gate == "only_alternate_has_data"
-    assert result.alternate_match is not None
-    assert [stat_var.ref.ref for stat_var in result.alternate_match.resolved.members] == [
-        data_bearing_neighbor
+    assert part.no_data.reason == "qualifier_not_bound"
+    assert [term.text for term in part.no_data.unbound_qualifiers] == ["female", "urban"]
+    flagged = part.no_data.flagged_match
+    assert flagged is not None
+    assert [sv.ref.ref for sv in flagged.resolved.members] == [
+        "Count_Person_10OrMoreYears_Literate_AsAFractionOf_Count_Person_10OrMoreYears"
     ]
 
 
@@ -617,8 +513,8 @@ def test_rate_filter_never_transfers_a_cross_member_raw_binding_combination() ->
 
     assert result.status == "definite"
     assert len(llm.prompts) == 1
-    assert "female count" not in llm.prompts[0]
-    assert "literate count" not in llm.prompts[0]
+    assert "female count" not in _menu(llm.prompts[0])
+    assert "literate count" not in _menu(llm.prompts[0])
     assert [stat_var.ref.ref for stat_var in result.spec.resolved.members] == [rate_literate]
     assert "gender" not in _slots_by_property(result)
 
@@ -649,199 +545,20 @@ def test_partial_raw_set_is_not_transferred_to_a_rate_candidate() -> None:
     assert result.no_data_reason == "variable_not_resolved"
     assert len(llm.prompts) == 1
     assert "partial category rate" in llm.prompts[0]
-    assert "raw category a" not in llm.prompts[0]
-    assert "raw category b" not in llm.prompts[0]
-
-
-def test_rate_intent_recognises_percent_forms_and_count_exception() -> None:
-    assert _has_strong_rate_intent("population rate")
-    assert _has_strong_rate_intent("population percentages")
-    assert _has_strong_rate_intent("population %")
-    assert _has_strong_rate_intent("renewable energy share")
-    assert not _has_strong_rate_intent("shareholder equity")
-    assert not _has_strong_rate_intent("population rate count")
-    assert not _has_strong_rate_intent("how many population rates")
-
-
-def test_raw_count_predicate_excludes_only_the_literal_standard_count_shape() -> None:
-    from search.engine.shape import ShapeDraft
-
-    raw_count = ShapeDraft(
-        shape_id="raw",
-        label="raw",
-        pop_type_dcid="Person",
-        meas_prop_dcid="count",
-        stat_type_dcid="measuredValue",
-        meas_qual_dcid=None,
-        meas_denom_dcid=None,
-        slot_keys=(),
-    )
-
-    assert _is_unnormalised_raw_count(raw_count)
-    assert not _is_unnormalised_raw_count(replace(raw_count, stat_type_dcid="growthRate"))
-    assert not _is_unnormalised_raw_count(replace(raw_count, meas_denom_unresolved=True))
-    assert not _is_unnormalised_raw_count(replace(raw_count, declared_roles=("creditor", "debtor")))
-
-
-def test_qualifier_detection_counts_female_and_urban_properties_once() -> None:
-    raw = _shape_with_members(
-        shape_id="raw-literacy",
-        label="female literate count",
-        denominator=None,
-        properties=("gender", "residence", "literacyStatus", "fixed"),
-        members=[
-            {
-                "gender": "Female",
-                "residence": "Urban",
-                "literacyStatus": "Literate",
-                "fixed": "FixedValue",
-            },
-            {
-                "gender": "Male",
-                "residence": "Rural",
-                "literacyStatus": "Illiterate",
-                "fixed": "FixedValue",
-            },
-            {
-                "gender": "Female",
-                "residence": "Urban",
-                "literacyStatus": "Literate",
-                "fixed": "FixedValue",
-            },
-        ],
-        value_labels={
-            "Female": "Female",
-            "Male": "Male",
-            "Urban": "Urban",
-            "Rural": "Rural",
-            "Literate": "Literate",
-            "Illiterate": "Illiterate",
-            "FixedValue": "Fixed",
-        },
-    )
-
-    mentioned, contradictory = _mentioned_raw_qualifier_props(raw, "female urban literacy rate")
-
-    assert mentioned == {"gender", "residence"}
-    assert not contradictory
-
-
-@pytest.mark.parametrize(
-    "variable",
-    [
-        "female literacy rate excluding male",
-        "female literacy rate, not male",
-        "female literacy rate, female but not female",
-    ],
-)
-def test_negated_or_mixed_qualifier_wording_retains_raw_count(variable: str) -> None:
-    raw = _shape_with_members(
-        shape_id="raw-literacy",
-        label="literacy count",
-        denominator=None,
-        properties=("gender",),
-        members=[{"gender": "Female"}, {"gender": "Male"}],
-        value_labels={"Female": "Female", "Male": "Male"},
-    )
-    normalized = _shape_with_members(
-        shape_id="normalized-literacy",
-        label="literacy rate",
-        denominator="Count_Person",
-        properties=(),
-        members=[{}],
-        value_labels={},
-    )
-
-    mentioned, contradictory = _mentioned_raw_qualifier_props(raw, variable)
-
-    assert contradictory
-    assert mentioned == set()
-    assert raw in _prune_explicit_rate_raw_counts([raw, normalized], variable)
-
-
-def test_per_candidate_qualifier_loss_never_unions_complementary_candidates() -> None:
-    raw = _shape_with_members(
-        shape_id="raw-literacy",
-        label="literacy count",
-        denominator=None,
-        properties=("gender", "residence", "age"),
-        members=[
-            {"gender": "Female", "residence": "Urban", "age": "Adult"},
-            {"gender": "Male", "residence": "Rural", "age": "Child"},
-        ],
-        value_labels={
-            "Female": "Female",
-            "Male": "Male",
-            "Urban": "Urban",
-            "Rural": "Rural",
-            "Adult": "Adult",
-            "Child": "Child",
-        },
-    )
-    gender_rate = _shape_with_members(
-        shape_id="gender-rate",
-        label="literacy rate by gender",
-        denominator="Count_Person",
-        properties=("gender",),
-        members=[{"gender": "Female"}],
-        value_labels={"Female": "Female"},
-    )
-    residence_rate = _shape_with_members(
-        shape_id="residence-rate",
-        label="literacy rate by residence",
-        denominator="Count_Person",
-        properties=("residence",),
-        members=[{"residence": "Urban"}],
-        value_labels={"Urban": "Urban"},
-    )
-    shapes = [raw, gender_rate, residence_rate]
-
-    assert raw in _prune_explicit_rate_raw_counts(shapes, "female urban adult literacy rate")
-    assert _raw_count_is_pending_joint_slice(raw, shapes, "female urban adult literacy rate")
-
-
-def test_compatible_candidate_order_does_not_change_raw_removal_before_top_k() -> None:
-    raw = _shape_with_members(
-        shape_id="raw-literacy",
-        label="literacy count",
-        denominator=None,
-        properties=("gender",),
-        members=[{"gender": "Female"}, {"gender": "Male"}],
-        value_labels={"Female": "Female", "Male": "Male"},
-    )
-    normalized = _shape_with_members(
-        shape_id="normalized-literacy",
-        label="literacy rate",
-        denominator="Count_Person",
-        properties=(),
-        members=[{}],
-        value_labels={},
-    )
-    false_friend = _shape_with_members(
-        shape_id="other-rate",
-        label="unemployment rate",
-        denominator="Count_Person",
-        properties=(),
-        members=[{}],
-        value_labels={},
-    )
-
-    first = _prune_explicit_rate_raw_counts([raw, normalized, false_friend], "female literacy rate")
-    second = _prune_explicit_rate_raw_counts(
-        [false_friend, normalized, raw], "female literacy rate"
-    )
-
-    assert raw not in first
-    assert raw not in second
-    assert [shape.shape_id for shape in first] == ["normalized-literacy", "other-rate"]
-    assert [shape.shape_id for shape in second] == ["other-rate", "normalized-literacy"]
+    assert "raw category a" not in _menu(llm.prompts[0])
+    assert "raw category b" not in _menu(llm.prompts[0])
 
 
 def test_replays_female_literacy_fixture_electing_the_normalized_rate() -> None:
-    """The literacy rate elected over the raw count declares no gender, so "female" is
-    reported unbound."""
-    response = offline_resolve(make_request("female literacy rate in Bangladesh"), llm=FakeLLM())
+    """The female literate count serves no rate and is not electable, so bind elects the
+    literacy rate, which has no gender slot, and the part refuses on "female"."""
+    llm = _CountingFixtureLLM()
+    response = offline_resolve(make_request("female literacy rate in Bangladesh"), llm=llm)
 
+    assert all(
+        "Population: Female, Literate (fails the form" in _not_electable(prompt)
+        for prompt in llm.bind_prompts
+    )
     assert response.status == "no_data"
     part = response.parts[0]
     assert part.no_data.reason == "qualifier_not_bound"
@@ -879,3 +596,53 @@ def test_female_literacy_refuses_on_female_whatever_the_bind_model_leaves_unplac
     part = response.parts[0]
     assert part.no_data.reason == "qualifier_not_bound"
     assert [q.text for q in part.no_data.unbound_qualifiers] == ["female"]
+
+
+class _FemaleUrbanBindLLM:
+    """Binds the literacy rate's gender to Female and its residence to Urban."""
+
+    async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
+        assert schema.__name__ == "_UniversalBindOutput"
+        return _UniversalBindOutput(
+            chosen_shape_index=0,
+            bindings=[
+                SlotBindingDraft(
+                    axis="how", property_dcid="gender", kind="value", value_dcids=["Female"]
+                ),
+                SlotBindingDraft(
+                    axis="how", property_dcid="residence", kind="value", value_dcids=["Urban"]
+                ),
+            ],
+        ), None
+
+
+def test_a_joint_slice_no_member_holds_does_not_answer_with_one_qualifier_dropped() -> None:
+    """ "female urban literacy rate" binds Female and Urban. The rate family holds a female
+    rate, an urban rate and a male rural rate, each with data, and no female urban one. The
+    answer never serves the female or the urban rate as though it were the slice asked."""
+    rates = {
+        "FemaleLiteracyRate": {"gender": "Female"},
+        "UrbanLiteracyRate": {"residence": "Urban"},
+        "MaleRuralLiteracyRate": {"gender": "Male", "residence": "Rural"},
+    }
+    nodes = {
+        dcid: _node(f"Literacy rate {dcid}", denominator="Count_Person", constraints=constraints)
+        for dcid, constraints in rates.items()
+    }
+    nodes |= {
+        value: {"label": value, "type": "Thing"} for value in ("Female", "Male", "Urban", "Rural")
+    }
+
+    result = _run(
+        "female urban literacy rate",
+        nodes=nodes,
+        svs=list(rates),
+        scores=[0.9, 0.89, 0.88],
+        llm=_FemaleUrbanBindLLM(),
+        with_data=list(rates),
+    )
+
+    assert result.status == "no_data"
+    assert result.specs == ()

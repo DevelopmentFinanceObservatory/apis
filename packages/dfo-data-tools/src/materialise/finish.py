@@ -27,10 +27,10 @@ from materialise.frame_build import fold_method_periods
 # `_build_warnings` checks outcome classes at runtime. `generation` imports only the
 # `MaterialisationRequest` annotation under `TYPE_CHECKING`, so these imports create no cycle.
 from materialise.generation import (
-    _bare_stat_var_ref,
     _GroupOutcome,
     _MemberOutcome,
     _PreviewOutcome,
+    bare_stat_var_ref,
 )
 from materialise.profile import compute_output_profile, compute_output_profile_from_chunks
 from materialise.statistics import SeriesStatisticsSink, compute_series_statistics_table
@@ -79,7 +79,7 @@ def _conversion_trace_entry(
     entry["members"] = [
         {"stat_var": stat_var, "native_unit": native_unit}
         for stat_var, native_unit in sorted(
-            {(_bare_stat_var_ref(stat_var), record.native_unit_ref) for stat_var, record in members}
+            {(bare_stat_var_ref(stat_var), record.native_unit_ref) for stat_var, record in members}
         )
     ]
 
@@ -261,6 +261,8 @@ def _finish_member(
         default_scope=outcome.default_scope.places,
         series_conversions=outcome.series_conversions,
         probe_empty=outcome.probe_empty,
+        latest_years=outcome.latest_years,
+        read_series=outcome.read_series,
     )
 
 
@@ -367,6 +369,8 @@ def _finish_group(
         default_scope=outcome.default_scope.places,
         series_conversions=outcome.series_conversions,
         probe_empty=outcome.probe_empty,
+        latest_years=outcome.latest_years,
+        read_series=outcome.read_series,
     )
 
 

@@ -1107,7 +1107,10 @@ def test_a_worker_run_at_one_place_reads_the_breadth_a_sync_mint_reads():
         )
         probed.update((sv, breadth.resolve()) for sv, breadth in pending.items())
         return SimpleNamespace(
-            manifest=_stub_manifest(), head=SimpleNamespace(confirmed_at=datetime.now(UTC))
+            manifest=_stub_manifest(),
+            head=SimpleNamespace(confirmed_at=datetime.now(UTC)),
+            latest_years={},
+            read_series={},
         )
 
     with pytest.MonkeyPatch.context() as mp:

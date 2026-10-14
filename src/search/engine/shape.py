@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from typing import Literal
 
 from materialise.roles import RoleAxis, roles_by_axis
 from origin_catalogue import DataCommons, SourceRef
@@ -24,6 +25,11 @@ from search.models import Axis
 # Fallback label when the shape group has no ->name arc. This leaf is imported
 # by bind.py and derive.py, keeping resolution modules out of the bind path.
 STANDARD_SHAPE_LABEL = "standard Data Commons"
+
+type Pool = Literal["ours", "un_system"]
+"""The resolver whose recall reached a shape: ours, or the UN System Data Commons'. Each
+scores on its own scale, so each pool meets its own score floor, and each pool's shapes are
+elected on their own pass (`region.pipeline`)."""
 
 # ShapeDraft is the ungrounded shape representation used inside the pipeline.
 
@@ -120,14 +126,25 @@ class ShapeDraft:
     # Recall score of the strongest topic root that reached an expansion-only group,
     # uncapped. None when a member was recalled. measured_score reads it.
     expansion_root_score: float | None = field(default=None, compare=False)
-    # Whether group members have observations at the queried place. None marks
-    # an unrun or failed-open probe, while False means it ran and found none.
-    # Read by the pre-election availability prune.
+    # The topic root that reached an expansion-only group: the root of the leaf its
+    # expansion rank comes from. None when a member was recalled. The bind menu seats a
+    # root with every leaf or none (`region.seating.seat_menu`).
+    expansion_root: str | None = field(default=None, compare=False)
+    # Whether group members have observations at the named countries, read by derive. None
+    # marks an unrun or failed-open probe, while False means it ran and found none. The
+    # slot defaults read it (`bind_repair.apply_shape_slot_defaults`).
     place_available: bool | None = field(default=None, compare=False)
-    # The probed places at which some member has observations, set by the
-    # sibling-availability probe over a question's whole place scope. None when that
-    # probe did not run for this shape.
-    available_places: frozenset[str] | None = field(default=None, compare=False)
+    # Per member, the places the part names at which it has observations, each with the
+    # years its facets there hold (`reading_coverage.observed_years`), set by the
+    # availability read over a menu shape when the part names a place other than a country
+    # (`region.availability.read_menu_availability`). A member with data at no such place
+    # maps to an empty mapping. None when that read did not run or failed for this shape.
+    named_place_coverage: Mapping[str, ReadingCoverage] | None = field(default=None, compare=False)
+    # The places the read behind the availability above covered: derive's probe at the
+    # named countries, or the menu read at every place the part names. A read that found no
+    # data establishes absence at these places only (`region.availability`). Empty when no
+    # read ran.
+    availability_places: frozenset[str] = field(default=frozenset(), compare=False)
     # Units of the facets holding the group's observations at the queried place, with
     # None for a facet that names no unit. None when the probe did not run or found no
     # data. `measures_count` reads it.
@@ -163,6 +180,9 @@ class ShapeDraft:
     # cut (`clients.graph.with_rival_families`). Such a shape displaces only shapes of its
     # own five-tuple (`place_roles.without_unasked_axes`).
     rival: bool = field(default=False, compare=False)
+    # The resolver whose recall reached the shape (`Pool`). A variable our resolver recalls
+    # under a superseded dcid derives as its UN successor and stays in our pool.
+    pool: Pool = field(default="ours", compare=False)
     # The datasets the part may answer this shape's five-tuple from, in serving order,
     # stamped by shape candidacy (`bound_values.shape_for_part`): the dataset the part
     # names, else the five-tuple's eligible publishers. None before candidacy and on a
@@ -283,6 +303,13 @@ def is_role_bearing(shape: ShapeDraft) -> bool:
     return bool(_declared_role_names(shape))
 
 
+def role_class(shape: ShapeDraft) -> frozenset[str]:
+    """The non-subject roles the group's members declare, as a set: the form every
+    role-class comparison and key reads, since `declared_roles` keeps arc order. Subject-only
+    and unbuilt drafts give the empty set."""
+    return frozenset(_declared_role_names(shape))
+
+
 def measures_count(shape: ShapeDraft) -> bool:
     """True when the group's values are counts: its measured property is ``count``, or
     every facet holding its data at the queried place carries a count unit
@@ -392,6 +419,7 @@ def shape_draft_from(
     representative_score: float | None = None,
     expansion_rank_score: float | None = None,
     expansion_root_score: float | None = None,
+    expansion_root: str | None = None,
     place_available: bool | None = None,
     place_units: frozenset[str | None] | None = None,
     value_labels: dict[str, str] | None = None,
@@ -439,6 +467,7 @@ def shape_draft_from(
         representative_score=representative_score,
         expansion_rank_score=expansion_rank_score,
         expansion_root_score=expansion_root_score,
+        expansion_root=expansion_root,
         place_available=place_available,
         place_units=place_units,
         value_labels=value_labels,

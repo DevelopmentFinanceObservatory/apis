@@ -766,17 +766,20 @@
 - id: sdg-07
   query: maternal mortality in Nauru
   slice: holdout
-  why: When the DFO and base paths end no_data for maternal mortality in Nauru, the UN System Data Commons offers three indicators as candidates.
+  why: Maternal mortality in Nauru resolves to the SDG maternal mortality ratio for women (SDG 3.1.1, deaths per 100,000 live births), which holds Nauru from 2000 to 2023.
   tags:
     directional_flow: na
     conjunction: none
   expect:
-    candidates:
+    definite:
       measure:
-        stat_vars:
-        - undata/unicef/MNCH_MATERNAL_DEATHS.SEX--F
-        - undata/unicef/MNCH_MMR.SEX--F
-        - undata/sdg/SH_STA_MORT.SEX--F
+        shape:
+          population_type: undata/sdg/SERIES-SH_STA_MORT
+          measured_property: value
+          stat_type: measuredValue
+          measurement_qualifier: null
+          measurement_denominator: null
+        stat_vars: [undata/sdg/SH_STA_MORT.SEX--F]
       entities:
       - dcid: country/NRU
         role: observationAbout

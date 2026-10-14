@@ -88,24 +88,63 @@ def _leading_year(time_period: str | None) -> int | None:
         return None
 
 
-def latest_period(periods: Iterable[str | None]) -> str | None:
-    """The period a `latest` window serves for one StatVar. It is the newest of `periods`, the
-    greatest leading year and, within that year, the greatest period string, which orders
-    zero-padded `YYYY`, `YYYY-MM` and `YYYY-MM-DD` chronologically. Null periods and periods
-    without a leading year are skipped. None when none is left.
+def latest_period(periods: Iterable[str | None], *, year: int | None = None) -> str | None:
+    """The period a `latest` window serves for one StatVar that elected no year. It is the
+    newest of `periods`, the greatest leading year and, within that year, the greatest period
+    string, which orders zero-padded `YYYY`, `YYYY-MM` and `YYYY-MM-DD` chronologically. Null
+    periods and periods without a leading year are skipped. None when none is left. With
+    `year`, the newest of the periods whose leading year it is: the period a StatVar that
+    elected `year` serves (`LatestYear`).
 
-    A StatVar serves this one period on every read, place-keyed and role-bearing alike, and
-    only from the series holding it. A series whose own latest period is earlier serves
-    nothing. A Datasets read reduces a StatVar's rows by it (`columnar.latest_rows`), and
+    A StatVar serves its one period on every read, place-keyed and role-bearing alike, and
+    only from the series holding it. A series holding no row at it serves nothing. A Datasets
+    read reduces a StatVar's rows by it (`columnar.latest_rows`, `columnar.elected_rows`), and
     Search reduces its plan (`search.engine.retrieval.read_plan.PairPlan.served`) and the
     preview it reads (`latest_periods`) by it."""
     newest: tuple[int, str] | None = None
     for period in periods:
-        if period is None or (year := _leading_year(period)) is None:
+        if period is None or (leading := _leading_year(period)) is None:
             continue
-        if newest is None or (year, period) > newest:
-            newest = (year, period)
+        if year is not None and leading != year:
+            continue
+        if newest is None or (leading, period) > newest:
+            newest = (leading, period)
     return newest[1] if newest is not None else None
+
+
+@dataclass(frozen=True)
+class LatestYear:
+    """The year a `latest` window served one StatVar. `elected` is the year the coverage
+    index elected for it (`materialise.generation.elected_latest_year`), None for a StatVar
+    that elects none: one outside the index, one with a facet finer than a year, one
+    holding only years after the index's build year. `served` is the year of the rows the
+    read kept, None when it kept none. `facet_ids` and `omitted` are what the election
+    counted: the series of the facets the read dispatched, less the `(graph role, entity)`
+    rows a conversion left out. The same request, facets and omissions elect the same year
+    from the same index."""
+
+    elected: int | None
+    served: int | None
+    facet_ids: tuple[str, ...] = ()
+    omitted: tuple[tuple[str, str], ...] = ()
+
+    @property
+    def fell_back(self) -> bool:
+        """Whether the StatVar elected a year no row of the read holds, and so serves the
+        newest period any of its series holds."""
+        return self.elected is not None and self.served is not None and self.served != self.elected
+
+
+@dataclass(frozen=True)
+class ReadSeries:
+    """The series a read of one StatVar holds of its facet selection, under any window:
+    those of `facet_ids`, the facets it dispatched less those of a method continuing the
+    selected series, less the `(graph role, entity)` rows a conversion left out
+    (`omitted`). They are the series `LatestYear` elects over under a `latest` window,
+    which no method continues."""
+
+    facet_ids: tuple[str, ...] = ()
+    omitted: tuple[tuple[str, str], ...] = ()
 
 
 def latest_periods[K](keyed: Iterable[tuple[K, str | None]]) -> dict[K, str]:

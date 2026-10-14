@@ -24,6 +24,7 @@ from search.engine.clients.sdmx import (
     _validate_role_series_params,
     assert_no_un_variables,
 )
+from search.engine.retrieval.read_plan import BulkPlan
 from tests.materialise._scope_availability import ScopeAvailability
 
 _ObsResult = dict[str, dict[tuple[tuple[str, str], ...], list[Facet]]]
@@ -176,6 +177,29 @@ def _narrow_facet(facet: Facet, time_period: RoleTimePeriod) -> Facet:
         earliest_date=dates[0] if dates else None,
         latest_date=dates[-1] if dates else None,
     )
+
+
+def plan_observations(plan: BulkPlan) -> _ObsResult:
+    """The `observations` of an SDMX that agrees with coverage on `plan`: every pair of the
+    facets the plan dispatches for each served member, with one point in each year coverage
+    dates it."""
+    observations: _ObsResult = {}
+    for sv in plan.served_members:
+        for candidate in plan.served_candidates(sv):
+            for role_tuple, by_year in candidate.pairs.year_counts(first_year=None, last_year=None):
+                dates = tuple(str(year) for year, _n_obs in by_year)
+                observations.setdefault(sv, {}).setdefault(role_tuple, []).append(
+                    Facet(
+                        facet_id=candidate.facet_id,
+                        provenance_id=candidate.provenance_id,
+                        obs_count=len(dates),
+                        earliest_date=dates[0],
+                        latest_date=dates[-1],
+                        dates=dates,
+                        values=tuple(1.0 for _date in dates),
+                    )
+                )
+    return observations
 
 
 # A hook can raise a fixed exception or return one by zero-based call index; `None` succeeds.
@@ -423,3 +447,24 @@ class FakeSdmxClient:
             for v in variables
             if v in self._subject_observations
         }
+
+
+class CountingSdmxClient(FakeSdmxClient):
+    """A `FakeSdmxClient` that records, beside each `role_series` request in
+    `series_calls`, the rows the call returned (`"rows"`). Calls in flight together must
+    name different variables, which is how a request finds its own record."""
+
+    def role_series(self, **read: Any) -> _ObsResult:
+        rows = super().role_series(**read)
+        (call,) = (
+            call
+            for call in self.series_calls
+            if call["variables"] == list(read["variables"]) and "rows" not in call
+        )
+        call["rows"] = sum(
+            len(facet.dates)
+            for by_tuple in rows.values()
+            for facets in by_tuple.values()
+            for facet in facets
+        )
+        return rows

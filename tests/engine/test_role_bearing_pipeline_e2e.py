@@ -529,8 +529,10 @@ def test_no_directional_wording_refuses_role_not_resolved():
     assert sdmx.series_calls == []
 
 
-def test_unplaceable_declared_role_still_refuses_role_incompatible():
-    """An unplaceable role returns role_incompatible with the elected shape preserved."""
+def test_unplaceable_declared_role_refuses_role_incompatible_before_bind():
+    """A shape whose one role is on no flow axis cannot place Kenya as the recipient "aid
+    to Kenya" asks for, so no reading is admissible: the part refuses role_incompatible
+    without a bind call and flags nothing, on the region result and on the wire part."""
     sdmx = FakeSdmxClient(observations={})
     result = _run(
         entities=["Kenya"],
@@ -544,12 +546,9 @@ def test_unplaceable_declared_role_still_refuses_role_incompatible():
     )
     assert result.status == "no_data"
     assert result.no_data_reason == "role_incompatible"
-    assert result.flagged_match is not None
-    assert [sv.ref.ref for sv in result.flagged_match[0].resolved.members] == [_UNPLACEABLE_SV_DCID]
-    assert result.elected_stat_vars is not None
-    assert [ref.ref for ref in result.elected_stat_vars] == [_UNPLACEABLE_SV_DCID]
+    assert not result.flagged_match
+    assert "bind" not in result.timing_by_step
 
-    # The same identity survives the region -> Part assembly the wire serves.
     part = _build_part(
         result,
         representative=result,
@@ -561,11 +560,8 @@ def test_unplaceable_declared_role_still_refuses_role_incompatible():
         envelope_warnings=[],
     )
     assert part.status == "no_data"
-    assert part.no_data.flagged_match is not None
-    assert [sv.ref.ref for sv in part.no_data.flagged_match.resolved.members] == [
-        _UNPLACEABLE_SV_DCID
-    ]
-    assert part.no_data.elected_count == 1
+    assert part.no_data.reason == "role_incompatible"
+    assert part.no_data.flagged_match is None
 
 
 def test_unresolved_second_entity_refuses_role_not_resolved_instead_of_guessing():

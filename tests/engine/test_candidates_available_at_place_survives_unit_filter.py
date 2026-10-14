@@ -111,28 +111,32 @@ def _run(unplaced: list[str]):
 
 
 @pytest.mark.parametrize(
-    ("unplaced", "trace", "departed"),
+    ("unplaced", "reason", "gate", "trace"),
     [
-        ([], [], []),
-        (["scope"], [("scope", "no_vocabulary")], [("measure_not_applied", "scope")]),
+        ([], "no_observations", NO_MEMBER_HAS_DATA_AT_PLACE, []),
+        (["scope"], "qualifier_not_bound", None, [("scope", "no_vocabulary")]),
     ],
     ids=["every-word-placed", "unplaced-word"],
 )
 def test_the_flagged_unavailable_carrier_still_reports_no_member_has_data_at_place(
-    unplaced, trace, departed
+    unplaced, reason, gate, trace
 ):
     """The bound-unit filter must preserve the unavailable carrier so its specific refusal
-    fires. The refusal is judged on the carrier: a word its trace leaves unmet departs once."""
+    fires, with the carrier flagged. The refusal is judged on the carrier, and nothing
+    departs. A word the carrier leaves unmet refuses `qualifier_not_bound` naming it, with
+    no gate: definite assembly judges the answer before its no-data gates
+    (`phase_answer._assemble_carve_outs`), as `NO_DATA_RESOLUTION_ORDER` ranks
+    `qualifier_not_bound` before `no_observations`."""
     result = _run(unplaced)
     assert result.status == "no_data", result
-    assert result.no_data_reason == "no_observations"
-    assert result.gate == NO_MEMBER_HAS_DATA_AT_PLACE
+    assert (result.no_data_reason, result.gate) == (reason, gate)
     assert result.flagged_match is not None and len(result.flagged_match) == 1
     assert any(w.code == PLACE_SCOPE_DEFAULTED for w in result.warnings)
     (carrier,) = result.flagged_match
     assert [(q.text, q.disposition) for q in carrier.resolved.trace.query_qualifiers] == trace
+    assert [(q.text, q.disposition) for q in result.unbound_qualifiers] == trace
     assert [
         (fact.code, fact.asked)
         for fact in result.departure_facts.values()
         if fact.code == "measure_not_applied"
-    ] == departed
+    ] == []

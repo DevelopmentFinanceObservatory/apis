@@ -8,5 +8,40 @@
     "resolvekit_id": "groups/OECD",
     "name": "Organisation for Economic Co-operation and Development",
     "dcid": "undata-geo/G00406000"
+  },
+  {
+    "resolvekit_id": "groups/OECD.DAC.Region.Africa",
+    "name": "Africa (DAC)",
+    "dcid": "africa"
+  },
+  {
+    "resolvekit_id": "groups/OECD.DAC.Region.Caribbean",
+    "name": "Caribbean (DAC)",
+    "dcid": "Caribbean"
+  },
+  {
+    "resolvekit_id": "groups/OECD.DAC.Region.CentralAmerica",
+    "name": "Central America (DAC)",
+    "dcid": "CentralAmerica"
+  },
+  {
+    "resolvekit_id": "groups/OECD.DAC.Region.Melanesia",
+    "name": "Melanesia (DAC)",
+    "dcid": "Melanesia"
+  },
+  {
+    "resolvekit_id": "groups/OECD.DAC.Region.Micronesia",
+    "name": "Micronesia (DAC)",
+    "dcid": "Micronesia"
+  },
+  {
+    "resolvekit_id": "groups/OECD.DAC.Region.Polynesia",
+    "name": "Polynesia (DAC)",
+    "dcid": "Polynesia"
+  },
+  {
+    "resolvekit_id": "groups/OECD.DAC.Region.SouthernAfrica",
+    "name": "Southern Africa (DAC)",
+    "dcid": "SouthernAfrica"
   }
 ]

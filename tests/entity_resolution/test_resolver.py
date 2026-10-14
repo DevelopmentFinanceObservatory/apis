@@ -16,6 +16,7 @@ from cachetools import TLRUCache
 from resolvekit import ResolutionContext, ResolutionStatus
 from resolvekit.core.model.result import CandidateSummary
 
+from code_index.shared import get_index
 from entity_resolution import (
     ADMITTED_TYPES,
     Ambiguous,
@@ -294,6 +295,88 @@ def test_dac_residual_resolves_aggregate(
     assert result.entity.name == name
 
 
+def test_official_donors_resolve_as_a_graph_confirmed_aggregate(shared_resolver):
+    graph = FakeGraphLookup(
+        nodes={
+            "DACOfficialDonors": {
+                "typeOf": ("DACGroup",),
+                "name": _UNUSED_GRAPH_NAME,
+            }
+        }
+    )
+    resolver = EntityResolver(graph=graph, shared=shared_resolver, code_index=get_index())
+
+    aliases = _run(
+        resolver.resolve(["official donors", "official donors (DAC)"], kinds={"aggregate"})
+    )
+    assert aliases == _run(
+        resolver.resolve(["official donors", "official donors (DAC)"], kinds={"aggregate"})
+    )
+    (wrong_kind,) = _run(resolver.resolve(["official donors"], kinds={"organisation"}))
+
+    assert all(isinstance(result, Resolved) for result in aliases)
+    assert {result.entity.dcid for result in aliases} == {"DACOfficialDonors"}
+    assert all(result.entity.kind == "aggregate" for result in aliases)
+    assert graph.node_arcs_many_calls == [
+        (("DACOfficialDonors",), ("typeOf", "name")),
+        (("DACOfficialDonors",), ("typeOf", "name")),
+    ]
+    assert isinstance(wrong_kind, NotFound)
+
+    (dac_members,) = _run(resolver.resolve(["DAC members"]))
+    assert isinstance(dac_members, Group)
+
+
+def test_official_donors_requires_its_graph_node(shared_resolver):
+    graph = FakeGraphLookup()
+    resolver = EntityResolver(graph=graph, shared=shared_resolver, code_index=get_index())
+
+    (result,) = _run(resolver.resolve(["official donors"]))
+
+    assert isinstance(result, NotHeld)
+    assert len(graph.node_arcs_many_calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("code", "dcid", "graph_type", "graph_name", "kind", "name"),
+    [
+        (
+            "20005",
+            "DACOfficialDonors",
+            "DACGroup",
+            _UNUSED_GRAPH_NAME[0],
+            "aggregate",
+            "official donors (DAC)",
+        ),
+        # A total that holds a group lists only its codes, so it takes its graph name.
+        ("20001", "DACCountriesTotal", "DACGroup", "DAC countries", "aggregate", "DAC countries"),
+        (
+            "20006",
+            "DACNonDACCountries",
+            "DACGroup",
+            "non-DAC countries (DAC)",
+            "aggregate",
+            "non-DAC countries (DAC)",
+        ),
+        ("20003", "GroupOfSeven", "Grouping", "Group of Seven", "group", "Group of Seven"),
+    ],
+)
+def test_dac_code_resolves_to_the_total_it_names(
+    shared_resolver, code: str, dcid: str, graph_type: str, graph_name: str, kind: str, name: str
+):
+    graph = FakeGraphLookup(nodes={dcid: {"typeOf": (graph_type,), "name": (graph_name,)}})
+    resolver = EntityResolver(graph=graph, shared=shared_resolver, code_index=get_index())
+
+    (result,) = _run(resolver.resolve([code]))
+
+    assert isinstance(result, Resolved), (code, result)
+    assert result.entity.dcid == dcid
+    assert result.entity.kind == kind
+    assert result.entity.name == name
+    assert result.matched is not None
+    assert result.matched.matched_as == "code"
+
+
 def test_world_bank_ambiguous_between_ibrd_and_ida(shared_resolver):
     ibrd = "InternationalBankForReconstructionAndDevelopment"
     ida = "InternationalDevelopmentAssociation"
@@ -319,6 +402,24 @@ def test_world_bank_ambiguous_between_ibrd_and_ida(shared_resolver):
     [
         ("IMF", "InternationalMonetaryFund", "International Monetary Fund"),
         ("WHO", "WorldHealthOrganization", "World Health Organization"),
+        ("UN agencies", "DACUnitedNations", "United Nations entities (DAC)"),
+        ("UN entities", "DACUnitedNations", "United Nations entities (DAC)"),
+        ("the UN agencies", "DACUnitedNations", "United Nations entities (DAC)"),
+        ("United Nations agencies", "DACUnitedNations", "United Nations entities (DAC)"),
+        ("United Nations entities", "DACUnitedNations", "United Nations entities (DAC)"),
+        ("multilaterals", "DACMultilaterals", "multilaterals (DAC)"),
+        ("private donors", "DACPrivateDonors", "private donors (DAC)"),
+        (
+            "regional development banks",
+            "DACRegionalDevelopmentBanks",
+            "regional development banks (DAC)",
+        ),
+        (
+            "other multilateral organisations",
+            "DACOtherMultilateralOrganisations",
+            "other multilateral organisations (DAC)",
+        ),
+        ("EU members of the DAC", "DACEUMembers", "DAC EU members"),
     ],
 )
 def test_curated_acronym_resolves_to_the_pinned_parent(
@@ -485,6 +586,51 @@ def test_geo_organization_grouping_resolves_group(shared_resolver, text: str):
     assert not read & set(member_ids)
 
 
+_DAC_REGIONS = [
+    (f"{name} (DAC)", f"groups/OECD.DAC.Region.{key}")
+    for name, key in [
+        ("Asia", "Asia"),
+        ("Caribbean and Central America", "CaribbeanAndCentralAmerica"),
+        ("Eastern Africa", "EasternAfrica"),
+        ("Europe", "Europe"),
+        ("Far East Asia", "FarEastAsia"),
+        ("Middle Africa", "MiddleAfrica"),
+        ("Middle East", "MiddleEast"),
+        ("North of Sahara", "NorthOfSahara"),
+        ("South America", "SouthAmerica"),
+        ("South and Central Asia", "SouthAndCentralAsia"),
+        ("South of Sahara", "SouthOfSahara"),
+        ("Western Africa", "WesternAfrica"),
+    ]
+]
+
+
+def test_the_dac_regions_here_are_the_ones_the_code_index_pairs():
+    paired = {g for g in get_index().totals_by_group if g.startswith("groups/OECD.DAC.Region.")}
+    assert paired == {dcid for _, dcid in _DAC_REGIONS}
+
+
+@pytest.mark.parametrize(("text", "dcid"), _DAC_REGIONS)
+def test_a_dac_region_resolves_to_the_group_its_total_is_paired_with(
+    shared_resolver, text: str, dcid: str
+):
+    """Each DAC region resolves to its resolvekit group, whose id is the key the code index
+    pairs the region's total with, and not to the DAC donor committee. It has no node of its
+    own, and its members are the graph-held countries resolvekit lists."""
+    member_ids = shared_resolver.groups.get(dcid).members()
+    assert isinstance(member_ids, tuple) and member_ids
+    graph = FakeGraphLookup(
+        nodes={d: {"typeOf": ("Country",), "name": _UNUSED_GRAPH_NAME} for d in member_ids}
+    )
+    resolver = EntityResolver(graph=graph, shared=shared_resolver)
+
+    (result,) = _run(resolver.resolve([text]))
+
+    assert isinstance(result, Group), (text, result)
+    assert (result.dcid, result.entity) == (dcid, None)
+    assert [e.dcid for e in result.members] == sorted(member_ids)
+
+
 def _parse_group_survivors_on_shared_thread(resolver, text: str):
     context = ResolutionContext(entity_types=ADMITTED_TYPES)
     group_types = resolver._runner.available_group_types
@@ -504,6 +650,15 @@ def _parse_group_survivors_on_shared_thread(resolver, text: str):
         ("European Union member states", "European Union", "members"),
         ("the EU member states.", "European Union", "members"),
         ("DAC members", "OECD Development Assistance Committee", "members"),
+        ("DAC countries", "OECD Development Assistance Committee", "entity"),
+        ("the DAC countries", "OECD Development Assistance Committee", "entity"),
+        ("all DAC countries", "OECD Development Assistance Committee", "entity"),
+        ("DAC Countries, Total", "OECD Development Assistance Committee", "entity"),
+        ("DAC countries total", "OECD Development Assistance Committee", "entity"),
+        ("United Nations", "United Nations", "entity"),
+        ("UN", "United Nations", "entity"),
+        ("the UN", "United Nations", "entity"),
+        ("UN members", "United Nations", "entity"),
     ],
 )
 def test_group_phrase_recovers_the_bare_groups_membership(

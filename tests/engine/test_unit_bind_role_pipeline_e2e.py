@@ -12,7 +12,7 @@ import asyncio
 import httpx
 
 from materialise.rate_tables import RateTableCache
-from search.engine.bind import _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region.pipeline import resolve_variable
@@ -158,7 +158,7 @@ def _run_standard(*, unit_text: str, sdmx: EngineSdmxClient | None = None):
     )
 
 
-def _run_role_bearing(*, unit_text: str):
+def _run_role_bearing(*, unit_text: str, llm=None):
     role_query = "aid from Norway to Kenya"
     sdmx = FakeSdmxClient(observations={_ROLE_SV: {(("provider", _NOR), ("recipient", _KEN)): []}})
     graph = FakeGraph(
@@ -182,7 +182,7 @@ def _run_role_bearing(*, unit_text: str):
             pac=True,
             graph=graph,
             resolver=make_resolver(graph),
-            llm=_FixedBindLLM(),
+            llm=llm or _FixedBindLLM(),
             sdmx=sdmx,
             base_timing={},
             unit_text=unit_text,
@@ -237,3 +237,32 @@ class TestBesidePhraseOnTwoBoundRolesRefuses:
         result = _run_role_bearing(unit_text="donor currency")
         assert result.status == "no_data"
         assert result.no_data_reason == "facet_not_available"
+
+
+class _StrayBindLLM:
+    """Elects shape index 0 and drafts `gender` Female, a property it has no slot for."""
+
+    async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
+        assert schema.__name__ == "_UniversalBindOutput"
+        stray = SlotBindingDraft(
+            axis="how", property_dcid="gender", kind="value", value_dcids=["Female"]
+        )
+        return _UniversalBindOutput(chosen_shape_index=0, bindings=[stray]), None
+
+
+def test_a_missing_facet_beside_a_stray_value_refuses_naming_it() -> None:
+    """The donor-currency flow finds no facet to convert (`facet_not_available`), which
+    refuses before any answer is judged. The bind drafted Female on a slot the flow lacks,
+    which the elected answer leaves unmet, and `qualifier_not_bound` ranks first, so the
+    part refuses naming it (`phase_shared.settle_unjudged_refusal`), with the elected flow
+    as its flagged match, whose trace records the term. Nothing departs."""
+    result = _run_role_bearing(unit_text="donor currency", llm=_StrayBindLLM())
+
+    assert (result.status, result.no_data_reason) == ("no_data", "qualifier_not_bound")
+    assert [q.text for q in result.unbound_qualifiers] == ["Female"]
+    (flagged,) = result.flagged_match or ()
+    assert [m.ref.ref for m in flagged.resolved.members] == [_ROLE_SV]
+    assert list(flagged.resolved.trace.query_qualifiers) == list(result.unbound_qualifiers)
+    assert result.departure_facts == {}

@@ -13,7 +13,7 @@ from starlette.middleware.cors import CORSMiddleware
 
 from dfo_platform.static_response import (
     FrozenJSON,
-    _accepts_gzip,
+    accepts_gzip,
     dynamic_public_json,
     encode_json_body,
     freeze_public_json,
@@ -212,7 +212,7 @@ def test_sequential_requests_do_not_accumulate_headers():
     ],
 )
 def test_accepts_gzip(header: str, expected: bool):
-    assert _accepts_gzip(header) is expected
+    assert accepts_gzip(header) is expected
 
 
 def test_second_if_none_match_line_participates_in_the_conditional_check():

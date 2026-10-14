@@ -5,10 +5,13 @@ through materialise with the plan's candidates and a filter admitting only the p
 group, so materialise elects nothing the plan did not. It makes one read per member and
 bound role tuple (`_Dispatch`): a role the answer leaves open is read open, and the rows
 are split into the plan's series by that role's dcid. Under `latest` each read uses SDMX
-`LATEST` and prepares retained rows without arithmetic. Once every read has returned, each
-StatVar's actual latest period is selected across them, then each prepared read finalises
-that period and converts it. A period newer than the coverage index states is served, as a
-mint's `LATEST` read serves it. A read whose dispatched facets fall outside its planned
+`LATEST`, reads the year its StatVar elected when a series ends after it, as a mint does
+(`materialise.prepare_materialise_preview`), and prepares retained rows without arithmetic.
+Once every read has returned, each StatVar's one period is selected across them, the
+newest in its elected year when a read holds a row there and else the newest any read
+holds, then each prepared read finalises that period and converts it. A StatVar that
+elected no year serves a period newer than the coverage index states, as a mint's `LATEST`
+read serves it. A read whose dispatched facets fall outside its planned
 group is a plan mismatch: it is logged and its series count as failed. A unit request
 converts the same reads. Reads run in a bounded thread pool under a process-wide semaphore
 and stop at `observation_settings().obs_preview_max_pairs` series. Scope-defaulted queries
@@ -492,12 +495,14 @@ class _Dispatch:
     read serves. `bound` holds the roles the answer's entities name. A role a series binds
     beyond them is open on the read, so the series of one bound tuple share the read and
     each takes the rows carrying its own dcid on that role (`_split_series`). A fully bound
-    tuple is one series, read alone. `years` is the window the read takes its rows in."""
+    tuple is one series, read alone. `years` is the window the read takes its rows in, and
+    `elected_year` the year the member elected under `latest`, None when it elected none."""
 
     stat_var: str
     bound: _RoleTuple
     series: tuple[PlanSeries, ...]
     years: PlanYears
+    elected_year: int | None = None
 
     @property
     def group_ids(self) -> frozenset[str]:
@@ -527,20 +532,32 @@ class _Dispatch:
 
 
 def _dispatches(
-    series: Sequence[PlanSeries], obs_entities: Mapping[str, Sequence[str]], *, years: PlanYears
+    series: Sequence[PlanSeries],
+    obs_entities: Mapping[str, Sequence[str]],
+    *,
+    years: PlanYears,
+    elected: Mapping[str, int],
 ) -> list[_Dispatch]:
     """Group the planned series into reads: one per member and tuple of the roles
     `obs_entities` names, in series order, each over `years`.
 
-    Under `latest` materialise asks SDMX for `LATEST` rows and later finalises the StatVar's
-    actual latest period across its prepared reads, before it converts."""
+    Under `latest` materialise asks SDMX for `LATEST` rows, and for the rows in the year
+    the member elected (`elected`, from `PairPlan.elected_years`) when a series ends after
+    it, as a mint does. The caller later finalises the StatVar's one period across its
+    prepared reads, before it converts."""
     bound_roles = {role for role, dcids in obs_entities.items() if dcids}
     grouped: dict[tuple[str, _RoleTuple], list[PlanSeries]] = {}
     for s in series:
         bound = tuple((role, dcid) for role, dcid in s.role_tuple if role in bound_roles)
         grouped.setdefault((s.stat_var, bound), []).append(s)
     return [
-        _Dispatch(stat_var=sv, bound=bound, series=tuple(members), years=years)
+        _Dispatch(
+            stat_var=sv,
+            bound=bound,
+            series=tuple(members),
+            years=years,
+            elected_year=elected.get(sv) if years == "latest" else None,
+        )
         for (sv, bound), members in grouped.items()
     ]
 
@@ -617,8 +634,10 @@ def _at_latest_periods(
     """`reads` under a `latest` window, each StatVar reduced to its one latest period across
     every read of it (`materialise.window.latest_periods` over their points' dates), as a
     mint keeps a StatVar's rows at that period alone (`materialise.columnar.latest_rows`).
-    Each read keeps its point at that period; a read holding none, because its series ends
-    earlier than coverage states, is dropped. Returns the kept reads and the dropped keys."""
+    The reads of a StatVar arrive finalised at one period (`_collect_pair_results`), the
+    one in its elected year when a read holds it. Each read keeps its point at that
+    period; a read holding none, because its series holds no row there, is dropped.
+    Returns the kept reads and the dropped keys."""
     latest = latest_periods(
         (sv, date) for (sv, _t), read in reads.items() for date, _v in read.points
     )
@@ -707,8 +726,9 @@ def _preview_one(
     merged by facet id and narrowed to the member's planned group, so it elects nothing the
     plan did not. The request binds the read's bound roles and leaves any other role open,
     naming it in `series_roles` so that materialise keeps each series' own conversion record.
-    It reads the dispatch's `years`; under `latest` it prepares SDMX `LATEST` rows, which the
-    caller finalises at the actual global period before converting. Each series the read
+    It reads the dispatch's `years`; under `latest` it prepares SDMX `LATEST` rows, and the
+    rows in the dispatch's `elected_year` when a series ends after it, which the caller
+    finalises at the StatVar's one period before converting. Each series the read
     returns keeps its most recent `obs_preview_max_rows` rows (`series_limit`), and the read's
     `limit` and `ceiling`, which sizes its raw fetch, are that many per planned series. Shared
     inputs are passed explicitly. No worker reads ambient request state. Resolve
@@ -767,6 +787,7 @@ def _preview_one(
                     if dispatch.open_roles
                     else None
                 ),
+                elected_year=dispatch.elected_year,
             )
         return materialise_preview(
             request,
@@ -842,6 +863,13 @@ def _collect_pair_results(
     omitted is left out uncounted, since the answer's `currency_unmapped_omitted` warning
     already names its entities, and so is one whose rows a missing deflator all omitted,
     which the answer's `deflator_missing_omitted` warning names (`_every_row_omitted`).
+
+    Under `latest` every read is prepared first, then each StatVar's reads are finalised
+    at one period: the newest in the year it elected when any of its reads holds a row
+    there (`PreparedPreview.elected_period`), else the newest any of them holds
+    (`PreparedPreview.latest_period`), which a StatVar that elected no year serves. The
+    second case, for a StatVar that elected, means coverage states a year SDMX holds no
+    row in, and is logged.
     """
     pair_results: dict[_SeriesKey, _SeriesRead] = {}
     hard_failed_pairs = 0
@@ -852,7 +880,6 @@ def _collect_pair_results(
     conversion_rejected_cause: str | None = None
     unfiltered_empty_pairs = 0
     plan_mismatched_pairs = 0
-    latest = bool(dispatches and dispatches[0].years == "latest")
     prepared_reads: list[tuple[_Dispatch, PreparedPreview]] = []
 
     futures = [
@@ -867,7 +894,7 @@ def _collect_pair_results(
             rate_cache=rate_cache,
             coverage_index=coverage_index,
             member_facts=member_facts,
-            prepare_only=latest,
+            prepare_only=dispatch.years == "latest",
         )
         for dispatch in dispatches
     ]
@@ -936,7 +963,7 @@ def _collect_pair_results(
             )
             timed_out_pairs += count
             continue
-        if latest:
+        if dispatch.years == "latest":
             assert isinstance(result, PreparedPreview)
             if not _dispatched_selection_ids(result.selections) <= dispatch.group_ids:
                 plan_mismatched_pairs += count
@@ -970,16 +997,34 @@ def _collect_pair_results(
             if not _every_row_omitted(read)
         )
 
-    if latest and prepared_reads:
-        actual_latest = latest_periods(
+    if prepared_reads:
+        newest = latest_periods(
             (dispatch.stat_var, prepared.latest_period) for dispatch, prepared in prepared_reads
         )
+        elected = latest_periods(
+            (dispatch.stat_var, prepared.elected_period) for dispatch, prepared in prepared_reads
+        )
+        fell_back = sorted(
+            {
+                dispatch.stat_var
+                for dispatch, _prepared in prepared_reads
+                if dispatch.elected_year is not None
+                and dispatch.stat_var in newest
+                and dispatch.stat_var not in elected
+            }
+        )
+        if fell_back:
+            logger.warning(
+                "coverage index and the observations read disagree: %r returned no row in "
+                "the year coverage elects; serving their newest period",
+                fell_back,
+            )
         finish_futures = [
             submit_with_context(
                 pool,
                 _finish_preview_one,
                 prepared,
-                time_period=actual_latest.get(dispatch.stat_var),
+                time_period=elected.get(dispatch.stat_var, newest.get(dispatch.stat_var)),
             )
             for dispatch, prepared in prepared_reads
         ]
@@ -1030,6 +1075,7 @@ def _run_pair_fetch_pool(
     obs_entities: Mapping[str, Sequence[str]],
     *,
     years: PlanYears,
+    elected: Mapping[str, int],
     unit_request: UnitRequest | None,
     materialise_graph: GraphReader,
     deadline: float | None,
@@ -1050,7 +1096,7 @@ def _run_pair_fetch_pool(
     """
     if len(series) > observation_settings().obs_preview_max_pairs:
         return _series_too_large(len(series), sv_dcids, obs_entities)
-    dispatches = _dispatches(series, obs_entities, years=years)
+    dispatches = _dispatches(series, obs_entities, years=years, elected=elected)
     with ThreadPoolExecutor(
         max_workers=max(1, min(settings().obs_preview_concurrency, len(dispatches))),
         thread_name_prefix="obs-preview",
@@ -1267,8 +1313,9 @@ def _assemble_pair_series(
 
 def _dispatched_series(plan: PairPlan, sv_dcids: Sequence[str]) -> list[PlanSeries]:
     """The series of `sv_dcids` a per-series read of `plan` dispatches. Every served one
-    counts, and under `latest` every held one, since the coverage index's predicted winner
-    can be stale and preparation elects the actual winner before conversion."""
+    counts, and under `latest` every held one, since the year or the winner the coverage
+    index predicts can be stale and preparation finds the period SDMX holds before
+    conversion."""
     members = set(sv_dcids)
     return [
         s for s in (plan.held if plan.years == "latest" else plan.served) if s.stat_var in members
@@ -1322,7 +1369,7 @@ def _fetch_pair_observations(
     member_constraints: Mapping[str, Mapping[str, str]],
 ) -> tuple[SpecObservations, Warning | None]:
     """Fetch each series `plan` serves over the plan's years, one read per member and bound
-    role tuple (`_dispatches`), reduce a `latest` read's series to each StatVar's latest
+    role tuple (`_dispatches`), reduce a `latest` read's series to each StatVar's one
     period (`_at_latest_periods`), then assemble the result. A planned series that reduction
     drops is logged and counted among the series the partial-result warning says could not
     be served.
@@ -1367,6 +1414,7 @@ def _fetch_pair_observations(
         sv_dcids,
         obs_entities,
         years=plan.years,
+        elected=plan.elected_years or {},
         unit_request=translated_unit_request,
         materialise_graph=materialise_graph,
         deadline=deadline,

@@ -25,12 +25,10 @@ from search.engine.clients.llm import (
     for_stage,
     generate_structured_async,
 )
-from search.engine.errors import LLMInfraError
+from search.engine.errors import LLMInfraError, LLMOutputRefused
 from search.engine.extract import Extraction
 from tests.fixtures import FakeLLM
 from tests.fixtures.keys import fixture_key
-
-_SCHEMA_NAMES = ("Extraction", "_UniversalBindOutput")
 
 # How many bytes one `_DummySchema(value=1)` answer serialises to, so the
 # byte-budget tests below can state an exact ceiling.
@@ -52,8 +50,10 @@ class _FakeUsageMeta:
 
 
 class _FakeResponse:
-    def __init__(self, *, parsed, usage_metadata=None) -> None:
-        self.parsed = parsed
+    """The slice of a genai response `LLM._fetch_text` reads."""
+
+    def __init__(self, *, text, usage_metadata=None) -> None:
+        self.text = text
         self.model_version = "gemini-3.5-flash-lite-007"
         self.usage_metadata = usage_metadata
 
@@ -100,7 +100,7 @@ def _call(llm, *, prompt="p", system="s", schema=_DummySchema):
 
 
 def _response() -> _FakeResponse:
-    return _FakeResponse(parsed=_DummySchema(value=1), usage_metadata=_FakeUsageMeta())
+    return _FakeResponse(text='{"value":1}', usage_metadata=_FakeUsageMeta())
 
 
 _LIVE_USAGE = {"input_tokens": 11, "output_tokens": 22, "cached_tokens": 0}
@@ -254,7 +254,7 @@ def test_live_call_without_usage_metadata_reports_none_and_no_memo_hit(monkeypat
     """Missing `usage_metadata` does not turn a live call into a memo hit."""
     llm, client = _llm(
         monkeypatch,
-        _FakeResponse(parsed=_DummySchema(value=1), usage_metadata=None),
+        _FakeResponse(text='{"value":1}', usage_metadata=None),
         memo=_memo(),
     )
 
@@ -283,11 +283,11 @@ def test_hit_returns_a_distinct_instance_per_call(monkeypatch):
 
 
 def test_parse_failure_is_not_stored(monkeypatch):
-    """A response whose `parsed` is None raises LLMInfraError and stores
+    """A response with no text raises LLMInfraError and stores
     nothing, so the next identical call reaches Gemini again."""
     llm, client = _llm(
         monkeypatch,
-        _FakeResponse(parsed=None, usage_metadata=_FakeUsageMeta()),
+        _FakeResponse(text=None, usage_metadata=_FakeUsageMeta()),
         memo=_memo(),
     )
 
@@ -417,7 +417,7 @@ def test_key_covers_every_field_of_a_real_config():
 
 
 def test_the_key_is_built_from_the_config_the_call_sends(monkeypatch):
-    """The memo key and `_fetch_structured` use the same resolved config."""
+    """The memo key and `_fetch_text` use the same resolved config."""
     llm, client = _llm(monkeypatch, _response(), memo=_memo(), seed=1234)
 
     asyncio.run(_call(llm))
@@ -922,31 +922,55 @@ def test_a_caller_arriving_during_the_orphans_cancellation_leads_its_own_call(
 
 
 # ---------------------------------------------------------------------------
-# round-tripping the stored value
+# an answer the schema refuses
 # ---------------------------------------------------------------------------
 
+# A binding that names no value: `_UniversalBindOutput` refuses it with `SCHEMA_REFUSAL`.
+_REFUSED_BIND = json.dumps(
+    {
+        "chosen_shape_index": 0,
+        "bindings": [
+            {"axis": "how", "property_dcid": "gender", "kind": "value", "value_dcids": []}
+        ],
+    }
+)
 
-@pytest.mark.parametrize("schema_name", _SCHEMA_NAMES)
-def test_stored_json_round_trips_through_the_schema(schema_name):
-    """The memo stores `parsed.model_dump_json()` and revalidates it with
-    `schema.model_validate_json` on every hit, so this pair must be lossless
-    for both schemas a raw_text resolve sends. Neither schema has validators
-    or aliases today; this test keeps it that way."""
-    schema = {"Extraction": Extraction, "_UniversalBindOutput": _UniversalBindOutput}[schema_name]
-    instance = schema.model_validate(_fixture(schema_name))
 
-    dumped = instance.model_dump_json()
+def test_a_refused_answer_reaches_leader_follower_and_hit_as_a_refusal(monkeypatch):
+    """The memo stores the model's text and every holder parses it alike: the leader's
+    refusal carries the live usage, the follower's and a later hit's carry zero usage,
+    and none of them calls the model again."""
+    refused = _FakeResponse(text=_REFUSED_BIND, usage_metadata=_FakeUsageMeta())
 
-    assert schema.model_validate_json(dumped) == instance
+    async def scenario():
+        llm, client, started, release = _blocking(monkeypatch, answer=refused)
+        memo = llm._memo
+        assert memo is not None
+
+        leader = asyncio.create_task(_call(llm, schema=_UniversalBindOutput))
+        await started.wait()
+        follower = asyncio.create_task(_call(llm, schema=_UniversalBindOutput))
+        await _parked(memo, misses=2)
+
+        release.set()
+        outcomes = await asyncio.gather(leader, follower, return_exceptions=True)
+        hit = await asyncio.gather(_call(llm, schema=_UniversalBindOutput), return_exceptions=True)
+        return client, [*outcomes, *hit]
+
+    client, outcomes = asyncio.run(scenario())
+
+    assert [type(exc) for exc in outcomes] == [LLMOutputRefused] * 3
+    assert [exc.usage for exc in outcomes] == [_LIVE_USAGE, _HIT_USAGE, _HIT_USAGE]
+    assert len(client.models.calls) == 1
 
 
 def test_round_trip_holds_through_a_memo_hit(monkeypatch):
-    """The same round trip end to end: a realistic extraction fetched once and
-    then served from the memo compares equal to the first."""
+    """A realistic extraction fetched once and then served from the memo
+    compares equal to the first."""
     instance = Extraction.model_validate(_fixture("Extraction"))
     llm, client = _llm(
         monkeypatch,
-        _FakeResponse(parsed=instance, usage_metadata=_FakeUsageMeta()),
+        _FakeResponse(text=instance.model_dump_json(), usage_metadata=_FakeUsageMeta()),
         memo=_memo(),
     )
 

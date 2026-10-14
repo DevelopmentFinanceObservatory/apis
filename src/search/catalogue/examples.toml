@@ -5,7 +5,7 @@
 # Each line is a template with one `{place}` slot, the StatVar search must
 # resolve it to, and a default country. The StatVar is what the sentence
 # names, checked against its graph name; a sentence that names a family of
-# CRS purpose codes, such as humanitarian aid, pins a member of that family.
+# CRS purpose codes, such as health aid, pins a member of that family.
 # A StatVar from the coverage index names the `role` its place fills (`donor`
 # or `recipient`); any other StatVar must be a base variable in the origin
 # catalogue. Those two artifacts say where the StatVar has data, and the
@@ -19,36 +19,31 @@
 # (`search.catalogue.check.REFUSING_DEPARTURES`). A sentence that names a
 # measure, direction or breakdown the engine drops, or a place without values,
 # does not pass; the data-describing departures (modelled values, a group read
-# as its members) do.
+# as its members, a place read in the one direction holding data, a check
+# covering only some values) do.
 
 [[example]]
-template = "Net ODA for education to {place}"
-stat_var = "Amount_FinancialFlow_Net_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSPurposeCode11110_Nominal"
+template = "ODA to {place} since 2015"
+stat_var = "Amount_FinancialFlow_Gross_Disbursement_DAC2aAidType206_Nominal"
 role = "recipient"
-place = "country/KEN"
+place = "country/UGA"
 
 [[example]]
-template = "Latest imputed multilateral aid for health to {place}"
-stat_var = "AttributedAmount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_DAC2aAidType106_CRSPurposeCode12110_Nominal"
+template = "Humanitarian aid to {place}"
+stat_var = "Amount_FinancialFlow_Gross_Disbursement_DAC2aAidType216_Nominal"
 role = "recipient"
-place = "country/NGA"
+place = "country/SOM"
 
 [[example]]
-template = "{place}'s total debt service since 2020"
-stat_var = "Amount_FinancialFlow_ServicingPayment_Nominal"
+template = "{place}'s debt service on PPG external debt"
+stat_var = "Amount_FinancialFlow_ServicingPayment_PublicOrPubliclyGuaranteed_Nominal"
 role = "recipient"
-place = "country/GHA"
+place = "country/MOZ"
 
 [[example]]
-template = "{place}'s interest payments on PPG external debt"
-stat_var = "Amount_FinancialFlow_InterestPayment_PublicOrPubliclyGuaranteed_Nominal"
-role = "recipient"
-place = "country/KEN"
-
-[[example]]
-template = "GDP growth in {place}"
-stat_var = "GrowthRate_Amount_EconomicActivity_GrossDomesticProduction"
-place = "country/NGA"
+template = "{place}'s GDP per capita"
+stat_var = "Amount_EconomicActivity_GrossDomesticProduction_Nominal_PerCapita"
+place = "country/RWA"
 
 [[example]]
 template = "Life expectancy in {place}"
@@ -56,7 +51,6 @@ stat_var = "LifeExpectancy_Person"
 place = "country/KEN"
 
 [[example]]
-template = "Gross ODA disbursements for health to {place}"
-stat_var = "Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSPurposeCode12110_Nominal"
-role = "recipient"
-place = "country/KEN"
+template = "GDP growth in {place}"
+stat_var = "GrowthRate_Amount_EconomicActivity_GrossDomesticProduction"
+place = "country/NGA"

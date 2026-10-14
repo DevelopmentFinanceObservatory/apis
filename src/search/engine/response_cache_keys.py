@@ -242,8 +242,10 @@ def layer2_key(
     declared_default_trigger_words: Sequence[Mapping[str, str]],
     declared_default_slots_named: Sequence[str],
     scope: dict,
+    query_text_negated_stated_words: Sequence[str] = (),
     source_codes: Sequence[str | None] = (),
     separate: Sequence[bool] = (),
+    written_variable_phrases: Sequence[str | None] = (),
 ) -> str:
     """Key the effective extraction and raw-text signals over the shared scope.
 
@@ -265,8 +267,11 @@ def layer2_key(
     The raw-text signals cover role contradictions, query-text qualifier matches,
     ties and two-reading spans, every place a row of any system names a query-text word
     (`qualifier_match.qualifier_occurrences`, which decides each shape vocabulary's
-    reading), unsupported phrases, declared-default trigger words, and the
-    slots with a declared default whose plain name the query names. They keep
+    reading), unsupported phrases, declared-default trigger words, the
+    slots with a declared default whose plain name the query names, the stretch of the query
+    that writes each variable (`written_phrase.written_phrase`), which the key states only
+    when one is given, and the words a dataset states of its rows that the query negates
+    (`bind_repair.stated_words_negated`), which the key states only when there is one. They keep
     layer 2 sound when distinct queries produce the same extraction without
     hashing raw query text, preserving reuse when those readers agree.
     """
@@ -288,10 +293,14 @@ def layer2_key(
         "declared_default_trigger_words": [dict(word) for word in declared_default_trigger_words],
         "declared_default_slots_named": list(declared_default_slots_named),
     }
+    if query_text_negated_stated_words:
+        document["query_text_negated_stated_words"] = list(query_text_negated_stated_words)
     if any(code is not None for code in source_codes):
         document["source_codes"] = list(source_codes)
     if separate_positions := [i for i, marked in enumerate(separate) if marked]:
         document["separate"] = separate_positions
+    if any(phrase is not None for phrase in written_variable_phrases):
+        document["written_variable_phrases"] = list(written_variable_phrases)
     return _digest("l2", document)
 
 

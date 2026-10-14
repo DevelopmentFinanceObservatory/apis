@@ -64,6 +64,7 @@ from artifact_store.inventory import InventoryBatch, InventoryEntry
 from code_index.query import CodeIndex
 from dataset_store.clock import utc_now
 from dataset_store.snapshot import (
+    ManifestFacts,
     SnapshotReader,
     StoredArtifactLocation,
     StoredVersion,
@@ -83,6 +84,7 @@ from datasets_api.manifest import (
     provenance_refs_of,
     reshape_warning_models,
     stored_manifest_facts,
+    year_coverage,
 )
 from datasets_api.manifest_models import (
     ArtifactEntryModel,
@@ -90,6 +92,7 @@ from datasets_api.manifest_models import (
     CitationSource,
     Manifest,
     WarningModel,
+    year_coverage_counted,
 )
 from datasets_api.mint_models import MintOptions
 from datasets_api.origin import (
@@ -102,6 +105,7 @@ from datasets_api.origin import (
 )
 from datasets_api.query_options import encode_query_options
 from datasets_api.render import (
+    DerivedVersion,
     artifact_rendering_key,
     complete_rendering,
     incomplete_rendering,
@@ -136,13 +140,13 @@ from materialise import (
     MaterialisationRequest,
     MaterialisationResult,
     RowProgress,
-    compute_output_profile,
     materialise_group,
 )
 from materialise.bundle import ReproducingCall
-from materialise.continued_series import continued_series_of_trace
+from materialise.continued_series import ContinuedSeries, continued_series_of_trace
 from materialise.errors import DefaultFacetUndefinedError
 from materialise.graph import GraphReader
+from materialise.profile import OutputProfile, compute_output_profile_from_chunks
 from materialise.provenance_doc import (
     SourceCitation,
     read_source_citations,
@@ -150,9 +154,11 @@ from materialise.provenance_doc import (
 from materialise.rate_tables import RateTableCache
 from materialise.statistics import (
     SeriesFigures,
+    SeriesStatisticsFile,
     SeriesStatisticsSink,
     compute_series_statistics_table,
 )
+from materialise.window import Coverage
 from origin_catalogue import current_catalogue, recording_un_blocked_places
 from series_coverage.index import CoverageIndex, Estimate
 from spec_registry.reader import StoredDefinition
@@ -477,6 +483,9 @@ class DefinitionPrewrite:
     documentation_complete: bool = True
     # The coverage snapshot materialisation read, for the documentation a bundle render reads.
     coverage_index: CoverageIndex | None = None
+    # The year members of the version's `coverage` (`manifest.year_coverage`), counted here
+    # from the index the run elected over and joined to every manifest the write half builds.
+    year_coverage: Mapping[str, object] = field(default_factory=dict)
 
 
 def _documentation_complete(source_citations: Mapping[str, SourceCitation]) -> bool:
@@ -631,6 +640,7 @@ def prewrite_definition(
             "spec_id": stored.spec_id,
             "identity": stored.identity,
         }
+        years = year_coverage(result, requests=requests, index=coverage_index)
         manifest = assemble_manifest(
             stored=stored,
             materialisation=result,
@@ -644,6 +654,7 @@ def prewrite_definition(
             settings=settings,
             extra_warnings=origin_warnings,
             coverage_stamp=coverage_stamp,
+            year_coverage=years,
         )
         return DefinitionPrewrite(
             stored=stored,
@@ -658,6 +669,7 @@ def prewrite_definition(
             persisted=persisted,
             documentation_complete=_documentation_complete(source_citations),
             coverage_index=coverage_index,
+            year_coverage=years,
         )
 
 
@@ -762,7 +774,9 @@ def _base_record(
 ) -> VersionRecord:
     """The version record of `prewrite`'s materialisation, linking `artifacts` and described by
     `describer`. It takes the stored body when the version is on record (`persisted`), else
-    this call's."""
+    this call's. A stored body whose year coverage was never counted
+    (`year_coverage_counted`) takes this call's `coverage`, which the write stores on the
+    version (`VersionRecordWriter.write_version`)."""
     record = definition_version_record(
         manifest=prewrite.manifest,
         stored=prewrite.stored,
@@ -773,14 +787,18 @@ def _base_record(
     record = replace(record, describer=describer)
     if persisted is None:
         return record
-    return replace(record, facts=persisted.version.facts)
+    facts = persisted.version.facts
+    if isinstance(facts, ManifestFacts) and not year_coverage_counted(facts.coverage):
+        assert isinstance(record.facts, ManifestFacts)
+        facts = replace(facts, coverage=record.facts.coverage)
+    return replace(record, facts=facts)
 
 
 def _describers(
     prewrite: DefinitionPrewrite, *, deps: ServeDeps, rendered: _RenderPass | None
 ) -> MintDescribers:
-    """The describers of the versions this serve writes: its own and the collapse `rendered`
-    holds. Their labels are read here, before the write transaction."""
+    """The describers of the versions this serve writes: its own and the derived version
+    `rendered` holds. Their labels are read here, before the write transaction."""
     collapsed = None
     if rendered is not None and rendered.collapsed is not None:
         assert rendered.collapsed_figures is not None
@@ -789,6 +807,7 @@ def _describers(
         _base_record(prewrite, persisted=prewrite.persisted, artifacts=()),
         figures=prewrite.result.series_statistics.figures,
         collapsed=collapsed,
+        collapsed_summed=rendered is None or rendered.collapsed_summed,
         code_index=deps.code_index,
         enrichment=deps.enrichment,
         deadline=deps.deadline,
@@ -995,12 +1014,13 @@ class _RenderPass:
     persisted: VersionState | None
     manifest: Manifest
     call_warnings: tuple[WarningModel, ...]
-    # Linked to the base version: the rendering, unless it is a multi-contributor collapse.
+    # Linked to the base version: the rendering, unless it belongs to a derived version.
     links: tuple[ArtifactRecord, ...]
-    # A multi-contributor collapse's own version, recorded with its artifacts, and the series
-    # figures of its statistics.
+    # A derived version (`render.DerivedVersion`), recorded with its artifacts, the series
+    # figures of its statistics, and whether its frame sums the definition's variables.
     collapsed: VersionRecord | None
     collapsed_figures: SeriesFigures | None
+    collapsed_summed: bool = True
 
     def write(
         self,
@@ -1102,24 +1122,24 @@ def _render_pass(
         output_profile=result.output_profile,
         deadline=deps.deadline,
     )
-    artifact, reshape_warnings, collapse = rendered.artifact, rendered.warnings, rendered.collapse
+    artifact, reshape_warnings, derived = rendered.artifact, rendered.warnings, rendered.derived
     if not (documentation_complete and rendered.labels_complete):
         artifact = incomplete_artifact(
             artifact,
             subject_id=stored.spec_id,
             content_version=(
-                collapse.content_version if collapse is not None else result.content_version
+                derived.content_version if derived is not None else result.content_version
             ),
             refs=prewrite.provenance_refs,
             documentation_complete=documentation_complete,
             labels_complete=rendered.labels_complete,
         )
     call_warnings = prewrite.origin_warnings + reshape_warning_models(reshape_warnings)
-    # Multi-contributor collapses have a distinct version. Record the base version separately so a
-    # plain GET can still resolve it. A sole-contributor collapse shares the base version. The head
-    # stays on the base materialisation, and definition retrieval derives the collapsed version on a
-    # head hit.
-    if collapse is None or collapse.content_version == result.content_version:
+    # A derived version (a multi-contributor collapse, a party-totals cut) is a version of its
+    # own. Record the base version separately so a plain GET can still resolve it. A rendering
+    # of the base frame shares the base version. The head stays on the base materialisation,
+    # and definition retrieval derives the derived version on a head hit.
+    if derived is None:
         manifest = assemble_manifest(
             stored=stored,
             materialisation=result,
@@ -1133,6 +1153,7 @@ def _render_pass(
             settings=deps.settings,
             extra_warnings=call_warnings,
             coverage_stamp=prewrite.coverage_stamp,
+            year_coverage=prewrite.year_coverage,
         )
         return _RenderPass(
             prewrite=prewrite,
@@ -1143,43 +1164,42 @@ def _render_pass(
             collapsed=None,
             collapsed_figures=None,
         )
-    collapsed_statistics_sink = SeriesStatisticsSink(
+    derived_statistics = derived_statistics_file(
+        derived,
         continuing=continued_series_of_trace(
             {"facets": result.trace.facets, "continuations": result.trace.continuations}
-        )
-    )
-    collapsed_statistics_sink.write(compute_series_statistics_table(collapse.frame))
-    collapsed_result = replace(
-        result,
-        frame_sha256=collapse.frame_sha256,
-        content_version=collapse.content_version,
-        coverage=replace(result.coverage, rows=len(collapse.frame.rows)),
-        series_statistics=collapsed_statistics_sink.finish(),
-        output_profile=compute_output_profile(
-            collapse.frame, role_columns=collapse.role_columns, enrichment=deps.enrichment
         ),
     )
-    _check_work_deadline(deps, "rendering the collapsed version's canonical frame")
-    collapsed_frame_record = render_and_store_canonical_frame(
-        frame_chunks=(collapse.frame,),
+    derived_result = replace(
+        result,
+        frame_sha256=derived.frame_sha256,
+        content_version=derived.content_version,
+        trace=replace(result.trace, party_totals_left_out=derived.party_totals_left_out),
+        coverage=derived_coverage(result.coverage, derived),
+        series_statistics=derived_statistics,
+        output_profile=derived_output_profile(derived, enrichment=deps.enrichment),
+    )
+    _check_work_deadline(deps, "rendering the derived version's canonical frame")
+    derived_frame_record = render_and_store_canonical_frame(
+        frame_chunks=derived.frame_chunks(),
         subject_id=stored.spec_id,
-        content_version=collapse.content_version,
+        content_version=derived.content_version,
         artifact_store=artifact_store,
     )
-    _check_work_deadline(deps, "rendering the collapsed version's series statistics")
-    collapsed_statistics_artifact = render_and_store_series_statistics(
-        data=collapsed_result.series_statistics.data,
+    _check_work_deadline(deps, "rendering the derived version's series statistics")
+    derived_statistics_artifact = render_and_store_series_statistics(
+        data=derived_statistics.data,
         subject_id=stored.spec_id,
-        content_version=collapsed_result.content_version,
+        content_version=derived.content_version,
         artifact_store=artifact_store,
     )
-    # The collapsed identity cites and dates as its base record does, and so does every
+    # The derived identity cites and dates as its base record does, and so does every
     # concurrent writer of it, so its record is written with its artifacts.
     # `collapsed_head_manifest` does the same.
     manifest = assemble_manifest(
         stored=stored,
-        materialisation=collapsed_result,
-        artifacts=[artifact, collapsed_statistics_artifact],
+        materialisation=derived_result,
+        artifacts=[artifact, derived_statistics_artifact],
         provenance_refs=prewrite.provenance_refs,
         source_citations=prewrite.source_citations,
         prepared_at=render_prepared_at,
@@ -1189,9 +1209,14 @@ def _render_pass(
         settings=deps.settings,
         extra_warnings=call_warnings,
         coverage_stamp=prewrite.coverage_stamp,
+        year_coverage=prewrite.year_coverage,
     )
     manifest = manifest.model_copy(
-        update={"citation": collapsed_citation(render_citation, base=manifest)}
+        update={
+            "citation": collapsed_citation(render_citation, base=manifest)
+            if derived.summed
+            else render_citation
+        }
     )
     return _RenderPass(
         prewrite=prewrite,
@@ -1202,12 +1227,49 @@ def _render_pass(
         collapsed=definition_version_record(
             manifest=manifest,
             stored=stored,
-            materialisation=collapsed_result,
-            artifacts=[artifact, collapsed_statistics_artifact],
-            record_only_artifacts=[collapsed_frame_record],
+            materialisation=derived_result,
+            artifacts=[artifact, derived_statistics_artifact],
+            record_only_artifacts=[derived_frame_record],
             base_content_version=result.content_version,
         ),
-        collapsed_figures=collapsed_result.series_statistics.figures,
+        collapsed_figures=derived_statistics.figures,
+        collapsed_summed=derived.summed,
+    )
+
+
+def derived_statistics_file(
+    derived: DerivedVersion, *, continuing: Sequence[ContinuedSeries]
+) -> SeriesStatisticsFile:
+    """The `series-statistics/1` file of `derived`'s frame, one statistics table per chunk,
+    with `continuing` the continuations of its base's series."""
+    sink = SeriesStatisticsSink(continuing=continuing)
+    for chunk in derived.frame_chunks():
+        sink.write(compute_series_statistics_table(chunk))
+    return sink.finish()
+
+
+def derived_output_profile(
+    derived: DerivedVersion, *, enrichment: EnrichmentLookup
+) -> OutputProfile:
+    """The output profile of `derived`'s frame over its role columns."""
+    return compute_output_profile_from_chunks(
+        derived.frame_chunks, role_columns=derived.role_columns, enrichment=enrichment
+    )
+
+
+def derived_coverage(coverage: Coverage, derived: DerivedVersion) -> Coverage:
+    """`coverage`, its base's, with `derived`'s row count and each dimension `derived`
+    counts anew (`DerivedVersion.distinct`)."""
+    return replace(
+        coverage,
+        rows=derived.rows,
+        dimensions=tuple(
+            {
+                **dimension,
+                "count": derived.distinct.get(str(dimension["label"]), dimension["count"]),
+            }
+            for dimension in coverage.dimensions
+        ),
     )
 
 

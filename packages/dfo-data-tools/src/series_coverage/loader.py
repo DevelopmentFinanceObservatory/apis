@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 import json
 from dataclasses import dataclass
+from datetime import datetime
 from typing import cast
 
 import numpy as np
@@ -108,7 +109,13 @@ def load_coverage(base_uri: str, *, pointer: CoveragePointer | None = None) -> L
     _check_facet_metadata_completeness(table, facet_metadata, label=label)
     _check_role_slots(table, role_names, label=label)
     try:
-        index = CoverageIndex(table, role_names, facet_metadata, horizon=manifest.horizon)
+        index = CoverageIndex(
+            table,
+            role_names,
+            facet_metadata,
+            horizon=manifest.horizon,
+            build_year=datetime.fromisoformat(manifest.built_at).year,
+        )
     except ValueError as exc:
         raise CoverageArtifactError(f"{label}: {exc}") from exc
     return LoadedCoverage(manifest=manifest, index=index)
