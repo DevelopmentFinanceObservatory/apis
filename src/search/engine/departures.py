@@ -56,6 +56,7 @@ from search.models import (
 )
 
 if TYPE_CHECKING:
+    from code_index.types import PartyRow
     from search.engine.retrieval.read_plan import WindowGap
 
 WHEN_REF = "when:"
@@ -219,6 +220,12 @@ def direction_discarded(name: str, axis: RoleAxis) -> DepartureFact:
     return DepartureFact(code="direction_discarded", binding_ref=WHERE_REF, asked=name, over=axis)
 
 
+def direction_inferred(name: str, axis: RoleAxis) -> DepartureFact:
+    """A place `name` the request named without a direction, which the answer reads on the
+    flow `axis`, the one direction that holds data (`region.status_rule`)."""
+    return DepartureFact(code="direction_inferred", binding_ref=WHERE_REF, asked=name, over=axis)
+
+
 def spec_departure_facts(
     spec: Spec | None,
     *,
@@ -258,44 +265,60 @@ def spec_departure_facts(
     facts.extend(year_facts)
     if modelled := _modelled_fact(spec):
         facts.append(modelled)
-    facts.extend(
-        DepartureFact(
-            code="group_read_as_members",
-            binding_ref=role_ref(role),
-            asked=words.get(group.label, group.label),
-            group=group.label,
-            group_size=sum(1 for entity in spec.resolved.entities if entity.role == role),
-            group_dcid=group.ref,
-            excluded=_residual_labels(spec, role, group.ref),
+    for role, group in (spec.resolved.entity_groups or {}).items():
+        if group.total is not None:
+            continue
+        excluded, sum_differs = _members_left_out(spec, role, group.ref)
+        facts.append(
+            DepartureFact(
+                code="group_read_as_members",
+                binding_ref=role_ref(role),
+                asked=words.get(group.label, group.label),
+                group=group.label,
+                group_size=sum(1 for entity in spec.resolved.entities if entity.role == role),
+                group_dcid=group.ref,
+                excluded=excluded,
+                sum_differs=sum_differs,
+            )
         )
-        for role, group in (spec.resolved.entity_groups or {}).items()
-        if group.total is None
-    )
     return facts
 
 
-def _residual_labels(spec: Spec, role: str, group: str | None) -> tuple[str, ...]:
-    """The labels of the residuals the total of `group` counts beside its members
-    (`PartyRow.residuals`) that a dataset `spec` serves publishes (`PartyRow.datasets`) on the
-    flow axis of `role` (`PartyRow.axes`), by the code index. Empty on a subject role, which
-    binds no party of a flow, and when no total holds the group."""
+def _members_left_out(spec: Spec, role: str, group: str | None) -> tuple[tuple[str, ...], bool]:
+    """What the members of `group`, read on `role`, leave out of the group's total, by the
+    code index: the labels of the residuals the total counts beside them
+    (`PartyRow.residuals`), and whether the total is a figure that can differ from their sum
+    (`PartyRow.sums_members` false). Each counts only where a dataset `spec` serves publishes
+    the party (`PartyRow.datasets`) on the flow axis of `role` (`PartyRow.axes`).
+
+    The total is the one the role keeps for the group it reads as members
+    (`ResolvedSpec.group_totals`), which a group with no node of its own, such as a resolver
+    group, needs; otherwise the one holding `group`, the group's node. Nothing is left out on
+    a subject role, which binds no party of a flow, or when no total holds the group."""
     index = get_index()
-    total = None if group is None else index.totals_by_group.get(group)
+    kept = spec.resolved.group_totals.get(role)
+    if kept is not None:
+        total = index.parties.get(kept)
+    else:
+        total = None if group is None else index.totals_by_group.get(group)
     axis = role_key_axis(role)
     if total is None or axis is None:
-        return ()
+        return (), False
     provenance = spec.resolved.facets.get("provenance")
     served = (
         {provenance.ref}
         if provenance is not None and provenance.ref is not None
         else {source.ref for source in spec.resolved.trace.resolved_sources}
     )
+
+    def published(party: PartyRow) -> bool:
+        return axis in party.axes and bool(served.intersection(party.datasets))
+
     residuals = (index.parties.get(dcid) for dcid in total.residuals)
-    return tuple(
-        party.label or party.dcid
-        for party in residuals
-        if party is not None and axis in party.axes and served.intersection(party.datasets)
+    excluded = tuple(
+        party.label or party.dcid for party in residuals if party is not None and published(party)
     )
+    return excluded, not total.sums_members and published(total)
 
 
 def without_request_words(fact: DepartureFact) -> DepartureFact:

@@ -20,8 +20,8 @@ the world holds, and returns one message per disagreement naming both sides:
   binds no provenance still refuses it.
 - `i6_nearest_real_is_the_relaxed_answer`: a suggestion states what the relaxed query
   answers.
-- `i7_bind_stage_sentence_held_only_for_declared_defaults`: the bind-stage sentence streams
-  unless the graph can declare a default facet.
+- `i7_one_sentence_names_the_answer`: the pipeline streams no sentence of its own, and the
+  part's one sentence names the Spec its response states.
 - `i8_place_order_independence`: both orders of the named places answer and request alike.
 - `i9_latency`: no door makes a request or a serial step beyond the same door at c669cc874
   where that door gave the same answer, and beyond a bound of its own where it did not.
@@ -340,7 +340,6 @@ def _first_door(
     date: str,
     preview: bool,
     unit: str,
-    declares_defaults: bool = False,
 ) -> Answer:
     places = [ALAND, BLAND] if order == "dcid_order" else [BLAND, ALAND]
     return world.first(
@@ -348,7 +347,6 @@ def _first_door(
         DATES[date],
         preview=preview,
         unit_text=UNIT_TEXT[unit],
-        declares_defaults=declares_defaults,
     )
 
 
@@ -1239,35 +1237,13 @@ def i6_nearest_real_is_the_relaxed_answer(run: Doors) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def i7_bind_stage_sentence_held_only_for_declared_defaults(run: Doors) -> list[str]:
-    """Over a graph that declares no facet default the cell's bind-stage sentence streams
-    before the answer's later requests; over one that can declare a default it is held
-    until the answer stands.
-
-    The hold is decided from the graph alone, before any phase runs, so the declaring graph
-    answers the cell's query once per route, row set, kind, unit request and date request:
-    in dcid order with the preview off."""
-    cell = run.cell
-    streamed = run.first.recorder
-    if not streamed.sentences:
-        return [f"{FIRST} emitted no sentence in {len(streamed.requests)} requests"]
-    if streamed.sentences[0] >= len(streamed.requests):
-        return [
-            f"a graph declaring no default held the bind-stage sentence until request "
-            f"{streamed.sentences[0]} of {len(streamed.requests)}"
-        ]
-    plain = _first_door(run.world, "dcid_order", cell.date, False, cell.unit).recorder
-    declaring = _first_door(
-        run.world, "dcid_order", cell.date, False, cell.unit, declares_defaults=True
-    ).recorder
-    if not plain.sentences or not declaring.sentences:
-        return [f"the first door emitted sentences at {plain.sentences} and {declaring.sentences}"]
-    if declaring.sentences[0] <= plain.sentences[0]:
-        return [
-            f"a graph declaring defaults streamed the bind-stage sentence at request "
-            f"{declaring.sentences[0]}, where one declaring none streams it at "
-            f"{plain.sentences[0]}"
-        ]
+def i7_one_sentence_names_the_answer(run: Doors) -> list[str]:
+    """The first door's pipeline streams no sentence: the part's one sentence goes out with
+    the response, built from the part the response states
+    (`sentence_events.response_sentence_events`)."""
+    first = run.first
+    if first.recorder.sentences:
+        return [f"{FIRST} streamed sentences at requests {first.recorder.sentences}"]
     return []
 
 
@@ -1332,7 +1308,7 @@ _FIXTURES = Path(__file__).parents[1] / "fixtures"
 _BASE_PATH = _FIXTURES / "answer_invariants_requests_c669cc874.json"
 _BRANCH_PATH = _FIXTURES / "answer_invariants_requests_uncompared.json"
 _DOOR_KEYS = {FIRST: "first", PINNED: "pinned", RESUBMIT: "resubmit", WINDOWED: "windowed"}
-_GROUND_PHASES = {FIRST: "_phase_ground_answer", WINDOWED: "_phase_ground_build"}
+_GROUND_PHASES = {FIRST: "_ground_elected_answer", WINDOWED: "_phase_ground_build"}
 _UNIT_DECISION_CLIENT = "materialise_graph."
 _PAIR_READ = "materialise_sdmx.GET"
 _UNIT_PLAN_READ = "materialise_graph.node_arcs_many"
@@ -1783,7 +1759,7 @@ CHECKS: dict[str, Callable[[Doors], list[str]]] = {
     "I4": i4_dates,
     "I5": i5_provenance_less_dispatch,
     "I6": i6_nearest_real_is_the_relaxed_answer,
-    "I7": i7_bind_stage_sentence_held_only_for_declared_defaults,
+    "I7": i7_one_sentence_names_the_answer,
     "I8": i8_place_order_independence,
     "I9": i9_latency,
     "I10": i10_election_warnings,
@@ -1846,16 +1822,14 @@ def door_loop() -> Iterator[None]:
 @pytest.fixture
 def recorded_engine(monkeypatch, search_settings, door_loop) -> Callable[[str], None]:
     """The engine as the grid runs it: its hand-offs carry the recorder's logical clock,
-    its unit decisions are logged, every first pass emits a bind-stage sentence, and the
-    pair cap sends a bulk route to its bulk read. Returns the function that sets the cap
-    for a route."""
+    its unit decisions are logged, and the pair cap sends a bulk route to its bulk read.
+    Returns the function that sets the cap for a route."""
     fixture_world.carry_logical_clock(monkeypatch)
     fixture_world.log_unit_decisions(monkeypatch)
     fixture_world.log_phases(monkeypatch)
     fixture_world.log_relaxation_walks(monkeypatch)
     fixture_world.log_alternate_walks(monkeypatch)
     fixture_world.log_facet_options(monkeypatch)
-    fixture_world.emit_bind_stage_sentence(monkeypatch)
     return lambda route: search_settings(obs_preview_max_pairs=1 if route.endswith("bulk") else 120)
 
 

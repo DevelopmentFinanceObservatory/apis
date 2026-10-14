@@ -101,6 +101,11 @@ class ManifestTrace:
     # `datasets_api.serve` (`datasets_api.origin.OriginGap.as_trace_entry`): `code`
     # (`withheld_by_registry` or `un_system_unavailable`), `variable` and `provenances` for a
     # registry withholding, and `entities`. Omitted from `to_dict()` when empty.
+    party_totals_left_out: tuple[dict[str, object], ...] = ()
+    # The group totals `options.without_party_totals` left out of a version's frame, attached by
+    # `datasets_api.serve` (`datasets_api.party_totals.PartyTotalsCut.trace_entries`): one
+    # `role` and its `entities` in dcid order per open party role that lost rows. Omitted from
+    # `to_dict()` when empty.
 
     def to_dict(self) -> dict[str, object]:
         """Returns the wire shape. Optional fields are omitted when `None`.
@@ -133,6 +138,8 @@ class ManifestTrace:
             result["continuations"] = list(self.continuations)
         if self.origin_gaps:
             result["origin_gaps"] = list(self.origin_gaps)
+        if self.party_totals_left_out:
+            result["party_totals_left_out"] = list(self.party_totals_left_out)
         result["frame_grammar_version"] = self.frame_grammar_version
         result["materialiser_build"] = self.materialiser_build
         result["capability_version"] = self.capability_version

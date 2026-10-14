@@ -6,7 +6,12 @@ from typing import TYPE_CHECKING
 
 from search.engine.bind import SlotBindingDraft
 from search.engine.extract import DateRequest
-from search.engine.retrieval.retrieve import Materialised, NoDataDraft
+from search.engine.retrieval.retrieve import (
+    BoundValuesUnrealisable,
+    Materialised,
+    MemberConflict,
+    NoDataDraft,
+)
 from search.engine.retrieval.role_resolve import graph_confirm_resolve
 from search.engine.retrieval.standard import standard_resolve
 from search.engine.shape import ShapeDraft
@@ -252,7 +257,9 @@ class TestGraphConfirmResolveUnresolvedConstraint:
             )
         ]
         result = self._resolve(sv, arcs, bindings)
-        assert isinstance(result, NoDataDraft)
+        # No unbinding admits a member whose constraint does not resolve, so the refusal
+        # names no conflict to relax.
+        assert type(result) is NoDataDraft
         assert result.reason == "binding_mismatch", (
             "the filter emptied a real candidate set on a present-but-unresolved "
             "bound property; variable_not_resolved would wrongly claim no StatVar "
@@ -280,10 +287,13 @@ class TestGraphConfirmResolveUnresolvedConstraint:
             )
         ]
         result = self._resolve(sv, arcs, bindings)
-        assert isinstance(result, NoDataDraft)
+        assert isinstance(result, BoundValuesUnrealisable)
         assert result.reason == "binding_mismatch", (
             "the filter emptied a real candidate set on a resolved-but-mismatched "
             f"bound property, got {result.reason!r}"
+        )
+        assert result.conflicts == (
+            MemberConflict(properties=frozenset({PROP_PURPOSE}), fully_bound=True),
         )
 
     def test_absent_bound_property_excludes_sv(self):
@@ -297,8 +307,12 @@ class TestGraphConfirmResolveUnresolvedConstraint:
             )
         ]
         result = self._resolve(sv, arcs, bindings)
-        assert isinstance(result, NoDataDraft)
+        assert isinstance(result, BoundValuesUnrealisable)
         assert result.reason == "binding_mismatch"
+        # Silence on a bound property is the member's conflict: unbinding it admits it.
+        assert result.conflicts == (
+            MemberConflict(properties=frozenset({PROP_PURPOSE}), fully_bound=False),
+        )
 
     def test_unbound_property_unresolved_excludes_sv_as_the_mint_does(self):
         """The mint's walk admits no member asserting an unresolved constraint, bound or not
@@ -349,7 +363,7 @@ class TestGraphConfirmResolveUnresolvedConstraint:
             ),
         ]
         result = self._resolve(sv, arcs, bindings)
-        assert isinstance(result, NoDataDraft)
+        assert type(result) is NoDataDraft
         assert result.reason == "binding_mismatch", (
             "a resolved-and-matching property alongside a present-but-unresolved "
             f"one must still empty the filter as binding_mismatch, got {result.reason!r}"

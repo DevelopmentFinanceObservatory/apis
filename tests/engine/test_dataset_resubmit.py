@@ -7,7 +7,6 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,9 +14,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from code_index import shared as code_index_shared
-from search.engine import deadline as deadline_mod
-from search.engine import envelope as envelope_mod
-from search.engine import fanout as fanout_mod
 from search.engine.concurrency import create_owned_task
 from search.engine.core import resolve_events
 from search.engine.enrichment import _launch_trailing_tasks
@@ -69,7 +65,14 @@ from tests.engine._builders import sv_arcs as _sv_arcs
 from tests.engine._builders import value_slot as _value_slot
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._harness import make_request, offline_resolve, walk_options, with_member_arcs
+from tests.engine._harness import (
+    DEADLINE_TIMEOUT_S,
+    frozen_monotonic_clock,
+    make_request,
+    offline_resolve,
+    walk_options,
+    with_member_arcs,
+)
 from tests.engine._refusal_detail import assert_names_plainly
 from tests.engine._search_app import search_app
 from tests.fixtures import FakeGraph, FakeLLM, _load_json, make_resolver
@@ -83,30 +86,6 @@ _PROBE = facet_probe(["sv"], {"observationAbout": ["country/KEN"]}, years=None)
 _INDIA = "country/IND"
 _USA = "country/USA"
 _KEN = "country/KEN"
-
-# The timeout tests advance the 30-second request budget with the fake clock.
-_DEADLINE_TIMEOUT_S = 30.0
-
-
-class _FakeClock:
-    """A settable monotonic clock for tests that advance time without sleeping."""
-
-    def __init__(self, start: float) -> None:
-        self.now = start
-
-    def __call__(self) -> float:
-        return self.now
-
-
-def _frozen_monotonic_clock(monkeypatch) -> _FakeClock:
-    """Patch monotonic time across envelope, deadline, and fan-out modules."""
-    clock = _FakeClock(time.monotonic())
-    fake_time = SimpleNamespace(monotonic=clock)
-    monkeypatch.setattr(envelope_mod, "time", fake_time)
-    monkeypatch.setattr(deadline_mod, "time", fake_time)
-    monkeypatch.setattr(fanout_mod, "time", fake_time)
-    return clock
-
 
 _ACTIVITY_SOURCE_SLOT = Slot.model_validate(
     {
@@ -1015,14 +994,14 @@ def test_timeout_mid_request_fails_the_whole_request_with_no_partial_parts(
     """A parsed leg advances the fake clock and blocks until cancelled.
     The GDP sibling must not leak as a partial response.
     """
-    clock = _frozen_monotonic_clock(monkeypatch)
-    search_settings(request_timeout_s=_DEADLINE_TIMEOUT_S)
+    clock = frozen_monotonic_clock(monkeypatch)
+    search_settings(request_timeout_s=DEADLINE_TIMEOUT_S)
     parsed_raises = _record_parsed_boundary_raise(monkeypatch)
 
     cancelled: list[str] = []
 
     async def _stall_past_deadline(*args, **kwargs):
-        clock.now += _DEADLINE_TIMEOUT_S * 10
+        clock.now += DEADLINE_TIMEOUT_S * 10
         emit = kwargs.get("emit")
         if emit is not None:
             # Wake the fan-out loop, whose own wait is bounded by the same
@@ -1118,8 +1097,8 @@ def test_parsed_timeout_with_completed_identity_refusal_surfaces_4xx_not_504(
     """A completed identity refusal takes precedence over a parsed-leg timeout.
     The fake clock advances only after the refusal completes; the response names entry 0.
     """
-    clock = _frozen_monotonic_clock(monkeypatch)
-    search_settings(request_timeout_s=_DEADLINE_TIMEOUT_S)
+    clock = frozen_monotonic_clock(monkeypatch)
+    search_settings(request_timeout_s=DEADLINE_TIMEOUT_S)
 
     async def _stall_until_promote_settles(*args, **kwargs):
         # The refusal has to be COMPLETED, not merely underway, for
@@ -1138,7 +1117,7 @@ def test_parsed_timeout_with_completed_identity_refusal_surfaces_4xx_not_504(
             spins += 1
             assert spins < 100_000, "the malformed entry's promote task never completed"
             await asyncio.sleep(0)
-        clock.now += _DEADLINE_TIMEOUT_S * 10
+        clock.now += DEADLINE_TIMEOUT_S * 10
         emit = kwargs.get("emit")
         if emit is not None:
             await emit(StepEvent(step="materialise", ran=True))
@@ -1163,12 +1142,12 @@ def test_parsed_timeout_with_completed_identity_refusal_surfaces_4xx_not_504(
 @pytest.mark.unrecorded_requests
 def test_parsed_timeout_without_completed_refusal_still_yields_504(monkeypatch, search_settings):
     """Without a completed refusal, the parsed-leg timeout returns 504."""
-    clock = _frozen_monotonic_clock(monkeypatch)
-    search_settings(request_timeout_s=_DEADLINE_TIMEOUT_S)
+    clock = frozen_monotonic_clock(monkeypatch)
+    search_settings(request_timeout_s=DEADLINE_TIMEOUT_S)
     parsed_raises = _record_parsed_boundary_raise(monkeypatch)
 
     async def _stall_past_deadline(*args, **kwargs):
-        clock.now += _DEADLINE_TIMEOUT_S * 10
+        clock.now += DEADLINE_TIMEOUT_S * 10
         emit = kwargs.get("emit")
         if emit is not None:
             await emit(StepEvent(step="materialise", ran=True))
@@ -1214,7 +1193,7 @@ def test_failing_request_cancels_and_awaits_live_parsed_trailing_tasks(
     fires during this generator's own teardown is invisible once
     `asyncio.run` has already returned and torn the loop down (that would
     hide exactly the leak this test guards against)."""
-    search_settings(request_timeout_s=_DEADLINE_TIMEOUT_S)
+    search_settings(request_timeout_s=DEADLINE_TIMEOUT_S)
 
     bounded_calls: list[float] = []
 
@@ -1690,8 +1669,8 @@ def test_parsed_fanout_timeout_cancels_a_completed_sibling_parsed_trailing_tasks
     both stand-ins, so the leg's own work never races it. The request runs on
     an empty process code index, as after `tests/code_index/test_shared.py`
     reset it, so the leg parses the index (about 0.2 s) before it launches."""
-    clock = _frozen_monotonic_clock(monkeypatch)
-    search_settings(request_timeout_s=_DEADLINE_TIMEOUT_S)
+    clock = frozen_monotonic_clock(monkeypatch)
+    search_settings(request_timeout_s=DEADLINE_TIMEOUT_S)
 
     real_resolve_variable = _pipeline_mod.resolve_variable
 
@@ -1710,7 +1689,7 @@ def test_parsed_fanout_timeout_cancels_a_completed_sibling_parsed_trailing_tasks
 
     def _pass_the_deadline_once_both_launched() -> None:
         if slot_tasks and obs_tasks:
-            clock.now += _DEADLINE_TIMEOUT_S * 10
+            clock.now += DEADLINE_TIMEOUT_S * 10
 
     def _stalling_launch_slot_options(*args, **kwargs):
         task = asyncio.create_task(asyncio.sleep(5.0))

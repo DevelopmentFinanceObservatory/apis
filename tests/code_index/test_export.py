@@ -29,6 +29,7 @@ from code_index.types import (
     DeclaredDefault,
     MeasureAxis,
     MeasurePartitionLabel,
+    PartlyStatedValue,
     PartyRow,
 )
 from materialise.graph import (
@@ -42,17 +43,26 @@ from scripts.export_code_index import (
     _MEASURE_VALUE_TEXT,
     CODE_SYSTEMS,
     DATASETS,
+    MEASURE_CLASSES,
+    PARTLY_STATED_VALUES,
     PARTY_KIND_OVERRIDES,
     PARTY_TYPE_KINDS,
+    SHAPE_SLOT_DEFAULTS,
+    STAT_TYPE_WORDS,
     TOTAL_GROUPS,
+    VARIABLE_ALIASES,
     CodeSystemConfig,
     CoverageJoin,
     KindOverride,
     PartyPublication,
     TotalGroup,
     _apply_concept_groups,
+    _measure_class_to_dict,
     _MeasureValueText,
     _minimal_system_sets,
+    _partly_stated_value_to_dict,
+    _shape_slot_default_to_dict,
+    _stat_type_word_to_dict,
     _validate_declared_defaults,
     _verify_axis_coverage,
     _verify_measure_label_named_values,
@@ -299,6 +309,7 @@ def test_export_index_round_trips_through_load_index(tmp_path: Path):
         graph,
         coverage=_covered(graph),
         datasets=_TEST_DATASETS,
+        partly_stated_values=(),
         graph_endpoint="https://fake.example",
         now=_NOW,
         code_systems=(_HIERARCHICAL, _FLAT),
@@ -1190,6 +1201,7 @@ def test_content_hash_identical_across_runs_and_differs_on_a_row_change():
         graph,
         coverage=_covered(graph),
         datasets=_TEST_DATASETS,
+        partly_stated_values=(),
         graph_endpoint="https://fake.example",
         now=_NOW,
         code_systems=(_HIERARCHICAL, _FLAT),
@@ -1201,6 +1213,7 @@ def test_content_hash_identical_across_runs_and_differs_on_a_row_change():
         graph,
         coverage=_covered(graph),
         datasets=_TEST_DATASETS,
+        partly_stated_values=(),
         graph_endpoint="https://fake.example",
         now=datetime(2026, 9, 9, 13, 0, 0, tzinfo=UTC),
         code_systems=(_HIERARCHICAL, _FLAT),
@@ -1217,6 +1230,7 @@ def test_content_hash_identical_across_runs_and_differs_on_a_row_change():
         changed_graph,
         coverage=_covered(changed_graph),
         datasets=_TEST_DATASETS,
+        partly_stated_values=(),
         graph_endpoint="https://fake.example",
         now=_NOW,
         code_systems=(_HIERARCHICAL, _FLAT),
@@ -1436,6 +1450,7 @@ def test_export_index_refuses_an_alias_whose_canonical_value_is_not_exported(
             graph,
             coverage=_covered(graph),
             datasets=_TEST_DATASETS,
+            partly_stated_values=(),
             graph_endpoint="https://fake.example",
             now=_NOW,
             code_systems=(_HIERARCHICAL, _FLAT),
@@ -1473,6 +1488,7 @@ def test_export_index_empty_measure_axes_exports_no_measure_values():
         graph,
         coverage=_covered(graph),
         datasets=_TEST_DATASETS,
+        partly_stated_values=(),
         graph_endpoint="https://fake.example",
         now=_NOW,
         code_systems=(_HIERARCHICAL, _FLAT),
@@ -1492,6 +1508,7 @@ def test_export_index_wires_measure_axes_into_the_document(tmp_path):
         graph,
         coverage=_covered(graph),
         datasets=_TEST_DATASETS,
+        partly_stated_values=(),
         graph_endpoint="https://fake.example",
         now=_NOW,
         code_systems=(_HIERARCHICAL, _FLAT),
@@ -1649,6 +1666,7 @@ def test_content_hash_moves_when_only_measure_axes_change():
         graph,
         coverage=_covered(graph),
         datasets=_TEST_DATASETS,
+        partly_stated_values=(),
         graph_endpoint="https://fake.example",
         now=_NOW,
         code_systems=(_HIERARCHICAL, _FLAT),
@@ -1661,6 +1679,7 @@ def test_content_hash_moves_when_only_measure_axes_change():
         graph,
         coverage=_covered(graph),
         datasets=_TEST_DATASETS,
+        partly_stated_values=(),
         graph_endpoint="https://fake.example",
         now=_NOW,
         code_systems=(_HIERARCHICAL, _FLAT),
@@ -1775,6 +1794,7 @@ def test_export_index_refuses_when_the_guard_fails():
             graph,
             coverage=_covered(graph),
             datasets=_TEST_DATASETS,
+            partly_stated_values=(),
             graph_endpoint="https://fake.example",
             now=_NOW,
             code_systems=(_HIERARCHICAL, _FLAT),
@@ -1797,6 +1817,25 @@ def test_committed_packaged_index_passes_the_measure_partition_label_guard():
     _verify_measure_label_named_values(
         payload["statvars"], payload["codes"], measure_index.axes, measure_index.partition_labels
     )  # raises nothing
+
+
+def test_committed_packaged_index_carries_the_authored_declarations():
+    """The authored tables no graph read checks match the committed export, so an edit to one
+    without a re-export fails here rather than in the live drift check."""
+    payload = json.loads(gzip.decompress(default_index_path().read_bytes()))
+
+    assert payload["shape_slot_defaults"] == [
+        _shape_slot_default_to_dict(d) for d in SHAPE_SLOT_DEFAULTS
+    ]
+    assert payload["partly_stated_values"] == [
+        _partly_stated_value_to_dict(v) for v in PARTLY_STATED_VALUES
+    ]
+    assert payload["measure_classes"] == [_measure_class_to_dict(d) for d in MEASURE_CLASSES]
+    assert payload["variable_aliases"] == dict(VARIABLE_ALIASES)
+    assert payload["stat_type_words"] == [_stat_type_word_to_dict(d) for d in STAT_TYPE_WORDS]
+    assert {d["code_system"]: d["no_vocabulary_terms"] for d in payload["declarations"]} == {
+        config.code_system: list(config.no_vocabulary_terms) for config in CODE_SYSTEMS
+    }
 
 
 def test_a_statvar_row_matching_a_measure_noun_aborts_the_export():
@@ -1861,6 +1900,7 @@ def test_export_index_stamps_plain_name_and_enum_dcid_from_the_code_system_table
         graph,
         coverage=_covered(graph),
         datasets=_TEST_DATASETS,
+        partly_stated_values=(),
         graph_endpoint="https://fake.example",
         now=_NOW,
         code_systems=(_HIERARCHICAL, _FLAT),
@@ -1899,6 +1939,7 @@ def test_export_index_stamps_a_declared_default_and_it_round_trips(tmp_path: Pat
         graph,
         coverage=_covered(graph),
         datasets=_TEST_DATASETS,
+        partly_stated_values=(),
         graph_endpoint="https://fake.example",
         now=_NOW,
         code_systems=(_HIERARCHICAL_WITH_DEFAULT, _FLAT),
@@ -1949,6 +1990,7 @@ def test_export_index_stamps_when_named_and_it_round_trips(tmp_path: Path):
         graph,
         coverage=_covered(graph),
         datasets=_TEST_DATASETS,
+        partly_stated_values=(),
         graph_endpoint="https://fake.example",
         now=_NOW,
         code_systems=(_HIERARCHICAL_WITH_NAMED_DEFAULT, _FLAT),
@@ -1986,6 +2028,7 @@ def test_export_index_refuses_a_declared_default_when_named_entry_that_is_not_lo
             graph,
             coverage=_covered(graph),
             datasets=_TEST_DATASETS,
+            partly_stated_values=(),
             graph_endpoint="https://fake.example",
             now=_NOW,
             code_systems=(wrong, _FLAT),
@@ -2016,6 +2059,7 @@ def test_export_index_refuses_a_declared_default_when_named_entry_that_is_empty(
             graph,
             coverage=_covered(graph),
             datasets=_TEST_DATASETS,
+            partly_stated_values=(),
             graph_endpoint="https://fake.example",
             now=_NOW,
             code_systems=(wrong, _FLAT),
@@ -2049,6 +2093,7 @@ def test_export_index_refuses_a_declared_default_when_named_entry_that_is_null()
             graph,
             coverage=_covered(graph),
             datasets=_TEST_DATASETS,
+            partly_stated_values=(),
             graph_endpoint="https://fake.example",
             now=_NOW,
             code_systems=(wrong, _FLAT),
@@ -2078,6 +2123,7 @@ def test_export_index_refuses_a_declared_default_code_outside_its_own_system():
             graph,
             coverage=_covered(graph),
             datasets=_TEST_DATASETS,
+            partly_stated_values=(),
             graph_endpoint="https://fake.example",
             now=_NOW,
             code_systems=(wrong, _FLAT),
@@ -2106,6 +2152,7 @@ def test_export_index_refuses_a_declared_default_scoped_under_an_unknown_dcid():
             graph,
             coverage=_covered(graph),
             datasets=_TEST_DATASETS,
+            partly_stated_values=(),
             graph_endpoint="https://fake.example",
             now=_NOW,
             code_systems=(wrong, _FLAT),
@@ -2135,6 +2182,7 @@ def test_export_index_refuses_a_declared_default_scoped_under_its_own_code_syste
             graph,
             coverage=_covered(graph),
             datasets=_TEST_DATASETS,
+            partly_stated_values=(),
             graph_endpoint="https://fake.example",
             now=_NOW,
             code_systems=(wrong, _FLAT),
@@ -2172,6 +2220,7 @@ def _export_two_system_graph(coverage: CoverageJoin, **overrides) -> dict:
         code_systems=overrides.pop("code_systems", (_HIERARCHICAL, _FLAT)),
         measure_axes=(),
         datasets=overrides.pop("datasets", _TEST_DATASETS),
+        partly_stated_values=overrides.pop("partly_stated_values", ()),
         total_groups={},
         party_kind_overrides={},
     )
@@ -2216,6 +2265,7 @@ def test_export_index_writes_dataset_declarations_and_they_round_trip(tmp_path: 
         ),
         measure_axes=(),
         datasets=(_OPT_IN,),
+        partly_stated_values=(),
         total_groups={},
         party_kind_overrides={},
     )
@@ -2276,7 +2326,11 @@ def test_content_hash_moves_with_a_dataset_declaration_and_with_a_rows_provenanc
 def test_export_graph_blocks_holds_the_documents_blocks_without_provenances_parties_or_stamp():
     graph = _two_system_graph()
     blocks = export_graph_blocks(
-        graph, code_systems=(_HIERARCHICAL, _FLAT), measure_axes=(), datasets=_TEST_DATASETS
+        graph,
+        code_systems=(_HIERARCHICAL, _FLAT),
+        measure_axes=(),
+        datasets=_TEST_DATASETS,
+        partly_stated_values=(),
     )
     document = _export_two_system_graph(_covered(graph))
 
@@ -2298,6 +2352,33 @@ def test_export_graph_blocks_holds_the_documents_blocks_without_provenances_part
     assert content_hash(blocks) != document["stamp"]["content_hash"]
     hashed = {key: document[key] for key in (*blocks, "parties")}
     assert content_hash(hashed) == document["stamp"]["content_hash"]
+
+
+_NEVER_STATED = (
+    PartlyStatedValue(
+        provenance=_TEST_PROVENANCE, property_dcid="financialFlowType", value_dcid="Nowhere"
+    ),
+)
+
+
+def test_export_graph_blocks_emits_the_partly_stated_values_it_is_given():
+    blocks = export_graph_blocks(
+        _two_system_graph(),
+        code_systems=(_HIERARCHICAL, _FLAT),
+        measure_axes=(),
+        datasets=_TEST_DATASETS,
+        partly_stated_values=_NEVER_STATED,
+    )
+
+    assert blocks["partly_stated_values"] == [_partly_stated_value_to_dict(_NEVER_STATED[0])]
+
+
+def test_export_index_refuses_a_partly_stated_value_no_row_bears_out():
+    """The finished document must load, so a declaration the rows contradict stops the export."""
+    coverage = _covered(_two_system_graph())
+
+    with pytest.raises(SystemExit):
+        _export_two_system_graph(coverage, partly_stated_values=_NEVER_STATED)
 
 
 def test_export_index_refuses_a_declared_dataset_with_no_row():
@@ -2350,6 +2431,7 @@ def _export_with_listed(graph: _FakeGraph, provenances: dict[str, tuple[str, ...
         code_systems=(_HIERARCHICAL, _FLAT),
         measure_axes=(),
         datasets=_TEST_DATASETS,
+        partly_stated_values=(),
         total_groups={},
         party_kind_overrides={},
         listed_datasets=(_LISTED_PROVENANCE,),
@@ -2500,6 +2582,7 @@ def test_export_index_refuses_a_row_lacking_a_system_its_dataset_always_declares
             code_systems=(_HIERARCHICAL, _FLAT),
             measure_axes=(),
             datasets=_TEST_DATASETS,
+            partly_stated_values=(),
             total_groups={},
             party_kind_overrides={},
         )
@@ -2789,6 +2872,7 @@ def _export_parties(
         code_systems=(_HIERARCHICAL, _FLAT),
         measure_axes=(),
         datasets=_TEST_DATASETS,
+        partly_stated_values=(),
         total_groups=total_groups or {},
         party_kind_overrides=kind_overrides or {},
     )
@@ -2802,9 +2886,13 @@ def test_export_index_writes_each_partys_kind_label_and_the_group_a_total_holds(
             "IDA": ("Organization", "ProvisionalNode"),
             "DACAfrica": ("DACGroup",),
             "DACAllRecipients": ("DACGroup",),
+            "DACCountriesTotal": ("DACGroup",),
             "DACAfricaUnallocated": ("DACRecipientUnallocatedByCountry",),
         },
-        total_groups={"DACAfrica": TotalGroup("africa", ("DACAfricaUnallocated",))},
+        total_groups={
+            "DACAfrica": TotalGroup("africa", ("DACAfricaUnallocated",)),
+            "DACCountriesTotal": TotalGroup("groups/OECD.DAC", sums_members=False),
+        },
         names={
             "country/FRA": "France",
             "DACAfrica": "Africa (DAC)",
@@ -2836,6 +2924,14 @@ def test_export_index_writes_each_partys_kind_label_and_the_group_a_total_holds(
         "DACAllRecipients": PartyRow(
             dcid="DACAllRecipients", kind="total", datasets=published, axes=recipient
         ),
+        "DACCountriesTotal": PartyRow(
+            dcid="DACCountriesTotal",
+            kind="total",
+            totals="groups/OECD.DAC",
+            sums_members=False,
+            datasets=published,
+            axes=recipient,
+        ),
         "DACAfricaUnallocated": PartyRow(
             dcid="DACAfricaUnallocated",
             kind="residual",
@@ -2844,7 +2940,10 @@ def test_export_index_writes_each_partys_kind_label_and_the_group_a_total_holds(
             axes=recipient,
         ),
     }
-    assert index.totals_by_group == {"africa": index.parties["DACAfrica"]}
+    assert index.totals_by_group == {
+        "africa": index.parties["DACAfrica"],
+        "groups/OECD.DAC": index.parties["DACCountriesTotal"],
+    }
     assert index.party_types == PARTY_TYPE_KINDS
 
 
@@ -2874,6 +2973,15 @@ def test_export_index_writes_each_partys_kind_label_and_the_group_a_total_holds(
             {"DACAfrica": TotalGroup("africa", ("DACAfricaUnallocated",))},
             "as residuals",
         ),
+        (
+            {
+                "DACAfrica": ("DACGroup",),
+                "DACAfricaUnallocated": ("DACRecipientUnallocatedByCountry",),
+            },
+            None,
+            {"DACAfrica": TotalGroup("africa", ("DACAfricaUnallocated",), sums_members=False)},
+            "claims no sum",
+        ),
     ],
     ids=[
         "undeclared-type",
@@ -2884,6 +2992,7 @@ def test_export_index_writes_each_partys_kind_label_and_the_group_a_total_holds(
         "group-on-an-unpublished-total",
         "residual-is-a-party",
         "residual-unpublished",
+        "residuals-beside-a-published-total",
     ],
 )
 def test_export_index_refuses_a_party_it_cannot_declare(
@@ -2995,17 +3104,65 @@ _OCEANIA_RESIDUALS = (
     "DACOceaniaUnallocated",
     "DACPolynesiaUnallocated",
 )
+_ASIA_RESIDUALS = (
+    "DACAsiaUnallocated",
+    "DACCentralAsiaUnallocated",
+    "DACFarEastAsiaUnallocated",
+    "DACMekongDeltaProject",
+    "DACMiddleEastUnallocated",
+    "DACSouthAndCentralAsiaUnallocated",
+    "DACSouthAsiaUnallocated",
+)
+_SOUTH_OF_SAHARA_RESIDUALS = (
+    "DACEasternAfricaUnallocated",
+    "DACMiddleAfricaUnallocated",
+    "DACSouthOfSaharaUnallocated",
+    "DACSouthernAfricaUnallocated",
+    "DACWesternAfricaUnallocated",
+)
+_DAC_REGION = "groups/OECD.DAC.Region."
 _REVIEWED_TOTAL_GROUPS = {
     "DACAfrica": TotalGroup("africa", _AFRICA_RESIDUALS),
     "DACAmerica": TotalGroup("undata-geo/G00134000", _AMERICA_RESIDUALS),
+    "DACAsia": TotalGroup(f"{_DAC_REGION}Asia", _ASIA_RESIDUALS),
     "DACCaribbean": TotalGroup("Caribbean", ("DACCaribbeanUnallocated",)),
+    "DACCaribbeanAndCentralAmerica": TotalGroup(
+        f"{_DAC_REGION}CaribbeanAndCentralAmerica",
+        (
+            "DACCaribbeanAndCentralAmericaUnallocated",
+            "DACCaribbeanUnallocated",
+            "DACCentralAmericaUnallocated",
+        ),
+    ),
     "DACCentralAmerica": TotalGroup("CentralAmerica", ("DACCentralAmericaUnallocated",)),
+    "DACCountriesTotal": TotalGroup("groups/OECD.DAC", sums_members=False),
+    "DACEasternAfrica": TotalGroup(f"{_DAC_REGION}EasternAfrica", ("DACEasternAfricaUnallocated",)),
+    "DACEurope": TotalGroup(
+        f"{_DAC_REGION}Europe", ("DACEuropeUnallocated", "DACExYugoslaviaUnallocated")
+    ),
+    "DACFarEastAsia": TotalGroup(
+        f"{_DAC_REGION}FarEastAsia", ("DACFarEastAsiaUnallocated", "DACMekongDeltaProject")
+    ),
     "DACMelanesia": TotalGroup("Melanesia", ("DACMelanesiaUnallocated",)),
     "DACMicronesia": TotalGroup("Micronesia", ("DACMicronesiaUnallocated",)),
+    "DACMiddleAfrica": TotalGroup(f"{_DAC_REGION}MiddleAfrica", ("DACMiddleAfricaUnallocated",)),
+    "DACMiddleEast": TotalGroup(f"{_DAC_REGION}MiddleEast", ("DACMiddleEastUnallocated",)),
     "DACNonDACCountries": TotalGroup("groups/OECD.NonDAC"),
+    "DACNorthOfSahara": TotalGroup(f"{_DAC_REGION}NorthOfSahara", ("DACNorthOfSaharaUnallocated",)),
     "DACOceania": TotalGroup("oceania", _OCEANIA_RESIDUALS),
     "DACPolynesia": TotalGroup("Polynesia", ("DACPolynesiaUnallocated",)),
+    "DACSouthAmerica": TotalGroup(f"{_DAC_REGION}SouthAmerica", ("DACSouthAmericaUnallocated",)),
+    "DACSouthAndCentralAsia": TotalGroup(
+        f"{_DAC_REGION}SouthAndCentralAsia",
+        (
+            "DACCentralAsiaUnallocated",
+            "DACSouthAndCentralAsiaUnallocated",
+            "DACSouthAsiaUnallocated",
+        ),
+    ),
+    "DACSouthOfSahara": TotalGroup(f"{_DAC_REGION}SouthOfSahara", _SOUTH_OF_SAHARA_RESIDUALS),
     "DACSouthernAfrica": TotalGroup("SouthernAfrica", ("DACSouthernAfricaUnallocated",)),
+    "DACWesternAfrica": TotalGroup(f"{_DAC_REGION}WesternAfrica", ("DACWesternAfricaUnallocated",)),
     "GroupOfSeven": TotalGroup("GroupOfSeven"),
     "UNLandlockedDevelopingCountries": TotalGroup("groups/UN.LLDC"),
     "UNLeastDevelopedCountries": TotalGroup("groups/UN.LDC"),
@@ -3023,7 +3180,12 @@ def test_total_groups_holds_only_reviewed_rows():
 def test_the_packaged_index_carries_each_reviewed_total_group(party: str, total: TotalGroup):
     index = get_index()
     row = index.parties[party]
-    assert (row.kind, row.totals, row.residuals) == ("total", total.group, total.residuals)
+    assert (row.kind, row.totals, row.residuals, row.sums_members) == (
+        "total",
+        total.group,
+        total.residuals,
+        total.sums_members,
+    )
     assert index.totals_by_group[total.group] == row
     assert {index.parties[residual].kind for residual in total.residuals} <= {"residual"}
     assert all(index.parties[residual].datasets for residual in total.residuals)

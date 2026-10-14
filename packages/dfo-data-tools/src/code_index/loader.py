@@ -9,12 +9,13 @@ from __future__ import annotations
 import gzip
 import importlib.resources
 import json
+import re
 from collections.abc import Iterable, Mapping, Sequence
 from importlib.resources.abc import Traversable
 from pathlib import Path
 from typing import get_args
 
-from code_index.query import CodeIndex, DuplicateDcid
+from code_index.query import CodeIndex, DuplicateDcid, partly_stated_five_tuples
 from code_index.types import (
     PARTY_KINDS,
     AbsentObservation,
@@ -24,12 +25,17 @@ from code_index.types import (
     DeclaredDefault,
     IndexStamp,
     MeasureAxis,
+    MeasureClassDeclaration,
     MeasureIndex,
     MeasurePartitionLabel,
     MeasureValueRow,
+    PartlyStatedValue,
     PartyKind,
     PartyRow,
+    ShapeSlotDefault,
     SourceCodeRow,
+    StatedWord,
+    StatTypeWordDeclaration,
     StatVarRow,
     invalid_when_named_entry,
 )
@@ -72,12 +78,18 @@ def parse_index(payload: Mapping, *, source: object = "<document>") -> CodeIndex
     The `party_types`, `parties`, `listed_statvars`, `source_codes` and `value_parents` blocks
     are optional: an index without the first two declares no party kind, one without the third
     lists no StatVar outside its code systems (`CodeIndex.listed_statvars`), one without the
-    fourth holds no series code, and one without the fifth no value parent. A value that two
+    fourth holds no series code, and one without the fifth no value parent. So are
+    `shape_slot_defaults`, `partly_stated_values`, `measure_classes`, `variable_aliases`
+    and `stat_type_words`, each reading as empty where absent; a measure class or stat-type
+    pattern that does not compile, or a variable alias or a `no_vocabulary_terms` entry that
+    is not a non-empty lowercase string, raises `IndexFormatError`. A value that two
     `value_parents` rows name raises `DuplicateDcid`, and a parent chain that cycles
     `CyclicParent`. A `source_codes` row the StatVar rows contradict raises `IndexFormatError`
-    (`_check_source_codes`). A kind outside `PartyKind`, a type declared twice, or a `totals` on a
-    party that is not a total raises `IndexFormatError`. A code row without a `definition`
-    carries none, as does a measure value or measure label in `parse_measure_axes`."""
+    (`_check_source_codes`), as does a `partly_stated_values` row they contradict
+    (`_check_partly_stated_values`). A kind outside `PartyKind`, a type declared twice, a
+    `totals` on a party that is not a total, or a false `sums_members` on a party holding no
+    group raises `IndexFormatError`. A code row without a `definition` carries none, as does
+    a measure value or measure label in `parse_measure_axes`."""
     try:
         stamp = _parse_stamp(payload["stamp"])
         declarations = [_parse_declaration(row) for row in payload["declarations"]]
@@ -87,12 +99,22 @@ def parse_index(payload: Mapping, *, source: object = "<document>") -> CodeIndex
         party_types = _parse_party_types(payload.get("party_types", ()))
         parties = [_parse_party(row) for row in payload.get("parties", ())]
         listed_statvars = [_parse_statvar(row) for row in payload.get("listed_statvars", ())]
+        shape_slot_defaults = [
+            _parse_shape_slot_default(row) for row in payload.get("shape_slot_defaults", ())
+        ]
+        partly_stated_values = [
+            _parse_partly_stated_value(row) for row in payload.get("partly_stated_values", ())
+        ]
+        measure_classes = [_parse_measure_class(row) for row in payload.get("measure_classes", ())]
+        variable_aliases = _parse_variable_aliases(payload.get("variable_aliases", {}))
+        stat_type_words = [_parse_stat_type_word(row) for row in payload.get("stat_type_words", ())]
         source_codes = [_parse_source_code(row) for row in payload.get("source_codes", ())]
         value_parents = _parse_value_parents(payload.get("value_parents", ()))
     except (KeyError, TypeError) as exc:
         raise IndexFormatError(f"malformed code_index export at {source!r}: {exc}") from exc
     _check_datasets(datasets, statvars)
     _check_source_codes(source_codes, [*statvars, *listed_statvars])
+    _check_partly_stated_values(partly_stated_values, [*statvars, *listed_statvars])
     return CodeIndex(
         stamp=stamp,
         declarations=declarations,
@@ -102,9 +124,72 @@ def parse_index(payload: Mapping, *, source: object = "<document>") -> CodeIndex
         party_types=party_types,
         parties=parties,
         listed_statvars=listed_statvars,
+        shape_slot_defaults=shape_slot_defaults,
+        partly_stated_values=partly_stated_values,
+        measure_classes=measure_classes,
+        variable_aliases=variable_aliases,
+        stat_type_words=stat_type_words,
         source_codes=source_codes,
         value_parents=value_parents,
     )
+
+
+def _parse_shape_slot_default(row: Mapping) -> ShapeSlotDefault:
+    return ShapeSlotDefault(
+        population_type=row["population_type"],
+        property_dcid=row["property"],
+        value_dcid=row["value"],
+    )
+
+
+def _parse_partly_stated_value(row: Mapping) -> PartlyStatedValue:
+    return PartlyStatedValue(
+        provenance=row["provenance"],
+        property_dcid=row["property"],
+        value_dcid=row["value"],
+    )
+
+
+def _parse_measure_class(row: Mapping) -> MeasureClassDeclaration:
+    """One `measure_classes` row, its pattern compiled, refusing a pattern that does not
+    compile and a `fallback` that is not a boolean."""
+    try:
+        pattern = re.compile(row["pattern"])
+    except re.error as exc:
+        raise IndexFormatError(
+            f"measure class {row['class']!r} pattern {row['pattern']!r} does not compile: {exc}"
+        ) from exc
+    fallback = row.get("fallback", False)
+    if not isinstance(fallback, bool):
+        raise IndexFormatError(f"measure class fallback {fallback!r} is not a boolean")
+    return MeasureClassDeclaration(measure_class=row["class"], pattern=pattern, fallback=fallback)
+
+
+def _parse_stat_type_word(row: Mapping) -> StatTypeWordDeclaration:
+    """One `stat_type_words` row, its pattern compiled, refusing a pattern that does not
+    compile."""
+    try:
+        pattern = re.compile(row["pattern"])
+    except re.error as exc:
+        raise IndexFormatError(
+            f"stat type {row['stat_type']!r} pattern {row['pattern']!r} does not compile: {exc}"
+        ) from exc
+    return StatTypeWordDeclaration(pattern=pattern, stat_type=row["stat_type"])
+
+
+def _parse_variable_aliases(payload: Mapping) -> dict[str, str]:
+    """The `variable_aliases` block, refusing an alias that is not a non-empty lowercase
+    string and an empty expansion."""
+    aliases = dict(payload)
+    invalid = invalid_when_named_entry(list(aliases))
+    if invalid is not None:
+        raise IndexFormatError(
+            f"variable alias {list(aliases)[invalid]!r} must be a non-empty lowercase string"
+        )
+    for alias, expansion in aliases.items():
+        if not isinstance(expansion, str) or not expansion.strip():
+            raise IndexFormatError(f"variable alias {alias!r} expands to {expansion!r}")
+    return aliases
 
 
 def _parse_party_types(rows: Sequence[Mapping]) -> dict[str, PartyKind | None]:
@@ -125,13 +210,15 @@ def _parse_party_types(rows: Sequence[Mapping]) -> dict[str, PartyKind | None]:
 
 def _parse_party(row: Mapping) -> PartyRow:
     """One `parties` row, refusing a kind outside `PartyKind`, an axis outside the flow axes,
-    and a `totals` or `residuals` on a party that is not a total. `residuals`, `label`,
-    `datasets` and `axes` are optional."""
+    a `totals` or `residuals` on a party that is not a total, and a false `sums_members` on a
+    party that holds no group or that counts residuals. `residuals`, `sums_members`, `label`,
+    `datasets` and `axes` are optional, and a row without `sums_members` reads it as true."""
     party = PartyRow(
         dcid=row["dcid"],
         kind=row["kind"],
         totals=row["totals"],
         residuals=tuple(row.get("residuals", ())),
+        sums_members=row.get("sums_members", True),
         label=row.get("label"),
         datasets=tuple(row.get("datasets", ())),
         axes=tuple(row.get("axes", ())),
@@ -148,6 +235,11 @@ def _parse_party(row: Mapping) -> PartyRow:
         raise IndexFormatError(
             f"party {party.dcid!r} of kind {party.kind!r} names a group or residuals; "
             "only a total holds them"
+        )
+    if not party.sums_members and (party.totals is None or party.residuals):
+        raise IndexFormatError(
+            f"party {party.dcid!r} claims no sum of members but holds no group or counts "
+            "residuals; only a total that holds a group and counts no residual makes no claim"
         )
     return party
 
@@ -220,7 +312,52 @@ def _parse_declaration(payload: Mapping) -> CodeSystemDeclaration:
         plain_name=payload["plain_name"],
         default=_parse_declared_default(payload["default"]),
         enum_dcid=payload["enum_dcid"],
+        no_vocabulary_terms=_parse_no_vocabulary_terms(payload.get("no_vocabulary_terms", ())),
     )
+
+
+def _parse_no_vocabulary_terms(terms: Sequence[str]) -> tuple[str, ...]:
+    """A declaration's `no_vocabulary_terms`, refusing an entry that is not a non-empty
+    lowercase string. Absent reads as none."""
+    terms = tuple(terms)
+    invalid = invalid_when_named_entry(terms)
+    if invalid is not None:
+        raise IndexFormatError(
+            f"no_vocabulary_terms entry {terms[invalid]!r} must be a non-empty lowercase string"
+        )
+    return terms
+
+
+def _parse_stated_words(provenance: str, rows: Sequence[Mapping]) -> tuple[StatedWord, ...]:
+    """A datasets row's `stated_words`, refusing a word that is not a single lowercase
+    word, an empty measured property, a `where` axis outside `AXIS_LABELS`, and a `where`
+    kind that is not a non-empty lowercase string. Absent reads as empty. `_check_datasets`
+    checks each measured property against the dataset's rows."""
+    stated: list[StatedWord] = []
+    for row in rows:
+        word, prop, where = row["word"], row["measured_property"], dict(row.get("where", {}))
+        if invalid_when_named_entry([word]) is not None or len(word.split()) != 1:
+            raise IndexFormatError(
+                f"datasets row for {provenance!r} states {word!r}, "
+                "which is not a single lowercase word"
+            )
+        if not isinstance(prop, str) or not prop:
+            raise IndexFormatError(
+                f"datasets row for {provenance!r} states {word!r} for {prop!r}, "
+                "which is not a measured property"
+            )
+        if unknown := sorted(set(where) - AXIS_LABELS):
+            raise IndexFormatError(
+                f"datasets row for {provenance!r} states {word!r} where {unknown!r}, "
+                f"outside {sorted(AXIS_LABELS)!r}"
+            )
+        if (invalid := invalid_when_named_entry(list(where.values()))) is not None:
+            raise IndexFormatError(
+                f"datasets row for {provenance!r} states {word!r} where a party is "
+                f"{list(where.values())[invalid]!r}, which is not a non-empty lowercase string"
+            )
+        stated.append(StatedWord(word=word, measured_property=prop, where=where))
+    return tuple(stated)
 
 
 def _parse_datasets(rows: Sequence[Mapping]) -> list[DatasetDeclaration]:
@@ -228,7 +365,8 @@ def _parse_datasets(rows: Sequence[Mapping]) -> list[DatasetDeclaration]:
     `absent_observation` value outside `{"zero", "unknown"}`, an `account`
     outside `dfo_platform.roles.FlowAccount`, an `opt_in` that is not a boolean,
     a `rank` that is not an integer, an empty `label`, an empty `description`,
-    or a `provenance` or `rank` repeated across rows. Each raises
+    a `stated_words` row `_parse_stated_words` refuses (the key is optional), or a
+    `provenance` or `rank` repeated across rows. Each raises
     `IndexFormatError` naming the offending row (or the repeated value)."""
     datasets: list[DatasetDeclaration] = []
     seen: set[str] = set()
@@ -244,6 +382,7 @@ def _parse_datasets(rows: Sequence[Mapping]) -> list[DatasetDeclaration]:
                 account=row["account"],
                 rank=row["rank"],
                 invariants=dict(row["invariants"]),
+                stated_words=_parse_stated_words(row["provenance"], row.get("stated_words", ())),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise IndexFormatError(f"malformed datasets row {row!r}: {exc}") from exc
@@ -295,10 +434,12 @@ def _check_datasets(datasets: Sequence[DatasetDeclaration], statvars: Sequence[S
     Raises `IndexFormatError` when a row names a provenance no dataset
     declares, a row of a dataset does not carry one of its declared
     `invariants` explicitly (an absent property fails whatever its
-    `absent_reading`), or a declared dataset has no row. A row with no
-    provenance belongs to no dataset and passes."""
+    `absent_reading`), a declared dataset has no row, or a dataset states a
+    word (`DatasetDeclaration.stated_words`) of a measured property none of
+    its rows has. A row with no provenance belongs to no dataset and passes."""
     invariants = {dataset.provenance: dataset.invariants for dataset in datasets}
     populated: set[str] = set()
+    measured: dict[str, set[str]] = {}
     for row in statvars:
         for provenance in row.provenances:
             if provenance not in invariants:
@@ -314,9 +455,18 @@ def _check_datasets(datasets: Sequence[DatasetDeclaration], statvars: Sequence[S
                         f"declares {prop}={code!r} as an invariant"
                     )
             populated.add(provenance)
+            measured.setdefault(provenance, set()).add(row.measured_property)
     empty = sorted(invariants.keys() - populated)
     if empty:
         raise IndexFormatError(f"declared dataset(s) {empty!r} have no StatVar row")
+    for dataset in datasets:
+        for stated in dataset.stated_words:
+            if stated.measured_property not in measured[dataset.provenance]:
+                raise IndexFormatError(
+                    f"dataset {dataset.provenance!r} states {stated.word!r} of "
+                    f"{stated.measured_property!r}, a measured property none of its rows has "
+                    f"(has: {sorted(measured[dataset.provenance])!r})"
+                )
 
 
 def _parse_code(payload: Mapping) -> CodeRow:
@@ -398,6 +548,32 @@ def _check_source_codes(rows: Sequence[SourceCodeRow], statvars: Sequence[StatVa
                     f"source code {row.code!r} under {row.provenance!r} names {dcid!r}, whose "
                     f"row carries provenances {list(provenances[dcid])!r}"
                 )
+
+
+def _check_partly_stated_values(
+    rows: Sequence[PartlyStatedValue], statvars: Sequence[StatVarRow]
+) -> None:
+    """Checks the `partly_stated_values` rows against the StatVar rows.
+
+    Raises `IndexFormatError` for a `(provenance, property, value)` triple on two rows, and
+    for a row with no five-tuple where the dataset has both a row stating the value and a row
+    stating nothing on the property (`partly_stated_five_tuples`). A dataset that states the
+    value on every row of a five-tuple or on none holds no partly stated value there."""
+    seen: set[tuple[str, str, str]] = set()
+    for declared in rows:
+        key = (declared.provenance, declared.property_dcid, declared.value_dcid)
+        if key in seen:
+            raise IndexFormatError(
+                f"partly stated value {declared.property_dcid}={declared.value_dcid} under "
+                f"{declared.provenance!r} appears more than once"
+            )
+        seen.add(key)
+        if not partly_stated_five_tuples(statvars, declared):
+            raise IndexFormatError(
+                f"{declared.provenance!r} states {declared.property_dcid}="
+                f"{declared.value_dcid} on every row or on none of each five-tuple, so it is "
+                "not partly stated; delete the declaration"
+            )
 
 
 def _parse_measure_axis(payload: Mapping) -> MeasureAxis:

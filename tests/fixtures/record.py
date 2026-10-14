@@ -280,9 +280,6 @@ class _RecordingGraph:
     def node_type(self, dcid: str) -> str | None:
         return self._graph.node_type(dcid)
 
-    def declares_facet_defaults(self) -> bool:
-        return self._graph.declares_facet_defaults()
-
     def default_facet_policy(self, *, stat_var: str, axis: str) -> FacetDefaultPolicy | None:
         # Passed through unrecorded: the replaying `FakeGraph` declares none, and a declared
         # default refuses resolve before any recorded row is read.
@@ -441,6 +438,11 @@ class _RecordingGraph:
             for entity, facets in by_entity.items():
                 self._upsert_obs(f"{sv}|{entity}", facets)
         return result
+
+    def observation_read_groups(
+        self, stat_vars: list[str], entities: list[str], needs_dates: bool = False
+    ) -> list[list[str]]:
+        return self._graph.observation_read_groups(stat_vars, entities, needs_dates)
 
     def entities_with_data(
         self,

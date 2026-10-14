@@ -98,28 +98,14 @@ def _run(
     )
 
 
-def _assert_pre_materialise_role_refusal(result, *, sv_dcid: str, window: TimeWindow) -> None:
+def _assert_role_refusal_before_bind(result) -> None:
+    """No reading can place the query's places, so the part refuses `role_incompatible`
+    before bind and flags nothing (`admissibility.judge_measure_and_roles`)."""
     assert result.status == "no_data"
     assert result.no_data_reason == "role_incompatible"
     assert result.gate is None
-    assert result.flagged_match is not None
-    assert result.elected_stat_vars is not None
-    flagged = result.flagged_match[0]
-    assert [stat_var.ref.ref for stat_var in flagged.resolved.members] == [sv_dcid]
-    assert [stat_var.ref for stat_var in result.elected_stat_vars] == [sv_dcid]
-    assert flagged.resolved.coverage.kind == "bare"
-    assert flagged.resolved.coverage.has_data is False
-    assert flagged.resolved.coverage.window == window
-    assert flagged.resolved.available_at_place is None
-    assert flagged.resolved.confidence == "low"
-    assert flagged.resolved.entities == []
-    assert flagged.resolved.trace.resolved_entities == []
-    assert flagged.resolved.trace.resolved_sources == []
-    assert flagged.resolved.slot_options == []
-    assert flagged.resolved.entity_options == []
-    assert flagged.resolved.facet_options == []
-    assert flagged.resolved.facets == {}
-    assert flagged.resolved.observations is None
+    assert not result.flagged_match
+    assert "bind" not in result.timing_by_step
 
 
 def test_directional_query_on_a_declaring_recall_below_the_floor_answers_as_subjects():
@@ -187,8 +173,9 @@ def test_directional_query_on_a_declaring_recall_elects_the_declaring_shape():
     }
 
 
-def test_unplaceable_role_keeps_the_elected_no_data_shape(monkeypatch):
-    """A declaring shape refuses when its role cannot accept either entity."""
+def test_unplaceable_role_refuses_before_bind(monkeypatch):
+    """A declaring shape whose role is on neither flow axis is no reading of a question
+    naming both ends."""
     graph_nodes = {
         _FRA: {"label": "France", "type": "Country"},
         _KEN: {"label": "Kenya", "type": "Country"},
@@ -210,7 +197,7 @@ def test_unplaceable_role_keeps_the_elected_no_data_shape(monkeypatch):
         role_query="aid from France to Kenya",
         date_request=DateRequest(window=window, latest=False),
     )
-    _assert_pre_materialise_role_refusal(result, sv_dcid=_DECLARING_SV, window=window)
+    _assert_role_refusal_before_bind(result)
 
 
 def test_directional_query_with_no_declaring_shape_answers_as_subjects():

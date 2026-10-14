@@ -21,7 +21,15 @@ from .observations import SpecObservations
 from .options import EntityOptions, FacetOptions, SlotOptions
 from .statvar import ResolvedStatVars, SentenceFacts, StatVar
 from .trace import ResolutionTrace
-from .vocab import SCHEMA_VERSION, Axis, Confidence, EntityRoleKey, FacetBasis, RoleAxis
+from .vocab import (
+    SCHEMA_VERSION,
+    Axis,
+    CandidateBasis,
+    Confidence,
+    EntityRoleKey,
+    FacetBasis,
+    RoleAxis,
+)
 
 
 class ResolvedFacet(StrictModel):
@@ -576,9 +584,10 @@ class UnitConversion(StrictModel):
 
 
 class MembersNotStated(LookupError):
-    """A Spec rebuilt from its wire form holds no served members or sentence facts: the
-    engine states them in `build_spec`, and the wire carries neither. Reading one there is
-    a programming error, raised so the reader does not answer from an empty list."""
+    """A Spec rebuilt from its wire form holds no served members, sentence facts or built
+    shape label: the engine states them in `build_spec`, and the wire carries none. Reading
+    one there is a programming error, raised so the reader does not answer from an empty
+    list."""
 
     def __init__(self, fact: str) -> None:
         super().__init__(f"ResolvedSpec.{fact} is not stated on a Spec rebuilt from its wire form")
@@ -766,6 +775,20 @@ class ResolvedSpec(StrictModel):
             "assessed. Bands are heuristic and may be retuned without a schema-version bump."
         ),
     )
+    basis: CandidateBasis | None = Field(
+        default=None,
+        description=(
+            "why the part offers this Spec as one of its candidates: 'structural', a reading "
+            "that differs from the elected one only on a stat type, price basis or "
+            "denominator the request leaves open; 'nominated', a reading the model named as "
+            "a genuine reading of the request's phrase; 'twin', an equivalent reading of the "
+            "elected one, offered where the elected one holds no data; 'direction', the same "
+            "reading with the other direction for a place the request names without one, "
+            "which a client shows as a direction prompt. The elected reading, listed first, "
+            "carries none. None on a definite answer and on every Spec outside "
+            "CandidateSet.specs."
+        ),
+    )
     available_at_place: bool | None = Field(
         default=None,
         description=(
@@ -934,6 +957,10 @@ class ResolvedSpec(StrictModel):
     # The members of those sets the request also named on their own, by role
     # (`ResolvedSpec.named_alone`).
     _named_alone: frozenset[tuple[str, str]] = PrivateAttr(default=frozenset())
+    # The total a dataset publishes for the group each role reads as its members, by role
+    # (`ResolvedSpec.group_totals`). `entity_groups` names a total only when the role binds
+    # it, and a group with no node of its own carries no dcid to look one up by.
+    _group_totals: tuple[tuple[str, str], ...] = PrivateAttr(default=())
     # The members the answer serves and what the renderer reads of them, set by
     # `engine.spec_build.build_spec`. A Spec rebuilt from its wire form holds neither, and
     # reading one there raises `MembersNotStated`.
@@ -945,6 +972,9 @@ class ResolvedSpec(StrictModel):
     _measure_label_named_values: tuple[tuple[str, str], ...] = PrivateAttr(default=())
     _unit_lexicon_version: str | None = PrivateAttr(default=None)
     _declaration_version: str | None = PrivateAttr(default=None)
+    # The label `shape` was built with before `engine.spec_build.build_spec` labelled it for
+    # the members this Spec serves (`ResolvedSpec.built_shape_label`).
+    _built_shape_label: str | None = PrivateAttr(default=None)
 
     @property
     def unserved_entities(self) -> tuple[tuple[str, str], ...]:
@@ -972,6 +1002,13 @@ class ResolvedSpec(StrictModel):
         member as the request did and counts only the rest under its set
         (`engine.departures.unavailable_entity_facts`)."""
         return self._named_alone
+
+    @property
+    def group_totals(self) -> dict[str, str]:
+        """The total a dataset publishes for the group each role reads as its members, keyed
+        by role (`engine.spec_build.role_group_totals`). The departure saying what the members
+        leave out reads the group's residuals from it (`engine.departures`)."""
+        return dict(self._group_totals)
 
     @property
     def data_years(self) -> tuple[int, int] | None:
@@ -1033,6 +1070,20 @@ class ResolvedSpec(StrictModel):
         (`retrieval.bound_values.declaration_version`); None otherwise."""
         return self._declaration_version
 
+    @property
+    def built_shape_label(self) -> str:
+        """The label `shape` came to `engine.spec_build.build_spec` with. `shape.label` is
+        that label composed for the members this Spec serves, so a Spec built over other
+        members of the same shape (`same_shape.collapse_same_shape`) labels them from this
+        one.
+
+        Raises:
+            MembersNotStated: the Spec was rebuilt from its wire form.
+        """
+        if self._built_shape_label is None:
+            raise MembersNotStated("built_shape_label")
+        return self._built_shape_label
+
     def __eq__(self, other: object) -> bool:
         """Equal when the wire state is: the private read facts above are inputs to the
         part's departures, which a cached response carries already written."""
@@ -1056,6 +1107,12 @@ class ResolvedSpec(StrictModel):
         stated = self.model_copy()
         stated._named_sets = named_sets
         stated._named_alone = named_alone
+        return stated
+
+    def stating_group_totals(self, group_totals: tuple[tuple[str, str], ...]) -> ResolvedSpec:
+        """A copy whose `group_totals` are `group_totals`."""
+        stated = self.model_copy()
+        stated._group_totals = group_totals
         return stated
 
     def stating_data_years(self, years: tuple[int, int] | None) -> ResolvedSpec:
@@ -1102,6 +1159,12 @@ class ResolvedSpec(StrictModel):
         """A copy whose `declaration_version` is `version`."""
         stated = self.model_copy()
         stated._declaration_version = version
+        return stated
+
+    def stating_built_shape_label(self, label: str) -> ResolvedSpec:
+        """A copy whose `built_shape_label` is `label`."""
+        stated = self.model_copy()
+        stated._built_shape_label = label
         return stated
 
     @field_validator("facets")

@@ -31,7 +31,7 @@ from search.engine.retrieval.retrieve import (
 from search.engine.retrieval.standard import FacetBatch
 from search.engine.shape import ShapeDraft
 from search.heading.departure_fact import DepartureFact
-from search.models import RoleAxis, Spec, Warning
+from search.models import NoDataReason, RoleAxis, Spec, Warning
 from search.render.heading import heading_for
 from series_coverage.shared import CoverageSnapshot
 
@@ -96,7 +96,7 @@ class UnsupportedMaterialise:
 class NoDataMaterialise:
     """A no-data outcome. Each caller decides whether to return or defer it."""
 
-    reason: str
+    reason: NoDataReason
 
 
 type Departed = tuple[Warning, DepartureFact]

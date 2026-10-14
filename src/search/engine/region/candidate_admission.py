@@ -1,20 +1,21 @@
-"""Admit `also_plausible` shapes and widen a confirmed near-neighbour tie when its alternate lacks
-data. Each alternate that passes the admission guards ends admitted, rejected or unevaluated
-(`_AlternatesAdmission`).
+"""Materialise the alternates the status rule offers beside the elected shape
+(`phase_place_materialise._plan_admission`). Each alternate that passes the admission guards
+ends admitted, rejected or unevaluated (`_AlternatesAdmission`).
 """
 
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from search.engine.region.availability import _shape_group_key
 from search.engine.region.candidates import _Alternate, _Candidate, _materialise_alt_shapes
-from search.engine.region.codes import ALTERNATES_UNEVALUATED, NEAR_NEIGHBOR_POOL_WIDENED
-from search.engine.region.near_neighbor import NEAR_NEIGHBOR_UNRESOLVED_MESSAGE
+from search.engine.region.codes import ALTERNATES_UNEVALUATED
 from search.engine.region.phase_place_materialise import (
     _plan_admission,
+    _plan_status,
     _read_alternates_presence,
     _unsettled_places,
     _walked_alternates,
@@ -69,14 +70,15 @@ async def _materialise_candidates(
     state: ResolveState, indices: list[int], *, group: Sequence[int]
 ) -> tuple[dict[int, _Candidate], dict[int, AlternateUnevaluatedReason], frozenset[int], bool]:
     """Materialise the capped shapes at `indices`, each in its own place context. Returns
-    the candidates with data by index, in `indices` order, the indices left unevaluated for
+    the candidates with data by index, in `indices` order, each with the basis the status
+    rule offers it on (`ResolveState.offer_bases`), the indices left unevaluated for
     want of a presence read, each with the reason, the indices dropped for the bound on the
     places a Spec binds, and whether a capped shape blocked the fan-out, in which case
     `state.mat_result` holds its refusal.
 
-    A sibling that zero-observation re-election offered is taken as re-election materialised
-    it (`state.sibling_candidates`) and is not read again: re-election probed it in the
-    same place context, over the same presence read, beside the same elected shape with no
+    A stand-in that status rule 1 offered is taken as re-election materialised it
+    (`state.sibling_candidates`) and is not read again: re-election probed it in the same
+    place context, over the same presence read, beside the same elected shape with no
     data. The rest have their role class elected first (`_walked_alternates`), so the
     presence read and the place context belong to the shape each is answered through. The
     presence they need and the request has not read is read here, over those shapes and
@@ -145,16 +147,16 @@ async def _materialise_candidates(
         candidates.update(
             {index_by_group[_shape_group_key(cand.shape)]: cand for cand in read.candidates}
         )
-    return {i: candidates[i] for i in indices if i in candidates}, unevaluated, over_bound, False
-
-
-def _drop_near_neighbor_tie(state: ResolveState) -> None:
-    """Remove the near-neighbour tie's warning and index, so the tied reading is neither
-    stated as a candidate nor searched beyond."""
-    if state.near_neighbor_warning is not None:
-        state.warnings.remove(state.near_neighbor_warning)
-    state.near_neighbor_warning = None
-    state.near_neighbor_fired_index = None
+    return (
+        {
+            i: dataclasses.replace(candidates[i], basis=state.offer_bases.get(i))
+            for i in indices
+            if i in candidates
+        },
+        unevaluated,
+        over_bound,
+        False,
+    )
 
 
 def alternates_unevaluated_warning(reason: AlternateUnevaluatedReason) -> Warning:
@@ -165,124 +167,54 @@ def alternates_unevaluated_warning(reason: AlternateUnevaluatedReason) -> Warnin
     )
 
 
-def _keep_tie_unresolved(state: ResolveState) -> None:
-    """Give a fired tie's warning the message of a tie that stands unresolved. Candidate
-    assembly restores the served labels when both tied readings are offered."""
-    if state.near_neighbor_warning is not None:
-        unresolved = state.near_neighbor_warning.model_copy(
-            update={"message": NEAR_NEIGHBOR_UNRESOLVED_MESSAGE}
-        )
-        state.warnings[state.warnings.index(state.near_neighbor_warning)] = unresolved
-        state.near_neighbor_warning = unresolved
-
-
 async def admit_alternates(state: ResolveState) -> _AlternatesAdmission:
-    """Guard and materialise alternates, widening a confirmed tie when its alternate has no data.
-    Sets `state.elected_has_data` for collapse.
+    """Materialise the alternates the status rule offers beside the elected shape. Sets
+    `state.elected_has_data` for collapse.
 
-    The admission guards and the candidate budget are applied first, with no request
-    (`_plan_admission`), so no read is made for an alternate they reject and the failure of
-    one cannot reach the answer. Each surviving alternate is materialised in its own place
-    context (`place_context`): a subject-only alternate with no place takes the default
-    scope of its own StatVars. A subject-only elected shape's presence read covers that
-    scope; beside a role-bearing elected shape, the read started beside its
-    materialisation does (`_phase_place_bindings`). Presence either lacks is read here
-    before the alternates are materialised, with the widened search's shapes when the
-    search can run, on the alternates' own pool. A sibling re-election offered is taken as
-    re-election materialised it (`_materialise_candidates`).
+    The status rule is planned again now the elected shape's read and the presence reads
+    have settled more of D (`_plan_status`), then the admission guards and the candidate
+    budget are applied, with no request (`_plan_admission`), so no read is made for an
+    alternate they reject and the failure of one cannot reach the answer. Each surviving
+    alternate is materialised in its own place context (`place_context`): a subject-only
+    alternate with no place takes the default scope of its own StatVars. A subject-only
+    elected shape's presence read covers that scope; beside a role-bearing elected shape,
+    the read started beside its materialisation does (`_phase_place_bindings`). Presence
+    either lacks is read here before the alternates are materialised, on the alternates'
+    own pool. A stand-in re-election offered is taken as re-election materialised it
+    (`_materialise_candidates`).
 
     When that read does not complete, for want of a worker, on a source failure or on a
     timeout, the alternates it would cover are unevaluated and the elected answer is served
     with `alternates_unevaluated`. So is an alternate whose values matched no member together
     and whose presence read under the relaxed bindings does not complete
-    (`candidates._presence_after_unbinding`). A fired tie then stays: its warning and its effect on
-    confidence hold (`ResolveState.tie_unresolved`). No search widens past an unevaluated
-    tied reading, since nothing read its data.
+    (`candidates._presence_after_unbinding`).
 
     An alternate whose places exceed the bound on the places a Spec binds is dropped unread
-    and is not listed as rejected. A tie whose other reading is dropped this way is dropped
-    with it (`_drop_near_neighbor_tie`).
+    and is not listed as rejected.
     """
     state.elected_has_data = (
         isinstance(state.mat_result, Materialised) and state.mat_result.has_data
     )
+    state.status_plan = _plan_status(state)
     plan = _plan_admission(state)
-    if state.near_neighbor_fired_index in plan.inadmissible:
-        _drop_near_neighbor_tie(state)
     alt_indices = plan.alt_indices
-    # Record clipping by either candidate fan-out, so `CandidateSet.truncated` reflects the pool
-    # budget even when later assembly keeps fewer candidates.
-    _candidate_budget_truncated = len(plan.eligible) > len(alt_indices)
-
-    # A confirmed tie remains ambiguous when its alternate has no data. When the elected shape has
-    # data, search beyond `SEARCH_NEAR_MARGIN` for semantically distinct candidates. The no-data
-    # path handles an elected shape without data. This search runs only when a tie fired.
-    widens = state.near_neighbor_fired_index is not None and state.elected_has_data
-    cascade_indices = plan.cascade_indices if widens else []
+    # Record clipping by the candidate budget, so `CandidateSet.truncated` reflects it even
+    # when later assembly keeps fewer candidates.
+    candidate_budget_truncated = len(plan.eligible) > len(alt_indices)
 
     admitted: dict[int, _Candidate] = {}
     unevaluated: dict[int, AlternateUnevaluatedReason] = {}
     evaluated: list[int] = []
     if alt_indices:
         admitted, unevaluated, over_bound, blocked = await _materialise_candidates(
-            state, alt_indices, group=[*alt_indices, *cascade_indices]
+            state, alt_indices, group=alt_indices
         )
         if blocked:
             return _AlternatesAdmission(unevaluated=unevaluated, blocked=True)
         evaluated = [i for i in alt_indices if i not in unevaluated and i not in over_bound]
-        if state.near_neighbor_fired_index in unevaluated:
-            widens = False
-        if state.near_neighbor_fired_index in over_bound:
-            # Nothing read the tied reading, so no search widens past it for want of data.
-            _drop_near_neighbor_tie(state)
-            widens = False
-
-    if widens and state.near_neighbor_fired_index not in admitted:
-        # The cascade has a separate remaining budget and can independently mark the pool
-        # truncated.
-        _candidate_budget_truncated = _candidate_budget_truncated or (
-            len(plan.eligible_cascade) > len(cascade_indices)
-        )
-        cascade: dict[int, _Candidate] = {}
-        if cascade_indices:
-            (
-                cascade,
-                cascade_unevaluated,
-                cascade_over_bound,
-                blocked,
-            ) = await _materialise_candidates(state, cascade_indices, group=cascade_indices)
-            unevaluated = {**unevaluated, **cascade_unevaluated}
-            if blocked:
-                return _AlternatesAdmission(unevaluated=unevaluated, blocked=True)
-        if cascade:
-            # Later narrowing and deduplication may remove these draft shapes. Candidate labels
-            # come from the surviving set, so the warning names the widened search.
-            state.warnings.append(
-                Warning(
-                    code=NEAR_NEIGHBOR_POOL_WIDENED,
-                    severity="info",
-                    message=(
-                        "the chosen reading's near-neighbor alternate had no data; "
-                        "the search was widened, and real data was found among the "
-                        "candidates shown."
-                    ),
-                )
-            )
-            admitted = {**admitted, **cascade}
-            evaluated = [
-                *evaluated,
-                *(
-                    i
-                    for i in cascade_indices
-                    if i not in unevaluated and i not in cascade_over_bound
-                ),
-            ]
-
-    if unevaluated:
-        _keep_tie_unresolved(state)
     return _AlternatesAdmission(
         admitted=list(admitted.values()),
         rejected=[i for i in evaluated if i not in admitted],
         unevaluated=unevaluated,
-        candidate_budget_truncated=_candidate_budget_truncated,
+        candidate_budget_truncated=candidate_budget_truncated,
     )

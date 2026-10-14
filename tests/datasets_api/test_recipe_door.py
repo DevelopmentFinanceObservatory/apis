@@ -411,6 +411,24 @@ def test_versions_list_is_newest_first_with_each_version_s_rendering(deps: _Deps
         base_content_version="cv_00000000000000000000000000000003",
         renderings=(_FRAME1_RENDERING, _STATISTICS_RENDERING),
     )
+    deps.now += timedelta(hours=1)
+    # A party-totals cut records the option on its file, alone or beside the groupby.
+    deps.record_version(
+        subject_id="spec_a",
+        content_version="cv_00000000000000000000000000000005",
+        base_content_version="cv_00000000000000000000000000000003",
+        renderings=(_FRAME1_RENDERING, {**_PLAIN_RENDERING, "without_party_totals": True}),
+    )
+    deps.now += timedelta(hours=1)
+    deps.record_version(
+        subject_id="spec_a",
+        content_version="cv_00000000000000000000000000000006",
+        base_content_version="cv_00000000000000000000000000000003",
+        renderings=(
+            _FRAME1_RENDERING,
+            {**_PLAIN_RENDERING, "groupby": _GROUPBY, "without_party_totals": True},
+        ),
+    )
     deps.record_version(
         subject_id="spec_b",
         content_version="cv_00000000000000000000000000000009",
@@ -425,6 +443,20 @@ def test_versions_list_is_newest_first_with_each_version_s_rendering(deps: _Deps
         "schema_version": 1,
         "spec_id": "spec_a",
         "versions": [
+            {
+                "content_version": "cv_00000000000000000000000000000006",
+                "base_content_version": "cv_00000000000000000000000000000003",
+                "rendering": "groupby",
+                "groupby": _GROUPBY,
+                "without_party_totals": True,
+            },
+            {
+                "content_version": "cv_00000000000000000000000000000005",
+                "base_content_version": "cv_00000000000000000000000000000003",
+                "rendering": "without_party_totals",
+                "groupby": None,
+                "without_party_totals": True,
+            },
             {
                 "content_version": "cv_00000000000000000000000000000004",
                 "base_content_version": "cv_00000000000000000000000000000003",

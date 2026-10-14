@@ -10,7 +10,7 @@ This module makes no graph or LLM calls.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from search.engine.assemble import (
     build_candidates_part,
@@ -41,7 +41,7 @@ from skills_index import SkillsIndex
 
 if TYPE_CHECKING:
     from search.engine.region import RegionResult
-    from search.models import GraphRef, NoDataReason, Part, QueryEcho
+    from search.models import GraphRef, Part, QueryEcho
 
 # ---------------------------------------------------------------------------
 # Warning code and pinned severity/message
@@ -156,11 +156,15 @@ def _no_data_entity_terms(region: RegionResult) -> tuple[list[str] | None, list[
 
 
 def _ambiguous_entity_groups(region: RegionResult) -> list[AmbiguousEntityGroup]:
-    """Convert region ambiguity data to the wire shape.
+    """Convert region ambiguity data to the wire shape, for an ``entity_ambiguous`` region
+    only. A region refused for another reason can still name ambiguous entities
+    (`phase_intake._phase_check_entities`), and the wire field is empty for it.
 
     Engine candidates use ``name``. Wire candidates use ``label``. Other
     fields copy directly.
     """
+    if region.no_data_reason != "entity_ambiguous":
+        return []
     return [
         AmbiguousEntityGroup(
             text=entity.text,
@@ -302,7 +306,10 @@ def _build_part(
             operations=region.operations,
             include_skills=include_skills,
             skills_index=skills_index,
-            departure_facts=surviving_facts(raised, [*warnings, *envelope_warnings]),
+            departure_facts=(
+                *surviving_facts(raised, [*warnings, *envelope_warnings]),
+                *(() if folded else representative.inferred_facts),
+            ),
             entity_words=region.entity_words,
         )
     if region.status == "candidates":
@@ -314,15 +321,9 @@ def _build_part(
             timing_ms=timing_ms,
             max_candidates=max_candidates,
             include_observations=include_observations,
-            # The near-neighbor gate promotes its runner-up into bind order.
-            # Other ambiguous sets sort broadest-first. Score and gate metadata preserve
-            # the loose-last relevance partition.
-            bind_ranked=region.near_neighbor_fired,
             budget_truncated=region.candidate_budget_truncated,
-            candidate_scores=region.candidate_scores,
-            near_neighbor_spec_ids=region.candidate_near_neighbor_spec_ids,
-            # dataset_resubmit preserves its posted candidate order and labels through this override.
-            ordering=region.candidate_ordering_override,
+            # dataset_resubmit states its posted ordering through this override.
+            ordering=region.candidate_ordering_override or "intent_rank",
             restatement=region.restatement,
             operations=region.operations,
             include_skills=include_skills,
@@ -366,7 +367,7 @@ def _build_part(
         ] or None
     qualifier_terms, unbound_sources, scope = _unbound_terms(region)
     return build_no_data_part(
-        cast("NoDataReason", region.no_data_reason),
+        region.no_data_reason,
         variable_text=variable_text,
         warnings=list(region.warnings),
         separate=region.separate,

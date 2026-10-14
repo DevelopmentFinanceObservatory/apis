@@ -503,7 +503,7 @@ def test_latest_window_refuses_rate_coverage_gap_on_the_chosen_year_only():
     )
 
     graph = _graph()
-    coverage = _coverage_for([(_BARE_STAT_VAR, "country/KEN")])
+    coverage = _coverage_for([(_BARE_STAT_VAR, "country/KEN")], year=2023)
     with pytest.raises(RateCoverageGapError) as exc_info:
         materialise_spec(
             request,
@@ -978,7 +978,9 @@ def test_group_rate_coverage_gap_preempts_the_pooled_ceiling_check():
     ]
 
     graph = _graph(arcs)
-    coverage = _coverage_for([(_BARE_STAT_VAR, "country/KEN"), (_BARE_STAT_VAR_B, "country/KEN")])
+    coverage = _coverage_for(
+        [(_BARE_STAT_VAR, "country/KEN"), (_BARE_STAT_VAR_B, "country/KEN")], year=2023
+    )
     # With ceiling 1, both latest rows total 2. The missing 2023 rate is
     # checked per member before the pooled ceiling.
     with pytest.raises(RateCoverageGapError) as exc_info:
@@ -1062,7 +1064,9 @@ def test_group_role_shaped_rate_coverage_gap_preempts_the_pooled_ceiling_check()
     ]
 
     graph = FakeGraphReader(arcs=arcs)
-    coverage = _coverage_for([(_BARE_STAT_VAR, "country/KEN"), (_BARE_STAT_VAR_B, "country/GBR")])
+    coverage = _coverage_for(
+        [(_BARE_STAT_VAR, "country/KEN"), (_BARE_STAT_VAR_B, "country/GBR")], year=2023
+    )
     with pytest.raises(RateCoverageGapError) as exc_info:
         materialise_group(
             members,

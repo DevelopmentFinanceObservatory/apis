@@ -25,8 +25,9 @@ from search.engine.quantity import (
     with_stated_form,
 )
 from search.engine.quantity_read import QuantityOutput
-from search.engine.region import NEAR_NEIGHBOR_AMBIGUOUS, resolve_variable
+from search.engine.region import resolve_variable
 from search.engine.region.alternate_guard import (
+    AlternateJudge,
     QueryPins,
     inadmissible_alternates,
     inadmissible_reason,
@@ -34,8 +35,11 @@ from search.engine.region.alternate_guard import (
     query_pins,
     shape_measure_class,
 )
+from search.engine.region.phase_rank_bind import judge_value_requirements
+from search.engine.region.requirements import judge, meets_stray_values
+from search.engine.region.state import Requirement, ValueRule, unapplied_departure
 from search.engine.shape import ShapeDraft
-from search.models import GraphRef
+from search.models import GraphRef, ResolvedQualifier
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
@@ -734,6 +738,19 @@ def test_normalisation_class_reads_the_denominator_kind(denominator, kinds, expe
     assert normalisation_class(shape, kinds=kinds) == expected
 
 
+@pytest.mark.parametrize(
+    ("denominator", "expected"),
+    [("PerCapita", "per_person"), ("Count_Person", "per_person"), (None, "unknown")],
+    ids=["per-capita-provisional", "count-person-provisional", "dcid-less"],
+)
+def test_an_unresolved_denominator_arc_reads_its_schema_term(denominator, expected):
+    """Base Data Commons holds `PerCapita` as a ProvisionalNode: its dcid still names the
+    per-person base. An arc with no dcid says nothing of its base."""
+    shape = _shape("x", "EconomicActivity", "amount", "measuredValue", None, denominator)
+    shape = dataclasses.replace(shape, meas_denom_unresolved=True)
+    assert normalisation_class(shape) == expected
+
+
 _GDP = "Amount_EconomicActivity_GrossDomesticProduction_Nominal"
 
 
@@ -778,6 +795,13 @@ _GDP = "Amount_EconomicActivity_GrossDomesticProduction_Nominal"
             "unverified",
             None,
         ),
+        # The ProvisionalNode `PerCapita` states its base as `Count_Person` does.
+        (
+            _shape("x", "Debt", "amount", "measuredValue", None, "PerCapita", unresolved=True),
+            NamedDenominator(ref=GraphRef(ref=_GDP, label="GDP"), base_words="GDP"),
+            "refused",
+            f"the query names the denominator {_GDP},",
+        ),
         # A level divides by nothing, whichever base the question names.
         (
             _shape("x", "Debt", "amount", "measuredValue", None, None),
@@ -799,6 +823,7 @@ _GDP = "Amount_EconomicActivity_GrossDomesticProduction_Nominal"
         "schema-term-arc-differs",
         "arcless-other-unverified",
         "unresolved-arc-unverified",
+        "provisional-schema-term-differs",
         "level-refused",
         "level-refused-under-none-of-these",
     ],
@@ -1811,95 +1836,379 @@ def test_pipeline_r7_density_nomination_rejected():
     assert _sv_refs(result.specs[0]) == {elected_sv}
 
 
-# The same nomination survives when the query names density. The elected count serves no
-# density, but the nomination does, so the quantity gate lets the fan-out answer with it,
-# and the count the gate refuses is no candidate beside it.
+# A query naming density holds a plain count off the menu, so bind elects the density;
+# the judge keeps the density nomination itself (`test_per_area_alternate_kept_when_phrase_names_the_framing`).
 
 
-def test_pipeline_r7_density_nomination_kept_when_query_names_density():
-    elected_sv, alt_sv = "Test_Count_Person", "Test_Count_Person_PerArea"
+def test_pipeline_r7_density_query_never_elects_a_plain_count():
+    count_sv, density_sv = "Test_Count_Person", "Test_Count_Person_PerArea"
     result = _run(
         query="population density of Testland",
         nodes={
-            elected_sv: _node(pop_type="Person", meas_prop="count", name="Total population"),
-            alt_sv: _node(
+            count_sv: _node(pop_type="Person", meas_prop="count", name="Total population"),
+            density_sv: _node(
                 pop_type="Person",
                 meas_prop="count",
                 name="Population Density",
                 meas_denom="area",
             ),
         },
-        svs=[elected_sv, alt_sv],
+        svs=[count_sv, density_sv],
         scores=[0.90, 0.89],
         chosen_shape_index=0,
-        also_plausible=[1],
+        also_plausible=None,
         obs={
-            f"{elected_sv}|country/TST": [_facet()],
-            f"{alt_sv}|country/TST": [_facet()],
+            f"{count_sv}|country/TST": [_facet()],
+            f"{density_sv}|country/TST": [_facet()],
         },
     )
     assert result.status == "definite"
     (spec,) = result.specs
-    assert _sv_refs(spec) == {alt_sv}
+    assert _sv_refs(spec) == {density_sv}
 
 
-# The margin gate injects a raw-count alternate. The normalisation pin refuses it and clears the warning.
+def _flow_amount(label: str, prop: str, value: str | None) -> ShapeDraft:
+    """A FinancialFlow amount with one member and no slot, holding `value` on `prop` when
+    given."""
+    arcs: dict = {
+        "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
+        "populationType": {"nodes": [{"dcid": "FinancialFlow"}]},
+        "measuredProperty": {"nodes": [{"dcid": "amount"}]},
+        "statType": {"nodes": [{"dcid": "measuredValue"}]},
+    }
+    if value is not None:
+        arcs["constraintProperties"] = {"nodes": [{"dcid": prop}]}
+        arcs[prop] = {"nodes": [{"dcid": value}]}
+    return ShapeDraft(
+        shape_id=label,
+        label=label,
+        pop_type_dcid="FinancialFlow",
+        meas_prop_dcid="amount",
+        stat_type_dcid="measuredValue",
+        meas_qual_dcid=None,
+        meas_denom_dcid=None,
+        slot_keys=(),
+        sv_arc_facts={f"Amount_{label}": arcs},
+    )
 
 
-def test_pipeline_fired_index_rejected_retracts_warning():
-    elected_sv, alt_sv = "Test_Incidence_Alpha", "Test_Incident_Beta"
-    result = _run(
-        query="sickness rate reporting in Testland",
-        nodes={
-            elected_sv: _node(
-                pop_type="MedicalCondition",
-                meas_prop="incidenceRateAlpha",
-                name="Disease Incidence Alpha Index",
-            ),
-            alt_sv: _node(
-                pop_type="MedicalConditionEvent",
-                meas_prop="count",
-                name="Count Of Disease Cases Beta",
-            ),
-        },
-        svs=[elected_sv, alt_sv],
-        # A 0.01 score gap is below the 0.025 margin. With 0.0 label similarity,
-        # the gate fires on alt_sv without a model nomination.
-        scores=[0.90, 0.89],
-        chosen_shape_index=0,
-        also_plausible=None,
-        obs={
-            f"{elected_sv}|country/TST": [_facet()],
-            f"{alt_sv}|country/TST": [_facet()],
+@pytest.mark.parametrize(
+    ("prop", "elected", "stray", "held", "measured", "admitted"),
+    [
+        ("crsPurpose", None, "CRSPurposeCode120", "CRSPurposeCode120", "amount", True),
+        ("crsPurpose", None, "CRSPurposeCode120", "CRSPurposeCode121", "amount", True),
+        ("crsPurpose", None, "CRSPurposeCode120", "CRSPurposeCode110", "amount", False),
+        ("crsPurpose", None, "CRSPurposeCode120", None, "amount", False),
+        ("crsPurpose", None, "CRSPurposeCode120", "CRSPurposeCode110", "adjustedAmount", False),
+        ("crsPurpose", None, "CRSPurposeCode120", None, "adjustedAmount", False),
+        ("crsPurpose", None, "CRSPurposeCode120", "CRSPurposeCode121", "adjustedAmount", True),
+        (
+            "crsPurpose",
+            "CRSPurposeCode120",
+            "CRSPurposeCode121",
+            "CRSPurposeCode121",
+            "amount",
+            True,
+        ),
+        (
+            "crsPurpose",
+            "CRSPurposeCode120",
+            "CRSPurposeCode121",
+            "CRSPurposeCode122",
+            "amount",
+            False,
+        ),
+        ("gender", "Female", "Male", "Male", "amount", True),
+        ("gender", "Female", "Male", "Female", "amount", False),
+    ],
+    ids=[
+        "the-stray-code",
+        "a-descendant",
+        "another-code",
+        "no-value-on-the-property",
+        "another-family-another-code",
+        "another-family-no-value-on-the-property",
+        "another-family-a-descendant",
+        "elected-fixes-the-parent-member-holds-the-stray",
+        "elected-fixes-the-parent-member-holds-a-sibling",
+        "elected-fixes-female-member-holds-the-stray",
+        "elected-fixes-female-member-holds-it-too",
+    ],
+)
+def test_the_guard_admits_a_stray_value_exactly_where_the_ledger_judges_it_met(
+    prop, elected, stray, held, measured, admitted
+):
+    """The bind drafted `stray` on `prop`, which the elected amount has no slot for: its
+    one member holds no value there, or holds `elected` at a fixed value. An alternate
+    member is admitted exactly when its value applies the stray (`applies_value`), as a
+    binding of the stray reads, whatever the elected reading holds and whichever family the
+    alternate measures: purpose 120's descendant 121 applies it, education 110, the sibling
+    122 and a member with no value on `prop` do not, and a member holding Female does not
+    apply Male. The ledger judges the stray met on exactly the members the guard admits,
+    and every other member is pinned out on `prop`."""
+    variable = "aid"
+    pins = query_pins(
+        variable, stray_values=[(prop, stray)], quantity=quantity_requirement([variable])
+    )
+    requirement = Requirement(
+        term=ResolvedQualifier(
+            text=stray,
+            named=[GraphRef(ref=stray, label=stray)],
+            disposition="unbound",
+            evidence="model",
+        ),
+        origin="stray",
+        rule=ValueRule(values=frozenset({(prop, stray)})),
+    )
+    alternate = dataclasses.replace(
+        _flow_amount(held or "missing", prop, held), meas_prop_dcid=measured
+    )
+
+    reason = AlternateJudge(pins, _flow_amount("elected", prop, elected)).verdict(alternate).reason
+    unmet = judge_value_requirements([requirement], alternate, [])
+
+    assert (reason is None, not unmet) == (admitted, admitted)
+    if not admitted:
+        assert reason is not None and _code(reason) == f"pin:{prop}"
+
+
+def test_the_guard_offers_a_mixed_alternate_as_the_members_that_meet_the_stray():
+    """The bind drafted Male on gender, which the elected amount has no slot for. An
+    alternate whose members hold Male and Female is offered narrowed to the Male member
+    (`AlternateJudge.offered`), the one member that applies the stray, and the ledger
+    judges the stray met on the alternate as offered, and unmet on it whole."""
+    variable = "aid"
+    stray = ("gender", "Male")
+    pins = query_pins(variable, stray_values=[stray], quantity=quantity_requirement([variable]))
+    requirement = Requirement(
+        term=ResolvedQualifier(
+            text="Male", named=[GraphRef(ref="Male", label="Male")], disposition="unbound"
+        ),
+        origin="stray",
+        rule=ValueRule(values=frozenset({stray})),
+    )
+    male, female = (
+        _flow_amount("male", "gender", "Male"),
+        _flow_amount("female", "gender", "Female"),
+    )
+    mixed = dataclasses.replace(
+        male, sv_arc_facts={**(male.sv_arc_facts or {}), **(female.sv_arc_facts or {})}
+    )
+    judge = AlternateJudge(pins, _flow_amount("elected", "gender", None))
+
+    verdict = judge.verdict(mixed)
+    offered = judge.offered(mixed)
+
+    assert verdict.reason is None
+    assert [member.dcid for member in verdict.passing] == ["Amount_male"]
+    assert list(offered.sv_arc_facts or {}) == ["Amount_male"]
+    assert judge_value_requirements([requirement], offered, []) == ()
+    assert judge_value_requirements([requirement], mixed, []) == (requirement,)
+
+
+@pytest.mark.parametrize(
+    ("prop", "drafted", "held", "admitted"),
+    [
+        ("gender", ("Female", "Male"), ("Female",), True),
+        ("gender", ("Female", "Male"), ("Male",), True),
+        ("gender", ("Female", "Male"), ("Female", "Male"), True),
+        ("gender", ("Female", "Male"), (None,), False),
+        ("crsPurpose", ("CRSPurposeCode120", "CRSPurposeCode121"), ("CRSPurposeCode121",), True),
+        ("crsPurpose", ("CRSPurposeCode120", "CRSPurposeCode121"), ("CRSPurposeCode110",), False),
+    ],
+    ids=[
+        "one-of-the-set",
+        "the-other-of-the-set",
+        "members-holding-each",
+        "no-value-on-the-property",
+        "a-code-under-one",
+        "a-code-outside-the-set",
+    ],
+)
+def test_the_guard_and_the_ledger_read_a_stray_set_by_membership(prop, drafted, held, admitted):
+    """The bind drafted the set `drafted` on `prop`, which the elected amount has no slot
+    for, and the ledger holds it as one requirement. A reading is admitted exactly when
+    every member holds a value in the set (`applies_one_of`), as a set bound on a slot
+    reads, and the ledger judges the requirement met on exactly those readings: a reading
+    of Female members, of Male members or of both applies Female and Male, and a member
+    with no value on `prop`, or with a code outside the set, does not."""
+    variable = "aid"
+    pins = query_pins(
+        variable,
+        stray_values=[(prop, value) for value in drafted],
+        quantity=quantity_requirement([variable]),
+    )
+    requirement = Requirement(
+        term=ResolvedQualifier(
+            text=" and ".join(drafted),
+            named=[GraphRef(ref=value, label=value) for value in drafted],
+            disposition="unbound",
+        ),
+        origin="stray",
+        rule=ValueRule(values=frozenset((prop, value) for value in drafted)),
+    )
+    readings = [_flow_amount(value or "missing", prop, value) for value in held]
+    alternate = dataclasses.replace(
+        readings[0],
+        sv_arc_facts={
+            dcid: arcs for r in readings for dcid, arcs in (r.sv_arc_facts or {}).items()
         },
     )
-    assert result.status == "definite"
-    assert len(result.specs) == 1
-    assert _sv_refs(result.specs[0]) == {elected_sv}
-    assert NEAR_NEIGHBOR_AMBIGUOUS not in _warning_codes(result)
+
+    verdict = AlternateJudge(pins, _flow_amount("elected", prop, None)).verdict(alternate)
+
+    assert (verdict.reason is None, meets_stray_values([requirement], alternate, [])) == (
+        admitted,
+        admitted,
+    )
+    if admitted:
+        assert len(verdict.passing) == len(held)
 
 
-# The gate-injected ordinary-count alternate is a candidate with its warning.
+def test_a_value_word_naming_two_properties_is_not_read_as_a_set():
+    """Membership is the rule for a set the bind drafts on one missing slot. A word of the
+    question naming a value on two properties (origin ``value``) is met by an answer every
+    member of which holds one same pair, so members split between the two properties leave
+    it unmet."""
+    requirement = Requirement(
+        term=ResolvedQualifier(text="female", named=[], disposition="no_vocabulary"),
+        origin="value",
+        rule=ValueRule(values=frozenset({("gender", "Female"), ("testSex", "Female")})),
+    )
+    by_gender, by_sex = (
+        _flow_amount("gender", "gender", "Female"),
+        _flow_amount("sex", "testSex", "Female"),
+    )
+    split = dataclasses.replace(
+        by_gender, sv_arc_facts={**(by_gender.sv_arc_facts or {}), **(by_sex.sv_arc_facts or {})}
+    )
+
+    assert judge_value_requirements([requirement], split, []) == (requirement,)
+    assert judge_value_requirements([requirement], by_gender, []) == ()
 
 
-def test_pipeline_fired_index_untouched_still_surfaces():
-    elected_sv, alt_sv = "Test_Widget_Count", "Test_Gadget_Count"
-    result = _run(
-        query="widget counting in Testland",
-        nodes={
-            elected_sv: _node(pop_type="Widget", meas_prop="count", name="Population Count Widget"),
-            alt_sv: _node(pop_type="Gadget", meas_prop="count", name="Population Count Gadget"),
-        },
-        svs=[elected_sv, alt_sv],
-        scores=[0.90, 0.89],
-        chosen_shape_index=0,
-        also_plausible=None,
-        obs={
-            f"{elected_sv}|country/TST": [_facet()],
-            f"{alt_sv}|country/TST": [_facet()],
+def test_the_guard_and_the_ledger_hold_a_reading_to_each_stray_property():
+    """The bind drafted Female on `gender` and purpose 120 on `crsPurpose`, neither a slot
+    of the elected amount: two requirements, one per property. A member holding both is
+    admitted and meets both; a member holding one is pinned out on the other and leaves
+    its requirement unmet."""
+    strays = [("gender", "Female"), ("crsPurpose", "CRSPurposeCode120")]
+    pins = query_pins("aid", stray_values=strays, quantity=quantity_requirement(["aid"]))
+    requirements = [
+        Requirement(
+            term=ResolvedQualifier(
+                text=value, named=[GraphRef(ref=value, label=value)], disposition="unbound"
+            ),
+            origin="stray",
+            rule=ValueRule(values=frozenset({(prop, value)})),
+        )
+        for prop, value in strays
+    ]
+    female = _flow_amount("female", "gender", "Female")
+    ((dcid, arcs),) = (female.sv_arc_facts or {}).items()
+    both = dataclasses.replace(
+        female,
+        sv_arc_facts={
+            dcid: {
+                **arcs,
+                "constraintProperties": {"nodes": [{"dcid": "gender"}, {"dcid": "crsPurpose"}]},
+                "crsPurpose": {"nodes": [{"dcid": "CRSPurposeCode121"}]},
+            }
         },
     )
-    assert result.status == "candidates"
-    assert len(result.specs) == 2
-    assert {ref for s in result.specs for ref in _sv_refs(s)} == {elected_sv, alt_sv}
-    assert NEAR_NEIGHBOR_AMBIGUOUS in _warning_codes(result)
+    judge = AlternateJudge(pins, _flow_amount("elected", "gender", None))
+
+    assert judge.verdict(both).reason is None
+    assert meets_stray_values(requirements, both, [])
+    assert _code(judge.verdict(female).reason or "") == "pin:crsPurpose"
+    assert judge_value_requirements(requirements, female, []) == (requirements[1],)
+
+
+def test_a_stray_value_is_held_by_values_alone_and_not_by_a_members_name():
+    """A member named "Adult female literacy rate" whose arcs hold no value on `gender`
+    does not apply a Female the bind drafted on `gender`: the guard pins it out, and the
+    ledger leaves the stray unmet, since a stray value is judged by values alone. A word
+    requirement for the same "female" is still met by the name."""
+    alternate = _flow_amount("named", "gender", None)
+    ((dcid, arcs),) = (alternate.sv_arc_facts or {}).items()
+    named = dataclasses.replace(
+        alternate,
+        sv_arc_facts={dcid: {**arcs, "name": {"nodes": [{"value": "Adult female literacy rate"}]}}},
+    )
+    stray, word = (
+        Requirement(
+            term=ResolvedQualifier(text="Female", named=[], disposition="unbound"),
+            origin=origin,
+            rule=ValueRule(values=frozenset({("gender", "Female")})),
+        )
+        for origin in ("stray", "value")
+    )
+    pins = query_pins(
+        "aid", stray_values=[("gender", "Female")], quantity=quantity_requirement(["aid"])
+    )
+
+    reason = AlternateJudge(pins, _flow_amount("elected", "gender", None)).verdict(named).reason
+
+    assert reason is not None and _code(reason) == "pin:gender"
+    assert judge_value_requirements([stray, word], named, []) == (stray,)
+
+
+def _drafted_set(prop: str, values: tuple[str, ...]) -> list[Requirement]:
+    """The ledger entries of `values` drafted together on `prop`, a slot the elected reading
+    lacks: the set, and each value disclosed on its own (`_stray_requirements`)."""
+    named = [GraphRef(ref=value, label=value) for value in values]
+    return [
+        Requirement(
+            term=ResolvedQualifier(text=" and ".join(values), named=named, disposition="unbound"),
+            origin="stray",
+            rule=ValueRule(values=frozenset((prop, value) for value in values)),
+            departure=unapplied_departure(
+                " and ".join(values), asked=" and ".join(values), property_dcid=prop
+            ),
+        ),
+        *(
+            Requirement(
+                term=ResolvedQualifier(text=value, named=[ref], disposition="unbound"),
+                origin="set_value",
+                rule=ValueRule(values=frozenset({(prop, value)})),
+                departure=unapplied_departure(value, asked=value, property_dcid=prop),
+            )
+            for value, ref in zip(values, named, strict=True)
+        ),
+    ]
+
+
+def test_an_answer_reading_each_value_of_a_drafted_set_discloses_none():
+    """An answer whose members hold Female and Male, read without a binding on gender, meets
+    the set and each of its values: a value of a drafted set is met when some selected
+    member holds it, so nothing departs."""
+    female, male = (
+        _flow_amount("female", "gender", "Female"),
+        _flow_amount("male", "gender", "Male"),
+    )
+    both = dataclasses.replace(
+        female, sv_arc_facts={**(female.sv_arc_facts or {}), **(male.sv_arc_facts or {})}
+    )
+
+    judgement = judge(_drafted_set("gender", ("Female", "Male")), [(both, [])])
+
+    assert judgement.outcomes == (("met", "met", "met"),)
+    assert judgement.departures() == ()
+
+
+def test_a_value_word_and_a_drafted_value_of_one_phrase_depart_once():
+    """The request's word "male" (origin ``value``) and the drafted label "Male" are one
+    phrase once case-folded, so an answer holding only Female departs it once."""
+    word = Requirement(
+        term=ResolvedQualifier(text="male", named=[], disposition="no_vocabulary"),
+        origin="value",
+        rule=ValueRule(values=frozenset({("gender", "Male")})),
+        departure=unapplied_departure("male", asked="male", property_dcid="gender"),
+    )
+    female = _flow_amount("female", "gender", "Female")
+
+    departed = judge(
+        [*_drafted_set("gender", ("Female", "Male")), word], [(female, [])]
+    ).departures()
+
+    assert [fact.asked.casefold() for _warning, fact in departed] == ["male"]

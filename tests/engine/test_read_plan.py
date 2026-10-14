@@ -4,6 +4,7 @@ reads, and coverage follows that plan."""
 from __future__ import annotations
 
 import itertools
+import threading
 from dataclasses import dataclass, field, replace
 
 import pytest
@@ -13,14 +14,20 @@ from materialise.facets import bound_variable_breadth, coverage_probe, served_fa
 from materialise.series_conversion import series_key
 from search.engine.app import _note_breadth_fallback
 from search.engine.clients.graph import Facet
+from search.engine.config import settings
 from search.engine.degraded_reads import recording_degraded_reads
+from search.engine.errors import GraphInfraError
 from search.engine.extract import DateRequest
+from search.engine.region.convertibility import _served_keys
 from search.engine.region.facets import FacetAdmission, filter_answer
 from search.engine.region.observations.bulk_role_series import (
     _bulk_role_series,
     _plan_role_bulk_fetch,
 )
+from search.engine.region.observations.fetch import _dispatched_series, _dispatches
+from search.engine.region.option_coverage import RoleServedFilter
 from search.engine.retrieval.coverage import CoverageForm, answer_coverage, answer_headline
+from search.engine.retrieval.download import download_facts
 from search.engine.retrieval.member_facts import ArcsMemberFacts
 from search.engine.retrieval.read_plan import (
     BulkPlan,
@@ -36,6 +43,7 @@ from search.engine.retrieval.read_plan import (
     plan_window,
     plan_years,
     read_range,
+    served_dates,
     unserved_entities,
     window_gap,
 )
@@ -47,7 +55,7 @@ from search.observations import observation_settings
 from series_coverage.coverage_types import BoundRoles
 from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames, YearHorizon
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
-from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._fake_sdmx import CountingSdmxClient, FakeSdmxClient, plan_observations
 from tests.fixtures import FakeGraph
 
 _TOTAL = "TEST/PreviewRoute_Total"
@@ -96,6 +104,7 @@ def _plan(sv_dcids, entity_lists) -> ReadPlan:
         pair_series=lambda members: [],
         member_probes=lambda members: {},
         roles=PlanRoles(bound={}, role_names={"recipient": "debtor"}),
+        elect=lambda plan: {},
     )
 
 
@@ -157,6 +166,7 @@ def test_an_open_role_reads_in_bulk_when_its_series_pass_the_cap() -> None:
             pair_series=lambda members: series(creditors),
             member_probes=lambda members: {},
             roles=PlanRoles(bound={}, role_names={"recipient": "debtor", "donor": "creditor"}),
+            elect=lambda plan: {},
         )
 
     cap = observation_settings().obs_preview_max_pairs
@@ -341,11 +351,11 @@ def _bulk_named_answer(search_settings, metadata: dict[str, FacetMetadata]):
 
 
 def _read_facets(plan: BulkPlan, sv_dcids: list[str]) -> set[str]:
-    """The facet ids the bulk read requests for `plan`."""
+    """The facet ids the bulk read requests for `plan`, the same in each of its reads."""
     sdmx = FakeSdmxClient(observations={})
     _bulk_role_series(plan, sv_dcids, sdmx=sdmx, graph=FakeGraph(), facet_filter=None)
-    (call,) = sdmx.series_calls
-    return set(call["facet_ids"])
+    (facet_ids,) = {frozenset(call["facet_ids"]) for call in sdmx.series_calls}
+    return set(facet_ids)
 
 
 def _preview_facet(index, plan, unit: str) -> str | None:
@@ -434,6 +444,451 @@ def test_named_family_coverage_dates_the_total_the_preview_reads() -> None:
     )
     assert headline is not None
     assert (headline.year, headline.series) == (2022, 3)
+
+
+_ELECTION_DEBTORS = [f"country/E{i:02d}" for i in range(11)]
+
+
+def _election_rows(sv: str, series_by_year: dict[int, int]) -> list:
+    """One series per debtor, the first `series_by_year[year]` debtors holding `year`."""
+    return [
+        (sv, "f1", ABSENT_ENTITY, debtor, [y for y, held in series_by_year.items() if i < held])
+        for i, debtor in enumerate(_ELECTION_DEBTORS[: max(series_by_year.values())])
+    ]
+
+
+def _election_plan(index, sv_dcids: list[str], date_request: DateRequest) -> ReadPlan:
+    return _role_plan(
+        sv_dcids,
+        member_facts={sv: _Constraints({"sector": sv}) for sv in sv_dcids},
+        names={"destination": "debtor"},
+        subject_dcids=_ELECTION_DEBTORS,
+        origin_dcids=[],
+        bound_roles={"recipient": frozenset(_ELECTION_DEBTORS)},
+        years=read_plan.role_years(date_request, index.horizon),
+        coverage_index=index,
+    )
+
+
+def _bulk_reads(plan: BulkPlan) -> list[tuple[list[str], str | list[str]]]:
+    """The `(variables, time_period)` of each `role_series` call a bulk preview of `plan`
+    makes, in order, against an SDMX that agrees with coverage (`plan_observations`)."""
+    sdmx = FakeSdmxClient(observations=plan_observations(plan))
+    _bulk_role_series(plan, list(plan.members), sdmx=sdmx, graph=FakeGraph(), facet_filter=None)
+    return [(call["variables"], call["time_period"]) for call in sdmx.series_calls]
+
+
+def _bulk_pairs(plan: BulkPlan) -> dict[str, int]:
+    """The pairs a bulk preview of `plan` dispatches for each member."""
+    fetch = _plan_role_bulk_fetch(plan)
+    return {
+        sv: sum(1 for member, _role_tuple in fetch.to_fetch if member == sv)
+        for sv in fetch.facet_svs
+    }
+
+
+def _latest_read(plan: PairPlan) -> dict[str, tuple[int | None, int]]:
+    """What a per-pair `latest` preview of `plan` reads for each member: the year it names
+    beside `LATEST` (`_Dispatch.elected_year`), None for `LATEST` alone, and the series it
+    dispatches."""
+    read: dict[str, tuple[int | None, int]] = {}
+    for dispatch in _dispatches(
+        _dispatched_series(plan, plan.members),
+        {"debtor": _ELECTION_DEBTORS},
+        years=plan.years,
+        elected=plan.elected_years or {},
+    ):
+        year = dispatch.elected_year
+        read[dispatch.stat_var] = (year, read.get(dispatch.stat_var, (year, 0))[1] + 1)
+    return read
+
+
+@pytest.mark.parametrize("bulk", [False, True], ids=["per_pair", "bulk"])
+@pytest.mark.parametrize(
+    ("date_request", "year", "series"),
+    [
+        pytest.param(_LATEST, 2024, 9, id="latest"),
+        pytest.param(
+            DateRequest(window=TimeWindow(start_year=2025, end_year=2025), latest=False),
+            2025,
+            5,
+            id="named_year",
+        ),
+    ],
+)
+def test_a_latest_headline_and_download_count_the_year_the_held_series_elect(
+    monkeypatch, search_settings, bulk: bool, date_request: DateRequest, year: int, series: int
+) -> None:
+    """Five debtors hold 2025, nine 2024 and eleven 2023. A `latest` answer heads 2024 with
+    the nine holding it, its preview reads 2024, in bulk for those nine and per pair beside
+    the `LATEST` row of all eleven, and its file and an option's served test count them, on
+    both routes, from one election. The series at the newest
+    period, or the nine alone, would elect 2025, and the headline keeps the raw counts of
+    all three years. A request naming 2025 heads it with five and elects nothing."""
+    if bulk:
+        search_settings(obs_preview_max_pairs=1)
+    index = build_coverage_index(
+        _election_rows(_TOTAL, {2025: 5, 2024: 9, 2023: 11}),
+        role_names={_TOTAL: RoleNames(donor=None, recipient="debtor")},
+    )
+    elections: list[object] = []
+    elect = index.elected_years
+    monkeypatch.setattr(
+        index, "elected_years", lambda **rows: elections.append(rows) or elect(**rows)
+    )
+    plan = _election_plan(index, [_TOTAL], date_request)
+    assert isinstance(plan, BulkPlan if bulk else PairPlan)
+
+    headline = answer_headline(plan, index, date_request=date_request)
+    download = download_facts(
+        plan,
+        index,
+        requested_window="latest" if date_request.latest else None,
+        conversion=None,
+        provenance=None,
+    )
+
+    assert headline is not None
+    assert (headline.year, headline.series, headline.role_counts) == (
+        year,
+        series,
+        {"debtor": series},
+    )
+    assert served_dates(plan) == {_TOTAL: (str(year), str(year))}
+    assert isinstance(answer_coverage(plan, CoverageForm()), CoverageExact)
+    assert len(elections) == (1 if date_request.latest else 0)
+    if date_request.latest:
+        if isinstance(plan, BulkPlan):
+            assert _bulk_pairs(plan) == {_TOTAL: 9}
+            # Five pairs end after 2024, so the year is read once more.
+            assert _bulk_reads(plan) == [([_TOTAL], "LATEST"), ([_TOTAL], ["2024"])]
+        else:
+            assert _latest_read(plan) == {_TOTAL: (2024, 11)}
+        assert [(c.year, c.series) for c in headline.recent_years] == [
+            (2025, 5),
+            (2024, 9),
+            (2023, 11),
+        ]
+        option = RoleServedFilter(
+            probe_entities={"debtor": _ELECTION_DEBTORS},
+            open_axes=frozenset(),
+            years="latest",
+            coverage=index,
+        ).served({_TOTAL: _Constraints()})
+        epoch = index.horizon.epoch_year
+        assert {rows.years for rows in option[_TOTAL].values()} == {1 << (2024 - epoch)}
+        assert len(option[_TOTAL]) == series
+    assert (download.rows, download.series, download.window) == (
+        series,
+        series,
+        TimeWindow(start_year=year, end_year=year),
+    )
+
+
+@pytest.mark.parametrize("bulk", [False, True], ids=["per_pair", "bulk"])
+def test_a_two_member_latest_headline_counts_the_member_serving_its_year(
+    search_settings, bulk: bool
+) -> None:
+    """The total holds 2025 at four of five debtors and elects it. Its health part holds
+    2025 at one of six and elects 2024. The headline names 2025 with the total's four
+    series, the preview reads the total in 2025, per pair at all five debtors, and the
+    part's six series in 2024, and the file holds those ten rows, on both routes."""
+    if bulk:
+        search_settings(obs_preview_max_pairs=1)
+    index = build_coverage_index(
+        _election_rows(_TOTAL, {2025: 4, 2024: 5}) + _election_rows(_HEALTH, {2025: 1, 2024: 6}),
+        role_names=_FAMILY_ROLES,
+    )
+    plan = _election_plan(index, [_TOTAL, _HEALTH], _LATEST)
+    assert isinstance(plan, BulkPlan if bulk else PairPlan)
+    assert plan.elected_years == {_TOTAL: 2025, _HEALTH: 2024}
+    # A plan narrowed by a facet filter elects for itself, here over the same rows.
+    assert plan.narrowed(lambda _sv, _candidate: True).elected_years == plan.elected_years
+    if isinstance(plan, BulkPlan):
+        assert _bulk_pairs(plan) == {_TOTAL: 4, _HEALTH: 6}
+        # Only the part ends after its year, and its read names no year of the total's.
+        assert _bulk_reads(plan) == [([_TOTAL, _HEALTH], "LATEST"), ([_HEALTH], ["2024"])]
+    else:
+        assert _latest_read(plan) == {_TOTAL: (2025, 5), _HEALTH: (2024, 6)}
+    assert served_dates(plan) == {_TOTAL: ("2025", "2025"), _HEALTH: ("2024", "2024")}
+    # A conversion checks each member's rows in the year it serves them.
+    assert {
+        sv: {block.year for rows in keys.values() for block in rows()}
+        for sv, keys in _served_keys(plan).items()
+    } == {_TOTAL: {2025}, _HEALTH: {2024}}
+
+    headline = answer_headline(plan, index, date_request=_LATEST)
+    download = download_facts(
+        plan, index, requested_window="latest", conversion=None, provenance=None
+    )
+
+    assert headline is not None
+    assert (headline.year, headline.series, headline.role_counts) == (2025, 4, {"debtor": 4})
+    assert [(c.year, c.series) for c in headline.recent_years[:2]] == [(2025, 5), (2024, 11)]
+    assert (download.rows, download.series, download.window) == (
+        10,
+        10,
+        TimeWindow(start_year=2024, end_year=2025),
+    )
+
+
+@pytest.mark.parametrize("bulk", [False, True], ids=["per_pair", "bulk"])
+@pytest.mark.parametrize(
+    ("period", "build_year"),
+    [pytest.param("P1M", None, id="sub_annual"), pytest.param("P1Y", 2022, id="projected")],
+)
+def test_a_member_the_index_cannot_elect_for_serves_its_newest_year(
+    search_settings, bulk: bool, period: str, build_year: int | None
+) -> None:
+    """Five debtors hold 2025, nine 2024 and eleven 2023, counts that elect 2024. A facet
+    stating months, or an index built in 2022, before every year held, elects no year. The
+    preview reads `LATEST` and the answer serves, heads and counts the five series at
+    2025, on both routes. A per-pair read fetches the latest row of all eleven to find
+    that period, and a bulk read the five pairs coverage dates in it."""
+    if bulk:
+        search_settings(obs_preview_max_pairs=1)
+    index = build_coverage_index(
+        _election_rows(_TOTAL, {2025: 5, 2024: 9, 2023: 11}),
+        role_names={_TOTAL: RoleNames(donor=None, recipient="debtor")},
+        facet_metadata={
+            "f1": FacetMetadata(provenance_id="dc/base/Ids", observation_period=period)
+        },
+        build_year=build_year,
+    )
+    plan = _election_plan(index, [_TOTAL], _LATEST)
+    assert isinstance(plan, BulkPlan if bulk else PairPlan)
+
+    headline = answer_headline(plan, index, date_request=_LATEST)
+    download = download_facts(
+        plan, index, requested_window="latest", conversion=None, provenance=None
+    )
+
+    assert plan.elected_years == {}
+    if isinstance(plan, BulkPlan):
+        assert _bulk_pairs(plan) == {_TOTAL: 5}
+        assert _bulk_reads(plan) == [([_TOTAL], "LATEST")]
+    else:
+        assert _latest_read(plan) == {_TOTAL: (None, 11)}
+    assert served_dates(plan) == {_TOTAL: ("2025", "2025")}
+    assert headline is not None and (headline.year, headline.series) == (2025, 5)
+    assert (download.rows, download.series, download.window) == (
+        5,
+        5,
+        TimeWindow(start_year=2025, end_year=2025),
+    )
+    # A plan holding no election elects nothing too, and its file holds the same rows.
+    assert (
+        download_facts(
+            replace(plan, elect=None),
+            index,
+            requested_window="latest",
+            conversion=None,
+            provenance=None,
+        )
+        == download
+    )
+
+
+def test_a_second_bulk_read_names_each_member_only_the_year_it_elected(search_settings) -> None:
+    """Fifty members each hold every year from 1975 at 180 debtors, member `i` up to
+    `1975 + i`, and one debtor holds the year after, so each elects a different year and
+    ends after it. The answer keeps 9,000 rows. Each read after `LATEST` names its members
+    only the year they elected, so the reads return 9,000 rows each way, where one read
+    naming every member every elected year would return 229,549, past the SDMX row cap."""
+    search_settings(obs_preview_max_pairs=1)
+    debtors = [f"country/R{i:03d}" for i in range(180)]
+    members = [f"TEST/PreviewRoute_Member{i:02d}" for i in range(50)]
+    index = build_coverage_index(
+        [
+            (
+                sv,
+                "f1",
+                ABSENT_ENTITY,
+                debtor,
+                [*range(1975, 1976 + i), *([1976 + i] if d == 0 else [])],
+            )
+            for i, sv in enumerate(members)
+            for d, debtor in enumerate(debtors)
+        ],
+        role_names={sv: RoleNames(donor=None, recipient="debtor") for sv in members},
+    )
+    plan = _role_plan(
+        members,
+        member_facts={sv: _Constraints({"sector": sv}) for sv in members},
+        names={"destination": "debtor"},
+        subject_dcids=debtors,
+        origin_dcids=[],
+        bound_roles={"recipient": frozenset(debtors)},
+        years=read_plan.role_years(_LATEST, index.horizon),
+        coverage_index=index,
+    )
+    assert isinstance(plan, BulkPlan) and plan.elected_years is not None
+    sdmx = CountingSdmxClient(observations=plan_observations(plan))
+
+    observations, _warning = _bulk_role_series(
+        plan, members, sdmx=sdmx, graph=FakeGraph(), facet_filter=None
+    )
+
+    newest, *named = sdmx.series_calls
+    assert (newest["time_period"], newest["rows"]) == ("LATEST", 9_000)
+    assert sorted(sv for call in named for sv in call["variables"]) == sorted(members)
+    for call in named:
+        assert all(call["time_period"] == [str(plan.elected_years[sv])] for sv in call["variables"])
+        assert call["rows"] <= settings().sdmx_max_rows
+    assert sum(call["rows"] for call in named) == plan.observation_count == 9_000
+    assert observations.omitted is None
+
+
+def _two_year_plan(search_settings) -> BulkPlan:
+    """A bulk plan whose total elects 2024 and whose health part elects 2023, each with
+    debtors ending after its year, so a `latest` read asks `LATEST` and then each year."""
+    search_settings(obs_preview_max_pairs=1)
+    index = build_coverage_index(
+        _election_rows(_TOTAL, {2025: 5, 2024: 9, 2023: 11})
+        + _election_rows(_HEALTH, {2024: 2, 2023: 9, 2022: 11}),
+        role_names=_FAMILY_ROLES,
+    )
+    plan = _election_plan(index, [_TOTAL, _HEALTH], _LATEST)
+    assert isinstance(plan, BulkPlan)
+    assert plan.elected_years == {_TOTAL: 2024, _HEALTH: 2023}
+    return plan
+
+
+class _MeetingSdmx(FakeSdmxClient):
+    """Holds each year-named `role_series` call until `together` of them are in flight,
+    and breaks when they do not meet."""
+
+    def __init__(self, *, together: int, **fixtures) -> None:
+        super().__init__(**fixtures)
+        self._meet = threading.Barrier(together, timeout=10)
+
+    def role_series(self, **read):
+        if read["time_period"] != "LATEST":
+            self._meet.wait()
+        return super().role_series(**read)
+
+
+def test_the_bulk_reads_of_each_elected_year_are_in_flight_together(search_settings) -> None:
+    """The reads of 2023 and 2024 that follow `LATEST` run at once, each under the
+    preview's deadline and naming its member its own year, and both members are served."""
+    plan = _two_year_plan(search_settings)
+    sdmx = _MeetingSdmx(together=2, observations=plan_observations(plan))
+
+    observations, _warning = _bulk_role_series(
+        plan, [_TOTAL, _HEALTH], sdmx=sdmx, graph=FakeGraph(), facet_filter=None, deadline=123.0
+    )
+
+    assert sorted(
+        (call["variables"], call["time_period"], call["deadline"]) for call in sdmx.series_calls[1:]
+    ) == [([_HEALTH], ["2023"], 123.0), ([_TOTAL], ["2024"], 123.0)]
+    assert sdmx.series_calls[0]["deadline"] == 123.0
+    assert observations.omitted is None
+    assert {(s.stat_var.ref, p.date) for s in observations.series for p in s.points} == {
+        (_TOTAL, "2024"),
+        (_HEALTH, "2023"),
+    }
+
+
+@pytest.mark.parametrize(
+    ("failure", "reason"),
+    [
+        pytest.param(
+            GraphInfraError("year read failed"), "observations_bulk_fetch_failed", id="failed"
+        ),
+        pytest.param(TimeoutError(), "observations_timed_out", id="timed_out"),
+    ],
+)
+def test_a_failed_year_read_of_a_bulk_preview_serves_no_series(
+    search_settings, failure: BaseException, reason: str
+) -> None:
+    """The bulk read asks `LATEST` and then 2023 and 2024. When one of those two reads
+    fails or crosses the deadline the preview is omitted for that reason with no series,
+    as when the first read fails: the member whose year was read is not served alone, and
+    no `LATEST` row stands in for the year that could not be read."""
+    plan = _two_year_plan(search_settings)
+    sdmx = FakeSdmxClient(
+        observations=plan_observations(plan), raise_series=lambda i: failure if i == 2 else None
+    )
+
+    observations, warning = _bulk_role_series(
+        plan, [_TOTAL, _HEALTH], sdmx=sdmx, graph=FakeGraph(), facet_filter=None
+    )
+
+    assert len(sdmx.series_calls) == 3
+    assert observations.omitted is not None and observations.omitted.reason == reason
+    assert observations.series == []
+    assert warning is not None and warning.code == reason
+
+
+@pytest.mark.parametrize("bulk", [False, True], ids=["per_pair", "bulk"])
+def test_a_dateless_role_plan_runs_no_election(monkeypatch, search_settings, bulk: bool) -> None:
+    """A read of every date serves no elected year, so its plan never asks the index for
+    one."""
+    if bulk:
+        search_settings(obs_preview_max_pairs=1)
+    index = build_coverage_index(
+        _election_rows(_TOTAL, {2025: 5, 2024: 9, 2023: 11}),
+        role_names={_TOTAL: RoleNames(donor=None, recipient="debtor")},
+    )
+    elections: list[object] = []
+    monkeypatch.setattr(index, "elected_years", lambda **rows: elections.append(rows) or {})
+    plan = _role_plan(
+        [_TOTAL],
+        member_facts={_TOTAL: _Constraints({"sector": _TOTAL})},
+        names={"destination": "debtor"},
+        subject_dcids=_ELECTION_DEBTORS,
+        origin_dcids=[],
+        bound_roles={"recipient": frozenset(_ELECTION_DEBTORS)},
+        years=read_plan.role_years(None, index.horizon),
+        coverage_index=index,
+    )
+    assert isinstance(plan, BulkPlan if bulk else PairPlan)
+
+    assert plan.elected_years is None
+    assert elections == []
+
+
+@pytest.mark.parametrize("bulk", [False, True], ids=["per_pair", "bulk"])
+def test_a_plan_less_omitted_rows_elects_again_over_the_rows_it_keeps(
+    monkeypatch, search_settings, bulk: bool
+) -> None:
+    """Five debtors hold 2025, nine 2024 and eleven 2023, which elects 2024. Without one
+    debtor that holds 2025 and the four that stop at 2024 the counts are four, four and
+    six, and the plan less their rows elects 2025 and serves its four series there. A
+    per-pair preview reads every series the plan holds, eleven and six. Each plan elects
+    once, however many counts read it."""
+    if bulk:
+        search_settings(obs_preview_max_pairs=1)
+    index = build_coverage_index(
+        _election_rows(_TOTAL, {2025: 5, 2024: 9, 2023: 11}),
+        role_names={_TOTAL: RoleNames(donor=None, recipient="debtor")},
+    )
+    elections: list[object] = []
+    elect = index.elected_years
+    monkeypatch.setattr(
+        index, "elected_years", lambda **rows: elections.append(rows) or elect(**rows)
+    )
+    plan = _election_plan(index, [_TOTAL], _LATEST)
+    kept = plan.omitting(frozenset((_TOTAL, "debtor", d) for d in _ELECTION_DEBTORS[4:9]))
+
+    for read, year, series, held in ((plan, 2024, 9, 11), (kept, 2025, 4, 6)):
+        headline = answer_headline(read, index, date_request=_LATEST)
+        download = download_facts(
+            read, index, requested_window="latest", conversion=None, provenance=None
+        )
+        if isinstance(read, BulkPlan):
+            assert _bulk_pairs(read) == {_TOTAL: series}
+            # No pair the plan keeps ends after 2025, so that plan reads `LATEST` alone.
+            assert (
+                _bulk_reads(read)
+                == [([_TOTAL], "LATEST"), ([_TOTAL], ["2024"])][: 2 if year == 2024 else 1]
+            )
+        else:
+            assert _latest_read(read) == {_TOTAL: (year, held)}
+        assert served_dates(read) == {_TOTAL: (str(year), str(year))}
+        assert headline is not None and (headline.year, headline.series) == (year, series)
+        assert (download.rows, download.series) == (series, series)
+    assert len(elections) == 2
 
 
 def test_discovered_family_elects_over_the_total_the_preview_reads(search_settings) -> None:
@@ -787,7 +1242,9 @@ def test_role_years_with_no_year_left_raise() -> None:
 def test_each_series_serves_its_joint_dispatch_group() -> None:
     """Kenya's `f-a` and `f-b` share a provenance, method and unit, so its series holds both.
     Norway's `f-c` comes from another source and is passed over. Under `latest` the preview
-    dispatches Kenya's series alone, since Norway's ends in 2022, before the variable's 2024."""
+    dispatches Kenya's series alone, since Norway's ends in 2022, before the variable's 2024.
+    A place-keyed variable lies outside the coverage index, elects no year and serves its
+    newest period."""
     plan = plan_standard(
         {
             ("sv", "country/KEN"): [
@@ -807,6 +1264,7 @@ def test_each_series_serves_its_joint_dispatch_group() -> None:
         ("sv", "country/KEN"): frozenset({"f-a", "f-b"}),
         ("sv", "country/NOR"): frozenset({"f-a"}),
     }
+    assert plan.elected_years is None
     assert [s.key for s in plan.served] == [("sv", "country/KEN")]
     assert all(s.role_tuple == (("observationAbout", s.key[1]),) for s in plan.held)
 

@@ -92,7 +92,7 @@ def _run(*, denominator: dict | None, monkeypatch):
             has_data=True,
             coverage=CoverageBare(has_data=True, window=None),
             # A real resolve path always populates this (Materialised's own
-            # docstring); _phase_assemble_definite reads it unconditionally
+            # docstring); _assemble_definite_answer reads it unconditionally
             # to observe this Spec's own served measure partition.
             member_facts={_SV: ArcsMemberFacts(arcs=_gdp_arcs(denominator=denominator))},
         ),
@@ -306,21 +306,26 @@ def test_person_count_denominator_answers_a_per_capita_query(monkeypatch):
 
 
 def test_off_topic_per_capita_series_stays_beside_the_named_shape(monkeypatch):
-    """nd-07: a murder rate per capita on the menu does not displace the teacher count
-    "teacher count per capita" names, and the elected count refuses
-    `denominator_not_available`."""
+    """nd-07: the teacher count "teacher count per capita" names serves no per-person form,
+    so it is listed as not electable beside the murder rate per capita, the menu's one
+    admissible shape. Bind declines the murder rate and names the teacher count, which the
+    refusal `denominator_not_available` flags."""
     result, _, llm = _resolve(
         "teacher count per capita in Kenya",
         nodes=_TEACHER_NODES,
         svs=[_TEACHERS, _MURDER_PER_CAPITA],
         place=("Kenya", "country/KEN"),
         monkeypatch=monkeypatch,
+        llm=_ReadingLLM(None, nearest="Number of teachers"),
     )
     (prompt,) = llm.prompts
-    assert _TEACHERS in prompt
-    assert _MURDER_PER_CAPITA in prompt
+    menu, _, refused = prompt.partition("NOT ELECTABLE")
+    assert _MURDER_PER_CAPITA in menu
+    assert "Number of teachers (fails the form the query asks for)" in refused
     assert result.status == "no_data"
     assert result.no_data_reason == "denominator_not_available"
+    (flagged,) = result.flagged_match or ()
+    assert _members(flagged) == [_TEACHERS]
 
 
 def test_a_request_naming_no_form_lists_the_denominators_for_the_quantity_read(monkeypatch):
@@ -479,21 +484,26 @@ _NONE_OF_THESE = "none of these"
 _OBS = {"earliestDate": "2020", "latestDate": "2022", "obsCount": 3}
 
 
+_SHARE_OF_GNI = "External debt (% of GNI)"
+
+
 class _ReadingLLM(_MenuLLM):
     """Elects the shape labelled `elect`, nominates the shapes labelled `also`, and names
     the DENOMINATORS entry `denominator` (a label, or "none of these") on the phrase's
     words `base_words`, with `stated_form` as the form it states and `unplaced` as the
-    phrases it places nowhere."""
+    phrases it places nowhere. With no `elect` it asks, naming the NOT ELECTABLE entry
+    labelled `nearest` as nearest, or none."""
 
     def __init__(
         self,
-        elect: str,
+        elect: str | None,
         *,
         denominator: str | int | None = None,
         base_words: str | None = None,
         stated_form: str | None = None,
         also: tuple[str, ...] = (),
         unplaced: tuple[str, ...] = (),
+        nearest: str | None = None,
     ) -> None:
         """`denominator` names a DENOMINATORS entry by label, or, as an int, the offset
         past the list's last index (`1` is the first index outside it)."""
@@ -504,6 +514,7 @@ class _ReadingLLM(_MenuLLM):
         self.stated_form = stated_form
         self.also = also
         self.unplaced = unplaced
+        self.nearest = nearest
 
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
@@ -514,8 +525,20 @@ class _ReadingLLM(_MenuLLM):
                 stated_form=self.stated_form,
             ), None
         self.prompts.append(prompt)
-        labels = re.findall(r"^Shape (\d+):\n  label: (.+)$", prompt, flags=re.MULTILINE)
-        chosen = next(int(index) for index, label in labels if label == self.elect)
+        menu, _, refused = prompt.partition("NOT ELECTABLE")
+        labels = re.findall(r"^Shape (\d+):\n  label: (.+)$", menu, flags=re.MULTILINE)
+        if self.elect is None:
+            named = re.findall(r"^  (\d+): (.+) \(fails .+\)$", refused, flags=re.MULTILINE)
+            output = _UniversalBindOutput(
+                chosen_shape_index=0,
+                ask="no shape on the menu measures this",
+                nearest_refused_index=next(
+                    (int(i) for i, label in named if label == self.nearest), None
+                ),
+                unplaced=list(self.unplaced),
+            )
+            return output, None
+        chosen = next(int(i) for i, label in labels if label == self.elect)
         output = _UniversalBindOutput(
             chosen_shape_index=chosen,
             bindings=[],
@@ -562,72 +585,69 @@ def _members(spec) -> list[str]:
 
 
 @pytest.mark.parametrize(
-    "query,nodes,svs,elect,unplaced",
+    ("query", "unplaced"),
     [
-        ("debt to GDP ratio", _DEBT_NODES, _DEBT_MENU, "External debt (current US$)", ()),
-        (
-            "debt service as a share of exports",
-            _DEBT_NODES,
-            _DEBT_MENU,
-            "External debt (current US$)",
-            (),
-        ),
-        (
-            "aid density",
-            _ODA_NODES,
-            [_ODA_AMOUNT, _ODA_GNI_SHARE],
-            "ODA",
-            (),
-        ),
-        (
-            "measles debt to GDP ratio",
-            _DEBT_NODES,
-            _DEBT_MENU,
-            "External debt (current US$)",
-            ("measles",),
-        ),
+        ("debt to GDP ratio", ()),
+        ("debt service as a share of exports", ()),
+        ("measles debt to GDP ratio", ("measles",)),
     ],
-    ids=["rate-level", "share-level", "per-area-level", "rate-level-unplaced-word"],
+    ids=["rate", "share", "rate-unplaced-word"],
 )
-def test_a_form_the_elected_shape_does_not_serve_refuses(
-    query, nodes, svs, elect, unplaced, monkeypatch
+def test_a_level_refused_on_its_form_is_flagged_when_bind_declines_and_names_it(
+    query, unplaced, monkeypatch
 ):
-    """A rate, a share or a density the elected level does not serve refuses
-    `denominator_not_available`, flagging the level, where the gate once held only
-    per-person forms. A level has no level relaxation, so the refusal offers no
-    nearest_real and probes no relaxation of the refused series. The flagged level's trace
-    records the words the elected reading leaves unplaced, which the refusal does not
-    name, and each of them departs once."""
-    from search.engine.region import phase_place_materialise
+    """A rate or a share the dollar level does not serve leaves the level off the menu as
+    not electable. Bind declines the shapes left and names the level as nearest, so the part
+    refuses `denominator_not_available` flagging it, before any read
+    (`phase_place_materialise._declined_refusal`). The flagged level's trace records the
+    words bind leaves unplaced, which the refusal does not name, and each of them departs
+    once."""
+    llm = _ReadingLLM(None, nearest="External debt (current US$)", unplaced=unplaced)
+    result = _resolve_debt(query, llm, monkeypatch)
 
-    probes: list[object] = []
-    monkeypatch.setattr(
-        phase_place_materialise,
-        "_nearest_real_for",
-        lambda state, **kwargs: probes.append(kwargs),
-    )
-    place = _GHANA if nodes is _DEBT_NODES else ("Norway", "country/NOR")
-    result, _, _ = _resolve(
-        query,
-        nodes=nodes,
-        svs=svs,
-        place=place,
-        monkeypatch=monkeypatch,
-        llm=_ReadingLLM(elect, unplaced=unplaced),
-    )
+    (prompt,) = llm.prompts
+    menu, _, refused = prompt.partition("NOT ELECTABLE")
+    assert "External debt (current US$)" not in menu
+    assert "External debt (current US$) (fails the form the query asks for)" in refused
     assert result.status == "no_data"
     assert result.no_data_reason == "denominator_not_available"
     (flagged,) = result.flagged_match or ()
-    assert _members(flagged) == [svs[0]]
+    assert _members(flagged) == [_DEBT_LEVEL]
     assert [q.text for q in flagged.resolved.trace.query_qualifiers] == list(unplaced)
     assert result.unbound_qualifiers == ()
     assert [(f.code, f.asked) for f in result.departure_facts.values()] == [
         ("measure_not_applied", word) for word in unplaced
     ]
+    assert result.nearest_real is None
     assert result.denominator is not None
     assert result.denominator.asked is None and result.denominator.found is None
-    assert result.nearest_real is None
-    assert probes == []
+    assert "materialise" not in result.timing_by_step
+
+
+@pytest.mark.parametrize(
+    ("nearest", "flagged"), [("ODA", [_ODA_AMOUNT]), (None, [])], ids=["named", "none-named"]
+)
+def test_a_density_no_reading_serves_binds_over_an_empty_menu(
+    nearest: str | None, flagged: list[str], monkeypatch
+):
+    """Neither the ODA amount nor its share of GNI is a density, so no reading of "aid
+    density" is admissible. Bind runs over an empty menu with both readings not electable,
+    and the part refuses on the form, flagging the reading the model names as nearest, or
+    nothing when it names none."""
+    llm = _ReadingLLM(None, nearest=nearest)
+    result, _, _ = _resolve(
+        "aid density",
+        nodes=_ODA_NODES,
+        svs=[_ODA_AMOUNT, _ODA_GNI_SHARE],
+        place=("Norway", "country/NOR"),
+        monkeypatch=monkeypatch,
+        llm=llm,
+    )
+    assert result.status == "no_data"
+    assert result.no_data_reason == "denominator_not_available"
+    assert [m for spec in result.flagged_match or () for m in _members(spec)] == flagged
+    (prompt,) = llm.prompts
+    assert "CANDIDATE SHAPES (0 total)" in prompt
 
 
 def test_a_matching_denominator_answers(monkeypatch):
@@ -697,15 +717,22 @@ def test_a_base_inside_a_hyphenated_ratio_grounds(query, base_words, monkeypatch
 
 
 @pytest.mark.parametrize(
-    ("query", "base_words", "menu", "asked"),
+    ("query", "base_words", "menu", "elect", "asked"),
     [
-        ("debt as a share of GDP", "share of GDP", _DEBT_MENU, _GDP),
-        ("debt as a share of GDP", "share", _DEBT_MENU, None),
-        ("debt ratio", "ratio", _DEBT_MENU, None),
-        ("debt per capita", "capita", _DEBT_MENU, None),
-        ("debt to GDP", "GDP", _CREDITOR_MENU, _GDP),
-        ("debt to GDP", "GDP", _GDP_LINKED_MENU, _GDP),
-        ("debt to GDP of private creditors", "GDP of private creditors", _CREDITOR_MENU, _GDP),
+        ("debt as a share of GDP", "share of GDP", _DEBT_MENU, _SHARE_OF_GNI, _GDP),
+        ("debt as a share of GDP", "share", _DEBT_MENU, _SHARE_OF_GNI, None),
+        ("debt ratio", "ratio", _DEBT_MENU, _SHARE_OF_GNI, None),
+        # A per-person phrase leaves the share of GNI not electable, so bind asks.
+        ("debt per capita", "capita", _DEBT_MENU, None, None),
+        ("debt to GDP", "GDP", _CREDITOR_MENU, _SHARE_OF_GNI, _GDP),
+        ("debt to GDP", "GDP", _GDP_LINKED_MENU, _SHARE_OF_GNI, _GDP),
+        (
+            "debt to GDP of private creditors",
+            "GDP of private creditors",
+            _CREDITOR_MENU,
+            _SHARE_OF_GNI,
+            _GDP,
+        ),
     ],
     ids=[
         "share-of-GDP",
@@ -717,7 +744,9 @@ def test_a_base_inside_a_hyphenated_ratio_grounds(query, base_words, monkeypatch
         "quote-reaching-past-a-creditor-type",
     ],
 )
-def test_a_quote_of_form_words_alone_names_no_base(query, base_words, menu, asked, monkeypatch):
+def test_a_quote_of_form_words_alone_names_no_base(
+    query, base_words, menu, elect, asked, monkeypatch
+):
     """The live quantity read answers "poverty headcount ratio" with GDP quoted as
     "ratio". A quote names a base only when it holds a word beyond form wording, so
     "share of GDP" names GDP and the share of GNI refuses, while "share", "ratio" and
@@ -729,9 +758,7 @@ def test_a_quote_of_form_words_alone_names_no_base(query, base_words, menu, aske
     "total government spending" leaves "total spending" beside the value "Government"."""
     result = _resolve_debt(
         query,
-        _ReadingLLM(
-            "External debt (% of GNI)", denominator="Gross domestic product", base_words=base_words
-        ),
+        _ReadingLLM(elect, denominator="Gross domestic product", base_words=base_words),
         monkeypatch,
         menu=menu,
     )
@@ -781,13 +808,109 @@ def test_a_mismatched_denominator_refuses_with_both_denominators(monkeypatch):
     }
 
 
+# Ghana's recorded debt menu (design worked example "What is Ghana's debt to GDP ratio"),
+# with the dev graph's dcids, names and arcs. The IDS share of GNI states no qualifier,
+# since its denominator carries the price basis, while the stock is in current US dollars.
+# Role arcs are left off so the series bind Ghana as their subject.
+
+_IDS_STOCK = "Amount_FinancialPosition_AmountOutstanding_Nominal"
+_IDS_SHARE_OF_GNI = (
+    "Amount_FinancialPosition_AmountOutstanding_AsAFractionOf_"
+    "PrimaryIncome_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal"
+)
+_GNI_REAL = "PrimaryIncome_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal"
+_GDP_REAL = "Amount_EconomicActivity_GrossDomesticProduction_Nominal"
+_MILITARY_SHARE_OF_GDP = (
+    "Amount_EconomicActivity_ExpenditureActivity_MilitaryExpenditure_Government_AsFractionOf_"
+    + _GDP_REAL
+)
+
+
+def _ids_node(name: str, code: str, *, qualifier: str | None, denominator: str | None) -> dict:
+    node = _sv_node(name, "FinancialPosition", "amount", denominator=denominator)
+    arcs = node["arcs"]
+    arcs["constraintProperties"] = {
+        "nodes": [{"dcid": "financialPositionType"}, {"dcid": "sourceIndicatorCode"}]
+    }
+    arcs["financialPositionType"] = {"nodes": [{"dcid": "AmountOutstanding"}]}
+    arcs["sourceIndicatorCode"] = {"nodes": [{"value": code}]}
+    if qualifier is not None:
+        arcs["measurementQualifier"] = {"nodes": [{"dcid": qualifier}]}
+    return node
+
+
+_GHANA_DEBT_NODES = {
+    "country/GHA": {"label": "Ghana", "type": "Country"},
+    _GDP_REAL: _sv_node("Nominal gross domestic product", "EconomicActivity", "amount"),
+    _GNI_REAL: _sv_node("Gross national income", "EconomicUnit", "primaryIncome"),
+    _IDS_STOCK: _ids_node(
+        "Outstanding external debt (current US$)",
+        "DT.DOD.DECT.CD",
+        qualifier="Nominal",
+        denominator=None,
+    ),
+    _IDS_SHARE_OF_GNI: _ids_node(
+        "Outstanding external debt (% of GNI)",
+        "DT.DOD.DECT.GN.ZS",
+        qualifier=None,
+        denominator=_GNI_REAL,
+    ),
+    _MILITARY_SHARE_OF_GDP: _sv_node(
+        "Percent of nominal GDP spent on military activities",
+        "EconomicActivity",
+        "amount",
+        denominator=_GDP_REAL,
+    ),
+}
+
+
+def test_ghana_debt_to_gdp_flags_the_share_of_gni_with_the_debt_stock_nearest(monkeypatch):
+    """The stock serves no ratio and is not electable. Bind elects the share of GNI and
+    names GDP as the base, which the share does not divide by, so the part refuses
+    `denominator_not_available`, flagging the share of GNI with the debt stock as its
+    nearest real reading and naming GDP asked and GNI found."""
+    obs = {
+        f"{_IDS_STOCK}|country/GHA": [
+            {"earliestDate": "1970", "latestDate": "2023", "obsCount": 54}
+        ]
+    }
+    llm = _ReadingLLM(
+        "Outstanding external debt (% of GNI)",
+        denominator="Nominal gross domestic product",
+        base_words="GDP",
+    )
+    result, _, _ = _resolve(
+        "debt to GDP ratio",
+        nodes=_GHANA_DEBT_NODES,
+        svs=[_IDS_STOCK, _IDS_SHARE_OF_GNI, _MILITARY_SHARE_OF_GDP],
+        place=_GHANA,
+        monkeypatch=monkeypatch,
+        llm=llm,
+        obs=obs,
+    )
+
+    (prompt,) = llm.prompts
+    assert "Outstanding external debt (current US$) (fails the form" in prompt
+    assert result.status == "no_data"
+    assert result.no_data_reason == "denominator_not_available"
+    (flagged,) = result.flagged_match or ()
+    assert _members(flagged) == [_IDS_SHARE_OF_GNI]
+    (nearest,) = result.nearest_real or ()
+    assert _members(nearest) == [_IDS_STOCK]
+    assert nearest.relaxation.dropped_value_dcids == [_GNI_REAL]
+    assert result.denominator is not None
+    assert result.denominator.asked is not None and result.denominator.asked.ref == _GDP_REAL
+    assert result.denominator.found is not None and result.denominator.found.ref == _GNI_REAL
+
+
 @pytest.mark.parametrize(
     ("elect", "base_words", "also", "status", "unverified"),
     [
         ("External debt (% of GNI)", "exports", (), "definite", ['"Gross national income"']),
         ("External debt (% of GNI)", None, (), "definite", []),
         ("External debt (% of GNI)", "export earnings", (), "definite", []),
-        ("External debt (current US$)", "exports", (), "no_data", []),
+        # The quoted base leaves the level not electable, so bind asks, naming it nearest.
+        (None, "exports", (), "no_data", []),
         (
             "External debt (% of GNI)",
             "exports",
@@ -819,7 +942,13 @@ def test_none_of_these_leaves_a_shape_with_a_denominator_arc_unverified(
     base, and the share of GNI answers without the warning."""
     result = _resolve_debt(
         "debt to exports ratio",
-        _ReadingLLM(elect, denominator=_NONE_OF_THESE, base_words=base_words, also=also),
+        _ReadingLLM(
+            elect,
+            denominator=_NONE_OF_THESE,
+            base_words=base_words,
+            also=also,
+            nearest="External debt (current US$)",
+        ),
         monkeypatch,
         menu=[*_DEBT_MENU, _DEBT_GDP, _DEBT_PER_CAPITA],
         obs={f"{sv}|country/GHA": [_OBS] for sv in (_DEBT_GDP, _DEBT_PER_CAPITA)},
@@ -836,6 +965,27 @@ def test_none_of_these_leaves_a_shape_with_a_denominator_arc_unverified(
         assert result.denominator is not None
         assert result.denominator.asked is None
         assert result.denominator.found is None
+
+
+def test_a_provisional_per_capita_series_names_people_as_its_base(monkeypatch):
+    """Base Data Commons holds `PerCapita` as a ProvisionalNode. A series dividing by it
+    states people as its base, as one dividing by `Count_Person` does, so its
+    `denominator_unverified` warning names people beside the question's words."""
+    per_capita = _sv_node("External debt per capita", "Debt", "amount")
+    per_capita["arcs"]["measurementDenominator"] = {
+        "nodes": [{"dcid": "PerCapita", "types": ["ProvisionalNode"]}]
+    }
+    result = _resolve_debt(
+        "debt to exports ratio",
+        _ReadingLLM("External debt per capita", denominator=_NONE_OF_THESE, base_words="exports"),
+        monkeypatch,
+        menu=[*_DEBT_MENU, _DEBT_PER_CAPITA],
+        obs={f"{_DEBT_PER_CAPITA}|country/GHA": [_OBS]},
+        nodes={**_DEBT_NODES, _DEBT_PER_CAPITA: per_capita},
+    )
+    assert result.status == "definite", result.no_data_reason
+    (warning,) = [w for w in result.warnings if w.code == "denominator_unverified"]
+    assert '"exports"' in warning.message and '"people"' in warning.message
 
 
 @pytest.mark.parametrize(
@@ -865,26 +1015,42 @@ def test_a_series_stating_its_base_only_in_its_name_answers_unverified(
     assert _GDP not in warning.message
 
 
+def test_a_form_only_the_model_states_refuses_the_level_before_bind(monkeypatch):
+    """ "debt to GDP" names no form a phrase pattern reads. The quantity read states a rate
+    on GDP before admissibility, so the dollar level is not electable, the FRAME states
+    the form and the base as the model's, and the part refuses
+    `denominator_not_available` flagging the level bind names as nearest."""
+    llm = _ReadingLLM(
+        None,
+        nearest="External debt (current US$)",
+        denominator="Gross domestic product",
+        base_words="GDP",
+        stated_form="rate",
+    )
+    result = _resolve_debt("debt to GDP", llm, monkeypatch)
+
+    (prompt,) = llm.prompts
+    frame, _, rest = prompt.partition("CANDIDATE SHAPES")
+    menu, _, refused = rest.partition("NOT ELECTABLE")
+    assert "  form: rate [model]\n  base: Gross domestic product [model]\n" in frame
+    assert "External debt (current US$)" not in menu
+    assert "External debt (current US$) (fails the form the query asks for)" in refused
+    assert (result.status, result.no_data_reason) == ("no_data", "denominator_not_available")
+    (flagged,) = result.flagged_match or ()
+    assert _members(flagged) == [_DEBT_LEVEL]
+
+
 @pytest.mark.parametrize(
     "query,elect,base_words,stated_form,status,traced",
     [
         # "debt to GDP" names no form a phrase pattern reads; the model's rate joins
         # beside its quote of the base.
-        ("debt to GDP", "External debt (current US$)", "GDP", "rate", "no_data", None),
         ("debt to GDP", "External debt (current US$)", "GDP", None, "definite", None),
         ("debt to GDP", "External debt to GDP ratio", "GDP", "rate", "definite", "rate"),
-        # An unquoted rate joins: a share of people quotes no base by design.
-        ("debt to GDP", "External debt (current US$)", None, "rate", "no_data", None),
         # "ratio" names a rate, so the model's form is not read.
         ("debt to GDP ratio", "External debt (% of GNI)", None, "per_person", "definite", None),
     ],
-    ids=[
-        "stated-rate-refuses-a-level",
-        "none-stated",
-        "stated-rate-traced",
-        "unquoted-rate-joins",
-        "phrase-form-wins",
-    ],
+    ids=["none-stated", "stated-rate-traced", "phrase-form-wins"],
 )
 def test_a_stated_form_joins_only_when_no_phrase_names_one(
     query, elect, base_words, stated_form, status, traced, monkeypatch
@@ -944,28 +1110,29 @@ def test_an_alternate_dividing_by_another_base_is_not_offered(monkeypatch):
     assert result.gate != "only_alternate_has_data"
 
 
-def test_an_elected_level_answers_nothing_when_the_alternate_that_serves_holds_no_data(
+def test_an_elected_share_answers_nothing_when_the_alternate_that_serves_holds_no_data(
     monkeypatch,
 ):
-    """The elected dollar level serves no rate and holds data; the nominated share of GDP
-    serves the rate and holds none. With no reading that serves the quantity left, the
-    refusal the gate deferred to the fan-out stands, flagging the level."""
+    """The elected share of GNI divides by another base than the GDP bind names and holds
+    data; the nominated share of GDP serves the rate and holds none. With no reading that
+    serves the quantity left, the refusal the gate deferred to the fan-out stands,
+    flagging the share of GNI."""
     result = _resolve_debt(
         "debt to GDP ratio",
         _ReadingLLM(
-            "External debt (current US$)",
+            "External debt (% of GNI)",
             denominator="Gross domestic product",
             base_words="GDP",
             also=("External debt (% of GDP)",),
         ),
         monkeypatch,
-        menu=[_DEBT_LEVEL, _DEBT_GDP, _MILITARY_GDP],
+        menu=[_DEBT_GNI, _DEBT_GDP, _MILITARY_GDP],
         without_data=frozenset({_DEBT_GDP}),
     )
     assert result.status == "no_data"
     assert result.no_data_reason == "denominator_not_available"
     (flagged,) = result.flagged_match or ()
-    assert _members(flagged) == [_DEBT_LEVEL]
+    assert _members(flagged) == [_DEBT_GNI]
 
 
 def test_an_unverified_series_without_data_raises_no_unverified_warning(monkeypatch):
@@ -1020,16 +1187,18 @@ def test_the_quantity_read_reads_no_word_a_place_owns(base_words, stated_form, s
     stays. A read naming "none of these" on "Ghana" names no base, and the debt service
     level answers. Nor does one on "private creditors", on "private" or on "to private
     creditors": each leaves nothing or a function word outside the span of the phrase that
-    the label of a value a menu shape's slot holds occupies, "private creditors (IDS
+    the label of a value an admitted shape's slot holds occupies, "private creditors (IDS
     creditor type)" read without its property. The live read states a
     rate beside that quote, the form of a division by the creditor type it took for a
     base; a rate or share drops beside a quote that names no base, as it does beside a
     quote of form words alone ("to") or of the place ("Ghana"). An unquoted rate or share
-    stands and refuses the level: a share of people quotes no base by design, as
-    dq-ext-005's read of "HIV prevalence among young women" (a share, no quote) does. A
-    per-head form names its base in its own words, so a stated one stands too."""
+    stands and refuses the level before bind, which names it as nearest: a share of people
+    quotes no base by design, as dq-ext-005's read of "HIV prevalence among young women" (a
+    share, no quote) does. A per-head form names its base in its own words, so a stated one
+    stands too."""
     llm = _ReadingLLM(
-        "External debt (current US$)",
+        "External debt (current US$)" if status == "definite" else None,
+        nearest="External debt (current US$)",
         denominator=None if base_words is None else _NONE_OF_THESE,
         base_words=base_words,
         stated_form=stated_form,

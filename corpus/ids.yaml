@@ -323,7 +323,7 @@
   why: Resolves to ids.net_flows for country/GHA as destination.
   reuse: panel/ids-035
   tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical}
-  known_failure: {issue: 1156, checks: [disposition]}
+  known_failure: {issue: 1156, checks: [measure]}
   expect: {definite: {measure: {family: ids.net_flows}, entities: [{dcid: country/GHA, role: destination}]}}
 
 - id: dq-ids-031
@@ -620,3 +620,48 @@
         stat_vars: [Amount_FinancialFlow_ServicingPayment_PublicOrPubliclyGuaranteed_ByCreditor_Nominal]
       entities: [{dcid: country/NGA, role: destination}]
       window: {kind: range, start: 2024, end: 2024}
+
+- id: dq-ids-058
+  query: debt service on external debt for Kenya
+  why: Names no lender, so resolves to the ids.debt_service total for country/KEN, not the series for one lender.
+  tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical}
+  expect:
+    definite:
+      measure: {family: ids.debt_service, stat_vars: [Amount_FinancialFlow_ServicingPayment_Nominal]}
+      entities: [{dcid: country/KEN, role: destination}]
+
+- id: dq-ids-059
+  query: Kenya external debt service
+  why: Names no lender, so resolves to the ids.debt_service total for country/KEN, not the series for one lender.
+  tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: ids.debt_service, stat_vars: [Amount_FinancialFlow_ServicingPayment_Nominal]}
+      entities: [{dcid: country/KEN, role: destination}]
+
+- id: dq-ids-060
+  query: Zambia's debt service to China
+  why: Resolves to ids.debt_service for country/CHN as origin and country/ZMB as destination.
+  tags: {theme: debt, entity: two_roles, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: ids.debt_service, stat_vars: [Amount_FinancialFlow_ServicingPayment_ByCreditor_Nominal]}
+      entities: [{dcid: country/CHN, role: origin}, {dcid: country/ZMB, role: destination}]
+
+- id: dq-ids-061
+  query: net flows on external debt for Ghana
+  why: The name of the net flows series, so resolves to it alone for country/GHA, not beside net transfers.
+  tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical}
+  expect:
+    definite:
+      measure: {family: ids.net_flows, stat_vars: [Amount_FinancialFlow_Net_Disbursement_PrincipalRepayment_Nominal]}
+      entities: [{dcid: country/GHA, role: destination}]
+
+- id: dq-ids-062
+  query: net flows on external debt for Kenya
+  why: The name of the net flows series, so resolves to it alone for country/KEN, not beside net transfers.
+  tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical}
+  expect:
+    definite:
+      measure: {family: ids.net_flows, stat_vars: [Amount_FinancialFlow_Net_Disbursement_PrincipalRepayment_Nominal]}
+      entities: [{dcid: country/KEN, role: destination}]

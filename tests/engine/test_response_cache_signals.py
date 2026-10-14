@@ -6,6 +6,8 @@ import ast
 from dataclasses import fields
 from pathlib import Path
 
+import pytest
+
 from search.engine.response_cache_flow import Layer2Signals, compute_layer2_signals
 from search.engine.role_text import DoorRole
 
@@ -30,12 +32,12 @@ def _count_state_attribute_reads(attr: str) -> int:
 
 
 def test_query_text_and_role_query_reader_counts_are_covered() -> None:
-    """Pin the 5 `query_text` readers and 1 `role_query` reader covered by cache signals."""
+    """Pin the 7 `query_text` readers and 1 `role_query` reader covered by cache signals."""
     query_text_reads = _count_state_attribute_reads("query_text")
     role_query_reads = _count_state_attribute_reads("role_query")
-    assert query_text_reads == 5, (
+    assert query_text_reads == 7, (
         f"state.query_text has {query_text_reads} readers in src/search/engine/region/, "
-        "not the 5 compute_layer2_signals computes signals for. Update "
+        "not the 7 compute_layer2_signals computes signals for. Update "
         "compute_layer2_signals (and this test) to cover the new reader."
     )
     assert role_query_reads == 1, (
@@ -232,8 +234,26 @@ def test_declared_default_slot_named_against_the_real_index() -> None:
     assert unnamed.declared_default_slots_named == ()
 
 
+@pytest.mark.parametrize(
+    ("query_text", "expected"),
+    [
+        ("not bilateral ODA to Kenya", ("bilateral",)),
+        ("non-bilateral ODA to Kenya", ("bilateral",)),
+        ("bilateral ODA to Kenya", ()),
+        (None, ()),
+    ],
+)
+def test_negated_stated_words_against_the_real_index(
+    query_text: str | None, expected: tuple[str, ...]
+) -> None:
+    """The real index has the CRS state "bilateral" of its rows; a raw query negating it
+    carries the word, and one stating it, or a request of several variables, carries none."""
+    signals = compute_layer2_signals(query=query_text or "", entity_roles={}, query_text=query_text)
+    assert signals.query_text_negated_stated_words == expected
+
+
 def test_layer2_signals_carries_one_field_per_numbered_signal() -> None:
-    """The dataclass has one field for each of the eight cache signals."""
+    """The dataclass has one field for each of the ten cache signals."""
     field_names = {f.name for f in fields(Layer2Signals)}
     assert field_names == {
         "role_contradictions",
@@ -244,4 +264,27 @@ def test_layer2_signals_carries_one_field_per_numbered_signal() -> None:
         "unsupported_qualifier_phrases",
         "declared_default_trigger_words",
         "declared_default_slots_named",
+        "written_variable_phrases",
+        "query_text_negated_stated_words",
     }
+
+
+def test_each_variable_carries_the_stretch_of_the_query_that_writes_it() -> None:
+    """Two wordings that extract alike key apart when they write the phrase differently,
+    and a request with no query text carries none."""
+
+    def written(query: str, query_text: str | None) -> tuple[str | None, ...]:
+        return compute_layer2_signals(
+            query=query,
+            entity_roles={},
+            query_text=query_text,
+            variables=["external debt net flows"],
+        ).written_variable_phrases
+
+    assert written(
+        "net flows on external debt for Kenya", "net flows on external debt for Kenya"
+    ) == ("net flows on external debt",)
+    assert written("Kenya external debt net flows", "Kenya external debt net flows") == (
+        "external debt net flows",
+    )
+    assert written("net flows on external debt for Kenya and Ghana", None) == ()

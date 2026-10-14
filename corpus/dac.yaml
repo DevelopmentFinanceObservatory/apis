@@ -53,12 +53,12 @@
 
 - id: dq-dac-006
   query: total ODA from all DAC countries in 2023
-  why: DAC1 publishes the DAC total as a provider in its own right; summing members differs where members report late.
+  why: '"All DAC countries" asks for the members, as "G7 countries" does in dq-dac-007; the DAC''s published total answers "the DAC".'
   tags: {theme: aid, entity: region_group, direction: origin_only, unit: default, time: year, operation: aggregate, breakdown: none, door: raw_text, phrasing: technical}
   expect:
     definite:
       measure: {family: dac1.oda_grant_equivalent}
-      entities: [{dcid: {gl: 'DAC1 ''DAC countries, total'' provider node'}, role: origin}]
+      entities: [{label: DAC, role: origin, expands: true}]
       window: {kind: range, start: 2023, end: 2023}
       operations: []
 
@@ -384,3 +384,42 @@
     definite:
       measure: {family: dac1.disbursement_gross}
       entities: [{dcid: GroupOfSeven, role: origin}]
+
+- id: dq-dac-037
+  query: gross ODA from France to Asia (DAC)
+  why: The DAC qualifier identifies the aid-statistics region, whose published total includes regional allocations.
+  tags: {theme: aid, entity: region_group, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: dac2a.oda_gross_received}
+      entities: [{dcid: country/FRA, role: origin}, {dcid: DACAsia, role: destination}]
+
+- id: dq-dac-038
+  query: DAC2a gross ODA to Far East Asia
+  why: The DAC2a region name binds its published total.
+  tags: {theme: aid, entity: region_group, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical}
+  expect:
+    definite:
+      measure: {family: dac2a.oda_gross_received}
+      entities: [{dcid: DACFarEastAsia, role: destination}]
+
+- id: dq-dac-039
+  query: ODA from France to Asia (DAC) for health
+  why: CRS answers the sector question using the DAC region's members and states the regional allocations they omit.
+  tags: {theme: health, entity: region_group, direction: both, unit: default, time: none, operation: none, breakdown: sector, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure:
+        family: crs.disbursement_gross
+        bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode120}
+      entities: [{dcid: country/FRA, role: origin}, {label: Asia (DAC), role: destination, expands: true}]
+
+- id: dq-dac-040
+  query: gross ODA from official donors to Asia (DAC) for 1990–1999
+  why: Both parties are published DAC2a totals, so the historical answer includes country-specific and regional allocations.
+  tags: {theme: aid, entity: region_group, direction: both, unit: default, time: range, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: dac2a.oda_gross_received}
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: DACAsia, role: destination}]
+      window: {kind: range, start: 1990, end: 1999}

@@ -43,8 +43,9 @@ class DepartureFact:
     on every other code:
 
     - `verb` (`operation_not_applied`): the operation the request named.
-    - `over` (`breakdown_not_applied`, `direction_discarded`): the flow axis the request
-      broke the answer down by, or named the place on.
+    - `over` (`breakdown_not_applied`, `direction_discarded`, `direction_inferred`): the
+      flow axis the request broke the answer down by, named the place on, or the axis the
+      answer reads a place named without a direction on.
     - `entities` (`entity_unavailable`): the names of the entities the data holds no
       values for, in the answer's entity order.
     - `sets` (`entity_unavailable`): on a role that binds the members of sets the request
@@ -58,6 +59,9 @@ class DepartureFact:
     - `excluded` (`group_read_as_members`): the labels of the residuals the total of the
       group counts beside its members ("Africa, unallocated by country (DAC)"), which the
       members leave out, in the code index's order. Empty for a group no total holds.
+    - `sum_differs` (`group_read_as_members`): a dataset the answer serves publishes, on the
+      role's flow axis, its own figure for the group, which can differ from one built from its
+      members (`PartyRow.sums_members` false).
     - `sources` (`entity_unavailable`): the names of sources that hold values for the
       entities but that Search does not read, because the origin registry withholds them.
     - `latest_years` (`entity_unavailable`): on a `latest` request, the first and last
@@ -99,6 +103,7 @@ class DepartureFact:
     group_size: int | None = None
     group_dcid: str | None = None
     excluded: tuple[str, ...] = ()
+    sum_differs: bool = False
     sources: tuple[str, ...] = ()
     latest_years: tuple[int, int] | None = None
     readings: bool = False

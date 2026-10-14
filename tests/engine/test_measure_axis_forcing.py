@@ -20,7 +20,7 @@ from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.interpret import Recall
 from search.engine.quantity_read import QuantityOutput
-from search.engine.region.phase_election import _phase_repair_bindings
+from search.engine.region.phase_election import _repair_bindings
 from search.engine.region.phase_rank_bind import _phase_bind
 from search.engine.region.state import ResolveState
 from search.engine.shape import ShapeDraft, SlotKeyDraft
@@ -138,8 +138,8 @@ def _state(*, shape_draft: ShapeDraft, bindings: list[SlotBindingDraft]) -> Reso
 
 
 def _run_repair(state: ResolveState) -> list[SlotBindingDraft]:
-    result = asyncio.run(_phase_repair_bindings(state))
-    assert result is None, "expected _phase_repair_bindings to fall through"
+    result = _repair_bindings(state)
+    assert result is None, "expected _repair_bindings to fall through"
     return state.bindings
 
 
@@ -257,57 +257,6 @@ def test_a_query_named_value_is_not_re_elected_but_every_other_open_axis_still_i
     assert by_prop["material"].value_dcids == ["Metal"]
     assert by_prop["finish"].kind == "value"
     assert by_prop["finish"].value_dcids == ["Glossy"]
-
-
-def test_a_restored_binding_is_not_overridden_while_a_sibling_axis_is_still_elected(
-    monkeypatch,
-):
-    # Empty taxonomy lets text restore material=Plastic before election; finish then elects Matte.
-    monkeypatch.setattr(
-        phase_election_module,
-        "get_index",
-        lambda: _index(
-            [
-                _row("SV_PLASTIC_MATTE", material="Plastic", finish="Matte"),
-                _row("SV_PLASTIC_GLOSSY", material="Plastic", finish="Glossy"),
-                _row("SV_METAL", material="Metal"),
-            ]
-        ),
-    )
-    monkeypatch.setattr(
-        phase_election_module, "get_measure_index", lambda: _measure_index(_MATERIAL, _FINISH)
-    )
-    # The recall sample holds index rows only, so the family election reads the index.
-    shape = _shape(
-        slot_keys=(_MATERIAL_SLOT, _FINISH_SLOT),
-        place_available=True,
-        slot_taxonomy={"what:material": []},
-        sv_arc_facts={
-            "SV_PLASTIC_MATTE": {
-                "constraintProperties": {"nodes": [{"dcid": "material"}]},
-                "material": {"nodes": [{"dcid": "Plastic"}]},
-            },
-            "SV_METAL": {
-                "constraintProperties": {"nodes": [{"dcid": "material"}]},
-                "material": {"nodes": [{"dcid": "Metal"}]},
-            },
-        },
-        value_labels={"Plastic": "plastic", "Metal": "metal"},
-    )
-    state = _state(
-        shape_draft=shape,
-        bindings=[_binding("material", kind="unbound"), _binding("finish", kind="unbound")],
-    )
-    state.variable = "plastic widgets"
-
-    bindings = _run_repair(state)
-
-    by_prop = {b.property_dcid: b for b in bindings}
-    assert len(bindings) == 2
-    assert by_prop["material"].kind == "value"
-    assert by_prop["material"].value_dcids == ["Plastic"]
-    assert by_prop["finish"].kind == "value"
-    assert by_prop["finish"].value_dcids == ["Matte"]
 
 
 def test_a_scope_that_populates_no_partition_forces_nothing(monkeypatch):

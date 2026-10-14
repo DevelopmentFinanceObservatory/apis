@@ -436,7 +436,73 @@ def test_a_group_read_as_members_names_the_residuals_its_total_counts(role, prov
 
     (fact,) = spec_departure_facts(spec, operations=())
 
-    assert (fact.code, fact.excluded) == ("group_read_as_members", excluded)
+    assert (fact.code, fact.excluded, fact.sum_differs) == (
+        "group_read_as_members",
+        excluded,
+        False,
+    )
+
+
+def test_a_group_with_no_node_names_the_residuals_of_the_total_its_role_keeps():
+    """A resolver group ("Asia (DAC)") has no node to find its total by, so the role reading
+    it as members keeps the total aside (`ResolvedSpec.group_totals`). CRS publishes every
+    residual DAC's Asia total counts but the Mekong Delta Project."""
+    spec = _served_from(
+        _spec(groups={"destination": EntityGroup(label="Asia (DAC)")}),
+        "provenance/OECDCreditorReportingSystem",
+    )
+    spec = spec.model_copy(
+        update={"resolved": spec.resolved.stating_group_totals((("destination", "DACAsia"),))}
+    )
+
+    (fact,) = spec_departure_facts(spec, operations=())
+
+    assert (fact.code, fact.excluded) == (
+        "group_read_as_members",
+        (
+            "Asia, unallocated by country (DAC)",
+            "Central Asia, unallocated by country (DAC)",
+            "Far East Asia, unallocated by country (DAC)",
+            "Middle East, unallocated by country (DAC)",
+            "South and Central Asia, unallocated by country (DAC)",
+            "South Asia, unallocated by country (DAC)",
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("role", "provenance", "sum_differs"),
+    [
+        pytest.param("origin", "provenance/OECDDAC1", True, id="a-dataset-publishing-the-total"),
+        pytest.param(
+            "origin",
+            "provenance/OECDCreditorReportingSystem",
+            False,
+            id="a-dataset-publishing-none",
+        ),
+        pytest.param("destination", "provenance/OECDDAC1", False, id="a-role-publishing-none"),
+    ],
+)
+def test_a_group_whose_published_total_claims_no_sum_says_the_members_can_differ(
+    role, provenance, sum_differs
+):
+    """DAC1 publishes "DAC countries, total" as a donor, a figure the sum over the DAC's
+    members can differ from (`PartyRow.sums_members` false). The DAC read as its members on a
+    role a served dataset publishes that total on says so, and counts no residual."""
+    spec = _served_from(
+        _spec(groups={role: EntityGroup(ref="groups/OECD.DAC", label="DAC")}), provenance
+    )
+    spec = spec.model_copy(
+        update={"resolved": spec.resolved.stating_group_totals(((role, "DACCountriesTotal"),))}
+    )
+
+    (fact,) = spec_departure_facts(spec, operations=())
+
+    assert (fact.code, fact.excluded, fact.sum_differs) == (
+        "group_read_as_members",
+        (),
+        sum_differs,
+    )
 
 
 def test_a_group_read_as_its_total_departs_nothing():

@@ -10,12 +10,15 @@ unchanged definition, each member a token that exists today.
 - `window`: the start and end year a range read when its definition left the end unstated,
   the end `window.election_window` gave it from the clock, or `None` for a window that reads
   no clock.
+- `latest_years`: for each member of a `latest` run, the year the coverage index elected for
+  it and the year its rows hold, with the facets and omitted entities the election counted
+  (`window.LatestYear`).
 
 The graph serving revision is not a member: it moves on every graph restart. Materialisation
 builds the fingerprint from what the run dispatched (`build_dependencies`), so every entry
 point that runs the same inputs records the same fingerprint. A freshness check rebuilds the
-fingerprint a run would record now against a stored one's refs (`refreshed_dependencies`), and
-`dependency_changes` compares the two member by member.
+fingerprint a run would record now against a stored one's refs and election arguments
+(`refreshed_dependencies`), and `dependency_changes` compares the two member by member.
 """
 
 from __future__ import annotations
@@ -23,23 +26,23 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, cast
 
 from materialise.content_version import recipe_dependency_fingerprint
 from materialise.convert import ConversionRecord
 from materialise.facets import ProvenanceRefresh, _probe_provenance_refresh
+from materialise.generation import bare_stat_var_ref, elected_latest_year
 from materialise.graph import GraphReader
-from materialise.window import RequestedWindow
+from materialise.window import LatestYear, RequestedWindow
 
 if TYPE_CHECKING:
     from materialise.pipeline import MaterialisationRequest
+    from series_coverage.index import CoverageIndex
 
 DEPENDENCIES_SCHEMA = 1
 """The version of `Dependencies.as_json`'s shape. A stored fingerprint of another schema
 compares as changed (`dependency_changes`)."""
-
-_STAT_VAR_REF_PREFIX = "dcid:"
 
 # The JSON list fields of `Dependencies.as_json`, each with its entry's key and value names.
 _PAIR_FIELDS: tuple[tuple[str, str, str], ...] = (
@@ -48,22 +51,29 @@ _PAIR_FIELDS: tuple[tuple[str, str, str], ...] = (
     ("recipes", "id", "digest"),
 )
 
+# A `latest` member that elected no year, over no facet.
+_NO_ELECTION = LatestYear(elected=None, served=None)
+
 
 @dataclass(frozen=True)
 class Dependencies:
     """A run's dependency fingerprint. Each pair tuple is sorted by its first element and
-    holds each ref or recipe id once."""
+    holds each ref, recipe id or StatVar once. `latest_years` holds one pair per member of a
+    `latest` run, keyed by the request's `stat_var`, and is empty for any other window."""
 
     members: str
     sources: tuple[tuple[str, str | None], ...]
     conversion_sources: tuple[tuple[str, str | None], ...]
     recipes: tuple[tuple[str, str | None], ...]
     window: tuple[int | None, int | None] | None
+    latest_years: tuple[tuple[str, LatestYear], ...] = ()
 
     def as_json(self) -> dict[str, object]:
         """The stored shape, `{"schema", "members", "sources", "conversion_sources",
         "recipes", "window"}`, with a JSON object per pair and `window` as
-        `{"start_year", "end_year"}` or null."""
+        `{"start_year", "end_year"}` or null. A `latest` run adds `latest_years`, one
+        `{"stat_var", "elected", "served", "facet_ids", "omitted"}` per member, `omitted` a
+        list of `{"role", "entity"}`."""
         encoded: dict[str, object] = {"schema": DEPENDENCIES_SCHEMA, "members": self.members}
         for name, key, value in _PAIR_FIELDS:
             encoded[name] = [{key: ref, value: token} for ref, token in getattr(self, name)]
@@ -72,13 +82,26 @@ class Dependencies:
             if self.window is None
             else {"start_year": self.window[0], "end_year": self.window[1]}
         )
+        if self.latest_years:
+            encoded["latest_years"] = [
+                {
+                    "stat_var": stat_var,
+                    "elected": latest.elected,
+                    "served": latest.served,
+                    "facet_ids": list(latest.facet_ids),
+                    "omitted": [
+                        {"role": role, "entity": entity} for role, entity in latest.omitted
+                    ],
+                }
+                for stat_var, latest in self.latest_years
+            ]
         return encoded
 
 
 def members_digest(stat_vars: Iterable[str]) -> str:
     """`sha256:` and the hex digest of the JSON list of `stat_vars` as sorted, distinct bare
     dcids, so the digest is independent of resolution order and the `dcid:` prefix."""
-    bare = sorted({ref.removeprefix(_STAT_VAR_REF_PREFIX) for ref in stat_vars})
+    bare = sorted({bare_stat_var_ref(ref) for ref in stat_vars})
     encoded = json.dumps(bare, separators=(",", ":")).encode("utf-8")
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
@@ -94,15 +117,29 @@ def _clock_window(window: RequestedWindow) -> tuple[int | None, int | None] | No
     return window.start_year, window.end_year
 
 
+def _latest_members(
+    requests: Sequence[MaterialisationRequest], latest_years: Mapping[str, LatestYear]
+) -> dict[str, LatestYear]:
+    """Each `latest` request's entry of `latest_years` by its `stat_var`, `_NO_ELECTION`
+    for one it lacks, which a check elects for over no facet and so matches."""
+    return {
+        request.stat_var: latest_years.get(request.stat_var, _NO_ELECTION)
+        for request in requests
+        if request.window.kind == "latest"
+    }
+
+
 def build_dependencies(
     requests: Sequence[MaterialisationRequest],
     *,
     source_refs: Iterable[str],
     provenance_refresh: Mapping[str, ProvenanceRefresh],
     conversion_records: Iterable[ConversionRecord | None],
+    latest_years: Mapping[str, LatestYear],
 ) -> Dependencies:
-    """The fingerprint of a run over `requests` that dispatched the provenances `source_refs`
-    and converted with `conversion_records`. `provenance_refresh` holds each dispatched
+    """The fingerprint of a run over `requests` that dispatched the provenances `source_refs`,
+    converted with `conversion_records`, and served each `latest` member at `latest_years`
+    (`MaterialisationResult.latest_years`). `provenance_refresh` holds each dispatched
     provenance's refresh dates; a ref it lacks records no date. The requests of one run share
     one window, so the first request's gives `window`."""
     records = [record for record in conversion_records if record is not None]
@@ -120,6 +157,7 @@ def build_dependencies(
         conversion_sources=tuple(sorted(conversion_sources.items())),
         recipes=tuple(sorted(recipes.items())),
         window=_clock_window(requests[0].window),
+        latest_years=tuple(sorted(_latest_members(requests, latest_years).items())),
     )
 
 
@@ -147,9 +185,50 @@ def _is_year(year: object) -> bool:
     return year is None or (isinstance(year, int) and not isinstance(year, bool))
 
 
+def _is_text_list(values: object) -> bool:
+    return isinstance(values, list) and all(isinstance(value, str) for value in values)
+
+
+def _decode_latest_years(entries: object) -> tuple[tuple[str, LatestYear], ...] | None:
+    """A stored `latest_years` list as sorted `(stat_var, LatestYear)` pairs, or `None` when
+    malformed."""
+    if not isinstance(entries, list):
+        return None
+    years: dict[str, LatestYear] = {}
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            return None
+        member = cast("Mapping[str, object]", entry)
+        stat_var, elected, served = (
+            member.get("stat_var"),
+            member.get("elected"),
+            member.get("served"),
+        )
+        facet_ids, omitted = member.get("facet_ids"), member.get("omitted")
+        if not (isinstance(stat_var, str) and _is_year(elected) and _is_year(served)):
+            return None
+        if not (_is_text_list(facet_ids) and isinstance(omitted, list)):
+            return None
+        rows: list[tuple[str, str]] = []
+        for row in omitted:
+            if not isinstance(row, Mapping):
+                return None
+            role, entity = row.get("role"), row.get("entity")
+            if not (isinstance(role, str) and isinstance(entity, str)):
+                return None
+            rows.append((role, entity))
+        years[stat_var] = LatestYear(
+            elected=cast("int | None", elected),
+            served=cast("int | None", served),
+            facet_ids=tuple(cast("list[str]", facet_ids)),
+            omitted=tuple(rows),
+        )
+    return tuple(sorted(years.items()))
+
+
 def decode_dependencies(encoded: Mapping[str, object]) -> Dependencies | None:
     """The fingerprint `Dependencies.as_json` stored as `encoded`, or `None` when its schema is
-    unknown or its shape malformed."""
+    unknown or its shape malformed. One stored with no `latest_years` holds none."""
     members = encoded.get("members")
     if encoded.get("schema") != DEPENDENCIES_SCHEMA or not isinstance(members, str):
         return None
@@ -170,26 +249,43 @@ def decode_dependencies(encoded: Mapping[str, object]) -> Dependencies | None:
         if decoded is None:
             return None
         pairs[name] = decoded
+    latest_years = _decode_latest_years(encoded.get("latest_years", []))
+    if latest_years is None:
+        return None
     return Dependencies(
         members=members,
         sources=pairs["sources"],
         conversion_sources=pairs["conversion_sources"],
         recipes=pairs["recipes"],
         window=window,
+        latest_years=latest_years,
     )
 
 
 def refreshed_dependencies(
-    stored: Dependencies, requests: Sequence[MaterialisationRequest], *, graph: GraphReader
+    stored: Dependencies,
+    requests: Sequence[MaterialisationRequest],
+    *,
+    graph: GraphReader,
+    coverage: CoverageIndex | None,
 ) -> Dependencies:
-    """The fingerprint a run over `requests` would record now against the refs `stored` names,
-    without materialising.
+    """The fingerprint a run over `requests` would record now against the refs and election
+    arguments `stored` names, without materialising.
 
     The source and conversion-source refs keep `stored`'s, each with the `lastDataRefreshDate`
     the graph holds now, read for all of them in one `node_arcs_many`, which `GraphReader`
     serves uncached. Each stored recipe takes the digest of its deployed body. `members` and
     `window` come from `requests` as `build_dependencies` takes them, so an open window ends
     at the year the requests were resolved in.
+
+    Each `latest` request keeps the entry `stored` holds for it with the year `coverage`
+    elects now over the entry's facets and omitted entities (`elected_latest_year`), read
+    under the source scope in context, as the run's was. The year the run served is kept, so
+    a run that served another year than it elected differs only once the index elects
+    another. A `latest` request `stored` holds no entry for elects over every facet the
+    index holds of its StatVar under that scope. If it elects a year, it gains an entry
+    `stored` lacks and so differs in `latest_years`. If it elects none, as a StatVar outside
+    the index or a subject-only request does, it gains none and matches.
     """
     refs = sorted(
         {ref for ref, _ in stored.sources} | {ref for ref, _ in stored.conversion_sources}
@@ -199,12 +295,38 @@ def refreshed_dependencies(
     def _token(ref: str) -> str | None:
         return refresh[ref].last_data_refresh_date
 
+    recorded = dict(stored.latest_years)
+
+    def _elected_now(request: MaterialisationRequest) -> LatestYear | None:
+        latest = recorded.get(request.stat_var)
+        if latest is not None:
+            year = elected_latest_year(
+                request, latest.omitted, coverage=coverage, facet_ids=latest.facet_ids
+            )
+            return replace(latest, elected=year)
+        held = (
+            coverage.facet_spans(variables=[bare_stat_var_ref(request.stat_var)])
+            if coverage is not None
+            else {}
+        )
+        year = elected_latest_year(
+            request, (), coverage=coverage, facet_ids=sorted(facet for _, facet in held)
+        )
+        return replace(_NO_ELECTION, elected=year) if year is not None else None
+
     return Dependencies(
         members=members_digest(request.stat_var for request in requests),
         sources=tuple((ref, _token(ref)) for ref, _ in stored.sources),
         conversion_sources=tuple((ref, _token(ref)) for ref, _ in stored.conversion_sources),
         recipes=tuple((recipe_id, _recipe_digest(recipe_id)) for recipe_id, _ in stored.recipes),
         window=_clock_window(requests[0].window),
+        latest_years=tuple(
+            sorted(
+                (request.stat_var, latest)
+                for request in requests
+                if request.window.kind == "latest" and (latest := _elected_now(request)) is not None
+            )
+        ),
     )
 
 
@@ -217,6 +339,7 @@ def _pairs_by_name(dependencies: Dependencies) -> dict[str, object]:
     members: dict[str, object] = {
         "members": dependencies.members,
         "window": dependencies.window,
+        "latest_years": dependencies.latest_years,
     }
     for name, _key, _value in _PAIR_FIELDS:
         for ref, token in getattr(dependencies, name):
@@ -230,7 +353,7 @@ def dependency_changes(
     """The members in which `stored`, a fingerprint as `Dependencies.as_json` stored it, differs
     from `current`, sorted; empty when they agree.
 
-    A member is `members`, `window`, or a pair named `<field>:<ref>`, such as
+    A member is `members`, `window`, `latest_years`, or a pair named `<field>:<ref>`, such as
     `sources:provenance/OECDDAC2A`. A ref present on one side only differs. A source or
     conversion source whose current refresh date is `None` is unknown and never differs, so a
     source with no refresh date, or one whose date the graph stops serving, never rebuilds on

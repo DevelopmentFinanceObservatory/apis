@@ -92,7 +92,7 @@ def test_definite_response_with_facet_options_validates_against_schema(response_
 
 
 def test_candidates_response_validates_against_schema(response_schema):
-    body = _resolve_raw_text(_client(), "under-5 child mortality rate")
+    body = _resolve_raw_text(_client(), "remittances as percentage of GDP in Nigeria")
     assert body["status"] == "candidates"
     jsonschema.validate(instance=body, schema=response_schema)
 

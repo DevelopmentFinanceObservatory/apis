@@ -1,7 +1,8 @@
 """Tests the no-data guard for alternate shapes when the elected shape has no observations.
 
-A lone alternate yields `no_data` with `ONLY_ALTERNATE_HAS_DATA`; two alternates yield
-`candidates` with an `ELECTED_SHAPE_NO_DATA` warning."""
+A nominated alternate that is neither an equivalent reading nor a price-basis sibling of the
+elected shape rides on the refusal: the part answers `no_data` with `ONLY_ALTERNATE_HAS_DATA`,
+the first such alternate with data as its alternate match (status rule 1)."""
 
 from __future__ import annotations
 
@@ -233,9 +234,9 @@ def test_elected_stat_vars_none_when_mat_result_is_no_data_draft():
 # ---------------------------------------------------------------------------
 
 _ROLE_SV = "TESTFIXTURE/OnlyAlternateHasDataGuard/RoleBearingFlow"
-# The subject-only alternate shares population, stat type and denominator with _ROLE_SV.
-# Its entity roles distinguish it after five-tuple grouping. The query names a share,
-# which both honour, so the elected flow passes the materialise quantity gate and the
+# The subject-only alternate shares population and stat type with _ROLE_SV and divides by
+# another base, so it is no equivalent reading of it (status rule 1). The query names a
+# share, which both honour, so the elected flow passes the materialise quantity gate and the
 # guard admits the alternate beside it.
 _AID_SV = "AidReceivedAsFractionOfGDP"
 _ROLE_NODE = {
@@ -253,13 +254,13 @@ _ROLE_NODE = {
         },
     },
     _AID_SV: {
-        "label": "Aid received as a fraction of GDP",
+        "label": "Aid received as a fraction of GNI",
         "type": "StatisticalVariable",
         "arcs": _std_arcs(
-            "Aid received as a fraction of GDP",
+            "Aid received as a fraction of GNI",
             pop_type="EconomicActivity",
             meas_prop="amount",
-            denom="GrossDomesticProduction",
+            denom="GrossNationalIncome",
         ),
     },
 }
@@ -275,13 +276,22 @@ _ROLE_GUARD_OBS = {
 }
 
 
-def _run_role_bearing_one_alt_scenario():
+def _run_role_bearing_one_alt_scenario(aid_denominator: str = "GrossNationalIncome"):
     # AID_SV ranks first at 0.85 and ROLE_SV second at 0.82.
     # ROLE_SV's creditor/debtor roles bind Kenya on the destination axis.
     graph = FakeGraph(
         nodes={
             **_KEN_NODE,
             **_ROLE_NODE,
+            _AID_SV: {
+                **_ROLE_NODE[_AID_SV],
+                "arcs": _std_arcs(
+                    "Aid received as a fraction of GNI",
+                    pop_type="EconomicActivity",
+                    meas_prop="amount",
+                    denom=aid_denominator,
+                ),
+            },
         },
         detect=_ROLE_GUARD_DETECT,
         resolve={"Kenya": "country/KEN"},
@@ -317,8 +327,17 @@ def test_role_bearing_elected_shape_no_observations_elects_stat_vars():
     assert result.elected_stat_vars == [GraphRef(ref=_ROLE_SV, label="aid flow")]
 
 
+def test_an_equivalent_reading_answers_for_an_empty_role_bearing_election():
+    """Status rule 1: a subject-only reading of the elected flow's own five-tuple is an
+    equivalent reading of it, so with data it answers in the elected flow's place."""
+    result = _run_role_bearing_one_alt_scenario(aid_denominator="GrossDomesticProduction")
+    assert result.status == "definite"
+    assert [sv.ref.ref for sv in result.specs[0].resolved.members] == [_AID_SV]
+    assert ELECTED_SHAPE_NO_DATA in [w.code for w in result.warnings]
+
+
 # ---------------------------------------------------------------------------
-# Two alternates meet CandidateSet's minimum and yield candidates with a warning.
+# Two nominated alternates with data beside an empty election.
 # ---------------------------------------------------------------------------
 
 _TWO_ALT_NODES: dict = {
@@ -370,18 +389,13 @@ def _run_two_alt_scenario():
     )
 
 
-def test_two_alt_survivors_is_candidates_not_definite():
+def test_two_alt_survivors_leave_the_part_refused_with_the_first_riding():
+    """Status rule 1: neither nominated reading is an equivalent or a price-basis sibling
+    of the empty elected shape, so the part refuses, and the first nominated reading with
+    data rides on the refusal as its alternate match."""
     result = _run_two_alt_scenario()
-    assert result.status == "candidates", (
-        f"expected candidates (2+ survivors satisfy CandidateSet's min_length=2), "
-        f"got {result.status!r}"
-    )
-    assert len(result.specs) == 2
-
-
-def test_two_alt_survivors_warning_names_the_elected_failure():
-    result = _run_two_alt_scenario()
-    warning = next((w for w in result.warnings if w.code == ELECTED_SHAPE_NO_DATA), None)
-    assert warning is not None, (
-        f"expected ELECTED_SHAPE_NO_DATA warning, got {[w.code for w in result.warnings]}"
-    )
+    assert (result.status, result.no_data_reason) == ("no_data", "no_observations")
+    assert result.gate == ONLY_ALTERNATE_HAS_DATA
+    assert result.alternate_match is not None
+    assert [sv.ref.ref for sv in result.alternate_match.resolved.members] == [_STD_SV]
+    assert ELECTED_SHAPE_NO_DATA not in [w.code for w in result.warnings]

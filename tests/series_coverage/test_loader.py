@@ -81,6 +81,7 @@ def test_load_coverage_reads_a_real_shaped_artifact(tmp_path: Path) -> None:
     loaded = load_coverage(uri)
     assert loaded.manifest.stamp == "test-coverage-stamp"
     assert loaded.index.num_rows > 0
+    assert loaded.index.build_year == 2026
     assert loaded.index.filter_candidates(variables=[V1], bound={"recipient": frozenset({KEN})})
 
 

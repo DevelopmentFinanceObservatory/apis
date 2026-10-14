@@ -37,7 +37,7 @@ import re
 import weakref
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 from code_index.shared import get_index, get_measure_index
 from search.engine.extract import _words
@@ -62,8 +62,10 @@ from search.engine.quantity import (
 )
 from search.engine.region.equivalent_series import CLUSTER_BY_MEMBER, EquivalentCluster
 from search.engine.region.qualifier_readings import reading_for_shape
+from search.engine.region.status_rule import CLOSED_AXES, OpenAxes
 from search.engine.retrieval.bound_values import (
     RoleKeys,
+    applies_one_of,
     bound_values_from_bindings,
     narrowed_to,
     serving_member_rows,
@@ -73,7 +75,7 @@ from search.engine.retrieval.bound_values import (
 )
 from search.engine.retrieval.facts import read_name
 from search.engine.retrieval.member_facts import ArcsMemberFacts, IndexMemberFacts
-from search.engine.shape import ShapeDraft, _declared_role_names, is_role_bearing
+from search.engine.shape import ShapeDraft, is_role_bearing, role_class
 from search.engine.unit.lexicon import AMBIGUOUS_CURRENCY_NAMES, CURRENCY_ALIASES
 from unit_words.currency_codes import ISO_4217_CODES
 
@@ -85,27 +87,10 @@ if TYPE_CHECKING:
     from search.engine.retrieval.facts import FiveTuple
     from search.engine.retrieval.member_facts import MemberFacts
 
-type MeasureClass = Literal["prevalence", "incidence", "mortality"]
-
 _QUALIFIER_AXIS = "measurementQualifier"
 
 # The measure axis whose values are the measured properties of one measure family.
 _MEASURED_PROPERTY_AXIS = "measuredProperty"
-
-# The words naming each measure class, read whole-word from a lowercase phrase or label.
-# Incidence also reads from "new" followed within three tokens by "infection(s)" or
-# "case(s)", as in "Number of new HIV infections per 1,000 uninfected population" and
-# "Number Of New Reported Cases Of ...". A bare "cases" names no class: most "Number of X
-# Cases" series are notified or cumulative counts.
-_MEASURE_CLASS_RES: tuple[tuple[MeasureClass, re.Pattern[str]], ...] = (
-    ("prevalence", re.compile(r"\bprevalence\b")),
-    ("incidence", re.compile(r"\bincidence\b|\bnew(?:\s+\S+){0,3}?\s+(?:infections?|cases?)\b")),
-    ("mortality", re.compile(r"\b(?:mortality|deaths|death\s+rates?|dying)\b")),
-)
-# "Living with" names a population ("people living with HIV"), which is a prevalence only
-# when no measure word names another class: "Deaths among people living with HIV" is a
-# mortality.
-_LIVING_WITH_RE = re.compile(r"\bliving\s+with\b")
 
 # A lower-to-upper case boundary inside a camelCase dcid such as `MortalityEvent`.
 _CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z])(?=[A-Z])")
@@ -126,17 +111,20 @@ _NORMALISATION, _QUALIFIER, _STAT_TYPE, _RESIDENCE, _CONSTRAINT = range(5)
 type _Refusal = tuple[int, int, str]
 
 
-def measure_class(text: str) -> MeasureClass | None:
-    """Return the measure class a query phrase or a label names: prevalence, incidence or
-    mortality. None when it names none, or more than one."""
+def measure_class(text: str) -> str | None:
+    """Return the measure class a query phrase or a label names, as the code index declares
+    the patterns naming each (`CodeIndex.measure_classes`). None when it names none, or
+    more than one. A fallback pattern names its class only where no other pattern names
+    any class."""
     lower = text.lower()
-    named = [cls for cls, pattern in _MEASURE_CLASS_RES if pattern.search(lower)]
-    if not named and _LIVING_WITH_RE.search(lower):
-        return "prevalence"
-    return named[0] if len(named) == 1 else None
+    declarations = get_index().measure_classes
+    named = {d.measure_class for d in declarations if not d.fallback and d.pattern.search(lower)}
+    if not named:
+        named = {d.measure_class for d in declarations if d.fallback and d.pattern.search(lower)}
+    return named.pop() if len(named) == 1 else None
 
 
-def shape_measure_class(shape: ShapeDraft) -> MeasureClass | None:
+def shape_measure_class(shape: ShapeDraft) -> str | None:
     """Return the measure class the shape's population type names.
 
     No graph arc separates prevalence, incidence and mortality, so the class is read from
@@ -242,11 +230,21 @@ class QueryPins:
     `qualifier_readings` are spans naming a code and a price basis ("PPP"). A span pins
     the price basis only when the elected shape carries that reading. `bindings` narrow
     the elected reading, and a property in `engine_authored` (a measure election, a
-    declared default) narrows it and counts as unnamed. `unread_price_basis` and
+    declared default) narrows it and counts as unnamed. `stray_values` are the values the
+    bind drafted on properties the elected shape has no slot for
+    (`requirements.stray_values`), by property, as drafted, whether or not the elected
+    reading's members hold the property at a fixed value. The request names them, so a
+    member holding a value that applies one of those drafted on a property
+    (`bound_values.applies_one_of`, the rule the ledger judges it by) is admitted on that
+    property, and one holding any other value there or none is pinned out, whatever the elected reading holds and whichever family
+    the alternate measures. `unread_price_basis` and
     `elected_has_data` gate the default operation. `denominator_kinds` classifies the
     StatVar denominators of the shapes judged (`normalisation_class`), and
     `named_denominator` is the denominator the question names, as the quantity read chose
-    it, `None` when it names none or no bind has run.
+    it, `None` when it names none or no bind has run. `open_axes` are the measure axes the
+    question leaves open for the elected reading (`status_rule.open_axes`), the status
+    rule's own: a stat-type difference, or a price basis ranked below the elected one, is
+    refused only on a closed axis. Every axis is closed by default.
     """
 
     normalisation: frozenset[NamedNormalisation] = frozenset()
@@ -256,17 +254,20 @@ class QueryPins:
     constraint_matches: Mapping[str, frozenset[str]] = field(default_factory=dict)
     qualifier_readings: tuple[QualifierReadings, ...] = ()
     bindings: tuple[SlotBindingDraft, ...] = ()
+    stray_values: Mapping[str, frozenset[str]] = field(default_factory=dict)
     engine_authored: frozenset[str] = frozenset()
     unread_price_basis: bool = False
     elected_has_data: bool = False
     denominator_kinds: Mapping[str, DenominatorKind] = field(default_factory=dict)
     named_denominator: NamedDenominator | None = None
+    open_axes: OpenAxes = CLOSED_AXES
 
 
 def query_pins(
     variable: str,
     *,
     bindings: Sequence[SlotBindingDraft] = (),
+    stray_values: Iterable[tuple[str, str]] = (),
     engine_authored: frozenset[str] = frozenset(),
     qualifier_matches: Sequence[QualifierMatch] = (),
     qualifier_readings: Sequence[QualifierReadings] = (),
@@ -275,11 +276,14 @@ def query_pins(
     denominator_kinds: Mapping[str, DenominatorKind] | None = None,
     named_denominator: NamedDenominator | None = None,
     quantity: QuantityRequirement,
+    open_axes: OpenAxes = CLOSED_AXES,
 ) -> QueryPins:
-    """Read the pins of one leg from its phrase, bindings, qualifier matches and
-    two-reading spans. The normalisation pins are the leg's `quantity`
-    (`ResolveState.quantity_requirement`), and `named_denominator` the denominator bind
-    chose (`ResolveState.named_denominator`)."""
+    """Read the pins of one leg from its phrase, bindings, the values the bind drafted
+    on properties the elected shape has no slot for, qualifier matches and two-reading
+    spans. The normalisation pins are the leg's `quantity`
+    (`ResolveState.quantity_requirement`), and `named_denominator` the denominator the
+    quantity read chose (`ResolveState.named_denominator`). `open_axes` are the measure axes
+    the status rule reads as open (`ResolveState.open_measure_axes`)."""
     index, measure_index = get_index(), get_measure_index()
     qualifiers: set[str] = set()
     constraint_matches: dict[str, set[str]] = {}
@@ -290,6 +294,9 @@ def query_pins(
             constraint_matches.setdefault(match.code_system, set()).update(
                 index.expansion(match.code_dcid)
             )
+    strays: dict[str, set[str]] = {}
+    for prop, value in stray_values:
+        strays.setdefault(prop, set()).add(value)
     return QueryPins(
         normalisation=quantity.named,
         normalisation_framing=quantity.framing,
@@ -298,11 +305,13 @@ def query_pins(
         constraint_matches={prop: frozenset(values) for prop, values in constraint_matches.items()},
         qualifier_readings=tuple(qualifier_readings),
         bindings=tuple(bindings),
+        stray_values={prop: frozenset(values) for prop, values in strays.items()},
         engine_authored=engine_authored,
         unread_price_basis=unread_price_basis,
         elected_has_data=elected_has_data,
         denominator_kinds=denominator_kinds or {},
         named_denominator=named_denominator,
+        open_axes=open_axes,
     )
 
 
@@ -325,8 +334,8 @@ def is_cross_population_false_friend(elected: ShapeDraft, alternate: ShapeDraft)
     The fields are population type, measured property, and role structure.
     Any one difference can mark a valid variant, such as a rate and its count;
     all three leave label wording as the only link. Equal population types
-    protect same-population siblings. Alternate admission and the pre-bind flow
-    prune both use this predicate. Only admission applies the registry-twin exemption.
+    protect same-population siblings. Alternate admission applies it, with the
+    registry-twin exemption.
     """
     return (
         elected.pop_type_dcid != alternate.pop_type_dcid
@@ -367,7 +376,7 @@ def _family(shape: ShapeDraft) -> tuple[object, ...]:
     return (
         shape.pop_type_dcid,
         shape.meas_prop_dcid,
-        _declared_role_names(shape),
+        role_class(shape),
         shape.optional_roles,
     )
 
@@ -711,8 +720,10 @@ class AlternateJudge:
         )
 
     def _stat_type_concept(self, alternate: ShapeDraft) -> _Refusal | None:
+        """Refuse another stat type than the elected one's while the stat-type axis is
+        closed: the question names one, or the elected reading holds the default."""
         elected, value = self.elected.stat_type_dcid, alternate.stat_type_dcid
-        if not elected or not value or elected == value:
+        if self.pins.open_axes.stat_type or not elected or not value or elected == value:
             return None
         return (
             _CONCEPT,
@@ -722,7 +733,10 @@ class AlternateJudge:
         )
 
     def _default_refusal(self, alternate: ShapeDraft) -> _Refusal | None:
-        """Refuse a lower-ranked price basis of the elected one's family.
+        """Refuse a lower-ranked price basis of the elected one's family while the
+        price-basis axis is closed. An elected reading off the default price basis leaves
+        the axis open when the question names none (`status_rule.open_axes`), and the
+        status rule offers its other price bases.
 
         A two-reading span ("PPP") names a price basis when the elected shape or the
         alternate carries its measure reading, as for the pre-bind collapse
@@ -732,6 +746,7 @@ class AlternateJudge:
         pins = self.pins
         if (
             not pins.elected_has_data
+            or pins.open_axes.price_basis
             or self.qualifiers
             or pins.unread_price_basis
             or any(
@@ -762,10 +777,36 @@ class AlternateJudge:
         )
 
     def _member_refusal(self, member: _Member, *, same_family: bool) -> _Refusal | None:
-        refusals = [self._residence_refusal(member)]
+        strays = self.pins.stray_values
+        refusals = [
+            self._residence_refusal(member),
+            *(self._stray_refusal(member, prop) for prop in strays),
+        ]
         if same_family:
-            refusals += [self._constraint_refusal(member, prop) for prop in member.properties]
+            refusals += [
+                self._constraint_refusal(member, prop)
+                for prop in member.properties
+                if prop not in strays
+            ]
         return min((refusal for refusal in refusals if refusal is not None), default=None)
+
+    def _stray_refusal(self, member: _Member, prop: str) -> _Refusal | None:
+        """Refuse a member that applies none of the values the bind drafted on `prop`, a
+        property the elected reading has no slot for (`QueryPins.stray_values`), in any
+        family. The values drafted on one property are a set, which a member applies by
+        membership (`applies_one_of`), as a set bound on a slot reads; a member holding a
+        value outside it, or none on `prop`, does not. The ledger judges an answer by the
+        same rule on each member it selects (`requirements.meets_stray_values`)."""
+        value = member.constraints.get(prop)
+        stray = self.pins.stray_values[prop]
+        if applies_one_of(stray, value):
+            return None
+        return (
+            _PIN,
+            _CONSTRAINT,
+            f"pin:{prop}: the bind names {sorted(stray)} and a member holds "
+            f"{value or 'no value there'}",
+        )
 
     def _residence_refusal(self, member: _Member) -> _Refusal | None:
         tokens, axis, named = member.residence, member.residence_axis, self.pins.residence

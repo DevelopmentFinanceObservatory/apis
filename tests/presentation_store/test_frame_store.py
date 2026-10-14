@@ -298,9 +298,6 @@ class _FakeGraphReader:
     def observation_facets_batch(self, *, stat_var: str, entities, deadline: float | None = None):
         raise NotImplementedError("not exercised by LiveFrameStore")
 
-    def declares_facet_defaults(self) -> bool:
-        raise NotImplementedError("not exercised by LiveFrameStore")
-
     def default_facet_policy(self, *, stat_var: str, axis: str):
         raise NotImplementedError("not exercised by LiveFrameStore")
 

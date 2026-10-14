@@ -1,23 +1,46 @@
-"""Prune empty sibling shapes before election using scoped availability evidence.
+"""The availability read: whether each admissible reading of a part has data where the
+question asks, D(x) under the status rule (`region.status_rule`).
 
-Denominator-resolution pairs apply at any place scope. Rate-head pairs require a
-named place and matching cohort structure.
+A part that names places reads D at them: a subject-only reading from the observations at
+the named countries, the nodes of the sets the part names and their members, within the
+requested years where the probe states them; a role-bearing reading from the coverage
+snapshot, on the roles the places bind (`series_at_places`). A part that names no place
+reads D in the default scope each subject-only reading declares, from the default-scope
+presence read (`place.read_default_presence`): data anywhere in that scope. A role-bearing
+reading with no place leaves D unknown, and its own read decides.
+
+Derive reads the named countries for every recalled StatVar (`ShapeDraft.place_available`),
+so a part naming only countries makes no further read. A part naming a set makes one more
+at every place the part names (`read_menu_availability`), over the menu's subject-only
+StatVars. That read covers every member of every set: a sample can show data present but
+never absent. The request deadline and a response byte cap bound it.
+Each read stamps the places it covered on the shape (`ShapeDraft.availability_places`), and
+a read that found no data settles D as absent only when it covered every place the part
+names (`asked_places`). A failed read, a slow or oversized one among them, leaves D unknown,
+which is no evidence either way, and so does a read of fewer places than the part names.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
+from typing import Protocol
 
+from code_index.shared import get_index
+from materialise.place_scope import DefaultPresence
 from search.engine.clients.graph import EngineGraphClient
-from search.engine.qualifier_match import QualifierMatch, QualifierReadings
-from search.engine.quantity import DenominatorKind, QuantityRequirement
-from search.engine.region.alternate_guard import QueryPins, inadmissible_reason, query_pins
+from search.engine.config import settings
+from search.engine.degraded_reads import note_degraded_read
+from search.engine.extract import DateRequest
+from search.engine.reading_coverage import ReadingCoverage, observed_years
+from search.engine.region.place_roles import PlaceAssignment, bind_place_roles, names_a_place
 from search.engine.region.place_set import PlaceSet
-from search.engine.region.rate_head import _rate_head, _rate_head_compatible
-from search.engine.region.state import for_shape, shape_vocabulary
+from search.engine.region.state import ResolveState
+from search.engine.retrieval.bound_values import index_carries_shape, part_member_rows
+from search.engine.retrieval.role_scope import _COVERAGE_ROLE_FOR_AXIS
 from search.engine.shape import ShapeDraft, is_role_bearing
+from search.models import TimeWindow
 
 logger = logging.getLogger(__name__)
 
@@ -37,323 +60,212 @@ def _shape_group_key(shape: ShapeDraft) -> _ShapeGroupKey:
     )
 
 
-def _availability_sibling_class_key(
-    shape: ShapeDraft,
-) -> tuple[str, str, str, str | None, frozenset[str]]:
-    """Return the shared structural key, excluding denominator resolution.
-
-    Constraint slots key on property dcid alone because axis classification
-    can vary for the same property across shape groups.
-    """
-    constraint_property_dcids = frozenset(
-        key.property_dcid for key in shape.slot_keys if key.property_dcid is not None
-    )
-    return (
-        shape.pop_type_dcid,
-        shape.meas_prop_dcid,
-        shape.stat_type_dcid,
-        shape.meas_qual_dcid,
-        constraint_property_dcids,
-    )
-
-
-def _are_availability_siblings(a: ShapeDraft, b: ShapeDraft) -> bool:
-    """Return whether shapes share all fields except denominator resolution.
-
-    One side must have an unresolved denominator arc and the other a resolved
-    dcid. A missing denominator arc is a different concept.
-    """
-    if _availability_sibling_class_key(a) != _availability_sibling_class_key(b):
-        return False
-    if a.meas_denom_unresolved and not b.meas_denom_unresolved and b.meas_denom_dcid is not None:
-        return True
-    return b.meas_denom_unresolved and not a.meas_denom_unresolved and a.meas_denom_dcid is not None
-
-
-def _covers_fewer_places(shape: ShapeDraft, other: ShapeDraft) -> bool:
-    """Return whether `shape` has data at a proper subset of the probed places `other`
-    has data at. False when either shape's places are unknown."""
-    if shape.available_places is None or other.available_places is None:
-        return False
-    return shape.available_places < other.available_places
-
-
-def _drop_shapes(shapes: list[ShapeDraft], to_drop: set[_ShapeGroupKey]) -> list[ShapeDraft]:
-    """Remove the named shape groups while keeping at least one candidate."""
-    if not to_drop:
-        return shapes
-    survivors = [s for s in shapes if _shape_group_key(s) not in to_drop]
-    return survivors or shapes
-
-
-def _measure_head_constraint_value_map(shape: ShapeDraft) -> dict[str, frozenset[str]] | None:
-    """Return slot values keyed by property, merging axes with the same property.
-
-    Axis classification can vary by shape group. Missing taxonomy means
-    structural compatibility is unknown. An empty map would wrongly permit a
-    match.
-    """
-    if shape.slot_taxonomy is None:
-        return None
-    values_by_property: dict[str, set[str]] = {}
-    for key, values in shape.slot_taxonomy.items():
-        _, _, property_dcid = key.partition(":")
-        values_by_property.setdefault(property_dcid, set()).update(values)
-    return {
-        property_dcid: frozenset(values) for property_dcid, values in values_by_property.items()
-    }
-
-
-def _measure_head_shapes_structurally_agree(a: ShapeDraft, b: ShapeDraft) -> bool:
-    """Return whether population type and constraint values identify one cohort.
-
-    This pairs a rate with its count but separates different cohorts. Missing
-    taxonomy fails closed because the prune would otherwise discard a shape
-    without evidence.
-    """
-    if a.pop_type_dcid != b.pop_type_dcid:
-        return False
-    a_constraints = _measure_head_constraint_value_map(a)
-    b_constraints = _measure_head_constraint_value_map(b)
-    return (
-        a_constraints is not None and b_constraints is not None and a_constraints == b_constraints
-    )
-
-
-def _shapes_are_measure_head_siblings(a: ShapeDraft, b: ShapeDraft) -> bool:
-    """Return whether labels share a rate head and structures identify one cohort.
-
-    A head is ``<concept> rate`` or ``<concept> percentage``. The other label
-    must use the same term or a close inflection. Equal population type and
-    constraint values pair a rate with its
-    cohort's count, while separating values such as under-five and under-14.
-    Structurally identical shapes with different unrepresented cohorts remain
-    indistinguishable. Callers enforce the named-place restriction.
-    """
-    head = _rate_head(a.label)
-    if head is None or not _rate_head_compatible(b, head):
-        head = _rate_head(b.label)
-        if head is None or not _rate_head_compatible(a, head):
-            return False
-    return _measure_head_shapes_structurally_agree(a, b)
-
-
-def _is_availability_pair_member(
-    shape: ShapeDraft, shapes: list[ShapeDraft], *, named_place: bool
-) -> bool:
-    """Return whether an active pairing rule includes this shape.
-
-    The probe and prune share this predicate. Denominator pairs apply at any
-    scope. Rate-head pairs require ``named_place``.
-    """
-    return any(
-        other is not shape
-        and not is_role_bearing(other)
-        and (
-            _are_availability_siblings(shape, other)
-            or (named_place and _shapes_are_measure_head_siblings(shape, other))
-        )
-        for other in shapes
-    )
-
-
-def _prune_availability_siblings(
-    shapes: list[ShapeDraft],
-    *,
-    named_place: bool,
-    quantity: QuantityRequirement,
-    denominator_kinds: Mapping[str, DenominatorKind],
-    variable: str = "",
-    qualifier_matches: Mapping[frozenset[str], tuple[QualifierMatch, ...]] | None = None,
-    qualifier_readings: Sequence[QualifierReadings] = (),
-) -> tuple[list[ShapeDraft], list[tuple[ShapeDraft, ShapeDraft]]]:
-    """Drop an empty shape when a valid sibling has observations.
-
-    Pairs share denominator resolution state, or a rate head and the same
-    cohort structure. Rate-head evidence applies only to named places.
-    entity-less queries use denominator pairs alone.
-
-
-    A denominator-resolution pair with data on both sides drops the shape whose
-    data covers a proper subset of its sibling's probed places
-    (``_covers_fewer_places``): nominal GDP per ``Count_Person`` holds one of the
-    six sample countries, and the ``PerCapita`` spelling holds all six.
-
-    Unknown or equal availability leaves both shapes intact. Role-bearing
-    shapes use donor entities and are excluded.
-
-    Pairing uses structural fields alone. Before a drop, the survivor must be a reading
-    of the dropped shape (`alternate_guard.inadmissible_reason`) under the query's
-    wording, its quantity requirement (`quantity`, judged with the kinds of the leg's
-    StatVar denominators, `denominator_kinds`, as bind and materialise judge it), the
-    dropped shape's own qualifier matches (`qualifier_matches`, keyed by vocabulary,
-    `state.for_shape`) and its two-reading spans. No bind has run, so every
-    member of the dropped shape is its reading. Empty query text allows structure-only pairing. Return measure-head
-    drops as ``(dropped, survivor)`` pairs for the caller's
-    ``ELECTED_SHAPE_NO_DATA`` warning. Denominator-resolution drops are omitted.
-    If every shape qualifies for removal, restore the original list.
-    """
-    pins_by_vocabulary: dict[frozenset[str], QueryPins] = {}
-
-    def pins(shape: ShapeDraft) -> QueryPins:
-        vocabulary = shape_vocabulary(shape)
-        if vocabulary not in pins_by_vocabulary:
-            pins_by_vocabulary[vocabulary] = query_pins(
-                variable,
-                quantity=quantity,
-                denominator_kinds=denominator_kinds,
-                qualifier_matches=for_shape(qualifier_matches or {}, shape),
-                qualifier_readings=qualifier_readings,
-            )
-        return pins_by_vocabulary[vocabulary]
-
-    to_drop: set[_ShapeGroupKey] = set()
-    measure_head_substitutions: list[tuple[ShapeDraft, ShapeDraft]] = []
-    for shape in shapes:
-        if is_role_bearing(shape):
-            continue
-        if shape.place_available is not False:
-            # Two denominator spellings of one measure, both with data: the one whose
-            # data covers only some of the other's probed places leaves the election.
-            if any(
-                not is_role_bearing(other)
-                and _are_availability_siblings(shape, other)
-                and _covers_fewer_places(shape, other)
-                and inadmissible_reason(pins(shape), shape, other) is None
-                for other in shapes
-            ):
-                to_drop.add(_shape_group_key(shape))
-            continue
-        survivor = next(
-            (
-                other
-                for other in shapes
-                if not is_role_bearing(other)
-                and other.place_available
-                and (
-                    _are_availability_siblings(shape, other)
-                    or (named_place and _shapes_are_measure_head_siblings(shape, other))
-                )
-                and inadmissible_reason(pins(shape), shape, other) is None
-            ),
-            None,
-        )
-        if survivor is None:
-            continue
-        to_drop.add(_shape_group_key(shape))
-        if named_place and _shapes_are_measure_head_siblings(shape, survivor):
-            measure_head_substitutions.append((shape, survivor))
-
-    survivors = _drop_shapes(shapes, to_drop)
-    if survivors is shapes:
-        # The drop-everything guard restored the full set, so no warning is due.
-        return survivors, []
-    return survivors, measure_head_substitutions
-
-
-# Entity-less probes sample one country per inhabited continent: USA, BRA, DEU,
-# KEN, IND, and AUS. Any observation marks a shape available. This sample can
-# miss coverage elsewhere, so a drop requires a confirmed-empty side and data
-# on its paired shape. No positive evidence on either side prunes none. Rate-head
-# pairing stays off because world-only series may have no country data.
-_ENTITYLESS_AVAILABILITY_PROBE_PLACES: tuple[str, ...] = (
-    "country/USA",
-    "country/BRA",
-    "country/DEU",
-    "country/KEN",
-    "country/IND",
-    "country/AUS",
-)
-
-# Five members suffice because one positive observation marks a shape available.
-# Probing every member up to SEARCH_MAX_CHILD_PLACES only enlarges the batch.
-_PLACE_AVAILABILITY_PROBE_SAMPLE = 5
-
-
-def _sibling_probe_places(
-    named_place_dcids: list[str] | None,
-    place_sets: Mapping[str, PlaceSet],
-) -> list[str]:
-    """Build the probe scope from named places and each set that expands.
-
-    A set that expands gives its own node, when it has one, and a sample of its members up
-    to the configured cap, so a shape with data only at the node and one with data only at
-    members are both seen. Raise ``AssertionError`` for a set with neither. Fall back to
-    the fixed sample only when no place resolves. Deduplication keeps first-seen order.
-    """
-    places = list(named_place_dcids or [])
-    for name, place_set in place_sets.items():
-        if place_set.members is None:
-            continue
-        if place_set.node is None and not place_set.members:
-            raise AssertionError(f"no resolved dcid for place-set name {name!r}")
+def asked_places(place_sets: Mapping[str, PlaceSet]) -> list[str]:
+    """Every place the part names: each set's node, then its members, without repeats."""
+    places: list[str] = []
+    for place_set in place_sets.values():
         if place_set.node is not None:
             places.append(place_set.node.dcid)
-        places.extend(place_set.members[:_PLACE_AVAILABILITY_PROBE_SAMPLE])
-    if not places:
-        places = list(_ENTITYLESS_AVAILABILITY_PROBE_PLACES)
+        places.extend(place_set.members or ())
     return list(dict.fromkeys(places))
 
 
-def _resolve_sibling_availability(
-    shapes: list[ShapeDraft],
+def menu_read_places(
+    place_sets: Mapping[str, PlaceSet], derive_places: Sequence[str] | None
+) -> list[str]:
+    """The places the menu's availability read covers, empty when derive's probe at
+    `derive_places`, the named countries, already read every place the part names. Else
+    every place the part names (`asked_places`)."""
+    places = asked_places(place_sets)
+    return [] if set(places) <= set(derive_places or ()) else places
+
+
+def read_menu_availability(
+    shapes: Sequence[ShapeDraft],
     *,
     graph: EngineGraphClient,
-    probe_places: list[str],
-    named_place: bool,
+    places: Sequence[str],
+    deadline: float | None,
 ) -> tuple[list[ShapeDraft], bool]:
-    """Refresh pair candidates against the query's full place scope.
+    """`shapes` with each subject-only one's coverage at `places`
+    (`ShapeDraft.named_place_coverage`) and those places (`ShapeDraft.availability_places`),
+    from one batched facet read over their StatVars, and whether that read failed.
 
-    Only shapes in an active pair are probed. One batched call covers their
-    confirmed StatVars. Any observation at any probe place marks a shape
-    available, and the shape records the probe places that hold one
-    (``available_places``). ``named_place`` enables rate-head pairing only for a named
-    place. Return ``(shapes, probe_failed)``. On graph error, reset every pair
-    candidate to unknown so the prune cannot use narrower stale evidence. Shapes
-    outside a pair remain unchanged.
-    """
-    candidates = [
-        shape
-        for shape in shapes
-        if not is_role_bearing(shape)
-        and _is_availability_pair_member(shape, shapes, named_place=named_place)
-    ]
-    if not candidates or not probe_places:
-        return shapes, False
-
-    all_svs = list(dict.fromkeys(sv for shape in candidates for sv in (shape.sv_arc_facts or {})))
-    if not all_svs:
-        return shapes, False
-
+    The read is bounded by `deadline`, the request's monotonic deadline, and by the
+    response byte cap (`sdmx_max_bytes`). A failed read, a slow or oversized one among
+    them, is noted as lost (`degraded_reads.note_degraded_read`) and leaves every shape as
+    it was. Derive's read covers fewer places than `places`, so an absence it found settles
+    nothing there (`_subject_has_data`) and D stays unknown. Role-bearing shapes are left as
+    they are: the subject facets this read sees do not hold their observations. Derive's
+    availability at the named countries (`ShapeDraft.place_available`), which the slot
+    defaults read, stays as derive read it."""
+    subject = [shape for shape in shapes if not is_role_bearing(shape)]
+    stat_vars = list(dict.fromkeys(sv for shape in subject for sv in (shape.sv_arc_facts or {})))
+    if not stat_vars or not places:
+        return list(shapes), False
     try:
-        probe = graph.observation_facets_batch(all_svs, probe_places, False)
+        probe = graph.observation_facets_batch(
+            stat_vars,
+            list(places),
+            False,
+            max_bytes=settings().sdmx_max_bytes,
+            deadline=deadline,
+        )
     except Exception:
         logger.warning(
-            "resolve_variable: sibling-availability probe failed for %d shape(s) "
-            "against probe_places=%r; resetting place_available to unknown so "
-            "the prune treats every candidate as unprunable",
-            len(candidates),
-            probe_places,
+            "availability read failed for %d menu shape(s) at %d place(s); their "
+            "availability stays unknown",
+            len(subject),
+            len(places),
             exc_info=True,
         )
-        reset_by_group = {
-            _shape_group_key(shape): dataclasses.replace(shape, place_available=None)
-            for shape in candidates
+        note_degraded_read("menu availability")
+        return list(shapes), True
+    coverage: dict[str, ReadingCoverage] = {
+        sv: {
+            place: years
+            for place, facets in by_place.items()
+            if (years := observed_years(facets)) is not None
         }
-        return [reset_by_group.get(_shape_group_key(shape), shape) for shape in shapes], True
-
-    places_by_sv = {
-        sv: frozenset(
-            place for place, facets in by_entity.items() if any(f.obs_count > 0 for f in facets)
-        )
-        for sv, by_entity in probe.items()
+        for sv, by_place in probe.items()
     }
-    updated_by_group = {}
-    for shape in candidates:
-        places = frozenset().union(
-            *(places_by_sv.get(sv, frozenset()) for sv in (shape.sv_arc_facts or {}))
+    read: list[ShapeDraft] = []
+    for shape in shapes:
+        if is_role_bearing(shape):
+            read.append(shape)
+            continue
+        at = {sv: coverage.get(sv, {}) for sv in (shape.sv_arc_facts or {})}
+        read.append(
+            dataclasses.replace(
+                shape, named_place_coverage=at, availability_places=frozenset(places)
+            )
         )
-        updated_by_group[_shape_group_key(shape)] = dataclasses.replace(
-            shape, place_available=bool(places), available_places=places
+    return read, False
+
+
+class SeriesReader(Protocol):
+    """Reads whether a role-bearing shape holds a series at the part's places
+    (`series_at_places`)."""
+
+    def __call__(
+        self, shape: ShapeDraft, assignment: PlaceAssignment | None = None, /
+    ) -> bool | None: ...
+
+
+def series_at_places(state: ResolveState) -> SeriesReader:
+    """Whether each role-bearing shape's family holds a series at the places the part
+    names, on the roles an assignment binds them to, else on those `bind_place_roles`
+    gives, read from the request's coverage snapshot within the requested years. A set
+    gives its node and its members. The family is the rows its part may answer from
+    (`part_member_rows`), else its recalled members. `None` when the shape is subject-only,
+    refuses the places, binds none, or has no member the coverage index holds."""
+    coverage = state.coverage.index
+    index = get_index()
+    window = _requested_window(state.date_request)
+    first_year = window.start_year if window is not None else None
+    last_year = window.end_year if window is not None else None
+
+    def read(shape: ShapeDraft, assignment: PlaceAssignment | None = None) -> bool | None:
+        if not is_role_bearing(shape):
+            return None
+        bound_roles = bind_place_roles(state, shape) if assignment is None else assignment
+        if isinstance(bound_roles, str) or bound_roles.binds_no_place:
+            return None
+        bound = {
+            _COVERAGE_ROLE_FOR_AXIS[axis]: frozenset(
+                dcid
+                for place_set in sets
+                for dcid in (*place_set.dcids("default"), *place_set.dcids("members"))
+            )
+            for axis, sets in bound_roles.sets.items()
+            if axis in _COVERAGE_ROLE_FOR_AXIS and sets
+        }
+        members = [row.dcid for row in part_member_rows(shape, index)] or list(
+            shape.sv_arc_facts or ()
         )
-    return [updated_by_group.get(_shape_group_key(shape), shape) for shape in shapes], False
+        covered = [dcid for dcid in members if coverage.covers(dcid)]
+        if not bound or not covered:
+            return None
+        return bool(
+            coverage.filter_candidates(
+                variables=covered, bound=bound, first_year=first_year, last_year=last_year
+            )
+        )
+
+    return read
+
+
+def _requested_window(date_request: DateRequest | None) -> TimeWindow | None:
+    """The years a part asks for, `None` when it names none or asks for the latest."""
+    return None if date_request is None or date_request.latest else date_request.window
+
+
+def _in_window(coverage: Mapping[str, ReadingCoverage], window: TimeWindow) -> bool:
+    """Whether some member holds a point at some place inside `window`, or may: a span the
+    probe states without its years counts when it overlaps the window."""
+    return any(
+        years.requested(window) != frozenset()
+        for by_place in coverage.values()
+        for years in by_place.values()
+    )
+
+
+def _subject_has_data(
+    shape: ShapeDraft, date_request: DateRequest | None, *, asked: Collection[str]
+) -> bool | None:
+    """D at `asked`, the places the part names, for a subject-only shape: whether a member
+    holds data at a place the probe read, inside the requested years when the probe states
+    them.
+
+    The menu read over every place the part names (`ShapeDraft.named_place_coverage`)
+    settles D where it ran, else derive's read at the named countries. Both reads cover the
+    shape's recalled members and state each facet's first and last years. A read that found
+    nothing, or nothing inside the requested years, settles D as absent only where it
+    covered every asked place (`ShapeDraft.availability_places`); else D stays unknown. So
+    does a read that found nothing for a shape the code index carries, whose family holds
+    members recall did not return."""
+    if shape.named_place_coverage is not None:
+        coverage: Mapping[str, ReadingCoverage] | None = shape.named_place_coverage
+        available: bool | None = any(coverage.values())
+    else:
+        coverage = shape.member_coverage
+        available = shape.place_available
+    covered = shape.availability_places.issuperset(asked)
+    if available is False and (not covered or index_carries_shape(shape)):
+        return None
+    if not available:
+        return available
+    window = _requested_window(date_request)
+    if window is None or coverage is None or _in_window(coverage, window):
+        return True
+    return False if covered else None
+
+
+def _default_scope_has_data(shape: ShapeDraft, presence: DefaultPresence | None) -> bool | None:
+    """D in the default scope a subject-only shape declares: whether a member's default
+    scope holds a place. Unknown when the presence read does not cover every member."""
+    members = list(shape.sv_arc_facts or ())
+    if presence is None or not members or any(sv not in presence.scopes for sv in members):
+        return None
+    return any(presence.scopes[sv].places for sv in members)
+
+
+def has_data_where_asked(
+    state: ResolveState,
+    shape: ShapeDraft,
+    *,
+    series: SeriesReader | None = None,
+    assignment: PlaceAssignment | None = None,
+) -> bool | None:
+    """D(x) for `shape`: whether it has data where the part asks, `None` when no read
+    settled it. `series` is the part's coverage reader (`series_at_places`), built once per
+    caller, and `assignment` the role assignment to read a role-bearing shape on, else the
+    one `bind_place_roles` gives."""
+    if names_a_place(state):
+        if is_role_bearing(shape):
+            read = series if series is not None else series_at_places(state)
+            return read(shape, assignment)
+        return _subject_has_data(shape, state.date_request, asked=asked_places(state.place_sets))
+    if is_role_bearing(shape):
+        return None
+    return _default_scope_has_data(shape, state.default_presence)

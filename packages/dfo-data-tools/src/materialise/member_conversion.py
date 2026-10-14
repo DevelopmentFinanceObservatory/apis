@@ -447,27 +447,41 @@ def _require_string_unit_column(table: pa.Table) -> None:
 
 
 def omit_unmapped_rows(
-    plan: MemberConversionPlan | None, table: pa.Table, *, served: pa.Table
+    plan: MemberConversionPlan | None,
+    table: pa.Table,
+    *,
+    served: pa.Table,
+    entities: Iterable[str] = (),
 ) -> tuple[pa.Table, EntityCurrencies | None]:
     """Drop `table`'s rows binding, on a role-shaped target's role, an entity no single
     currency names, and return the kept rows with the currencies resolved.
 
-    Currencies resolve, in one read, for the entities `served` binds on that role: the rows
-    of `table` the read can serve (`_role_currencies`). A bound entity with no served row
-    needs no mapping, and a row of an entity `served` lacks stays, for the caller's own
-    filters to drop. Every other plan returns `table` and None.
+    Currencies resolve, in one read, for the entities `served` binds on that role, the rows
+    of `table` the read can serve, and `entities` (`_role_currencies`). A bound entity with
+    no served row needs no mapping, and a row of an entity `served` lacks stays, for the
+    caller's own filters to drop. Every other plan returns `table` and None.
     """
     if plan is None or plan.spec_role is None:
         return table, None
     graph_role = plan.graph_role
     assert graph_role is not None  # `MemberConversionDecision`: set with `spec_role`
     currencies = _role_currencies(
-        plan.graph, entities=served[graph_role].to_pylist(), deadline=plan.deadline
+        plan.graph,
+        entities=[*served[graph_role].to_pylist(), *entities],
+        deadline=plan.deadline,
     )
-    if currencies.unmapped:
-        unmapped = pa.array(currencies.unmapped, type=pa.string())
-        table = table.filter(pc.invert(pc.is_in(table[graph_role], value_set=unmapped)))
-    return table, currencies
+    return without_unmapped(plan, table, currencies), currencies
+
+
+def without_unmapped(
+    plan: MemberConversionPlan | None, table: pa.Table, currencies: EntityCurrencies | None
+) -> pa.Table:
+    """`table` less the rows binding, on a role-shaped target's role, an entity `currencies`
+    holds as unmapped (`omit_unmapped_rows`). `table` itself when `currencies` names none."""
+    if plan is None or plan.graph_role is None or currencies is None or not currencies.unmapped:
+        return table
+    unmapped = pa.array(currencies.unmapped, type=pa.string())
+    return table.filter(pc.invert(pc.is_in(table[plan.graph_role], value_set=unmapped)))
 
 
 def apply_member_conversion(

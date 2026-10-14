@@ -23,8 +23,6 @@ from search.engine.region.codes import (
     AVAILABILITY_PROBE_FAILED,
     DEGENERATE_BINDING_DETECTED,
     DIRECTION_DISCARDED,
-    NEAR_NEIGHBOR_AMBIGUOUS,
-    NEAR_NEIGHBOR_POOL_WIDENED,
     NO_MEMBER_ASSERTS_BOUND_PROPERTIES,
     NO_MEMBER_HAS_DATA_AT_PLACE,
     OBSERVATIONS_NO_MATCHING_SOURCE,
@@ -49,14 +47,6 @@ from search.engine.region.grounding import (
     _shape_with_taxonomy,
     _suggest_nearest_real,
 )
-from search.engine.region.near_neighbor import (
-    _best_near_neighbor_index,
-    _discriminating_token,
-    _label_token_similarity,
-    _near_neighbor_check,
-    _representative_score_is_weak,
-    _shapes_semantically_distinct,
-)
 from search.engine.region.observations.dispatch import (
     _observations_relaunch_closure,
     _resolve_spec_observations,
@@ -78,16 +68,14 @@ from search.engine.region.refs import (
 from search.engine.region.resubmit import resolve_spec_resubmit
 from search.engine.region.result import RegionResult
 from search.engine.region.sentence_events import (
-    _build_sentence_event,
     _build_shape_event,
 )
+from search.engine.region.weak_score import _representative_score_is_weak
 
 __all__ = [
     "AVAILABILITY_PROBE_FAILED",
     "DEGENERATE_BINDING_DETECTED",
     "DIRECTION_DISCARDED",
-    "NEAR_NEIGHBOR_AMBIGUOUS",
-    "NEAR_NEIGHBOR_POOL_WIDENED",
     "NO_MEMBER_ASSERTS_BOUND_PROPERTIES",
     "NO_MEMBER_HAS_DATA_AT_PLACE",
     "OBSERVATIONS_NO_MATCHING_SOURCE",
@@ -103,23 +91,18 @@ __all__ = [
     "_ObsProbeResult",
     "_OptionEvent",
     "_OptionProbeResult",
-    "_best_near_neighbor_index",
     "_build_and_enrich_entity_options",
     "_build_entity",
     "_build_observations",
-    "_build_sentence_event",
     "_build_shape_event",
     "_build_source_refs",
-    "_discriminating_token",
     "_emit_step",
     "_gather_slot_options_events",
     "_grade_confidence",
     "_ground_answer",
-    "_label_token_similarity",
     "_launch_slot_options_task",
     "_materialise_alt_shapes",
     "_maybe_enrich_slot_options",
-    "_near_neighbor_check",
     "_observation_entities",
     "_observations_relaunch_closure",
     "_place_confidence",
@@ -128,7 +111,6 @@ __all__ = [
     "_representative_score_is_weak",
     "_resolve_spec_observations",
     "_shape_with_taxonomy",
-    "_shapes_semantically_distinct",
     "_suggest_nearest_real",
     "detect_set_ref",
     "inapplicable_slots_from_arcs",

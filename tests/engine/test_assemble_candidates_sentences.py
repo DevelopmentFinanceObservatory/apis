@@ -40,8 +40,8 @@ def test_assemble_candidates_populates_sentences():
     assert specs[0].resolved.rendered_sentence != specs[1].resolved.rendered_sentence
 
 
-def test_assemble_candidates_sentences_align_with_sort_and_clamp():
-    """Sentences follow the sorted and clamped candidate list."""
+def test_assemble_candidates_sentences_align_with_order_and_clamp():
+    """Sentences follow the given order of the clamped candidate list."""
     spec_a = _make_spec(
         sv_dcid="Count_Person",
         purpose_dcid="DAC/Health",
@@ -61,7 +61,7 @@ def test_assemble_candidates_sentences_align_with_sort_and_clamp():
         member_count=3,
     )
 
-    # Input order differs from the expected breadth order.
+    # The order given stands whatever the member counts.
     part = build_candidates_part(
         [spec_a, spec_b, spec_c],
         variable_text="test variable",
@@ -71,15 +71,14 @@ def test_assemble_candidates_sentences_align_with_sort_and_clamp():
 
     assert isinstance(part, CandidatesPart)
     specs = part.candidates.specs
-    # The two broadest specs survive the cap.
-    assert [s.spec_id for s in specs] == [spec_b.spec_id, spec_c.spec_id]
+    # The first two specs given survive the cap.
+    assert [s.spec_id for s in specs] == [spec_a.spec_id, spec_b.spec_id]
     for s in specs:
         assert s.resolved.rendered_sentence is not None
 
 
-def test_a_loose_candidate_follows_and_no_candidate_sentence_carries_a_note():
-    """A loose reading is ordered after the strong one, though it is broader. A weak score
-    alone writes no departure, so neither reading's own sentence carries a note."""
+def test_no_candidate_sentence_carries_a_note():
+    """A candidate's own sentence states its reading, and no departure note."""
     strong = _make_spec(
         sv_dcid="Count_Person",
         purpose_dcid="DAC/Health",
@@ -93,12 +92,7 @@ def test_a_loose_candidate_follows_and_no_candidate_sentence_carries_a_note():
         member_count=3,
     )
 
-    part = build_candidates_part(
-        [loose, strong],
-        variable_text="test variable",
-        warnings=[],
-        candidate_scores={loose.spec_id: 0.7},
-    )
+    part = build_candidates_part([strong, loose], variable_text="test variable", warnings=[])
 
     assert isinstance(part, CandidatesPart)
     assert [spec.spec_id for spec in part.candidates.specs] == [strong.spec_id, loose.spec_id]

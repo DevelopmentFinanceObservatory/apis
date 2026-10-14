@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import NamedTuple
 
@@ -49,6 +49,7 @@ from search.engine.retrieval.bound_values import (
     RoleClassWalks,
     RoleKeys,
     WalkedMembers,
+    applies_value,
     canonical_pin_bindings,
     elected_role_class_shape,
     entity_role_keys,
@@ -60,6 +61,7 @@ from search.engine.retrieval.bound_values import (
     shape_query,
     without_values,
 )
+from search.engine.retrieval.facts import read_constraints
 from search.engine.retrieval.representative import shape_agreement_representative
 from search.engine.retrieval.retrieve import (
     BoundValuesUnrealisable,
@@ -72,7 +74,7 @@ from search.engine.retrieval.retrieve import (
 from search.engine.retrieval.standard import FacetBatch, facets_at_own_places
 from search.engine.shape import ShapeDraft, is_role_bearing
 from search.engine.source_scope import SourceScope
-from search.models import SpecObservations, Warning, omitted_observations
+from search.models import CandidateBasis, SpecObservations, Warning, omitted_observations
 from series_coverage.shared import CoverageSnapshot
 
 logger = logging.getLogger(__name__)
@@ -94,14 +96,17 @@ form `_build_observations` returns."""
 @dataclass(frozen=True)
 class _Candidate:
     """One shape offered for the answer: its bindings, its materialised result, the place
-    context it is grounded and read over (`PlaceContext.settled` on `mat`), and what the
-    mint states of the members its walk settled (`MembershipResolution.walked`)."""
+    context it is grounded and read over (`PlaceContext.settled` on `mat`), what the
+    mint states of the members its walk settled (`MembershipResolution.walked`), and why the
+    status rule offers it beside the elected shape (`status_rule`), `None` for the elected
+    shape itself and for a reading that rides on a refusal."""
 
     shape: ShapeDraft
     bindings: list[SlotBindingDraft]
     mat: Materialised
     place: PlaceContext
     walked: WalkedMembers | None
+    basis: CandidateBasis | None = None
 
 
 def _prewarm_places(
@@ -141,8 +146,32 @@ class _Alternate:
     walked: WalkedMembers | None = None
 
 
+def _stray_holdings(
+    shape: ShapeDraft, stray_values: Mapping[str, frozenset[str]]
+) -> dict[str, tuple[frozenset[str], list[str]]]:
+    """For each property the bind drafted values on for a slot the elected reading lacks
+    (`stray_values`), when some member of `shape` holds one: the member values that apply a
+    drafted value, and the drafted values they apply, sorted (`applies_value`). With no
+    value drafted it reads no member."""
+    if not stray_values:
+        return {}
+    members = [read_constraints(arcs) for arcs in shape_population_arcs(shape).values()]
+    holdings: dict[str, tuple[frozenset[str], list[str]]] = {}
+    for prop, drafted in stray_values.items():
+        held = {value for member in members if (value := member.get(prop)) is not None}
+        applied = sorted(v for v in drafted if any(applies_value(v, value) for value in held))
+        if applied:
+            holding = frozenset(h for h in held if any(applies_value(v, h) for v in applied))
+            holdings[prop] = (holding, applied)
+    return holdings
+
+
 def alternate_representative(
-    shape: ShapeDraft, *, elected_bindings: list[SlotBindingDraft], elected_has_data: bool
+    shape: ShapeDraft,
+    *,
+    elected_bindings: list[SlotBindingDraft],
+    elected_has_data: bool,
+    stray_values: Mapping[str, frozenset[str]] | None = None,
 ) -> str | None:
     """The StatVar an alternate derives its constraint bindings from, or `None` when it has
     none.
@@ -152,7 +181,10 @@ def alternate_representative(
     member reads as the elected quantity. With elected data, a standard alternate needs a
     representative matching the elected bound values or a bare member. A role-bearing shape
     uses its first member because its constraint axes describe flows, and so does any shape
-    when the elected shape has no data."""
+    when the elected shape has no data. On a property the bind drafted values on for a slot
+    the elected reading lacks (`stray_values`), the member values that apply them count as
+    bound, so a family holding one member per drafted value has a representative among
+    them."""
     if is_role_bearing(shape) or not elected_has_data:
         return next(iter(shape_population_arcs(shape)), None)
     elected_bound_values: dict[str, list[str]] = {
@@ -160,7 +192,32 @@ def alternate_representative(
         for b in elected_bindings
         if b.property_dcid and b.kind in ("value", "set") and b.value_dcids
     }
+    for prop, (held, _drafted) in _stray_holdings(shape, stray_values or {}).items():
+        elected_bound_values[prop] = sorted(held)
     return shape_agreement_representative(shape, elected_bound_values)
+
+
+def _with_stray_values(
+    bindings: list[SlotBindingDraft],
+    shape: ShapeDraft,
+    stray_values: Mapping[str, frozenset[str]],
+) -> list[SlotBindingDraft]:
+    """`bindings` with each slot on a property the bind drafted values on for a slot the
+    elected reading lacks bound to the drafted values `shape`'s members apply: a set when
+    they apply several, a value when one (`_stray_holdings`). The alternate then selects and
+    reads exactly the members the question asks for."""
+    holdings = _stray_holdings(shape, stray_values)
+    return [
+        binding.model_copy(
+            update={
+                "kind": "set" if len(drafted) > 1 else "value",
+                "value_dcids": drafted,
+            }
+        )
+        if (drafted := holdings.get(binding.property_dcid or "", (None, None))[1])
+        else binding
+        for binding in bindings
+    ]
 
 
 def walk_alternate(
@@ -172,6 +229,7 @@ def walk_alternate(
     deadline: float | None = None,
     role_class_walks: RoleClassWalks | None = None,
     scope: SourceScope | None = None,
+    stray_values: Mapping[str, frozenset[str]] | None = None,
 ) -> _Alternate | None:
     """Give an alternate the constraint bindings of `rep_sv` and narrow it to the role class
     its entities elect, or return `None` when the mint refuses its identity or no table the
@@ -180,7 +238,9 @@ def walk_alternate(
     the part's source scope or from a table of another family.
 
     The chosen shape alone receives model bindings. An alternate derives constraint bindings
-    from its representative StatVar (`alternate_representative`), and names the dataset its
+    from its representative StatVar (`alternate_representative`), except on a property the
+    bind drafted values on for a slot the elected reading lacks (`stray_values`), which it
+    binds to the drafted values its members apply (`_with_stray_values`), and names the dataset its
     shape names (`with_named_source`), as the chosen shape does, so its identity is the one
     a question electing it mints. When the shape names none, the alternate names the
     dataset the part, under the source scope `scope`, is served from under those
@@ -201,7 +261,9 @@ def walk_alternate(
     walk can change the roles the shape declares, so the caller assigns the returned
     shape's places (`place_roles.bound_after_election`) and settles them after this call.
     """
-    bindings = standard_bindings_from_arcs(shape=shape, rep_sv_dcid=rep_sv)
+    bindings = _with_stray_values(
+        standard_bindings_from_arcs(shape=shape, rep_sv_dcid=rep_sv), shape, stray_values or {}
+    )
     try:
         source = part_source(shape, bindings, lambda: role_keys, scope=scope)
     except PartNotServed:

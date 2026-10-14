@@ -88,8 +88,10 @@ class Detection:
     ``SEARCH_DETECT_K``, ours with the rival-family rows `recall_hits` adds past the cap.
     `candidates` come from our resolve. `un` settles to the UN System Data
     Commons' candidates, or to ``None`` when that resolve failed; it may still be running when
-    the detection returns, and the search pipeline waits for it only on a gap-fill pass
-    (`region.pipeline`)."""
+    the detection returns. A part whose scope allows that origin derives the UN shapes
+    beside its own, and only a part whose own pass ends no_data waits for them, at most
+    ``SEARCH_UN_FIRST_PASS_WAIT_S`` from the start of derivation
+    (`region.phase_intake.un_pool_shapes`)."""
 
     candidates: tuple[DetectedSV, ...]
     un: Future[tuple[DetectedSV, ...] | None]
@@ -386,12 +388,6 @@ class EngineGraphClient(Protocol):
         """Return the first typeOf dcid for a node, or None if absent."""
         ...
 
-    def declares_facet_defaults(self) -> bool:
-        """Whether `default_facet_policy` can return a policy for any StatVar. A graph that
-        declares none cannot raise resolve's declared-default refusal, so a streamed resolve
-        sends its sentences as they are built (`region.pipeline.resolve_variable`)."""
-        ...
-
     def default_facet_policy(self, *, stat_var: str, axis: str) -> FacetDefaultPolicy | None:
         """Return the default facet the graph declares for `stat_var` on `axis`, or None."""
         ...
@@ -571,6 +567,17 @@ class EngineGraphClient(Protocol):
         The process-wide pair cache can serve results from an earlier uncapped read without
         applying this cap. Callers needing a hard receive limit must check the returned
         facets themselves. Transport failures raise ``GraphInfraError``.
+        """
+        ...
+
+    def observation_read_groups(
+        self, stat_vars: list[str], entities: list[str], needs_dates: bool = False
+    ) -> list[list[str]]:
+        """Split ``stat_vars``, in order, into the groups an ``observation_facets_batch``
+        read of them at ``entities`` sends apart: one group where a single request names
+        them all, and one per request where the deployment serving them reads by GET under
+        a URL budget. A caller that may stop reading early reads a group at a time. Makes
+        no request.
         """
         ...
 

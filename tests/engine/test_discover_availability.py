@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from search.engine.errors import GraphInfraError
 from search.engine.reading_coverage import ObservedYears
 from search.engine.retrieval.derive import derive_shapes
@@ -60,9 +62,10 @@ class _ProbeCountingGraph:
 
 
 class TestAvailabilityFloor:
-    """Place availability scopes taxonomy values.
+    """The place-availability probe sets `place_available`, `place_units` and `member_coverage`.
 
-    Slot keys retain the full-group union."""
+    It narrows neither the slot keys nor the slot taxonomy: each holds every confirmed
+    member's values, and the status rule reads availability as evidence."""
 
     KEN = "country/KEN"
     USA = "country/USA"
@@ -124,8 +127,9 @@ class TestAvailabilityFloor:
         obs = {f"Count_Person|{self.TGO}": [{"obsCount": 137}]}
         return FakeGraph(nodes=nodes, obs=obs, detect={}, resolve={})
 
-    def test_ungendered_aggregate_starves_gender_taxonomy_but_keeps_slot_key(self):
-        """The unconstrained Togo member has data. Both gender labels remain."""
+    def test_ungendered_aggregate_with_data_leaves_both_gender_values_in_the_taxonomy(self):
+        """Only the unconstrained member has Togo data, and the shape still lists Female and
+        Male, with its availability recorded as true for the bind menu's data line."""
         graph = self._togo_scenario_graph()
 
         shapes = derive_shapes(
@@ -138,9 +142,8 @@ class TestAvailabilityFloor:
         shape = shapes[0]
         taxonomy = shape.slot_taxonomy
         assert taxonomy is not None
-        assert not any("gender" in k for k in taxonomy), (
-            "gender's taxonomy must be empty -- no Togo-available member asserts it"
-        )
+        gender_values = next(v for k, v in taxonomy.items() if "gender" in k)
+        assert set(gender_values) == {"Female", "Male"}
 
         constraint_props = {sk.property_dcid for sk in shape.slot_keys if sk.property_dcid}
         assert "gender" in constraint_props
@@ -150,44 +153,57 @@ class TestAvailabilityFloor:
         assert shape.value_labels.get("Female") == "Female"
         assert shape.value_labels.get("Male") == "Male"
 
-    def test_place_unknown_taxonomy_unchanged(self):
-        """Without a place filter, taxonomy uses the full member union."""
+    @pytest.mark.parametrize(
+        ("place_dcids", "place_available", "member_coverage"),
+        [
+            pytest.param(None, None, None, id="no-place"),
+            pytest.param(
+                [KEN],
+                True,
+                {
+                    "Count_Person_Female": {KEN: ObservedYears(first=None, last=None, years=None)},
+                    "Count_Person_Male": {},
+                    "Count_Person_WhiteAlone": {},
+                },
+                id="kenya-female-only",
+            ),
+            pytest.param(
+                [USA],
+                True,
+                {
+                    "Count_Person_Female": {},
+                    "Count_Person_Male": {USA: ObservedYears(first=None, last=None, years=None)},
+                    "Count_Person_WhiteAlone": {
+                        USA: ObservedYears(first=None, last=None, years=None)
+                    },
+                },
+                id="usa-male-and-white",
+            ),
+        ],
+    )
+    def test_taxonomy_holds_every_member_value_whatever_the_place(
+        self, place_dcids, place_available, member_coverage
+    ):
+        """The slot taxonomy lists Female, Male and WhiteAlone at a place where only some
+        members have data and with no place at all; the probe records which members have
+        data in `member_coverage`, and the slot keys stay whole."""
         graph = self._kenya_scenario_graph()
 
-        shapes = derive_shapes(confirmed_svs=self._svs(), graph=graph)
-
-        assert len(shapes) == 1
-        taxonomy = shapes[0].slot_taxonomy
-        assert taxonomy is not None
-        gender_values = next(v for k, v in taxonomy.items() if "gender" in k)
-        race_values = next(v for k, v in taxonomy.items() if "race" in k)
-        assert set(gender_values) == {"Female", "Male"}
-        assert set(race_values) == {"WhiteAlone"}
-        assert shapes[0].member_coverage is None
-
-    def test_kenya_place_scoping_prunes_taxonomy_values_but_keeps_slot_keys(self):
-        """Kenya scopes taxonomy to Female and removes race values, while both slot keys remain."""
-        graph = self._kenya_scenario_graph()
-
-        shapes = derive_shapes(confirmed_svs=self._svs(), graph=graph, place_dcids=[self.KEN])
+        shapes = derive_shapes(confirmed_svs=self._svs(), graph=graph, place_dcids=place_dcids)
 
         assert len(shapes) == 1
         shape = shapes[0]
         taxonomy = shape.slot_taxonomy
         assert taxonomy is not None
-
-        assert not any("race" in k for k in taxonomy)
-        gender_key = next(k for k in taxonomy if "gender" in k)
-        assert taxonomy[gender_key] == ["Female"]
+        gender_values = next(v for k, v in taxonomy.items() if "gender" in k)
+        race_values = next(v for k, v in taxonomy.items() if "race" in k)
+        assert set(gender_values) == {"Female", "Male"}
+        assert set(race_values) == {"WhiteAlone"}
 
         constraint_props = {sk.property_dcid for sk in shape.slot_keys if sk.property_dcid}
-        assert "race" in constraint_props
-        assert "gender" in constraint_props
-        assert shape.member_coverage == {
-            "Count_Person_Female": {self.KEN: ObservedYears(first=None, last=None, years=None)},
-            "Count_Person_Male": {},
-            "Count_Person_WhiteAlone": {},
-        }
+        assert {"gender", "race"} <= constraint_props
+        assert shape.place_available is place_available
+        assert shape.member_coverage == member_coverage
 
     def test_member_coverage_carries_each_places_facet_years(self):
         """Each member maps the probed places holding its observations to the first and last
@@ -225,8 +241,8 @@ class TestAvailabilityFloor:
             "Count_Person_WhiteAlone": {},
         }
 
-    def test_three_constraint_group_availability_floor_scopes_the_observed_union(self):
-        """Place-scoped taxonomy retains the full three-property slot-key union."""
+    def test_three_constraint_group_keeps_the_full_slot_key_union_at_a_place(self):
+        """A place with data leaves the taxonomy and all three constraint slot keys whole."""
         sv_dcid = f"{_TEST_SV_NAMESPACE}Health-ODAGrants-ETH"
         arcs = _three_constraint_arcs("DAC/Health", "ODAGrants", "country/ETH")
         graph = _fake_graph_with_svs({sv_dcid: arcs})
@@ -245,19 +261,6 @@ class TestAvailabilityFloor:
         constraint_props = {sk.property_dcid for sk in shape.slot_keys if sk.property_dcid}
         assert {PROP_SCHEME, PROP_PURPOSE, PROP_RECIPIENT} <= constraint_props
 
-    def test_us_query_keeps_census_axes(self):
-        """USA taxonomy keeps Male and WhiteAlone, the values observed there."""
-        graph = self._kenya_scenario_graph()
-
-        shapes = derive_shapes(confirmed_svs=self._svs(), graph=graph, place_dcids=[self.USA])
-
-        taxonomy = shapes[0].slot_taxonomy
-        assert taxonomy is not None
-        race_key = next(k for k in taxonomy if "race" in k)
-        assert taxonomy[race_key] == ["WhiteAlone"]
-        gender_key = next(k for k in taxonomy if "gender" in k)
-        assert taxonomy[gender_key] == ["Male"]
-
     def test_slot_keys_identical_regardless_of_place_availability(self):
         """Kenya, USA, and unscoped derivation keep identical slot keys."""
         graph = self._kenya_scenario_graph()
@@ -271,8 +274,8 @@ class TestAvailabilityFloor:
         assert _constraint_props([self.KEN]) == unscoped
         assert _constraint_props([self.USA]) == unscoped
 
-    def test_zero_available_members_falls_back_to_unscoped_union(self):
-        """A place with no group observations falls back to the unscoped taxonomy."""
+    def test_zero_available_members_records_no_availability_and_keeps_the_taxonomy(self):
+        """A place with no group observations reads as unavailable and leaves the taxonomy."""
         graph = self._kenya_scenario_graph()
 
         shapes = derive_shapes(
@@ -281,6 +284,7 @@ class TestAvailabilityFloor:
             place_dcids=["country/ZZZ"],
         )
 
+        assert shapes[0].place_available is False
         taxonomy = shapes[0].slot_taxonomy
         assert taxonomy is not None
         gender_values = next(v for k, v in taxonomy.items() if "gender" in k)
@@ -288,13 +292,15 @@ class TestAvailabilityFloor:
         assert set(gender_values) == {"Female", "Male"}
         assert set(race_values) == {"WhiteAlone"}
 
-    def test_probe_failure_fails_open_to_unscoped_union(self):
-        """A failed availability probe leaves the unscoped taxonomy intact."""
+    def test_probe_failure_leaves_availability_unknown_and_the_taxonomy_whole(self):
+        """A failed availability probe leaves `place_available` unknown, so no absence is
+        read, and the taxonomy intact."""
         graph = _ProbeFailsGraph(self._kenya_scenario_graph())
 
         shapes = derive_shapes(confirmed_svs=self._svs(), graph=graph, place_dcids=[self.KEN])
 
         assert len(shapes) == 1
+        assert shapes[0].place_available is None
         taxonomy = shapes[0].slot_taxonomy
         assert taxonomy is not None
         gender_values = next(v for k, v in taxonomy.items() if "gender" in k)

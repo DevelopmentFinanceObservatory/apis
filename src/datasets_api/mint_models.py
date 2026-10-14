@@ -317,7 +317,7 @@ class PivotOptions(BaseModel):
 
 class MintOptions(BaseModel):
     """Rendering-only, never hashed into identity. `format`/`bundle`/`pivot`/
-    `columns`/`groupby` are this deployment's live rendering surface. A
+    `columns`/`groupby`/`without_party_totals` are this deployment's live rendering surface. A
     `groupby.by` entry names a code system some deployment declaration
     marks summable, a role/entity column, `stat_var`, or a column every
     frame carries regardless of shape; any other name refuses
@@ -345,6 +345,12 @@ class MintOptions(BaseModel):
     unit as its JCS request text. `columns` then selects over those columns,
     as it does for pivot output. It refuses with `bundle: true`, a `pivot`,
     or a format other than parquet.
+
+    `without_party_totals: true` leaves out the rows whose party, on a flow party role the
+    served identity binds no entity on, the code index declares a group total
+    (`datasets_api.party_totals`). It runs on the frame before any reshape, so a `groupby`
+    sums members alone. A cut that leaves rows out mints a version of its own, as a `groupby`
+    collapse does; one that leaves nothing out serves the frame's own version.
     """
 
     # Disabled enrichment names refuse only when the frame lacks a real column with that name.
@@ -356,6 +362,7 @@ class MintOptions(BaseModel):
     columns: list[Annotated[str, Field(min_length=1)]] | None = Field(
         default=None, json_schema_extra={"uniqueItems": True}
     )
+    without_party_totals: bool = False
 
     @field_validator("columns")
     @classmethod

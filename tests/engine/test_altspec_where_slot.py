@@ -1,7 +1,8 @@
 """Test that candidate specs bind their place in the where slot.
 
-The Kenya government education spending golden (sdg-06) checks alternate sentences,
-identity hashes, and StatVar slot values with offline fixtures.
+The Nigeria remittances golden (remittances-pct-gdp-nigeria), which offers two shares of
+GDP, checks alternate sentences, identity hashes, and StatVar slot values with offline
+fixtures.
 """
 
 from __future__ import annotations
@@ -19,8 +20,8 @@ from search.models import (
 )
 from tests.engine._harness import offline_resolve
 
-_QUERY = "government education spending Kenya"  # sdg-06
-_ENTITY_DCID = "country/KEN"
+_QUERY = "remittances as percentage of GDP in Nigeria"  # remittances-pct-gdp-nigeria
+_ENTITY_DCID = "country/NGA"
 
 
 def _where_slot(slots: list[Slot]) -> Slot | None:
@@ -55,15 +56,15 @@ class TestAlternateSpecsCarryWhereSlot:
             assert where.binding.value.ref is not None
             assert where.binding.value.ref.ref == _ENTITY_DCID
 
-    def test_every_spec_entities_list_also_carries_kenya(self):
-        """The where slot and resolved entity list both identify Kenya."""
+    def test_every_spec_entities_list_also_carries_nigeria(self):
+        """The where slot and resolved entity list both identify Nigeria."""
         resp = _candidates()
         for spec in resp.candidates.specs:
             assert [e.ref for e in spec.resolved.entities] == [_ENTITY_DCID]
 
 
 class TestAlternateSpecSentencesIncludePlace:
-    def test_every_candidate_sentence_mentions_kenya(self):
+    def test_every_candidate_sentence_mentions_nigeria(self):
         req = ResolveRequest(
             input=RawTextInput(query=_QUERY),
             response_options=ResolveOptions(),
@@ -72,7 +73,7 @@ class TestAlternateSpecSentencesIncludePlace:
         assert isinstance(part, CandidatesPart)
         for spec in part.candidates.specs:
             assert spec.resolved.rendered_sentence is not None
-            assert "Kenya" in spec.resolved.rendered_sentence, (
+            assert "Nigeria" in spec.resolved.rendered_sentence, (
                 f"spec {spec.spec_id!r} sentence dropped the place: "
                 f"{spec.resolved.rendered_sentence!r}"
             )

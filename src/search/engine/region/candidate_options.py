@@ -6,13 +6,11 @@ import asyncio
 import functools
 from collections.abc import Callable
 
-from search.engine.closest_match import substituted_measure_fact
 from search.engine.concurrency import create_owned_task
 from search.engine.region.candidate_grounding import _GroundedCandidates
 from search.engine.region.codes import ELECTED_SHAPE_NO_DATA, _OptionProbeResult
 from search.engine.region.convertibility import option_pins
 from search.engine.region.facet_probe import FacetProbe, facet_probe
-from search.engine.region.grounding import _place_confidence
 from search.engine.region.option_coverage import (
     _build_and_enrich_entity_options,
     _gather_slot_options_events,
@@ -27,7 +25,6 @@ from search.engine.retrieval.elected_dataset import elected_datasets
 from search.engine.retrieval.read_plan import preview_years
 from search.engine.retrieval.retrieve import NoDataDraft
 from search.models import SlotOptions, Spec, Warning
-from search.render.heading import heading_for
 
 
 def _candidate_facet_probe(
@@ -159,41 +156,6 @@ def _elected_no_data_warning(state: ResolveState, alternates: list[Spec]) -> War
     )
 
 
-def depart_to_measure_sibling(state: ResolveState, served: Spec) -> None:
-    """Record on `state` that the region answers with `served`, a Spec on the elected
-    shape's measure sibling. The record holds the `elected_shape_no_data` warning naming its
-    `measure_label` and the `closest_match` departure it discloses, which states the
-    measure noun its heading shows. Definite assembly judges the sibling on the request's
-    requirements (`candidate_collapse._assemble_definite`)."""
-    assert served.resolved.measure_label is not None, "a measure sibling carries its label"
-    state.depart(
-        _elected_no_data_measure_substituted_warning(state, served.resolved.measure_label),
-        substituted_measure_fact(
-            variable_text=state.variable,
-            measure_noun=heading_for(served).heading.noun.inline_text,
-        ),
-    )
-
-
-def _elected_no_data_measure_substituted_warning(
-    state: ResolveState, served_measure_label: str
-) -> Warning:
-    _elected_reason = (
-        state.mat_result.reason if isinstance(state.mat_result, NoDataDraft) else "no_observations"
-    )
-    return Warning(
-        code=ELECTED_SHAPE_NO_DATA,
-        severity="warn",
-        message=(
-            f"the model's elected shape {state.shape_draft.label!r} returned no data "
-            f"({_elected_reason}); answering on its own measure sibling "
-            f"{served_measure_label!r} instead, the only measure of this shape the "
-            "graph has data for"
-        ),
-        params={"no_data": [state.shape_draft.label], "elected": [served_measure_label]},
-    )
-
-
 def _elected_no_data_twin_substituted_warning(state: ResolveState, served_label: str) -> Warning:
     """Note that a registry twin of the elected shape (`EquivalentCluster`) answers in its
     place. The twin reads the same indicator, so the note is informational."""
@@ -305,20 +267,4 @@ async def _attach_candidate_entity_options(
         state.warnings.append(_entity_warn.model_copy(update={"spec_id": spec.spec_id}))
     return spec.model_copy(
         update={"resolved": spec.resolved.model_copy(update={"entity_options": _entity_options})}
-    )
-
-
-def _without_near_neighbor_confidence(
-    state: ResolveState, grounded: _GroundedCandidates, spec: Spec
-) -> Spec:
-    """Regrade confidence without the near-neighbour penalty for a nested equivalent."""
-    _available_at_place, _confidence = _place_confidence(
-        destination_dcid=state.destination_dcid,
-        available_at_place=spec.resolved.available_at_place,
-        representative_score=grounded.cand_scores[spec.spec_id],
-        candidate=True,
-        retrieved=grounded.cand_retrieved[spec.spec_id],
-    )
-    return spec.model_copy(
-        update={"resolved": spec.resolved.model_copy(update={"confidence": _confidence})}
     )

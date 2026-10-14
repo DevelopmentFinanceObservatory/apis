@@ -22,6 +22,7 @@ from typing import Literal, cast
 import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
+from dfo_frame_grammar.rolling import ANCHOR_SHARE
 
 from dc_sdmx import DEFAULT_PLANNING_LANES, plan_request_chunks
 from dfo_platform.roles import RoleAxis
@@ -59,8 +60,30 @@ _NO_BINDING: BoundRoles = MappingProxyType({})
 _NO_FACET_METADATA: Mapping[str, FacetMetadata] = MappingProxyType({})
 # CurrencyUnit dcids are `Currency` plus an upper-case ISO 4217 code (`CurrencyUSD`).
 _CURRENCY_UNIT = re.compile(r"Currency([A-Z]{3})")
-# The calendar years `Headline.recent_years` counts, the latest year with data included.
+# The calendar years `Headline.recent_years` counts and `elected_year` elects among, the
+# latest year with data included.
 _HEADLINE_YEARS = 3
+
+
+def elected_year(series_by_year: Mapping[int, int]) -> int | None:
+    """The year a `latest` read of one variable serves, from how many of its series hold
+    each year: of the three calendar years ending at the newest year any series holds, the
+    newest one held by at least `ANCHOR_SHARE` of the series the fullest of the three
+    holds. A year `series_by_year` omits holds none. None when no series holds a year. A
+    caller leaves out the years it does not elect among, as `CoverageIndex.elected_years`
+    leaves out those after the index's build year.
+
+    The counts are of the series a read holds before any `latest` reduction. The series
+    left by a reduction to one year elect another: of 44, 85 and 91 series the rule elects
+    the middle year, and the 85 holding it, counted alone, elect the newest."""
+    newest = max((year for year, series in series_by_year.items() if series > 0), default=None)
+    if newest is None:
+        return None
+    recent = {
+        year: series_by_year.get(year, 0) for year in range(newest, newest - _HEADLINE_YEARS, -1)
+    }
+    floor = ANCHOR_SHARE * max(recent.values())
+    return next(year for year, series in recent.items() if series >= floor)
 
 
 @dataclass(frozen=True, slots=True)
@@ -481,8 +504,12 @@ class CoverageIndex:
         facet_metadata: Mapping[str, FacetMetadata] = _NO_FACET_METADATA,
         *,
         horizon: YearHorizon,
+        build_year: int | None = None,
     ) -> None:
         """Dictionary-encodes key columns and sorts rows by `(variable, facet_id)`.
+
+        `build_year` is the calendar year the artifact was built in, the last year a
+        `latest` read elects (`elected_years`). None sets no last year.
 
         Raises `ValueError` if mask columns differ from `horizon` or a
         `(variable, facet_id, donor, recipient)` key repeats.
@@ -495,6 +522,7 @@ class CoverageIndex:
                 f"{list(horizon.mask_columns)}"
             )
         self._horizon = horizon
+        self._build_year = build_year
         self._table = _group_rows(_dictionary_encode_keys(table))
         self._variable_codes = _code_lookup(self._table[VARIABLE_COLUMN])
         # Non-decreasing after `_group_rows`, so `_run` finds a variable's rows.
@@ -515,6 +543,17 @@ class CoverageIndex:
         self._facet_summary = CoverageSummary(
             self._table, variable_codes=self._variable_codes, facet_metadata=self._facet_metadata
         )
+
+    @property
+    def build_year(self) -> int | None:
+        """The calendar year the artifact was built in, from its manifest, or None for an
+        index built without one. A `latest` read elects no later year
+        (`elected_years`), since a year after it holds projections."""
+        return self._build_year
+
+    def _to_build_year(self, masks: np.ndarray) -> np.ndarray:
+        """`masks` without the years after `build_year`."""
+        return masks & _window_words(self._horizon, first_year=None, last_year=self._build_year)
 
     @property
     def horizon(self) -> YearHorizon:
@@ -1207,6 +1246,7 @@ class CoverageIndex:
         excluded: Iterable[tuple[str, Role, str]] = (),
         first_year: int | None = None,
         last_year: int | None = None,
+        elected: Mapping[str, int] | None = None,
     ) -> Headline | None:
         """The latest year any row surviving `bound` has data inside `[first_year,
         last_year]` (unbounded by default, across a series' whole history), with the exact
@@ -1216,6 +1256,19 @@ class CoverageIndex:
         earlier years count whether or not the window reaches them. `recent_years` stops
         at the horizon's `epoch_year`, since the artifact holds no year before it. `None`
         when nothing survives `bound` and the window.
+
+        `elected` is set for a `latest` read, which passes no window, and holds the year
+        each variable elected (`elected_years`). Each variable then serves that year, or
+        its own latest year when `elected` omits it. The headline's year is the newest any
+        variable heads: the year it elected or, absent from `elected`, its latest year up
+        to `build_year`, so a projection after `build_year` heads nothing. It is counted
+        over the rows of the variables heading it, and a variable that holds the year and
+        elected an earlier one counts for nothing there. With no variable holding a year
+        that early it is the latest year any row holds. `recent_years`
+        counts every row, and ends at the latest year any row holds up to `build_year`,
+        the last year a variable elects, so with one variable the headline repeats the
+        `recent_years` entry of its year. With no row holding a year that early it ends
+        at the latest year any row holds.
 
         `served` keeps only the rows a preview serves, as `(variable,
         facet_id, recipient, donor)` patterns where `None` matches any dcid
@@ -1247,32 +1300,54 @@ class CoverageIndex:
         masks = _mask_matrix(rows, self._horizon)
         window = _window_words(self._horizon, first_year=first_year, last_year=last_year)
         combined = np.bitwise_or.reduce(masks, axis=0) & window
-        occupied = np.flatnonzero(combined)
-        if occupied.size == 0:
+        if not combined.any():
             return None
-        word = int(occupied[-1])
-        latest_offset = int(bit_length64(combined[word : word + 1])[0]) - 1
-        latest_year = self._horizon.epoch_year + MASK_WORD_BITS * word + latest_offset
+        if elected is not None and (built := self._to_build_year(combined)).any():
+            combined = built
+        latest_year = int(_year_bounds(combined[None, :], self._horizon)[1][0])
         earliest = max(latest_year - _HEADLINE_YEARS + 1, self._horizon.epoch_year)
         recent_years = tuple(
             self._year_count(rows, masks, year) for year in range(latest_year, earliest - 1, -1)
         )
-        latest = recent_years[0]
+        counted = recent_years[0] if elected is None else self._elected_count(rows, masks, elected)
         return Headline(
-            year=latest_year,
-            observations=latest.observations,
-            series=latest.series,
-            role_counts=latest.role_counts,
+            year=counted.year,
+            observations=counted.observations,
+            series=counted.series,
+            role_counts=counted.role_counts,
             recent_years=recent_years,
         )
+
+    def _elected_count(
+        self, rows: pa.Table, masks: np.ndarray, elected: Mapping[str, int]
+    ) -> YearCount:
+        """The counts of the newest year a variable of `rows` heads under `latest`, over
+        the rows of the variables heading it. A variable heads its `elected` year or,
+        absent from `elected`, its latest year up to `build_year`, and no year when it
+        holds none that early. With no variable heading a year, each heads its own latest.
+        `rows` are grouped by variable and `masks` is their `(rows, mask_words)` year-mask
+        matrix."""
+        rows = rows.combine_chunks()
+        codes = _codes(rows[VARIABLE_COLUMN])
+        starts = np.flatnonzero(np.r_[True, codes[1:] != codes[:-1]])
+        held = np.bitwise_or.reduceat(masks, starts)
+        built = self._to_build_year(held)
+        heads = built.any(axis=1)
+        if not heads.any():
+            built, heads = held, np.ones(len(starts), dtype=bool)
+        years = np.full(len(starts), -1, dtype=np.int64)
+        years[heads] = _year_bounds(built[heads], self._horizon)[1]
+        for variable, year in elected.items():
+            years[codes[starts] == self._variable_codes.get(variable, -1)] = year
+        year = int(years.max())
+        serving = np.isin(codes, codes[starts][years == year])
+        return self._year_count(rows.filter(pa.array(serving)), masks[serving], year)
 
     def _year_count(self, rows: pa.Table, masks: np.ndarray, year: int) -> YearCount:
         """`rows`' series, and their distinct donor and recipient dcids, holding an
         observation in `year`, a year inside the horizon. `masks` is `rows`'
         `(rows, mask_words)` year-mask matrix."""
-        word, bit = divmod(year - self._horizon.epoch_year, MASK_WORD_BITS)
-        active = (masks[:, word] & (np.uint64(1) << np.uint64(bit))) != 0
-        active_rows = rows.filter(pa.array(active))
+        active_rows = rows.filter(pa.array(self._year_only(masks, year).any(axis=1)))
         series = (
             active_rows.select([VARIABLE_COLUMN, RECIPIENT_COLUMN, DONOR_COLUMN])
             .group_by([VARIABLE_COLUMN, RECIPIENT_COLUMN, DONOR_COLUMN])
@@ -1285,6 +1360,86 @@ class CoverageIndex:
             if count := len(found - {ABSENT_ENTITY}):
                 role_counts[role] = count
         return YearCount(year=year, observations=series, series=series, role_counts=role_counts)
+
+    def _year_only(self, masks: np.ndarray, year: int) -> np.ndarray:
+        """Each row of `(rows, mask_words)` year masks keeping only `year`'s bit: zero for
+        a row holding no observation in `year`, and for a year outside the horizon."""
+        only = np.zeros_like(masks)
+        if self._horizon.epoch_year <= year <= self._horizon.max_year:
+            word, bit = divmod(year - self._horizon.epoch_year, MASK_WORD_BITS)
+            only[:, word] = masks[:, word] & (np.uint64(1) << np.uint64(bit))
+        return only
+
+    def elected_years(
+        self,
+        *,
+        variables: Sequence[str],
+        bound: BoundRoles = _NO_BINDING,
+        served: Iterable[tuple[str, str, str | None, str | None]] | None = None,
+        excluded: Iterable[tuple[str, Role, str]] = (),
+        admits: Callable[[str, str], bool] | None = None,
+    ) -> dict[str, int]:
+        """The year a `latest` read of `variables` under `bound` serves each variable
+        (`elected_year`), counted over the series `served`, `excluded` and `admits` select
+        as they do for `series_years`, across their whole history up to `build_year`.
+
+        Those series are the ones the read holds before it reduces any to one year: every
+        series of the facets it reads, less the rows it leaves out. Every count, reduction
+        and headline of one read takes its years from one call.
+
+        A variable elects no year, and is absent, when the index holds no selected row of
+        it, when none of its selected series holds a year up to `build_year`, or when one
+        of its selected facets states an observation period shorter than a year
+        (`KeptFacets.sub_annual`), whose latest period the index cannot find within a
+        year. Such a variable serves its own latest period."""
+        found = self.series_years(
+            variables=variables, bound=bound, served=served, excluded=excluded, admits=admits
+        )
+        if found is None:
+            return {}
+        names = _key_values(found.key_rows[VARIABLE_COLUMN])
+        starts = [i for i, name in enumerate(names) if i == 0 or name != names[i - 1]]
+        elected: dict[str, int] = {}
+        for start, stop in zip(starts, [*starts[1:], len(names)], strict=True):
+            variable = names[start]
+            if found.variables[variable].sub_annual:
+                continue
+            masks = found.masks[start:stop]
+            held = self._to_build_year(np.bitwise_or.reduce(masks, axis=0))
+            if not held.any():
+                continue
+            newest = int(_year_bounds(held[None, :], self._horizon)[1][0])
+            year = elected_year(
+                {
+                    year: int(self._year_only(masks, year).any(axis=1).sum())
+                    for year in range(newest, newest - _HEADLINE_YEARS, -1)
+                }
+            )
+            assert year is not None  # `newest` holds a series
+            elected[variable] = year
+        return elected
+
+    def series_by_year(
+        self,
+        *,
+        variables: Sequence[str],
+        bound: BoundRoles = _NO_BINDING,
+        served: Iterable[tuple[str, str, str | None, str | None]] | None = None,
+        excluded: Iterable[tuple[str, Role, str]] = (),
+        first_year: int,
+        last_year: int,
+    ) -> dict[int, int]:
+        """How many series of `variables` under `bound` hold each year of `[first_year,
+        last_year]`, a year none holds kept at zero: the series `headline` counts in
+        `recent_years` and `elected_years` elects over, selected by `served` and
+        `excluded` as they select them."""
+        found = self.series_years(
+            variables=variables, bound=bound, served=served, excluded=excluded
+        )
+        return {
+            year: 0 if found is None else int(self._year_only(found.masks, year).any(axis=1).sum())
+            for year in range(first_year, last_year + 1)
+        }
 
     def covers(self, variable: str) -> bool:
         """Whether the artifact holds any row of `variable`."""
@@ -1300,7 +1455,7 @@ class CoverageIndex:
         admits: Callable[[str, str], bool] | None = None,
         first_year: int | None = None,
         last_year: int | None = None,
-        latest: bool = False,
+        latest: Mapping[str, int] | None = None,
         kept_years: KeptYears | None = None,
     ) -> SeriesYears | None:
         """The series a read of `variables` under `bound` serves inside `[first_year,
@@ -1315,10 +1470,10 @@ class CoverageIndex:
         A series is a `(variable, recipient, donor)` key. It serves one point per year any
         of its kept facets holds, as materialise collapses facets sharing a provenance,
         method and unit to one row per date (`materialise.facet_collapse`), so its mask
-        ORs those facets' masks. With `latest`, a variable serves its latest year alone,
-        from the series holding it, as a read keeps each StatVar's rows at its latest
-        period (`read_plan.PairPlan.served`, `read_plan.BulkPlan.member_year`). A series
-        whose own latest year is earlier serves nothing.
+        ORs those facets' masks. `latest` is set for a `latest` read and holds the year
+        each variable elected (`elected_years`): the variable serves that year alone, from
+        the series holding it. A variable `latest` omits serves its own latest year, from
+        the series whose latest year it is. A series serving neither serves nothing.
         """
         filtered = self._filtered(
             variables=variables, bound=bound, first_year=first_year, last_year=last_year
@@ -1341,9 +1496,15 @@ class CoverageIndex:
         starts = np.flatnonzero(np.r_[True, sorted_keys[1:] != sorted_keys[:-1]])
         masks = np.bitwise_or.reduceat(_mask_matrix(filtered, self._horizon)[order], starts)
         firsts = order[starts]
-        if latest:
-            masks = _latest_year_only(masks)
-            kept = _at_variable_latest(masks, _codes(filtered[VARIABLE_COLUMN])[firsts])
+        if latest is not None:
+            variable_codes = _codes(filtered[VARIABLE_COLUMN])[firsts]
+            held = masks
+            masks = _latest_year_only(held)
+            kept = _at_variable_latest(masks, variable_codes)
+            for variable, year in latest.items():
+                elects = variable_codes == self._variable_codes.get(variable, -1)
+                masks[elects] = self._year_only(held[elects], year)
+                kept[elects] = masks[elects].any(axis=1)
             masks, firsts = masks[kept], firsts[kept]
         found = SeriesYears(
             masks=masks,
@@ -1440,14 +1601,14 @@ class CoverageIndex:
         excluded: Iterable[tuple[str, Role, str]] = (),
         first_year: int | None = None,
         last_year: int | None = None,
-        latest: bool = False,
+        latest: Mapping[str, int] | None = None,
         kept_years: KeptYears | None = None,
     ) -> ServedExtent | None:
         """The rows, series and years a read of `variables` under `bound` serves inside
         `[first_year, last_year]`, over every year of the window where `headline` counts
         its latest: `rows` sums each series' distinct years (`series_years`). `served`
         and `excluded` select rows as they do for `headline`. `None` when nothing
-        survives. With `latest`, each variable serves its latest year alone
+        survives. With `latest`, each variable serves one year alone, the one it elected
         (`series_years`), and the years span the earliest and latest of those. `kept_years`
         narrows each series' years as it does for `series_years`.
         """

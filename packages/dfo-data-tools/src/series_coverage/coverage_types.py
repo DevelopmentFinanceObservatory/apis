@@ -77,20 +77,27 @@ class YearCount:
 
 @dataclass(frozen=True, slots=True)
 class Headline:
-    """Counts for the latest year with data, or for a requested year window.
+    """Counts for the year a `latest` read serves, or for a requested year window.
 
-    `year` is the latest counted year with data. In the latest-year form
+    `year` is the latest counted year with data inside a window, and under
+    `latest` the newest year a variable elected. In the latest-year form
     `observations` equals `series`, because each row has at most one
     observation per year; across a window `observations` can exceed
     `series`. `role_counts` counts distinct donor and recipient dcids. Use
     `CoverageIndex.role_names` for graph names.
 
-    `recent_years` holds the same counts for `year` and the two calendar years
-    before it, newest first, a year with no data kept with zero counts. It stops
-    at the artifact's epoch year, so it holds one or two entries when `year`
-    falls within two years of it. The first entry repeats `observations`,
-    `series` and `role_counts`. The earlier years are counted whether or not a
-    requested window reaches them.
+    `recent_years` holds the same counts for three calendar years, newest first,
+    a year with no data kept with zero counts. For a requested window they end at
+    `year`, and the first entry repeats `observations`, `series` and
+    `role_counts`. For a `latest` read they end at the latest year any counted row
+    holds up to the index's build year, or at the latest year any holds when none
+    holds a year that early, and count every row. `year` is one of the three: the
+    newest year a variable of the read heads, the year it elected
+    (`CoverageIndex.elected_years`) or, electing none, its latest year up to the
+    build year. When no variable holds a year that early, each heads its latest
+    year. The list stops at the artifact's epoch year, so it holds one or two
+    entries within two years of it.
+    The earlier years are counted whether or not a requested window reaches them.
     """
 
     year: int

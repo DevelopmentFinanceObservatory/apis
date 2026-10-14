@@ -178,6 +178,15 @@ def _candidate_name(candidate: CandidateSummary) -> str:
     return candidate.canonical_name or candidate.entity_id
 
 
+def _confirmed_name(
+    candidate: CandidateSummary, *, dcid: str, arcs: dict[str, tuple[str, ...]]
+) -> str:
+    """The candidate's pack name, or its graph name for a code-only row, which the pack names by
+    its dcid."""
+    name = _candidate_name(candidate)
+    return _fallback_name(arcs=arcs, text=name) if name == dcid else name
+
+
 def _unconfirmed_kind(
     policy: MembershipPolicy,
     code_index: KindIndex | None,
@@ -358,7 +367,9 @@ def _unless_expired[*Ts, R](deadline: float | None, fn: Callable[[*Ts], R], /, *
 def _group_node_dcids_job(shared: SharedResolver) -> frozenset[str]:
     """The dcids `Group.entity` can hold, for every group resolvekit knows: the group's own
     id as a dcid, and each organisation that survives the gate beside it
-    (`EntityResolver._assemble_group`). Runs on the shared resolver's single worker."""
+    (`EntityResolver._assemble_group`). A region the membership policy holds is left out,
+    since the policy answers its members ("Africa (DAC)" resolves to `africa`). Runs on the
+    shared resolver's single worker."""
     context = ResolutionContext(entity_types=ADMITTED_TYPES)
     dcids: set[str] = set()
     for name in shared.resolver.known_groups():
@@ -370,7 +381,7 @@ def _group_node_dcids_job(shared: SharedResolver) -> frozenset[str]:
         dcids.update(
             dcid for node in nodes if (dcid := identity_to_dcid(node.entity_id)) is not None
         )
-    return frozenset(dcids)
+    return frozenset(dcid for dcid in dcids if not shared.policy.holds_region(dcid))
 
 
 def _entity_from_confirmation(
@@ -458,6 +469,20 @@ class EntityResolver:
     def membership(self) -> MembershipPolicy:
         """The shared membership policy, which answers a group's or a region's members."""
         return self._shared.policy
+
+    def is_exact_registered_name(self, text: str) -> bool:
+        """Whether ``text`` is an exact name held by the membership policy, the group registry
+        or the graph pack. The registry still names a group the policy answers by a region
+        ("Africa (DAC)" by `africa`, `membership.build_policy`).
+
+        This is deliberately a narrow read-only registry check for callers that recover a
+        source span. It does not parse or resolve a partial surface.
+        """
+        normalized = _normalize_key(text)
+        memberships = (*self.membership, *self._shared.groups)
+        if any(_normalize_key(membership.label) == normalized for membership in memberships):
+            return True
+        return bool(self._shared.alias_index.owners_of(text))
 
     def stats(self) -> Mapping[str, int]:
         with self._cache_lock:
@@ -694,7 +719,9 @@ class EntityResolver:
         for candidate, dcid in candidate_hits:
             arcs = confirmed.get(dcid)
             if arcs is not None:
-                entity = self._confirmed(dcid=dcid, arcs=arcs, name=_candidate_name(candidate))
+                entity = self._confirmed(
+                    dcid=dcid, arcs=arcs, name=_confirmed_name(candidate, dcid=dcid, arcs=arcs)
+                )
             elif dcid in self._shared.policy:
                 entity = self._confirmed(dcid=dcid, arcs={}, name=_candidate_name(candidate))
             else:
@@ -750,7 +777,9 @@ class EntityResolver:
                     continue
                 arcs = confirmed.get(dcid)
                 if arcs is not None:
-                    entity = self._confirmed(dcid=dcid, arcs=arcs, name=_candidate_name(candidate))
+                    entity = self._confirmed(
+                        dcid=dcid, arcs=arcs, name=_confirmed_name(candidate, dcid=dcid, arcs=arcs)
+                    )
                     break
         if codes:
             node = Entity(

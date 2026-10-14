@@ -31,6 +31,7 @@ from search.engine.function_words import FUNCTION_WORDS
 from search.engine.retrieval.facts import _dcids_for, read_name
 from search.engine.shape import ShapeDraft, measures_count
 from search.models import GraphRef, QuantityForm
+from unit_words.unit_class import is_per_head_denominator
 
 if TYPE_CHECKING:
     from search.engine.clients.graph import EngineGraphClient
@@ -39,18 +40,50 @@ type NormalisationClass = Literal["level", "other", "series", "per_person", "per
 type NamedNormalisation = QuantityForm
 type DenominatorKind = Literal["person", "area", "other", "unknown"]
 
-# measurementDenominator dcids of a per-person reading, and of a per-area one.
-PER_PERSON_DENOMINATORS = frozenset({"Count_Person", "PerCapita"})
+# The measurementDenominator dcid of a per-area reading. A per-person one is a
+# `unit_words.unit_class.PER_HEAD_DENOMINATORS` dcid.
 PER_AREA_DENOMINATOR = "area"
 
 
 def schema_denominator_kind(denominator: str) -> DenominatorKind | None:
     """Return the kind a schema-term denominator names, or None for a StatVar denominator."""
-    if denominator in PER_PERSON_DENOMINATORS:
+    if is_per_head_denominator(denominator):
         return "person"
     if denominator == PER_AREA_DENOMINATOR:
         return "area"
     return None
+
+
+def shape_denominator_kind(shape: ShapeDraft) -> DenominatorKind | None:
+    """Return the kind of the schema term `shape` divides by, or None when it divides by a
+    StatVar or by nothing (`schema_denominator_kind`).
+
+    The arc's dcid states the term whether or not its target resolves: base Data Commons
+    holds `PerCapita` as a ProvisionalNode, and a series dividing by it divides by the same
+    per-person base as one dividing by `Count_Person`."""
+    denominator = shape.meas_denom_dcid
+    return schema_denominator_kind(denominator) if denominator is not None else None
+
+
+def denominator_meaning(shape: ShapeDraft) -> DenominatorKind | tuple[str | None, bool]:
+    """What `shape` divides by, equal for two shapes exactly when they divide by one base:
+    the kind of a schema term (`shape_denominator_kind`), so `Count_Person` and `PerCapita`
+    are one per-person base, else the arc itself, its dcid and whether it resolves. The
+    status rule (`status_rule._differing_axes`) and the rank election
+    (`bind.rank_elected`) both compare denominators by it."""
+    kind = shape_denominator_kind(shape)
+    if kind is not None:
+        return kind
+    return shape.meas_denom_dcid, shape.meas_denom_unresolved
+
+
+def stated_denominator(shape: ShapeDraft) -> str | None:
+    """Return the dcid of the base `shape` states it divides by: a resolved arc's, or a
+    schema term's whether or not its target resolves (`shape_denominator_kind`). None when
+    it divides by nothing, or by an unresolved arc naming no schema term."""
+    if shape.meas_denom_unresolved and shape_denominator_kind(shape) is None:
+        return None
+    return shape.meas_denom_dcid
 
 
 def denominator_kind_from_arcs(arcs: dict | None) -> DenominatorKind:
@@ -135,13 +168,10 @@ PER_HEAD_RATE_BASE_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Terms naming a rate, and terms naming a share of a whole. `STRONG_RATE_REQUEST_RE` is
-# the subset the pre-bind raw-count prune reads (`phase_rank_bind._has_strong_rate_intent`).
-# `ratio` and `incidence` name a rate here and leave that prune off.
+# Terms naming a rate, and terms naming a share of a whole.
 _RATE_TERMS_RE = re.compile(r"\b(?:rates?|ratios?|incidence)\b")
 _SHARE_TERMS = r"\b(?:proportions?|percentages?|percent|shares?)\b|%"
 _SHARE_TERMS_RE = re.compile(_SHARE_TERMS)
-STRONG_RATE_REQUEST_RE = re.compile(r"\brates?\b|" + _SHARE_TERMS, re.IGNORECASE)
 # Tokens of a lowercase phrase: alphabetic runs, digit runs, `/`, and `²`.
 # Every other character separates tokens, so `km²` reads as `km`, `²`, and
 # `km2`, `km^2`, `km**2`, and `km 2` all read as `km`, `2`.
@@ -299,20 +329,22 @@ def normalisation_class(
 ) -> NormalisationClass:
     """Return the normalisation class of a shape's five-tuple.
 
-    An unresolved denominator arc is `unknown`. A denominator's kind is the schema term's
-    (`PerCapita` or `Count_Person` is a person, `area` an area), else its entry in
-    `kinds` (`quantity.denominator_kinds`), else other: a person is `per_person`, an area
-    `per_area`, other a `series`, and a StatVar whose arcs did not resolve `unknown`. With
-    no denominator arc, a plain stat type over a count or a declared amount property
-    (`_LEVEL_PROPERTIES`) is a `level`, and anything else, such as an SDG `value` series,
-    a fertility rate or a growth rate, is `other`.
+    A schema-term denominator's kind is the term's (`shape_denominator_kind`: `PerCapita`
+    or `Count_Person` is a person, `area` an area), whether or not its arc resolves. Any
+    other unresolved denominator arc is `unknown`. A StatVar denominator's kind is its
+    entry in `kinds` (`quantity.denominator_kinds`), else other: a person is `per_person`,
+    an area `per_area`, other a `series`, and a StatVar whose arcs did not resolve
+    `unknown`. With no denominator arc, a plain stat type over a count or a declared amount
+    property (`_LEVEL_PROPERTIES`) is a `level`, and anything else, such as an SDG `value`
+    series, a fertility rate or a growth rate, is `other`.
     """
+    if (schema_kind := shape_denominator_kind(shape)) is not None:
+        return _CLASS_OF_DENOMINATOR[schema_kind]
     if shape.meas_denom_unresolved:
         return "unknown"
     denominator = shape.meas_denom_dcid
     if denominator is not None:
-        kind = schema_denominator_kind(denominator) or (kinds or {}).get(denominator, "other")
-        return _CLASS_OF_DENOMINATOR[kind]
+        return _CLASS_OF_DENOMINATOR[(kinds or {}).get(denominator, "other")]
     if shape.stat_type_dcid in _LEVEL_STAT_TYPES and (
         measures_count(shape) or shape.meas_prop_dcid in _LEVEL_PROPERTIES
     ):
@@ -398,8 +430,8 @@ def serves_every_form(
 @dataclass(frozen=True, slots=True)
 class NamedDenominator:
     """The denominator a question names, as the quantity read chose it from the StatVar
-    denominators the menu's shapes divide by: `ref`, or `None` when the read matched the
-    base to none of them ("none of these"), and `base_words`, the question's own words
+    denominators the admissible shapes divide by: `ref`, or `None` when the read matched
+    the base to none of them ("none of these"), and `base_words`, the question's own words
     for the base, which the read quoted and the phrase grounds."""
 
     ref: GraphRef | None
@@ -412,22 +444,24 @@ type DenominatorCheck = Literal["matches", "unverified", "refused"]
 def check_denominator(shape: ShapeDraft, named: NamedDenominator) -> DenominatorCheck:
     """Hold `shape` to the denominator the question names.
 
-    A shape with a resolved denominator arc `matches` when the arc is the named
-    denominator and is `refused` when the read named a different listed one. Under "none
-    of these" (`named.ref` is `None`) it is `unverified`: the read matches the question's
-    words to terse graph names, and an absent match proves nothing about the arc ("total
-    government spending" against "Amount Of Economic Activity: Expenditure Activity,
-    Government" flips on one capital letter). A shape whose arc does not resolve, or that
-    has no arc and classes as `other`, as UN and WHO ratio series do, states its base only
-    in its name, so it passes `unverified`. Any other shape with no arc, such as a level,
-    divides by nothing and is `refused`: the question's grounded words name a base.
+    A shape stating its base (`stated_denominator`: a resolved arc, or a schema term such as
+    the ProvisionalNode `PerCapita`) `matches` when that base is the named denominator and
+    is `refused` when the read named a different listed one. Under "none of these"
+    (`named.ref` is `None`) it is `unverified`: the read matches the question's words to
+    terse graph names, and an absent match proves nothing about the arc ("total government
+    spending" against "Amount Of Economic Activity: Expenditure Activity, Government" flips
+    on one capital letter). A shape whose arc resolves to no stated base, or that has no
+    arc and classes as `other`, as UN and WHO ratio series do, states its base only in its
+    name, so it passes `unverified`. Any other shape with no arc, such as a level, divides
+    by nothing and is `refused`: the question's grounded words name a base.
     """
-    if shape.meas_denom_unresolved:
-        return "unverified"
-    if shape.meas_denom_dcid is not None:
+    denominator = stated_denominator(shape)
+    if denominator is not None:
         if named.ref is None:
             return "unverified"
-        return "matches" if named.ref.ref == shape.meas_denom_dcid else "refused"
+        return "matches" if named.ref.ref == denominator else "refused"
+    if shape.meas_denom_unresolved:
+        return "unverified"
     return "unverified" if normalisation_class(shape) == "other" else "refused"
 
 

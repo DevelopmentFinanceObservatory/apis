@@ -1,7 +1,7 @@
 """Fail a passing test whose run missed a recorded FakeLLM fixture.
 
 The engine degrades some failures instead of raising them: a multi-part leg becomes `no_data`,
-and a failed gap-fill pass keeps the first pass. A stale fixture bank can therefore leave a test
+and a failed UN shape derivation leaves the part to our pool. A stale fixture bank can therefore leave a test
 green on a degraded answer. FakeLLM notes every miss here, and `tests/conftest.py` loads these
 hooks for the whole suite. Tests marked `llm_misses_expected` miss on purpose.
 

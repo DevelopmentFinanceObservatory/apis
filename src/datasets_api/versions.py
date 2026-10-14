@@ -251,11 +251,11 @@ NULL_VERSION_RECORD_WRITER = NullVersionRecordWriter()
 
 @dataclass(frozen=True)
 class ListedVersion:
-    """One stored version of a subject. `base_content_version` names the raw version a full
-    collapse was rendered from, and is `None` on every other version. `renderings` holds the
-    rendering of each file linked under the version, in the order
-    `SnapshotReader.read_artifact_locations` returns them. A collapse's groupby is read from
-    them (`datasets_api.recorded_rendering`).
+    """One stored version of a subject. `base_content_version` names the raw version a derived
+    version (a full groupby collapse, a party-totals cut, or both) was rendered from, and is
+    `None` on every other version. `renderings` holds the rendering of each file linked under
+    the version, in the order `SnapshotReader.read_artifact_locations` returns them. A derived
+    version's options are read from them (`datasets_api.recorded_rendering`).
     """
 
     content_version: str

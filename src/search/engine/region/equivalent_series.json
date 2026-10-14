@@ -31,6 +31,54 @@
       "note": "Gross domestic product at current prices, in US dollars, as the World Bank series and the IMF World Economic Outlook series report it.",
       "preferred": "Amount_EconomicActivity_GrossDomesticProduction_Nominal",
       "currency": "USD"
+    },
+    {
+      "members": [
+        "undata/sdg/SH_STA_MORT.SEX--F",
+        "undata/unicef/MNCH_MMR.SEX--F"
+      ],
+      "note": "The maternal mortality ratio: maternal deaths per 100,000 live births, as the SDG Global Database and UNICEF publish the same inter-agency estimates.",
+      "preferred": "undata/sdg/SH_STA_MORT.SEX--F"
+    },
+    {
+      "members": [
+        "undata/sdg/SP_DYN_ADKL.AGE--Y15T19__SEX--F",
+        "undata/unicef/MNCH_ABR.AGE--Y15T19"
+      ],
+      "note": "The adolescent birth rate: live births per 1,000 women aged 15 to 19, as the SDG Global Database and UNICEF publish it.",
+      "preferred": "undata/sdg/SP_DYN_ADKL.AGE--Y15T19__SEX--F"
+    },
+    {
+      "members": [
+        "undata/sdg/SH_HIV_INCD",
+        "undata/unaids/HIV_INC"
+      ],
+      "note": "HIV incidence: new HIV infections per 1,000 uninfected population, as the SDG Global Database and UNAIDS publish it.",
+      "preferred": "undata/sdg/SH_HIV_INCD"
+    },
+    {
+      "members": [
+        "undata/sdg/SH_HIV_INCD.SEX--F",
+        "undata/unaids/HIV_INC.SEX--F"
+      ],
+      "note": "HIV incidence among women: new HIV infections per 1,000 uninfected women, as the SDG Global Database and UNAIDS publish it.",
+      "preferred": "undata/sdg/SH_HIV_INCD.SEX--F"
+    },
+    {
+      "members": [
+        "undata/sdg/IU_COR_BRIB",
+        "undata/unodc/VIC_BRIBE_PCT"
+      ],
+      "note": "The prevalence rate of bribery: the share of people who paid a bribe to a public official, as the SDG Global Database and UNODC publish it.",
+      "preferred": "undata/sdg/IU_COR_BRIB"
+    },
+    {
+      "members": [
+        "undata/sdg/SH_STA_MALR",
+        "undata/who/MAL_EST_INCID"
+      ],
+      "note": "Malaria incidence per 1,000 population at risk, as the SDG Global Database and WHO publish it.",
+      "preferred": "undata/sdg/SH_STA_MALR"
     }
   ]
 }

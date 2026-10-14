@@ -166,6 +166,23 @@
       entities: [{dcid: country/DEU, role: origin}, {dcid: country/KEN, role: destination}]
       operations: []
 
+- id: dataset-net-bilateral-oda-kenya
+  query: net bilateral ODA to Kenya in 2024
+  why: Every DAC2a flow to a recipient country is bilateral, so the word restricts nothing and the net received family answers.
+  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: none}
+  expect:
+    definite:
+      measure: {family: dac2a.oda_net_received}
+      entities: [{dcid: country/KEN, role: destination}]
+      window: {kind: range, start: 2024, end: 2024}
+
+- id: dataset-bilateral-oda-ida
+  query: bilateral ODA to the International Development Association in 2022
+  why: A flow to a multilateral organisation is a core contribution, so no table states "bilateral" of it and the part refuses.
+  tags: {theme: aid, entity: organisation, direction: destination_only, door: raw_text, dataset: none}
+  expect:
+    no_data: {reason: qualifier_not_bound, category: absent}
+
 - id: dataset-multilateral-aid-kenya
   query: multilateral aid to Kenya
   why: Multilateral aid reaching a recipient is what the imputed table measures, so bind elects its measure and the provenance is bound.

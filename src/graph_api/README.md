@@ -25,7 +25,7 @@ The surface mounts at `/api/graph` and operates as an independent composition ro
 ### Components
 
 - **Entity resolution (`entity_resolution`)**: Free-text resolution and graph confirmation both run inside the shared `entity_resolution.EntityResolver` component (`packages/dfo-data-tools/src/entity_resolution`), acquired once per process (`entity_resolution.acquire_shared()`) and shared with Search when both are mounted in the same deployment. It resolves over `resolvekit`'s four bundled country-level geo modules plus `dfo_graph`, a custom pack built from this deployment's own graph (`entity_resolution.MODULE_IDS`). Both are baked into the image at build time (`scripts/warm_resolvekit_cache.py`), so no pack is built or composed at runtime. The SQLite engine under `resolvekit` is thread-affine, so all matching queries run on the component's own single-worker thread. Graph confirmation runs on this surface's DCP-read executor. The resolve door maps the component's result onto the wire and takes a group's or region's count, link and inline members from the membership policy, with no graph containment read.
-- **Membership policy (`entity_resolution.membership.MembershipPolicy`)**: The lifespan publishes the shared resolver's policy as `NODE_MEMBERSHIP_SLOT`. The resolve, node and members doors classify and list groups and regions from it. It holds 33 groups, taken from resolvekit's curated membership (13 of them date their rows, so they accept `as_of`), and 29 regions, taken from resolvekit's UN M49 containment (undated). `data/membership_policy.json` composes North America from M49 Northern America plus Central America and the Caribbean (23 states) and declares which region projections resolvekit holds only in part. A group takes its resolvekit id as its dcid. `entity_resolution/data/group_ids.json` replaces the ids of the two groups whose membership has its own graph node: the G7 (`groups/G7`) is `GroupOfSeven`, and the OECD (`groups/OECD`) is `undata-geo/G00406000`.
+- **Membership policy (`entity_resolution.membership.MembershipPolicy`)**: The lifespan publishes the shared resolver's policy as `NODE_MEMBERSHIP_SLOT`. The resolve, node and members doors classify and list groups and regions from it. It holds 48 groups, taken from resolvekit's curated membership (13 of them date their rows, so they accept `as_of`), and 29 regions, taken from resolvekit's UN M49 containment (undated). `data/membership_policy.json` composes North America from M49 Northern America plus Central America and the Caribbean (23 states) and declares which region projections resolvekit holds only in part. A group takes its resolvekit id as its dcid. `entity_resolution/data/group_ids.json` replaces the ids of the groups whose membership has its own graph node: the G7 (`groups/G7`) is `GroupOfSeven`, and the OECD (`groups/OECD`) is `undata-geo/G00406000`. It also maps seven DAC regions to the region whose countries they list ("Africa (DAC)" to `africa`, "Caribbean (DAC)" to `Caribbean`, and Central America, Melanesia, Micronesia, Polynesia and Southern Africa); the policy holds the region alone under that id and refuses to build when the two member lists differ (`build_policy`). Resolvekit's other 46 groups keep their own ids.
 - **Kinds (`graph_api.kinds`)**: One list of 16 kinds serves resolve and the node route. `classify` gives a node its kind by a fixed order: membership policy groups, then `typeOf`, then the code index, then membership policy regions, units, aggregates and the resolver's place and organisation types.
 - **DCP read executor (`DcpReadExecutor`)**: Graph confirmation reads, the node, members and documentation doors' reads and the variable card's name and currency reads all run on one bounded thread pool (`GRAPH_NODE_POOL_SIZE`). The executor admits one read per worker. A read that arrives while every worker is busy is refused at once as `503 service_unavailable`, which is retryable. A running read keeps its worker until it returns, after its request has timed out. The executor logs one WARNING when its workers fill (`thread pool graph-dcp saturated`) and an INFO line when they drain. Each read logs how long it waited between submission and a worker starting it (`DCP read <function> waited <n> ms for a worker`), and each upstream response logs its method, path, status and milliseconds to headers (`graph POST /core/api/v2/node answered 200 in <n> ms`), one line per attempt. Both lines are DEBUG, on the `graph_api` and `dc_graph` loggers. A wait over 1 s (`graph_api.config.DCP_QUEUE_WAIT_WARN_SECONDS`) or a response over 2 s (`dc_graph.client._SLOW_RESPONSE_SECONDS`) logs at WARNING instead, with the threshold, so it shows under the default log configuration. Facet-profile reads run outside this admission, on the process's shared facet profile cache (`materialise.shared_profiles`), which Search and Datasets share when mounted beside it and naming the same roots.
 - **Contract schema and refusal typing**: Responses conform to fixed Pydantic models, served as JSON Schema at `GET /api/graph/schema`. Error envelopes use RFC 9457 problem details.
@@ -244,11 +244,11 @@ The response comes from the app built with the `tests/graph_api` fixtures (`make
   "gaps": ["group.projections.institutions"],
   "built_from": {
     "code_index": "1be06f70b06f447fbc48644d99f3d023f30bf8987b2ccdf0b82c6ca73228e7e7",
-    "membership": "resolvekit 0.1.12, data 2026.06"
+    "membership": "resolvekit 0.1.13, data 2026.10"
   },
   "kind": "group",
   "group": {
-    "authority": {"name": "resolvekit curated membership", "version": "resolvekit 0.1.12, data 2026.06"},
+    "authority": {"name": "resolvekit curated membership", "version": "resolvekit 0.1.13, data 2026.10"},
     "as_of": null,
     "effective_date": "1976-01-01",
     "projections": [
@@ -274,13 +274,13 @@ The response comes from the app built with the `tests/graph_api` fixtures (`make
   "gaps": ["continent.membership.effective_date", "continent.membership.projections.institutions"],
   "built_from": {
     "code_index": "1be06f70b06f447fbc48644d99f3d023f30bf8987b2ccdf0b82c6ca73228e7e7",
-    "membership": "resolvekit 0.1.12, data 2026.06"
+    "membership": "resolvekit 0.1.13, data 2026.10"
   },
   "kind": "continent",
   "continent": {
     "contained_in": [],
     "membership": {
-      "authority": {"name": "resolvekit UN M49 containment", "version": "resolvekit 0.1.12, data 2026.06"},
+      "authority": {"name": "resolvekit UN M49 containment", "version": "resolvekit 0.1.13, data 2026.10"},
       "as_of": null,
       "effective_date": null,
       "projections": [
@@ -554,7 +554,7 @@ The response comes from the app built with `make_client` and no graph nodes, sin
   "complete": false,
   "total": null,
   "gaps": ["membership_incomplete"],
-  "built_from": {"membership": "resolvekit 0.1.12, data 2026.06"}
+  "built_from": {"membership": "resolvekit 0.1.13, data 2026.10"}
 }
 ```
 
@@ -597,7 +597,7 @@ The example keeps the first entry of each list. The response comes from the app 
   "built_from": {
     "code_index": "1be06f70b06f447fbc48644d99f3d023f30bf8987b2ccdf0b82c6ca73228e7e7",
     "origin_catalogue": "restrictive-catalogue-6fde3fb68115",
-    "membership": "resolvekit 0.1.12, data 2026.06"
+    "membership": "resolvekit 0.1.13, data 2026.10"
   }
 }
 ```

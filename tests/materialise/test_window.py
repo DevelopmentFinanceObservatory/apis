@@ -8,9 +8,11 @@ from dc_sdmx import SdmxObservation
 from materialise import columnar
 from materialise.window import (
     Coverage,
+    LatestYear,
     RequestedWindow,
     compute_applied_window,
     coverage_below_scope,
+    latest_period,
     unserved_entities,
 )
 
@@ -81,6 +83,35 @@ def test_latest_rows_keeps_only_single_latest_period():
     result = columnar.latest_rows(_table(rows))
 
     assert result["TIME_PERIOD"].to_pylist() == ["2020"]
+
+
+@pytest.mark.parametrize(
+    ("year", "period"),
+    [
+        pytest.param(None, "2021-03", id="newest"),
+        pytest.param(2020, "2020-12", id="newest-in-the-year"),
+        pytest.param(2018, None, id="a-year-no-period-holds"),
+    ],
+)
+def test_latest_period_within_a_year(year: int | None, period: str | None):
+    periods = ["2019", "2020-06", "2020-12", None, "20a5", "2021-03"]
+
+    assert latest_period(periods, year=year) == period
+
+
+@pytest.mark.parametrize(
+    ("elected", "served", "fell_back"),
+    [
+        pytest.param(2024, 2024, False, id="served-at-its-year"),
+        pytest.param(2024, 2023, True, id="no-row-in-its-year"),
+        pytest.param(None, 2025, False, id="elected-none"),
+        pytest.param(2024, None, False, id="served-nothing"),
+    ],
+)
+def test_a_latest_year_fell_back_when_it_serves_another_year(
+    elected: int | None, served: int | None, fell_back: bool
+):
+    assert LatestYear(elected=elected, served=served).fell_back is fell_back
 
 
 # --- compute_applied_window -----------------------------------------------

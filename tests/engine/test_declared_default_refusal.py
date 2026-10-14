@@ -1,11 +1,10 @@
 """A StatVar whose graph declares a default facet is refused at resolve time, before any
 coverage, headline or sentence is built, as the registered `facet_binding_unsupported`
-refusal (501, not retryable). No fan-out leg or UN gap-fill pass degrades it into a
+refusal (501, not retryable). No fan-out leg or UN pool election degrades it into a
 no-data answer."""
 
 from __future__ import annotations
 
-import ast
 import asyncio
 import json
 from pathlib import Path
@@ -20,15 +19,13 @@ from promptlab.graphcache import GraphCache
 from promptlab.report import _NoLiveGraph
 from search.engine.clients.graph_client import LiveGraphClient
 from search.engine.errors import DeclaredDefaultUnsupportedError, EngineInfraError
-from search.engine.events import SentenceEvent, StepEvent
-from search.engine.region import phase_place_materialise, pipeline
+from search.engine.events import SentenceEvent
 from search.engine.region.pipeline import resolve_variable
-from search.engine.region.result import RegionResult
 from search.engine.retrieval.facet_policy import refuse_declared_defaults
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
 from tests.engine import test_candidates_fold_after_unit_filter as fold
-from tests.engine import test_gap_fill as gap_fill
 from tests.engine import test_measure_election_inapplicable_slots as measure_election
+from tests.engine import test_pool_election as pools
 from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import PINNED_DATE, door_roles_for_test_query
@@ -46,8 +43,7 @@ _POLICY = FacetDefaultPolicy(
 )
 
 
-# A policy on a StatVar no test answer reads: the graph declares defaults, so the first pass
-# holds its sentences, and no answer here is refused for it.
+# A policy on a StatVar no test answer reads, so no answer here is refused for it.
 _UNRELATED_POLICY = {("dcid:Unrelated_StatVar", "unit"): _POLICY}
 
 
@@ -207,11 +203,12 @@ def _measure_elected_stream(monkeypatch, events: list, *, facet_policies: dict) 
 
 
 def test_a_measure_elected_stream_emits_no_sentence_before_the_refusal(monkeypatch) -> None:
-    """A measure-elected resolve builds its sentence while materialise runs and emits it only
-    once materialise returns, so the refusal reaches the client before any sentence."""
+    """The pipeline emits no sentence of its own: the part's one sentence follows its final
+    result (`fanout._stream_one_variable`), so a refusal reaches the client before any."""
     control: list = []
     _measure_elected_stream(monkeypatch, control, facet_policies={})
-    assert [e for e in control if isinstance(e, SentenceEvent)]
+    assert control, "the stream emits its shape and step events"
+    assert not [e for e in control if isinstance(e, SentenceEvent)]
 
     events: list = []
     with pytest.raises(DeclaredDefaultUnsupportedError):
@@ -224,54 +221,16 @@ def test_a_measure_elected_stream_emits_no_sentence_before_the_refusal(monkeypat
     assert not [e for e in events if isinstance(e, SentenceEvent)]
 
 
-def _sentences_and_materialise(events: list) -> list[str]:
-    """The stream's sentence events and its materialise step event, in order."""
-    return [
-        "sentence" if isinstance(e, SentenceEvent) else "materialise"
-        for e in events
-        if isinstance(e, SentenceEvent) or (isinstance(e, StepEvent) and e.step == "materialise")
-    ]
-
-
-def test_a_graph_declaring_no_default_streams_the_bind_stage_sentence_before_materialise(
-    monkeypatch,
-) -> None:
-    """A graph that declares no default facet cannot refuse, so the measure-elected
-    bind-stage sentence streams while materialise runs: it precedes the materialise step
-    event, and the definite answer's final sentence follows that event."""
-    events: list = []
-    _measure_elected_stream(monkeypatch, events, facet_policies={})
-
-    order = _sentences_and_materialise(events)
-    assert order[:2] == ["sentence", "materialise"]
-    assert order[-1] == "sentence"
-
-
-def test_a_graph_declaring_a_default_holds_the_bind_stage_sentence_until_the_answer_stands(
-    monkeypatch,
-) -> None:
-    """A graph declaring a default on a StatVar this answer does not read can still refuse a
-    later step, so the first pass holds its sentences: none precedes the materialise step
-    event, and the answer's sentences arrive once it stands."""
-    events: list = []
-    _measure_elected_stream(monkeypatch, events, facet_policies=_UNRELATED_POLICY)
-
-    order = _sentences_and_materialise(events)
-    assert order[0] == "materialise"
-    assert "sentence" in order
-
-
 # ---------------------------------------------------------------------------
-# A refusal raised after the bind-stage sentence over a graph that declares default facets:
-# each pass holds its sentences until the part's answer stands, so none reaches the stream
-# ahead of the refusal.
+# A refusal raised by a later step, over a graph that declares default facets: the
+# pipeline streams no sentence, so none reaches the stream ahead of the refusal.
 # ---------------------------------------------------------------------------
 
 
 def test_a_refusal_in_the_candidates_fan_out_streams_no_sentence(monkeypatch) -> None:
-    """The measure-elected grant-equivalent answer builds its bind-stage sentence, then the
-    candidates fan-out materialises the plausible amount sibling, whose member declares a
-    default: the request fails and the stream carries no sentence."""
+    """The candidates fan-out of the measure-elected grant-equivalent answer materialises the
+    plausible amount sibling, whose member declares a default: the request fails and the
+    stream carries no sentence."""
     index = patch_coverage(
         monkeypatch,
         [
@@ -314,7 +273,7 @@ def test_a_refusal_in_the_candidates_fan_out_streams_no_sentence(monkeypatch) ->
 
     control: list = []
     stream({}, control)
-    assert [e for e in control if isinstance(e, SentenceEvent)]
+    assert control and not [e for e in control if isinstance(e, SentenceEvent)]
     events: list = []
     with pytest.raises(DeclaredDefaultUnsupportedError, match=fold._ALT_SV):
         stream({(f"dcid:{fold._ALT_SV}", "unit"): _POLICY}, events)
@@ -322,107 +281,17 @@ def test_a_refusal_in_the_candidates_fan_out_streams_no_sentence(monkeypatch) ->
     assert not [e for e in events if isinstance(e, SentenceEvent)]
 
 
-def _with_a_bind_stage_sentence(monkeypatch) -> None:
-    """Have the first pass emit a sentence before its phases run, as a measure-elected bind
-    stage does once its materialise returns."""
-    real = pipeline._run_phases
-
-    async def run(state):
-        if state.pool == "ours" and state.emit is not None:
-            await state.emit(
-                SentenceEvent(
-                    variable_index=0, spec_id="spec_bind_stage", sentence_plan=[], slots=[]
-                )
-            )
-        return await real(state)
-
-    monkeypatch.setattr(pipeline, "_run_phases", run)
-
-
-def _gap_fill_stream(graph: FakeGraph) -> tuple[RegionResult, list]:
+def test_a_refusal_on_an_elected_un_variable_streams_no_sentence() -> None:
+    """The part elects a UN variable declaring a default and refuses, so the stream carries
+    no sentence."""
+    graph = pools._graph(facet_policies={(f"dcid:{pools._UN}", "unit"): _POLICY})
     events: list = []
 
     async def collect(event) -> None:
         events.append(event)
 
-    return gap_fill._resolve(graph, emit=collect), events
-
-
-def test_a_refusal_in_the_un_second_pass_streams_no_sentence(monkeypatch) -> None:
-    """The first pass streams a sentence and ends without data; the UN second pass finds a
-    variable declaring a default and refuses. The first pass's sentence is held, so the
-    stream carries none."""
-    _with_a_bind_stage_sentence(monkeypatch)
-    graph = FakeGraph(
-        **gap_fill._graph_kwargs(), facet_policies={(f"dcid:{gap_fill._UN}", "unit"): _POLICY}
-    )
-    events: list = []
-
-    async def collect(event) -> None:
-        events.append(event)
-
-    with pytest.raises(DeclaredDefaultUnsupportedError, match=gap_fill._UN):
-        gap_fill._resolve(graph, emit=collect)
-    assert not [e for e in events if isinstance(e, SentenceEvent)]
-
-
-def test_a_filled_answer_streams_only_the_second_passs_sentences(monkeypatch) -> None:
-    """Over a graph declaring default facets, without the refusal the second pass answers,
-    and the stream carries its sentences alone: the first pass's held sentence describes an
-    answer that does not stand."""
-    _with_a_bind_stage_sentence(monkeypatch)
-    result, events = _gap_fill_stream(
-        FakeGraph(**gap_fill._graph_kwargs(), facet_policies=_UNRELATED_POLICY)
-    )
-
-    assert result.status == "definite"
-    spec_ids = [e.spec_id for e in events if isinstance(e, SentenceEvent)]
-    assert spec_ids and "spec_bind_stage" not in spec_ids
-    assert spec_ids[-1] == result.specs[0].spec_id
-
-
-def test_a_filled_answer_over_a_graph_declaring_no_default_ends_on_its_own_sentence(
-    monkeypatch,
-) -> None:
-    """A graph declaring no default streams the first pass's sentence as it is built; the
-    second pass's sentences follow once its answer stands, so the last sentence on the
-    stream is the answer's."""
-    _with_a_bind_stage_sentence(monkeypatch)
-    result, events = _gap_fill_stream(gap_fill._graph())
-
-    assert result.status == "definite"
-    spec_ids = [e.spec_id for e in events if isinstance(e, SentenceEvent)]
-    assert spec_ids[0] == "spec_bind_stage"
-    assert spec_ids[-1] == result.specs[0].spec_id
-
-
-def test_a_refusal_in_sibling_re_election_streams_no_sentence(monkeypatch) -> None:
-    """The first pass streams a sentence, its elected shape has no data at Kenya, and the
-    re-election of a zero-observation sibling meets a declared default and refuses."""
-    _with_a_bind_stage_sentence(monkeypatch)
-    calls: list[str] = []
-
-    async def refuse(state, mat_result):
-        calls.append(state.shape_draft.shape_id)
-        raise DeclaredDefaultUnsupportedError("a sibling declares a default")
-
-    # Re-election runs when the elected shape has a sibling to try; the fixture recalls one
-    # shape, so the elected shape stands in as its own sibling.
-    monkeypatch.setattr(phase_place_materialise, "_reelection_siblings", lambda state: [0])
-    monkeypatch.setattr(phase_place_materialise, "_reelect_zero_observation_sibling", refuse)
-    # The re-election is replaced, so no sibling is walked ahead of it.
-    monkeypatch.setattr(phase_place_materialise, "_sibling_shapes_of", lambda state: {})
-    events: list = []
-
-    async def collect(event) -> None:
-        events.append(event)
-
-    with pytest.raises(DeclaredDefaultUnsupportedError):
-        gap_fill._resolve(
-            FakeGraph(**gap_fill._graph_kwargs(un=()), facet_policies=_UNRELATED_POLICY),
-            emit=collect,
-        )
-    assert calls, "the elected shape's no-data result runs the sibling re-election"
+    with pytest.raises(DeclaredDefaultUnsupportedError, match=pools._UN):
+        pools._resolve(graph, emit=collect, llm=pools._ElectLLM(pools._UN))
     assert not [e for e in events if isinstance(e, SentenceEvent)]
 
 
@@ -509,50 +378,8 @@ def test_a_2027_request_over_a_declared_recorded_default_never_serves_the_projec
 
 
 # ---------------------------------------------------------------------------
-# A graph that declares no default facet returns no policy: the hold rests on it.
+# A graph given no default facet returns no policy, and one given a policy returns it.
 # ---------------------------------------------------------------------------
-
-_REPO = Path(__file__).resolve().parents[2]
-_SOURCE_ROOTS = ("src", "packages/dfo-data-tools/src", "promptlab", "tests", "scripts")
-
-
-def _graph_classes() -> dict[str, tuple[set[str], list[str]]]:
-    """Every class in the repository's Python sources that name `default_facet_policy`, the
-    graphs and the bases they inherit it from: its methods and its base names."""
-    classes: dict[str, tuple[set[str], list[str]]] = {}
-    for root in _SOURCE_ROOTS:
-        for path in (_REPO / root).rglob("*.py"):
-            text = path.read_text()
-            if "default_facet_policy" not in text:
-                continue
-            for node in ast.walk(ast.parse(text, filename=str(path))):
-                if isinstance(node, ast.ClassDef):
-                    methods = {item.name for item in node.body if isinstance(item, ast.FunctionDef)}
-                    bases = [ast.unparse(base).rsplit(".", 1)[-1] for base in node.bases]
-                    known, known_bases = classes.get(node.name, (set(), []))
-                    classes[node.name] = (known | methods, known_bases + bases)
-    return classes
-
-
-def test_every_graph_answering_default_facet_policy_says_whether_it_declares_any() -> None:
-    """A class defining `default_facet_policy` also defines `declares_facet_defaults`, or
-    inherits it from a base that does, so no graph the pipeline holds its sentences by can
-    leave the question unanswered."""
-    classes = _graph_classes()
-
-    def answers(name: str, seen: frozenset[str] = frozenset()) -> bool:
-        if name not in classes or name in seen:
-            return False
-        methods, bases = classes[name]
-        return "declares_facet_defaults" in methods or any(
-            answers(base, seen | {name}) for base in bases
-        )
-
-    graphs = sorted(
-        name for name, (methods, _) in classes.items() if "default_facet_policy" in methods
-    )
-    assert len(graphs) >= 15, graphs
-    assert [name for name in graphs if not answers(name)] == []
 
 
 def _stat_vars_and_axes() -> list[tuple[str, str]]:
@@ -563,13 +390,13 @@ def _stat_vars_and_axes() -> list[tuple[str, str]]:
     ]
 
 
-def test_a_graph_declaring_no_default_returns_no_policy_and_one_declaring_says_so(
+def test_a_graph_declaring_no_default_returns_no_policy_and_one_declaring_returns_it(
     tmp_path: Path,
 ) -> None:
     """The production client, its origin delegate, the live wrapper, promptlab's graph cache
     and its read-only placeholder, the recording proxy and every fake built without policies
-    declare no default and return no policy; the same wrappers over a graph given a policy,
-    and the fakes given one, declare it."""
+    return no policy; the same wrappers over a graph given a policy, and the fakes given one,
+    return it."""
     live = LiveGraphClient(base="http://fake")
     silent = [
         live,
@@ -584,7 +411,6 @@ def test_a_graph_declaring_no_default_returns_no_policy_and_one_declaring_says_s
         FakeMintGraphReader(arcs={}),
     ]
     for graph in silent:
-        assert graph.declares_facet_defaults() is False, graph
         for stat_var, axis in _stat_vars_and_axes():
             assert graph.default_facet_policy(stat_var=stat_var, axis=axis) is None, graph
 
@@ -596,5 +422,4 @@ def test_a_graph_declaring_no_default_returns_no_policy_and_one_declaring_says_s
         FakeMintGraphReader(arcs={}, policies={(f"dcid:{_FERTILITY}", "unit"): _POLICY}),
     ]
     for graph in declaring:
-        assert graph.declares_facet_defaults() is True, graph
         assert graph.default_facet_policy(stat_var=f"dcid:{_FERTILITY}", axis="unit") == _POLICY

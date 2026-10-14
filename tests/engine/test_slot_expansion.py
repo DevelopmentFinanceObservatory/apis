@@ -2,15 +2,8 @@
 
 from __future__ import annotations
 
-from code_index import (
-    CodeIndex,
-    CodeRow,
-    CodeSystemDeclaration,
-    IndexStamp,
-)
 from code_index.shared import get_index
 from search.engine.bind import SlotBindingDraft
-from search.engine.bind_repair import repair_draft_bindings
 from search.engine.clients.graph import Facet
 from search.engine.retrieval.bound_values import (
     bound_values_from_bindings,
@@ -307,97 +300,3 @@ def test_standard_path_refuses_a_sibling_outside_the_subtree():
 
     assert isinstance(result, BoundValuesUnrealisable)
     assert [c.properties for c in result.conflicts] == [{"crsPurpose"}]
-
-
-# The repair fixture splits two bound properties across separate members.
-# A one-property case would pass before expansion because presence triggers fail-open.
-
-_ROOT = "synthetic_root"
-_LEAF = "synthetic_leaf"
-
-
-def _synthetic_hierarchical_index() -> CodeIndex:
-    return CodeIndex(
-        stamp=IndexStamp(
-            graph_endpoint="test",
-            exported_at="2026-01-01T00:00:00Z",
-            code_counts={"concept": 2},
-            statvar_shape_counts={},
-            content_hash="test-hash",
-        ),
-        declarations=[
-            CodeSystemDeclaration(
-                code_system="concept",
-                hierarchical=True,
-                disjoint_from_children=True,
-                summable=True,
-                absent_reading="not_declared",
-                plain_name="concept",
-            )
-        ],
-        codes=[
-            CodeRow(
-                dcid=_ROOT,
-                code_system="concept",
-                code="root",
-                label="root",
-                synonyms=(),
-                parent=None,
-            ),
-            CodeRow(
-                dcid=_LEAF,
-                code_system="concept",
-                code="leaf",
-                label="leaf",
-                synonyms=(),
-                parent=_ROOT,
-            ),
-        ],
-        statvars=[],
-    )
-
-
-def test_a_repair_stops_firing_once_the_leaf_is_admitted(monkeypatch):
-    import search.engine.retrieval.bound_values as bound_values_module
-
-    monkeypatch.setattr(bound_values_module, "get_index", _synthetic_hierarchical_index)
-
-    concept_binding = _binding("concept", [_ROOT], evidence="sole_option")
-    concept_alt_binding = _binding("concept_alt", ["Y"], evidence="mentioned")
-    members = ["sv_concept_alt_only", "sv_both"]
-    sv_arc_facts = {
-        "sv_concept_alt_only": _arcs(concept_alt="Y"),
-        "sv_both": _arcs(concept=_LEAF, concept_alt="Y"),
-    }
-    slot_taxonomy = {"how:concept": [_ROOT]}
-
-    repaired, dropped = repair_draft_bindings(
-        [concept_binding, concept_alt_binding], members, sv_arc_facts, slot_taxonomy
-    )
-
-    # The expanded leaf lets sv_both satisfy both properties before repair.
-    assert dropped == []
-    assert repaired == [concept_binding, concept_alt_binding]
-
-
-def test_the_same_repair_fires_without_expansion():
-    """Without index entries for either property, repair drops the sole-option binding.
-
-    Neither member asserts both bound values.
-    """
-    concept_binding = _binding("concept", [_ROOT], evidence="sole_option")
-    concept_alt_binding = _binding("concept_alt", ["Y"], evidence="mentioned")
-    members = ["sv_concept_alt_only", "sv_both"]
-    sv_arc_facts = {
-        "sv_concept_alt_only": _arcs(concept_alt="Y"),
-        "sv_both": _arcs(concept=_LEAF, concept_alt="Y"),
-    }
-    slot_taxonomy = {"how:concept": [_ROOT]}
-
-    repaired, dropped = repair_draft_bindings(
-        [concept_binding, concept_alt_binding], members, sv_arc_facts, slot_taxonomy
-    )
-
-    assert dropped == [concept_binding]
-    assert repaired[0].kind == "unbound"
-    assert repaired[1] == concept_alt_binding

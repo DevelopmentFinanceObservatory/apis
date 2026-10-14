@@ -1,7 +1,8 @@
 """Tests for no-data reason threading through candidate fan-out. Reasons before
 `no_observations` in `NO_DATA_RESOLUTION_ORDER` can carry through; later reasons
 cannot. A grounded alternate also takes precedence over `variable_not_resolved`.
-Place-less per-capita tests pin the separate `no_matching_slice` deferral.
+Place-less tests pin the separate `no_matching_slice` deferral, and a per-capita
+refusal before bind that flags the reading the bind model names as nearest.
 """
 
 from __future__ import annotations
@@ -55,7 +56,7 @@ _STD_NODE = {
 }
 _NODES: dict = {**_KEN_NODE, **_ELECTED_NODE, **_STD_NODE}
 _DETECT = {
-    "experimental census or health spending in Kenya": {
+    "experimental census or healthcare expenditure in Kenya": {
         "svs": [_STD_SV, _ELECTED_SV],
         "cosine_scores": [0.85, 0.82],
     },
@@ -83,10 +84,15 @@ def _run(
     monkeypatch=None,
     elected_reason: str | None = None,
     alternate_unsupported: UnsupportedDraft | None = None,
+    alternate_reason: str | None = None,
 ):
     # Stub the elected shape by its unique measuredProperty. Patch both call
     # sites because pipeline and candidates import `materialise` separately.
-    if elected_reason is not None or alternate_unsupported is not None:
+    if (
+        elected_reason is not None
+        or alternate_unsupported is not None
+        or alternate_reason is not None
+    ):
 
         def _fake_materialise(shape, *args, **kwargs):
             if shape.meas_prop_dcid == _ELECTED_MEAS_PROP:
@@ -94,6 +100,8 @@ def _run(
                     return NoDataDraft(reason=elected_reason)
             elif alternate_unsupported is not None:
                 return alternate_unsupported
+            elif alternate_reason is not None:
+                return NoDataDraft(reason=alternate_reason)
             return _real_materialise(shape, *args, **kwargs)
 
         assert monkeypatch is not None
@@ -108,11 +116,11 @@ def _run(
     )
     return asyncio.run(
         resolve_variable(
-            "experimental census or health spending in Kenya",
+            "experimental census or healthcare expenditure in Kenya",
             entities=["Kenya"],
             date_request=None,
-            detect_query="experimental census or health spending in Kenya",
-            role_query="experimental census or health spending in Kenya",
+            detect_query="experimental census or healthcare expenditure in Kenya",
+            role_query="experimental census or healthcare expenditure in Kenya",
             pac=True,
             graph=graph,
             resolver=make_resolver(graph),
@@ -128,13 +136,16 @@ def _run(
 # no-data alternate allows one. The fake stands in for role-scope's cap path.
 
 
+# The alternate holds data in Kenya, so the status rule offers it and its read is made.
+_BOTH_IN_KENYA = {
+    f"{_ELECTED_SV}|country/KEN": [{"earliestDate": "2015", "latestDate": "2022", "obsCount": 5}],
+    f"{_STD_SV}|country/KEN": [{"earliestDate": "2015", "latestDate": "2022", "obsCount": 5}],
+}
+
+
 def test_capped_alternate_returns_unsupported_not_elected_definite(monkeypatch):
     result = _run(
-        obs={
-            f"{_ELECTED_SV}|country/KEN": [
-                {"earliestDate": "2015", "latestDate": "2022", "obsCount": 5}
-            ]
-        },
+        obs=_BOTH_IN_KENYA,
         monkeypatch=monkeypatch,
         alternate_unsupported=UnsupportedDraft(
             code="scope_too_broad",
@@ -174,8 +185,14 @@ def test_no_data_alternate_keeps_elected_definite():
     ],
 )
 def test_empty_candidates_uses_reason_order(monkeypatch, elected_reason, expected_reason):
-    """Empty fan-out retains only an elected reason ordered before no_observations."""
-    result = _run(obs={}, monkeypatch=monkeypatch, elected_reason=elected_reason)
+    """Empty fan-out retains only an elected reason ordered before no_observations. The
+    alternate holds data in Kenya, so it is read, and its read finds none."""
+    result = _run(
+        obs={f"{_STD_SV}|country/KEN": _BOTH_IN_KENYA[f"{_STD_SV}|country/KEN"]},
+        monkeypatch=monkeypatch,
+        elected_reason=elected_reason,
+        alternate_reason="no_observations",
+    )
     assert result.status == "no_data"
     assert result.no_data_reason == expected_reason
 
@@ -256,8 +273,8 @@ def test_empty_candidates_variable_not_resolved_threads_without_flagged_match(mo
 
 
 # ---------------------------------------------------------------------------
-# A place-less query with split binding ownership returns no_matching_slice
-# before the per-capita denominator check can report a missing denominator.
+# A place-less query with split binding ownership returns no_matching_slice, and a
+# place-less per-capita query that no reading serves refuses on the form before bind.
 # ---------------------------------------------------------------------------
 
 _PC_PROP_GENDER = "gender"
@@ -272,7 +289,7 @@ _PC_POP_TYPE = "TestPerCapitaIncidenceEvent"
 _PC_MEAS_PROP = "testPerCapitaIncidence"
 _PC_STAT_TYPE = "measuredValue"
 
-_PC_NO_ENTITY_QUERY = "female urban test incidence per capita"
+_PC_NO_ENTITY_QUERY = "female urban test measure"
 _PC_FULLY_ASSERTED_QUERY = "female test incidence per capita"
 
 
@@ -358,36 +375,31 @@ class _PerCapitaSplitOwnershipBindLLM:
         )
 
 
-class _PerCapitaFullyAssertedBindLLM:
-    """Binds Female, which the sole member asserts, and supplies data for the
-    control that should report a missing denominator.
-    """
+class _PerCapitaDeclinedBindLLM:
+    """Answers the quantity read with the per-person form, which leaves the sole reading not
+    electable, and declines in bind, naming that reading as nearest."""
+
+    def __init__(self) -> None:
+        self.prompts: list[str] = []
 
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
-            return NO_QUANTITY
+            return QuantityOutput(stated_form="per_person"), None
         assert schema.__name__ == "_UniversalBindOutput"
+        self.prompts.append(prompt)
         return (
             _UniversalBindOutput(
                 chosen_shape_index=0,
-                bindings=[
-                    SlotBindingDraft(
-                        axis="how",
-                        property_dcid=_PC_PROP_GENDER,
-                        kind="value",
-                        value_dcids=[_PC_VAL_FEMALE],
-                    ),
-                ],
-                also_plausible=[],
-                ask=None,
+                ask="no shape on the menu measures this per person",
+                nearest_refused_index=0,
             ),
             None,
         )
 
 
-def test_place_less_per_capita_no_matching_slice_defers_to_mint_with_flagged_match():
-    """With no member asserting both bound values, `no_matching_slice` takes
-    precedence and preserves the flagged match and LLM usage.
+def test_place_less_split_ownership_no_matching_slice_defers_to_mint_with_flagged_match():
+    """With no member asserting both bound values, the place-less mint refuses
+    `no_matching_slice` and preserves the flagged match and LLM usage.
     """
     graph = FakeGraph(nodes=_PC_NODES, detect=_PC_NO_ENTITY_DETECT, resolve={}, obs={})
     result = asyncio.run(
@@ -421,9 +433,10 @@ def test_place_less_per_capita_no_matching_slice_defers_to_mint_with_flagged_mat
 
 
 def test_place_less_per_capita_fully_asserted_member_reports_denominator_not_available():
-    """The member asserts Female and has a 2020 Kenya observation but no
-    denominator, so the query reports `denominator_not_available`, flagging the elected
-    member.
+    """The member asserts Female and has a 2020 Kenya observation, but it is no per-capita
+    series, so the per-person form the quantity read states leaves it not electable. Bind
+    declines and names it as nearest, so the query reports `denominator_not_available`,
+    flagging that member, before any read.
     """
     graph = FakeGraph(
         nodes=_PC_NODES,
@@ -435,6 +448,7 @@ def test_place_less_per_capita_fully_asserted_member_reports_denominator_not_ava
             ]
         },
     )
+    llm = _PerCapitaDeclinedBindLLM()
     result = asyncio.run(
         resolve_variable(
             _PC_FULLY_ASSERTED_QUERY,
@@ -445,7 +459,7 @@ def test_place_less_per_capita_fully_asserted_member_reports_denominator_not_ava
             pac=True,
             graph=graph,
             resolver=make_resolver(graph),
-            llm=_PerCapitaFullyAssertedBindLLM(),
+            llm=llm,
             base_timing={},
             sdmx=FakeSdmxClient(
                 availability={"recipient": ["country/KEN"]},
@@ -455,7 +469,10 @@ def test_place_less_per_capita_fully_asserted_member_reports_denominator_not_ava
         )
     )
 
+    (prompt,) = llm.prompts
+    assert "(fails the form the query asks for)" in prompt.partition("NOT ELECTABLE")[2]
     assert result.status == "no_data"
     assert result.no_data_reason == "denominator_not_available"
     (flagged,) = result.flagged_match or ()
     assert [sv.ref.ref for sv in flagged.resolved.members] == [_PC_SV_A]
+    assert "materialise" not in result.timing_by_step

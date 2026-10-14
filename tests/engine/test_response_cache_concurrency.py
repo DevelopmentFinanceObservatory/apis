@@ -10,14 +10,20 @@ from unittest.mock import patch
 import search.engine.fanout as fanout_module
 from search.engine.core import resolve_async, resolve_events
 from search.engine.envelope import now_ms
-from search.engine.events import DoneEvent, Event, ResponseEvent
+from search.engine.events import DoneEvent, Event, ResponseEvent, StepEvent
 from search.engine.extract import Extraction, ExtractionResult
 from search.engine.region import RegionResult
 from search.engine.response_cache import ResponseCache
 from search.engine.response_cache_flow import CacheScope
 from search.models import RawTextInput, ResolveRequest, ResolveResponse
 from tests.engine._fake_coverage import empty_coverage_snapshot
-from tests.engine._harness import EMPTY_SDMX, make_request, offline_resolve
+from tests.engine._harness import (
+    DEADLINE_TIMEOUT_S,
+    EMPTY_SDMX,
+    frozen_monotonic_clock,
+    make_request,
+    offline_resolve,
+)
 from tests.engine.test_response_cache_e2e import _QUERY_A, _QUERY_B, _AliasedLLM, _CountingLLM
 from tests.fixtures import PINNED_DATE, FakeGraph, FakeLLM
 
@@ -141,25 +147,57 @@ async def _collect(gen) -> list[Event]:
     return [ev async for ev in gen]
 
 
+def _stall_leader_past_deadline_once_followers_wait(monkeypatch, cache, clock, *, n_followers):
+    """A `resolve_variable` stand-in for the leader's fan-out, and the variables it was given.
+
+    It waits until `n_followers` requests are waiting on a leader in `cache`, then moves the
+    fake `clock` past the request deadline and wakes the fan-out loop. The deadline passes
+    only once the followers wait, so no step of the leader or a follower races it.
+    """
+    waiting = 0
+    all_waiting = asyncio.Event()
+    real_await_leader = cache.await_leader
+
+    async def _counting_await_leader(lease):
+        nonlocal waiting
+        waiting += 1
+        if waiting >= n_followers:
+            all_waiting.set()
+        return await real_await_leader(lease)
+
+    monkeypatch.setattr(cache, "await_leader", _counting_await_leader)
+
+    calls: list[str] = []
+
+    async def _stub(variable, **kwargs):
+        calls.append(variable)
+        await all_waiting.wait()
+        clock.now += DEADLINE_TIMEOUT_S * 10
+        await kwargs["emit"](StepEvent(step="materialise", ran=True))
+        await asyncio.Event().wait()
+        return _no_data_region(variable)  # pragma: no cover (the deadline fires first)
+
+    return _stub, calls
+
+
 def test_leader_timeout_wakes_every_follower_with_timed_out_done(monkeypatch, search_settings):
     """N concurrent identical raw_text requests sharing one ResponseCache.
     The leader's own fan-out hits SEARCH_REQUEST_TIMEOUT_S and produces a
     partial, is_storable-rejected response. Every follower gets that same
     partial and its own done(timed_out=true) rather than waiting past its
-    own deadline into a 504.
+    own deadline into a 504. The fake clock passes the deadline once every follower waits.
     """
-    search_settings(request_timeout_s=0.05)
+    clock = frozen_monotonic_clock(monkeypatch)
+    search_settings(request_timeout_s=DEADLINE_TIMEOUT_S)
     monkeypatch.setattr("search.engine.entry.raw_text.extract", _mock_extract(["only"]))
-
-    async def _stub(variable, **kwargs):
-        await asyncio.sleep(10)
-        return _no_data_region(variable)  # pragma: no cover (the deadline fires first)
-
-    monkeypatch.setattr("search.engine.fanout.resolve_variable", _stub)
 
     cache = ResponseCache()
     query = "test leader timeout wakes every follower"
     n_followers = 2
+    stub, _ = _stall_leader_past_deadline_once_followers_wait(
+        monkeypatch, cache, clock, n_followers=n_followers
+    )
+    monkeypatch.setattr("search.engine.fanout.resolve_variable", stub)
 
     async def _run() -> tuple[list[Event], list[list[Event]]]:
         leader_task = asyncio.ensure_future(
@@ -255,38 +293,16 @@ def test_two_differently_worded_queries_run_concurrently_bind_once(monkeypatch):
 def test_layer2_leader_timeout_wakes_the_layer2_follower_with_timed_out_done(
     monkeypatch, search_settings
 ):
-    search_settings(request_timeout_s=0.05)
+    clock = frozen_monotonic_clock(monkeypatch)
+    search_settings(request_timeout_s=DEADLINE_TIMEOUT_S)
     monkeypatch.setattr("search.engine.entry.raw_text.extract", _mock_extract(["only"]))
 
-    fan_out_calls = 0
-
-    async def _stub(variable, **kwargs):
-        nonlocal fan_out_calls
-        fan_out_calls += 1
-        await asyncio.sleep(10)
-        return _no_data_region(variable)  # pragma: no cover (the deadline fires first)
-
-    monkeypatch.setattr("search.engine.fanout.resolve_variable", _stub)
-
-    # The leader must reach its fan-out inside the 0.05 s deadline. Building the fakes
-    # here and running one request through another cache first keeps fixture parsing and
-    # the process-wide loads the cache lookup reads out of that window.
-    leader_graph, follower_graph = FakeGraph(), FakeGraph()
-    leader_llm, follower_llm = FakeLLM(), FakeLLM()
-    asyncio.run(
-        _collect(
-            resolve_events(
-                make_request("layer two timeout warm-up"),
-                graph=FakeGraph(),
-                llm=FakeLLM(),
-                sdmx=EMPTY_SDMX,
-                response_cache=ResponseCache(),
-            )
-        )
-    )
-    fan_out_calls = 0
-
     cache = ResponseCache()
+    stub, fan_out_calls = _stall_leader_past_deadline_once_followers_wait(
+        monkeypatch, cache, clock, n_followers=1
+    )
+    monkeypatch.setattr("search.engine.fanout.resolve_variable", stub)
+
     query_a = "layer two timeout alpha wording"
     query_b = "layer two timeout beta wording"
 
@@ -295,8 +311,8 @@ def test_layer2_leader_timeout_wakes_the_layer2_follower_with_timed_out_done(
             _collect(
                 resolve_events(
                     make_request(query_a),
-                    graph=leader_graph,
-                    llm=leader_llm,
+                    graph=FakeGraph(),
+                    llm=FakeLLM(),
                     sdmx=EMPTY_SDMX,
                     response_cache=cache,
                 )
@@ -308,8 +324,8 @@ def test_layer2_leader_timeout_wakes_the_layer2_follower_with_timed_out_done(
             _collect(
                 resolve_events(
                     make_request(query_b),
-                    graph=follower_graph,
-                    llm=follower_llm,
+                    graph=FakeGraph(),
+                    llm=FakeLLM(),
                     sdmx=EMPTY_SDMX,
                     response_cache=cache,
                 )
@@ -321,7 +337,7 @@ def test_layer2_leader_timeout_wakes_the_layer2_follower_with_timed_out_done(
 
     leader_events, follower_events = asyncio.run(asyncio.wait_for(_run(), timeout=10))
 
-    assert fan_out_calls == 1  # the follower never ran its own fan-out
+    assert len(fan_out_calls) == 1  # the follower never ran its own fan-out
 
     leader_dones = [e for e in leader_events if isinstance(e, DoneEvent)]
     assert len(leader_dones) == 1

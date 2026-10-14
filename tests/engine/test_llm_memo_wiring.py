@@ -50,10 +50,10 @@ class _UsageMeta:
 
 
 class _Response:
-    """The slice of a genai response `LLM._fetch_structured` reads."""
+    """The slice of a genai response `LLM._fetch_text` reads."""
 
-    def __init__(self, *, parsed) -> None:
-        self.parsed = parsed
+    def __init__(self, *, text: str) -> None:
+        self.text = text
         self.model_version = "gemini-3.5-flash-lite-007"
         self.usage_metadata = _UsageMeta()
 
@@ -71,7 +71,7 @@ class _ReplayingModels:
         parsed, _usage = await self._fixtures.generate_structured(
             prompt=contents, system=config.system_instruction, schema=schema
         )
-        return _Response(parsed=parsed)
+        return _Response(text=parsed.model_dump_json())
 
 
 class _ReplayingClient:
@@ -216,7 +216,7 @@ def test_app_builds_a_shared_memoised_llm_and_a_repeat_costs_no_gemini_call(wire
     second = _body(_resolve(client, sse=False))
 
     # One extract, one bind and one quantity read, on the first request only.
-    assert calls_after_first == ["Extraction", "_UniversalBindOutput", "QuantityOutput"]
+    assert calls_after_first == ["Extraction", "QuantityOutput", "_UniversalBindOutput"]
     assert replay_client.models.calls == calls_after_first
     assert "LLM memo hit: schema=Extraction" in capture.messages
     assert "LLM memo hit: schema=_UniversalBindOutput" in capture.messages
@@ -253,7 +253,7 @@ def test_sse_transport_shares_the_same_memo(wired):
     assert response.status_code == 200, response.text
     frames = parse_sse(response.text)
     assert replay_client.models.calls == calls_after_first
-    assert calls_after_first == ["Extraction", "_UniversalBindOutput", "QuantityOutput"]
+    assert calls_after_first == ["Extraction", "QuantityOutput", "_UniversalBindOutput"]
 
     event_types = [event for event, _ in frames]
     response_idx = event_types.index("response")
@@ -300,11 +300,11 @@ def test_an_injected_llm_without_a_memo_still_calls_the_model(wired, monkeypatch
 
     assert replay_client.models.calls == [
         "Extraction",
-        "_UniversalBindOutput",
         "QuantityOutput",
+        "_UniversalBindOutput",
         "Extraction",
-        "_UniversalBindOutput",
         "QuantityOutput",
+        "_UniversalBindOutput",
     ]
 
 
@@ -315,11 +315,11 @@ def test_a_live_answer_without_usage_metadata_is_not_logged_as_a_memo_hit(wired)
     replay_client.models.generate_content = _no_usage_generate(replay_client)
 
     _body(_resolve(client, sse=False))
-    assert replay_client.models.calls == ["Extraction", "_UniversalBindOutput", "QuantityOutput"]
+    assert replay_client.models.calls == ["Extraction", "QuantityOutput", "_UniversalBindOutput"]
     assert "LLM memo hit" not in capture.messages
 
     _body(_resolve(client, sse=False))
-    assert replay_client.models.calls == ["Extraction", "_UniversalBindOutput", "QuantityOutput"]
+    assert replay_client.models.calls == ["Extraction", "QuantityOutput", "_UniversalBindOutput"]
     assert "LLM memo hit: schema=Extraction" in capture.messages
 
 

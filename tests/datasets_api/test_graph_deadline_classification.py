@@ -107,9 +107,6 @@ class _DeadlineExceededGraphReader:
             stat_vars=stat_vars, entities=entities, deadline=deadline
         )
 
-    def declares_facet_defaults(self) -> bool:
-        return self._delegate.declares_facet_defaults()
-
     def generation_stamp(self):
         return self._delegate.generation_stamp()
 

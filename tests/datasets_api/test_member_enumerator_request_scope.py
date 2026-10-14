@@ -107,9 +107,6 @@ class _MutableGraph:
             for stat_var in stat_vars
         }
 
-    def declares_facet_defaults(self) -> bool:
-        return False
-
     def default_facet_policy(self, *, stat_var: str, axis: str) -> FacetDefaultPolicy | None:
         return None
 

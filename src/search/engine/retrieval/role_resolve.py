@@ -22,7 +22,12 @@ from search.engine.retrieval.bound_values import (
     shape_query,
     undeclared_bound_roles,
 )
-from search.engine.retrieval.coverage import CoverageForm, answer_coverage, answer_headline
+from search.engine.retrieval.coverage import (
+    CoverageForm,
+    answer_coverage,
+    answer_headline,
+    plan_election,
+)
 from search.engine.retrieval.elected_dataset import elected_datasets, published
 from search.engine.retrieval.facet_election import merge_role_candidates
 from search.engine.retrieval.facet_policy import refuse_declared_defaults
@@ -66,7 +71,13 @@ if TYPE_CHECKING:
     from search.engine.bind import SlotBindingDraft
     from search.engine.clients.sdmx import EngineSdmxClient
     from search.engine.extract import DateRequest
-    from search.engine.retrieval.retrieve import Materialised, NoDataDraft, UnsupportedDraft
+    from search.engine.retrieval.retrieve import (
+        BoundValuesUnrealisable,
+        Materialised,
+        MemberConflict,
+        NoDataDraft,
+        UnsupportedDraft,
+    )
     from series_coverage.index import BoundRoles, CoverageIndex, Role
     from series_coverage.shared import CoverageSnapshot
 
@@ -172,6 +183,63 @@ def _mint_admits(member: MemberFacts, bound_values: Mapping[str, Sequence[str]])
         return False
     constraints = member.read_constraints()
     return all(constraints.get(prop) in values for prop, values in bound_values.items())
+
+
+def _mint_conflicts(
+    member_facts: Mapping[str, MemberFacts], bound_values: Mapping[str, Sequence[str]]
+) -> tuple[MemberConflict, ...]:
+    """Each member's conflict with `bound_values` under the mint's rule (`_mint_admits`),
+    in population order and without repeats: the bound properties the member asserts at
+    another value or does not assert, since the mint serves no member silent on a bound
+    property. Unbinding a member's set admits it.
+
+    A member with a declared constraint that does not resolve (`_constraints_resolve`) has
+    no conflict here: no unbinding admits it. The result is empty when that is every member.
+    """
+    from search.engine.retrieval.retrieve import MemberConflict
+
+    conflicts: dict[MemberConflict, None] = {}
+    for member in member_facts.values():
+        if not _constraints_resolve(member):
+            continue
+        constraints = member.read_constraints()
+        conflicts[
+            MemberConflict(
+                properties=frozenset(
+                    prop
+                    for prop, values in bound_values.items()
+                    if constraints.get(prop) not in values
+                ),
+                fully_bound=all(prop in constraints for prop in bound_values),
+            )
+        ] = None
+    return tuple(conflicts)
+
+
+def _constraint_values(bound_values: Mapping[str, list[str]]) -> dict[str, list[str]]:
+    """The bound values admission judges members on. Facet axes describe observations and
+    no member asserts one, so they are left out."""
+    return {prop: values for prop, values in bound_values.items() if prop not in FACET_AXES}
+
+
+def unrealisable_bound_values(
+    shape: ShapeDraft, query: FamilyQuery, bindings: list[SlotBindingDraft]
+) -> BoundValuesUnrealisable | None:
+    """The refusal `_admit_population` gives `shape`'s population under `bindings` when no
+    member asserts every bound value and unbinding some admits one, else None.
+
+    `query` is the shape's `shape_query` under `bindings`. A caller that learns before any
+    place is read that the family holds no member under the query (`MembershipResolution.no_member`)
+    unbinds by this and settles the family again, so the members it then reads are the
+    family of the bindings it answers under."""
+    from search.engine.retrieval.retrieve import BoundValuesUnrealisable
+
+    constraint_values = _constraint_values(bound_values_from_bindings(bindings))
+    member_facts, _index_sourced = shape_member_facts(shape, query)
+    if any(_mint_admits(member, constraint_values) for member in member_facts.values()):
+        return None
+    conflicts = _mint_conflicts(member_facts, constraint_values)
+    return BoundValuesUnrealisable(conflicts=conflicts) if conflicts else None
 
 
 def _no_subject_outcome(*, names: dict[RoleAxis, str]) -> NoDataDraft:
@@ -419,6 +487,7 @@ def _role_plan(
             coverage_index, variables=members, bound=bound_roles
         ),
         roles=PlanRoles(bound=bound_roles, role_names=role_names),
+        elect=plan_election(coverage_index),
     )
     return in_elected_datasets(plan, member_facts)
 
@@ -656,18 +725,15 @@ def _admit_population(
     Empty populations return ``NoDataDraft`` with one of four reasons:
     ``variable_not_resolved`` (no members, or none whose unbound constraints all
     resolve), ``binding_mismatch`` (no member asserts every bound value, and some member's
-    unbound constraints all resolve), ``role_incompatible`` (no member declares every bound role, including a
+    unbound constraints all resolve; as ``BoundValuesUnrealisable``, naming each member's
+    conflict (`_mint_conflicts`), when unbinding values admits one), ``role_incompatible`` (no member declares every bound role, including a
     bound axis the shape declares no role on), or
     ``role_signature_incompatible`` (survivors disagree on role names, or their
     roles share a flow axis).
     """
-    from search.engine.retrieval.retrieve import NoDataDraft
+    from search.engine.retrieval.retrieve import BoundValuesUnrealisable, NoDataDraft
 
-    # Facet axes describe observations and no member asserts one, so admission
-    # judges members on the bound constraint properties alone.
-    constraint_values = {
-        prop: values for prop, values in bound_values.items() if prop not in FACET_AXES
-    }
+    constraint_values = _constraint_values(bound_values)
 
     # Use the full index population when available, otherwise the shape's arcs.
     member_facts, index_sourced = shape_member_facts(shape, query)
@@ -681,8 +747,10 @@ def _admit_population(
 
     surviving_svs = _filter_and_rank_surviving(member_facts, constraint_values)
     if not surviving_svs:
-        # A bound value is mismatched when some member fails only on bound properties: its
-        # unbound constraints all resolve.
+        if conflicts := _mint_conflicts(member_facts, constraint_values):
+            return BoundValuesUnrealisable(conflicts=conflicts)
+        # No unbinding admits a member. A bound value is still mismatched when some member
+        # fails only on bound properties: its unbound constraints all resolve.
         return NoDataDraft(
             reason=(
                 "binding_mismatch"

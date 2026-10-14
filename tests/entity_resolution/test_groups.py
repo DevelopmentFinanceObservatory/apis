@@ -15,7 +15,8 @@ from entity_resolution.membership import (
     UnknownMembership,
 )
 from entity_resolution.regions import identity_to_dcid, replacing_group_id
-from entity_resolution.shared import SharedResolver
+from entity_resolution.shared import SharedResolver, shared_memberships
+from scripts.export_code_index import TOTAL_GROUPS
 
 _DATES = (date(1960, 1, 1), date(1995, 6, 1), date(2015, 6, 1), date(2021, 6, 1))
 
@@ -151,3 +152,36 @@ def test_an_unknown_group_is_refused(registry: GroupRegistry) -> None:
         registry.get("groups/NoSuchGroup")
     with pytest.raises(UnknownMembership):
         registry.by_entity_id("groups/NoSuchGroup")
+
+
+# The DAC regions no total holds. America and Oceania list only the DAC's recipients, so
+# their members leave out Canada and the United States, and Australia and New Zealand, which
+# the graph places DACAmerica and DACOceania are keyed to hold. Northern America's total has
+# no amounts after 1996, so `TOTAL_GROUPS` keys no group to it.
+_DAC_REGIONS_WITHOUT_A_TOTAL = frozenset(
+    {
+        "groups/OECD.DAC.Region.America",
+        "groups/OECD.DAC.Region.NorthernAmerica",
+        "groups/OECD.DAC.Region.Oceania",
+    }
+)
+
+
+def test_every_dac_region_holds_a_total_or_is_listed_without_one(
+    registry: GroupRegistry,
+) -> None:
+    """Each DAC region resolvekit holds reaches a total `TOTAL_GROUPS` keys to its id, or to
+    the region `group_ids.json` maps it to, whose members are the DAC region's own."""
+    keyed = {total.group for total in TOTAL_GROUPS.values()}
+    policy = shared_memberships().policy
+    dac_regions = [g for g in registry if g.entity_id.startswith("groups/OECD.DAC.Region.")]
+    assert dac_regions
+    held = set()
+    for group in dac_regions:
+        if group.ref not in keyed:
+            continue
+        held.add(group.entity_id)
+        if group.ref != group.entity_id:
+            assert policy.holds_region(group.ref), group.entity_id
+            assert group.members() == policy.get(group.ref).members(), group.entity_id
+    assert {g.entity_id for g in dac_regions} - held == _DAC_REGIONS_WITHOUT_A_TOTAL

@@ -837,7 +837,9 @@ def _merge_shape(group: list[RegionResult], base_spec: Spec, is_where: bool):
 
     Count the union of admitted dcids only when every population is present and exact,
     and the merge is not on the where axis. Otherwise report the largest member count as a
-    lower bound. `build_spec` states the merged Spec's `member_digest`.
+    lower bound. `build_spec` states the merged Spec's `member_digest`, and labels the
+    shape for the merged members from the label the base's shape was built with
+    (`ResolvedSpec.built_shape_label`).
     """
     if not is_where and all(
         r.member_population is not None and r.member_population.exact for r in group
@@ -849,7 +851,12 @@ def _merge_shape(group: list[RegionResult], base_spec: Spec, is_where: bool):
         merged_member_count = len(admitted_dcids)
     else:
         merged_member_count = max(r.spec.resolved.shape.member_count for r in group)
-    return base_spec.resolved.shape.model_copy(update={"member_count": merged_member_count})
+    return base_spec.resolved.shape.model_copy(
+        update={
+            "label": base_spec.resolved.built_shape_label,
+            "member_count": merged_member_count,
+        }
+    )
 
 
 def _merged_walked(group: list[RegionResult]) -> WalkedMembers | None:

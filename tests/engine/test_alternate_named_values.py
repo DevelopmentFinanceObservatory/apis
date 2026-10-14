@@ -130,13 +130,14 @@ def test_an_alternate_of_another_measure_is_not_a_candidate():
     assert _served(result) == [[_NOMINAL_GDP]]
 
 
-def test_an_alternate_holding_the_named_value_stays_a_candidate():
-    """An estimate of GDP holds the named activity and states no price basis, so it stays a
-    reading beside nominal GDP."""
+def test_an_alternate_differing_only_on_a_qualifier_left_at_its_default_is_no_rival():
+    """An estimate of GDP holds the named activity and differs from nominal GDP only on the
+    measurement qualifier. Nominal GDP holds the declared default reading and the question
+    names none, so that axis is closed and the nomination is no rival (status rule 2)."""
     result = _run([_NOMINAL_GDP, _ESTIMATED_GDP, _PPP_GNI])
 
-    assert result.status == "candidates"
-    assert sorted(_served(result)) == [[_ESTIMATED_GDP], [_NOMINAL_GDP]]
+    assert result.status == "definite"
+    assert _served(result) == [[_NOMINAL_GDP]]
 
 
 def test_a_lower_price_basis_of_the_elected_measure_is_not_a_candidate():

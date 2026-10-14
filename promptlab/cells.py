@@ -27,9 +27,9 @@ from promptlab.expectations import (
 )
 from promptlab.llm import CallRecord, LadderLLM
 from promptlab.manifest import Rung
-from promptlab.scoring import UNRESOLVED_DENOMINATOR, menu_five_tuple
+from promptlab.scoring import menu_five_tuple
 from promptlab.store import BindRecord, CaptureStore, CellStore, ExtractRecord
-from search.engine.bind import _UniversalBindOutput
+from search.engine.bind import UNRESOLVED_DENOMINATOR, _UniversalBindOutput, menu_denominator
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import LLM, SupportsLLM, for_stage
 from search.engine.clients.sdmx import EngineSdmxClient
@@ -194,14 +194,17 @@ async def run_capture(
 def _shape_matches(entry: MenuEntry, shape: ShapeAssertion) -> bool:
     """Whether the menu entry carries every dimension the shape asserts; `None` asserts absence.
 
-    The menu shows an unresolved denominator as a sentinel without its dcid, so any asserted
-    denominator matches the sentinel.
+    The menu shows a denominator as `bind.menu_denominator` does, so an asserted denominator
+    is compared in that text: a schema term by its meaning, and any asserted denominator
+    matches the sentinel of an unresolved arc.
     """
     entry_tuple = dict(zip(get_args(ShapeKey), menu_five_tuple(entry), strict=True))
     for key, want in shape.items():
         got = entry_tuple[key]
-        if key == "measurement_denominator" and want is not None and got == UNRESOLVED_DENOMINATOR:
-            continue
+        if key == "measurement_denominator" and want is not None:
+            if got == UNRESOLVED_DENOMINATOR:
+                continue
+            want = menu_denominator(want, unresolved=False)
         if got != want:
             return False
     return True

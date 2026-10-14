@@ -290,7 +290,9 @@ def test_a_description_answers_with_an_etag_over_its_rendered_body(kind: str) ->
     assert body["describes"]["content_version"] == version.content_version
     encoded, etag = encode_json_body(body)
     assert response.content == encoded
-    assert response.headers["etag"] == etag
+    # The test client accepts gzip, and a gzip body carries the weak form of the validator.
+    assert response.headers["content-encoding"] == "gzip"
+    assert response.headers["etag"] == f"W/{etag}"
 
 
 @pytest.mark.parametrize("kind", _KINDS)

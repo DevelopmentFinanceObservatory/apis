@@ -16,8 +16,8 @@ from code_index import shared as code_index_shared
 from code_index.query import CodeIndex
 from code_index.types import DatasetDeclaration, IndexStamp, StatVarRow
 from origin_catalogue import BASE
-from search.engine.bind import SlotBindingDraft
-from search.engine.region.phase_rank_bind import _validate_sole_option_bindings
+from search.engine.bind import DraftBindingEvidence, SlotBindingDraft
+from search.engine.region.phase_election import _validate_sole_option_bindings
 from search.engine.retrieval.derive import derive_shapes
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from tests.fixtures import FakeGraph
@@ -41,7 +41,7 @@ def _shape(pop_type: str = "FinancialFlow") -> ShapeDraft:
     )
 
 
-def _flow(value: str, evidence: str) -> SlotBindingDraft:
+def _flow(value: str, evidence: DraftBindingEvidence) -> SlotBindingDraft:
     return SlotBindingDraft(
         axis="how", property_dcid=_FLOW, kind="value", value_dcids=[value], evidence=evidence
     )
@@ -253,6 +253,11 @@ _LONG_TERM_CONCESSIONAL = (
 _SHORT_TERM_CONCESSIONAL = (
     "Amount_FinancialFlow_ServicingPayment_ShortTermMaturity_IDSConcessional_ByCreditor_Nominal"
 )
+_NET_FLOWS = "Amount_FinancialFlow_Net_Disbursement_PrincipalRepayment_Nominal"
+_NET_TRANSFERS = "Amount_FinancialFlow_Net_Disbursement_ServicingPayment_Nominal"
+_NET_TRANSFERS_CONCESSIONAL = (
+    "Amount_FinancialFlow_Net_Disbursement_ServicingPayment_IDSConcessional_Nominal"
+)
 
 
 def _debt_service_arcs(**constraints: str) -> dict:
@@ -327,6 +332,24 @@ def _debt_service_arcs(**constraints: str) -> dict:
             False,
             id="a-bound-member-is-the-total",
         ),
+        pytest.param(
+            {
+                _NET_FLOWS: _debt_service_arcs(
+                    financialFlowType="Disbursement", netOf="PrincipalRepayment"
+                ),
+                _NET_TRANSFERS: _debt_service_arcs(
+                    financialFlowType="Disbursement", netOf="ServicingPayment"
+                ),
+                _NET_TRANSFERS_CONCESSIONAL: _debt_service_arcs(
+                    financialFlowType="Disbursement",
+                    netOf="ServicingPayment",
+                    idsConcessionality="IDSConcessional",
+                ),
+            },
+            {},
+            False,
+            id="a-sample-split-on-an-open-slot-holds-a-broader-member",
+        ),
     ],
 )
 def test_a_sole_option_claim_on_a_recalled_sample_falls_to_a_total_lacking_the_value(
@@ -339,7 +362,10 @@ def test_a_sole_option_claim_on_a_recalled_sample_falls_to_a_total_lacking_the_v
     "infant mortality rate" binds the age of zero beside members stating an age group
     classification. A bound property does not keep its member from being the total: with
     the long-term maturity band named, the long-term member stating no concessionality is
-    the total. The shape holds no held family and the index carries none of its rows."""
+    the total. A sample that splits on what a flow is net of holds no total, and the net
+    transfers member stating no concessionality is the reading without one beside the
+    member that states it. The shape holds no held family and the index carries none of
+    its rows."""
     shape = replace(
         _shape("UnindexedFlow"),
         slot_keys=(

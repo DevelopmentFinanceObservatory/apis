@@ -582,7 +582,8 @@ _OPEN_ORIGIN: _OpenOriginHoldings = {
 
 def _open_origin_handler(holdings: _OpenOriginHoldings):
     """Serve each dispatched facet for every creditor of the debtor bound, or for the
-    creditor bound too, or each one's latest row under `LATEST`."""
+    creditor bound too: each one's latest row under `LATEST`, its rows at the periods the
+    request names, or every row."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         params = request.url.params
@@ -590,7 +591,7 @@ def _open_origin_handler(holdings: _OpenOriginHoldings):
         debtors = params.get("c[debtor]", "").split(",")
         creditor = params.get("c[creditor]")
         facet_ids = params.get("c[facetId]")
-        latest = params.get("c[TIME_PERIOD]") == "LATEST"
+        period = params.get("c[TIME_PERIOD]")
         for (c, d), held in holdings.items():
             if d not in debtors or (creditor is not None and c not in creditor.split(",")):
                 continue
@@ -598,7 +599,11 @@ def _open_origin_handler(holdings: _OpenOriginHoldings):
                 if facet_ids is not None and facet_id not in facet_ids.split(","):
                     continue
                 fixture = ObsFacetFixture(facet_id=facet_id, provenance_id=_SOURCE[facet_id])
-                for year in [years[-1]] if latest else years:
+                if period == "LATEST":
+                    years = years[-1:]
+                elif period is not None:
+                    years = [year for year in years if str(year) in period.split(",")]
+                for year in years:
                     body += _csv_row(
                         stat_var=role_bearing._SV_DCID,
                         role_dcids=[c, d],
@@ -744,17 +749,108 @@ def test_an_open_origin_serves_one_series_per_creditor(
     _assert_counts_what_it_serves(spec, served)
 
 
+@pytest.mark.parametrize("bulk", [False, True], ids=["per_pair", "bulk"])
+def test_a_latest_answer_reads_heads_and_counts_the_year_its_series_elect(
+    monkeypatch, search_settings, bulk: bool
+) -> None:
+    """One debtor's 91 creditors: 44 hold 2024, 85 hold 2023 and all 91 hold 2022. Under
+    half of the fullest year reach 2024, so the variable elects 2023, and on both routes the
+    preview serves the 85 series holding 2023 at that year, the headline names 2023 with 85
+    series, and the file counts the same 85 rows."""
+    ends = [2024] * 44 + [2023] * 41 + [2022] * 6
+    holdings: _OpenOriginHoldings = {
+        (f"country/CR{i:02d}", _AAA): [("f1", range(2015, end + 1))] for i, end in enumerate(ends)
+    }
+    search_settings(role_bulk_series_max=len(ends), obs_inline_max=len(ends))
+    spec = _open_origin_answer(
+        monkeypatch, search_settings, request="latest", bulk=bulk, holdings=holdings
+    )
+
+    served = _served_by_pair(spec)
+    assert served == {pair: ["2023"] for pair, [(_f, years)] in holdings.items() if 2023 in years}
+    _assert_counts_what_it_serves(spec, served)
+    headline, download = spec.resolved.headline, spec.resolved.download
+    assert headline is not None and download is not None
+    assert (headline.year, headline.series) == (2023, 85)
+    assert [(c.year, c.series) for c in headline.recent_years] == [
+        (2024, 44),
+        (2023, 85),
+        (2022, 91),
+    ]
+    assert (download.rows, download.series, download.window) == (
+        85,
+        85,
+        TimeWindow(start_year=2023, end_year=2023),
+    )
+
+
+@pytest.mark.parametrize(
+    ("live_ends", "periods", "served_year"),
+    [
+        pytest.param((2024, 2024), ["LATEST"], 2024, id="index_agrees"),
+        pytest.param((2023, 2023), ["LATEST"], 2023, id="index_ahead"),
+        pytest.param((2024, 2025), ["LATEST", "2024"], 2024, id="a_series_ends_later"),
+    ],
+)
+def test_an_elected_year_sdmx_holds_no_row_in_reads_the_newest_period(
+    monkeypatch,
+    search_settings,
+    live_ends: tuple[int, int],
+    periods: list[str],
+    served_year: int,
+) -> None:
+    """Coverage dates one debtor's two creditors to 2024, which they elect. The preview
+    asks SDMX for their `LATEST` rows. Where both end in 2024 that read serves them. Where
+    SDMX ends both in 2023 no row holds 2024, and the same read serves each creditor's
+    2023 point with no second request. Where one creditor ends in 2025 its `LATEST` row
+    is past the elected year, so one more read names 2024 and both serve it. The headline
+    stays the index's."""
+    indexed: _OpenOriginHoldings = {
+        (creditor, _AAA): [("f1", range(2012, 2025))] for creditor in (_CRA, _CRB)
+    }
+    live: _OpenOriginHoldings = {
+        pair: [("f1", range(2012, end + 1))] for pair, end in zip(indexed, live_ends, strict=True)
+    }
+    requests: list[httpx.Request] = []
+    spec = _open_origin_answer(
+        monkeypatch,
+        search_settings,
+        request="latest",
+        holdings=indexed,
+        live_holdings=live,
+        requests=requests,
+    )
+
+    assert [
+        (
+            r.url.params.get("c[debtor]"),
+            r.url.params.get("c[creditor]"),
+            r.url.params["c[facetId]"],
+            r.url.params.get("c[TIME_PERIOD]"),
+        )
+        for r in requests
+    ] == [(_AAA, None, "f1", period) for period in periods]
+    assert _served_by_pair(spec) == {pair: [str(served_year)] for pair in indexed}
+    headline = spec.resolved.headline
+    assert headline is not None and (headline.year, headline.series) == (2024, 2)
+
+
 @pytest.mark.parametrize("discovered", [False, True], ids=["named", "discovered"])
 @pytest.mark.parametrize("request_kind", ["latest", "closed", "dateless"])
 @pytest.mark.parametrize("creditors", [1, 5, 40])
 def test_an_open_origin_preview_makes_one_read_per_debtor_however_many_creditors(
-    monkeypatch, search_settings, creditors: int, request_kind: str, discovered: bool
+    monkeypatch,
+    search_settings,
+    creditors: int,
+    request_kind: str,
+    discovered: bool,
 ) -> None:
     """Two debtors and 1, 5 or 40 creditors left open, each creditor's series ending in its
     own year. The preview makes one read per debtor, binding the debtor, leaving the creditor
     open and dispatching the variable's group, and still serves one series per creditor with
-    that creditor's own dates, and under `latest` one per creditor reaching the variable's
-    latest year."""
+    that creditor's own dates, and under `latest` one per creditor holding the year the
+    variable elects, at that year. A `latest` read of a debtor with a creditor ending after
+    that year is followed by one read of the same debtor naming the year."""
     holdings: _OpenOriginHoldings = {
         (f"country/CR{i:02d}", debtor): [("f1", range(2008 + i % 5, 2019 + i % 6))]
         for i in range(creditors)
@@ -770,12 +866,23 @@ def test_an_open_origin_preview_makes_one_read_per_debtor_however_many_creditors
         requests=requests,
     )
 
+    # The creditors end in 2018 to 2023 by turns. With 5, the series holding 2020, 2021 and
+    # 2022 number 6, 4 and 2, and with 40 those holding 2021, 2022 and 2023 number 40, 26
+    # and 12. Each newest year holds under half of the fullest, and the year before it does not.
+    elected = {1: 2018, 5: 2021, 40: 2022}[creditors]
+    periods = {"latest": ["LATEST"], "closed": [None], "dateless": [None]}[request_kind]
+    if request_kind == "latest" and creditors > 1:
+        periods = [*periods, str(elected)]
     assert sorted(
-        (r.url.params.get("c[debtor]"), r.url.params.get("c[creditor]"), r.url.params["c[facetId]"])
+        (
+            r.url.params.get("c[debtor]"),
+            r.url.params.get("c[creditor]"),
+            r.url.params["c[facetId]"],
+            r.url.params.get("c[TIME_PERIOD]"),
+        )
         for r in requests
-    ) == [(_AAA, None, "f1"), (_CCC, None, "f1")]
+    ) == sorted((debtor, None, "f1", period) for debtor in (_AAA, _CCC) for period in periods)
     served = _served_by_pair(spec)
-    newest = max(years[-1] for [(_facet_id, years)] in holdings.values())
     expected: dict[tuple[str, str], list[str]] = {}
     for pair, [(_facet_id, years)] in holdings.items():
         if request_kind == "closed":
@@ -783,7 +890,7 @@ def test_an_open_origin_preview_makes_one_read_per_debtor_however_many_creditors
         elif request_kind == "dateless":
             dates = [str(y) for y in years]
         else:
-            dates = [str(years[-1])] if years[-1] == newest else []
+            dates = [str(elected)] if elected in years else []
         if dates:
             expected[pair] = dates
     assert served == expected

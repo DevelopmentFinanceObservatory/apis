@@ -34,18 +34,25 @@ def _leading_year(time_period: str | None) -> int | None:
         return None
 
 
-def _latest_rows(rows: Sequence[SdmxObservation]) -> tuple[SdmxObservation, ...]:
-    """Keep rows at the greatest parseable year and period, in input order."""
+def _latest_rows(
+    rows: Sequence[SdmxObservation], *, year: int | None = None
+) -> tuple[SdmxObservation, ...]:
+    """Keep rows at the greatest parseable year and period, in input order. With `year`,
+    the year the rows' StatVar elected, keep the rows at the greatest period in `year`
+    instead, when any row falls in it."""
     parseable: list[tuple[SdmxObservation, int, str]] = []
     for row in rows:
-        year = _leading_year(row.time_period)
-        if year is None or row.time_period is None:
+        row_year = _leading_year(row.time_period)
+        if row_year is None or row.time_period is None:
             continue
-        parseable.append((row, year, row.time_period))
+        parseable.append((row, row_year, row.time_period))
     if not parseable:
         return ()
-    latest_year = max(year for _, year, _ in parseable)
-    same_year = [(row, period) for row, year, period in parseable if year == latest_year]
+    served_year = max(row_year for _, row_year, _ in parseable)
+    if any(row_year == year for _, row_year, _ in parseable):
+        assert year is not None
+        served_year = year
+    same_year = [(row, period) for row, row_year, period in parseable if row_year == served_year]
     latest_period = max(period for _, period in same_year)
     return tuple(row for row, period in same_year if period == latest_period)
 

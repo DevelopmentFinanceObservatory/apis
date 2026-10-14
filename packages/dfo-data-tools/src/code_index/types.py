@@ -5,6 +5,7 @@ This module has no graph or file-I/O imports.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal, get_args
@@ -136,6 +137,10 @@ class CodeSystemDeclaration:
     `enum_dcid` is the system's graph id, the enumeration its codes are `typeOf`
     (`CRSPurposeCodeEnum` for `crsPurpose`). Every exported declaration carries
     one; a declaration built in memory may name none.
+
+    `no_vocabulary_terms` lists lowercase words naming a distinction of this axis that no
+    code of the system expresses. A question naming one on a shape declaring the system
+    reads it as a qualifier with no vocabulary, and the answer refuses it.
     """
 
     code_system: str
@@ -146,6 +151,61 @@ class CodeSystemDeclaration:
     plain_name: str
     default: DeclaredDefault | None = None
     enum_dcid: str | None = None
+    no_vocabulary_terms: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ShapeSlotDefault:
+    """The value an open constraint slot takes on every shape of one `populationType`.
+
+    A code system declares defaults for its own slots (`CodeSystemDeclaration.default`).
+    This declares one for a graph property no code system of the index carries.
+    """
+
+    population_type: str
+    property_dcid: str
+    value_dcid: str
+
+
+@dataclass(frozen=True, slots=True)
+class PartlyStatedValue:
+    """A constraint value a dataset states on only some of the series that hold it.
+
+    The series that state the value and the series that leave it unsaid hold the same kind
+    of thing, so the value separates no reading a question can name: the debt statistics
+    state ``financingResource=DebtInstrument`` on the series that name a lender and on no
+    debt total. The value is stated partly on a five-tuple where one of the dataset's
+    rows states the value and another states nothing on the property
+    (`CodeIndex.partly_stated_on`).
+    """
+
+    provenance: str
+    property_dcid: str
+    value_dcid: str
+
+
+@dataclass(frozen=True, slots=True)
+class MeasureClassDeclaration:
+    """One pattern naming a measure class (prevalence, incidence, mortality) in a phrase or
+    label.
+
+    `pattern` searches lowercase text. A `fallback` pattern names its class only where no
+    other pattern names any class: "people living with HIV" is a prevalence, while "deaths
+    among people living with HIV" is a mortality.
+    """
+
+    measure_class: str
+    pattern: re.Pattern[str]
+    fallback: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class StatTypeWordDeclaration:
+    """One pattern naming a statType other than `measuredValue` in a variable phrase, as
+    "growth" names `growthRate`. `pattern` searches lowercase text."""
+
+    pattern: re.Pattern[str]
+    stat_type: str
 
 
 def summable_axes(declarations: Mapping[str, CodeSystemDeclaration]) -> frozenset[str]:
@@ -195,6 +255,22 @@ against.
 
 
 @dataclass(frozen=True, slots=True)
+class StatedWord:
+    """One word a table's rows state (`DatasetDeclaration.stated_words`).
+
+    `word` is one lowercase word and `measured_property` the measured-property dcid of
+    the rows that state it, one the table has a row for. `where` maps a flow axis to the
+    entity kind (`entity_resolution.types.Entity.kind`, such as "country") the row's
+    party on that axis must have; empty, every row with the measured property states the
+    word.
+    """
+
+    word: str
+    measured_property: str
+    where: Mapping[RoleAxis, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
 class DatasetDeclaration:
     """One published table, keyed by the provenance its observations carry.
 
@@ -232,6 +308,16 @@ class DatasetDeclaration:
     each invariant (`code_index.members.invariant_bindings`), so an invariant is a
     contract: dropping one changes what stored identities mean, and a table whose
     invariant stops holding takes a new provenance.
+
+    `stated_words` lists the words the table's rows state (`StatedWord`): a word every
+    row with the measured property states, and where `StatedWord.where` is non-empty
+    only the rows whose party on each named axis is of the named kind. Every row of the
+    CRS states "bilateral", since the import leaves out core contributions to
+    multilateral organisations; a DAC2a or DAC2b `amount` row states it only where its
+    recipient is a country, since a flow to a multilateral organisation is a core
+    contribution. A query word the table states restricts nothing on those rows, so
+    search reads it there without a code. A word belongs here only when the table's
+    import guarantees it of every such row.
     """
 
     provenance: str
@@ -242,6 +328,7 @@ class DatasetDeclaration:
     account: FlowAccount
     rank: int
     invariants: Mapping[str, str] = field(default_factory=dict)
+    stated_words: tuple[StatedWord, ...] = ()
 
 
 PartyKind = Literal["party", "total", "residual"]
@@ -282,11 +369,15 @@ class PartyRow:
     """One party a declared dataset publishes, as donor or recipient, and its kind.
 
     `totals` is the group a total holds, as search names the group: a graph place
-    (`africa`, `Caribbean`) or a resolver group (`GroupOfSeven`). A total holds every member
-    of its group plus `residuals`, the residuals it counts beside them ("Africa, unallocated
-    by country"), sorted. `totals` is `None` and `residuals` empty for a party or a residual,
-    and for a total no group matches (`DACAllRecipients`, or "lower middle-income
-    countries", whose DAC members differ from the World Bank list). `label` is the party's
+    (`africa`, `Caribbean`) or a resolver group (`GroupOfSeven`). A total holds its group in
+    one of two ways. When `sums_members` is true it equals the sum of every member of its
+    group plus `residuals`, the residuals it counts beside them ("Africa, unallocated by
+    country"), sorted. When `sums_members` is false it is the figure the source publishes
+    for the group, which can differ from the sum of the members ("DAC countries, total",
+    where members report late), and `residuals` is empty. `totals` is `None`, `residuals`
+    empty and `sums_members` true for a party or a residual, and for a total no group
+    matches (`DACAllRecipients`, or "lower middle-income countries", whose DAC members
+    differ from the World Bank list). `label` is the party's
     graph name ("Africa, unallocated by country (DAC)"), `None` when the graph gives it none.
     `datasets` are the provenances of the declared and listed datasets that publish the
     party, and `axes` the flow axes they publish it on (`origin` as a donor, `destination` as a
@@ -297,6 +388,7 @@ class PartyRow:
     kind: PartyKind
     totals: str | None = None
     residuals: tuple[str, ...] = ()
+    sums_members: bool = True
     label: str | None = None
     datasets: tuple[str, ...] = ()
     axes: tuple[RoleAxis, ...] = ()

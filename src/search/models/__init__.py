@@ -220,6 +220,7 @@ from .vocab import (
     Axis,
     BindingKind,
     BindingProvenance,
+    CandidateBasis,
     Confidence,
     CoverageKind,
     DataCommonsId,
@@ -248,6 +249,7 @@ from .vocab import (
     StatusLiteral,
     ValueKind,
     _require_schema_version_int,  # noqa: F401
+    elect_no_data_reason,
 )
 
 __all__ = [
@@ -276,6 +278,7 @@ __all__ = [
     "BindingUnbound",
     "BindingValue",
     "BreadthDim",
+    "CandidateBasis",
     "CandidateSet",
     "CandidatesPart",
     "CatalogueAnswer",
@@ -440,6 +443,7 @@ __all__ = [
     "WarningSeverity",
     "coverage_is_empty",
     "departures_in_precedence_order",
+    "elect_no_data_reason",
     "in_window",
     "omitted_observations",
     "role_ref",

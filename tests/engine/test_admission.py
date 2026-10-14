@@ -10,7 +10,6 @@ import pytest
 
 from entity_resolution import Admission
 from search.engine.bind import _UniversalBindOutput
-from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.interpret import Recall
 from search.engine.quantity_read import QuantityOutput
@@ -21,7 +20,7 @@ from search.engine.region.state import ResolveState
 from search.engine.shape import ShapeDraft
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._quantity import NO_QUANTITY
+from tests.engine._quantity import NO_QUANTITY, QuantityReadOnlyLLM
 from tests.fixtures import FakeGraph, make_resolver
 
 
@@ -256,7 +255,7 @@ def _pruning_state(place_sets: dict[str, PlaceSet]) -> ResolveState:
         graph=graph,
         resolver=make_resolver(graph),
         admission=Admission(graph=graph),
-        llm=cast(SupportsLLM, None),
+        llm=QuantityReadOnlyLLM(),
         sdmx=cast(EngineSdmxClient, None),
         deadline=None,
         pre_resolved=None,

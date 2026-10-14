@@ -211,16 +211,27 @@ def test_candidates_case_partial_unscorable_reported_not_scored_as_miss():
     assert "sv/Beta" in (ev.comment or "")
 
 
-def test_candidates_case_denominator_unresolved_resolves_via_sentinel():
-    """A ProvisionalNode denominator matches the unresolved menu entry."""
+@pytest.mark.parametrize(
+    ("denominator_node", "nominated"),
+    [
+        ({"dcid": "PerCapita", "types": ["ProvisionalNode"]}, 0),
+        ({"types": ["ProvisionalNode"]}, 1),
+    ],
+    ids=["schema-term-reads-per-person", "dcid-less-reads-the-sentinel"],
+)
+def test_candidates_case_provisional_denominator_resolves_as_the_menu_shows_it(
+    denominator_node, nominated
+):
+    """A ProvisionalNode `PerCapita` matches the per-person entry, as the menu shows it, and
+    a ProvisionalNode with no dcid matches the unresolved entry."""
     menu = (
         _entry(
             index=0,
-            label="Resolved-denominator shape",
+            label="Per-person shape",
             five_tuple=_five_tuple(
                 pop_type="EconomicActivity",
                 meas_prop="amount",
-                denominator="PerCapita",
+                denominator="per person",
             ),
         ),
         _entry(
@@ -239,16 +250,15 @@ def test_candidates_case_denominator_unresolved_resolves_via_sentinel():
         "populationType": {"nodes": [{"dcid": "EconomicActivity"}]},
         "measuredProperty": {"nodes": [{"dcid": "amount"}]},
         "statType": {"nodes": [{"dcid": "measuredValue"}]},
-        "measurementDenominator": {"nodes": [{"dcid": "PerCapita", "types": ["ProvisionalNode"]}]},
+        "measurementDenominator": {"nodes": [denominator_node]},
     }
     graph = _StubGraph({"sv/Target": arcs})
     nomination_correctness = make_nomination_correctness(graph)
     result = nomination_correctness(
-        output={"chosen_shape_index": 0, "also_plausible": [1]},
+        output={"chosen_shape_index": 1 - nominated, "also_plausible": [nominated]},
         expected=_expected("candidates", "sv/Target"),
         menu=menu,
     )
-    # Both shapes carry the PerCapita dcid; the unresolved marker selects index 1.
     assert result[0].name == "expected_alternate_recall"
     assert result[0].value == 1.0
 

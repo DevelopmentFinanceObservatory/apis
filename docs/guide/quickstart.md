@@ -2,9 +2,13 @@
 description: Build a Parquet dataset from a plain-English development-finance question.
 ---
 
-# Build a dataset from a question
+# Get started with the API
 
-Turn a question about German ODA disbursements to Nigeria into a downloadable Parquet dataset.
+The DFO API lets software request DFO data directly, without anyone visiting the website. It's the same process as searching on /data, done by code: you send a question in plain English, the DFO works out which data you mean, and it packages that data as a file your program can download. This makes it useful for developers building tools, dashboards, or regular reports that need to pull in up-to-date development finance figures automatically. The example on this page asks how much aid Germany gave Nigeria for basic health care and returns the figures for each year. If you don't write code, you can get the same data from Get data on /data, or by asking an AI assistant connected to the DFO.
+
+## How it works
+
+Getting data from the API takes three steps. You **resolve** a question into a precise data definition, **create** a dataset from that definition, then **download** the result as a file. The steps below make each request with curl, then run the whole flow in Python. It takes about ten minutes.
 
 ## What you will build
 

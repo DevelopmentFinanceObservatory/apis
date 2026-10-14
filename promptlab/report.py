@@ -352,10 +352,6 @@ class _NoLiveGraph:
     def node_type(self, dcid: str) -> str | None:
         return self._unreachable("node_type")
 
-    def declares_facet_defaults(self) -> bool:
-        """False, as the live client answers (`dc_graph.GraphClient.declares_facet_defaults`)."""
-        return False
-
     def default_facet_policy(self, *, stat_var: str, axis: str) -> None:
         """None, as the live client answers: the graph declares no default facet
         (`dc_graph.GraphClient.default_facet_policy`), and `GraphCache` passes this read
@@ -429,6 +425,11 @@ class _NoLiveGraph:
         deadline: float | None = None,
     ) -> dict[str, dict[str, list]]:
         return self._unreachable("observation_facets_batch")
+
+    def observation_read_groups(
+        self, stat_vars: list[str], entities: list[str], needs_dates: bool = False
+    ) -> list[list[str]]:
+        return self._unreachable("observation_read_groups")
 
     def child_dcids(self, parent_dcid: str) -> list[str]:
         return self._unreachable("child_dcids")

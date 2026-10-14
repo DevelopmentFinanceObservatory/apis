@@ -234,7 +234,7 @@ def origin(wire: _Wire) -> Iterator[OriginGraphClient]:
 
 
 def _search(graph: LiveGraphClient) -> Spec:
-    """The Spec Search answers the query with at Kenya, from the first pass alone."""
+    """The Spec Search answers the query with at Kenya, from our pass alone."""
     llm = _ElectFirstLLM()
     result = asyncio.run(
         resolve_variable(
@@ -502,7 +502,7 @@ def test_a_recalled_superseded_variable_and_an_excluded_one_reach_no_part_of_the
 ) -> None:
     """Both refused variables outscore every admitted one on their own resolve, are recalled
     again through a topic, and hold data at Kenya. Our admitted variable holds none, so the
-    second pass runs when the UN origin is on."""
+    UN pass runs when the UN origin is on."""
     bind_catalogue(_refusing_catalogue(un_system_enabled=un_system_enabled))
     llm = _ElectFirstLLM()
     graph = _recalling(
@@ -534,8 +534,8 @@ def test_a_question_only_refused_variables_answer_serves_none_of_them(
     bind_catalogue, caplog, un_system_enabled: bool
 ) -> None:
     """Our resolve recalls only refused dcids, and the UN's a refused one and `_SDG`, which
-    holds no data at Kenya. The controls: the first pass ends without a shape, and with the
-    UN origin on the second pass runs and its menu holds `_SDG`."""
+    holds no data at Kenya. The controls: our pass ends without a shape, and with the
+    UN origin on the UN pass runs and its menu holds `_SDG`."""
     bind_catalogue(_refusing_catalogue(un_system_enabled=un_system_enabled))
     llm = _ElectFirstLLM()
     graph = _recalling(
@@ -547,9 +547,9 @@ def test_a_question_only_refused_variables_answer_serves_none_of_them(
 
     assert (result.status, result.specs) == ("no_data", ())
     (line,) = [r.getMessage() for r in caplog.records if r.getMessage().startswith("gap_fill ")]
-    assert "pass1=no_data/variable_not_resolved" in line
+    assert "status=no_data/variable_not_resolved" in line
     if un_system_enabled:
-        assert "un_candidates=1 pass2=ran" in line
+        assert "un_pass=ran:" in line
         (menu,) = llm.prompts
         assert _SDG in menu
     else:

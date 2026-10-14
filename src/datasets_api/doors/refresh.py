@@ -12,43 +12,48 @@ moved or its head is too old:
   the same operation and enqueues nothing.
 
 The dataset and rendering come from stored records. A version record
-with no `base_content_version` is the dataset's default rendering. A groupby collapse is stored
-under its own `content_version` and names the raw version in `base_content_version`. Its
-groupby is read from the requested-format file linked under the collapsed version, since the
-stored frame's rendering is the same for every frame (`datasets_api.recorded_rendering`). A
-collapse with no such file refuses `rendering_not_recorded` (422). An unregistered `spec_id`
+with no `base_content_version` is the dataset's default rendering. A derived version, a groupby
+collapse or a party-totals cut (`without_party_totals`) or both, is stored under its own
+`content_version` and names the raw version in `base_content_version`. Its minting options
+(`recorded_rendering.MintingOptions`) are read from the requested-format file linked under the
+derived version, since the stored frame's rendering is the same for every frame
+(`datasets_api.recorded_rendering`). A derived version with no such file refuses
+`rendering_not_recorded` (422). An unregistered `spec_id`
 refuses `spec_not_found` (404), an unknown version of a registered one `snapshot_not_found`
 (404), and a derived (`ops_`) frame `frame_not_refreshable` (422). Resolution does not check
 the named version's revocation, so a frame taken down still refreshes to a newer current frame.
 
 A groupby sum that leaves the frame unchanged, as over a dataset with one contributing StatVar,
-has no version of its own: its file is linked under the raw version. A raw version linking a
-groupby file and no plain requested-format file is that sum. One linking a plain file and files
-of one or more groupbys stands for several renderings, and its records do not say which the
-caller holds. While those renderings of the current data are still one frame, the refresh
-answers with it and links every file under it. Once they differ, because a sum of the current
-data has a version of its own, the refresh refuses `rendering_not_recorded` (422) and names the
-rendering ambiguous. A raw version linking files of two or more different groupbys and no plain
+and a party-totals cut that leaves nothing out have no version of their own: their file is
+linked under the raw version. A raw version linking a file of one set of minting options and no
+plain requested-format file is that rendering. One linking a plain file and files of one or more
+minting options stands for several renderings, and its records do not say which the caller
+holds. While those renderings of the current data are still one frame, the refresh answers with
+it and links every file under it. Once they differ, because a rendering of the current data has
+a version of its own, the refresh refuses `rendering_not_recorded` (422) and names the rendering
+ambiguous. A raw version linking files of two or more different minting options and no plain
 file refuses `rendering_not_recorded` at once, since no rendering of the current data is the
-one to answer with. So does a collapsed version linking files of two or more different
-groupbys, which two sums producing the same rows share.
+one to answer with. So does a derived version linking files of two or more different minting
+options, which two renderings producing the same rows share, such as a cut and a groupby that
+left the cut frame unchanged.
 
 Freshness is the definition door's (`current.serve_current` through `_serve_spec`): a head
 confirmed within `head_recheck_seconds` answers with no read, a later call compares the head's
 dependency fingerprint in one graph read, and a changed fingerprint or a head older than
 `head_max_age_seconds` rebuilds. A rebuild mints the options dfo-ai mints a frame with (bare
-parquet in the frame layout) plus the frame's groupby, so it writes the canonical frame
-Presentation reads. Concurrent refreshes and definition reads of one dataset share one rebuild
+parquet in the frame layout) plus the frame's minting options, so it writes the canonical frame
+Presentation reads, and a frame minted without party totals is minted without them again.
+Concurrent refreshes and definition reads of one dataset share one rebuild
 (`admission.RebuildFlights`).
 
-For a collapsed frame the answer is the collapsed version under the current head with the same
-groupby. The door looks it up among the dataset's stored versions and, when none is recorded
-yet, mints it from the head's stored frame as a head-hit groupby read does.
+For a derived frame the answer is the derived version under the current head with the same
+minting options. The door looks it up among the dataset's stored versions and, when none is
+recorded yet, mints it from the head's stored frame as a head-hit groupby read does.
 
 A stored frame answers only while its stored frame file (`render.servable_frame_location`) is
-servable, for the plain rendering and a sum alike, since Presentation loads the frame from that
-file. When a collapse's frame file has expired the door renders the collapse again from the
-head's stored frame and records it. When that cannot be done, or the head's own frame file has
+servable, for the plain rendering and a derived one alike, since Presentation loads the frame
+from that file. When a derived version's frame file has expired the door renders it again from
+the head's stored frame and records it. When that cannot be done, or the head's own frame file has
 expired, the door rebuilds the dataset.
 
 A dataset whose rebuild is always over the inline budget holds no head, because the worker
@@ -93,10 +98,14 @@ from datasets_api.doors.definition import (
 from datasets_api.doors.snapshot import rendering_servable
 from datasets_api.headers import no_store_headers
 from datasets_api.manifest_models import Manifest
-from datasets_api.mint_models import GroupbyOptions, MintOptions
+from datasets_api.mint_models import MintOptions
 from datasets_api.operations.submit import OPERATION_SUBMIT_RETRY_AFTER_MS, OperationSubmitted
 from datasets_api.principals import Grant, Principals, RefreshNotPermitted, granted_route_class
-from datasets_api.recorded_rendering import recorded_groupbys, records_plain_file
+from datasets_api.recorded_rendering import (
+    MintingOptions,
+    recorded_mintings,
+    records_plain_file,
+)
 from datasets_api.refusals import classify_datasets_refusal
 from datasets_api.render import artifact_rendering_key, servable_frame_location
 from datasets_api.timings import door_call, phase
@@ -125,11 +134,11 @@ class FrameNotRefreshable(Refusal):
 
 
 class RenderingNotRecorded(Refusal):
-    """The stored records do not say which rendering the frame is: a collapsed frame with no
-    linked file recording its groupby, or with `ambiguous` a raw version linking a groupby file
-    and a plain file whose renderings of the current data differ, or with `sums` above one a
-    collapse, or a raw version with no plain file, linking files of that many different
-    groupbys. Maps to `rendering_not_recorded` (422)."""
+    """The stored records do not say which rendering the frame is: a derived frame with no
+    linked file recording its minting options, or with `ambiguous` a raw version linking a file
+    of minting options and a plain file whose renderings of the current data differ, or with
+    `sums` above one a derived version, or a raw version with no plain file, linking files of
+    that many different minting options. Maps to `rendering_not_recorded` (422)."""
 
     code = "rendering_not_recorded"
 
@@ -140,19 +149,20 @@ class RenderingNotRecorded(Refusal):
         if sums > 1:
             detail = (
                 f"the rendering of {spec_id!r} at content_version {content_version!r} is "
-                f"ambiguous: the version links files of {sums} different groupby sums, and "
-                "its records do not say which sum the frame is"
+                f"ambiguous: the version links files of {sums} different renderings that "
+                "mint a version of their own, and its records do not say which the frame is"
             )
         elif ambiguous:
             detail = (
                 f"the rendering of {spec_id!r} at content_version {content_version!r} is "
-                "ambiguous: the version links a groupby sum and a plain file, and the two "
-                "renderings of the current data are no longer one frame"
+                "ambiguous: the version links a groupby sum or party-totals cut and a plain "
+                "file, and the renderings of the current data are no longer one frame"
             )
         else:
             detail = (
-                f"{spec_id!r} at content_version {content_version!r} is a groupby collapse, "
-                "and no file linked under it records its groupby"
+                f"{spec_id!r} at content_version {content_version!r} is a derived version, "
+                "and no file linked under it records the groupby or party-totals cut it was "
+                "minted with"
             )
         super().__init__(detail)
 
@@ -240,32 +250,41 @@ FrameRefreshResponse = Annotated[
 ]
 
 
-def _frame_options(groupby: GroupbyOptions | None) -> MintOptions:
+def _frame_options(minting: MintingOptions | None) -> MintOptions:
     """The options a mint of a frame takes: the bare frame-layout parquet dfo-ai mints a frame
-    with, plus the groupby."""
-    return MintOptions(format="parquet", bundle=False, groupby=groupby, layout="frame")
+    with, plus the minting options."""
+    if minting is None:
+        return MintOptions(format="parquet", bundle=False, layout="frame")
+    return MintOptions(
+        format="parquet",
+        bundle=False,
+        groupby=minting.groupby,
+        without_party_totals=minting.without_party_totals,
+        layout="frame",
+    )
 
 
 @dataclass(frozen=True)
 class StoredRendering:
     """The rendering of its dataset a stored frame is, read from its version record."""
 
-    # The raw version the frame is, or was collapsed from.
+    # The raw version the frame is, or was derived from.
     base_content_version: str
-    groupby: GroupbyOptions | None
-    # The frame's version is a raw one linking a plain file and a file of each of `groupbys`,
+    # The groupby and party-totals cut the frame was minted with, `None` for the plain one.
+    minting: MintingOptions | None
+    # The frame's version is a raw one linking a plain file and a file of each of `mintings`,
     # so the frame is one of several renderings that were the same rows when it was minted.
     ambiguous: bool = False
-    # The frame's version is a groupby collapse with a version of its own, not a raw version.
+    # The frame's version is a derived version of its own, not a raw version.
     collapsed: bool = False
-    # Each different groupby a file linked under the frame's version records. `groupby` is
-    # the first.
-    groupbys: tuple[GroupbyOptions, ...] = ()
+    # Each different set of minting options a file linked under the frame's version records.
+    # `minting` is the first.
+    mintings: tuple[MintingOptions, ...] = ()
 
     @property
     def options(self) -> MintOptions:
         """The options a mint of this rendering takes (`_frame_options`)."""
-        return _frame_options(self.groupby)
+        return _frame_options(self.minting)
 
 
 def stored_rendering(
@@ -273,22 +292,22 @@ def stored_rendering(
 ) -> StoredRendering:
     """Resolve a stored dataset frame's rendering from its version record and linked files.
 
-    A version collapsed from another takes its groupby from the files linked under it. It
-    refuses when none records one, and when they record two or more different groupbys, since
-    sums that produce the same rows share one collapsed version and nothing says which the
-    frame is. A raw version linking no groupby file is the plain rendering. One linking files
-    of one groupby and no plain file is that sum. One linking
-    files of two or more different groupbys and no plain file refuses, since nothing says
-    which sum the frame is. One linking a plain file and any groupby files is `ambiguous`: it
-    is served as the plain rendering, which is determined because the refresh answers only
-    while every one of `groupbys` still sums the current data to the plain frame.
-    The registration of `spec_id` is not checked.
+    A version derived from another takes its minting options (a groupby, a party-totals cut,
+    or both) from the files linked under it. It refuses when none records any, and when they
+    record two or more different ones, since renderings that produce the same rows share one
+    derived version and nothing says which the frame is. A raw version linking no file of
+    minting options is the plain rendering. One linking files of one set of minting options
+    and no plain file is that rendering. One linking files of two or more different ones and
+    no plain file refuses, since nothing says which the frame is. One linking a plain file and
+    any files of minting options is `ambiguous`: it is served as the plain rendering, which is
+    determined because the refresh answers only while every one of `mintings` still renders
+    the current data as the plain frame. The registration of `spec_id` is not checked.
 
     Raises:
         SnapshotNotFound: The dataset holds no version at `content_version`.
-        RenderingNotRecorded: The version is a collapse whose linked files record no groupby
-            or several different ones, or a raw version linking several different groupbys
-            and no plain file.
+        RenderingNotRecorded: The version is derived and its linked files record no minting
+            options or several different ones, or a raw version linking several different
+            ones and no plain file.
     """
     version = snapshot_reader.read_version(spec_id, content_version)
     if version is None:
@@ -297,37 +316,37 @@ def stored_rendering(
         location.rendering
         for location in snapshot_reader.read_artifact_locations(spec_id, content_version)
     ]
-    groupbys: tuple[GroupbyOptions, ...] = ()
-    for recorded in recorded_groupbys(renderings):
-        if recorded not in groupbys:
-            groupbys += (recorded,)
-    groupby = groupbys[0] if groupbys else None
+    mintings: tuple[MintingOptions, ...] = ()
+    for recorded in recorded_mintings(renderings):
+        if recorded not in mintings:
+            mintings += (recorded,)
+    minting = mintings[0] if mintings else None
     if version.base_content_version is not None:
-        if groupby is None:
+        if minting is None:
             raise RenderingNotRecorded(spec_id=spec_id, content_version=content_version)
-        if len(groupbys) > 1:
+        if len(mintings) > 1:
             raise RenderingNotRecorded(
                 spec_id=spec_id,
                 content_version=content_version,
                 ambiguous=True,
-                sums=len(groupbys),
+                sums=len(mintings),
             )
         return StoredRendering(
             base_content_version=version.base_content_version,
-            groupby=groupby,
+            minting=minting,
             collapsed=True,
-            groupbys=groupbys,
+            mintings=mintings,
         )
     plain_file = records_plain_file(renderings)
-    if len(groupbys) > 1 and not plain_file:
+    if len(mintings) > 1 and not plain_file:
         raise RenderingNotRecorded(
-            spec_id=spec_id, content_version=content_version, ambiguous=True, sums=len(groupbys)
+            spec_id=spec_id, content_version=content_version, ambiguous=True, sums=len(mintings)
         )
     return StoredRendering(
         base_content_version=content_version,
-        groupby=groupby,
-        ambiguous=groupby is not None and plain_file,
-        groupbys=groupbys,
+        minting=minting,
+        ambiguous=minting is not None and plain_file,
+        mintings=mintings,
     )
 
 
@@ -338,29 +357,29 @@ def refresh_can_answer(*, stored: StoredRendering, target: StoredRendering) -> b
     other.
 
     The refresh answers a plain frame with the dataset's raw head, whatever else is linked
-    under it. It answers a groupby sum with the sum of the head: a collapsed version recording
-    that groupby, or the raw head when the sum leaves the frame unchanged and its file is
-    linked there. It answers an ambiguous frame only with a raw head that is every one of its
-    renderings, so one linking a file of each of its groupbys.
+    under it. It answers a derived frame with the same rendering of the head: a derived version
+    recording those minting options, or the raw head when the rendering leaves the frame
+    unchanged and its file is linked there. It answers an ambiguous frame only with a raw head
+    that is every one of its renderings, so one linking a file of each of its minting options.
     """
-    if stored.groupby is None:
+    if stored.minting is None:
         return not target.collapsed
     if stored.ambiguous:
         return not target.collapsed and all(
-            groupby in target.groupbys for groupby in stored.groupbys
+            minting in target.mintings for minting in stored.mintings
         )
-    return stored.groupby in target.groupbys
+    return stored.minting in target.mintings
 
 
-def _recorded_collapse(
-    *, spec_id: str, base_content_version: str, groupby: GroupbyOptions, deps: DefinitionDeps
+def _recorded_derived(
+    *, spec_id: str, base_content_version: str, minting: MintingOptions, deps: DefinitionDeps
 ) -> str | None:
-    """The stored version collapsed from `base_content_version` with `groupby`, or `None` when
+    """The stored version derived from `base_content_version` with `minting`, or `None` when
     none is on record."""
     if deps.version_lister is None:
         return None
     for version in deps.version_lister.list_versions(spec_id):
-        if version.base_content_version == base_content_version and groupby in recorded_groupbys(
+        if version.base_content_version == base_content_version and minting in recorded_mintings(
             version.renderings
         ):
             return version.content_version
@@ -383,29 +402,29 @@ def _rendering_frame(
     *,
     spec_id: str,
     head_content_version: str,
-    groupby: GroupbyOptions | None,
+    minting: MintingOptions | None,
     deps: DefinitionDeps,
     trace_id: str | None,
     coverage_snapshot: CoverageSnapshot,
 ) -> Manifest | None:
-    """The stored frame of the `groupby` rendering under the head, or of the plain rendering
-    when `groupby` is `None`, answered only while its stored frame file is servable
-    (`_servable_frame`). The plain frame is the head. A sum is the collapsed version on record
-    under the head; with none on record, or with that version's frame file expired, the
-    rendering is made from the head's stored frame, as a head-hit groupby read makes it. A sum
-    with a version of its own is recorded under it with its canonical frame, and one that leaves
-    the frame unchanged is linked under the head. `None` sends the caller to a rebuild: the
-    head's frame file has expired or cannot render the sum."""
-    if groupby is None:
+    """The stored frame of the `minting` rendering under the head, or of the plain rendering
+    when `minting` is `None`, answered only while its stored frame file is servable
+    (`_servable_frame`). The plain frame is the head. A derived rendering is the derived version
+    on record under the head; with none on record, or with that version's frame file expired,
+    the rendering is made from the head's stored frame, as a head-hit groupby read makes it. A
+    rendering with a version of its own is recorded under it with its canonical frame, and one
+    that leaves the frame unchanged is linked under the head. `None` sends the caller to a
+    rebuild: the head's frame file has expired or cannot render it."""
+    if minting is None:
         return _servable_frame(spec_id=spec_id, content_version=head_content_version, deps=deps)
-    recorded = _recorded_collapse(
-        spec_id=spec_id, base_content_version=head_content_version, groupby=groupby, deps=deps
+    recorded = _recorded_derived(
+        spec_id=spec_id, base_content_version=head_content_version, minting=minting, deps=deps
     )
     if recorded is not None:
         stored = _servable_frame(spec_id=spec_id, content_version=recorded, deps=deps)
         if stored is not None:
             return stored
-    options = _frame_options(groupby)
+    options = _frame_options(minting)
     rendered = head_rendering(
         subject_id=spec_id,
         content_version=head_content_version,
@@ -424,19 +443,19 @@ def _refuse_differing_renderings(
     spec_id: str,
     content_version: str,
     current_content_version: str,
-    groupby: GroupbyOptions,
+    minting: MintingOptions,
     deps: DefinitionDeps,
     trace_id: str | None,
 ) -> None:
-    """Refuse an ambiguous frame once the plain and the summed rendering of the current data
+    """Refuse an ambiguous frame once the plain and the `minting` rendering of the current data
     differ. `current_content_version` is the plain one.
 
     The two are one frame when the current version links a file of each, as the named version
-    does. When it does not yet, both are rendered from its stored frame: a sum that keeps the
-    version is linked under it (`_rendering_frame`), and so is the plain file. Anything else
-    refuses: a sum with a version of its own, a rendering that cannot be made, and a file that
-    was not linked. The current frame therefore always records both renderings, and a later
-    refresh of it meets the same check.
+    does. When it does not yet, both are rendered from its stored frame: a rendering that keeps
+    the version is linked under it (`_rendering_frame`), and so is the plain file. Anything else
+    refuses: a rendering with a version of its own, a rendering that cannot be made, and a file
+    that was not linked. The current frame therefore always records both renderings, and a
+    later refresh of it meets the same check.
 
     Raises:
         RenderingNotRecorded: The two renderings are not established to be one frame.
@@ -449,14 +468,14 @@ def _refuse_differing_renderings(
                 spec_id, current_content_version
             )
         ]
-        return groupby in recorded_groupbys(renderings) and records_plain_file(renderings)
+        return minting in recorded_mintings(renderings) and records_plain_file(renderings)
 
     def _render_both(coverage_snapshot: CoverageSnapshot) -> bool:
         """Render what the current version lacks and say whether it then records both."""
         summed = _rendering_frame(
             spec_id=spec_id,
             head_content_version=current_content_version,
-            groupby=groupby,
+            minting=minting,
             deps=deps,
             trace_id=trace_id,
             coverage_snapshot=coverage_snapshot,
@@ -496,16 +515,16 @@ def _refresh_frame(
             spec_id=spec_id, content_version=content_version, snapshot_reader=deps.snapshot_reader
         )
     named_spec_id, spec_id = spec_id, served.spec_id
-    # An ambiguous frame is served as the plain rendering, and `_answer` then checks the sum.
-    groupby = None if rendering.ambiguous else rendering.groupby
-    options = _frame_options(groupby)
+    # An ambiguous frame is served as the plain rendering, and `_answer` then checks the others.
+    minting = None if rendering.ambiguous else rendering.minting
+    options = _frame_options(minting)
 
     def _load_head_frame(
         head_content_version: str, coverage_snapshot: CoverageSnapshot
     ) -> Manifest | None:
         """The stored frame of this rendering under the head, read without its artifacts."""
         if (
-            groupby is not None
+            minting is not None
             and named_spec_id == spec_id
             and head_content_version == rendering.base_content_version
         ):
@@ -516,7 +535,7 @@ def _refresh_frame(
         return _rendering_frame(
             spec_id=spec_id,
             head_content_version=head_content_version,
-            groupby=groupby,
+            minting=minting,
             deps=deps,
             trace_id=trace_id,
             coverage_snapshot=coverage_snapshot,
@@ -527,12 +546,12 @@ def _refresh_frame(
         if (spec_id, current_content_version) == (named_spec_id, content_version):
             return FrameCurrent(frame=frame)
         if rendering.ambiguous:
-            for recorded in rendering.groupbys:
+            for recorded in rendering.mintings:
                 _refuse_differing_renderings(
                     spec_id=spec_id,
                     content_version=content_version,
                     current_content_version=current_content_version,
-                    groupby=recorded,
+                    minting=recorded,
                     deps=deps,
                     trace_id=trace_id,
                 )

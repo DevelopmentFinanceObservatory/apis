@@ -7,9 +7,12 @@ from __future__ import annotations
 
 import asyncio
 
+from search.engine.bind import _UniversalBindOutput
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region import RegionResult, resolve_variable
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, FakeLLM, make_resolver
 
 # The fixture SV uses the standard resolve path.
@@ -34,7 +37,17 @@ _NODES: dict = {
 _RESOLVE: dict = {"France": "country/FRA"}
 
 
-def _run(cosine_score: float) -> RegionResult:
+class _DeclineLLM:
+    """Declines the bind menu and names no not-electable reading."""
+
+    async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
+        assert schema.__name__ == "_UniversalBindOutput"
+        return _UniversalBindOutput(chosen_shape_index=0, ask="no reading is a rate"), None
+
+
+def _run(cosine_score: float, llm=None) -> RegionResult:
     detect: dict = {"left-handedness rate": {"svs": [_SV], "cosine_scores": [cosine_score]}}
     graph = FakeGraph(nodes=_NODES, detect=detect, resolve=_RESOLVE, obs={})
 
@@ -48,7 +61,7 @@ def _run(cosine_score: float) -> RegionResult:
             pac=True,
             graph=graph,
             resolver=make_resolver(graph),
-            llm=FakeLLM(),
+            llm=llm or FakeLLM(),
             base_timing={},
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
@@ -71,7 +84,9 @@ def test_below_threshold_skips_materialise():
 
 
 def test_at_or_above_threshold_refuses_a_rate_without_a_denominator_shape():
-    """A 0.70 score clears the floor, but the count lacks a denominator for a rate."""
-    result = _run(cosine_score=0.70)
-    assert result.no_data_reason == "variable_not_resolved"
-    assert "materialise" not in result.timing_by_step
+    """A 0.70 score clears the floor, but the count serves no rate, so no reading is
+    admissible and the part refuses on the form. A model that names no not-electable
+    reading leaves nothing flagged."""
+    result = _run(cosine_score=0.70, llm=_DeclineLLM())
+    assert result.no_data_reason == "denominator_not_available"
+    assert not result.flagged_match

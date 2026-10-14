@@ -10,6 +10,7 @@ from search.models import (
     BaseIdentity,
     GraphRef,
     NoDataGate,
+    NoDataReason,
     ResolvedQualifier,
     Spec,
     Unsupported,
@@ -19,7 +20,7 @@ from search.models import (
 
 def _no_data_region(
     variable_text: str,
-    reason: str = "variable_not_resolved",
+    reason: NoDataReason = "variable_not_resolved",
     *,
     warnings: tuple[Warning, ...] = (),
     flagged_match: tuple[Spec, ...] | None = None,

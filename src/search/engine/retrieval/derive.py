@@ -86,8 +86,7 @@ CONVERSION_TABLE_STAT_VARS: frozenset[str] = frozenset(
 # a topic-expansion-only member's expansion rank (see _split_and_expand_topics
 # below). It keeps an expanded member ordered strictly below the best
 # recalled candidate, so a tie-cluster of expanded leaves can never outrank
-# the genuine candidate that set that ceiling in the pool's rank order or under
-# the bind menu's top-K cap.
+# the genuine candidate that set that ceiling in the pool's rank order.
 _EXPANSION_RANK_EPSILON = 1e-4
 
 # A group of confirmed members: their five-tuple, whether they are role-bearing, and the
@@ -149,6 +148,8 @@ class _TopicExpansion:
     expansion_rank: dict[str, float]
     # leaf -> the recall score of the topic root that reached it, uncapped.
     expansion_root_score: dict[str, float]
+    # leaf -> the topic root that reached it.
+    expansion_root: dict[str, str]
 
 
 def _split_and_expand_topics(
@@ -178,6 +179,7 @@ def _split_and_expand_topics(
     # are score-descending) root's rank.
     expansion_rank: dict[str, float] = {}
     expansion_root_score: dict[str, float] = {}
+    expansion_root: dict[str, str] = {}
     if topic_svs:
         pool_scores = [sv_scores.get(sv, 1.0) for sv in (*topic_svs, *non_topic_svs)]
         top_pool_score = max(pool_scores) if pool_scores else 1.0
@@ -213,6 +215,7 @@ def _split_and_expand_topics(
             for sv, root in leaf_to_root.items():
                 expansion_rank.setdefault(sv, root_rank[root])
                 expansion_root_score.setdefault(sv, root_scores[root])
+                expansion_root.setdefault(sv, root)
 
     return _TopicExpansion(
         non_topic_svs=non_topic_svs,
@@ -220,6 +223,7 @@ def _split_and_expand_topics(
         expanded_svs=expanded_svs,
         expansion_rank=expansion_rank,
         expansion_root_score=expansion_root_score,
+        expansion_root=expansion_root,
     )
 
 
@@ -254,10 +258,12 @@ def _stand_pool(
     recall_svs: set[str],
     expansion_rank: dict[str, float],
     expansion_root_score: dict[str, float],
+    expansion_root: dict[str, str],
 ) -> list[str]:
     """The ranked pool as the variables its members stand as (`stand_in`), in the pool's
     order. The score, expansion rank and root score maps and `recall_svs` gain each
-    successor under the best value of the variables standing as it, in place."""
+    successor under the best value of the variables standing as it, in place, and
+    `expansion_root` the root of the variable its expansion rank comes from."""
     catalogue = current_catalogue()
     standing = {sv: stand_in(sv, catalogue=catalogue) for sv in candidate_pool}
     if all(standing[sv] == sv for sv in candidate_pool):
@@ -266,6 +272,8 @@ def _stand_pool(
         dcid = standing[sv]
         if dcid is None or dcid == sv:
             continue
+        if sv in expansion_root and expansion_rank[sv] > expansion_rank.get(dcid, float("-inf")):
+            expansion_root[dcid] = expansion_root[sv]
         for values in (sv_scores, expansion_rank, expansion_root_score):
             if sv in values and values[sv] > values.get(dcid, float("-inf")):
                 values[dcid] = values[sv]
@@ -326,11 +334,13 @@ class _PlaceProbe:
     `units` maps each dcid with observations at a probed place to the units of the facets
     holding them (`ShapeDraft.place_units`). `coverage` maps every probed dcid to the
     places where it has observations and the years its facets there hold
-    (`ShapeDraft.member_coverage`).
+    (`ShapeDraft.member_coverage`). `places` are the places the probe read
+    (`ShapeDraft.availability_places`).
     """
 
     units: dict[str, frozenset[str | None]]
     coverage: dict[str, ReadingCoverage]
+    places: frozenset[str]
 
 
 def _probe_place_availability(
@@ -360,7 +370,7 @@ def _probe_place_availability(
     if full_facets_max_candidates is not None and len(sv_facts) > full_facets_max_candidates:
         logger.info(
             "derive_shapes: %d confirmed candidates exceeds the %d-candidate "
-            "full-facets bound; re-narrowing the availability floor probe to "
+            "full-facets bound; re-narrowing the place-availability probe to "
             "needs_dates=False",
             len(sv_facts),
             full_facets_max_candidates,
@@ -374,8 +384,8 @@ def _probe_place_availability(
     except GraphCapExceededError as exc:
         logger.warning(
             "derive_shapes: place-availability probe for %d candidates against "
-            "place_dcids=%r hit its %s cap (cap=%d, observed=%d); skipping the "
-            "availability floor",
+            "place_dcids=%r hit its %s cap (cap=%d, observed=%d); place availability "
+            "stays unknown",
             len(sv_facts),
             place_dcids,
             exc.cap_kind,
@@ -386,7 +396,7 @@ def _probe_place_availability(
     except Exception:
         logger.warning(
             "derive_shapes: place-availability probe failed for %d candidates "
-            "against place_dcids=%r; skipping the availability floor",
+            "against place_dcids=%r; place availability stays unknown",
             len(sv_facts),
             place_dcids,
             exc_info=True,
@@ -416,6 +426,7 @@ def _probe_place_availability(
             }
             for sv, by_place in held.items()
         },
+        places=frozenset(place_dcids),
     )
 
 
@@ -478,6 +489,7 @@ def _shape_draft_for_group(
     rep_score: float | None,
     expansion_rank_score: float | None,
     expansion_root_score: float | None,
+    expansion_root: str | None,
     place_available: bool | None,
     place_units: frozenset[str | None] | None,
     roles: GroupRoles,
@@ -509,6 +521,7 @@ def _shape_draft_for_group(
         representative_score=rep_score,
         expansion_rank_score=expansion_rank_score,
         expansion_root_score=expansion_root_score,
+        expansion_root=expansion_root,
         place_available=place_available,
         place_units=place_units,
         value_labels=value_labels,
@@ -592,6 +605,7 @@ def _build_group_shape(
     recall_svs: set[str],
     expansion_rank: dict[str, float],
     expansion_root_score: dict[str, float],
+    expansion_root: dict[str, str],
     place_probe: _PlaceProbe | None,
     prop_labels_raw: dict[str, str],
     value_labels: dict[str, str],
@@ -604,12 +618,12 @@ def _build_group_shape(
     `held` is the group's family as the catalogue's tables hold it (`held_family`), or
     None when they hold none of its members. Given it, the slot keys, the label and, for a
     five-tuple the code index does not carry, the slot taxonomy read the whole family, the
-    confirmed members' values first, and the taxonomy is not narrowed to the probed place.
-    Without it they read the confirmed members. `held_role_arcs` holds the arcs of every
-    member of a held role-bearing family that declares a role set: the shape declares the
-    roles of the whole family (`facts.group_roles`), as the role-class election reads it,
-    unless the family's roles have no single axis mapping, when it declares its confirmed
-    members' roles.
+    confirmed members' values first. Without it they read every confirmed member. The
+    availability probe narrows neither: it sets `place_available` and `place_units` only.
+    `held_role_arcs` holds the arcs of every member of a held role-bearing family that
+    declares a role set: the shape declares the roles of the whole family
+    (`facts.group_roles`), as the role-class election reads it, unless the family's roles
+    have no single axis mapping, when it declares its confirmed members' roles.
 
     Return `(None, unusable_roles, zero_member)` when no single axis mapping
     covers the members' roles or the tuple has no schema member; otherwise
@@ -659,18 +673,16 @@ def _build_group_shape(
                 )
         return None, True, False
 
-    # Probe availability narrows taxonomy values only; slot keys still come
-    # from the full group. An empty or unknown result keeps the full taxonomy.
+    # The probe says whether the group has data at the place and in which units. Slot keys
+    # and taxonomy values keep every member: availability is evidence the status rule reads.
     place_units: frozenset[str | None] | None = None
     if place_probe is not None:
         units_by_available_sv = place_probe.units
         group_available = {sv for sv in group_svs if sv in units_by_available_sv}
-        scoped_svs = group_available or set(group_svs)
         place_available: bool | None = bool(group_available)
         if group_available:
             place_units = frozenset().union(*(units_by_available_sv[sv] for sv in group_available))
     else:
-        scoped_svs = set(group_svs)
         # Unknown means the probe did not establish that the place lacks data.
         place_available = None
 
@@ -732,6 +744,19 @@ def _build_group_shape(
             default=None,
         )
     )
+    # The root of the leaf an unscored group's rank comes from, its first at that rank.
+    group_root = (
+        None
+        if rep_score is not None
+        else next(
+            (
+                expansion_root.get(sv)
+                for sv in group_svs
+                if expansion_rank.get(sv) == expansion_rank_score
+            ),
+            None,
+        )
+    )
     # True for non-Topic recall members; false for expansion-only groups.
     group_recalled = any(sv in recall_svs for sv in group_svs)
 
@@ -747,6 +772,7 @@ def _build_group_shape(
         rep_score=rep_score,
         expansion_rank_score=expansion_rank_score,
         expansion_root_score=group_root_score,
+        expansion_root=group_root,
         place_available=place_available,
         place_units=place_units,
         roles=roles,
@@ -755,18 +781,10 @@ def _build_group_shape(
     )
 
     # Read every index row of the five-tuple, across datasets, so the slot keys
-    # stay those of the whole five-tuple; index options are unscoped because the
-    # code index carries no place data, and so are a held family's, whose members
-    # outside the confirmed ones the probe did not read.
-    #
-    # Starved-axis repair cannot match index-only values against sampled labels.
+    # stay those of the whole five-tuple. No taxonomy is scoped to the probed place.
     member_facts, index_sourced = five_tuple_member_facts(shape)
     if not index_sourced:
-        member_facts = {
-            sv: ArcsMemberFacts(arcs=arcs)
-            for sv, arcs in group_arc_facts.items()
-            if sv in scoped_svs
-        }
+        member_facts = {sv: ArcsMemberFacts(arcs=arcs) for sv, arcs in group_arc_facts.items()}
     else:
         # The index may add properties missed by the confirm sample; append them
         # in index row order.
@@ -793,6 +811,7 @@ def _build_group_shape(
                 rep_score=rep_score,
                 expansion_rank_score=expansion_rank_score,
                 expansion_root_score=group_root_score,
+                expansion_root=group_root,
                 place_available=place_available,
                 place_units=place_units,
                 roles=roles,
@@ -821,6 +840,7 @@ def _build_group_shape(
         slot_taxonomy=taxonomy,
         slot_taxonomy_index_sourced=index_sourced,
         member_coverage=member_coverage,
+        availability_places=place_probe.places if place_probe is not None else frozenset(),
         scored_members=frozenset(sv for sv in group_svs if sv in recall_svs),
     )
     return shape, False, False
@@ -870,13 +890,14 @@ def derive_shapes(
 
     `sv_scores` supplies measured recall scores; expansion-only groups retain
     no score and carry a separate ordering rank. `sv_types` identifies Topic
-    roots. `place_dcids` scopes taxonomy values, while slot keys use every group
-    member. `full_facets_max_candidates` is re-checked against the confirmed count, which topic
-    expansion can inflate past the caller's raw-count check; above it the probe narrows to
-    `needs_dates=False`. `None` leaves the ambient facet scope unchanged. `deadline`, the
-    part's monotonic soft deadline, bounds the availability probe, which reads every
-    confirmed candidate: at most recall's `detect_k` candidates, `topic_expand_max_roots`
-    roots of `topic_expand_max_members` leaves each, and the rival rows.
+    roots. `place_dcids` are the places the availability probe reads; slot keys and
+    taxonomy values use every group member. `full_facets_max_candidates` is re-checked
+    against the confirmed count, which topic expansion can inflate past the caller's
+    raw-count check; above it the probe narrows to `needs_dates=False`. `None` leaves the
+    ambient facet scope unchanged. `deadline`, the part's monotonic soft deadline, bounds
+    the availability probe, which reads every confirmed candidate: at most recall's
+    `detect_k` candidates, `topic_expand_max_roots` roots of `topic_expand_max_members`
+    leaves each, and the rival rows.
 
     Return one shape per group: the members of one five-tuple that are subject-only or
     role-bearing, and whose family the packaged code index decides or does not
@@ -885,8 +906,7 @@ def derive_shapes(
     not declare. Its label, slot keys and family all come from that one group.
     Groups without schema fields are skipped. A group whose roles put two names on one
     flow axis, or hold a degenerate arc, is skipped; raise `RoleSignatureError` only when
-    every group with a schema field has unusable roles. A group with no place-available
-    member, or a failed availability probe, keeps its full taxonomy.
+    every group with a schema field has unusable roles.
     """
     # Do not mutate a score map the caller may reuse across variables.
     sv_scores = dict(sv_scores) if sv_scores else {}
@@ -911,6 +931,7 @@ def derive_shapes(
         recall_svs=recall_svs,
         expansion_rank=expansion_rank,
         expansion_root_score=topic_expansion.expansion_root_score,
+        expansion_root=topic_expansion.expansion_root,
     )
 
     # Full arcs supply five-tuples, constraints, and member facts; the roles-only read is insufficient.
@@ -987,6 +1008,7 @@ def derive_shapes(
             recall_svs=recall_svs,
             expansion_rank=expansion_rank,
             expansion_root_score=topic_expansion.expansion_root_score,
+            expansion_root=topic_expansion.expansion_root,
             place_probe=place_probe,
             prop_labels_raw=prop_labels_raw,
             value_labels=value_labels,

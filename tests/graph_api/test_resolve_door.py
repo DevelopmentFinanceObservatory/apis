@@ -217,6 +217,15 @@ def test_listed_alias_or_code_stays_resolved(text: str, dcid: str, shared_resolv
             "DACRecipientUnallocatedByCountry",
             "aggregate",
         ),
+        (
+            "official donors",
+            "official donors (DAC)",
+            "DACOfficialDonors",
+            "DACGroup",
+            "aggregate",
+        ),
+        ("20005", "official donors (DAC)", "DACOfficialDonors", "DACGroup", "aggregate"),
+        ("20001", "DAC countries", "DACCountriesTotal", "DACGroup", "aggregate"),
     ],
 )
 def test_organisation_or_aggregate_resolves_with_kind(

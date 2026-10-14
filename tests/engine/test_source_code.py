@@ -19,8 +19,9 @@ from datasets_api.adapter import resolve_definition_members
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.core import resolve_async
 from search.engine.quantity_read import QuantityOutput
-from search.engine.region import phase_place_materialise
+from search.engine.region import phase_place_materialise, pipeline
 from search.engine.region.pipeline import resolve_variable
+from search.engine.region.state import ResolveState
 from search.engine.retrieval.bound_values import bind_member_values
 from search.engine.retrieval.derive import derive_shapes
 from search.engine.retrieval.retrieve import NoDataDraft
@@ -32,8 +33,8 @@ from search.engine.source_code import (
     stands_for_code,
     without_code_words,
 )
-from search.engine.source_scope import SourceScope
-from search.models import ParsedEntity, ParsedInput, ParsedPart, ResolveRequest
+from search.engine.source_scope import SourceReference, SourceScope
+from search.models import ParsedEntity, ParsedInput, ParsedPart, ResolveRequest, SourceMention
 from series_coverage.schema import FacetMetadata, RoleNames
 from statvar_members import MemberEnumerator
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
@@ -44,6 +45,7 @@ from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
 _IDS = "provenance/WorldBankInternationalDebtStatistics"
+_CRS = "provenance/OECDCreditorReportingSystem"
 _DEGG = "DT.TDS.DEGG.CD"
 _AGGREGATE = "Amount_FinancialFlow_ServicingPayment_IDSDebtorTypeGG_Nominal"
 _BY_CREDITOR = "Amount_FinancialFlow_ServicingPayment_IDSDebtorTypeGG_ByCreditor_Nominal"
@@ -496,6 +498,31 @@ def test_a_code_none_of_whose_statvars_the_graph_confirms_refuses_not_held():
     ) == ("not_served", [_IDS])
 
 
+def test_a_code_part_starts_no_un_leg_and_gets_no_un_pass(monkeypatch):
+    """A code part answers from its code's StatVars alone, so its refusal stands: it starts
+    no UN System Data Commons derivation and the UN pass is skipped."""
+    states: list[ResolveState] = []
+    skips: list[str | None] = []
+    un_pass_skip = pipeline._un_pass_skip
+
+    def record(result, first):
+        states.append(first)
+        skips.append(un_pass_skip(result, first))
+        return skips[-1]
+
+    monkeypatch.setattr(pipeline, "_un_pass_skip", record)
+    llm = _BindLLM(ask="Variable does not match any candidate shape.")
+    part = ParsedPart(
+        variable_text="debt service", entities=[ParsedEntity(text="Kenya")], source_code=_DEGG
+    )
+
+    answer = _answer(part, monkeypatch, llm)
+
+    assert answer.no_data.reason == "source_code_not_held"
+    assert skips == ["source_code"]
+    assert [state.un_leg for state in states] == [None]
+
+
 _ALL_DEBTORS_PHRASE = "across all debtor types"
 
 
@@ -510,9 +537,15 @@ def _asked_in_full(property_dcid: str) -> SlotBindingDraft:
     )
 
 
-def _resolve_degg(bindings: Sequence[SlotBindingDraft]):
-    """The DT.TDS.DEGG.CD part's result when the bind model drafts `bindings`."""
-    members = compile_part_code(_DEGG, scope=None, index=get_index())
+def _resolve_degg(
+    bindings: Sequence[SlotBindingDraft] = (),
+    *,
+    ask: str | None = None,
+    scope: SourceScope | None = None,
+):
+    """The DT.TDS.DEGG.CD part's result under the source scope `scope` when the bind model
+    drafts `bindings`, or asks with `ask`."""
+    members = compile_part_code(_DEGG, scope=scope, index=get_index())
     assert isinstance(members, SeriesCodeMembers)
     graph = _graph()
     return asyncio.run(
@@ -527,12 +560,48 @@ def _resolve_degg(bindings: Sequence[SlotBindingDraft]):
             pac=True,
             graph=graph,
             resolver=make_resolver(graph),
-            llm=_BindLLM(bindings=bindings),
+            llm=_BindLLM(ask, bindings),
             sdmx=FakeSdmxClient(observations={}),
             base_timing={},
             coverage=_coverage(),
+            source_scope=scope,
         )
     )
+
+
+def test_a_code_part_under_an_exclusion_refuses_not_held_as_one_under_no_scope_does(
+    monkeypatch,
+):
+    """A part naming DT.TDS.DEGG.CD excludes the CRS, which holds none of the code's
+    StatVars. The bind model declines its menu, and the part refuses `source_code_not_held`
+    as the same part under no scope does: the exclusion is not what the refusal names, the
+    scope settles nothing, and the UN pass is skipped for the code alone."""
+    excluding = SourceScope(
+        allowed=(frozenset(get_index().datasets) | {_IDS}) - {_CRS},
+        named=False,
+        mentions=(SourceMention(text="CRS", ref=_CRS, polarity="exclude"),),
+        references=(SourceReference(ref=_CRS, label="CRS", kind="provenance"),),
+        expansions=(frozenset({_CRS}),),
+    )
+
+    states: list[ResolveState] = []
+    skips: list[str | None] = []
+    un_pass_skip = pipeline._un_pass_skip
+
+    def record(result, first):
+        states.append(first)
+        skips.append(un_pass_skip(result, first))
+        return skips[-1]
+
+    monkeypatch.setattr(pipeline, "_un_pass_skip", record)
+
+    plain, excluded = (_resolve_degg(ask="Which series?", scope=s) for s in (None, excluding))
+
+    assert plain.no_data_reason == excluded.no_data_reason == "source_code_not_held"
+    assert excluded.source_code_refusal == plain.source_code_refusal
+    assert not excluded.unbound_sources
+    assert [state.scope_settled for state in states] == [False, False]
+    assert skips == ["source_code", "source_code"]
 
 
 def test_a_code_part_asking_every_value_of_a_slot_its_code_fixes_refuses_not_held():

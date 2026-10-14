@@ -9,7 +9,7 @@ import asyncio
 import dataclasses
 import logging
 import threading
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Final, cast
@@ -18,10 +18,12 @@ import dc_graph
 from dfo_platform.executor import submit_with_context
 from dfo_platform.trace import get_trace_id
 from materialise.place_scope import DefaultPresence
+from materialise.roles import RoleAxis, axis_for_role
 from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import EngineGraphClient, force_full_facets
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.config import SEARCH_MAX_UNIT_ALTERNATIVES, settings
+from search.engine.departures import direction_inferred
 from search.engine.envelope import _emit_step, now_ms
 from search.engine.errors import FamilyNotResolvableError, GraphInfraError, RoleSignatureError
 from search.engine.interpret import PinnedResolved, Recall
@@ -31,9 +33,14 @@ from search.engine.quantity import (
     check_denominator,
     schema_denominator_kind,
     serves_quantity,
+    stated_denominator,
 )
 from search.engine.region.alternate_guard import AlternateJudge, query_pins
-from search.engine.region.availability import _shape_group_key
+from search.engine.region.availability import (
+    _shape_group_key,
+    has_data_where_asked,
+    series_at_places,
+)
 from search.engine.region.candidate_options import _elected_sibling_warning
 from search.engine.region.candidates import (
     _Alternate,
@@ -64,15 +71,11 @@ from search.engine.region.materialise_step import (
     interpret_materialised,
     run_materialise,
 )
-from search.engine.region.near_neighbor import (
-    _representative_score_is_weak,
-    _shapes_semantically_distinct,
-)
 from search.engine.region.observations.dispatch import _attach_observations
-from search.engine.region.observations.entities import _observation_entities, open_role_axis
+from search.engine.region.observations.entities import _observation_entities
 from search.engine.region.observations.fetch import _build_observations
+from search.engine.region.phase_election import _settle_served_dataset
 from search.engine.region.phase_intake import not_admitted_entity
-from search.engine.region.phase_rank_bind import _raw_count_is_pending_joint_slice
 from search.engine.region.phase_shared import (
     _admitted_qualifier_properties,
     _elected_flagged_match,
@@ -95,15 +98,18 @@ from search.engine.region.place_context import (
 )
 from search.engine.region.place_roles import (
     PlaceAssignment,
+    PlaceRoleRefusal,
     bind_alternate_place_roles,
     bind_place_roles,
     bound_after_election,
+    direction_assignments,
     first_spellings,
     names_a_place,
     request_named_groups,
+    undirected_place_name,
 )
+from search.engine.region.requirements import settle_answer, stray_values
 from search.engine.region.result import FacetAxisFilter, RegionResult
-from search.engine.region.sentence_events import _build_sentence_event
 from search.engine.region.state import (
     AlternateUnevaluatedReason,
     ResolveState,
@@ -111,6 +117,15 @@ from search.engine.region.state import (
     for_shape,
     presence_covering,
     taker_stat_vars,
+)
+from search.engine.region.status_rule import (
+    Alternative,
+    MenuReading,
+    OpenAxes,
+    StatusPlan,
+    open_axes,
+    plan_status,
+    shares_role_class,
 )
 from search.engine.region.unrealisable import unbind_unrealisable
 from search.engine.retrieval.bound_values import (
@@ -122,7 +137,7 @@ from search.engine.retrieval.bound_values import (
     shape_population_arcs,
     shape_query,
 )
-from search.engine.retrieval.facts import read_constraints
+from search.engine.retrieval.facts import read_constraints, read_declared_roles
 from search.engine.retrieval.retrieve import (
     BoundValuesUnrealisable,
     Materialised,
@@ -130,6 +145,7 @@ from search.engine.retrieval.retrieve import (
     NoDataDraft,
     UnsupportedDraft,
 )
+from search.engine.retrieval.role_resolve import unrealisable_bound_values
 from search.engine.retrieval.standard import FacetBatch
 from search.engine.shape import (
     ShapeDraft,
@@ -139,8 +155,8 @@ from search.engine.unit.base_year import declared_base_year
 from search.engine.unit.bind import UnitDefaultPolicy, bind_unit_text
 from search.engine.unit.refs import satisfies as _unit_satisfies
 from search.models import (
+    CandidateBasis,
     FacetBasis,
-    IdentityFacetValueRequest,
     IdentityUnitRequest,
     NearestRealSpec,
     NoDataDenominator,
@@ -237,10 +253,19 @@ async def _phase_place_bindings(state: ResolveState) -> RegionResult | None:
     the read its subject-only alternates need starts here and runs beside its
     materialisation (`_start_alternates_presence_read`). An elected shape that cannot take
     a default scope refuses the request (`DefaultScopeIndexSourcedError`).
+
+    A role-bearing family the walk or the catalogue's tables read whole and found no member
+    of under the bindings (`MembershipResolution.no_member`) has bound values no member holds
+    together (`role_resolve.unrealisable_bound_values`). They lose a minimal set here, by
+    the rule the read applies (`unrealisable.unbind_unrealisable`), and the family is
+    settled again, so the place context is built once, on the family of the bindings the
+    answer states. `membership_unverified` then says only that a family could not be read.
     """
     _note_named_places(state)
 
     bound = bind_place_roles(state, state.shape_draft)
+    if bound == "role_not_resolved":
+        bound = _settle_direction(state)
     if bound == "role_incompatible":
         return await _role_incompatible_no_data(state)
     if bound == "role_not_resolved":
@@ -282,6 +307,43 @@ async def _phase_place_bindings(state: ResolveState) -> RegionResult | None:
         except (RoleSignatureError, FamilyNotResolvableError) as exc:
             return _election_refusal(state, exc)
         state.shape_draft = resolution.value
+    # A role-bearing family read whole that holds no member under the bindings is not one
+    # the walk failed to read: bound values that match no member together lose a set
+    # (`unbind_unrealisable`) and the family is settled again under what remains, so the
+    # members every later step reads are the family of the bindings the answer states. The
+    # conflicts are the mint's (`role_resolve._mint_conflicts`), which the role path reads
+    # by; a standard part relaxes at its own read (`standard._admit_standard_members`).
+    relaxed = False
+    while (
+        resolution.no_member
+        and is_role_bearing(state.shape_draft)
+        and (
+            unrealisable := await asyncio.to_thread(
+                unrealisable_bound_values, state.shape_draft, role_query, state.bindings
+            )
+        )
+        is not None
+    ):
+        state.shape_draft = recalled
+        if (refused := _unbind(state, unrealisable, role_keys)) is not None:
+            return refused
+        recalled = state.shape_draft
+        relaxed = True
+        role_query = shape_query(
+            recalled, state.bindings, role_keys.bound, open_role_keys=role_keys.open
+        )
+        try:
+            resolution = await asyncio.to_thread(
+                elected_role_class_shape,
+                recalled,
+                role_query,
+                walks=state.role_class_walks,
+                arcs_graph=state.graph,
+                deadline=state.deadline,
+            )
+        except (RoleSignatureError, FamilyNotResolvableError) as exc:
+            return _election_refusal(state, exc)
+        state.shape_draft = resolution.value
     if not resolution.authority.settled:
         state.warnings.append(membership_unverified_warning())
     state.walked = resolution.walked
@@ -291,12 +353,12 @@ async def _phase_place_bindings(state: ResolveState) -> RegionResult | None:
         return await _role_incompatible_no_data(state)
     if bound == "role_not_resolved":
         return await _role_not_resolved_no_data(state)
-    if state.shape_draft is not planned:
+    if relaxed or state.shape_draft is not planned:
         plan = _plan_alternates(state)
     (unsettled,) = await _place_contexts(
         state,
         [(state.shape_draft, state.bindings, bound)],
-        group=[*plan.alt_indices, *state.reelection_siblings, *plan.cascade_indices],
+        group=[*plan.alt_indices, *state.reelection_siblings],
     )
     try:
         place = unsettled.unread()
@@ -304,7 +366,9 @@ async def _phase_place_bindings(state: ResolveState) -> RegionResult | None:
         return _too_many_places(state, exc)
     except PlaceSetNotAdmittedError as exc:
         return _not_admitted_places(state, exc)
-    _install_shape(state, state.shape_draft, state.bindings, place, unsettled)
+    _install_shape(
+        state, state.shape_draft, state.bindings, place, unsettled, index=state.elected_index
+    )
     if place.default_scope is None:
         state.alternates_presence = _start_alternates_presence_read(state, plan)
     return None
@@ -321,32 +385,129 @@ def _election_refusal(
     return state.no_data("variable_not_resolved", llm_usage=state.var_usage)
 
 
+def _settle_direction(state: ResolveState) -> PlaceAssignment | PlaceRoleRefusal:
+    """The elected shape's places when one is named without a direction no rule places
+    (`place_roles.direction_assignments`): the availability read runs once per role
+    assignment (`availability.series_at_places`). Exactly one with data is served, and the
+    answer states the direction it reads the place on (`departures.direction_inferred`).
+    When several hold data the first is served and each other is offered beside it as a
+    `direction` candidate: a copy of the elected shape on the menu, bound on its own
+    assignment (`ResolveState.direction_rivals`). Otherwise the places refuse
+    ``role_not_resolved``, as a question whose direction no data settles."""
+    shape = state.shape_draft
+    readings = direction_assignments(state, shape)
+    series = series_at_places(state)
+    held = [(axis, assignment) for axis, assignment in readings if series(shape, assignment)]
+    name = undirected_place_name(state)
+    if not held or name is None:
+        return "role_not_resolved"
+    (axis, served), *others = held
+    if not others:
+        state.inferred_facts.append(direction_inferred(name, axis))
+        return served
+    for _axis, assignment in others:
+        state.direction_rivals[len(state.capped_shapes)] = assignment
+        state.capped_shapes.append(shape)
+    return served
+
+
 def _plan_alternates(state: ResolveState) -> _AdmissionPlan:
-    """Bind every alternate's places (`_bind_alternates`), choose the re-election siblings
-    (`_reelection_siblings`), apply the admission guards and budget (`_plan_admission`), and
-    start the walk of each alternate and sibling the plan names (`_start_alternate_walks`).
-    Makes no request of its own.
+    """Bind every alternate's places (`_bind_alternates`), apply the admission guards and
+    the status rule to them (`_plan_status`), choose the readings rule 1 tries when the
+    elected shape has no data (`_stand_in_indices`), apply the candidate budget
+    (`_plan_admission`), and start the walk of each alternate and stand-in the plan names
+    (`_start_alternate_walks`). Makes no request of its own.
 
     An alternate is walked at the representative it takes beside an elected shape with data,
-    the case in which admission offers it; a sibling at the one it takes beside an elected
-    shape without data, the only case in which re-election runs."""
+    the case in which admission offers it; a stand-in at the one it takes beside an elected
+    shape without data, the only case in which rule 1 runs."""
     state.alternate_place_roles, state.unbindable_alternates = _bind_alternates(
         state,
         [
             (i, shape)
             for i, shape in enumerate(state.capped_shapes)
-            if i != state.bind_result.chosen_shape_index
+            if i != state.elected_index and i not in state.direction_rivals
         ],
     )
-    state.reelection_siblings = _reelection_siblings(state)
+    state.alternate_place_roles.update(state.direction_rivals)
+    state.status_plan = _plan_status(state)
+    state.reelection_siblings = _stand_in_indices(state)
     plan = _plan_admission(state)
     _start_alternate_walks(
-        state,
-        {i: state.capped_shapes[i] for i in [*plan.alt_indices, *plan.cascade_indices]},
-        elected_has_data=True,
+        state, {i: state.capped_shapes[i] for i in plan.alt_indices}, elected_has_data=True
     )
     _start_alternate_walks(state, _sibling_shapes_of(state), elected_has_data=False)
     return plan
+
+
+def _open_axes(state: ResolveState) -> OpenAxes:
+    """The axes the part leaves open for the elected shape (`status_rule.open_axes`). The
+    frame names a stat type when a measure word states one, a form when a reader or the
+    quantity read's model read one or that model read a denominator, and a price basis when the words
+    match a measurement qualifier or leave a price-basis phrase unread."""
+    frame = state.frame
+    measure = frame.measure if frame is not None else None
+    return open_axes(
+        state.shape_draft,
+        stat_type_named=measure is not None and measure.stat_type.stated_by != "default",
+        form_named=bool(state.quantity_requirement.named) or state.named_denominator is not None,
+        price_basis_named=state.unread_price_basis
+        or (frame is not None and frame.price_basis.stated_by != "default"),
+    )
+
+
+def _plan_status(state: ResolveState) -> StatusPlan:
+    """The status rule over the elected shape's admissible alternates
+    (`status_rule.plan_status`): every capped shape beside it whose roles the query's places
+    bind (`state.alternate_place_roles`, which holds no `state.unbindable_alternates`) and
+    that the alternate guard admits (`AlternateJudge.inadmissible`, as `_plan_admission`
+    judges it), each with D read on its own assignment
+    (`availability.has_data_where_asked`), whether bind nominated it, and whether the
+    registry pairs it with the elected shape. The guard runs first, so `sole` means P is the
+    only admissible reading with data. The measure axes the question leaves open for the
+    elected shape are read here (`_open_axes`) and kept as `state.open_measure_axes`, which
+    the rule and the guard both read. A base the question states that the quantity read
+    matched to no listed denominator (`NamedDenominator.ref` `None`) is the rule's
+    `base_unmatched`. A reading the model declined in favour of a refused one has no
+    alternatives: the part refuses with it."""
+    if state.declined is not None:
+        return StatusPlan()
+    state.open_measure_axes = _open_axes(state)
+    judge = _guard_judge(state, elected_has_data=state.elected_has_data)
+    bindable = sorted(
+        (i, state.capped_shapes[i])
+        for i in state.alternate_place_roles
+        if i != state.elected_index and i not in state.direction_rivals
+    )
+    inadmissible = judge.inadmissible(bindable)
+    bindable = [(i, shape) for i, shape in bindable if i not in inadmissible]
+    twins = set(judge.twin_alternates(bindable))
+    nominated = set(state.bind_result.also_plausible or ())
+    series = series_at_places(state)
+    menu = [
+        MenuReading(
+            index=i,
+            shape=shape,
+            has_data=has_data_where_asked(
+                state, shape, series=series, assignment=state.alternate_place_roles[i]
+            ),
+            nominated=i in nominated,
+            registry_twin=i in twins,
+        )
+        for i, shape in bindable
+    ]
+    plan = plan_status(
+        state.shape_draft,
+        menu,
+        axes=state.open_measure_axes,
+        base_unmatched=state.named_denominator is not None and state.named_denominator.ref is None,
+    )
+    if not state.direction_rivals:
+        return plan
+    # The other directions of a place named without one come first beside the elected
+    # reading: the question asks which direction it means.
+    directions = tuple(Alternative(index=i, basis="direction") for i in state.direction_rivals)
+    return dataclasses.replace(plan, rivals=(*directions, *plan.rivals), sole=False)
 
 
 def _too_many_places(state: ResolveState, exc: PlaceSetTooLargeError) -> RegionResult:
@@ -383,8 +544,11 @@ def _install_shape(
     bindings: list[SlotBindingDraft],
     place: PlaceContext,
     unsettled: UnsettledPlace | None = None,
+    *,
+    index: int,
 ) -> None:
-    """Make `shape` the shape in play, with its property bindings and its place context.
+    """Make `shape`, the capped shape at `index`, the shape in play
+    (`ResolveState.elected_index`), with its property bindings and its place context.
 
     Election, the settling of the elected shape's place sets and the adoption of a
     zero-observation sibling all call this, so the shape, its where binding, its roles and
@@ -397,6 +561,7 @@ def _install_shape(
     spec has been offered yet, so none of them is stamped.
     """
     state.shape_draft = shape
+    state.elected_index = index
     state.bindings = with_where(bindings, place)
     state.place = place
     state.unsettled_place = unsettled
@@ -635,13 +800,15 @@ def _guard_judge(state: ResolveState, *, elected_has_data: bool) -> AlternateJud
     its bindings, the properties the engine authored, its qualifier matches, whether a
     price-basis phrase went unread, whether the elected shape has data, the leg's quantity
     requirement (`state.quantity_requirement`, which the materialise check also reads), the
-    kinds of the denominators read before bind (`state.denominator_kinds`) and the
-    denominator the quantity read chose (`state.named_denominator`). A judge this
+    kinds of the denominators read before bind (`state.denominator_kinds`), the
+    denominator the quantity read chose (`state.named_denominator`) and the measure axes
+    the status rule reads as open (`state.open_measure_axes`). A judge this
     pass built for the same elected shape under equal pins is reused
     (`state.alternate_judges`)."""
     pins = query_pins(
         state.variable,
         bindings=state.bindings,
+        stray_values=stray_values(state.requirements),
         engine_authored=state.measure_elected_properties | state.defaulted_properties,
         qualifier_matches=for_shape(state.query_qualifier_matches, state.shape_draft),
         qualifier_readings=state.query_qualifier_readings,
@@ -650,6 +817,7 @@ def _guard_judge(state: ResolveState, *, elected_has_data: bool) -> AlternateJud
         denominator_kinds=state.denominator_kinds,
         named_denominator=state.named_denominator,
         quantity=state.quantity_requirement,
+        open_axes=state.open_measure_axes,
     )
     for judge in state.alternate_judges:
         if judge.elected is state.shape_draft and judge.pins == pins:
@@ -684,73 +852,71 @@ def _offered_shapes(state: ResolveState, shapes: Mapping[int, ShapeDraft]) -> di
 @dataclass(frozen=True)
 class _AdmissionPlan:
     """The alternates candidate admission materialises beside the shape in play, decided by
-    the admission guards alone, before any read is made for them."""
+    the status rule and the admission guards alone, before any read is made for them."""
 
     # Why each alternate the guards reject is left out, by capped-shape index: its roles
     # cannot bind the query's places, it cannot take the default scope the query gives it,
     # or it contradicts the query's wording.
     inadmissible: dict[int, str]
-    # The flagged alternates that pass the guards, and those within the candidate budget.
+    # The offered alternates that pass the guards, and those within the candidate budget.
     eligible: list[int]
     alt_indices: list[int]
-    # The shapes a widened search adds when a tie fired and its alternate passes the guards,
-    # and those within the budget the alternates leave. Empty otherwise.
-    eligible_cascade: list[int]
-    cascade_indices: list[int]
+
+
+def _offered(state: ResolveState) -> dict[int, CandidateBasis | None]:
+    """The alternates the status rule offers beside the shape in play, by capped-shape
+    index in the order admission materialises them, each with its basis (`None` for one
+    that rides on a refusal).
+
+    The registry twins come first, whether or not P has data: the equivalent-series
+    diversion serves the preferred one in P's place or lists them on P. Beside an elected
+    shape with data, R follows (rule 2). Beside one without, rule 1's stand-ins re-election
+    found with data follow, else the nominated readings that ride on the refusal. Before the
+    elected shape is read, both cases are planned, so the walks either needs start beside
+    its read."""
+    plan = state.status_plan
+    offered: dict[int, CandidateBasis | None] = dict.fromkeys(plan.twins, "twin")
+    read = state.mat_result is not None
+    if not read or state.elected_has_data:
+        offered.update((alternative.index, alternative.basis) for alternative in plan.rivals)
+    if read and not state.elected_has_data and state.sibling_candidates:
+        offered.update(dict.fromkeys(state.sibling_candidates, "structural"))
+    elif not read or not state.elected_has_data:
+        offered.update((i, offered.get(i)) for i in plan.riders)
+    return offered
 
 
 def _plan_admission(state: ResolveState) -> _AdmissionPlan:
-    """Apply the admission guards and the candidate budget to the alternates of the shape
-    in play, making no request.
+    """Apply the admission guards and the candidate budget to the alternates the status
+    rule offers beside the shape in play (`_offered`), making no request.
 
     A shape that is not a reading of the shape in play (`alternate_guard`) is rejected
     before budget or materialisation; registry twins pass for equivalent-series handling.
-    Every registry twin of the elected reading on the menu
-    (`AlternateJudge.twin_alternates`) is admitted first whether or not bind nominated it.
-    Every capped shape is compared with the shape in play, so the guard covers model
-    nominees, tie proofs and the widening cascade. A shape whose roles the query's places
-    cannot bind, or that cannot take the default scope a query naming no place gives it
-    (`state.unbindable_alternates`), is rejected the same way, twins included. The plan is
-    made twice: before any read, and once the shape in play's data is known
-    (`admit_alternates`), when a lower-ranked price basis of the same family is refused too.
-
-    A confirmed tie remains ambiguous when its alternate has no data, and the search then
-    widens beyond `SEARCH_NEAR_MARGIN` to semantically distinct shapes. The plan lists them
-    whenever a tie fired and its alternate passes the guards; whether the search runs is
-    decided once the elected shape and that alternate are materialised (`admit_alternates`).
+    A shape whose roles the query's places cannot bind, or that cannot take the default
+    scope a query naming no place gives it (`state.unbindable_alternates`), is rejected the
+    same way, twins included. The status rule plans over the guarded menu
+    (`_plan_status`), so the guards reject here only readings a plan under other pins
+    offered. The plan is made twice: before any read, and once the shape in play's data is
+    known (`admit_alternates`), when a lower-ranked price basis of the same family is
+    refused too on a closed price-basis axis. The budget applies once, to the eligible
+    alternates in offer order, so `eligible` longer than `alt_indices` is the evidence that
+    it dropped one (`CandidateSet.truncated`). Each planned alternate's basis is kept on
+    the state (`ResolveState.offer_bases`).
     """
-    chosen = state.bind_result.chosen_shape_index
+    chosen = state.elected_index
     budget = max(0, settings().max_candidates - 1)
     bindable = [(i, state.capped_shapes[i]) for i in state.alternate_place_roles]
     judge = _guard_judge(state, elected_has_data=state.elected_has_data)
     inadmissible = {**state.unbindable_alternates, **judge.inadmissible(bindable)}
-    # Every registry twin of the elected reading on the menu is admitted first, the
-    # preferred one leading, nominated or not, so the equivalent-series diversion serves the
-    # preferred twin and lists the others whatever bind nominated.
-    twins = judge.twin_alternates([(i, shape) for i, shape in bindable if i != chosen])
+    offered = _offered(state)
     eligible = [
         i
-        for i in dict.fromkeys([*twins, *(state.bind_result.also_plausible or [])])
+        for i in offered
         if 0 <= i < len(state.capped_shapes) and i != chosen and i not in inadmissible
     ]
     alt_indices = [] if state.force_single_shape_path else eligible[:budget]
-    eligible_cascade: list[int] = []
-    fired = state.near_neighbor_fired_index
-    if fired is not None and fired not in inadmissible:
-        # Exclude guard-rejected candidates from every source, including cascade-only shapes.
-        tried = {chosen, *alt_indices, *inadmissible}
-        eligible_cascade = [
-            i
-            for i, cand in enumerate(state.capped_shapes)
-            if i not in tried and _shapes_semantically_distinct(state.shape_draft, cand)
-        ]
-    return _AdmissionPlan(
-        inadmissible=inadmissible,
-        eligible=eligible,
-        alt_indices=alt_indices,
-        eligible_cascade=eligible_cascade,
-        cascade_indices=eligible_cascade[: max(0, budget - len(alt_indices))],
-    )
+    state.offer_bases = {i: basis for i in alt_indices if (basis := offered[i]) is not None}
+    return _AdmissionPlan(inadmissible=inadmissible, eligible=eligible, alt_indices=alt_indices)
 
 
 @dataclass(frozen=True)
@@ -766,19 +932,33 @@ class _WalkedAlternate:
         return self.alternate.shape
 
 
-_WalkKey = tuple[int, tuple[str, ...], tuple[object, ...], str]
+_WalkKey = tuple[int, tuple[str, ...], tuple[object, ...], str, tuple[object, ...]]
 
 
 def _walk_key(state: ResolveState, index: int, shape: ShapeDraft, rep_sv: str) -> _WalkKey:
     """The memo key of a walk: everything `walk_alternate` reads from the request. That is
     the alternate, by capped-shape index, its members and the role keys its places are
-    assigned under, and the representative its bindings come from. The dataset it names is
+    assigned under, the representative its bindings come from, and the values the bind
+    drafted on slots the elected reading lacks, which it binds where its members hold them
+    (`candidates._with_stray_values`). The dataset it names is
     its shape's (`ShapeDraft.named_dataset`), or the one the part's source scope leaves
     serving under those bindings, whatever bindings the shape in play holds. The scope is
     the leg's, fixed once vetting runs."""
     role_keys = state.alternate_place_roles[index].role_keys
     places = (tuple(sorted(role_keys.bound)), tuple(sorted(role_keys.open)))
-    return (index, tuple(shape.sv_arc_facts or {}), places, rep_sv)
+    strays = tuple(
+        sorted((prop, tuple(sorted(values))) for prop, values in _strays_by_property(state).items())
+    )
+    return (index, tuple(shape.sv_arc_facts or {}), places, rep_sv, strays)
+
+
+def _strays_by_property(state: ResolveState) -> dict[str, frozenset[str]]:
+    """The values the bind drafted on slots the elected reading lacks
+    (`requirements.stray_values`), by property."""
+    by_prop: dict[str, set[str]] = {}
+    for prop, value in stray_values(state.requirements):
+        by_prop.setdefault(prop, set()).add(value)
+    return {prop: frozenset(values) for prop, values in by_prop.items()}
 
 
 def _walk_args(state: ResolveState, index: int, shape: ShapeDraft, rep_sv: str) -> dict:
@@ -790,6 +970,7 @@ def _walk_args(state: ResolveState, index: int, shape: ShapeDraft, rep_sv: str) 
         "deadline": state.deadline,
         "role_class_walks": state.role_class_walks,
         "scope": state.scope,
+        "stray_values": _strays_by_property(state),
     }
 
 
@@ -806,7 +987,10 @@ def _start_alternate_walks(
         return
     for index, shape in _offered_shapes(state, shapes).items():
         rep_sv = alternate_representative(
-            shape, elected_bindings=state.bindings, elected_has_data=elected_has_data
+            shape,
+            elected_bindings=state.bindings,
+            elected_has_data=elected_has_data,
+            stray_values=_strays_by_property(state),
         )
         if rep_sv is None:
             continue
@@ -831,7 +1015,10 @@ async def _walk(
     else one queued there now. With no walks to run the election makes no request and runs
     in place."""
     rep_sv = alternate_representative(
-        shape, elected_bindings=state.bindings, elected_has_data=elected_has_data
+        shape,
+        elected_bindings=state.bindings,
+        elected_has_data=elected_has_data,
+        stray_values=_strays_by_property(state),
     )
     if rep_sv is None:
         return None
@@ -884,8 +1071,8 @@ def _start_alternates_presence_read(
     A role-bearing elected shape on a query naming no place makes no presence read, so a
     subject-only alternate that passed the admission guards and the candidate budget
     (`plan`) has no read to ride. Every answer that reaches candidate admission needs this
-    one, so it starts here, and admission awaits it (`_read_alternates_presence`). It covers
-    the alternates and the shapes a widened search would add. When the elected result ends
+    one, so it starts here, and admission awaits it (`_read_alternates_presence`). When the
+    elected result ends
     the request, the read is left to finish on its pool and nothing waits for it. With
     every worker of the pool busy it is not started, and admission tries it again.
     """
@@ -894,9 +1081,7 @@ def _start_alternates_presence_read(
         for i in plan.alt_indices
     ):
         return None
-    return _submit_alternates_presence_read(
-        state, _group_stat_vars(state, [*plan.alt_indices, *plan.cascade_indices])
-    )
+    return _submit_alternates_presence_read(state, _group_stat_vars(state, plan.alt_indices))
 
 
 def _submit_alternates_read[T](read: Callable[..., T], /, **kwargs: object) -> Future[T] | None:
@@ -1138,12 +1323,6 @@ async def _phase_facet_requests(state: ResolveState) -> RegionResult | None:
 type _MaterialiseOutcome = Materialised | NoDataDraft | MaterialisedCandidates | UnsupportedDraft
 
 
-def _read_settles_a_set(state: ResolveState) -> bool:
-    """Whether the elected shape's own read decides the reading of one of its place sets
-    (`UnsettledPlace.decided`)."""
-    return state.unsettled_place is not None and not state.unsettled_place.decided
-
-
 def _materialise_task(
     state: ResolveState,
 ) -> asyncio.Task[tuple[PlaceContext, _MaterialiseOutcome]]:
@@ -1184,67 +1363,63 @@ def _materialise_task(
         return asyncio.create_task(asyncio.to_thread(settle))
 
 
-async def _emit_bind_sentence(state: ResolveState) -> None:
-    """Build and emit the bind-stage sentence of a measure-elected shape. It names the
-    elected measure family and leaves time and source blank; a definite answer's final
-    sentence fills them."""
-    if state.emit is None or state.measure_elected_partition is None:
-        return
-    sentence_event = await _build_sentence_event(
-        state.shape_draft,
-        state.bindings,
-        state.place.roles.roles,
-        variable_index=state.variable_index,
-        date_request=state.date_request,
-        open_axes=state.place.roles.open_axes,
-        graph=state.graph,
-        query_entity_text_by_dcid=state.entity_label_text_by_dcid,
-        measure_partition=state.measure_elected_partition,
-        named_groups=request_named_groups(state, state.place.roles),
-        explicit_facets=(
-            # A bound outcome guarantees a unit request. The type checker cannot infer it.
-            {
-                "unit": IdentityFacetValueRequest(
-                    request=cast(IdentityUnitRequest, state.unit_request)
-                )
-            }
-            if state.bound_unit_outcome is not None
-            else None
-        ),
-    )
-    await state.emit(sentence_event)
+class _RelaxedPartRefused(Exception):
+    """No table serves the part under the bindings an unbinding leaves; `result` is its
+    refusal (`phase_election._settle_served_dataset`)."""
+
+    def __init__(self, result: RegionResult) -> None:
+        super().__init__(result.no_data_reason)
+        self.result = result
+
+
+def _unbind(
+    state: ResolveState, unrealisable: BoundValuesUnrealisable, role_keys: RoleKeys
+) -> RegionResult | None:
+    """Unbind values of `unrealisable` (`unbind_unrealisable`) and settle the dataset the
+    part is served from again under what remains, returning the refusal of a part no table
+    then serves. The dataset is named from the bindings wherever the index decides the
+    part's membership (`bound_values.part_source`), and a query the index did not decide
+    can be one it decides once a value on a property no index row declares is unbound."""
+    unbind_unrealisable(state, unrealisable)
+    return _settle_served_dataset(state, role_keys)
 
 
 async def _run_materialise_task(state: ResolveState) -> _MaterialiseOutcome:
     """Run materialisation off-thread and time it, and install the place context the
-    elected shape's place sets settle to (`_materialise_task`). A measure-elected sentence
-    is built and emitted while it runs, or once it has run when the read decides which
-    places the sentence names. Over a graph that can declare a default facet the pipeline
-    holds it until the part's answer stands, so it never precedes a declared-default refusal
-    from this or a later step (`pipeline.resolve_variable`). Bound values that together match
-    no member lose a minimal set and the shape is resolved again
+    elected shape's place sets settle to (`_materialise_task`). Bound values that together
+    match no member lose a minimal set and the shape is resolved again
     (`unrealisable.unbind_unrealisable`) until its bindings can be read, over a presence
     read that covers what the resolve under the new bindings reads (`_cover_unbound`).
 
     Raises `PlaceSetTooLargeError` when the places the sets settle to exceed the bound on
-    the places a Spec binds."""
+    the places a Spec binds, and `_RelaxedPartRefused` when no table serves the part under
+    the bindings an unbinding leaves (`_unbind`)."""
     t0 = now_ms()
-    settles = _read_settles_a_set(state)
     materialise_task = _materialise_task(state)
     try:
-        if not settles:
-            # Build and emit while the materialise call runs.
-            await _emit_bind_sentence(state)
         place, mat_result = await materialise_task
         while isinstance(mat_result, BoundValuesUnrealisable):
-            unbind_unrealisable(state, mat_result)
+            refused = _unbind(
+                state,
+                mat_result,
+                entity_role_keys(
+                    state.place.roles.resolved_entities, open_axes=state.place.roles.open_axes
+                ),
+            )
+            if refused is not None:
+                raise _RelaxedPartRefused(refused)
             await _cover_unbound(state)
             materialise_task = _materialise_task(state)
             place, mat_result = await materialise_task
         if place != state.place:
-            _install_shape(state, state.shape_draft, state.bindings, place, state.unsettled_place)
-        if settles:
-            await _emit_bind_sentence(state)
+            _install_shape(
+                state,
+                state.shape_draft,
+                state.bindings,
+                place,
+                state.unsettled_place,
+                index=state.elected_index,
+            )
         state.mat_result = mat_result
     finally:
         # Cancel and await unfinished materialisation so cancellation cannot detach it.
@@ -1284,17 +1459,6 @@ async def _cover_unbound(state: ResolveState) -> None:
     )
 
 
-def _is_qualifier_variant_sibling(a: ShapeDraft, b: ShapeDraft) -> bool:
-    """Match shapes differing only in ``meas_qual_dcid``, with stat type and denominator equal."""
-    return (
-        not _shapes_semantically_distinct(a, b)
-        and a.stat_type_dcid == b.stat_type_dcid
-        and a.meas_qual_dcid != b.meas_qual_dcid
-        and a.meas_denom_dcid == b.meas_denom_dcid
-        and a.meas_denom_unresolved == b.meas_denom_unresolved
-    )
-
-
 def _members_holding_bound_values(
     shape: ShapeDraft, bound_values: Mapping[str, list[str]]
 ) -> dict[str, dict]:
@@ -1313,48 +1477,34 @@ def _members_holding_bound_values(
     }
 
 
-def _reelection_siblings(state: ResolveState) -> list[int]:
-    """The capped-shape indices of the siblings zero-observation re-election would try.
-
-    Candidates are unflagged qualifier variants with scores inside ``weak_score_threshold -
-    relevance_threshold`` of a scored elected shape, role-bearing or not, whose score is
-    neither the sentinel ``1.0`` nor weak. This local margin does not change the general
-    near-neighbour gate. Siblings whose roles the query's places bind and that can take the
-    scope the query gives them (``state.alternate_place_roles``) pass the alternate guard
-    (`AlternateJudge.inadmissible`) before the ``max_candidates - 1`` cap. The elected
-    shape has no data here, so no default price basis is imposed. They depend on the
-    elected shape and the bind step alone, so they are known before any read.
-    """
-    _elected_score = state.shape_draft.representative_score
-    if (
-        _elected_score is None
-        or _elected_score == 1.0
-        or _representative_score_is_weak(_elected_score)
-    ):
+def _stand_in_indices(state: ResolveState) -> list[int]:
+    """The capped-shape indices of the readings status rule 1 tries in the elected shape's
+    place when it has no observations at its places, in the order the rule takes them: its
+    equivalent readings, then its measurement-qualifier siblings that hold the elected
+    bindings' values (`_members_holding_bound_values`). Each passes the alternate guard
+    (`AlternateJudge.inadmissible`) judged beside an elected shape without data, so no
+    default price basis is imposed, within the candidate budget. A part with a registry twin
+    of the elected shape takes none: the equivalent-series diversion answers with the twin
+    (`candidate_collapse._apply_twin_diversion`). They depend on the elected shape and the
+    bind step alone, so they are known before any read."""
+    plan = state.status_plan
+    if plan.twins:
         return []
-    _already_flagged = {
-        state.bind_result.chosen_shape_index,
-        *(state.bind_result.also_plausible or []),
-    }
-    _sibling_score_margin = settings().weak_score_threshold - settings().relevance_threshold
-    _elected_bound_values = bound_values_from_bindings(state.bindings)
-    _sibling_indices = [
-        i
-        for i, cand in enumerate(state.capped_shapes)
-        if i not in _already_flagged
-        and i in state.alternate_place_roles
-        and _is_qualifier_variant_sibling(state.shape_draft, cand)
-        and _members_holding_bound_values(cand, _elected_bound_values)
-        and cand.representative_score is not None
-        and _elected_score - cand.representative_score <= _sibling_score_margin
+    bound_values = bound_values_from_bindings(state.bindings)
+    indices = [
+        *plan.equivalents,
+        *(
+            i
+            for i in plan.stand_ins
+            if _members_holding_bound_values(state.capped_shapes[i], bound_values)
+        ),
     ]
-    if _sibling_indices:
-        _inadmissible = _guard_judge(state, elected_has_data=False).inadmissible(
-            [(i, state.capped_shapes[i]) for i in _sibling_indices]
+    if indices:
+        inadmissible = _guard_judge(state, elected_has_data=False).inadmissible(
+            [(i, state.capped_shapes[i]) for i in indices]
         )
-        if _inadmissible:
-            _sibling_indices = [i for i in _sibling_indices if i not in _inadmissible]
-    return _sibling_indices[: max(0, settings().max_candidates - 1)]
+        indices = [i for i in indices if i not in inadmissible]
+    return indices[: max(0, settings().max_candidates - 1)]
 
 
 def _sibling_shapes_of(state: ResolveState) -> dict[int, ShapeDraft]:
@@ -1375,35 +1525,50 @@ def _sibling_shapes_of(state: ResolveState) -> dict[int, ShapeDraft]:
 async def _reelect_zero_observation_sibling(
     state: ResolveState, mat_result: Materialised
 ) -> Materialised:
-    """Try the nearby qualifier siblings (`state.reelection_siblings`) when the elected
-    shape has no observations at its places (``has_data=False``,
-    ``available_at_place=False``).
+    """Status rule 1's stand-ins (`state.reelection_siblings`) when the elected shape has no
+    observations at its places (``has_data=False``, ``available_at_place=False``): its
+    equivalent readings, then its measurement-qualifier siblings.
 
-    Each sibling's members are settled first by the mint's walk (`_walked_alternates`), so a
-    sibling that answers lists the members its own resubmit serves, and
-    ``_materialise_alt_shapes`` then prewarms facets and resolves the siblings. Each sibling
-    settles its own place sets on its own read, for the shape the election returned
-    (`_place_contexts`, `place_context.settle_sets`), or takes the default scopes of its own
-    StatVars when it is subject-only and the query names no place. The elected shape's
-    presence read covers the scopes of the siblings' recalled members
-    (`_phase_place_bindings`), so a read is made here only for a sibling whose walk replaced
-    its members, or for the members a mint serves (`_group_stat_vars`) of one narrowed from
-    a held family's members past its recalled ones. Siblings with separate probe
-    places are read concurrently, so their facet reads take one serial step between them.
+    Each stand-in's members are settled first by the mint's walk (`_walked_alternates`), so
+    one that answers lists the members its own resubmit serves, and
+    ``_materialise_alt_shapes`` then prewarms facets and resolves them. Each settles its own
+    place sets on its own read, for the shape the election returned (`_place_contexts`,
+    `place_context.settle_sets`), or takes the default scopes of its own StatVars when it is
+    subject-only and the query names no place. The elected shape's presence read covers
+    the scopes of the stand-ins' recalled members (`_phase_place_bindings`), so a read is
+    made here only for a stand-in whose walk replaced its members, or for the members a mint
+    serves (`_group_stat_vars`) of one narrowed from a held family's members past its
+    recalled ones. Stand-ins with separate probe places are read concurrently, so their
+    facet reads take one serial step between them.
 
-    One data-bearing subject sibling is installed in place of the elected shape with its
-    bindings and place context (`_install_shape`), replaces the elected result, and adds a
-    warning after its place warnings. A winner whose members the walk left unsettled states
-    it once its result is read (`interpret_materialised`). Multiple or role-bearing results join
-    ``also_plausible`` and are kept as `state.sibling_candidates`, which candidate admission
-    takes in place of materialising them (`admit_alternates`), and the elected shape stays
-    in play with its own context. Blocked or empty probes leave the result and the place
+    The first equivalent reading with data answers. Otherwise a qualifier sibling whose walk
+    elects a shape of the elected shape's role class (`status_rule.shares_role_class`)
+    stands in: one with data answers, and several are offered as candidates without the
+    elected shape, kept as `state.sibling_candidates`, which candidate admission takes in
+    place of materialising them (`admit_alternates`). An answering stand-in is installed in
+    place of the elected shape with its bindings and place context (`_install_shape`),
+    replaces the elected result, and warns `elected_shape_no_data` after its place warnings.
+    Its `elected` starts as the stand-in's draft label and becomes the shape label of the
+    Spec built for the stand-in, on the definite path and among candidates alike
+    (`ResolveState.state_reelected_reading`). A part refused before any such Spec is built
+    keeps the draft label.
+    A winner whose members the walk left unsettled states it once its result is read
+    (`interpret_materialised`). Blocked or empty probes leave the result and the place
     context unchanged.
     """
     _sibling_shapes = _sibling_shapes_of(state)
     # A sibling's members are settled before its places, presence and context, which belong
     # to the shape it is answered through.
     _walked = await _walked_alternates(state, _sibling_shapes, elected_has_data=False)
+    # A qualifier sibling stands in only as a reading of the elected shape's role class, as
+    # its walk elects it; an equivalent reading of the five-tuple stands in whatever its
+    # role class.
+    equivalents = frozenset(state.status_plan.equivalents)
+    _walked = {
+        i: walked
+        for i, walked in _walked.items()
+        if i in equivalents or shares_role_class(state.shape_draft, walked.shape)
+    }
     places = await _place_contexts(
         state,
         [(walked.shape, walked.alternate.bindings, walked.roles) for walked in _walked.values()],
@@ -1466,37 +1631,53 @@ async def _reelect_zero_observation_sibling(
     # ``state.reelection_siblings`` ascend, so this restores menu order across scope groups.
     _sibling_candidates.sort(key=lambda cand: _index_by_group[_shape_group_key(cand.shape)])
 
-    _reelectable = [cand for cand in _sibling_candidates if not is_role_bearing(cand.shape)]
-    if len(_sibling_candidates) == 1 and len(_reelectable) == 1:
-        (_winner,) = _reelectable
+    _answering = [
+        cand
+        for cand in _sibling_candidates
+        if _index_by_group[_shape_group_key(cand.shape)] in equivalents
+    ]
+    if not _answering and len(_sibling_candidates) == 1:
+        _answering = _sibling_candidates
+    if _answering:
+        _winner = _answering[0]
         _no_data_label = state.shape_draft.label
-        _install_shape(state, _winner.shape, _winner.bindings, _winner.place)
+        _install_shape(
+            state,
+            _winner.shape,
+            _winner.bindings,
+            _winner.place,
+            index=_index_by_group[_shape_group_key(_winner.shape)],
+        )
         state.walked = _winner.walked
         state.mat_result = _winner.mat
         mat_result = _winner.mat
-        state.warnings.append(
-            _elected_sibling_warning(no_data=[_no_data_label], elected=[_winner.shape.label])
+        state.reelection_warning = _elected_sibling_warning(
+            no_data=[_no_data_label], elected=[_winner.shape.label]
         )
+        state.warnings.append(state.reelection_warning)
     else:
         state.sibling_candidates = {
             _index_by_group[_shape_group_key(cand.shape)]: cand for cand in _sibling_candidates
         }
-        state.bind_result.also_plausible = [
-            *(state.bind_result.also_plausible or []),
-            *state.sibling_candidates,
-        ]
     return mat_result
 
 
 async def _phase_materialise(state: ResolveState) -> RegionResult | None:
-    """Materialise the elected shape, settling its place sets on that read, re-elect a
-    zero-observation sibling, and apply per-capita denominator precedence."""
+    """Materialise the elected shape, settling its place sets on that read, try status
+    rule 1's stand-ins when it has no observations at its places
+    (`_reelect_zero_observation_sibling`), and apply per-capita denominator precedence. A part whose
+    model declined every admissible reading refuses with the one it named instead, before
+    any read (`_declined_refusal`)."""
+    if state.declined is not None:
+        return await _declined_refusal(state)
     try:
         mat_result = await _run_materialise_task(state)
     except PlaceSetTooLargeError as exc:
         return _too_many_places(state, exc)
     except PlaceSetNotAdmittedError as exc:
         return _not_admitted_places(state, exc)
+    except _RelaxedPartRefused as exc:
+        return exc.result
 
     if (
         state.reelection_siblings
@@ -1539,29 +1720,6 @@ async def _phase_materialise(state: ResolveState) -> RegionResult | None:
         state.place = settle_place(state.place, mat_result, state.warnings)
         state.shape_draft = settled_shape(state.shape_draft, mat_result)
 
-    # A place-less empty probe proves a missing joint slice only when each same-head shape
-    # loses at least two named qualifiers. Use the single-shape mint and retract near-neighbour
-    # candidates and warnings.
-    if (
-        state.destination_dcid is None
-        and isinstance(mat_result, Materialised)
-        and not mat_result.has_data
-        and mat_result.available_at_place is None
-        and _raw_count_is_pending_joint_slice(
-            state.shape_draft, state.eligible_shapes, state.variable
-        )
-    ):
-        fired_index = state.near_neighbor_fired_index
-        if fired_index is not None:
-            state.bind_result.also_plausible = [
-                index for index in (state.bind_result.also_plausible or []) if index != fired_index
-            ]
-        if state.near_neighbor_warning is not None:
-            state.warnings.remove(state.near_neighbor_warning)
-        state.near_neighbor_fired_index = None
-        state.near_neighbor_warning = None
-        state.force_single_shape_path = True
-
     # Preserve no-data precedence. ``no_matching_slice`` and ``variable_not_resolved`` win.
     # Otherwise an elected shape that does not serve the leg's quantity
     # (`quantity.serves_quantity`: an amount, or a share of GNI, for "aid per capita"; a
@@ -1591,8 +1749,6 @@ async def _phase_materialise(state: ResolveState) -> RegionResult | None:
             # (`refuse_unserved_quantity`).
             state.quantity_refusal = mat_result
             return None
-        # No outcome below reaches candidate fan-out, so retract its near-neighbour warning.
-        _retract_near_neighbor(state)
         if _slice_mint_pending and _elected == "no_matching_slice":
             # The single-shape path attaches the flagged match after Spec assembly.
             state.force_single_shape_path = True
@@ -1612,21 +1768,12 @@ def serves_leg_quantity(state: ResolveState, shape: ShapeDraft) -> bool:
     )
 
 
-def _retract_near_neighbor(state: ResolveState) -> None:
-    """Drop the near-neighbour tie and its warning from an answer no fan-out reaches."""
-    if state.near_neighbor_warning is not None:
-        state.warnings.remove(state.near_neighbor_warning)
-    state.near_neighbor_fired_index = None
-    state.near_neighbor_warning = None
-
-
 async def refuse_unserved_quantity(state: ResolveState) -> RegionResult | None:
     """The `denominator_not_available` refusal the materialise gate deferred to the
     fan-out (`state.quantity_refusal`), once no reading that serves the quantity survived
     it (`serves_leg_quantity`). `None` when the gate deferred nothing."""
     if state.quantity_refusal is None:
         return None
-    _retract_near_neighbor(state)
     return await _denominator_refusal(state, state.quantity_refusal)
 
 
@@ -1640,7 +1787,7 @@ def note_denominator_unverified(
     `shape` answers through, definite or candidate."""
     named = state.named_denominator
     if named is not None and check_denominator(shape, named) == "unverified":
-        arc = None if shape.meas_denom_unresolved else shape.meas_denom_dcid
+        arc = stated_denominator(shape)
         state.warnings.append(
             denominator_unverified_warning(
                 named,
@@ -1685,26 +1832,68 @@ def denominator_unverified_warning(
     return Warning(code=DENOMINATOR_UNVERIFIED, severity="warn", message=message, spec_id=spec_id)
 
 
+async def _declined_refusal(state: ResolveState) -> RegionResult:
+    """Refuse with the reading the bind model named as nearest when it declined every
+    admissible one (`ResolveState.declined`), standing in as the elected shape with its
+    bindings and places settled. A reading that fails the form the question names refuses
+    ``denominator_not_available`` (`_denominator_refusal`), and one that cannot bind a code
+    the question names refuses ``qualifier_not_bound``, naming the terms its flagged
+    match's trace leaves unmet (`requirements.settle_answer`), those codes among them
+    (election vetting records them). Either flags the reading, with its level reading as
+    nearest_real, and states as open the axes the frame asks every member of that its
+    members declare a role on (`_declined_open_roles`), as its definite answer would."""
+    declined = state.declined
+    assert declined is not None
+    # The flagged match names the members the settled bindings select, not the family.
+    holding = _members_holding_bound_values(
+        state.shape_draft, bound_values_from_bindings(state.bindings)
+    )
+    members = list(holding)
+    open_roles = _declined_open_roles(state, holding)
+    if declined.pinned_failure != "pinned_code":
+        return await _denominator_refusal(state, None, members=members, open_roles=open_roles)
+    flagged = await _elected_flagged_match(state, members=members, open_roles=open_roles)
+    return state.no_data(
+        "qualifier_not_bound",
+        flagged_match=(flagged,),
+        nearest_real=await _nearest_real_for(state, level=_level_relaxation(state)),
+        unbound_qualifiers=settle_answer(state, state.shape_draft, state.bindings),
+        llm_usage=state.var_usage,
+    )
+
+
+def _declined_open_roles(state: ResolveState, members: Mapping[str, dict]) -> tuple[RoleAxis, ...]:
+    """The flow axes the frame asks every member of (`Frame.open_roles`) on which some of
+    `members` (each with its arcs), else some member the declined shape stands for
+    (`shape_population_arcs`), declares a role. No read settles them, so a recipient-only
+    reading states no open creditor."""
+    arcs = members or shape_population_arcs(state.shape_draft)
+    declared = {
+        axis_for_role(role) for facts in arcs.values() for role in read_declared_roles(facts)
+    }
+    return tuple(axis for axis in state.frame.open_roles.value if axis in declared)
+
+
 async def _denominator_refusal(
-    state: ResolveState, mat_result: _MaterialiseOutcome
+    state: ResolveState,
+    mat_result: _MaterialiseOutcome | None,
+    *,
+    members: Sequence[str] | None = None,
+    open_roles: Collection[RoleAxis] = (),
 ) -> RegionResult:
     """Refuse ``denominator_not_available`` with the elected shape as the flagged match,
-    naming the StatVars materialise elected (`mat_result`), its level reading as
-    nearest_real (`_level_relaxation`), and the denominator the question named beside the
-    one the flagged match divides by. The flagged match keeps the open axes materialise
-    confirmed the elected members declare (`Materialised.open_axes`,
-    `NoDataDraft.open_axes`), so "external debt
-    per capita by every creditor in Kenya" flags a by-creditor reading. A shape with no
-    level relaxation, such as one that is already a level, carries no nearest_real:
-    relaxing one of its bindings would offer the reading the gate refused."""
-    members = mat_result.sv_dcids if isinstance(mat_result, (Materialised, NoDataDraft)) else None
-    flagged = await _elected_flagged_match(
-        state,
-        members=members,
-        open_roles=(
-            mat_result.open_axes if isinstance(mat_result, (Materialised, NoDataDraft)) else ()
-        ),
-    )
+    naming the StatVars materialise elected (`mat_result`), else `members`, else every
+    confirmed member of the shape, its level reading as nearest_real (`_level_relaxation`),
+    and the denominator the question named beside the one the flagged match divides by. The
+    flagged match keeps the open axes materialise confirmed the elected members declare
+    (`Materialised.open_axes`, `NoDataDraft.open_axes`), else `open_roles`, so "external debt per capita by
+    every creditor in Kenya" flags a by-creditor reading. A shape with no level relaxation,
+    such as one that is already a level, carries no nearest_real: relaxing one of its
+    bindings would offer the reading the gate refused."""
+    if isinstance(mat_result, (Materialised, NoDataDraft)):
+        members = mat_result.sv_dcids
+        open_roles = mat_result.open_axes
+    flagged = await _elected_flagged_match(state, members=members, open_roles=open_roles)
     named = state.named_denominator
     level = _level_relaxation(state)
     return state.no_data(
@@ -1721,30 +1910,36 @@ async def _denominator_refusal(
 
 def _level_relaxation(state: ResolveState) -> tuple[ShapeDraft, Relaxation] | None:
     """The level reading of the elected shape, the relaxation that drops its denominator: a
-    recalled shape with the same population type, measured property, stat type, qualifier
-    and constraint properties and no denominator arc. `None` when the elected shape
-    divides by nothing, or no recalled shape is its level."""
+    recalled shape with the same population type, measured property, stat type and
+    constraint properties, no denominator arc, and the same qualifier. A ratio states no
+    qualifier where its denominator carries the price basis (IDS's outstanding external
+    debt as a share of GNI, beside the stock in current US dollars), so a ratio with no
+    qualifier reads the one level whose qualifier is the only one its levels hold. `None`
+    when the elected shape divides by nothing, or no recalled shape is its level."""
     elected = state.shape_draft
     denominator = elected.meas_denom_dcid
     if denominator is None or elected.meas_denom_unresolved:
         return None
     properties = _constraint_properties(elected)
-    for shape in state.shapes_found:
-        if (
-            shape.meas_denom_dcid is None
-            and not shape.meas_denom_unresolved
-            and shape.pop_type_dcid == elected.pop_type_dcid
-            and shape.meas_prop_dcid == elected.meas_prop_dcid
-            and shape.stat_type_dcid == elected.stat_type_dcid
-            and shape.meas_qual_dcid == elected.meas_qual_dcid
-            and _constraint_properties(shape) == properties
-        ):
-            return shape, Relaxation(
-                axis="what",
-                property_dcid="measurementDenominator",
-                dropped_value_dcids=[denominator],
-            )
-    return None
+    levels = [
+        shape
+        for shape in state.shapes_found
+        if shape.meas_denom_dcid is None
+        and not shape.meas_denom_unresolved
+        and shape.pop_type_dcid == elected.pop_type_dcid
+        and shape.meas_prop_dcid == elected.meas_prop_dcid
+        and shape.stat_type_dcid == elected.stat_type_dcid
+        and _constraint_properties(shape) == properties
+    ]
+    level = next((s for s in levels if s.meas_qual_dcid == elected.meas_qual_dcid), None)
+    if level is None and elected.meas_qual_dcid is None:
+        qualifiers = {s.meas_qual_dcid for s in levels}
+        level = levels[0] if len(qualifiers) == 1 else None
+    if level is None:
+        return None
+    return level, Relaxation(
+        axis="what", property_dcid="measurementDenominator", dropped_value_dcids=[denominator]
+    )
 
 
 def _constraint_properties(shape: ShapeDraft) -> frozenset[str]:
@@ -1843,59 +2038,3 @@ async def _nearest_real_for(
             NearestRealSpec, _attach_observations(near_specs[index], result, state.warnings)
         )
     return tuple(near_specs)
-
-
-async def _phase_no_data_answer(state: ResolveState) -> RegionResult | None:
-    """Return the single-shape no-data result. ``None`` means materialisation found data.
-
-    Attach nearest-real suggestions for ``no_observations``. Pass materialised results to
-    definite assembly. An elected shape the quantity gate found does not serve the leg's
-    quantity answers nothing alone, so the refusal the gate deferred to the fan-out stands
-    when the fan-out left the elected shape's path (`refuse_unserved_quantity`).
-    """
-    if (refused := await refuse_unserved_quantity(state)) is not None:
-        return refused
-    mat_result = state.mat_result
-
-    if isinstance(mat_result, NoDataDraft):
-        # Relax constraint bindings to suggest nearby data when observations are missing.
-        nearest_real: tuple[NearestRealSpec, ...] | None = None
-        if mat_result.reason == "no_observations":
-            nearest_real = await _nearest_real_for(state)
-        if (
-            refused := state.source_code_no_data(mat_result.reason, llm_usage=state.var_usage)
-        ) is not None:
-            return refused
-        return RegionResult(
-            variable_text=state.variable,
-            status="no_data",
-            specs=(),
-            no_data_reason=mat_result.reason,
-            warnings=tuple(state.warnings),
-            departure_facts=dict(state.departure_facts),
-            timing_by_step=dict(state.timing),
-            settled_dataset=state.settled_dataset(),
-            nearest_real=nearest_real,
-            llm_usage=state.var_usage,
-            no_data_role_axis=(
-                open_role_axis(state.shape_draft, state.place.roles.resolved_entities)
-                if mat_result.reason == "no_observations"
-                else None
-            ),
-        )
-
-    if isinstance(mat_result, UnsupportedDraft):
-        return _unsupported(
-            state,
-            mat_result.code,
-            pointer=mat_result.pointer,
-            detail=mat_result.detail,
-            llm_usage=state.var_usage,
-            facets=mat_result.facets,
-        )
-
-    # Treat unexpected resolver outcomes as ``no_observations``.
-    if not isinstance(mat_result, Materialised):
-        return state.no_data("no_observations", llm_usage=state.var_usage)
-
-    return None

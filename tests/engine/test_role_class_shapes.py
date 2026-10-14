@@ -38,16 +38,25 @@ from search.engine.qualifier_match import QualifierMatch, read_by_vocabulary
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import (
     candidate_collapse,
+    phase_election,
+    phase_place_materialise,
     promote_materialise,
     resolve_spec_resubmit,
     resolve_variable,
+)
+from search.engine.region.candidates import _Alternate, _materialise_alt_shapes
+from search.engine.region.phase_place_materialise import (
+    _declined_open_roles,
+    _members_holding_bound_values,
 )
 from search.engine.region.phase_rank_bind import _phase_prune_and_rank
 from search.engine.region.promote_materialise import _phase_materialise
 from search.engine.region.promote_state import _PromoteState
 from search.engine.region.result import with_runnable_operations
 from search.engine.region.state import EngineOptions, shape_vocabulary
+from search.engine.region.unrealisable import unbind_unrealisable
 from search.engine.retrieval.bound_values import (
+    MembershipAuthority,
     MembershipResolution,
     RoleClassWalks,
     RoleKeys,
@@ -80,6 +89,8 @@ from search.models import (
     BaseIdentity,
     CoverageBare,
     DatasetResubmitInput,
+    IdentityBindingValue,
+    IdentitySlot,
     Operation,
     ParsedEntity,
     ParsedPart,
@@ -346,6 +357,35 @@ def test_a_held_family_elects_its_role_class_among_every_member_it_holds(bind_ca
     assert list(shape_population_arcs(narrowed)) == [_TOTAL, _TOTAL_GUARANTEED]
     assert narrowed.label == shape.label
     assert narrowed.held_family == shape.held_family is not None
+
+
+def test_a_declined_reading_states_the_open_roles_of_held_members_outside_recall(
+    bind_catalogue,
+):
+    """Recall finds the unguaranteed members alone; the catalogue holds the guaranteed ones
+    too. Bound to a public guarantee, the declined reading's members are all held past
+    recall, and the by-creditor one among them leaves the origin open."""
+    bind_catalogue(
+        restrictive_catalogue(
+            provenances=[provenance_row(_WDI, BASE)],
+            base_variables={dcid: ([_WDI], []) for dcid in _DEBT_NODES},
+            arcs=build_arc_tables(
+                dfo={},
+                base={dcid: node["arcs"] for dcid, node in _DEBT_NODES.items()},
+                schema={},
+            ),
+        )
+    )
+    shape = _debt_shape(_TOTAL, _BY_CREDITOR)
+    holding = _members_holding_bound_values(shape, {"guarantee": ["Public"]})
+    state = SimpleNamespace(
+        shape_draft=shape,
+        frame=SimpleNamespace(open_roles=SimpleNamespace(value=("origin",))),
+    )
+
+    assert set(holding) == {_TOTAL_GUARANTEED, _BY_CREDITOR_GUARANTEED}
+    assert not set(holding) & set(shape.sv_arc_facts or {})
+    assert _declined_open_roles(cast(Any, state), holding) == ("origin",)
 
 
 def test_the_member_facts_of_a_recalled_shape_are_the_elected_role_class():
@@ -915,6 +955,18 @@ class _BindLLM:
         ), None
 
 
+class _AskNearestLLM:
+    """Declines the empty menu and names the first not-electable reading as nearest."""
+
+    async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
+        assert schema.__name__ == "_UniversalBindOutput"
+        return _UniversalBindOutput(
+            chosen_shape_index=0, ask="no reading divides by people", nearest_refused_index=0
+        ), None
+
+
 def _run(
     *,
     entities: list[str],
@@ -923,10 +975,13 @@ def _run(
     query: str = _QUERY,
     open_axes: frozenset[RoleAxis] = frozenset(),
     coverage: CoverageSnapshot | None = None,
+    llm=None,
+    nodes: dict = _DEBT_NODES,
+    options: EngineOptions | None = None,
 ):
-    members = list(_DEBT_NODES)
+    members = list(nodes)
     graph = FakeGraph(
-        nodes={**_PLACES, **_DEBT_NODES},
+        nodes={**_PLACES, **nodes},
         detect={query: {"svs": members, "cosine_scores": [0.9, 0.88, 0.87, 0.86]}},
         resolve={"Kenya": "country/KEN", "China": "country/CHN"},
         obs=obs,
@@ -943,10 +998,11 @@ def _run(
             pac=True,
             graph=graph,
             resolver=make_resolver(graph),
-            llm=_BindLLM(),
+            llm=llm or _BindLLM(),
             base_timing={},
             sdmx=FakeSdmxClient(observations={}, availability={}),
-            coverage=coverage or _one_role_coverage(_DEBT_NODES, obs),
+            coverage=coverage or _one_role_coverage(nodes, obs),
+            options=options,
         )
     )
 
@@ -1708,16 +1764,18 @@ _GNI_NODES = {
 }
 
 
-def test_a_subject_only_candidate_beside_a_role_bearing_election_binds_its_place_as_subject():
-    """The elected shape binds Kenya as the recipient. The subject-only candidate's identity
-    binds Kenya under `observationAbout`, the role its member declares."""
+def test_a_candidate_of_another_role_class_binds_its_place_in_its_own_role():
+    """The elected PPP reading binds Kenya under `observationAbout`, the role its member
+    declares. The question names no price basis and the elected reading is off the default
+    one, so the current-dollar reading is offered beside it (status rule 2(a)), and its
+    identity binds Kenya as the recipient, the role its member declares."""
 
     class _TwoReadingsLLM:
         async def generate_structured(self, *, prompt, system, schema):
             if schema is QuantityOutput:
                 return NO_QUANTITY
             return _UniversalBindOutput(
-                chosen_shape_index=0, bindings=[], also_plausible=[1], ask=None
+                chosen_shape_index=1, bindings=[], also_plausible=[0], ask=None
             ), None
 
     query = "national income of Kenya"
@@ -1791,78 +1849,47 @@ def _run_with_operations(*, obs: dict, operations: tuple[Operation, ...]):
     )
 
 
-def test_a_rank_over_creditors_is_left_off_a_recipient_only_answer_with_a_warning():
-    """No member of the family declares the creditor, so the open creditor the rank asks
-    for elects as it would unasked. The identity binds the recipient alone and states no
-    open role, and the answer is the plain total the mint resolves. The rank has no
-    creditor to run over, and the part says so."""
+def test_a_rank_over_creditors_refuses_a_recipient_only_family_before_bind():
+    """A rank over creditors asks the creditor axis, and no member of the family declares
+    the creditor, so no reading of the part is admissible: the part refuses
+    `role_incompatible` without a bind call and flags nothing
+    (`admissibility.judge_measure_and_roles`)."""
     stamped = _run_leg(
         nodes=_RECIPIENT_ONLY_NODES,
         coverage=_one_role_coverage(_RECIPIENT_ONLY_NODES, {f"{_TOTAL}|country/KEN": _OBS}),
         operations=(_RANK_CREDITORS, _GROWTH),
     )
 
-    assert stamped.status == "definite"
-    assert {sv.ref.ref for sv in stamped.specs[0].resolved.members} == {_TOTAL}
-    assert stamped.specs[0].definition.identity.open_roles is None
-    assert stamped.answered_roles == ("financingRecipient",)
-    assert stamped.operations == (_GROWTH,)
-    dropped = [w for w in stamped.warnings if w.code == "query_qualifier_dropped"]
-    assert [w.message for w in dropped] == [
-        'The requested "top creditors" was not applied: the answer is the total over every '
-        "provider, and a breakdown by provider needs a named provider."
-    ]
-    assert stamped.departure_facts == {
-        warning_key(dropped[0]): DepartureFact(
-            code="breakdown_not_applied",
-            binding_ref="origin:",
-            asked=_RANK_CREDITORS.phrase,
-            over="origin",
-        )
-    }
-    assert with_runnable_operations(stamped, (_RANK_CREDITORS, _GROWTH)).warnings == (
-        stamped.warnings
-    )
+    assert stamped.status == "no_data"
+    assert stamped.no_data_reason == "role_incompatible"
+    assert not stamped.flagged_match
+    assert "bind" not in stamped.timing_by_step
 
 
 _OPEN_CREDITOR_DROPPED = (
     "The requested breakdown over every provider was not applied: the answer is the total "
     "over every provider, and a breakdown by provider needs a named provider."
 )
-_RANK_CREDITORS_DROPPED = (
-    'The requested "top creditors" was not applied: the answer is the total over every '
-    "provider, and a breakdown by provider needs a named provider."
-)
 
 
-@pytest.mark.parametrize(
-    ("operations", "dropped_message", "asked"),
-    [
-        ((), _OPEN_CREDITOR_DROPPED, None),
-        ((_RANK_CREDITORS,), _RANK_CREDITORS_DROPPED, _RANK_CREDITORS.phrase),
-    ],
-    ids=["open-role-alone", "open-role-beside-a-rank-over-it"],
-)
-def test_an_open_creditor_on_a_recipient_only_answer_warns_once(
-    operations: tuple[Operation, ...], dropped_message: str, asked: str | None
-):
+def test_an_open_creditor_on_a_recipient_only_answer_warns_once():
     """No member declares the creditor, so the open creditor the part asks for elects as it
-    would unasked and the answer is the total over every creditor. The part warns once for
-    the axis, and a rank over it that already warned raises nothing more."""
+    would unasked and the answer is the total over every creditor. An axis asked member by
+    member is a preference among readings, never a refusal, and the part warns once for
+    it."""
     stamped = _run_leg(
         nodes=_RECIPIENT_ONLY_NODES,
         coverage=_one_role_coverage(_RECIPIENT_ONLY_NODES, {f"{_TOTAL}|country/KEN": _OBS}),
-        operations=operations,
         open_axes=frozenset({"origin"}),
     )
 
     assert stamped.status == "definite"
     assert stamped.specs[0].definition.identity.open_roles is None
     dropped = [w for w in stamped.warnings if w.code == "query_qualifier_dropped"]
-    assert [w.message for w in dropped] == [dropped_message]
+    assert [w.message for w in dropped] == [_OPEN_CREDITOR_DROPPED]
     assert stamped.departure_facts == {
         warning_key(dropped[0]): DepartureFact(
-            code="breakdown_not_applied", binding_ref="origin:", asked=asked, over="origin"
+            code="breakdown_not_applied", binding_ref="origin:", asked=None, over="origin"
         )
     }
 
@@ -2152,6 +2179,115 @@ def test_a_family_reading_fewer_leaves_before_recall_scores_compare():
     assert kept == [debt]
 
 
+_DAC1_BILATERAL_ODA = "Amount_FinancialFlow_Gross_Disbursement_DAC1AidType1015_Nominal"
+
+
+def _election_family(name: str) -> ShapeDraft:
+    """A shape of the family `name` among the rivals of one five-tuple and role class: the
+    DAC1, DAC2a and CRS tables, and an unindexed debt series. Each has the same recall
+    score, so only the phrases it reads and the words it states separate them."""
+    if name == "debt":
+        (shape,) = [
+            shape
+            for shape in _rival_shapes(debt_score=0.5, crs_score=0.5)
+            if not index_carries_shape(shape)
+        ]
+    else:
+        dcid = {"dac1": _DAC1_BILATERAL_ODA, "dac2a": _DAC2A_ODA, "crs": _CRS_PRIMARY}[name]
+        (shape,) = _index_shapes(dcid)
+    return dataclasses.replace(shape, representative_score=0.5)
+
+
+def _words(*words: str) -> frozenset[str]:
+    return frozenset(words)
+
+
+@pytest.mark.parametrize(
+    ("families", "reads_stated_words", "kept"),
+    [
+        # DAC1 codes "bilateral ODA" as one aid type. The CRS reads "ODA" and states
+        # "bilateral", which its rival already reads in a phrase, so the CRS reads fewer.
+        pytest.param(
+            {
+                "dac1": (_words("bilateral oda"), _words()),
+                "crs": (_words("oda"), _words("bilateral")),
+            },
+            True,
+            {"dac1"},
+            id="a-coding-family-beats-a-stating-one",
+        ),
+        # DAC2a reads "ODA" and states nothing here, and the CRS reads "ODA" and states
+        # "bilateral", which DAC2a reads nowhere.
+        pytest.param(
+            {"dac2a": (_words("oda"), _words()), "crs": (_words("oda"), _words("bilateral"))},
+            True,
+            {"crs"},
+            id="a-stating-family-beats-one-that-neither-states-nor-codes-the-word",
+        ),
+        pytest.param(
+            {
+                "dac2a": (_words("oda"), _words("bilateral")),
+                "crs": (_words("oda"), _words("bilateral")),
+            },
+            True,
+            {"dac2a", "crs"},
+            id="two-stating-families-read-alike",
+        ),
+        # A debt series codes "bilateral" as its creditor type and the CRS reads nothing.
+        pytest.param(
+            {"debt": (_words("bilateral"), _words()), "crs": (_words(), _words("bilateral"))},
+            True,
+            {"debt"},
+            id="a-family-coding-the-word-beats-a-stating-one-reading-nothing",
+        ),
+        # Each reads a phrase the other lacks: the debt series "bilateral", DAC2a "ODA".
+        pytest.param(
+            {
+                "debt": (_words("bilateral"), _words()),
+                "dac2a": (_words("oda"), _words("bilateral")),
+            },
+            True,
+            {"debt", "dac2a"},
+            id="a-stating-family-adds-nothing-beside-one-that-codes-the-word",
+        ),
+        # The index records no phrase for a debt series, whose creditor type is a graph
+        # value, so nothing shows whether it reads the word.
+        pytest.param(
+            {"debt": (_words(), _words()), "crs": (_words(), _words("bilateral"))},
+            True,
+            {"debt", "crs"},
+            id="a-stated-word-adds-nothing-beside-a-family-the-index-does-not-carry",
+        ),
+        pytest.param(
+            {"dac2a": (_words("oda"), _words()), "crs": (_words("oda"), _words("bilateral"))},
+            False,
+            {"dac2a", "crs"},
+            id="stated-words-unread-without-a-reader",
+        ),
+    ],
+)
+def test_a_family_stating_a_query_word_reads_it_in_the_election(
+    families: dict[str, tuple[frozenset[str], frozenset[str]]],
+    reads_stated_words: bool,
+    kept: set[str],
+):
+    """A family reads beside a rival the phrases its codes read and, where the index
+    carries the rival, each word its tables state that no phrase of the rival reads. A
+    coding family beats a stating one, a stating family beats one that neither states nor
+    codes the word, and two stating families read alike."""
+    shapes = {name: _election_family(name) for name in families}
+    assert len({shape_five_tuple(shape) for shape in shapes.values()}) == 1
+    reads = {id(shape): families[name] for name, shape in shapes.items()}
+
+    elected = elect_five_tuple_family(
+        list(shapes.values()),
+        lambda shape: reads[id(shape)][0],
+        stated_words=(lambda shape: reads[id(shape)][1]) if reads_stated_words else None,
+    )
+
+    assert {name for name, shape in shapes.items() if any(shape is e for e in elected)} == kept
+
+
 def test_an_unindexed_shape_has_no_measure_family_and_passes_the_collapse():
     """A by-creditor debt member shares its five-tuple and its two roles with CRS flows.
     The measure family machinery reads index rows, so it leaves the debt shape alone."""
@@ -2337,19 +2473,459 @@ def test_a_per_capita_refusal_keeps_the_open_creditor_on_its_flagged_match(
     entities, coverage, bound
 ):
     """External debt per capita by every creditor. No debt series divides by people, so
-    the quantity gate refuses after materialise, and the flagged definition keeps the
-    creditor axis the elected members confirmed open, as the definite answer would. It does
-    so over the zero-observation carrier at Kenya and over the role path's no-data outcome,
-    where discovery finds no series at any place (`NoDataDraft.open_axes`)."""
+    every reading fails the form the question names and none is admissible. Bind declines
+    the empty menu and names the nearest not-electable reading, which the part refuses
+    with as its flagged match. The flagged definition keeps the creditor axis the frame
+    confirms open, as the definite answer would, whether or not Kenya holds data."""
     result = _run(
         entities=entities,
         obs={},
         query="external debt stocks per capita of Kenya",
         open_axes=frozenset({"origin"}),
         coverage=coverage(),
+        llm=_AskNearestLLM(),
     )
 
     assert (result.status, result.no_data_reason) == ("no_data", "denominator_not_available")
-    (flagged,) = result.flagged_match or ()
+    assert result.flagged_match is not None
+    (flagged,) = result.flagged_match
     assert flagged.definition.identity.entities == bound
     assert flagged.definition.identity.open_roles == ["origin"]
+
+
+# ---------------------------------------------------------------------------
+# Drafted values no member holds together
+# ---------------------------------------------------------------------------
+
+_RELAX_BONDS = "Debt_Bonds"
+_RELAX_GUARANTEED = "Debt_Guaranteed"
+_RELAX_LONG_TERM = "Debt_LongTerm"
+_RELAX_TOTAL = "Debt_Stocks"
+_RELAX_NODES = {
+    _RELAX_BONDS: _node(
+        "External debt stocks, bonds",
+        _RECIPIENT,
+        positionType="AmountOutstanding",
+        instrument="Bond",
+    ),
+    _RELAX_GUARANTEED: _node(
+        "Guaranteed external debt stocks",
+        _RECIPIENT,
+        positionType="AmountOutstanding",
+        guarantee="Public",
+    ),
+    _RELAX_LONG_TERM: _node(
+        "Long-term external debt stocks",
+        _RECIPIENT,
+        positionType="AmountOutstanding",
+        maturity="LongTerm",
+    ),
+    _RELAX_TOTAL: _node("External debt stocks", _RECIPIENT, positionType="AmountOutstanding"),
+}
+_RELAX_OBS = {f"{dcid}|country/KEN": _OBS for dcid in _RELAX_NODES}
+
+
+def _relax_llm(**drafts: tuple[str, str]):
+    """A bind double drafting each property's (value, evidence) on the first shape."""
+
+    class _DraftLLM:
+        async def generate_structured(self, *, prompt, system, schema):
+            if schema is QuantityOutput:
+                return NO_QUANTITY
+            return _UniversalBindOutput(
+                chosen_shape_index=0,
+                bindings=[
+                    SlotBindingDraft(
+                        axis="how",
+                        property_dcid=prop,
+                        kind="value",
+                        value_dcids=[value],
+                        evidence=cast(Any, evidence),
+                    )
+                    for prop, (value, evidence) in drafts.items()
+                ],
+                also_plausible=None,
+                ask=None,
+            ), None
+
+    return _DraftLLM()
+
+
+def _relax_outcome(result) -> tuple:
+    """The status, the refusal reason, the members and bound slots of the answer or of the
+    read a refusal flags, and each departure code."""
+    (spec,) = result.specs or result.flagged_match or (None,)
+    return (
+        result.status,
+        result.no_data_reason,
+        spec and [sv.ref.ref for sv in spec.resolved.members],
+        spec
+        and {
+            slot.property: slot.binding.ref
+            for slot in spec.definition.identity.slots
+            if slot.binding.state == "value"
+        },
+        sorted(fact.code for fact in result.departure_facts.values()),
+    )
+
+
+class _RelaxUnreadableWalk(FakeMintGraphReader):
+    """A walk reader over the relax members whose reverse query times out."""
+
+    def __init__(self) -> None:
+        super().__init__(arcs={dcid: _walk_arcs(node) for dcid, node in _RELAX_NODES.items()})
+
+    def node_subjects(self, dcid, *, property, filters=None, max_results, deadline=None):
+        raise TimeoutError("the read timed out")
+
+
+@pytest.mark.parametrize(
+    ("member_graph", "unverified"),
+    [
+        pytest.param(lambda: _walk_reader(_RELAX_NODES), False, id="walked"),
+        pytest.param(_RelaxUnreadableWalk, True, id="unreadable-walk"),
+        pytest.param(lambda: None, True, id="no-walk"),
+    ],
+)
+def test_sole_option_drafts_no_member_holds_together_give_way_and_the_named_value_stays(
+    member_graph, unverified
+):
+    """ "Principal repayments" names the flow type alone, and the reply also drafts one
+    value on each of three slots because each offered no other. The recalled family holds
+    a total, which asserts none of the three, so each claim falls when it is checked
+    against the sample (`_validate_sole_option_bindings`): the total answers under the
+    named value alone, the three slots shown unbound and no departure (dq-ids-029). The
+    family with no total, where the drafts reach the read and give way there, is
+    `test_a_family_with_no_total_refuses_once_its_sole_option_drafts_go`.
+
+    A walk that settles the family leaves no `membership_unverified`; a walk that cannot
+    read it, and a request with no walk, answer the recalled members under that warning."""
+    result = _run(
+        entities=["Kenya"],
+        obs=_RELAX_OBS,
+        nodes=_RELAX_NODES,
+        options=EngineOptions(materialise_graph=member_graph()),
+        llm=_relax_llm(
+            positionType=("AmountOutstanding", "mentioned"),
+            instrument=("Bond", "sole_option"),
+            guarantee=("Public", "sole_option"),
+            maturity=("LongTerm", "sole_option"),
+        ),
+    )
+
+    assert _relax_outcome(result) == (
+        "definite",
+        None,
+        [_RELAX_TOTAL],
+        {"positionType": "AmountOutstanding"},
+        [],
+    )
+    assert not result.unbound_qualifiers
+    assert ("membership_unverified" in {w.code for w in result.warnings}) is unverified
+    assert (result.specs[0].resolved.shape.member_digest is None) is unverified
+
+
+@pytest.mark.parametrize("walked", [True, False], ids=["walked", "no-walk"])
+def test_a_named_value_gives_way_only_after_every_sole_option_draft_and_is_refused_on(walked):
+    """The request names bonds and the reply drafts the guarantee as a sole option. The
+    guaranteed member would answer by dropping the named instrument, and the bonds member
+    by dropping the draft, so the draft goes and the bonds member answers. With both
+    values named, one must go: the first member's conflict is unbound, and the part refuses
+    `qualifier_not_bound` on that value, flagging the read made without it. The order is
+    the same where the walk exposes the conflict and where the read does."""
+    pair = {
+        _RELAX_GUARANTEED: _RELAX_NODES[_RELAX_GUARANTEED],
+        _RELAX_BONDS: _RELAX_NODES[_RELAX_BONDS],
+    }
+
+    def options(nodes: dict) -> EngineOptions:
+        return EngineOptions(materialise_graph=_walk_reader(nodes) if walked else None)
+
+    drafted = _run(
+        entities=["Kenya"],
+        obs=_RELAX_OBS,
+        nodes=pair,
+        options=options(pair),
+        llm=_relax_llm(instrument=("Bond", "mentioned"), guarantee=("Public", "sole_option")),
+    )
+    named = _run(
+        entities=["Kenya"],
+        obs=_RELAX_OBS,
+        nodes=_RELAX_NODES,
+        options=options(_RELAX_NODES),
+        llm=_relax_llm(instrument=("Bond", "mentioned"), guarantee=("Public", "mentioned")),
+    )
+
+    assert _relax_outcome(drafted) == ("definite", None, [_RELAX_BONDS], {"instrument": "Bond"}, [])
+    assert _relax_outcome(named) == (
+        "no_data",
+        "qualifier_not_bound",
+        [_RELAX_BONDS],
+        {"instrument": "Bond"},
+        [],
+    )
+    assert [(term.slot, term.disposition) for term in named.unbound_qualifiers] == [
+        ("guarantee", "unbound")
+    ]
+
+
+@pytest.mark.parametrize("walked", [True, False], ids=["walked", "no-walk"])
+def test_bound_values_no_unbinding_can_admit_a_member_under_refuse_binding_mismatch(walked):
+    """The one member asserting the bound instrument carries a guarantee that resolves to
+    no node, and the other's instrument resolves to none, so the mint admits neither
+    under any bindings. Nothing is unbound and the part refuses `binding_mismatch`."""
+    unresolved = {"nodes": [{"types": ["ProvisionalNode"], "provenanceId": "dc/base/Schema"}]}
+    bonds = _node(
+        "External debt stocks, bonds",
+        _RECIPIENT,
+        positionType="AmountOutstanding",
+        instrument="Bond",
+    )
+    guaranteed = _node(
+        "Guaranteed external debt stocks, bonds",
+        _RECIPIENT,
+        positionType="AmountOutstanding",
+        instrument="Bond",
+        guarantee="Public",
+    )
+    bonds["arcs"]["instrument"] = unresolved
+    guaranteed["arcs"]["guarantee"] = unresolved
+
+    nodes = {_RELAX_BONDS: bonds, _RELAX_GUARANTEED: guaranteed}
+
+    result = _run(
+        entities=["Kenya"],
+        obs=_RELAX_OBS,
+        nodes=nodes,
+        options=EngineOptions(materialise_graph=_walk_reader(nodes) if walked else None),
+        llm=_relax_llm(instrument=("Bond", "mentioned")),
+    )
+
+    assert (result.status, result.no_data_reason) == ("no_data", "binding_mismatch")
+    assert result.flagged_match is None
+    assert not result.unbound_qualifiers
+
+
+def test_an_alternate_whose_values_no_member_holds_together_unbinds_a_minimal_set():
+    """An alternate's values come from its representative, none from the request, so the
+    candidate read weighs no class: the smallest conflict goes, the first member's on a
+    tie, and the alternate answers from that member with its value still bound."""
+    graph = FakeGraph(nodes={**_PLACES, **_RELAX_NODES}, obs=_RELAX_OBS, detect={}, resolve={})
+    (shape,) = derive_shapes(confirmed_svs=list(_RELAX_NODES), graph=graph)
+    bindings = [
+        SlotBindingDraft(axis="how", property_dcid=prop, kind="value", value_dcids=[value])
+        for prop, value in (
+            ("guarantee", "Public"),
+            ("instrument", "Bond"),
+            ("maturity", "LongTerm"),
+        )
+    ]
+
+    read = _materialise_alt_shapes(
+        [_Alternate(shape, bindings)],
+        places=[
+            bound_place_context(flow_place_roles(shape, destination=["country/KEN"]), "country/KEN")
+        ],
+        named_place_dcids=["country/KEN"],
+        graph=graph,
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+        date_request=None,
+        coverage=_one_role_coverage(_RELAX_NODES, _RELAX_OBS),
+    )
+
+    (candidate,) = read.candidates
+    assert candidate.mat.sv_dcids == [_RELAX_BONDS]
+    assert {
+        b.property_dcid: b.value_dcids for b in candidate.bindings if b.property_dcid is not None
+    } == {"guarantee": [], "instrument": ["Bond"], "maturity": []}
+
+
+def test_a_resubmit_posting_values_no_member_holds_together_refuses_and_unbinds_nothing():
+    """A posted identity is what the mint resolves, and it resolves no member for a bond
+    that is also guaranteed. The resubmit refuses `no_matching_slice` before any read: it
+    answers the identity posted or none, so it relaxes nothing and flags no other read."""
+    first = _run(
+        entities=["Kenya"],
+        obs=_RELAX_OBS,
+        nodes=_RELAX_NODES,
+        options=EngineOptions(materialise_graph=_walk_reader(_RELAX_NODES)),
+        llm=_relax_llm(instrument=("Bond", "mentioned")),
+    )
+    identity = first.specs[0].definition.identity
+    posted = identity.model_copy(
+        update={
+            "slots": [
+                IdentitySlot(property=slot.property, binding=IdentityBindingValue(ref="Public"))
+                if slot.property == "guarantee"
+                else slot
+                for slot in identity.slots
+            ]
+        }
+    )
+
+    region = _resubmit(posted, nodes=_RELAX_NODES)
+
+    assert (region.status, region.no_data_reason) == ("no_data", "no_matching_slice")
+    assert region.flagged_match is None
+    assert not region.unbound_qualifiers
+
+
+def test_a_walk_whose_reverse_read_holds_no_candidate_finds_no_member():
+    """The reverse read under a bond binding holds no candidate, while more recalled seeds
+    are silent on the instrument than the walk re-reads, so it leaves some undismissed. The
+    mint walks the reverse read alone, with no seed, and serves no member for the identity,
+    so the walk reports no member, the fact the place-binding relaxation reads, and not a
+    family it could not read."""
+    nodes = {
+        f"Debt_Seed_{i}": _node(f"Debt stocks {i}", _RECIPIENT, positionType=f"Position{i}")
+        for i in range(40)
+    }
+    graph = FakeGraph(nodes=nodes, obs={}, detect={}, resolve={})
+    (shape,) = derive_shapes(confirmed_svs=list(nodes), graph=graph)
+    bond = SlotBindingDraft(
+        axis="how", property_dcid="instrument", kind="value", value_dcids=["Bond"]
+    )
+
+    resolution = elected_role_class_shape(
+        shape,
+        shape_query(shape, [bond], ["destination"]),
+        walks=RoleClassWalks(_walk_reader(nodes)),
+        arcs_graph=graph,
+    )
+
+    assert resolution.authority is MembershipAuthority.FAILED
+    assert resolution.no_member is True
+
+
+@pytest.mark.parametrize("walked", [True, False], ids=["walked", "no-walk"])
+def test_a_standard_part_is_not_relaxed_where_its_walk_finds_no_member(walked):
+    """A subject-only family of the total and its male part, with female bound. The walk
+    finds no member under it, and the mint's rule, which counts the total's silence on
+    gender as a conflict, would unbind female and refuse on it. A standard part reads
+    its members by its own rule, under which the silent total admits, so the walk changes
+    nothing: both answers read the total and find no observation."""
+    nodes = {
+        "Pop_Total": _node("People", [], positionType="Stock"),
+        "Pop_Male": _node("Male people", [], positionType="Stock", gender="Male"),
+    }
+
+    result = _run(
+        entities=["Kenya"],
+        obs={f"{dcid}|country/KEN": _OBS for dcid in nodes},
+        nodes=nodes,
+        options=EngineOptions(materialise_graph=_walk_reader(nodes) if walked else None),
+        llm=_relax_llm(gender=("Female", "mentioned")),
+    )
+
+    assert _relax_outcome(result) == ("no_data", "no_observations", ["Pop_Total"], {}, [])
+    assert not result.unbound_qualifiers
+
+
+def test_a_standard_part_unbinds_a_sole_option_value_before_a_named_one(monkeypatch):
+    """Female is drafted as the gender slot's sole option and age X is named. No member
+    holds both: A is female at age Y, B male at age X. The sole-option claim gives way
+    silently and B answers, where unbinding the named age would refuse on it. Validation
+    of the claim against the population (`_validate_sole_option_bindings`) would drop it
+    first here, so it is held off to reach the read."""
+    nodes = {
+        "Pop_A": _node("Females aged Y", [], positionType="Stock", gender="Female", age="Y"),
+        "Pop_B": _node("Males aged X", [], positionType="Stock", gender="Male", age="X"),
+    }
+    monkeypatch.setattr(
+        phase_election, "_validate_sole_option_bindings", lambda bindings, shape: bindings
+    )
+
+    result = _run(
+        entities=["Kenya"],
+        obs={f"{dcid}|country/KEN": _OBS for dcid in nodes},
+        nodes=nodes,
+        llm=_relax_llm(gender=("Female", "sole_option"), age=("X", "mentioned")),
+    )
+
+    assert _relax_outcome(result) == ("definite", None, ["Pop_B"], {"age": "X"}, [])
+    assert not result.unbound_qualifiers
+
+
+@pytest.mark.parametrize("walked", [True, False], ids=["walked", "no-walk"])
+def test_a_family_with_no_total_refuses_once_its_sole_option_drafts_go(monkeypatch, walked):
+    """The family holds no member asserting the named value alone, and its bonds member
+    declares a creditor where the others declare the debtor alone. Every member conflicts
+    on a sole-option draft, so all three go, and the members left under the named value
+    declare role sets the election cannot order: the part refuses
+    `role_signature_incompatible`, as the mint refuses the identity, with no draft still
+    bound and no value refused on."""
+    nodes = {
+        _RELAX_BONDS: _node(
+            "External debt stocks, bonds",
+            _PAIR,
+            positionType="AmountOutstanding",
+            instrument="Bond",
+        ),
+        _RELAX_GUARANTEED: _RELAX_NODES[_RELAX_GUARANTEED],
+        _RELAX_LONG_TERM: _RELAX_NODES[_RELAX_LONG_TERM],
+    }
+    states = []
+
+    def unbind(state, unrealisable):
+        unbind_unrealisable(state, unrealisable)
+        states.append(state)
+
+    monkeypatch.setattr(phase_place_materialise, "unbind_unrealisable", unbind)
+
+    result = _run(
+        entities=["Kenya"],
+        obs=_RELAX_OBS,
+        nodes=nodes,
+        options=EngineOptions(materialise_graph=_walk_reader(nodes) if walked else None),
+        llm=_relax_llm(
+            positionType=("AmountOutstanding", "mentioned"),
+            instrument=("Bond", "sole_option"),
+            guarantee=("Public", "sole_option"),
+            maturity=("LongTerm", "sole_option"),
+        ),
+    )
+
+    assert (result.status, result.no_data_reason) == ("no_data", "role_signature_incompatible")
+    assert result.flagged_match is None
+    assert not result.unbound_qualifiers
+    (state,) = states
+    assert {
+        b.property_dcid: b.value_dcids
+        for b in state.bindings
+        if b.kind == "value" and b.property_dcid is not None
+    } == {"positionType": ["AmountOutstanding"]}
+
+
+@pytest.mark.parametrize("walked", [True, False], ids=["walk-point", "read"])
+def test_the_served_dataset_is_settled_again_under_the_bindings_an_unbinding_leaves(
+    monkeypatch, walked
+):
+    """The dataset a part is served from is named from its bindings, so each point that
+    unbinds values settles it again on what remains, and a part no table then serves
+    answers with that refusal."""
+    settled = []
+
+    def settle(state, role_keys):
+        settled.append(
+            {b.property_dcid for b in state.bindings if b.kind == "value" and b.property_dcid}
+        )
+        return state.no_data("variable_not_resolved")
+
+    monkeypatch.setattr(phase_place_materialise, "_settle_served_dataset", settle)
+    nodes = {dcid: node for dcid, node in _RELAX_NODES.items() if dcid != _RELAX_TOTAL}
+
+    result = _run(
+        entities=["Kenya"],
+        obs=_RELAX_OBS,
+        nodes=nodes,
+        options=EngineOptions(materialise_graph=_walk_reader(nodes) if walked else None),
+        llm=_relax_llm(
+            positionType=("AmountOutstanding", "mentioned"),
+            instrument=("Bond", "sole_option"),
+            guarantee=("Public", "sole_option"),
+            maturity=("LongTerm", "sole_option"),
+        ),
+    )
+
+    assert settled == [{"positionType"}]
+    assert (result.status, result.no_data_reason) == ("no_data", "variable_not_resolved")

@@ -79,16 +79,16 @@ def test_candidates_count_summary_sentence():
     """Candidates: rendered_sentence counts the readings, then states each one's
     heading and a byline led by its source and span.
 
-    The count tracks however many structurally distinct SVs the universal
-    choose+bind call's also_plausible list surfaces with real data, so it is read off
-    the response's own spec count rather than a literal.
+    The elected reading comes first, then its rival, the share the model nominated
+    (status rule 2(b)).
     """
-    r = _resolve("under-5 child mortality rate")
+    r = _resolve("remittances as percentage of GDP in Nigeria")
     assert isinstance(r, CandidatesPart)
     assert r.rendered_sentence == (
-        f"{len(r.candidates.specs)} readings. "
-        "Under-five deaths (under 5 years old). UN SDG · 2000 to 2022. "
-        "Under-five mortality rate (under 5 years old). UN SDG · 2000 to 2022."
+        "2 readings. "
+        "Nigeria's inward remittances as a percentage of nominal gross domestic production. "
+        "World Development Indicators · 1977 to 2024. "
+        "Nigeria's volume of remittances as a proportion of total GDP. UN SDG · 2000 to 2022."
     )
 
 
@@ -112,7 +112,7 @@ def test_sentence_plan_present_on_the_resolved_spec():
 def test_sentence_plan_wraps_candidates_summary():
     """The part's plan states the readings as text tokens that join to its sentence;
     each candidate keeps its own sentence plan."""
-    r = _resolve("under-5 child mortality rate")
+    r = _resolve("remittances as percentage of GDP in Nigeria")
     assert isinstance(r, CandidatesPart)
     assert r.rendered_sentence is not None
     assert r.sentence_plan is not None

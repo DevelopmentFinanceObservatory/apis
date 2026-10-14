@@ -136,9 +136,6 @@ class FakeMintGraphReader:
             for stat_var in variable_dcids
         }
 
-    def declares_facet_defaults(self) -> bool:
-        return bool(self._policies)
-
     def default_facet_policy(self, *, stat_var: str, axis: str) -> FacetDefaultPolicy | None:
         self._count("default_facet_policy")
         return self._policies.get((stat_var, axis))
@@ -294,9 +291,6 @@ class BlockingFakeMintGraphReader:
         return self._delegate.entities_with_data_by_variable(
             variable_dcids, entity_dcids, deadline=deadline
         )
-
-    def declares_facet_defaults(self) -> bool:
-        return self._delegate.declares_facet_defaults()
 
     def default_facet_policy(self, *, stat_var: str, axis: str) -> FacetDefaultPolicy | None:
         return self._delegate.default_facet_policy(stat_var=stat_var, axis=axis)

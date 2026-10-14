@@ -66,9 +66,9 @@ class ArtifactExpired(Refusal):
 
 
 class ObservationsUnavailable(Refusal):
-    """The version is a groupby collapse, holds no servable stored frame where its preview reads
-    rows, holds a converted series without its per-series conversion record, or does not say
-    whether its default place scope was plural. It maps to `observations_unavailable`, 404."""
+    """The version is derived (a groupby collapse or a party-totals cut), holds no servable
+    stored frame where its preview reads rows, holds a converted series without its per-series
+    conversion record, or does not say whether its default place scope was plural. It maps to `observations_unavailable`, 404."""
 
     code = "observations_unavailable"
 

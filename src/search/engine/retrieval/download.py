@@ -3,11 +3,11 @@
 
 The counts are what the answer's read plan serves over the identity's whole window, the
 window a mint reads: every year when the identity names none, the plan's range for a range,
-and each series' own latest year for `latest`. A preview reads `BulkPlan.served_years` under
-`latest`, one year, and the counts ignore it.
+and each member's elected year for `latest` (`coverage.latest_election`). A preview
+reads `BulkPlan.served_years` under `latest`, one year, and the counts ignore it.
 
 - A role-bearing plan counts from the coverage index (`CoverageIndex.served_extent`): the
-  rows it serves (`coverage.served_rows`) less the rows a conversion leaves out, the rows
+  rows it counts (`coverage.counted_rows`) less the rows a conversion leaves out, the rows
   its headline counts in one year.
 - A standard plan, which binds no roles, counts from facet metadata: each served series' points
   (`read_plan.series_points`) and dates (`read_plan.series_dates`), as coverage does.
@@ -35,7 +35,11 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from origin_catalogue import current_catalogue, entry_ref
-from search.engine.retrieval.coverage import coverage_exclusions, served_rows
+from search.engine.retrieval.coverage import (
+    counted_rows,
+    coverage_exclusions,
+    latest_election,
+)
 from search.engine.retrieval.read_plan import (
     PairPlan,
     PlanSeries,
@@ -203,14 +207,15 @@ def _coverage_extent(
     if plan.roles is None or not all(index.covers(sv) for sv in plan.members):
         return None
     read = years if isinstance(years, TimeWindow) else None
+    latest = latest_election(plan, years)
     extent = index.served_extent(
         variables=plan.members,
         bound=plan.roles.bound,
-        served=served_rows(plan),
+        served=counted_rows(plan, latest),
         excluded=coverage_exclusions(plan),
         first_year=read.start_year if read is not None else None,
         last_year=read.end_year if read is not None else None,
-        latest=years == "latest",
+        latest=latest,
         kept_years=(
             coverage_kept_years(conversion, plan.roles.role_names)
             if conversion is not None
@@ -275,14 +280,15 @@ def _served_entity_years(
         (cov for cov, graph in plan.roles.role_names.items() if graph == role), None
     )
     read = years if isinstance(years, TimeWindow) else None
+    latest = latest_election(plan, years)
     found = index.series_years(
         variables=plan.members,
         bound=plan.roles.bound,
-        served=served_rows(plan),
+        served=counted_rows(plan, latest),
         excluded=coverage_exclusions(plan),
         first_year=read.start_year if read is not None else None,
         last_year=read.end_year if read is not None else None,
-        latest=years == "latest",
+        latest=latest,
     )
     if found is None or coverage_role is None:
         return

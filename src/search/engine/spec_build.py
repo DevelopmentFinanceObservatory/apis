@@ -290,7 +290,8 @@ class NamedGroup:
     the graph holds one, and `entity_type` is that node's graph type. `named_alone` are the
     members the request also named on their own, each as the role key it fills and its
     dcid. `total` is the party a flow dataset publishes as the group's total
-    (`PlaceSet.total`), which a role can bind in place of the members.
+    (`PlaceSet.total`), which a role can bind in place of the members. `group_id` is the
+    membership registry's id for a group the graph holds no node for (`EntityGroup.group_id`).
     """
 
     label: str
@@ -299,6 +300,7 @@ class NamedGroup:
     entity_type: str | None = None
     named_alone: frozenset[tuple[str, str]] = frozenset()
     total: str | None = None
+    group_id: str | None = None
 
 
 def spec_named_groups(spec: Spec) -> tuple[NamedGroup, ...]:
@@ -311,6 +313,16 @@ def spec_named_groups(spec: Spec) -> tuple[NamedGroup, ...]:
     """
     entities = spec.definition.identity.entities
     alone = spec.resolved.named_alone
+    groups_by_role = spec.resolved.entity_groups or {}
+    group_totals = spec.resolved.group_totals
+
+    def total(role: str, group: EntityGroup) -> str | None:
+        # A role reading its group as members keeps the group's total aside
+        # (`ResolvedSpec.group_totals`). Both entries for that group carry it, so they stay one.
+        if group.total is not None:
+            return group.total
+        return group_totals.get(role) if groups_by_role.get(role) == group else None
+
     named = [
         NamedGroup(
             label=group.label,
@@ -318,6 +330,8 @@ def spec_named_groups(spec: Spec) -> tuple[NamedGroup, ...]:
             member_dcids=members,
             entity_type=group.entity_type,
             named_alone=frozenset((r, d) for r, d in alone if r == role and d in members),
+            total=total(role, group),
+            group_id=group.group_id,
         )
         for role, group, members in spec.resolved.named_sets
     ]
@@ -328,9 +342,10 @@ def spec_named_groups(spec: Spec) -> tuple[NamedGroup, ...]:
             member_dcids=frozenset(entities[role]),
             entity_type=group.entity_type,
             named_alone=frozenset((r, d) for r, d in alone if r == role and d in entities[role]),
-            total=group.total,
+            total=total(role, group),
+            group_id=group.group_id,
         )
-        for role, group in (spec.resolved.entity_groups or {}).items()
+        for role, group in groups_by_role.items()
     )
     return tuple(dict.fromkeys(named))
 
@@ -350,7 +365,12 @@ def role_named_sets(
     return tuple(
         (
             role,
-            EntityGroup(ref=group.dcid, label=group.label, entity_type=group.entity_type),
+            EntityGroup(
+                ref=group.dcid,
+                label=group.label,
+                entity_type=group.entity_type,
+                group_id=group.group_id,
+            ),
             group.member_dcids,
         )
         for role, dcids in dcids_by_role.items()
@@ -370,25 +390,50 @@ def role_entity_groups(
     members instead. Of groups with the same members, one with a node wins over one without,
     then the first by dcid, then label, whatever order the request named them in.
     """
-    dcids_by_role: dict[str, set[str]] = {}
-    for entity in entities:
-        dcids_by_role.setdefault(entity_role_key(entity), set()).add(entity.ref.ref)
     groups = tuple(groups)
     result: dict[str, EntityGroup] = {}
-    for role, dcids in dcids_by_role.items():
-        group = min(
-            (g for g in groups if g.member_dcids == dcids or {g.total} == dcids),
-            key=lambda g: (g.dcid is None, g.dcid or "", g.label),
-            default=None,
-        )
+    for role, dcids in _dcids_by_role(entities).items():
+        group = _role_group(groups, dcids)
         if group is not None:
             result[role] = EntityGroup(
                 ref=group.dcid,
                 label=group.label,
                 entity_type=group.entity_type,
                 total=group.total if {group.total} == dcids else None,
+                group_id=group.group_id,
             )
     return result
+
+
+def role_group_totals(
+    groups: Iterable[NamedGroup], entities: Iterable[Entity]
+) -> tuple[tuple[str, str], ...]:
+    """The total of the group each role reads as its members, as `(role, total)` in role
+    order (`ResolvedSpec.group_totals`). A role that binds the total names it on
+    `EntityGroup.total` instead, and a group no total holds names none."""
+    groups = tuple(groups)
+    result: list[tuple[str, str]] = []
+    for role, dcids in _dcids_by_role(entities).items():
+        group = _role_group(groups, dcids)
+        if group is not None and group.total is not None and {group.total} != dcids:
+            result.append((role, group.total))
+    return tuple(result)
+
+
+def _dcids_by_role(entities: Iterable[Entity]) -> dict[str, set[str]]:
+    dcids_by_role: dict[str, set[str]] = {}
+    for entity in entities:
+        dcids_by_role.setdefault(entity_role_key(entity), set()).add(entity.ref.ref)
+    return dcids_by_role
+
+
+def _role_group(groups: Sequence[NamedGroup], dcids: set[str]) -> NamedGroup | None:
+    """The group whose members or total a role's dcids equal. Of groups with the same
+    members, one with a node wins over one without, then the first by dcid, then label."""
+    matches = [g for g in groups if g.member_dcids == dcids or {g.total} == dcids]
+    if not matches:
+        return None
+    return min(matches, key=lambda g: (g.dcid is None, g.dcid or "", g.label))
 
 
 def entity_from_resolved(re: ResolvedEntity) -> Entity:
@@ -962,12 +1007,21 @@ def _wire_shape_label(
     resolved_open_axis_facts: list[OpenConstraintAxisFact] | None,
     stat_vars: list[StatVar],
 ) -> Shape:
-    """Return the served-group label. Fall back to a confirmed member's name when empty.
+    """Return ``shape`` labelled for the members the reading serves.
 
-    Without one measure partition, return ``shape`` unchanged.
+    With a measure partition, the label is the one composed from what the served group
+    shares (``_compose_wire_shape_label``), else the name of a served member of the
+    partition. Without one, a reading that serves one member with a graph name takes that
+    name. A label equal to its dcid is no name. Every other reading keeps the label
+    ``shape`` came with.
     """
     if measure_partition is None:
-        return shape
+        if len(stat_vars) != 1:
+            return shape
+        served = stat_vars[0].ref
+        if served.label == served.ref:
+            return shape
+        return shape.model_copy(update={"label": served.label})
     composed_label = _compose_wire_shape_label(
         measure_label, measure_label_axes, slots, resolved_open_axis_facts
     )
@@ -1262,10 +1316,12 @@ def build_spec(
             role_named_sets(named_groups, hashed_entities),
             frozenset(alone for group in named_groups for alone in group.named_alone),
         )
+        .stating_group_totals(role_group_totals(named_groups, hashed_entities))
         .stating_data_years(data_years(plan))
         .stating_continued(serves_continuation(plan))
         .stating_members(stat_vars)
-        .stating_measure_label_named_values(measure_label.named_values),
+        .stating_measure_label_named_values(measure_label.named_values)
+        .stating_built_shape_label(shape.label),
     )
 
 

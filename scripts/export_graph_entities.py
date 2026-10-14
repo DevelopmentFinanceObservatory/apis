@@ -1,9 +1,11 @@
 """Regenerate graph-derived entity and region packs.
 
 `entities` exports `Organization`, `DACRecipientUnallocatedByCountry` and `DACUnspecifiedParty`
-nodes, sorted by dcid, then folds each `_MERGED_DCIDS` source record into its target. A record's
-`dac_code` is the node's numerically lowest `dacCode`; its other codes join its aliases, since a
-resolvekit entity holds one code per system and every code must resolve.
+nodes and every declared origin total, sorted by dcid, then folds each `_MERGED_DCIDS` source
+record into its target. A record's `dac_code` is the node's numerically lowest `dacCode`; its other
+codes join its aliases, since a resolvekit entity holds one code per system and every code must
+resolve. A total that holds a resolver group lists only its codes, under its dcid as name: its
+names resolve to the group, and its DAC codes name the total itself.
 `regions` maps resolvekit subregions and continents to graph dcids via `/v2/resolve`.
 `place-types` lists `Place` and every class below it by `subClassOf`, sorted, which
 `entity_resolution.types.entity_kind` classes as places.
@@ -22,6 +24,8 @@ from pathlib import Path
 
 import httpx
 
+from code_index.query import CodeIndex
+from code_index.shared import get_index
 from dc_graph import GraphClient
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -59,7 +63,8 @@ _KIND_BY_TYPE = {
     "DACRecipientUnallocatedByCountry": "aggregate",
     "DACUnspecifiedParty": "aggregate",
 }
-_ENTITY_PROPERTIES = ("name", "alternateName", "dacCode")
+_DAC_GROUP_TYPE = "DACGroup"
+_ENTITY_PROPERTIES = ("typeOf", "name", "alternateName", "dacCode")
 
 # The graph holds two "Africa Finance Corporation" nodes. The debt StatVars name the base-schema node
 # `Africa_Finance_Corporation` as lendingEntity. The DFO ontology node `AfricaFinanceCorporation`
@@ -114,11 +119,42 @@ def _numeric_code(code: str) -> int:
     return int(code)
 
 
-def export_entities(reader: GraphClient, *, max_results: int = 1000) -> list[dict]:
-    """Fetch every `_KIND_BY_TYPE` population in dcid order.
+def _origin_total_labels(index: CodeIndex) -> tuple[dict[str, str], frozenset[str]]:
+    """Return each declared origin total's code-index label, keyed by dcid, and the dcids of the
+    totals that hold a resolver group.
 
-    Raise `SystemExit` if any population exceeds `max_results` and would be truncated.
+    An ungrouped total is exported with its names. Organization totals are already covered by the
+    organization export; the remaining ungrouped records must be graph `DACGroup` nodes.
     """
+    labels = {}
+    grouped = set()
+    for dcid, party in index.parties.items():
+        if party.kind != "total" or "origin" not in party.axes:
+            continue
+        if party.label is None:
+            raise SystemExit(
+                f"declared origin total {dcid} has no graph label -- cannot verify its export"
+            )
+        labels[dcid] = party.label
+        if party.totals is not None:
+            grouped.add(dcid)
+    return labels, frozenset(grouped)
+
+
+def export_entities(
+    reader: GraphClient, *, max_results: int = 1000, index: CodeIndex | None = None
+) -> list[dict]:
+    """Fetch every `_KIND_BY_TYPE` population and declared donor total in dcid order.
+
+    Each declared total's code-index label must equal its graph name. A total that holds a group
+    becomes a code-only `aggregate` record, named by its dcid, or no record when it has no DAC
+    code. Ungrouped Organization totals stay organization records; any other ungrouped total must
+    be a graph `DACGroup`. Raise `SystemExit` if any population exceeds `max_results` and would be
+    truncated.
+    """
+    origin_total_labels, grouped_totals = _origin_total_labels(
+        get_index() if index is None else index
+    )
     dcids_by_type: dict[str, tuple[str, ...]] = {}
     for graph_type in _KIND_BY_TYPE:
         page = reader.node_subjects(graph_type, property="typeOf", max_results=max_results)
@@ -129,20 +165,41 @@ def export_entities(reader: GraphClient, *, max_results: int = 1000) -> list[dic
             )
         dcids_by_type[graph_type] = page.dcids
 
-    all_dcids = sorted({dcid for dcids in dcids_by_type.values() for dcid in dcids})
+    organization_dcids = set(dcids_by_type["Organization"])
+    all_dcids = sorted(
+        {dcid for dcids in dcids_by_type.values() for dcid in dcids} | set(origin_total_labels)
+    )
     kind_by_dcid = {
         dcid: _KIND_BY_TYPE[graph_type]
         for graph_type, dcids in dcids_by_type.items()
         for dcid in dcids
     }
 
-    # A single ~160-dcid x 3-property batch trips a nextToken loop on this
+    # A single ~160-dcid x 4-property batch trips a nextToken loop on this
     # deployment's mixer, a composition-dependent quirk. Chunking sidesteps it.
     arcs_by_dcid: dict[str, dict[str, tuple[str, ...]] | None] = {}
     chunk_size = 20
     for start in range(0, len(all_dcids), chunk_size):
         chunk = all_dcids[start : start + chunk_size]
         arcs_by_dcid.update(reader.node_arcs_many(chunk, properties=list(_ENTITY_PROPERTIES)))
+
+    for dcid, label in origin_total_labels.items():
+        arcs = arcs_by_dcid.get(dcid)
+        if arcs is None:
+            raise SystemExit(f"declared origin total {dcid} is absent from the graph")
+        graph_name = _single_name(list(arcs.get("name", ())))
+        if graph_name != label:
+            raise SystemExit(
+                f"declared origin total {dcid} has graph name {graph_name!r}, expected {label!r}"
+            )
+        if dcid in grouped_totals or dcid in organization_dcids:
+            continue
+        if _DAC_GROUP_TYPE not in arcs.get("typeOf", ()):
+            raise SystemExit(
+                f"declared origin total {dcid} is not a {_DAC_GROUP_TYPE} outside "
+                "the Organization export"
+            )
+        kind_by_dcid[dcid] = "aggregate"
 
     records = []
     for dcid in all_dcids:
@@ -152,6 +209,18 @@ def export_entities(reader: GraphClient, *, max_results: int = 1000) -> list[dic
                 f"{dcid} was enumerated via <-typeOf but the graph holds no node for it"
             )
         dac_code, other_codes = _split_dac_codes(list(arcs.get("dacCode", ())))
+        if dcid in grouped_totals:
+            if dac_code is not None:
+                records.append(
+                    {
+                        "dcid": dcid,
+                        "name": dcid,
+                        "kind": "aggregate",
+                        "aliases": other_codes,
+                        "dac_code": dac_code,
+                    }
+                )
+            continue
         aliases = [a for a in arcs.get("alternateName", ()) if a]
         records.append(
             {
