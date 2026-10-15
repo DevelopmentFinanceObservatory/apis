@@ -22,8 +22,9 @@ _WORKFLOW = yaml.safe_load(_WORKFLOW_PATH.read_text())
 # PyYAML reads the bare `on` key as boolean true.
 _TRIGGERS = _WORKFLOW[True]
 _REQUEST = yaml.safe_load((_WORKFLOW_PATH.parent / "eval-request.yml").read_text())
-# The eval reads dev's deployed builds, so every job runs in ONEcampaign only.
-_ONECAMPAIGN_ONLY = "github.repository_owner == 'ONEcampaign'"
+# The eval needs the repository's secrets, which a fork PR does not receive; a
+# dispatched run has no pull_request payload and passes this clause.
+_NOT_FORK = "github.event.pull_request.head.repo.fork != true"
 # Every job skips on a draft; a dispatched run has no pull_request payload.
 _NOT_DRAFT = "github.event.pull_request.draft != true"
 _PR_NUMBER = "github.event.pull_request.number || inputs.pr"
@@ -55,6 +56,12 @@ def test_every_job_skips_on_a_draft():
     """A pull_request run on a draft skips every job, the verdict included."""
     for name, job in _WORKFLOW["jobs"].items():
         assert _NOT_DRAFT in _clauses(job["if"]), name
+
+
+def test_every_job_skips_on_a_fork_pr():
+    """A fork PR gets no secrets, so the eval would fail on credentials it cannot read."""
+    for name, job in _WORKFLOW["jobs"].items():
+        assert _NOT_FORK in _clauses(job["if"]), name
 
 
 def test_a_dispatched_run_evaluates_the_merge_of_the_head_it_reports_on():
@@ -129,7 +136,6 @@ def test_eval_request_dispatches_only_for_run_eval_on_an_open_same_repo_pr():
 
     assert triggers["pull_request"]["types"] == ["labeled"]
     assert _clauses(job["if"]) == {
-        _ONECAMPAIGN_ONLY,
         "github.event.label.name == 'run-eval'",
         "github.event.pull_request.state == 'open'",
         "github.event.pull_request.head.repo.full_name == github.repository",
@@ -170,7 +176,7 @@ def test_the_reset_job_clears_the_override_without_running_pr_code():
 
     assert reset["permissions"] == {"pull-requests": "write"}
     assert not any("uses" in step for step in reset["steps"])
-    assert _clauses(reset["if"]) == {_ONECAMPAIGN_ONLY, _NOT_DRAFT}
+    assert _clauses(reset["if"]) == {_NOT_DRAFT, _NOT_FORK}
     assert "reset" in _WORKFLOW["jobs"]["verdict"]["needs"]
 
 
@@ -237,10 +243,10 @@ def test_one_changes_job_gates_a_matrix_of_shards_that_do_not_cancel_each_other(
     jobs = _WORKFLOW["jobs"]
     run = jobs["run"]
 
-    assert _clauses(jobs["changes"]["if"]) == {_ONECAMPAIGN_ONLY, _NOT_DRAFT}
+    assert _clauses(jobs["changes"]["if"]) == {_NOT_DRAFT, _NOT_FORK}
     assert set(jobs["changes"]["outputs"]) == {"eval", "merge", "shards"}
     assert run["needs"] == "changes"
-    assert _clauses(run["if"]) == {"needs.changes.outputs.eval == 'true'", _NOT_DRAFT}
+    assert _clauses(run["if"]) == {"needs.changes.outputs.eval == 'true'", _NOT_DRAFT, _NOT_FORK}
     assert run["strategy"]["fail-fast"] is False
     assert run["strategy"]["matrix"]["shard"] == "${{ fromJSON(needs.changes.outputs.shards) }}"
     assert "matrix.shard" in run["name"]
@@ -280,7 +286,7 @@ def test_the_verdict_job_keeps_its_name_and_waits_for_every_job():
 
     assert verdict["name"] == "Eval gate"
     assert set(verdict["needs"]) == {"reset", "changes", "run"}
-    assert _clauses(verdict["if"]) == {"always()", _ONECAMPAIGN_ONLY, _NOT_DRAFT}
+    assert _clauses(verdict["if"]) == {"always()", _NOT_DRAFT, _NOT_FORK}
     assert verdict["permissions"] == {"pull-requests": "read"}
     download = next(
         step

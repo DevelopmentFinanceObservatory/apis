@@ -2,12 +2,8 @@ name: Deploy production
 
 # Reconciles the production apis service, its datasets worker, and its jobs
 # to the pushed or dispatched commit on main. The steps live in deploy.yml,
-# which deploy-dev.yml shares; this file chooses the triggers, the
-# `production` GitHub Environment, and the owner guard.
-#
-# Production runs only in the DevelopmentFinanceObservatory copy of this
-# repository, where main receives reviewed snapshots of a ONEcampaign commit.
-# The same file is present in ONEcampaign, where the owner guard skips it.
+# which deploy-dev.yml shares; this file chooses the triggers and the
+# `production` GitHub Environment.
 #
 # A push deploys the pushed commit when its image inputs differ from what the
 # service is serving. A dispatch always deploys the dispatched commit, for
@@ -31,7 +27,6 @@ concurrency:
 
 jobs:
   deploy:
-    if: github.repository_owner == 'DevelopmentFinanceObservatory'
     permissions:
       contents: read
       id-token: write
@@ -39,6 +34,5 @@ jobs:
     uses: ./.github/workflows/deploy.yml
     with:
       environment: production
-    # deploy.yml reads READER_APP_PRIVATE_KEY from its own environment, which in
-    # prod is the only place the key lives.
+    # deploy.yml reads WIF_PROVIDER and WIF_SA from its own environment.
     secrets: inherit

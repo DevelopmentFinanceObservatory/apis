@@ -1,7 +1,7 @@
 """Check deploy triggers, guards, permissions, target selection, and step gates without a deploy.
 
 deploy.yml holds the steps. deploy-dev.yml and deploy-prod.yml call it and choose only the
-triggers, the GitHub Environment, and the owner guard.
+triggers and the GitHub Environment.
 """
 
 import re
@@ -64,23 +64,28 @@ def test_prod_deploys_on_a_push_to_main_or_a_dispatch():
 
 
 @pytest.mark.parametrize(
-    ("caller", "owner", "environment"),
-    [
-        ("deploy-dev.yml", "ONEcampaign", "dev"),
-        ("deploy-prod.yml", "DevelopmentFinanceObservatory", "production"),
-    ],
+    ("caller", "environment"),
+    [("deploy-dev.yml", "dev"), ("deploy-prod.yml", "production")],
 )
-def test_each_caller_guards_its_owner_and_names_its_environment(
-    caller: str, owner: str, environment: str
-):
-    """The same files run in both organisations, so the guard picks which one deploys."""
+def test_each_caller_names_its_environment(caller: str, environment: str):
+    """The branch and the trigger pick the environment; no owner check is involved."""
     job = _workflow(caller)["jobs"]["deploy"]
 
-    assert f"github.repository_owner == '{owner}'" in job["if"]
     assert job["uses"] == "./.github/workflows/deploy.yml"
     assert job["with"] == {"environment": environment}
     assert job["permissions"] == _CALLER_PERMISSIONS
     assert job["secrets"] == "inherit"
+
+
+def test_prod_deploy_has_no_condition_beyond_its_triggers():
+    """A push to main or a dispatch deploys; nothing else gates the job."""
+    assert "if" not in _workflow("deploy-prod.yml")["jobs"]["deploy"]
+
+
+@pytest.mark.parametrize("path", sorted(_WORKFLOWS.glob("*.yml")), ids=lambda path: path.name)
+def test_no_workflow_chooses_its_behaviour_by_repository_owner(path: Path):
+    """The repository lives in one organisation, so events and branches decide what runs."""
+    assert "repository_owner" not in path.read_text()
 
 
 @pytest.mark.parametrize(
@@ -151,9 +156,7 @@ def test_every_step_names_the_resolved_target():
     )
     assert "DFO_BUILD_COMMIT=${{ steps.target.outputs.sha }}" in build["with"]["build-args"]
     assert build["with"]["tags"] == "${{ steps.image.outputs.image }}"
-    assert build["with"]["secrets"].strip() == (
-        "spec_kit_token=${{ steps.spec-kit-auth.outputs.token }}"
-    )
+    assert "secrets" not in build["with"]
 
 
 def test_every_name_comes_from_the_environment_variables():
@@ -227,15 +230,12 @@ def test_each_job_moves_to_the_new_image_before_it_executes(update: str, execute
     assert names.index(update) < names.index(execute)
 
 
-def test_spec_kit_token_comes_from_the_reader_app():
-    """The build reads dfo-spec-kit with the read-only reader App, never the release App."""
+def test_the_build_fetches_the_public_spec_kit_without_a_credential():
+    """The deploy mints no App token and passes the build no secret."""
     workflow = _workflow("deploy.yml")
     assert set(_triggers(workflow)["workflow_call"]) == {"inputs"}
-    assert _workflow("deploy.yml")["jobs"]["deploy"]["environment"] == "${{ inputs.environment }}"
-    assert _step("spec-kit-auth")["with"] == {
-        "client-id": "${{ vars.READER_APP_CLIENT_ID }}",
-        "private-key": "${{ secrets.READER_APP_PRIVATE_KEY }}",
-    }
+    assert not any(step.get("uses", "").startswith("./.github/actions") for step in _steps())
+    assert "secrets" not in _step("image").get("env", {})
 
 
 def test_search_catalogue_job_moves_to_the_new_image_without_executing():
@@ -343,7 +343,7 @@ def test_decide_step_runs_gcloud_describe_and_git_diff_and_gates_every_later_ste
     steps = _steps()
     decide_index = steps.index(decide)
     later = steps[decide_index + 1 :]
-    assert len(later) == 20
+    assert len(later) == 19
     for step in later:
         assert step["if"] == "steps.decide.outputs.deploy == 'true'", step
 

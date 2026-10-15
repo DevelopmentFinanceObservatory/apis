@@ -95,10 +95,11 @@ jobs:
   # to. Runs no PR code and checks nothing out.
   reset:
     name: Reset the eval override
-    # Mints a dfo-reader token and reads dev's deployed builds, so the eval runs
-    # in ONEcampaign only. The identical tree ran it here before it was synced.
-    # Every job skips on a draft; a dispatched run has no pull_request payload.
-    if: github.repository_owner == 'ONEcampaign' && github.event.pull_request.draft != true
+    # The eval reads dev's deployed builds and calls Gemini with the
+    # repository's secrets, which a fork PR does not receive, so every job
+    # skips on a fork PR. Every job also skips on a draft. A dispatched run has
+    # no pull_request payload and passes both clauses.
+    if: github.event.pull_request.draft != true && github.event.pull_request.head.repo.fork != true
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -118,8 +119,8 @@ jobs:
   # Runs the path filter once for every shard and lists the shards.
   changes:
     name: Detect eval changes
-    # The run job needs this one, so it skips with it outside ONEcampaign.
-    if: github.repository_owner == 'ONEcampaign' && github.event.pull_request.draft != true
+    # The run job needs this one, so it skips with it.
+    if: github.event.pull_request.draft != true && github.event.pull_request.head.repo.fork != true
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -197,7 +198,10 @@ jobs:
   run:
     name: Eval run (shard ${{ matrix.shard.label }})
     needs: changes
-    if: needs.changes.outputs.eval == 'true' && github.event.pull_request.draft != true
+    if: >-
+      needs.changes.outputs.eval == 'true' &&
+      github.event.pull_request.draft != true &&
+      github.event.pull_request.head.repo.fork != true
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -228,8 +232,7 @@ jobs:
           # is the base.
           ref: ${{ needs.changes.outputs.merge }}
           fetch-depth: 2
-          # No step needs an authenticated git after checkout. The spec-kit
-          # step writes its own credential rewrite.
+          # No step needs an authenticated git after checkout.
           persist-credentials: false
 
       - name: Check out the base
@@ -246,14 +249,6 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
-
-      # dfo-spec-kit is a private repo the default GITHUB_TOKEN cannot read, and
-      # the engine extra pulls it as a git dependency.
-      - name: Authenticate git for the dfo-spec-kit dependency
-        uses: ./.github/actions/spec-kit-auth
-        with:
-          client-id: ${{ vars.READER_APP_CLIENT_ID }}
-          private-key: ${{ secrets.READER_APP_PRIVATE_KEY }}
 
       - name: Install dependencies in head and base
         env:
@@ -467,7 +462,10 @@ jobs:
   verdict:
     name: Eval gate
     needs: [reset, changes, run]
-    if: always() && github.repository_owner == 'ONEcampaign' && github.event.pull_request.draft != true
+    if: >-
+      always() &&
+      github.event.pull_request.draft != true &&
+      github.event.pull_request.head.repo.fork != true
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
