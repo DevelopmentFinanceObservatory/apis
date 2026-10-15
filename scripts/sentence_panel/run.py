@@ -17,6 +17,9 @@ It reads the live deployed service and takes about five minutes for the whole pa
 per slice, the query count, transport errors and status counts. It exits non-zero when a
 queries file is empty or every query in a slice fails at transport level.
 
+`search.eval.apis_auth` adds the Cloud Run ID token an `https` base URL needs. Set
+`DFO_APIS_ID_TOKEN`, or point the base URL at `gcloud run services proxy` on localhost.
+
 `--redigest` rebuilds the digests from the saved raw files in `--out` without calling the
 resolver, which is how to pick up a change to the digest code or to a query's metadata.
 
@@ -50,6 +53,8 @@ from typing import Any
 
 import httpx
 import yaml
+
+from search.eval.apis_auth import apis_auth
 
 QUERIES_DIR = Path(__file__).resolve().parent / "queries"
 DEFAULT_OUT = Path("runs/sentence-panel")
@@ -412,7 +417,7 @@ async def _client(
         async with in_process_client() as (client, facts):
             yield client, "http://in-process", facts
         return
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(auth=apis_auth()) as client:
         yield client, None, None
 
 

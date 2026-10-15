@@ -29,6 +29,9 @@ eval = [
     # scripts/eval_corpus.py checks them.
     "pyyaml",
     "jsonschema",
+    # search.eval.apis_auth mints Cloud Run ID tokens for a deployed apis service.
+    # Impersonated ID token credentials post through google-auth's requests transport.
+    "google-auth[requests]>=2.34",
 ]
 # Shared ASGI stack for every door that mounts onto dfo_platform's app.
 # engine, datasets, and graph all pull this in rather than pinning fastapi

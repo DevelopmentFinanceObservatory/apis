@@ -40,6 +40,7 @@ import httpx
 from langfuse import Evaluation
 from langfuse.api import DatasetStatus
 
+from search.eval.apis_auth import apis_auth
 from search.eval.cases import (
     CHECK_NAMES,
     DEFAULT_CORPUS_DIR,
@@ -377,6 +378,7 @@ def _main(args: argparse.Namespace) -> int:
                 f"{args.nightly.rstrip('/')}{SCHEMA_PATH}",
                 timeout=_SCHEMA_TIMEOUT_S,
                 headers=EVAL_HEADERS,
+                auth=apis_auth(),
             )
             response.raise_for_status()
         except httpx.HTTPError as exc:

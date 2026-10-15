@@ -11,6 +11,11 @@ name: Eval nightly
 # With it off, an unmarked failure (1) or an infrastructure loss (3) is a
 # warning and the job passes. With it on, either fails the job, and an unmarked
 # failure opens one issue, or updates its body when it is already open.
+#
+# Every request to the service carries a Cloud Run ID token the eval reader
+# account mints and refreshes for the run (search.eval.apis_auth). A 401 or 403
+# from the service is a crash (2), which fails the job. An eval the service
+# refuses measures nothing.
 
 on:
   schedule:
@@ -55,7 +60,8 @@ jobs:
       - name: Install dependencies
         run: uv sync ${{ env.UV_SYNC_ARGS }} --no-default-groups
 
-      # The checks read the deployed coverage and origin catalogue buckets.
+      # The checks read the deployed coverage and origin catalogue buckets, and
+      # the eval calls the dev service with ID tokens it mints as this account.
       - name: Authenticate to Google Cloud as the eval reader
         uses: google-github-actions/auth@v3
         with:
