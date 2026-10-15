@@ -333,7 +333,7 @@ check:
         echo "" >&2
         echo "tests/engine/test_identity_vectors.py needs one to run. Clone it as a" >&2
         echo "sibling of this checkout:" >&2
-        echo "  git clone https://github.com/ONEcampaign/dfo-spec-kit.git ../dfo-spec-kit" >&2
+        echo "  git clone https://github.com/DevelopmentFinanceObservatory/spec-kit.git ../dfo-spec-kit" >&2
         echo "or point DFO_SPEC_KIT_DIR at an existing checkout instead. See" >&2
         echo "CONTRIBUTING.md for details." >&2
         echo "" >&2
@@ -451,11 +451,10 @@ ladder-report *ARGS: _check-env
 
 # ── Container ────────────────────────────────────────
 
-# Build the image for linux/amd64 (the Cloud Run target). Resolving the private
-# dfo-spec-kit dependency needs a read token; defaults to `gh auth token`.
+# Build the image for linux/amd64 (the Cloud Run target).
 build:
     @echo "Building {{IMAGE}} from {{DOCKERFILE}} for linux/amd64..."
-    SPEC_KIT_TOKEN=${SPEC_KIT_TOKEN:-$(gh auth token)} docker buildx build --platform linux/amd64 --provenance=false --load --tag {{IMAGE}} -f {{DOCKERFILE}} --secret id=spec_kit_token,env=SPEC_KIT_TOKEN .
+    docker buildx build --platform linux/amd64 --provenance=false --load --tag {{IMAGE}} -f {{DOCKERFILE}} .
 
 # Run the built image locally with the env file (container 8080 -> the dev PORT)
 #
