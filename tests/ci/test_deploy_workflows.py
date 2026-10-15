@@ -69,7 +69,7 @@ def test_prod_deploys_on_a_push_to_main_or_a_dispatch():
     [("deploy-dev.yml", "dev"), ("deploy-prod.yml", "production")],
 )
 def test_each_caller_names_its_environment(caller: str, environment: str):
-    """The branch and the trigger pick the environment; no owner check is involved."""
+    """The branch and the trigger pick the environment."""
     job = _workflow(caller)["jobs"]["deploy"]
 
     assert job["uses"] == "./.github/workflows/deploy.yml"
@@ -79,7 +79,7 @@ def test_each_caller_names_its_environment(caller: str, environment: str):
 
 
 def test_prod_deploy_has_no_condition_beyond_its_triggers():
-    """A push to main or a dispatch deploys; nothing else gates the job."""
+    """A push to main or a dispatch deploys, and no other condition gates the job."""
     assert "if" not in _workflow("deploy-prod.yml")["jobs"]["deploy"]
 
 

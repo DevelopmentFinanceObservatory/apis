@@ -47,12 +47,12 @@ main checkout's.
 
 ## Branch model
 
-Two branches, each mapped to one environment. Work flows up, never down.
+Two branches, each mapped to one environment. Work flows up from `dev` to `main`.
 
 - **`dev`.** Active development, and the default branch. Feature branches merge here.
   Deploys to `dfo-dev`.
-- **`main`.** Production. Protected, tagged, and only ever moved by promoting a validated
-  `dev` commit. Every commit on `main` is deployable.
+- **`main`.** Production. Protected, tagged, and moved only by a pull request from
+  `dev`. Every commit on `main` is deployable.
 
 ```
 feat/* , api/*  ──►  dev  ──►  main

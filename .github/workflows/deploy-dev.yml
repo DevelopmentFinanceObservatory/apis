@@ -7,13 +7,12 @@ name: Deploy dev
 #
 # The trigger is `workflow_run` on CI, not `push`, because a push trigger
 # races CI's own run for the same commit: an older commit's CI can finish
-# after a newer commit's. A CI run that failed or was cancelled deploys
-# nothing, because the job requires
-# `github.event.workflow_run.conclusion == 'success'`, and only a CI run started
-# by a push counts, so a fork pull request from a branch named dev deploys
-# nothing. deploy.yml resolves
-# dev's tip for itself, so a run triggered by an older commit still deploys
-# the newest green commit.
+# after a newer commit's. The job requires
+# `github.event.workflow_run.conclusion == 'success'` and a CI run started by a
+# push, so a failed or cancelled run deploys nothing, and neither does a fork
+# pull request from a branch named dev. deploy.yml resolves dev's tip for
+# itself, so a run triggered by an older commit still deploys the newest green
+# commit.
 #
 # dev is the branch CONTRIBUTING.md maps to the dev environment.
 #

@@ -1,9 +1,10 @@
 name: Deploy
 
 # The deploy steps every environment runs. deploy-dev.yml and deploy-prod.yml
-# call this workflow and choose only the triggers and the GitHub Environment. Every project, region, registry, service, and job name
-# comes from that environment's variables, so one variable name means the same
-# thing in `dev` and `production`. See deploy/README.md for the full list.
+# call this workflow and choose only the triggers and the GitHub Environment.
+# Every project, region, registry, service, and job name comes from that
+# environment's variables, so one variable name means the same thing in `dev`
+# and `production`. See deploy/README.md for the full list.
 #
 # The `deploy` job resolves its own target commit rather than trusting the
 # commit that triggered it. On a push or a workflow_dispatch the target is

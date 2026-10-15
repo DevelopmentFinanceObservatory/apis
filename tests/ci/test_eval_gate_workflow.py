@@ -22,7 +22,7 @@ _WORKFLOW = yaml.safe_load(_WORKFLOW_PATH.read_text())
 # PyYAML reads the bare `on` key as boolean true.
 _TRIGGERS = _WORKFLOW[True]
 _REQUEST = yaml.safe_load((_WORKFLOW_PATH.parent / "eval-request.yml").read_text())
-# The eval needs the repository's secrets, which a fork PR does not receive; a
+# The eval needs the repository's secrets, which a fork PR does not receive. A
 # dispatched run has no pull_request payload and passes this clause.
 _NOT_FORK = "github.event.pull_request.head.repo.fork != true"
 # Every job skips on a draft; a dispatched run has no pull_request payload.
