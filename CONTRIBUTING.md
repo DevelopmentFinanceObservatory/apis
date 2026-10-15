@@ -19,7 +19,7 @@ surface onto the shared platform app. Its zero-argument `create_app` factory is 
 container runs. Every line here is ours. There is no upstream to track, no vendored code, and
 no submodules.
 
-The repo builds one container image. A sibling repo, `dfo-infra`, deploys it to Cloud Run.
+The repo builds one container image. A sibling repo, `infra`, deploys it to Cloud Run.
 
 ## Getting set up
 
@@ -32,12 +32,11 @@ just dev      # hot-reload server on :8083
 `just` on its own lists every recipe.
 
 `just check` also runs the identity vector conformance suite
-(`tests/engine/test_identity_vectors.py`), which lives in the private
-`dfo-spec-kit` repo rather than this one. Clone it as a sibling of this
-checkout:
+(`tests/engine/test_identity_vectors.py`), which lives in the `spec-kit` repo
+rather than this one. Clone it as a sibling of this checkout:
 
 ```sh
-git clone https://github.com/ONEcampaign/dfo-spec-kit.git ../dfo-spec-kit
+git clone https://github.com/DevelopmentFinanceObservatory/spec-kit.git ../dfo-spec-kit
 ```
 
 `just check` and `just test` pick it up automatically from that path. Point
@@ -48,18 +47,16 @@ main checkout's.
 
 ## Branch model
 
-Three branches, each mapped to one environment. Work flows up, never down.
+Two branches, each mapped to one environment. Work flows up, never down.
 
 - **`dev`.** Active development, and the default branch. Feature branches merge here.
   Deploys to `dfo-dev`.
 - **`main`.** Production. Protected, tagged, and only ever moved by promoting a validated
   `dev` commit. Every commit on `main` is deployable.
-- **`staging`.** Not built yet. It slots between `dev` and `main` once the staging
-  environment exists in `dfo-infra`.
 
 ```
-feat/* , api/*  ──►  dev  ──►  (staging)  ──►  main
-                 dfo-dev                       dfo-prod
+feat/* , api/*  ──►  dev  ──►  main
+                 dfo-dev       dfo-prod
 ```
 
 ## Where your work goes
@@ -138,17 +135,13 @@ weekday schedule.
 
 ## Releasing to production
 
-Changes land on `dev` here in ONEcampaign. Production runs from `main` in
-DevelopmentFinanceObservatory/apis, which holds exact tree copies of `dev` commits.
+Changes land on `dev`. Production runs from `main`.
 
 1. Confirm the `dev` commit you want is deployed and validated on `dfo-dev`.
-1. In DevelopmentFinanceObservatory/infra, dispatch `sync.yml` with the `apis` repo and that
-   commit. It opens a sync PR into `main` whose head commit carries a
-   `Synced-from: ONEcampaign/dfo-apis@<sha>` trailer.
-1. A member of the `release` team approves the PR once `sync-guard` passes. CI runs in
-   ONEcampaign only, on the commit being synced.
+1. Open a pull request from `dev` into `main`. CI runs on it, and one approval is required.
 1. Merging it is the release. The push to `main` runs `.github/workflows/deploy-prod.yml`,
-   which deploys to the `production` environment through the same steps as dev.
+   which deploys to the `production` environment through the same steps as dev. The
+   environment holds the job until a member of the `release` team approves it.
 
 ## Building and deploying
 
@@ -169,7 +162,7 @@ and secrets it needs.
 
 - **Commits** follow [Conventional Commits](https://www.conventionalcommits.org): `feat:`,
   `fix:`, `chore:`, and so on.
-- **PRs target `dev`.** Only sync PRs in DevelopmentFinanceObservatory/apis write to `main`.
+- **PRs target `dev`.** Only a pull request from `dev` writes to `main`.
 - **Eval cases** live under `corpus/<source>.yaml`, one file per source, with the measure
   families they name in `corpus/families/`. See `corpus/README.md` for the case format, then run
   `just corpus-check` before you commit.

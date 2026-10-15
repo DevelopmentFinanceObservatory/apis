@@ -60,7 +60,7 @@ _load_dotenv()
 # ---------------------------------------------------------------------------
 
 # User-Agent identifying DFO API traffic in the graph's request logs.
-USER_AGENT: str = "dfo-apis (+https://github.com/ONEcampaign/dfo-apis)"
+USER_AGENT: str = "dfo-apis (+https://github.com/DevelopmentFinanceObservatory/apis)"
 
 # Fixed parsed-door caps duplicated as Pydantic ``Field(max_length=...)``
 # literals in search.models, which avoids an engine import cycle and engine-extra dependency.

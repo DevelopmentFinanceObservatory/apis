@@ -55,7 +55,7 @@ Every skill in the catalogue, ordered by id, so an unchanged catalogue keeps the
       "description": "Core ODA concepts ...",
       "frontmatter": { "name": "oda-concepts", "description": "Core ODA concepts ..." },
       "content_version": "sha256:9c1e...",
-      "url": "https://github.com/ONEcampaign/dfo-skills/tree/main/skills/oda-concepts",
+      "url": "https://github.com/DevelopmentFinanceObservatory/skills/tree/main/skills/oda-concepts",
       "attached": true,
       "excluded": false,
       "statvar_count": 4695,

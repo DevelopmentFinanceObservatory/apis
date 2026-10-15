@@ -11,7 +11,7 @@ from dc_sdmx.errors import SdmxQueryError, SdmxUnsupportedFilterError
 from .conftest import read_fixture_text
 
 _BASE_URL = "https://datacommons.one.org/core/api"
-_DEFAULT_USER_AGENT = "dfo-apis (+https://github.com/ONEcampaign/dfo-apis)"
+_DEFAULT_USER_AGENT = "dfo-apis (+https://github.com/DevelopmentFinanceObservatory/apis)"
 _CSV_RESPONSE = httpx.Response(
     200,
     text=read_fixture_text("data_header_only.csv"),
