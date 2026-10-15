@@ -33,7 +33,7 @@ concurrency:
 env:
   UV_SYNC_ARGS: --frozen --extra eval --extra api --extra engine --extra datasets --extra graph
   UV_NO_SYNC: "1"
-  # The dfo-dev Cloud Run service dfo-infra defines.
+  # The dfo-dev Cloud Run service `infra` defines.
   SEARCH_API_URL: https://dfo-dev-apis-zms5lj4zhq-nn.a.run.app
   ISSUE_TITLE: "Nightly Search eval: unmarked failures"
 

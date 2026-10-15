@@ -91,7 +91,7 @@ def check_cases_assertable_warnings(cases: Iterable[Case]) -> list[str]:
 
 
 def _registry_resolve_doors_by_code() -> dict[str, frozenset[str] | None]:
-    """Every door a `search.resolve` mapping in the pinned dfo-spec-kit registry
+    """Every door a `search.resolve` mapping in the pinned `spec-kit` registry
     names for each active code, unioned across every such mapping. `None` means
     at least one matching mapping named no `doors` of its own, which the
     registry format treats as applying to every door (the same convention

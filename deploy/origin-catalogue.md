@@ -171,7 +171,7 @@ Every run that exits 0 logs `origin_catalogue_job_heartbeat` as its last line, w
 - `identity_unpublished`: the current identity has gone unpublished for more than one cycle (`ORIGIN_CATALOGUE_CYCLE_SECONDS`). A run that finds `IngestionLock` held cannot compute its own identity, so it checks the identity the last unlocked run recorded in `catalogue_state.json`. A lock held past a cycle while that identity is unpublished logs the line on every run.
 - `published_build_age`: the published build is older than a week plus 7200 seconds plus one cycle. The ISO week in the identity makes a healthy job publish at least weekly, and the first run of a week may wait a cycle for the lease and then build for up to 7200 seconds, so an older build means nothing has published since the week turned. The line comes just before the heartbeat, with `build_id`, `age_seconds` and `limit_seconds`.
 
-dfo-infra's `origin_catalogue.tf` alerts on three conditions in one policy: a stale line, a failed execution, and no heartbeat for 9000 seconds. The last catches a Scheduler that stopped starting the job, which logs nothing and fails nothing. Its window exceeds the 7200-second task timeout plus one cycle.
+The `infra` repository's `origin_catalogue.tf` alerts on three conditions in one policy: a stale line, a failed execution, and no heartbeat for 9000 seconds. The last catches a Scheduler that stopped starting the job, which logs nothing and fails nothing. Its window exceeds the 7200-second task timeout plus one cycle.
 
 ## Refusals
 

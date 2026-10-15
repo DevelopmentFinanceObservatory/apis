@@ -1,5 +1,5 @@
 """Contract tests for the omission reason vocabulary, OpenAPI fields, and SSE
-wire shape, so `dfo-website` can build `types.ts` against a fixture. Payloads use
+wire shape, so `website` can build `types.ts` against a fixture. Payloads use
 the real constructors, app entry points, and encoder.
 """
 
@@ -63,7 +63,7 @@ def _schema() -> dict:
 
 # ---------------------------------------------------------------------------
 # 1. The Literal reason vocabulary and the ObservationsOmission field set,
-#    pinned in /openapi.json -- what dfo-website's types.ts diffs against.
+#    pinned in /openapi.json -- what `website`'s types.ts diffs against.
 # ---------------------------------------------------------------------------
 
 

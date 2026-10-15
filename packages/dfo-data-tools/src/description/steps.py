@@ -1,8 +1,8 @@
 """Step records: what was done to a result, one step per operation, in order.
 
-The models mirror dfo-spec-kit's `steps.schema.json` member for member. A step list the
-schema accepts validates here, and one it refuses is refused here, with one exception: a
-count written as a float with no fraction, such as `3.0`, which the schema reads as an
+The models mirror the `spec-kit` repository's `steps.schema.json` member for member. A step
+list the schema accepts validates here, and one it refuses is refused here, with one
+exception: a count written as a float with no fraction, such as `3.0`, which the schema reads as an
 integer and these models refuse. `op`, `policy` and `left_out[].reason` are bounded names,
 so an operation or reason the kit's list does not hold still validates.
 
@@ -42,7 +42,7 @@ CONTINUE_SERIES_OP = "continue_series"
 the same source's estimates. Its `params.method` names the continuing `measurementMethod`."""
 
 MAX_SERVED_STEPS = 64
-"""dfo-spec-kit's bound on one step list (`dfo_descriptions.MAX_STEPS`), which a
+"""The `spec-kit` repository's bound on one step list (`dfo_descriptions.MAX_STEPS`), which a
 description's served steps meet as a stored list does."""
 
 MAX_CARD_STEPS = 2

@@ -388,7 +388,7 @@ It answers 200 with the body a read of that revision answers (`component_id`, `r
 
 `GET .../render/data?spec_id=&content_version=` serves the rows behind that drawing. `format` and `bundle` behave as on the stored revision's `/data` route. The file is dated by the frame's retrieval date, a bundle's `dfo.component.frame_ref` names the frame, and the bundle carries no `dfo.reproducing_call`, since a reader cannot call this route. The route pins nothing.
 
-Both routes admit one caller, the live-refresh principal: the value of `LIVE_REFRESH_PRINCIPAL` in the `DATASETS_PRINCIPAL_HEADER` header (default `x-dfo-principal`). The website and dfo-ai hold that value as a shared secret and put it in the header themselves. Nothing in this service or in front of it sets, replaces, or removes the header, so knowing the value is what admits a caller. Any other caller is refused `refresh_not_permitted` (403) before the path, query, or body is read. An unset or empty `LIVE_REFRESH_PRINCIPAL` refuses every caller.
+Both routes admit one caller, the live-refresh principal: the value of `LIVE_REFRESH_PRINCIPAL` in the `DATASETS_PRINCIPAL_HEADER` header (default `x-dfo-principal`). The website and `ai` hold that value as a shared secret and put it in the header themselves. Nothing in this service or in front of it sets, replaces, or removes the header, so knowing the value is what admits a caller. Any other caller is refused `refresh_not_permitted` (403) before the path, query, or body is read. An unset or empty `LIVE_REFRESH_PRINCIPAL` refuses every caller.
 
 The frame must be able to stand in for the frame the revision is stored on:
 

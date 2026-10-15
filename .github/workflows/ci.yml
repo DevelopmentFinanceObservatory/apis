@@ -383,7 +383,7 @@ jobs:
   package-install:
     # Proves the dfo-data-tools member installs on its own, as the
     # commit-pinned git dependency with a subdirectory that external
-    # consumers (dfo-ai) use, into a clean environment carrying none of the
+    # consumers (`ai`) use, into a clean environment carrying none of the
     # other jobs' caches. The explicit `@$(git rev-parse HEAD)` is required:
     # this checkout is detached HEAD, which has no default branch for a bare
     # git+file:// URL to fall back to.

@@ -6,7 +6,7 @@
 #
 # Dispatch only: every run mints new versions on the target and holds its
 # materialise permits, so it never runs on a schedule or a push. The default
-# target is the dfo-dev Cloud Run service dfo-infra defines. The script sends a
+# target is the dfo-dev Cloud Run service `infra` defines. The script sends a
 # Cloud Run ID token minted for the target as the eval reader account
 # (search.eval.apis_auth), which holds roles/run.invoker on the dev service
 # only, so another target refuses the run with 401 or 403.

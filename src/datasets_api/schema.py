@@ -1,7 +1,7 @@
 """`GET /api/datasets/schema` publishes contract-stable schemas with immutable `$id`s. Register,
 mint, and members request schemas reuse their runtime models, and the members door serves
 `MembersEnvelope` itself. The manifest, options, pin, operation, and description values page
-schemas define the fields their doors enforce. A description refers to dfo-spec-kit's schema. Nested graph-dependent shapes remain open.
+schemas define the fields their doors enforce. A description refers to the `spec-kit` repository's schema. Nested graph-dependent shapes remain open.
 Problem details embeds the platform-owned schema without a datasets `$id`.
 """
 
@@ -145,7 +145,7 @@ class MembersEnvelope(ResponseModel):
 DESCRIPTION_SCHEMA_ID = (
     "https://developmentfinance.org/descriptions/schema/v1/description.schema.json"
 )
-"""The `$id` of dfo-spec-kit's description schema, which
+"""The `$id` of the `spec-kit` repository's description schema, which
 `GET /api/datasets/{id}/{content_version}/description` answers in."""
 
 DESCRIPTION_OPENAPI_SCHEMA: dict[str, object] = {
@@ -167,8 +167,8 @@ DESCRIPTION_OPENAPI_SCHEMA: dict[str, object] = {
         )
     },
 }
-"""The description route's OpenAPI response: its members, each shaped by dfo-spec-kit's
-schema."""
+"""The description route's OpenAPI response: its members, each shaped by the `spec-kit`
+repository's schema."""
 
 
 class DescribedProperty(BaseModel):
