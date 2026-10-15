@@ -60,7 +60,7 @@ _load_dotenv()
 # ---------------------------------------------------------------------------
 
 # User-Agent identifying DFO API traffic in the graph's request logs.
-USER_AGENT: str = "dfo-apis (+https://github.com/ONEcampaign/dfo-apis)"
+USER_AGENT: str = "dfo-apis (+https://github.com/DevelopmentFinanceObservatory/apis)"
 
 # Fixed parsed-door caps duplicated as Pydantic ``Field(max_length=...)``
 # literals in search.models, which avoids an engine import cycle and engine-extra dependency.
@@ -214,7 +214,7 @@ class SearchSettings(BaseSettings):
     # (JSON) or a terminal error event (SSE). The hard cap also bounds every graph and SDMX
     # read the request makes (`dfo_platform.request_deadline`). Cancelling unfinished
     # variables and assembling the partial answer take milliseconds, so the grace covers
-    # that work only. dfo-ai's data-mcp gives up on a resolve at 50 s.
+    # that work only. The `ai` repository's data-mcp gives up on a resolve at 50 s.
     finalise_grace_s: float = 2
 
     # Deadline from request start for a resubmit whose member walk reads the whole filtered

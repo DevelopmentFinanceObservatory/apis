@@ -26,7 +26,7 @@ from .conftest import (
 def test_list_entry_carries_frontmatter_attached_and_resources():
     entry = skill_entry(
         references={"references/core-oda.md": "# Core ODA\n"},
-        url="https://github.com/ONEcampaign/dfo-skills/tree/main/skills/oda-concepts",
+        url="https://github.com/DevelopmentFinanceObservatory/skills/tree/main/skills/oda-concepts",
         attached=True,
         statvar_count=4695,
     )
@@ -46,7 +46,7 @@ def test_list_entry_carries_frontmatter_attached_and_resources():
             "license": "CC-BY-4.0",
         },
         "content_version": entry.front_matter.content_version,
-        "url": "https://github.com/ONEcampaign/dfo-skills/tree/main/skills/oda-concepts",
+        "url": "https://github.com/DevelopmentFinanceObservatory/skills/tree/main/skills/oda-concepts",
         "attached": True,
         "excluded": False,
         "statvar_count": 4695,

@@ -11,6 +11,11 @@ name: Eval nightly
 # With it off, an unmarked failure (1) or an infrastructure loss (3) is a
 # warning and the job passes. With it on, either fails the job, and an unmarked
 # failure opens one issue, or updates its body when it is already open.
+#
+# Every request to the service carries a Cloud Run ID token the eval reader
+# account mints and refreshes for the run (search.eval.apis_auth). A 401 or 403
+# from the service is a crash (2), which fails the job. An eval the service
+# refuses measures nothing.
 
 on:
   schedule:
@@ -28,16 +33,13 @@ concurrency:
 env:
   UV_SYNC_ARGS: --frozen --extra eval --extra api --extra engine --extra datasets --extra graph
   UV_NO_SYNC: "1"
-  # The dfo-dev Cloud Run service dfo-infra defines.
+  # The dfo-dev Cloud Run service `infra` defines.
   SEARCH_API_URL: https://dfo-dev-apis-zms5lj4zhq-nn.a.run.app
   ISSUE_TITLE: "Nightly Search eval: unmarked failures"
 
 jobs:
   nightly:
     name: Eval nightly
-    # Mints a dfo-reader token and writes to Langfuse against dev, so this runs
-    # in ONEcampaign only.
-    if: github.repository_owner == 'ONEcampaign'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -55,18 +57,11 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
 
-      # dfo-spec-kit is a private repo the default GITHUB_TOKEN cannot read, and
-      # the engine extra pulls it as a git dependency.
-      - name: Authenticate git for the dfo-spec-kit dependency
-        uses: ./.github/actions/spec-kit-auth
-        with:
-          client-id: ${{ vars.READER_APP_CLIENT_ID }}
-          private-key: ${{ secrets.READER_APP_PRIVATE_KEY }}
-
       - name: Install dependencies
         run: uv sync ${{ env.UV_SYNC_ARGS }} --no-default-groups
 
-      # The checks read the deployed coverage and origin catalogue buckets.
+      # The checks read the deployed coverage and origin catalogue buckets, and
+      # the eval calls the dev service with ID tokens it mints as this account.
       - name: Authenticate to Google Cloud as the eval reader
         uses: google-github-actions/auth@v3
         with:

@@ -29,7 +29,7 @@ _REFERENCES = {
 def test_skill_door_serves_the_list_entry_plus_skill_md_verbatim():
     entry = skill_entry(
         references=_REFERENCES,
-        url="https://github.com/ONEcampaign/dfo-skills/tree/main/skills/oda-concepts",
+        url="https://github.com/DevelopmentFinanceObservatory/skills/tree/main/skills/oda-concepts",
         attached=True,
         statvar_count=4695,
     )

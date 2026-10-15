@@ -71,7 +71,7 @@ class IdentityBindingUnbound(StrictModel):
 class IdentityBindingExact(StrictModel):
     """A single bound dcid, denoting that code alone -- never its subtree,
     even where the code is a hierarchical (non-leaf) code (see
-    `docs/identity-v1.md` in dfo-spec-kit for the denotation rule: `value`
+    `docs/identity-v1.md` in `spec-kit` for the denotation rule: `value`
     denotes a hierarchical code's whole subtree, `exact` denotes the code
     alone). Slot-only: `_build_facet_binding` refuses `exact` on a facet.
     No engine `Binding` arm maps onto this state and no minting site
@@ -197,7 +197,7 @@ class IdentityFacetValueAbsent(StrictModel):
     on the axis, the ones Data Commons serves without that member. An unbound
     axis admits every facet; this binding admits only those without a value.
     Mirrors the identity core's null facet ref (`docs/identity-v1.md` in
-    dfo-spec-kit). `ref` serialises as `null` even under `exclude_none`, since
+    `spec-kit`). `ref` serialises as `null` even under `exclude_none`, since
     the identity core refuses a value binding with neither `ref` nor `request`."""
 
     state: Literal["value"] = "value"

@@ -26,16 +26,9 @@ RUN apt-get update \
 # Manifests first for layer caching; install deps without the workspace members.
 COPY pyproject.toml uv.lock .python-version ./
 COPY packages/dfo-data-tools/pyproject.toml packages/dfo-data-tools/
-# dfo-spec-kit is a private git dependency; the token is mounted as a
-# BuildKit secret (tmpfs, never written to a layer) and the git credential
-# rewrite it drives is undone in this same RUN, so neither the token nor
-# the rewrite survives into the committed layer.
-RUN --mount=type=secret,id=spec_kit_token \
-    --mount=type=cache,target=/root/.cache/uv \
-    git config --global url."https://x-access-token:$(cat /run/secrets/spec_kit_token)@github.com/ONEcampaign/".insteadOf "https://github.com/ONEcampaign/" \
-    && uv python install \
-    && uv sync --no-install-workspace --extra engine --extra datasets --extra graph --no-default-groups --frozen \
-    && git config --global --unset-all url."https://x-access-token:$(cat /run/secrets/spec_kit_token)@github.com/ONEcampaign/".insteadOf
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv python install \
+    && uv sync --no-install-workspace --extra engine --extra datasets --extra graph --no-default-groups --frozen
 
 # Then the source; build and install the project non-editable.
 COPY . ./
@@ -78,7 +71,7 @@ USER app
 
 # The deploy workflow supplies this build argument as github.sha. It is
 # baked into the image rather than set on the Cloud Run service because
-# dfo-infra owns the service's own environment.
+# `infra` owns the service's own environment.
 ARG DFO_BUILD_COMMIT=unknown
 ENV DFO_BUILD_COMMIT=${DFO_BUILD_COMMIT}
 

@@ -2,22 +2,21 @@ name: Deploy dev
 
 # Reconciles the dev apis service, its datasets worker, and its jobs to dev's
 # current tip, whatever triggered the run. The steps live in deploy.yml, which
-# deploy-prod.yml shares; this file chooses the triggers, the `dev` GitHub
-# Environment, and the owner guard.
+# deploy-prod.yml shares; this file chooses the triggers and the `dev` GitHub
+# Environment.
 #
 # The trigger is `workflow_run` on CI, not `push`, because a push trigger
 # races CI's own run for the same commit: an older commit's CI can finish
-# after a newer commit's. A CI run that failed or was cancelled deploys
-# nothing, because the job requires
-# `github.event.workflow_run.conclusion == 'success'`. deploy.yml resolves
-# dev's tip for itself, so a run triggered by an older commit still deploys
-# the newest green commit.
+# after a newer commit's. The job requires
+# `github.event.workflow_run.conclusion == 'success'` and a CI run started by a
+# push, so a failed or cancelled run deploys nothing, and neither does a fork
+# pull request from a branch named dev. deploy.yml resolves dev's tip for
+# itself, so a run triggered by an older commit still deploys the newest green
+# commit.
 #
-# dev is the branch CONTRIBUTING.md maps to the dev environment. The same file
-# also runs in the DevelopmentFinanceObservatory copy of this repository,
-# where the owner guard skips it.
+# dev is the branch CONTRIBUTING.md maps to the dev environment.
 #
-# A staging environment would be one more caller like this one, with its own
+# A further environment would be one more caller like this one, with its own
 # triggers and GitHub Environment.
 
 on:
@@ -53,11 +52,12 @@ concurrency:
 
 jobs:
   deploy:
-    # Dev deploys only from ONEcampaign. A CI run that failed or was
-    # cancelled deploys nothing.
+    # A CI run that failed or was cancelled deploys nothing. A fork PR from a
+    # branch named dev reports head_branch dev, so only a push run counts.
     if: >-
-      github.repository_owner == 'ONEcampaign' &&
-      (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push')
     permissions:
       contents: read
       id-token: write
@@ -65,6 +65,5 @@ jobs:
     uses: ./.github/workflows/deploy.yml
     with:
       environment: dev
-    # deploy.yml reads READER_APP_PRIVATE_KEY from its own environment, which in
-    # prod is the only place the key lives.
+    # deploy.yml reads WIF_PROVIDER and WIF_SA from its own environment.
     secrets: inherit

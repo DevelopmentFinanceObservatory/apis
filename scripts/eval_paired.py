@@ -75,6 +75,7 @@ import httpx
 
 from origin_catalogue import Catalogue, bound_catalogue
 from origin_catalogue.service import get_catalogue_service
+from search.eval.apis_auth import apis_auth
 from search.eval.cases import (
     CHECK_NAMES,
     DEFAULT_CORPUS_DIR,
@@ -801,7 +802,9 @@ def _load_catalogue() -> Catalogue:
 
 
 async def _main_async(args: argparse.Namespace, reads: Reads) -> int:
-    async with httpx.AsyncClient(timeout=_TIMEOUT_S, headers=EVAL_HEADERS) as client:
+    async with httpx.AsyncClient(
+        timeout=_TIMEOUT_S, headers=EVAL_HEADERS, auth=apis_auth()
+    ) as client:
         try:
             return await run(args, reads=reads, client=client)
         except httpx.HTTPError as exc:

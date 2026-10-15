@@ -1,14 +1,14 @@
 Architecture
 
-GitHub Actions builds the `dfo-apis` container image and updates the active revision on Google Cloud Run. Service provisioning, VPC connectivity, scaling parameters, Cloud SQL instances, IAM bindings, and environment configurations are managed in the `dfo-infra` repository via Terraform.
+GitHub Actions builds the `dfo-apis` container image and updates the active revision on Google Cloud Run. Service provisioning, VPC connectivity, scaling parameters, Cloud SQL instances, IAM bindings, and environment configurations are managed in the `infra` repository via Terraform.
 
 ## Overview
 
-`dfo-apis` builds container artifacts and manages revision swaps. `dfo-infra` provisions cloud resources and infrastructure state.
+`apis` builds container artifacts and manages revision swaps. `infra` provisions cloud resources and infrastructure state.
 
 ```
 +-------------------------------------------------------------+
-|                          dfo-apis                           |
+|                             apis                            |
 |                                                             |
 |  +---------------------+        +------------------------+  |
 |  |  deploy.yml         |------->| Artifact Registry      |  |
@@ -18,7 +18,7 @@ GitHub Actions builds the `dfo-apis` container image and updates the active revi
               | OIDC Auth (WIF)               |
               v                               v Revision Update
 +-------------------------------------------------------------+
-|                          dfo-infra                          |
+|                            infra                            |
 |                                                             |
 |  +-------------------------------------------------------+  |
 |  | Cloud Run Service (SERVICE_APIS)                      |  |
@@ -45,12 +45,10 @@ Related guides:
 
 ## Continuous Deployment (`deploy.yml`)
 
-`.github/workflows/deploy.yml` holds the deploy steps. Two callers choose the triggers, the GitHub Environment, and the owner guard, so dev and production run the same steps against the names their environment's variables hold:
+`.github/workflows/deploy.yml` holds the deploy steps. Two callers choose the triggers and the GitHub Environment, so dev and production run the same steps against the names their environment's variables hold:
 
-- `deploy-dev.yml` runs in ONEcampaign, in the `dev` environment, after each successful CI run on `dev` and on `workflow_dispatch`.
-- `deploy-prod.yml` runs in DevelopmentFinanceObservatory, in the `production` environment, on a push to `main` and on `workflow_dispatch`.
-
-The same files sit in both organisations' copies of the repository. Each caller's job checks `github.repository_owner`, so a workflow skips in the organisation it does not deploy from.
+- `deploy-dev.yml` runs in the `dev` environment, after each successful CI run on `dev` and on `workflow_dispatch`.
+- `deploy-prod.yml` runs in the `production` environment, on a push to `main` and on `workflow_dispatch`.
 
 On a `workflow_run` trigger the workflow resolves the triggering branch's current tip as its deploy target rather than trusting the commit that triggered it. When that tip is the triggering run's own commit, this run's CI success already proves it green; otherwise the workflow queries the GitHub API for CI's newest run against the tip and proceeds only when it is `completed`/`success`, emitting a notice and deploying nothing otherwise. On a push or a dispatch the target is the commit the run is for. The workflow then reads the commit Cloud Run is currently serving with `gcloud run services describe` and diffs it against the target over `src/`, `packages/`, `pyproject.toml`, `uv.lock`, `.python-version`, `Dockerfile`, and the three deploy workflows; a target identical to the live commit, or one whose diff over those paths is empty, skips the build. A live image tag the checkout doesn't recognise as a commit deploys unconditionally, since its inputs can't be compared. On `workflow_dispatch`, the workflow still reads the live image so an unreadable service fails loudly, but skips the diff and always deploys the dispatched commit, so a dispatch can force a redeploy or a rollback regardless of what's already live. See `.github/scripts/deploy_decide.sh` for the exact decision.
 
@@ -104,31 +102,29 @@ Deployments authenticate to Google Cloud using GitHub Actions OIDC tokens exchan
 
 ### Deployment Branch Policies
 
-The Workload Identity binding maps access to `repo:ONEcampaign/dfo-apis:environment:dev` in dev and to the `production` environment of the DevelopmentFinanceObservatory repository in production. GitHub restricts token minting through each environment's deployment branch policy (`dev` and `main`). Workflows from unauthorised branches fail before authentication.
+The Workload Identity binding maps access to `repo:DevelopmentFinanceObservatory/apis:environment:dev` in dev and to `repo:DevelopmentFinanceObservatory/apis:environment:production` in production. GitHub restricts token minting through each environment's deployment branch policy (`dev` and `main`). Workflows from unauthorised branches fail before authentication.
 
 ## GitHub Variables & Secrets
 
 Configuration values map to GitHub Environment secrets and variables:
 
-| Name                       | Scope       | Type     | Description                                                                                                                                                      | Source                           |
-| :------------------------- | :---------- | :------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------- |
-| `WIF_PROVIDER`             | Environment | Secret   | Full path of the Workload Identity Provider resource.                                                                                                            | `just handoff apis` in dfo-infra |
-| `WIF_SA`                   | Environment | Secret   | Email address of the deployer service account.                                                                                                                   | `just handoff apis` in dfo-infra |
-| `READER_APP_CLIENT_ID`     | Repository  | Variable | Client ID of the `dfo-reader` GitHub App, which mints the read-only `dfo-spec-kit` token.                                                                        | Repository Settings              |
-| `READER_APP_PRIVATE_KEY`   | Repository  | Secret   | Private key of the `dfo-reader` GitHub App. In DevelopmentFinanceObservatory it lives in the `production` and `sync-guard` environments only.                    | Repository Settings              |
-| `PROJECT_ID`               | Environment | Variable | Google Cloud project ID (`dev-fin-observatory` in dev).                                                                                                          | `just handoff apis` in dfo-infra |
-| `REGION`                   | Environment | Variable | Google Cloud region (`northamerica-northeast1` in dev, `europe-west1` in production).                                                                            | `just handoff apis` in dfo-infra |
-| `AR_REPO`                  | Environment | Variable | Artifact Registry repository name (`datacommons` in dev).                                                                                                        | `just handoff apis` in dfo-infra |
-| `SERVICE_APIS`             | Environment | Variable | Cloud Run apis service name.                                                                                                                                     | `just handoff apis` in dfo-infra |
-| `SERVICE_WORKER`           | Environment | Variable | Cloud Run datasets worker service name (`dfo-dev-datasets-worker` in dev), the async operations worker `google_cloud_run_v2_service.datasets_worker` provisions. | `just handoff apis` in dfo-infra |
-| `JOB_DATASETS_MIGRATE`     | Environment | Variable | Cloud Run Job that applies the datasets migrations (`dfo-dev-datasets-migrate` in dev).                                                                          | `just handoff apis` in dfo-infra |
-| `JOB_PRESENTATION_MIGRATE` | Environment | Variable | Cloud Run Job that applies the presentation migrations (`dfo-dev-presentation-migrate` in dev).                                                                  | `just handoff apis` in dfo-infra |
-| `JOB_DATASETS_MAINTENANCE` | Environment | Variable | Cloud Run Job that runs the `datasets-maintenance` tasks: the reconciliation sweep, aging terminal operations, and the deploy's settle and description backfill.                           | `just handoff apis` in dfo-infra |
-| `JOB_COVERAGE`             | Environment | Variable | Cloud Run Job that builds and verifies the coverage artifact (`dfo-dev-coverage` in dev).                                                                        | `just handoff apis` in dfo-infra |
-| `JOB_ORIGIN_CATALOGUE`     | Environment | Variable | Cloud Run Job that builds and verifies the origin catalogue (`dfo-dev-origin-catalogue` in dev).                                                                 | `just handoff apis` in dfo-infra |
-| `JOB_SEARCH_CATALOGUE`     | Environment | Variable | Cloud Run Job that builds the search catalogue (`dfo-dev-search-catalogue` in dev).                                                                              | `just handoff apis` in dfo-infra |
+| Name                       | Scope       | Type     | Description                                                                                                                                                      | Source                       |
+| :------------------------- | :---------- | :------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------- | :--------------------------- |
+| `WIF_PROVIDER`             | Environment | Secret   | Full path of the Workload Identity Provider resource.                                                                                                            | `just handoff apis` in infra |
+| `WIF_SA`                   | Environment | Secret   | Email address of the deployer service account.                                                                                                                   | `just handoff apis` in infra |
+| `PROJECT_ID`               | Environment | Variable | Google Cloud project ID (`dev-fin-observatory` in dev).                                                                                                          | `just handoff apis` in infra |
+| `REGION`                   | Environment | Variable | Google Cloud region (`northamerica-northeast1` in dev, `europe-west1` in production).                                                                            | `just handoff apis` in infra |
+| `AR_REPO`                  | Environment | Variable | Artifact Registry repository name (`datacommons` in dev).                                                                                                        | `just handoff apis` in infra |
+| `SERVICE_APIS`             | Environment | Variable | Cloud Run apis service name.                                                                                                                                     | `just handoff apis` in infra |
+| `SERVICE_WORKER`           | Environment | Variable | Cloud Run datasets worker service name (`dfo-dev-datasets-worker` in dev), the async operations worker `google_cloud_run_v2_service.datasets_worker` provisions. | `just handoff apis` in infra |
+| `JOB_DATASETS_MIGRATE`     | Environment | Variable | Cloud Run Job that applies the datasets migrations (`dfo-dev-datasets-migrate` in dev).                                                                          | `just handoff apis` in infra |
+| `JOB_PRESENTATION_MIGRATE` | Environment | Variable | Cloud Run Job that applies the presentation migrations (`dfo-dev-presentation-migrate` in dev).                                                                  | `just handoff apis` in infra |
+| `JOB_DATASETS_MAINTENANCE` | Environment | Variable | Cloud Run Job that runs the `datasets-maintenance` tasks: the reconciliation sweep, aging terminal operations, and the deploy's settle and description backfill. | `just handoff apis` in infra |
+| `JOB_COVERAGE`             | Environment | Variable | Cloud Run Job that builds and verifies the coverage artifact (`dfo-dev-coverage` in dev).                                                                        | `just handoff apis` in infra |
+| `JOB_ORIGIN_CATALOGUE`     | Environment | Variable | Cloud Run Job that builds and verifies the origin catalogue (`dfo-dev-origin-catalogue` in dev).                                                                 | `just handoff apis` in infra |
+| `JOB_SEARCH_CATALOGUE`     | Environment | Variable | Cloud Run Job that builds the search catalogue (`dfo-dev-search-catalogue` in dev).                                                                              | `just handoff apis` in infra |
 
-Every environment variable lives in both the `dev` and `production` GitHub Environments under the same name. In dfo-infra, `just handoff apis` sets every environment variable and secret on `dev`, and `just ENV=dfo-prod handoff apis` sets them on `production`.
+Every environment variable lives in both the `dev` and `production` GitHub Environments under the same name. In infra, `just handoff apis` sets every environment variable and secret on `dev`, and `just ENV=dfo-prod handoff apis` sets them on `production`.
 
 ## Container Build & Image Naming
 
@@ -140,34 +136,24 @@ Artifact Registry images use the commit SHA tag:
 ${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/dfo-apis:<commit-sha>
 ```
 
-### BuildKit Secret Resolution
+### Dependency resolution
 
-The application depends on the private `dfo-spec-kit` repository. During the multi-stage Docker build, `uv` resolves dependencies using git over HTTPS.
-
-The deploy workflow mints a read-only `dfo-reader` App token for `ONEcampaign/dfo-spec-kit` through `.github/actions/spec-kit-auth` and mounts it as the `spec_kit_token` BuildKit secret. The rewrite covers only `https://github.com/ONEcampaign/` URLs:
-
-```dockerfile
-RUN --mount=type=secret,id=spec_kit_token \
-    git config --global url."https://x-access-token:$(cat /run/secrets/spec_kit_token)@github.com/ONEcampaign/".insteadOf "https://github.com/ONEcampaign/" \
-    && uv python install \
-    && uv sync --no-install-workspace --extra engine --extra datasets --extra graph --no-default-groups --frozen \
-    && git config --global --unset-all url."https://x-access-token:$(cat /run/secrets/spec_kit_token)@github.com/ONEcampaign/".insteadOf
-```
+The application depends on the `spec-kit` repository at `DevelopmentFinanceObservatory/spec-kit`, which is public. During the multi-stage Docker build, `uv` resolves it with git over HTTPS, and the build needs no credential.
 
 The runtime container uses `debian:bookworm-slim` with installed CA certificates and runs as an unprivileged `app` user (`UID 1000`) on port `8080`.
 
 ## Infrastructure & Persistence Boundary
 
-`dfo-apis` and `dfo-infra` divide deployment responsibilities:
+`apis` and `infra` divide deployment responsibilities:
 
-### Infrastructure (`dfo-infra`)
+### Infrastructure (`infra`)
 
 - Manages Cloud Run service concurrency, CPU and memory limits, ingress settings, and environment variables.
 - Configures `lifecycle { ignore_changes = [template[0].spec[0].containers[0].image] }` in Terraform to preserve deployment image updates during Terraform applies.
 - Provisions Cloud SQL PostgreSQL instances, private VPC peering, databases, and IAM database users.
 - Grants the deployer service account `roles/run.developer`, `roles/artifactregistry.writer`, and `roles/iam.serviceAccountUser`.
 
-### Application (`dfo-apis`)
+### Application (`apis`)
 
 - Builds, tests, warms ResolveKit SQLite caches, and pushes container images.
 - Updates Cloud Run revisions using `gcloud run services update --image=...` after CI checks pass.

@@ -3,7 +3,7 @@
 Routes:
 
 - `GET /api/datasets/{id}/{content_version}/description` answers the version's description
-  (`description.compose.describe_version`) in dfo-spec-kit's description schema.
+  (`description.compose.describe_version`) in the `spec-kit` repository's description schema.
 - `GET /api/datasets/{id}/{content_version}/description/values?property=&limit=&cursor=` pages
   the values the version's record holds for one open dimension, with their variable counts.
 

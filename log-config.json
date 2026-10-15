@@ -11,6 +11,9 @@
     "handlers": ["stdout"]
   },
   "loggers": {
+    "dfo_platform.request": {
+      "level": "INFO"
+    },
     "datasets_api": {
       "level": "INFO"
     },

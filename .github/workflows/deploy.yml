@@ -1,10 +1,10 @@
 name: Deploy
 
 # The deploy steps every environment runs. deploy-dev.yml and deploy-prod.yml
-# call this workflow and choose only the triggers, the GitHub Environment, and
-# the owner guard. Every project, region, registry, service, and job name
-# comes from that environment's variables, so one variable name means the same
-# thing in `dev` and `production`. See deploy/README.md for the full list.
+# call this workflow and choose only the triggers and the GitHub Environment.
+# Every project, region, registry, service, and job name comes from that
+# environment's variables, so one variable name means the same thing in `dev`
+# and `production`. See deploy/README.md for the full list.
 #
 # The `deploy` job resolves its own target commit rather than trusting the
 # commit that triggered it. On a push or a workflow_dispatch the target is
@@ -38,7 +38,7 @@ name: Deploy
 # only outside the watched paths, still has to deploy.
 #
 # This workflow only swaps the image on Cloud Run services and jobs that
-# already exist. dfo-infra owns creating and configuring them; see
+# already exist. `infra` owns creating and configuring them; see
 # deploy/README.md for the full division of responsibility.
 #
 # The apis service moves to an image only after both migration jobs
@@ -130,7 +130,7 @@ jobs:
             echo "sha=" >> "$GITHUB_OUTPUT"
           fi
 
-      # dfo-infra defines the Cloud Run service and job names; the deploy
+      # `infra` defines the Cloud Run service and job names; the deploy
       # environment carries them as variables. See deploy/README.md. All of
       # them are checked here, before the build and either migration job run,
       # so a missing variable fails fast rather than after burning a full
@@ -214,16 +214,6 @@ jobs:
           username: oauth2accesstoken
           password: ${{ steps.auth.outputs.access_token }}
 
-      # The Dockerfile mounts this token as a BuildKit secret to resolve the
-      # private dfo-spec-kit dependency, and the build fails without it.
-      - name: Mint a dfo-spec-kit read token
-        id: spec-kit-auth
-        if: steps.decide.outputs.deploy == 'true'
-        uses: ./.github/actions/spec-kit-auth
-        with:
-          client-id: ${{ vars.READER_APP_CLIENT_ID }}
-          private-key: ${{ secrets.READER_APP_PRIVATE_KEY }}
-
       # The image every job below runs is the image this step just pushed.
       # Pointing a job at anything else exits 0 without touching the database.
       #
@@ -237,8 +227,6 @@ jobs:
           push: true
           tags: ${{ steps.image.outputs.image }}
           build-args: DFO_BUILD_COMMIT=${{ steps.target.outputs.sha }}
-          secrets: |
-            spec_kit_token=${{ steps.spec-kit-auth.outputs.token }}
 
       # Both migration Cloud Run Jobs carry lifecycle.ignore_changes on their
       # container image in Terraform, so the deploy pipeline is what moves
@@ -290,7 +278,7 @@ jobs:
       # so the deploy points it at the new image here and executes it only for
       # the settle step after the services move. It moves after both
       # migrations, so its next run finds the schema this image expects. The
-      # job and its variable come from dfo-infra, and the upfront variable
+      # job and its variable come from `infra`, and the upfront variable
       # check refuses the deploy when the variable is missing.
       - name: Point the datasets maintenance job at the new image
         if: steps.decide.outputs.deploy == 'true'
@@ -470,12 +458,12 @@ jobs:
             --project="${{ vars.PROJECT_ID }}" \
             --quiet
 
-      # The async operations worker (dfo-infra's google_cloud_run_v2_service
+      # The async operations worker (the `infra` repository's google_cloud_run_v2_service
       # .datasets_worker) runs the same image as the apis service, and moves
       # onto the new one before the apis step below does, because an
       # in-flight or newly-enqueued operation must run against the schema and
       # coverage artifact this deploy just brought current. Image-only
-      # update, same shape as the apis service step below. dfo-infra owns the
+      # update, same shape as the apis service step below. `infra` owns the
       # service's own scaling/secrets/runtime-service-account config via
       # lifecycle.ignore_changes on the container image.
       - name: Point the datasets worker at the new image
@@ -488,11 +476,11 @@ jobs:
             --project="${{ vars.PROJECT_ID }}" \
             --quiet
 
-      # Image-only update against the service dfo-infra already defined. This
+      # Image-only update against the service `infra` already defined. This
       # step uses `gcloud run services update`, not `gcloud run services
       # replace`, since replace takes a full manifest and would fight
-      # dfo-infra for ownership of scaling, secrets, and the runtime service
-      # account. dfo-infra keeps lifecycle.ignore_changes on the container
+      # `infra` for ownership of scaling, secrets, and the runtime service
+      # account. `infra` keeps lifecycle.ignore_changes on the container
       # image in Terraform for the same reason, and replacing the manifest
       # here would fight that too. This step runs only once both migration
       # jobs above have exited 0, so the service never serves an image ahead

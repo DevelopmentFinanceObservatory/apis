@@ -88,7 +88,7 @@ def _refuse_to_build(*_args: object) -> None:
 
 
 def test_the_policy_is_read_once_for_the_process_without_a_shared_resolver(monkeypatch):
-    """dfo-apis#1281: a caller holding no resolver (`rerender_golden`, a surface built with an
+    """A caller holding no resolver (`rerender_golden`, a surface built with an
     injected resolver) built and closed the whole resolver on every policy read, and raised
     without a cache directory. Reading the bundled geo modules takes about a second."""
     monkeypatch.delenv("RESOLVEKIT_CACHE_DIR", raising=False)

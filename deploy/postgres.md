@@ -1,9 +1,9 @@
 # Postgres (`dataset_store`)
 
 `dataset_store` reads and writes the shared `dfo-dev-platform-postgres`
-instance's `datasets` database. `dfo-infra` owns the instance, the database,
+instance's `datasets` database. `infra` owns the instance, the database,
 and the two Postgres roles (a runtime role authenticated over IAM, and the
-built-in `dfo-dev-datasets-migrator`). `dfo-infra`'s
+built-in `dfo-dev-datasets-migrator`). The `infra` repository's
 `infra/dfo-dev/platform/README.md` and `infra/dfo-dev/dcp/dfo_datasets.tf`
 are the source of truth for that provisioning. This repo owns the code that
 reaches those roles and the migrations that grant against them.
@@ -68,9 +68,9 @@ either door's lifespan runs.
 `LIVE_REFRESH_PRINCIPAL` is optional and has no safe value to default to. It
 names the one caller of the frame refresh (`POST /api/datasets/frames/refresh`)
 and of the Presentation render routes, which read it whether or not the
-Datasets surface is mounted. `dfo-infra` generates it as the
+Datasets surface is mounted. `infra` generates it as the
 `<namespace>-live-refresh-principal` secret and mounts it on this service, the
-website, and dfo-ai. Unset or empty, the service starts and those routes refuse
+website, and `ai`. Unset or empty, the service starts and those routes refuse
 every caller with `refresh_not_permitted`.
 
 Derived-frame recipes live in `datasets.frame_recipe`, which migration
@@ -89,7 +89,7 @@ across the tenants on the instance (`website`, `datasets`, `analysis`, and
 instances (`autoscaling.knative.dev/maxScale`). `dataset_store`'s own share of
 the budget is the per-instance pool size (`DATASET_STORE_POOL_SIZE`, default
 `10`) times that instance count, 20 connections at most. Raising the pool size
-multiplies against `maxScale`. `maxScale` is set in dfo-infra and moves
+multiplies against `maxScale`. `maxScale` is set in `infra` and moves
 independently of this document. Confirm the live value with:
 
 ```bash
@@ -173,15 +173,13 @@ the service update step, leaving the service on its current image.
 
 Point a job at an image and execute it, the same two commands the deploy
 workflow runs. Build and push the image first if it isn't already in
-Artifact Registry, tagged with the full commit SHA and needing
-`SPEC_KIT_TOKEN` to fetch the private `dfo-spec-kit` dependency, the same
-token `just build` passes:
+Artifact Registry, tagged with the full commit SHA:
 
 ```bash
-SPEC_KIT_TOKEN=$(gh auth token) docker buildx build \
+docker buildx build \
   --platform linux/amd64 --provenance=false --sbom=false --push \
   --tag northamerica-northeast1-docker.pkg.dev/dev-fin-observatory/datacommons/dfo-apis:<full commit sha> \
-  -f Dockerfile --secret id=spec_kit_token,env=SPEC_KIT_TOKEN .
+  -f Dockerfile .
 ```
 
 `--provenance=false --sbom=false` are required. Without them buildx pushes
@@ -258,7 +256,7 @@ Postgres (see above) or a working runtime IAM connection.
 `presentation_store` reads and writes its own `presentation` database on the
 same shared `dfo-dev-platform-postgres` instance. It is a distinct tenant from
 `dataset_store`'s `datasets`, never the same database under a second schema.
-`dfo-infra` owns the instance, the `presentation` database, and its two
+`infra` owns the instance, the `presentation` database, and its two
 Postgres roles (an IAM-authenticated runtime role and a password-authenticated
 migrator role), the same division `datasets` already has. This repo owns the
 code that reaches those roles and the migrations under

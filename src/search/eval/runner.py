@@ -23,6 +23,7 @@ from typing import Any
 
 import httpx
 
+from search.eval.apis_auth import apis_auth
 from search.eval.cases import Case
 from search.eval.checks.base import MembersReader
 from search.eval.dataset import resubmit_identity
@@ -170,6 +171,7 @@ def members_door_reader(url: str) -> MembersReader:
                 json={"definition": definition},
                 headers=EVAL_HEADERS,
                 timeout=_DEFAULT_TIMEOUT_S,
+                auth=apis_auth(),
             )
             response.raise_for_status()
             read[spec_id] = [
@@ -380,7 +382,9 @@ async def _client_scope(client: httpx.AsyncClient | None) -> AsyncIterator[httpx
     if client is not None:
         yield client
         return
-    async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT_S, headers=EVAL_HEADERS) as owned:
+    async with httpx.AsyncClient(
+        timeout=_DEFAULT_TIMEOUT_S, headers=EVAL_HEADERS, auth=apis_auth()
+    ) as owned:
         yield owned
 
 

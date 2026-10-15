@@ -541,7 +541,7 @@ def _sentence(head: str, words: _Words) -> str:
     return f"{head}: {'; '.join(clauses)}." if clauses else f"{head}."
 
 
-# One template per operation in dfo-spec-kit's `operations.json`
+# One template per operation in the `spec-kit` repository's `operations.json`
 
 
 def _retrieve(words: _Words) -> str:
@@ -787,7 +787,7 @@ _OPERATIONS: Final[Mapping[str, _Operation]] = {
     "select": _Operation(_select, "the selection"),
     "change": _Operation(_change, "the change"),
 }
-"""The sentence template and noun of each operation dfo-spec-kit lists."""
+"""The sentence template and noun of each operation `spec-kit` lists."""
 
 
 def templated_operations() -> frozenset[str]:
