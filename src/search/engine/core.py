@@ -8,6 +8,7 @@ work from recall through assembly lives in ``region.resolve_variable``.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 from collections.abc import AsyncIterator
@@ -21,6 +22,7 @@ from code_index.shared import get_index
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from dfo_platform.build import build_commit
 from dfo_platform.executor import submit_with_context
+from dfo_platform.trace import get_trace_id
 from entity_resolution import Admission, EntityResolver, acquire_shared, release_shared
 from graph_generation import UNKNOWN_GENERATION, GenerationProvider
 from materialise import GraphReader
@@ -51,6 +53,7 @@ from search.engine.response_cache_memo import PartMemo
 from search.engine.retrieval.bound_values import held_family_memo
 from search.models import (
     DatasetResubmitInput,
+    NoDataPart,
     NoDataReason,
     ParsedInput,
     QueryEcho,
@@ -58,6 +61,7 @@ from search.models import (
     Resolution,
     ResolveRequest,
     ResolveResponse,
+    UnsupportedPart,
     Warning,
 )
 from series_coverage.shared import CoverageSnapshot, get_coverage_service
@@ -95,15 +99,21 @@ class SkillsIndexSource(Protocol):
 class _ResolveRecord:
     """What one resolve's log line reports, filled in as its events pass.
 
-    `cache` is the response cache outcome: `inactive`, `miss`, `hit layer1` or `hit layer2`.
-    `memo_hits` and `memo_misses` count a `dataset_resubmit` request's part memo lookups,
-    and stay None on every other request and when the memo is off.
+    `trace_id` is read when the request starts, because `get_trace_id` in the `finally` after a
+    client disconnect can mint a fresh id that joins nothing. `cache` is the response cache outcome:
+    `inactive`, `miss`, `hit layer1` or `hit layer2`. `memo_hits` and `memo_misses` count a
+    `dataset_resubmit` request's part memo lookups, and stay None on every other request and
+    when the memo is off. `timed_out` and `degraded_leg` come from the `done` event and stay
+    None when the request ended before it.
     """
 
+    trace_id: str
     cache: str = "inactive"
     memo_hits: int | None = None
     memo_misses: int | None = None
     response: ResolveResponse | None = None
+    timed_out: bool | None = None
+    degraded_leg: bool | None = None
 
 
 def _log_resolve(
@@ -111,10 +121,23 @@ def _log_resolve(
 ) -> None:
     """Log one INFO line per resolve, `resolve ` followed by a JSON object.
 
-    The object carries the input kind, the caller's User-Agent, the posted `include_*` flags
-    (an unposted flag is absent), the transport (`sse` or `buffered`), the response cache
-    outcome, the part memo's hits and misses, the envelope's `timing_ms` total and
-    `by_step`, and each part's own `by_step`. Timing is null when the request ended before
+    The object carries the request's `trace_id`, the input kind, the caller's User-Agent, the
+    posted `include_*` flags (an unposted flag is absent), the transport (`sse` or
+    `buffered`), the response cache outcome, the part memo's hits and misses, the envelope's
+    `timing_ms` total and `by_step`, and each part's own `by_step`.
+
+    `outcome` is the response's `status` for a resolution and its `kind` otherwise.
+    `part_statuses` lists each part's status in order, `no_data_reasons` each no_data part's
+    `reason` and `unsupported_codes` each unsupported part's `code`. `llm_usage` is the
+    diagnostics' token counts. `timed_out` and `degraded_leg` come from the `done` event. A
+    leg cut at the soft deadline is backfilled as `no_data`/`variable_not_resolved`, so only
+    `timed_out` tells it from a real miss.
+
+    `query_sha256` is the sha256 hex of a raw_text query after `.strip().casefold()`, null for
+    other input kinds. It is a pseudonymous key for counting repeats, and hashing a guessed
+    phrasing recovers a common query. The line carries no query text.
+
+    Every response-derived field is null, and every list empty, when the request ended before
     its response event.
     """
     options = request.response_options
@@ -122,11 +145,24 @@ def _log_resolve(
     response = record.response
     timing = response.diagnostics.timing_ms if response is not None else None
     parts = response.parts if isinstance(response, Resolution) else []
+    if response is None:
+        outcome = None
+    elif isinstance(response, Resolution):
+        outcome = response.status
+    else:
+        outcome = response.kind
+    inp = request.input
+    query_sha256 = (
+        hashlib.sha256(inp.query.strip().casefold().encode()).hexdigest()
+        if isinstance(inp, RawTextInput)
+        else None
+    )
     logger.info(
         "resolve %s",
         json.dumps(
             {
-                "kind": request.input.kind,
+                "trace_id": record.trace_id,
+                "kind": inp.kind,
                 "caller": caller,
                 **{name: value for name, value in posted.items() if name.startswith("include_")},
                 "transport": transport,
@@ -138,6 +174,18 @@ def _log_resolve(
                 "parts_by_step": [
                     part.timing_ms.by_step if part.timing_ms is not None else None for part in parts
                 ],
+                "outcome": outcome,
+                "part_statuses": [part.status for part in parts],
+                "no_data_reasons": [
+                    part.no_data.reason for part in parts if isinstance(part, NoDataPart)
+                ],
+                "unsupported_codes": [
+                    part.unsupported.code for part in parts if isinstance(part, UnsupportedPart)
+                ],
+                "llm_usage": response.diagnostics.llm_usage if response is not None else None,
+                "timed_out": record.timed_out,
+                "degraded_leg": record.degraded_leg,
+                "query_sha256": query_sha256,
             }
         ),
     )
@@ -253,7 +301,7 @@ async def resolve_events(
     if budget is None:
         budget = request_budget(kind=request.input.kind)
     start_ms = budget.start_ms
-    record = _ResolveRecord()
+    record = _ResolveRecord(trace_id=get_trace_id())
     request_rate_cache = rate_cache.for_request() if rate_cache is not None else None
     owns_graph = graph is None
     _graph = graph if graph is not None else _build_live_graph_client()
@@ -313,6 +361,9 @@ async def resolve_events(
                             ),
                         )
                         record.response = event.response
+                    elif isinstance(event, DoneEvent):
+                        record.timed_out = event.timed_out
+                        record.degraded_leg = event.degraded_leg
                     yield event
     finally:
         _log_resolve(
