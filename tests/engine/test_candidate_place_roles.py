@@ -40,7 +40,7 @@ from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.core import resolve_async
 from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.errors import GraphInfraError
-from search.engine.extract import Extraction
+from search.engine.extract import ExtractedExclusion, Extraction, _admit_exclusions
 from search.engine.interpret import Recall
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import (
@@ -1455,6 +1455,24 @@ def test_a_party_reading_stands_where_a_binding_shape_reads_all_any_other_reads(
             with_party_reading(state, shapes, phrases_read)
         return
     assert [s.shape_id for s in with_party_reading(state, shapes, phrases_read)] == kept
+
+
+def test_a_stated_word_the_query_left_out_reaches_no_reader() -> None:
+    """An exclusion over part of a variable takes the word out of the variable and out of
+    the request text, so the part states nothing of it and no reader needs the phrase."""
+    query = "not bilateral ODA to Kenya"
+    extraction = Extraction(
+        kind="resolution",
+        variables=["bilateral ODA"],
+        exclusions=[ExtractedExclusion(phrase="not bilateral", left_out="bilateral")],
+    )
+    admitted, request_text = _admit_exclusions(query, extraction)
+    (variable,) = admitted.variables
+    state = _state_naming(variable, None)
+    state.query_text = request_text
+
+    assert (variable, request_text) == ("ODA", "; ODA to Kenya")
+    assert _dataset_stated_words(_flow_shape(_CRS), get_index(), state) == _NOTHING
 
 
 def test_a_pinned_recipient_keeps_its_kind() -> None:

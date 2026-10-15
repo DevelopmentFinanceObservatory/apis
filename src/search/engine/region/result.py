@@ -198,6 +198,10 @@ class RegionResult:
     # The entry door uses them to retain or drop `QUERY_QUALIFIER_DROPPED` warnings
     # across the request.
     admitted_qualifier_phrases: frozenset[str] = frozenset()
+    # The phrases the request asked to leave out that every answer of this region leaves
+    # out (`requirements.Judgement.met_exclusions`), as the request wrote them. The entry
+    # door drops a phrase's warning when every region holds it.
+    met_exclusions: frozenset[str] = frozenset()
     # Why a no_data outcome fired (models.NoData's own `cause`), populated
     # only for no_data_reason=="rate_coverage_gap".
     cause: Cause | None = None

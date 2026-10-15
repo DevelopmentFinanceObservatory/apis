@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import logging
+import re
+import unicodedata
 from types import SimpleNamespace
 
 import pytest
@@ -19,6 +22,7 @@ from search.engine.extract import (
     ExtractedOperation,
     Extraction,
     ExtractionResult,
+    _admit_exclusions,
     _admit_operations,
     _drop_forecast_years,
     _occurs_in,
@@ -2759,3 +2763,1470 @@ def test_extract_leaves_a_qualifier_no_operation_touches_to_the_region():
     )
     result, _ = _run(extract(query, llm=llm))
     assert result.extraction.dropped_qualifiers == ["standard grants"]
+
+
+# Exclusions: what the query asks to leave out
+
+
+def _place(text: str) -> dict:
+    return {"text": text, "span": text}
+
+
+def _ex(phrase: str, left_out: str) -> dict:
+    """An exclusion as the model states it."""
+    return {"phrase": phrase, "left_out": left_out}
+
+
+@pytest.mark.parametrize(
+    ("query", "payload", "variables", "entities", "exclusions", "dropped"),
+    [
+        pytest.param(
+            "everything but humanitarian aid to Kenya in 2022",
+            {
+                "variables": ["humanitarian aid"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("everything but humanitarian aid", "humanitarian aid")],
+            },
+            [],
+            ["Kenya"],
+            ["everything but humanitarian aid"],
+            ["everything but humanitarian aid"],
+            id="no-measure-left",
+        ),
+        pytest.param(
+            "ODA to Kenya excluding humanitarian aid in 2022",
+            {
+                "variables": ["ODA", "humanitarian aid"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("excluding humanitarian aid", "humanitarian aid")],
+            },
+            ["ODA"],
+            ["Kenya"],
+            ["excluding humanitarian aid"],
+            ["excluding humanitarian aid"],
+            id="promoted-measure-removed",
+        ),
+        pytest.param(
+            "aid to Kenya excluding humanitarian aid in 2022",
+            {
+                "variables": ["aid", "humanitarian aid"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("excluding humanitarian aid", "humanitarian aid")],
+            },
+            ["aid"],
+            ["Kenya"],
+            ["excluding humanitarian aid"],
+            ["excluding humanitarian aid"],
+            id="nested-measure-kept-by-position",
+        ),
+        pytest.param(
+            "ODA to Kenya in 2022 not from the United States",
+            {
+                "variables": ["ODA"],
+                "entities": [
+                    _place("Kenya"),
+                    {"text": "United States", "span": "United States", "flow_role": "origin"},
+                ],
+                "exclusions": [_ex("not from the United States", "the United States")],
+            },
+            ["ODA"],
+            ["Kenya"],
+            ["not from the United States"],
+            ["not from the United States"],
+            id="excluded-origin-removed",
+        ),
+        pytest.param(
+            "ODA to Africa excluding North Africa in 2022",
+            {
+                "variables": ["ODA"],
+                "entities": [_place("Africa"), _place("North Africa")],
+                "exclusions": [_ex("excluding North Africa", "North Africa")],
+            },
+            ["ODA"],
+            ["Africa"],
+            ["excluding North Africa"],
+            ["excluding North Africa"],
+            id="nested-entity-kept",
+        ),
+        pytest.param(
+            "ODA to Sudan except South Sudan in 2022",
+            {
+                "variables": ["ODA"],
+                "entities": [_place("Sudan"), _place("South Sudan")],
+                "exclusions": [_ex("except South Sudan", "South Sudan")],
+            },
+            ["ODA"],
+            ["Sudan"],
+            ["except South Sudan"],
+            ["except South Sudan"],
+            id="entity-inside-another-name-kept",
+        ),
+        pytest.param(
+            "not net ODA to Kenya in 2022",
+            {
+                "variables": ["net ODA"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("not net", "net")],
+            },
+            ["ODA"],
+            ["Kenya"],
+            ["not net"],
+            ["not net"],
+            id="covered-words-leave-the-measure",
+        ),
+        pytest.param(
+            "not bilateral ODA to Kenya",
+            {
+                "variables": ["bilateral ODA"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("not bilateral", "bilateral")],
+            },
+            ["ODA"],
+            ["Kenya"],
+            ["not bilateral"],
+            ["not bilateral"],
+            id="covered-stated-word-leaves-the-measure",
+        ),
+        pytest.param(
+            "not net ODA to Kenya in 2022",
+            {
+                "variables": ["net official development assistance"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("not net", "net")],
+            },
+            ["official development assistance"],
+            ["Kenya"],
+            ["not net"],
+            ["not net"],
+            id="reworded-measure-loses-the-covered-word",
+        ),
+        pytest.param(
+            "not net aid flows to Kenya",
+            {
+                "variables": ["net aid inflows"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("not net", "net")],
+            },
+            ["aid inflows"],
+            ["Kenya"],
+            ["not net"],
+            ["not net"],
+            id="reworded-measure-keeps-the-word-the-query-lacks",
+        ),
+        pytest.param(
+            "Excluding humanitarian aid, how much aid did Kenya receive in 2022?",
+            {
+                "variables": ["aid"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("Excluding humanitarian aid", "humanitarian aid")],
+            },
+            ["aid"],
+            ["Kenya"],
+            ["Excluding humanitarian aid"],
+            ["Excluding humanitarian aid"],
+            id="measure-word-first-inside-the-exclusion",
+        ),
+        pytest.param(
+            "Do not include humanitarian aid. Aid to Kenya in 2022.",
+            {
+                "variables": ["aid"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("Do not include humanitarian aid", "humanitarian aid")],
+            },
+            ["aid"],
+            ["Kenya"],
+            ["Do not include humanitarian aid"],
+            ["Do not include humanitarian aid"],
+            id="measure-after-a-leading-sentence",
+        ),
+        pytest.param(
+            "Leaving out food aid, how much aid went to Kenya?",
+            {
+                "variables": ["aid"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("Leaving out food aid", "food aid")],
+            },
+            ["aid"],
+            ["Kenya"],
+            ["Leaving out food aid"],
+            ["Leaving out food aid"],
+            id="measure-after-leaving-out",
+        ),
+        pytest.param(
+            "Apart from health aid, how much health spending does Kenya have?",
+            {
+                "variables": ["health spending"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("Apart from health aid", "health aid")],
+            },
+            ["health spending"],
+            ["Kenya"],
+            ["Apart from health aid"],
+            ["Apart from health aid"],
+            id="measure-sharing-a-word-with-the-exclusion",
+        ),
+        pytest.param(
+            "ODA to Kenya excluding debt relief, compared with debt service",
+            {
+                "variables": ["ODA", "debt service"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("excluding debt relief", "debt relief")],
+            },
+            ["ODA", "debt service"],
+            ["Kenya"],
+            ["excluding debt relief"],
+            ["excluding debt relief"],
+            id="second-measure-shares-a-word",
+        ),
+        pytest.param(
+            "ODA to Kenya excluding debt relief, and debt service payments",
+            {
+                "variables": ["ODA", "debt service payments"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("excluding debt relief", "debt relief")],
+            },
+            ["ODA", "debt service payments"],
+            ["Kenya"],
+            ["excluding debt relief"],
+            ["excluding debt relief"],
+            id="second-measure-shares-a-word-after-and",
+        ),
+        pytest.param(
+            "ODA excluding humanitarian aid and humanitarian assistance from the UN to Kenya",
+            {
+                "variables": ["ODA", "humanitarian assistance"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("excluding humanitarian aid", "humanitarian aid")],
+            },
+            ["ODA", "humanitarian assistance"],
+            ["Kenya"],
+            ["excluding humanitarian aid"],
+            ["excluding humanitarian aid"],
+            id="second-measure-shares-its-first-word",
+        ),
+        pytest.param(
+            "ODA to Kenya excluding grants in 2022",
+            {
+                "variables": ["ODA grants"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("excluding grants", "grants")],
+            },
+            ["ODA"],
+            ["Kenya"],
+            ["excluding grants"],
+            ["excluding grants"],
+            id="fused-measure-loses-the-covered-word",
+        ),
+        pytest.param(
+            "aid to Kenya excluding humanitarian in 2022",
+            {
+                "variables": ["humanitarian aid"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("excluding humanitarian", "humanitarian")],
+            },
+            ["aid"],
+            ["Kenya"],
+            ["excluding humanitarian"],
+            ["excluding humanitarian"],
+            id="fused-measure-keeps-query-order",
+        ),
+        pytest.param(
+            "ODA to Kenya excluding grants",
+            {
+                "variables": ["ODA"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("grants", "grants")],
+            },
+            ["ODA"],
+            ["Kenya"],
+            ["grants"],
+            ["grants"],
+            id="label-nothing-names-is-left-out",
+        ),
+        pytest.param(
+            "ODA to Kenya excluding loans",
+            {
+                "variables": ["ODA"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("excluding loans", "loans"), _ex("Excluding Loans ", "Loans")],
+            },
+            ["ODA"],
+            ["Kenya"],
+            ["excluding loans"],
+            ["excluding loans"],
+            id="same-phrase-in-another-case-once",
+        ),
+        pytest.param(
+            "not net ODA to Kenya compared with grants",
+            {
+                "variables": ["net ODA grants"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("not net", "net")],
+            },
+            ["ODA grants"],
+            ["Kenya"],
+            ["not net"],
+            ["not net"],
+            id="word-past-the-located-span-stays",
+        ),
+        pytest.param(
+            "aid commitments and aid disbursements to Kenya excluding humanitarian aid",
+            {
+                "variables": ["aid commitments", "aid disbursements"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("excluding humanitarian aid", "humanitarian aid")],
+            },
+            ["aid commitments", "aid disbursements"],
+            ["Kenya"],
+            ["excluding humanitarian aid"],
+            ["excluding humanitarian aid"],
+            id="measures-sharing-a-first-word-aid",
+        ),
+        pytest.param(
+            "debt service and debt stock of Kenya excluding IMF debt",
+            {
+                "variables": ["debt service", "debt stock"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("excluding IMF debt", "IMF debt")],
+            },
+            ["debt service", "debt stock"],
+            ["Kenya"],
+            ["excluding IMF debt"],
+            ["excluding IMF debt"],
+            id="measures-sharing-a-first-word-debt",
+        ),
+        pytest.param(
+            "GDP growth and GDP per capita in Kenya excluding oil GDP",
+            {
+                "variables": ["GDP growth", "GDP per capita"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("excluding oil GDP", "oil GDP")],
+            },
+            ["GDP growth", "GDP per capita"],
+            ["Kenya"],
+            ["excluding oil GDP"],
+            ["excluding oil GDP"],
+            id="measures-sharing-a-first-word-gdp",
+        ),
+        pytest.param(
+            "health aid and health spending in Kenya excluding health insurance",
+            {
+                "variables": ["health aid", "health spending"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("excluding health insurance", "health insurance")],
+            },
+            ["health aid", "health spending"],
+            ["Kenya"],
+            ["excluding health insurance"],
+            ["excluding health insurance"],
+            id="measures-sharing-a-first-word-health",
+        ),
+        pytest.param(
+            "net ODA and net FDI to Kenya, not net of debt relief",
+            {
+                "variables": ["net ODA", "net FDI"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("not net of debt relief", "net of debt relief")],
+            },
+            ["net ODA", "net FDI"],
+            ["Kenya"],
+            ["not net of debt relief"],
+            ["not net of debt relief"],
+            id="measures-sharing-a-first-word-net",
+        ),
+        pytest.param(
+            "Excluding humanitarian aid, how much aid did Kenya receive?",
+            {
+                "variables": ["aid"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("humanitarian aid", "humanitarian aid")],
+            },
+            ["aid"],
+            ["Kenya"],
+            ["humanitarian aid"],
+            ["humanitarian aid"],
+            id="label-holding-the-measure-word-is-left-out",
+        ),
+        pytest.param(
+            "health aid to Kenya excluding humanitarian aid",
+            {
+                "variables": ["health aid", "humanitarian aid"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("excluding humanitarian aid", "humanitarian aid")],
+            },
+            ["health aid"],
+            ["Kenya"],
+            ["excluding humanitarian aid"],
+            ["excluding humanitarian aid"],
+            id="measure-written-only-inside-goes-whole",
+        ),
+        pytest.param(
+            "no humanitarian aid to Kenya",
+            {
+                "variables": ["humanitarian aid"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("no humanitarian aid", "humanitarian aid")],
+            },
+            [],
+            ["Kenya"],
+            ["no humanitarian aid"],
+            ["no humanitarian aid"],
+            id="only-measure-left-out",
+        ),
+        pytest.param(
+            "Kenya ODA grants excluded",
+            {
+                "variables": ["ODA"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("grants", "grants")],
+            },
+            ["ODA"],
+            ["Kenya"],
+            ["grants"],
+            ["grants"],
+            id="label-beside-the-measure-is-left-out",
+        ),
+        pytest.param(
+            "What does Kenya owe China, excluding debt relief",
+            {
+                "variables": ["debt"],
+                "entities": [_place("Kenya"), _place("China")],
+                "exclusions": [_ex("excluding debt relief", "debt relief")],
+            },
+            ["debt"],
+            ["Kenya", "China"],
+            ["excluding debt relief"],
+            ["excluding debt relief"],
+            id="own-word-debt-stays",
+        ),
+        pytest.param(
+            "How much does France give to Kenya excluding humanitarian aid?",
+            {
+                "variables": ["aid"],
+                "entities": [_place("France"), _place("Kenya")],
+                "exclusions": [_ex("excluding humanitarian aid", "humanitarian aid")],
+            },
+            ["aid"],
+            ["France", "Kenya"],
+            ["excluding humanitarian aid"],
+            ["excluding humanitarian aid"],
+            id="own-word-aid-stays",
+        ),
+        pytest.param(
+            "how much does Kenya owe excluding IMF debt",
+            {
+                "variables": ["debt stock"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("excluding IMF debt", "IMF debt")],
+            },
+            ["debt stock"],
+            ["Kenya"],
+            ["excluding IMF debt"],
+            ["excluding IMF debt"],
+            id="own-words-debt-stock-stay",
+        ),
+        pytest.param(
+            "Sweden supports Ethiopia's health sector, excluding humanitarian aid",
+            {
+                "variables": ["health aid"],
+                "entities": [_place("Sweden"), _place("Ethiopia")],
+                "exclusions": [_ex("excluding humanitarian aid", "humanitarian aid")],
+            },
+            ["health aid"],
+            ["Sweden", "Ethiopia"],
+            ["excluding humanitarian aid"],
+            ["excluding humanitarian aid"],
+            id="own-words-health-aid-stay",
+        ),
+        pytest.param(
+            "net ODA to Kenya, not gross",
+            {
+                "variables": ["net ODA"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("not gross", "gross")],
+            },
+            ["net ODA"],
+            ["Kenya"],
+            ["not gross"],
+            ["not gross"],
+            id="net-measure-beside-not-gross",
+        ),
+        pytest.param(
+            "gross ODA to Kenya, not net",
+            {
+                "variables": ["gross ODA"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("not net", "net")],
+            },
+            ["gross ODA"],
+            ["Kenya"],
+            ["not net"],
+            ["not net"],
+            id="gross-measure-beside-not-net",
+        ),
+        pytest.param(
+            "ODA to Kenya excluding humanitarian aid",
+            {
+                "variables": ["ODA"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("excluding humanitarian aid", "food aid")],
+            },
+            ["ODA"],
+            ["Kenya"],
+            ["excluding humanitarian aid"],
+            ["excluding humanitarian aid"],
+            id="left-out-outside-the-phrase-removes-nothing",
+        ),
+        pytest.param(
+            "ケニアへのODA、人道支援を除く",
+            {
+                "variables": ["ODA"],
+                "entities": [_place("ケニア")],
+                "exclusions": [_ex("人道支援を除く", "人道支援")],
+            },
+            ["ODA"],
+            ["ケニア"],
+            ["人道支援を除く"],
+            ["人道支援を除く"],
+            id="y08-unspaced-left-out-warns",
+        ),
+        pytest.param(
+            "AOD a Kenia sin ayuda humanitaria",
+            {
+                "variables": ["AOD"],
+                "entities": [_place("Kenia")],
+                "exclusions": [_ex("sin ayuda humanitaria", "humanitarian aid")],
+            },
+            ["AOD"],
+            ["Kenia"],
+            ["sin ayuda humanitaria"],
+            ["sin ayuda humanitaria"],
+            id="y09-translated-left-out-warns",
+        ),
+        pytest.param(
+            "ODA to Kenya excluding humanitarian aid",
+            {
+                "variables": ["ODA", "humanitarian aid"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("excluding humanitarian aid", "humanitarian assistance")],
+            },
+            ["ODA", "humanitarian aid"],
+            ["Kenya"],
+            ["excluding humanitarian aid"],
+            ["excluding humanitarian aid"],
+            id="y10-reworded-left-out-warns",
+        ),
+        pytest.param(
+            "ODA to Africa except Kenya and Uganda",
+            {
+                "variables": ["ODA"],
+                "entities": [_place("Africa"), _place("Kenya"), _place("Uganda")],
+                "exclusions": [
+                    _ex("except Kenya and Uganda", "Kenya"),
+                    _ex("except Kenya and Uganda", "Uganda"),
+                ],
+            },
+            ["ODA"],
+            ["Africa"],
+            ["except Kenya and Uganda"],
+            ["except Kenya and Uganda"],
+            id="one-phrase-two-places-left-out",
+        ),
+        pytest.param(
+            "ODA to Kenya excluding grants and loans",
+            {
+                "variables": ["ODA", "loans"],
+                "entities": [_place("Kenya")],
+                "exclusions": [
+                    _ex("excluding grants and loans", "grants"),
+                    _ex("excluding grants and loans", "loans"),
+                ],
+            },
+            ["ODA"],
+            ["Kenya"],
+            ["excluding grants and loans"],
+            ["excluding grants and loans"],
+            id="one-phrase-two-measures-left-out",
+        ),
+        pytest.param(
+            "aide au Kenya, sauf de la France",
+            {
+                "variables": ["aide"],
+                "entities": [_place("Kenya"), {"text": "France", "span": "la France"}],
+                "exclusions": [_ex("sauf de la France", "France")],
+            },
+            ["aide"],
+            ["Kenya"],
+            ["sauf de la France"],
+            ["sauf de la France"],
+            id="place-span-wider-than-left-out",
+        ),
+        pytest.param(
+            "ODA to Kenya except from the UK",
+            {
+                "variables": ["ODA"],
+                "entities": [_place("Kenya"), {"text": "United Kingdom", "span": "the UK"}],
+                "exclusions": [_ex("except from the UK", "UK")],
+            },
+            ["ODA"],
+            ["Kenya"],
+            ["except from the UK"],
+            ["except from the UK"],
+            id="place-span-with-article-the-uk",
+        ),
+        pytest.param(
+            "ODA to Kenya except from the U.S.",
+            {
+                "variables": ["ODA"],
+                "entities": [_place("Kenya"), {"text": "United States", "span": "the U.S."}],
+                "exclusions": [_ex("except from the U.S.", "U.S.")],
+            },
+            ["ODA"],
+            ["Kenya"],
+            ["except from the U.S."],
+            ["except from the U.S."],
+            id="place-span-with-article-the-us",
+        ),
+        pytest.param(
+            "ODA to Kenya, except for the humanitarian aid",
+            {
+                "variables": ["ODA"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("except humanitarian aid", "humanitarian aid")],
+            },
+            ["ODA"],
+            ["Kenya"],
+            ["except humanitarian aid"],
+            ["except humanitarian aid"],
+            id="paraphrase-still-reported",
+        ),
+        pytest.param(
+            "non-humanitarian aid to Kenya in 2022",
+            {
+                "variables": ["non-humanitarian aid"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("non-humanitarian", "non-humanitarian")],
+            },
+            ["non-humanitarian aid"],
+            ["Kenya"],
+            [],
+            [],
+            id="variable-carries-the-negation",
+        ),
+        pytest.param(
+            "official development assistance excluding debt relief to Kenya in 2022",
+            {
+                "variables": ["official development assistance"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("excluding debt relief", "debt relief")],
+            },
+            ["official development assistance excluding debt relief"],
+            ["Kenya"],
+            [],
+            [],
+            id="measure-label-with-the-variable",
+        ),
+        pytest.param(
+            "ODA from non-DAC countries to Kenya in 2022",
+            {
+                "variables": ["ODA"],
+                "entities": [_place("non-DAC countries"), _place("Kenya")],
+                "exclusions": [_ex("non-DAC countries", "non-DAC countries")],
+            },
+            ["ODA"],
+            ["non-DAC countries", "Kenya"],
+            [],
+            [],
+            id="party-label",
+        ),
+        pytest.param(
+            "ODA to Kenya excluding humanitarian aid in 2022",
+            {
+                "variables": ["ODA"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("excluding humanitarian aid", "humanitarian aid")],
+                "dropped_qualifiers": ["humanitarian aid"],
+            },
+            ["ODA"],
+            ["Kenya"],
+            ["excluding humanitarian aid"],
+            ["excluding humanitarian aid"],
+            id="dropped-copy-reported-once",
+        ),
+        pytest.param(
+            "ODA to Kenya in 2022",
+            {
+                "variables": ["ODA"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("excluding loans", "loans")],
+            },
+            ["ODA"],
+            ["Kenya"],
+            [],
+            ["excluding loans"],
+            id="not-in-the-query",
+        ),
+        # A phrase the query does not write in order is the model's wording: it is a
+        # plain dropped qualifier, which warns that it was not applied.
+        pytest.param(
+            "ODA to Kenya minus humanitarian aid",
+            {
+                "variables": ["ODA"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("excluding humanitarian aid", "humanitarian aid")],
+            },
+            ["ODA"],
+            ["Kenya"],
+            [],
+            ["excluding humanitarian aid"],
+            id="cue-reworded",
+        ),
+        pytest.param(
+            "ODA to Kenya, humanitarian aid excluded",
+            {
+                "variables": ["ODA"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("excluded humanitarian aid", "humanitarian aid")],
+            },
+            ["ODA"],
+            ["Kenya"],
+            [],
+            ["excluded humanitarian aid"],
+            id="words-reordered",
+        ),
+        pytest.param(
+            "AOD a Kenia sin ayuda humanitaria",
+            {
+                "variables": ["ODA"],
+                "entities": [{"text": "Kenya", "span": "Kenia"}],
+                "exclusions": [_ex("without humanitarian aid", "humanitarian aid")],
+            },
+            ["ODA"],
+            ["Kenya"],
+            [],
+            ["without humanitarian aid"],
+            id="phrase-translated",
+        ),
+        pytest.param(
+            "ODA to Kenya excluding humanitarian aid",
+            {
+                "variables": ["ODA"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("excluding humanitarian aid to Kenya", "humanitarian aid")],
+            },
+            ["ODA"],
+            ["Kenya"],
+            [],
+            ["excluding humanitarian aid to Kenya"],
+            id="phrase-past-the-query",
+        ),
+        pytest.param(
+            "ODA to Kenya minus humanitarian aid",
+            {
+                "variables": ["ODA"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("excluding humanitarian aid", "humanitarian aid")],
+                "dropped_qualifiers": ["excluding humanitarian aid"],
+            },
+            ["ODA"],
+            ["Kenya"],
+            [],
+            ["excluding humanitarian aid"],
+            id="unwritten-phrase-reported-once",
+        ),
+        pytest.param(
+            "aid excluding loans to Kenya and humanitarian aid to Uganda",
+            {
+                "variables": ["aid", "humanitarian aid"],
+                "entities": [_place("Kenya"), _place("Uganda")],
+                "exclusions": [_ex("excluding humanitarian aid", "humanitarian aid")],
+            },
+            ["aid", "humanitarian aid"],
+            ["Kenya", "Uganda"],
+            ["excluding humanitarian aid"],
+            ["excluding humanitarian aid"],
+            id="pieces-apart-remove-nothing",
+        ),
+        pytest.param(
+            "ODA from non-DAC countries to Kenya in 2022",
+            {
+                "variables": ["ODA"],
+                "entities": [_place("non-DAC countries"), _place("Kenya")],
+                "exclusions": [_ex("non-DAC", "non-DAC")],
+            },
+            ["ODA"],
+            ["non-DAC countries", "Kenya"],
+            [],
+            [],
+            id="entity-carries-the-negation",
+        ),
+        pytest.param(
+            "ODA to Kenya in 2022",
+            {
+                "variables": ["ODA"],
+                "entities": [_place("Kenya")],
+                "exclusions": [_ex("ODA to Kenya in 2022", "ODA to Kenya in 2022")],
+            },
+            ["ODA"],
+            ["Kenya"],
+            [],
+            [],
+            id="whole-query-phrase-is-no-exclusion",
+        ),
+        pytest.param(
+            "AOD a Kenia sin ayuda humanitaria en 2022",
+            {
+                "variables": ["ODA", "humanitarian aid"],
+                "entities": [{"text": "Kenya", "span": "Kenia"}],
+                "exclusions": [_ex("sin ayuda humanitaria", "ayuda humanitaria")],
+            },
+            ["ODA", "humanitarian aid"],
+            ["Kenya"],
+            ["sin ayuda humanitaria"],
+            ["sin ayuda humanitaria"],
+            id="translated-measure-unlocated",
+        ),
+    ],
+)
+def test_extract_admits_an_exclusion_and_removes_what_it_leaves_out(
+    query, payload, variables, entities, exclusions, dropped
+):
+    result, _ = _run(extract(query, llm=_stub_for(query, {"dates": [], **payload})))
+    extraction = result.extraction
+    assert extraction.variables == variables
+    assert _texts(extraction.entities) == entities
+    assert (
+        list(dict.fromkeys(exclusion.phrase for exclusion in extraction.exclusions)) == exclusions
+    )
+    assert extraction.dropped_qualifiers == dropped
+
+
+_GRID_MEASURES = [
+    ["aid"],
+    ["aid commitments", "aid disbursements"],
+    ["health aid", "education aid"],
+    ["ODA", "debt service"],
+    ["ODA", "FDI", "remittances"],
+    ["net ODA", "gross ODA"],
+]
+# An excluded phrase as the query writes it, and the phrase and the thing it leaves out
+# as the model states them.
+_GRID_PHRASES = [
+    ("excluding humanitarian aid", "excluding humanitarian aid", "humanitarian aid"),
+    ("excluding loans", "excluding loans", "loans"),
+    ("excluding debt relief", "excluding debt relief", "debt relief"),
+    # An elided article, with the query's typographic apostrophe.
+    ("hors l\u2019aide humanitaire", "hors l'aide humanitaire", "aide humanitaire"),
+    # A possessive: the loans are left out, and Uganda only names them.
+    ("excluding Uganda's loans", "excluding Uganda's loans", "loans"),
+    # A thing left out that a measure holds beside its own words.
+    ("not net", "not net", "net"),
+    # A hyphen the model leaves out.
+    ("excluding debt-relief", "excluding debt relief", "debt relief"),
+    # A phrase the model states apart from how the query writes it.
+    ("excluding the humanitarian aid", "excluding humanitarian aid", "humanitarian aid"),
+    # A thing left out in other words than the phrase's, which removes nothing.
+    ("excluding humanitarian aid", "excluding humanitarian aid", "humanitarian assistance"),
+    # A phrase in an order the query does not write, which is a plain dropped qualifier.
+    ("humanitarian aid excluded", "excluded humanitarian aid", "humanitarian aid"),
+]
+# A second exclusion: its phrase, and each thing an entry for it leaves out.
+_GRID_SECOND = [
+    None,
+    ("except Uganda", ("Uganda",)),
+    ("but not food aid", ("food aid",)),
+    # A place span wider than the thing left out.
+    ("but not the UK", ("UK",)),
+    # One phrase, two entries.
+    ("but not food aid or loans", ("food aid", "loans")),
+]
+# What the model may name the measures: as the query writes them, with the thing left
+# out as a measure of its own, with the thing left out fused into the first measure, or
+# with the first measure in its own word, the last word of the thing left out ("aid"
+# beside "excluding humanitarian aid", "debt" beside "excluding debt relief").
+_GRID_MODEL = ["as-written", "left-out-promoted", "left-out-fused", "own-word"]
+
+
+def _grid_query(measures: list[str], phrase: str, where: str, second: str | None) -> str:
+    """A query with `phrase` at its start, in its middle (the measures on both sides) or
+    at its end, and `second` last."""
+    named = " and ".join(measures)
+    query = {
+        "start": f"{phrase}, how much {named} did Kenya receive in 2022",
+        "whole": phrase,
+        "middle": f"{named} to Kenya {phrase}, and {named} to Uganda in 2022",
+        "end": f"{named} to Kenya in 2022 {phrase}",
+    }[where]
+    return query if second is None else f"{query}, {second}"
+
+
+def _grid_words(text: str) -> list[str]:
+    """The words of `text`, split at spaces and at apostrophes and hyphens inside a word,
+    without the punctuation beside them. The grid reads no tokeniser of the engine."""
+    parted = re.split(r"[\s'\u2019-]+", text.casefold())
+    return [word for part in parted if (word := part.strip(",.;?"))]
+
+
+def _grid_runs(text: str | list[str], words: list[str]) -> list[set[int]]:
+    wanted = _grid_words(text) if isinstance(text, str) else text
+    return [
+        set(range(at, at + len(wanted)))
+        for at in range(len(words) - len(wanted) + 1)
+        if words[at : at + len(wanted)] == wanted
+    ]
+
+
+def _grid_in_order(text: str, words: list[str]) -> bool:
+    """Whether `words` holds every word of `text` in its order, not necessarily together."""
+    rest = iter(words)
+    return all(word in rest for word in _grid_words(text))
+
+
+def _grid_left(variable: str, words: list[str], covered: set[int], things: list[list[str]]):
+    """The words `variable` keeps, `None` when none: whole when the query writes it once
+    outside every exclusion, else less each run of its words that is a thing left out."""
+    if any(not run & covered for run in _grid_runs(variable, words)):
+        return _grid_words(variable)
+    own = _grid_words(variable)
+    cut = set().union(*(run for thing in things for run in _grid_runs(thing, own)))
+    return [word for at, word in enumerate(own) if at not in cut] or None
+
+
+@pytest.mark.parametrize(
+    ("measures", "phrase", "where", "second", "model"),
+    list(
+        itertools.product(
+            _GRID_MEASURES,
+            _GRID_PHRASES,
+            ["start", "middle", "end", "whole"],
+            _GRID_SECOND,
+            _GRID_MODEL,
+        )
+    ),
+)
+def test_an_exclusion_changes_a_measure_only_by_the_thing_it_leaves_out(
+    measures, phrase, where, second, model
+):
+    """What `_admit_exclusions` does to the variables, entities and dropped qualifiers,
+    wherever the measures and the exclusions stand in the query, whatever words they
+    share, and whatever the model calls the measure."""
+    written, stated, thing = phrase
+    query = _grid_query(measures, written, where, None if second is None else second[0])
+    variables = {
+        "as-written": measures,
+        "left-out-promoted": [*measures, thing],
+        "left-out-fused": [f"{measures[0]} {thing.split()[-1]}", *measures[1:]],
+        "own-word": [thing.split()[-1], *measures[1:]],
+    }[model]
+    stated_pairs = [(stated, thing)]
+    if second is not None:
+        stated_pairs += [(second[0], each) for each in second[1]]
+    places = ["Kenya", "Uganda", "the UK"]
+    dropped = ["in 2022", thing.split()[0], "Uganda"]
+    asked = Extraction(
+        kind="resolution",
+        variables=variables,
+        entities=[ExtractedEntity(text=place, span=place) for place in places],
+        exclusions=[_ex(each, left_out) for each, left_out in stated_pairs],
+        dropped_qualifiers=dropped,
+    )
+
+    admitted, request_text = _admit_exclusions(query, asked)
+
+    words = _grid_words(query)
+    # Each phrase the query writes in order keeps an entry for each thing it leaves out;
+    # one it does not is a plain dropped qualifier.
+    kept_pairs = [pair for pair in stated_pairs if _grid_in_order(pair[0], words)]
+    if not _grid_in_order(stated, words):
+        assert stated in admitted.dropped_qualifiers
+    # A phrase that is the whole query leaves nothing to answer, and is no exclusion.
+    if _grid_words(stated) == words:
+        assert [(e.phrase, e.left_out) for e in admitted.exclusions] == stated_pairs[1:]
+        if second is None:
+            assert (admitted, request_text) == (asked.model_copy(update={"exclusions": []}), None)
+        return
+    covered: set[int] = set()
+    removed: set[int] = set()
+    things: list[list[str]] = []
+    for each, left_out in stated_pairs:
+        for run in _grid_runs(each, words):
+            covered |= run
+            inside = [words[at] for at in sorted(run)]
+            # A thing that is no run of its phrase removes nothing.
+            if parts := _grid_runs(left_out, inside):
+                removed |= {min(run) + at for part in parts for at in part}
+                things.append(_grid_words(left_out))
+
+    def written_only_left_out(text: str) -> bool:
+        runs = _grid_runs(text, words)
+        return bool(runs) and all(run <= removed for run in runs)
+
+    expected: list[list[str]] = []
+    for variable in variables:
+        kept = _grid_left(variable, words, covered, things)
+        if kept is not None and kept not in expected:
+            expected.append(kept)
+    assert [(e.phrase, e.left_out) for e in admitted.exclusions] == kept_pairs
+    assert [_grid_words(variable) for variable in admitted.variables] == expected
+    # A variable written in full outside every exclusion is unchanged.
+    for variable in variables:
+        if any(not run & covered for run in _grid_runs(variable, words)):
+            assert variable in admitted.variables
+    # A variable is lost only when the things left out hold each of its words.
+    for variable in variables:
+        if _grid_left(variable, words, covered, things) is None:
+            assert not [w for w in _grid_words(variable) if not any(w in t for t in things)]
+
+    # An entity goes exactly when every place the query writes it holds a word left out.
+    def touched_wherever_written(place: str) -> bool:
+        runs = _grid_runs(place, words)
+        return bool(runs) and all(run & removed for run in runs)
+
+    assert [entity.text for entity in admitted.entities] == [
+        place for place in places if not touched_wherever_written(place)
+    ]
+    # So does a dropped qualifier the query writes as one run.
+    for qualifier in dropped:
+        if _grid_runs(qualifier, words):
+            kept = qualifier in admitted.dropped_qualifiers
+            assert kept is not written_only_left_out(qualifier)
+    # The request text holds every word outside the exclusions' phrases and none inside.
+    assert (request_text is None) is (not covered)
+    outside = [word for at, word in enumerate(words) if at not in covered]
+    assert _grid_words(request_text or query) == outside
+    # With no exclusion nothing changes.
+    plain = asked.model_copy(update={"exclusions": []})
+    assert _admit_exclusions(query, plain) == (plain, None)
+
+
+@pytest.mark.parametrize(
+    ("query_form", "span_form"), [("NFD", "NFC"), ("NFC", "NFD"), ("NFD", "NFD")]
+)
+def test_extract_reads_a_name_typed_with_combining_accents(query_form, span_form):
+    """The query and every span the model copies from it are read in NFC, so a name typed
+    with combining accents is left out where the query writes it."""
+    query = unicodedata.normalize(query_form, "aide \u00e0 l\u2019Afrique sauf l\u2019\u00c9gypte")
+    egypt = unicodedata.normalize(span_form, "\u00c9gypte")
+    phrase = unicodedata.normalize(span_form, "sauf l\u2019\u00c9gypte")
+    llm = _stub_for(
+        unicodedata.normalize("NFC", query),
+        {
+            "variables": ["aide"],
+            "entities": [_place("Afrique"), _place(egypt)],
+            "exclusions": [_ex(phrase, egypt)],
+        },
+    )
+    result, _ = _run(extract(query, llm=llm))
+    assert _texts(result.extraction.entities) == ["Afrique"]
+    assert result.request_text == "aide \u00e0 l\u2019Afrique ;"
+
+
+def _spans(*spans: str) -> list[ExtractedEntity]:
+    return [ExtractedEntity(text=span, span=span) for span in spans]
+
+
+@pytest.mark.parametrize(
+    ("query", "asked", "variables", "entities", "exclusions", "dropped"),
+    [
+        # A name behind an elided article, a possessive or a hyphen is read where it stands.
+        pytest.param(
+            "APD au Kenya hors l'aide humanitaire",
+            {
+                "variables": ["APD", "aide humanitaire"],
+                "exclusions": [_ex("hors l'aide humanitaire", "aide humanitaire")],
+            },
+            ["APD"],
+            [],
+            ["hors l'aide humanitaire"],
+            [],
+            id="elided-article-measure",
+        ),
+        pytest.param(
+            "APD au Kenya hors l\u2019all\u00e8gement de la dette en 2022",
+            {
+                "variables": ["APD", "all\u00e8gement de la dette"],
+                "exclusions": [
+                    _ex("hors l'all\u00e8gement de la dette", "all\u00e8gement de la dette")
+                ],
+            },
+            ["APD"],
+            [],
+            ["hors l'all\u00e8gement de la dette"],
+            [],
+            id="elided-article-measure-typographic",
+        ),
+        pytest.param(
+            "aide \u00e0 l'Afrique sauf l'\u00c9gypte",
+            {
+                "variables": ["aide"],
+                "entities": _spans("Afrique", "\u00c9gypte"),
+                "exclusions": [_ex("sauf l'\u00c9gypte", "\u00c9gypte")],
+            },
+            ["aide"],
+            ["Afrique"],
+            ["sauf l'\u00c9gypte"],
+            [],
+            id="elided-article-place",
+        ),
+        pytest.param(
+            "aide \u00e0 l\u2019Afrique sauf l\u2019\u00c9gypte",
+            {
+                "variables": ["aide"],
+                "entities": _spans("Afrique", "\u00c9gypte"),
+                "exclusions": [_ex("sauf l\u2019\u00c9gypte", "\u00c9gypte")],
+            },
+            ["aide"],
+            ["Afrique"],
+            ["sauf l\u2019\u00c9gypte"],
+            [],
+            id="elided-article-place-typographic",
+        ),
+        pytest.param(
+            "aiuti all'Africa esclusa l'Africa del Nord",
+            {
+                "variables": ["aiuti"],
+                "entities": _spans("Africa", "Africa del Nord"),
+                "exclusions": [_ex("esclusa l'Africa del Nord", "Africa del Nord")],
+            },
+            ["aiuti"],
+            ["Africa"],
+            ["esclusa l'Africa del Nord"],
+            [],
+            id="elided-article-place-italian",
+        ),
+        pytest.param(
+            "ODA to Africa excluding Kenya's share",
+            {
+                "variables": ["ODA"],
+                "entities": _spans("Africa", "Kenya"),
+                "exclusions": [_ex("excluding Kenya's share", "Kenya's share")],
+            },
+            ["ODA"],
+            ["Africa"],
+            ["excluding Kenya's share"],
+            [],
+            id="possessive-place",
+        ),
+        pytest.param(
+            "ODA to Africa excluding Kenya\u2019s share",
+            {
+                "variables": ["ODA"],
+                "entities": _spans("Africa", "Kenya"),
+                "exclusions": [_ex("excluding Kenya's share", "Kenya's share")],
+            },
+            ["ODA"],
+            ["Africa"],
+            ["excluding Kenya's share"],
+            [],
+            id="possessive-place-typographic",
+        ),
+        pytest.param(
+            "aid to Kenya excluding debt-relief",
+            {
+                "variables": ["aid", "debt relief"],
+                "exclusions": [_ex("excluding debt relief", "debt relief")],
+            },
+            ["aid"],
+            [],
+            ["excluding debt relief"],
+            [],
+            id="hyphenated-measure",
+        ),
+        # A dropped qualifier the query also writes outside the exclusion stays.
+        pytest.param(
+            "bilateral ODA to Kenya excluding bilateral loans",
+            {
+                "variables": ["ODA"],
+                "dropped_qualifiers": ["bilateral"],
+                "exclusions": [_ex("excluding bilateral loans", "bilateral loans")],
+            },
+            ["ODA"],
+            [],
+            ["excluding bilateral loans"],
+            ["bilateral"],
+            id="dropped-word-also-outside",
+        ),
+        pytest.param(
+            "ODA type of finance 110 to Kenya, excluding type of finance 110 to NGOs",
+            {
+                "variables": ["ODA"],
+                "dropped_qualifiers": ["type of finance 110"],
+                "exclusions": [
+                    _ex("excluding type of finance 110 to NGOs", "type of finance 110 to NGOs")
+                ],
+            },
+            ["ODA"],
+            [],
+            ["excluding type of finance 110 to NGOs"],
+            ["type of finance 110"],
+            id="dropped-code-also-outside",
+        ),
+        pytest.param(
+            "ODA to Kenya in euros excluding loans in euros",
+            {
+                "variables": ["ODA"],
+                "dropped_qualifiers": ["in euros"],
+                "exclusions": [_ex("excluding loans in euros", "loans in euros")],
+            },
+            ["ODA"],
+            [],
+            ["excluding loans in euros"],
+            ["in euros"],
+            id="dropped-unit-also-outside",
+        ),
+        pytest.param(
+            "health ODA and FDI to Kenya for malaria control excluding malaria control grants",
+            {
+                "variables": ["health ODA", "FDI"],
+                "dropped_qualifiers": ["malaria control"],
+                "exclusions": [_ex("excluding malaria control grants", "malaria control grants")],
+            },
+            ["health ODA", "FDI"],
+            [],
+            ["excluding malaria control grants"],
+            ["malaria control"],
+            id="dropped-phrase-also-outside",
+        ),
+        # A phrase that forms a label takes the measure written inside the label with it.
+        pytest.param(
+            "official development assistance excluding debt relief to Kenya",
+            {
+                "variables": ["official development assistance", "debt relief"],
+                "exclusions": [_ex("excluding debt relief", "debt relief")],
+            },
+            ["official development assistance excluding debt relief"],
+            [],
+            [],
+            [],
+            id="measure-inside-a-formed-label",
+        ),
+    ],
+)
+def test_an_exclusion_reads_each_name_where_the_query_writes_it(
+    query, asked, variables, entities, exclusions, dropped
+):
+    admitted, _ = _admit_exclusions(query, Extraction(kind="resolution", **asked))
+    assert admitted.variables == variables
+    assert [entity.span for entity in admitted.entities] == entities
+    assert [exclusion.phrase for exclusion in admitted.exclusions] == exclusions
+    assert admitted.dropped_qualifiers == dropped
+
+
+@pytest.mark.parametrize(
+    ("query", "excluded", "kept"),
+    [
+        # A label no measure or place names is left out.
+        ("ODA to Kenya in 2022 excluding grants", "grants", ["grants"]),
+        # A coded phrase joins the dropped phrases after the coded-qualifier pass.
+        (
+            "ODA to Kenya in 2022 excluding type of finance 110",
+            "type of finance 110",
+            ["type of finance 110"],
+        ),
+    ],
+)
+def test_extract_never_attaches_an_excluded_code_as_asked_for(query, excluded, kept):
+    llm = _stub_for(
+        query,
+        {
+            "variables": ["ODA"],
+            "entities": [_place("Kenya")],
+            "exclusions": [_ex(excluded, excluded)],
+        },
+    )
+    result, _ = _run(extract(query, llm=llm))
+    assert result.qualifiers == {}
+    assert [exclusion.phrase for exclusion in result.extraction.exclusions] == kept
+    assert result.extraction.dropped_qualifiers == kept
+
+
+def test_extract_drops_the_dropped_copy_of_an_excluded_code_before_it_attaches():
+    """A marker phrase is coded-only, so the dropped copy of an excluded one would attach
+    to the variable as asked for."""
+    query = "ODA to Kenya in 2022 excluding type of finance 110"
+    llm = _stub_for(
+        query,
+        {
+            "variables": ["ODA"],
+            "entities": [_place("Kenya")],
+            "exclusions": [_ex("excluding type of finance 110", "type of finance 110")],
+            "dropped_qualifiers": ["type of finance 110"],
+        },
+    )
+    result, _ = _run(extract(query, llm=llm))
+    assert result.qualifiers == {}
+    assert result.extraction.dropped_qualifiers == ["excluding type of finance 110"]
+
+
+def test_extract_keeps_the_kind_of_a_question_whose_only_measure_is_left_out():
+    """The kind is enforced on the variables an exclusion leaves, so a catalogue question
+    stays one."""
+    query = "What data do you have apart from aid?"
+    llm = _stub_for(
+        query,
+        {
+            "kind": "catalogue",
+            "variables": ["aid"],
+            "entities": [],
+            "exclusions": [_ex("apart from aid", "aid")],
+        },
+    )
+    result, _ = _run(extract(query, llm=llm))
+    assert result.extraction.kind == "catalogue"
+    assert result.extraction.variables == []
+
+
+@pytest.mark.parametrize(
+    ("query", "exclusions", "request_text"),
+    [
+        (
+            "aid to Kenya excluding humanitarian aid in 2022",
+            [_ex("excluding humanitarian aid", "humanitarian aid")],
+            "aid to Kenya ; in 2022",
+        ),
+        (
+            "health aid to Kenya excluding malaria control",
+            [_ex("excluding malaria control", "malaria control")],
+            "health aid to Kenya ;",
+        ),
+        # Phrases with no word between them leave one gap.
+        (
+            "ODA to Kenya, not loans, not grants, in 2022",
+            [_ex("not loans", "loans"), _ex("not grants", "grants")],
+            "ODA to Kenya, ;, in 2022",
+        ),
+        # A phrase and the query fold alike: fullwidth letters are the same words.
+        (
+            "ODA to Kenya excluding \uff4c\uff4f\uff41\uff4e\uff53",
+            [_ex("excluding loans", "loans")],
+            "ODA to Kenya ;",
+        ),
+        # A label nothing names is covered.
+        ("ODA to Kenya excluding grants", [_ex("grants", "grants")], "ODA to Kenya excluding ;"),
+        # A paraphrase covers nothing.
+        ("ODA to Kenya, except for the grants", [_ex("except grants", "grants")], None),
+        # No admitted phrase leaves the query whole.
+        ("ODA to Kenya in 2022", [_ex("excluding loans", "loans")], None),
+    ],
+)
+def test_extract_gives_the_request_text_without_what_the_query_leaves_out(
+    query, exclusions, request_text
+):
+    llm = _stub_for(
+        query,
+        {
+            "variables": [query.split(" to ")[0]],
+            "entities": [_place("Kenya")],
+            "exclusions": exclusions,
+        },
+    )
+    result, _ = _run(extract(query, llm=llm))
+    assert result.request_text == request_text
+
+
+def test_extract_keeps_the_whole_phrase_of_an_exclusion_past_the_display_length():
+    """The dropped qualifiers show a long phrase cut to the display length; the exclusion
+    keeps it whole, which answers are judged on."""
+    limit = settings().max_dropped_qualifier_length
+    phrase = "excluding " + "humanitarian aid and " * (limit // 20) + "loans"
+    query = f"ODA to Kenya {phrase}"
+    llm = _stub_for(
+        query,
+        {"variables": ["ODA"], "entities": [_place("Kenya")], "exclusions": [_ex(phrase, "loans")]},
+    )
+    result, _ = _run(extract(query, llm=llm))
+    assert len(phrase) > limit
+    assert [exclusion.phrase for exclusion in result.extraction.exclusions] == [phrase]
+    assert result.extraction.dropped_qualifiers == [phrase[:limit]]
+
+
+def test_extract_counts_exclusions_in_the_dropped_qualifier_cap():
+    """Exclusions fill the cap first, each phrase once however many things it leaves out,
+    and the overflow count holds both lists."""
+    limit = settings().max_dropped_qualifiers
+    excluded = ["not sector0 or sectorA", *(f"not sector{i}" for i in range(1, limit - 1))]
+    dropped = ["by income group", "per capita basis", "in fragile states"]
+    query = f"ODA to Kenya {' '.join(excluded)} {' '.join(dropped)}"
+    llm = _stub_for(
+        query,
+        {
+            "variables": ["ODA"],
+            "entities": [_place("Kenya")],
+            "exclusions": [
+                _ex(excluded[0], "sectorA"),
+                *(_ex(phrase, phrase.split()[1]) for phrase in excluded),
+            ],
+            "dropped_qualifiers": dropped,
+        },
+    )
+    result, _ = _run(extract(query, llm=llm))
+    assert result.extraction.dropped_qualifiers == ["by income group", *excluded]
+    assert result.raw_dropped_qualifier_count == limit + 2
+    assert len(result.extraction.exclusions) == limit
+
+
+def test_extract_drops_an_operation_inside_an_exclusion_and_reindexes_the_rest():
+    """An operation an exclusion holds goes, and is not trimmed out of the phrase; the
+    others follow their variable onto its new position."""
+    query = "ODA to Kenya in 2022 excluding the top 5 donors"
+    llm = _stub_for(
+        query,
+        {
+            "variables": ["ODA"],
+            "entities": [_place("Kenya")],
+            "operations": [_op("rank", 0, "top 5 donors", "origin")],
+            "exclusions": [_ex("excluding the top 5 donors", "the top 5 donors")],
+        },
+    )
+    result, _ = _run(extract(query, llm=llm))
+    assert result.extraction.operations == []
+    assert result.operations == {}
+    assert result.extraction.dropped_qualifiers == ["excluding the top 5 donors"]
+
+    query = "top 5 donors of aid to Kenya excluding humanitarian aid"
+    llm = _stub_for(
+        query,
+        {
+            "variables": ["humanitarian aid", "aid"],
+            "entities": [_place("Kenya")],
+            "operations": [_op("rank", 1, "top 5 donors", "origin")],
+            "exclusions": [_ex("excluding humanitarian aid", "humanitarian aid")],
+        },
+    )
+    result, _ = _run(extract(query, llm=llm))
+    assert result.extraction.variables == ["aid"]
+    assert result.extraction.operations == [
+        ExtractedOperation(verb="rank", variable=0, phrase="top 5 donors", over="origin")
+    ]
+    assert list(result.operations) == ["aid"]
+
+    # Two variables left with the same words are one, and an operation follows.
+    query = "ODA and not net ODA to Kenya, top 5 donors"
+    llm = _stub_for(
+        query,
+        {
+            "variables": ["ODA", "net ODA"],
+            "entities": [_place("Kenya")],
+            "operations": [_op("rank", 1, "top 5 donors", "origin")],
+            "exclusions": [_ex("not net", "net")],
+        },
+    )
+    result, _ = _run(extract(query, llm=llm))
+    assert result.extraction.variables == ["ODA"]
+    assert result.extraction.operations == [
+        ExtractedOperation(verb="rank", variable=0, phrase="top 5 donors", over="origin")
+    ]
+
+    # An operation the query also writes outside the exclusion stays.
+    query = "total aid to Kenya excluding total humanitarian aid"
+    llm = _stub_for(
+        query,
+        {
+            "variables": ["aid"],
+            "entities": [_place("Kenya")],
+            "operations": [_op("aggregate", 0, "total")],
+            "exclusions": [_ex("excluding total humanitarian aid", "total humanitarian aid")],
+        },
+    )
+    result, _ = _run(extract(query, llm=llm))
+    assert [operation.phrase for operation in result.extraction.operations] == ["total"]

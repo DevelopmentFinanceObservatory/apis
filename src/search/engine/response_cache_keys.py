@@ -23,7 +23,7 @@ from typing import Literal
 import rfc8785
 
 from search.engine.envelope import make_diagnostics, make_query_echo, now_ms
-from search.engine.extract import ExtractedDate, ExtractedEntity
+from search.engine.extract import ExtractedDate, ExtractedEntity, ExtractedExclusion
 from search.engine.qualifier_match import CodedQualifier, QualifierMatch, recall_text
 from search.engine.region.codes import (
     AVAILABILITY_PROBE_FAILED,
@@ -246,6 +246,7 @@ def layer2_key(
     source_codes: Sequence[str | None] = (),
     separate: Sequence[bool] = (),
     written_variable_phrases: Sequence[str | None] = (),
+    exclusions: Sequence[ExtractedExclusion] = (),
 ) -> str:
     """Key the effective extraction and raw-text signals over the shared scope.
 
@@ -262,7 +263,11 @@ def layer2_key(
     them and adds nothing when none is written.
     `separate` runs parallel to `variables` when given and marks each variable compared
     with the others, which never folds (`same_shape.fold_key`). The key states the marked
-    positions and adds nothing when none is marked.
+    positions and adds nothing when none is marked. `exclusions` are the dropped phrases
+    the query asked to leave out (`Extraction.exclusions`), each with a thing it leaves
+    out. A phrase's departure reads differently from a plain dropped phrase's, and the
+    things decide whether the legs judge it (`state.exclusion_requirements`); the key states
+    them only when there is one.
 
     The raw-text signals cover role contradictions, query-text qualifier matches,
     ties and two-reading spans, every place a row of any system names a query-text word
@@ -301,6 +306,8 @@ def layer2_key(
         document["separate"] = separate_positions
     if any(phrase is not None for phrase in written_variable_phrases):
         document["written_variable_phrases"] = list(written_variable_phrases)
+    if exclusions:
+        document["exclusions"] = [exclusion.model_dump(mode="json") for exclusion in exclusions]
     return _digest("l2", document)
 
 

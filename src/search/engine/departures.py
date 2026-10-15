@@ -157,7 +157,10 @@ def stated_facts(
     - a measure qualifier (`measure_not_applied` cleared by a `how` slot, or by none) whose
       content words one of `stated` holds, source included: "gross" beside "Gross
       capital formation", "IMF" beside the byline "IMF World Economic Outlook (WEO)", "net"
-      beside a reading of net outbound ODA.
+      beside a reading of net outbound ODA. A phrase that asked to leave something out
+      (`DepartureFact.left_out`) is never cleared here: a part that states "grants" shows
+      the thing left out. Only an answer that leaves it out withholds the fact, at the
+      door (`RegionResult.met_exclusions`).
     """
     return ordered_facts(
         fact
@@ -173,7 +176,7 @@ def stated_facts(
 
 def _qualifier_stated(fact: DepartureFact, stated: Sequence[frozenset[str]]) -> bool:
     """Whether `fact` is a measure qualifier one of `stated` already holds."""
-    if fact.code != "measure_not_applied" or fact.binding_ref == UNIT_REF:
+    if fact.code != "measure_not_applied" or fact.binding_ref == UNIT_REF or fact.left_out:
         return False
     asked = content_words(fact.asked or "")
     return any(asked <= words for words in stated)
@@ -195,6 +198,12 @@ def measure_not_applied(*, asked: str, property_dcid: str | None) -> DepartureFa
         binding_ref=f"how:{property_dcid}" if property_dcid else None,
         asked=asked,
     )
+
+
+def exclusion_not_applied(*, asked: str) -> DepartureFact:
+    """Something the request asked to leave out, in its words `asked` ("excluding
+    humanitarian aid"), that the search did not apply. No one slot clears it."""
+    return DepartureFact(code="measure_not_applied", binding_ref=None, asked=asked, left_out=True)
 
 
 def price_basis_not_applied(*, asked: str, shown: str | None) -> DepartureFact:

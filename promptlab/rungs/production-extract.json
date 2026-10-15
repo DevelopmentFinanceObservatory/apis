@@ -22,6 +22,22 @@
       "id": "04-scope-words"
     },
     {
+      "id": "04a-exclusions",
+      "unit": "exclusions"
+    },
+    {
+      "id": "04b-example-exclusion-measure",
+      "unit": "exclusions"
+    },
+    {
+      "id": "04c-example-exclusion-place",
+      "unit": "exclusions"
+    },
+    {
+      "id": "04d-example-negated-name",
+      "unit": "exclusions"
+    },
+    {
       "id": "05-example-health-oda",
       "unit": "examples-oda"
     },
