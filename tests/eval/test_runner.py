@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 from search.eval import runner
+from search.eval.apis_auth import ApisAuth, ApisAuthError, apis_auth
 from search.eval.cases import Case, validate_case
 from search.eval.runner import (
     DEGRADED_LEG_HEADER,
@@ -488,14 +489,41 @@ def test_fetch_schema_raises_when_the_app_fails():
         asyncio.run(go())
 
 
-def test_the_runner_names_the_eval_in_its_user_agent():
-    """Request logs and analytics tell eval traffic apart by its User-Agent."""
+def test_the_runner_names_the_eval_and_sends_the_apis_token():
+    """Request logs and analytics tell eval traffic apart by its User-Agent, and every
+    client the runner owns shares the process's one ID token source."""
 
-    async def user_agent() -> str:
+    async def identity() -> tuple[str, httpx.Auth]:
         async with runner._client_scope(None) as client:
-            return client.headers["user-agent"]
+            return client.headers["user-agent"], client.auth
 
-    assert asyncio.run(user_agent()) == "dfo-search-eval"
+    assert asyncio.run(identity()) == ("dfo-search-eval", apis_auth())
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_a_service_refusing_the_token_fails_the_run_rather_than_counting_as_infra(status):
+    """Cloud Run's refusal is an HTML page, which the runner would otherwise score as an
+    infrastructure failure. It has to stop the run."""
+
+    def refuse(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, text="<html>Forbidden</html>")
+
+    async def go() -> None:
+        auth = ApisAuth(static_token="token")
+        transport = httpx.MockTransport(refuse)
+        async with httpx.AsyncClient(transport=transport, auth=auth) as client:
+            await run_cases(
+                [_case()],
+                url="https://apis.example",
+                samples=1,
+                concurrency=1,
+                client=client,
+                backoff_s=0,
+            )
+
+    with pytest.raises(ExceptionGroup) as raised:
+        asyncio.run(go())
+    assert raised.group_contains(ApisAuthError)
 
 
 # Members door
@@ -506,7 +534,8 @@ def test_the_members_door_reader_posts_each_definition_once():
     with the Spec's definition, as bare dcids."""
     posts = []
 
-    def post(url, *, json, headers, timeout):
+    def post(url, *, json, headers, timeout, auth):
+        assert auth is apis_auth()
         posts.append((url, json))
         body = {"members": [{"ref": "dcid:Count_Person"}, {"ref": "dcid:Count_Person_Female"}]}
         return httpx.Response(200, json=body, request=httpx.Request("POST", url))
@@ -522,7 +551,7 @@ def test_the_members_door_reader_posts_each_definition_once():
 
 
 def test_a_refused_members_read_raises_for_the_check_to_score_as_infrastructure():
-    def post(url, *, json, headers, timeout):
+    def post(url, *, json, headers, timeout, auth):
         return httpx.Response(404, json={}, request=httpx.Request("POST", url))
 
     with pytest.MonkeyPatch.context() as patch:

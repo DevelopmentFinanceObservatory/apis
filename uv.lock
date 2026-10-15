@@ -2582,6 +2582,7 @@ engine = [
     { name = "uvicorn", extra = ["standard"] },
 ]
 eval = [
+    { name = "google-auth", extra = ["requests"] },
     { name = "httpx" },
     { name = "jsonschema" },
     { name = "langfuse" },
@@ -2627,6 +2628,7 @@ requires-dist = [
     { name = "dfo-spec-kit", marker = "extra == 'engine'", git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fspec-kit&rev=3616b64245c2db8af3187552e9e5de99b6d304d4" },
     { name = "fastapi", marker = "extra == 'api'", specifier = ">=0.138" },
     { name = "google-auth", marker = "extra == 'datasets'", specifier = ">=2.34" },
+    { name = "google-auth", extras = ["requests"], marker = "extra == 'eval'", specifier = ">=2.34" },
     { name = "google-cloud-storage", marker = "extra == 'datasets'", specifier = ">=2.18" },
     { name = "google-cloud-tasks", marker = "extra == 'datasets'", specifier = ">=2.16" },
     { name = "google-genai", marker = "extra == 'engine'", specifier = ">=2.6.0" },
