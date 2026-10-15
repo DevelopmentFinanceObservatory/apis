@@ -31,8 +31,8 @@ _LOOKUP = "passed-tree"
 _RECORD = "record-passed-tree"
 # The jobs a record vouches for: every job but the lookup and the record itself.
 _SUITE = sorted(set(_JOBS) - {_LOOKUP, _RECORD})
-_REPO = "ONEcampaign/dfo-apis"
-_REPO_ID = "1311485891"
+_REPO = "DevelopmentFinanceObservatory/apis"
+_REPO_ID = "1401633649"
 _BRANCH = "dev"
 _KID = "test-key"
 
@@ -156,7 +156,7 @@ def test_a_record_vouches_for_the_tree_its_own_workflow_ran_on(repo: Path, event
     ("overrides", "refusal"),
     [
         ({"iss": "https://token.example"}, "issuer"),
-        ({"aud": "https://github.com/ONEcampaign"}, "audience"),
+        ({"aud": "https://github.com/DevelopmentFinanceObservatory"}, "audience"),
         ({"repository_id": "7"}, "repository"),
         ({"workflow_ref": f"{_REPO}/.github/workflows/other.yml@refs/heads/x"}, "workflow"),
         ({"workflow_ref": f"{_REPO}/.github/workflows/ci.yml.yml@refs/heads/x"}, "workflow"),

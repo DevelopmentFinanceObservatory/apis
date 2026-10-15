@@ -80,11 +80,7 @@ jobs:
     # it creates, against an ephemeral Postgres container. Does not prove
     # reachability of the real PSC-only instance -- see deploy/postgres.md
     # for that.
-    # Mints a dfo-reader token, which prod keeps only in main-limited
-    # environments, so this runs in ONEcampaign only. The identical tree
-    # ran it here before it was synced.
     if: >-
-      github.repository_owner == 'ONEcampaign' &&
       github.event.pull_request.draft != true &&
       (github.event_name != 'pull_request' || github.event.pull_request.state == 'open')
     runs-on: ubuntu-latest
@@ -116,15 +112,6 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
-
-      # The datasets extra pulls dfo-spec-kit-frame-grammar as a git
-      # dependency; uv sync needs the same credential rewrite as every
-      # other job that syncs it.
-      - name: Authenticate git for the dfo-spec-kit dependency
-        uses: ./.github/actions/spec-kit-auth
-        with:
-          client-id: ${{ vars.READER_APP_CLIENT_ID }}
-          private-key: ${{ secrets.READER_APP_PRIVATE_KEY }}
 
       - name: Install dependencies
         run: uv sync --frozen --no-default-groups --group test --extra datasets
@@ -305,11 +292,7 @@ jobs:
     # ephemeral Postgres container, mirroring the dataset_store job above --
     # a separate database, migrator role, and migration set. Does not prove
     # reachability of the real PSC-only instance.
-    # Mints a dfo-reader token, which prod keeps only in main-limited
-    # environments, so this runs in ONEcampaign only. The identical tree
-    # ran it here before it was synced.
     if: >-
-      github.repository_owner == 'ONEcampaign' &&
       github.event.pull_request.draft != true &&
       (github.event_name != 'pull_request' || github.event.pull_request.state == 'open')
     runs-on: ubuntu-latest
@@ -340,15 +323,6 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
-
-      # The datasets extra pulls dfo-spec-kit-frame-grammar as a git
-      # dependency; uv sync needs the same credential rewrite as every
-      # other job that syncs it.
-      - name: Authenticate git for the dfo-spec-kit dependency
-        uses: ./.github/actions/spec-kit-auth
-        with:
-          client-id: ${{ vars.READER_APP_CLIENT_ID }}
-          private-key: ${{ secrets.READER_APP_PRIVATE_KEY }}
 
       - name: Install dependencies
         run: uv sync --frozen --no-default-groups --group test --extra datasets

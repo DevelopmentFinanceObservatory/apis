@@ -188,7 +188,7 @@ External packages depend on `dfo-data-tools` by referencing the git repository a
 ```toml
 [project]
 dependencies = [
-    "dfo-data-tools[sdmx,formats] @ git+https://github.com/ONEcampaign/dfo-apis.git@<commit-or-tag>#subdirectory=packages/dfo-data-tools",
+    "dfo-data-tools[sdmx,formats] @ git+https://github.com/DevelopmentFinanceObservatory/apis.git@<commit-or-tag>#subdirectory=packages/dfo-data-tools",
 ]
 ```
 

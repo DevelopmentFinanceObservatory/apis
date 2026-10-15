@@ -352,10 +352,10 @@ ______________________________________________________________________
 
 ## Container Build
 
-The application builds as a multi-stage Docker image using a uv-managed Python runtime. Building requires read access to the private `dfo-spec-kit` repository.
+The application builds as a multi-stage Docker image using a uv-managed Python runtime.
 
 ```bash
-# Build using justfile recipe (linux/amd64 with BuildKit secrets)
+# Build using justfile recipe (linux/amd64)
 just build
 
 # Run the container locally with .env configuration
@@ -365,8 +365,7 @@ just run
 Or build directly with Docker:
 
 ```bash
-SPEC_KIT_TOKEN=$(gh auth token) docker build -t dfo-apis . \
-  --secret id=spec_kit_token,env=SPEC_KIT_TOKEN
+docker build -t dfo-apis .
 
 docker run -p 8080:8080 -e GEMINI_API_KEY=<key> dfo-apis
 ```
@@ -375,16 +374,16 @@ ______________________________________________________________________
 
 ## CI Workflows
 
-GitHub Actions validate pull requests and pushes to `dev` in ONEcampaign. A draft pull request
-runs nothing until it is marked ready for review. A push to `main` runs no CI, since `main` only
-moves to a commit `dev` has already tested. The jobs that read `dfo-spec-kit` skip in
-DevelopmentFinanceObservatory, where `sync-guard` admits each sync PR:
+GitHub Actions validate pull requests and pushes to `dev`. A draft pull request runs nothing
+until it is marked ready for review. A push to `main` runs no CI, since `main` only moves to a
+commit `dev` has already tested. The jobs that need repository secrets skip on pull requests
+from forks:
 
 - **`.github/workflows/ci.yml`**: Runs `ruff check`, `ruff format --check`, `ty check`, `pytest` with identity vectors, and verifies container builds.
 - **`.github/workflows/eval-gate.yml`**: Scores the eval cases on the head and base builds of a pull request, split by case id across parallel shard jobs, and blocks on a regression, a failing new case, or a structural failure in any shard.
 - **`.github/workflows/sdmx-live.yml`**: Validates `dc_sdmx` client operations against active Data Commons Cloud Run endpoints.
 - **`.github/workflows/migrations.yml`**: Runs database migrations and live tests against PostgreSQL service containers.
 - **`.github/workflows/bundle-round-trip.yml`**: Validates Frictionless data package export and R consumption.
-- **`.github/workflows/deploy-dev.yml`**: Deploys to dev after each successful CI run on `dev`. Runs only in ONEcampaign.
-- **`.github/workflows/deploy-prod.yml`**: Deploys to production on a push to `main`. Runs only in DevelopmentFinanceObservatory.
+- **`.github/workflows/deploy-dev.yml`**: Deploys to dev after each successful CI run on `dev`.
+- **`.github/workflows/deploy-prod.yml`**: Deploys to production on a push to `main`.
 - **`.github/workflows/deploy.yml`**: The build, migrate, and deploy steps both callers share. See `deploy/README.md`.

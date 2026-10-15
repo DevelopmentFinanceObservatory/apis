@@ -173,15 +173,13 @@ the service update step, leaving the service on its current image.
 
 Point a job at an image and execute it, the same two commands the deploy
 workflow runs. Build and push the image first if it isn't already in
-Artifact Registry, tagged with the full commit SHA and needing
-`SPEC_KIT_TOKEN` to fetch the private `dfo-spec-kit` dependency, the same
-token `just build` passes:
+Artifact Registry, tagged with the full commit SHA:
 
 ```bash
-SPEC_KIT_TOKEN=$(gh auth token) docker buildx build \
+docker buildx build \
   --platform linux/amd64 --provenance=false --sbom=false --push \
   --tag northamerica-northeast1-docker.pkg.dev/dev-fin-observatory/datacommons/dfo-apis:<full commit sha> \
-  -f Dockerfile --secret id=spec_kit_token,env=SPEC_KIT_TOKEN .
+  -f Dockerfile .
 ```
 
 `--provenance=false --sbom=false` are required. Without them buildx pushes

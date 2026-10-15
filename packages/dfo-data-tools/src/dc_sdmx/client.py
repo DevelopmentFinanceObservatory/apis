@@ -72,7 +72,7 @@ _TOKEN_HEADER = "x-graph-token"
 
 # Keep this literal to avoid importing Search. WAF-fronted deployments can
 # challenge it. Callers can override it with the `user_agent` argument.
-_DEFAULT_USER_AGENT = "dfo-apis (+https://github.com/ONEcampaign/dfo-apis)"
+_DEFAULT_USER_AGENT = "dfo-apis (+https://github.com/DevelopmentFinanceObservatory/apis)"
 
 # Content-Type marker for HTML challenge pages in place of mixer error JSON.
 _HTML_CONTENT_TYPE_MARKER = "html"
