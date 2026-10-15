@@ -202,7 +202,7 @@ def test_null_steps_fill_once_from_a_matching_republish_and_are_noted_as_late(
 
 
 def test_a_chained_frame_first_published_without_steps_takes_its_roots_as_inputs() -> None:
-    """dfo-ai lists the immediate input frames, here a filtered frame by the `cv_` of its
+    """`ai` lists the immediate input frames, here a filtered frame by the `cv_` of its
     bytes. The late steps retrieve the roots, which replace that lineage as the inputs."""
     store = FakeVersionRecordDatasetStore()
     client = datasets_client(store)

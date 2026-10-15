@@ -403,7 +403,7 @@ def _routes(shared_resolver, nodes, arcs):
     ],
 )
 def test_resolve_and_the_node_route_give_a_party_one_kind(shared_resolver, text, ref, graph_type):
-    """dfo-apis#1281: resolve classed a node by its graph types alone, so a total party was an
+    """Resolve classed a node by its graph types alone, so a total party was an
     `organisation` or `other` there and an `aggregate` on the node route."""
     nodes = {ref: _node(graph_type, text)}
     arcs = {(_LAST_RUNG_ARC, text): [ref]}
@@ -421,7 +421,7 @@ def test_resolve_and_the_node_route_give_a_party_one_kind(shared_resolver, text,
 
 
 def test_a_region_the_policy_holds_without_a_node_is_held_on_every_route(shared_resolver):
-    """dfo-apis#1281: the members route held a policy region with no graph node, while the node
+    """The members route held a policy region with no graph node, while the node
     route answered 404 and resolve `not_held`."""
     with _routes(shared_resolver, {}, {}) as client:
         node = client.get("/api/graph/node/WesternAfrica")

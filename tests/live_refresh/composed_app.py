@@ -121,7 +121,7 @@ MEMBERS = (MEMBER_A, MEMBER_B)
 RECIPIENTS = ("country/GHA", "country/KEN", "country/TZA", "country/UGA")
 INITIAL_YEARS = (2022, 2023, 2024)
 GROUPBY = {"by": ["recipient"], "op": "sum"}
-# The options dfo-ai's data-mcp mints a frame with.
+# The options the `ai` repository's data-mcp mints a frame with.
 FRAME_OPTIONS = {"format": "parquet", "bundle": False, "layout": "frame"}
 
 _AXIS = "liveRefreshFlow"
@@ -181,7 +181,7 @@ def derived_publish_body(
     anchor: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """A `POST /api/datasets/frames/publish` body for a frame derived by `verb` from `root`,
-    a frame of `DATASET` minted with `FRAME_OPTIONS`, carrying the recipe dfo-ai's
+    a frame of `DATASET` minted with `FRAME_OPTIONS`, carrying the recipe the `ai` repository's
     presentation-mcp sends with a publish.
 
     The derived frame's `spec_id` hashes its op-spec, which names `root`, and its

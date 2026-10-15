@@ -290,7 +290,7 @@ def test_served_facet_set_reproduces_spec_id() -> None:
 def test_a_null_method_ref_mints_its_own_id_matching_the_spec_kit_vector() -> None:
     """A measurementMethod bound to a null ref pins the facets that declare no method. It is a
     pin, not an unbound axis: the id differs from the unpinned identity's, the served document
-    carries the null ref, and the id equals the dfo-spec-kit vector
+    carries the null ref, and the id equals the `spec-kit` vector
     `identity/facet-null-ref-measurement-method`."""
     shape = {"kind": "statvar_schema", "measured_property": "developmentFinanceFlow"}
     slots = [_value_slot("how", "DevelopmentFinancePurpose", "Malaria")]

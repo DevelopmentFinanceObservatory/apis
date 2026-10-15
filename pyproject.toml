@@ -230,10 +230,9 @@ dfo-data-tools = { workspace = true }
 # The registry refuses a part's `source_code` on search.resolve with
 # `source_code_not_held`, `source_code_ambiguous`, and
 # `source_code_shares_variable`.
-# The pin is `c7a18ae`, a commit of spec-kit's main. It holds
-# dfo-spec-kit#131, which registers slot_default_not_applied and retires
-# starved_axis_binding_restored, and dfo-spec-kit#138, which registers the
-# three source-code refusals.
+# The pin is a commit of spec-kit's main. It registers
+# slot_default_not_applied and the three source-code refusals, and retires
+# starved_axis_binding_restored.
 # Follow-up: move all five to a real spec-kit tag once one is cut, so a
 # future force-push or GC on spec-kit's main can't silently break this lock.
 dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "3616b64245c2db8af3187552e9e5de99b6d304d4", subdirectory = "python/spec-kit" }

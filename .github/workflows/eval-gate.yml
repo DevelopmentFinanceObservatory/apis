@@ -80,7 +80,7 @@ env:
   PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr }}
   UV_SYNC_ARGS: --frozen --extra eval --extra api --extra engine --extra datasets --extra graph
   UV_NO_SYNC: "1"
-  # The deployed artifact roots, owned by the dfo-infra `apis` stack. The eval
+  # The deployed artifact roots, owned by the `apis` stack in `infra`. The eval
   # reader service account reads both buckets and nothing else.
   DEPLOYED_COVERAGE_URI: gs://dfo-dev-coverage-dev-fin-observatory/
   DEPLOYED_CATALOGUE_URI: gs://dfo-dev-origin-catalogue-dev-fin-observatory/
