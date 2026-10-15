@@ -1,7 +1,7 @@
 """A null facet ref binds measurementMethod or unit to the facets that declare no value.
 
 `BaseIdentity` mirrors the identity core: the null ref is legal on those two axes only,
-survives `exclude_none` dumps, and mints the id dfo-spec-kit's
+survives `exclude_none` dumps, and mints the id the `spec-kit` repository's
 `facet-null-ref-measurement-method` vector pins.
 """
 

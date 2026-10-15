@@ -150,7 +150,7 @@ _DEFAULT_CYCLE_SECONDS = 900.0  # Cloud Scheduler's own 15-minute cadence.
 _UINT64_MASK = 0xFFFFFFFFFFFFFFFF
 
 _MAX_RUN_SECONDS: Final[float] = 1800.0
-"""The coverage Cloud Run Job's own maximum runtime (dfo-infra's
+"""The coverage Cloud Run Job's own maximum runtime (the `infra` repository's
 `coverage.tf` sets the job template's `timeout` to `"1800s"`), and the
 grace period `prune_old_versions` applies. A build directory whose newest
 file is younger than this could still be another invocation's in-progress

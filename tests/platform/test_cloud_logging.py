@@ -82,6 +82,16 @@ def test_a_line_omits_the_trace_without_a_project(stream):
     assert TRACE_FIELD not in json.loads(stream.getvalue())
 
 
+def test_a_record_json_fields_become_top_level_entries_that_cannot_replace_the_reserved_ones():
+    record = logging.LogRecord("t", logging.INFO, __file__, 1, "request", (), None)
+    record.json_fields = {"caller_email": "a@b", "severity": "forged"}
+
+    entry = json.loads(JsonFormatter(project="p-1").format(record))
+
+    assert entry["caller_email"] == "a@b"
+    assert entry["severity"] == "INFO"
+
+
 def test_a_traceback_is_folded_into_the_message():
     record = logging.LogRecord("t", logging.ERROR, __file__, 1, "failed", (), None)
     try:
@@ -137,7 +147,7 @@ def test_the_handler_is_silent_when_the_project_is_set(monkeypatch, capsys):
     assert capsys.readouterr().out == ""
 
 
-def test_the_dockerfile_log_config_sends_search_and_datasets_info_to_stdout_as_json():
+def test_the_dockerfile_log_config_sends_search_datasets_and_request_info_to_stdout_as_json():
     """Applies the committed config in a subprocess, since dictConfig replaces global state.
 
     The Datasets doors log their `datasets.timings` line at INFO on `datasets_api.*`."""
@@ -150,6 +160,7 @@ def test_the_dockerfile_log_config_sends_search_and_datasets_info_to_stdout_as_j
         "logging.config.dictConfig(json.load(open(sys.argv[1])));"
         "logging.getLogger('search.engine.fanout').info('from search');"
         "logging.getLogger('datasets_api.doors.definition').info('from datasets');"
+        "logging.getLogger('dfo_platform.request').info('from request');"
         "logging.getLogger('httpx').info('below the root level')"
     )
     result = subprocess.run(
@@ -164,4 +175,5 @@ def test_the_dockerfile_log_config_sends_search_and_datasets_info_to_stdout_as_j
     assert [(e["logger"], e["message"]) for e in entries] == [
         ("search.engine.fanout", "from search"),
         ("datasets_api.doors.definition", "from datasets"),
+        ("dfo_platform.request", "from request"),
     ]

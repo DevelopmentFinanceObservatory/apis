@@ -1,4 +1,4 @@
-"""Cross-check positive dfo-spec-kit vectors through the registry adapter and write path.
+"""Cross-check positive `spec-kit` vectors through the registry adapter and write path.
 
 `tests/engine/test_identity_vectors.py` covers the kit itself. Set `DFO_SPEC_KIT_DIR` in a
 worktree because the sibling fallback resolves beside it. `DFO_SPEC_KIT_REQUIRED` makes missing

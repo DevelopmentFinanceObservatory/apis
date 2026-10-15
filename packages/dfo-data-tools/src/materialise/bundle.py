@@ -62,7 +62,7 @@ BUNDLE_CODE_CATALOGUE: CodeCatalogue = {
 }
 """Registry fragment for two Datasets `info` warnings. `datasets_api.manifest` emits
 `processing_level_undeclared`. `observation_attributes_in_notes` stays registered in
-dfo-spec-kit and has no emitter."""
+`spec-kit` and has no emitter."""
 
 
 @dataclass(frozen=True)

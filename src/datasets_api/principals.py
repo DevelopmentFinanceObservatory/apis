@@ -6,11 +6,11 @@ front of it sets, replaces, or removes the header, so knowing a secret is what a
 Each configured secret holds one grant:
 
 - `DATASETS_FIRST_PARTY_PRINCIPAL` holds `publish`, which opens the publish and recipe routes.
-  dfo-ai sends it.
+  `ai` sends it.
 - `DATASETS_PIN_FIRST_PARTY_PRINCIPAL` holds `pin`, which opens the pin route. The website
   sends it.
 - `LIVE_REFRESH_PRINCIPAL` holds `refresh`, which opens the frame refresh and the Presentation
-  render routes. The website and dfo-ai both send it.
+  render routes. The website and `ai` both send it.
 
 A secret configured under two names holds both grants, and an empty secret holds none.
 `Principals.parse` reads one request's header into a `Principal`, comparing the value with every

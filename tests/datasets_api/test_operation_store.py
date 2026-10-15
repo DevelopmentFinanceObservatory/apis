@@ -493,7 +493,7 @@ def test_a_running_row_with_no_claim_time_holds_a_backlog_slot_while_its_heartbe
 
 
 def test_the_operation_deadline_default_lets_every_delivery_wait_out_a_full_backlog_and_run():
-    """The queue's locals in dfo-infra: 3 attempts, a 1,680 s backoff (the lease plus 60 s
+    """The queue's locals in `infra`: 3 attempts, a 1,680 s backoff (the lease plus 60 s
     skew) and 4 concurrent dispatches. A change to the backlog max, the attempts, the lease or
     the dispatch deadline moves the deadline, so this fails until the default follows."""
     settings = DatasetsBuildSettings()

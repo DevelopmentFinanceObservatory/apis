@@ -23,6 +23,9 @@ every Spec the responses show. The names snapshot maps a StatVar dcid to every `
 weak reading. A run with neither flag reads the snapshots and touches no network, so it
 reruns to the same output.
 
+`search.eval.apis_auth` adds the Cloud Run ID token an `https` base URL needs. Set
+`DFO_APIS_ID_TOKEN`, or point the base URL at `gcloud run services proxy` on localhost.
+
 The labels file maps a query id to `{"closest_match": bool, "basis": "assessment" | "own",
 "reason": str}`. A query it does not list is a negative whose basis is the assessment.
 
@@ -48,6 +51,7 @@ from pathlib import Path
 import httpx
 
 from search.engine.closest_match import bound_code_names, closest_match_fact
+from search.eval.apis_auth import apis_auth
 from search.heading.measure_noun import measure_noun
 from search.heading.words import content_words
 
@@ -222,7 +226,7 @@ def _fetch_members(records: list[dict], path: Path, *, base: str) -> None:
     if not definitions:
         raise SystemExit("the responses show no Spec; nothing to fetch")
     members: dict[str, list[dict]] = {}
-    with httpx.Client(base_url=base.rstrip("/"), timeout=TIMEOUT_S) as client:
+    with httpx.Client(base_url=base.rstrip("/"), timeout=TIMEOUT_S, auth=apis_auth()) as client:
         for spec_id, definition in sorted(definitions.items()):
             response = client.post(
                 f"/api/datasets/{spec_id}/members",

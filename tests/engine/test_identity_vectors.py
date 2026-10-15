@@ -1,4 +1,4 @@
-"""Runs `dfo_spec_kit.identity` against the language-neutral dfo-spec-kit identity vectors."""
+"""Runs `dfo_spec_kit.identity` against the language-neutral `spec-kit` identity vectors."""
 
 from __future__ import annotations
 
