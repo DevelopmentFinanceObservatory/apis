@@ -53,6 +53,7 @@ def test_dev_deploys_after_a_successful_ci_run_on_dev():
     job = workflow["jobs"]["deploy"]
     assert "success" in job["if"]
     assert "workflow_dispatch" in job["if"]
+    assert "workflow_run.event == 'push'" in job["if"], "a fork PR from dev must not deploy"
 
 
 def test_prod_deploys_on_a_push_to_main_or_a_dispatch():
