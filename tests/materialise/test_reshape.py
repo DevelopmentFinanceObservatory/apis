@@ -7,6 +7,7 @@ from typing import cast
 
 import pytest
 
+from code_index.types import PartyRow, WholeMarker
 from materialise.errors import MaterialisationUsageError
 from materialise.reshape import (
     _MAX_HOMOGENEITY_VALUES_PER_GROUP,
@@ -1144,6 +1145,18 @@ class TestSelectColumns:
         assert "unit" in str(excinfo.value)
 
 
+_DAC2A = "provenance/OECDDAC2A"
+_DAC2B = "provenance/OECDDAC2B"
+_WINDOWED_PARTIES = {
+    "donor/ALL": PartyRow(
+        dcid="donor/ALL",
+        kind="total",
+        whole=(WholeMarker(dataset=_DAC2A, holds=("party",), years=(2020, 2021)),),
+    ),
+    "donor/A": PartyRow(dcid="donor/A", kind="party"),
+}
+
+
 class TestEnrichColumns:
     _COLUMNS = ("stat_var", "entity", "donor", "time_period", "value")
 
@@ -1171,6 +1184,58 @@ class TestEnrichColumns:
             (_STAT_VAR, "country/KEN", "donor/A", "2020", 1.0, "KE", "KEN", "Kenya"),
             (_STAT_VAR, "country/TGO", "donor/A", "2020", 2.0, "TG", "TGO", "Togo"),
         )
+        assert warnings == ()
+
+    @pytest.mark.parametrize(
+        ("columns", "rows", "kinds"),
+        [
+            pytest.param(
+                ("donor", "time_period", "provenance"),
+                (
+                    ("donor/ALL", "2019", _DAC2A),
+                    ("donor/ALL", "2021", _DAC2A),
+                    ("donor/ALL", "2021", _DAC2B),
+                    ("donor/A", "2021", _DAC2A),
+                ),
+                ["total", "whole_total", "total", "party"],
+                id="the-row-dataset-and-year-decide",
+            ),
+            pytest.param(
+                ("donor", "time_period"),
+                (("donor/ALL", "2021"), ("donor/A", "2021")),
+                ["total", "party"],
+                id="no-provenance-column-reads-total",
+            ),
+            pytest.param(
+                ("donor", "provenance"),
+                (("donor/ALL", _DAC2A), ("donor/A", _DAC2A)),
+                ["total", "party"],
+                id="no-time-period-column-reads-total",
+            ),
+            pytest.param(
+                ("donor", "time_period", "provenance"),
+                (
+                    ("donor/ALL", "2020/2022", _DAC2A),
+                    ("donor/ALL", "bogus", _DAC2A),
+                    ("donor/ALL", None, _DAC2A),
+                    ("donor/ALL", "2021", None),
+                ),
+                ["total", "total", "total", "total"],
+                id="unreadable-or-multi-year-period-or-null-provenance-reads-total",
+            ),
+        ],
+    )
+    def test_a_party_kind_cell_follows_the_dataset_and_year_of_its_row(self, columns, rows, kinds):
+        table = Table(columns=columns, rows=rows)
+
+        result, warnings = enrich_columns(
+            table,
+            requests=(("donor", "party_kind"),),
+            lookup={},
+            parties=_WINDOWED_PARTIES,
+        )
+
+        assert [row[-1] for row in result.rows] == kinds
         assert warnings == ()
 
     def test_two_entity_columns_in_one_call_each_get_their_own_columns(self):

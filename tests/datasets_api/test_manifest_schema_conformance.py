@@ -70,6 +70,7 @@ def _fully_populated_artifacts() -> list[manifest_models.ArtifactEntryModel]:
             created_at="2026-01-01T00:00:00+00:00",
             tier="working",
             url="/api/datasets/spec_a/cv1/files/sha256:aaa",
+            enrichment_stamp="3f5e0c1a" * 8,
         )
     ]
 

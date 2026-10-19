@@ -15,9 +15,10 @@ from importlib.resources.abc import Traversable
 from pathlib import Path
 from typing import get_args
 
-from code_index.query import CodeIndex, DuplicateDcid, partly_stated_five_tuples
+from code_index.query import CodeIndex, DuplicateDcid, fold_text, partly_stated_five_tuples
 from code_index.types import (
     PARTY_KINDS,
+    WHOLE_OF_KINDS,
     AbsentObservation,
     CodeRow,
     CodeSystemDeclaration,
@@ -38,7 +39,10 @@ from code_index.types import (
     StatedWord,
     StatTypeWordDeclaration,
     StatVarRow,
+    WholeMarker,
+    WholeTotalSet,
     invalid_when_named_entry,
+    marked_datasets,
 )
 from dfo_platform.roles import AXIS_LABELS, FlowAccount
 
@@ -82,17 +86,21 @@ def parse_index(payload: Mapping, *, source: object = "<document>") -> CodeIndex
     are optional: an index without the first two declares no party kind, one without the third
     lists no StatVar outside its code systems (`CodeIndex.listed_statvars`), one without the
     fourth holds no series code, and one without the fifth no value parent. So are
-    `shape_slot_defaults`, `partly_stated_values`, `measure_classes`, `variable_aliases`
-    and `stat_type_words`, each reading as empty where absent; a measure class or stat-type
-    pattern that does not compile, or a variable alias or a `no_vocabulary_terms` entry that
-    is not a non-empty lowercase string, raises `IndexFormatError`. A value that two
+    `shape_slot_defaults`, `partly_stated_values`, `measure_classes`, `variable_aliases`,
+    `stat_type_words` and `whole_total_sets`, each reading as empty where absent; a measure
+    class or stat-type pattern that does not compile, or a variable alias or a
+    `no_vocabulary_terms` entry that is not a non-empty lowercase string, raises
+    `IndexFormatError`. A value that two
     `value_parents` rows name raises `DuplicateDcid`, and a parent chain that cycles
     `CyclicParent`. A `source_codes` row the StatVar rows contradict raises `IndexFormatError`
     (`_check_source_codes`), as does a `partly_stated_values` row they contradict
     (`_check_partly_stated_values`). A kind outside `PartyKind`, a type declared twice, a
     `totals` on a party that is not a total, or a false `sums_members` on a party holding no
-    group raises `IndexFormatError`. A code row without a `definition` carries none, as does
-    a measure value or measure label in `parse_measure_axes`."""
+    group raises `IndexFormatError`, as does a whole marker (`PartyRow.whole`) the row cannot
+    carry (`_check_whole_markers`), two whole totals holding the same kind on one dataset and
+    axis, and a whole total set its members contradict (`_check_whole_totals`). A party without
+    a `whole` key is no whole total. A code row without a `definition` carries
+    none, as does a measure value or measure label in `parse_measure_axes`."""
     try:
         stamp = _parse_stamp(payload["stamp"])
         declarations = [_parse_declaration(row) for row in payload["declarations"]]
@@ -113,10 +121,14 @@ def parse_index(payload: Mapping, *, source: object = "<document>") -> CodeIndex
         stat_type_words = [_parse_stat_type_word(row) for row in payload.get("stat_type_words", ())]
         source_codes = [_parse_source_code(row) for row in payload.get("source_codes", ())]
         value_parents = _parse_value_parents(payload.get("value_parents", ()))
+        whole_total_sets = [
+            _parse_whole_total_set(row) for row in payload.get("whole_total_sets", ())
+        ]
     except (KeyError, TypeError) as exc:
         raise IndexFormatError(f"malformed code_index export at {source!r}: {exc}") from exc
     _check_datasets(datasets, statvars)
     _check_party_words(datasets, parties)
+    _check_whole_totals(parties, whole_total_sets)
     _check_source_codes(source_codes, [*statvars, *listed_statvars])
     _check_partly_stated_values(partly_stated_values, [*statvars, *listed_statvars])
     return CodeIndex(
@@ -135,6 +147,7 @@ def parse_index(payload: Mapping, *, source: object = "<document>") -> CodeIndex
         stat_type_words=stat_type_words,
         source_codes=source_codes,
         value_parents=value_parents,
+        whole_total_sets=whole_total_sets,
     )
 
 
@@ -215,8 +228,10 @@ def _parse_party_types(rows: Sequence[Mapping]) -> dict[str, PartyKind | None]:
 def _parse_party(row: Mapping) -> PartyRow:
     """One `parties` row, refusing a kind outside `PartyKind`, an axis outside the flow axes,
     a `totals` or `residuals` on a party that is not a total, and a false `sums_members` on a
-    party that holds no group or that counts residuals. `residuals`, `sums_members`, `label`,
-    `datasets` and `axes` are optional, and a row without `sums_members` reads it as true."""
+    party that holds no group or that counts residuals. `whole` markers are parsed by
+    `_parse_whole_marker` and checked by `_check_whole_markers`. `residuals`, `sums_members`,
+    `label`, `datasets`, `axes` and `whole` are optional, and a row without `sums_members`
+    reads it as true."""
     party = PartyRow(
         dcid=row["dcid"],
         kind=row["kind"],
@@ -226,6 +241,12 @@ def _parse_party(row: Mapping) -> PartyRow:
         label=row.get("label"),
         datasets=tuple(row.get("datasets", ())),
         axes=tuple(row.get("axes", ())),
+        whole=tuple(
+            sorted(
+                (_parse_whole_marker(marker) for marker in row.get("whole", ())),
+                key=lambda marker: marker.dataset,
+            )
+        ),
     )
     if party.kind not in PARTY_KINDS:
         raise IndexFormatError(
@@ -245,7 +266,63 @@ def _parse_party(row: Mapping) -> PartyRow:
             f"party {party.dcid!r} claims no sum of members but holds no group or counts "
             "residuals; only a total that holds a group and counts no residual makes no claim"
         )
+    _check_whole_markers(party)
     return party
+
+
+def _parse_whole_marker(row: Mapping) -> WholeMarker:
+    """One `whole` entry: its dataset, the kinds it holds (sorted) and its optional window,
+    which must be two years in order. `_check_whole_markers` checks the rest."""
+    years = row.get("years")
+    if years is not None:
+        years = tuple(years)
+        if len(years) != 2 or not all(isinstance(year, int) for year in years):
+            raise IndexFormatError(f"whole marker years {years!r} is not a first and last year")
+        if years[0] > years[1]:
+            raise IndexFormatError(f"whole marker years {years!r} are out of order")
+    return WholeMarker(dataset=row["dataset"], holds=tuple(sorted(row["holds"])), years=years)
+
+
+def _check_whole_markers(party: PartyRow) -> None:
+    """Raises `IndexFormatError` for a `whole` marker list the row cannot carry: on a party
+    that is not a total, on other than exactly one published axis, for a dataset the party is
+    not published in or twice for one dataset, or holding no kind, a kind outside
+    `WHOLE_OF_KINDS` or one kind twice."""
+    if not party.whole:
+        return
+    if party.kind != "total":
+        raise IndexFormatError(
+            f"party {party.dcid!r} of kind {party.kind!r} carries a whole marker; only a total "
+            "holds a population"
+        )
+    if len(party.axes) != 1:
+        raise IndexFormatError(
+            f"party {party.dcid!r} carries a whole marker but is published on "
+            f"{list(party.axes)!r}; a whole total stands on exactly one published axis"
+        )
+    marked: set[str] = set()
+    for marker in party.whole:
+        if marker.dataset not in party.datasets:
+            raise IndexFormatError(
+                f"party {party.dcid!r} is marked whole in {marker.dataset!r}, which does not "
+                "publish it"
+            )
+        if marker.dataset in marked:
+            raise IndexFormatError(
+                f"party {party.dcid!r} carries two whole markers for {marker.dataset!r}"
+            )
+        marked.add(marker.dataset)
+        if not marker.holds:
+            raise IndexFormatError(f"party {party.dcid!r} holds no kind in {marker.dataset!r}")
+        if unknown := sorted(set(marker.holds) - WHOLE_OF_KINDS):
+            raise IndexFormatError(
+                f"party {party.dcid!r} holds kinds {unknown!r} in {marker.dataset!r}, outside "
+                f"{sorted(WHOLE_OF_KINDS)!r}"
+            )
+        if len(set(marker.holds)) != len(marker.holds):
+            raise IndexFormatError(
+                f"party {party.dcid!r} names a held kind more than once in {marker.dataset!r}"
+            )
 
 
 def _read_json(source: Traversable | Path | str) -> dict:
@@ -344,6 +421,22 @@ def _parse_stated_words(provenance: str, rows: Sequence[Mapping]) -> tuple[State
         where = _parse_where(provenance, word, row.get("where", {}))
         stated.append(StatedWord(word=word, measured_property=prop, where=where))
     return tuple(stated)
+
+
+def _parse_whole_total_set(row: Mapping) -> WholeTotalSet:
+    """One `whole_total_sets` row, refusing a phrase that is not a non-empty string, an axis
+    outside the flow axes and fewer than two members. `_check_whole_totals` checks the members
+    against the `parties` block."""
+    phrase, axis, members = row["phrase"], row["axis"], tuple(row["members"])
+    if not isinstance(phrase, str) or not fold_text(phrase):
+        raise IndexFormatError(f"whole total set {phrase!r} is not a non-empty phrase")
+    if axis not in AXIS_LABELS:
+        raise IndexFormatError(
+            f"whole total set {phrase!r} names axis {axis!r}, outside {sorted(AXIS_LABELS)!r}"
+        )
+    if len(members) < 2 or len(set(members)) != len(members):
+        raise IndexFormatError(f"whole total set {phrase!r} needs two or more distinct members")
+    return WholeTotalSet(phrase=phrase, axis=axis, members=members)
 
 
 def _parse_party_words(provenance: str, rows: Sequence[Mapping]) -> tuple[PartyWord, ...]:
@@ -549,6 +642,43 @@ def _check_party_words(datasets: Sequence[DatasetDeclaration], parties: Sequence
                     f"on {named.axis!r}, which the parties block does not list for that "
                     "dataset and axis"
                 )
+
+
+def _check_whole_totals(parties: Sequence[PartyRow], sets: Sequence[WholeTotalSet]) -> None:
+    """Raises `IndexFormatError` for two whole totals whose markers hold a kind in common on one
+    dataset and axis, so every population a dataset's axis counts is counted once, and for a
+    `WholeTotalSet` that names a phrase twice, a member that is no whole total on the set's
+    axis, or members no dataset marks together. Members marked together in one dataset hold
+    disjoint kinds there by the first rule, so their sum counts no party twice."""
+    by_dcid = {party.dcid: party for party in parties}
+    held: dict[tuple[str, str], list[tuple[PartyRow, WholeMarker]]] = {}
+    for party in parties:
+        for marker in party.whole:
+            held.setdefault((marker.dataset, party.axes[0]), []).append((party, marker))
+    for (dataset, axis), rows in held.items():
+        for index, (first, first_marker) in enumerate(rows):
+            for second, second_marker in rows[index + 1 :]:
+                if shared := sorted(set(first_marker.holds) & set(second_marker.holds)):
+                    raise IndexFormatError(
+                        f"whole totals {first.dcid!r} and {second.dcid!r} both hold {shared!r} "
+                        f"on {axis!r} in {dataset!r}"
+                    )
+    phrases: set[str] = set()
+    for whole_set in sets:
+        if (phrase := fold_text(whole_set.phrase)) in phrases:
+            raise IndexFormatError(f"whole total set {whole_set.phrase!r} is declared twice")
+        phrases.add(phrase)
+        members = [by_dcid.get(dcid) for dcid in whole_set.members]
+        for dcid, member in zip(whole_set.members, members, strict=True):
+            if member is None or not member.whole or member.axes != (whole_set.axis,):
+                raise IndexFormatError(
+                    f"whole total set {whole_set.phrase!r} names {dcid!r}, which is no whole "
+                    f"total on {whole_set.axis!r}"
+                )
+        if not marked_datasets(member for member in members if member is not None):
+            raise IndexFormatError(
+                f"whole total set {whole_set.phrase!r} has members no dataset marks together"
+            )
 
 
 def _parse_code(payload: Mapping) -> CodeRow:

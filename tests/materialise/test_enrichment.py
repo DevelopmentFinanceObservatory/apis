@@ -4,15 +4,28 @@ from __future__ import annotations
 
 import json
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import httpx
+import pytest
 
 import materialise.enrichment as enrichment_module
-from code_index.types import PartyRow
+from code_index.shared import get_index
+from code_index.types import PartyRow, WholeMarker
+from datasets_api.render import _RenderReads
 from dc_graph import GraphClient
-from materialise.enrichment import EnrichmentLookup, read_party_kinds
+from materialise.enrichment import (
+    EnrichmentLookup,
+    PartyKindCell,
+    party_kind_cell,
+    period_year,
+    read_party_kinds,
+    row_party_kind_cell,
+)
 
 from .conftest import FakeGraphReader
+
+_FIXTURES = Path(__file__).parent.parent / "fixtures"
 
 
 def _graph() -> FakeGraphReader:
@@ -110,6 +123,133 @@ def test_a_partys_kind_survives_a_graph_that_returns_no_node_for_it():
     assert graph.calls["node_arcs_many"] == 1
 
 
+_DAC2A = "provenance/OECDDAC2A"
+_DAC2B = "provenance/OECDDAC2B"
+
+_ETHIOPIA_2021_PARTIES = {
+    row.dcid: row
+    for row in (
+        PartyRow(dcid="country/FRA", kind="party"),
+        PartyRow(dcid="GatesFoundation", kind="private"),
+        PartyRow(dcid="DACCountriesTotal", kind="total"),
+        PartyRow(
+            dcid="DACOfficialDonors",
+            kind="total",
+            whole=(
+                WholeMarker(dataset=_DAC2A, holds=("party",)),
+                WholeMarker(dataset=_DAC2B, holds=("party",)),
+            ),
+        ),
+        PartyRow(
+            dcid="DACPrivateDonors",
+            kind="total",
+            whole=(WholeMarker(dataset=_DAC2A, holds=("private",)),),
+        ),
+        PartyRow(dcid="DACAfricaUnallocated", kind="residual"),
+    )
+}
+"""The origin refs of DAC2A Ethiopia 2021 as the code index rows give them."""
+
+
+def test_a_dac2a_ethiopia_2021_row_reads_private_and_whole_total_cells():
+    cells = {
+        ref: party_kind_cell(ref, parties=_ETHIOPIA_2021_PARTIES, year=2021, provenance=_DAC2A)
+        for ref in (*_ETHIOPIA_2021_PARTIES, "country/NOWHERE")
+    }
+
+    assert cells == {
+        "country/FRA": "party",
+        "GatesFoundation": "private",
+        "DACCountriesTotal": "total",
+        "DACOfficialDonors": "whole_total",
+        "DACPrivateDonors": "whole_total",
+        "DACAfricaUnallocated": "residual",
+        "country/NOWHERE": None,
+    }
+
+
+def test_official_donors_read_whole_total_in_both_dac_datasets_and_private_donors_in_one():
+    def cell(ref: str, provenance: str) -> object:
+        return party_kind_cell(
+            ref, parties=_ETHIOPIA_2021_PARTIES, year=2021, provenance=provenance
+        )
+
+    assert [cell("DACOfficialDonors", dataset) for dataset in (_DAC2A, _DAC2B)] == [
+        "whole_total",
+        "whole_total",
+    ]
+    assert [cell("DACPrivateDonors", dataset) for dataset in (_DAC2A, _DAC2B)] == [
+        "whole_total",
+        "total",
+    ]
+
+
+def test_the_lookup_reads_a_whole_total_as_a_total_where_it_knows_no_dataset_or_year():
+    """`fields_of` and `lookup` carry no row, so only a row-aware reader writes `whole_total`;
+    every other kind reads as the row would."""
+    reads = _RenderReads(
+        enrichment=EnrichmentLookup(FakeGraphReader(arcs={}), parties=_ETHIOPIA_2021_PARTIES),
+        known={},
+        deadline=None,
+    )
+
+    cells = reads.fields_of([*_ETHIOPIA_2021_PARTIES], fields={"party_kind"})
+
+    assert {ref: fields.get("party_kind") for ref, fields in cells.items()} == {
+        "country/FRA": "party",
+        "GatesFoundation": "private",
+        "DACCountriesTotal": "total",
+        "DACOfficialDonors": "total",
+        "DACPrivateDonors": "total",
+        "DACAfricaUnallocated": "residual",
+    }
+
+
+_WINDOWED = PartyRow(
+    dcid="W",
+    kind="total",
+    whole=(WholeMarker(dataset=_DAC2A, holds=("party",), years=(2010, 2023)),),
+)
+_UNWINDOWED = PartyRow(
+    dcid="W", kind="total", whole=(WholeMarker(dataset=_DAC2A, holds=("party",)),)
+)
+
+
+@pytest.mark.parametrize(
+    ("row", "year", "provenance", "expected"),
+    [
+        pytest.param(_WINDOWED, 2021, _DAC2A, "whole_total", id="inside-the-window"),
+        pytest.param(_WINDOWED, 2010, _DAC2A, "whole_total", id="window-start-is-inside"),
+        pytest.param(_WINDOWED, 2023, _DAC2A, "whole_total", id="window-end-is-inside"),
+        pytest.param(_WINDOWED, 2009, _DAC2A, "total", id="before-the-window"),
+        pytest.param(_WINDOWED, 2024, _DAC2A, "total", id="after-the-window"),
+        pytest.param(_WINDOWED, None, _DAC2A, "total", id="no-year-is-outside-the-window"),
+        pytest.param(_WINDOWED, 2021, _DAC2B, "total", id="a-dataset-with-no-marker"),
+        pytest.param(_WINDOWED, 2021, None, "total", id="no-provenance"),
+        pytest.param(_UNWINDOWED, None, _DAC2A, "whole_total", id="no-window-needs-no-year"),
+        pytest.param(_UNWINDOWED, 1960, _DAC2A, "whole_total", id="no-window-in-an-early-year"),
+        pytest.param(_UNWINDOWED, 2021, None, "total", id="no-window-still-needs-a-dataset"),
+        pytest.param(PartyRow(dcid="W", kind="total"), 2021, _DAC2A, "total", id="no-marker"),
+        pytest.param(
+            PartyRow(dcid="W", kind="private"), 2021, _DAC2A, "private", id="private-party"
+        ),
+    ],
+)
+def test_a_whole_total_reads_whole_total_only_in_the_dataset_and_years_of_its_marker(
+    row: PartyRow, year: int | None, provenance: str | None, expected: PartyKindCell
+):
+    assert party_kind_cell("W", parties={"W": row}, year=year, provenance=provenance) == expected
+
+
+def test_the_lookup_reads_a_whole_total_as_a_total_until_a_dataset_and_year_are_given():
+    lookup = EnrichmentLookup(FakeGraphReader(arcs={}), parties={"W": _WINDOWED})
+
+    assert lookup.party_kind("W") == "total"
+    assert lookup.party_kind("W", year=2021) == "total"
+    assert lookup.party_kind("W", year=2021, provenance=_DAC2A) == "whole_total"
+    assert lookup.lookup(["W"]) == {"W": {"party_kind": "total"}}
+
+
 def test_party_kinds_read_the_index_alone_for_flow_parties():
     """A party the index does not list has no kind, whatever its graph types, and a subject
     role holds no party."""
@@ -133,6 +273,13 @@ def test_party_kinds_read_the_index_alone_for_flow_parties():
         ("origin", "country/USA"): "party",
         ("destination", "DACAfrica"): "total",
     }
+
+
+def test_search_reads_a_whole_total_as_a_total():
+    """Only a frame cell reads `whole_total`; the kind on the wire stays `total`."""
+    kinds = read_party_kinds([("origin", "DACOfficialDonors")], parties=_ETHIOPIA_2021_PARTIES)
+
+    assert kinds == {("origin", "DACOfficialDonors"): "total"}
 
 
 def test_ref_with_only_a_label_omits_the_missing_fields():
@@ -334,3 +481,70 @@ def test_budget_bounds_individual_probes_and_the_graph_logs_the_unprobed_count(m
     assert len(requests) == 3
     assert result == {"country/AAA": {}, "country/BBB": {}}
     assert any("1 dcid" in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.parametrize(
+    ("cell", "year"),
+    [
+        pytest.param("2021", 2021, id="year"),
+        pytest.param("2021-06", 2021, id="month"),
+        pytest.param("2021-06-30", 2021, id="day"),
+        pytest.param("2021/2021", 2021, id="interval-inside-a-year"),
+        pytest.param("2021-01/2021-12", 2021, id="months-inside-a-year"),
+        pytest.param(2021, 2021, id="integer-year"),
+        pytest.param("2019/2021", None, id="interval-across-years"),
+        pytest.param("2021-Q2", None, id="other-spelling"),
+        pytest.param("", None, id="empty"),
+        pytest.param(None, None, id="null"),
+        pytest.param(True, None, id="boolean"),
+    ],
+)
+def test_a_period_has_a_year_only_when_it_lies_in_one(cell: object, year: int | None):
+    assert period_year(cell) == year
+
+
+def test_a_recorded_facets_provenance_has_the_form_a_party_rows_datasets_hold():
+    """A frame's `provenance` cell is its facet's `provenanceId`, the dataset the mint elected
+    (`ElectedDataset.publishes`), which is also what `PartyRow.datasets` lists. Every provenance
+    in the recorded SDMX facets is such a dcid, and the DAC datasets a whole total is marked in
+    are spelled the same way."""
+    recorded = json.loads((_FIXTURES / "sdmx_obs.json").read_text())
+    provenances = {
+        facet["provenanceId"]
+        for key, facets in recorded.items()
+        if not key.startswith("_")
+        for facet in facets
+    }
+    parties = get_index().parties
+    listed = {dataset for party in parties.values() for dataset in party.datasets}
+
+    assert provenances
+    assert provenances <= listed
+    assert {_DAC2A, _DAC2B} <= set(parties["DACAllRecipients"].datasets)
+
+
+@pytest.mark.parametrize(
+    ("ref", "period", "provenance", "expected"),
+    [
+        pytest.param("W", "2021", _DAC2A, "whole_total", id="dataset-and-year-inside"),
+        pytest.param("W", "2022", _DAC2A, "total", id="year-outside"),
+        pytest.param("W", "2021", _DAC2B, "total", id="dataset-without-marker"),
+        pytest.param("W", None, _DAC2A, "total", id="no-period"),
+        pytest.param("W", "2021", None, "total", id="no-provenance"),
+        pytest.param("W", "2021", 7, "total", id="provenance-not-text"),
+        pytest.param(None, "2021", _DAC2A, None, id="ref-not-text"),
+        pytest.param("X", "2021", _DAC2A, None, id="ref-not-listed"),
+    ],
+)
+def test_a_rows_cells_give_its_party_kind_cell(ref, period, provenance, expected):
+    parties = {
+        "W": PartyRow(
+            dcid="W",
+            kind="total",
+            whole=(WholeMarker(dataset=_DAC2A, holds=("party",), years=(2020, 2021)),),
+        )
+    }
+
+    assert (
+        row_party_kind_cell(ref, parties=parties, period=period, provenance=provenance) == expected
+    )

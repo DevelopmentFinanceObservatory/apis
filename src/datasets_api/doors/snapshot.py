@@ -69,6 +69,7 @@ from datasets_api.render import (
     FRAME_LAYOUT,
     LAYOUT_KEY,
     RENDITION_KEY,
+    current_enrichment_locations,
     is_canonical_frame_rendering,
     is_incomplete_rendering,
     is_statistics_rendering,
@@ -96,9 +97,7 @@ class SnapshotBackpressure(Backpressure):
 
 
 def _stored_snapshot_manifest(
-    stored_version: StoredVersion,
-    *,
-    settings: DatasetsBuildSettings,
+    stored_version: StoredVersion, *, settings: DatasetsBuildSettings
 ) -> Manifest:
     """The stored version's manifest with no artifacts, its `output_options` derived from its
     stored profile and current capabilities."""
@@ -197,13 +196,25 @@ def read_stored_version(
 
 
 def servable_listable_locations(
-    locations: Sequence[StoredArtifactLocation], *, now: datetime, rendition: str
+    locations: Sequence[StoredArtifactLocation],
+    *,
+    now: datetime,
+    rendition: str,
+    enrichment_digest: str | None,
 ) -> list[StoredArtifactLocation]:
     """The caller-facing renderings among `locations` a snapshot lists at `now`, in listing
     order (`_listed_locations`). The canonical frame counts. A frame1 document never does. It
     has no entry in `LISTABLE_MEDIA_TYPES`. An unpinned bundle of a superseded rendition or
     unpinned incomplete artifact does not count either. A version for which this is empty
-    answers `artifact_expired`."""
+    answers `artifact_expired`.
+
+    `enrichment_digest` is the serving code index's (`CodeIndex.enrichment_digest`). A file
+    that a re-render under it has replaced does not count (`render.current_enrichment_locations`),
+    so a rendering is listed once after a rotation. A superseded or pinned file with no current
+    twin counts as before.
+    `None` counts every link, for a caller that only asks whether any file is listed."""
+    if enrichment_digest is not None:
+        locations = current_enrichment_locations(locations, enrichment_digest=enrichment_digest)
     listable = [loc for loc in locations if loc.media_type in LISTABLE_MEDIA_TYPES]
     return _listed_locations(select_servable_locations(listable, now=now), rendition=rendition)
 
@@ -280,12 +291,12 @@ def _listed_locations(
 
 
 def _narrow_to_rendering(
-    servable: Sequence[StoredArtifactLocation], *, rendering_key: str
+    servable: Sequence[StoredArtifactLocation], *, rendering_keys: tuple[str, ...]
 ) -> list[StoredArtifactLocation]:
-    """The locations among `servable` matching `rendering_key`, followed by every statistics
-    artifact among them. A statistics artifact has its own fixed key, distinct from every
-    `MintOptions` rendering, so it is kept across renderings."""
-    narrowed = [loc for loc in servable if loc.rendering_key == rendering_key]
+    """The locations among `servable` matching one of `rendering_keys`, followed by every
+    statistics artifact among them. A statistics artifact has its own fixed key, distinct from
+    every `MintOptions` rendering, so it is kept across renderings."""
+    narrowed = [loc for loc in servable if loc.rendering_key in rendering_keys]
     narrowed_keys = {loc.rendering_key for loc in narrowed}
     narrowed.extend(
         loc
@@ -299,31 +310,33 @@ def rendering_servable(
     *,
     subject_id: str,
     content_version: str,
-    rendering_key: str,
+    rendering_keys: tuple[str, ...],
     snapshot_reader: SnapshotReader,
     now: Clock,
     settings: DatasetsBuildSettings,
 ) -> bool:
-    """Whether a snapshot read of `(subject_id, content_version)` narrowed to `rendering_key`
+    """Whether a snapshot read of `(subject_id, content_version)` narrowed to `rendering_keys`
     lists an artifact other than statistics.
 
-    It applies the selection `read_snapshot_manifest(rendering_key=...)` lists from, under the
+    It applies the selection `read_snapshot_manifest(rendering_keys=...)` lists from, under the
     rendition `settings.site` gives (`servable_listable_locations`, then
     `_narrow_to_rendering`), so the check and the read agree. It reads artifact locations only:
     no spec or version lookup, no revocation check and no signing. A bundle linked only as
     incomplete, a bundle of a superseded rendition and an expired working-tier artifact all
     answer `False`.
 
-    Derive `rendering_key` from the request's options with `render.artifact_rendering_key`.
+    Derive `rendering_keys` from the request's options with `render.artifact_rendering_keys`.
     """
     servable = servable_listable_locations(
         snapshot_reader.read_artifact_locations(subject_id, content_version),
         now=now(),
         rendition=rendition_token(settings.site),
+        # `rendering_keys` are the current keys, so narrowing by them keeps only current links.
+        enrichment_digest=None,
     )
     return any(
         not is_statistics_rendering(loc.rendering)
-        for loc in _narrow_to_rendering(servable, rendering_key=rendering_key)
+        for loc in _narrow_to_rendering(servable, rendering_keys=rendering_keys)
     )
 
 
@@ -335,7 +348,8 @@ def read_snapshot_manifest(
     snapshot_reader: SnapshotReader,
     now: Clock,
     settings: DatasetsBuildSettings,
-    rendering_key: str | None = None,
+    rendering_keys: tuple[str, ...] | None = None,
+    enrichment_digest: str | None,
     revoked_under: Sequence[str] = (),
 ) -> Manifest:
     """Load a snapshot and list its servable artifacts under their stable download links.
@@ -352,6 +366,13 @@ def read_snapshot_manifest(
     a non-statistics artifact. A bundle under a superseded rendition and an
     incomplete artifact are listed only when pinned, after the current artifacts
     (`_listed_locations`).
+
+    `enrichment_digest` is the serving code index's (`CodeIndex.enrichment_digest`). The
+    listing holds a party-kind file linked under it in place of an older twin, each rendering
+    once (`servable_listable_locations`), and each such file carries it as `enrichment_stamp`
+    (`render.stored_artifact_entry`). A file with no twin under it, such as a pinned file or
+    an older layout, is listed with no stamp. The callers pass their code index's. `None`
+    lists every link and states no stamp, for a read that serves no listing to a client.
     """
     read_at = now()
     stored = read_stored_version(
@@ -364,15 +385,23 @@ def read_snapshot_manifest(
     )
     manifest = _stored_snapshot_manifest(stored.version, settings=settings)
     servable = servable_listable_locations(
-        stored.servable, now=read_at, rendition=rendition_token(settings.site)
+        stored.servable,
+        now=read_at,
+        rendition=rendition_token(settings.site),
+        enrichment_digest=enrichment_digest,
     )
-    if rendering_key is None:
+    if rendering_keys is None:
         if not servable:
             raise ArtifactExpired(id=id, content_version=content_version)
     else:
-        servable = _narrow_to_rendering(servable, rendering_key=rendering_key)
+        servable = _narrow_to_rendering(servable, rendering_keys=rendering_keys)
     artifacts = [
-        stored_artifact_entry(location, subject_id=id, content_version=content_version)
+        stored_artifact_entry(
+            location,
+            subject_id=id,
+            content_version=content_version,
+            enrichment_digest=enrichment_digest,
+        )
         for location in servable
     ]
     return manifest.model_copy(update={"artifacts": artifacts})
@@ -422,6 +451,7 @@ def build_snapshot_door(*, deps: DepsCell) -> DoorContribution:
                 now=current.now,
                 settings=current.settings,
                 revoked_under=subject_ids,
+                enrichment_digest=current.code_index.enrichment_digest,
             )
 
         with door_call("snapshot", logger=logger) as call:

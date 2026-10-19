@@ -12,7 +12,7 @@ import json
 import time
 import zipfile
 from collections import Counter
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 
 import openpyxl
 import pyarrow.parquet as pq
@@ -22,7 +22,7 @@ from dfo_frame_grammar.grammar import UnitRequest
 
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
 from code_index.shared import get_index
-from code_index.types import PartyRow, StatVarRow
+from code_index.types import PartyRow, RoleAxis, StatVarRow, WholeMarker
 from datasets_api.manifest_models import CitationSource
 from datasets_api.mint_models import GroupbyOptions, MintOptions
 from datasets_api.output_options import movable_totals_roles
@@ -824,20 +824,32 @@ def test_a_bare_csv_leaves_out_the_totals_of_an_open_or_several_bound_role(spec,
     assert _recipients(_records(body)) == kept
 
 
-def _totals_published(*, datasets: tuple[str, ...], axes: tuple[str, ...]) -> dict[str, PartyRow]:
+def _totals_published(
+    *, datasets: tuple[str, ...], axes: tuple[RoleAxis, ...], whole: tuple[WholeMarker, ...] = ()
+) -> dict[str, PartyRow]:
     return {
         **_PARTIES,
         **{
-            dcid: PartyRow(dcid=dcid, kind="total", datasets=datasets, axes=axes)
+            dcid: PartyRow(dcid=dcid, kind="total", datasets=datasets, axes=axes, whole=whole)
             for dcid in _TOTAL_ROWS
         },
     }
+
+
+_WHOLE_TOTALS = _totals_published(
+    datasets=("p1",),
+    axes=("destination",),
+    whole=(WholeMarker(dataset="p1", holds=("party", "residual")),),
+)
 
 
 @pytest.mark.parametrize(
     ("parties", "named", "kept"),
     [
         pytest.param(_PARTIES, ["financingRecipient"], _PARTY_ROWS, id="read-provenance-totals"),
+        pytest.param(
+            _WHOLE_TOTALS, ["financingRecipient"], _PARTY_ROWS, id="read-provenance-whole-totals"
+        ),
         pytest.param(
             _totals_published(datasets=("p1",), axes=("origin",)),
             [],
@@ -871,9 +883,13 @@ def test_a_bare_csv_drops_totals_only_on_the_roles_the_options_document_names(pa
 
 
 @pytest.mark.parametrize("bundle", [False, True])
-def test_an_xlsx_holds_the_totals_on_a_second_sheet_and_years_as_numbers(bundle):
+@pytest.mark.parametrize("parties", [_PARTIES, _WHOLE_TOTALS], ids=["totals", "whole-totals"])
+def test_an_xlsx_holds_the_totals_on_a_second_sheet_and_years_as_numbers(bundle, parties):
     _rendered, body = _render(
-        MintOptions(format="xlsx", bundle=bundle), rows=_RECIPIENT_ROWS, spec=_OPEN_RECIPIENTS
+        MintOptions(format="xlsx", bundle=bundle),
+        rows=_RECIPIENT_ROWS,
+        spec=_OPEN_RECIPIENTS,
+        parties=parties,
     )
     if bundle:
         archive = zipfile.ZipFile(io.BytesIO(body))
@@ -1156,3 +1172,136 @@ def test_a_frame_mixing_year_points_and_spans_writes_every_period_as_text(
     types = {field["name"]: field["type"] for field in resource["schema"]["fields"]}
     assert types["time_period"] == ("integer" if typed else "string")
     assert sorted(r["time_period"] for r in _records(archive.read(resource["path"]))) == periods
+
+
+_DAC2A = "provenance/OECDDAC2A"
+_DAC2B = "provenance/OECDDAC2B"
+_DAC_PARTIES = {
+    **_PARTIES,
+    "DACAllRecipients": PartyRow(
+        dcid="DACAllRecipients",
+        kind="total",
+        datasets=(_DAC2A, _DAC2B),
+        axes=("destination",),
+        whole=(WholeMarker(dataset=_DAC2A, holds=("party", "residual"), years=(2020, 2021)),),
+    ),
+    "DACOfficialDonors": PartyRow(
+        dcid="DACOfficialDonors",
+        kind="total",
+        datasets=(_DAC2A, _DAC2B),
+        axes=("origin",),
+        whole=(
+            WholeMarker(dataset=_DAC2A, holds=("party",)),
+            WholeMarker(dataset=_DAC2B, holds=("party",)),
+        ),
+    ),
+    "GatesFoundation": PartyRow(dcid="GatesFoundation", kind="private"),
+}
+
+
+def _recipient_row(recipient: str, period: str, provenance: str) -> tuple[object, ...]:
+    return ("dcid:SV_A", "country/USA", recipient, period, 1.0, "USD", None, provenance, None)
+
+
+_WINDOWED_ROWS = (
+    _recipient_row("country/KEN", "2021", _DAC2A),
+    _recipient_row("DACAllRecipients", "2019", _DAC2A),
+    _recipient_row("DACAllRecipients", "2021", _DAC2A),
+    _recipient_row("DACAllRecipients", "2021-06", _DAC2A),
+    _recipient_row("DACAllRecipients", "2021/2022", _DAC2A),
+    _recipient_row("DACAllRecipients", "2022", _DAC2A),
+    _recipient_row("DACAllRecipients", "2021", _DAC2B),
+    _recipient_row("DACAllRecipients", "2020", _DAC2B),
+)
+_WINDOWED_KINDS = [
+    "party",
+    "total",
+    "whole_total",
+    "whole_total",
+    "total",
+    "total",
+    "total",
+    "total",
+]
+"""The recipient kinds of `_WINDOWED_ROWS` in order. The total reads `whole_total` in DAC2A
+inside its marker's years (2020 to 2021), and `total` in DAC2A outside them, across years, and
+in every DAC2B row, where it carries no marker."""
+
+
+def _kinds_by_row(rows: Sequence[Mapping[str, object]]) -> list[object]:
+    return [row["financingRecipient_party_kind"] for row in rows]
+
+
+@pytest.mark.parametrize(
+    ("options", "reader"),
+    [
+        pytest.param(
+            MintOptions(format="csv", bundle=False),
+            lambda body: _kinds_by_row(_records(body)),
+            id="long-layout",
+        ),
+        pytest.param(
+            MintOptions(
+                format="parquet",
+                bundle=False,
+                layout="frame",
+                columns=["financingRecipient_party_kind"],
+            ),
+            lambda body: _kinds_by_row(pq.read_table(io.BytesIO(body)).to_pylist()),
+            id="reshape-enrichment-keeping-time-period",
+        ),
+    ],
+)
+def test_a_whole_total_reads_whole_total_only_in_the_dataset_and_years_of_its_marker(
+    options, reader
+):
+    """One frame holds DAC2A and DAC2B rows of the same total in several periods: the cell
+    follows each row's dataset and year, in the long layout and in the reshape enrichment
+    alike."""
+    _rendered, body = _render(options, rows=_WINDOWED_ROWS, spec=None, parties=_DAC_PARTIES)
+
+    assert reader(body) == _WINDOWED_KINDS
+
+
+def test_a_kind_column_a_pivot_indexes_by_reads_a_windowed_whole_total_as_a_total():
+    """A pivot groups rows by its index, so a kind that changed with the year would split one
+    recipient across index rows; the cell stays the `total` that holds in every dataset and year."""
+    options = MintOptions(
+        format="csv",
+        bundle=False,
+        groupby=GroupbyOptions(by=["financingProvider", "financingRecipient"], op="sum"),
+        columns=[
+            "stat_var",
+            "financingProvider",
+            "financingRecipient",
+            "financingRecipient_party_kind",
+            "time_period",
+            "value",
+            "unit",
+            "provenance",
+        ],
+        pivot={"index": "financingRecipient_party_kind", "columns": "time_period"},
+    )
+    one_row_per_year = (_WINDOWED_ROWS[1], _WINDOWED_ROWS[2], _WINDOWED_ROWS[5])
+
+    _rendered, body = _render(options, rows=one_row_per_year, spec=None, parties=_DAC_PARTIES)
+
+    header, *rows = _csv(body)
+    assert [row[header.index("financingRecipient_party_kind")] for row in rows] == ["total"]
+
+
+def test_a_dac2a_ethiopia_2021_frame_reads_private_and_whole_total_providers():
+    rows = tuple(
+        ("dcid:SV_A", provider, "country/ETH", "2021", 1.0, "USD", None, _DAC2A, None)
+        for provider in ("country/USA", "GatesFoundation", "DACOfficialDonors")
+    )
+
+    _rendered, body = _render(
+        MintOptions(format="csv", bundle=False), rows=rows, spec=None, parties=_DAC_PARTIES
+    )
+
+    assert [record["financingProvider_party_kind"] for record in _records(body)] == [
+        "party",
+        "private",
+        "whole_total",
+    ]

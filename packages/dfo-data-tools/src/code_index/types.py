@@ -357,17 +357,39 @@ class DatasetDeclaration:
     party_words: tuple[PartyWord, ...] = ()
 
 
-PartyKind = Literal["party", "total", "residual"]
+PartyKind = Literal["party", "private", "total", "residual"]
 """What one party of a flow is beside the other parties on its side.
 
-A `party` is a country, a territory or an organisation. A `total` holds other parties'
-figures: DAC2A publishes "Africa, Total" (`DACAfrica`) and DAC1 the G7 (`GroupOfSeven`)
-beside the countries they hold, so a sum across a flow role that counts a total counts its
-members twice. A `residual` holds figures no other party does ("Africa, unallocated by
-country", `DACAfricaUnallocated`).
+A `party` is a country, a territory or an organisation. A `private` party is a private
+provider of development finance, such as a foundation; it sums like a `party` and is
+counted and labelled apart. A `total` holds other parties' figures: DAC2A publishes
+"Africa, Total" (`DACAfrica`) and DAC1 the G7 (`GroupOfSeven`) beside the countries they
+hold, so a sum across a flow role that counts a total counts its members twice. A `residual`
+holds figures no other party does ("Africa, unallocated by country", `DACAfricaUnallocated`).
 """
 
 PARTY_KINDS: frozenset[str] = frozenset(get_args(PartyKind))
+
+WHOLE_OF_KINDS: frozenset[str] = frozenset({"party", "private", "residual"})
+"""The kinds a whole total can hold (`WholeMarker.holds`). A `total` is never one of them, so
+no whole total holds another."""
+
+
+@dataclass(frozen=True, slots=True)
+class WholeMarker:
+    """What a total holds in one dataset: every party of the kinds in `holds` on its axis.
+
+    `dataset` is a provenance among `PartyRow.datasets`, and `holds` a non-empty, sorted
+    subset of `party`, `private` and `residual`. `years` is the first and last year,
+    inclusive, in which the total holds that population in `dataset`, or `None` for every
+    year the dataset publishes it. "All Recipients, Total" (`DACAllRecipients`) holds every
+    `party` and `residual` recipient in DAC2A from the year its composition check starts, and
+    in DAC2B it holds nothing of the kind, so it has no marker there.
+    """
+
+    dataset: str
+    holds: tuple[PartyKind, ...]
+    years: tuple[int, int] | None = None
 
 
 def party_kind(
@@ -408,6 +430,13 @@ class PartyRow:
     `datasets` are the provenances of the declared and listed datasets that publish the
     party, and `axes` the flow axes they publish it on (`origin` as a donor, `destination` as a
     recipient), each sorted.
+
+    `whole` is empty for every row but a whole total: a `total` that holds the whole
+    population of a kind on its one axis in the datasets it carries a marker for
+    (`WholeMarker`), sorted by dataset, one per dataset. "Official Donors, Total"
+    (`DACOfficialDonors`) holds every `party` donor in DAC2A and DAC2B. A dataset with no
+    marker reads the party as an ordinary `total`. The kind stays `total`, so a reader of
+    `kind == "total"` stays correct.
     """
 
     dcid: str
@@ -418,6 +447,33 @@ class PartyRow:
     label: str | None = None
     datasets: tuple[str, ...] = ()
     axes: tuple[RoleAxis, ...] = ()
+    whole: tuple[WholeMarker, ...] = ()
+
+    def marker(self, dataset: str) -> WholeMarker | None:
+        """The marker for `dataset`, or `None` where the party is an ordinary total."""
+        return next((marker for marker in self.whole if marker.dataset == dataset), None)
+
+
+def marked_datasets(parties: Iterable[PartyRow]) -> frozenset[str]:
+    """The datasets in which every one of `parties` carries a whole marker. Empty for no party."""
+    sets = [frozenset(marker.dataset for marker in party.whole) for party in parties]
+    return frozenset.intersection(*sets) if sets else frozenset()
+
+
+@dataclass(frozen=True, slots=True)
+class WholeTotalSet:
+    """Whole totals read as one population under a phrase.
+
+    `phrase` is the words that name the union ("all donors including private"), `axis` the
+    flow axis it stands on, and `members` the dcids of the whole totals it joins, which
+    are each marked in at least one dataset where all are marked
+    (`marked_datasets`), and hold disjoint kinds there, so their sum counts no
+    party twice (`code_index.loader._check_whole_totals`).
+    """
+
+    phrase: str
+    axis: RoleAxis
+    members: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)

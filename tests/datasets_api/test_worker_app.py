@@ -612,6 +612,7 @@ class TestFinalAttempt:
                 snapshot_reader=None,
                 now=lambda: now_box["t"],
                 settings=DatasetsBuildSettings(),
+                enrichment_digest="digest",
             )
             polled.append(resource.operation.status)
             _complete_run(operation=operation, deps=deps, operation_store=operation_store)

@@ -15,10 +15,11 @@ from collections.abc import Iterator, Mapping, Sequence, Set
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from code_index.types import PartyRow
 from dfo_platform.codes import CodeCatalogue
 from dfo_platform.problem import Alternative, ProblemIssue
 from materialise.codes import MaterialisationWarning
-from materialise.enrichment import PARTY_KIND_FIELD, is_party_role
+from materialise.enrichment import PARTY_KIND_FIELD, is_party_role, row_party_kind_cell
 from materialise.errors import MaterialisationError, MaterialisationUsageError
 from materialise.method_status import method_status_classes
 
@@ -1170,23 +1171,47 @@ def _fill_lookup_columns(
     *,
     requests: Sequence[tuple[str, str]],
     lookup: Mapping[str, Mapping[str, str]],
+    parties: Mapping[str, PartyRow] | None = None,
 ) -> tuple[Table, tuple[MaterialisationWarning, ...]]:
     """Append one `{entity_column}_{field}` column per request, in request
     order. Missing refs or fields become empty cells; each affected request
     gets an `enrichment_unavailable` warning with its empty-cell count.
     Callers validate entity columns, field names, and duplicate requests.
+
+    With `parties` (the code index's rows), a `party_kind` cell is `party_kind_cell` of the
+    row's party for the row's `provenance` and the year of its `time_period`, so a whole total
+    reads `whole_total` only in the dataset and years its marker holds (`PartyRow.whole`). A
+    table with no `provenance` or `time_period` column, or a row with no readable value in one,
+    reads `total`. Without `parties` the cell comes from `lookup` like every field.
     """
     entity_positions = {
         entity_column: table.columns.index(entity_column) for entity_column, _field in requests
     }
+    period_at = (
+        table.columns.index(_TIME_PERIOD_COLUMN) if _TIME_PERIOD_COLUMN in table.columns else None
+    )
+    provenance_at = (
+        table.columns.index(_PROVENANCE_COLUMN) if _PROVENANCE_COLUMN in table.columns else None
+    )
     missing_counts: dict[tuple[str, str], int] = {}
     new_rows = []
     for row in table.rows:
         extra: list[object] = []
         for entity_column, field_name in requests:
             ref = row[entity_positions[entity_column]]
-            entry = lookup.get(ref, {}) if isinstance(ref, str) else {}
-            value = entry.get(field_name, "")
+            if parties is not None and field_name == PARTY_KIND_FIELD:
+                value = (
+                    row_party_kind_cell(
+                        ref,
+                        parties=parties,
+                        period=None if period_at is None else row[period_at],
+                        provenance=None if provenance_at is None else row[provenance_at],
+                    )
+                    or ""
+                )
+            else:
+                entry = lookup.get(ref, {}) if isinstance(ref, str) else {}
+                value = entry.get(field_name, "")
             if value == "":
                 request = (entity_column, field_name)
                 missing_counts[request] = missing_counts.get(request, 0) + 1
@@ -1244,11 +1269,13 @@ def enrich_columns(
     *,
     requests: Sequence[tuple[str, str]],
     lookup: Mapping[str, Mapping[str, str]],
+    parties: Mapping[str, PartyRow] | None = None,
 ) -> tuple[Table, tuple[MaterialisationWarning, ...]]:
     """Append `{entity_column}_{field}` columns in request order.
     Fields must be supported, entity columns must exist, and requests must
     be unique. Invalid input raises `MaterialisationUsageError` before rows
-    are processed.
+    are processed. `parties` gives `party_kind` cells their year-aware reading
+    (`_fill_lookup_columns`).
     """
     unsupported = sorted(
         {
@@ -1265,7 +1292,7 @@ def enrich_columns(
     _refuse_unknown_entity_columns(table, requests=requests, caller_name="enrich_columns")
     _refuse_duplicate_requests(requests, caller_name="enrich_columns", field_noun="field")
 
-    return _fill_lookup_columns(table, requests=requests, lookup=lookup)
+    return _fill_lookup_columns(table, requests=requests, lookup=lookup, parties=parties)
 
 
 def decode_columns(
@@ -1928,11 +1955,14 @@ class GroupbyPlan:
 class EnrichmentPlan:
     """One `enrich_columns` invocation's parameters. `requests` is a tuple
     of `(entity_column, field)` pairs, in the order `enrich_columns` should
-    append their output columns.
+    append their output columns. `parties` is the code index's rows, which give
+    each row's `party_kind` cell for the year of its `time_period`; `None` reads
+    the cell from `lookup`, as for every other field.
     """
 
     requests: tuple[tuple[str, str], ...]
     lookup: Mapping[str, Mapping[str, str]]
+    parties: Mapping[str, PartyRow] | None = None
 
 
 @dataclass(frozen=True)
@@ -2089,6 +2119,7 @@ def apply_reshapes(
             current,
             requests=plan.enrichment.requests,
             lookup=plan.enrichment.lookup,
+            parties=plan.enrichment.parties,
         )
         warnings.extend(enrichment_warnings)
 

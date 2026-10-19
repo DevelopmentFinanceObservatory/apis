@@ -106,7 +106,7 @@ from datasets_api.origin import (
 from datasets_api.query_options import encode_query_options
 from datasets_api.render import (
     DerivedVersion,
-    artifact_rendering_key,
+    artifact_rendering_keys,
     complete_rendering,
     incomplete_rendering,
     render_and_store,
@@ -116,7 +116,7 @@ from datasets_api.render import (
 )
 from datasets_api.timings import phase, record_elapsed
 from datasets_api.version_descriptions import MintDescribers, mint_describers
-from datasets_api.version_store import rendering_key
+from datasets_api.version_store import current_rendering_keys
 from datasets_api.versions import (
     ArtifactRecord,
     HeadFence,
@@ -131,6 +131,7 @@ from datasets_api.versions import (
     VersionRecordWriter,
     VersionWrite,
     WrittenVersion,
+    link_digest,
 )
 from dc_sdmx import SdmxClient
 from dfo_platform.config import PublicSiteSettings
@@ -311,6 +312,7 @@ def persisted_response(
     served: Manifest,
     call_warnings: Sequence[WarningModel],
     now: datetime,
+    enrichment_digest: str | None,
 ) -> Manifest:
     """What a write returns when its version record already existed: the stored version.
 
@@ -321,12 +323,14 @@ def persisted_response(
     The record stays as stored. The write still links this call's artifacts, each
     under its own `rendering_key`; an existing key keeps its artifact while that one is
     servable, and the response lists whichever the store links (`with_linked_artifacts`).
+    `enrichment_digest` is `with_linked_artifacts`'s.
     """
     return with_linked_artifacts(
         persisted_manifest(stored=persisted, served=served, call_warnings=call_warnings),
         subject_id=subject_id,
         locations=locations,
         now=now,
+        enrichment_digest=enrichment_digest,
     )
 
 
@@ -336,6 +340,7 @@ def with_linked_artifacts(
     subject_id: str,
     locations: Sequence[StoredArtifactLocation],
     now: datetime,
+    enrichment_digest: str | None,
 ) -> Manifest:
     """`manifest` with each artifact replaced by the one linked under its rendering key in
     `locations`, the version's linked locations, when that one is servable
@@ -343,6 +348,14 @@ def with_linked_artifacts(
     has no servable link stays as this call rendered it. An incomplete artifact
     (`incomplete_artifact`) gives way to a servable artifact linked under its complete
     rendering, and otherwise to the one linked under its own.
+
+    `enrichment_digest` is the serving code index's (`CodeIndex.enrichment_digest`). A file
+    with party-kind cells is looked up under the keys it salts
+    (`version_store.current_rendering_keys`), so one linked under an older digest is not
+    listed: this call's render of it, linked under the current one, is. Each listed file
+    carries the digest as its `enrichment_stamp` when it holds party-kind cells read under it
+    (`render.stored_artifact_entry`), as this call's render does. With no digest the keys are
+    unsalted and no file carries a stamp.
 
     A linked artifact stays linked while it is servable, so every mint, re-mint and head hit of
     a version lists the same bytes under one key, whatever this call's render read from the
@@ -358,14 +371,23 @@ def with_linked_artifacts(
     }
     artifacts: list[ArtifactEntryModel] = []
     for artifact in manifest.artifacts:
-        location = servable.get(
-            rendering_key(complete_rendering(artifact.rendering))
-        ) or servable.get(rendering_key(artifact.rendering))
+        location = next(
+            (
+                servable[key]
+                for rendering in (complete_rendering(artifact.rendering), artifact.rendering)
+                for key in current_rendering_keys(rendering, enrichment_digest)
+                if key in servable
+            ),
+            None,
+        )
         artifacts.append(
             artifact
             if location is None
             else stored_artifact_entry(
-                location, subject_id=subject_id, content_version=manifest.content_version
+                location,
+                subject_id=subject_id,
+                content_version=manifest.content_version,
+                enrichment_digest=enrichment_digest,
             )
         )
     return manifest.model_copy(update={"artifacts": artifacts})
@@ -377,16 +399,18 @@ def bundle_linked(
     options: MintOptions,
     site: PublicSiteSettings,
     now: datetime,
+    enrichment_digest: str | None,
 ) -> bool:
     """Whether `locations`, a version's linked locations, hold a servable artifact under the
-    bundle rendering `options` asks for. The response then lists that artifact
+    bundle rendering `options` asks for, keyed under `enrichment_digest`
+    (`render.artifact_rendering_keys`). The response then lists that artifact
     (`with_linked_artifacts`), so this call's render is discarded and needs no live
     documentation read. `False` for a bare rendering."""
     if not options.bundle:
         return False
-    key = artifact_rendering_key(options, site=site)
+    keys = artifact_rendering_keys(options, site=site, enrichment_digest=enrichment_digest)
     return any(
-        location.rendering_key == key for location in select_servable_locations(locations, now=now)
+        location.rendering_key in keys for location in select_servable_locations(locations, now=now)
     )
 
 
@@ -998,10 +1022,13 @@ def _option_free(
 
 
 def _artifact_record(artifact: ArtifactEntryModel) -> ArtifactRecord:
+    """The link of `artifact`, rendered by this call, under the key its `enrichment_stamp`
+    salts (`versions.link_digest`)."""
     return ArtifactRecord(
         artifact_digest=artifact.artifact_digest,
         rendering=artifact.rendering,
         media_type=artifact.media_type,
+        enrichment_digest=link_digest(artifact.rendering, stamp=artifact.enrichment_stamp),
     )
 
 
@@ -1014,6 +1041,8 @@ class _RenderPass:
     persisted: VersionState | None
     manifest: Manifest
     call_warnings: tuple[WarningModel, ...]
+    # `CodeIndex.enrichment_digest`: the salt of the keys the response looks its links up under.
+    enrichment_digest: str
     # Linked to the base version: the rendering, unless it belongs to a derived version.
     links: tuple[ArtifactRecord, ...]
     # A derived version (`render.DerivedVersion`), recorded with its artifacts, the series
@@ -1050,7 +1079,11 @@ class _RenderPass:
         locations = written.state.locations
         if written.created:
             return with_linked_artifacts(
-                self.manifest, subject_id=subject_id, locations=locations, now=now
+                self.manifest,
+                subject_id=subject_id,
+                locations=locations,
+                now=now,
+                enrichment_digest=self.enrichment_digest,
             )
         return persisted_response(
             subject_id=subject_id,
@@ -1059,6 +1092,7 @@ class _RenderPass:
             served=self.manifest,
             call_warnings=self.call_warnings,
             now=now,
+            enrichment_digest=self.enrichment_digest,
         )
 
 
@@ -1088,7 +1122,11 @@ def _render_pass(
         on_record=persisted is not None,
         linked=persisted is not None
         and bundle_linked(
-            persisted.locations, options=options, site=deps.settings.site, now=utc_now()
+            persisted.locations,
+            options=options,
+            site=deps.settings.site,
+            now=utc_now(),
+            enrichment_digest=deps.code_index.enrichment_digest,
         ),
         documentation_complete=prewrite.documentation_complete,
         graph=deps.graph,
@@ -1160,6 +1198,7 @@ def _render_pass(
             persisted=persisted,
             manifest=manifest,
             call_warnings=call_warnings,
+            enrichment_digest=deps.code_index.enrichment_digest,
             links=(_artifact_record(artifact),),
             collapsed=None,
             collapsed_figures=None,
@@ -1223,6 +1262,7 @@ def _render_pass(
         persisted=persisted,
         manifest=manifest,
         call_warnings=call_warnings,
+        enrichment_digest=deps.code_index.enrichment_digest,
         links=(),
         collapsed=definition_version_record(
             manifest=manifest,

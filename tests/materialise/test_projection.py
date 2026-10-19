@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import pytest
 from dfo_frame_grammar.grammar import ComposedUnit, StatVarPart, UnitRequest
 
+from code_index.types import PartyKind, PartyRow, WholeMarker
 from materialise.errors import MaterialisationUsageError
 from materialise.projection import (
     NativeCurrency,
@@ -46,7 +49,12 @@ _NAMES = {
     "p1": "Source one",
 }
 
-_PARTY_KINDS = {"country/USA": "party", "country/KEN": "party"}
+
+def _parties(kinds: Mapping[str, PartyKind]) -> dict[str, PartyRow]:
+    return {ref: PartyRow(dcid=ref, kind=kind) for ref, kind in kinds.items()}
+
+
+_PARTY_KINDS = _parties({"country/USA": "party", "country/KEN": "party"})
 
 # Reshape's own order: frame columns, then decoded axes, then enrichments.
 _SOURCE = Table(
@@ -101,7 +109,7 @@ def _project(
     source: Table = _SOURCE,
     *,
     names=_NAMES,
-    party_kinds=_PARTY_KINDS,
+    parties=_PARTY_KINDS,
     axis_codes=_AXIS_CODES,
     entity_columns=("financingProvider", "financingRecipient"),
 ):
@@ -111,7 +119,7 @@ def _project(
         axis_codes=axis_codes,
         unit_naming=_UNIT_NAMING,
         grain=period_grain(_periods(source)),
-    ).apply(source, names=names, party_kinds=party_kinds)
+    ).apply(source, names=names, parties=parties)
 
 
 def _periods(source: Table) -> tuple[object, ...]:
@@ -214,7 +222,7 @@ def test_a_label_two_codes_share_leaves_the_code_cell_empty_and_counts_a_miss():
 def test_a_value_without_a_name_or_kind_leaves_its_cell_empty_and_counts_a_miss():
     projected = _project(
         names={"country/USA": "United States", "p1": "Source one"},
-        party_kinds={"country/USA": "total"},
+        parties=_parties({"country/USA": "total"}),
     )
 
     assert [
@@ -247,7 +255,7 @@ def test_a_party_kind_column_the_table_carries_takes_the_default_columns_place_o
     projected = _project(
         source,
         entity_columns=("observationAbout", "financingRecipient"),
-        party_kinds={"country/KEN": "party"},
+        parties=_parties({"country/KEN": "party"}),
     )
 
     assert projected.table.columns == (
@@ -384,7 +392,7 @@ def test_a_layout_refuses_a_table_with_other_columns():
     )
 
     with pytest.raises(MaterialisationUsageError):
-        projection.apply(Table(columns=("value", "stat_var"), rows=()), names={}, party_kinds={})
+        projection.apply(Table(columns=("value", "stat_var"), rows=()), names={}, parties={})
 
 
 @pytest.mark.parametrize(
@@ -472,11 +480,113 @@ def test_a_row_is_a_total_when_a_split_role_holds_a_total_and_residuals_stay():
             ("party", "residual", 2.0),
             ("party", "total", 3.0),
             ("total", "party", 4.0),
+            ("private", "party", 5.0),
+            ("party", "whole_total", 6.0),
+            ("whole_total", "party", 7.0),
         ),
     )
 
     parties, totals = split_totals(table, roles=("financingRecipient", "observationAbout"))
 
     assert (parties.columns, totals.columns) == (columns, columns)
-    assert [row[2] for row in parties.rows] == [1.0, 2.0, 4.0]
-    assert [row[2] for row in totals.rows] == [3.0]
+    assert [row[2] for row in parties.rows] == [1.0, 2.0, 4.0, 5.0, 7.0]
+    assert [row[2] for row in totals.rows] == [3.0, 6.0]
+
+
+_DAC2A = "provenance/OECDDAC2A"
+_DAC2B = "provenance/OECDDAC2B"
+_WHOLE_PARTIES = {
+    "DACAllRecipients": PartyRow(
+        dcid="DACAllRecipients",
+        kind="total",
+        datasets=(_DAC2A, _DAC2B),
+        axes=("destination",),
+        whole=(WholeMarker(dataset=_DAC2A, holds=("party", "residual"), years=(1984, 2024)),),
+    ),
+    "DACOfficialDonors": PartyRow(
+        dcid="DACOfficialDonors",
+        kind="total",
+        datasets=(_DAC2A, _DAC2B),
+        axes=("origin",),
+        whole=(
+            WholeMarker(dataset=_DAC2A, holds=("party",)),
+            WholeMarker(dataset=_DAC2B, holds=("party",)),
+        ),
+    ),
+}
+
+
+def _kinds(
+    columns: tuple[str, ...], rows: tuple[tuple[object, ...], ...], *, role: str
+) -> list[object]:
+    table = Table(columns=columns, rows=rows)
+    projected = plan_long_projection(
+        table.columns,
+        entity_columns=(role,),
+        axis_codes={},
+        unit_naming=_UNIT_NAMING,
+        grain=None,
+    ).apply(table, names={}, parties=_WHOLE_PARTIES)
+    return [_row(projected.table, i)[f"{role}_party_kind"] for i in range(len(rows))]
+
+
+_RECIPIENT_COLUMNS = ("stat_var", "financingRecipient", "time_period", "provenance", "value")
+
+
+def test_one_frame_reads_an_all_recipients_total_by_dataset_and_year():
+    """DAC2A holds the total from 1984; DAC2B carries no marker, so every DAC2B row reads
+    `total`."""
+    rows = (
+        ("dcid:SV_A", "DACAllRecipients", "2021", _DAC2A, 1.0),
+        ("dcid:SV_A", "DACAllRecipients", "1984", _DAC2A, 2.0),
+        ("dcid:SV_A", "DACAllRecipients", "1983", _DAC2A, 3.0),
+        ("dcid:SV_A", "DACAllRecipients", "2021", _DAC2B, 4.0),
+        ("dcid:SV_A", "DACAllRecipients", "1990", _DAC2B, 5.0),
+    )
+
+    assert _kinds(_RECIPIENT_COLUMNS, rows, role="financingRecipient") == [
+        "whole_total",
+        "whole_total",
+        "total",
+        "total",
+        "total",
+    ]
+
+
+def test_official_donors_read_whole_total_in_both_datasets():
+    columns = ("stat_var", "financingProvider", "time_period", "provenance", "value")
+    rows = (
+        ("dcid:SV_A", "DACOfficialDonors", "2021", _DAC2A, 1.0),
+        ("dcid:SV_A", "DACOfficialDonors", "2021", _DAC2B, 2.0),
+    )
+
+    assert _kinds(columns, rows, role="financingProvider") == ["whole_total", "whole_total"]
+
+
+@pytest.mark.parametrize(
+    ("columns", "rows"),
+    [
+        pytest.param(
+            ("stat_var", "financingRecipient", "provenance", "value"),
+            (("dcid:SV_A", "DACAllRecipients", _DAC2A, 1.0),),
+            id="no-period-column",
+        ),
+        pytest.param(
+            ("stat_var", "financingRecipient", "time_period", "value"),
+            (("dcid:SV_A", "DACAllRecipients", "2021", 1.0),),
+            id="no-provenance-column",
+        ),
+        pytest.param(
+            _RECIPIENT_COLUMNS,
+            (("dcid:SV_A", "DACAllRecipients", "2021", None, 1.0),),
+            id="empty-provenance-cell",
+        ),
+        pytest.param(
+            _RECIPIENT_COLUMNS,
+            (("dcid:SV_A", "DACAllRecipients", "2021/2022", _DAC2A, 1.0),),
+            id="period-across-years",
+        ),
+    ],
+)
+def test_a_row_without_a_readable_dataset_or_year_reads_total(columns, rows):
+    assert _kinds(columns, rows, role="financingRecipient") == ["total"]

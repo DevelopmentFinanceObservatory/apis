@@ -107,8 +107,8 @@ def _build(stat_var, profile, *, coverage, catalogue, parties=None, currencies=N
 
 
 def _crs_coverage() -> tuple[CoverageIndex, dict[str, PartyRow]]:
-    """The education example as the 8 October build holds it: 29 donors, 166 recipient
-    parties and 17 residual entries, 1990 to 2012, 6,604 observations. A second facet sits
+    """The education example as the 8 October build holds it: 29 donors (the last five
+    private), 166 recipient parties and 17 residual entries, 1990 to 2012, 6,604 observations. A second facet sits
     under a provenance the catalogue does not admit."""
     donors = [f"donor/D{i:02d}" for i in range(29)]
     recipients = [f"recipient/R{i:03d}" for i in range(183)]
@@ -136,7 +136,9 @@ def _crs_coverage() -> tuple[CoverageIndex, dict[str, PartyRow]]:
             ),
         },
     )
-    parties = {d: PartyRow(dcid=d, kind="party") for d in donors}
+    parties = {
+        d: PartyRow(dcid=d, kind="private" if i >= 24 else "party") for i, d in enumerate(donors)
+    }
     parties.update(
         {
             r: PartyRow(dcid=r, kind="residual" if i >= 166 else "party")
@@ -158,13 +160,30 @@ def test_the_crs_example_folds_from_the_coverage_summary():
     assert card["summary"] == {
         "places": None,
         "entities": {
-            "financingProvider": {"parties": 29, "totals": 0, "residual": 0, "unclassified": 0},
-            "financingRecipient": {"parties": 166, "totals": 0, "residual": 17, "unclassified": 0},
+            "financingProvider": {
+                "parties": 24,
+                "private": 5,
+                "totals": 0,
+                "residual": 0,
+                "unclassified": 0,
+            },
+            "financingRecipient": {
+                "parties": 166,
+                "private": 0,
+                "totals": 0,
+                "residual": 17,
+                "unclassified": 0,
+            },
         },
         "first_year": "1990",
         "last_year": "2012",
         "sources": 1,
         "facets": 1,
+    }
+    # Every kind count adds up to the role's distinct entities, private donors included.
+    assert {role: sum(counts.values()) for role, counts in card["summary"]["entities"].items()} == {
+        "financingProvider": 29,
+        "financingRecipient": 183,
     }
     assert card["default"] == {
         "facets": ["fCRS"],

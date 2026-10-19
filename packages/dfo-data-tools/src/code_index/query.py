@@ -6,6 +6,8 @@ committed JSON export.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
@@ -32,6 +34,7 @@ from code_index.types import (
     SourceCodeRow,
     StatTypeWordDeclaration,
     StatVarRow,
+    WholeTotalSet,
     party_kind,
 )
 from statvar_members import FiveTuple
@@ -241,6 +244,22 @@ def _dataset_pins(
     return pins
 
 
+def _enrichment_digest(parties: Iterable[PartyRow]) -> str:
+    """The hex SHA-256 of `parties`' `(dcid, kind, whole markers)` rows, sorted by dcid, each
+    marker as `(dataset, holds, years)`. Neither row order nor a label, group or dataset-list
+    change moves it. The markers are in it, windows included, because a whole total's frame
+    cell depends on the row's dataset and on whether its year falls inside the window."""
+    rows = sorted(
+        (
+            party.dcid,
+            party.kind,
+            [(marker.dataset, sorted(marker.holds), marker.years) for marker in party.whole],
+        )
+        for party in parties
+    )
+    return hashlib.sha256(json.dumps(rows, separators=(",", ":")).encode()).hexdigest()
+
+
 def _check_consistent_parents(codes_by_dcid: dict[str, CodeRow]) -> None:
     """Raises `CrossSystemParent` for a parent in another code system.
 
@@ -367,6 +386,7 @@ class CodeIndex:
         "_partly_stated_by_five_tuple",
         "_source_codes_by_dcid",
         "_statvars_by_dcid",
+        "_whole_sets_by_phrase",
         "_words_by_code",
         "codes",
         "codes_by_system",
@@ -374,6 +394,7 @@ class CodeIndex:
         "datasets",
         "datasets_by_five_tuple",
         "declarations",
+        "enrichment_digest",
         "families_by_five_tuple",
         "family_by_dcid",
         "listed_by_five_tuple",
@@ -392,6 +413,7 @@ class CodeIndex:
         "value_parents",
         "variable_aliases",
         "variables_by_provenance",
+        "whole_total_sets",
     )
 
     def __init__(
@@ -412,6 +434,7 @@ class CodeIndex:
         stat_type_words: Iterable[StatTypeWordDeclaration] = (),
         source_codes: Iterable[SourceCodeRow] = (),
         value_parents: Mapping[str, str] | None = None,
+        whole_total_sets: Iterable[WholeTotalSet] = (),
     ) -> None:
         self.stamp = stamp
         self.shape_slot_defaults = tuple(shape_slot_defaults)
@@ -470,6 +493,17 @@ class CodeIndex:
                 if party.totals in self.totals_by_group:
                     raise DuplicateDcid(f"two totals hold the group {party.totals!r}")
                 self.totals_by_group[party.totals] = party
+        self.enrichment_digest = _enrichment_digest(self.parties.values())
+        """SHA-256 over the sorted `(dcid, kind, whole markers)` rows of `parties`, the part of
+        the index a `{role}_party_kind` cell is read from. A file holding such cells is linked
+        under a key salted with it (`datasets_api.version_store.enriched_rendering_key`), so an
+        export that changes no kind and no whole marker leaves every link in place."""
+        self.whole_total_sets = tuple(whole_total_sets)
+        """The unions of whole totals read as one population (`WholeTotalSet`), in declaration
+        order. The loader refuses two that share a phrase (`loader._check_whole_totals`)."""
+        self._whole_sets_by_phrase = {
+            fold_text(whole_set.phrase): whole_set for whole_set in self.whole_total_sets
+        }
 
         codes_by_dcid: dict[str, CodeRow] = {}
         codes_by_system_code: dict[tuple[str, str], CodeRow] = {}
@@ -646,6 +680,10 @@ class CodeIndex:
         `parties` lists it, else the kind its types give (`code_index.types.party_kind`)."""
         party = self.parties.get(dcid)
         return party.kind if party is not None else party_kind(types, self.party_types)
+
+    def whole_set(self, phrase: str) -> WholeTotalSet | None:
+        """The whole total set a `phrase` names, compared under `fold_text`, or `None`."""
+        return self._whole_sets_by_phrase.get(fold_text(phrase))
 
     def statvar_by_dcid(self, dcid: str) -> StatVarRow | None:
         """The StatVar row for `dcid`, from `statvars` or `listed_statvars`, or `None` if

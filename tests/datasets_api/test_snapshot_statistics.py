@@ -126,6 +126,7 @@ def test_a_stored_body_without_series_count_validates_and_the_wire_response_omit
         snapshot_reader=reader,
         now=lambda: _NOW,
         settings=DatasetsBuildSettings(),
+        enrichment_digest=None,
     )
 
     assert manifest.series_count is None
@@ -168,6 +169,7 @@ def test_an_old_records_inline_statistics_key_is_dropped_not_translated():
         snapshot_reader=reader,
         now=lambda: _NOW,
         settings=DatasetsBuildSettings(),
+        enrichment_digest=None,
     )
 
     assert manifest.series_count is None
@@ -192,6 +194,7 @@ def test_a_zero_series_count_is_present_not_omitted_on_the_wire():
         snapshot_reader=reader,
         now=lambda: _NOW,
         settings=DatasetsBuildSettings(),
+        enrichment_digest=None,
     )
 
     assert manifest.series_count == 0

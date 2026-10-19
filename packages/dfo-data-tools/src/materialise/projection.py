@@ -7,8 +7,8 @@ columns, groupby collapses over them, and `options.columns`, `groupby.by` and `p
 - `stat_var`, then `stat_var_label` when the table decodes no code system;
 - each entity role in declared order, as the entity (`<role>`), its name (`<role>_label`),
   for a party role (`materialise.enrichment.is_party_role`) its party's kind
-  (`<role>_party_kind`: `party`, `total` or `residual`), and any requested enrichment (`_iso2`,
-  `_iso3`, `_type`);
+  (`<role>_party_kind`: `party`, `private`, `total`, `whole_total` or `residual`), and any
+  requested enrichment (`_iso2`, `_iso3`, `_type`);
 - each decoded code system in property order, as `<code_system>` (the value's code dcid) and
   `<code_system>_label` (the decoded label);
 - `time_period` (an integer year for a frame of year points, `period_cell`), `value`;
@@ -21,10 +21,13 @@ columns, groupby collapses over them, and `options.columns`, `groupby.by` and `p
 table and leaves every frame alone, so frames, collapse frames and their content versions keep
 the grammar names.
 
-Names come from a `names` mapping (cell value to name) and kinds from a `party_kinds` mapping
-(party ref to kind), both read by the caller for each table in one lookup
-(`LongProjection.refs_to_name`). A name or kind cell left empty beside a non-empty entity, and
-an axis code cell whose label two codes of its system share, count as unavailable. `apply`
+Names come from a `names` mapping (cell value to name) read by the caller for each table in one
+lookup (`LongProjection.refs_to_name`). Kinds come from the code index's `parties` rows, read per
+row: a `<role>_party_kind` cell is `party_kind_cell` of the party for the row's `provenance`
+and the year of its `time_period`, so a whole total reads `whole_total` only in the dataset and
+years its marker holds (`PartyRow.whole`). A table with no `provenance` or `time_period` column,
+or a row with no readable value in one, gives `total`. A name or kind cell left empty beside a
+non-empty entity, and an axis code cell whose label two codes of its system share, count as unavailable. `apply`
 reports those counts per column so the caller can warn. A `<role>_party_kind` column the table
 already carries (an explicit `party_kind` token) takes that column's place, so the layout holds
 it once.
@@ -49,8 +52,9 @@ from typing import Literal
 from dfo_frame_grammar import TIME_PERIOD_COLUMN, parse_time_period
 from dfo_frame_grammar.grammar import ComposedUnit, UnitRequest
 
+from code_index.types import PartyRow
 from dfo_platform.roles import role_key_axis
-from materialise.enrichment import PARTY_KIND_FIELD, is_party_role
+from materialise.enrichment import PARTY_KIND_FIELD, is_party_role, row_party_kind_cell
 from materialise.errors import MaterialisationUsageError
 from materialise.reshape import Table, TableLike
 from materialise.unit_cells import unit_cell_text
@@ -75,7 +79,9 @@ _ENRICHMENT_FIELD_ORDER = ("iso2", "iso3", "type")
 
 _YEAR_GRAIN = "year"
 
-_TOTAL_KIND = "total"
+_TOTAL_KINDS = frozenset({"total", "whole_total"})
+"""The `<role>_party_kind` cells of a total: `whole_total` is a total that holds every party of
+its kinds on its axis in the row's dataset (`code_index.types.PartyRow.whole`)."""
 
 _METHOD_COLUMN = "measurementMethod"
 _PROVENANCE_COLUMN = "provenance"
@@ -156,8 +162,8 @@ def totals_roles(identity: Mapping[str, object], entity_columns: Sequence[str]) 
 
 def split_totals(table: Table, *, roles: Sequence[str]) -> tuple[Table, Table]:
     """`table`, a table in the long layout, split into the rows of parties and residuals and
-    the rows where any of `roles` holds a party of kind `total` (its `<role>_party_kind`
-    cell). A role the table does not carry splits nothing."""
+    the rows where any of `roles` holds a party of kind `total` or `whole_total` (its
+    `<role>_party_kind` cell). A role the table does not carry splits nothing."""
     positions = [
         list(table.columns).index(column)
         for role in roles
@@ -168,7 +174,7 @@ def split_totals(table: Table, *, roles: Sequence[str]) -> tuple[Table, Table]:
     parties: list[Row] = []
     totals: list[Row] = []
     for row in table.rows:
-        (totals if any(row[at] == _TOTAL_KIND for at in positions) else parties).append(row)
+        (totals if any(row[at] in _TOTAL_KINDS for at in positions) else parties).append(row)
     return Table(columns=table.columns, rows=tuple(parties)), Table(
         columns=table.columns, rows=tuple(totals)
     )
@@ -182,10 +188,10 @@ def axis_source_column(code_system: str) -> str:
 @dataclass(frozen=True)
 class NodeReads:
     """What a long output's cells read beyond the row: `names` maps a cell value to its name,
-    `party_kinds` a party ref to its kind."""
+    `parties` a party ref to its code index row, which gives its kind cell."""
 
     names: Names
-    party_kinds: Names
+    parties: Mapping[str, PartyRow]
 
 
 @dataclass(frozen=True)
@@ -301,9 +307,11 @@ class LongProjection:
                     refs[cell] = None
         return tuple(refs)
 
-    def apply(self, table: TableLike, *, names: Names, party_kinds: Names) -> ProjectedTable:
+    def apply(
+        self, table: TableLike, *, names: Names, parties: Mapping[str, PartyRow]
+    ) -> ProjectedTable:
         """`table` in this layout, its name cells read from `names` and its kind cells from
-        `party_kinds`. Raises `MaterialisationUsageError` when `table`'s columns differ from the
+        `parties`, each for the year of its row. Raises `MaterialisationUsageError` when `table`'s columns differ from the
         ones the layout was planned for."""
         if tuple(table.columns) != self.source_columns:
             raise MaterialisationUsageError(
@@ -312,7 +320,7 @@ class LongProjection:
             )
         source_rows = table.rows
         cells = self.cells
-        reads = NodeReads(names=names, party_kinds=party_kinds)
+        reads = NodeReads(names=names, parties=parties)
         rows = tuple(tuple(cell(row, reads) for cell in cells) for row in source_rows)
         counts: Counter[str] = Counter()
         for column, is_unavailable in self.unavailable:
@@ -374,10 +382,21 @@ def plan_long_projection(
 
     def add_party_kind(entity: str) -> None:
         at = position[entity]
+        period_at = position.get(TIME_PERIOD_COLUMN)
+        provenance_at = position.get(_PROVENANCE_COLUMN)
+
+        def kind(row: Row, reads: NodeReads) -> str | None:
+            return row_party_kind_cell(
+                row[at],
+                parties=reads.parties,
+                period=None if period_at is None else row[period_at],
+                provenance=None if provenance_at is None else row[provenance_at],
+            )
+
         add(
             f"{entity}_{PARTY_KIND_FIELD}",
-            lambda row, reads: _name_of(row[at], reads.party_kinds),
-            lambda row, reads: _name_missing(row[at], reads.party_kinds),
+            kind,
+            lambda row, reads: _name_missing(row[at], reads.parties),
         )
 
     def take_method() -> None:
@@ -517,7 +536,7 @@ def _method_name(cell: object, names: Names) -> str | None:
     return name if name != cell else None
 
 
-def _name_missing(cell: object, names: Names) -> bool:
+def _name_missing(cell: object, names: Mapping[str, object]) -> bool:
     return isinstance(cell, str) and cell != "" and cell not in names
 
 

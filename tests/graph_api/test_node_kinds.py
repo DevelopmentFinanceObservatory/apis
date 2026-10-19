@@ -6,7 +6,9 @@ from typing import get_args
 
 import pytest
 
+from code_index import CodeIndex, IndexStamp
 from code_index.shared import get_index
+from code_index.types import PartyRow, WholeMarker
 from entity_resolution.membership import (
     COUNTRY_CLASS,
     Authority,
@@ -89,6 +91,46 @@ def test_the_list_holds_sixteen_kinds_and_every_resolver_kind():
 )
 def test_a_node_takes_the_first_kind_the_rule_gives(dcid, types, kind):
     assert classify(dcid=dcid, types=types, code_index=get_index(), membership=_POLICY) == kind
+
+
+@pytest.mark.parametrize(
+    ("row", "kind"),
+    [
+        (PartyRow(dcid="dc/o/Foundation", kind="private"), "organisation"),
+        (PartyRow(dcid="dc/o/Foundation", kind="total"), "aggregate"),
+        (
+            PartyRow(
+                dcid="dc/o/Foundation",
+                kind="total",
+                datasets=("provenance/P",),
+                axes=("origin",),
+                whole=(WholeMarker(dataset="provenance/P", holds=("party",)),),
+            ),
+            "aggregate",
+        ),
+        (PartyRow(dcid="dc/o/Foundation", kind="residual"), "aggregate"),
+    ],
+    ids=["private", "total", "whole-total", "residual"],
+)
+def test_a_private_party_is_an_organisation_and_every_total_an_aggregate(row, kind):
+    """The index's party kind outranks the graph type, which types all of these `Organization`."""
+    index = CodeIndex(
+        stamp=IndexStamp(
+            graph_endpoint="https://example.test/core/api",
+            exported_at="2026-09-09T00:00:00Z",
+            code_counts={},
+            statvar_shape_counts={},
+            content_hash="deadbeef",
+        ),
+        declarations=(),
+        codes=(),
+        statvars=(),
+        parties=(row,),
+    )
+
+    assert (
+        classify(dcid=row.dcid, types=("Organization",), code_index=index, membership=None) == kind
+    )
 
 
 def test_with_no_policy_no_node_is_a_group_or_region():

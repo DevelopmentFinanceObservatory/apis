@@ -57,7 +57,11 @@ class Manifest(ResponseModel):
     `series_coverage_stamp` is lineage only (C156): the
     `series_coverage` artifact this request's sync-admission estimate ran
     against, absent when a served-from-head response ran no estimate this
-    call. `content_version` does not fold it in. `prepared_at` is the
+    call. `content_version` does not fold it in. An artifact entry carries
+    `enrichment_stamp`, the digest of the code index's party kinds and
+    whole-total markers its party-kind cells were read under, when it holds
+    such cells read under the serving call's index
+    (`manifest_models.ArtifactEntryModel`). `prepared_at` is the
     RFC 3339 instant the version was first minted. Every later mint and
     re-render of the version reports the same instant.
     """

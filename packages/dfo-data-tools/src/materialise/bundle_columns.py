@@ -126,11 +126,13 @@ _ENRICHMENT_COLUMNS: Mapping[str, tuple[str, str]] = {
     "label": ("name", "The name of the {noun}."),
     "party_kind": (
         "kind",
-        "Whether the {noun} is a `party` (a country, territory or organisation), a `total` "
-        "that holds other {noun}s' figures, or a `residual` no other {noun} holds. A sum over "
-        "{noun}s that includes a total counts its members twice. Leaving totals out does not "
-        "make every sum exact: two parties can report the same money, such as a fund and the "
-        "organisation that runs it.",
+        "Whether the {noun} is a `party` (a country, territory or organisation), a `private` "
+        "provider (a foundation or other private body, which sums like a party), a `total` "
+        "that holds other {noun}s' figures, a `whole_total` (a total that holds every {noun} "
+        "of its kinds the source publishes in that year, so it can stand alone), or a `residual` "
+        "no other {noun} holds. A sum over {noun}s that includes a total counts its members "
+        "twice. Leaving totals out does not make every sum exact: two parties can report the "
+        "same money, such as a fund and the organisation that runs it.",
     ),
     "type": ("type", "The graph types of the {noun}, comma-separated."),
 }

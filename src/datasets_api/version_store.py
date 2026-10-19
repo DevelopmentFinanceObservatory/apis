@@ -84,6 +84,7 @@ from datasets_api.manifest import version_body
 from datasets_api.manifest_models import year_coverage_counted
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.versions import (
+    NO_PARTY_ROLE,
     RENDERED_FACT_FIELDS,
     ArtifactRecord,
     DescriptionDiverges,
@@ -97,11 +98,14 @@ from datasets_api.versions import (
     VersionRecord,
     VersionWrite,
     WrittenVersion,
+    carries_party_kind,
+    holds_party_role,
     log_description_build_failure,
 )
 from description.facts import DescriptionRecord
 from dfo_platform.store_errors import extract_sqlstate, safe_diagnostics
 from materialise.formats import FRAME1_MEDIA_TYPE
+from materialise.profile import OutputProfile
 
 Clock = Callable[[], datetime]
 
@@ -113,6 +117,35 @@ def utc_now() -> datetime:
 def rendering_key(rendering: Mapping[str, object]) -> str:
     canonical = json.dumps(dict(rendering), sort_keys=True, default=str)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def enriched_rendering_key(rendering: Mapping[str, object], enrichment_digest: str | None) -> str:
+    """The key a file of `rendering` is linked under when it was rendered under
+    `enrichment_digest` (`versions.link_digest`).
+
+    A rendering that `carries_party_kind` is keyed by the rendering and the digest, so a change
+    to a party's kind or whole markers leaves its old link matching no request, and the next
+    request re-renders. Any other rendering, and any call with no digest, keys as
+    `rendering_key` does. The digest salts the key only. `rendering` itself, which a caller
+    selects an artifact by, never holds it.
+    """
+    if enrichment_digest is None or not carries_party_kind(rendering):
+        return rendering_key(rendering)
+    return rendering_key({"rendering": dict(rendering), "enrichment_digest": enrichment_digest})
+
+
+def current_rendering_keys(
+    rendering: Mapping[str, object], enrichment_digest: str | None
+) -> tuple[str, ...]:
+    """The keys a current file of `rendering` can be linked under while the code index has
+    `enrichment_digest`: salted with the digest for a frame with a party role, and with
+    `NO_PARTY_ROLE` for one without. A lookup needs no fact about the frame, since a file is
+    linked under one of the two only. A rendering `carries_party_kind` rejects, and a call
+    with no digest, have the one unsalted key."""
+    key = enriched_rendering_key(rendering, enrichment_digest)
+    if enrichment_digest is None or not carries_party_kind(rendering):
+        return (key,)
+    return (key, enriched_rendering_key(rendering, NO_PARTY_ROLE))
 
 
 def recorded_frame_sha256(
@@ -189,7 +222,7 @@ def _insert_artifact(
             subject_id,
             content_version,
             artifact.artifact_digest,
-            rendering_key(artifact.rendering),
+            enriched_rendering_key(artifact.rendering, artifact.enrichment_digest),
             dict(artifact.rendering),
             artifact.media_type,
             now - WORKING_TIER_RETENTION,
@@ -497,7 +530,11 @@ class LiveVersionRecordWriter:
                 linked = tx.fetch_one(
                     "SELECT artifact_digest FROM datasets.version_artifact "
                     "WHERE subject_id = %s AND content_version = %s AND rendering_key = %s",
-                    (subject_id, content_version, rendering_key(artifact.rendering)),
+                    (
+                        subject_id,
+                        content_version,
+                        enriched_rendering_key(artifact.rendering, artifact.enrichment_digest),
+                    ),
                 )
         except Exception as exc:
             failure = (
@@ -567,14 +604,15 @@ class LiveVersionLister:
         try:
             with self._store.transaction() as tx:
                 rows = tx.fetch_all(
-                    "SELECT content_version, base_content_version "
+                    "SELECT content_version, base_content_version, output_profile "
                     "FROM datasets.version_record WHERE subject_id = %s "
                     # `content_version` orders versions recorded at one instant.
                     "ORDER BY recorded_at DESC, content_version DESC",
                     (subject_id,),
                 )
                 linked = tx.fetch_all(
-                    "SELECT va.content_version AS content_version, va.rendering AS rendering "
+                    "SELECT va.content_version AS content_version, va.rendering AS rendering, "
+                    "va.rendering_key AS rendering_key "
                     "FROM datasets.version_artifact va "
                     "JOIN datasets.artifact_inventory ai "
                     "ON ai.artifact_digest = va.artifact_digest "
@@ -591,18 +629,38 @@ class LiveVersionLister:
         if failure is not None:
             raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
         renderings: dict[str, list[Mapping[str, object]]] = {}
+        party_free: set[str] = set()
         for link in linked:
-            renderings.setdefault(cast(str, link["content_version"]), []).append(
-                cast("Mapping[str, object]", link["rendering"])
-            )
+            content_version = cast(str, link["content_version"])
+            rendering = cast("Mapping[str, object]", link["rendering"])
+            renderings.setdefault(content_version, []).append(rendering)
+            if carries_party_kind(rendering) and link["rendering_key"] == enriched_rendering_key(
+                rendering, NO_PARTY_ROLE
+            ):
+                party_free.add(content_version)
         return [
             ListedVersion(
                 content_version=cast(str, row["content_version"]),
                 base_content_version=cast("str | None", row["base_content_version"]),
                 renderings=tuple(renderings.get(cast(str, row["content_version"]), ())),
+                holds_party_role=_listed_holds_party_role(
+                    cast("Mapping[str, object] | None", row["output_profile"]),
+                    party_free_link=cast(str, row["content_version"]) in party_free,
+                ),
             )
             for row in rows
         ]
+
+
+def _listed_holds_party_role(
+    output_profile: Mapping[str, object] | None, *, party_free_link: bool
+) -> bool | None:
+    """`ListedVersion.holds_party_role` of a version that stored `output_profile`, which links a
+    file that `carries_party_kind` under `NO_PARTY_ROLE` when `party_free_link`."""
+    if output_profile is not None:
+        profile = OutputProfile.from_json(output_profile)
+        return holds_party_role(column.name for column in profile.columns if column.kind == "role")
+    return False if party_free_link else None
 
 
 _HEAD_COLUMNS = "content_version, confirmed_at, materialised_at, materialisation_id, dependencies"

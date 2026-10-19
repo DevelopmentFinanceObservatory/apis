@@ -325,6 +325,20 @@ class ArtifactEntryModel(BaseModel):
         "host. It never expires: each request checks the version and answers 302 to a signed "
         "URL valid for five minutes, or refuses snapshot_revoked once the version is taken down"
     )
+    enrichment_stamp: str | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "the digest of the code index's party kinds and whole-total markers this file's "
+            "{role}_party_kind cells were read under. Present on a file whose frame holds a party "
+            "role and whose layout writes party-kind cells (a long-layout file, or one whose "
+            "columns name a party-kind column), when it was rendered under the serving code "
+            "index. Absent on every other file, including a pinned or older-layout file rendered "
+            "under an earlier index, whose kinds may be out of date. A caller naming a frame by "
+            "this file's rendering adds the stamp to the name, so a change to a party's kind names "
+            "a new frame"
+        ),
+    )
 
 
 class ColumnOptionModel(BaseModel):
@@ -439,13 +453,16 @@ class OutputOptionsModel(BaseModel):
         description=(
             "the enrichment tokens a long-layout download writes with no columns option, in "
             "column order: every role's {role}_label, and {role}_party_kind for every role on "
-            "a flow axis. Naming one in columns gives the same column once"
+            "a flow axis (party, private, total, whole_total or residual; whole_total is the "
+            "cell of a published whole-population total). Naming one in columns gives the "
+            "same column once"
         )
     )
     long_layout_totals: list[str] = Field(
         description=(
-            "the roles whose total rows ({role}_party_kind is total) a long-layout CSV or "
-            "XLSX download keeps out of its main table. A role is listed when the definition "
+            "the roles whose total rows ({role}_party_kind is total, or whole_total for a "
+            "published whole-population total) a long-layout CSV or XLSX download keeps out of "
+            "its main table. A private party stays in it. A role is listed when the definition "
             "binds it to several entities one of which the code index declares a total, or "
             "leaves it open and the code index lists a total on its axis in a dataset the "
             "definition read (any dataset, when the read selected none). A role bound to "

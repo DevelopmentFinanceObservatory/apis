@@ -185,7 +185,9 @@ class Capabilities(BaseModel):
         description=(
             "enrichment field names this deployment enables. A live token qualifies one as "
             "{entity_column}_{field} on the columns option. party_kind is a party's kind "
-            "(party, total, residual) from the code index's declaration for it. Long output "
+            "(party, private, total, residual) from the code index's declaration for it; a "
+            "total that holds every party of its kinds on its axis, such as Official Donors, "
+            "Total, is written whole_total. Long output "
             "writes {role}_party_kind beside {role}_label "
             "for every role on a flow axis without a token; a bare party_kind token requests "
             "it for every role on a flow axis the table has. party_kind qualifies no subject "

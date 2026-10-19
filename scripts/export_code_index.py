@@ -43,13 +43,23 @@ StatVar row aborts the export.
 
 The same build names every donor and recipient of a declared or listed dataset. Each party's graph
 types give it a kind (party, total or residual) under the authored `PARTY_TYPE_KINDS`, except a
-party the authored `PARTY_KIND_OVERRIDES` names. Its graph name is its label, and its row lists the
+party the authored `PARTY_KIND_OVERRIDES` names, and a party the authored `PRIVATE_PROVIDERS`
+lists by OECD donor code (`dacCode`), which is `private`. Its graph name is its label, and its row lists the
 datasets that publish it and the flow axes they publish it on. The authored `TOTAL_GROUPS` names the group each total holds, whether
 the total equals the sum of the group's members plus the residuals it counts beside them, and those
 residuals. A party with an undeclared type, or whose types
 give no single kind, aborts the export, as does a `TOTAL_GROUPS` or `PARTY_KIND_OVERRIDES` row
 naming a party no declared or listed dataset publishes (a `TOTAL_GROUPS` row also needs that party to be a
 total, and each residual it names to be a published residual).
+
+The authored `WHOLE_POPULATION_TOTALS` marks the totals that hold a whole population on their one
+axis in the datasets it names (`PartyRow.whole`, with the years its composition check holds),
+and `WHOLE_TOTAL_SETS` the unions of such totals read as one population. The export aborts when a
+`PRIVATE_PROVIDERS` code is carried by another party than its listed one, when a published donor
+carries an unlisted code from 1601 to 1699, and when a whole-population row names a party that is
+no published total, is published on another axis or is marked in a dataset that does not publish
+it; the finished document must also load, which
+refuses two whole totals that hold one kind on one dataset and axis.
 
 Requires `SEARCH_GRAPH_BASE` and `COVERAGE_ARTIFACT_URI`, with read access to the coverage bucket
 for a `gs://` URI. Sorted JSON is stable. `content_hash` covers data blocks and excludes the stamp.
@@ -91,6 +101,7 @@ from code_index.types import (
     ShapeSlotDefault,
     StatedWord,
     StatTypeWordDeclaration,
+    WholeTotalSet,
     invalid_when_named_entry,
     label_for_pairs,
     party_kind,
@@ -628,6 +639,178 @@ TOTAL_GROUPS: Mapping[str, TotalGroup] = {
 }
 
 
+# The private providers of development finance, by OECD donor code (`dacCode` in the graph) and the
+# party each code names. The OECD donor code list
+# (`dfo-pipelines/dbt/seeds/oecd/dac_codelists/dac_donor_code_codelist.csv`) types 48 donors
+# `Private donor`, codes 1601 to 1650, and the graph types them `Organization` like any
+# multilateral, so the table is the only record of the grouping until the ontology types them. A
+# row takes the kind `private` in place of the `party` the types give. 46 of the 48 codes name a
+# party a declared dataset publishes. Code 1645 (CHANEL Foundation) has no graph node, and 1649
+# (`NovoNordiskFoundation`) has one that no dataset publishes; `_check_private_providers` aborts the
+# export when either, or any other code from 1601 to 1699, reaches a published donor unlisted.
+# Code 1014 (Private Infrastructure Development Group) is a multilateral on the same list and stays
+# a `party`; the Postcode Lottery Group (20035) stays a `total` override, and its five national
+# lotteries are `private`.
+PRIVATE_PROVIDERS: Mapping[int, str] = {
+    1601: "GatesFoundation",  # Gates Foundation
+    1602: "DutchPostcodeLottery",  # Dutch Postcode Lottery
+    1603: "SwedishPostcodeLottery",  # Swedish Postcode Lottery
+    1604: "PeoplesPostcodeLottery",  # People's Postcode Lottery
+    1605: "MetLifeFoundation",  # MetLife Foundation
+    1606: "MastercardFoundation",  # Mastercard Foundation
+    1608: "IKEAFoundation",  # IKEA Foundation
+    1609: "VanLeerFoundation",  # Van Leer Foundation
+    1610: "MAVAFoundation",  # MAVA Foundation
+    1611: "OakFoundation",  # Oak Foundation
+    1612: "HAndMFoundation",  # H&M Foundation
+    1613: "LaudesFoundation",  # Laudes Foundation
+    1614: "ComicRelief",  # Charity Projects Ltd (Comic Relief)
+    1615: "ChildrensInvestmentFundFoundation",  # Children's Investment Fund Foundation
+    1616: "GatsbyFoundation",  # Gatsby Charitable Foundation
+    1617: "ConradNHiltonFoundation",  # Conrad N. Hilton Foundation
+    1618: "DavidAndLucilePackardFoundation",  # David and Lucile Packard Foundation
+    1619: "JohnDAndCatherineTMacArthurFoundation",  # John D. and Catherine T. MacArthur Foundation
+    1620: "AndrewCarnegieFoundation",  # Carnegie Corporation of New York
+    1621: "MichaelAndSusanDellFoundation",  # Michael & Susan Dell Foundation
+    1622: "OmidyarNetwork",  # Omidyar Network Fund, Inc.
+    1623: "RockefellerFoundation",  # Rockefeller Foundation
+    1624: "WilliamAndFloraHewlettFoundation",  # William and Flora Hewlett Foundation
+    1625: "ArcusFoundation",  # Arcus Foundation
+    1626: "GordonAndBettyMooreFoundation",  # Gordon and Betty Moore Foundation
+    1627: "FordFoundation",  # Ford Foundation
+    1628: "WellcomeTrust",  # Wellcome Trust
+    1629: "UBSOptimusFoundation",  # UBS Optimus Foundation
+    1630: "WorldDiabetesFoundation",  # World Diabetes Foundation
+    1631: "McKnightFoundation",  # McKnight Foundation
+    1632: "CitiFoundation",  # Citi Foundation
+    1633: "LEGOFoundation",  # LEGO Foundation
+    1634: "NorwegianPostcodeLottery",  # Norwegian Postcode Lottery
+    1636: "JacobsFoundation",  # Jacobs Foundation
+    1637: "Arcadia",  # Arcadia
+    1638: "MargaretACargillFoundation",  # Margaret A. Cargill Foundation
+    1639: "LaCaixaFoundation",  # La Caixa Banking Foundation
+    1640: "BloombergPhilanthropies",  # Bloomberg Family Foundation
+    1641: "SusanThompsonBuffettFoundation",  # Susan T. Buffett Foundation
+    1642: "HowardGBuffettFoundation",  # Howard G. Buffett Foundation
+    1643: "OpenSocietyFoundations",  # Open Society Foundations
+    1644: "FondationBotnar",  # Fondation Botnar
+    1646: "BezosEarthFund",  # Bezos Earth Fund
+    1647: "GermanPostcodeLottery",  # German Postcode Lottery
+    1648: "LeonaMAndHarryBHelmsleyCharitableTrust",  # Leona M. and Harry B. Helmsley Charitable Trust
+    1650: "GoodVenturesFoundation",  # Good Ventures Foundation
+}
+
+_PRIVATE_CODE_BLOCK = range(1601, 1700)
+"""The OECD donor codes reserved for private donors."""
+
+
+@dataclass(frozen=True)
+class WholeWindow:
+    """What a total holds in one dataset: every party of the kinds in `holds` on its axis, in the
+    years `years` gives (first and last, inclusive), or in every year the dataset publishes it when
+    `years` is `None` (`code_index.types.WholeMarker`)."""
+
+    holds: tuple[PartyKind, ...]
+    years: tuple[int, int] | None = None
+
+
+@dataclass(frozen=True)
+class WholePopulationTotal:
+    """A total that holds a whole population on `axis`, with the datasets where it does.
+
+    `datasets` maps a provenance to what the total holds there. A dataset that publishes the total
+    and is not named reads it as an ordinary total. `reason` states the composition check and the
+    figures it found."""
+
+    axis: RoleAxis
+    datasets: Mapping[str, WholeWindow]
+    reason: str
+
+
+# The totals that hold a whole population on their axis, per dataset: in a named dataset the total
+# covers every party of the kinds given on its axis, so a sum of those parties and the total count
+# the same population. The published figure can still differ from the sum of the listed members,
+# by late reporters for example, as the DACOfficialDonors paragraph below records. The index
+# loader checks that no two markers hold a kind in common on one dataset and axis, and the frame
+# cells write `whole_total` for a marked total (in the years given, in the named dataset) where
+# they would write `total`. A dataset is named when
+# the total's composition check holds there, over the years given (none: every year the dataset
+# publishes it). The checks read the dev graph on coverage build 20261013T115221Z-ab2a6880. A
+# party sum is the sum of the party donors' own rows, and a component with no row in a year counts
+# zero.
+#
+# DACOfficialDonors equals DACCountriesTotal + DACNonDACCountries + DACMultilaterals to the dollar
+# in every year it is published, 1960 to 2024, at Bangladesh, Ethiopia, India and Kenya, in DAC2A
+# (aid type 206) and DAC2B (aid type 972). The sum of the party donors differs from the total by
+# what late reporters leave out (Ethiopia 2021: 4,267.6m against 4,250.8m). The total has no row
+# at DACAllRecipients in either dataset.
+#
+# DACPrivateDonors is published in DAC2A only, from 2009 (DAC2B has no row at Bangladesh, Ethiopia,
+# India or Kenya, 1960 to 2024). It equals the sum of the PRIVATE_PROVIDERS rows to the dollar in
+# every year at Ethiopia, Kenya and India (Ethiopia 2021: 310.8m).
+#
+# DACAllRecipients is published in DAC2A and DAC2B and holds in DAC2A alone. The sum of its party
+# and residual recipients equals the total from 1984 to 2024 for France, the United States,
+# Germany, Japan, the United Kingdom, IDA and the EU institutions, except in Japan 1988 (members
+# 19.5m above the total, 0.19%), Germany 2002 (14.8m, 0.22%) and France 2008 (0.04m), which are
+# OECD revision noise. Before 1984 the members exceed it by 0.02% to 0.83% (France 1976 to 1983,
+# Japan and the United Kingdom 1976 to 1982), the Part II and MADCT recipients outside the
+# developing-country population, so the window starts in 1984. In DAC2B the check fails in nearly
+# every year for every DAC donor checked, because DAC2B publishes regional totals with no country
+# rows for most donors (France 2020: 965.1m at DACAllRecipients against 77.9m of residual rows
+# and no country row; Japan 2020: short by 8.6bn), so DAC2B is not named.
+WHOLE_POPULATION_TOTALS: Mapping[str, WholePopulationTotal] = {
+    "DACAllRecipients": WholePopulationTotal(
+        axis="destination",
+        datasets={_DAC2A: WholeWindow(("party", "residual"), (1984, 2024))},
+        reason=(
+            "DAC2A: party plus residual recipients equal the total from 1984 to 2024 for seven "
+            "donors, apart from Japan 1988 (0.19%), Germany 2002 (0.22%) and France 2008 "
+            "(0.04m), which are OECD revision noise; DAC2B fails in nearly every donor-year"
+        ),
+    ),
+    "DACOfficialDonors": WholePopulationTotal(
+        axis="origin",
+        datasets={_DAC2A: WholeWindow(("party",)), _DAC2B: WholeWindow(("party",))},
+        reason=(
+            "DACCountriesTotal plus DACNonDACCountries plus DACMultilaterals, to the dollar in "
+            "every year, DAC2A and DAC2B, at four recipients"
+        ),
+    ),
+    "DACPrivateDonors": WholePopulationTotal(
+        axis="origin",
+        datasets={_DAC2A: WholeWindow(("private",))},
+        reason=(
+            "the sum of the PRIVATE_PROVIDERS rows, to the dollar in every year from 2009, "
+            "DAC2A, at three recipients; DAC2B does not publish it"
+        ),
+    ),
+}
+
+# Whole totals read as one population under a phrase. The members hold disjoint kinds of party
+# and are published together in one dataset (`code_index.loader._check_whole_totals`). Official
+# plus private donors is 4,578.4m for Ethiopia 2021 (4,267.6m and 310.8m). "All donors" and
+# "every donor" name the same population as "all donors including private"; the first phrase
+# labels it.
+WHOLE_TOTAL_SETS: tuple[WholeTotalSet, ...] = (
+    WholeTotalSet(
+        phrase="all donors including private",
+        axis="origin",
+        members=("DACOfficialDonors", "DACPrivateDonors"),
+    ),
+    WholeTotalSet(
+        phrase="all donors",
+        axis="origin",
+        members=("DACOfficialDonors", "DACPrivateDonors"),
+    ),
+    WholeTotalSet(
+        phrase="every donor",
+        axis="origin",
+        members=("DACOfficialDonors", "DACPrivateDonors"),
+    ),
+)
+
+
 @dataclass(frozen=True)
 class PartyPublication:
     """The datasets that publish one party, by provenance, and the flow axes they publish it
@@ -696,6 +879,92 @@ def _kind_from_types(
     return kind
 
 
+def _dac_codes(arcs: Mapping[str, tuple[str, ...]]) -> tuple[int, ...]:
+    """The numeric OECD donor codes in a party's `dacCode` arcs. A code that is not an integer is
+    not a donor code and is left out."""
+    return tuple(int(code) for code in arcs.get("dacCode", ()) if code.isdecimal())
+
+
+def _check_private_providers(
+    codes: Mapping[str, tuple[int, ...]],
+    origins: Collection[str],
+    private_providers: Mapping[int, str],
+    kind_overrides: Mapping[str, KindOverride],
+) -> None:
+    """Raises `SystemExit` when `private_providers` and the published parties disagree.
+
+    `codes` is each published party's donor codes and `origins` the parties published as a donor.
+    A listed code must be carried by its listed party alone once either is published; an origin
+    party carrying a code in `_PRIVATE_CODE_BLOCK` must be listed; a listed party takes no kind
+    override."""
+    holders: dict[int, list[str]] = defaultdict(list)
+    for dcid, party_codes in codes.items():
+        for code in party_codes:
+            holders[code].append(dcid)
+    wrong = sorted(
+        (code, dcid, sorted(holders[code]))
+        for code, dcid in private_providers.items()
+        if (code in holders or dcid in codes) and holders.get(code) != [dcid]
+    )
+    if wrong:
+        raise SystemExit(
+            f"PRIVATE_PROVIDERS lists a code for a different party than the graph gives it: "
+            f"{wrong!r} (code, listed party, parties carrying the code)"
+        )
+    missing = sorted(
+        (code, dcid)
+        for dcid in origins
+        for code in codes.get(dcid, ())
+        if code in _PRIVATE_CODE_BLOCK and code not in private_providers
+    )
+    if missing:
+        raise SystemExit(
+            f"published donors carry OECD private donor codes (1601 to 1699) that PRIVATE_PROVIDERS "
+            f"does not list: {missing!r} (code, party) -- review each and add it"
+        )
+    overridden = sorted(set(private_providers.values()) & kind_overrides.keys())
+    if overridden:
+        raise SystemExit(
+            f"PRIVATE_PROVIDERS and PARTY_KIND_OVERRIDES both name {overridden!r}; a party takes "
+            "one kind"
+        )
+
+
+def _check_whole_population_totals(
+    whole_totals: Mapping[str, WholePopulationTotal],
+    kinds: Mapping[str, PartyKind],
+    parties: Mapping[str, PartyPublication],
+) -> None:
+    """Raises `SystemExit` for a `whole_totals` row naming a party that is not a published total,
+    a total not published on exactly the row's axis, a dataset that does not publish the total, or
+    a row with no dataset, no kind or no reason. Two rows holding one kind on one dataset and axis
+    fail when the finished document loads (`code_index.loader._check_whole_totals`)."""
+    for dcid, whole in sorted(whole_totals.items()):
+        if kinds.get(dcid) != "total":
+            raise SystemExit(
+                f"WHOLE_POPULATION_TOTALS names {dcid!r}, which no declared or listed dataset "
+                "publishes as a total"
+            )
+        if parties[dcid].axes != {whole.axis}:
+            raise SystemExit(
+                f"WHOLE_POPULATION_TOTALS gives {dcid!r} the axis {whole.axis!r}, but the datasets "
+                f"publish it on {sorted(parties[dcid].axes)!r}"
+            )
+        if unpublished := sorted(whole.datasets.keys() - parties[dcid].datasets):
+            raise SystemExit(
+                f"WHOLE_POPULATION_TOTALS marks {dcid!r} in {unpublished!r}, which do not publish it"
+            )
+        if (
+            not whole.datasets
+            or not all(window.holds for window in whole.datasets.values())
+            or not whole.reason
+        ):
+            raise SystemExit(
+                f"WHOLE_POPULATION_TOTALS row {dcid!r} names no dataset, holds no kind or gives "
+                "no reason"
+            )
+
+
 def export_parties(
     reader: GraphReader,
     parties: Mapping[str, PartyPublication],
@@ -703,18 +972,25 @@ def export_parties(
     type_kinds: Mapping[str, PartyKind | None],
     kind_overrides: Mapping[str, KindOverride],
     total_groups: Mapping[str, TotalGroup],
+    private_providers: Mapping[int, str],
+    whole_totals: Mapping[str, WholePopulationTotal],
 ) -> list[dict]:
     """Each party's kind, label, the datasets that publish it and the flow axes they publish it
-    on (`parties`, each sorted), and the group and residuals a total holds, sorted by dcid.
+    on (`parties`, each sorted), the group and residuals a total holds, and for a whole
+    population total what it holds in each dataset (`whole`), sorted by dcid.
 
-    A party in `kind_overrides` takes its override's kind; any other takes the kind its graph
-    types give under `type_kinds`. Its label is its graph name, `None` when the graph gives it
-    none.
+    A party in `kind_overrides` takes its override's kind; a party whose OECD donor code is in
+    `private_providers` is `private`; any other takes the kind its graph types give under
+    `type_kinds`. Its label is its graph name, `None` when the graph gives it none. A row carries
+    `whole` only for a total in `whole_totals`, and a marker's `years` only with a window.
 
     Raises `SystemExit` for a `kind_overrides` row naming a party not in `parties`, a party the
     graph holds no node or type for, a party carrying a type `type_kinds` does not name, a party
     whose types give it no single kind, a `total_groups` row naming a party that is not a total
-    of `parties`, and a `total_groups` residual that is not a residual of `parties`.
+    of `parties`, a `total_groups` residual that is not a residual of `parties`, a
+    `private_providers` row the graph contradicts (`_check_private_providers`) or whose party the
+    types give a kind other than `party`, and a `whole_totals` row the parties contradict
+    (`_check_whole_population_totals`).
     """
     published = frozenset(parties)
     unpublished = sorted(kind_overrides.keys() - published)
@@ -722,28 +998,48 @@ def export_parties(
         raise SystemExit(
             f"PARTY_KIND_OVERRIDES names {unpublished!r}, which no declared or listed dataset publishes"
         )
-    arcs = _fetch_arcs_many(reader, sorted(published), properties=("typeOf", "name"))
+    arcs = _fetch_arcs_many(reader, sorted(published), properties=("typeOf", "name", "dacCode"))
+    codes = {dcid: _dac_codes(arcs.get(dcid) or {}) for dcid in published}
+    origins = [dcid for dcid in published if "origin" in parties[dcid].axes]
+    _check_private_providers(codes, origins, private_providers, kind_overrides)
+    private = frozenset(
+        dcid
+        for dcid in published
+        if any(private_providers.get(code) == dcid for code in codes[dcid])
+    )
     rows = []
+    kinds: dict[str, PartyKind] = {}
     for dcid in sorted(published):
         party_arcs = arcs.get(dcid) or {}
         if (override := kind_overrides.get(dcid)) is not None:
             kind = override.kind
         else:
             kind = _kind_from_types(dcid, party_arcs.get("typeOf", ()), type_kinds)
+        if dcid in private:
+            if kind != "party":
+                raise SystemExit(
+                    f"PRIVATE_PROVIDERS lists {dcid!r}, whose types give it the kind {kind!r}; "
+                    "only a party can be private"
+                )
+            kind = "private"
+        kinds[dcid] = kind
         total = total_groups.get(dcid)
-        rows.append(
-            {
-                "dcid": dcid,
-                "kind": kind,
-                "label": _first_or_none(party_arcs.get("name", ())),
-                "totals": None if total is None else total.group,
-                "residuals": [] if total is None else sorted(total.residuals),
-                "sums_members": True if total is None else total.sums_members,
-                "datasets": sorted(parties[dcid].datasets),
-                "axes": sorted(parties[dcid].axes),
-            }
-        )
-    kinds = {row["dcid"]: row["kind"] for row in rows}
+        row = {
+            "dcid": dcid,
+            "kind": kind,
+            "label": _first_or_none(party_arcs.get("name", ())),
+            "totals": None if total is None else total.group,
+            "residuals": [] if total is None else sorted(total.residuals),
+            "sums_members": True if total is None else total.sums_members,
+            "datasets": sorted(parties[dcid].datasets),
+            "axes": sorted(parties[dcid].axes),
+        }
+        if (whole := whole_totals.get(dcid)) is not None:
+            row["whole"] = [
+                _whole_marker_to_dict(dataset, window)
+                for dataset, window in sorted(whole.datasets.items())
+            ]
+        rows.append(row)
     stale = sorted(dcid for dcid in total_groups if kinds.get(dcid) != "total")
     if stale:
         raise SystemExit(
@@ -760,6 +1056,7 @@ def export_parties(
             f"TOTAL_GROUPS counts {not_residuals!r} as residuals, which no declared or listed dataset "
             "publishes as a residual"
         )
+    _check_whole_population_totals(whole_totals, kinds, parties)
     return rows
 
 
@@ -2940,6 +3237,18 @@ def _stated_word_to_dict(stated: StatedWord) -> dict:
     }
 
 
+def _whole_marker_to_dict(dataset: str, window: WholeWindow) -> dict:
+    """A `PartyRow.whole` entry. `years` is left out when the window has none."""
+    marker: dict = {"dataset": dataset, "holds": sorted(window.holds)}
+    if window.years is not None:
+        marker["years"] = list(window.years)
+    return marker
+
+
+def _whole_total_set_to_dict(whole_set: WholeTotalSet) -> dict:
+    return {"phrase": whole_set.phrase, "axis": whole_set.axis, "members": list(whole_set.members)}
+
+
 def _party_word_to_dict(named: PartyWord) -> dict:
     return {
         "word": named.word,
@@ -3030,6 +3339,7 @@ def export_graph_blocks(
     measure_classes: Sequence[MeasureClassDeclaration] = MEASURE_CLASSES,
     variable_aliases: Mapping[str, str] = VARIABLE_ALIASES,
     stat_type_words: Sequence[StatTypeWordDeclaration] = STAT_TYPE_WORDS,
+    whole_total_sets: Sequence[WholeTotalSet] = WHOLE_TOTAL_SETS,
 ) -> dict:
     """Build every document block the graph and the authored config determine, sorted.
 
@@ -3104,6 +3414,7 @@ def export_graph_blocks(
         "measure_classes": [_measure_class_to_dict(d) for d in measure_classes],
         "variable_aliases": dict(variable_aliases),
         "stat_type_words": [_stat_type_word_to_dict(d) for d in stat_type_words],
+        "whole_total_sets": [_whole_total_set_to_dict(d) for d in whole_total_sets],
     }
 
 
@@ -3141,6 +3452,9 @@ def export_index(
     partly_stated_values: Sequence[PartlyStatedValue] = PARTLY_STATED_VALUES,
     party_kind_overrides: Mapping[str, KindOverride] = PARTY_KIND_OVERRIDES,
     total_groups: Mapping[str, TotalGroup] = TOTAL_GROUPS,
+    private_providers: Mapping[int, str] = PRIVATE_PROVIDERS,
+    whole_totals: Mapping[str, WholePopulationTotal] = WHOLE_POPULATION_TOTALS,
+    whole_total_sets: Sequence[WholeTotalSet] = WHOLE_TOTAL_SETS,
     listed_datasets: Collection[str] = (),
 ) -> dict:
     """Build the index document: the graph blocks, with the StatVars `coverage` assigns to
@@ -3162,6 +3476,7 @@ def export_index(
         datasets=datasets,
         party_type_kinds=party_type_kinds,
         partly_stated_values=partly_stated_values,
+        whole_total_sets=whole_total_sets,
         listed=listed_dcids(coverage.provenances, listed_datasets),
     )
     statvars_without_coverage = _join_provenances(blocks["statvars"], coverage)
@@ -3173,6 +3488,8 @@ def export_index(
         type_kinds=party_type_kinds,
         kind_overrides=party_kind_overrides,
         total_groups=total_groups,
+        private_providers=private_providers,
+        whole_totals=whole_totals,
     )
 
     stamp = {

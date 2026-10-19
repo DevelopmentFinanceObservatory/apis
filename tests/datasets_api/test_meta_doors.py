@@ -37,7 +37,7 @@ from datasets_api.schema import (
     build_schema_document,
 )
 from datasets_api.version import DATASETS_CAPABILITY_VERSION
-from datasets_api.version_store import rendering_key
+from datasets_api.version_store import enriched_rendering_key, rendering_key
 from datasets_api.versions import NullVersionRecordWriter
 from dfo_platform import Alternative, ProblemIssue, ProblemSpec
 from dfo_platform.build import build_commit
@@ -609,16 +609,20 @@ def _stored_rendering(
     options: MintOptions,
     *,
     data: bytes,
+    enrichment_digest: str | None = None,
 ) -> StoredArtifactLocation:
     """A pinned location (so retention against the real clock never applies) stored under the
-    rendering and key the mint links `options` under."""
+    rendering and key the mint links `options` under, rendered under `enrichment_digest`, which
+    defaults to the serving code index's."""
+    if enrichment_digest is None:
+        enrichment_digest = get_index().enrichment_digest
     rendering = artifact_rendering(options, site=_SITE_SETTINGS.site)
     return _store_and_locate(
         artifact_store,
         data,
         tier=Tier.pinned,
         rendering=rendering,
-        rendering_key=rendering_key(rendering),
+        rendering_key=enriched_rendering_key(rendering, enrichment_digest),
         media_type="application/zip" if options.bundle else _MEDIA_TYPES[options.format],
     )
 
@@ -686,6 +690,53 @@ def test_a_done_operation_lists_only_its_own_rendering_and_statistics(
         assert resp.status_code == 200, resp.json()
         listed = {artifact["artifact_digest"] for artifact in resp.json()["manifest"]["artifacts"]}
         assert listed == own[index] | {statistics.artifact_digest}
+
+
+@pytest.mark.parametrize(
+    ("rendered_under", "status"),
+    [
+        pytest.param(lambda digest: digest, 200, id="current-digest"),
+        pytest.param(lambda digest: f"{digest}-before-a-rotation", 500, id="older-digest"),
+    ],
+)
+def test_a_done_operations_kind_column_file_is_served_only_under_the_current_digest(
+    rendered_under, status: int
+) -> None:
+    """A rendering with a party-kind column is found under the key salted with the serving code
+    index's digest; a file linked under an older digest is a rendering that is gone."""
+    options = MintOptions(format="parquet", bundle=False, layout="frame", columns=["party_kind"])
+    artifact_store = FakeArtifactStore()
+    location = _stored_rendering(
+        artifact_store,
+        options,
+        data=b"frame",
+        enrichment_digest=rendered_under(get_index().enrichment_digest),
+    )
+    client = make_client(
+        registry=LiveSpecRegistry(store=FakeDatasetStore()),
+        settings=_SITE_SETTINGS,
+        spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
+        snapshot_reader=FakeSnapshotReader(
+            versions={("spec_a", "cv1"): _version()}, locations={("spec_a", "cv1"): [location]}
+        ),
+        artifact_store=artifact_store,
+        reference_writer=FakeArtifactReferenceWriter(),
+        version_writer=NullVersionRecordWriter(),
+        operation_store=_FixedOperationStore(
+            {
+                "op_1": _operation(
+                    state="done", subject_id="spec_a", content_version="cv1", options=options
+                )
+            }
+        ),
+    )
+
+    resp = client.get("/api/datasets/operations/op_1")
+
+    assert resp.status_code == status, resp.text
+    if status == 200:
+        (listed,) = resp.json()["manifest"]["artifacts"]
+        assert listed["artifact_digest"] == location.artifact_digest
 
 
 def test_a_done_operation_whose_rendering_is_gone_fails_retryable_and_a_resubmit_resets_it() -> (
@@ -801,6 +852,7 @@ def test_a_poll_that_loses_the_demotion_race_answers_from_the_rows_current_state
             ),
             now=lambda: _OP_NOW,
             settings=_SITE_SETTINGS,
+            enrichment_digest=get_index().enrichment_digest,
         )
 
     if current is None:
@@ -837,6 +889,7 @@ def _poll_at(operation_store: LiveOperationStore, operation_id: str, at: datetim
         snapshot_reader=None,
         now=lambda: at,
         settings=DatasetsBuildSettings(),
+        enrichment_digest=get_index().enrichment_digest,
     )
 
 
@@ -1113,6 +1166,7 @@ def _poll(
         snapshot_reader=None,
         now=lambda: now_box["t"],
         settings=DatasetsBuildSettings(),
+        enrichment_digest=get_index().enrichment_digest,
     )
 
 

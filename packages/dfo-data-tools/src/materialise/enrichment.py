@@ -1,12 +1,17 @@
 """Batched graph lookups for materialisation's country-code, label and place-type enrichment
 fields, the party-kind field the code index gives, and `read_party_kinds`, Search's reader of a
-party's kind. Every reader takes the kind from the code index alone (`party_kind_of`)."""
+party's kind. Every reader takes the kind from the code index alone (`party_kind_of`). A frame's
+`<role>_party_kind` cell is that kind, except that a whole-population total reads
+`whole_total` (`party_kind_cell`)."""
 
 from __future__ import annotations
 
+import functools
+import re
 import threading
 from collections import OrderedDict
 from collections.abc import Iterable, Mapping
+from typing import Literal
 
 from code_index.types import PartyKind, PartyRow
 from dfo_platform.roles import role_key_axis
@@ -22,8 +27,18 @@ ENRICHMENT_PROPERTIES: Mapping[str, str] = {
 one batched `node_arcs_many` read, so asking for `type` beside `label` costs no extra read."""
 
 PARTY_KIND_FIELD = "party_kind"
-"""The field a lookup derives with no graph read: the party's kind (`party`, `total`,
-`residual`) the code index declares (`party_kind_of`)."""
+"""The field a lookup derives with no graph read: the party's kind cell (`party`, `private`,
+`total`, `whole_total` or `residual`) the code index declares (`party_kind_cell`)."""
+
+WHOLE_TOTAL_CELL = "whole_total"
+"""The cell of a total that holds every party of its marker's kinds on its axis in the row's
+dataset (`PartyRow.whole`, `code_index.types.WholeMarker`). It
+is a `total` for every reader that cuts or splits totals, and the one total a pooled role may
+sum alone (two whole totals on one axis hold disjoint kinds, so their sum counts no party
+twice)."""
+
+type PartyKindCell = PartyKind | Literal["whole_total"]
+"""What a `<role>_party_kind` cell holds: a `PartyKind`, or `whole_total` for a whole total."""
 
 ENRICHMENT_FIELDS: tuple[str, ...] = (*ENRICHMENT_PROPERTIES, PARTY_KIND_FIELD)
 """Every field a lookup can return."""
@@ -48,7 +63,8 @@ class EnrichmentLookup:
     most-recently used.
 
     `parties` is the code index's party rows (`CodeIndex.parties`), which give a ref its
-    `party_kind` (`party_kind_of`). A ref they do not list has no kind, whatever its graph types.
+    `party_kind` cell (`party_kind_cell`). A ref they do not list has no kind, whatever its graph
+    types.
 
     The lock guards cache access only. Graph calls run unlocked, so concurrent misses may
     duplicate requests. Results use each call's own hits and fetches, even if another call
@@ -90,10 +106,14 @@ class EnrichmentLookup:
             hits.update(resolved)
         return {ref: hits[ref] for ref in requested}
 
-    def party_kind(self, ref: str) -> PartyKind | None:
-        """The kind `parties` declares for `ref` (`party_kind_of`), read with no graph call, so
-        it holds when a `lookup` fails. `lookup` gives `ref` the same kind."""
-        return party_kind_of(ref, parties=self.parties)
+    def party_kind(
+        self, ref: str, *, year: int | None = None, provenance: str | None = None
+    ) -> PartyKindCell | None:
+        """The `party_kind` cell `parties` gives `ref` (`party_kind_cell`, for a row of
+        `provenance` in `year` when given), read with no graph call, so it holds when a `lookup`
+        fails. `lookup` gives `ref` the cell for no dataset and year, so a whole total reads
+        `total` there."""
+        return party_kind_cell(ref, parties=self.parties, year=year, provenance=provenance)
 
     def _hits_and_missing(
         self, requested: list[str]
@@ -126,10 +146,10 @@ def _resolve_fields(
 ) -> Mapping[str, str]:
     """Each field's first value, except `type`: every `typeOf` value of the place, sorted and
     comma-joined (`AdministrativeArea1,Country,EurostatNUTS2`), since a place can hold several
-    levels at once. `party_kind` is `party_kind_of` the ref, absent when it gives none. A `ref`
-    with no `node` and no `parties` row maps to `{}`."""
+    levels at once. `party_kind` is `party_kind_cell` of the ref for no dataset and year, absent when it
+    gives none. A `ref` with no `node` and no `parties` row maps to `{}`."""
     fields = {} if node is None else _node_fields(node)
-    if (kind := party_kind_of(ref, parties=parties)) is not None:
+    if (kind := party_kind_cell(ref, parties=parties)) is not None:
         fields[PARTY_KIND_FIELD] = kind
     return fields
 
@@ -154,6 +174,77 @@ def party_kind_of(ref: str, *, parties: Mapping[str, PartyRow]) -> PartyKind | N
     code-index drift gate reports and a re-export of the index repairs."""
     party = parties.get(ref)
     return None if party is None else party.kind
+
+
+def party_kind_cell(
+    ref: str,
+    *,
+    parties: Mapping[str, PartyRow],
+    year: int | None = None,
+    provenance: str | None = None,
+) -> PartyKindCell | None:
+    """The `<role>_party_kind` cell of the party `ref` for a row of `provenance` in `year`: its
+    kind (`party_kind_of`), except that a `total` with a marker for `provenance` reads
+    `whole_total` when the marker applies. It applies in every year when the marker's `years`
+    is `None`, and otherwise only in a `year` inside that window. A row with no `provenance`,
+    or no `year` where a window is set, keeps `total`, the reading that holds in every dataset
+    and year. `None` for a ref the rows do not list."""
+    party = parties.get(ref)
+    if party is None:
+        return None
+    marker = None if provenance is None else party.marker(provenance)
+    if party.kind == "total" and marker is not None and _in_window(marker.years, year):
+        return WHOLE_TOTAL_CELL
+    return party.kind
+
+
+def row_party_kind_cell(
+    ref: object, *, parties: Mapping[str, PartyRow], period: object, provenance: object
+) -> PartyKindCell | None:
+    """The `<role>_party_kind` cell of a frame row whose party cell is `ref`, `time_period` cell
+    `period` and `provenance` cell `provenance` (`None` for a table without that column): the
+    `party_kind_cell` for the year of `period` (`period_year`) and that dataset. `None` for a
+    `ref` that is not text. A `provenance` that is not text reads as no dataset."""
+    if not isinstance(ref, str):
+        return None
+    return party_kind_cell(
+        ref,
+        parties=parties,
+        year=period_year(period),
+        provenance=provenance if isinstance(provenance, str) else None,
+    )
+
+
+_POINT = r"(\d{4})(?:-\d{2}(?:-\d{2})?)?"
+_PERIOD = re.compile(rf"{_POINT}(?:/{_POINT})?")
+"""A `time_period` cell as the frame grammar spells it: `YYYY`, `YYYY-MM` or `YYYY-MM-DD`, or two
+such points joined by `/`. The years are captured; this module reads no more of the grammar."""
+
+
+def period_year(cell: object) -> int | None:
+    """The one year a row's `time_period` cell lies in, for `party_kind_cell`: the year of a
+    point (`2021`, `2021-06`, `2021-06-30`) or of an interval inside one year. `None` for an
+    interval across years, an empty cell and any other spelling, so such a row reads the `total`
+    that holds in every year. An integer cell (a year already written as a number) is its own
+    year."""
+    if isinstance(cell, int) and not isinstance(cell, bool):
+        return cell
+    return _text_year(cell) if isinstance(cell, str) else None
+
+
+@functools.cache
+def _text_year(text: str) -> int | None:
+    if (match := _PERIOD.fullmatch(text)) is None:
+        return None
+    start, end = match.groups()
+    return int(start) if end is None or end == start else None
+
+
+def _in_window(years: tuple[int, int] | None, year: int | None) -> bool:
+    if years is None:
+        return True
+    first, last = years
+    return year is not None and first <= year <= last
 
 
 def is_party_role(role: str) -> bool:
