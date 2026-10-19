@@ -261,16 +261,12 @@ def walk_alternate(
     walk can change the roles the shape declares, so the caller assigns the returned
     shape's places (`place_roles.bound_after_election`) and settles them after this call.
     """
-    bindings = _with_stray_values(
-        standard_bindings_from_arcs(shape=shape, rep_sv_dcid=rep_sv), shape, stray_values or {}
+    served = _served_alternate(
+        shape, role_keys, rep_sv, scope=scope, stray_values=stray_values or {}
     )
-    try:
-        source = part_source(shape, bindings, lambda: role_keys, scope=scope)
-    except PartNotServed:
+    if served is None:
         return None
-    if source is not None and shape.named_dataset is None:
-        shape = shape_for_part(shape, named_scope(source))
-    bindings = with_named_source(bindings, shape)
+    shape, bindings = served
     try:
         resolution = elected_role_class_shape(
             shape,
@@ -284,6 +280,52 @@ def walk_alternate(
     elected = resolution.value
     canonical = canonical_pin_bindings(elected, bindings, role_keys)
     return _Alternate(elected, canonical, not resolution.authority.settled, resolution.walked)
+
+
+def settle_alternate(
+    shape: ShapeDraft,
+    role_keys: RoleKeys,
+    rep_sv: str,
+    *,
+    scope: SourceScope | None = None,
+    stray_values: Mapping[str, frozenset[str]] | None = None,
+) -> _Alternate | None:
+    """The alternate `walk_alternate` walks, before its walk: `shape` naming the dataset it
+    is served from, with the constraint bindings of `rep_sv` in canonical form under
+    `role_keys`. `None` where `walk_alternate` drops it because no table serves those
+    bindings. Binding repair settles the elected shape's bindings this way before its role
+    class is elected, and an alternate's whole total is judged on these, as the elected
+    shape's is (`phase_place_materialise._walk_assignment`)."""
+    served = _served_alternate(
+        shape, role_keys, rep_sv, scope=scope, stray_values=stray_values or {}
+    )
+    if served is None:
+        return None
+    shape, bindings = served
+    return _Alternate(shape, canonical_pin_bindings(shape, bindings, role_keys))
+
+
+def _served_alternate(
+    shape: ShapeDraft,
+    role_keys: RoleKeys,
+    rep_sv: str,
+    *,
+    scope: SourceScope | None,
+    stray_values: Mapping[str, frozenset[str]],
+) -> tuple[ShapeDraft, list[SlotBindingDraft]] | None:
+    """`shape` naming the dataset the part is served from under the bindings of `rep_sv`
+    (`part_source`), with those bindings naming it, or `None` when no table serves them
+    (`bound_values.PartNotServed`)."""
+    bindings = _with_stray_values(
+        standard_bindings_from_arcs(shape=shape, rep_sv_dcid=rep_sv), shape, stray_values
+    )
+    try:
+        source = part_source(shape, bindings, lambda: role_keys, scope=scope)
+    except PartNotServed:
+        return None
+    if source is not None and shape.named_dataset is None:
+        shape = shape_for_part(shape, named_scope(source))
+    return shape, with_named_source(bindings, shape)
 
 
 def elect_alternate(

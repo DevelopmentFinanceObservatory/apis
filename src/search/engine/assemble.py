@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Mapping, Sequence
+from types import MappingProxyType
 from typing import TYPE_CHECKING, cast
 
 from dfo_platform import Cause
@@ -86,6 +87,9 @@ OBSERVATIONS_OMITTED = "observations_omitted"
 SKILLS_INDEX_UNAVAILABLE = "skills_index_unavailable"
 SKILLS_INDEX_INCOMPLETE = "skills_index_incomplete"
 SKILLS_NOT_MATCHABLE = "skills_not_matchable"
+
+NO_READING_FACTS: Mapping[str, Sequence[DepartureFact]] = MappingProxyType({})
+"""No departure facts for any reading of a candidates part."""
 
 
 def _observations_omitted_msg() -> str:
@@ -485,6 +489,7 @@ def build_no_data_part(
     cause: Cause | None = None,
     window_gap_fact: DepartureFact | None = None,
     departure_facts: Sequence[DepartureFact] = (),
+    reading_facts: Mapping[str, Sequence[DepartureFact]] = NO_READING_FACTS,
     request_words: bool = True,
     source_code_refusal: SourceCodeRefusal | None = None,
 ) -> NoDataPart:
@@ -527,7 +532,8 @@ def build_no_data_part(
     ``departure_facts`` are the raised facts whose warnings the part or its envelope holds,
     stated without the request's words when ``request_words`` is false (a resubmit).
     An alternate the sentence shows (`alternate_preserves_bound_role`) adds its reading's
-    `closest_match` fact (`_with_closest_match`). The part shows no data, so no departure
+    `closest_match` fact (`_with_closest_match`) and its facts in ``reading_facts``, by
+    `spec_id` (`RegionResult.unpublished_whole_facts`). The part shows no data, so no departure
     text claims it shows anything.
     A check limited to the values the engine chose for the flagged match adds a
     `scope_limited` departure (`departures.scope_limited_fact`).
@@ -545,9 +551,17 @@ def build_no_data_part(
     # holds them, so the fact would misstate what the part shows.
     year_facts = [window_gap_fact] if window_gap_fact and shown_alternate is None else []
     scope_fact = scope_limited_fact(flagged_match) if flagged_match is not None else None
+    alternate_facts = (
+        reading_facts.get(shown_alternate.spec_id, ()) if shown_alternate is not None else ()
+    )
     facts = part_departure_facts(
         None,
-        raised=[*departure_facts, *year_facts, *([scope_fact] if scope_fact else [])],
+        raised=[
+            *departure_facts,
+            *year_facts,
+            *([scope_fact] if scope_fact else []),
+            *alternate_facts,
+        ],
         operations=operations,
     )
     if reason in _UNRESOLVED_NO_DATA_REASONS:
@@ -724,6 +738,7 @@ def build_candidates_part(
     include_skills: bool = False,
     skills_index: SkillsIndex | None = None,
     departure_facts: Sequence[DepartureFact] = (),
+    reading_facts: Mapping[str, Sequence[DepartureFact]] = NO_READING_FACTS,
     request_words: bool = True,
 ) -> CandidatesPart:
     """Build a candidates part from competing specs, in the order given: the elected
@@ -740,7 +755,10 @@ def build_candidates_part(
     is selected for observation retrieval. Requested skills attach to each clamped candidate
     when the index snapshot is available. ``departure_facts`` are the raised facts that
     hold for every reading the part shows; no single spec answers, so none is read off one.
-    Their text names roles in the flow family every clamped reading shares. A part warned
+    ``reading_facts`` are the facts of each reading by `spec_id`, each naming the dataset
+    it holds for (`RegionResult.unpublished_whole_facts`); the part states those of the
+    readings it shows, once each. Their text names roles in the flow family every clamped
+    reading shares. A part warned
     `elected_shape_no_data` states one `closest_match` departure
     (`_with_readings_substituted`).
     ``request_words`` is false on a door that holds no words of the request (a resubmit).
@@ -761,7 +779,14 @@ def build_candidates_part(
 
     departures = part_departures(
         _with_readings_substituted(
-            part_departure_facts(None, raised=departure_facts, operations=operations),
+            part_departure_facts(
+                None,
+                raised=[
+                    *departure_facts,
+                    *(fact for spec in clamped for fact in reading_facts.get(spec.spec_id, ())),
+                ],
+                operations=operations,
+            ),
             shown=clamped,
             warnings=warnings,
             variable_text=variable_text,

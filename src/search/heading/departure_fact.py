@@ -11,7 +11,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Literal
 
-from search.models import DEPARTURE_ORDER, DepartureCode, OperationVerb, RoleAxis
+from search.models import DEPARTURE_ORDER, DepartureCode, OperationVerb, PartyKind, RoleAxis
 
 
 @dataclass(frozen=True)
@@ -42,12 +42,16 @@ class DepartureFact:
     The remaining fields are set by the codes named on each, and are `None` (or `False`)
     on every other code:
 
-    - `verb` (`operation_not_applied`): the operation the request named.
-    - `over` (`breakdown_not_applied`, `direction_discarded`, `direction_inferred`): the
-      flow axis the request broke the answer down by, named the place on, or the axis the
-      answer reads a place named without a direction on.
-    - `entities` (`entity_unavailable`): the names of the entities the data holds no
-      values for, in the answer's entity order.
+    - `verb` (`operation_not_applied`): the operation the request named. On
+      `whole_total_read`, `aggregate` when the request summed over the side, which the
+      published total answered.
+    - `over` (`breakdown_not_applied`, `direction_discarded`, `direction_inferred`,
+      `whole_total_read`): the flow axis the request broke the answer down by, named the
+      place on, the axis the answer reads a place named without a direction on, or the side
+      the answer reads as its whole population.
+    - `entities` (`entity_unavailable`, `whole_total_read`): the names of the entities the
+      data holds no values for, in the answer's entity order; or, for a whole population
+      read as a union of totals, the names of those totals.
     - `sets` (`entity_unavailable`): on a role that binds the members of sets the request
       named beside other places, each set with the members the data holds no values for.
       `entities` then names only the places the request named one by one.
@@ -56,6 +60,17 @@ class DepartureFact:
       (`EntityGroup.ref`) of the group the request named for the role, when
       it named one; `asked` is then the request's own words for the group, `None` on a
       door that holds none.
+    - `group` (`whole_total_read`): the label of the whole population the side reads
+      (`EntityGroup.label`); `asked` is the request's own words for it, `None` when the
+      request named nothing on the side or its door holds no words.
+    - `whole_of` (`whole_total_read`): the kinds of party the population holds
+      (`EntityGroup.whole_of`).
+    - `inferred` (`whole_total_read`): the request named nothing on the side, so the answer
+      read it whole. False on a door that holds no words of the request (a resubmit).
+    - `shown`, `over` and `whole_of` (`whole_total_unpublished`): the name of the dataset
+      that publishes no total of the whole population the request named, the side it
+      leaves unnamed, and the kinds of party the dataset holds there; `asked` is the
+      request's words for the population.
     - `excluded` (`group_read_as_members`): the labels of the residuals the total of the
       group counts beside its members ("Africa, unallocated by country (DAC)"), which the
       members leave out, in the code index's order. Empty for a group no total holds.
@@ -104,6 +119,8 @@ class DepartureFact:
     group_dcid: str | None = None
     excluded: tuple[str, ...] = ()
     sum_differs: bool = False
+    whole_of: tuple[PartyKind, ...] = ()
+    inferred: bool = False
     sources: tuple[str, ...] = ()
     latest_years: tuple[int, int] | None = None
     readings: bool = False

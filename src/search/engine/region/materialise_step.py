@@ -5,7 +5,7 @@ Each door builds its own terminal result from the shared classification.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
 from materialise.place_scope import DefaultPresence
@@ -199,12 +199,15 @@ def interpret_materialised(
     boundary_roles: EntityRoles,
     label_of: Callable[[Sequence[str]], Sequence[str]],
     warnings: list[Warning],
+    unnamed_wholes: Collection[RoleAxis],
 ) -> UnsupportedMaterialise | NoDataMaterialise | None:
     """Classify unsupported and no-data outcomes, then append carrier warnings.
 
     Returns ``UnsupportedMaterialise`` for a scope refusal, ``NoDataMaterialise`` for
     ``NoDataDraft``, and ``None`` for materialised outcomes. A ``Materialised`` also adds
-    its scope-defaulted, role-declaration, and membership warnings. Its
+    its scope-defaulted warnings, on no axis of ``unnamed_wholes``
+    (`grounding.role_scope_defaulted_warnings`), and its role-declaration and membership
+    warnings. Its
     ``family_total_absent`` fact describes one Spec, so the terminal that holds that
     Spec raises it.
     """
@@ -215,7 +218,10 @@ def interpret_materialised(
     if isinstance(mat_result, Materialised):
         warnings.extend(
             role_scope_defaulted_warnings(
-                mat_result, boundary_roles=boundary_roles, label_of=label_of
+                mat_result,
+                boundary_roles=boundary_roles,
+                label_of=label_of,
+                unnamed_wholes=unnamed_wholes,
             )
         )
         warnings.extend(

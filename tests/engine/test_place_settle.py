@@ -476,6 +476,8 @@ def _state(
             entities=[place_set.name for place_set in sets],
             place_sets={place_set.name: place_set for place_set in sets},
             party_sets={},
+            whole_sets={},
+            whole_named={},
             entity_roles=roles,
             operations=tuple(operations),
             open_axes=frozenset(),

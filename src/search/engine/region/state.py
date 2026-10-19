@@ -66,7 +66,12 @@ from search.engine.region.place_context import (
     default_scope_stat_vars,
     empty_place_context,
 )
-from search.engine.region.place_roles import PlaceAssignment, place_order, place_texts
+from search.engine.region.place_roles import (
+    PlaceAssignment,
+    PlaceRoleRefusal,
+    place_order,
+    place_texts,
+)
 from search.engine.region.place_set import PlaceSet
 from search.engine.region.result import (
     AmbiguousEntity,
@@ -740,6 +745,23 @@ class ResolveState:
     # `pipeline.resolve_variable` falls back to when the party reading binds no party, and
     # the reading of every UN pass.
     party_words_off: bool = False
+    # The place set of each whole total the part can bind (`whole_totals`), by dcid: the
+    # parties a text of the part names as a whole population (`whole_named`) and the totals
+    # of every party on each side the part totals (`place_roles.totalled_axes`). Set by
+    # `_phase_resolve_places`; binding repair binds a side's total on a shape whose datasets
+    # read it whole (`place_roles.whole_total_candidates`), and a named one binds as a party
+    # on its side (`place_roles.bind_place_roles`).
+    whole_sets: dict[str, PlaceSet] = field(default_factory=dict)
+    # Each text of the part naming a whole population ("all donors"), with the dcids it
+    # names, in query order. Such a text holds no place set: its parties bind as named
+    # parties on its side, read whole where the shape's datasets mark them, and its side
+    # stays unnamed only on a shape that publishes no total of a population covering it
+    # (`place_roles._named_wholes`).
+    whole_named: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # Each text of the part naming a whole population that the part asks for member by
+    # member (`member_entities`), with the side it names: it holds no place set and names
+    # no total, and the side is among `open_axes`, so the answer lists that side's parties.
+    whole_listed: dict[str, RoleAxis] = field(default_factory=dict)
     # Start tick for the shape timing span, including derivation and ranking.
     shape_t0: int = 0
     # All confirmed shapes, before eligibility and ranking filters.
@@ -976,6 +998,12 @@ class ResolveState:
     # Where the StatVars of the last default-scope read have data; the default scope of the
     # shape in play, when it has one, is taken from it. `None` until a shape needs one.
     default_presence: DefaultPresence | None = None
+    # The elected shape's assignment of the query's place sets, or its refusal, taken once
+    # by binding repair (`phase_election._bind_query_places`): with a whole total only where
+    # the bindings settled under its role keys hold the total's series, and those are the
+    # bindings installed. Place binding (`phase_place_materialise._phase_place_bindings`)
+    # reads it. `None` before repair.
+    query_place_roles: PlaceAssignment | PlaceRoleRefusal | None = None
     # The elected shape's assignment of the query's place sets as admitted, before the
     # role-class election narrows it. An alternate puts a place named with no direction on
     # the axis this assignment gives it (`place_roles._undirected_place_axis`).
@@ -1034,6 +1062,9 @@ class ResolveState:
     alternate_walks: dict[tuple[object, ...], Future[_Alternate | None]] = field(
         default_factory=dict
     )
+    # The assignment each alternate is walked under, keyed by the walk key of the
+    # alternate as bound (`phase_place_materialise._walk_plan`).
+    alternate_walk_plans: dict[tuple[object, ...], PlaceAssignment] = field(default_factory=dict)
     # The alternate guard's judges of the elected shape this pass, one per set of pins
     # (`phase_place_materialise._guard_judge`), so admission, re-election and the walks read
     # each alternate's members once.

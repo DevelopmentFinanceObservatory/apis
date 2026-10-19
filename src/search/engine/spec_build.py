@@ -83,6 +83,7 @@ from search.models import (
     MeasureAxisValue,
     OpenAxisValueCount,
     OpenConstraintAxisFact,
+    PartyKind,
     ProvenanceRef,
     QuantityForm,
     RequestedWindow,
@@ -292,6 +293,8 @@ class NamedGroup:
     dcid. `total` is the party a flow dataset publishes as the group's total
     (`PlaceSet.total`), which a role can bind in place of the members. `group_id` is the
     membership registry's id for a group the graph holds no node for (`EntityGroup.group_id`).
+    `whole_of` is the kinds of party a side read as its whole population holds
+    (`region.whole_totals.WholeReading`), empty for any other group.
     """
 
     label: str
@@ -301,6 +304,7 @@ class NamedGroup:
     named_alone: frozenset[tuple[str, str]] = frozenset()
     total: str | None = None
     group_id: str | None = None
+    whole_of: tuple[PartyKind, ...] = ()
 
 
 def spec_named_groups(spec: Spec) -> tuple[NamedGroup, ...]:
@@ -332,6 +336,7 @@ def spec_named_groups(spec: Spec) -> tuple[NamedGroup, ...]:
             named_alone=frozenset((r, d) for r, d in alone if r == role and d in members),
             total=total(role, group),
             group_id=group.group_id,
+            whole_of=tuple(group.whole_of or ()),
         )
         for role, group, members in spec.resolved.named_sets
     ]
@@ -344,6 +349,7 @@ def spec_named_groups(spec: Spec) -> tuple[NamedGroup, ...]:
             named_alone=frozenset((r, d) for r, d in alone if r == role and d in entities[role]),
             total=total(role, group),
             group_id=group.group_id,
+            whole_of=tuple(group.whole_of or ()),
         )
         for role, group in groups_by_role.items()
     )
@@ -386,9 +392,10 @@ def role_entity_groups(
 
     A role takes a group when its bound dcids are exactly the group's members, or exactly
     the group's total (`NamedGroup.total`), which the group then names
-    (`EntityGroup.total`). A role whose entities were capped, widened or edited reads as its
-    members instead. Of groups with the same members, one with a node wins over one without,
-    then the first by dcid, then label, whatever order the request named them in.
+    (`EntityGroup.total`). A group read as a whole population states the kinds it holds
+    (`EntityGroup.whole_of`). A role whose entities were capped, widened or edited reads as
+    its members instead. Of groups with the same members, one with a node wins over one
+    without, then the first by dcid, then label, whatever order the request named them in.
     """
     groups = tuple(groups)
     result: dict[str, EntityGroup] = {}
@@ -401,6 +408,7 @@ def role_entity_groups(
                 entity_type=group.entity_type,
                 total=group.total if {group.total} == dcids else None,
                 group_id=group.group_id,
+                whole_of=list(group.whole_of) or None,
             )
     return result
 

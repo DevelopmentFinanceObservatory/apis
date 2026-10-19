@@ -215,6 +215,10 @@ class RegionResult:
     # a place named without one on, the one direction that holds data
     # (`departures.direction_inferred`).
     inferred_facts: tuple[DepartureFact, ...] = ()
+    # The `whole_total_unpublished` facts of each Spec, by `spec_id`: the whole populations
+    # a text names whose side the Spec's dataset reads as unnamed
+    # (`whole_totals.whole_total_unpublished_facts`). No warning discloses them.
+    unpublished_whole_facts: Mapping[str, tuple[DepartureFact, ...]] = field(default_factory=dict)
     # This region's LLM token usage. A same-shape merge keeps the first
     # member's value. Request-wide totals are aggregated separately.
     llm_usage: dict | None = None
@@ -353,6 +357,10 @@ class RegionResult:
     # `None` on a door that holds no words for any entity (a resubmit), whose departures
     # then quote none.
     entity_words: Mapping[str, str] | None = field(default_factory=dict)
+    # The flow sides a whole population the part asks for member by member opens
+    # (`ResolveState.whole_listed`). The leg warns for each one the answer drops as it
+    # does for its own open roles (`with_dropped_open_roles`).
+    listed_axes: frozenset[RoleAxis] = frozenset()
 
     @property
     def spec(self) -> Spec:
@@ -490,7 +498,8 @@ def with_runnable_operations(region: RegionResult, operations: Sequence[Operatio
 
 def with_dropped_open_roles(region: RegionResult, open_axes: Collection[RoleAxis]) -> RegionResult:
     """Return `region` warning `query_qualifier_dropped` for each of `open_axes`, the part's
-    own open roles, that its answer drops.
+    own open roles and the sides a whole population it asks member by member opens
+    (`RegionResult.listed_axes`), that its answer drops.
 
     A place the part names without `role_text` takes the axis place binding gives it, and a
     bound axis wins over an open one (`place_roles.PlaceRoles.open_axes`), so the answer

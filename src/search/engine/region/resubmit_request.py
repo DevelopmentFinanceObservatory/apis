@@ -31,11 +31,14 @@ from search.engine.region.grounding import (
 )
 from search.engine.region.refs import provenance_labels
 from search.engine.region.result import FacetAxisFilter
+from search.engine.region.whole_totals import identity_years, whole_reading
+from search.engine.retrieval.bound_values import identity_dataset
 from search.engine.retrieval.facts import read_constraints
 from search.engine.spec_build import NamedGroup
 from search.engine.unit.refs import expressible as _unit_request_expressible
 from search.engine.unit.refs import satisfies as _unit_request_satisfies
 from search.models import (
+    BaseIdentity,
     Binding,
     BindingSet,
     BindingUnbound,
@@ -474,11 +477,18 @@ def resubmit_named_groups(
     at info with the reason. A `GraphInfraError` on any of the reads drops the groups it
     covers, logged at warning and noted as a lost read (`degraded_reads.note_degraded_read`),
     and the role's entities still bind.
+
+    A role whose entities the identity's dataset reads as the whole population of its side
+    (`_whole_named_groups`) carries that population, whatever group the request posts on it,
+    so a first answer's whole total survives a resubmit that posts no group.
     """
     kept: list[tuple[str, EntityGroup, frozenset[str], str | None]] = []
-    named: list[NamedGroup] = []
+    whole = _whole_named_groups(inp.identity)
+    named: list[NamedGroup] = list(whole.values())
     entities = inp.identity.entities
     for role, group in (inp.entity_groups or {}).items():
+        if role in whole:
+            continue
         _refuse_retired_group_id(group, role)
         registry_group = _registry_group(group, role)
         if role not in entities:
@@ -568,6 +578,24 @@ def resubmit_named_groups(
             len(members),
         )
     return tuple(named)
+
+
+def _whole_named_groups(identity: BaseIdentity) -> dict[str, NamedGroup]:
+    """The group of each flow role whose entities the dataset elected for `identity`
+    (`bound_values.identity_dataset`) reads as the whole population of the role's side over
+    its requested window (`whole_totals.whole_reading`), by role key: one whole total ("ODA
+    to Ethiopia" binds `DACOfficialDonors`) or the members of one whole total set. Empty for
+    an identity whose dataset the code index does not elect."""
+    dataset = identity_dataset(identity)
+    if dataset is None:
+        return {}
+    years = identity_years(identity.requested_window)
+    groups: dict[str, NamedGroup] = {}
+    for role, dcids in identity.entities.items():
+        reading = whole_reading(dcids, datasets=(dataset,), years=years)
+        if reading is not None and reading.axis == role_key_axis(role):
+            groups[role] = reading.named_group()
+    return groups
 
 
 def _bound_total(group: EntityGroup, role: str, role_entities: frozenset[str]) -> str | None:

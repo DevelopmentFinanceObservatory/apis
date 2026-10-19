@@ -11,7 +11,7 @@ from typing import Final, cast
 
 import dc_graph
 from code_index.shared import get_index
-from entity_resolution import Ambiguous, Group, Resolved
+from entity_resolution import Ambiguous, Entity, Group, Resolved
 from origin_catalogue import recording_un_blocked_places
 from search.engine.clients.graph import DetectedSV, force_full_facets
 from search.engine.config import settings
@@ -29,6 +29,7 @@ from search.engine.region.place_roles import (
     place_key,
     set_choices,
     stated_party_words,
+    totalled_axes,
 )
 from search.engine.region.place_set import PlaceNode, PlaceReading, PlaceSet
 from search.engine.region.result import (
@@ -39,6 +40,7 @@ from search.engine.region.result import (
 )
 from search.engine.region.source_choice import allows_un_system
 from search.engine.region.state import ResolveState, UnLeg, UnPool
+from search.engine.region.whole_totals import named_whole, population_totals
 from search.engine.retrieval.derive import derive_shapes
 from search.engine.shape import ShapeDraft, role_names_by_axis
 from search.models import EntityRoleKey, NoDataReason, RoleAxis, elect_no_data_reason
@@ -114,7 +116,11 @@ async def _phase_resolve_places(state: ResolveState) -> None:
     asks for the name's members (`ResolveState.member_entities`) or the resolver read the name
     as its members (`reading`). Recall's country dcids are snapshotted for the availability
     floor. The party each word of the part names on an unnamed axis gets a set of its node
-    (`ResolveState.party_sets`, `_party_word_sets`).
+    (`ResolveState.party_sets`, `_party_word_sets`). A text naming a whole population ("all
+    donors") gets no place set: it and each whole total the part can bind on a side it
+    totals get a set of their node (`ResolveState.whole_sets`, `_whole_total_sets`). Such a
+    text asked for its members (`ResolveState.whole_listed`) opens its side
+    (`ResolveState.open_axes`) in place of naming a total there.
     """
     # The type checker narrows locals, while state attributes need this explicit cast.
     rcl = cast(Recall, state.rcl)
@@ -132,6 +138,22 @@ async def _phase_resolve_places(state: ResolveState) -> None:
         name: resolution.entity
         for name, resolution in rcl.resolutions.items()
         if isinstance(resolution, Resolved)
+    }
+    # A text naming a whole population ("all donors") binds as a whole total
+    # (`_whole_total_sets`), so it holds no place set. Asked for its members, it asks for
+    # every party of its side, which it leaves open and no total binds.
+    whole_named = _whole_named(state, resolved)
+    groups = {name: group for name, group in groups.items() if name not in whole_named}
+    resolved = {name: entity for name, entity in resolved.items() if name not in whole_named}
+    parties = get_index().parties
+    state.whole_listed = {
+        name: parties[dcids[0]].axes[0]
+        for name, dcids in whole_named.items()
+        if name in state.member_entities
+    }
+    state.open_axes |= set(state.whole_listed.values())
+    whole_named = {
+        name: dcids for name, dcids in whole_named.items() if name not in state.whole_listed
     }
     membership = state.resolver.membership
     regions = [entity for entity in resolved.values() if membership.holds_region(entity.dcid)]
@@ -195,6 +217,46 @@ async def _phase_resolve_places(state: ResolveState) -> None:
         )
     state.place_sets = place_sets
     state.party_sets = await _party_word_sets(state)
+    state.whole_named = whole_named
+    state.whole_sets = _whole_total_sets(state)
+
+
+def _whole_named(state: ResolveState, resolved: Mapping[str, Entity]) -> dict[str, tuple[str, ...]]:
+    """Each text of the part naming a whole population, with the dcids it names
+    (`whole_totals.named_whole`): the phrase of a whole total set, or a name resolving to a
+    whole total of every party on its side."""
+    named: dict[str, tuple[str, ...]] = {}
+    for name in dict.fromkeys(state.entities):
+        entity = resolved.get(name)
+        if (dcids := named_whole(name, None if entity is None else entity.dcid)) is not None:
+            named[name] = dcids
+    return named
+
+
+def _whole_total_sets(state: ResolveState) -> dict[str, PlaceSet]:
+    """The place set of each whole total the part can bind (`ResolveState.whole_sets`), by
+    dcid: each party a text names as a whole population (`ResolveState.whole_named`), and
+    the totals of every party on each side the part totals (`place_roles.totalled_axes`,
+    `whole_totals.population_totals`). Each is its node, named by the code index's label
+    for the party.
+
+    A total of a side the part totals binds where the code index marks it on a side its
+    dataset publishes (`place_roles.whole_total_candidates`), and a named one binds as a
+    party on its side (`place_roles.bind_place_roles`). Its set asks role admission nothing
+    (`_prune_shapes_by_admission`): it holds no members, so it reads its node on any role
+    (`place_roles.set_choices`), and its node carries no graph type, so no graph read runs
+    for it."""
+    named = [dcid for dcids in state.whole_named.values() for dcid in dcids]
+    rows = get_index().parties
+
+    def label(dcid: str) -> str:
+        row = rows.get(dcid)
+        return row.label if row is not None and row.label else dcid
+
+    return {
+        dcid: PlaceSet(name=label(dcid), kind="place", node=PlaceNode(dcid=dcid, graph_type=""))
+        for dcid in dict.fromkeys((*named, *population_totals(totalled_axes(state))))
+    }
 
 
 async def _party_word_sets(state: ResolveState) -> dict[str, PlaceSet]:
@@ -245,7 +307,8 @@ async def _phase_check_entities(state: ResolveState) -> RegionResult | None:
     """Refuse a part naming an entity that did not resolve, before shape derivation and
     the bind call.
 
-    Each name with no place set mints one reason: ``entity_ambiguous`` for an Ambiguous
+    Each name with no place set that names no whole population (`ResolveState.whole_named`,
+    `ResolveState.whole_listed`) mints one reason: ``entity_ambiguous`` for an Ambiguous
     resolution, ``entity_set_too_large`` for a Group with more members than a Spec binds,
     and ``entity_not_resolved`` otherwise. The part refuses with the reason
     `elect_no_data_reason` elects over them, and names, whatever the elected reason, an
@@ -261,6 +324,8 @@ async def _phase_check_entities(state: ResolveState) -> RegionResult | None:
         name: _entity_reason(rcl.resolutions.get(name))
         for name in state.entities
         if name not in state.place_sets
+        and name not in state.whole_named
+        and name not in state.whole_listed
     }
     if not reasons:
         return None

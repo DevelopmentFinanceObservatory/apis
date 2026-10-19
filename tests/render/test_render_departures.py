@@ -594,6 +594,76 @@ _CASES: list[tuple[DepartureFact, str | None, str]] = [
     ),
     (
         DepartureFact(
+            code="whole_total_read",
+            binding_ref="origin:",
+            over="origin",
+            group="official donors (DAC)",
+            whole_of=("party",),
+            inferred=True,
+        ),
+        "aid",
+        "No donor was named, so this shows official donors (DAC), the source's total for "
+        "every official donor. Private donors are outside it. To list each donor, search again "
+        "with open_roles ['donor'].",
+    ),
+    (
+        DepartureFact(
+            code="whole_total_read",
+            binding_ref="origin:",
+            asked="all donors including private",
+            over="origin",
+            group="all donors including private",
+            entities=("official donors (DAC)", "private donors (DAC)"),
+            whole_of=("party", "private"),
+        ),
+        "aid",
+        "You asked for all donors including private. This shows official donors (DAC) plus "
+        "private donors (DAC). To list each donor, search again with open_roles ['donor'] in "
+        "place of all donors including private.",
+    ),
+    (
+        DepartureFact(
+            code="whole_total_read",
+            binding_ref="destination:",
+            over="destination",
+            group="all recipients (DAC)",
+            whole_of=("party", "residual"),
+            verb="aggregate",
+        ),
+        "aid",
+        "This shows all recipients (DAC), the source's total for every recipient, which "
+        "includes aid not allocated to a country. To list each recipient, search again with "
+        "open_roles ['recipient'] and no aggregate over the recipients.",
+    ),
+    (
+        DepartureFact(
+            code="whole_total_unpublished",
+            binding_ref="origin:",
+            asked="all donors",
+            shown="OECD Creditor Reporting System (CRS)",
+            over="origin",
+            whole_of=("party", "private"),
+        ),
+        "aid",
+        "You asked for all donors. OECD Creditor Reporting System (CRS) publishes no total of "
+        "every donor, so this covers every donor it holds with data, private donors among them.",
+    ),
+    (
+        DepartureFact(
+            code="whole_total_unpublished",
+            binding_ref="where:",
+            asked="all recipients",
+            shown="OECD Creditor Reporting System (CRS)",
+            over="destination",
+            whole_of=("party", "residual"),
+        ),
+        "aid",
+        "You asked for all recipients. OECD Creditor Reporting System (CRS) publishes no total "
+        "of every recipient, so this covers every recipient it holds with data, which includes "
+        "aid not allocated to a country.",
+    ),
+    (
+        DepartureFact(
             code="direction_discarded", binding_ref="where:", asked="Kenya", over="destination"
         ),
         None,
@@ -758,6 +828,34 @@ _NO_DATA_CASES: list[tuple[DepartureFact, str | None, str]] = [
         ),
         "aid",
         "This checked the 27 European Union members, each on its own.",
+    ),
+    (
+        DepartureFact(
+            code="whole_total_read",
+            binding_ref="origin:",
+            over="origin",
+            group="official donors (DAC)",
+            whole_of=("party",),
+            inferred=True,
+        ),
+        "aid",
+        "No donor was named, so this checked official donors (DAC), the source's total for "
+        "every official donor. Private donors are outside it. To list each donor, search again "
+        "with open_roles ['donor'].",
+    ),
+    (
+        DepartureFact(
+            code="whole_total_unpublished",
+            binding_ref="origin:",
+            asked="all donors",
+            shown="OECD Creditor Reporting System (CRS)",
+            over="origin",
+            whole_of=("party", "private"),
+        ),
+        "aid",
+        "You asked for all donors. OECD Creditor Reporting System (CRS) publishes no total of "
+        "every donor, so the closest match covers every donor it holds with data, private "
+        "donors among them.",
     ),
     (
         DepartureFact(

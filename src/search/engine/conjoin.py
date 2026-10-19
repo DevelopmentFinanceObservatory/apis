@@ -308,7 +308,16 @@ def _build_part(
             skills_index=skills_index,
             departure_facts=(
                 *surviving_facts(raised, [*warnings, *envelope_warnings]),
-                *(() if folded else representative.inferred_facts),
+                *(
+                    ()
+                    if folded
+                    else (
+                        *representative.inferred_facts,
+                        *representative.unpublished_whole_facts.get(
+                            representative.spec.spec_id, ()
+                        ),
+                    )
+                ),
             ),
             entity_words=region.entity_words,
         )
@@ -334,6 +343,7 @@ def _build_part(
                 raised,
                 [w for w in (*region.warnings, *envelope_warnings) if w.spec_id is None],
             ),
+            reading_facts=region.unpublished_whole_facts,
             request_words=region.entity_words is not None,
         )
     if region.status == "unsupported":
@@ -400,6 +410,7 @@ def _build_part(
         cause=region.cause,
         window_gap_fact=region.window_gap_fact,
         departure_facts=surviving_facts(raised, [*region.warnings, *envelope_warnings]),
+        reading_facts=region.unpublished_whole_facts,
         request_words=region.entity_words is not None,
         source_code_refusal=region.source_code_refusal,
     )

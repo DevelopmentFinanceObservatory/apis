@@ -591,12 +591,12 @@ def _record_footnote_label_lookups(monkeypatch: pytest.MonkeyPatch) -> list[list
     lookups: list[list[str]] = []
 
     def spying(build):
-        def wrapper(mat, *, boundary_roles, label_of):
+        def wrapper(mat, *, boundary_roles, label_of, **kwargs):
             def recording(dcids):
                 lookups.append(list(dcids))
                 return label_of(dcids)
 
-            return build(mat, boundary_roles=boundary_roles, label_of=recording)
+            return build(mat, boundary_roles=boundary_roles, label_of=recording, **kwargs)
 
         return wrapper
 

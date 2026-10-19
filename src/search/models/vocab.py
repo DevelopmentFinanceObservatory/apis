@@ -116,6 +116,8 @@ DepartureCode = Literal[
     "year_unavailable",
     "modelled_values",
     "group_read_as_members",
+    "whole_total_read",
+    "whole_total_unpublished",
     "direction_discarded",
     "direction_inferred",
     "scope_limited",

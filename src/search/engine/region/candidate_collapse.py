@@ -87,6 +87,7 @@ from search.engine.region.requirements import (
 )
 from search.engine.region.result import RegionResult
 from search.engine.region.state import ResolveState, raised_facts
+from search.engine.region.whole_totals import whole_total_warnings
 from search.engine.retrieval.read_plan import ReadPlan, plan_coverage, serves_nothing
 from search.engine.retrieval.retrieve import Materialised, NoDataDraft
 from search.engine.unit.bind import with_unit_lexicon_version
@@ -587,7 +588,11 @@ async def _assemble_definite(
         status="definite",
         specs=(_survivor_spec,),
         no_data_reason=None,
-        warnings=(*state.warnings, *(warning for warning, _fact in _family)),
+        warnings=(
+            *state.warnings,
+            *(warning for warning, _fact in _family),
+            *whole_total_warnings(_survivor_spec, coverage=state.coverage.index),
+        ),
         departure_facts={**state.departure_facts, **raised_facts(_family)},
         timing_by_step=dict(state.timing),
         llm_usage=state.var_usage,

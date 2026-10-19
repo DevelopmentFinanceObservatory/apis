@@ -73,6 +73,7 @@ from search.engine.region.source_choice import (
 from search.engine.region.state import EngineOptions, ResolveState
 from search.engine.region.un_system import with_un_unavailable_warning
 from search.engine.region.weak_score import _representative_score_is_weak
+from search.engine.region.whole_totals import whole_total_unpublished_facts
 from search.engine.region.withheld import elected_series, with_withheld_warning
 from search.engine.retrieval.bound_values import RoleClassWalks, elects_within, held_family_memo
 from search.engine.role_text import DoorRole
@@ -496,6 +497,24 @@ def _excluded_from_the_place(result: RegionResult, state: ResolveState) -> Regio
     )
 
 
+def _stating_unpublished_wholes(result: RegionResult, state: ResolveState) -> RegionResult:
+    """`result` holding, for each of its Specs, each whole population a text names whose
+    side the Spec's dataset publishes no total of and reads as unnamed
+    (`whole_totals.whole_total_unpublished_facts`), by `spec_id`
+    (`RegionResult.unpublished_whole_facts`), and so for the alternate a no-data answer
+    shows in its place (`RegionResult.alternate_match`). Such a side warns no
+    `role_scope_defaulted` (`PlaceRoles.unnamed_wholes`)."""
+    if not state.whole_named:
+        return result
+    shown = (*result.specs, *([result.alternate_match] if result.alternate_match else []))
+    facts = {
+        spec.spec_id: tuple(found)
+        for spec in shown
+        if (found := whole_total_unpublished_facts(spec, state.whole_named))
+    }
+    return dataclasses.replace(result, unpublished_whole_facts=facts) if facts else result
+
+
 def _stating_unevaluated(result: RegionResult, state: ResolveState) -> RegionResult:
     """`result`, stating `alternates_unevaluated` when the pass left an alternate
     unevaluated, on every path that reached admission, a capped alternate's refusal
@@ -717,7 +736,7 @@ async def _run_phases(state: ResolveState) -> RegionResult:
                     )
                     # Every requirement departs here, once, as the judgement of the part's
                     # final answer leaves it (`with_requirement_departures`).
-                    return _stating_unevaluated(
+                    result = _stating_unevaluated(
                         dataclasses.replace(
                             with_requirement_departures(
                                 result, state.requirements, state.judgement
@@ -725,12 +744,14 @@ async def _run_phases(state: ResolveState) -> RegionResult:
                             admitted_qualifier_phrases=admitted,
                             scope_unsettled=_scope_unsettled(state),
                             entity_words=group_request_names(state),
+                            listed_axes=frozenset(state.whole_listed.values()),
                             inferred_facts=(
                                 tuple(state.inferred_facts) if result.status == "definite" else ()
                             ),
                         ),
                         state,
                     )
+                    return _stating_unpublished_wholes(result, state)
                 if state.capped_shapes and state.scope is not None and not scoped:
                     reads.enter_context(scoped_reads(state.scope.allowed))
                     scoped = True

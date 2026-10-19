@@ -1835,6 +1835,7 @@ def test_elected_shape_drops_a_model_emitted_entity_only_where_binding(places, e
     )
     state.sdmx = FakeSdmxClient(observations={}, scope_availability=state.graph.scope_availability)
     state.bindings = [_MODEL_WHERE, _ACTIVITY_SOURCE]
+    state.query_place_roles = bind_place_roles(state, state.shape_draft)
 
     assert asyncio.run(_phase_place_bindings(state)) is None
     assert state.bindings == expected
@@ -1874,6 +1875,7 @@ def test_placeless_election_reads_presence_for_its_flagged_alternates_too() -> N
     state.shape_draft = shapes[_GNI_PPP]
     state.bind_result = _UniversalBindOutput(chosen_shape_index=0, bindings=[], also_plausible=[1])
     state.elected_index = 0
+    state.query_place_roles = bind_place_roles(state, state.shape_draft)
 
     assert asyncio.run(_phase_place_bindings(state)) is None
     assert state.default_presence is not None

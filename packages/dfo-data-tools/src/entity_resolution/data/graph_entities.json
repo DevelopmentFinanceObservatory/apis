@@ -425,6 +425,15 @@
     "dac_code": "298"
   },
   {
+    "dcid": "DACAllRecipients",
+    "name": "all recipients (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "All Recipients, Total"
+    ],
+    "dac_code": "10200"
+  },
+  {
     "dcid": "DACAmericaUnallocated",
     "name": "America, unallocated by country (DAC)",
     "kind": "aggregate",

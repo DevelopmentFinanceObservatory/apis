@@ -766,7 +766,9 @@ def _finish_candidate(
         False if cand_is_elected else cand_mat.role_declaration_unverified
     )
     cand_open_origin_defaulted = (
-        False if cand_is_elected else cand_mat.open_origin_dcids is not None
+        not cand_is_elected
+        and cand_mat.open_origin_dcids is not None
+        and "origin" not in cand.place.roles.unnamed_wholes
     )
 
     cand_places = cand.place.roles
@@ -917,6 +919,7 @@ def restate_scope_warning(
         members=own if own is not None else on_axis[0],
         boundary_roles=state.place.roles.roles,
         label_of=state.opposite_labels,
+        unnamed_wholes=state.place.roles.unnamed_wholes,
         state_count=len(distinct) <= 1,
     )
 

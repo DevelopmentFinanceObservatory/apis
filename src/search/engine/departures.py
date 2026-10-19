@@ -44,6 +44,7 @@ from search.models import (
     UNIT_REF,
     WHERE_REF,
     BindingProvenance,
+    EntityGroup,
     GraphRef,
     IdentityWindowRange,
     ObservationSeries,
@@ -234,10 +235,12 @@ def spec_departure_facts(
 ) -> list[DepartureFact]:
     """The departures read off `spec` and the `operations` its part carries: operations
     not run, entities the data holds no values for, years outside the served span,
-    modelled values, and groups read as members. On a flow role such a group names the
-    residuals its total counts that the members leave out and the served dataset publishes on
-    that role.
-    A group read as its total departs nothing.
+    modelled values, groups read as members, and sides read as their whole population. On a
+    flow role a group read as members names the residuals its total counts that the members
+    leave out and the served dataset publishes on that role. A group read as its total
+    departs nothing. A side read whole (`EntityGroup.whole_of`) departs as
+    `whole_total_read`, which names the population and the way back to its members, and an
+    `aggregate` over that side was answered by the total, so it departs nothing.
     With no `spec`, only the operations not run.
 
     A forecast to a target year that a `year_unavailable` fact states departs as that
@@ -249,6 +252,7 @@ def spec_departure_facts(
     part states its departures without them (`without_request_words`)."""
     year_facts = _year_facts(spec, operations=operations) if spec is not None else []
     stated_years = {fact.requested_years for fact in year_facts}
+    whole_axes = _whole_axes(spec) if spec is not None else frozenset()
     facts = [
         fact
         for operation in operations
@@ -256,6 +260,7 @@ def spec_departure_facts(
             operation.target_year is not None
             and (operation.target_year, operation.target_year) in stated_years
         )
+        and not (operation.verb == "aggregate" and operation.over in whole_axes)
         and (fact := _operation_fact(operation))
     ]
     if spec is None:
@@ -266,6 +271,22 @@ def spec_departure_facts(
     if modelled := _modelled_fact(spec):
         facts.append(modelled)
     for role, group in (spec.resolved.entity_groups or {}).items():
+        if group.whole_of:
+            summed = any(
+                operation.verb == "aggregate" and operation.over == role_key_axis(role)
+                for operation in operations
+            )
+            facts.append(
+                _whole_total_fact(
+                    spec,
+                    role,
+                    group,
+                    words=words,
+                    request_words=entity_words is not None,
+                    summed=summed,
+                )
+            )
+            continue
         if group.total is not None:
             continue
         excluded, sum_differs = _members_left_out(spec, role, group.ref)
@@ -282,6 +303,52 @@ def spec_departure_facts(
             )
         )
     return facts
+
+
+def _whole_axes(spec: Spec) -> frozenset[RoleAxis]:
+    """The flow axes `spec` reads as their whole population (`EntityGroup.whole_of`)."""
+    return frozenset(
+        axis
+        for role, group in (spec.resolved.entity_groups or {}).items()
+        if group.whole_of and (axis := role_key_axis(role)) is not None
+    )
+
+
+def _whole_total_fact(
+    spec: Spec,
+    role: str,
+    group: EntityGroup,
+    *,
+    words: Mapping[str, str],
+    request_words: bool,
+    summed: bool,
+) -> DepartureFact:
+    """`whole_total_read` for `role`, which reads `group`'s whole population. The request's
+    words for it (`words`, keyed by the group's label) are `asked`; with none on a door that
+    holds the request's words (`request_words`), the request named nothing on the side, so
+    the fact is `inferred`. A union of totals (`EntityGroup.total` `None`) names each by its
+    code index label, as the group names a single total. A
+    request that summed over the side (`summed`), which the total answered, carries
+    `aggregate` as its `verb`."""
+    asked = words.get(group.label)
+    parties = get_index().parties
+    totals = [entity.ref for entity in spec.resolved.entities if entity.role == role]
+    return DepartureFact(
+        code="whole_total_read",
+        binding_ref=role_ref(role),
+        asked=asked,
+        over=role_key_axis(role),
+        group=group.label,
+        entities=()
+        if group.total is not None
+        else tuple(
+            row.label if (row := parties.get(dcid)) is not None and row.label else dcid
+            for dcid in totals
+        ),
+        whole_of=tuple(group.whole_of or ()),
+        inferred=asked is None and request_words,
+        verb="aggregate" if summed else None,
+    )
 
 
 def _members_left_out(spec: Spec, role: str, group: str | None) -> tuple[tuple[str, ...], bool]:
