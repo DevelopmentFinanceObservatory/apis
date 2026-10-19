@@ -647,7 +647,8 @@ def _build_part_memo(registrations: ExitStack, generation: GenerationProvider) -
         settings().response_cache_memo_max_bytes,
         settings().response_cache_memo_max_entry_bytes,
     )
-    # Refresh invokes clear from a worker thread. The memo is read on this loop only.
+    # Refresh calls stats and clear from its own thread. `stats` takes the memo's lock; clear
+    # runs on this loop.
     loop = asyncio.get_running_loop()
 
     def _clear() -> None:

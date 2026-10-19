@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import threading
+import time
+
 from pydantic import TypeAdapter
 
 from graph_api.node_cache import NodeEntryCache, NodeKey
@@ -54,3 +57,25 @@ def test_an_entry_expires_with_its_stamp():
     assert cache.get(key) is not None
     now[0] = GRAPH_CACHE_UNKNOWN_GENERATION_MAX_AGE_SECONDS + 1
     assert cache.get(key) is None
+
+
+def test_stats_from_another_thread_waits_for_a_request_in_progress():
+    # The timer runs inside `get`, after the request has entered the cache. From there it starts
+    # `stats` on a second thread, the way the generation provider's refresh thread calls it, and
+    # gives it 0.2 s to finish. `stats` expires entries through `len`, so it must wait for the
+    # request instead of mutating the cache under it.
+    outcome: dict[str, bool] = {}
+    caller = threading.get_ident()
+
+    def timer() -> float:
+        if threading.get_ident() == caller and "stats_ran_inside" not in outcome:
+            reader = threading.Thread(target=cache.stats)
+            reader.start()
+            reader.join(timeout=0.2)
+            outcome["stats_ran_inside"] = not reader.is_alive()
+        return time.monotonic()
+
+    cache = NodeEntryCache(timer=timer)
+    cache.get(_KEY)
+
+    assert outcome == {"stats_ran_inside": False}

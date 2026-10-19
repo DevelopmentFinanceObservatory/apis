@@ -7,13 +7,16 @@ it did not read, so a table swapped while the entry was built stores it where on
 that sees the new build finds it. Entries expire with their stamp's lifetime
 (`graph_generation.ttu_from_stamp_key`).
 
-The cache takes no lock: only the event loop touches it. The graph lifespan registers it with
-the generation provider as `graph_api.node_entries`, which reads `stats` and schedules `clear`
-on the loop.
+Requests call `get` and `put` on the event loop, and the generation provider calls `stats` on
+its refresh thread. `TLRUCache.__len__` expires entries, so a read of the size mutates the
+cache; one lock covers every operation on the entries and the counters. The graph lifespan
+registers the cache with the provider as `graph_api.node_entries`, with a `clear` callback that
+schedules `clear` on the loop.
 """
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Callable, Mapping
 from typing import NamedTuple
@@ -53,15 +56,17 @@ class NodeEntryCache:
         )
         self._hits = 0
         self._misses = 0
+        self._lock = threading.Lock()
 
     def get(self, key: NodeKey) -> NodeResponse | None:
         """The live envelope under `key`, counting a hit, or `None`, counting a miss."""
-        node = self._entries.get(key)
-        if node is None:
-            self._misses += 1
-        else:
-            self._hits += 1
-        return node
+        with self._lock:
+            node = self._entries.get(key)
+            if node is None:
+                self._misses += 1
+            else:
+                self._hits += 1
+            return node
 
     def put(self, key: NodeKey, node: NodeResponse) -> None:
         """Store `node`, looked up under `key`, with each build its `built_from` names in place
@@ -73,12 +78,15 @@ class NodeEntryCache:
             coverage_index=built.get("coverage_index", key.coverage_index),
             membership=built.get("membership", key.membership),
         )
-        self._entries[stored] = node
+        with self._lock:
+            self._entries[stored] = node
 
     def stats(self) -> Mapping[str, int]:
         """Hit and miss counters and the current entry count."""
-        return {"hits": self._hits, "misses": self._misses, "entries": len(self._entries)}
+        with self._lock:
+            return {"hits": self._hits, "misses": self._misses, "entries": len(self._entries)}
 
     def clear(self) -> None:
         """Drop every entry. Counters keep running."""
-        self._entries.clear()
+        with self._lock:
+            self._entries.clear()
