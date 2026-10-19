@@ -32,8 +32,8 @@ from tests.series_coverage.test_job import (
     _ROW_V1,
     FakeBigQuery,
     FakeSdmx,
-    _fingerprint_responses,
     _obs,
+    import_key_responses,
     year_stats,
 )
 
@@ -348,7 +348,7 @@ def test_job_run_publishes_a_first_ever_gs_artifact(gs_bucket, capsys):
     first build hit on dev (Cloud Run execution `dfo-dev-coverage-f58v5`).
     """
     responses = {
-        **_fingerprint_responses(row_count=3),
+        **import_key_responses(),
         "AS max_year": [year_stats(max_year=2022)],
         "GROUP BY variable, facet_id, donor, recipient": [dict(_ROW_V1)],
         "object_id AS role": [

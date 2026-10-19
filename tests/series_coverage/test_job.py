@@ -7,6 +7,7 @@ import os
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -78,6 +79,44 @@ class FakeBigQuery:
 
     def stream(self, sql: str) -> Iterator[dict[str, Any]]:
         return iter(self.query(sql))
+
+
+_CREATED_AT = datetime(2026, 9, 24, 10, 0, tzinfo=UTC)
+
+
+def history_row(
+    execution: str = "wf-1",
+    *,
+    status: str = "SUCCESS",
+    failed: bool = False,
+    created_at: datetime = _CREATED_AT,
+) -> dict[str, Any]:
+    """An `IngestionHistory` row as BigQuery returns it, completed ten minutes
+    after it was created."""
+    return {
+        "WorkflowExecutionID": execution,
+        "Status": status,
+        "IngestionFailure": failed,
+        "CreationTimestamp": created_at,
+        "CompletionTimestamp": created_at + timedelta(minutes=10),
+    }
+
+
+def import_key_responses(
+    execution: str = "wf-1",
+    *,
+    lock_owner: str | None = None,
+    newest: dict[str, Any] | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """`FakeBigQuery` responses for the import key: `execution` is the newest
+    successful import, and `newest`, when given, a newer row of another
+    status. The success marker precedes the history marker it contains."""
+    success = history_row(execution)
+    return {
+        "FROM IngestionLock": [{"LockOwner": lock_owner}],
+        "Status = 'SUCCESS'": [success],
+        "FROM IngestionHistory": [success if newest is None else newest],
+    }
 
 
 def _obs(
@@ -224,60 +263,13 @@ def test_settings_bare_unprefixed_variable_has_no_effect(monkeypatch):
     assert settings.bq_connection == _CONNECTION
 
 
-# --- Fingerprint ---------------------------------------------------------
+# --- Import key ----------------------------------------------------------
 
 
-def test_fingerprint_stamp_is_deterministic():
-    fp1 = job.Fingerprint(
-        workflow_execution_id="wf-1",
-        creation_timestamp="t1",
-        row_count=10,
-        max_last_update_timestamp="t2",
-    )
-    fp2 = job.Fingerprint(
-        workflow_execution_id="wf-1",
-        creation_timestamp="t1",
-        row_count=10,
-        max_last_update_timestamp="t2",
-    )
-    fp3 = job.Fingerprint(
-        workflow_execution_id="wf-1",
-        creation_timestamp="t1",
-        row_count=11,
-        max_last_update_timestamp="t2",
-    )
-    assert fp1.stamp == fp2.stamp
-    assert fp1.stamp != fp3.stamp
-
-
-def test_read_fingerprint_combines_history_and_observation_count():
-    bq = FakeBigQuery(
-        {
-            "IngestionHistory": [
-                {"WorkflowExecutionID": "wf-9", "CreationTimestamp": "2026-09-24T10:00:00Z"}
-            ],
-            "COUNT(*) AS row_count": [{"row_count": 6645946, "max_ts": "2026-09-24T09:00:00Z"}],
-        }
-    )
-    fp = job.read_fingerprint(bq, connection=_CONNECTION)
-    assert fp.workflow_execution_id == "wf-9"
-    assert fp.row_count == 6645946
-
-
-def test_read_fingerprint_raises_when_no_successful_history_row():
-    bq = FakeBigQuery({"IngestionHistory": []})
-    with pytest.raises(job.CoverageFingerprintError):
-        job.read_fingerprint(bq, connection=_CONNECTION)
-
-
-def test_lock_held_true_when_lock_owner_set():
-    bq = FakeBigQuery({"IngestionLock": [{"LockOwner": "some-workflow"}]})
-    assert job.lock_held(bq, connection=_CONNECTION) is True
-
-
-def test_lock_held_false_when_lock_owner_null():
-    bq = FakeBigQuery({"IngestionLock": [{"LockOwner": None}]})
-    assert job.lock_held(bq, connection=_CONNECTION) is False
+def test_read_key_raises_when_history_is_empty():
+    bq = FakeBigQuery({"FROM IngestionLock": [{"LockOwner": None}], "FROM IngestionHistory": []})
+    with pytest.raises(job.CoverageImportKeyError):
+        job.read_key(bq, connection=_CONNECTION)
 
 
 # --- build_coverage_table ----------------------------------------------------
@@ -531,19 +523,6 @@ def test_build_coverage_table_refuses_rows_outside_the_role_population():
     assert "WHERE d.n_roles IS NOT NULL OR IFNULL(o.extra_entities_id, '') != ''" in year_sql
     assert "IFNULL(d.n_roles BETWEEN 1 AND 2, FALSE) AS in_population" in year_sql
     assert "COUNTIF(NOT in_population) AS n_outside_rows" in year_sql
-
-
-def test_read_fingerprint_counts_role_bearing_observations_by_role_count():
-    bq = FakeBigQuery(
-        {
-            "IngestionHistory": [{"WorkflowExecutionID": "wf-1", "CreationTimestamp": "t1"}],
-            "COUNT(*) AS row_count": [{"row_count": 1, "max_ts": "t2"}],
-        }
-    )
-    job.read_fingerprint(bq, connection=_CONNECTION)
-    count_sql = bq.queries[-1]
-    assert "FROM declared_roles WHERE n_roles BETWEEN 1 AND 2" in count_sql
-    assert "WHERE variable_measured IN (SELECT variable FROM role_bearing)" in count_sql
 
 
 def test_build_coverage_table_refuses_on_empty_result():
@@ -1472,7 +1451,7 @@ def test_publish_writes_a_new_build_create_only_then_current_json_last(tmp_path,
 
 
 def test_two_builds_of_one_stamp_land_in_separate_directories(tmp_path):
-    """A scheduled run and a deploy run of one fingerprint each publish into
+    """A scheduled run and a deploy run of one import key each publish into
     their own build directory; the second leaves every byte of the first
     as it was, and the pointer moves to the second."""
     base_uri = f"file://{tmp_path}"
@@ -1584,8 +1563,7 @@ def test_update_stale_state_no_op_when_caught_up(tmp_path, capsys):
         sdmx_timeout_seconds=90.0,
         cycle_seconds=900.0,
     )
-    fp = job.Fingerprint("wf", "t", 1, "t2")
-    job._update_stale_state(settings, fingerprint=fp, published_stamp=fp.stamp, clock=lambda: 0.0)
+    job._update_stale_state(settings, stamp="s", published_stamp="s", clock=lambda: 0.0)
     assert capsys.readouterr().out == ""
     assert not _root(tmp_path).exists()
 
@@ -1600,25 +1578,23 @@ def test_update_stale_state_emits_only_past_the_cycle_threshold(tmp_path, capsys
         sdmx_timeout_seconds=90.0,
         cycle_seconds=100.0,
     )
-    fp = job.Fingerprint("wf", "t", 1, "t2")
-
     # First unpublished observation starts the clock without an alert.
-    job._update_stale_state(settings, fingerprint=fp, published_stamp=None, clock=lambda: 0.0)
+    job._update_stale_state(settings, stamp="s", published_stamp=None, clock=lambda: 0.0)
     assert capsys.readouterr().out == ""
     # Each format root keeps its own clock.
     assert (_root(tmp_path) / "coverage_state.json").is_file()
     assert sorted(p.name for p in tmp_path.iterdir()) == [_root(tmp_path).name]
 
     # Still within one cycle: no alert.
-    job._update_stale_state(settings, fingerprint=fp, published_stamp=None, clock=lambda: 50.0)
+    job._update_stale_state(settings, stamp="s", published_stamp=None, clock=lambda: 50.0)
     assert capsys.readouterr().out == ""
 
     # Past the cycle threshold: alert.
-    job._update_stale_state(settings, fingerprint=fp, published_stamp=None, clock=lambda: 150.0)
+    job._update_stale_state(settings, stamp="s", published_stamp=None, clock=lambda: 150.0)
     out = capsys.readouterr().out
     payload = json.loads(out)
     assert payload["event"] == "coverage_publish_stale"
-    assert payload["fingerprint_stamp"] == fp.stamp
+    assert payload["fingerprint_stamp"] == "s"
 
 
 # --- run() orchestration --------------------------------------------------
@@ -1637,24 +1613,16 @@ def _settings(tmp_path: Path) -> job.JobSettings:
 
 
 def test_run_skips_when_lock_held(tmp_path, capsys):
-    bq = FakeBigQuery({"IngestionLock": [{"LockOwner": "someone"}]})
+    bq = FakeBigQuery(import_key_responses(lock_owner="someone"))
     sdmx = FakeSdmx()
     job.run(_settings(tmp_path), index=_INDEX, bq=bq, sdmx=sdmx)
     assert json.loads(capsys.readouterr().out)["event"] == "coverage_job_skipped"
     assert not tmp_path.exists() or not any(tmp_path.iterdir())
 
 
-def _fingerprint_responses(row_count: int = 3) -> dict[str, list[dict[str, Any]]]:
-    return {
-        "IngestionLock": [{"LockOwner": None}],
-        "IngestionHistory": [{"WorkflowExecutionID": "wf-1", "CreationTimestamp": "t1"}],
-        "COUNT(*) AS row_count": [{"row_count": row_count, "max_ts": "t2"}],
-    }
-
-
 def _build_responses() -> dict[str, list[dict[str, Any]]]:
     return {
-        **_fingerprint_responses(row_count=3),
+        **import_key_responses(),
         "AS max_year": [year_stats(max_year=2022)],
         "GROUP BY variable, facet_id, donor, recipient": [dict(_ROW_V1)],
         # Every query joins `role_bearing`, which reads observationProperties;
@@ -1700,25 +1668,60 @@ def _write_pointer(root: Path, *, build_id: str, stamp: str = "s", age: float = 
     _set_age(root / "current.json", age)
 
 
-def test_run_noops_when_published_stamp_matches_fingerprint(tmp_path, capsys):
-    responses = _fingerprint_responses()
-    fp = job.read_fingerprint(FakeBigQuery(responses), connection=_CONNECTION)
-    _write_build(_root(tmp_path), "b1", stamp=fp.stamp)
-    _write_pointer(_root(tmp_path), build_id="b1", stamp=fp.stamp)
+def test_run_noops_when_published_stamp_matches_the_import_key(tmp_path, capsys):
+    responses = import_key_responses()
+    key = job.read_key(FakeBigQuery(responses), connection=_CONNECTION)
+    _write_build(_root(tmp_path), "b1", stamp=key.stamp)
+    _write_pointer(_root(tmp_path), build_id="b1", stamp=key.stamp)
+    bq = FakeBigQuery(responses)
 
-    job.run(_settings(tmp_path), index=_INDEX, bq=FakeBigQuery(responses), sdmx=FakeSdmx())
+    job.run(_settings(tmp_path), index=_INDEX, bq=bq, sdmx=FakeSdmx())
 
     events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert events[-1]["event"] == "coverage_job_noop"
+    # The change check reads the import workflow's own rows and scans no observation.
+    assert bq.queries
+    assert not [sql for sql in bq.queries if "Observation" in sql or "last_update" in sql]
+
+
+def test_a_failed_import_publishes_nothing_and_alerts_after_a_cycle(tmp_path, capsys):
+    published = import_key_responses()
+    key = job.read_key(FakeBigQuery(published), connection=_CONNECTION)
+    _write_build(_root(tmp_path), "b1", stamp=key.stamp)
+    _write_pointer(_root(tmp_path), build_id="b1", stamp=key.stamp)
+    failed = import_key_responses(
+        newest=history_row(
+            "wf-2", status="FAILURE", failed=True, created_at=_CREATED_AT + timedelta(days=1)
+        )
+    )
+    settings = _settings(tmp_path)
+
+    for now in (0.0, settings.cycle_seconds + 1):
+        job.run(
+            settings,
+            index=_INDEX,
+            bq=FakeBigQuery(failed),
+            sdmx=FakeSdmx(),
+            clock=lambda now=now: now,
+        )
+
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert [(e["event"], e.get("reason")) for e in events] == [
+        ("coverage_job_skipped", "import_not_successful"),
+        ("coverage_publish_stale", None),
+        ("coverage_job_skipped", "import_not_successful"),
+    ]
+    assert events[1]["published_stamp"] == key.stamp != events[1]["fingerprint_stamp"]
+    assert read_current(_root(tmp_path) / "current.json").build_id == "b1"
 
 
 def test_run_ignores_the_next_format_root(tmp_path, capsys):
     """A matching artifact under another format root does not satisfy this version's publish.
     The run leaves that root unchanged."""
-    fp = job.read_fingerprint(FakeBigQuery(_build_responses()), connection=_CONNECTION)
+    key = job.read_key(FakeBigQuery(_build_responses()), connection=_CONNECTION)
     other_root = tmp_path / f"format-{COVERAGE_FORMAT_VERSION + 1}"
-    _write_build(other_root, "theirs", stamp=fp.stamp, age=job._MAX_RUN_SECONDS * 10)
-    _write_pointer(other_root, build_id="theirs", stamp=fp.stamp, age=job._MAX_RUN_SECONDS * 10)
+    _write_build(other_root, "theirs", stamp=key.stamp, age=job._MAX_RUN_SECONDS * 10)
+    _write_pointer(other_root, build_id="theirs", stamp=key.stamp, age=job._MAX_RUN_SECONDS * 10)
     _write_build(other_root, "their-old", age=job._MAX_RUN_SECONDS * 10)
     before = {p: p.read_bytes() for p in other_root.rglob("*") if p.is_file()}
 
@@ -1731,21 +1734,18 @@ def test_run_ignores_the_next_format_root(tmp_path, capsys):
         "coverage_job_published",
         "coverage_index_compatible",
     ]
-    assert load_coverage(f"file://{tmp_path}").manifest.stamp == fp.stamp
+    assert load_coverage(f"file://{tmp_path}").manifest.stamp == key.stamp
     assert {p: p.read_bytes() for p in other_root.rglob("*") if p.is_file()} == before
 
 
-def test_run_discards_when_fingerprint_moves_during_build(tmp_path, capsys):
-    call_count = {"n": 0}
+def test_run_discards_when_the_import_key_moves_during_build(tmp_path, capsys):
+    landed = import_key_responses("wf-2", newest=history_row("wf-2", created_at=_CREATED_AT))
 
     class _MovingBigQuery(FakeBigQuery):
         def query(self, sql):
-            if "COUNT(*) AS row_count" in sql:
-                call_count["n"] += 1
-                # First fingerprint read (pre-build) reports row_count=3;
-                # the second (post-build, "did anything change?") reports a
-                # different count, simulating an ingestion landing mid-run.
-                return [{"row_count": 3 if call_count["n"] == 1 else 4, "max_ts": "t2"}]
+            # An import lands once the build has started reading.
+            if "AS max_year" in sql:
+                self._responses.update(landed)
             return super().query(sql)
 
     job.run(
@@ -1777,7 +1777,9 @@ def test_run_publishes_end_to_end(tmp_path, capsys):
     manifest = load_coverage(f"file://{tmp_path}").manifest
     assert manifest.build_id == pointer.build_id
     # The raw IngestionHistory row, which the origin catalogue's manifest records too.
-    assert manifest.ingestion == Ingestion(workflow_execution_id="wf-1", creation_timestamp="t1")
+    assert manifest.ingestion == Ingestion(
+        workflow_execution_id="wf-1", creation_timestamp="2026-09-24 10:00:00+00:00"
+    )
 
 
 def test_run_publishes_a_one_role_variable_beside_a_two_role_one(tmp_path, capsys):
@@ -1872,7 +1874,7 @@ def test_main_reports_a_pointer_read_failure_as_coverage_job_failed(tmp_path, ca
     """A `current.json` read that fails for a reason other than "doesn't
     exist yet" must stop the run and reach `main`'s own
     `coverage_job_failed` event, never a bare traceback."""
-    bq = FakeBigQuery(_fingerprint_responses())
+    bq = FakeBigQuery(import_key_responses())
     sdmx = FakeSdmx()
 
     monkeypatch.setattr(job.JobSettings, "from_env", classmethod(lambda cls: _settings(tmp_path)))
@@ -2041,11 +2043,11 @@ def test_prune_between_a_concurrent_publish_s_files_leaves_it_loadable(tmp_path,
 
 def test_run_prunes_old_builds_on_a_no_op_run(tmp_path, capsys):
     """No-op runs also prune old builds."""
-    responses = _fingerprint_responses()
-    fp = job.read_fingerprint(FakeBigQuery(responses), connection=_CONNECTION)
+    responses = import_key_responses()
+    key = job.read_key(FakeBigQuery(responses), connection=_CONNECTION)
     root = _root(tmp_path)
-    _write_build(root, "live", stamp=fp.stamp, age=_OLD)
-    _write_pointer(root, build_id="live", stamp=fp.stamp, age=_OLD)
+    _write_build(root, "live", stamp=key.stamp, age=_OLD)
+    _write_pointer(root, build_id="live", stamp=key.stamp, age=_OLD)
     _write_build(root, "ancient", age=_OLD * 10)
     _write_build(root, "previous", age=_OLD)
 

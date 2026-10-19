@@ -5,8 +5,9 @@ immutable `versions/<build_id>/` directory. Each image reads and prunes its
 own format root. BigQuery queries send root-partitionable projections to
 Spanner through `EXTERNAL_QUERY` and aggregate in BigQuery.
 
-The job refuses to publish while `IngestionLock` is held, if the source
-fingerprint changes during a build, if a date is invalid or more than 50
+The job refuses to publish while `IngestionLock` is held, while the newest
+`IngestionHistory` row is not a success, if the import key
+(`artifact_publication.jobs.ImportKey`) changes during a build, if a date is invalid or more than 50
 years ahead, or if SDMX reconciliation differs. It writes build files
 create-only and conditionally replaces `current.json` using its version
 token. Concurrent runs can leave an unreferenced build, which pruning
@@ -87,14 +88,13 @@ from pydantic_settings import SettingsConfigDict
 from artifact_publication.jobs import (
     AliasOnlySettings,
     BigQueryReader,
-    Fingerprint,
+    ImportKey,
     Ingestion,
     LiveBigQuery,
     emit,
-    lock_held,
     new_build_id,
     prune_versions,
-    read_ingestion_fingerprint,
+    read_import_key_bq,
     unpublished_seconds,
 )
 from artifact_publication.uri import (
@@ -202,8 +202,8 @@ def _with_role_bearing(connection: str) -> str:
 _IS_ROLE_BEARING = "variable_measured IN (SELECT variable FROM role_bearing)"
 
 
-class CoverageFingerprintError(Exception):
-    """`IngestionHistory` has no successful row to fingerprint from."""
+class CoverageImportKeyError(Exception):
+    """`IngestionHistory` has no row to key a build on."""
 
 
 class CoverageBuildError(Exception):
@@ -314,30 +314,18 @@ class CoverageSdmxClient(Protocol):
     ) -> Any: ...
 
 
-# --- Fingerprint -----------------------------------------------------------
+# --- Import key ------------------------------------------------------------
 
 
-def read_fingerprint(bq: BigQueryReader, *, connection: str) -> Fingerprint:
-    """Reads the latest successful ingestion and role-bearing row counts.
-    `stamp` is the data version recorded in the manifest and `current.json`.
-    Missing successful history raises `CoverageFingerprintError`.
+def read_key(bq: BigQueryReader, *, connection: str) -> ImportKey:
+    """Reads the import key. `stamp` is the data version recorded in the
+    manifest and `current.json`. An empty `IngestionHistory` raises
+    `CoverageImportKeyError`.
     """
-    observation_sql = (
-        _with_role_bearing(connection)
-        + "SELECT COUNT(*) AS row_count, MAX(last_update_timestamp) AS max_ts\n"
-        f'FROM EXTERNAL_QUERY("{connection}", '
-        '"SELECT variable_measured, last_update_timestamp FROM Observation")\n'
-        f"WHERE {_IS_ROLE_BEARING}"
-    )
-    fingerprint = read_ingestion_fingerprint(
-        bq, connection=connection, observation_sql=observation_sql
-    )
-    if fingerprint is None:
-        raise CoverageFingerprintError(
-            "IngestionHistory has no row with IngestionFailure=false and Status='SUCCESS' "
-            "to fingerprint from"
-        )
-    return fingerprint
+    key = read_import_key_bq(bq, connection=connection)
+    if key is None:
+        raise CoverageImportKeyError("IngestionHistory has no row to key a build on")
+    return key
 
 
 def _read_published(root: str) -> tuple[CoveragePointer | None, str | None]:
@@ -959,8 +947,8 @@ def reconcile(
     The sample holds the variable with the fewest expected rows from each
     `(donor_role, recipient_role)` group, so every role mapping is checked,
     then further variables in `sha256(stamp + variable)` order while the
-    expected rows fit `max_rows`. `stamp` is the fingerprint the build
-    publishes under, so one data version always gets the same sample.
+    expected rows fit `max_rows`. `stamp` is the import key stamp the
+    build publishes under, so one data version always gets the same sample.
 
     Variables group by `RoleNames`, and `_plan_group_requests` plans each
     group's sampled variables into requests so none expects more than
@@ -1056,7 +1044,7 @@ def publish(
 ) -> bool:
     """Writes files to a new build directory, then conditionally commits
     `current.json` using `expected_generation`. The manifest records
-    `ingestion`, the `IngestionHistory` row the build's fingerprint read.
+    `ingestion`, the successful `IngestionHistory` row the build is keyed on.
     Build files are create-only.
     An existing file raises `CoverageBuildError`. Returns whether the pointer
     write landed. A lost race leaves an unreferenced build for pruning.
@@ -1195,25 +1183,27 @@ def _record_compatibility(base_uri: str, *, stamp: str, build_id: str, index: Co
 
 
 def _update_stale_state(
-    settings: JobSettings, *, fingerprint: Fingerprint, published_stamp: str | None, clock
+    settings: JobSettings, *, stamp: str, published_stamp: str | None, clock
 ) -> None:
-    """Tracks unpublished time in `coverage_state.json` at the format root.
+    """Tracks how long `stamp` has gone unpublished in `coverage_state.json`
+    at the format root.
 
-    Emits `coverage_publish_stale` after one cycle. A new fingerprint starts
-    its own clock. Each format root has separate state.
+    Emits `coverage_publish_stale` after one cycle. A new stamp starts its
+    own clock, so a failed import, which moves the stamp and publishes
+    nothing, alerts a cycle later. Each format root has separate state.
     """
-    if published_stamp == fingerprint.stamp:
+    if published_stamp == stamp:
         return
     behind_seconds = unpublished_seconds(
         format_root(settings.artifact_uri),
         state_file=_STATE_FILE,
-        stamp=fingerprint.stamp,
+        stamp=stamp,
         now=clock(),
     )
     if behind_seconds > settings.cycle_seconds:
         emit(
             "coverage_publish_stale",
-            fingerprint_stamp=fingerprint.stamp,
+            fingerprint_stamp=stamp,
             published_stamp=published_stamp,
             seconds_behind=round(behind_seconds, 1),
         )
@@ -1230,21 +1220,22 @@ def run(
     index: CodeIndex,
     clock=time.time,
 ) -> None:
-    """Publishes a build when the fingerprint has moved, records it against `index`, the
-    code index this image packages, and prunes."""
-    if lock_held(bq, connection=settings.bq_connection):
+    """Publishes a build when the import key's stamp has moved, records it against
+    `index`, the code index this image packages, and prunes."""
+    key = read_key(bq, connection=settings.bq_connection)
+    if key.lock_owner is not None:
         emit("coverage_job_skipped", reason="ingestion_lock_held")
         return
 
-    fingerprint = read_fingerprint(bq, connection=settings.bq_connection)
     published, published_generation = _read_published(format_root(settings.artifact_uri))
     published_stamp = published.stamp if published is not None else None
-    _update_stale_state(
-        settings, fingerprint=fingerprint, published_stamp=published_stamp, clock=clock
-    )
-    if published_stamp == fingerprint.stamp:
-        emit("coverage_job_noop", stamp=fingerprint.stamp)
+    _update_stale_state(settings, stamp=key.stamp, published_stamp=published_stamp, clock=clock)
+    if published_stamp == key.stamp:
+        emit("coverage_job_noop", stamp=key.stamp)
         _prune(settings.artifact_uri)
+        return
+    if not key.buildable:
+        emit("coverage_job_skipped", reason="import_not_successful", stamp=key.stamp)
         return
 
     build_start = time.monotonic()
@@ -1256,51 +1247,51 @@ def run(
         sdmx,
         table=table,
         role_names=role_names,
-        stamp=fingerprint.stamp,
+        stamp=key.stamp,
         max_rows=settings.reconcile_max_rows,
     )
     build_seconds = time.monotonic() - build_start
 
-    if lock_held(bq, connection=settings.bq_connection):
+    current_key = read_key(bq, connection=settings.bq_connection)
+    if current_key.lock_owner is not None:
         emit(
             "coverage_job_discarded",
             reason="ingestion_lock_acquired_during_build",
-            stamp=fingerprint.stamp,
+            stamp=key.stamp,
         )
         return
-    current_fingerprint = read_fingerprint(bq, connection=settings.bq_connection)
-    if current_fingerprint.stamp != fingerprint.stamp:
+    if current_key.stamp != key.stamp:
         emit(
             "coverage_job_discarded",
             reason="fingerprint_moved_during_build",
-            stamp=fingerprint.stamp,
+            stamp=key.stamp,
         )
         return
 
     build_id = new_build_id()
     committed = publish(
         base_uri=settings.artifact_uri,
-        stamp=fingerprint.stamp,
+        stamp=key.stamp,
         build_id=build_id,
         table=table,
         horizon=build.horizon,
         role_names=role_names,
         facet_metadata=facet_metadata,
         source="series_coverage.job",
-        ingestion=fingerprint.ingestion,
+        ingestion=key.newest.ingestion,
         expected_generation=published_generation,
     )
     if not committed:
         emit(
             "coverage_job_lost_publish_race",
-            stamp=fingerprint.stamp,
+            stamp=key.stamp,
             build_id=build_id,
             published_generation=published_generation,
         )
         return
     emit(
         "coverage_job_published",
-        stamp=fingerprint.stamp,
+        stamp=key.stamp,
         build_id=build_id,
         rows=table.num_rows,
         variables=len(role_names),
@@ -1310,9 +1301,7 @@ def run(
         reconciliation_variables=reconciliation.variables_checked,
         reconciliation_rows_expected=reconciliation.rows_expected,
     )
-    _record_compatibility(
-        settings.artifact_uri, stamp=fingerprint.stamp, build_id=build_id, index=index
-    )
+    _record_compatibility(settings.artifact_uri, stamp=key.stamp, build_id=build_id, index=index)
     _prune(settings.artifact_uri)
 
 
@@ -1330,7 +1319,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (
         CoverageArtifactError,
         CoverageBuildError,
-        CoverageFingerprintError,
+        CoverageImportKeyError,
         CoveragePointerReadError,
         CoverageRoleNameError,
         CoverageFacetMetadataError,
@@ -1350,22 +1339,20 @@ __all__ = [
     "BigQueryReader",
     "CoverageBuildError",
     "CoverageFacetMetadataError",
-    "CoverageFingerprintError",
+    "CoverageImportKeyError",
     "CoveragePointerReadError",
     "CoverageReconciliationError",
     "CoverageRoleNameError",
     "CoverageSdmxClient",
-    "Fingerprint",
     "JobSettings",
     "LiveBigQuery",
     "ReconciliationResult",
     "build_coverage_table",
-    "lock_held",
     "main",
     "new_build_id",
     "prune_old_versions",
     "publish",
-    "read_fingerprint",
+    "read_key",
     "reconcile",
     "resolve_facet_metadata",
     "resolve_role_names",

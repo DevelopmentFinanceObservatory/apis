@@ -3,9 +3,10 @@
 
 Both jobs publish immutable `versions/<build_id>/` directories under a format
 root and commit a `current.json` pointer with a generation-conditional
-write. Both read Spanner through BigQuery `EXTERNAL_QUERY`, skip a build
-while `IngestionLock` is held, fingerprint the ingested data, prune builds
-nothing can still be reading, and alert when publication falls behind.
+write. Both read Spanner through BigQuery `EXTERNAL_QUERY`, key each build
+on the import workflow's `IngestionHistory` and `IngestionLock` rows
+(`ImportKey`), prune builds nothing can still be reading, and alert when
+publication falls behind.
 """
 
 from __future__ import annotations
@@ -15,8 +16,8 @@ import json
 import logging
 import secrets
 import time
-from collections.abc import Callable, Iterator
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
@@ -91,24 +92,27 @@ class LiveBigQuery:
             yield dict(row)
 
 
-def lock_held(bq: BigQueryReader, *, connection: str) -> bool:
-    """Returns `True` when the single `IngestionLock` row has a `LockOwner`.
-
-    The row always exists. An unheld lock has `LockOwner IS NULL`.
-    """
-    sql = (
-        "SELECT LockOwner\n"
-        f'FROM EXTERNAL_QUERY("{connection}", "SELECT LockOwner FROM IngestionLock")'
-    )
-    rows = bq.query(sql)
-    return any(row.get("LockOwner") for row in rows)
+# The three statements both import-key readers run, so the key cannot drift
+# between the BigQuery and the Spanner path. The BigQuery reader sorts outside
+# `EXTERNAL_QUERY`, which keeps the federated statement root-partitionable.
+_HISTORY_COLUMNS = (
+    "WorkflowExecutionID",
+    "Status",
+    "IngestionFailure",
+    "CreationTimestamp",
+    "CompletionTimestamp",
+)
+_LOCK_SQL = "SELECT LockOwner FROM IngestionLock"
+_HISTORY_SQL = f"SELECT {', '.join(_HISTORY_COLUMNS)} FROM IngestionHistory"
+_SUCCESS_SQL = f"{_HISTORY_SQL} WHERE IngestionFailure = false AND Status = 'SUCCESS'"
+_NEWEST_FIRST = "ORDER BY CreationTimestamp DESC, WorkflowExecutionID DESC LIMIT 1"
 
 
 @dataclass(frozen=True, slots=True)
 class Ingestion:
-    """The latest successful `IngestionHistory` row a build read, raw. Two
-    artifacts built from one ingestion record equal values, so a reader can
-    tell whether a pair it loaded agree."""
+    """The successful `IngestionHistory` row a build read, its creation time
+    as `str` of the UTC `datetime`. Two artifacts built from one ingestion record equal
+    values, so a reader can tell whether a pair it loaded agree."""
 
     workflow_execution_id: str
     creation_timestamp: str
@@ -131,75 +135,143 @@ class Ingestion:
         return cls(workflow_execution_id=execution, creation_timestamp=created)
 
 
+def _utc_iso(value: object) -> str:
+    """A timestamp as UTC ISO 8601 at microsecond precision. BigQuery returns
+    a `datetime` and the Spanner client a `DatetimeWithNanoseconds`, and both
+    give the same text."""
+    if not isinstance(value, datetime) or value.tzinfo is None:
+        raise ValueError(f"IngestionHistory timestamp is not a timezone-aware datetime: {value!r}")
+    return value.astimezone(UTC).isoformat(timespec="microseconds")
+
+
 @dataclass(frozen=True, slots=True)
-class Fingerprint:
-    """The data-version fingerprint: the latest successful `IngestionHistory`
-    row plus `COUNT(*)`/`MAX(last_update_timestamp)` over the `Observation`
-    rows a job reads. `stamp` is the digest a job compares and records."""
+class HistoryRow:
+    """One `IngestionHistory` row, normalised so that either driver's row
+    hashes alike. `completed_at` is `None` while the import runs."""
 
     workflow_execution_id: str
-    creation_timestamp: str
-    row_count: int
-    max_last_update_timestamp: str
+    status: str
+    failed: bool
+    created_at: str
+    completed_at: str | None
 
-    @property
-    def stamp(self) -> str:
-        digest_input = "|".join(
-            (
-                self.workflow_execution_id,
-                self.creation_timestamp,
-                str(self.row_count),
-                self.max_last_update_timestamp,
-            )
+    @classmethod
+    def from_row(cls, row: Mapping[str, object]) -> HistoryRow:
+        """Raises `ValueError` for a timestamp that is not a timezone-aware
+        `datetime`."""
+        completed = row["CompletionTimestamp"]
+        return cls(
+            workflow_execution_id=str(row["WorkflowExecutionID"]),
+            status=str(row["Status"]),
+            failed=bool(row["IngestionFailure"]),
+            created_at=_utc_iso(row["CreationTimestamp"]),
+            completed_at=None if completed is None else _utc_iso(completed),
         )
-        return hashlib.sha256(digest_input.encode("utf-8")).hexdigest()[:32]
 
     @property
     def ingestion(self) -> Ingestion:
+        """The manifest record of this row. Its timestamp keeps the form the
+        manifests have always carried, `str` of the UTC `datetime`."""
         return Ingestion(
             workflow_execution_id=self.workflow_execution_id,
-            creation_timestamp=self.creation_timestamp,
+            creation_timestamp=str(datetime.fromisoformat(self.created_at)),
         )
 
 
-def observation_stats_sql(connection: str) -> str:
-    """The row count and latest update over every `Observation` row.
-    `read_ingestion_fingerprint` reads it as `row_count` and `max_ts`."""
-    return (
-        "SELECT COUNT(*) AS row_count, MAX(last_update_timestamp) AS max_ts\n"
-        f'FROM EXTERNAL_QUERY("{connection}", '
-        '"SELECT last_update_timestamp FROM Observation")'
-    )
+@dataclass(frozen=True, slots=True)
+class ImportKey:
+    """What the import workflow last did: the newest `IngestionHistory` row
+    of any status, the newest successful one, and the `IngestionLock` owner.
 
-
-def read_ingestion_fingerprint(
-    bq: BigQueryReader, *, connection: str, observation_sql: str
-) -> Fingerprint | None:
-    """Reads the latest successful ingestion and the one-row observation
-    stats `observation_sql` selects as `row_count` and `max_ts`, such as
-    `observation_stats_sql`. Returns `None` when `IngestionHistory` has no
-    successful row.
-
-    Sorting runs in BigQuery outside `EXTERNAL_QUERY` to preserve Spanner
-    root partitioning.
+    A job builds when `buildable` and `stamp` differs from the stamp it last
+    published. The lock stays out of `stamp`, so taking it does not change
+    the key.
     """
-    history_sql = (
-        "SELECT WorkflowExecutionID, CreationTimestamp\n"
-        f'FROM EXTERNAL_QUERY("{connection}", '
-        '"SELECT WorkflowExecutionID, CreationTimestamp FROM IngestionHistory '
-        "WHERE IngestionFailure = false AND Status = 'SUCCESS'\")\n"
-        "ORDER BY CreationTimestamp DESC\nLIMIT 1"
-    )
-    history_rows = bq.query(history_sql)
-    if not history_rows:
+
+    newest: HistoryRow
+    newest_success: HistoryRow | None
+    lock_owner: str | None
+
+    @classmethod
+    def from_rows(
+        cls,
+        lock: Mapping[str, object] | None,
+        newest: Mapping[str, object],
+        newest_success: Mapping[str, object] | None,
+    ) -> ImportKey:
+        """Builds the key from the rows the three statements return, keyed by
+        column name. A missing lock row, or one with no `LockOwner`, is unheld."""
+        owner = None if lock is None else lock.get("LockOwner")
+        return cls(
+            newest=HistoryRow.from_row(newest),
+            newest_success=None if newest_success is None else HistoryRow.from_row(newest_success),
+            lock_owner=str(owner) if owner else None,
+        )
+
+    @property
+    def stamp(self) -> str:
+        """SHA-256 over the two history rows, first 32 hex characters. Any new
+        history row, or a status change on the newest one, moves it."""
+        rows = [self.newest, self.newest_success]
+        payload = json.dumps(
+            [None if row is None else asdict(row) for row in rows],
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
+
+    @property
+    def buildable(self) -> bool:
+        """`False` while the lock is held or the newest row is not the newest
+        success, because the database could then hold part of an import."""
+        return self.lock_owner is None and self.newest == self.newest_success
+
+
+def read_import_key_bq(bq: BigQueryReader, *, connection: str) -> ImportKey | None:
+    """Reads the import key through BigQuery `EXTERNAL_QUERY` on `connection`.
+    Returns `None` when `IngestionHistory` has no row.
+
+    The lock is read first, so an import that starts after it shows as a
+    newest row that is not a success.
+    """
+
+    def first(statement: str, columns: str, order: str = "") -> Mapping[str, object] | None:
+        sql = f'SELECT {columns}\nFROM EXTERNAL_QUERY("{connection}", "{statement}")'
+        rows = bq.query(f"{sql}\n{order}" if order else sql)
+        return rows[0] if rows else None
+
+    history_columns = ", ".join(_HISTORY_COLUMNS)
+    lock = first(_LOCK_SQL, "LockOwner")
+    newest = first(_HISTORY_SQL, history_columns, _NEWEST_FIRST)
+    if newest is None:
         return None
-    latest = history_rows[0]
-    obs = bq.query(observation_sql)[0]
-    return Fingerprint(
-        workflow_execution_id=str(latest["WorkflowExecutionID"]),
-        creation_timestamp=str(latest["CreationTimestamp"]),
-        row_count=int(obs["row_count"]),
-        max_last_update_timestamp=str(obs["max_ts"]),
+    return ImportKey.from_rows(lock, newest, first(_SUCCESS_SQL, history_columns, _NEWEST_FIRST))
+
+
+class SpannerSnapshot(Protocol):
+    """The part of a `google.cloud.spanner` snapshot `read_import_key` uses:
+    `execute_sql` yields each row as a sequence in the statement's column
+    order."""
+
+    def execute_sql(self, sql: str) -> Iterable[Sequence[object]]: ...
+
+
+def read_import_key(snapshot: SpannerSnapshot) -> ImportKey | None:
+    """Reads the import key in `snapshot`, which runs three statements, so it
+    must be a multi-use snapshot. Returns `None` when `IngestionHistory` has
+    no row."""
+
+    def first(sql: str, columns: Sequence[str]) -> Mapping[str, object] | None:
+        for row in snapshot.execute_sql(sql):
+            return dict(zip(columns, row, strict=True))
+        return None
+
+    lock = first(_LOCK_SQL, ("LockOwner",))
+    newest = first(f"{_HISTORY_SQL} {_NEWEST_FIRST}", _HISTORY_COLUMNS)
+    if newest is None:
+        return None
+    return ImportKey.from_rows(
+        lock, newest, first(f"{_SUCCESS_SQL} {_NEWEST_FIRST}", _HISTORY_COLUMNS)
     )
 
 
@@ -391,17 +463,18 @@ __all__ = [
     "LEASE_FILE",
     "AliasOnlySettings",
     "BigQueryReader",
-    "Fingerprint",
+    "HistoryRow",
+    "ImportKey",
     "Ingestion",
     "Lease",
     "LiveBigQuery",
+    "SpannerSnapshot",
     "acquire_lease",
     "emit",
-    "lock_held",
     "new_build_id",
-    "observation_stats_sql",
     "prune_versions",
-    "read_ingestion_fingerprint",
+    "read_import_key",
+    "read_import_key_bq",
     "release_lease",
     "tracked_stamp",
     "unpublished_seconds",
