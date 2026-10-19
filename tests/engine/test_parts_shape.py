@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 from search.engine.assemble import OBSERVATIONS_OMITTED
 from search.engine.bind import _UniversalBindOutput
-from search.engine.conjoin import BINDING_FOLDED
+from search.engine.conjoin import BINDING_FOLDED, NESTED_SHAPE_STEPS
 from search.engine.extract import _EXTRACTION_SYSTEM_PROMPT, Extraction
 from search.engine.quantity_read import QuantityOutput
 from search.models import (
@@ -573,7 +573,7 @@ def test_per_part_timing_by_step_excludes_the_envelopes_shared_step():
 
     assert result.diagnostics.timing_ms is not None
     assert result.diagnostics.timing_ms.by_step is not None
-    assert set(result.diagnostics.timing_ms.by_step) == {"extract"}
+    assert set(result.diagnostics.timing_ms.by_step) == {"coverage", "extract"}
     assert result.diagnostics.timing_ms.by_step["extract"] >= 0
     assert result.diagnostics.timing_ms.total >= 0
 
@@ -581,4 +581,6 @@ def test_per_part_timing_by_step_excludes_the_envelopes_shared_step():
         assert part.timing_ms is not None
         assert part.timing_ms.by_step
         assert "extract" not in part.timing_ms.by_step
-        assert part.timing_ms.total == sum(part.timing_ms.by_step.values())
+        assert part.timing_ms.total == sum(
+            ms for step, ms in part.timing_ms.by_step.items() if step not in NESTED_SHAPE_STEPS
+        )

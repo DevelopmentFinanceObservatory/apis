@@ -151,7 +151,7 @@ def test_buffered_include_observations_is_cached():
     assert llm.calls == ["Extraction", "QuantityOutput", "_UniversalBindOutput"]
     assert r1.status == "definite"
     assert r2.parts == r1.parts
-    assert set(r2.diagnostics.timing_ms.by_step or {}) == {"response_cache_layer1"}
+    assert set(r2.diagnostics.timing_ms.by_step or {}) == {"coverage", "response_cache_layer1"}
 
 
 def test_a_transport_with_trailing_events_is_not_cached():
@@ -322,7 +322,7 @@ def test_identical_parsed_requests_hit_layer2():
     assert r2.parts == r1.parts
     assert r2.query_echo == r1.query_echo
     assert r2.query_echo.entry_path == "parsed"
-    assert set(r2.diagnostics.timing_ms.by_step or {}) == {"response_cache_layer2"}
+    assert set(r2.diagnostics.timing_ms.by_step or {}) == {"coverage", "response_cache_layer2"}
     stats = cache.stats()
     assert (stats.hits, stats.entries) == (1, 1)
 

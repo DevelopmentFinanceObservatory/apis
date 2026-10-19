@@ -82,7 +82,9 @@ class Timing(StrictModel):
     shared across every part (e.g. extract), and a part's own timing_ms,
     where total sums that part's own by_step values and by_step names only
     the phases that part ran, excluding the shared steps already reported
-    on the envelope.
+    on the envelope. A part's shape_arcs, shape_probe, shape_labels,
+    shape_groups and shape_admission steps are nested inside its shape
+    step, so its total leaves them out.
     """
 
     total: int = Field(description="total latency in milliseconds, at whichever scope this sits")

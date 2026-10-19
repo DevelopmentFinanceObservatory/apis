@@ -84,6 +84,28 @@ def test_assemble_region_supplied_echo_used_verbatim():
     assert response.query_echo.raw_query is None
 
 
+def test_a_parts_total_leaves_out_the_stages_nested_inside_shape():
+    """`shape` spans its `shape_*` stages, so the part's total sums only the top-level
+    steps, and the shared `extract` step stays on the envelope."""
+    stages = {
+        "shape_arcs": 30,
+        "shape_probe": 20,
+        "shape_labels": 5,
+        "shape_groups": 10,
+        "shape_admission": 25,
+    }
+    timing = {"extract": 50, "recall": 10, "shape": 100, **stages, "bind": 7}
+    region = dataclasses.replace(
+        _region(_spec(_PERSON_SHAPE, "any"), "population"), timing_by_step=timing
+    )
+
+    part = assemble_region(region, **_assemble_kwargs(region)).parts[0]
+
+    assert part.timing_ms is not None
+    assert part.timing_ms.total == 10 + 100 + 7
+    assert part.timing_ms.by_step == {"recall": 10, "shape": 100, **stages, "bind": 7}
+
+
 def test_assemble_region_candidates_keep_the_status_rules_order():
     """A candidates region states the elected reading first and its rivals in menu order,
     and assembly keeps that order whatever the retrieval scores, as `intent_rank`."""
