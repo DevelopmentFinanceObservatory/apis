@@ -29,7 +29,7 @@ ceiling before proxy admission.
 from __future__ import annotations
 
 from collections.abc import Iterator
-from contextlib import asynccontextmanager, contextmanager, nullcontext
+from contextlib import asynccontextmanager, contextmanager
 
 from fastapi import FastAPI
 
@@ -75,7 +75,7 @@ from datasets_api.versions import HeadStore, VersionLister, VersionRecordWriter
 from dc_sdmx import SdmxClient
 from dfo_platform.app import Surface
 from dfo_platform.doors import combine_classifiers, flatten
-from graph_release.context import bound_release
+from graph_release.context import bound_served_release
 from graph_release.service import ReleaseService, optional_release_service
 from materialise.graph import GraphReader
 from materialise.rate_tables import RateTableCache
@@ -209,8 +209,7 @@ def datasets_surface(
 
     @contextmanager
     def request_scope() -> Iterator[None]:
-        release_scope = nullcontext() if _release is None else bound_release(_release.snapshot())
-        with bound_catalogue(_catalogue.snapshot()), release_scope:
+        with bound_catalogue(_catalogue.snapshot()), bound_served_release(_release):
             yield
 
     @asynccontextmanager

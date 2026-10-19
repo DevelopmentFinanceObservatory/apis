@@ -73,6 +73,8 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import httpx
 
+from graph_release.context import bound_served_release
+from graph_release.service import optional_release_service
 from origin_catalogue import Catalogue, bound_catalogue
 from origin_catalogue.service import get_catalogue_service
 from search.eval.apis_auth import apis_auth
@@ -118,6 +120,7 @@ from search.eval.runner import (
 from search.eval.summary import paired_markdown, single_markdown, single_text
 
 if TYPE_CHECKING:
+    from graph_release.service import ReleaseService
     from search.engine.clients.sdmx import EngineSdmxClient
     from search.eval.graph import GraphClient
     from series_coverage.shared import CoverageService
@@ -131,10 +134,12 @@ _TIMEOUT_S = 90.0
 
 @dataclass(frozen=True)
 class Reads:
-    """The graph, SDMX and coverage reads the checks score against, and the origin
-    catalogue the graph client's reads need bound."""
+    """The graph, SDMX and coverage reads the checks score against, the origin
+    catalogue the graph client's reads need bound, and the release service whose served
+    release a run binds beside it, `None` when `GRAPH_RELEASE_URI` is unset."""
 
     catalogue: Catalogue
+    release: ReleaseService | None = None
     graph: GraphClient | None = None
     sdmx: EngineSdmxClient | None = None
     coverage: CoverageService | None = None
@@ -398,7 +403,7 @@ def _score_round(
             state.infra_errors[round_] = run.infra_error
 
     # Checks read the graph and coverage synchronously, so cases score on threads. Each
-    # task runs in a copy of this context, which carries the bound origin catalogue.
+    # task runs in a copy of this context, which carries the bound origin catalogue and release.
     with ThreadPoolExecutor(max_workers=workers) as pool:
         tasks = [pool.submit(contextvars.copy_context().run, one, s) for s in states]
         for task in tasks:
@@ -701,7 +706,7 @@ def _parser() -> argparse.ArgumentParser:
 
 async def run(args: argparse.Namespace, *, reads: Reads, client: httpx.AsyncClient) -> int:
     """Run the mode ``args`` selects, write its outputs, and return the exit code."""
-    with bound_catalogue(reads.catalogue):
+    with bound_catalogue(reads.catalogue), bound_served_release(reads.release):
         return await _run_bound(args, reads=reads, client=client)
 
 
@@ -777,9 +782,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     # workflow's override label can release, so every unexpected error exits 2.
     try:
         catalogue = _load_catalogue()
+        release = _load_release()
         with score_clients() as clients:
             reads = Reads(
                 catalogue=catalogue,
+                release=release,
                 graph=clients.graph,
                 sdmx=clients.sdmx,
                 coverage=clients.coverage,
@@ -799,6 +806,15 @@ def _load_catalogue() -> Catalogue:
         return get_catalogue_service().snapshot()
     except Exception as exc:
         raise SetupError(f"the origin catalogue does not load: {exc!r}") from exc
+
+
+def _load_release() -> ReleaseService | None:
+    """The release service ``GRAPH_RELEASE_URI`` names, opened as the app opens it, or
+    ``None`` when it is unset."""
+    try:
+        return optional_release_service()
+    except Exception as exc:
+        raise SetupError(f"the graph release does not load: {exc!r}") from exc
 
 
 async def _main_async(args: argparse.Namespace, reads: Reads) -> int:

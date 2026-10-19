@@ -14,7 +14,8 @@ It publishes the shared resolver's membership policy, which the node, resolve
 and members doors classify groups and regions by. Surface
 construction loads the origin catalogue, so a missing or unloadable
 `ORIGIN_CATALOGUE_URI` fails startup, and each request binds its loaded
-snapshot. Resolve confirmation and region reads, node reads, and
+snapshot. With `GRAPH_RELEASE_URI` set, each request also binds the release
+service's served release, and an unreadable release fails startup. Resolve confirmation and region reads, node reads, and
 source-document reads share them. Resolvekit matching uses its
 own single-worker executor. A live surface also acquires the process-wide
 coverage service when `COVERAGE_ARTIFACT_URI` is set, and the sources door
@@ -37,8 +38,9 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from typing import TYPE_CHECKING
 
 from fastapi import FastAPI
@@ -79,6 +81,8 @@ from graph_api.version import GRAPH_CAPABILITY_VERSION
 from graph_generation import UNKNOWN_GENERATION, GenerationProvider, RegistrationHandle
 from graph_generation import acquire_shared as acquire_shared_generation
 from graph_generation import release_shared as release_shared_generation
+from graph_release.context import bound_served_release
+from graph_release.service import optional_release_service
 from materialise.facet_profile import (
     FLIGHT_TIMEOUT_S,
     MAX_BYTES,
@@ -210,6 +214,7 @@ def graph_surface(
     resolver leaves the membership policy for its caller to publish.
     """
     catalogue = get_catalogue_service()
+    release = optional_release_service()
     # Distinct literal prefixes keep documentation and node routes disjoint. The members
     # route goes ahead of the node route, whose dcid convertor accepts slashes and would
     # take `<dcid>/members` as one dcid.
@@ -425,6 +430,11 @@ def graph_surface(
             GRAPH_DEPS_SLOT.clear(_app)
             await _release_owned()
 
+    @contextmanager
+    def request_scope() -> Iterator[None]:
+        with bound_catalogue(catalogue.snapshot()), bound_served_release(release):
+            yield
+
     return Surface(
         name="graph",
         prefix="/api/graph",
@@ -448,5 +458,5 @@ def graph_surface(
         registry_endpoints={
             path: endpoint for door in doors for path, endpoint in door.registry_endpoints.items()
         },
-        request_scope=lambda: bound_catalogue(catalogue.snapshot()),
+        request_scope=request_scope,
     )

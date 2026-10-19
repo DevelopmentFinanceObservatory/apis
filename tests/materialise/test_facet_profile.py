@@ -1,6 +1,7 @@
 """A variable's facet profile: the default it reports is what a mint naming no place, years or
 facet elects (P4), its scope's countries fallback is marked (P8), and its cache keys on the
-catalogue build, binds that catalogue in the flight, and stores no failed or late flight."""
+catalogue build, binds that catalogue and the caller's graph release in the flight, and stores no
+failed or late flight."""
 
 from __future__ import annotations
 
@@ -8,6 +9,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import httpx
 import pytest
@@ -15,6 +17,8 @@ import pytest
 from dc_graph import GraphCapExceededError, GraphReadError
 from dc_sdmx import EntityFilter, SdmxClient, SdmxHttpError
 from graph_generation import FakeGeneration
+from graph_release.context import bound_release, bound_release_or_none
+from graph_release.service import ReleaseService
 from materialise import (
     EnrichmentLookup,
     MaterialisationRequest,
@@ -35,6 +39,7 @@ from origin_catalogue import BASE, DFO, Catalogue, bound_catalogue
 from series_coverage.schema import FacetMetadata, RoleNames
 from series_coverage.shared import CoverageSnapshot
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
+from tests.graph_release.support import build_test_release, sample_tables
 from tests.origin_catalogue.fake_catalogue import provenance_row, restrictive_catalogue
 
 from ._scope_availability import ScopeAvailability
@@ -443,6 +448,36 @@ def test_a_flight_reads_under_the_catalogue_it_is_keyed_on(executor):
         )
 
     assert _default_ids(found[_POPULATION]) == ["fB"]
+
+
+def test_a_flight_reads_under_the_callers_graph_release(executor, tmp_path: Path):
+    """A flight runs in an empty context, so it binds the release its caller has bound."""
+    manifest = build_test_release((tmp_path / "releases").as_uri(), tables=sample_tables())
+    release = ReleaseService(
+        uri=(tmp_path / "releases").as_uri(), local_dir=tmp_path / "local"
+    ).snapshot()
+    seen: list[str | None] = []
+
+    class _ReleaseRecordingGraph(_ProfileGraph):
+        def observation_facets_batch_many(self, **kwargs):
+            bound = bound_release_or_none()
+            seen.append(bound.release_id if bound is not None else None)
+            return super().observation_facets_batch_many(**kwargs)
+
+    cache = _cache(
+        _ReleaseRecordingGraph(
+            facets={(_POPULATION, place): [_DFO, _BASE] for place in _PLACES},
+            child_places={("Earth", "Country"): list(_PLACES)},
+        ),
+        executor,
+    )
+
+    with bound_release(release):
+        cache.profiles(
+            [_POPULATION], catalogue=_overlap(), coverage=_empty_coverage(), deadline=None
+        )
+
+    assert seen and set(seen) == {manifest.release_id}
 
 
 @pytest.mark.parametrize(

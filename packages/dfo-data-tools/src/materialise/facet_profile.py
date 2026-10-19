@@ -35,6 +35,7 @@ import logging
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import BrokenExecutor, CancelledError, Executor
+from contextlib import nullcontext
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import partial
@@ -46,6 +47,7 @@ from dfo_platform.executor import submit_with_context
 from dfo_platform.request_deadline import request_deadline
 from dfo_platform.single_flight_cache import SingleFlightCache
 from graph_generation import GenerationProvider
+from graph_release.context import bound_release, bound_release_or_none
 from materialise.facets import (
     BreadthUnread,
     MemberProbe,
@@ -415,7 +417,8 @@ class FacetProfileCache:
     ) -> dict[str, ProfileOutcome]:
         """Each of `stat_vars`' outcome, keyed by bare dcid: its cached profile, else a read in
         the variable's own flight, shared with every caller missing the same key. A flight binds
-        `catalogue` and reads `coverage.index`. Each wait ends at the earlier of its flight's
+        `catalogue`, and the caller's bound graph release when there is one, and reads
+        `coverage.index`. Each wait ends at the earlier of its flight's
         deadline and `deadline`. A variable without a profile is `ProfileUnavailable` with its
         `ProfileGap` and is not stored, while the profiles of the variables that finished are:
         its own probe raised, its scope was unsettled, its flight failed, or its flight or the
@@ -467,6 +470,7 @@ class FacetProfileCache:
             )
             for sv in dict.fromkeys(sv.removeprefix(_STAT_VAR_REF_PREFIX) for sv in stat_vars)
         ]
+        release = bound_release_or_none()
 
         def fetch(
             missing: list[ProfileKey], flight_deadline: float
@@ -476,7 +480,11 @@ class FacetProfileCache:
             # places, degraded reads, timings), and a failed UN part fails the flight rather
             # than reading as empty. It binds only what the read needs.
             def read() -> dict[str, ProfileOutcome]:
-                with bound_catalogue(catalogue), request_deadline(flight_deadline):
+                with (
+                    bound_catalogue(catalogue),
+                    bound_release(release) if release is not None else nullcontext(),
+                    request_deadline(flight_deadline),
+                ):
                     return read_facet_profiles(
                         [key.stat_var for key in missing],
                         graph=self._graph,

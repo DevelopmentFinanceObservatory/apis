@@ -1,7 +1,8 @@
 """Pins `ReleaseService`: load at start, a request-triggered recheck, the swap
 inside its guards, one release per request across a swap, file cleanup after
-the last holder, and the Datasets surface and worker wiring with and without
-`GRAPH_RELEASE_URI`."""
+the last holder, the Datasets surface and worker wiring with and without
+`GRAPH_RELEASE_URI`, and the Graph, Presentation and Search surfaces' binding
+under it."""
 
 from __future__ import annotations
 
@@ -26,6 +27,7 @@ from datasets_api.deps import DepsOverrides, open_deps
 from datasets_api.operation_store import LiveOperationStore
 from datasets_api.operations.oidc import FakeOidcVerifier
 from datasets_api.operations.worker_app import RUN_ROUTE_PATH, build_worker_app
+from graph_api.app import graph_surface
 from graph_release.context import ReleaseNotBound, bound_release, current_release
 from graph_release.format import Manifest, Pointer, manifest_uri, open_release, pointer_uri
 from graph_release.service import (
@@ -40,6 +42,8 @@ from graph_release.service import (
 from materialise.rate_tables import RateTableCache
 from origin_catalogue import current_catalogue
 from origin_catalogue.service import CatalogueService
+from presentation_api.app import presentation_surface
+from search.engine.app import search_surface
 from series_coverage.shared import get_coverage_service
 from tests.datasets_api._artifact_doubles import FakeArtifactStore
 from tests.datasets_api._operation_store import FakeOperationDatasetStore
@@ -330,6 +334,23 @@ class TestProcessService:
 
         assert service is get_release_service()
         assert service is not None and service.snapshot().release_id == manifest.release_id
+
+    @pytest.mark.parametrize(
+        "build_surface",
+        [graph_surface, presentation_surface, search_surface],
+        ids=["graph", "presentation", "search"],
+    )
+    def test_a_request_binds_the_served_release_beside_the_catalogue(
+        self, root: str, monkeypatch: pytest.MonkeyPatch, build_surface
+    ):
+        manifest = build_test_release(root, tables=sample_tables())
+        monkeypatch.setenv("GRAPH_RELEASE_URI", root)
+        surface = build_surface()
+
+        assert surface.request_scope is not None
+        with surface.request_scope():
+            assert current_release().release_id == manifest.release_id
+            current_catalogue()
 
 
 class TestDatasetsSurface:

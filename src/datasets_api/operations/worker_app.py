@@ -38,7 +38,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable
-from contextlib import AsyncExitStack, asynccontextmanager, nullcontext
+from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import timedelta
 
 from fastapi import FastAPI, Request
@@ -69,7 +69,7 @@ from datasets_api.version import DATASETS_CAPABILITY_VERSION
 from datasets_api.version_store import LiveHeadStore, LiveVersionRecordWriter
 from dc_sdmx import SdmxClient
 from dfo_platform.build import build_commit
-from graph_release.context import bound_release
+from graph_release.context import bound_served_release
 from graph_release.service import ReleaseService, optional_release_service
 from materialise import EnrichmentLookup
 from materialise.facets import VariableBreadthReader
@@ -444,10 +444,7 @@ def build_worker_app(
         try:
             # One catalogue version and one release serve the whole operation. `to_thread`
             # carries the bindings.
-            release_scope = (
-                nullcontext() if _release is None else bound_release(_release.snapshot())
-            )
-            with bound_catalogue(catalogue), release_scope:
+            with bound_catalogue(catalogue), bound_served_release(_release):
                 await asyncio.to_thread(
                     run_in_thread,
                     operation=operation,

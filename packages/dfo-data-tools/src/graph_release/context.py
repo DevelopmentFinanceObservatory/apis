@@ -10,10 +10,13 @@ a pool runs under a copied context, as it does for the catalogue
 from __future__ import annotations
 
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from contextvars import ContextVar, Token
+from typing import TYPE_CHECKING
 
-from graph_release.service import Release
+if TYPE_CHECKING:
+    # Annotation-only, so binding a release imports no part reader (NumPy, pyarrow).
+    from graph_release.service import Release, ReleaseService
 
 _BOUND: ContextVar[Release | None] = ContextVar("graph_release", default=None)
 
@@ -42,6 +45,21 @@ def bound_release(release: Release) -> Iterator[Release]:
         _BOUND.reset(token)
 
 
+def bound_served_release(
+    service: ReleaseService | None,
+) -> AbstractContextManager[Release | None]:
+    """Binds `service`'s served release for the body of the `with` block, and
+    nothing when `service` is `None`, as when `GRAPH_RELEASE_URI` is unset
+    (`optional_release_service`)."""
+    return nullcontext() if service is None else bound_release(service.snapshot())
+
+
+def bound_release_or_none() -> Release | None:
+    """The bound release, or `None` when none is bound. For work that carries
+    its caller's binding into a context of its own."""
+    return _BOUND.get()
+
+
 def current_release() -> Release:
     """The bound release. Raises `ReleaseNotBound` when none is bound."""
     release = _BOUND.get()
@@ -57,6 +75,8 @@ __all__ = [
     "ReleaseNotBound",
     "bind_release",
     "bound_release",
+    "bound_release_or_none",
+    "bound_served_release",
     "current_release",
     "unbind_release",
 ]

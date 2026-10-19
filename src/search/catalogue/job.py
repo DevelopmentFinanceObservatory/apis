@@ -17,7 +17,8 @@ A run:
 4. finds each example's places with data (`search.catalogue.presence`) and
    counts publishers, countries and aid (`search.catalogue.counts`);
 5. runs each example through the search engine in-process, with the
-   origin catalogue build bound, at its default place and at the test
+   origin catalogue build bound, and the served graph release when
+   `GRAPH_RELEASE_URI` is set, at its default place and at the test
    places where it has data (`search.catalogue.check`), trying a run that
    raised, timed out or had its preview read fail once more. When a run
    still fails in the engine, the job logs `search_catalogue_job_failed`
@@ -70,6 +71,8 @@ from artifact_publication.uri import ArtifactUriError
 from code_index.shared import get_index
 from dc_graph import GraphReadError
 from dfo_platform.build import build_commit
+from graph_release.context import bound_served_release
+from graph_release.service import optional_release_service
 from origin_catalogue import bound_catalogue
 from origin_catalogue.artifact import CatalogueArtifactError as OriginArtifactError
 from origin_catalogue.artifact import load_catalogue
@@ -569,7 +572,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         if pointed is not None and nothing_to_build(settings, inputs=pointed):
             return 0
         catalogue = _load_origin_catalogue(settings)
-        with _live_engine() as (resolve, place_names), bound_catalogue(catalogue):
+        # The release is bound before the engine is built, since its construction reads the
+        # code index.
+        with (
+            bound_served_release(optional_release_service()),
+            _live_engine() as (resolve, place_names),
+            bound_catalogue(catalogue),
+        ):
             asyncio.run(
                 run(
                     settings,
