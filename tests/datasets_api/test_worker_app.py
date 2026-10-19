@@ -772,6 +772,11 @@ class TestLiveDefinitionDepsConstruction:
         """The worker takes a materialise permit, as the doors do."""
         assert self._deps().materialise_semaphore is self._semaphore
 
+    def test_the_template_holds_no_code_index(self):
+        """Each run fills `code_index` from the index its own bindings read, so the long-lived
+        template pins no index across a release swap."""
+        assert self._deps().code_index is None
+
     def test_snapshot_reader_is_live(self):
         """`run_operation` reads artifact locations through it before completing a row."""
         assert isinstance(self._deps().snapshot_reader, LiveSnapshotReader)

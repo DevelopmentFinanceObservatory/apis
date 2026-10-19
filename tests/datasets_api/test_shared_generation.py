@@ -195,7 +195,8 @@ def test_the_worker_builds_its_graph_client_on_the_shared_generation(
     monkeypatch.setattr(worker_module, "LiveDatasetStore", lambda **_: object())
     monkeypatch.setattr(worker_module, "LiveArtifactStore", lambda **_: object())
     monkeypatch.setattr(worker_module, "LiveArtifactInventory", lambda **_: object())
-    monkeypatch.setattr(worker_module, "get_index", lambda: object())
+    index_reads: list[None] = []
+    monkeypatch.setattr(worker_module, "get_index", lambda: index_reads.append(None))
     monkeypatch.setattr(
         worker_module,
         "get_coverage_service",
@@ -221,6 +222,7 @@ def test_the_worker_builds_its_graph_client_on_the_shared_generation(
     assert events.graph_kwargs["generation"] is events.generation
     assert events.graph_kwargs["un_availability"] is not None
     assert registered == [(WORKER_PLACE_SCOPE_MEMO_NAME,)]
+    assert index_reads == [None]  # the startup read that fails a missing export
     assert events.generation.registered_names() == ()
     assert events.log.index("close graph") < events.log.index("release generation")
 

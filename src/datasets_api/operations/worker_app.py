@@ -41,6 +41,7 @@ import time
 from collections.abc import Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import timedelta
+from typing import cast
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -48,6 +49,7 @@ from pydantic import Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from artifact_store import ArtifactStore, LiveArtifactInventory, LiveArtifactStore, Tier
+from code_index.query import CodeIndex
 from code_index.shared import get_index
 from dataset_store import DatasetStore, LiveDatasetStore, close_shared_pool, shared_pool
 from dataset_store.snapshot import LiveSnapshotReader
@@ -113,9 +115,9 @@ def _build_live_definition_deps(
     run breaks a single-place facet tie on `variable_breadth`, as a sync mint of the spec does,
     so both elect one facet.
 
-    The deps' `code_index` is read here, which parses the index, so a missing or malformed
-    export fails startup. Each run replaces it with the index read under the run's bindings
-    (`build_worker_app`), and the enrichment reads party kinds from `get_index()` per lookup.
+    The deps hold no code index: `code_index` is None until each run replaces it with the index
+    read under the run's bindings (`build_worker_app`), so the long-lived template pins none
+    across a release swap. The enrichment reads party kinds from `get_index()` per lookup.
     """
     _settings = settings if settings is not None else DatasetsBuildSettings.from_env()
     return DefinitionDeps(
@@ -130,7 +132,7 @@ def _build_live_definition_deps(
         member_concurrency=_settings.mint_member_max_concurrency,
         enumerator=shared_enumerator(),
         enrichment=EnrichmentLookup(graph, parties=lambda: get_index().parties),
-        code_index=get_index(),
+        code_index=cast(CodeIndex, None),
         rate_cache=RateTableCache(),
         coverage=coverage,
         version_writer=LiveVersionRecordWriter(store=store),
@@ -318,6 +320,9 @@ def build_worker_app(
                         stack.callback(
                             _release.register_swap_guard(materialise_semaphore.every_permit)
                         )
+                    # Parse the index now so a missing or malformed export fails startup. The
+                    # result is dropped: each run reads its own under its bindings.
+                    get_index()
                     # Run state uses the top-level store. This worker only runs tasks.
                     # Dependency defaults stay inert.
                     _deps = _build_live_definition_deps(

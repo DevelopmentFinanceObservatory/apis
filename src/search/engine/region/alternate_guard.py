@@ -175,18 +175,31 @@ def _price_basis_words(text: str) -> set[str]:
     return kept
 
 
-# A release swap replaces the measure index, so two entries hold the served index and the one
-# it replaced.
+# Keyed on the qualifier rows' text, not on the measure index, so the cache never holds an
+# index object. A release swap that changes the labels adds an entry, and two entries hold
+# the served vocabulary and the one it replaced.
 @functools.lru_cache(maxsize=2)
+def _price_basis_vocabulary_of(
+    qualifier_texts: tuple[tuple[str, tuple[str, ...]], ...],
+) -> frozenset[str]:
+    """The price-basis words of the given (label, synonyms) pairs (`_price_basis_words`)."""
+    return frozenset(
+        word
+        for label, synonyms in qualifier_texts
+        for text in (label, *synonyms)
+        for word in _price_basis_words(text)
+    )
+
+
 def _price_basis_vocabulary(measure_index: MeasureIndex) -> frozenset[str]:
     """The price-basis words of the measurement-qualifier axis's value labels and synonyms
     (`_price_basis_words`)."""
-    return frozenset(
-        word
-        for row in measure_index.values
-        if row.axis == _QUALIFIER_AXIS
-        for text in (row.label, *row.synonyms)
-        for word in _price_basis_words(text)
+    return _price_basis_vocabulary_of(
+        tuple(
+            (row.label, tuple(row.synonyms))
+            for row in measure_index.values
+            if row.axis == _QUALIFIER_AXIS
+        )
     )
 
 
