@@ -49,8 +49,9 @@ from search.models import EntityRoleKey, NoDataReason, RoleAxis, elect_no_data_r
 _FLOOR_PROBE_FULL_FACETS_MAX_CANDIDATES = 6
 
 # With `SEARCH_UN_ON_FIRST_MENU`, our pass merges the UN leg's shapes, waiting for them,
-# only when its best shape's measured recall score is below this (`_holds_a_strong_shape`). It is the Jev prototype's
-# `measures` cut-off, which scores on another scale; a dev run of the flag calibrates it.
+# only when no shape of its own has a measured recall score of at least this
+# (`_holds_a_strong_shape`). A pass holding such a shape never takes the UN pool, so its
+# answer does not wait on the leg.
 UN_MERGE_WEAK_SCORE: Final = 0.7
 
 logger = logging.getLogger(__name__)

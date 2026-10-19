@@ -29,6 +29,7 @@ from search.engine.clients.llm import (
     SupportsLLM,
     for_stage,
     generate_structured_async,
+    schema_digest,
 )
 from search.engine.config import settings
 from search.engine.errors import EngineInputError
@@ -489,7 +490,7 @@ Example — "What climate data do you have?":
 
 def _extract_version(system: str, schema: type[BaseModel]) -> str:
     """Hash the system prompt and the response schema the model answers in."""
-    document = {"system": system, "schema": schema.model_json_schema()}
+    document = {"system": system, "schema": schema_digest(schema)}
     canonical = json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 

@@ -67,6 +67,7 @@ from search.models import (
     ResolveResponse,
     ResubmitIdentityPayload,
     SourceMention,
+    Warning,
 )
 from series_coverage.shared import CoverageSnapshot
 
@@ -366,6 +367,7 @@ class CacheScope:
         query_text: str | None,
         source_codes: Sequence[str | None] = (),
         separate: Sequence[bool] = (),
+        extraction_warnings: Sequence[Warning] = (),
         llm_usage: dict[str, int] | None = None,
     ) -> ResolveResponse | None:
         """Look up layer 2 by effective extraction and raw-text signals.
@@ -373,7 +375,9 @@ class CacheScope:
         `entity_roles`, `query_text`, and the parallel `variable_qualifiers`, `operations`
         and `sources` are required to build a complete key. `source_codes` runs parallel to
         `variables` and holds the series code the query writes for each. `separate` runs parallel to
-        `variables` and marks each one the raw query compares with another. This lookup
+        `variables` and marks each one the raw query compares with another.
+        `extraction_warnings` holds the warnings extraction adds to the answer, which a hit
+        serves as stored. This lookup
         never waits on a layer-1 lease. The first miss owns the layer-2 lease (`_acquire`).
 
         Hits record the leader's health verdict. `store()` can then cache the
@@ -407,6 +411,7 @@ class CacheScope:
             query_text_negated_stated_words=signals.query_text_negated_stated_words,
             scope=self._scope,
             separate=separate,
+            extraction_warnings=extraction_warnings,
         )
         self._layer2_key = key
         value, self._layer2_lease = await self._acquire(key)

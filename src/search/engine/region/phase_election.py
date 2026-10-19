@@ -444,8 +444,8 @@ def _unbind_implied_values(
     never the family's total and the binding elects a narrower series in its place. The
     binding is released where the family has totals under the other bindings
     (`family_totals`) and none of them asserts the property, so the total answers. A
-    family with no total keeps the value, as does one whose totals assert the property:
-    there the value separates readings the family holds. The population is the one
+    family with no total keeps the value, as does one whose totals assert the property or
+    have unknown constraints: there the value may separate readings the family holds. The population is the one
     `_validate_sole_option_bindings` reads (`five_tuple_member_facts`).
 
     The draft's evidence does not matter: the recorded bind reply to "life expectancy"
@@ -467,9 +467,8 @@ def _unbind_implied_values(
         ):
             continue
         totals = family_totals(population, _collapse_bindings(settled[:i] + settled[i + 1 :]))
-        if totals and not any(
-            prop in (asserted_constraint_properties(population[sv]) or ()) for sv in totals
-        ):
+        asserted = [asserted_constraint_properties(population[sv]) for sv in totals]
+        if totals and all(props is not None and prop not in props for props in asserted):
             settled[i] = binding.model_copy(
                 update={"kind": "unbound", "value_dcids": [], "evidence": "mentioned"}
             )

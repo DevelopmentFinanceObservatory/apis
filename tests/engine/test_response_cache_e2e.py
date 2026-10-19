@@ -14,9 +14,10 @@ from search.engine.bind import _UniversalBindOutput
 from search.engine.core import resolve_async, resolve_events
 from search.engine.degraded_reads import note_degraded_read
 from search.engine.errors import GraphInfraError, LLMInfraError
-from search.engine.extract import ExtractedEntity, Extraction
+from search.engine.extract import ExtractedDate, ExtractedEntity, Extraction
 from search.engine.quantity_read import QuantityOutput
 from search.engine.response_cache import ResponseCache
+from search.engine.time_bind import TIME_TEXT_NOT_PARSED
 from search.models import (
     ParsedEntity,
     ParsedInput,
@@ -546,6 +547,58 @@ def test_role_direction_agreement_still_hits_layer2(monkeypatch):
     assert r1.status == "definite", r1
     assert r2.status == "definite", r2
     assert r1.parts == r2.parts
+
+
+class _UnparsedDateLLM(_FixedExtractionLLM):
+    """`_FixedExtractionLLM`, adding a relative date worded "lately" to a query holding the
+    word. The time parser cannot read it, so extraction drops the date and warns: the
+    resolved extraction matches the dateless query's, and only the warning differs."""
+
+    async def generate_structured(self, *, prompt: str, system: str, schema):
+        parsed, usage = await super().generate_structured(
+            prompt=prompt, system=system, schema=schema
+        )
+        if schema is Extraction and "lately" in prompt:
+            parsed = parsed.model_copy(
+                update={"dates": [ExtractedDate(kind="range", relative="lately")]}
+            )
+        return parsed, usage
+
+
+def _warning_codes(response) -> list[str]:
+    return [warning.code for warning in response.diagnostics.warnings] + [
+        warning.code for part in response.parts for warning in part.warnings
+    ]
+
+
+@pytest.mark.parametrize(
+    "first, second",
+    [("aid to Kenya", "aid to Kenya lately"), ("aid to Kenya lately", "aid to Kenya")],
+    ids=["dateless-first", "unparsed-first"],
+)
+def test_an_unparsed_date_warning_keeps_its_own_layer2_entry(monkeypatch, first, second):
+    """A dropped relative date leaves the extraction the dateless query has, so only its
+    `time_text_not_parsed` warning tells the two apart. Each answer carries the warning
+    exactly when its own query held the wording, in either order."""
+    patch_coverage(monkeypatch, _ROLE_COVERAGE_ROWS, role_names=_ROLE_NAMES)
+    llm = _CountingLLM(_UnparsedDateLLM())
+    cache = ResponseCache()
+    responses = [
+        _run(
+            make_request(query),
+            llm=llm,
+            cache=cache,
+            graph=_role_bearing_graph(),
+            sdmx=FakeSdmxClient(observations={}),
+            materialise_graph=_role_bearing_member_graph(),
+        )
+        for query in (first, second)
+    ]
+
+    assert llm.calls == ["Extraction", "QuantityOutput", "_UniversalBindOutput"] * 2
+    for query, response in zip((first, second), responses, strict=True):
+        assert response.status == "definite", response
+        assert (TIME_TEXT_NOT_PARSED in _warning_codes(response)) == ("lately" in query)
 
 
 # ---------------------------------------------------------------------------

@@ -1081,8 +1081,9 @@ async def handle(
         expected_results=len(prep.unique),
     )
 
-    # Include entities, roles, dates, qualifiers, operations, sources and raw-text signals in the
-    # cache key so semantically distinct queries retain separate entries.
+    # Include entities, roles, dates, qualifiers, operations, sources, raw-text signals and the
+    # extraction's warnings in the cache key so semantically distinct queries retain separate
+    # entries.
     # `query_text` applies only to N=1, matching the single-variable cache readers.
     # A cache hit returns before binding. Core always supplies `scope`.
     # Direct tests may omit it.
@@ -1101,6 +1102,7 @@ async def handle(
             source_codes=prep.per_variable_source_codes,
             query_text=query if len(prep.unique) == 1 else None,
             separate=prep.separate,
+            extraction_warnings=prep.clamp_warnings,
             llm_usage=extract_usage,
         )
     _log_unclaimed_words(prep, extraction, query=query)

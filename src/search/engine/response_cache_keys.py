@@ -240,6 +240,7 @@ def layer2_key(
     source_codes: Sequence[str | None] = (),
     separate: Sequence[bool] = (),
     written_variable_phrases: Sequence[str | None] = (),
+    extraction_warnings: Sequence[Warning] = (),
 ) -> str:
     """Key the effective extraction and raw-text signals over the shared scope.
 
@@ -265,7 +266,10 @@ def layer2_key(
     slots with a declared default whose plain name the query names, the stretch of the query
     that writes each variable (`written_phrase.written_phrase`), which the key states only
     when one is given, and the words a dataset states of its rows that the query negates
-    (`bind_repair.stated_words_negated`), which the key states only when there is one. They keep
+    (`bind_repair.stated_words_negated`), which the key states only when there is one, and the
+    warnings extraction adds to the answer (`extraction_warnings`): a relative date the parser
+    could not read, quoting its wording, and the variable and qualifier caps, counting what
+    the model named before them. The key states those only when there is one. They keep
     layer 2 sound when distinct queries produce the same extraction without
     hashing raw query text, preserving reuse when those readers agree.
     """
@@ -295,6 +299,10 @@ def layer2_key(
         document["separate"] = separate_positions
     if any(phrase is not None for phrase in written_variable_phrases):
         document["written_variable_phrases"] = list(written_variable_phrases)
+    if extraction_warnings:
+        document["extraction_warnings"] = [
+            warning.model_dump(mode="json") for warning in extraction_warnings
+        ]
     return _digest("l2", document)
 
 
