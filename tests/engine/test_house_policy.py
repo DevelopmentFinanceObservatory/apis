@@ -160,6 +160,27 @@ def test_an_unrated_pool_runs_the_dataset_flow_and_place_policies():
 
 
 @pytest.mark.parametrize(
+    ("holds", "survivor", "dropped"),
+    [
+        pytest.param(None, 1, {0, 2}, id="no-report-every-shape-holds"),
+        pytest.param({0: True, 1: False, 2: True}, 0, {1}, id="the-default-lacks-a-constraint"),
+        pytest.param({0: True, 2: True}, 0, {1}, id="a-shape-left-out-does-not-hold"),
+        pytest.param({0: False, 1: False, 2: False}, 0, {1, 2}, id="the-pick-holds-its-own"),
+    ],
+)
+def test_the_policies_choose_only_among_the_shapes_that_hold_the_picks_constraints(
+    holds: Mapping[int, bool] | None, survivor: int, dropped: set[int]
+):
+    """A recipient question prefers DAC2a, but a DAC2a shape that does not hold a value the
+    binder recognised on its CRS pick is set aside before the dataset policy runs."""
+    pool = PolicyPool(measuring=(0, 1, 2), rated=True)
+
+    choice = apply_house_policies(_BY_DATASET, pool, _ctx(case="recipient"), chosen=0, holds=holds)
+
+    assert (choice.survivor, choice.dropped) == (survivor, frozenset(dropped))
+
+
+@pytest.mark.parametrize(
     ("fits", "expected"),
     [
         pytest.param((), [0, 1, 2], id="none-fit"),
@@ -414,14 +435,25 @@ def _purpose(code_system: str) -> QualifierMatch:
             _frame(window=TimeWindow(start_year=2015, end_year=2017)), True, id="2015-2017"
         ),
         pytest.param(
-            _frame(window=TimeWindow(start_year=2016, end_year=2019)), False, id="2016-2019"
+            _frame(window=TimeWindow(start_year=2016, end_year=2019)), True, id="2016-2019"
         ),
-        pytest.param(_frame(window=TimeWindow(start_year=2010)), False, id="open-end"),
+        pytest.param(
+            _frame(window=TimeWindow(start_year=2010, end_year=2022)), True, id="2010-2022"
+        ),
+        pytest.param(
+            _frame(window=TimeWindow(start_year=2018, end_year=2022)), False, id="2018-2022"
+        ),
+        pytest.param(_frame(window=TimeWindow(start_year=2010)), True, id="open-end"),
+        pytest.param(_frame(window=TimeWindow(start_year=2019)), False, id="open-end-from-2019"),
+        pytest.param(_frame(window=TimeWindow(end_year=2017)), True, id="open-start-to-2017"),
+        pytest.param(_frame(window=TimeWindow(end_year=2022)), False, id="open-start-to-2022"),
         pytest.param(_frame(latest=True), False, id="latest"),
         pytest.param(_frame(), False, id="no-window"),
     ],
 )
-def test_the_window_is_pre_grant_equivalent_when_it_ends_before_2018(frame: Frame, expected: bool):
+def test_the_window_is_pre_grant_equivalent_when_it_starts_before_2018(
+    frame: Frame, expected: bool
+):
     assert (
         context_of(frame, [], [0], wanted_datasets=_WANTED, case_systems=_CASE_SYSTEMS).pre_ge
         is expected

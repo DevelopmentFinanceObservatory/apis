@@ -26,13 +26,24 @@ if TYPE_CHECKING:
 
 class ApplyPolicies(Protocol):
     """The engine's house-policy step (`house_policy.apply_house_policies`): from the pool a
-    binder elects among, its pick first in `PolicyPool.measuring`, and the binder's rating of
-    each pool shape when it rates them, the shape the part answers with. A binder calls it
-    once on a reply that elects a menu shape and never on one that does not."""
+    binder elects among, its pick first in `PolicyPool.measuring`, the binder's rating of
+    each pool shape when it rates them, and whether each pool shape holds the constraints
+    the binder recognised on its pick (`holds`), the shape the part answers with. A binder
+    calls it once on a reply that elects a menu shape and never on one that does not."""
 
     def __call__(
-        self, pool: PolicyPool, *, ratings: Mapping[int, float] | None = None
+        self,
+        pool: PolicyPool,
+        *,
+        ratings: Mapping[int, float] | None = None,
+        holds: Mapping[int, bool] | None = None,
     ) -> PolicyChoice: ...
+
+
+class PolicyContractError(Exception):
+    """A binder broke the house-policy contract: the step ran other than once on a reply
+    that elects a shape, or the election moved to a shape that does not hold a constraint
+    the binder recognised on its pick. The part refuses (`phase_rank_bind._phase_bind`)."""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

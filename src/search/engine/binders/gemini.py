@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from search.engine.bind import (
     SlotBindingDraft,
     _grounded_in_taxonomy,
+    _states_same_reading,
     _UniversalBindOutput,
     _without_partly_stated_values,
     bind_universal,
@@ -15,7 +16,7 @@ from search.engine.bind import (
     stated_reading,
 )
 from search.engine.bind_repair import _label_named_in_text
-from search.engine.binders.base import BindRequest, BindResult
+from search.engine.binders.base import BindRequest, BindResult, PolicyContractError
 from search.engine.binders.house_policy import PolicyChoice, PolicyPool
 from search.engine.config import settings
 from search.engine.quantity_read import read_stated_quantity
@@ -44,7 +45,9 @@ class GeminiBinder:
     onto the shape the policies elect (`reelect`).
 
     The reply rates each shape that measures the phrase, and the pool is the shapes it rates
-    near the best (`rated_pool`), over which all six policies run with the ratings."""
+    near the best and the pick's twins (`rated_pool`), over which all six policies run with
+    the ratings. Each pool shape holds the pick's constraints when it holds each value the
+    reply drafted as named (`holds_mentioned_values`)."""
 
     @property
     def name(self) -> str:
@@ -77,11 +80,14 @@ class GeminiBinder:
         )
         if output.ask or not 0 <= output.chosen_shape_index < len(request.shapes):
             return BindResult(output=output, binder=self.name), usage
-        ratings = shape_ratings(output, len(request.shapes))
-        pool = rated_pool(request.shapes, output, ratings)
-        choice = request.apply_policies(pool, ratings=ratings)
+        shapes = request.shapes
+        ratings = shape_ratings(output, len(shapes))
+        pool = rated_pool(shapes, output, ratings)
+        chosen = shapes[output.chosen_shape_index]
+        holds = {i: holds_mentioned_values(chosen, shapes[i], output) for i in pool.measuring}
+        choice = request.apply_policies(pool, ratings=ratings, holds=holds)
         result = BindResult(
-            output=reelect(output, choice, request.shapes, request.admitted_qualifiers),
+            output=reelect(output, choice, shapes, request.admitted_qualifiers),
             binder=self.name,
             policy_pool=pool,
             policy_choice=choice,
@@ -109,21 +115,30 @@ def rated_pool(
     """The rated pool of the shape `output` elects: that shape first, then in menu order
     every menu shape rated above `RATED_POOL_FLOOR` and near the best rating of the menu
     (`near_best` with `RATED_POOL_FRACTION`), that states the chosen shape's denominator
-    (`bind.stated_reading`). The chosen shape stays whatever its rating.
+    (`bind.stated_reading`). The chosen shape stays whatever its rating, and so does each
+    shape the menu states as its reading (`bind._states_same_reading`), so the menu-rank
+    tie-break (`bind.rank_elected`) can choose between the two.
 
-    A shape joins only when it holds every value the phrase names as the chosen shape does (`holds_mentioned_values`), so the phrase's own words
-    stand before any policy runs."""
+    A rated shape joins only when it holds every value the phrase names as the chosen shape
+    does (`holds_mentioned_values`), so the phrase's own words stand before any policy runs;
+    a twin holds them by being one reading."""
     chosen = output.chosen_shape_index
     denominator = stated_reading(shapes[chosen]).denominator
     best = max(ratings.values(), default=0.0)
+
+    def joins(index: int, shape: ShapeDraft) -> bool:
+        if _states_same_reading(shapes[chosen], shape, output.bindings):
+            return True
+        rating = ratings.get(index, 0.0)
+        return (
+            rating > RATED_POOL_FLOOR
+            and near_best(rating, best, RATED_POOL_FRACTION)
+            and stated_reading(shape).denominator == denominator
+            and holds_mentioned_values(shapes[chosen], shape, output)
+        )
+
     others = (
-        index
-        for index, shape in enumerate(shapes)
-        if index != chosen
-        and (rating := ratings.get(index, 0.0)) > RATED_POOL_FLOOR
-        and near_best(rating, best, RATED_POOL_FRACTION)
-        and stated_reading(shape).denominator == denominator
-        and holds_mentioned_values(shapes[chosen], shape, output)
+        index for index, shape in enumerate(shapes) if index != chosen and joins(index, shape)
     )
     return PolicyPool(measuring=(chosen, *others), rated=True)
 
@@ -138,13 +153,19 @@ def holds_mentioned_values(
     chosen: ShapeDraft, shape: ShapeDraft, output: _UniversalBindOutput
 ) -> bool:
     """Whether `shape` holds each value the reply drafted on `chosen` that the phrase names
-    (evidence ``mentioned``) as `chosen` does: it has a slot for each such property, and
-    each value applies to the same taxonomy codes of its slot as of `chosen`'s
-    (`bind.reads_bound_values_alike`)."""
-    mentioned = _mentioned_drafts(output)
-    return {draft.property_dcid for draft in mentioned} <= _slot_property_dcids(
+    (`holds_drafted_values` over `mentioned_drafts`)."""
+    return holds_drafted_values(chosen, shape, mentioned_drafts(output.bindings))
+
+
+def holds_drafted_values(
+    chosen: ShapeDraft, shape: ShapeDraft, drafts: Sequence[SlotBindingDraft]
+) -> bool:
+    """Whether `shape` holds each value `drafts` bind on `chosen` as `chosen` does: it has
+    a slot for each drafted property, and each value applies to the same taxonomy codes of
+    its slot as of `chosen`'s (`bind.reads_bound_values_alike`)."""
+    return {draft.property_dcid for draft in drafts} <= _slot_property_dcids(
         shape
-    ) and reads_bound_values_alike(chosen, shape, mentioned)
+    ) and reads_bound_values_alike(chosen, shape, drafts)
 
 
 def reelect(
@@ -161,7 +182,8 @@ def reelect(
     its value, since it bound only because the old slot held one member; the rest are
     grounded in the new shape's taxonomy (`bind._grounded_in_taxonomy`,
     `bind._without_partly_stated_values`), and the pool admitted the new shape only if it
-    holds each value the phrase names (`holds_mentioned_values`). An unplaced phrase leaves
+    holds each value the phrase names (`holds_mentioned_values`); a move to one that does
+    not raises `PolicyContractError`. An unplaced phrase leaves
     `unplaced` when the new shape admits a qualifier read from its words
     (`admitted_qualifiers`, each menu shape's own, as the bind request carries them), since
     that shape's vocabulary reads it. An output the policies leave as it was is returned as
@@ -180,10 +202,11 @@ def reelect(
         ]
     if moved:
         shape = shapes[elected]
-        assert holds_mentioned_values(shapes[old], shape, output), (
-            f"house policies moved the election to {shape.shape_id!r}, which does not hold "
-            "a value the phrase names"
-        )
+        if not holds_mentioned_values(shapes[old], shape, output):
+            raise PolicyContractError(
+                f"house policies moved the election to {shape.shape_id!r}, which does not "
+                "hold a value the phrase names"
+            )
         slots = _slot_property_dcids(shape)
         kept = [
             draft
@@ -206,10 +229,11 @@ def reelect(
     return output.model_copy(update=update)
 
 
-def _mentioned_drafts(output: _UniversalBindOutput) -> list[SlotBindingDraft]:
+def mentioned_drafts(bindings: Sequence[SlotBindingDraft]) -> list[SlotBindingDraft]:
+    """The value and set drafts of `bindings` the phrase names (evidence ``mentioned``)."""
     return [
         draft
-        for draft in output.bindings
+        for draft in bindings
         if draft.kind in ("value", "set")
         and draft.evidence == "mentioned"
         and draft.property_dcid is not None

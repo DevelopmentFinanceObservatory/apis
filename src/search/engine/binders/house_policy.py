@@ -11,7 +11,8 @@ The six policies run in order, each over the survivors of the one before:
 1. `nominal_vs_va`: nominal output (EconomicActivity `amount`, Nominal where only some
    output shapes are) over value added.
 2. `amount_vs_ge`: grant equivalent, or `amount` on a FinancialFlow shape when the window
-   ends before grant-equivalent reporting starts (`GE_STARTS`).
+   starts before grant-equivalent reporting does (`GE_STARTS`), so the years before it
+   stay in the answer.
 3. `net_vs_gross`: a shape whose `nettingBasis` slot offers Gross.
 4. `default_dataset`: a shape whose family the part's house default dataset
    (`Context.wanted_dataset`) publishes. An opt-in table is its own dataset, so the
@@ -19,6 +20,10 @@ The six policies run in order, each over the survivors of the one before:
 5. `commit_vs_disb`: a FinancialFlow shape whose `financialFlowType` slot offers
    Disbursement.
 6. `data_at_places`: a shape with data at the named places.
+
+The policies choose only among the pool shapes that hold every constraint the binder
+recognised on its pick (`apply_house_policies`'s `holds`), so a policy never trades a value
+the phrase names for a convention. The pick holds its own.
 
 A policy narrows only when some, not all, candidates fit it, and does nothing with one
 candidate left. A rated pool (bounded by a near-best rating) runs all six; an unrated pool
@@ -99,7 +104,8 @@ class ShapeFacts:
 class Context:
     """What the part asks, as the policies read it.
 
-    `pre_ge` says the window ends before `GE_STARTS`. `dataset_case` is the kind of question
+    `pre_ge` says the window starts before `GE_STARTS`, or, open at its start, ends before
+    it. A part that names no window, or the latest year, is not pre-GE. `dataset_case` is the kind of question
     the part is for the default-dataset policy, and `wanted_dataset` that kind's declared
     house default; both are `None` when the part names no place and admits no code that
     declares a kind.
@@ -193,7 +199,8 @@ def context_of(
     question; else the named places are all donors and make it a `donor` question.
     """
     window = frame.window.value
-    end_year = None if isinstance(window, str) else window.end_year
+    # A window open at its start states its end year alone.
+    first_year = None if isinstance(window, str) else window.start_year or window.end_year
     directions = [place.direction for place in frame.places]
     admitted = {
         case_systems[match.code_system]
@@ -211,7 +218,7 @@ def context_of(
     else:
         case = None
     return Context(
-        pre_ge=end_year is not None and end_year < GE_STARTS,
+        pre_ge=first_year is not None and first_year < GE_STARTS,
         dataset_case=case,
         wanted_dataset=wanted_datasets.get(case) if case else None,
     )
@@ -288,12 +295,16 @@ def apply_house_policies(
     *,
     chosen: int,
     ratings: Mapping[int, float] | None = None,
+    holds: Mapping[int, bool] | None = None,
 ) -> PolicyChoice:
     """The pool shape the house policies and the tie-break elect.
 
     `facts` covers every pool shape (`shape_facts`), `chosen` is the binder's pick, and
     `ratings` the binder's per-index rating of a rated pool when it gives no election
-    probability. Raises `ValueError` when `chosen` or a pool shape's facts are missing.
+    probability. `holds` says, per pool shape, whether it holds every constraint the binder
+    recognised on `chosen`; the policies run over `chosen` and the shapes that hold, and
+    set the rest aside. A pool shape `holds` leaves out does not hold, and None holds them
+    all. Raises `ValueError` when `chosen` or a pool shape's facts are missing.
     """
     if chosen not in pool.measuring:
         raise ValueError(f"chosen shape {chosen} is not in the pool {pool.measuring}")
@@ -303,7 +314,9 @@ def apply_house_policies(
         raise ValueError(f"no facts for pool shapes {missing}")
     pooled = tuple(by_index[i] for i in pool.measuring)
 
-    candidates: Sequence[ShapeFacts] = pooled
+    candidates: Sequence[ShapeFacts] = [
+        f for f in pooled if holds is None or f.index == chosen or holds.get(f.index, False)
+    ]
     fired: list[PolicyName] = []
     for policy in POLICY_ORDER if pool.rated else UNRATED_POLICIES:
         kept = apply_policy(policy, candidates, context)

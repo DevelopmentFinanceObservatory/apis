@@ -33,6 +33,7 @@ from search.engine.bind_repair import (
     _label_negated_in_text,
 )
 from search.engine.binders import BindRequest, BindResult
+from search.engine.binders.base import PolicyContractError
 from search.engine.binders.house_policy import (
     Context,
     PolicyChoice,
@@ -3585,7 +3586,8 @@ class _HousePolicyStep:
     binder's pool (`house_policy.apply_house_policies`), the pool's first index the binder's
     pick, read against the part's menu, frame, each shape's admitted qualifiers and
     availability, and the code index's house default datasets, with the binder's ratings of
-    a rated pool. `calls` counts the binder's calls."""
+    a rated pool and its report of the pool shapes that hold what it recognised on its
+    pick. `calls` counts the binder's calls."""
 
     shapes: Sequence[ShapeDraft]
     frame: Frame
@@ -3595,14 +3597,20 @@ class _HousePolicyStep:
     calls: int = 0
 
     def __call__(
-        self, pool: PolicyPool, *, ratings: Mapping[int, float] | None = None
+        self,
+        pool: PolicyPool,
+        *,
+        ratings: Mapping[int, float] | None = None,
+        holds: Mapping[int, bool] | None = None,
     ) -> PolicyChoice:
         self.calls += 1
         facts = shape_facts(
             self.shapes, self.availability, pool.measuring, code_index=self.code_index
         )
         context = self._context(pool.measuring)
-        return apply_house_policies(facts, pool, context, chosen=pool.measuring[0], ratings=ratings)
+        return apply_house_policies(
+            facts, pool, context, chosen=pool.measuring[0], ratings=ratings, holds=holds
+        )
 
     def _context(self, pool: Sequence[int]) -> Context:
         return context_of(
@@ -3674,7 +3682,10 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
     policies choose among the shapes the binder elects from (`BindRequest.apply_policies`,
     `_HousePolicyStep`), once on a reply that elects a shape and never on one that does
     not. The binder's answer is `ResolveState.bind_decision`, logged as one
-    ``bind_decision`` line (`_log_bind_decision`). The part's frame
+    ``bind_decision`` line (`_log_bind_decision`). A binder that runs the step any other
+    number of times, or raises `PolicyContractError`, breaks that contract: the breach is
+    logged at ERROR in place of the line and the part refuses ``variable_not_resolved``
+    with the call's usage. The part's frame
     opens the prompt, and the readings refused only on a pinned part follow the menu as not
     electable (`InterpretationSet.refused_on_pinned`). Each shape's own admitted qualifiers
     become its fixed context (`_shape_qualifiers`), less the terms inside a phrase its own
@@ -3747,9 +3758,10 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
     )
     t0 = now_ms()
     bind_result: _UniversalBindOutput
-    _bind_usage: dict | None
+    _bind_usage: dict | None = None
     bind_task = asyncio.create_task(state.binder.bind(request, llm=state.llm))
     refusal: LLMOutputRefused | None = None
+    breach: str | None = None
     try:
         if state.emit is not None and state.capped_shapes:
             # Emit the top-ranked candidate while the bind call runs. It may differ from the choice.
@@ -3768,15 +3780,20 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
             # infrastructure failure.
             logger.info("bind answer refused at parse for %r: %s", state.variable, exc)
             refusal = exc
-            assert policies.calls == 0, f"house policies ran {policies.calls} times on a refusal"
+            if policies.calls:
+                breach = f"house policies ran {policies.calls} times on a refusal"
+        except PolicyContractError as exc:
+            breach = str(exc)
         else:
             elects = not bind_result.ask and 0 <= bind_result.chosen_shape_index < len(
                 state.capped_shapes
             )
-            assert policies.calls == int(elects), (
-                f"house policies ran {policies.calls} times on a bind call that "
-                f"{'elects' if elects else 'elects no'} shape"
-            )
+            if policies.calls != int(elects):
+                breach = (
+                    f"house policies ran {policies.calls} times on a bind call that "
+                    f"{'elects' if elects else 'elects no'} shape"
+                )
+        if breach is None and refusal is None:
             bind_result, stray = split_stray_bindings(bind_result, state.capped_shapes)
             state.bind_result = bind_result
             if stray:
@@ -3787,13 +3804,23 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
             bind_task.cancel()
             await asyncio.gather(bind_task, return_exceptions=True)
     state.timing["bind"] = now_ms() - t0
-    _log_bind_decision(state, None if refusal is not None else state.bind_decision)
+    # A call that broke the house-policy contract logs its breach in place of a decision.
+    if breach is None:
+        _log_bind_decision(state, None if refusal is not None else state.bind_decision)
     await _emit_step(
         state.emit,
         state.variable_index,
         "bind",
         ms=state.timing["bind"],
     )
+    if breach is not None:
+        # A binder that breaks the house-policy contract has an election nobody can
+        # vouch for; refuse the part loudly rather than answer from it.
+        logger.error(
+            "part %r: the binder broke the house-policy contract: %s", state.variable, breach
+        )
+        usage = refusal.usage if refusal is not None else _bind_usage
+        return state.no_data("variable_not_resolved", llm_usage=_sum_usage(state.var_usage, usage))
     if refusal is not None:
         state.warnings.append(
             Warning(

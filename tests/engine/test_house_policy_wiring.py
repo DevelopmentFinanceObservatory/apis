@@ -25,6 +25,7 @@ from search.engine.bind import (
     rank_elected,
 )
 from search.engine.binders import BindRequest, BindResult, GeminiBinder
+from search.engine.binders.base import PolicyContractError
 from search.engine.binders.gemini import (
     RATED_POOL_FRACTION,
     rated_pool,
@@ -322,12 +323,12 @@ def test_a_moved_election_keeps_only_the_drafts_the_new_shape_holds():
 
 def test_a_move_to_a_shape_without_a_named_value_is_refused():
     """The pools admit no shape that lacks a value the phrase names, so a move to one is a
-    fault in the binder and fails the bind call."""
+    fault in the binder and breaks the house-policy contract."""
     old = _shape("old", _FLOW, taxonomy={"how:flowKind": ["Grant"]})
     new = _shape("new", _FLOW, taxonomy={"how:flowKind": ["Loan"]})
     choice = PolicyChoice(survivor=1, fired=("default_dataset",), dropped=frozenset({0}), facts=())
 
-    with pytest.raises(AssertionError, match="does not hold"):
+    with pytest.raises(PolicyContractError, match="does not hold"):
         reelect(_reply(0, _value("flowKind", "Grant")), choice, [old, new])
 
 
@@ -452,10 +453,13 @@ class _CountingGemini(GeminiBinder):
         step = request.apply_policies
 
         def counted(
-            pool: PolicyPool, *, ratings: Mapping[int, float] | None = None
+            pool: PolicyPool,
+            *,
+            ratings: Mapping[int, float] | None = None,
+            holds: Mapping[int, bool] | None = None,
         ) -> PolicyChoice:
             self.calls += 1
-            return step(pool, ratings=ratings)
+            return step(pool, ratings=ratings, holds=holds)
 
         return await super().bind(replace(request, apply_policies=counted), llm=llm)
 
@@ -505,14 +509,47 @@ class _MiscountingBinder(GeminiBinder):
         pytest.param(_reply(0, ask="Which aid?"), 1, id="asks-with-a-step"),
     ],
 )
-def test_a_binder_that_miscounts_the_policy_step_fails_the_bind_call(
-    output: _UniversalBindOutput, calls: int
+def test_a_binder_that_miscounts_the_policy_step_refuses_the_part(
+    output: _UniversalBindOutput, calls: int, caplog: pytest.LogCaptureFixture
 ):
+    """A binder that runs the policy step other than once on an election breaks the
+    contract: the part refuses ``variable_not_resolved``, the breach is logged at ERROR,
+    and no ``bind_decision`` line vouches for the election."""
+    caplog.set_level(logging.INFO, logger="search.engine.region.phase_rank_bind")
     state = _state([_DAC2A, _CRS], llm=_StubLLM(None))
     state.binder = _MiscountingBinder(output, calls)
 
-    with pytest.raises(AssertionError, match="house policies ran"):
-        asyncio.run(_phase_bind(state))
+    result = asyncio.run(_phase_bind(state))
+
+    assert result is not None and result.no_data_reason == "variable_not_resolved"
+    [error] = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert "house policies ran" in error.getMessage()
+    assert _decisions(caplog) == []
+
+
+class _MovingBinder(GeminiBinder):
+    """The Gemini binder whose policy step moves every election to menu shape 1."""
+
+    async def bind(self, request: BindRequest, *, llm) -> tuple[BindResult, dict | None]:
+        def moves(pool: PolicyPool, **_kwargs: object) -> PolicyChoice:
+            return PolicyChoice(
+                survivor=1, fired=("default_dataset",), dropped=frozenset(), facts=()
+            )
+
+        return await super().bind(replace(request, apply_policies=moves), llm=llm)
+
+
+def test_a_move_to_a_shape_without_a_named_value_refuses_the_part():
+    """An election the policy step moves to a shape that lacks a value the phrase names
+    breaks the contract, and the part refuses rather than answer without the value."""
+    old = _shape("old", _FLOW, taxonomy={"how:flowKind": ["Grant"]})
+    new = _shape("new", _FLOW, taxonomy={"how:flowKind": ["Loan"]})
+    state = _state([old, new], llm=_StubLLM(_reply(0, _value("flowKind", "Grant"), rated=(0, 1))))
+    state.binder = _MovingBinder()
+
+    result = asyncio.run(_phase_bind(state))
+
+    assert result is not None and result.no_data_reason == "variable_not_resolved"
 
 
 def test_each_bind_call_logs_one_bind_decision_line(caplog: pytest.LogCaptureFixture):
@@ -670,12 +707,33 @@ def test_the_rated_pool_reads_each_rating_against_the_bound(
     """With the fraction at 0.1 a shape joins at 0.9 of the best, whatever the float product
     of the bound rounds to, and not below, and not at the 0.1 floor. A shape the reply leaves unrated reads 0, as does a rating outside 0 to
     1, which sets no best either. The chosen shape stays whatever its rating."""
-    shapes = [_OUTPUT, replace(_OUTPUT, shape_id="output_twin")]
+    shapes = [_OUTPUT, replace(_OUTPUT, shape_id="output_other", label="other output")]
     reply = _rated(0, ratings)
 
     assert rated_pool(shapes, reply, shape_ratings(reply, len(shapes))) == PolicyPool(
         measuring=pool, rated=True
     )
+
+
+@pytest.mark.parametrize(
+    "ratings",
+    [
+        pytest.param({1: 1.0}, id="unrated"),
+        pytest.param({1: 1.0, 0: 0.5}, id="below-the-bound"),
+        pytest.param({1: 1.0, 0: 0.05}, id="under-the-floor"),
+    ],
+)
+def test_a_twin_of_the_pick_joins_the_pool_whatever_its_rating(ratings: Mapping[int, float]):
+    """A shape the menu states as the pick's reading joins the pool, however the reply
+    rates it, so the menu rank breaks the tie between the two and elects the first."""
+    shapes = [replace(_OUTPUT, shape_id="output_first"), _OUTPUT]
+    reply = _rated(1, ratings)
+
+    result = _rated_bind(shapes, reply)
+
+    assert result.policy_pool == PolicyPool(measuring=(1, 0), rated=True)
+    among = frozenset(result.policy_pool.measuring)
+    assert rank_elected(shapes, result.output, among=among) == 0
 
 
 def test_the_rated_pool_keeps_the_chosen_denominator_and_the_named_values():

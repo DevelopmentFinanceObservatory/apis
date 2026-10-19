@@ -573,9 +573,9 @@ def rank_elected(
     is.
 
     `among` holds the shapes the house policies left standing (`house_policy.PolicyChoice`),
-    `None` where no policy step ran. The rank is the menu-rank tie-break among those
-    survivors (spec "Ties and precedence"): a shape the policies set aside, or one outside
-    their pool, is never elected here, so the rank cannot undo a policy's move."""
+    `None` where no policy step ran. The rank breaks ties among those survivors alone: a
+    shape the policies set aside, or one outside their pool, is never elected here, so the
+    rank cannot undo a policy's move."""
     chosen = output.chosen_shape_index
     return next(
         (

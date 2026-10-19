@@ -10,7 +10,12 @@ from search.engine.binders import BindRequest, BindResult, GeminiBinder
 from search.engine.binders.house_policy import PolicyChoice, PolicyPool
 
 
-def keep_the_pick(pool: PolicyPool, *, ratings: Mapping[int, float] | None = None) -> PolicyChoice:
+def keep_the_pick(
+    pool: PolicyPool,
+    *,
+    ratings: Mapping[int, float] | None = None,
+    holds: Mapping[int, bool] | None = None,
+) -> PolicyChoice:
     """A house-policy step that elects the binder's pick, the pool's first index."""
     return PolicyChoice(survivor=pool.measuring[0], fired=(), dropped=frozenset(), facts=())
 
