@@ -77,6 +77,11 @@ coverage = [
     "google-cloud-bigquery>=3.27",
     "dfo-data-tools[sdmx]",
 ]
+# graph_release.reads reads one Spanner snapshot directly through
+# google-cloud-spanner, imported lazily so no offline test or serving-path
+# install needs it. graph_release.format holds mask words in numpy, which
+# ships with `coverage`.
+graph-release = ["google-cloud-spanner>=3.57", "dfo-data-tools[coverage]"]
 
 [tool.uv.sources]
 # See the root pyproject.toml's dfo-spec-kit source comment for the

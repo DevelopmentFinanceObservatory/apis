@@ -8,7 +8,8 @@ these functions, so the release and a live read agree about each variable.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Final, cast
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
     import pyarrow as pa
@@ -38,12 +39,31 @@ def mixer_visible(predicate: str) -> bool:
     return predicate not in MIXER_BLOCKED_PREDICATES
 
 
+def mixer_target(object_id: str, *, value: str | None, types: Sequence[str] | None) -> str:
+    """The mixer's name for an edge's target, given the target's `Node` row: a literal (no types,
+    a value of its own) answers as its `value`, every other target, with or without a `Node` row,
+    as its dcid."""
+    if not types and value is not None and value != object_id:
+        return value
+    return object_id
+
+
 def dfo_visible(predicate: str, object_id: str | None) -> bool:
     """Stage two: DFO normalisation, applied to mixer rows and release rows alike. `object_id` is
     the target's dcid, or `None` for a literal the mixer answers as a `value`."""
     return not (
         predicate == _CONSTRAINT_PROPERTIES and object_id in IMPORT_ADDED_CONSTRAINT_PROPERTIES
     )
+
+
+def mixer_visible_mask(predicates: pa.Array) -> pa.BooleanArray:
+    """Stage one over an Arrow column, for the builder writing `edges`. A null predicate hides
+    nothing: `is_in` answers false for a null, so the mask holds no nulls."""
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    blocked = pc.is_in(predicates, value_set=pa.array(sorted(MIXER_BLOCKED_PREDICATES)))
+    return pc.invert(blocked)
 
 
 def visible_mask(predicates: pa.Array, object_ids: pa.Array) -> pa.BooleanArray:
@@ -53,9 +73,8 @@ def visible_mask(predicates: pa.Array, object_ids: pa.Array) -> pa.BooleanArray:
     import pyarrow as pa
     import pyarrow.compute as pc
 
-    blocked = pc.is_in(predicates, value_set=pa.array(sorted(MIXER_BLOCKED_PREDICATES)))
     import_added = pc.and_(
         pc.is_in(predicates, value_set=pa.array([_CONSTRAINT_PROPERTIES])),
         pc.is_in(object_ids, value_set=pa.array(sorted(IMPORT_ADDED_CONSTRAINT_PROPERTIES))),
     )
-    return cast("pa.BooleanArray", pc.invert(pc.or_(blocked, import_added)))
+    return pc.and_(mixer_visible_mask(predicates), pc.invert(import_added))

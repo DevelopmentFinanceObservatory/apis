@@ -468,7 +468,7 @@ def write_part(
     if part.split_on is None and provenance is not None:
         raise ValueError(f"part {name!r} has no provenance files")
 
-    table = _sort(_conform(table, part), part)
+    table = conform_part(table, name=name)
     if name == "edges" and table.num_rows:
         provenances = _dictionary(table["provenance"]).dictionary.to_pylist()
         if provenances != [provenance]:
@@ -500,6 +500,18 @@ def write_part(
         )
         staged.append(StagedPart(path=path, ref=ref))
     return staged
+
+
+def conform_part(table: pa.Table, *, name: str) -> pa.Table:
+    """`table` as tabular part `name` holds it: columns in schema order and
+    type, dictionary columns with sorted dictionaries, rows sorted by the
+    key. An optional column may be left out. Raises `ValueError` for an
+    unknown part, an unknown or missing column, or a null in a non-nullable
+    column."""
+    part = PART_SCHEMAS.get(name)
+    if part is None:
+        raise ValueError(f"unknown tabular part {name!r}; known: {sorted(PART_SCHEMAS)}")
+    return _sort(_conform(table, part), part)
 
 
 def write_blob_part(
@@ -774,6 +786,7 @@ __all__ = [
     "ReleaseFormatError",
     "StagedPart",
     "compute_release_id",
+    "conform_part",
     "manifest_uri",
     "open_release",
     "part_uri",

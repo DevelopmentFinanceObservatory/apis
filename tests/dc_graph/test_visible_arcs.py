@@ -14,6 +14,7 @@ import pyarrow as pa
 import pytest
 
 from dc_graph import MIXER_BLOCKED_PREDICATES, GraphClient, parse_arcs, visible_mask
+from dc_graph.visible_arcs import mixer_target
 
 _FIXTURE = Path(__file__).parents[1] / "fixtures/dc_graph/visible_arcs/ids_variables.json"
 
@@ -26,12 +27,7 @@ def recorded() -> dict:
 
 
 def _target(row: dict) -> str:
-    """The mixer's name for a row's target: a literal `Node` (no types, a value of its own)
-    answers as its `value`, every other target as its dcid."""
-    value = row["value"]
-    if not row["types"] and value is not None and value != row["object_id"]:
-        return value
-    return row["object_id"]
+    return mixer_target(row["object_id"], value=row["value"], types=row["types"])
 
 
 def _release_arcs(rows: list[dict]) -> set[Arc]:
