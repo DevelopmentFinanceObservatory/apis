@@ -1035,16 +1035,19 @@ def _enforce_kind(extraction: Extraction) -> Extraction:
     return extraction
 
 
-def _disclose_lost_words(query: str, extraction: Extraction) -> Extraction:
+def _disclose_lost_words(
+    query: str, extraction: Extraction, *, date_wording: Sequence[str]
+) -> Extraction:
     """Add to `dropped_qualifiers` the query words a reading with a repeated variable lost.
 
     Two variables equal after stripping and casefolding are one measure to the engine, so
     the words that told them apart are gone: "aid to Kenya and Uganda for health and
     education" read as `["aid", "aid"]` loses "health and education". Each maximal run of
-    query words that no variable, place, role cue, operation phrase, dropped qualifier or
-    date holds, with function words trimmed from its ends, is added when it keeps a word
-    other than a function word or a number. A reading with no repeated variable is
-    returned unchanged.
+    query words that no variable, place, role cue, operation phrase, dropped qualifier,
+    date bound or applied relative-date wording (`date_wording`, from
+    `_resolve_relative_dates`) holds, with function words trimmed from its ends, is added
+    when it keeps a word other than a function word or a number. A reading with no
+    repeated variable is returned unchanged.
     """
     variables = [v.strip().casefold() for v in extraction.variables if v.strip()]
     if len(variables) == len(set(variables)):
@@ -1055,6 +1058,7 @@ def _disclose_lost_words(query: str, extraction: Extraction) -> Extraction:
         *(operation.phrase for operation in extraction.operations),
         *extraction.dropped_qualifiers,
         *(year for d in extraction.dates for year in (d.start, d.end) if year),
+        *date_wording,
     ]
     covered = {word for text in held for word in _words(text)}
     runs: list[list[re.Match[str]]] = [[]]
@@ -1327,9 +1331,13 @@ def _admit_operations(
     )
 
 
-def _applied_phrases(extraction: Extraction) -> frozenset[tuple[str, ...]]:
+def _applied_phrases(
+    extraction: Extraction, *, date_wording: Sequence[str]
+) -> frozenset[tuple[str, ...]]:
     """The word sequences the answer applies whenever it resolves: each entity's text
-    and span, and the role span of each entity that holds a flow role.
+    and span, the role span of each entity that holds a flow role, and the wording of
+    each relative date `_resolve_relative_dates` applied (`date_wording`), which the
+    resolved date's bounds no longer carry.
 
     The span is the query's own wording of a place the model names in English ("Kenia",
     "Kenyan", "DR Congo"), and a role span its cue ("funded by", "received", "au").
@@ -1345,6 +1353,7 @@ def _applied_phrases(extraction: Extraction) -> frozenset[tuple[str, ...]]:
         for entity in extraction.entities
         if entity.role_span and entity.flow_role != "unspecified"
     ]
+    texts += date_wording
     return frozenset(words for text in texts if (words := tuple(_words(text))))
 
 
@@ -1398,7 +1407,9 @@ def _names_a_role_axis(word: str, axes: frozenset[str]) -> bool:
     return any(role_axis_for_text(form) in axes for form in (word, word.removesuffix("s")))
 
 
-def _trim_qualifiers_to_what_operations_leave(extraction: Extraction) -> Extraction:
+def _trim_qualifiers_to_what_operations_leave(
+    extraction: Extraction, *, date_wording: Sequence[str]
+) -> Extraction:
     """Cut from each dropped qualifier the words an admitted operation accounts for.
 
     An operation accounts for a qualifier's words when one phrase holds the other's
@@ -1407,7 +1418,8 @@ def _trim_qualifiers_to_what_operations_leave(extraction: Extraction) -> Extract
     (`_words_an_operation_accounts_for`) and, over origin or destination, the role noun
     anywhere in the qualifier (`_names_a_role_axis`). Such a qualifier loses, from both
     ends, those words, function words, date words, and every run of words that is an
-    entity's text or span or a validated role span (`_applied_phrases`). What is left
+    entity's text or span, a validated role span or an applied relative date's wording
+    (`_applied_phrases`). What is left
     stays in `dropped_qualifiers` for
     the region, which reports it unless the answer applied it: "top 5 donors of standard
     grants" leaves "standard grants", unapplied when bind asks instead of electing. The
@@ -1423,7 +1435,7 @@ def _trim_qualifiers_to_what_operations_leave(extraction: Extraction) -> Extract
     """
     if not extraction.dropped_qualifiers or not extraction.operations:
         return extraction
-    phrases = _applied_phrases(extraction)
+    phrases = _applied_phrases(extraction, date_wording=date_wording)
     dates = _date_words(extraction)
     plain_names = frozenset(d.plain_name for d in get_index().declarations.values())
     variables = {tuple(_non_function_words(v)) for v in extraction.variables}
@@ -1610,7 +1622,7 @@ def _drop_forecast_years(
 
 def _resolve_relative_dates(
     extraction: Extraction, *, current_year: int
-) -> tuple[Extraction, tuple[Warning, ...]]:
+) -> tuple[Extraction, tuple[Warning, ...], tuple[str, ...]]:
     """Replace each date the model gave as relative wording (`ExtractedDate.relative`)
     with the dates `time_bind.parse_time_text` reads in it, ending at `current_year`.
 
@@ -1620,21 +1632,36 @@ def _resolve_relative_dates(
     `relative` counts as none, so its date keeps its own bounds. A latest date needs no
     year, so it keeps its kind with `relative` cleared whatever its wording ("today",
     "más reciente").
+
+    The third value holds the wording of each relative date that yielded a date, which
+    the resolved dates no longer carry; `_disclose_lost_words` and
+    `_trim_qualifiers_to_what_operations_leave` credit it as applied.
     """
     dates: list[ExtractedDate] = []
     warnings: list[Warning] = []
+    applied_wording: list[str] = []
     for extracted in extraction.dates:
         if extracted.relative is None:
             dates.append(extracted)
             continue
-        if extracted.kind == "latest" or not extracted.relative.strip():
+        if not extracted.relative.strip():
             dates.append(extracted.model_copy(update={"relative": None}))
+            continue
+        if extracted.kind == "latest":
+            dates.append(extracted.model_copy(update={"relative": None}))
+            applied_wording.append(extracted.relative)
             continue
         parsed, warning = parse_time_text(extracted.relative, current_year=current_year)
         dates += parsed
+        if parsed:
+            applied_wording.append(extracted.relative)
         if warning is not None:
             warnings.append(warning)
-    return extraction.model_copy(update={"dates": dates}), tuple(warnings)
+    return (
+        extraction.model_copy(update={"dates": dates}),
+        tuple(warnings),
+        tuple(applied_wording),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1729,7 +1756,9 @@ async def extract(
     extraction, usage = await _model_extraction(
         query, llm=for_stage(llm, "extract"), year=today_year
     )
-    extraction, date_warnings = _resolve_relative_dates(extraction, current_year=today_year)
+    extraction, date_warnings, date_wording = _resolve_relative_dates(
+        extraction, current_year=today_year
+    )
     extraction = _bound_entities(_restore_query_word_order(query, _enforce_kind(extraction)))
     extraction, operations = _admit_operations(query, extraction, today_year=today_year)
     operations = _target_forecasts(extraction, operations, today_year=today_year)
@@ -1741,8 +1770,8 @@ async def extract(
     extraction = extraction.model_copy(
         update={"entities": _validate_role_spans(query, extraction.entities, clamped_variables)}
     )
-    extraction = _disclose_lost_words(query, extraction)
-    extraction = _trim_qualifiers_to_what_operations_leave(extraction)
+    extraction = _disclose_lost_words(query, extraction, date_wording=date_wording)
+    extraction = _trim_qualifiers_to_what_operations_leave(extraction, date_wording=date_wording)
     extraction, raw_variable_count, raw_dropped_qualifier_count, admitted_variables = (
         _bound_extraction(extraction)
     )

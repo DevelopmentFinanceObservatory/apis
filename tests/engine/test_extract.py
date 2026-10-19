@@ -1082,26 +1082,47 @@ def test_extract_clamps_oversized_variables_before_the_reattach_scan(monkeypatch
 
 
 @pytest.mark.parametrize(
-    ("query", "variables", "dropped"),
+    ("query", "variables", "dates", "resolved", "dropped"),
     [
         # dq-crs-056's stored reading.
         (
             "aid to Kenya and Uganda for health and education",
             ["aid", "aid"],
+            [],
+            [],
             ["health and education"],
         ),
         (
             "aid to Kenya and Uganda for health and education",
             ["aid", "Aid "],
+            [],
+            [],
             ["health and education"],
         ),
         # Distinct variables lose nothing the engine can see.
-        ("aid to Kenya and Uganda for health and education", ["health aid", "education aid"], []),
+        (
+            "aid to Kenya and Uganda for health and education",
+            ["health aid", "education aid"],
+            [],
+            [],
+            [],
+        ),
         # A repeat that loses no word adds nothing.
-        ("aid and aid to Kenya", ["aid", "aid"], []),
+        ("aid and aid to Kenya", ["aid", "aid"], [], [], []),
+        # A resolved relative date holds its wording, though its bounds are years.
+        (
+            "aid to Kenya and Uganda over the last five years",
+            ["aid", "aid"],
+            [{"kind": "range", "relative": "over the last five years"}],
+            [{"kind": "range", "start": "2022", "end": "2026"}],
+            [],
+        ),
     ],
 )
-def test_extract_lists_the_words_a_repeated_variable_lost(query, variables, dropped):
+def test_extract_lists_the_words_a_repeated_variable_lost(
+    monkeypatch, query, variables, dates, resolved, dropped
+):
+    monkeypatch.setattr(extract_module, "date", SimpleNamespace(today=lambda: date(2026, 6, 23)))
     llm = _stub_for(
         query,
         {
@@ -1111,10 +1132,11 @@ def test_extract_lists_the_words_a_repeated_variable_lost(query, variables, drop
                 for t in ("Kenya", "Uganda")
                 if t in query
             ],
-            "dates": [],
+            "dates": dates,
         },
     )
     result, _ = _run(extract(query, llm=llm))
+    assert [d.model_dump(mode="json") for d in result.extraction.dates] == resolved
     assert result.extraction.dropped_qualifiers == dropped
 
 
@@ -2558,11 +2580,15 @@ def test_slot_default_answers_a_qualifier_that_names_only_the_slot(qualifier, va
     [
         ("top 5 donors in fragile states", ["fragile states"]),
         ("top 5 donors in the United States", []),
+        # The relative date's wording is applied, though its bounds are years.
+        ("top 5 donors over the last five years", []),
     ],
 )
 def test_extract_accounts_for_an_entity_only_as_a_run_of_its_words(dropped, expected):
     """ "states" alone is not the entity "United States"."""
-    query = "ODA from the top 5 donors in fragile states and the United States"
+    query = (
+        "ODA from the top 5 donors in fragile states and the United States over the last five years"
+    )
     llm = _stub_for(
         query,
         {
@@ -2570,7 +2596,7 @@ def test_extract_accounts_for_an_entity_only_as_a_run_of_its_words(dropped, expe
             "entities": [{"text": "United States", "span": "United States"}],
             "operations": [_op("rank", 0, "top 5 donors", "origin")],
             "dropped_qualifiers": [dropped],
-            "dates": [],
+            "dates": [{"kind": "range", "relative": "over the last five years"}],
         },
     )
     result, _ = _run(extract(query, llm=llm))
@@ -2912,7 +2938,7 @@ def test_resolve_relative_dates_reads_the_wording_against_the_current_year(
     dates, resolved, warning_codes
 ):
     extraction = Extraction(kind="resolution", variables=["aid"], dates=dates)
-    out, warnings = _resolve_relative_dates(extraction, current_year=2026)
+    out, warnings, _ = _resolve_relative_dates(extraction, current_year=2026)
     # A resolved date dumps without `relative`, as the wire and the response cache keys read it.
     assert [d.model_dump(mode="json") for d in out.dates] == resolved
     assert [w.code for w in warnings] == warning_codes
