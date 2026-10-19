@@ -17,18 +17,21 @@ Each tick:
 4. Takes the build lease, or exits.
 5. Reads every input in one snapshot whose first statements re-read the import key, and
    discards the build when the key moved since step 1.
-6. Builds the platform and DFO parts and gates them. A finding records the inputs as the last
-   failed build; an unavailable dependency records them as the last unavailable inputs, which
-   only the backoff reads.
+6. Builds the platform and DFO parts and gates them, then re-reads the serving revision and
+   discards the build, recording nothing, when it moved. Otherwise a finding records the inputs
+   as the last failed build, and an unavailable dependency records them as the last unavailable
+   inputs, which only the backoff reads.
 7. Publishes, unless the release id is the serving one, in which case it records the inputs
    and publishes nothing. Prunes while still holding the lease, then releases it. A failed
    prune or lease release is logged and leaves the outcome alone.
 
-Every tick logs `graph_release_heartbeat` last, whatever its exit, with outcome `error` before
-re-raising an exception the tick does not classify. The no-heartbeat alert's metric leaves out
-outcomes `error` and `lease_held`. A build killed by the task timeout or out of memory logs no
-heartbeat and keeps the lease, and the ticks that overlap it end `lease_held`, so builds killed
-on every run raise the alert.
+Every outcome the tick classifies exits 0, a gate finding and an unavailable dependency
+included, since their log lines raise the alerts. Only an exception the tick does not classify,
+or a timeout or out-of-memory kill, fails the execution. Every tick logs
+`graph_release_heartbeat` last, with outcome `error` before re-raising an exception it does not
+classify. The no-heartbeat alert's metric leaves out outcomes `error` and `lease_held`. A build
+killed by the task timeout or out of memory logs no heartbeat and keeps the lease, and the ticks
+that overlap it end `lease_held`, so builds killed on every run raise the alert.
 
 It logs `graph_release_stale` while the newest import of any status has waited more than
 `STALE_SECONDS` for a release, less the time spent waiting for the shadow comparators up to
@@ -268,13 +271,16 @@ class Mixer(Protocol):
 
 @dataclass(frozen=True)
 class _Exit:
+    """How a tick ended. `failed` marks a gate finding or an unavailable dependency, which an
+    unreadable stale check does not replace in the heartbeat."""
+
     outcome: str
-    code: int = 0
+    failed: bool = False
 
 
 class _Unavailable(Exception):
-    """A dependency that could not answer. The tick exits non-zero, records no finding, and the
-    next tick retries. `phases` holds the build phases run before it, when a build ran."""
+    """A dependency that could not answer. The tick records no finding, and the next tick
+    retries. `phases` holds the build phases run before it, when a build ran."""
 
     def __init__(self, *entries: GateUnavailable) -> None:
         super().__init__("; ".join(f"{entry.dependency}: {entry.detail}" for entry in entries))
@@ -325,10 +331,11 @@ def run(
     sdmx: SeriesReader,
     declarations: Declarations = DECLARATIONS,
     clock: Callable[[], float] = time.time,
-) -> int:
-    """One tick. Returns the exit code: 1 for a gate finding or an unavailable dependency, 0
-    otherwise. Logs `graph_release_heartbeat` last, with outcome `error` and the exception type
-    before re-raising anything the tick does not classify."""
+) -> None:
+    """One tick. Every outcome it classifies, a gate finding and an unavailable dependency
+    included, returns, so the process exits 0; their log lines raise the alerts. Logs
+    `graph_release_heartbeat` last, with outcome `error` and the exception type before
+    re-raising anything the tick does not classify, which fails the execution."""
     try:
         result = _run(
             settings,
@@ -343,7 +350,6 @@ def run(
         emit("graph_release_heartbeat", severity="ERROR", outcome="error", error=type(exc).__name__)
         raise
     emit("graph_release_heartbeat", outcome=result.outcome)
-    return result.code
 
 
 def _run(
@@ -385,7 +391,7 @@ def _run(
     except _Unavailable as exc:
         # Logged whatever the tick's outcome, so a stale check that cannot read stays visible.
         stale_check = _unavailable(exc)
-        if result.code == 0:
+        if not result.failed:
             result = stale_check
     return result
 
@@ -656,21 +662,8 @@ def _build_phases(
                             origin_build_id=inputs.origin_build_id,
                         ),
                     )
-        if gate.findings:
-            with _needs(Dependency.BUCKET, *_BUCKET_ERRORS):
-                _update_state(root, last_failed=inputs.to_json())
-            emit(
-                "graph_release_gate_failed",
-                **inputs.to_json(),
-                **gate.summary(),
-                phases=phases.recorded,
-            )
-            return _Exit("gate_failed", 1)
-        if gate.unavailable:
-            raise _Unavailable(*gate.unavailable)
-
-        # Discards the build when the serving revision moved during the mixer reads above,
-        # since they may have answered from a revision the inputs do not name.
+        # The mixer reads above may have answered from a revision the inputs do not name, so a
+        # moved revision discards whatever they decided, a finding or an unavailable read alike.
         with _needs(Dependency.ADMIN_API, ServingRevisionError):
             serving = admin.serving()
         if serving.token != inputs.dc_serving_revision:
@@ -681,6 +674,19 @@ def _build_phases(
                 **inputs.to_json(),
             )
             return _Exit("serving_revision_moved")
+
+        if gate.findings:
+            with _needs(Dependency.BUCKET, *_BUCKET_ERRORS):
+                _update_state(root, last_failed=inputs.to_json())
+            emit(
+                "graph_release_gate_failed",
+                **inputs.to_json(),
+                **gate.summary(),
+                phases=phases.recorded,
+            )
+            return _Exit("gate_failed", failed=True)
+        if gate.unavailable:
+            raise _Unavailable(*gate.unavailable)
 
         return _publish(
             root,
@@ -930,10 +936,10 @@ def _entries(exc: _Unavailable) -> list[dict[str, str]]:
 def _unavailable(exc: _Unavailable) -> _Exit:
     phases = {"phases": exc.phases} if exc.phases else {}
     emit("graph_release_unavailable", severity="WARNING", unavailable=_entries(exc), **phases)
-    return _Exit("unavailable", 1)
+    return _Exit("unavailable", failed=True)
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="python -m graph_release.job")
     parser.add_argument(
         "--local-dir",
@@ -960,11 +966,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     admin = CloudRunAdmin(service=settings.datacommons_service)
     with graph, sdmx, closing(admin):
-        return run(settings, database=database, admin=admin, graph=graph, sdmx=sdmx)
+        run(settings, database=database, admin=admin, graph=graph, sdmx=sdmx)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
 
 
 __all__ = [

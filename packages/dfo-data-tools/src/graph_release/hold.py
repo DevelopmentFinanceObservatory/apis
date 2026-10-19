@@ -36,7 +36,7 @@ from artifact_publication.jobs import (
     release_lease,
 )
 from graph_release.format import ReleaseFormatError
-from graph_release.job import clear_failed
+from graph_release.job import StateConflict, clear_failed
 from graph_release.publish import HoldError, clear_hold, hold_release
 
 LEASE_TTL_SECONDS: Final[float] = 900.0
@@ -91,7 +91,7 @@ def main(argv: Sequence[str] | None = None, *, clock: Callable[[], float] = time
             pointer = hold_release(root, args.release_id, write_by=write_by, clock=clock)
         else:
             pointer = clear_hold(root, write_by=write_by, clock=clock)
-    except (HoldError, ReleaseFormatError) as exc:
+    except (HoldError, ReleaseFormatError, StateConflict) as exc:
         print(f"graph_release.hold {args.command}: {exc}", file=sys.stderr)
         return 1
     finally:

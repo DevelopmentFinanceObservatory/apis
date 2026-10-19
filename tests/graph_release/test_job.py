@@ -270,8 +270,8 @@ class Builder:
             origin_uri="file:///origin" if self.shadow else "",
         )
 
-    def run(self) -> int:
-        return job.run(
+    def run(self) -> None:
+        job.run(
             self.settings(),
             database=self.database,
             admin=self.admin.client(),
@@ -284,15 +284,15 @@ class Builder:
     def events(self) -> list[dict]:
         return [json.loads(line) for line in self.capsys.readouterr().out.splitlines()]
 
-    def tick(self) -> tuple[int, list[dict]]:
-        """Runs one tick and returns its exit code and events, checking the heartbeat closes
-        it with the tick's outcome."""
+    def tick(self) -> list[dict]:
+        """Runs one tick and returns its events, checking the heartbeat closes it with the
+        tick's outcome."""
         self.capsys.readouterr()
-        code = self.run()
+        self.run()
         events = self.events()
         assert events[-1]["event"] == "graph_release_heartbeat"
         assert sum(e["event"] == "graph_release_heartbeat" for e in events) == 1
-        return code, events
+        return events
 
     def state(self) -> dict:
         try:
@@ -338,9 +338,9 @@ def builder(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch) -> 
 
 
 def test_a_tick_publishes_the_release_and_the_next_exits_at_step_three(builder):
-    code, events = builder.tick()
+    events = builder.tick()
 
-    assert (code, _outcome(events)) == (0, "published")
+    assert _outcome(events) == "published"
     (published,) = _named(events, "graph_release_published")
     pointer = read_pointer(builder.root)
     assert pointer is not None and pointer.release_id == published["release_id"]
@@ -363,9 +363,9 @@ def test_a_tick_publishes_the_release_and_the_next_exits_at_step_three(builder):
     assert last_built["release_id"] == pointer.release_id
     assert builder.lease_free()
 
-    code, events = builder.tick()
+    events = builder.tick()
 
-    assert (code, _outcome(events)) == (0, "inputs_built")
+    assert _outcome(events) == "inputs_built"
     assert len(builder.database.snapshots) == 3
     assert read_pointer(builder.root) == pointer
 
@@ -378,14 +378,14 @@ def test_a_build_of_the_serving_release_records_its_inputs_and_publishes_nothing
     # A builder change that changes no part gives new inputs and the same release id.
     monkeypatch.setattr(job, "builder_code_hash", lambda: "another-builder")
 
-    code, events = builder.tick()
+    events = builder.tick()
 
-    assert (code, _outcome(events)) == (0, "release_unchanged")
+    assert _outcome(events) == "release_unchanged"
     (unchanged,) = _named(events, "graph_release_unchanged")
     assert set(unchanged["phases"]) == {"reads", "platform", "dfo", "gate"}
     assert read_uri_bytes_and_generation(pointer_uri(builder.root)) == before
     assert builder.state()["last_built"]["inputs"]["builder_code_hash"] == "another-builder"
-    assert _outcome(builder.tick()[1]) == "inputs_built"
+    assert _outcome(builder.tick()) == "inputs_built"
 
 
 def test_a_held_pointer_stops_the_tick_before_it_builds(builder):
@@ -395,9 +395,9 @@ def test_a_held_pointer_stops_the_tick_before_it_builds(builder):
     hold_release(builder.root, pointer.release_id)
     builder.admin.revisions = ["dc-00002"]
 
-    code, events = builder.tick()
+    events = builder.tick()
 
-    assert (code, _outcome(events)) == (0, "held")
+    assert _outcome(events) == "held"
     assert len(builder.database.snapshots) == 3
 
 
@@ -405,7 +405,7 @@ def test_a_held_pointer_raises_no_stale_and_clearing_it_republishes_the_newest_b
     builder.tick()
     first = read_pointer(builder.root)
     builder.admin.revisions = ["dc-00002"]
-    assert _outcome(builder.tick()[1]) == "published"
+    assert _outcome(builder.tick()) == "published"
     newest = read_pointer(builder.root)
     assert first is not None and newest is not None and newest != first
     hold_release(builder.root, first.release_id)
@@ -413,27 +413,27 @@ def test_a_held_pointer_raises_no_stale_and_clearing_it_republishes_the_newest_b
     builder.database.newest = _history("wf-2", status="FAILURE")
     builder.now = _COMPLETED + timedelta(minutes=31)
 
-    code, events = builder.tick()
+    events = builder.tick()
 
-    assert (code, _outcome(events)) == (0, "import_not_successful")
+    assert _outcome(events) == "import_not_successful"
     assert _named(events, "graph_release_stale") == []
 
     clear_hold(builder.root)
     builder.database.newest = _RECORDED_ROW
 
-    code, events = builder.tick()
+    events = builder.tick()
 
-    assert (code, _outcome(events)) == (0, "published")
+    assert _outcome(events) == "published"
     assert read_pointer(builder.root) == newest
-    assert _outcome(builder.tick()[1]) == "inputs_built"
+    assert _outcome(builder.tick()) == "inputs_built"
 
 
 def test_a_held_lease_stops_the_tick(builder):
     acquire_lease(builder.root, build_id="other", ttl_seconds=600, now=builder.now.timestamp)
 
-    code, events = builder.tick()
+    events = builder.tick()
 
-    assert (code, _outcome(events)) == (0, "lease_held")
+    assert _outcome(events) == "lease_held"
     assert read_pointer(builder.root) is None
 
 
@@ -459,9 +459,9 @@ def test_step_one_exits_unless_the_import_is_buildable(builder, change, outcome)
     for name, value in change.items():
         setattr(builder.database, name, value)
 
-    code, events = builder.tick()
+    events = builder.tick()
 
-    assert (code, _outcome(events)) == (0, outcome)
+    assert _outcome(events) == outcome
     assert builder.admin.requests == []
     assert builder.database.snapshots == [{"multi_use": True}]
 
@@ -469,9 +469,9 @@ def test_step_one_exits_unless_the_import_is_buildable(builder, change, outcome)
 def test_step_two_waits_for_a_revision_created_after_the_import(builder):
     builder.admin.created = _COMPLETED - timedelta(seconds=1)
 
-    code, events = builder.tick()
+    events = builder.tick()
 
-    assert (code, _outcome(events)) == (0, "serving_revision_before_import")
+    assert _outcome(events) == "serving_revision_before_import"
     assert len(builder.database.snapshots) == 1
 
 
@@ -512,9 +512,9 @@ def test_shadow_waits_for_both_comparators_before_building(builder, behind):
     builder.shadow = True
     builder.behind = frozenset({behind})
 
-    code, events = builder.tick()
+    events = builder.tick()
 
-    assert (code, _outcome(events)) == (0, "shadow_waiting")
+    assert _outcome(events) == "shadow_waiting"
     assert _named(events, "graph_release_shadow_waiting")[0]["stamp"] == builder.stamp
     assert len(builder.database.snapshots) == 1
     assert builder.lease_free() and read_pointer(builder.root) is None
@@ -532,9 +532,9 @@ def test_shadow_diffs_the_release_once_both_comparators_are_ready(builder, monke
 
     monkeypatch.setattr(job, "shadow_diff", diff)
 
-    code, events = builder.tick()
+    events = builder.tick()
 
-    assert (code, _outcome(events)) == (0, "published")
+    assert _outcome(events) == "published"
     assert diffed == [(builder.stamp, "coverage-1", "origin-1")]
     assert "shadow" in _named(events, "graph_release_published")[0]["phases"]
 
@@ -543,15 +543,15 @@ def test_a_shadow_finding_builds_again_once_a_comparator_is_republished(builder,
     builder.shadow = True
     finding = GateFinding(GateCode.SHADOW_COVERAGE_DIFF, "1 coverage row differs")
     monkeypatch.setattr(job, "shadow_diff", lambda parts, **_: GateResult(findings=(finding,)))
-    assert _outcome(builder.tick()[1]) == "gate_failed"
-    assert _outcome(builder.tick()[1]) == "inputs_failed"
+    assert _outcome(builder.tick()) == "gate_failed"
+    assert _outcome(builder.tick()) == "inputs_failed"
 
     builder.coverage_build_id = "coverage-2"
     monkeypatch.setattr(job, "shadow_diff", lambda parts, **_: GateResult())
 
-    code, events = builder.tick()
+    events = builder.tick()
 
-    assert (code, _outcome(events)) == (0, "published")
+    assert _outcome(events) == "published"
     assert builder.state()["last_built"]["inputs"]["coverage_build_id"] == "coverage-2"
 
 
@@ -561,9 +561,9 @@ def test_a_shadow_finding_builds_again_once_a_comparator_is_republished(builder,
 def test_a_finding_records_the_failed_inputs_and_the_next_tick_skips_them(builder):
     builder.sdmx.extra = 1
 
-    code, events = builder.tick()
+    events = builder.tick()
 
-    assert (code, _outcome(events)) == (1, "gate_failed")
+    assert _outcome(events) == "gate_failed"
     (failed,) = _named(events, "graph_release_gate_failed")
     assert [f["code"] for f in failed["findings"]] == ["sdmx_count_mismatch"]
     assert set(failed["phases"]) == {"reads", "platform", "dfo", "gate"}
@@ -571,13 +571,13 @@ def test_a_finding_records_the_failed_inputs_and_the_next_tick_skips_them(builde
     assert builder.state()["last_failed"]["import_execution_id"] == "wf-1"
     assert builder.lease_free()
 
-    code, events = builder.tick()
+    events = builder.tick()
 
-    assert (code, _outcome(events)) == (0, "inputs_failed")
+    assert _outcome(events) == "inputs_failed"
     assert len(builder.database.snapshots) == 3
 
 
-def test_a_platform_refusal_is_a_finding(builder, monkeypatch):
+def _inconsistent_facets(builder: Builder, monkeypatch: pytest.MonkeyPatch) -> None:
     raw = raw_inputs()
     facets = raw.facets.set_column(
         2, "facet_max", pa.array(["{}"] * raw.facets.num_rows, pa.string())
@@ -588,9 +588,13 @@ def test_a_platform_refusal_is_a_finding(builder, monkeypatch):
 
     monkeypatch.setattr(job, "read_inputs", read_inconsistent)
 
-    code, events = builder.tick()
 
-    assert (code, _outcome(events)) == (1, "gate_failed")
+def test_a_platform_refusal_is_a_finding(builder, monkeypatch):
+    _inconsistent_facets(builder, monkeypatch)
+
+    events = builder.tick()
+
+    assert _outcome(events) == "gate_failed"
     (failed,) = _named(events, "graph_release_gate_failed")
     assert [f["code"] for f in failed["findings"]] == ["inconsistent_facet"]
     assert "last_failed" in builder.state()
@@ -641,14 +645,14 @@ def _unreadable_bucket(error: Exception):
         ),
     ],
 )
-def test_an_unavailable_dependency_records_nothing_and_exits_non_zero(
+def test_an_unavailable_dependency_records_nothing(
     builder, monkeypatch, break_it, dependency, lines
 ):
     break_it(builder, monkeypatch)
 
-    code, events = builder.tick()
+    events = builder.tick()
 
-    assert (code, _outcome(events)) == (1, "unavailable")
+    assert _outcome(events) == "unavailable"
     unavailable = _named(events, "graph_release_unavailable")
     assert [u["dependency"] for e in unavailable for u in e["unavailable"]] == [dependency] * lines
     assert read_pointer(builder.root) is None
@@ -660,9 +664,9 @@ def test_an_unavailable_shadow_comparator_records_nothing(builder):
     builder.shadow = True
     builder.comparator_error = GateUnavailable(Dependency.COVERAGE_BUILD, "pointer unreadable")
 
-    code, events = builder.tick()
+    events = builder.tick()
 
-    assert (code, _outcome(events)) == (1, "unavailable")
+    assert _outcome(events) == "unavailable"
     assert len(builder.database.snapshots) == 1
     assert builder.state() == {}
 
@@ -670,24 +674,24 @@ def test_an_unavailable_shadow_comparator_records_nothing(builder):
 def test_inputs_that_ended_unavailable_back_off_for_ten_minutes(builder):
     builder.mixer.error = GraphReadError("connection reset")
 
-    code, events = builder.tick()
+    events = builder.tick()
 
-    assert (code, _outcome(events)) == (1, "unavailable")
+    assert _outcome(events) == "unavailable"
     (unavailable,) = _named(events, "graph_release_unavailable")
     assert set(unavailable["phases"]) == {"reads", "platform", "dfo"}
     builder.mixer.error = None
     builder.now += timedelta(seconds=job.UNAVAILABLE_BACKOFF_SECONDS - 1)
 
-    code, events = builder.tick()
+    events = builder.tick()
 
-    assert (code, _outcome(events)) == (0, "unavailable_backoff")
+    assert _outcome(events) == "unavailable_backoff"
     assert len(builder.database.snapshots) == 3
     (repeated,) = _named(events, "graph_release_unavailable")
     assert repeated["backoff"] is True
     assert repeated["unavailable"] == unavailable["unavailable"]
 
     builder.now += timedelta(seconds=1)
-    assert _outcome(builder.tick()[1]) == "published"
+    assert _outcome(builder.tick()) == "published"
 
 
 def test_an_unclassified_error_logs_an_error_heartbeat_and_propagates(builder, monkeypatch):
@@ -716,9 +720,9 @@ def test_a_stale_check_that_cannot_read_is_logged_when_the_tick_already_failed(
 
     monkeypatch.setattr(job, "_track_stale", unreadable)
 
-    code, events = builder.tick()
+    events = builder.tick()
 
-    assert (code, _outcome(events)) == (1, "unavailable")
+    assert _outcome(events) == "unavailable"
     logged = [
         [u["dependency"] for u in event["unavailable"]]
         for event in _named(events, "graph_release_unavailable")
@@ -739,22 +743,47 @@ def test_a_key_that_moved_before_the_build_snapshot_discards_the_build(builder, 
 
     monkeypatch.setattr(job, "read_inputs", moved)
 
-    code, events = builder.tick()
+    events = builder.tick()
 
-    assert (code, _outcome(events)) == (0, "import_moved")
+    assert _outcome(events) == "import_moved"
     assert read_pointer(builder.root) is None
     assert builder.state() == {}
     assert builder.lease_free()
 
 
-def test_a_serving_revision_that_moves_during_the_build_discards_it(builder):
+def _sdmx_unavailable(builder: Builder, monkeypatch: pytest.MonkeyPatch) -> None:
+    unavailable = GateUnavailable(Dependency.SDMX, "/data failed")
+    monkeypatch.setattr(job, "run_gate", lambda staged, **_: GateResult(unavailable=(unavailable,)))
+
+
+# Whatever the build decided, a moved revision records nothing, so the next tick at the
+# original revision builds the same inputs again.
+@pytest.mark.parametrize(
+    ("break_it", "rebuilt"),
+    [
+        pytest.param(lambda b, m: None, "published", id="clean"),
+        pytest.param(lambda b, m: setattr(b.sdmx, "extra", 1), "gate_failed", id="finding"),
+        pytest.param(_inconsistent_facets, "gate_failed", id="platform_refusal"),
+        pytest.param(_sdmx_unavailable, "unavailable", id="unavailable"),
+    ],
+)
+def test_a_serving_revision_that_moves_during_the_build_discards_it(
+    builder, monkeypatch, break_it, rebuilt
+):
+    break_it(builder, monkeypatch)
     builder.admin.revisions = ["dc-00001", "dc-00002"]
 
-    code, events = builder.tick()
+    events = builder.tick()
 
-    assert (code, _outcome(events)) == (0, "serving_revision_moved")
+    assert _outcome(events) == "serving_revision_moved"
+    assert _named(events, "graph_release_gate_failed") == []
+    assert _named(events, "graph_release_unavailable") == []
     assert read_pointer(builder.root) is None
     assert builder.state() == {}
+    assert builder.lease_free()
+
+    builder.admin.revisions = ["dc-00001"]
+    assert _outcome(builder.tick()) == rebuilt
 
 
 # ---------------------------------------------------------------- lease and prune
@@ -775,7 +804,7 @@ def test_pruning_runs_under_the_lease_and_the_lease_is_released_after(builder, m
     monkeypatch.setattr(job, "prune_releases", pruning)
     monkeypatch.setattr(job, "release_lease", releasing)
 
-    assert _outcome(builder.tick()[1]) == "published"
+    assert _outcome(builder.tick()) == "published"
     assert calls == [("prune", False), ("release", False)]
     assert builder.lease_free()
 
@@ -789,9 +818,9 @@ def test_a_failed_prune_or_lease_release_leaves_the_outcome_published(
 
     monkeypatch.setattr(job, failing, fail)
 
-    code, events = builder.tick()
+    events = builder.tick()
 
-    assert (code, _outcome(events)) == (0, "published")
+    assert _outcome(events) == "published"
     assert _named(events, "graph_release_unavailable") == []
     assert len(_named(events, "graph_release_prune_failed")) == (failing == "prune_releases")
 
@@ -808,22 +837,31 @@ def test_the_gate_reads_only_the_previous_release_edges(builder, monkeypatch):
     monkeypatch.setattr(job, "run_gate", recording)
     builder.admin.revisions = ["dc-00002"]
 
-    assert _outcome(builder.tick()[1]) == "published"
+    assert _outcome(builder.tick()) == "published"
     assert opened == [{"edges"}]
 
 
-def test_hold_retry_lets_the_next_tick_build_the_failed_inputs_again(builder, tmp_path):
+def test_hold_retry_lets_the_next_tick_build_the_failed_inputs_again(
+    builder, tmp_path, monkeypatch
+):
     builder.sdmx.extra = 1
-    assert _outcome(builder.tick()[1]) == "gate_failed"
+    assert _outcome(builder.tick()) == "gate_failed"
     builder.sdmx.extra = 0
-    assert _outcome(builder.tick()[1]) == "inputs_failed"
+    assert _outcome(builder.tick()) == "inputs_failed"
+
+    # A state file that changes under every write leaves the failed inputs recorded.
+    with monkeypatch.context() as patched:
+        patched.setattr(job, "write_uri_bytes_if_unchanged", lambda *a, **k: False)
+        assert hold_main(["--local-dir", str(tmp_path / "releases"), "retry"]) == 1
+    assert "changed under" in builder.capsys.readouterr().err
+    assert "last_failed" in builder.state()
 
     assert hold_main(["--local-dir", str(tmp_path / "releases"), "retry"]) == 0
 
     (retried,) = _named(builder.events(), "graph_release_retry")
     assert retried["inputs"]["import_execution_id"] == "wf-1"
     assert "last_failed" not in builder.state()
-    assert _outcome(builder.tick()[1]) == "published"
+    assert _outcome(builder.tick()) == "published"
 
 
 @pytest.mark.parametrize("races", [1, job.STATE_WRITE_ATTEMPTS])
@@ -863,13 +901,13 @@ def test_a_state_write_keeps_what_another_writer_lands_after_its_read(builder, m
 def test_a_failed_import_raises_stale_after_thirty_minutes(builder):
     builder.database.newest = _history("wf-2", status="FAILURE")
     builder.now = _COMPLETED + timedelta(minutes=29)
-    assert _named(builder.tick()[1], "graph_release_stale") == []
+    assert _named(builder.tick(), "graph_release_stale") == []
 
     builder.now = _COMPLETED + timedelta(minutes=31)
-    code, events = builder.tick()
+    events = builder.tick()
 
     (stale,) = _named(events, "graph_release_stale")
-    assert (code, stale["import_execution_id"], stale["failed"]) == (0, "wf-2", True)
+    assert (stale["import_execution_id"], stale["failed"]) == ("wf-2", True)
     assert _outcome(events) == "import_not_successful"
 
 
@@ -878,7 +916,7 @@ def test_a_published_import_is_never_stale(builder):
     builder.admin.created = builder.now - timedelta(minutes=1)
     builder.tick()
 
-    assert _named(builder.tick()[1], "graph_release_stale") == []
+    assert _named(builder.tick(), "graph_release_stale") == []
 
 
 def test_time_spent_waiting_for_the_shadow_comparators_is_not_stale(builder, monkeypatch):
@@ -888,7 +926,7 @@ def test_time_spent_waiting_for_the_shadow_comparators_is_not_stale(builder, mon
     builder.now = _COMPLETED + timedelta(minutes=20)
     builder.tick()
     builder.now = _COMPLETED + timedelta(minutes=45)
-    assert _named(builder.tick()[1], "graph_release_stale") == []
+    assert _named(builder.tick(), "graph_release_stale") == []
 
     # Ready at 50 minutes, so 30 minutes were shadow waiting. The build fails, so the clock
     # runs on.
@@ -896,11 +934,11 @@ def test_time_spent_waiting_for_the_shadow_comparators_is_not_stale(builder, mon
     monkeypatch.setattr(job, "shadow_diff", lambda parts, **_: GateResult())
     builder.now = _COMPLETED + timedelta(minutes=50)
     builder.sdmx.extra = 1
-    assert _outcome(builder.tick()[1]) == "gate_failed"
+    assert _outcome(builder.tick()) == "gate_failed"
     builder.now = _COMPLETED + timedelta(minutes=59)
-    assert _named(builder.tick()[1], "graph_release_stale") == []
+    assert _named(builder.tick(), "graph_release_stale") == []
     builder.now = _COMPLETED + timedelta(minutes=61)
-    (stale,) = _named(builder.tick()[1], "graph_release_stale")
+    (stale,) = _named(builder.tick(), "graph_release_stale")
     assert stale["waited_seconds"] == pytest.approx(31 * 60)
 
 
@@ -908,19 +946,19 @@ def test_a_shadow_wait_past_its_limit_is_unavailable_and_stale_resumes(builder):
     builder.shadow = True
     builder.behind = frozenset({Dependency.COVERAGE_BUILD})
     builder.now = _COMPLETED + timedelta(minutes=20)
-    assert _outcome(builder.tick()[1]) == "shadow_waiting"
+    assert _outcome(builder.tick()) == "shadow_waiting"
     builder.now += timedelta(seconds=job.SHADOW_WAIT_LIMIT_SECONDS + 60)
 
-    code, events = builder.tick()
+    events = builder.tick()
 
-    assert (code, _outcome(events)) == (1, "unavailable")
+    assert _outcome(events) == "unavailable"
     (unavailable,) = _named(events, "graph_release_unavailable")
     assert [u["dependency"] for u in unavailable["unavailable"]] == ["coverage_build"]
     # 3 h 21 min since the import, less the 3 hours of wait the limit discounts.
     assert _named(events, "graph_release_stale") == []
 
     builder.now += timedelta(minutes=10)
-    (stale,) = _named(builder.tick()[1], "graph_release_stale")
+    (stale,) = _named(builder.tick(), "graph_release_stale")
     assert stale["waited_seconds"] == pytest.approx(31 * 60)
 
 
