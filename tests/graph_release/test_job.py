@@ -388,6 +388,48 @@ def test_a_build_of_the_serving_release_records_its_inputs_and_publishes_nothing
     assert _outcome(builder.tick()) == "inputs_built"
 
 
+@pytest.mark.parametrize(
+    ("package", "module"),
+    [
+        ("code_index", "loader.py"),
+        ("code_index", "query.py"),
+        ("code_index", "types.py"),
+        ("series_coverage", "index.py"),
+        ("series_coverage", "loader.py"),
+        ("series_coverage", "schema.py"),
+    ],
+)
+def test_a_change_to_a_loader_the_view_gate_applies_moves_the_builder_hash(
+    monkeypatch, package, module
+):
+    """The gate refuses a release whose views these modules refuse, so a change to one must
+    build the last failed inputs again."""
+    baseline = job.builder_code_hash()
+    files = job.resources.files
+
+    class Edited:
+        def __init__(self, path):
+            self.path = path
+
+        def read_bytes(self):
+            return self.path.read_bytes() + b"\n# edited\n"
+
+    class Package:
+        def __init__(self, name):
+            self.name, self.root = name, files(name)
+
+        def joinpath(self, name):
+            path = self.root.joinpath(name)
+            return Edited(path) if (self.name, name) == (package, module) else path
+
+    monkeypatch.setattr(job.resources, "files", Package)
+    job.builder_code_hash.cache_clear()
+    try:
+        assert job.builder_code_hash() != baseline
+    finally:
+        job.builder_code_hash.cache_clear()
+
+
 def test_a_held_pointer_stops_the_tick_before_it_builds(builder):
     builder.tick()
     pointer = read_pointer(builder.root)

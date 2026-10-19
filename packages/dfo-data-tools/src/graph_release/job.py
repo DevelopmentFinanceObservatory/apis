@@ -160,12 +160,14 @@ BUILDER_MODULES: Final[Mapping[str, tuple[str, ...]]] = {
         "reads.py",
         "serving_revision.py",
         "shadow.py",
+        "views.py",
     ),
-    "code_index": ("export.py",),
+    "code_index": ("export.py", "loader.py", "query.py", "types.py"),
     "dc_graph": ("visible_arcs.py",),
+    "series_coverage": ("index.py", "loader.py", "schema.py"),
 }
 """The modules whose source `builder_code_hash` covers: what reads, builds, gates and publishes
-a release. A change elsewhere that changes a part still changes the release id, but builds only
+a release, including the loaders whose refusals `graph_release.gate.check_views` applies. A change elsewhere that changes a part still changes the release id, but builds only
 at the next import or DC redeploy."""
 
 

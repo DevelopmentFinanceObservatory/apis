@@ -4,8 +4,8 @@ declarations.
 The reader is checked against the dev mixer's recorded `/v2/node` answer for five IDS variables
 (`tests/fixtures/dc_graph/visible_arcs/ids_variables.json`). The parts are built from the
 recorded slice with `tests.graph_release.recorded`'s declarations and parties: two the release
-holds by edges, and two countries only the mixer answers, one of them a placeholder `Node` row
-typed `Thing` that an edge names.
+holds by edges, and countries only the mixer answers, one of them a placeholder `Node` row typed
+`Thing` that an edge names.
 """
 
 from __future__ import annotations
@@ -20,10 +20,12 @@ import pyarrow.compute as pc
 import pytest
 
 from code_index import declarations as code_index_declarations
+from code_index.export import content_hash
 from dc_graph import GraphClient, parse_arcs
 from graph_release import declarations as release_declarations
 from graph_release.declarations import DECLARATIONS, Declarations
 from graph_release.dfo import (
+    GRAPH_ENDPOINT,
     MissingBaseParties,
     ReleaseGraphReader,
     base_party_ids,
@@ -37,6 +39,7 @@ from graph_release.platform import PlatformRefusal
 from tests.graph_release.recorded import (
     MIXER_PARTIES,
     PLACEHOLDER_PARTY,
+    RELEASE_PARTIES,
     SLICE_BASE_PARTIES,
     SLICE_DECLARATIONS,
     UNHELD_PARTY,
@@ -162,7 +165,8 @@ def test_base_parties_are_the_parties_the_release_does_not_answer() -> None:
     stored = read_base_parties(list(reversed(ids)), graph=mixer)
 
     assert placeholder == {PLACEHOLDER_PARTY: {"typeOf": ("Thing",)}, UNHELD_PARTY: None}
-    assert ids == (PLACEHOLDER_PARTY, UNHELD_PARTY) == tuple(sorted(MIXER_PARTIES))
+    assert ids == tuple(sorted(MIXER_PARTIES))
+    assert {PLACEHOLDER_PARTY, UNHELD_PARTY} <= set(ids)
     assert mixer.calls == [ids]
     assert stored == SLICE_BASE_PARTIES
     assert json.loads(stored) == {
@@ -201,13 +205,27 @@ def test_dfo_parts_rebuild_byte_for_byte_and_join_coverage(tmp_path: Path) -> No
     assert stored == built.blobs()
     assert again == built
     assert built.declarations == SLICE_DECLARATIONS.declarations_json()
-    blocks = json.loads(gzip.decompress(built.code_index_blocks))
-    assert "stamp" not in blocks
+    document = json.loads(gzip.decompress(built.code_index_blocks))
+    stamp = document.pop("stamp")
+    blocks = document
+    assert stamp == {
+        "graph_endpoint": GRAPH_ENDPOINT,
+        "exported_at": "",
+        "code_counts": {"crsTypeOfFlow": len(blocks["codes"])},
+        "statvar_shape_counts": {"crsTypeOfFlow": len(blocks["statvars"])},
+        "content_hash": content_hash(blocks),
+        "coverage_build": None,
+        "statvars_without_coverage": 0,
+    }
     assert {(row["dcid"].split("_")[0], *row["provenances"]) for row in blocks["statvars"]} == {
         ("Amount", _CRS),
         ("AttributedAmount", "provenance/ONEImputedMultilateralSectors"),
     }
-    assert {row["dcid"]: (row["kind"], row["label"], row["axes"]) for row in blocks["parties"]} == {
+    parties = {row["dcid"]: (row["kind"], row["label"], row["axes"]) for row in blocks["parties"]}
+    assert parties.keys() == {*RELEASE_PARTIES, *MIXER_PARTIES}
+    assert {
+        party: parties[party] for party in (*RELEASE_PARTIES, PLACEHOLDER_PARTY, UNHELD_PARTY)
+    } == {
         "AsianDevelopmentBank": ("party", "Asian Development Bank", ["origin"]),
         "DACAsiaUnallocated": ("residual", "Asia, regional", ["destination"]),
         "country/KGZ": ("party", "Kyrgyzstan", ["destination"]),

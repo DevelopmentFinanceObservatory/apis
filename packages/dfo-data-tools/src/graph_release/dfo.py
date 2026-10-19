@@ -2,11 +2,13 @@
 
 `dfo_inputs` reads a release's coverage view and a `ReleaseGraphReader` once, for both
 `base_party_ids` and `build_dfo_parts`. `build_dfo_parts` returns each DFO part's bytes. `declarations` is `declarations_json`.
-`code_index_blocks` is the code index's graph blocks, built by `code_index.export` over
+`code_index_blocks` is the code index document, built by `code_index.export` over
 `ReleaseGraphReader`, a reader over the `edges` and `nodes` parts. Where the export script joins
 a published coverage build, these blocks take each variable's provenances, the listed datasets'
 variables and the parties from `coverage_rows` over `series`, so the code index and coverage
-read one release. The blocks carry no stamp. A reader stamps them from the manifest.
+read one release. The document's stamp holds only what its blocks determine (`_stamped`), so
+an unchanged index keeps its bytes and its part across releases. `graph_release.views` stamps
+the release id and read time from the manifest when it opens the index.
 
 The parties block needs each donor's and recipient's type and name. DFO's Spanner holds them for
 organisations but not for the countries of the base Data Commons graph, which it holds as
@@ -34,10 +36,12 @@ import pyarrow.compute as pc
 from code_index.export import (
     ExportRefused,
     PartyPublication,
+    content_hash,
     export_graph_blocks,
     export_parties,
     index_bytes,
     listed_dcids,
+    stamp_counts,
     verify_complete_systems,
 )
 from dc_graph.visible_arcs import mixer_target, visible_mask
@@ -50,6 +54,9 @@ from series_coverage.schema import ABSENT_ENTITY, DONOR_COLUMN, FACET_COLUMN, RE
 if TYPE_CHECKING:
     from dc_graph import SubjectPage
     from dfo_platform.roles import RoleAxis
+
+GRAPH_ENDPOINT: Final[str] = "graph_release"
+"""The code index stamp's `graph_endpoint`: the release's own `edges` and `nodes` parts."""
 
 _TYPE_OF: Final[str] = "typeOf"
 _NAME: Final[str] = "name"
@@ -169,7 +176,7 @@ def build_dfo_parts(inputs: DfoInputs, base_parties: bytes) -> DfoParts:
         raise PlatformRefusal("code_index_export_refused", str(exc)) from exc
     return DfoParts(
         declarations=inputs.declarations.declarations_json(),
-        code_index_blocks=index_bytes(blocks),
+        code_index_blocks=index_bytes(_stamped(blocks)),
         base_parties=base_parties,
     )
 
@@ -207,6 +214,22 @@ def _code_index_blocks(inputs: DfoInputs, base_parties: Mapping[str, dict | None
         total_groups=declarations.total_groups,
     )
     return blocks
+
+
+def _stamped(blocks: dict) -> dict:
+    """`blocks` as a code index document `code_index.loader.parse_index` loads. The stamp holds
+    the counts and `content_hash` of the blocks, `GRAPH_ENDPOINT` as their source, and an empty
+    `exported_at` and no `coverage_build`, which `graph_release.views` fills from the manifest.
+    `statvars_without_coverage` counts the StatVar rows no `series` row covers."""
+    stamp = {
+        "graph_endpoint": GRAPH_ENDPOINT,
+        "exported_at": "",
+        **stamp_counts(blocks),
+        "content_hash": content_hash(blocks),
+        "coverage_build": None,
+        "statvars_without_coverage": sum(not row["provenances"] for row in blocks["statvars"]),
+    }
+    return {"stamp": stamp, **blocks}
 
 
 def stage_dfo_parts(parts: DfoParts, *, staging_dir: Path, execution_id: str) -> list[StagedPart]:
@@ -478,6 +501,7 @@ def _strings(column: pa.ChunkedArray) -> pa.Array:
 
 
 __all__ = [
+    "GRAPH_ENDPOINT",
     "ArcReader",
     "DfoInputs",
     "DfoParts",

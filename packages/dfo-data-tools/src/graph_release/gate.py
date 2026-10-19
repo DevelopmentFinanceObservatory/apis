@@ -1,7 +1,8 @@
 """The gate a release passes before the pointer moves.
 
 `run_gate` reads the staged platform files back and checks what ships: the invariants, the DFO
-parts rebuilt byte for byte from the files, the mixer differential and the SDMX counts. The
+parts rebuilt byte for byte from the files, the serving views built from the files, the mixer
+differential and the SDMX counts. The
 shadow diff (`graph_release.shadow`) returns a `GateResult` of its own, which `merge` joins.
 
 A result has two kinds of failure. A finding is deterministic: the same inputs fail the same
@@ -37,6 +38,15 @@ from graph_release.declarations import Declarations
 from graph_release.dfo import build_dfo_parts, dfo_inputs
 from graph_release.format import DFO, PLATFORM, LoadedRelease, StagedPart, join_part_files
 from graph_release.platform import PlatformParts, PlatformRefusal
+from graph_release.views import (
+    CODE_INDEX_PART,
+    DECLARATIONS_PART,
+    ViewRefused,
+    code_indexes,
+    coverage_index,
+    declared_role_axes,
+    read_document,
+)
 from series_coverage.schema import VARIABLE_COLUMN
 
 MIXER_CHANGED_CAP: Final[int] = 500
@@ -78,6 +88,8 @@ class GateCode(StrEnum):
     UNSUPPORTED_OBSERVATION_PERIOD = "unsupported_observation_period"
     INCONSISTENT_FACET = "inconsistent_facet"
     CODE_INDEX_EXPORT_REFUSED = "code_index_export_refused"
+    COVERAGE_VIEW_REFUSED = "coverage_view_refused"
+    CODE_INDEX_UNLOADABLE = "code_index_unloadable"
 
 
 class Dependency(StrEnum):
@@ -204,6 +216,7 @@ def run_gate(
             reports={"rows": _row_counts(parts)},
         ),
         GateResult(findings=check_dfo_rebuild(parts, staged=staged, declarations=declarations)),
+        GateResult(findings=check_views(parts, staged=staged)),
         check_mixer(
             parts,
             previous_edges=None if previous is None else previous.tables["edges"],
@@ -367,6 +380,42 @@ def check_dfo_rebuild(
             tuple(differ),
         ),
     )
+
+
+# ---------------------------------------------------------------- serving views
+
+
+def check_views(parts: PlatformParts, *, staged: Sequence[StagedPart]) -> tuple[GateFinding, ...]:
+    """Builds the serving views from `parts` and the staged DFO files through
+    `graph_release.views`, as a serving process builds them from the published release, and
+    names each view that does not build: `coverage_view_refused` for the `CoverageIndex`,
+    `code_index_unloadable` for the code and measure indexes.
+
+    The coverage view takes its role axes from the staged `declarations` file. The build year
+    only bounds what a read elects, so the view is built without one."""
+    written = {part.ref.name: part.path for part in staged if part.ref.layer == DFO}
+    findings: list[GateFinding] = []
+    try:
+        declarations = written.get(DECLARATIONS_PART)
+        if declarations is None:
+            raise ViewRefused(f"no {DECLARATIONS_PART} part is staged")
+        coverage_index(
+            series=parts.series,
+            edges=parts.edges,
+            facets=parts.facets,
+            role_axes=declared_role_axes(declarations.read_bytes()),
+            build_year=None,
+        )
+    except ViewRefused as refusal:
+        findings.append(GateFinding(GateCode.COVERAGE_VIEW_REFUSED, str(refusal)))
+    try:
+        index = written.get(CODE_INDEX_PART)
+        if index is None:
+            raise ViewRefused(f"no {CODE_INDEX_PART} part is staged")
+        code_indexes(read_document(index.read_bytes()))
+    except ViewRefused as refusal:
+        findings.append(GateFinding(GateCode.CODE_INDEX_UNLOADABLE, str(refusal)))
+    return tuple(findings)
 
 
 # ---------------------------------------------------------------- mixer
@@ -629,6 +678,7 @@ __all__ = [
     "check_invariants",
     "check_mixer",
     "check_sdmx",
+    "check_views",
     "dfo_variables",
     "merge",
     "read_back",
