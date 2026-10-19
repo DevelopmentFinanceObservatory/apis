@@ -346,6 +346,7 @@ def check_dfo_rebuild(
             GateFinding(
                 GateCode.DFO_REBUILD_MISMATCH,
                 f"the DFO parts do not rebuild from the staged platform files: {refusal}",
+                (refusal.code,),
             ),
         )
     differ = sorted(

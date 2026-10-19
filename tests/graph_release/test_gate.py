@@ -762,14 +762,15 @@ def _staged_release(tmp_path: Path) -> tuple[PlatformParts, list[StagedPart]]:
 
 def _drop_crs_variable(staged: list[StagedPart]) -> str:
     """Rewrites one CRS `series` file in place without one variable's rows, keeping its name.
-    Returns the variable."""
+    Returns the variable. The file is read into memory: a mapped read leaves the filtered
+    table's dictionaries in the mapping, which truncating the file zeroes on Linux."""
     part = next(
         part
         for part in staged
         if part.ref.name == "series"
         and part.ref.provenance == SLICE_DECLARATIONS.datasets[0].provenance
     )
-    table = pa.ipc.open_file(pa.memory_map(str(part.path), "r")).read_all()
+    table = pa.ipc.open_file(pa.py_buffer(part.path.read_bytes())).read_all()
     variable = table["variable_measured"].cast(pa.string())[0].as_py()
     kept = table.filter(pc.not_equal(table["variable_measured"].cast(pa.string()), variable))
     with pa.OSFile(str(part.path), "wb") as sink, pa.ipc.new_file(sink, kept.schema) as writer:
@@ -789,6 +790,16 @@ def test_a_corrupted_platform_file_fails_the_dfo_rebuild(tmp_path):
     result = check_dfo_rebuild(read_back(staged), staged=staged, declarations=SLICE_DECLARATIONS)
     assert _codes(result) == ["dfo_rebuild_mismatch"]
     assert result[0].examples == ("code_index_blocks",)
+
+
+def test_a_dfo_rebuild_the_export_refuses_names_the_refusal(tmp_path):
+    parts, staged = _staged_release(tmp_path)
+    base_parties = next(part for part in staged if part.ref.name == "base_parties")
+    base_parties.path.write_bytes(b"{}")
+
+    result = check_dfo_rebuild(parts, staged=staged, declarations=SLICE_DECLARATIONS)
+    assert _codes(result) == ["dfo_rebuild_mismatch"]
+    assert result[0].examples == ("code_index_export_refused",)
 
 
 def test_run_gate_reads_the_staged_files_and_never_passes_an_unavailable_dependency(tmp_path):
