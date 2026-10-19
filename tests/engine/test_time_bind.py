@@ -218,6 +218,19 @@ class TestRelativeSpans:
             ("en el último año", "2025"),
             ("la dernière année", "2025"),
             ("au cours de la dernière année", "2025"),
+            ("the last 12 months", "2025"),
+            ("over the past twelve months", "2025"),
+            ("in the last 6 months", "2025"),
+            ("the last 18 months", "2024"),
+            ("the past 24 months", "2024"),
+            ("los últimos 12 meses", "2025"),
+            ("en los últimos dieciocho meses", "2024"),
+            ("les 12 derniers mois", "2025"),
+            ("au cours des douze derniers mois", "2025"),
+            ("this decade", "2020"),
+            ("over this decade", "2020"),
+            ("en esta década", "2020"),
+            ("cette décennie", "2020"),
         ],
     )
     def test_spans_measured_from_now(self, text: str, start: str) -> None:
@@ -228,12 +241,41 @@ class TestRelativeSpans:
         assert [(d.kind, d.start, d.end) for d in dates] == [("range", start, "2026")]
 
     @pytest.mark.parametrize(
+        ("text", "end"),
+        [
+            ("the next five years", "2031"),
+            ("next 5 years", "2031"),
+            ("over the next five years", "2031"),
+            ("in the next 10 years", "2036"),
+            ("the coming 3 years", "2029"),
+            ("over the coming three years", "2029"),
+            ("the next 1 year", "2027"),
+            ("los próximos cinco años", "2031"),
+            ("en los próximos 10 años", "2036"),
+            ("les cinq prochaines années", "2031"),
+            ("dans les 10 prochaines années", "2036"),
+            ("au cours des trois prochaines années", "2029"),
+        ],
+    )
+    def test_spans_ahead_start_after_now(self, text: str, end: str) -> None:
+        """A span ahead starts the year after current_year, so a forecast over it targets
+        its last year and none of it overlaps the data years."""
+        dates, warning = parse_time_text(text, current_year=_CURRENT_YEAR)
+        assert warning is None
+        assert [(d.kind, d.start, d.end) for d in dates] == [("range", "2027", end)]
+
+    @pytest.mark.parametrize(
         ("text", "year"),
         [
             ("last year", "2025"),
             ("for last year", "2025"),
             ("this year", "2026"),
             ("for this year", "2026"),
+            ("so far this year", "2026"),
+            ("this year so far", "2026"),
+            ("en lo que va del año", "2026"),
+            ("lo que va de año", "2026"),
+            ("depuis le début de l'année", "2026"),
             ("next year", "2027"),
             ("el año pasado", "2025"),
             ("este año", "2026"),
@@ -294,6 +336,12 @@ class TestUnparsed:
             "2015 until 2024",
             "last 0 decades",
             "the next year",
+            "the coming years",
+            "in the next few years",
+            "los próximos años",
+            "les prochaines années",
+            "next 0 years",
+            "the last 0 months",
             "Q1 2015",
             "current year",
             "the current year",

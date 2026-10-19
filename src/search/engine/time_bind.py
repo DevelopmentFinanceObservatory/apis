@@ -9,13 +9,20 @@ recent year available") yields an open-ended range, as ``since``, ``depuis``, an
 ``desde`` do. The latest phrase alone yields a latest entry.
 
 Wording measured from now resolves against the caller-supplied ``current_year``. Spans
-("last 5 years", "la última década", "au cours des dix dernières années") yield closed
-ranges that include the current year, and "last year", "this year" and "next year" yield
-single years. "The past year" and "the last year" are the last twelve months, the range
-from the year before the current one to the current year; bare "last year" is the
-previous calendar year. The relative rows read with accents folded and after any leading
-"in", "during", "over", "for" or "within" and their Spanish and French counterparts. An
-English "the" stays, since it separates "the last year" from "last year".
+back ("last 5 years", "la última década", "au cours des dix dernières années") yield
+closed ranges that include the current year, and "this decade" runs from the decade's
+first year to the current one. Spans ahead ("the next 5 years", "los próximos cinco
+años") start the year after the current one, so a forecast over them targets their last
+year and its window leaves the data years alone. "Last year", "this year", "so far this
+year" and "next year" yield single years. "The past year" and "the last year" are the
+last twelve months, the range from the year before the current one to the current year;
+bare "last year" is the previous calendar year. A count of months reaches back as many
+calendar years as it covers, part years rounded up, so "the last 12 months" is that
+same range and "the last 18 months" starts two years back. A span ahead with no count
+("the coming years") names no last year and stays unparsed. The relative rows read with
+accents folded and after any leading "in", "during", "over", "for" or "within" and
+their Spanish and French counterparts. An English "the" stays, since it separates "the
+last year" from "last year".
 ``TIME_TEXT_FORMS`` lists every accepted form. Counts accept digits or number words
 through twenty, and the fixed vocabulary covers English, French, and Spanish.
 
@@ -27,6 +34,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Callable
 
 from dfo_platform import WarningSeverity
 from search.engine.extracted_date import ExtractedDate
@@ -86,16 +94,25 @@ TIME_TEXT_FORMS: tuple[str, ...] = (
     "the last few years",
     "the past year",
     "the last year",
+    "the last N months",
+    "this decade",
+    "the next N years",
+    "the coming N years",
     "last year",
     "this year",
+    "so far this year",
     "next year",
     "los últimos N años",
     "la última década",
     "las últimas N décadas",
     "los últimos años",
     "el último año",
+    "los últimos N meses",
+    "esta década",
+    "los próximos N años",
     "el año pasado",
     "este año",
+    "en lo que va del año",
     "el próximo año",
     "au cours des N dernières années",
     "les N derniers ans",
@@ -103,9 +120,13 @@ TIME_TEXT_FORMS: tuple[str, ...] = (
     "la dernière décennie",
     "ces dernières années",
     "la dernière année",
+    "les N derniers mois",
+    "cette décennie",
+    "dans les N prochaines années",
     "l'année dernière",
     "l'année passée",
     "cette année",
+    "depuis le début de l'année",
     "l'année prochaine",
 )
 
@@ -131,7 +152,7 @@ _COUNT = rf"(?P<count>\d{{1,2}}|{'|'.join(_NUMBER_WORDS)})"
 # dernières années". The English rows take "the" themselves.
 _RELATIVE_LEADS_RE = re.compile(
     r"^(?:(?:in|during|over|for|within|en|durante|los|las|la|el"
-    r"|au\s+cours\s+des?|pendant|durant|sur|les|ces)\s+)*"
+    r"|au\s+cours\s+des?|pendant|durant|sur|dans|les|ces)\s+)*"
 )
 
 _DECADE_YEARS = 10
@@ -144,28 +165,65 @@ _RECENT_YEARS = 5
 _TWELVE_MONTH_YEARS = 2
 _THE = r"(?:the\s+)?"
 
-# Each row is a span measured back from now, accents folded and leads removed, and the
-# years one counted unit covers. A row without a count covers one unit.
-_RELATIVE_SPANS: tuple[tuple[re.Pattern[str], int], ...] = tuple(
-    (re.compile(rf"^(?:{pattern})$"), unit_years)
-    for pattern, unit_years in (
-        (rf"{_THE}(?:last|past)\s+{_COUNT}\s+years?", 1),
-        (rf"{_THE}(?:last|past)\s+decade", _DECADE_YEARS),
-        (rf"{_THE}(?:last|past)\s+{_COUNT}\s+decades", _DECADE_YEARS),
-        (rf"{_THE}(?:recent\s+years|(?:last|past)\s+few\s+years)", _RECENT_YEARS),
-        (rf"{_THE}past\s+year|the\s+last\s+year", _TWELVE_MONTH_YEARS),
-        (rf"ultimos\s+{_COUNT}\s+anos", 1),
-        (r"ultima\s+decada", _DECADE_YEARS),
-        (rf"ultimas\s+{_COUNT}\s+decadas", _DECADE_YEARS),
-        (r"ultimos\s+anos|anos\s+recientes", _RECENT_YEARS),
-        (r"ultimo\s+ano", _TWELVE_MONTH_YEARS),
-        (rf"{_COUNT}\s+(?:dernieres\s+annees|derniers\s+ans)", 1),
-        (rf"dernieres\s+{_COUNT}\s+annees", 1),
-        (rf"derniers\s+{_COUNT}\s+ans", 1),
-        (r"derniere\s+decennie", _DECADE_YEARS),
-        (rf"{_COUNT}\s+dernieres\s+decennies", _DECADE_YEARS),
-        (r"dernieres\s+annees|annees\s+recentes", _RECENT_YEARS),
-        (r"derniere\s+annee", _TWELVE_MONTH_YEARS),
+# A span's first and last years from its count and the current year.
+_SpanYears = Callable[[int, int], tuple[int, int]]
+
+
+def _back(unit_years: int) -> _SpanYears:
+    """Years counted back from now, the current year included: "last 10 years" from
+    2026 is 2017 to 2026."""
+    return lambda count, current_year: (current_year - count * unit_years + 1, current_year)
+
+
+def _ahead(unit_years: int) -> _SpanYears:
+    """Years counted on from the year after now: "the next 5 years" from 2026 is 2027 to
+    2031, so a forecast over them targets 2031."""
+    return lambda count, current_year: (current_year + 1, current_year + count * unit_years)
+
+
+def _months_back(count: int, current_year: int) -> tuple[int, int]:
+    """Months counted back from now reach as many years before the current one as they
+    cover, a part year rounded up: 12 months from 2026 are 2025 to 2026, 18 are 2024 to
+    2026."""
+    return current_year - -(-count // 12), current_year
+
+
+def _this_decade(_count: int, current_year: int) -> tuple[int, int]:
+    """The current decade so far: 2020 to 2026 from 2026."""
+    return current_year - current_year % _DECADE_YEARS, current_year
+
+
+# Each row is a span measured from now, accents folded and leads removed, and the years
+# it covers. A row without a count covers one unit.
+_RELATIVE_SPANS: tuple[tuple[re.Pattern[str], _SpanYears], ...] = tuple(
+    (re.compile(rf"^(?:{pattern})$"), span_years)
+    for pattern, span_years in (
+        (rf"{_THE}(?:last|past)\s+{_COUNT}\s+years?", _back(1)),
+        (rf"{_THE}(?:last|past)\s+decade", _back(_DECADE_YEARS)),
+        (rf"{_THE}(?:last|past)\s+{_COUNT}\s+decades", _back(_DECADE_YEARS)),
+        (rf"{_THE}(?:recent\s+years|(?:last|past)\s+few\s+years)", _back(_RECENT_YEARS)),
+        (rf"{_THE}past\s+year|the\s+last\s+year", _back(_TWELVE_MONTH_YEARS)),
+        (rf"{_THE}(?:last|past)\s+{_COUNT}\s+months?", _months_back),
+        (r"this\s+decade", _this_decade),
+        (rf"{_THE}(?:next|coming)\s+{_COUNT}\s+years?", _ahead(1)),
+        (rf"ultimos\s+{_COUNT}\s+anos", _back(1)),
+        (r"ultima\s+decada", _back(_DECADE_YEARS)),
+        (rf"ultimas\s+{_COUNT}\s+decadas", _back(_DECADE_YEARS)),
+        (r"ultimos\s+anos|anos\s+recientes", _back(_RECENT_YEARS)),
+        (r"ultimo\s+ano", _back(_TWELVE_MONTH_YEARS)),
+        (rf"ultimos\s+{_COUNT}\s+meses", _months_back),
+        (r"esta\s+decada", _this_decade),
+        (rf"proximos\s+{_COUNT}\s+anos", _ahead(1)),
+        (rf"{_COUNT}\s+(?:dernieres\s+annees|derniers\s+ans)", _back(1)),
+        (rf"dernieres\s+{_COUNT}\s+annees", _back(1)),
+        (rf"derniers\s+{_COUNT}\s+ans", _back(1)),
+        (r"derniere\s+decennie", _back(_DECADE_YEARS)),
+        (rf"{_COUNT}\s+dernieres\s+decennies", _back(_DECADE_YEARS)),
+        (r"dernieres\s+annees|annees\s+recentes", _back(_RECENT_YEARS)),
+        (r"derniere\s+annee", _back(_TWELVE_MONTH_YEARS)),
+        (rf"{_COUNT}\s+derniers\s+mois", _months_back),
+        (r"cette\s+decennie", _this_decade),
+        (rf"{_COUNT}\s+prochaines\s+annees", _ahead(1)),
     )
 )
 # Each row is a single year measured from now, read like the spans, and its offset
@@ -174,13 +232,13 @@ _RELATIVE_YEARS: tuple[tuple[re.Pattern[str], int], ...] = tuple(
     (re.compile(rf"^(?:{pattern})$"), offset)
     for pattern, offset in (
         (r"last\s+year", -1),
-        (r"this\s+year", 0),
+        (r"(?:so\s+far\s+)?this\s+year(?:\s+so\s+far)?", 0),
         (r"next\s+year", 1),
         (r"ano\s+pasado", -1),
-        (r"este\s+ano", 0),
+        (r"este\s+ano|lo\s+que\s+va\s+del?\s+ano", 0),
         (r"proximo\s+ano|ano\s+(?:proximo|que\s+viene)", 1),
         (r"l'\s*(?:annee\s+(?:derniere|passee)|an\s+dernier)", -1),
-        (r"cette\s+annee", 0),
+        (r"cette\s+annee|depuis\s+le\s+debut\s+de\s+l'\s*annee", 0),
         (r"l'\s*(?:annee\s+prochaine|an\s+prochain)", 1),
     )
 )
@@ -193,9 +251,10 @@ def parse_time_text(text: str, *, current_year: int) -> tuple[list[ExtractedDate
     -- the same structured shape raw_text's LLM extraction produces -- so a
     caller feeds the result through extract.dates_to_request() unchanged.
     Pure and deterministic. Returns dates or a warning without I/O. ``current_year`` resolves
-    wording measured from now: a span ("last N years", "last decade", "recent years", "the
-    past year") is a closed range ending at that year, and "last year", "this year" and
-    "next year" are the years before, at and after it."""
+    wording measured from now: a span back ("last N years", "last decade", "recent years",
+    "the past year", "this decade") is a closed range ending at that year, a span ahead
+    ("the next N years") a closed range starting the year after it, and "last year",
+    "this year" and "next year" are the years before, at and after it."""
     normalised = text.strip().casefold()
 
     if _LATEST_RE.match(normalised):
@@ -212,13 +271,14 @@ def parse_time_text(text: str, *, current_year: int) -> tuple[list[ExtractedDate
         return (dates, None) if dates else ([], _not_parsed_warning(text))
 
     relative = _RELATIVE_LEADS_RE.sub("", _fold_accents(normalised), count=1)
-    for pattern, unit_years in _RELATIVE_SPANS:
+    for pattern, span_years in _RELATIVE_SPANS:
         if span_match := pattern.match(relative):
             token = span_match.groupdict().get("count")
             count = 1 if token is None else _resolve_span_count(token)
             if count is None:
                 return [], _not_parsed_warning(text)
-            return _relative_range(current_year, count * unit_years), None
+            start_year, end_year = span_years(count, current_year)
+            return [ExtractedDate(kind="range", start=str(start_year), end=str(end_year))], None
     for pattern, offset in _RELATIVE_YEARS:
         if pattern.match(relative):
             return [ExtractedDate(kind="point", start=str(current_year + offset))], None
@@ -256,14 +316,6 @@ def _resolve_span_count(token: str) -> int | None:
     ("last 0 years" is well-formed grammar with no representable range)."""
     count = int(token) if token.isdigit() else _NUMBER_WORDS[token]
     return count if count > 0 else None
-
-
-def _relative_range(current_year: int, span_years: int) -> list[ExtractedDate]:
-    """The closed range for a relative span ending at current_year and
-    covering span_years years, current_year included (so "last 10 years"
-    from 2026 is 2017-2026, ten years inclusive)."""
-    start_year = current_year - span_years + 1
-    return [ExtractedDate(kind="range", start=str(start_year), end=str(current_year))]
 
 
 def _not_parsed_warning(text: str) -> Warning:
