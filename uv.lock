@@ -667,10 +667,10 @@ requires-dist = [
     { name = "dfo-data-tools", extras = ["generation"], marker = "extra == 'resolve'", editable = "packages/dfo-data-tools" },
     { name = "dfo-data-tools", extras = ["sdmx"], marker = "extra == 'coverage'", editable = "packages/dfo-data-tools" },
     { name = "dfo-data-tools", extras = ["sdmx"], marker = "extra == 'formats'", editable = "packages/dfo-data-tools" },
-    { name = "dfo-spec-kit-components", git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fdfo-spec-kit-components&rev=3616b64245c2db8af3187552e9e5de99b6d304d4" },
-    { name = "dfo-spec-kit-descriptions", git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fdescriptions&rev=3616b64245c2db8af3187552e9e5de99b6d304d4" },
-    { name = "dfo-spec-kit-frame-grammar", extras = ["arrow"], git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fframe-grammar&rev=3616b64245c2db8af3187552e9e5de99b6d304d4" },
-    { name = "dfo-spec-kit-provenance-docs", git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fprovenance-docs&rev=3616b64245c2db8af3187552e9e5de99b6d304d4" },
+    { name = "dfo-spec-kit-components", git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fdfo-spec-kit-components&rev=0a0c068d71b58c960ee373e1452788299f5ac1d0" },
+    { name = "dfo-spec-kit-descriptions", git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fdescriptions&rev=0a0c068d71b58c960ee373e1452788299f5ac1d0" },
+    { name = "dfo-spec-kit-frame-grammar", extras = ["arrow"], git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fframe-grammar&rev=0a0c068d71b58c960ee373e1452788299f5ac1d0" },
+    { name = "dfo-spec-kit-provenance-docs", git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fprovenance-docs&rev=0a0c068d71b58c960ee373e1452788299f5ac1d0" },
     { name = "fastapi", marker = "extra == 'surface'", specifier = ">=0.138" },
     { name = "google-auth", extras = ["requests"], marker = "extra == 'generation'", specifier = ">=2.55" },
     { name = "google-cloud-bigquery", marker = "extra == 'coverage'", specifier = ">=3.27" },
@@ -695,7 +695,7 @@ provides-extras = ["sdmx", "formats", "surface", "resolve", "generation", "cover
 [[package]]
 name = "dfo-spec-kit"
 version = "0.2.0"
-source = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fspec-kit&rev=3616b64245c2db8af3187552e9e5de99b6d304d4#3616b64245c2db8af3187552e9e5de99b6d304d4" }
+source = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fspec-kit&rev=0a0c068d71b58c960ee373e1452788299f5ac1d0#0a0c068d71b58c960ee373e1452788299f5ac1d0" }
 dependencies = [
     { name = "rfc8785" },
 ]
@@ -703,7 +703,7 @@ dependencies = [
 [[package]]
 name = "dfo-spec-kit-components"
 version = "0.1.0"
-source = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fdfo-spec-kit-components&rev=3616b64245c2db8af3187552e9e5de99b6d304d4#3616b64245c2db8af3187552e9e5de99b6d304d4" }
+source = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fdfo-spec-kit-components&rev=0a0c068d71b58c960ee373e1452788299f5ac1d0#0a0c068d71b58c960ee373e1452788299f5ac1d0" }
 dependencies = [
     { name = "dfo-spec-kit-descriptions" },
 ]
@@ -711,7 +711,7 @@ dependencies = [
 [[package]]
 name = "dfo-spec-kit-descriptions"
 version = "0.1.0"
-source = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fdescriptions&rev=3616b64245c2db8af3187552e9e5de99b6d304d4#3616b64245c2db8af3187552e9e5de99b6d304d4" }
+source = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fdescriptions&rev=0a0c068d71b58c960ee373e1452788299f5ac1d0#0a0c068d71b58c960ee373e1452788299f5ac1d0" }
 dependencies = [
     { name = "rfc8785" },
 ]
@@ -719,7 +719,7 @@ dependencies = [
 [[package]]
 name = "dfo-spec-kit-frame-grammar"
 version = "0.1.0"
-source = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fframe-grammar&rev=3616b64245c2db8af3187552e9e5de99b6d304d4#3616b64245c2db8af3187552e9e5de99b6d304d4" }
+source = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fframe-grammar&rev=0a0c068d71b58c960ee373e1452788299f5ac1d0#0a0c068d71b58c960ee373e1452788299f5ac1d0" }
 dependencies = [
     { name = "dfo-spec-kit" },
     { name = "pyarrow" },
@@ -729,7 +729,7 @@ dependencies = [
 [[package]]
 name = "dfo-spec-kit-provenance-docs"
 version = "0.1.0"
-source = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fprovenance-docs&rev=3616b64245c2db8af3187552e9e5de99b6d304d4#3616b64245c2db8af3187552e9e5de99b6d304d4" }
+source = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fprovenance-docs&rev=0a0c068d71b58c960ee373e1452788299f5ac1d0#0a0c068d71b58c960ee373e1452788299f5ac1d0" }
 dependencies = [
     { name = "markdown-it-py" },
 ]
@@ -2834,7 +2834,7 @@ requires-dist = [
     { name = "dfo-data-tools", extras = ["resolve", "sdmx"], marker = "extra == 'graph'", editable = "packages/dfo-data-tools" },
     { name = "dfo-data-tools", extras = ["sdmx"], marker = "extra == 'sdmx'", editable = "packages/dfo-data-tools" },
     { name = "dfo-data-tools", extras = ["surface", "resolve", "coverage", "sdmx"], marker = "extra == 'engine'", editable = "packages/dfo-data-tools" },
-    { name = "dfo-spec-kit", marker = "extra == 'engine'", git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fspec-kit&rev=3616b64245c2db8af3187552e9e5de99b6d304d4" },
+    { name = "dfo-spec-kit", marker = "extra == 'engine'", git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fspec-kit&rev=0a0c068d71b58c960ee373e1452788299f5ac1d0" },
     { name = "fastapi", marker = "extra == 'api'", specifier = ">=0.138" },
     { name = "google-auth", marker = "extra == 'datasets'", specifier = ">=2.34" },
     { name = "google-auth", extras = ["requests"], marker = "extra == 'eval'", specifier = ">=2.34" },
