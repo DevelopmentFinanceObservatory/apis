@@ -28,8 +28,7 @@ from datasets_api.live_refresh import LiveRefreshPrincipal
 from datasets_api.recipe_store import RecipeReader
 from dfo_platform.app import Surface
 from dfo_platform.doors import DoorContribution, combine_classifiers, flatten
-from graph_release.context import bound_served_release
-from graph_release.service import optional_release_service
+from graph_release.context import bound_served_release, optional_release_service
 from origin_catalogue import bound_catalogue
 from origin_catalogue.service import get_catalogue_service
 from presentation_api.codes import PRESENTATION_CODE_CATALOGUE

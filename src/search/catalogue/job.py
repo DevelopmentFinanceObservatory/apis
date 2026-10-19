@@ -71,8 +71,7 @@ from artifact_publication.uri import ArtifactUriError
 from code_index.shared import get_index
 from dc_graph import GraphReadError
 from dfo_platform.build import build_commit
-from graph_release.context import bound_served_release
-from graph_release.service import optional_release_service
+from graph_release.context import bound_served_release, optional_release_service
 from origin_catalogue import bound_catalogue
 from origin_catalogue.artifact import CatalogueArtifactError as OriginArtifactError
 from origin_catalogue.artifact import load_catalogue

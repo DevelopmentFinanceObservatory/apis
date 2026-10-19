@@ -28,7 +28,7 @@ import logging
 import time
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextlib import AsyncExitStack, ExitStack, asynccontextmanager, contextmanager
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 from fastapi import APIRouter, FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
@@ -59,8 +59,7 @@ from entity_resolution import (
 from graph_generation import GenerationProvider
 from graph_generation import acquire_shared as acquire_shared_generation
 from graph_generation import release_shared as release_shared_generation
-from graph_release.context import bound_served_release
-from graph_release.service import ReleaseService, optional_release_service
+from graph_release.context import bound_served_release, optional_release_service
 from materialise import GraphReader, place_scope
 from materialise.errors import UpstreamVersionChangedError
 from materialise.facets import VariableBreadthReader, bound_variable_breadth
@@ -133,6 +132,10 @@ from search.models import (
 )
 from series_coverage.shared import get_coverage_service
 from skills_index import SharedSkillsIndex, acquire_shared_index, release_shared_index
+
+if TYPE_CHECKING:
+    # Annotation-only: `graph_release.service` needs the `graph-release` extra.
+    from graph_release.service import ReleaseService
 
 logger = logging.getLogger(__name__)
 

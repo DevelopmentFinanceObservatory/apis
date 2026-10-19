@@ -28,6 +28,7 @@ from datasets_api.operation_store import LiveOperationStore
 from datasets_api.operations.oidc import FakeOidcVerifier
 from datasets_api.operations.worker_app import RUN_ROUTE_PATH, build_worker_app
 from graph_api.app import graph_surface
+from graph_release import context
 from graph_release.context import ReleaseNotBound, bound_release, current_release
 from graph_release.format import Manifest, Pointer, manifest_uri, open_release, pointer_uri
 from graph_release.service import (
@@ -322,6 +323,7 @@ class TestProcessService:
             monkeypatch.setenv("GRAPH_RELEASE_URI", value)
 
         assert optional_release_service() is None
+        assert context.optional_release_service() is None
         with pytest.raises(ReleaseUriMissingError):
             get_release_service()
 
@@ -335,6 +337,7 @@ class TestProcessService:
 
         assert service is get_release_service()
         assert service is not None and service.snapshot().release_id == manifest.release_id
+        assert context.optional_release_service() is service
 
     @pytest.mark.parametrize(
         "build_surface",

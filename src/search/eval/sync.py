@@ -332,8 +332,7 @@ def _client() -> Langfuse:
 def _run_nightly(
     by_file: Mapping[str, Sequence[Case]], url: str, schema: Mapping[str, Any], langfuse: Langfuse
 ) -> tuple[list[NightlyCase], dict[str, str | None]]:
-    from graph_release.context import bound_served_release
-    from graph_release.service import optional_release_service
+    from graph_release.context import bound_served_release, optional_release_service
     from origin_catalogue import bound_catalogue
     from origin_catalogue.service import get_catalogue_service
     from search.eval.live_clients import score_clients

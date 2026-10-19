@@ -157,8 +157,7 @@ from datasets_api.version_store import LiveVersionRecordWriter, rendering_key
 from datasets_api.versions import ArtifactRecord
 from description.facts import SCHEMA_VERSION, DescriptionRecord
 from dfo_platform.store_errors import extract_sqlstate, store_failure_is_permanent
-from graph_release.context import bound_served_release
-from graph_release.service import optional_release_service
+from graph_release.context import bound_served_release, optional_release_service
 from materialise.continued_series import ContinuedSeries, continued_series_of_trace
 from materialise.formats import (
     FRAME1_MEDIA_TYPE,

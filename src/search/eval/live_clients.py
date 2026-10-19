@@ -12,8 +12,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 
-from graph_release.context import bind_release, bound_served_release
-from graph_release.service import optional_release_service
+from graph_release.context import bind_release, bound_served_release, optional_release_service
 from origin_catalogue import bind_catalogue, bound_catalogue
 from origin_catalogue.service import get_catalogue_service
 from search.engine.clients.graph_client import LiveGraphClient

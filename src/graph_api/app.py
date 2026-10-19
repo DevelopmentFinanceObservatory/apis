@@ -82,8 +82,7 @@ from graph_api.version import GRAPH_CAPABILITY_VERSION
 from graph_generation import UNKNOWN_GENERATION, GenerationProvider, RegistrationHandle
 from graph_generation import acquire_shared as acquire_shared_generation
 from graph_generation import release_shared as release_shared_generation
-from graph_release.context import bound_served_release
-from graph_release.service import optional_release_service
+from graph_release.context import bound_served_release, optional_release_service
 from materialise.facet_profile import (
     FLIGHT_TIMEOUT_S,
     MAX_BYTES,

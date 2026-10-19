@@ -41,33 +41,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
-
 from dfo_platform.singleton import RefCountedSingleton
+from graph_release.context import URI_ENV_VAR, release_uri
 from graph_release.format import LoadedRelease, Manifest, open_release, read_pointer
 
 logger = logging.getLogger(__name__)
 
-_URI_ENV_VAR = "GRAPH_RELEASE_URI"
 DEFAULT_RECHECK_SECONDS = 60.0
 
 # Logs the first recheck failure and each tenth consecutive failure.
 _FAILURE_LOG_EVERY_N = 10
-
-
-class _ReleaseEnv(BaseSettings):
-    """Env reads for `get_release_service()`, constructed fresh on each call so a
-    `GRAPH_RELEASE_URI` set after import is still honoured."""
-
-    model_config = SettingsConfigDict()
-
-    uri: str | None = Field(default=None, alias=_URI_ENV_VAR)
-
-    @field_validator("uri", mode="before")
-    @classmethod
-    def _blank_is_unset(cls, value: object) -> object:
-        return None if isinstance(value, str) and not value.strip() else value
 
 
 class ReleaseUriMissingError(RuntimeError):
@@ -325,9 +308,9 @@ class ReleaseService:
 
 
 def _build() -> ReleaseService:
-    uri = _ReleaseEnv().uri
+    uri = release_uri()
     if uri is None:
-        raise ReleaseUriMissingError(f"{_URI_ENV_VAR} is not set")
+        raise ReleaseUriMissingError(f"{URI_ENV_VAR} is not set")
     # On Cloud Run the temporary directory is the in-memory filesystem.
     return ReleaseService(uri=uri, local_dir=Path(tempfile.mkdtemp(prefix="graph-release-")))
 
@@ -350,7 +333,7 @@ def get_release_service() -> ReleaseService:
 def optional_release_service() -> ReleaseService | None:
     """The process-wide service when `GRAPH_RELEASE_URI` is set, `None` when it
     is unset or blank."""
-    return None if _ReleaseEnv().uri is None else get_release_service()
+    return None if release_uri() is None else get_release_service()
 
 
 def reset_release_service() -> None:

@@ -73,8 +73,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import httpx
 
-from graph_release.context import bound_served_release
-from graph_release.service import optional_release_service
+from graph_release.context import bound_served_release, optional_release_service
 from origin_catalogue import Catalogue, bound_catalogue
 from origin_catalogue.service import get_catalogue_service
 from search.eval.apis_auth import apis_auth
