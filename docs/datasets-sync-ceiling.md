@@ -152,7 +152,7 @@ state. The default lets
 every delivery wait behind a full backlog and then run to its dispatch deadline, with the backoff
 between deliveries and a margin: `attempts x (ceil(backlog_max / dispatch_concurrency) x
 dispatch_deadline + dispatch_deadline) + (attempts - 1) x backoff + margin`, 3 x (5 x 1,800 +
-1,800) + 2 x 1,680 + 240 = 36,000 seconds. dfo-infra computes it from the queue's own locals.
+1,800) + 2 x 1,680 + 240 = 36,000 seconds. `infra` computes it from the queue's own locals.
 
 The poll fails an abandoned row with `refusal_code` `internal_error`, retryable, through
 `OperationStore.abandon`, one `UPDATE` fenced on the attempt the poll read, so a delivery that
@@ -170,7 +170,7 @@ Setting `DFO_WORKER_SURFACE` (truthy: `1`/`true`) swaps the whole app compositio
 ASGI app carrying exactly one route, `POST /internal/datasets/operations/{operation_id}/run`
 (`datasets_api.operations.worker_app.build_worker_app`), with no Search or public Datasets routes.
 The worker's Cloud Run service takes internal-only ingress. The deployed worker runs at Cloud Run
-concurrency 1 on 2 vCPU and 4 GiB, with up to four instances (dfo-infra's
+concurrency 1 on 2 vCPU and 4 GiB, with up to four instances (the `infra` repository's
 `infra/stacks/apis/datasets_worker.tf`), so the app builds one `DefinitionDeps` at startup and runs
 each dispatch's materialisation on a worker thread.
 
@@ -273,7 +273,7 @@ beside mints and rebuilds. With no permit free the door answers `service_unavail
 door inflates a gzip body in 1 MiB steps and refuses it with `request_invalid` as soon as the
 decoded size passes the bound, so a gzip bomb costs at most the bound plus one step. Corrupt,
 truncated, or multi-member gzip data also refuses with `request_invalid`. Cloud Run caps an HTTP/1
-request at 32 MiB on the wire, which an identity body reaches at about 150,000 dfo-ai rows. The same
+request at 32 MiB on the wire, which an identity body reaches at about 150,000 `ai` rows. The same
 250,000-row body is 54 MB as JSON and 4.7 MB gzipped at level 1.
 
 ## Writer memory

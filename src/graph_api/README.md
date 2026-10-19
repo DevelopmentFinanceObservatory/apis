@@ -418,9 +418,11 @@ A missing node answers `404 node_not_held`. A group the membership policy holds 
 
 ### POST /api/graph/nodes
 
-Reads up to 50 nodes in one request, as one executor job. A client that needs several nodes at once sends them here: parallel `GET /api/graph/node/{dcid}` calls each take a worker of the shared pool (`GRAPH_NODE_POOL_SIZE`, 4 by default).
+Reads up to 50 nodes in one request, as at most one executor job. A client that needs several nodes at once sends them here: parallel `GET /api/graph/node/{dcid}` calls each take a worker of the shared pool (`GRAPH_NODE_POOL_SIZE`, 4 by default).
 
 The door makes one allowlisted arc read for every distinct dcid, classifies each held node, then makes one batched name read for the label targets, skipped when none has a target. Every `stat_var` in the request takes one facet profile read. Each entry is the body `GET /api/graph/node/{dcid}` returns for that dcid. A dcid the graph does not hold gets `{ref, status: "not_held"}` where the GET route answers `404 node_not_held`.
+
+The door keeps each entry it builds with no transient gap (`graph_api.node_cache`), up to `GRAPH_NODE_ENTRY_CACHE_SIZE` entries, keyed by the graph generation, the code index, origin catalogue, coverage and membership builds, and the dcid. An entry is stored under the builds its `built_from` names, and expires with its generation's cache lifetime. A batch reads only the dcids it misses there, so a repeat of a batch within one generation and set of builds makes no graph read. A GET without `as_of` reads and fills the same entries; a GET with `as_of` always reads. A generation change clears them.
 
 #### Request constraints
 
@@ -917,6 +919,7 @@ The Graph API reads environment variables during module initialization and appli
 | `GRAPH_RESOLVE_TIMEOUT_SECONDS` | Integer | `30`                    | Request timeout for `/api/graph/resolve`.                                           |
 | `GRAPH_NODE_TIMEOUT_SECONDS`    | Integer | `10`                    | Request timeout for `/api/graph/node/{dcid}`, `/api/graph/nodes`, `/api/graph/documentation/{dcid}`, and the label and facet reads of `/api/graph/node/{dcid}/members`. |
 | `GRAPH_PROVENANCE_DOC_CACHE_SIZE` | Integer | `512`                 | Most source documents `/api/graph/documentation/{dcid}` keeps in its cache at once. |
+| `GRAPH_NODE_ENTRY_CACHE_SIZE`   | Integer | `2048`                  | Most built node entries the node routes keep in their cache at once.                |
 | `GRAPH_SDMX_TIMEOUT_SECONDS`    | Integer | `30`                    | HTTP timeout of the UN deployment's SDMX client the node reader uses.              |
 | `UN_GRAPH_BASE_URL`             | String  | UN System Data Commons  | API root for `undata/` dcids (`https://unsd-datacommons.gcp.un-icc.cloud/core/api`), shared with every surface and the origin catalogue job. |
 | `COVERAGE_ARTIFACT_URI`         | String  | _(unset)_               | Coverage artifact root for currencies, granularity and variable availability; unset serves `[]` and `null`, and a variable's `availability` is `null`. |

@@ -256,7 +256,6 @@ def _promote_relaunch(
         entity_options=state.entity_options_raw,
         facet_probe=_promote_facet_probe(state, mat_result),
         facets_pinned=bool(state.inp.identity.facets),
-        identity=spec.definition.identity,
         sv_dcids=list(mat_result.sv_dcids),
         obs_entities=state.obs_entities,
         facet_filter=state.facet_filter,

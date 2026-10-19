@@ -344,32 +344,34 @@ def load_stored(
     `include_artifacts=True` uses `read_snapshot_manifest`, which lists servable artifacts under
     their download links and refuses an expired version. Optional `rendering_keys` narrow
     artifacts to the requested rendering. `False` uses `read_snapshot_currency`, which returns
-    no artifacts. A fresh head relies on this as its only existence check.
+    no artifacts. A fresh head relies on this as its only existence check. Both time under
+    `snapshot_state`.
 
     Its artifacts hold the party-kind files linked under the code index's digest only, each
     carrying it as `enrichment_stamp` (`read_snapshot_manifest`).
     """
-    if not include_artifacts:
-        return read_snapshot_currency(
+    with phase("snapshot_state"):
+        if not include_artifacts:
+            return read_snapshot_currency(
+                id=subject_id,
+                content_version=content_version,
+                spec_reader=None,
+                snapshot_reader=deps.snapshot_reader,
+                now=deps.now,
+                settings=deps.settings,
+                revoked_under=revoked_under,
+            )
+        return read_snapshot_manifest(
             id=subject_id,
             content_version=content_version,
             spec_reader=None,
             snapshot_reader=deps.snapshot_reader,
             now=deps.now,
             settings=deps.settings,
+            rendering_keys=rendering_keys,
             revoked_under=revoked_under,
+            enrichment_digest=deps.code_index.enrichment_digest,
         )
-    return read_snapshot_manifest(
-        id=subject_id,
-        content_version=content_version,
-        spec_reader=None,
-        snapshot_reader=deps.snapshot_reader,
-        now=deps.now,
-        settings=deps.settings,
-        rendering_keys=rendering_keys,
-        revoked_under=revoked_under,
-        enrichment_digest=deps.code_index.enrichment_digest,
-    )
 
 
 def _record_head_hit_derived(
@@ -460,7 +462,8 @@ def _record_head_hit_derived(
     )
     if created and not is_incomplete_rendering(artifact.rendering):
         return derived_manifest
-    state = deps.snapshot_reader.read_version_state(subject_id, derived.content_version)
+    with phase("snapshot_state"):
+        state = deps.snapshot_reader.read_version_state(subject_id, derived.content_version)
     if state is None:
         return derived_manifest
     if created:
@@ -1117,7 +1120,8 @@ def serve_fresh_head(
     nothing, and materialises nothing, so it runs on the read executor. A `HeadRead` hands the call
     to the work executor, whose `serve_current` starts from that head.
     """
-    coverage_snapshot = deps.coverage.snapshot()
+    with phase("coverage"):
+        coverage_snapshot = deps.coverage.snapshot()
     with phase("head_read"):
         head = deps.head_store.read_head(stored.spec_id)
     if head is None or not _head_is_fresh(head, now=deps.now(), deps=deps):

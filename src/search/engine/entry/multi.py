@@ -88,15 +88,19 @@ async def _stream_combined_regions(
             yield event
         warnings: list[Warning] = []
         late_departures: list[LateDepartures] = []
+        incomplete: list[str] = []
         async for event in _stream_slot_options(
             streaming_regions,
             deadline=params.deadline,
             warnings_out=warnings,
             late_departures_out=late_departures,
+            incomplete_out=incomplete,
             response=response,
             answered=regions,
         ):
             yield event
+        if scope is not None:
+            scope.note_health(trailing_incomplete=bool(incomplete))
         yield DoneEvent(
             elapsed_ms=now_ms() - start_ms,
             timed_out=timed_out,

@@ -8,8 +8,10 @@ request's identity entries from the part memo.
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
+from contextlib import aclosing
 from dataclasses import asdict, dataclass
 
 import search.engine.config as config  # module-attribute access for runtime-resolved values
@@ -22,7 +24,9 @@ from search.engine.bind_repair import (
     stated_words_negated,
 )
 from search.engine.deadline import _await_bounded
-from search.engine.envelope import now_ms
+from search.engine.enrichment import stream_place_options
+from search.engine.envelope import _terminal_events, now_ms
+from search.engine.events import DoneEvent, Event, PlaceOptionsEvent, ResponseEvent
 from search.engine.extract import ExtractedDate, ExtractedEntity
 from search.engine.qualifier_match import (
     CodedQualifier,
@@ -37,14 +41,19 @@ from search.engine.region.result import RegionResult
 from search.engine.region.state import EngineOptions
 from search.engine.response_cache import Lease, ResponseCache
 from search.engine.response_cache_keys import (
+    StoredBundle,
+    from_bundle,
     from_entry,
+    is_bundle_storable,
     is_region_storable,
     is_storable,
     layer1_key,
     layer2_key,
     parsed_key,
     part_memo_key,
+    refresh_response,
     scope_document,
+    to_bundle,
     to_entry,
 )
 from search.engine.response_cache_memo import PartMemo
@@ -62,6 +71,12 @@ from search.models import (
 from series_coverage.shared import CoverageSnapshot
 
 logger = logging.getLogger(__name__)
+
+type ReplayedPlaceOptions = Callable[
+    [ResolveResponse], Sequence[asyncio.Task[list[PlaceOptionsEvent]]]
+]
+"""Launches the place-options tasks a fresh run of a response launches
+(`place_options.replayed_place_options`, with the request's clients bound)."""
 
 
 # ---------------------------------------------------------------------------
@@ -176,11 +191,15 @@ class CacheScope:
     """One request's access to the two-layer response cache.
 
     `active` is fixed at construction; inactive methods return `None`. A raw-text or
-    parsed request is active when the cache is enabled and its transport streams no
-    trailing events (`trailing`). Every enrichment it asked for is then in the response
-    event the scope stores, so a stored entry is complete by construction. The
-    generation stamp is read once and sets both the key and entry lifetime.
-    New stamps produce new keys, leaving old entries unreachable. The caller's
+    parsed request is active when the cache is enabled. A request that streams trailing
+    events (`trailing`) stores its event bundle: the `response` event, the slot-options and
+    observations events and the `done` event, published when `done` arrives (`observe`).
+    Place options stay out of it: they run on a best-effort budget and the options cache
+    keeps them, so a hit runs them again (`hit_events`). Any other request stores its
+    response at the `response` event. A hit sends either entry through `hit_events`. A
+    follower of an in-flight streamed leader therefore waits
+    for the leader's `done` before it sends anything. The generation stamp is read once
+    and sets both the key and entry lifetime. New stamps produce new keys, leaving old entries unreachable. The caller's
     coverage snapshot contributes its stamp to the same scope; this class does
     not read the coverage service again. The revision of the conversion catalogue and the
     build and UN System setting of the origin catalogue the request bound join the scope
@@ -222,8 +241,10 @@ class CacheScope:
             cache is not None
             and config.settings().response_cache_enabled
             and request.input.kind in ("raw_text", "parsed")
-            and not trailing
         )
+        self._bundle = trailing
+        # The bound build's refused places, which the key's `origin_catalogue` names.
+        self._refused_at_build = origin.un_blocked_places
         self._scope = (
             scope_document(
                 schema_version=request.schema_version,
@@ -240,6 +261,7 @@ class CacheScope:
                 conversion_catalogue=conversion.revision if conversion is not None else None,
                 origin_catalogue=origin.build_id,
                 un_system_enabled=origin.un_system_enabled,
+                bundle=trailing,
             )
             if self.active
             else None
@@ -249,8 +271,13 @@ class CacheScope:
         self._layer2_key: str | None = None
         self._timed_out = False
         self._degraded_leg = False
+        self._trailing_incomplete = False
         self._served_timed_out = False
         self._served_storable = True
+        # Events from `response` on, while this request records its bundle.
+        self._recorded: list[Event] = []
+        # The stored bundle a hit replays.
+        self._replay: StoredBundle | None = None
         self._outcome: str = "inactive" if not self.active else "miss"
 
     @property
@@ -415,29 +442,89 @@ class CacheScope:
             step="response_cache_layer2",
         )
 
-    def note_health(self, *, timed_out: bool, degraded_leg: bool) -> None:
-        """Accumulate timeout and degraded-leg flags; either stays true once set."""
+    def note_health(
+        self,
+        *,
+        timed_out: bool = False,
+        degraded_leg: bool = False,
+        trailing_incomplete: bool = False,
+    ) -> None:
+        """Accumulate timeout, degraded-leg and trailing-loss flags; each stays true once set.
+
+        `trailing_incomplete` marks a stream that dropped a slot-options or observations
+        event (`enrichment._stream_slot_options`); its bundle is not stored. No flag reaches
+        the wire."""
         self._timed_out = self._timed_out or timed_out
         self._degraded_leg = self._degraded_leg or degraded_leg
+        self._trailing_incomplete = self._trailing_incomplete or trailing_incomplete
 
     @property
     def degraded_leg(self) -> bool:
         """Whether a fresh run noted a degraded leg. A cache hit reports False."""
         return self._degraded_leg
 
+    async def observe(self, event: Event) -> None:
+        """Take one event of the live stream; publish the answer once it is complete.
+
+        A bundle request records events from `response` and publishes at `done`, leaving
+        out place options, which a hit runs again. Any other request publishes its response
+        at `response`.
+        """
+        if not self.active:
+            return
+        if not self._bundle:
+            if isinstance(event, ResponseEvent):
+                await self.store(event.response)
+            return
+        if isinstance(event, PlaceOptionsEvent):
+            return
+        if isinstance(event, ResponseEvent) or self._recorded:
+            self._recorded.append(event)
+        if isinstance(event, DoneEvent):
+            await self._publish(
+                lambda: to_bundle(self._recorded),
+                lambda: is_bundle_storable(
+                    self._recorded,
+                    timed_out=self._timed_out,
+                    degraded_leg=self._degraded_leg,
+                    trailing_incomplete=self._trailing_incomplete,
+                    refused_at_build=self._refused_at_build,
+                ),
+            )
+
     async def store(self, response: ResolveResponse) -> None:
         """Publish this request's response to any leases it owns.
 
-        Cache errors are logged and never reach the pipeline. Followers always
-        receive the answer, even when `is_storable` rejects it; that verdict
-        controls storage, not delivery. Both leases share one encoding and
-        verdict. Entry lifetime comes from the generation stamp captured before
-        lookup.
+        Only a request without trailing events stores a bare response. A streamed one
+        publishes its bundle through `observe`, since its keys name a bundle entry.
 
-        Fresh runs use `note_health`; hits carry the leader's verdict because
-        degraded-leg status is absent from response bytes. A hit is storable
-        only when both its served verdict and this response's checks allow it.
-        Published timeout status combines this run's and the leader's flags.
+        Followers always receive the answer, even when `is_storable` rejects it; that
+        verdict controls storage, not delivery. Fresh runs use `note_health`; hits carry
+        the leader's verdict because degraded-leg status is absent from response bytes. A
+        hit is storable only when both its served verdict and this response's checks allow
+        it. Published timeout status combines this run's and the leader's flags.
+        """
+        assert not self._bundle, "a streamed request publishes its bundle through observe()"
+        await self._publish(
+            lambda: to_entry(response),
+            lambda: is_storable(
+                response,
+                timed_out=self._timed_out,
+                degraded_leg=self._degraded_leg,
+                refused_at_build=self._refused_at_build,
+            ),
+        )
+
+    async def _publish(
+        self,
+        encode: Callable[[], tuple[bytes, int]],
+        storable: Callable[[], bool],
+    ) -> None:
+        """Publish an entry to any leases this request owns.
+
+        Cache errors are logged and never reach the pipeline. Both leases share one
+        encoding and verdict. Entry lifetime comes from the generation stamp captured
+        before lookup.
         """
         if not self.active:
             return
@@ -446,31 +533,21 @@ class CacheScope:
             # No lease means this request cannot publish a cache entry.
             return
         try:
-            storable = self._served_storable and is_storable(
-                response, timed_out=self._timed_out, degraded_leg=self._degraded_leg
-            )
+            verdict = self._served_storable and storable()
             timed_out = self._timed_out or self._served_timed_out
-            entry, size = to_entry(response)
-            if self._layer1_lease is not None:
-                await self._cache.publish(
-                    self._layer1_lease,
-                    entry,
-                    size,
-                    storable=storable,
-                    timed_out=timed_out,
-                    max_age_s=self._stamp.max_age_s,
-                )
-                self._layer1_lease = None
-            if self._layer2_lease is not None:
-                await self._cache.publish(
-                    self._layer2_lease,
-                    entry,
-                    size,
-                    storable=storable,
-                    timed_out=timed_out,
-                    max_age_s=self._stamp.max_age_s,
-                )
-                self._layer2_lease = None
+            entry, size = encode()
+            for lease in (self._layer1_lease, self._layer2_lease):
+                if lease is not None:
+                    await self._cache.publish(
+                        lease,
+                        entry,
+                        size,
+                        storable=verdict,
+                        timed_out=timed_out,
+                        max_age_s=self._stamp.max_age_s,
+                    )
+            self._layer1_lease = None
+            self._layer2_lease = None
         except Exception:
             logger.exception("response cache store failed; serving the fresh answer uncached")
 
@@ -498,6 +575,16 @@ class CacheScope:
         step: str,
     ) -> ResolveResponse:
         elapsed = now_ms() - self._start_ms
+        if self._bundle:
+            self._replay = from_bundle(entry)
+            return refresh_response(
+                self._replay.response.response,
+                query=query,
+                extract_skipped=extract_skipped,
+                start_ms=self._start_ms,
+                llm_usage=llm_usage,
+                timing_by_step={step: elapsed},
+            )
         return from_entry(
             entry,
             query=query,
@@ -506,6 +593,45 @@ class CacheScope:
             llm_usage=llm_usage,
             timing_by_step={step: elapsed},
         )
+
+    async def hit_events(
+        self,
+        response: ResolveResponse,
+        *,
+        start_ms: int,
+        llm_usage: dict | None = None,
+        place_options: ReplayedPlaceOptions | None = None,
+    ) -> AsyncGenerator[Event]:
+        """The events a cache hit sends for the `response` a lookup returned.
+
+        The `response` and `done` events are fresh (trace id, timing, usage). A bundle hit
+        sends the stored slot-options and observations events after `response`, then the
+        place options a fresh run streams, launched by `place_options` and awaited under
+        the place-options budget (`enrichment.stream_place_options`), and keeps the stored
+        `done` event's warnings and late departures. Any other hit sends `response` and
+        `done` alone. `place_options` is `None` when the request streams no place options.
+        """
+        yield ResponseEvent(response=response)
+        if self._replay is not None:
+            for event in self._replay.trailing:
+                yield event
+            if place_options is not None:
+                async with aclosing(
+                    stream_place_options(place_options(response), deadline=self._deadline)
+                ) as streamed:
+                    async for event in streamed:
+                        yield event
+        _, done_event = _terminal_events(
+            response, start_ms=start_ms, llm_usage=llm_usage, timed_out=self._served_timed_out
+        )
+        if self._replay is not None:
+            done_event = done_event.model_copy(
+                update={
+                    "warnings": self._replay.done.warnings,
+                    "late_departures": self._replay.done.late_departures,
+                }
+            )
+        yield done_event
 
 
 class PartMemoScope:
@@ -543,6 +669,7 @@ class PartMemoScope:
         origin = current_catalogue()
         self._origin_catalogue = origin.build_id
         self._un_system_enabled = origin.un_system_enabled
+        self._refused_at_build = origin.un_blocked_places
         self.hits = 0
         self.misses = 0
 
@@ -582,6 +709,8 @@ class PartMemoScope:
 
     def store(self, key: str, region: RegionResult) -> None:
         """Store `region` without its closures when `is_region_storable` accepts it."""
-        if self._memo is None or not is_region_storable(region):
+        if self._memo is None or not is_region_storable(
+            region, refused_at_build=self._refused_at_build
+        ):
             return
         self._memo.put(self._stamp.key, key, without_relaunches(region))

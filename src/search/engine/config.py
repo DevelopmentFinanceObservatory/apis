@@ -214,7 +214,7 @@ class SearchSettings(BaseSettings):
     # (JSON) or a terminal error event (SSE). The hard cap also bounds every graph and SDMX
     # read the request makes (`dfo_platform.request_deadline`). Cancelling unfinished
     # variables and assembling the partial answer take milliseconds, so the grace covers
-    # that work only. dfo-ai's data-mcp gives up on a resolve at 50 s.
+    # that work only. The `ai` repository's data-mcp gives up on a resolve at 50 s.
     finalise_grace_s: float = 2
 
     # Deadline from request start for a resubmit whose member walk reads the whole filtered

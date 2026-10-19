@@ -40,7 +40,7 @@ left the cut frame unchanged.
 Freshness is the definition door's (`current.serve_current` through `_serve_spec`): a head
 confirmed within `head_recheck_seconds` answers with no read, a later call compares the head's
 dependency fingerprint in one graph read, and a changed fingerprint or a head older than
-`head_max_age_seconds` rebuilds. A rebuild mints the options dfo-ai mints a frame with (bare
+`head_max_age_seconds` rebuilds. A rebuild mints the options `ai` mints a frame with (bare
 parquet in the frame layout) plus the frame's minting options, so it writes the canonical frame
 Presentation reads, and a frame minted without party totals is minted without them again.
 Concurrent refreshes and definition reads of one dataset share one rebuild
@@ -251,7 +251,7 @@ FrameRefreshResponse = Annotated[
 
 
 def _frame_options(minting: MintingOptions | None) -> MintOptions:
-    """The options a mint of a frame takes: the bare frame-layout parquet dfo-ai mints a frame
+    """The options a mint of a frame takes: the bare frame-layout parquet `ai` mints a frame
     with, plus the minting options."""
     if minting is None:
         return MintOptions(format="parquet", bundle=False, layout="frame")

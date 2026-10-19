@@ -13,14 +13,11 @@ from collections import defaultdict
 
 import pytest
 
+from code_index.declarations import CODE_SYSTEMS
+from code_index.export import _measure_axis_value, export_statvars
 from code_index.loader import default_index_path, load_index, load_measure_axes
 from code_index.types import StatVarRow, label_for_pairs
-from scripts.export_code_index import (
-    CODE_SYSTEMS,
-    _measure_axis_value,
-    export_reader,
-    export_statvars,
-)
+from scripts.export_code_index import export_reader
 
 _GRAPH_BASE = os.environ.get("SEARCH_GRAPH_BASE")
 

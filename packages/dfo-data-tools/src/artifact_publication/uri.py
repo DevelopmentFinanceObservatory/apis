@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import shutil
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -82,6 +83,36 @@ def _write_gs(*, bucket: str, object_name: str, data: bytes) -> None:
     client = storage.Client()
     blob = client.bucket(bucket).blob(object_name)
     blob.upload_from_string(data)
+
+
+def download_uri_to_path(uri: str, path: Path) -> None:
+    """Streams the object to `path`, overwriting it, without holding it in
+    memory. Missing files or objects raise `FileNotFoundError`, and invalid
+    schemes or an empty GCS bucket raise `ArtifactUriError`."""
+    parsed = urlsplit(uri)
+    if parsed.scheme == "file":
+        shutil.copyfile(parsed.path, path)
+        return
+    if parsed.scheme == "gs":
+        _download_gs(bucket=parsed.netloc, object_name=parsed.path.lstrip("/"), path=path)
+        return
+    raise ArtifactUriError(
+        f"unsupported scheme {parsed.scheme!r} in URI {uri!r}; expected gs:// or file://"
+    )
+
+
+def _download_gs(*, bucket: str, object_name: str, path: Path) -> None:
+    if not bucket:
+        raise ArtifactUriError(f"gs:// URI names no bucket (object {object_name!r})")
+    from google.api_core.exceptions import NotFound
+    from google.cloud import storage
+
+    client = storage.Client()
+    blob = client.bucket(bucket).blob(object_name)
+    try:
+        blob.download_to_filename(str(path))
+    except NotFound as exc:
+        raise FileNotFoundError(f"gs://{bucket}/{object_name} does not exist") from exc
 
 
 def read_uri_bytes_and_generation(uri: str) -> tuple[bytes, str] | None:
@@ -229,6 +260,50 @@ def _list_gs_object_times(*, bucket: str, prefix: str) -> dict[str, float]:
     }
 
 
+def list_uri_object_generations(uri: str) -> dict[str, tuple[float, str]]:
+    """Maps each object under `uri` to its relative path, write time and the
+    version token `delete_uri_if_unchanged` takes, without downloading it.
+
+    GCS reads both from one recursive list. Local files use `st_mtime` and
+    stream each file through SHA-256. A missing prefix returns an empty
+    mapping.
+    """
+    parsed = urlsplit(uri)
+    if parsed.scheme == "file":
+        return _list_file_object_generations(Path(parsed.path))
+    if parsed.scheme == "gs":
+        return _list_gs_object_generations(bucket=parsed.netloc, prefix=parsed.path.lstrip("/"))
+    raise ArtifactUriError(
+        f"unsupported scheme {parsed.scheme!r} in URI {uri!r}; expected gs:// or file://"
+    )
+
+
+def _list_file_object_generations(path: Path) -> dict[str, tuple[float, str]]:
+    if not path.is_dir():
+        return {}
+    listed = {}
+    for found in path.rglob("*"):
+        if found.is_file():
+            with found.open("rb") as handle:
+                token = hashlib.file_digest(handle, "sha256").hexdigest()
+            listed[found.relative_to(path).as_posix()] = (found.stat().st_mtime, token)
+    return listed
+
+
+def _list_gs_object_generations(*, bucket: str, prefix: str) -> dict[str, tuple[float, str]]:
+    if not bucket:
+        raise ArtifactUriError(f"gs:// URI names no bucket (prefix {prefix!r})")
+    from google.cloud import storage
+
+    client = storage.Client()
+    prefix = prefix.rstrip("/") + "/"
+    return {
+        blob.name[len(prefix) :]: (blob.time_created.timestamp(), str(blob.generation))
+        for blob in client.list_blobs(bucket, prefix=prefix)
+        if blob.time_created is not None and blob.generation is not None
+    }
+
+
 def delete_uri_if_unchanged(uri: str, *, expected_generation: str) -> bool:
     """Deletes one object only while its token equals `expected_generation`.
     Returns whether this call deleted it, so an absent or replaced object
@@ -277,8 +352,6 @@ def delete_uri_prefix(uri: str) -> None:
     if parsed.scheme == "file":
         path = Path(parsed.path)
         if path.exists():
-            import shutil
-
             shutil.rmtree(path)
         return
     if parsed.scheme == "gs":
@@ -311,7 +384,9 @@ __all__ = [
     "ArtifactUriError",
     "delete_uri_if_unchanged",
     "delete_uri_prefix",
+    "download_uri_to_path",
     "join_uri",
+    "list_uri_object_generations",
     "list_uri_object_times",
     "read_uri_bytes",
     "read_uri_bytes_and_generation",

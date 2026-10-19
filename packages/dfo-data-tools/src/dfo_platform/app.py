@@ -35,6 +35,7 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from dfo_platform import codes, refusal
 from dfo_platform.build import build_commit
+from dfo_platform.caller import log_request
 from dfo_platform.codes import (
     PLATFORM_CODE_CATALOGUE,
     CodeCatalogue,
@@ -509,7 +510,8 @@ async def _trace_id_dispatch(
     """Bind one trace ID to the request context and stamp response headers.
 
     Also binds the Cloud Trace ID parsed from the request's trace headers,
-    which `dfo_platform.cloud_logging` stamps on every log record.
+    which `dfo_platform.cloud_logging` stamps on every log record, and logs one
+    line per request with the caller's claimed identity (`dfo_platform.caller`).
 
     This outermost layer also runs on CORS preflights. Only non-cacheable
     responses receive the request's trace ID. HSTS and build commit stamp
@@ -525,8 +527,10 @@ async def _trace_id_dispatch(
     token = set_trace_id(trace_id)
     cloud_token = set_cloud_trace_id(cloud_trace_id_from_headers(request.headers))
     start = time.perf_counter()
+    status: int | None = None
     try:
         response = await call_next(request)
+        status = response.status_code
         elapsed_ms = (time.perf_counter() - start) * 1000
         response.headers[HSTS_HEADER] = HSTS_VALUE
         response.headers[COMMIT_HEADER] = commit
@@ -540,9 +544,21 @@ async def _trace_id_dispatch(
             response.headers[SERVER_TIMING_HEADER] = f"total;dur={elapsed_ms:.1f}"
         return response
     finally:
-        # The inner task retains its copied trace context after this outer task resets.
-        reset_trace_id(token)
-        reset_cloud_trace_id(cloud_token)
+        try:
+            log_request(
+                method=request.method,
+                path=request.url.path,
+                status=status,
+                headers=request.headers,
+            )
+        except Exception as exc:
+            # A logging failure must not replace the response. The header value stays
+            # out of the record, as it can carry a credential.
+            logger.warning("request log line failed: %s", type(exc).__name__)
+        finally:
+            # The inner task retains its copied trace context after this outer task resets.
+            reset_trace_id(token)
+            reset_cloud_trace_id(cloud_token)
 
 
 async def _probe_default_executor(

@@ -151,12 +151,13 @@ def test_buffered_include_observations_is_cached():
     assert llm.calls == ["Extraction", "QuantityOutput", "_UniversalBindOutput"]
     assert r1.status == "definite"
     assert r2.parts == r1.parts
-    assert set(r2.diagnostics.timing_ms.by_step or {}) == {"response_cache_layer1"}
+    assert set(r2.diagnostics.timing_ms.by_step or {}) == {"coverage", "response_cache_layer1"}
 
 
-def test_a_transport_with_trailing_events_is_not_cached():
-    """Over SSE, observations stream after the response event, so the scope stays
-    inactive: two identical streamed requests both run the pipeline and store nothing."""
+def test_a_transport_with_trailing_events_replays_its_bundle():
+    """Over SSE, observations stream after the response event. The scope stores the whole
+    event bundle at `done`, and an identical streamed request replays it without a model
+    call, trailing events included."""
     llm = _CountingLLM(FakeLLM())
     cache = ResponseCache()
     request = ResolveRequest(
@@ -181,19 +182,12 @@ def test_a_transport_with_trailing_events_is_not_cached():
     with patch("search.engine.extract.date") as mock_date:
         mock_date.today.return_value = PINNED_DATE
         mock_date.side_effect = lambda *args, **kwargs: date(*args, **kwargs)
-        asyncio.run(_drain())
-        kinds = asyncio.run(_drain())
-    assert "observations" in kinds
-    assert llm.calls == [
-        "Extraction",
-        "QuantityOutput",
-        "_UniversalBindOutput",
-        "Extraction",
-        "QuantityOutput",
-        "_UniversalBindOutput",
-    ]
-    stats = cache.stats()
-    assert stats.hits == stats.misses == stats.entries == 0
+        first = asyncio.run(_drain())
+        second = asyncio.run(_drain())
+    assert "observations" in first
+    assert llm.calls == ["Extraction", "QuantityOutput", "_UniversalBindOutput"]
+    assert second == first[first.index("response") :]
+    assert cache.stats().hits == 1
 
 
 class _QuantityReadFailsLLM(FakeLLM):
@@ -322,7 +316,7 @@ def test_identical_parsed_requests_hit_layer2():
     assert r2.parts == r1.parts
     assert r2.query_echo == r1.query_echo
     assert r2.query_echo.entry_path == "parsed"
-    assert set(r2.diagnostics.timing_ms.by_step or {}) == {"response_cache_layer2"}
+    assert set(r2.diagnostics.timing_ms.by_step or {}) == {"coverage", "response_cache_layer2"}
     stats = cache.stats()
     assert (stats.hits, stats.entries) == (1, 1)
 

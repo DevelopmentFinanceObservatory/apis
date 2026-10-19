@@ -10,12 +10,15 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from google.api_core.exceptions import NotFound, PreconditionFailed
 
 from artifact_publication.uri import (
     delete_uri_prefix,
+    download_uri_to_path,
+    list_uri_object_generations,
     list_uri_object_times,
     read_uri_bytes,
     read_uri_bytes_and_generation,
@@ -32,8 +35,8 @@ from tests.series_coverage.test_job import (
     _ROW_V1,
     FakeBigQuery,
     FakeSdmx,
-    _fingerprint_responses,
     _obs,
+    import_key_responses,
     year_stats,
 )
 
@@ -75,6 +78,9 @@ class _FakeBlob:
             raise NotFound(f"gs://{_BUCKET}/{self.name} does not exist") from None
         self.generation = stored.generation
         return stored.data
+
+    def download_to_filename(self, filename: str) -> None:
+        Path(filename).write_bytes(self.download_as_bytes())
 
     def upload_from_string(self, data: bytes, if_generation_match: int | None = None) -> None:
         current = self._objects.get(self.name)
@@ -280,6 +286,7 @@ def test_write_uri_bytes_if_unchanged_still_reports_failure_when_a_different_obj
 
 def test_list_uri_object_times_is_empty_for_a_base_that_does_not_exist(gs_bucket):
     assert list_uri_object_times(_uri("format-1")) == {}
+    assert list_uri_object_generations(_uri("format-1")) == {}
 
 
 def test_list_uri_object_times_reads_every_object_under_the_prefix_only(gs_bucket):
@@ -293,6 +300,23 @@ def test_list_uri_object_times_reads_every_object_under_the_prefix_only(gs_bucke
 
     assert set(times) == {"current.json", "versions/b1/a.txt"}
     assert abs(times["versions/b1/a.txt"] - old_time.timestamp()) < 2
+
+    listed = list_uri_object_generations(_uri("format-1"))
+
+    assert {name: written for name, (written, _) in listed.items()} == times
+    found = read_uri_bytes_and_generation(_uri("format-1", "versions", "b1", "a.txt"))
+    assert found is not None
+    assert listed["versions/b1/a.txt"][1] == found[1]
+
+
+def test_download_uri_to_path_streams_the_object_and_refuses_a_missing_one(gs_bucket, tmp_path):
+    write_uri_bytes(_uri("parts", "a.arrow"), b"part")
+
+    download_uri_to_path(_uri("parts", "a.arrow"), tmp_path / "local")
+
+    assert (tmp_path / "local").read_bytes() == b"part"
+    with pytest.raises(FileNotFoundError):
+        download_uri_to_path(_uri("parts", "gone"), tmp_path / "local")
 
 
 # --- delete_uri_prefix -------------------------------------------------------
@@ -348,7 +372,7 @@ def test_job_run_publishes_a_first_ever_gs_artifact(gs_bucket, capsys):
     first build hit on dev (Cloud Run execution `dfo-dev-coverage-f58v5`).
     """
     responses = {
-        **_fingerprint_responses(row_count=3),
+        **import_key_responses(),
         "AS max_year": [year_stats(max_year=2022)],
         "GROUP BY variable, facet_id, donor, recipient": [dict(_ROW_V1)],
         "object_id AS role": [

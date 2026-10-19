@@ -71,7 +71,7 @@ USER app
 
 # The deploy workflow supplies this build argument as github.sha. It is
 # baked into the image rather than set on the Cloud Run service because
-# dfo-infra owns the service's own environment.
+# `infra` owns the service's own environment.
 ARG DFO_BUILD_COMMIT=unknown
 ENV DFO_BUILD_COMMIT=${DFO_BUILD_COMMIT}
 

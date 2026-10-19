@@ -12,6 +12,7 @@ import json
 import logging
 from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import aclosing
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
@@ -44,7 +45,7 @@ from search.engine.envelope import _terminal_events, make_diagnostics, make_resp
 from search.engine.events import DoneEvent, Event, ResponseEvent
 from search.engine.options.population_memo import OptionsPopulationMemo
 from search.engine.region.codes import ORIGIN_CATALOGUE_STALE
-from search.engine.region.place_options import PlaceOptionsPool
+from search.engine.region.place_options import PlaceOptionsPool, replayed_place_options
 from search.engine.response_cache import ResponseCache
 from search.engine.response_cache_flow import CacheScope, PartMemoScope
 from search.engine.response_cache_memo import PartMemo
@@ -232,12 +233,13 @@ async def resolve_events(
     those tasks. A missing skills snapshot emits ``skills_index_unavailable``
     when requested.
 
-    ``response_cache=None`` disables caching. Raw-text and parsed requests whose
-    transport streams no trailing events use its per-request ``CacheScope``, built
-    after ``max_candidates`` and PAC are resolved. ``part_memo=None`` disables the
-    part memo a ``dataset_resubmit`` request's identity entries read through
-    ``PartMemoScope``. ``generation`` supplies each scope's one graph stamp. The
-    default stamp has key ``unknown`` and a short lifetime.
+    ``response_cache=None`` disables caching. Raw-text and parsed requests use its
+    per-request ``CacheScope``, built after ``max_candidates`` and PAC are resolved. It
+    stores the event bundle of a request that streams trailing events and the response
+    of any other. ``part_memo=None`` disables the part memo a ``dataset_resubmit``
+    request's identity entries read through ``PartMemoScope``. ``generation`` supplies
+    each scope's one graph stamp. The default stamp has key ``unknown`` and a short
+    lifetime.
 
     The request reads rate tables through one ``RateTableCache.for_request``
     view, so every spec it converts cites one version of each table.
@@ -277,7 +279,10 @@ async def resolve_events(
         # snapshot, the process's code index and each cache scope's one generation stamp.
         # Separate coverage reads could straddle an artifact swap and mismatch its index and
         # stamp. Both reads sit inside the `try`, so the clients are released whatever raises.
+        # The snapshot's time is a once-per-request step on the envelope's timing.
+        coverage_t0 = now_ms()
         coverage = get_coverage_service().snapshot()
+        coverage_ms = now_ms() - coverage_t0
         checks = CatalogueSettings()
         async with scoped_concurrency():
             with held_family_memo():
@@ -304,7 +309,9 @@ async def resolve_events(
                     warn_index_drift=checks.warn_index_drift,
                     record=record,
                 ):
-                    event = _with_stale_catalogue_warning(event)
+                    event = _with_request_step(
+                        _with_stale_catalogue_warning(event), step="coverage", ms=coverage_ms
+                    )
                     if isinstance(event, ResponseEvent):
                         event = _with_response_warning(
                             event,
@@ -327,6 +334,24 @@ async def resolve_events(
             _sdmx.close()  # ty: ignore[call-non-callable]  # hasattr
         if _shared_resolvekit is not None:
             release_shared(_shared_resolvekit)
+
+
+def _with_request_step(event: Event, *, step: str, ms: int) -> Event:
+    """A response event whose envelope `timing_ms.by_step` starts with `step` at `ms`, for a
+    step that runs once per request before the pipeline. It runs after the response cache, so
+    a cached answer reports this request's time. Any other event passes through unchanged."""
+    if not isinstance(event, ResponseEvent):
+        return event
+    diagnostics = event.response.diagnostics
+    timing = diagnostics.timing_ms
+    if timing is None:
+        return event
+    stepped = timing.model_copy(update={"by_step": {step: ms, **(timing.by_step or {})}})
+    return ResponseEvent(
+        response=event.response.model_copy(
+            update={"diagnostics": diagnostics.model_copy(update={"timing_ms": stepped})}
+        )
+    )
 
 
 def _with_response_warning(event: ResponseEvent, warning: Warning | None) -> ResponseEvent:
@@ -452,7 +477,8 @@ async def _resolve_pipeline_events(
     today = datetime.now(UTC).date().isoformat()
 
     # The cache key includes the resolved candidate cap and PAC setting. A transport that
-    # streams trailing events stores nothing, since its response event lacks them.
+    # streams trailing events stores the events from `response` to `done`, since the
+    # response event lacks the trailing ones.
     scope = CacheScope(
         response_cache,
         request=request,
@@ -533,11 +559,24 @@ async def _resolve_pipeline_events(
         cached = await scope.lookup_raw(inp.query)
         if cached is not None:
             record.cache = scope.outcome
-            response_event, done_event = _terminal_events(
-                cached, start_ms=start_ms, timed_out=scope.served_timed_out
-            )
-            yield response_event
-            yield done_event
+            async with aclosing(
+                scope.hit_events(
+                    cached,
+                    start_ms=start_ms,
+                    place_options=replayed_place_options(
+                        stream=params.stream_option_coverage,
+                        graph=graph,
+                        sdmx=sdmx,
+                        materialise_graph=materialise_graph,
+                        materialise_sdmx=materialise_sdmx,
+                        pool=place_options_pool,
+                        coverage=coverage_snapshot,
+                        population_memo=population_memo,
+                    ),
+                )
+            ) as hit:
+                async for ev in hit:
+                    yield ev
             return
         events = raw_text.handle(
             inp,
@@ -574,14 +613,13 @@ async def _resolve_pipeline_events(
             place_options_pool=place_options_pool,
             scope=scope,
         )
-    # Cache the ResponseEvent. CacheScope decides whether it is storable.
+    # CacheScope.observe stores the answer and decides whether it is storable.
     # finally releases any unpublished lease if the request raises.
     try:
         async for ev in events:
             ev = _with_index_drift_warning(ev, warn=warn_index_drift)
-            if isinstance(ev, ResponseEvent):
-                await scope.store(ev.response)
-            elif isinstance(ev, DoneEvent) and scope.degraded_leg:
+            await scope.observe(ev)
+            if isinstance(ev, DoneEvent) and scope.degraded_leg:
                 ev = ev.model_copy(update={"degraded_leg": True})
             yield ev
     finally:

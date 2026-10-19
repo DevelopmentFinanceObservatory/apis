@@ -839,7 +839,6 @@
       ],
       "needs_dates": false,
       "stat_vars": [
-       "Amount_EconomicActivity_GrossNationalIncome_Nominal_ByCreditorScenario",
        "Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
       ]
      }
@@ -1820,7 +1819,6 @@
       ],
       "needs_dates": false,
       "stat_vars": [
-       "Amount_EconomicActivity_GrossNationalIncome_Nominal_ByCreditorScenario",
        "Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
       ]
      }
@@ -2647,7 +2645,6 @@
       "needs_dates": false,
       "stat_vars": [
        "Amount_EconomicActivity_GrossNationalIncome_NominalScenario",
-       "Amount_EconomicActivity_GrossNationalIncome_Nominal_ByCreditorScenario",
        "Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
       ]
      }
@@ -3213,7 +3210,6 @@
       "stat_vars": [
        "Amount_EconomicActivity_GrossNationalIncome_AtlasScenario",
        "Amount_EconomicActivity_GrossNationalIncome_NominalScenario",
-       "Amount_EconomicActivity_GrossNationalIncome_Nominal_ByCreditorScenario",
        "Amount_EconomicActivity_GrossNationalIncome_PPPScenario",
        "Amount_EconomicActivity_GrossNationalIncome_RealValueScenario"
       ]
@@ -5204,7 +5200,6 @@
       "needs_dates": false,
       "stat_vars": [
        "Amount_EconomicActivity_GrossNationalIncome_NominalScenario",
-       "Amount_EconomicActivity_GrossNationalIncome_Nominal_ByCreditorScenario",
        "Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
       ]
      }
@@ -6265,18 +6260,6 @@
       "stat_vars": [
        "Amount_EconomicActivity_GrossNationalIncome_NominalScenario",
        "Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.observation_facets_batch",
-     {
-      "entities": [
-       "country/GHA"
-      ],
-      "needs_dates": false,
-      "stat_vars": [
-       "Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
       ]
      }
     ],

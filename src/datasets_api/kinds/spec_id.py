@@ -75,7 +75,7 @@ from materialise import MaterialisationRequest
 from materialise.graph import GraphReader
 from series_coverage.shared import CoverageSnapshot
 from spec_registry import RecomputedIdentity, SpecIdMismatch, SpecRegistry, recompute_identity
-from spec_registry.reader import StoredDefinition
+from spec_registry.reader import SpecReader, StoredDefinition
 from statvar_members import MemberEnumerator
 
 _POINTER = "/input/spec_id"
@@ -92,6 +92,14 @@ class MemberResolutionDeps(Protocol):
     code_index: CodeIndex
     settings: DatasetsBuildSettings
     deadline: float | None
+
+
+class SidecarRegistrationDeps(MemberResolutionDeps, Protocol):
+    """`MemberResolutionDeps` plus the registry a sidecar registration writes and the reader
+    that reads it back."""
+
+    registry: SpecRegistry
+    spec_reader: SpecReader
 
 
 def _walk_bounds(deps: MemberResolutionDeps) -> MemberReadBounds:
@@ -246,6 +254,32 @@ def admit_sidecar(
     return recomputed, shapes
 
 
+def register_sidecar(
+    definition: CanonicalDefinition,
+    *,
+    spec_id: str,
+    scope: Scope | None,
+    deps: SidecarRegistrationDeps,
+    trace_id: str | None,
+) -> tuple[StoredDefinition, tuple[StatVarShape, ...]]:
+    """Admit the sidecar `definition` for the unregistered `spec_id` (`admit_sidecar`), register
+    it, and read it back. Returns the stored definition and the shapes admission resolved.
+
+    Admission runs before the registry write, so its refusals leave no registry row. The
+    registry write is read back before the caller serves anything.
+    """
+    _recomputed, shapes = admit_sidecar(definition, spec_id=spec_id, scope=scope, deps=deps)
+    deps.registry.register_definition(
+        identity_definition=definition.identity,
+        schema_version=definition.schema_version,
+        supplied_spec_id=spec_id,
+        trace_id=trace_id,
+    )
+    stored = deps.spec_reader.read_definition(spec_id)
+    assert stored is not None, "definition missing immediately after its own registration"
+    return stored, shapes
+
+
 def _served_identity(
     identity: Mapping[str, object], *, scope: Scope | None, code_index: CodeIndex
 ) -> RecomputedIdentity | None:
@@ -317,17 +351,9 @@ def mint_spec_id(
         if stored is None:
             if definition is None:
                 raise SpecNotFound(subject_id=spec_id, pointer="/input/spec_id")
-            # Resolve and validate the sidecar before writing. Refusals leave no registry row.
-            _recomputed, shapes = admit_sidecar(definition, spec_id=spec_id, scope=scope, deps=deps)
-            deps.registry.register_definition(
-                identity_definition=definition.identity,
-                schema_version=definition.schema_version,
-                supplied_spec_id=spec_id,
-                trace_id=trace_id,
+            stored, shapes = register_sidecar(
+                definition, spec_id=spec_id, scope=scope, deps=deps, trace_id=trace_id
             )
-            # No manifest returns before the registry write is read back.
-            stored = deps.spec_reader.read_definition(spec_id)
-            assert stored is not None, "definition missing immediately after its own registration"
         else:
             if definition is not None:
                 # The registered identity supplies members. Verify the sidecar for consistency.

@@ -128,11 +128,11 @@ class DatasetsBuildSettings(BaseSettings):
     pin_first_party_principal: str = Field(default="")
 
     # Sole principal of the live-refresh routes: the frame refresh here and the Presentation
-    # render routes. Read from `LIVE_REFRESH_PRINCIPAL`, the name the website and dfo-ai mount
+    # render routes. Read from `LIVE_REFRESH_PRINCIPAL`, the name the website and `ai` mount
     # the same secret under. Empty denies all. It opens no publish, recipe, or pin route.
     live_refresh_principal: str = Field(default="", validation_alias="live_refresh_principal")
 
-    # The queue's `max_attempts`, which dfo-infra sets from the queue's own `max_attempts` local
+    # The queue's `max_attempts`, which `infra` sets from the queue's own `max_attempts` local
     # (3). The worker marks the operation failed on its final transient attempt.
     operation_max_attempts: int = Field(default=3, ge=1)
 
@@ -145,7 +145,7 @@ class DatasetsBuildSettings(BaseSettings):
     # delivery that arrives later fails the row without running it, and the backlog stops
     # counting the row. It says nothing about the queue's state. Cloud Tasks may still hold the
     # task. The default lets every delivery wait behind a full backlog and then run to its
-    # dispatch deadline, with the backoff between deliveries and a margin. dfo-infra computes it
+    # dispatch deadline, with the backoff between deliveries and a margin. `infra` computes it
     # from the queue's own locals as
     #   attempts x (ceil(backlog_max / dispatch_concurrency) x dispatch_deadline
     #     + dispatch_deadline) + (attempts - 1) x backoff + margin

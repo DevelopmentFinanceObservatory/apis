@@ -187,7 +187,7 @@ class CatalogueManifest:
     from the UN. `un_mirror` describes the UN tables, `arc_tables` the arc
     tables and `families` the family tables, which `row_counts` and
     `resident_bytes` leave out. `ingestion`
-    is the `IngestionHistory` row the build's DFO fingerprint read, which
+    is the successful `IngestionHistory` row the build's import key names, which
     the coverage manifest records too, and `None` for a build made outside
     the job.
     """

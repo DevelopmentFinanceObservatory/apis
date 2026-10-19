@@ -10,7 +10,7 @@ import math
 import re
 import time
 from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import aclosing, contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import date
 from types import SimpleNamespace
@@ -44,8 +44,10 @@ from search.engine.region.facets import FacetAdmission, facet_admitted
 from search.engine.region.observations.bulk_role_series import _bulk_role_series
 from search.engine.region.observations.bulk_scope import BulkScope, _bulk_scope_series
 from search.engine.region.observations.fetch import _build_observations
+from search.engine.region.place_options import PlaceOptionsPool
 from search.engine.region.result import FacetAxisFilter
 from search.engine.region.state import EngineOptions
+from search.engine.response_cache import ResponseCache
 from search.engine.response_cache_memo import PartMemo
 from search.engine.retrieval.facet_election import merge_role_candidates, select_role_candidate
 from search.engine.retrieval.member_facts import MemberFacts
@@ -1019,25 +1021,39 @@ def offline_events(
     materialise_graph: GraphReader | None = None,
     materialise_sdmx: MaterialiseSdmxClient | None = None,
     rate_cache: RateTableCache | None = None,
+    stream_slot_options: bool = False,
+    response_cache: ResponseCache | None = None,
+    place_options_pool: PlaceOptionsPool | None = None,
+    close_after: str | None = None,
 ) -> list[Event]:
     """Every event `resolve_events` streams for `request`, in order, under the shared fakes
     and the pinned extraction date `offline_resolve` runs with. `graph` and `llm` replace
-    the shared fakes for this call."""
+    the shared fakes for this call. `stream_slot_options` streams the trailing events as the
+    SSE route does; `response_cache` and `place_options_pool` are the app's shared ones.
+    `close_after` names an event kind: the stream is closed after the first such event, as
+    when a client disconnects."""
     graph = _FAKE_GRAPH if graph is None else graph
 
     async def collect() -> list[Event]:
-        return [
-            event
-            async for event in resolve_events(
-                request,
-                graph=graph,
-                llm=_FAKE_LLM if llm is None else llm,
-                sdmx=_FAKE_SDMX if sdmx is None else sdmx,
-                materialise_graph=_materialise_graph(request, graph, materialise_graph),
-                materialise_sdmx=materialise_sdmx,
-                rate_cache=rate_cache,
-            )
-        ]
+        events: list[Event] = []
+        stream = resolve_events(
+            request,
+            graph=graph,
+            llm=_FAKE_LLM if llm is None else llm,
+            sdmx=_FAKE_SDMX if sdmx is None else sdmx,
+            materialise_graph=_materialise_graph(request, graph, materialise_graph),
+            materialise_sdmx=materialise_sdmx,
+            rate_cache=rate_cache,
+            stream_slot_options=stream_slot_options,
+            response_cache=response_cache,
+            place_options_pool=place_options_pool,
+        )
+        async with aclosing(stream):
+            async for event in stream:
+                events.append(event)
+                if event.kind == close_after:
+                    break
+        return events
 
     with _offline(None):
         return asyncio.run(collect())

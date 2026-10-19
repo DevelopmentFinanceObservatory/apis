@@ -35,7 +35,6 @@ from datasets_api.admission import (
 )
 from datasets_api.app import datasets_surface
 from datasets_api.config import DatasetsBuildSettings
-from datasets_api.doors import definition as definition_module
 from datasets_api.doors.mint_errors import MintBackpressure
 from datasets_api.operation_store import NullOperationStore
 from datasets_api.operations.task_client import NullTaskClient
@@ -671,6 +670,35 @@ def test_a_coverage_reload_takes_every_permit_under_a_stream_of_arrivals() -> No
     reload.join(timeout=5)
 
 
+def test_two_concurrent_drains_run_one_after_the_other() -> None:
+    """A coverage reload and a release swap drain the same two permits at once. Without a
+    drain mutex each takes one permit and waits forever for the other, which a pause after
+    each acquire makes certain."""
+    permits = MaterialisePermits(2)
+    acquire = permits._semaphore.acquire
+
+    def _acquire_then_pause() -> bool:
+        taken = acquire()
+        time.sleep(0.02)
+        return taken
+
+    done: list[int] = []
+
+    def _drain(position: int) -> None:
+        with permits.every_permit():
+            done.append(position)
+
+    with mock.patch.object(permits._semaphore, "acquire", _acquire_then_pause):
+        drains = [threading.Thread(target=_drain, args=(n,), daemon=True) for n in range(2)]
+        for drain in drains:
+            drain.start()
+        for drain in drains:
+            drain.join(timeout=3)
+    assert sorted(done) == [0, 1]
+    assert permits.acquire(timeout=0)
+    assert permits.acquire(timeout=0)
+
+
 def test_a_coverage_reload_drains_callers_already_past_the_gate() -> None:
     """Two callers wait for the one permit past the gate when a reload closes it. Each takes the
     permit and releases it, or gives up at its own bound, so the reload takes the permit once
@@ -796,8 +824,8 @@ def test_mint_facet_probe_waits_for_a_materialise_slot_and_times_out_as_503(
 def test_posted_definition_options_wait_for_the_slot_a_mint_holds_and_refuse_retryably() -> None:
     """B's definition is posted to the options route of a deployment that never registered it.
     While A's mint holds the only slot, the call fetches nothing and returns the retryable 503
-    `MintBackpressure` maps to after the 0.1 s wait bound. After release, it answers. B is
-    never registered."""
+    `MintBackpressure` maps to after the 0.1 s wait bound. After release, it answers. The slot
+    refusal comes after the call registered B, so B's registry row stays, as a mint's does."""
     with _client(materialise_max_concurrency=1, transport=_OverlapTrackingTransport()) as minting:
         minted_b = minting.post("/api/datasets", json=_scope(statvar=_REF_B))
         assert minted_b.status_code == 200, minted_b.text
@@ -853,12 +881,12 @@ def test_posted_definition_options_wait_for_the_slot_a_mint_holds_and_refuse_ret
         assert not mint_thread.is_alive()
         assert results["mint_a"] == 200
         registered = set(store.state.spec_registry)
+        assert definition_b["spec_id"] in registered
 
         answered = client.post(options_b, json={"definition": definition_b})
         assert answered.status_code == 200, answered.text
         assert fetch_calls_b["n"] == 1
         assert set(store.state.spec_registry) == registered
-        assert definition_b["spec_id"] not in registered
 
 
 class _PermitLog:
@@ -1595,31 +1623,52 @@ def test_a_sliced_wait_ends_at_its_bound_and_looks_once_a_slice() -> None:
     assert 2 <= len(looks) <= math.ceil(wait_seconds / STALE_CHECK_SECONDS) + 2
 
 
-def test_the_options_route_takes_its_coverage_snapshot_while_it_holds_its_permit(
+def test_a_posted_definition_whose_snapshot_a_reload_replaced_materialises_on_the_served_build(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A definition posted to the options route of a deployment that never registered it
-    materialises on a coverage snapshot taken inside its materialise slot, where no reload
-    can replace it."""
+    """A definition posted to the options route of a deployment that never registered it took
+    build 1's snapshot, and a reload to build 2 completed before its permit. The call gives the
+    permit back, starts again, and materialises against build 2's index after build 1's has
+    left memory, as its first SDMX request observes."""
     with _client(materialise_max_concurrency=1, transport=_OverlapTrackingTransport()) as minting:
         minted = minting.post("/api/datasets", json=_scope(statvar=_REF_B))
         assert minted.status_code == 200, minted.text
     definition = minted.json()["definition"]
     log = _PermitLog()
-    _count_permits(monkeypatch, log)
-    coverage = _CoverageBuilds(monkeypatch, log=log)
+    coverage = _CoverageBuilds(monkeypatch)
+    schedule = _reload_before_permit(monkeypatch, log, coverage)
     transport, _ = _logged_transport(log)
+    old_index_resident: list[bool] = []
+    fetched_on_served_index: list[bool] = []
+
+    def observing_transport(request: httpx.Request) -> httpx.Response:
+        old_index_resident.append(coverage.resident(1))
+        return transport(request)
+
+    real_prewrite = serve_module.prewrite_definition
+
+    def observing_prewrite(**kwargs):
+        fetched_on_served_index.append(kwargs["coverage_index"] is coverage.indexes[2]())
+        return real_prewrite(**kwargs)
+
+    monkeypatch.setattr(serve_module, "prewrite_definition", observing_prewrite)
     with _client(
-        materialise_max_concurrency=1, transport=transport, coverage=coverage.service
+        materialise_max_concurrency=1, transport=observing_transport, coverage=coverage.service
     ) as client:
+        schedule(1)
         resp = client.post(
             f"/api/datasets/{definition['spec_id']}/options", json={"definition": definition}
         )
 
     assert resp.status_code == 200, resp.text
-    assert log.kinds().count("snapshot") == 1
-    assert log.held_at("snapshot") == {1}
-    assert log.kinds().index("snapshot") < log.kinds().index("sdmx")
+    assert resp.json()["trace"]["served_from"] == "materialise"
+    assert fetched_on_served_index == [True]
+    assert old_index_resident and not any(old_index_resident)
+    # The stale pass takes and returns its permit before anything is fetched.
+    kinds = [kind for kind in log.kinds() if kind in ("acquire", "release", "sdmx")]
+    assert kinds[:4] == ["acquire", "release", "acquire", "sdmx"]
+    assert kinds.count("acquire") == kinds.count("release") == 2
+    assert "coverage_restarts;desc=1" in resp.headers["server-timing"]
 
 
 @pytest.mark.parametrize("route", ["mint", "options"])
@@ -1635,15 +1684,14 @@ def test_a_materialisation_frees_its_frame_before_its_permit_is_released(
     definition = minted.json()["definition"]
     permits = _FrameTrackingPermits(1)
     monkeypatch.setattr(deps_module, "MaterialisePermits", lambda _permits: permits)
-    module = serve_module if route == "mint" else definition_module
-    real_prewrite = module.prewrite_definition
+    real_prewrite = serve_module.prewrite_definition
 
     def watched_prewrite(**kwargs):
         prewrite = real_prewrite(**kwargs)
         permits.watch(prewrite.result)
         return prewrite
 
-    monkeypatch.setattr(module, "prewrite_definition", watched_prewrite)
+    monkeypatch.setattr(serve_module, "prewrite_definition", watched_prewrite)
     with _client(materialise_max_concurrency=1, transport=_OverlapTrackingTransport()) as client:
         if route == "mint":
             resp = client.post("/api/datasets", json=_scope(statvar=_REF_B))

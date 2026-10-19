@@ -29,6 +29,9 @@ eval = [
     # scripts/eval_corpus.py checks them.
     "pyyaml",
     "jsonschema",
+    # search.eval.apis_auth mints Cloud Run ID tokens for a deployed apis service.
+    # Impersonated ID token credentials post through google-auth's requests transport.
+    "google-auth[requests]>=2.34",
 ]
 # Shared ASGI stack for every door that mounts onto dfo_platform's app.
 # engine, datasets, and graph all pull this in rather than pinning fastapi
@@ -73,8 +76,9 @@ datasets = [
     # materialise.formats's spreadsheet/Parquet writers, and the coverage
     # artifact datasets_surface() loads at construction, used by
     # datasets_api. `sdmx` is materialise's and dc_sdmx's own dependency
-    # (httpx, pyarrow): datasets_api imports both directly.
-    "dfo-data-tools[formats,coverage,sdmx]",
+    # (httpx, pyarrow): datasets_api imports both directly. `graph-release`
+    # is the Spanner client of graph_release.job, which runs from this image.
+    "dfo-data-tools[formats,coverage,sdmx,graph-release]",
     # dataset_store's Postgres persistence layer: Cloud SQL Python Connector (PSC
     # addressing, TLS, IAM/password auth) + pg8000, its pure-Python sync
     # driver -- plain parameterized SQL, no ORM. >=1.15 is the floor for
@@ -227,10 +231,9 @@ dfo-data-tools = { workspace = true }
 # The registry refuses a part's `source_code` on search.resolve with
 # `source_code_not_held`, `source_code_ambiguous`, and
 # `source_code_shares_variable`.
-# The pin is `c7a18ae`, a commit of spec-kit's main. It holds
-# dfo-spec-kit#131, which registers slot_default_not_applied and retires
-# starved_axis_binding_restored, and dfo-spec-kit#138, which registers the
-# three source-code refusals.
+# The pin is a commit of spec-kit's main. It registers
+# slot_default_not_applied and the three source-code refusals, and retires
+# starved_axis_binding_restored.
 # Follow-up: move all five to a real spec-kit tag once one is cut, so a
 # future force-push or GC on spec-kit's main can't silently break this lock.
 dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "3616b64245c2db8af3187552e9e5de99b6d304d4", subdirectory = "python/spec-kit" }
@@ -277,8 +280,9 @@ python = ".venv"
 # literally in a docstring about averaging three ratios. "dependant" is
 # FastAPI's own attribute name (`APIRoute.dependant`).
 # heading_words_specs.json holds graph labels verbatim ("Assitance" in a UNICEF series).
+# CHANEL Foundation is an OECD private donor (code 1645) named in code_index.declarations.
 skip = "tests/render/heading_words_specs.json"
-ignore-words-list = "caf,nam,som,tha,fro,zar,nd,retuned,unparseable,uncomplete,re-use,pre-empt,pre-empting,fo,convertor,convertors,disjointness,meaned,dependant"
+ignore-words-list = "caf,nam,som,tha,fro,zar,nd,retuned,unparseable,uncomplete,re-use,pre-empt,pre-empting,fo,convertor,convertors,disjointness,meaned,dependant,chanel"
 
 [tool.ruff]
 target-version = "py312"

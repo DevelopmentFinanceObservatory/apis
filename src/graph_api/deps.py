@@ -10,7 +10,8 @@ profile comes from the process's shared `FacetProfileCache` for its source
 (`materialise.shared_profiles`), whose flights run on an executor no request
 runs on. The national currencies and node facts a
 variable's availability reads beside its profile (`CardReadCaches`) run their
-flights on the DCP-read executor.
+flights on the DCP-read executor. The node routes keep the envelopes they build in
+`node_entries`, which guards every operation with its own lock.
 
 This module holds the bundle and the doors' one way onto the executor,
 `run_dcp_read`, to keep door imports separate from the composition root,
@@ -25,7 +26,7 @@ import logging
 import threading
 from collections.abc import Callable
 from concurrent.futures import BrokenExecutor, Future, ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from time import perf_counter
 from typing import TYPE_CHECKING, Annotated, Any, override
 
@@ -36,6 +37,7 @@ from dfo_platform.single_flight_cache import SingleFlightCache
 from dfo_platform.state import StateSlot
 from entity_resolution import EntityResolver
 from graph_api.config import DCP_QUEUE_WAIT_WARN_SECONDS
+from graph_api.node_cache import NodeEntryCache
 from graph_api.reader import GraphNodeReader
 from graph_generation import GenerationProvider
 from materialise.facet_profile import FacetProfileCache
@@ -79,6 +81,8 @@ class GraphDeps:
     # The national currencies and node facts a variable's availability reads beside its
     # profile, on the DCP-read executor. Set whenever `profile_cache` is.
     card_reads: CardReadCaches | None = None
+    # The envelopes the node routes built, keyed by generation stamp, table builds and dcid.
+    node_entries: NodeEntryCache = field(default_factory=NodeEntryCache)
 
 
 class DcpExecutorShutDown(Exception):

@@ -9,7 +9,7 @@ Every service sharing the Postgres instance sizes against one budget:
 
     sum(pool x max instances) + reserve <= max_connections
 
-With dfo-infra's caps (`infra/stacks/apis`, `infra/stacks/website`,
+With the `infra` repository's caps (`infra/stacks/apis`, `infra/stacks/website`,
 `infra/stacks/ai`) and the pool sizes its `infra/stacks/platform` comment
 records, that is 12 x 5 (apis) + 10 x 4 (datasets worker) + 5 x 5 (website)
 + 10 x 2 (ai) + 10 (migrations and built-in users) = 155, against

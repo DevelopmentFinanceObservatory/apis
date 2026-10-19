@@ -14,9 +14,9 @@ import pytest
 
 import search.engine.retrieval.bound_values as bound_values_module
 from code_index import FamilyQuery, StatVarRow, default_index_path, parse_index
+from code_index.export import content_hash
 from code_index.shared import get_index, get_measure_index
 from datasets_api.adapter import resolve_definition_members
-from scripts.export_code_index import content_hash
 from search.engine.bind import SlotBindingDraft
 from search.engine.options.population import options_population
 from search.engine.options.population_memo import _population_key

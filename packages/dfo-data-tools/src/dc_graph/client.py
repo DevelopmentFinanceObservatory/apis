@@ -42,6 +42,7 @@ from dc_graph.errors import (
     GraphReadError,
     ReadErrorFactory,
 )
+from dc_graph.visible_arcs import dfo_visible
 from dfo_platform.executor import submit_with_context
 from dfo_platform.request_deadline import bounded_deadline
 from dfo_platform.single_flight_cache import SingleFlightCache, WaitTimeout
@@ -93,19 +94,6 @@ _CURRENCY_CLASS: Final[str] = "Currency"
 _ISO_4217_SHAPE: Final = re.compile(r"[A-Z]{3}")
 """A `Currency` member's dcid is its ISO 4217 code. A few legacy members carry four letters
 (`MYAD`), which no ISO code has."""
-
-_CONSTRAINT_PROPERTIES = "constraintProperties"
-
-IMPORT_ADDED_CONSTRAINT_PROPERTIES: Final[frozenset[str]] = frozenset({"sourceIndicatorCode"})
-"""Properties every forward-arc read drops from a node's `constraintProperties`.
-
-The Data Commons import tool (`McfMutator.mutate` in datacommonsorg/import) rewrites each
-StatisticalVariable's `constraintProperties` to every property outside its own exclusion list,
-replacing the list the import declared. `sourceIndicatorCode` names the source series a variable
-came from and identifies no variable, yet it lands on the list and can carry two values (IMF WEO
-GDP carries `NGDP` and `NGDPD`). Dropping it here, where `/v2/node` arcs enter dfo-apis, gives
-every reader the declared list. The property's own arc is untouched.
-"""
 
 # Paging limits raise on exhaustion, preserving complete reads.
 _NODE_ARCS_MANY_MAX_PAGES = 200
@@ -2330,12 +2318,9 @@ def _pick_first(values: list[str]) -> str | None:
 
 
 def _arc_entries(arcs: dict, prop: str) -> list[dict]:
-    """Return the wire entries of `prop`, without the `constraintProperties` entries that name an
-    `IMPORT_ADDED_CONSTRAINT_PROPERTIES` property. Both forward-arc parsers read through it."""
-    entries = arcs.get(prop, {}).get("nodes", [])
-    if prop != _CONSTRAINT_PROPERTIES:
-        return entries
-    return [e for e in entries if e.get("dcid") not in IMPORT_ADDED_CONSTRAINT_PROPERTIES]
+    """Return the wire entries of `prop` that `dfo_visible` keeps. Both forward-arc parsers read
+    through it."""
+    return [e for e in arcs.get(prop, {}).get("nodes", []) if dfo_visible(prop, e.get("dcid"))]
 
 
 def _dedup_wire_arcs(arcs: dict) -> dict:

@@ -75,7 +75,7 @@ Search groups recalled variables by five-tuple and role class. A group whose mem
 
 - the family key: `population_type`, `measured_property`, `stat_type`, `measurement_qualifier`, `measurement_denominator`, `denominator_unresolved` and `role_bearing`, read from each variable's arcs as search reads them (`search.engine.retrieval.facts.read_five_tuple`), and `un`, true for a family of the admitted UN variables and false for one of the `dfo` and `base` variables;
 - `members`, the member count;
-- `properties` and `values`, each constraint property the members assert and the distinct values they assert for it, in first-seen order over the members in dcid order. A `constraintProperties` target naming an import-added property (`dc_graph.IMPORT_ADDED_CONSTRAINT_PROPERTIES`, `sourceIndicatorCode`) is not a constraint, since no served read shows it;
+- `properties` and `values`, each constraint property the members assert and the distinct values they assert for it, in first-seen order over the members in dcid order. A `constraintProperties` target naming an import-added property (`sourceIndicatorCode`, which `dc_graph.dfo_visible` hides) is not a constraint, since no served read shows it;
 - `shared`, the properties every member asserts at one value;
 - `total` and `total_name`, the first member declaring no constraint, resolved or not, that has a name, and that name, null where the family has none.
 
@@ -124,9 +124,9 @@ The memory budget, `ORIGIN_CATALOGUE_MAX_RESIDENT_BYTES` (default 384 MiB), is c
 
 ## Identity and skip
 
-A build's identity hashes six inputs: the base resolver index URI, the artifact format version, a hash of the job's modules (`origin_catalogue.job.JOB_MODULES`: the job, enumeration, the topic walk, the arc reads and arc tables, the UN table enumeration, the successor derivation, the card-fact derivation, the family summaries, the artifact writer, the schema, the registry parser and the origin ids), the registry file's hash, the DFO fingerprint, and the ISO week. The DFO fingerprint is the latest successful `IngestionHistory` row plus the row count and latest `last_update_timestamp` over every `Observation` row. A registry edit, an ingestion, a new ISO week and an image that changes a job module each produce a new identity, so the base tables refresh weekly with no separate schedule and a job fix reaches the catalogue on its first run. A change to the serving modules (`catalogue`, `context`, `graph`, `service`) builds nothing.
+A build's identity hashes six inputs: the base resolver index URI, the artifact format version, a hash of the job's modules (`origin_catalogue.job.JOB_MODULES`: the job, enumeration, the topic walk, the arc reads and arc tables, the UN table enumeration, the successor derivation, the card-fact derivation, the family summaries, the artifact writer, the schema, the registry parser and the origin ids), the registry file's hash, the import key's stamp (`dfo_fingerprint`), and the ISO week. The stamp is `artifact_publication.jobs.ImportKey.stamp`, a hash of the newest `IngestionHistory` row of any status and the newest successful one, the value the coverage job publishes under. A registry edit, an ingestion, a new ISO week and an image that changes a job module each produce a new identity, so the base tables refresh weekly with no separate schedule and a job fix reaches the catalogue on its first run. A change to the serving modules (`catalogue`, `context`, `graph`, `service`) builds nothing.
 
-Each run reads `current.json` and exits without building when it already carries the current identity (`origin_catalogue_job_noop`), unless that build carried its UN stage forward, in which case the run retries the UN (see UN carry-forward). It also exits without building while `IngestionLock` is held (`origin_catalogue_job_skipped`, reason `ingestion_lock_held`), because the fingerprint is unstable during a load. Before it exits, it checks that the identity the last unlocked run saw is published (see Monitoring).
+Each run reads `current.json` and exits without building when it already carries the current identity (`origin_catalogue_job_noop`), unless that build carried its UN stage forward, in which case the run retries the UN (see UN carry-forward). It also exits without building while `IngestionLock` is held (`origin_catalogue_job_skipped`, reason `ingestion_lock_held`), because a load writes the database while it runs. It exits the same way (reason `import_not_successful`) while the newest `IngestionHistory` row is not the newest success, after tracking the new identity, so a failed import publishes nothing and raises `identity_unpublished` a cycle later. Until a later import succeeds the job publishes nothing at all, including the weekly base and UN refresh and registry edits, and a format-bump deploy's verify-then-build step fails its second verify and stops; the stale alert reports the wait. Before it exits, it checks that the identity the last unlocked run saw is published (see Monitoring).
 
 ## Lease
 
@@ -160,7 +160,7 @@ A published build that carried its UN stage forward does not satisfy the identit
 
 ## Publication
 
-A run discards its build (`origin_catalogue_job_discarded`) when the ingestion lock was taken or the fingerprint moved while it ran; the next run starts again. Otherwise it writes `versions/<build_id>/`, then writes `current.json` conditional on the generation it read at the start. A run that loses that race logs `origin_catalogue_job_lost_publish_race` and leaves an unreferenced build for pruning. Every run prunes builds that nothing can still be reading: a build is deleted only when `current.json` does not name it and both the pointer and the build are older than 7200 seconds.
+A run discards its build (`origin_catalogue_job_discarded`) when the ingestion lock was taken or the import key moved while it ran; the next run starts again. Otherwise it writes `versions/<build_id>/`, then writes `current.json` conditional on the generation it read at the start. A run that loses that race logs `origin_catalogue_job_lost_publish_race` and leaves an unreferenced build for pruning. Every run prunes builds that nothing can still be reading: a build is deleted only when `current.json` does not name it and both the pointer and the build are older than 7200 seconds.
 
 ## Monitoring
 
@@ -171,7 +171,7 @@ Every run that exits 0 logs `origin_catalogue_job_heartbeat` as its last line, w
 - `identity_unpublished`: the current identity has gone unpublished for more than one cycle (`ORIGIN_CATALOGUE_CYCLE_SECONDS`). A run that finds `IngestionLock` held cannot compute its own identity, so it checks the identity the last unlocked run recorded in `catalogue_state.json`. A lock held past a cycle while that identity is unpublished logs the line on every run.
 - `published_build_age`: the published build is older than a week plus 7200 seconds plus one cycle. The ISO week in the identity makes a healthy job publish at least weekly, and the first run of a week may wait a cycle for the lease and then build for up to 7200 seconds, so an older build means nothing has published since the week turned. The line comes just before the heartbeat, with `build_id`, `age_seconds` and `limit_seconds`.
 
-dfo-infra's `origin_catalogue.tf` alerts on three conditions in one policy: a stale line, a failed execution, and no heartbeat for 9000 seconds. The last catches a Scheduler that stopped starting the job, which logs nothing and fails nothing. Its window exceeds the 7200-second task timeout plus one cycle.
+The `infra` repository's `origin_catalogue.tf` alerts on three conditions in one policy: a stale line, a failed execution, and no heartbeat for 9000 seconds. The last catches a Scheduler that stopped starting the job, which logs nothing and fails nothing. Its window exceeds the 7200-second task timeout plus one cycle.
 
 ## Refusals
 
@@ -195,11 +195,11 @@ The job refuses to publish a version when any check below fails. A refusal is wh
 | `un_successor_not_held` | A successor row names a variable the build's UN tables do not admit. | Check the `variable_prefix` and `code_delimiter` of the supersession against the successor agency's variable ids, then `origin_catalogue.successors`. |
 | `un_successor_not_served` | A base provenance is excluded as superseded by a UN agency the build has no row for. | Wait for the UN to answer, or revert the supersession. |
 
-A run also exits 1 (`origin_catalogue_job_failed`) for an input the catalogue cannot represent: no successful ingestion to fingerprint, an observation whose facet has no `TimeSeries` provenance, a source whose `<-source` list exceeds 5000 subjects, a malformed registry, a base-table build that runs out of time, tables that break the catalogue's invariants, a failed read of our mixer, or a failed UN read or an incomplete enumeration with no published build to carry forward. The Cloud Run execution fails, and the failed-execution alert fires.
+A run also exits 1 (`origin_catalogue_job_failed`) for an input the catalogue cannot represent: an empty `IngestionHistory` to key the build on, an observation whose facet has no `TimeSeries` provenance, a source whose `<-source` list exceeds 5000 subjects, a malformed registry, a base-table build that runs out of time, tables that break the catalogue's invariants, a failed read of our mixer, or a failed UN read or an incomplete enumeration with no published build to carry forward. The Cloud Run execution fails, and the failed-execution alert fires.
 
 ## Registry pull request before ingestion
 
-A registry pull request precedes an ingestion that adds a DFO provenance under a registered base source. An ingestion moves the fingerprint, so the next run builds with the new provenance. If its source entry has no reviewed `exclusions`, the run refuses, and no new build publishes for any reason until the registry is fixed. Merging the registry change first, with `exclusions` stating which overlapping base provenances stay out, lets the ingestion publish on its first run.
+A registry pull request precedes an ingestion that adds a DFO provenance under a registered base source. An ingestion moves the import key, so the next run builds with the new provenance. If its source entry has no reviewed `exclusions`, the run refuses, and no new build publishes for any reason until the registry is fixed. Merging the registry change first, with `exclusions` stating which overlapping base provenances stay out, lets the ingestion publish on its first run.
 
 ## Stale catalogue
 
@@ -249,7 +249,7 @@ To seed the bucket, copy the format root: `gcloud storage cp -r /tmp/origin-cata
 
 ## Compatibility with the coverage index
 
-The manifest's `ingestion` records the `IngestionHistory` row the build's DFO fingerprint read, raw: `workflow_execution_id` and `creation_timestamp`. The coverage index's manifest records the same pair for its own build. The two fingerprints hash different `Observation` rows, so their stamps differ for every build, and a reader compares these two fields to tell whether a catalogue and a coverage build come from one ingestion. A coverage build published before its manifest recorded the pair reads as `None`.
+The manifest's `ingestion` records the successful `IngestionHistory` row the build is keyed on: `workflow_execution_id` and `creation_timestamp`, the UTC timestamp as `str(datetime)` renders it. The coverage index's manifest records the same pair for its own build, and a reader compares these two fields to tell whether a catalogue and a coverage build come from one ingestion. A coverage build published before its manifest recorded the pair reads as `None`.
 
 A Search request binds one artifact set at entry and holds it to the end: the catalogue build (`bound_catalogue`), one coverage snapshot (`search.engine.core.resolve_events`), the process's code index, and the generation stamp each response cache scope reads once. When the catalogue and coverage builds record different `workflow_execution_id` values, the service keeps serving the newest build of each, logs `artifact_pair_stale` at WARNING with both builds and ingestions, and adds the `artifact_pair_stale` warning to the response. A build that records no ingestion never warns. The pair is transient: it lasts until the job that lags rebuilds from the newer ingestion.
 

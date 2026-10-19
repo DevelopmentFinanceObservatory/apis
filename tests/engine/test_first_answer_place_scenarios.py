@@ -1258,8 +1258,10 @@ _SERIAL_STEPS_SAVED: dict[str, int] = {
     # The candidates of an answer are grounded side by side, where the baseline grounds them
     # one after another, and the alternates' walks start beside the elected shape's.
     "income-role-bearing-elected-subject-alternate": 3,
-    "income-subject-elected-role-bearing-alternate": 6,
     "named-flagged-alternate": 3,
+    # As above, and its role-bearing alternate resolves from coverage, so the facet read that
+    # warmed the alternate's cache before admission, one step in series, is not made.
+    "income-subject-elected-role-bearing-alternate": 7,
     # An answer that binds several places reads their types in one request and the labels
     # of those types in one more, where the baseline reads each place's type and its label
     # in turn, which saves two steps for a second place. Three of these also save the steps their

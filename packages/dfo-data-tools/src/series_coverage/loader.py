@@ -94,15 +94,15 @@ def load_coverage(base_uri: str, *, pointer: CoveragePointer | None = None) -> L
     if pointer is None:
         pointer = _read_pointer(root)
     prefix = join_uri(root, VERSIONS_PREFIX, pointer.build_id)
-    manifest = _read_manifest(prefix, root=root, pointer=pointer)
+    manifest = read_manifest(prefix, root=root, pointer=pointer)
     if (manifest.stamp, manifest.build_id) != (pointer.stamp, pointer.build_id):
         raise CoverageArtifactError(
             f"the pointer at {root!r} names stamp {pointer.stamp!r} build "
             f"{pointer.build_id!r}, but the manifest at {prefix!r} carries stamp "
             f"{manifest.stamp!r} build {manifest.build_id!r}; the two disagree"
         )
-    table = _read_table(prefix, manifest)
-    role_names = _read_role_names(prefix, manifest)
+    table = read_table(prefix, manifest)
+    role_names = read_role_names(prefix, manifest)
     facet_metadata = _read_facet_metadata(prefix, manifest)
     label = f"coverage artifact at {prefix!r} (stamp {pointer.stamp!r})"
     _check_popcount_invariant(table, manifest.horizon, label=label)
@@ -161,7 +161,10 @@ _MANIFEST_FIELDS = (
 )
 
 
-def _read_manifest(prefix: str, *, root: str, pointer: CoveragePointer) -> CoverageManifest:
+def read_manifest(prefix: str, *, root: str, pointer: CoveragePointer) -> CoverageManifest:
+    """The manifest of the build directory `prefix` under format root `root`, which
+    `pointer` selected. Raises `CoverageArtifactError` for a missing or malformed manifest or
+    another format version."""
     uri = join_uri(prefix, "manifest.json")
     try:
         raw = read_uri_bytes(uri)
@@ -225,7 +228,10 @@ def _manifest_file(manifest: CoverageManifest, *, logical_name: str) -> str:
         ) from exc
 
 
-def _read_table(prefix: str, manifest: CoverageManifest) -> pa.Table:
+def read_table(prefix: str, manifest: CoverageManifest) -> pa.Table:
+    """The coverage table `manifest` names, in the resident schema: series key columns
+    dictionary-encoded. Raises `CoverageArtifactError` for a missing file or a schema the
+    manifest's horizon does not give."""
     relative = _manifest_file(manifest, logical_name="coverage")
     uri = join_uri(prefix, relative)
     try:
@@ -244,7 +250,9 @@ def _read_table(prefix: str, manifest: CoverageManifest) -> pa.Table:
         ) from exc
 
 
-def _read_role_names(prefix: str, manifest: CoverageManifest) -> dict[str, RoleNames]:
+def read_role_names(prefix: str, manifest: CoverageManifest) -> dict[str, RoleNames]:
+    """Each variable's role names from the file `manifest` names. Raises
+    `CoverageArtifactError` for a missing or malformed file."""
     relative = _manifest_file(manifest, logical_name="role_names")
     uri = join_uri(prefix, relative)
     try:
@@ -390,5 +398,8 @@ __all__ = [
     "LoadedCoverage",
     "format_root",
     "load_coverage",
+    "read_manifest",
     "read_published_pointer",
+    "read_role_names",
+    "read_table",
 ]

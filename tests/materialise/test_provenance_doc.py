@@ -1023,7 +1023,7 @@ class TestGaps:
 
 
 def _escape(markdown: str) -> str:
-    """The stored form of a Markdown document: dfo-pipelines'
+    """The stored form of a Markdown document: `pipelines`'
     `escape_markdown` without its outer quotes, which the graph drops.
     """
     return json.dumps(markdown, ensure_ascii=False)[1:-1].replace('\\"', "\\u0022")
