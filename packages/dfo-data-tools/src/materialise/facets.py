@@ -474,6 +474,31 @@ def role_bearing_facet_candidates(
     )
 
 
+def role_bearing_facet_candidates_by_donor(
+    *, stat_vars: Sequence[str], donors: Sequence[str], coverage: CoverageIndex
+) -> dict[str, dict[str, list[Facet]]]:
+    """Each of `stat_vars`' facet choices at each of `donors` bound alone to the donor role,
+    the recipient open, read in one grouped pass over the variables' rows.
+
+    Each value equals `role_bearing_facet_candidates` with only that donor bound, ranked the
+    same way; a variable and donor with no rows map to `[]`. A variable lacking `RoleNames`,
+    or declaring no donor role, holds no row at any donor, so every value it has is `[]`."""
+    found = coverage.pair_facet_candidates(
+        variables=stat_vars,
+        bound={"donor": frozenset(donors)},
+        pair_roles=("donor",),
+        facet_candidates=True,
+    )
+    by_donor: dict[str, dict[str, list[Facet]]] = {
+        stat_var: {donor: [] for donor in donors} for stat_var in stat_vars
+    }
+    for (stat_var, (donor,)), facet_coverage in found.items():
+        candidates = _coverage_facet_candidates(facet_coverage, metadata=coverage.facet_metadata)
+        ranked = _coverage_rank_candidates(candidates)
+        by_donor[stat_var][donor] = [_facet_from_coverage_candidate(c) for c in ranked]
+    return by_donor
+
+
 def _coverage_facets(
     *,
     stat_var: str,

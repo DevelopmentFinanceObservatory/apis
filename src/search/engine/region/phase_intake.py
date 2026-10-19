@@ -475,6 +475,7 @@ async def _derive_pool(
                 place_dcids=state.recall_only_place_dcids,
                 full_facets_max_candidates=_FLOOR_PROBE_FULL_FACETS_MAX_CANDIDATES,
                 deadline=state.deadline,
+                coverage=state.coverage.index,
             )
 
     # Dated observation reads use ``needs_dates=True``. This scope lets the availability
@@ -557,7 +558,8 @@ async def _phase_derive_shapes(state: ResolveState) -> RegionResult | None:
     shapes proceed to ranking.
 
     Beside `shape`, `state.timing` gets our pass's derivation stages (`derive.derive_shapes`:
-    `shape_arcs`, `shape_probe`, `shape_labels`, `shape_groups`) and the admission prune,
+    `shape_arcs`, `shape_probe` with `shape_probe_coverage` inside it, `shape_labels`,
+    `shape_groups`) and the admission prune,
     `shape_admission`. The UN leg's derivation runs concurrently and records none of them.
     """
     rcl = cast(Recall, state.rcl)

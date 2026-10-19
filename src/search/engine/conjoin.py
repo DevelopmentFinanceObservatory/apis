@@ -58,7 +58,14 @@ _SHARED_TIMING_STEP = "extract"
 # The steps that time stages inside `shape` (`phase_intake._phase_derive_shapes`). A part's
 # by_step reports them, and its total leaves them out, since `shape` already spans them.
 NESTED_SHAPE_STEPS = frozenset(
-    {"shape_arcs", "shape_probe", "shape_labels", "shape_groups", "shape_admission"}
+    {
+        "shape_arcs",
+        "shape_probe",
+        "shape_probe_coverage",
+        "shape_labels",
+        "shape_groups",
+        "shape_admission",
+    }
 )
 
 

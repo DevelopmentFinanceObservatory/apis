@@ -34,6 +34,7 @@ def _availability_probe() -> None:
         full_facets_max_candidates=None,
         graph=SimpleNamespace(observation_facets_batch=_raise_graph_failure),
         deadline=None,
+        coverage=None,
     )
 
 
