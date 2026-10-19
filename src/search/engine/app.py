@@ -518,6 +518,7 @@ async def options_endpoint(body: OptionsRequest, deps: SearchDepsDep) -> Respons
             graph=deps.graph,
             deadline=compute_deadline,
             materialise_graph=materialise_graph,
+            materialise_sdmx=deps.materialise_sdmx,
             coverage=coverage_snapshot,
         )
 

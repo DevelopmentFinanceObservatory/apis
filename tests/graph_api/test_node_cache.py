@@ -1,4 +1,5 @@
-"""`NodeEntryCache` stores an envelope under the builds its `built_from` names."""
+"""`NodeEntryCache` stores an envelope under the builds its `built_from` names, and only under
+the generation's current stamp."""
 
 from __future__ import annotations
 
@@ -10,6 +11,7 @@ from pydantic import TypeAdapter
 from graph_api.node_cache import NodeEntryCache, NodeKey
 from graph_api.node_models import NodeResponse
 from graph_generation.config import GRAPH_CACHE_UNKNOWN_GENERATION_MAX_AGE_SECONDS
+from graph_generation.fake import FakeGeneration
 from graph_generation.stamp import UNKNOWN_KEY
 
 _KEY = NodeKey(
@@ -38,13 +40,25 @@ def _node(built_from: dict[str, str]) -> NodeResponse:
 
 
 def test_an_entry_built_from_a_swapped_table_is_stored_under_the_new_build():
-    cache = NodeEntryCache()
+    cache = NodeEntryCache(generation=FakeGeneration(token="rev-1"))
     node = _node({"code_index": "index-a", "coverage_index": "coverage-b"})
 
     cache.put(_KEY, node)
 
     assert cache.get(_KEY) is None
     assert cache.get(_KEY._replace(coverage_index="coverage-b")) is node
+
+
+def test_a_put_under_a_stamp_that_is_no_longer_current_stores_nothing():
+    generation = FakeGeneration(token="rev-1")
+    cache = NodeEntryCache(generation=generation)
+    generation.advance("rev-2")
+
+    cache.put(_KEY, _node({"code_index": "index-a"}))
+    assert cache.stats()["entries"] == 0
+
+    cache.put(_KEY._replace(stamp="rev-2"), _node({"code_index": "index-a"}))
+    assert cache.stats()["entries"] == 1
 
 
 def test_an_entry_expires_with_its_stamp():

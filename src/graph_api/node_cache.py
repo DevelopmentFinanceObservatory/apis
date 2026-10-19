@@ -4,8 +4,9 @@ An entry keys on the generation stamp key, the build of every table a node can r
 dcid (`NodeKey`). A request looks an entry up under the builds it sees before its read. An entry
 is stored under the builds its own `built_from` names, and the request's builds for the tables
 it did not read, so a table swapped while the entry was built stores it where only a request
-that sees the new build finds it. Entries expire with their stamp's lifetime
-(`graph_generation.ttu_from_stamp_key`).
+that sees the new build finds it. `put` stores nothing when the generation's current stamp key is
+no longer the key's, since no lookup under the new stamp reaches such an entry. Entries expire
+with their stamp's lifetime (`graph_generation.ttu_from_stamp_key`).
 
 Requests call `get` and `put` on the event loop, and the generation provider calls `stats` on
 its refresh thread. `TLRUCache.__len__` expires entries, so a read of the size mutates the
@@ -25,6 +26,7 @@ from cachetools import TLRUCache
 
 from graph_api.config import GRAPH_NODE_ENTRY_CACHE_SIZE
 from graph_api.node_models import NodeResponse
+from graph_generation import UNKNOWN_GENERATION, GenerationProvider
 from graph_generation.stamp import ttu_from_stamp_key
 
 
@@ -43,17 +45,20 @@ class NodeKey(NamedTuple):
 
 
 class NodeEntryCache:
-    """At most `maxsize` built node envelopes, each expiring with its generation stamp."""
+    """At most `maxsize` built node envelopes, each expiring with its generation stamp.
+    `generation` supplies the current stamp key that `put` compares with the key's."""
 
     def __init__(
         self,
         *,
+        generation: GenerationProvider = UNKNOWN_GENERATION,
         maxsize: int = GRAPH_NODE_ENTRY_CACHE_SIZE,
         timer: Callable[[], float] = time.monotonic,
     ) -> None:
         self._entries: TLRUCache[NodeKey, NodeResponse] = TLRUCache(
             maxsize=maxsize, ttu=ttu_from_stamp_key, timer=timer
         )
+        self._generation = generation
         self._hits = 0
         self._misses = 0
         self._lock = threading.Lock()
@@ -70,7 +75,10 @@ class NodeEntryCache:
 
     def put(self, key: NodeKey, node: NodeResponse) -> None:
         """Store `node`, looked up under `key`, with each build its `built_from` names in place
-        of `key`'s."""
+        of `key`'s. Store nothing when the generation's stamp key is no longer `key.stamp`."""
+        # The provider asks callers to read the stamp outside their own locks.
+        if self._generation.stamp().key != key.stamp:
+            return
         built = node.built_from
         stored = key._replace(
             code_index=built.get("code_index", key.code_index),

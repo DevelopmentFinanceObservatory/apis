@@ -358,7 +358,7 @@ def graph_surface(
                 stats=provenance_docs.stats,
                 clear=provenance_docs.clear,
             )
-            node_entries = NodeEntryCache()
+            node_entries = NodeEntryCache(generation=resolved_generation)
             loop = asyncio.get_running_loop()
 
             def _clear_node_entries() -> None:
