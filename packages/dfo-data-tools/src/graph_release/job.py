@@ -25,10 +25,14 @@ Each tick:
    prune or lease release is logged and leaves the outcome alone.
 
 Every tick logs `graph_release_heartbeat` last, whatever its exit, with outcome `error` before
-re-raising an exception the tick does not classify. It logs `graph_release_stale` while the
-newest import of any status has waited more than `STALE_SECONDS` for a release, less the time
-spent waiting for the shadow comparators up to `SHADOW_WAIT_LIMIT_SECONDS`, unless the pointer is
-held.
+re-raising an exception the tick does not classify. The no-heartbeat alert's metric leaves out
+outcomes `error` and `lease_held`. A build killed by the task timeout or out of memory logs no
+heartbeat and keeps the lease, and the ticks that overlap it end `lease_held`, so builds killed
+on every run raise the alert.
+
+It logs `graph_release_stale` while the newest import of any status has waited more than
+`STALE_SECONDS` for a release, less the time spent waiting for the shadow comparators up to
+`SHADOW_WAIT_LIMIT_SECONDS`, unless the pointer is held.
 """
 
 from __future__ import annotations
@@ -70,7 +74,7 @@ from artifact_publication.uri import (
     join_uri,
     read_uri_bytes,
     read_uri_bytes_and_generation,
-    write_uri_bytes,
+    write_uri_bytes_if_unchanged,
 )
 from dc_graph import GraphClient
 from dc_graph.errors import GraphCapExceededError, GraphReadError
@@ -126,6 +130,10 @@ SHADOW_WAIT_LIMIT_SECONDS: Final[float] = 10800.0
 """How long a shadow wait is excluded from stale: the origin catalogue job's 2-hour timeout plus
 ticks. Past it the tick is unavailable, naming each comparator that is behind."""
 
+STATE_WRITE_ATTEMPTS: Final[int] = 5
+"""How many times a state file change is read and written before `StateConflict`. A conflict
+is another tick or `graph_release.hold` writing between the read and the write."""
+
 UNAVAILABLE_BACKOFF_SECONDS: Final[float] = 600.0
 """How long ticks skip inputs whose build last ended unavailable, so an outage does not repeat
 the full Spanner read every tick. Each skipped tick logs the unavailable line again."""
@@ -152,6 +160,11 @@ BUILDER_MODULES: Final[Mapping[str, tuple[str, ...]]] = {
 a release. A change elsewhere that changes a part still changes the release id, but builds only
 at the next import or DC redeploy."""
 
+
+class StateConflict(Exception):
+    """The state file changed under every one of `STATE_WRITE_ATTEMPTS` writes."""
+
+
 _GRAPH_TIMEOUT_SECONDS: Final[float] = 120.0
 _USER_AGENT: Final[str] = "dfo-graph-release"
 _SPANNER_ERRORS: Final = (GoogleAPIError, GoogleAuthError)
@@ -162,6 +175,7 @@ _BUCKET_ERRORS: Final = (
     GoogleAPIError,
     GoogleAuthError,
     ReleaseFormatError,
+    StateConflict,
 )
 """What a read or write under the release root, or of a comparator, raises when it fails."""
 _MIXER_ERRORS: Final = (GraphReadError, GraphCapExceededError, MissingBaseParties)
@@ -626,6 +640,8 @@ def _build_phases(
                     seed=key.stamp,
                 )
             if shadow_parts is not None:
+                # With shadow on the inputs name both comparator builds (step 3).
+                assert inputs.coverage_build_id is not None and inputs.origin_build_id is not None
                 with phases("shadow"):
                     gate = merge(
                         gate,
@@ -635,7 +651,9 @@ def _build_phases(
                             role_axes=declarations.role_axes,
                             code_index_blocks=dfo.code_index_blocks,
                             coverage_uri=settings.coverage_uri,
+                            coverage_build_id=inputs.coverage_build_id,
                             origin_uri=settings.origin_uri,
+                            origin_build_id=inputs.origin_build_id,
                         ),
                     )
         if gate.findings:
@@ -773,33 +791,60 @@ def _read_pointer(root: str) -> tuple[Pointer | None, str | None]:
 
 def clear_failed(root: str) -> dict[str, object] | None:
     """Drops the last failed inputs from the state file at `root`, so the next tick builds them
-    again. Returns the inputs it dropped, or `None` when none were recorded."""
-    state = _read_state(root)
-    failed = state.pop("last_failed", None)
-    if failed is not None:
-        _write_state(root, state)
-    return failed
+    again. Returns the inputs it dropped, or `None` when none were recorded. Raises
+    `StateConflict` as `_change_state` does."""
+
+    def drop(state: dict[str, Any]) -> dict[str, Any] | None:
+        if "last_failed" not in state:
+            return None
+        return {name: value for name, value in state.items() if name != "last_failed"}
+
+    return _change_state(root, drop).get("last_failed")
 
 
 def _read_state(root: str) -> dict[str, Any]:
     """The state file, empty when it is missing or does not parse."""
     try:
-        state = json.loads(read_uri_bytes(join_uri(root, STATE_FILE)))
+        return _parse_state(read_uri_bytes(join_uri(root, STATE_FILE)))
     except FileNotFoundError:
         return {}
+
+
+def _parse_state(data: bytes) -> dict[str, Any]:
+    try:
+        state = json.loads(data)
     except ValueError:
         logger.warning("graph_release: %s does not parse; starting it afresh", STATE_FILE)
         return {}
     return state if isinstance(state, dict) else {}
 
 
-def _write_state(root: str, state: Mapping[str, Any]) -> None:
-    write_uri_bytes(join_uri(root, STATE_FILE), json.dumps(state, sort_keys=True).encode("utf-8"))
+def _change_state(
+    root: str, change: Callable[[dict[str, Any]], dict[str, Any] | None]
+) -> dict[str, Any]:
+    """Applies `change` to the state file, writing only while the file holds the version
+    `change` read. Ticks write the shadow wait and the unavailable inputs without the lease, so
+    another writer can land between the read and the write, and the change is then applied
+    again to what that writer left. `change` returns `None` to write nothing. Returns the state
+    `change` applied to. Raises `StateConflict` when all `STATE_WRITE_ATTEMPTS` writes find the
+    file changed."""
+    uri = join_uri(root, STATE_FILE)
+    for _ in range(STATE_WRITE_ATTEMPTS):
+        found = read_uri_bytes_and_generation(uri)
+        state, generation = ({}, None) if found is None else (_parse_state(found[0]), found[1])
+        changed = change(state)
+        if changed is None:
+            return state
+        data = json.dumps(changed, sort_keys=True).encode("utf-8")
+        if write_uri_bytes_if_unchanged(uri, data, expected_generation=generation):
+            return state
+    raise StateConflict(f"{uri} changed under {STATE_WRITE_ATTEMPTS} writes")
 
 
 def _update_state(root: str, **fields: object) -> None:
-    """Rewrites `fields` in the state file, keeping the other fields."""
-    _write_state(root, _read_state(root) | fields)
+    """Rewrites `fields` in the state file, keeping the other fields. Raises `StateConflict` as
+    `_change_state` does."""
+    _change_state(root, lambda state: state | fields)
 
 
 def _note_unavailable(root: str, inputs: BuildInputs, exc: _Unavailable, *, now: float) -> None:
@@ -928,12 +973,14 @@ __all__ = [
     "SHADOW_WAIT_LIMIT_SECONDS",
     "STALE_SECONDS",
     "STATE_FILE",
+    "STATE_WRITE_ATTEMPTS",
     "UNAVAILABLE_BACKOFF_SECONDS",
     "BuildInputs",
     "Database",
     "JobSettings",
     "Mixer",
     "ServingRevisions",
+    "StateConflict",
     "builder_code_hash",
     "clear_failed",
     "main",

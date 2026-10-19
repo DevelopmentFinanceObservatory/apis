@@ -12,6 +12,7 @@ from __future__ import annotations
 import dataclasses
 import json
 from datetime import UTC, date, datetime
+from itertools import pairwise
 from pathlib import Path
 
 import numpy as np
@@ -123,14 +124,11 @@ class _RecordedSpanner:
         if action == "skill_edges":
             skills = {e[0] for e in self.edges if e[1] == "typeOf" and e[2] == "AgentSkill"}
             return [e for e in self.edges if e[0] in skills and e[1] in _SKILL_PREDICATES]
-        if action == "specialization_closure":
-            parents = {e[0]: e[2] for e in self.edges if e[1] == "specializationOf"}
-            children, level = set(), set(params["values"])
-            for _ in range(6):
-                level = {code for code in level if code in parents}
-                children |= level
-                level = {parents[code] for code in level}
-            return [[child] for child in sorted(children)]
+        if action == "specialization_parents":
+            codes = set(params["codes"])
+            return [
+                (e[0], e[2]) for e in self.edges if e[1] == "specializationOf" and e[0] in codes
+            ]
         if action == "target_edges":
             subjects = set(params["subjects"])
             return [e for e in self.edges if e[0] in subjects]
@@ -156,13 +154,13 @@ def test_read_inputs_runs_every_read_tagged_in_one_snapshot(raw, monkeypatch):
 
     actions = [action for action, _ in spanner.calls]
     assert actions[:3] == ["import_key"] * 3
-    assert sorted(actions[3:]) == sorted(
+    assert sorted(set(actions[3:])) == sorted(
         [
             "live_variables",
             "variable_edges",
             "code_edges",
             "skill_edges",
-            "specialization_closure",
+            "specialization_parents",
             "target_edges",
             "nodes",
             "facets",
@@ -178,6 +176,43 @@ def test_read_inputs_runs_every_read_tagged_in_one_snapshot(raw, monkeypatch):
         assert got.schema == want.schema
         assert got.to_pylist() == want.to_pylist()
     assert read.series_summary["variable_measured"].num_chunks > 1
+
+
+def test_read_inputs_walks_the_specialization_chain_to_its_top_and_stops_at_a_cycle(raw):
+    edges = raw.edges_raw.to_pylist()
+    live = set(raw.live_variables["variable_measured"].to_pylist())
+    constrained = {
+        (e["subject_id"], e["object_id"]) for e in edges if e["predicate"] == "constraintProperties"
+    }
+    value = next(
+        e["object_id"]
+        for e in edges
+        if e["subject_id"] in live and (e["subject_id"], e["predicate"]) in constrained
+    )
+    parents = {
+        e["subject_id"]: e["object_id"] for e in edges if e["predicate"] == "specializationOf"
+    }
+    top = value
+    while top in parents:
+        top = parents[top]
+    # Ten levels above the chain's top, the last pointing back at the third.
+    chain = [top, *(f"dfo/Ancestor{level}" for level in range(1, 11))]
+    added = [
+        (child, "specializationOf", parent, "provenance/DFOOntology")
+        for child, parent in [*pairwise(chain), (chain[-1], chain[3])]
+    ]
+    spanner = _RecordedSpanner(
+        dataclasses.replace(raw, edges_raw=pa.concat_tables([raw.edges_raw, _edges(added)]))
+    )
+
+    read = read_inputs(spanner)
+
+    assert set(added) <= _edge_set(read.edges_raw)
+    levels = [
+        params["codes"] for action, params in spanner.calls if action == "specialization_parents"
+    ]
+    assert levels[-1] == [chain[-1]]
+    assert sum(code == chain[3] for level in levels for code in level) == 1
 
 
 def test_snapshot_at_refuses_a_naive_timestamp():

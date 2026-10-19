@@ -9,7 +9,7 @@ The graph release is one build of DFO's Data Commons graph and the DFO layer per
 - `format-1/current.json`, the pointer: `{"release_id": ..., "hold": null}`. The job moves it last, conditional on the version it read, so it is the commit point.
 - `manifests/<release_id>.json`, one per release, create-only. The release id hashes the part hashes, the import execution id, the DC serving revision and the format.
 - `parts/<sha256>.arrow` and `.json.gz`, named by content and shared between releases.
-- `lease.json`, the build lease, and `builder_state.json`: the last built inputs and the release they built, the last failed inputs, the last unavailable inputs and when, and the shadow wait.
+- `lease.json`, the build lease, and `builder_state.json`: the last built inputs and the release they built, the last failed inputs, the last unavailable inputs and when, and the shadow wait. Ticks write the state file with and without the lease, so each write is conditional on the version it read and is applied again to a newer one, up to five times.
 
 ## What a tick does
 
@@ -53,7 +53,7 @@ Every tick logs `graph_release_heartbeat` last, with its `outcome`. `graph_relea
 
 `graph_release_published`, `graph_release_gate_failed` and a `graph_release_unavailable` from a build carry `phases`, which gives each of `reads`, `platform`, `dfo`, `gate`, `shadow` and `publish` that ran its wall time in seconds and the process's peak RSS in bytes when it ended.
 
-The `infra` repository's `graph_release.tf` alerts on `graph_release_stale` or `graph_release_gate_failed` at once, on `graph_release_unavailable` logged for 15 minutes, and on no heartbeat for 2100 seconds, the task timeout plus one tick. The heartbeat metric leaves out outcome `error`, so a tick that crashes on every run raises the no-heartbeat alert. `graph_release_enabled` in the dfo-infra env tfvars switches the Scheduler and both alert policies: false creates the Scheduler paused and the alerts disabled. Set it true once the deployed image carries `graph_release.job`.
+The `infra` repository's `graph_release.tf` alerts on `graph_release_stale` or `graph_release_gate_failed` at once, on `graph_release_unavailable` logged for 15 minutes, and on no heartbeat for 2100 seconds, the task timeout plus one tick. The heartbeat metric leaves out outcomes `error` and `lease_held`, so a tick that crashes on every run raises the no-heartbeat alert, and so does a build the task timeout or an out-of-memory kill ends on every run: it logs no heartbeat and keeps the lease, and the ticks that overlap it end `lease_held`. A healthy build lands its own heartbeat inside the 2100 seconds. `graph_release_enabled` in the dfo-infra env tfvars switches the Scheduler and both alert policies: false creates the Scheduler paused and the alerts disabled. Set it true once the deployed image carries `graph_release.job`.
 
 ## Running it locally
 

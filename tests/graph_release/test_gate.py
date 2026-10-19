@@ -22,6 +22,8 @@ import pyarrow.parquet as pq
 import pytest
 from google.auth.exceptions import RefreshError
 
+from artifact_publication import POINTER_FILE
+from artifact_publication.uri import join_uri, write_uri_bytes
 from dc_graph import GraphClient
 from dc_graph.errors import GraphReadError
 from dc_graph.visible_arcs import IMPORT_ADDED_CONSTRAINT_PROPERTIES
@@ -55,6 +57,8 @@ from graph_release.shadow import (
     shadow_builds,
 )
 from origin_catalogue.artifact import encode_build, publish_build
+from origin_catalogue.artifact import format_root as origin_root
+from origin_catalogue.schema import CataloguePointer
 from series_coverage.io import (
     write_coverage_table,
     write_current,
@@ -80,6 +84,8 @@ from tests.series_coverage.support import build_dir, build_test_artifact, pointe
 
 _IDS_FIXTURE = Path(__file__).parents[1] / "fixtures/dc_graph/visible_arcs/ids_variables.json"
 _STAMP = "stamp-a"
+_COVERAGE_BUILD = f"{_STAMP}-build"
+_ORIGIN_BUILD = "build-a"
 _SEED = "seed-a"
 
 
@@ -566,15 +572,25 @@ def _bump_first_count(table: pa.Table) -> pa.Table:
 def test_the_coverage_diff_finds_a_changed_or_missing_row(parts, tmp_path):
     base = tmp_path / "coverage"
     uri = _publish_coverage(base, parts)
-    clean = diff_coverage(parts, import_stamp=_STAMP, role_axes=ROLE_AXES, uri=uri)
+    # The diff reads the build it is given, wherever the pointer has moved since.
+    write_current(CoveragePointer(stamp="stamp-b", build_id="stamp-b-build"), pointer_path(base))
+    clean = diff_coverage(
+        parts, import_stamp=_STAMP, role_axes=ROLE_AXES, uri=uri, build_id=_COVERAGE_BUILD
+    )
     assert clean.passed, clean.summary()
 
     _rewrite_published(base, _bump_first_count)
-    changed = diff_coverage(parts, import_stamp=_STAMP, role_axes=ROLE_AXES, uri=uri)
+    changed = diff_coverage(
+        parts, import_stamp=_STAMP, role_axes=ROLE_AXES, uri=uri, build_id=_COVERAGE_BUILD
+    )
     _rewrite_published(base, lambda table: table.slice(1))
-    missing = diff_coverage(parts, import_stamp=_STAMP, role_axes=ROLE_AXES, uri=uri)
+    missing = diff_coverage(
+        parts, import_stamp=_STAMP, role_axes=ROLE_AXES, uri=uri, build_id=_COVERAGE_BUILD
+    )
     _rewrite_published(base, _with_unknown_recipient)  # and still without the first row
-    extra = diff_coverage(parts, import_stamp=_STAMP, role_axes=ROLE_AXES, uri=uri)
+    extra = diff_coverage(
+        parts, import_stamp=_STAMP, role_axes=ROLE_AXES, uri=uri, build_id=_COVERAGE_BUILD
+    )
 
     assert _codes(changed) == ["shadow_coverage_diff"]
     assert changed.findings[0].detail.startswith("1 coverage row")
@@ -600,7 +616,9 @@ def test_the_coverage_diff_finds_other_role_names(parts, tmp_path):
     names[variable] = {"donor": names[variable]["recipient"], "recipient": names[variable]["donor"]}
     path.write_text(json.dumps(names))
 
-    result = diff_coverage(parts, import_stamp=_STAMP, role_axes=ROLE_AXES, uri=uri)
+    result = diff_coverage(
+        parts, import_stamp=_STAMP, role_axes=ROLE_AXES, uri=uri, build_id=_COVERAGE_BUILD
+    )
 
     assert _codes(result) == ["shadow_coverage_diff"]
     assert result.findings[0].examples == (variable,)
@@ -609,11 +627,19 @@ def test_the_coverage_diff_finds_other_role_names(parts, tmp_path):
 def test_a_comparator_at_another_import_or_unreadable_is_unavailable(parts, tmp_path):
     uri = _publish_coverage(tmp_path / "coverage", parts, stamp="stamp-old")
 
-    behind = diff_coverage(parts, import_stamp=_STAMP, role_axes=ROLE_AXES, uri=uri)
-    absent = diff_coverage(
-        parts, import_stamp=_STAMP, role_axes=ROLE_AXES, uri=f"file://{tmp_path / 'none'}"
+    behind = diff_coverage(
+        parts, import_stamp=_STAMP, role_axes=ROLE_AXES, uri=uri, build_id="stamp-old-build"
     )
-    no_origin = diff_origin_arcs(parts, import_stamp=_STAMP, uri=f"file://{tmp_path / 'none'}")
+    absent = diff_coverage(
+        parts,
+        import_stamp=_STAMP,
+        role_axes=ROLE_AXES,
+        uri=f"file://{tmp_path / 'none'}",
+        build_id=_COVERAGE_BUILD,
+    )
+    no_origin = diff_origin_arcs(
+        parts, import_stamp=_STAMP, uri=f"file://{tmp_path / 'none'}", build_id=_ORIGIN_BUILD
+    )
 
     for result, dependency in (
         (behind, Dependency.COVERAGE_BUILD),
@@ -662,9 +688,13 @@ def test_the_origin_arc_diff_pins_the_import_added_property_and_finds_any_other(
             if node["dcid"] == "sourceIndicatorCode":
                 node["dcid"] = "sourceSeriesCode"
 
-    clean = diff_origin_arcs(
-        parts, import_stamp=_STAMP, uri=_publish_origin(tmp_path / "a", _mixer_answers(ids))
+    origin = _publish_origin(tmp_path / "a", _mixer_answers(ids))
+    # The diff reads the build it is given, wherever the pointer has moved since.
+    write_uri_bytes(
+        join_uri(origin_root(origin), POINTER_FILE),
+        CataloguePointer(build_id="build-b", identity="identity-b").to_json().encode(),
     )
+    clean = diff_origin_arcs(parts, import_stamp=_STAMP, uri=origin, build_id=_ORIGIN_BUILD)
     assert clean.passed, clean.summary()
     assert clean.reports["shadow_arcs"] == {"variables": 5, "pinned": 5}
 
@@ -673,7 +703,10 @@ def test_the_origin_arc_diff_pins_the_import_added_property_and_finds_any_other(
         (renamed, "sourceSeriesCode", "origin catalogue only"),
     ):
         result = diff_origin_arcs(
-            parts, import_stamp=_STAMP, uri=_publish_origin(tmp_path / name, answers)
+            parts,
+            import_stamp=_STAMP,
+            uri=_publish_origin(tmp_path / name, answers),
+            build_id=_ORIGIN_BUILD,
         )
         assert _codes(result) == ["shadow_arc_diff"], name
         assert result.findings[0].detail.startswith("5 arc(s)"), name

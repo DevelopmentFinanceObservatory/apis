@@ -26,7 +26,12 @@ from google.auth.exceptions import RefreshError
 from pydantic import ValidationError
 
 from artifact_publication.jobs import acquire_lease, read_import_key
-from artifact_publication.uri import join_uri, read_uri_bytes, read_uri_bytes_and_generation
+from artifact_publication.uri import (
+    join_uri,
+    read_uri_bytes,
+    read_uri_bytes_and_generation,
+    write_uri_bytes,
+)
 from dc_graph.errors import GraphReadError
 from dc_sdmx.results import SdmxDataResult, SdmxObservation
 from graph_release import job
@@ -520,7 +525,9 @@ def test_shadow_diffs_the_release_once_both_comparators_are_ready(builder, monke
     diffed = []
 
     def diff(parts, **kwargs):
-        diffed.append(kwargs["import_stamp"])
+        diffed.append(
+            (kwargs["import_stamp"], kwargs["coverage_build_id"], kwargs["origin_build_id"])
+        )
         return GateResult(reports={"shadow_arcs": {"pinned": 0}})
 
     monkeypatch.setattr(job, "shadow_diff", diff)
@@ -528,7 +535,7 @@ def test_shadow_diffs_the_release_once_both_comparators_are_ready(builder, monke
     code, events = builder.tick()
 
     assert (code, _outcome(events)) == (0, "published")
-    assert len(diffed) == 1
+    assert diffed == [(builder.stamp, "coverage-1", "origin-1")]
     assert "shadow" in _named(events, "graph_release_published")[0]["phases"]
 
 
@@ -817,6 +824,37 @@ def test_hold_retry_lets_the_next_tick_build_the_failed_inputs_again(builder, tm
     assert retried["inputs"]["import_execution_id"] == "wf-1"
     assert "last_failed" not in builder.state()
     assert _outcome(builder.tick()[1]) == "published"
+
+
+@pytest.mark.parametrize("races", [1, job.STATE_WRITE_ATTEMPTS])
+def test_a_state_write_keeps_what_another_writer_lands_after_its_read(builder, monkeypatch, races):
+    uri = join_uri(builder.root, job.STATE_FILE)
+    write_uri_bytes(uri, json.dumps({"last_failed": {"a": 1}, "last_built": {"b": 2}}).encode())
+    pending = [races]
+
+    def racing(read):
+        def wrapped(target):
+            found = read(target)
+            if target == uri and pending[0]:
+                # An overlapping tick records unavailable inputs after this read.
+                pending[0] -= 1
+                state = json.loads(read_uri_bytes(uri))
+                state["last_unavailable"] = {"at": races - pending[0]}
+                write_uri_bytes(uri, json.dumps(state).encode())
+            return found
+
+        return wrapped
+
+    for name in ("read_uri_bytes", "read_uri_bytes_and_generation"):
+        monkeypatch.setattr(job, name, racing(getattr(job, name)))
+
+    if races == job.STATE_WRITE_ATTEMPTS:
+        with pytest.raises(job.StateConflict):
+            job.clear_failed(builder.root)
+        assert "last_failed" in builder.state()
+        return
+    assert job.clear_failed(builder.root) == {"a": 1}
+    assert builder.state() == {"last_built": {"b": 2}, "last_unavailable": {"at": 1}}
 
 
 # ---------------------------------------------------------------- stale

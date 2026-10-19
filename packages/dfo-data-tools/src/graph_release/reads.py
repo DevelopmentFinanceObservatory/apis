@@ -88,18 +88,12 @@ FROM Edge@{FORCE_INDEX=InEdge} t
 JOIN@{JOIN_METHOD=APPLY_JOIN} Edge@{FORCE_INDEX=_BASE_TABLE} e ON e.subject_id = t.subject_id
 WHERE t.object_id IN UNNEST(@enums) AND t.predicate = 'typeOf'"""
 
-# The `specializationOf` chain above each constraint value, six levels deep. `child` holds every
-# value and ancestor that has a parent.
-CLOSURE_SQL: Final[str] = """WITH l0 AS (SELECT v AS code FROM UNNEST(@values) AS v),
-l1 AS (SELECT e.subject_id AS child, e.object_id AS code FROM l0 JOIN@{JOIN_METHOD=APPLY_JOIN} Edge@{FORCE_INDEX=_BASE_TABLE} e ON e.subject_id = l0.code AND e.predicate = 'specializationOf'),
-l2 AS (SELECT e.subject_id AS child, e.object_id AS code FROM l1 JOIN@{JOIN_METHOD=APPLY_JOIN} Edge@{FORCE_INDEX=_BASE_TABLE} e ON e.subject_id = l1.code AND e.predicate = 'specializationOf'),
-l3 AS (SELECT e.subject_id AS child, e.object_id AS code FROM l2 JOIN@{JOIN_METHOD=APPLY_JOIN} Edge@{FORCE_INDEX=_BASE_TABLE} e ON e.subject_id = l2.code AND e.predicate = 'specializationOf'),
-l4 AS (SELECT e.subject_id AS child, e.object_id AS code FROM l3 JOIN@{JOIN_METHOD=APPLY_JOIN} Edge@{FORCE_INDEX=_BASE_TABLE} e ON e.subject_id = l3.code AND e.predicate = 'specializationOf'),
-l5 AS (SELECT e.subject_id AS child, e.object_id AS code FROM l4 JOIN@{JOIN_METHOD=APPLY_JOIN} Edge@{FORCE_INDEX=_BASE_TABLE} e ON e.subject_id = l4.code AND e.predicate = 'specializationOf'),
-l6 AS (SELECT e.subject_id AS child, e.object_id AS code FROM l5 JOIN@{JOIN_METHOD=APPLY_JOIN} Edge@{FORCE_INDEX=_BASE_TABLE} e ON e.subject_id = l5.code AND e.predicate = 'specializationOf')
-SELECT child FROM l1 UNION DISTINCT SELECT child FROM l2 UNION DISTINCT SELECT child FROM l3
-UNION DISTINCT SELECT child FROM l4 UNION DISTINCT SELECT child FROM l5
-UNION DISTINCT SELECT child FROM l6"""
+# The `specializationOf` parents of `@codes`, one level up. `read_inputs` runs it again on the
+# parents it has not read yet, until a level has none.
+PARENTS_SQL: Final[str] = """SELECT e.subject_id, e.object_id
+FROM UNNEST(@codes) AS v
+JOIN@{JOIN_METHOD=APPLY_JOIN} Edge@{FORCE_INDEX=_BASE_TABLE} e
+  ON e.subject_id = v AND e.predicate = 'specializationOf'"""
 
 # The `AgentSkill` nodes' edges the skills index reads.
 SKILL_EDGES_SQL: Final[str] = """SELECT e.subject_id, e.predicate, e.object_id, e.provenance
@@ -169,7 +163,7 @@ RAW_IMPORTS = pa.schema(
     ]
 )
 _VARIABLE_EDGES = RAW_EDGES.append(pa.field("target_typed", pa.bool_()))
-_CHILDREN = pa.schema([("child", pa.string())])
+_PARENTS = pa.schema([("child", pa.string()), ("parent", pa.string())])
 
 
 @dataclass(frozen=True)
@@ -238,13 +232,7 @@ def read_inputs(snapshot: Snapshot) -> RawInputs:
         params={"enums": CODE_ENUMS},
     )
     skill_edges = _stream(snapshot, SKILL_EDGES_SQL, action="skill_edges", schema=RAW_EDGES)
-    children = _stream(
-        snapshot,
-        CLOSURE_SQL,
-        action="specialization_closure",
-        schema=_CHILDREN,
-        params={"values": _constraint_values(variable_edges)},
-    )
+    children = _specialized(snapshot, _constraint_values(variable_edges))
     read_subjects = pa.chunked_array(
         [
             *variable_edges["subject_id"].chunks,
@@ -255,7 +243,7 @@ def read_inputs(snapshot: Snapshot) -> RawInputs:
     )
     typed = cast("pa.ChunkedArray", pc.fill_null(variable_edges["target_typed"], pa.scalar(False)))
     typed_targets = variable_edges.filter(typed)
-    targets = _unique([typed_targets["object_id"], children["child"]], excluding=read_subjects)
+    targets = _unique([typed_targets["object_id"], children], excluding=read_subjects)
     target_edges = _stream(
         snapshot,
         TARGET_EDGES_SQL,
@@ -313,6 +301,27 @@ def _constraint_values(variable_edges: pa.Table) -> list[str]:
         constrained, keys=["subject_id", "predicate"], join_type="inner"
     )
     return _unique([values["object_id"]])
+
+
+def _specialized(snapshot: Snapshot, values: list[str]) -> list[str]:
+    """Every code in `values`, or above one in the `specializationOf` chain, that has a parent,
+    sorted. Reads one level per statement, each a level's parents not read before, so the walk
+    reaches any depth and ends at a cycle."""
+    children: set[str] = set()
+    read = set(values)
+    level = values
+    while level:
+        edges = _stream(
+            snapshot,
+            PARENTS_SQL,
+            action="specialization_parents",
+            schema=_PARENTS,
+            params={"codes": level},
+        )
+        children.update(cast("list[str]", edges["child"].to_pylist()))
+        level = sorted(set(cast("list[str]", edges["parent"].to_pylist())) - read)
+        read.update(level)
+    return sorted(children)
 
 
 class _Tagged:
@@ -402,7 +411,6 @@ def _distinct(edges: pa.Table) -> pa.Table:
 
 __all__ = [
     "CHUNK_ROWS",
-    "CLOSURE_SQL",
     "CODE_EDGES_SQL",
     "CODE_ENUMS",
     "FACETS_SQL",
@@ -410,6 +418,7 @@ __all__ = [
     "INGESTED_IMPORTS_SQL",
     "LIVE_VARIABLES_SQL",
     "NODES_SQL",
+    "PARENTS_SQL",
     "RAW_EDGES",
     "RAW_FACETS",
     "RAW_IMPORTS",

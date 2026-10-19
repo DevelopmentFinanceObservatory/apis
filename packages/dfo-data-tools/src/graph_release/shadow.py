@@ -5,8 +5,10 @@ catalogue, with the import each was built from. The builder waits until both wer
 the release's import, since a diff against an earlier import fails for reasons the release did
 not cause.
 
-`shadow_diff` compares the release's coverage rows and role map with the published coverage
-build, and its DFO arcs with the origin catalogue's DFO arc table. A difference is a finding,
+`shadow_diff` compares the release's coverage rows and role map with the coverage build, and its
+DFO arcs with the origin catalogue build's DFO arc table. It reads the builds `shadow_builds`
+named, which the build inputs record, so a comparator republished during the build is not the
+one diffed. A difference is a finding,
 except the pinned one, which the report counts. The origin catalogue stores raw
 `constraintProperties` rows, so its arcs keep the import-added properties every reader drops
 (`dc_graph.visible_arcs.IMPORT_ADDED_CONSTRAINT_PROPERTIES`). A comparator that cannot be read,
@@ -150,18 +152,29 @@ def shadow_diff(
     role_axes: Mapping[str, RoleAxis],
     code_index_blocks: bytes,
     coverage_uri: str,
+    coverage_build_id: str,
     origin_uri: str,
+    origin_build_id: str,
     committed_index: Traversable | Path | None = None,
 ) -> GateResult:
-    """Diffs the release's `parts` with the comparators built from `import_stamp`.
+    """Diffs the release's `parts` with the comparator builds `coverage_build_id` and
+    `origin_build_id`, built from `import_stamp`.
 
     `code_index_blocks` is the release's gzipped blocks part, and `committed_index` the index
     it is reported against, the packaged `index.json.gz` by default.
     """
     committed = committed_index if committed_index is not None else default_index_path()
     return merge(
-        diff_coverage(parts, import_stamp=import_stamp, role_axes=role_axes, uri=coverage_uri),
-        diff_origin_arcs(parts, import_stamp=import_stamp, uri=origin_uri),
+        diff_coverage(
+            parts,
+            import_stamp=import_stamp,
+            role_axes=role_axes,
+            uri=coverage_uri,
+            build_id=coverage_build_id,
+        ),
+        diff_origin_arcs(
+            parts, import_stamp=import_stamp, uri=origin_uri, build_id=origin_build_id
+        ),
         GateResult(reports={"code_index": index_report(code_index_blocks, committed)}),
     )
 
@@ -170,15 +183,21 @@ def shadow_diff(
 
 
 def diff_coverage(
-    parts: PlatformParts, *, import_stamp: str, role_axes: Mapping[str, RoleAxis], uri: str
+    parts: PlatformParts,
+    *,
+    import_stamp: str,
+    role_axes: Mapping[str, RoleAxis],
+    uri: str,
+    build_id: str,
 ) -> GateResult:
-    """The release's coverage rows and role map against the coverage build published at `uri`,
+    """The release's coverage rows and role map against the coverage build `build_id` at `uri`,
     row by row on the series key. The release's rows are built before the published table is
     read, so the build's working memory and the published table are not held together."""
     root = coverage_root(uri)
     try:
-        pointer = _coverage_pointer(uri)
-        prefix = join_uri(root, VERSIONS_PREFIX, pointer.build_id)
+        prefix = join_uri(root, VERSIONS_PREFIX, build_id)
+        # `read_coverage_manifest` names the build from `pointer` in its errors.
+        pointer = CoveragePointer(stamp=import_stamp, build_id=build_id)
         manifest = read_coverage_manifest(prefix, root=root, pointer=pointer)
     except _UNREADABLE as exc:
         return _unreadable(exc)
@@ -316,12 +335,14 @@ def _key_codes(column: pa.ChunkedArray, union: pa.Array) -> np.ndarray:
 # ---------------------------------------------------------------- origin arcs
 
 
-def diff_origin_arcs(parts: PlatformParts, *, import_stamp: str, uri: str) -> GateResult:
-    """The release's visible arcs of its DFO variables against the origin catalogue's DFO arc
-    table, over every variable either holds with arcs. Targets compare as the mixer names them,
+def diff_origin_arcs(
+    parts: PlatformParts, *, import_stamp: str, uri: str, build_id: str
+) -> GateResult:
+    """The release's visible arcs of its DFO variables against the DFO arc table of the origin
+    catalogue build `build_id` at `uri`, over every variable either holds with arcs. Targets compare as the mixer names them,
     a literal by its value."""
     try:
-        manifest = read_manifest(uri, _origin_pointer(uri).build_id)
+        manifest = read_manifest(uri, build_id)
         fingerprint = _manifest_fingerprint(manifest.identity_inputs)
         if fingerprint != import_stamp:
             return _moved(Dependency.ORIGIN_CATALOGUE, fingerprint, import_stamp)
