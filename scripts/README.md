@@ -83,7 +83,7 @@ The graph supplies the code rows and StatVar rows. The coverage build supplies e
 
 `LISTED_DATASETS` names the datasets whose StatVars declare no code system, World Bank IDS among them, so no code read reaches them. The coverage build lists their StatVars, which the export reads into a separate `listed_statvars` block with their provenances. No family, dataset election, measure axis or shape reads that block: Search and the Datasets mint elect the members of a family holding a listed row from the index's rows of its five-tuple, in place of a graph walk (`code_index.members.listed_group`). The export therefore reads each five-tuple a listed row has, unsplit, and refuses when the graph holds a StatVar there that is neither an exported nor a listed row; the largest, `FinancialFlow` amount, holds about 14,000 StatVars and reads in about 45 s. When a build assigns a listed dataset a StatVar the index does not list, `python -m series_coverage.verify_index` fails naming them, and a running service keeps the build it serves (`series_coverage.compatibility.index_coverage_differences`).
 
-`CODE_SYSTEMS` in the script supplies each code system's declaration, which the export writes into the index's `declarations` block and `code_index.loader` reads into `CodeSystemDeclaration`:
+`CODE_SYSTEMS` in `code_index/declarations.py` supplies each code system's declaration, which the export writes into the index's `declarations` block and `code_index.loader` reads into `CodeSystemDeclaration`:
 
 | Field                    | Meaning                                                                                                                                 |
 | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
@@ -94,7 +94,7 @@ The graph supplies the code rows and StatVar rows. The coverage build supplies e
 | `plain_name`             | The singular noun a sentence uses for the axis.                                                                                         |
 | `default`                | A code bound onto an open slot when another slot or a query phrase triggers it, or on every open slot (`when_open`), with the `note` an answer states when it fires; or `null`. |
 
-`declared_by_every_statvar_of` stays in the script: it lists the datasets whose every StatVar declares the property, and the export enumerates each dataset only through the systems that list it.
+`declared_by_every_statvar_of` stays in `code_index/declarations.py`: it lists the datasets whose every StatVar declares the property, and the export enumerates each dataset only through the systems that list it.
 
 `DATASETS` supplies one declaration per published table, written into the `datasets` block and read into `DatasetDeclaration`:
 

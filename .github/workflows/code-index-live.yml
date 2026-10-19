@@ -94,7 +94,7 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
 
-      # scripts/export_code_index.py imports materialise.graph, which needs the
+      # scripts/export_code_index.py imports dc_graph, which needs the
       # `sdmx` extra (httpx). tests/conftest.py installs the session coverage
       # service, which needs the `coverage` extra (numpy).
       - name: Install dependencies
@@ -137,7 +137,7 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
 
-      # scripts/export_code_index.py imports materialise.graph, which needs the
+      # scripts/export_code_index.py imports dc_graph, which needs the
       # `sdmx` extra (httpx). tests/conftest.py installs the session coverage
       # service, which needs the `coverage` extra (numpy).
       - name: Install dependencies

@@ -7,8 +7,8 @@ import json
 from collections.abc import Callable
 
 from code_index import default_index_path, parse_index
+from code_index.export import content_hash
 from code_index.query import CodeIndex
-from scripts.export_code_index import content_hash
 
 
 def packaged_index_with(edit: Callable[[dict], None]) -> CodeIndex:

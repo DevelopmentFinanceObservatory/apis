@@ -1,4 +1,4 @@
-"""Offline tests for scripts/export_code_index.py. Drives a small in-memory
+"""Offline tests for code_index/export.py and scripts/export_code_index.py. Drives a small in-memory
 fake reader (`_FakeGraph`) implementing only the `ExportReader` surface the
 export actually calls (`node_subjects`, `node_arcs_many` and `node_arcs_batch`).
 Nothing here opens a socket.
@@ -15,6 +15,48 @@ from pathlib import Path
 
 import pytest
 
+from code_index.declarations import (
+    CODE_SYSTEMS,
+    CONCEPT_GROUPS,
+    DATASETS,
+    MEASURE_CLASSES,
+    MEASURE_VALUE_TEXT,
+    PARTLY_STATED_VALUES,
+    PARTY_KIND_OVERRIDES,
+    PARTY_TYPE_KINDS,
+    SHAPE_SLOT_DEFAULTS,
+    STAT_TYPE_WORDS,
+    TOTAL_GROUPS,
+    VARIABLE_ALIASES,
+    CodeSystemConfig,
+    KindOverride,
+    MeasureValueText,
+    TotalGroup,
+)
+from code_index.export import (
+    PartyPublication,
+    _apply_concept_groups,
+    _measure_class_to_dict,
+    _minimal_system_sets,
+    _partly_stated_value_to_dict,
+    _shape_slot_default_to_dict,
+    _stat_type_word_to_dict,
+    _validate_declared_defaults,
+    _verify_axis_coverage,
+    _verify_measure_label_named_values,
+    _verify_measure_nouns,
+    _verify_measure_partition_labels,
+    content_hash,
+    enumerate_statvar_dcids,
+    export_code_system,
+    export_graph_blocks,
+    export_measure_values,
+    export_source_codes,
+    export_statvars,
+    export_value_parents,
+    stamp_counts,
+    strip_system_suffix,
+)
 from code_index.loader import (
     IndexFormatError,
     default_index_path,
@@ -39,47 +81,9 @@ from materialise.graph import (
     SubjectPage,
 )
 from scripts.export_code_index import (
-    _CONCEPT_GROUPS,
-    _MEASURE_VALUE_TEXT,
-    CODE_SYSTEMS,
-    DATASETS,
-    MEASURE_CLASSES,
-    PARTLY_STATED_VALUES,
-    PARTY_KIND_OVERRIDES,
-    PARTY_TYPE_KINDS,
-    SHAPE_SLOT_DEFAULTS,
-    STAT_TYPE_WORDS,
-    TOTAL_GROUPS,
-    VARIABLE_ALIASES,
-    CodeSystemConfig,
     CoverageJoin,
-    KindOverride,
-    PartyPublication,
-    TotalGroup,
-    _apply_concept_groups,
-    _measure_class_to_dict,
-    _MeasureValueText,
-    _minimal_system_sets,
-    _partly_stated_value_to_dict,
-    _shape_slot_default_to_dict,
-    _stat_type_word_to_dict,
-    _validate_declared_defaults,
-    _verify_axis_coverage,
-    _verify_measure_label_named_values,
-    _verify_measure_nouns,
-    _verify_measure_partition_labels,
-    content_hash,
-    enumerate_statvar_dcids,
-    export_code_system,
-    export_graph_blocks,
     export_index,
-    export_measure_values,
-    export_source_codes,
-    export_statvars,
-    export_value_parents,
     load_coverage_join,
-    stamp_counts,
-    strip_system_suffix,
 )
 from series_coverage.loader import load_coverage
 
@@ -1399,7 +1403,7 @@ def test_export_measure_values_stamps_matchable_from_the_authored_table():
     rows = export_measure_values(graph, statvars, _MEASURE_AXES_FOR_TEST)
     by_dcid = {row["dcid"]: row for row in rows}
 
-    # `_MEASURE_VALUE_TEXT` marks `amount` unmatchable; other observed values are matchable.
+    # `MEASURE_VALUE_TEXT` marks `amount` unmatchable; other observed values are matchable.
     assert by_dcid["amount"]["matchable"] is False
     assert by_dcid["Gross"]["matchable"] is True
     assert by_dcid["Nominal"]["matchable"] is True
@@ -1441,9 +1445,9 @@ def test_export_index_refuses_an_alias_whose_canonical_value_is_not_exported(
 ):
     graph = _two_system_graph_with_measure_labels()
     monkeypatch.setitem(
-        _MEASURE_VALUE_TEXT,
+        MEASURE_VALUE_TEXT,
         "Gross",
-        _MeasureValueText(same_reading_as="NotAMeasureValue"),
+        MeasureValueText(same_reading_as="NotAMeasureValue"),
     )
     with pytest.raises(SystemExit, match=r"does not load.*NotAMeasureValue"):
         export_index(
@@ -2801,7 +2805,7 @@ def test_export_refuses_a_five_tuple_read_still_truncated_after_every_code_axis(
         _export_blocks(graph)
 
 
-@pytest.mark.parametrize("group", _CONCEPT_GROUPS, ids=lambda group: "+".join(d for _s, d in group))
+@pytest.mark.parametrize("group", CONCEPT_GROUPS, ids=lambda group: "+".join(d for _s, d in group))
 def test_every_code_of_a_concept_group_reads_the_same_texts(group):
     """Codes of different tables that name one concept carry one set of texts in the
     packaged index, so a query phrase reads on all of them or none."""

@@ -19,13 +19,9 @@ import os
 
 import pytest
 
+from code_index.export import content_hash, export_graph_blocks, stamp_counts
 from code_index.loader import default_index_path, load_index
-from scripts.export_code_index import (
-    content_hash,
-    export_graph_blocks,
-    export_reader,
-    stamp_counts,
-)
+from scripts.export_code_index import export_reader
 
 _GRAPH_BASE = os.environ.get("SEARCH_GRAPH_BASE")
 
