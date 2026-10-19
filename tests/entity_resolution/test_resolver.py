@@ -6,10 +6,11 @@ Graph names differ from pack names to check that resolved names come from resolv
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 
 import pytest
 from cachetools import TLRUCache
@@ -37,6 +38,7 @@ from entity_resolution.resolver import (
     _ttu,
     _without_article_and_punctuation,
 )
+from entity_resolution.types import KindIndex
 from graph_generation import FakeGeneration
 from graph_generation.config import (
     GRAPH_CACHE_MAX_AGE_SECONDS,
@@ -304,7 +306,7 @@ def test_official_donors_resolve_as_a_graph_confirmed_aggregate(shared_resolver)
             }
         }
     )
-    resolver = EntityResolver(graph=graph, shared=shared_resolver, code_index=get_index())
+    resolver = EntityResolver(graph=graph, shared=shared_resolver, code_index=get_index)
 
     aliases = _run(
         resolver.resolve(["official donors", "official donors (DAC)"], kinds={"aggregate"})
@@ -327,9 +329,49 @@ def test_official_donors_resolve_as_a_graph_confirmed_aggregate(shared_resolver)
     assert isinstance(dac_members, Group)
 
 
+class _IndexWithoutParties:
+    """The packaged index under another content hash, declaring no party kinds."""
+
+    def __init__(self) -> None:
+        self._index = get_index()
+        self.stamp = dataclasses.replace(self._index.stamp, content_hash="another-index")
+
+    def is_code_system(self, dcid: str) -> bool:
+        return self._index.is_code_system(dcid)
+
+    def code_by_dcid(self, dcid: str) -> object | None:
+        return self._index.code_by_dcid(dcid)
+
+    def party_kind_of(self, dcid: str, types: Iterable[str]) -> str | None:
+        return None
+
+
+def test_a_resolution_is_cached_under_the_code_index_it_was_classed_by(shared_resolver):
+    """The index the resolver reads can change between calls, as a graph release swap
+    replaces it. A text resolved under one index is resolved again under another, and the
+    first index's entry still serves it."""
+    graph = FakeGraphLookup(
+        nodes={"DACOfficialDonors": {"typeOf": ("DACGroup",), "name": _UNUSED_GRAPH_NAME}}
+    )
+    packaged, without_parties = get_index(), _IndexWithoutParties()
+    current: list[KindIndex] = [packaged]
+    resolver = EntityResolver(graph=graph, shared=shared_resolver, code_index=lambda: current[0])
+
+    (first,) = _run(resolver.resolve(["official donors"]))
+    current[0] = without_parties
+    (swapped,) = _run(resolver.resolve(["official donors"]))
+    current[0] = packaged
+    (again,) = _run(resolver.resolve(["official donors"]))
+
+    assert isinstance(first, Resolved) and first.entity.kind == "aggregate"
+    assert isinstance(swapped, Resolved) and swapped.entity.kind != "aggregate"
+    assert again == first
+    assert len(graph.node_arcs_many_calls) == 2
+
+
 def test_official_donors_requires_its_graph_node(shared_resolver):
     graph = FakeGraphLookup()
-    resolver = EntityResolver(graph=graph, shared=shared_resolver, code_index=get_index())
+    resolver = EntityResolver(graph=graph, shared=shared_resolver, code_index=get_index)
 
     (result,) = _run(resolver.resolve(["official donors"]))
 
@@ -365,7 +407,7 @@ def test_dac_code_resolves_to_the_total_it_names(
     shared_resolver, code: str, dcid: str, graph_type: str, graph_name: str, kind: str, name: str
 ):
     graph = FakeGraphLookup(nodes={dcid: {"typeOf": (graph_type,), "name": (graph_name,)}})
-    resolver = EntityResolver(graph=graph, shared=shared_resolver, code_index=get_index())
+    resolver = EntityResolver(graph=graph, shared=shared_resolver, code_index=get_index)
 
     (result,) = _run(resolver.resolve([code]))
 

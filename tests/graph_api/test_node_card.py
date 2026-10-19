@@ -490,7 +490,7 @@ def _mint_dispatches(
         ),
         sdmx=SdmxClient(base_url=_SDMX_BASE, transport=httpx.MockTransport(answer)),
         graph=profile_graph,
-        enrichment=EnrichmentLookup(profile_graph, parties={}),
+        enrichment=EnrichmentLookup(profile_graph, parties=lambda: {}),
         materialiser_build="build",
         capability_version="cap",
         coverage=coverage.snapshot().index,

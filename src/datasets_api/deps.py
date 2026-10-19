@@ -3,8 +3,8 @@
 `open_deps` builds one `Deps` for the surface's lifespan, and every door reads it through the
 surface's `DepsCell`. Doors build no client and no store. The bundle holds one graph client, one
 SDMX client, one artifact store, the stores over one `dataset_store` pool borrow, the task client,
-the coverage service, rate cache and code index, the whole-variable breadth reader, one
-materialise semaphore, and two executors.
+the coverage service and rate cache, the source of the code index each request reads, the
+whole-variable breadth reader, one materialise semaphore, and two executors.
 
 The read executor runs snapshot, description, observations, operations polls, members, pin, register,
 recipe, and head-hit reads. The work executor runs mints, definition rebuilds, frame refreshes,
@@ -28,6 +28,7 @@ from dataclasses import dataclass
 
 from artifact_store import ArtifactStore, LiveArtifactInventory, LiveArtifactStore, Tier
 from code_index.query import CodeIndex
+from code_index.shared import get_index
 from dataset_store import LiveDatasetStore, close_shared_pool, shared_pool
 from dataset_store.clock import Clock, utc_now
 from dataset_store.snapshot import LiveSnapshotReader, SnapshotReader
@@ -93,8 +94,11 @@ class Deps:
     task_client: TaskClient
     coverage: CoverageService
     rate_cache: RateTableCache
-    code_index: CodeIndex
-    # Wraps `graph` and caches country-code and label lookups for the lifespan.
+    # The code index a request reads (`code_index`): the caller's when it supplied one, else
+    # `get_index()`, which can change between requests.
+    code_index_source: Callable[[], CodeIndex]
+    # Wraps `graph` and caches country-code and label lookups for the lifespan. Party kinds
+    # come from `code_index_source` on every lookup.
     enrichment: EnrichmentLookup
     materialiser_build: str
     now: Clock
@@ -112,6 +116,11 @@ class Deps:
     rebuilds: RebuildFlights
     read_executor: DoorExecutor
     work_executor: DoorExecutor
+
+    @property
+    def code_index(self) -> CodeIndex:
+        """The code index this request reads. A request's dependency views take it once."""
+        return self.code_index_source()
 
 
 class DepsCell:
@@ -138,14 +147,15 @@ class DepsCell:
 class DepsOverrides:
     """Dependencies the caller supplies in place of live ones. `None` builds the live one.
 
-    `coverage`, `rate_cache`, and `code_index` are process-wide services the surface resolves
-    when it is built, so a missing coverage artifact fails construction. `release` is the
-    process's graph release service, `None` when `GRAPH_RELEASE_URI` is unset.
+    `coverage` and `rate_cache` are process-wide services the surface resolves when it is
+    built, so a missing coverage artifact fails construction. A given `code_index` serves
+    every request; `None` reads `get_index()` per request. `release` is the process's graph
+    release service, `None` when `GRAPH_RELEASE_URI` is unset.
     """
 
     coverage: CoverageService
     rate_cache: RateTableCache
-    code_index: CodeIndex
+    code_index: CodeIndex | None = None
     release: ReleaseService | None = None
     registry: SpecRegistry | None = None
     spec_reader: SpecReader | None = None
@@ -185,6 +195,10 @@ class DepsOverrides:
 
 def _given_or[T](given: T | None, build: Callable[[], T]) -> T:
     return given if given is not None else build()
+
+
+def _index_source(given: CodeIndex | None) -> Callable[[], CodeIndex]:
+    return get_index if given is None else lambda: given
 
 
 def build_executors(settings: DatasetsBuildSettings) -> tuple[DoorExecutor, DoorExecutor]:
@@ -302,6 +316,7 @@ async def open_deps(
 
         read_executor, work_executor = build_executors(settings)
         budget = ShutdownBudget()
+        code_index_source = _index_source(overrides.code_index)
 
         async def _drain() -> None:
             for executor in (work_executor, read_executor):
@@ -344,11 +359,8 @@ async def open_deps(
             task_client=task_client,
             coverage=overrides.coverage,
             rate_cache=overrides.rate_cache,
-            code_index=overrides.code_index,
-            enrichment=EnrichmentLookup(
-                graph,
-                parties=overrides.code_index.parties,
-            ),
+            code_index_source=code_index_source,
+            enrichment=EnrichmentLookup(graph, parties=lambda: code_index_source().parties),
             materialiser_build=build_commit(),
             now=overrides.now,
             variable_breadth=variable_breadth,

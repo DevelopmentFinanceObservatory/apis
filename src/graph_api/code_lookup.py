@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from code_index.query import CodeIndex, fold_text
@@ -16,15 +17,19 @@ class CodeIndexCodes:
     the hit carries the first of its texts that does, the label before any synonym. A code's
     system is named by its graph id, the declaration's `enum_dcid`, which is also the hit's
     `graph_type`. A code whose system declares no graph id cannot be named by one, so it is
-    left out."""
+    left out.
 
-    index: CodeIndex
+    `index` returns the code index, read on each lookup, since it can change between
+    requests."""
+
+    index: Callable[[], CodeIndex]
 
     def codes_by_text(self, text: str, *, code_system: str | None) -> list[CodeHit]:
         folded = fold_text(text)
+        index = self.index()
         hits: list[CodeHit] = []
-        for row in self.index.codes_by_text(text):
-            declaration = self.index.declarations.get(row.code_system)
+        for row in index.codes_by_text(text):
+            declaration = index.declarations.get(row.code_system)
             enum_dcid = declaration.enum_dcid if declaration is not None else None
             if enum_dcid is None or (code_system is not None and enum_dcid != code_system):
                 continue

@@ -51,7 +51,7 @@ class MintDeps:
     enumerator: MemberEnumerator
     # Shares `graph` and caches country-code and label lookups for the process lifetime.
     enrichment: EnrichmentLookup
-    # The process-wide loaded index decodes StatVar-declared code systems during rendering.
+    # The code index this request reads decodes StatVar-declared code systems during rendering.
     code_index: CodeIndex
     # One process-wide cache shared by materialisations.
     rate_cache: RateTableCache

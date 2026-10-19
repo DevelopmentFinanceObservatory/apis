@@ -138,8 +138,10 @@ def datasets_surface(
     store left out is built over one `dataset_store` pool borrow shared by every omitted store.
     `head_writer` is the head store. `now` is the clock every door reads.
 
-    `code_index` defaults to the process-wide index and `coverage` to the process-wide service,
-    resolved here, so a missing or unreadable `COVERAGE_ARTIFACT_URI` fails construction.
+    A given `code_index` serves every request. Left out, each request reads `get_index()`,
+    which can change between requests; the index is parsed here, so a missing or malformed
+    export fails construction. `coverage` defaults to the process-wide service, resolved here,
+    so a missing or unreadable `COVERAGE_ARTIFACT_URI` fails construction.
     `rate_cache` defaults to a cache of this surface's own; pass Search's when composing both.
 
     `pin_allowed_principals` and `publish_allowed_principals` set separate allowlists,
@@ -160,10 +162,12 @@ def datasets_surface(
     _settings = settings if settings is not None else DatasetsBuildSettings.from_env()
     _catalogue = catalogue if catalogue is not None else get_catalogue_service()
     _release = release if release is not None else optional_release_service()
+    if code_index is None:
+        get_index()
     overrides = DepsOverrides(
         coverage=coverage if coverage is not None else get_coverage_service(),
         rate_cache=rate_cache if rate_cache is not None else RateTableCache(),
-        code_index=code_index if code_index is not None else get_index(),
+        code_index=code_index,
         release=_release,
         registry=registry,
         spec_reader=spec_reader,

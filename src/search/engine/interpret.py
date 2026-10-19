@@ -55,7 +55,8 @@ class PinnedResolved(Resolved):
     """
 
 
-@functools.cache
+# Two entries hold the patterns of the served code index's aliases and of the one it replaced.
+@functools.lru_cache(maxsize=2)
 def _alias_pattern(aliases: tuple[str, ...]) -> re.Pattern[str] | None:
     """The whole-word, case-insensitive pattern matching any of `aliases`."""
     if not aliases:

@@ -1,11 +1,14 @@
-"""Test process-wide `get_index` caching and the `reset_index` rebuild hook.
+"""Test process-wide `get_index` caching, the `reset_index` rebuild hook and the `per_index`
+memo.
 The autouse fixture runs each test on an empty index and restores the process's own after it,
 so a later test in the worker does not parse the index again inside its own deadline."""
 
 from __future__ import annotations
 
+import gc
 import json
 import re
+import weakref
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -13,7 +16,8 @@ import pytest
 
 from code_index import CodeIndex, IndexFormatError
 from code_index import shared as shared_module
-from code_index.shared import get_index, reset_index
+from code_index.loader import load_index
+from code_index.shared import get_index, per_index, reset_index
 
 from .conftest import FIXTURE_PATH
 
@@ -74,3 +78,32 @@ def test_a_malformed_packaged_index_raises_index_format_error(monkeypatch, tmp_p
 
     with pytest.raises(IndexFormatError):
         get_index()
+
+
+def test_per_index_builds_once_per_index():
+    built: list[int] = []
+
+    @per_index
+    def stamp_hash(index: CodeIndex) -> str:
+        built.append(id(index))
+        return index.stamp.content_hash
+
+    first, second = load_index(FIXTURE_PATH), load_index(FIXTURE_PATH)
+    for index in (first, first, second, first, second):
+        assert stamp_hash(index) == index.stamp.content_hash
+
+    assert built == [id(first), id(second)]
+
+
+def test_per_index_keeps_no_replaced_index_alive():
+    @per_index
+    def stamp_hash(index: CodeIndex) -> str:
+        return index.stamp.content_hash
+
+    replaced = load_index(FIXTURE_PATH)
+    stamp_hash(replaced)
+    held = weakref.ref(replaced)
+    del replaced
+    gc.collect()
+
+    assert held() is None

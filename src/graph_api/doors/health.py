@@ -13,8 +13,6 @@ loads it once at startup. A deployment with no coverage index configured serves
 
 from __future__ import annotations
 
-import functools
-
 from fastapi import APIRouter, Request, Response
 
 from code_index.shared import get_index
@@ -37,12 +35,6 @@ async def healthz() -> HealthResponse:
     return health_response(capability_version=GRAPH_CAPABILITY_VERSION)
 
 
-@functools.cache
-def _code_index_build() -> str:
-    """The packaged code index export's content hash, fixed for the process."""
-    return get_index().stamp.content_hash
-
-
 def _data_builds(request: Request) -> tuple[DataBuilds, bool]:
     """Read each build without I/O from the request's catalogue and the surface's deps, and
     say whether a null among them is transient: the deps are unpublished, the graph generation
@@ -59,7 +51,7 @@ def _data_builds(request: Request) -> tuple[DataBuilds, bool]:
             if deps is not None and deps.coverage is not None
             else None
         ),
-        code_index=_code_index_build(),
+        code_index=get_index().stamp.content_hash,
     )
     transient = deps is None or builds.graph_generation is None or deps.coverage_load_failed
     return builds, transient
@@ -80,7 +72,7 @@ async def capabilities(request: Request) -> Response:
 
 def build_health_door() -> DoorContribution:
     # Load the code index now, so the first capabilities request does not parse it.
-    _code_index_build()
+    get_index()
     router = APIRouter()
     router.add_api_route(
         "/api/graph/healthz", healthz, methods=["GET"], response_model=HealthResponse

@@ -34,6 +34,7 @@ services in its lifespan from shared and worker-specific settings.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import threading
 import time
@@ -47,7 +48,6 @@ from pydantic import Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from artifact_store import ArtifactStore, LiveArtifactInventory, LiveArtifactStore, Tier
-from code_index.query import CodeIndex
 from code_index.shared import get_index
 from dataset_store import DatasetStore, LiveDatasetStore, close_shared_pool, shared_pool
 from dataset_store.snapshot import LiveSnapshotReader
@@ -97,7 +97,6 @@ def _build_live_definition_deps(
     graph: GraphReader,
     sdmx: SdmxClient,
     artifact_store: ArtifactStore,
-    code_index: CodeIndex,
     coverage: CoverageService,
     materialise_semaphore: MaterialisePermits,
     variable_breadth: VariableBreadthReader | None = None,
@@ -113,6 +112,10 @@ def _build_live_definition_deps(
     `run_operation` checks that the request's rendering is servable before completing. A
     run breaks a single-place facet tie on `variable_breadth`, as a sync mint of the spec does,
     so both elect one facet.
+
+    The deps' `code_index` is read here, which parses the index, so a missing or malformed
+    export fails startup. Each run replaces it with the index read under the run's bindings
+    (`build_worker_app`), and the enrichment reads party kinds from `get_index()` per lookup.
     """
     _settings = settings if settings is not None else DatasetsBuildSettings.from_env()
     return DefinitionDeps(
@@ -126,8 +129,8 @@ def _build_live_definition_deps(
         ceiling=_MATERIALISE_RAW_FETCH_GUARD_ROWS,
         member_concurrency=_settings.mint_member_max_concurrency,
         enumerator=shared_enumerator(),
-        enrichment=EnrichmentLookup(graph, parties=code_index.parties),
-        code_index=code_index,
+        enrichment=EnrichmentLookup(graph, parties=lambda: get_index().parties),
+        code_index=get_index(),
         rate_cache=RateTableCache(),
         coverage=coverage,
         version_writer=LiveVersionRecordWriter(store=store),
@@ -222,12 +225,14 @@ def build_worker_app(
     answers 2xx so Cloud Tasks does not retry completed or failed work. `catalogue` defaults to the
     process-wide service, so a missing or unloadable `ORIGIN_CATALOGUE_URI` fails construction.
     `release` defaults to the process-wide graph release service when `GRAPH_RELEASE_URI` is set,
-    and to none otherwise.
+    and to none otherwise. Injected `deps` serve every run as given. Deps the lifespan builds
+    take the code index each run reads under its bindings, since it can change between runs.
     """
     _settings = settings if settings is not None else DatasetsBuildSettings.from_env()
     _max_attempts = max_attempts if max_attempts is not None else _settings.operation_max_attempts
     _operation_store: OperationStore | None = operation_store
     _deps: DefinitionDeps | None = deps
+    _index_per_run = False
     _oidc_verifier: OidcVerifier = (
         oidc_verifier if oidc_verifier is not None else LiveOidcVerifier()
     )
@@ -239,7 +244,8 @@ def build_worker_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        nonlocal _operation_store, _deps, _worker_url, _worker_invoker_service_account
+        nonlocal _operation_store, _deps, _index_per_run, _worker_url
+        nonlocal _worker_invoker_service_account
         async with AsyncExitStack() as stack:
             pool_opened_here = False
             store: LiveDatasetStore | None = None
@@ -296,7 +302,6 @@ def build_worker_app(
                         },
                         inventory=LiveArtifactInventory(store=store),
                     )
-                    code_index = get_index()
                     coverage = get_coverage_service()
                     materialise_semaphore = MaterialisePermits(1)
                     # A coverage reload holds the run's permit, as on the API surface. The run
@@ -320,7 +325,6 @@ def build_worker_app(
                         graph=graph,
                         sdmx=sdmx,
                         artifact_store=artifact_store,
-                        code_index=code_index,
                         coverage=coverage,
                         materialise_semaphore=materialise_semaphore,
                         variable_breadth=open_profile_breadth(
@@ -332,6 +336,7 @@ def build_worker_app(
                         ),
                         settings=_settings,
                     )
+                    _index_per_run = True
                 if _operation_store is None:
                     if store is None:
                         connections = shared_pool()
@@ -445,10 +450,13 @@ def build_worker_app(
             # One catalogue version and one release serve the whole operation. `to_thread`
             # carries the bindings.
             with bound_catalogue(catalogue), bound_served_release(_release):
+                run_deps = (
+                    dataclasses.replace(_deps, code_index=get_index()) if _index_per_run else _deps
+                )
                 await asyncio.to_thread(
                     run_in_thread,
                     operation=operation,
-                    deps=_deps,
+                    deps=run_deps,
                     operation_store=_operation_store,
                     deadline=deadline,
                     is_final_attempt=is_final_attempt,

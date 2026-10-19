@@ -155,7 +155,7 @@ class FakeGraphNodeReader:
 def make_resolver(shared: SharedResolver, *, graph: FakeGraphNodeReader) -> EntityResolver:
     """Build an `EntityResolver` with the shared resolver and test graph."""
     return EntityResolver(
-        graph=graph, shared=shared, codes=CodeIndexCodes(get_index()), code_index=get_index()
+        graph=graph, shared=shared, codes=CodeIndexCodes(get_index), code_index=get_index
     )
 
 

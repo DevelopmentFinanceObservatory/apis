@@ -57,7 +57,7 @@ _FIXTURES_DIR = Path(__file__).parent
 def make_resolver(graph: GraphLookup) -> EntityResolver:
     """Build an EntityResolver over `graph` using the session's shared resolver and the code
     index production Search passes, so a node's kind follows `entity_resolution.kinds.classify`."""
-    return EntityResolver(graph=graph, shared=acquire_shared(), code_index=get_index())
+    return EntityResolver(graph=graph, shared=acquire_shared(), code_index=get_index)
 
 
 def declare_regions(

@@ -189,7 +189,7 @@ class DefinitionDeps:
     enumerator: MemberEnumerator
     # Process-wide country-code and label cache, built with the graph and passed to `ServeDeps`.
     enrichment: EnrichmentLookup
-    # Process-wide code index passed to `ServeDeps`.
+    # The code index this request or run reads, passed to `ServeDeps`.
     code_index: CodeIndex
     # Shared by re-materialisations and passed to `ServeDeps`.
     rate_cache: RateTableCache

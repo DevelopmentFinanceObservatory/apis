@@ -175,7 +175,9 @@ def _price_basis_words(text: str) -> set[str]:
     return kept
 
 
-@functools.cache
+# A release swap replaces the measure index, so two entries hold the served index and the one
+# it replaced.
+@functools.lru_cache(maxsize=2)
 def _price_basis_vocabulary(measure_index: MeasureIndex) -> frozenset[str]:
     """The price-basis words of the measurement-qualifier axis's value labels and synonyms
     (`_price_basis_words`)."""

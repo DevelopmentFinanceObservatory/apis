@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import threading
 from collections import OrderedDict
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 
 from code_index.types import PartyKind, PartyRow
 from dfo_platform.roles import role_key_axis
@@ -43,12 +43,14 @@ its group retry."""
 
 
 class EnrichmentLookup:
-    """Resolves refs to available `iso3`, `iso2`, `label`, `type` and `party_kind` fields in an
-    LRU capped at `_CACHE_CEILING`. Each entry caches all fields. Lookups promote refs to
-    most-recently used.
+    """Resolves refs to available `iso3`, `iso2`, `label`, `type` and `party_kind` fields. The
+    graph fields are cached per ref in an LRU capped at `_CACHE_CEILING`, and lookups promote
+    refs to most-recently used.
 
-    `parties` is the code index's party rows (`CodeIndex.parties`), which give a ref its
-    `party_kind` (`party_kind_of`). A ref they do not list has no kind, whatever its graph types.
+    `parties` returns the code index's party rows (`CodeIndex.parties`), which give a ref its
+    `party_kind` (`party_kind_of`). A ref they do not list has no kind, whatever its graph
+    types. It is read on every lookup and the kind is never cached, since the index can
+    change between requests.
 
     The lock guards cache access only. Graph calls run unlocked, so concurrent misses may
     duplicate requests. Results use each call's own hits and fetches, even if another call
@@ -58,12 +60,17 @@ class EnrichmentLookup:
         self,
         graph: GraphReader,
         *,
-        parties: Mapping[str, PartyRow],
+        parties: Callable[[], Mapping[str, PartyRow]],
     ) -> None:
         self._graph = graph
-        self.parties = parties
+        self._parties = parties
         self._lock = threading.Lock()
         self._cache: OrderedDict[str, Mapping[str, str]] = OrderedDict()
+
+    @property
+    def parties(self) -> Mapping[str, PartyRow]:
+        """The party rows `parties` returns now."""
+        return self._parties()
 
     def lookup(
         self, refs: Iterable[str], *, deadline: float | None = None
@@ -75,6 +82,7 @@ class EnrichmentLookup:
         requested = list(dict.fromkeys(refs))
         if not requested:
             return {}
+        parties = self._parties()
         hits, missing = self._hits_and_missing(requested)
         if missing:
             fetched = self._graph.node_arcs_many(
@@ -84,16 +92,17 @@ class EnrichmentLookup:
                 deadline=deadline,
             )
             resolved = {
-                ref: _resolve_fields(ref, fetched.get(ref), parties=self.parties) for ref in missing
+                ref: {} if (node := fetched.get(ref)) is None else _node_fields(node)
+                for ref in missing
             }
             self._store(resolved)
             hits.update(resolved)
-        return {ref: hits[ref] for ref in requested}
+        return {ref: _with_party_kind(ref, hits[ref], parties=parties) for ref in requested}
 
     def party_kind(self, ref: str) -> PartyKind | None:
         """The kind `parties` declares for `ref` (`party_kind_of`), read with no graph call, so
         it holds when a `lookup` fails. `lookup` gives `ref` the same kind."""
-        return party_kind_of(ref, parties=self.parties)
+        return party_kind_of(ref, parties=self._parties())
 
     def _hits_and_missing(
         self, requested: list[str]
@@ -118,23 +127,20 @@ class EnrichmentLookup:
                 self._cache.popitem(last=False)
 
 
-def _resolve_fields(
-    ref: str,
-    node: Mapping[str, tuple[str, ...]] | None,
-    *,
-    parties: Mapping[str, PartyRow],
+def _with_party_kind(
+    ref: str, fields: Mapping[str, str], *, parties: Mapping[str, PartyRow]
 ) -> Mapping[str, str]:
-    """Each field's first value, except `type`: every `typeOf` value of the place, sorted and
-    comma-joined (`AdministrativeArea1,Country,EurostatNUTS2`), since a place can hold several
-    levels at once. `party_kind` is `party_kind_of` the ref, absent when it gives none. A `ref`
-    with no `node` and no `parties` row maps to `{}`."""
-    fields = {} if node is None else _node_fields(node)
-    if (kind := party_kind_of(ref, parties=parties)) is not None:
-        fields[PARTY_KIND_FIELD] = kind
-    return fields
+    """`fields` with `party_kind` set to `party_kind_of` the ref, unchanged when it gives none.
+    A copy, so the cached fields never carry a kind."""
+    if (kind := party_kind_of(ref, parties=parties)) is None:
+        return fields
+    return {**fields, PARTY_KIND_FIELD: kind}
 
 
 def _node_fields(node: Mapping[str, tuple[str, ...]]) -> dict[str, str]:
+    """Each graph field's first value, except `type`: every `typeOf` value of the place, sorted
+    and comma-joined (`AdministrativeArea1,Country,EurostatNUTS2`), since a place can hold
+    several levels at once."""
     fields: dict[str, str] = {}
     for property_, field in _FIELDS_BY_PROPERTY.items():
         values = node.get(property_, ())

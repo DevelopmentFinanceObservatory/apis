@@ -1,9 +1,13 @@
-"""Process-wide code and measure indexes, parsed once from the packaged export.
+"""Process-wide code and measure indexes, parsed once from the packaged export, and
+`per_index`, the memo for values derived from one code index.
 
 The cached values need no cleanup. Reset functions exist for tests only.
 """
 
 from __future__ import annotations
+
+import weakref
+from collections.abc import Callable
 
 from code_index.loader import default_index_path, load_index, load_measure_axes
 from code_index.query import CodeIndex
@@ -46,4 +50,25 @@ def reset_measure_index() -> None:
     _measure_singleton.force_reset()
 
 
-__all__ = ["get_index", "get_measure_index", "reset_index", "reset_measure_index"]
+def per_index[T](build: Callable[[CodeIndex], T]) -> Callable[[CodeIndex], T]:
+    """Memoise `build` on the code index it is called with, for as long as that index lives.
+
+    The index a request reads can change between requests, so a value derived from it is
+    cached per index and never for the process. Entries are keyed on the index object, as
+    `code_index.members` keys its views, since in-memory indexes share placeholder content
+    hashes, and each entry is dropped when its index is collected. `build` must return a value
+    that does not hold its index, or the entry would keep the index alive.
+    """
+    values: dict[int, T] = {}
+
+    def cached(index: CodeIndex) -> T:
+        key = id(index)
+        if key not in values:
+            values[key] = build(index)
+            weakref.finalize(index, values.pop, key, None)
+        return values[key]
+
+    return cached
+
+
+__all__ = ["get_index", "get_measure_index", "per_index", "reset_index", "reset_measure_index"]

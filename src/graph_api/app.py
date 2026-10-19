@@ -345,8 +345,8 @@ def graph_surface(
                     shared=shared_resolver,
                     graph_executor=dcp_executor,
                     generation=shared_generation,
-                    codes=CodeIndexCodes(get_index()),
-                    code_index=get_index(),
+                    codes=CodeIndexCodes(get_index),
+                    code_index=get_index,
                 )
                 generation_registration = shared_generation.register(
                     "graph_api.entity_resolver",

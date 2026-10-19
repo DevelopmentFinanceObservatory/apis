@@ -14,8 +14,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from artifact_store import ArtifactStore
-from code_index.query import CodeIndex
-from code_index.types import IndexStamp
 from dataset_store.snapshot import LiveSnapshotReader
 from datasets_api.admission import MaterialisePermits
 from datasets_api.config import DatasetsBuildSettings
@@ -738,7 +736,7 @@ class TestFinalAttempt:
 class TestLiveDefinitionDepsConstruction:
     """`_build_live_definition_deps` is the pure assembly step the
     worker's own `lifespan` calls once its live sub-dependencies (graph,
-    SDMX, store, artifact store, code index, coverage) are built.
+    SDMX, store, artifact store, coverage) are built.
     Exercised here directly, with cheap stand-ins for those sub-
     dependencies, since none of them do any I/O merely by being
     constructed or referenced."""
@@ -751,18 +749,6 @@ class TestLiveDefinitionDepsConstruction:
             graph=cast(GraphReader, object()),
             sdmx=SdmxClient(base_url="https://example.org"),
             artifact_store=cast(ArtifactStore, object()),
-            code_index=CodeIndex(
-                stamp=IndexStamp(
-                    graph_endpoint="test",
-                    exported_at="2026-01-01T00:00:00Z",
-                    code_counts={},
-                    statvar_shape_counts={},
-                    content_hash="test",
-                ),
-                declarations=(),
-                codes=(),
-                statvars=(),
-            ),
             coverage=cast(CoverageService, object()),
             materialise_semaphore=self._semaphore,
         )

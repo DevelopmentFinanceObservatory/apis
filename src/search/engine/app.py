@@ -36,7 +36,8 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 import graph_generation.config as generation_config
 import search.engine.clients.llm as _llm_mod
-from code_index.shared import get_index
+from code_index.query import CodeIndex
+from code_index.shared import get_index, per_index
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from dfo_platform import Envelope, HealthResponse, ProblemSpec, health_response, refusal
 from dfo_platform.app import Surface
@@ -45,7 +46,7 @@ from dfo_platform.build import build_commit
 from dfo_platform.config import parse_cors_origins
 from dfo_platform.named import cut
 from dfo_platform.request_deadline import request_deadline
-from dfo_platform.static_response import freeze_public_json
+from dfo_platform.static_response import FrozenJSON, freeze_public_json
 from dfo_platform.trace import get_trace_id
 from dfo_platform.validation import error_field_loc, pointer_for_error, validation_problem
 from entity_resolution import (
@@ -355,10 +356,16 @@ def _schema_payload_response_schema() -> dict:
 
 
 def search_documents() -> SearchDocuments:
-    """Freeze the public schema and capability documents. Build errors propagate."""
+    """Freeze the public schema, and the capability document of the index read now. Build
+    errors propagate."""
+
+    @per_index
+    def capabilities(index: CodeIndex) -> FrozenJSON:
+        return freeze_public_json(build_capabilities(index).model_dump(mode="json"), max_age=300)
+
+    capabilities(get_index())
     return SearchDocuments(
-        schema=freeze_public_json(schema_payload(), max_age=300),
-        capabilities=freeze_public_json(build_capabilities().model_dump(mode="json"), max_age=300),
+        schema=freeze_public_json(schema_payload(), max_age=300), capabilities=capabilities
     )
 
 
@@ -559,7 +566,7 @@ async def schema(request: Request, deps: SearchDepsDep) -> Response:
 
 async def capabilities(request: Request, deps: SearchDepsDep) -> Response:
     # Deployment configuration can change capabilities without changing the contract schema.
-    return deps.documents.capabilities.respond(request)
+    return deps.documents.capabilities(get_index()).respond(request)
 
 
 class SearchCatalogueUnavailable(EngineInfraError):
@@ -849,7 +856,7 @@ async def _open_search_deps(
     if resolver is None:
         assert shared_resolvekit is not None
         resolver = EntityResolver(
-            graph=graph, shared=shared_resolvekit, generation=generation, code_index=get_index()
+            graph=graph, shared=shared_resolvekit, generation=generation, code_index=get_index
         )
         logger.info("EntityResolver started")
         _register(
