@@ -216,17 +216,23 @@ _UNRESOLVED_PLACEHOLDER = NoDataPart(
 
 def test_is_storable_true_for_a_clean_complete_response():
     base = _base_response()
-    assert is_storable(base, timed_out=False, degraded_leg=False) is True
+    assert (
+        is_storable(base, timed_out=False, degraded_leg=False, refused_at_build=frozenset()) is True
+    )
 
 
 def test_is_storable_false_when_timed_out():
     base = _base_response()
-    assert is_storable(base, timed_out=True, degraded_leg=False) is False
+    assert (
+        is_storable(base, timed_out=True, degraded_leg=False, refused_at_build=frozenset()) is False
+    )
 
 
 def test_is_storable_false_when_a_leg_degraded():
     base = _base_response()
-    assert is_storable(base, timed_out=False, degraded_leg=True) is False
+    assert (
+        is_storable(base, timed_out=False, degraded_leg=True, refused_at_build=frozenset()) is False
+    )
 
 
 def test_is_storable_false_on_skills_index_unavailable_warning():
@@ -240,7 +246,10 @@ def test_is_storable_false_on_skills_index_unavailable_warning():
     )
     tainted = base.model_copy(update={"diagnostics": tainted_diagnostics})
 
-    assert is_storable(tainted, timed_out=False, degraded_leg=False) is False
+    assert (
+        is_storable(tainted, timed_out=False, degraded_leg=False, refused_at_build=frozenset())
+        is False
+    )
 
 
 @pytest.mark.parametrize(
@@ -266,14 +275,20 @@ def test_is_storable_false_on_a_failed_or_timed_out_read_warning_on_a_part(code)
     )
     tainted = base.model_copy(update={"parts": [tainted_part]})
 
-    assert is_storable(tainted, timed_out=False, degraded_leg=False) is False
+    assert (
+        is_storable(tainted, timed_out=False, degraded_leg=False, refused_at_build=frozenset())
+        is False
+    )
 
 
 def test_is_storable_false_when_an_unresolved_placeholder_sits_alongside_a_resolved_part():
     base = _base_response()
     mixed = base.model_copy(update={"parts": [*base.parts, _UNRESOLVED_PLACEHOLDER]})
 
-    assert is_storable(mixed, timed_out=False, degraded_leg=False) is False
+    assert (
+        is_storable(mixed, timed_out=False, degraded_leg=False, refused_at_build=frozenset())
+        is False
+    )
 
 
 def test_is_storable_true_for_a_genuine_single_variable_no_data_answer():
@@ -283,21 +298,39 @@ def test_is_storable_true_for_a_genuine_single_variable_no_data_answer():
     base = _base_response()
     only_placeholder = base.model_copy(update={"parts": [_UNRESOLVED_PLACEHOLDER]})
 
-    assert is_storable(only_placeholder, timed_out=False, degraded_leg=False) is True
+    assert (
+        is_storable(
+            only_placeholder, timed_out=False, degraded_leg=False, refused_at_build=frozenset()
+        )
+        is True
+    )
 
 
 @pytest.mark.parametrize("kind", ["catalogue", "declined"])
 def test_is_storable_true_for_a_clean_part_less_answer(kind):
-    assert is_storable(_scoped_answer(kind), timed_out=False, degraded_leg=False) is True
+    assert (
+        is_storable(
+            _scoped_answer(kind), timed_out=False, degraded_leg=False, refused_at_build=frozenset()
+        )
+        is True
+    )
 
 
 @pytest.mark.parametrize("kind", ["catalogue", "declined"])
 def test_is_storable_false_for_a_part_less_answer_that_timed_out(kind):
-    assert is_storable(_scoped_answer(kind), timed_out=True, degraded_leg=False) is False
+    assert (
+        is_storable(
+            _scoped_answer(kind), timed_out=True, degraded_leg=False, refused_at_build=frozenset()
+        )
+        is False
+    )
 
 
 @pytest.mark.parametrize("kind", ["catalogue", "declined"])
 def test_is_storable_false_for_a_part_less_answer_with_an_unavailable_warning(kind):
     warning = Warning(code="un_system_unavailable", severity="warn", message="down")
     answer = _scoped_answer(kind, warnings=[warning])
-    assert is_storable(answer, timed_out=False, degraded_leg=False) is False
+    assert (
+        is_storable(answer, timed_out=False, degraded_leg=False, refused_at_build=frozenset())
+        is False
+    )

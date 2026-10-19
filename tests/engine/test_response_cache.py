@@ -116,6 +116,28 @@ async def _test_stored_size_equals_the_actual_retained_byte_length():
     assert cache.stats().total_bytes == len(payload)
 
 
+async def _test_one_bytes_object_under_two_keys_is_charged_once():
+    """Two keys holding one bytes object charge its size once, and the last key to go frees it.
+
+    The 15-byte budget fits one 10-byte value but not two.
+    """
+    cache = ResponseCache(max_bytes=15, max_entry_bytes=1_000_000, ttl_s=60)
+    shared = bytes(10)
+    for key in ("layer1", "layer2"):
+        _, lease = await cache.acquire(key)
+        await cache.publish(lease, shared, 10)
+    stats = cache.stats()
+    assert (stats.entries, stats.total_bytes, stats.evictions) == (2, 10, 0)
+
+    # An equal value in another object is charged again. Evicting "layer1" frees nothing
+    # while "layer2" holds the shared value, so both go.
+    _, lease = await cache.acquire("other")
+    await cache.publish(lease, bytes(bytearray(10)), 10)
+    stats = cache.stats()
+    assert (stats.entries, stats.total_bytes, stats.evictions) == (1, 10, 2)
+    assert await cache.get("other") == bytes(10)
+
+
 async def _test_concurrent_acquire_single_flight_and_await_leader():
     cache = ResponseCache(max_bytes=1_000_000, max_entry_bytes=1_000_000, ttl_s=60)
 
@@ -126,6 +148,7 @@ async def _test_concurrent_acquire_single_flight_and_await_leader():
     assert lease_a is not None and lease_b is not None
     assert lease_a.is_leader is True
     assert lease_b.is_leader is False
+    assert cache.stats().follower_waits == 1
 
     waiter_task = asyncio.ensure_future(cache.await_leader(lease_b))
     await asyncio.sleep(0)  # let the waiter actually park before publishing
@@ -276,6 +299,10 @@ def test_unstorable_publish_wakes_a_waiter_with_timed_out_but_stores_nothing():
 
 def test_stored_size_equals_the_actual_retained_byte_length():
     asyncio.run(_test_stored_size_equals_the_actual_retained_byte_length())
+
+
+def test_one_bytes_object_under_two_keys_is_charged_once():
+    asyncio.run(_test_one_bytes_object_under_two_keys_is_charged_once())
 
 
 def test_concurrent_acquire_single_flight_and_await_leader():

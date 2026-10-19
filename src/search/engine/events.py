@@ -304,8 +304,8 @@ class PlaceOptionsEvent(BaseModel):
     (`search.models.OptionsResponse.options`), built by
     `region.place_options.build_place_options_events` from exactly the
     identity `region.pipeline`/`region.resubmit_promote` already resolved
-    -- `resolve_options_target` and `build_options_response`, the same pair
-    a POST to /api/search/options would run for this Spec's own identity.
+    -- `resolve_options_target` and `compute_options`, the same pair a POST
+    to /api/search/options would run for this Spec's own identity.
     The point is to let a client open the "Select place" popover on this
     anchor with zero network round trip: the anchor's peers and children
     candidate sets are already on the wire by the time a user could click.

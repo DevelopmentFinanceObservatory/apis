@@ -110,7 +110,7 @@ from search.engine.options.options_response_cache import (
 )
 from search.engine.options.population_memo import OptionsPopulationMemo
 from search.engine.options.resolve import resolve_options_target
-from search.engine.options.surface import build_options_response
+from search.engine.options.surface import compute_options
 from search.engine.region.place_options import PlaceOptionsPool
 from search.engine.response_cache import ResponseCache
 from search.engine.response_cache_memo import PartMemo
@@ -470,8 +470,8 @@ async def options_endpoint(body: OptionsRequest, deps: SearchDepsDep) -> Respons
     Composes engine.options.resolve.resolve_options_target (derive the
     posted identity's own StatVar population, typed anchors and
     role-target validity, server-side, with no resubmit or materialise
-    pipeline) with engine.options.surface.build_options_response
-    (compute the per-role option surface and assemble the envelope) --
+    pipeline) with engine.options.surface.compute_options (compute the
+    per-role option surface), then assembles the envelope here --
     see those two modules' own docstrings for the full design, including
     the option_target_invalid (422) role check that runs inside
     resolution. Every EngineInputError either half raises propagates
@@ -512,16 +512,14 @@ async def options_endpoint(body: OptionsRequest, deps: SearchDepsDep) -> Respons
     )
 
     def _compute(compute_deadline: float) -> ComputedOptions:
-        response = build_options_response(
+        return compute_options(
             body,
             target,
             graph=deps.graph,
             deadline=compute_deadline,
             materialise_graph=materialise_graph,
+            materialise_sdmx=deps.materialise_sdmx,
             coverage=coverage_snapshot,
-        )
-        return ComputedOptions(
-            options=response.options, warnings=tuple(response.diagnostics.warnings)
         )
 
     engine_build = build_commit()
@@ -650,7 +648,8 @@ def _build_part_memo(registrations: ExitStack, generation: GenerationProvider) -
         settings().response_cache_memo_max_bytes,
         settings().response_cache_memo_max_entry_bytes,
     )
-    # Refresh invokes clear from a worker thread. The memo is read on this loop only.
+    # Refresh calls stats and clear from its own thread. `stats` takes the memo's lock; clear
+    # runs on this loop.
     loop = asyncio.get_running_loop()
 
     def _clear() -> None:
@@ -824,7 +823,10 @@ async def _open_search_deps(
         )
 
     if place_options_pool is None:
-        place_options_pool = PlaceOptionsPool.build(max_workers=settings().place_options_workers)
+        place_options_pool = PlaceOptionsPool.build(
+            max_workers=settings().place_options_workers,
+            options_cache=options_response_cache,
+        )
         # Running jobs can outlive `shutdown()`. Release the pool before their clients.
         owned.callback(_logged, "PlaceOptionsPool shut down", place_options_pool.shutdown)
         logger.info("PlaceOptionsPool built (max_workers=%d)", settings().place_options_workers)

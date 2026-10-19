@@ -531,7 +531,7 @@ def test_a_failed_un_resolve_leaves_an_answer_unwarned_and_storable() -> None:
     assert isinstance(answer := response.parts[0], DefinitePart)
     assert isinstance(expected := baseline.parts[0], DefinitePart)
     assert answer.spec.spec_id == expected.spec.spec_id
-    assert is_storable(response, timed_out=False, degraded_leg=False)
+    assert is_storable(response, timed_out=False, degraded_leg=False, refused_at_build=frozenset())
 
 
 class _RefusingUnGraph(FakeGraph):

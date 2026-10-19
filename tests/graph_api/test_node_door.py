@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import json
 import threading
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from graph_api import app as graph_app
 from graph_api import routing
 from graph_api.doors import node as node_door
 from graph_api.node_models import NODES_MAX_DCIDS
 from graph_api.version import GRAPH_CAPABILITY_VERSION
+from graph_generation.fake import FakeGeneration
 from materialise.graph import GraphDeadlineExceededError, GraphReadError, parse_arcs
 from origin_catalogue import DFO
 from tests.origin_catalogue.fake_catalogue import provenance_row, restrictive_catalogue
@@ -894,6 +897,120 @@ class TestNodesBatch:
         assert batch_response[0].status_code == 200, batch_response[0].text
 
 
+class _RecordingGraphNodeReader(FakeGraphNodeReader):
+    """Record the dcids of every `node_arcs_many` call."""
+
+    def __init__(self, *, nodes) -> None:
+        super().__init__(nodes=nodes)
+        self.reads: list[list[str]] = []
+
+    def node_arcs_many(self, dcids, *, properties, deadline=None):
+        self.reads.append(list(dcids))
+        return super().node_arcs_many(dcids, properties=properties, deadline=deadline)
+
+
+class TestNodesBatchCache:
+    def test_a_repeated_batch_makes_no_graph_read(self):
+        dcids = list(_BATCH_NODES)
+        graph = FakeGraphNodeReader(nodes=_BATCH_NODES)
+        client = make_client(graph=graph)
+
+        with client:
+            first = client.post("/api/graph/nodes", json={"dcids": dcids})
+            reads = graph.calls["node_arcs_many"]
+            second = client.post("/api/graph/nodes", json={"dcids": dcids})
+
+        assert first.status_code == second.status_code == 200, second.text
+        assert reads > 0
+        assert graph.calls["node_arcs_many"] == reads
+        assert second.json() == first.json()
+
+    def test_a_batch_reads_only_its_misses_and_answers_in_request_order(self):
+        graph = _RecordingGraphNodeReader(nodes=_BATCH_NODES)
+        client = make_client(graph=graph)
+        dcids = ["country/KEN", "dc/base/Nowhere", "dc/base/WDI", "dc/base/Foo", "country/KEN"]
+
+        with client:
+            client.post("/api/graph/nodes", json={"dcids": ["dc/base/Foo", "country/KEN"]})
+            graph.reads.clear()
+            merged = client.post("/api/graph/nodes", json={"dcids": dcids})
+        with make_client(graph=FakeGraphNodeReader(nodes=_BATCH_NODES)) as fresh:
+            uncached = fresh.post("/api/graph/nodes", json={"dcids": dcids})
+
+        assert merged.status_code == 200, merged.text
+        # The hold read, then the WDI provenance's label read.
+        assert graph.reads == [
+            ["dc/base/Nowhere", "dc/base/WDI"],
+            ["dc/s/WorldBank", "dc/d/WorldBank_WDI"],
+        ]
+        assert merged.json() == uncached.json()
+
+    def test_a_new_generation_misses(self):
+        graph = FakeGraphNodeReader(nodes=_BATCH_NODES)
+        client = make_client(graph=graph)
+
+        with client:
+            client.post("/api/graph/nodes", json={"dcids": ["dc/base/Foo"]})
+            deps = client.app.state.graph_deps
+            client.app.state.graph_deps = replace(deps, generation=FakeGeneration(token="rev-2"))
+            resp = client.post("/api/graph/nodes", json={"dcids": ["dc/base/Foo"]})
+
+        assert resp.status_code == 200, resp.text
+        assert graph.calls["node_arcs_many"] == 2
+
+    @pytest.mark.parametrize(
+        ("query", "reads"), [("", 1), ("?as_of=2020-01-01", 2)], ids=["undated", "as-of"]
+    )
+    def test_a_repeated_get_reads_the_graph_only_when_it_carries_as_of(self, query, reads):
+        """A GET without `as_of` reads through the batch's entries; a dated GET always reads."""
+        graph = FakeGraphNodeReader(nodes=_BATCH_NODES)
+        client = make_client(graph=graph)
+
+        with client:
+            first = client.get(f"/api/graph/node/dc/base/Foo{query}")
+            second = client.get(f"/api/graph/node/dc/base/Foo{query}")
+
+        assert first.status_code == second.status_code == 200, second.text
+        assert second.json() == first.json()
+        assert graph.calls["node_arcs_many"] == reads
+
+    def test_a_generation_change_clears_the_entries(self, monkeypatch):
+        """The lifespan registers the entries with the generation provider, whose clear
+        empties them on the event loop."""
+        generation = FakeGeneration(token="rev-1")
+        monkeypatch.setattr(graph_app, "acquire_shared_generation", lambda **_kwargs: generation)
+        monkeypatch.setattr(graph_app, "release_shared_generation", lambda _generation: None)
+        client = make_client(graph=FakeGraphNodeReader(nodes=_BATCH_NODES))
+
+        with client:
+            client.post("/api/graph/nodes", json={"dcids": ["dc/base/Foo"]})
+            client.post("/api/graph/nodes", json={"dcids": ["dc/base/Foo"]})
+            entries = client.app.state.graph_deps.node_entries
+            assert entries.stats() == {"hits": 1, "misses": 1, "entries": 1}
+            generation.advance("rev-2")
+            wait_until(lambda: entries.stats()["entries"] == 0)
+
+        assert generation.registered_names() == ()
+
+    def test_an_entry_with_a_transient_gap_is_not_stored(self):
+        """A coverage index that failed to load leaves the variable's availability with a
+        transient gap, so the next batch reads the variable again and serves the other node from
+        the cache."""
+        graph = _RecordingGraphNodeReader(nodes=_BATCH_NODES)
+        client = make_client(graph=graph)
+        dcids = ["dc/base/BilateralFlow_Grants", "dc/base/Foo"]
+
+        with client:
+            deps = client.app.state.graph_deps
+            client.app.state.graph_deps = replace(deps, coverage_load_failed=True)
+            first = client.post("/api/graph/nodes", json={"dcids": dcids})
+            graph.reads.clear()
+            client.post("/api/graph/nodes", json={"dcids": dcids})
+
+        assert first.json()["nodes"][0]["stat_var"]["availability"] is None
+        assert graph.reads[0] == ["dc/base/BilateralFlow_Grants"]
+
+
 class _BlockingGraphNodeReader:
     """Block `node_arcs_many` until the test releases it."""
 
@@ -924,8 +1041,11 @@ class _BlockingGraphNodeReader:
 
 def test_a_read_past_the_pool_size_is_refused_at_once():
     """With every worker busy a read answers retryable 503 without reaching the reader. The
-    in-pool read and a read after it succeed."""
-    delegate = FakeGraphNodeReader(nodes={"country/KEN": {"typeOf": ("Country",)}})
+    in-pool read and a read after it succeed. The read after it names another node, which no
+    cached envelope answers, so it reaches the pool."""
+    delegate = FakeGraphNodeReader(
+        nodes={"country/KEN": {"typeOf": ("Country",)}, "country/UGA": {"typeOf": ("Country",)}}
+    )
     graph = _BlockingGraphNodeReader(delegate)
     client = make_client(graph=graph, node_pool_size=1)
 
@@ -936,7 +1056,7 @@ def test_a_read_past_the_pool_size_is_refused_at_once():
             entered=graph.entered,
             release=graph.release,
         )
-        after = client.get("/api/graph/node/country/KEN")
+        after = client.get("/api/graph/node/country/UGA")
 
     in_pool, refused = responses
     assert in_pool.status_code == 200, in_pool.text

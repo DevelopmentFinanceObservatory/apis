@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
 from code_index.shared import get_index
@@ -28,7 +29,7 @@ from materialise.recipes import (
     RoleAxisNotDeclaredError,
     cause_from_recipe_error,
 )
-from origin_catalogue import recording_un_blocked_places
+from origin_catalogue import current_catalogue, recording_un_blocked_places
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.materialise_bridge import observation_facets_via_materialise
 from search.engine.config import settings
@@ -748,7 +749,25 @@ def _directional_options_set(
 # ---------------------------------------------------------------------------
 
 
-def build_options_response(
+@dataclass(frozen=True)
+class ComputedOptions:
+    """The options `compute_options` built and the warnings it carried.
+
+    `transient` marks a result built from a read that failed during this compute: a coverage
+    probe that did not answer, a UN System Data Commons read that failed
+    (`UnBlockedPlaces.failures`), or a UN front door refusal of a place outside the bound
+    origin catalogue build's refused set. Places in that set are a fact of the build and
+    leave a result settled, though its warning names them. `degraded`
+    marks a compute that noted a read it stands without (`degraded_reads`); the caller that
+    records those reads sets it. `options_response_cache.is_cacheable` reads both."""
+
+    options: OptionsSet
+    warnings: tuple[Warning, ...]
+    transient: bool = False
+    degraded: bool = False
+
+
+def compute_options(
     req: OptionsRequest,
     target: ResolvedOptionsTarget,
     *,
@@ -757,8 +776,8 @@ def build_options_response(
     materialise_graph: GraphReader | None = None,
     materialise_sdmx: MaterialiseSdmxClient | None = None,
     coverage: CoverageSnapshot,
-) -> OptionsResponse:
-    """Build the requested role's options and response envelope.
+) -> ComputedOptions:
+    """Build the requested role's options, their warnings and whether a read failed.
 
     `observationAbout` reads graph candidates; flow axes group the supplied
     coverage snapshot. `materialise_sdmx` is used only for request-form unit
@@ -767,12 +786,8 @@ def build_options_response(
     branches. Warnings report coverage-probe failures and UN System Data
     Commons reads that could not serve (`un_system_unavailable`). The target's
     provenance pin scopes every read (`resubmit_request.pinned_provenance_scope`), so a
-    base pin answers at a place a DFO table also holds. The diagnostics time this call
-    alone; `timing_by_step` is empty.
+    base pin answers at a place a DFO table also holds.
     """
-    start_ms = now_ms()
-    include_coverage = bool(req.include_coverage)
-
     # A provenance pin scopes every read before DFO precedence, as resubmit reads it.
     with recording_un_blocked_places() as un_blocked, pinned_provenance_scope(target.facets):
         if req.for_.role == "observationAbout":
@@ -782,7 +797,7 @@ def build_options_response(
                 graph=graph,
                 materialise_graph=materialise_graph,
                 materialise_sdmx=materialise_sdmx,
-                include_coverage=include_coverage,
+                include_coverage=bool(req.include_coverage),
                 deadline=deadline,
                 coverage_snapshot=coverage,
             )
@@ -794,11 +809,48 @@ def build_options_response(
 
     # The door holds the population's dcids and no member names, so the warning names
     # its variables `""`.
-    warnings = [
+    warnings = tuple(
         w
         for w in (probe_warning, un_unavailable_warning(un_blocked, labels=NO_LABELS))
         if w is not None
-    ]
+    )
+    return ComputedOptions(
+        options=options,
+        warnings=warnings,
+        transient=probe_warning is not None
+        or bool(un_blocked.failures())
+        or _refused_while_serving(un_blocked.places()),
+    )
 
-    diagnostics = make_diagnostics(build_commit(), warnings, {}, now_ms() - start_ms)
-    return OptionsResponse(diagnostics=diagnostics, for_=req.for_, options=options)
+
+def _refused_while_serving(places: tuple[str, ...]) -> bool:
+    """Whether the UN front door refused a place outside the bound origin catalogue build's
+    own refused set (`Catalogue.un_blocked_places`). Such a refusal was found while serving
+    and may be a stray one, so the result is transient."""
+    return bool(places) and not set(places) <= current_catalogue().un_blocked_places
+
+
+def build_options_response(
+    req: OptionsRequest,
+    target: ResolvedOptionsTarget,
+    *,
+    graph: EngineGraphClient,
+    deadline: float,
+    materialise_graph: GraphReader | None = None,
+    materialise_sdmx: MaterialiseSdmxClient | None = None,
+    coverage: CoverageSnapshot,
+) -> OptionsResponse:
+    """`compute_options` in the response envelope. The diagnostics time this call alone;
+    `timing_by_step` is empty."""
+    start_ms = now_ms()
+    computed = compute_options(
+        req,
+        target,
+        graph=graph,
+        deadline=deadline,
+        materialise_graph=materialise_graph,
+        materialise_sdmx=materialise_sdmx,
+        coverage=coverage,
+    )
+    diagnostics = make_diagnostics(build_commit(), list(computed.warnings), {}, now_ms() - start_ms)
+    return OptionsResponse(diagnostics=diagnostics, for_=req.for_, options=computed.options)

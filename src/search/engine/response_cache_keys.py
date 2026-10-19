@@ -18,11 +18,13 @@ import re
 import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
-from typing import Literal
+from typing import Literal, NamedTuple
 
 import rfc8785
+from pydantic import TypeAdapter
 
 from search.engine.envelope import make_diagnostics, make_query_echo, now_ms
+from search.engine.events import DoneEvent, Event, ResponseEvent
 from search.engine.extract import ExtractedDate, ExtractedEntity
 from search.engine.qualifier_match import CodedQualifier, QualifierMatch, recall_text
 from search.engine.region.codes import (
@@ -53,8 +55,8 @@ from search.models import (
 )
 
 _INTERNAL_WHITESPACE = re.compile(r"\s+")
-# Warnings that mark an answer a dependency could not complete: the skills index, the UN
-# System Data Commons, the member walk that settles a role-bearing answer's members, the
+# Warnings that mark an answer a dependency could not complete: the skills index, a UN
+# System Data Commons read that failed (`_is_unstorable_warning`), the member walk that settles a role-bearing answer's members, the
 # role declarations a population re-reads, the conversion catalogue its unit conversion
 # offer reads, and the option-coverage, availability and observation reads that failed or
 # ran past the deadline. An elected member the graph read did not return
@@ -121,6 +123,7 @@ def scope_document(
     conversion_catalogue: str | None,
     origin_catalogue: str,
     un_system_enabled: bool,
+    bundle: bool = False,
 ) -> dict:
     """Build shared key material from caller-supplied values.
 
@@ -132,9 +135,10 @@ def scope_document(
     place default and the coverage mode can change answers without changing the build
     commit. A catalogue
     reload changes the revision or build and not the graph generation. Each stamp is
-    captured once and invalidates both layers when it changes. Transport is omitted because a request with trailing
-    events uses neither layer, and without them both transports answer the same
-    response.
+    captured once and invalidates both layers when it changes. `bundle` marks a request
+    that streams trailing events: its entry is the event bundle (`to_bundle`), which a
+    buffered request's entry is not. Without trailing events both transports answer the
+    same response and share one entry.
     """
     return {
         "schema_version": schema_version,
@@ -150,6 +154,7 @@ def scope_document(
         "conversion_catalogue": conversion_catalogue,
         "origin_catalogue": origin_catalogue,
         "un_system_enabled": un_system_enabled,
+        "bundle": bundle,
     }
 
 
@@ -380,7 +385,26 @@ def from_entry(
     validation reads the retained bytes directly. `timing_by_step` is omitted
     when the hit has no named cache step.
     """
-    restored = RESOLVE_RESPONSE_ADAPTER.validate_json(entry)
+    return refresh_response(
+        RESOLVE_RESPONSE_ADAPTER.validate_json(entry),
+        query=query,
+        extract_skipped=extract_skipped,
+        start_ms=start_ms,
+        llm_usage=llm_usage,
+        timing_by_step=timing_by_step,
+    )
+
+
+def refresh_response(
+    restored: ResolveResponse,
+    *,
+    query: str | None,
+    extract_skipped: bool,
+    start_ms: int,
+    llm_usage: dict | None,
+    timing_by_step: dict[str, int] | None = None,
+) -> ResolveResponse:
+    """`restored` with this request's `query_echo` and `diagnostics` (see `from_entry`)."""
     echo = (
         restored.query_echo
         if query is None
@@ -396,20 +420,111 @@ def from_entry(
     return restored.model_copy(update={"query_echo": echo, "diagnostics": diagnostics})
 
 
-def _has_unstorable_warning(warnings: Sequence[Warning]) -> bool:
-    return any(w.code in _UNSTORABLE_WARNING_CODES for w in warnings)
+_BUNDLE_ADAPTER: TypeAdapter[list[Event]] = TypeAdapter(list[Event])
+
+
+def to_bundle(events: Sequence[Event]) -> tuple[bytes, int]:
+    """Encode a finished SSE stream from its `response` event to its `done` event.
+
+    The bytes use the SSE surface (`serialize_sse`'s context and null rule), so a restored
+    event serialises to the frame the first run sent.
+    """
+    encoded = _BUNDLE_ADAPTER.dump_json(list(events), exclude_none=True, context={"surface": "sse"})
+    return encoded, len(encoded)
+
+
+class StoredBundle(NamedTuple):
+    """A stored bundle's `response` event, the trailing events after it, and its `done` event."""
+
+    response: ResponseEvent
+    trailing: list[Event]
+    done: DoneEvent
+
+
+def from_bundle(entry: bytes) -> StoredBundle:
+    """Revalidate a stored bundle: a `response` event, the trailing events, a `done` event."""
+    events = _BUNDLE_ADAPTER.validate_json(entry)
+    response, done = events[0], events[-1]
+    assert isinstance(response, ResponseEvent) and isinstance(done, DoneEvent)
+    return StoredBundle(response=response, trailing=events[1:-1], done=done)
+
+
+def _is_unstorable_warning(warning: Warning, *, refused_at_build: frozenset[str]) -> bool:
+    """Whether `warning` marks a dependency this answer could not complete.
+
+    An `un_system_unavailable` warning names a failed UN read in `params["variables"]` and the
+    places the UN front door refused in `params["places"]` (`un_system.un_unavailable_warning`).
+    A refusal of a place in `refused_at_build`, the origin catalogue build's own refused set
+    (`Catalogue.un_blocked_places`, whose build the key holds), is a fact of that build, so an
+    answer whose warning names only such places is stored with it. A place refused while
+    serving and absent from that set may be a stray refusal, and a warning naming a failed
+    read, or one without `params` (a failed UN leg), marks a failure; neither is stored."""
+    if warning.code not in _UNSTORABLE_WARNING_CODES:
+        return False
+    if warning.code != UN_SYSTEM_UNAVAILABLE:
+        return True
+    params = warning.params
+    if params is None or params.get("variables"):
+        return True
+    places = params.get("places", [])
+    return not isinstance(places, list) or not set(places) <= refused_at_build
+
+
+def _has_unstorable_warning(
+    warnings: Sequence[Warning], *, refused_at_build: frozenset[str]
+) -> bool:
+    return any(_is_unstorable_warning(w, refused_at_build=refused_at_build) for w in warnings)
 
 
 def _is_unresolved_placeholder(part: Part) -> bool:
     return isinstance(part, NoDataPart) and part.no_data.reason == "variable_not_resolved"
 
 
-def is_storable(response: ResolveResponse, *, timed_out: bool, degraded_leg: bool) -> bool:
+def is_bundle_storable(
+    events: Sequence[Event],
+    *,
+    timed_out: bool,
+    degraded_leg: bool,
+    trailing_incomplete: bool,
+    refused_at_build: frozenset[str],
+) -> bool:
+    """Return whether a finished SSE stream is complete and safe to cache.
+
+    `is_storable` judges the response. The `done` event adds the trailing probes' verdict:
+    its own timeout flag and the warnings of a probe that failed or ran past the deadline.
+    `trailing_incomplete` rejects a stream that dropped a slot-options or observations
+    event, which the events do not show. Place options are not in a bundle.
+    `refused_at_build` follows `is_storable`.
+    """
+    if trailing_incomplete:
+        return False
+    response, done = events[0], events[-1]
+    assert isinstance(response, ResponseEvent) and isinstance(done, DoneEvent)
+    return not _has_unstorable_warning(
+        done.warnings, refused_at_build=refused_at_build
+    ) and is_storable(
+        response.response,
+        timed_out=timed_out or done.timed_out,
+        degraded_leg=degraded_leg,
+        refused_at_build=refused_at_build,
+    )
+
+
+def is_storable(
+    response: ResolveResponse,
+    *,
+    timed_out: bool,
+    degraded_leg: bool,
+    refused_at_build: frozenset[str],
+) -> bool:
     """Return whether the response is complete and safe to cache.
 
-    Reject timeouts, degraded legs, unavailable-skills, UN and unverified-membership
-    warnings, and an unresolved-variable placeholder alongside a resolved part. A catalogue or
+    Reject timeouts, degraded legs, unavailable-skills, failed-UN-read and
+    unverified-membership warnings (`_is_unstorable_warning`), and an unresolved-variable
+    placeholder alongside a resolved part. A catalogue or
     declined answer has no parts, so only the first three checks apply to it.
+    `refused_at_build` is the refused-place set of the origin catalogue build the request
+    bound; an empty one stores no answer that names a refused place.
     """
     if timed_out or degraded_leg:
         return False
@@ -418,7 +533,7 @@ def is_storable(response: ResolveResponse, *, timed_out: bool, degraded_leg: boo
     all_warnings = list(response.diagnostics.warnings)
     for part in parts:
         all_warnings.extend(part.warnings)
-    if _has_unstorable_warning(all_warnings):
+    if _has_unstorable_warning(all_warnings, refused_at_build=refused_at_build):
         return False
 
     placeholder = [p for p in parts if _is_unresolved_placeholder(p)]
@@ -426,10 +541,13 @@ def is_storable(response: ResolveResponse, *, timed_out: bool, degraded_leg: boo
     return not (placeholder and resolved)
 
 
-def is_region_storable(region: RegionResult) -> bool:
+def is_region_storable(region: RegionResult, *, refused_at_build: frozenset[str]) -> bool:
     """Return whether a resubmitted identity's region is complete and safe to memoise.
 
     Reject a region that is a degraded leg (`RegionResult.leg_degraded`: it swallowed a read
     failure, a presence read left its default scope unsettled, or it left an alternate
-    unevaluated), or that carries a warning `is_storable` rejects."""
-    return not (region.leg_degraded or _has_unstorable_warning(region.warnings))
+    unevaluated), or that carries a warning `is_storable` rejects under `refused_at_build`."""
+    return not (
+        region.leg_degraded
+        or _has_unstorable_warning(region.warnings, refused_at_build=refused_at_build)
+    )

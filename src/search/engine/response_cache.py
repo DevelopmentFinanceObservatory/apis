@@ -40,6 +40,7 @@ class ResponseCacheStats:
     entries: int
     total_bytes: int
     oversized: int
+    follower_waits: int
 
 
 @dataclass
@@ -98,11 +99,15 @@ class ResponseCache:
         self._lock = Lock()
         self._store: OrderedDict[str, _Entry] = OrderedDict()
         self._inflight: dict[str, _Waiter] = {}
+        # Count of keys holding each stored bytes object, by identity. A value stored under
+        # several keys is charged once, and its bytes are freed when the last of them goes.
+        self._holders: dict[int, int] = {}
         self._bytes = 0
         self._hits = 0
         self._misses = 0
         self._evictions = 0
         self._oversized = 0
+        self._follower_waits = 0
 
     async def get(self, key: str) -> bytes | None:
         """Return a live value or `None`; a hit becomes most-recently-used."""
@@ -126,6 +131,7 @@ class ResponseCache:
             waiter = self._inflight.get(key)
             if waiter is not None:
                 waiter.interest += 1
+                self._follower_waits += 1
                 return None, Lease(key=key, is_leader=False, _waiter=waiter)
             waiter = _Waiter()
             self._inflight[key] = waiter
@@ -218,10 +224,10 @@ class ResponseCache:
         response bytes cannot show. Oversized storable values are not stored
         and increment `oversized`; non-storable values do not.
 
-        Each `also` key is charged `size` independently, though both keys share
-        the same bytes object. Two keys can therefore overstate retained bytes
-        by up to 2x, avoiding shared-value eviction bookkeeping. Only a leader
-        lease may publish; others raise `ValueError`.
+        Retained bytes count each stored bytes object once, however many keys
+        hold it: the `also` keys, and a second lease published with the same
+        object, add no bytes. Only a leader lease may publish; others raise
+        `ValueError`.
         """
         if not lease.is_leader:
             raise ValueError(
@@ -262,6 +268,8 @@ class ResponseCache:
                 waiter.event.set()
 
     def stats(self) -> ResponseCacheStats:
+        """Counters and current size. `follower_waits` counts the misses that joined
+        another caller's in-flight computation rather than leading their own."""
         return ResponseCacheStats(
             hits=self._hits,
             misses=self._misses,
@@ -269,6 +277,7 @@ class ResponseCache:
             entries=len(self._store),
             total_bytes=self._bytes,
             oversized=self._oversized,
+            follower_waits=self._follower_waits,
         )
 
     def clear_sync(self) -> None:
@@ -279,10 +288,20 @@ class ResponseCache:
         needed because the callback runs to completion without coroutine interleaving.
         """
         self._store.clear()
+        self._holders.clear()
         self._bytes = 0
 
     def _drop_locked(self, key: str, entry: _Entry) -> None:
         del self._store[key]
+        self._release_bytes_locked(entry)
+
+    def _release_bytes_locked(self, entry: _Entry) -> None:
+        """Forget one key's hold on `entry.value`. The last holder frees its bytes."""
+        holders = self._holders[id(entry.value)] - 1
+        if holders:
+            self._holders[id(entry.value)] = holders
+            return
+        del self._holders[id(entry.value)]
         self._bytes -= entry.size
 
     def _set_locked(
@@ -290,11 +309,15 @@ class ResponseCache:
     ) -> None:
         existing = self._store.pop(key, None)
         if existing is not None:
-            self._bytes -= existing.size
+            self._release_bytes_locked(existing)
         lifetime = self._ttl_s if max_age_s is None else max_age_s
         self._store[key] = _Entry(value=value, size=size, expires_at=now + lifetime)
-        self._bytes += size
+        # A stored entry keeps `value` alive, so its id names no other object meanwhile.
+        holders = self._holders.get(id(value), 0)
+        if not holders:
+            self._bytes += size
+        self._holders[id(value)] = holders + 1
         while self._bytes > self._max_bytes and self._store:
             _evicted_key, evicted = self._store.popitem(last=False)
-            self._bytes -= evicted.size
+            self._release_bytes_locked(evicted)
             self._evictions += 1

@@ -73,6 +73,7 @@ from graph_api.doors.node import NODE_MEMBERSHIP_SLOT, build_node_door
 from graph_api.doors.resolve import build_resolve_door
 from graph_api.doors.schema import build_schema_door
 from graph_api.doors.sources import build_sources_door, new_provenance_doc_cache
+from graph_api.node_cache import NodeEntryCache
 from graph_api.reader import GraphNodeReader
 from graph_api.version import GRAPH_CAPABILITY_VERSION
 from graph_generation import UNKNOWN_GENERATION, GenerationProvider, RegistrationHandle
@@ -233,6 +234,7 @@ def graph_surface(
         shared_generation: GenerationProvider | None = None
         generation_registration: RegistrationHandle | None = None
         doc_cache_registration: RegistrationHandle | None = None
+        node_entries_registration: RegistrationHandle | None = None
         dcp_executor: DcpReadExecutor | None = None
         profile_executor: ThreadPoolExecutor | None = None
         profile_reads: ThreadPoolExecutor | None = None
@@ -261,6 +263,8 @@ def graph_surface(
                 await asyncio.to_thread(profile_reads.shutdown, wait=True, cancel_futures=True)
             if doc_cache_registration is not None:
                 doc_cache_registration.close()
+            if node_entries_registration is not None:
+                node_entries_registration.close()
             if generation_registration is not None:
                 generation_registration.close()
             if shared_resolver is not None:
@@ -354,6 +358,16 @@ def graph_surface(
                 stats=provenance_docs.stats,
                 clear=provenance_docs.clear,
             )
+            node_entries = NodeEntryCache(generation=resolved_generation)
+            loop = asyncio.get_running_loop()
+
+            def _clear_node_entries() -> None:
+                # The provider clears from a worker thread. Only the loop touches the cache.
+                loop.call_soon_threadsafe(node_entries.clear)
+
+            node_entries_registration = resolved_generation.register(
+                "graph_api.node_entries", stats=node_entries.stats, clear=_clear_node_entries
+            )
 
             if resolved_coverage is None and graph is None:
                 resolved_coverage, coverage_load_failed = await _acquire_coverage()
@@ -401,6 +415,7 @@ def graph_surface(
             dcp_executor=dcp_executor,
             generation=resolved_generation,
             provenance_docs=provenance_docs,
+            node_entries=node_entries,
             coverage=resolved_coverage,
             coverage_load_failed=coverage_load_failed,
             profile_cache=profile_cache,
