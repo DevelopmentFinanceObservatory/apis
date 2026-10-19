@@ -170,8 +170,8 @@ class HistoryRow:
 
     @property
     def ingestion(self) -> Ingestion:
-        """The manifest record of this row. Its timestamp keeps the form the
-        manifests have always carried, `str` of the UTC `datetime`."""
+        """The manifest record of this row. Its timestamp is `str` of the UTC
+        `datetime`, the form manifests record."""
         return Ingestion(
             workflow_execution_id=self.workflow_execution_id,
             creation_timestamp=str(datetime.fromisoformat(self.created_at)),

@@ -3,8 +3,8 @@
 Datasets enter Search, the Datasets API and the code index only through the index's
 declarations. A string literal equal to a declared dataset's provenance (with or without
 its `provenance/` prefix), or to a code value only one declared dataset's rows carry (with
-or without a `dcid:` prefix), would let a code path decide for one dataset by name. `code_index/declarations.py` is the one
-place dataset literals live, so the scan skips it.
+or without a `dcid:` prefix), would let a code path decide for one dataset by name.
+`code_index/declarations.py` is the one place dataset literals live, so the scan skips it.
 """
 
 from __future__ import annotations

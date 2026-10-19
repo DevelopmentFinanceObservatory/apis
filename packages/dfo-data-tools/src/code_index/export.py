@@ -144,7 +144,7 @@ def export_parties(
     """Each party's kind, label, the datasets that publish it and the flow axes they publish it
     on (`parties`, each sorted), and the group and residuals a total holds, sorted by dcid.
 
-    A party in `kind_overrides` takes its override's kind; any other takes the kind its graph
+    A party in `kind_overrides` takes its override's kind. Any other takes the kind its graph
     types give under `type_kinds`. Its label is its graph name, `None` when the graph gives it
     none.
 
@@ -424,7 +424,7 @@ def _strip_measure_words(
     span first, so a code synonym holding "net" or "gross" would take the word from the netting
     basis in every vocabulary: "gross ODA" would read the ODA code and no basis
     (`_measure_runs`). Such a synonym keeps the rest of its words, so "Gross ODA Loans" becomes
-    "ODA Loans": a query reads the code in the remainder and the measure in the word. A run
+    "ODA Loans", so a query reads the code in the remainder and the measure in the word. A run
     stays when every series carrying any code that holds the text has the measure it names,
     since the text then implies it ("ODA grant equivalents of bilateral loans" on a code whose
     one series is a grant equivalent). The test covers every code holding the text, because
@@ -1005,7 +1005,7 @@ def _verify_five_tuple_completeness(
     constraint property of some exported row of its five-tuple (`index_covers_slot_keys` in
     `code_index.members`, which this check shares through `key_sets_cover`), so such a StatVar
     must be an exported row. One the index would not decide, such as an IDS debt series with
-    no CRS keys, passes: it is a listed row (`_verify_listed_five_tuples`) or the graph walk
+    no CRS keys, passes. It is a listed row (`_verify_listed_five_tuples`) or the graph walk
     resolves it.
 
     A decided StatVar carries every code system of the exported row it covers. Each five-tuple
@@ -1106,7 +1106,7 @@ def export_source_codes(reader: ExportReader, dcids: Sequence[str]) -> list[dict
     StatVar its provenances separately, and `parse_index` refuses a code row whose provenance
     its StatVar's row lacks. A StatVar of `dcids` with no code, and a code value with no
     provenance or no text, raise `SystemExit`. Every listed dataset gives each of its
-    StatVars a series code (today World Bank IDS alone), so a listed dataset without codes
+    StatVars a series code (World Bank IDS is the only one), so a listed dataset without codes
     must lift this rule before it is listed."""
     arcs = reader.node_arcs_batch(list(dcids))
     members: dict[tuple[str, str], set[str]] = defaultdict(set)
@@ -1629,8 +1629,8 @@ def verify_complete_systems(
     statvars: Sequence[dict], code_systems: Sequence[CodeSystemConfig]
 ) -> None:
     """Require every row of a dataset to declare each code system listing that dataset in
-    `declared_by_every_statvar_of`. A row that does not raises `SystemExit`: the enumeration split
-    that dataset's reads on the system and can have dropped rows like it."""
+    `declared_by_every_statvar_of`. A row that does not raises `SystemExit`, since the enumeration
+    split that dataset's reads on the system and can have dropped rows like it."""
     for config in code_systems:
         complete_in = set(config.declared_by_every_statvar_of)
         for row in statvars:
@@ -1646,8 +1646,8 @@ def verify_complete_systems(
 
 
 def _statvar_shape_counts(statvars: list[dict], code_systems: Sequence[str]) -> dict[str, int]:
-    """Keyed by code system: how many StatVar rows name that code system in
-    their `constraint_properties`.
+    """Count, by code system, the StatVar rows that name it in their
+    `constraint_properties`.
     """
     return {
         code_system: sum(1 for row in statvars if code_system in row["constraint_properties"])

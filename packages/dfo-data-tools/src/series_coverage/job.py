@@ -7,8 +7,8 @@ Spanner through `EXTERNAL_QUERY` and aggregate in BigQuery.
 
 The job refuses to publish while `IngestionLock` is held, while the newest
 `IngestionHistory` row is not a success, if the import key
-(`artifact_publication.jobs.ImportKey`) changes during a build, if a date is invalid or more than 50
-years ahead, or if SDMX reconciliation differs. It writes build files
+(`artifact_publication.jobs.ImportKey`) changes during a build, if a date
+is invalid or more than 50 years ahead, or if SDMX reconciliation differs. It writes build files
 create-only and conditionally replaces `current.json` using its version
 token. Concurrent runs can leave an unreferenced build, which pruning
 removes after `_MAX_RUN_SECONDS` (1800 s). A zero exit also covers skips and

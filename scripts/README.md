@@ -85,16 +85,16 @@ The graph supplies the code rows and StatVar rows. The coverage build supplies e
 
 `CODE_SYSTEMS` in `code_index/declarations.py` supplies each code system's declaration, which the export writes into the index's `declarations` block and `code_index.loader` reads into `CodeSystemDeclaration`:
 
-| Field                    | Meaning                                                                                                                                 |
-| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `hierarchical`           | Codes form a `specializationOf` tree. Derived from the graph and checked against `expected_hierarchical`.                               |
-| `disjoint_from_children` | A record coded to a parent is a different record from one coded to its child.                                                           |
-| `summable`               | Sibling values add up to their parent's total.                                                                                          |
-| `absent_reading`         | How a StatVar that does not carry the property reads: `not_declared` (a separate population) or `aggregate` (a total over every value). |
-| `plain_name`             | The singular noun a sentence uses for the axis.                                                                                         |
+| Field                    | Meaning                                                                                                                                                                         |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `hierarchical`           | Codes form a `specializationOf` tree. Derived from the graph and checked against `expected_hierarchical`.                                                                       |
+| `disjoint_from_children` | A record coded to a parent is a different record from one coded to its child.                                                                                                   |
+| `summable`               | Sibling values add up to their parent's total.                                                                                                                                  |
+| `absent_reading`         | How a StatVar that does not carry the property reads: `not_declared` (a separate population) or `aggregate` (a total over every value).                                         |
+| `plain_name`             | The singular noun a sentence uses for the axis.                                                                                                                                 |
 | `default`                | A code bound onto an open slot when another slot or a query phrase triggers it, or on every open slot (`when_open`), with the `note` an answer states when it fires; or `null`. |
 
-`declared_by_every_statvar_of` stays in `code_index/declarations.py`: it lists the datasets whose every StatVar declares the property, and the export enumerates each dataset only through the systems that list it.
+`declared_by_every_statvar_of` lives in `code_index/declarations.py` and lists the datasets whose every StatVar declares the property, and the export enumerates each dataset only through the systems that list it.
 
 `DATASETS` supplies one declaration per published table, written into the `datasets` block and read into `DatasetDeclaration`:
 
@@ -113,10 +113,10 @@ The export and the loader refuse a document in which a StatVar carries a provena
 
 Two gates check the committed export, each against the source it can read:
 
-| Gate                                                                                                    | Runs                                                                                   | Checks                                                                                                                                                                                                                                                                          |
-| ------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `code-index-drift` in `.github/workflows/code-index-live.yml` (`tests/code_index/test_export_drift.py`) | Weekday schedule, plus ready PRs touching `code_index` paths; graph credentials only   | Everything the graph and the authored config determine: declarations, datasets, codes, StatVar rows without `provenances`, measure blocks, the stamp's counts, and its content hash.                                                                                            |
-| `python -m series_coverage.verify_index --record` in `.github/workflows/deploy-dev.yml`                 | Every deploy, on the coverage job, before traffic moves                                | Each StatVar row's `provenances` equals the published coverage build's for that variable, and every declared dataset has a row in the build. It prints the index's `coverage_build` beside the build it read, and on a pass records that build as the index's compatible build. |
+| Gate                                                                                                    | Runs                                                                                 | Checks                                                                                                                                                                                                                                                                          |
+| ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `code-index-drift` in `.github/workflows/code-index-live.yml` (`tests/code_index/test_export_drift.py`) | Weekday schedule, plus ready PRs touching `code_index` paths; graph credentials only | Everything the graph and the authored config determine: declarations, datasets, codes, StatVar rows without `provenances`, measure blocks, the stamp's counts, and its content hash.                                                                                            |
+| `python -m series_coverage.verify_index --record` in `.github/workflows/deploy-dev.yml`                 | Every deploy, on the coverage job, before traffic moves                              | Each StatVar row's `provenances` equals the published coverage build's for that variable, and every declared dataset has a row in the build. It prints the index's `coverage_build` beside the build it read, and on a pass records that build as the index's compatible build. |
 
 Run the export by hand when either gate reports a difference. The coverage check also runs locally: `COVERAGE_ARTIFACT_URI=gs://<coverage bucket>/ uv run python -m series_coverage.verify_index`, with `--index <path>` for an export not yet committed.
 

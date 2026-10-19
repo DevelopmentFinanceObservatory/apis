@@ -6,12 +6,13 @@ A run:
    the last unlocked run saw is published;
 2. computes the build identity from the registry file's hash, the import
    key's stamp (`artifact_publication.jobs.ImportKey`, over the newest
-   `IngestionHistory` row and the newest successful one), the ISO week, the artifact format version and a hash of the job's own
-   modules (`JOB_MODULES`), and skips when `current.json` already carries
-   it, unless that build carried its UN stage forward, in which case the
-   run retries the UN stage first, over that build's scan places, and goes
-   on to build and publish only if the UN answers, and skips while the
-   newest `IngestionHistory` row is not a success;
+   `IngestionHistory` row and the newest successful one), the ISO week,
+   the artifact format version and a hash of the job's own modules
+   (`JOB_MODULES`). It skips while the newest `IngestionHistory` row is
+   not a success, and skips when `current.json` already carries the
+   identity, unless that build carried its UN stage forward, in which
+   case the run retries the UN stage first, over that build's scan
+   places, and goes on to build and publish only if the UN answers;
 3. takes the create-only lease `lease.json` at the format root, so
    overlapping scheduler executions do not both build, and skips while
    another run holds an unexpired one;

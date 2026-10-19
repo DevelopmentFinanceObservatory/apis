@@ -2,7 +2,7 @@
 
 Code systems, datasets, party kinds and total groups, measure axes, labels and nouns,
 synonyms, concept groups, shape slot defaults, measure classes and variable aliases. The export
-(`code_index.export`) reads them beside the graph; nothing here reads the graph or imports a
+(`code_index.export`) reads them beside the graph. Nothing here reads the graph or imports a
 script, so a build that has no graph client can load them.
 """
 
@@ -31,12 +31,12 @@ from code_index.types import (
 class CodeSystemConfig:
     """One code system's graph enum and semantic declarations.
 
-    `enum_dcid` is the enumeration the system's codes are `typeOf`; the declaration carries it
+    `enum_dcid` is the enumeration the system's codes are `typeOf`. The declaration carries it
     as the system's graph id. `hierarchical` is derived from graph rows and checked against the expected value.
 
     `declared_by_every_statvar_of` lists the provenances of the datasets whose every StatVar
     declares this property. CRS StatVars all declare `crsPurpose`, `crsTypeOfFinance`, and
-    `crsTypeOfFlow`; imputed multilateral StatVars all declare `crsPurpose`, `crsTypeOfFlow`, and
+    `crsTypeOfFlow`. Imputed multilateral StatVars all declare `crsPurpose`, `crsTypeOfFlow`, and
     `dac2aAidType`, and none declares `crsTypeOfFinance`. DAC1 StatVars all declare `dac1AidType`
     and no CRS code system, and DAC2a and DAC2b StatVars all declare their own table's aid type
     (`dac2aAidType`, `dac2bAidType`) and no CRS code system. `crsCooperationModality` is
@@ -127,7 +127,7 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
         # question naming them on a CRS shape refuses the qualifier.
         no_vocabulary_terms=("non-concessional",),
     ),
-    # Imputed multilateral and DAC2a StatVars carry `dac2aAidType`; CRS StatVars do not. DAC2a
+    # Imputed multilateral and DAC2a StatVars carry `dac2aAidType`, and CRS StatVars do not. DAC2a
     # aid types nest totals over their parts ("ODA grants" under "ODA"), and a net total holds
     # gross parts and the repayments netted off them, so siblings neither sum nor exclude the
     # parent. Every imputed row holds the one root code its table's invariant names.
@@ -207,7 +207,7 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
 # declared as invariants the loader checks against every row. Each of the five is a table a
 # provider reports, so each gives the provider's account of a flow. Every row of the CRS is a
 # flow from one provider to one recipient, which the OECD calls bilateral whatever the provider
-# is: the CRS import leaves out the rows that record a core contribution to a multilateral
+# is, because the CRS import leaves out the rows that record a core contribution to a multilateral
 # organisation. So the CRS states "bilateral" of both measured properties it publishes
 # (`DatasetDeclaration.stated_words`). A DAC2a or DAC2b `amount` row is bilateral only where
 # its recipient is a country, since a flow to a multilateral organisation is a core
@@ -308,7 +308,7 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
 
 
 # The kind each graph type gives a party of a declared dataset (`code_index.types.party_kind`).
-# Every type a donor or recipient of a declared or listed dataset carries is named here; the export refuses
+# Every type a donor or recipient of a declared or listed dataset carries is named here. The export refuses
 # a party with a type this table does not name, or whose types give it no single kind. A type
 # mapped to `None` names no kind of its own and sits beside a type that does: `Place` beside
 # `Country` (India), `ProvisionalNode` beside `Organization` (IDA), `LendingEntityEnum` beside
@@ -558,7 +558,7 @@ class MeasureValueText:
 
     `label` replaces the graph name. `synonyms` add to `alternateName`. `matchable` controls text
     lookup. `amount` keeps a display label but skips text indexing because queries use it as a
-    determiner. `same_reading_as` names the canonical value of an alias dcid; query text naming
+    determiner. `same_reading_as` names the canonical value of an alias dcid. Query text naming
     the alias resolves to the canonical value, so authored synonyms belong on the canonical one.
     """
 
@@ -794,7 +794,7 @@ CODE_SHORT_NAMES: Mapping[str, str] = {
 }
 
 # A label keys a measure partition, or a family whose rows share fewer measure axes than a
-# partition; `label_for_pairs` picks the most specific label, so a family-level label never
+# partition. `label_for_pairs` picks the most specific label, so a family-level label never
 # names a full partition. `measurementQualifier` stays outside the key, because no measure
 # label states the price basis (`code_index.labels.compose_measure_label`).
 #
@@ -822,7 +822,7 @@ MEASURE_PARTITION_LABELS: tuple[MeasurePartitionLabel, ...] = (
         ),
     ),
     # A family spanning both netting bases (CRS and DAC1 disbursements) reads as this
-    # label; a gross or net partition matches its own, more specific label.
+    # label. A gross or net partition matches its own, more specific label.
     MeasurePartitionLabel(
         axis_values=(
             ("financialFlowType", "Disbursement"),
@@ -894,7 +894,7 @@ MEASURE_PARTITION_LABELS: tuple[MeasurePartitionLabel, ...] = (
             "for the share given through terms softer than the market's."
         ),
     ),
-    # Only DAC1 StatVars hold `amountMobilised`: private finance that official flows mobilise.
+    # Only DAC1 StatVars hold `amountMobilised`, the private finance that official flows mobilise.
     MeasurePartitionLabel(
         axis_values=(
             ("financialFlowType", "Disbursement"),
@@ -1274,7 +1274,7 @@ STAT_TYPE_WORDS: tuple[StatTypeWordDeclaration, ...] = (
 )
 
 # Acronyms recall confuses, expanded in the variable query before recall. GNI scores 0.6342 for
-# GiniIndex_EconomicActivity; its full term finds the aggregate. U5MR and IMR hit unrelated
+# GiniIndex_EconomicActivity. Its full term finds the aggregate. U5MR and IMR hit unrelated
 # variables, while their full terms find the mortality variables. CO2's full term scores higher
 # than the acronym. GDP recalls correctly without expansion. PPG recalls no variable for "debt
 # service for PPG debt"; its full term finds the public and publicly guaranteed debt service

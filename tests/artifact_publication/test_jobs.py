@@ -115,7 +115,7 @@ def test_two_reads_with_no_new_row_give_equal_stamps_and_scan_no_observation():
 )
 def test_both_readers_give_one_stamp_for_one_history_row(created_at):
     """BigQuery returns microsecond `datetime`s and the Spanner client
-    `DatetimeWithNanoseconds`; the key normalises both, so the readers agree."""
+    `DatetimeWithNanoseconds`. The key normalises both, so the readers agree."""
     bq_key = read_import_key_bq(FakeBigQuery(import_key_responses()), connection=_CONNECTION)
     spanner_row = tuple(history_row("wf-1", created_at=created_at).values())
     snapshot = _FakeSnapshot({"IngestionLock": [(None,)], "IngestionHistory": [spanner_row]})
