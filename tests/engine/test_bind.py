@@ -24,6 +24,7 @@ from search.engine.bind import (
     rank_elected,
     split_stray_bindings,
 )
+from search.engine.binders import BindRequest, GeminiBinder
 from search.engine.errors import LLMOutputRefused
 from search.engine.extract import DateRequest
 from search.engine.frame import door_frame, with_recall
@@ -36,6 +37,7 @@ from search.engine.region.requirements import judge
 from search.engine.role_text import DoorRole
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.models import GraphRef, QuantityForm
+from tests.engine._binders import keep_the_pick
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
@@ -96,6 +98,25 @@ def _shape(
 _GENDER_SLOT = SlotKeyDraft(axis="how", property_dcid="gender", label="gender")
 
 
+async def _bind_through_the_gemini_binder(variable, shapes, *, llm):
+    """`bind_universal`'s reply, read through `GeminiBinder.bind`."""
+    request = BindRequest(
+        variable=variable, shapes=shapes, query_text=None, apply_policies=keep_the_pick
+    )
+    result, usage = await GeminiBinder().bind(request, llm=llm)
+    assert (result.binder, result.also_plausible_support) == ("gemini", None)
+    return result.output, usage
+
+
+@pytest.fixture(
+    params=[bind_universal, _bind_through_the_gemini_binder], ids=["bind_universal", "binder"]
+)
+def bind(request):
+    """Each stub-LLM case runs on `bind_universal` and through the Gemini binder, which
+    answers it alike."""
+    return request.param
+
+
 class _StubLLM:
     """Return a fixed universal-bind result."""
 
@@ -138,7 +159,7 @@ def test_split_stray_bindings_drops_drafts_on_another_shapes_slots():
     assert (kept.bindings, stray) == ([gender, open_age], ())
 
 
-def test_bind_universal_chooses_shape_and_binds_slots():
+def test_bind_universal_chooses_shape_and_binds_slots(bind):
     shapes = [
         _shape(
             "count_person_female",
@@ -156,7 +177,7 @@ def test_bind_universal_chooses_shape_and_binds_slots():
         also_plausible=None,
         ask=None,
     )
-    result, usage = _run(bind_universal("female population", shapes, llm=_StubLLM(output)))
+    result, usage = _run(bind("female population", shapes, llm=_StubLLM(output)))
     assert result.chosen_shape_index == 0
     assert result.ask is None
     assert len(result.bindings) == 1
@@ -164,7 +185,7 @@ def test_bind_universal_chooses_shape_and_binds_slots():
     assert usage is not None
 
 
-def test_bind_universal_unbinds_a_source_draft_the_model_writes():
+def test_bind_universal_unbinds_a_source_draft_the_model_writes(bind):
     """Only the engine names a dataset, so a source-axis value from the model comes back
     unbound, the engine's draft, and every other draft comes back as written, stamped as
     the reply's."""
@@ -184,7 +205,7 @@ def test_bind_universal_unbinds_a_source_draft_the_model_writes():
         ask=None,
     )
 
-    result, _ = _run(bind_universal("female population", shapes, llm=_StubLLM(output)))
+    result, _ = _run(bind("female population", shapes, llm=_StubLLM(output)))
 
     assert result.bindings == [
         gender.model_copy(update={"drafted_by": "reply"}),
@@ -335,7 +356,7 @@ _INSTRUMENT = ["DebtInstrument"]
     ],
 )
 def test_bind_universal_unbinds_a_value_a_dataset_states_on_only_some_of_its_series(
-    monkeypatch, members, values, kept
+    bind, monkeypatch, members, values, kept
 ):
     """ "Debt service on external debt" names no resource. The debt statistics state the
     debt instrument on the service owed to a named lender and on no total, so the draft
@@ -373,7 +394,7 @@ def test_bind_universal_unbinds_a_value_a_dataset_states_on_only_some_of_its_ser
         chosen_shape_index=0, bindings=[resource], also_plausible=None, ask=None
     )
 
-    result, _ = _run(bind_universal("debt service", [_debt_shape(*members)], llm=_StubLLM(output)))
+    result, _ = _run(bind("debt service", [_debt_shape(*members)], llm=_StubLLM(output)))
 
     assert result.bindings == [
         resource.model_copy(update={"drafted_by": "reply"})
@@ -448,7 +469,9 @@ _AGE_SLOT = SlotKeyDraft(axis="how", property_dcid="undataAge", label="age")
         ),
     ],
 )
-def test_bind_universal_grounds_values_in_the_chosen_shapes_taxonomy(written, taxonomy, expected):
+def test_bind_universal_grounds_values_in_the_chosen_shapes_taxonomy(
+    bind, written, taxonomy, expected
+):
     """under5-mortality-ethiopia-2015-2020: the model wrote ``undataAGE-Y0T4`` for
     ``undata/AGE-Y0T4``. A value grounds by exact or unique normalised match, an ambiguous
     one opens its slot while the elected shape stays chosen, and one matching nothing binds
@@ -473,7 +496,7 @@ def test_bind_universal_grounds_values_in_the_chosen_shapes_taxonomy(written, ta
         ask=None,
     )
 
-    result, _ = _run(bind_universal("under-five mortality", shapes, llm=_StubLLM(output)))
+    result, _ = _run(bind("under-five mortality", shapes, llm=_StubLLM(output)))
 
     assert result.chosen_shape_index == 1
     assert result.bindings == [expected]
@@ -492,17 +515,17 @@ def test_who_drafted_a_binding_stays_out_of_the_schema_the_model_fills_and_of_du
     assert "drafted_by" not in draft.model_dump_json()
 
 
-def test_bind_universal_picks_non_first_shape():
+def test_bind_universal_picks_non_first_shape(bind):
     shapes = [
         _shape("wrong_shape", score=0.9),
         _shape("right_shape", score=0.6),
     ]
     output = _UniversalBindOutput(chosen_shape_index=1, bindings=[], also_plausible=None, ask=None)
-    result, _ = _run(bind_universal("some variable", shapes, llm=_StubLLM(output)))
+    result, _ = _run(bind("some variable", shapes, llm=_StubLLM(output)))
     assert result.chosen_shape_index == 1
 
 
-def test_bind_universal_also_plausible_ranked():
+def test_bind_universal_also_plausible_ranked(bind):
     shapes = [_shape("a"), _shape("b"), _shape("c")]
     output = _UniversalBindOutput(
         chosen_shape_index=0,
@@ -510,14 +533,14 @@ def test_bind_universal_also_plausible_ranked():
         also_plausible=[2, 1],
         ask=None,
     )
-    result, _ = _run(bind_universal("ambiguous variable", shapes, llm=_StubLLM(output)))
+    result, _ = _run(bind("ambiguous variable", shapes, llm=_StubLLM(output)))
     assert result.also_plausible == [2, 1]
 
 
 # CANNOT-BIND (ask) path
 
 
-def test_bind_universal_off_topic_sets_ask():
+def test_bind_universal_off_topic_sets_ask(bind):
     shapes = [_shape("unrelated_shape")]
     output = _UniversalBindOutput(
         chosen_shape_index=0,
@@ -525,7 +548,7 @@ def test_bind_universal_off_topic_sets_ask():
         also_plausible=None,
         ask="Variable 'weather in London' does not match any candidate shape.",
     )
-    result, _ = _run(bind_universal("weather in London", shapes, llm=_StubLLM(output)))
+    result, _ = _run(bind("weather in London", shapes, llm=_StubLLM(output)))
     assert result.ask is not None
     assert result.bindings == []
 

@@ -620,6 +620,7 @@ def export_code_system(
         "default": _declared_default_to_dict(config.default),
         "enum_dcid": config.enum_dcid,
         "no_vocabulary_terms": list(config.no_vocabulary_terms),
+        **({"house_case": config.house_case} if config.house_case is not None else {}),
     }
     return declaration, rows
 
@@ -1660,6 +1661,11 @@ def _dataset_to_dict(dataset: DatasetDeclaration) -> dict:
         **(
             {"party_words": [_party_word_to_dict(w) for w in dataset.party_words]}
             if dataset.party_words
+            else {}
+        ),
+        **(
+            {"house_default_for": list(dataset.house_default_for)}
+            if dataset.house_default_for
             else {}
         ),
     }

@@ -437,7 +437,7 @@ class _FixedExtractionLLM:
             return extraction, None
         if schema is QuantityOutput:
             return NO_QUANTITY
-        assert schema is _UniversalBindOutput
+        assert issubclass(schema, _UniversalBindOutput)
         return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
 
 

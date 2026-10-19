@@ -39,6 +39,7 @@ from code_index.export import (
     ExportRefused,
     PartyPublication,
     _apply_concept_groups,
+    _dataset_to_dict,
     _implied_value_to_dict,
     _measure_class_to_dict,
     _minimal_system_sets,
@@ -1841,11 +1842,17 @@ def test_committed_packaged_index_carries_the_authored_declarations():
         _partly_stated_value_to_dict(v) for v in PARTLY_STATED_VALUES
     ]
     assert payload["implied_values"] == [_implied_value_to_dict(v) for v in IMPLIED_VALUES]
+    assert payload["datasets"] == sorted(
+        (_dataset_to_dict(d) for d in DATASETS), key=lambda row: row["provenance"]
+    )
     assert payload["measure_classes"] == [_measure_class_to_dict(d) for d in MEASURE_CLASSES]
     assert payload["variable_aliases"] == dict(VARIABLE_ALIASES)
     assert payload["stat_type_words"] == [_stat_type_word_to_dict(d) for d in STAT_TYPE_WORDS]
     assert {d["code_system"]: d["no_vocabulary_terms"] for d in payload["declarations"]} == {
         config.code_system: list(config.no_vocabulary_terms) for config in CODE_SYSTEMS
+    }
+    assert {d["code_system"]: d.get("house_case") for d in payload["declarations"]} == {
+        config.code_system: config.house_case for config in CODE_SYSTEMS
     }
 
 

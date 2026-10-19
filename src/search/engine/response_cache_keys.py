@@ -116,6 +116,7 @@ def scope_document(
     seam_default: bool,
     qualifier_coverage: Literal["log", "refuse"],
     build_commit: str,
+    binder: str,
     model: str,
     seed: int | None,
     today: str,
@@ -129,8 +130,9 @@ def scope_document(
     """Build shared key material from caller-supplied values.
 
     Includes the schema, defaulted response options, effective candidate cap,
-    place-as-constraint default, qualifier coverage mode, build/model/seed fingerprint,
-    day, graph and coverage stamps, the revision of the conversion catalogue the request
+    place-as-constraint default, qualifier coverage mode, build commit, the binder the
+    request resolved to and the model it answers with, seed, day, graph and coverage
+    stamps, the revision of the conversion catalogue the request
     bound (None when it bound none), and the build of the origin catalogue it bound with
     its UN System setting, which decide what provenances an answer admits. The cap, the
     place default and the coverage mode can change answers without changing the build
@@ -147,6 +149,7 @@ def scope_document(
         "seam_default": seam_default,
         "qualifier_coverage": qualifier_coverage,
         "build_commit": build_commit,
+        "binder": binder,
         "model": model,
         "seed": seed,
         "today": today,

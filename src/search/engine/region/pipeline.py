@@ -17,6 +17,7 @@ from dc_sdmx import SdmxCapExceededError
 from entity_resolution import Admission, EntityResolver, Resolution
 from materialise.member_conversion import request_conversion_reader
 from origin_catalogue import note_un_unserved, recording_un_blocked_places, scoped_reads
+from search.engine.binders import Binder, configured_binder
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM, recording_llm_usage
 from search.engine.clients.sdmx import EngineSdmxClient
@@ -143,6 +144,7 @@ async def resolve_variable(
     resolver: EntityResolver,
     admission: Admission | None = None,
     llm: SupportsLLM,
+    binder: Binder | None = None,
     sdmx: EngineSdmxClient,
     base_timing: dict[str, int],
     pre_resolved: dict[str, Resolution] | None = None,
@@ -202,8 +204,10 @@ async def resolve_variable(
     part's frame (`ResolveState.frame`); a direct caller states them as the parsed door's does.
 
     `graph` and `sdmx` are shared, thread-safe clients. Dev-finance role-keyed observation and
-    availability reads use `sdmx`. `llm` is stateless per call. `date_request` is the shared
-    window, while `base_timing` carries extraction timing.
+    availability reads use `sdmx`. `llm` is stateless per call. `binder` reads the quantity
+    and binds on `llm`; `None` takes the one `Settings.binder` names
+    (`binders.configured_binder`). `date_request` is the shared window, while `base_timing`
+    carries extraction timing.
 
     Recall runs once. Our pass elects over our candidates first, while the UN System Data
     Commons' resolve and shape derivation run beside it (`ResolveState.un_leg`). When our
@@ -225,6 +229,7 @@ async def resolve_variable(
     """
     _admission = admission if admission is not None else Admission(graph=graph)
     _options = options if options is not None else EngineOptions()
+    _binder = binder if binder is not None else configured_binder()
 
     # One conversion memo serves every unit decision, coverage check and preview of the call.
     materialise_graph = (
@@ -267,6 +272,7 @@ async def resolve_variable(
             resolver=resolver,
             admission=_admission,
             llm=llm,
+            binder=_binder,
             sdmx=sdmx,
             deadline=deadline,
             pre_resolved=pre_resolved,

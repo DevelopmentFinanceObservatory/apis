@@ -159,7 +159,7 @@ class _FixedBindLLM:
     async def generate_structured(self, *, prompt: str, system: str, schema: type):
         if schema is QuantityOutput:
             return NO_QUANTITY
-        assert schema is _UniversalBindOutput
+        assert issubclass(schema, _UniversalBindOutput)
         return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
 
 

@@ -200,7 +200,9 @@ class CacheScope:
     response at the `response` event. A hit sends either entry through `hit_events`. A
     follower of an in-flight streamed leader therefore waits
     for the leader's `done` before it sends anything. The generation stamp is read once
-    and sets both the key and entry lifetime. New stamps produce new keys, leaving old entries unreachable. The caller's
+    and sets both the key and entry lifetime. New stamps produce new keys, leaving old entries unreachable. `binder` and `model` name
+    the binder the request resolved to and the model it answers with, so answers two
+    binders give never share a key. The caller's
     coverage snapshot contributes its stamp to the same scope; this class does
     not read the coverage service again. The revision of the conversion catalogue and the
     build and UN System setting of the origin catalogue the request bound join the scope
@@ -216,6 +218,7 @@ class CacheScope:
         start_ms: int,
         deadline: float,
         build_commit: str,
+        binder: str,
         model: str,
         seed: int | None,
         today: str,
@@ -254,6 +257,7 @@ class CacheScope:
                 seam_default=seam_default,
                 qualifier_coverage=config.settings().qualifier_coverage,
                 build_commit=build_commit,
+                binder=binder,
                 model=model,
                 seed=seed,
                 today=today,

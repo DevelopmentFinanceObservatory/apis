@@ -670,6 +670,7 @@ _KEY_SCOPE = scope_document(
     seam_default=True,
     qualifier_coverage="log",
     build_commit="commit-a",
+    binder="gemini",
     model="model-a",
     seed=1,
     today="2026-09-22",

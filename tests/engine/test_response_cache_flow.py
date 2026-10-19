@@ -72,6 +72,7 @@ def _make_scope(
         start_ms=now_ms(),
         deadline=deadline if deadline is not None else time.monotonic() + _DEADLINE_HORIZON_S,
         build_commit=_BUILD_COMMIT,
+        binder="gemini",
         model=_MODEL,
         seed=_SEED,
         today=_TODAY,

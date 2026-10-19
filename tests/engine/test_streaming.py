@@ -160,7 +160,7 @@ def test_dropped_qualifier_note_matches_raw_text_sentence_event(monkeypatch):
 
     class _SelectFirstShapeLLM(FakeLLM):
         async def generate_structured(self, *, prompt, system, schema):
-            if schema is _UniversalBindOutput:
+            if issubclass(schema, _UniversalBindOutput):
                 return (
                     _UniversalBindOutput(
                         chosen_shape_index=0,

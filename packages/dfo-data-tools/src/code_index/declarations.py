@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from code_index.types import (
     DatasetDeclaration,
     DeclaredDefault,
+    HouseDefaultCase,
     ImpliedValue,
     MeasureAxis,
     MeasureClassDeclaration,
@@ -49,7 +50,8 @@ class CodeSystemConfig:
     system, scope codes belong to other systems, and `when_named` entries are lowercase and
     non-empty. Export validates these conditions before writing. `no_vocabulary_terms` lists
     the lowercase words naming a distinction of this axis no code expresses
-    (`CodeSystemDeclaration.no_vocabulary_terms`).
+    (`CodeSystemDeclaration.no_vocabulary_terms`). `house_case` is the kind of question an
+    admitted code makes a part (`CodeSystemDeclaration.house_case`).
     """
 
     code_system: str
@@ -62,6 +64,7 @@ class CodeSystemConfig:
     plain_name: str
     default: DeclaredDefault | None = None
     no_vocabulary_terms: tuple[str, ...] = ()
+    house_case: HouseDefaultCase | None = None
 
 
 _CRS = "provenance/OECDCreditorReportingSystem"
@@ -87,6 +90,7 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
         absent_reading="not_declared",
         declared_by_every_statvar_of=(_CRS, _IMPUTED_MULTILATERAL_SECTORS),
         plain_name="sector",
+        house_case="sector",
     ),
     CodeSystemConfig(
         code_system="crsTypeOfFinance",
@@ -243,6 +247,7 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
             StatedWord(word="bilateral", measured_property="amount"),
             StatedWord(word="bilateral", measured_property="grantEquivalent"),
         ),
+        house_default_for=("sector",),
     ),
     DatasetDeclaration(
         provenance=_IMPUTED_MULTILATERAL_SECTORS,
@@ -269,6 +274,7 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
         absent_observation="unknown",
         account="provider",
         rank=20,
+        house_default_for=("donor",),
     ),
     DatasetDeclaration(
         provenance=_DAC2A,
@@ -287,6 +293,7 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
             ),
         ),
         party_words=(_MULTILATERAL_PROVIDER,),
+        house_default_for=("recipient",),
     ),
     DatasetDeclaration(
         provenance=_DAC2B,

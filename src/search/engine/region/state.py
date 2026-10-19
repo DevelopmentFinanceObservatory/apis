@@ -24,6 +24,7 @@ from materialise.place_scope import DefaultPresence
 from materialise.rate_tables import RateTableCache
 from origin_catalogue import UnUnserved
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.binders import Binder, BindResult, GeminiBinder
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
@@ -651,6 +652,8 @@ class ResolveState:
     resolver: EntityResolver
     admission: Admission
     llm: SupportsLLM
+    # The binder the part's quantity read and bind call go through, on `llm`.
+    binder: Binder = field(default_factory=GeminiBinder)
     sdmx: EngineSdmxClient
     deadline: float | None
     pre_resolved: dict[str, Resolution] | None
@@ -902,6 +905,9 @@ class ResolveState:
     menu_choices: tuple[QualifierMatch, ...] = ()
     # Bind assigns this before any reader; `cast(None)` avoids an invalid sentinel or Optional checks.
     bind_result: _UniversalBindOutput = field(default=cast(_UniversalBindOutput, None))
+    # The binder's whole answer to the bind call (`binders.BindResult`): its reply before
+    # `split_stray_bindings`, with what the engine reads beside it. `None` before bind.
+    bind_decision: BindResult | None = None
     # Shape selected by the bind call.
     shape_draft: ShapeDraft = field(default=cast(ShapeDraft, None))
     # What each bind menu shape stated of data at the places the part names, in

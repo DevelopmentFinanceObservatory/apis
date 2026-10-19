@@ -705,15 +705,11 @@ def test_admit_qualifier_ties_keeps_only_the_codes_the_shapes_rows_hold():
         ),
     ],
 )
-def test_attributed_as_a_plain_verb_names_no_measure(
-    monkeypatch, query, entities, variable, recalled
-):
+def test_attributed_as_a_plain_verb_names_no_measure(query, entities, variable, recalled):
     """The attributed-amount measure reads on phrases that name it ("attributed to donors",
     "attributed aid"). The verb alone names none, so the answer warns of no dropped
     qualifier."""
-    result, _menu = _resolve_two_ended(
-        monkeypatch, query, entities, variable=variable, recalled=(recalled,)
-    )
+    result, _menu = _resolve_two_ended(query, entities, variable=variable, recalled=(recalled,))
 
     assert not [
         w
@@ -723,9 +719,7 @@ def test_attributed_as_a_plain_verb_names_no_measure(
 
 
 @pytest.mark.parametrize("mode", ["log", "refuse"])
-def test_a_term_naming_codes_no_row_holds_follows_the_coverage_mode(
-    monkeypatch, search_settings, caplog, mode
-):
+def test_a_term_naming_codes_no_row_holds_follows_the_coverage_mode(search_settings, caplog, mode):
     """ "Goods donations" names two CRS cooperation modalities, and no index row holds
     either, so bind is never offered them. The part names no dataset, so the record
     follows the coverage mode. In refuse mode the part refuses `qualifier_not_bound` on
@@ -735,7 +729,6 @@ def test_a_term_naming_codes_no_row_holds_follows_the_coverage_mode(
     search_settings(qualifier_coverage=mode)
     with caplog.at_level(logging.INFO, logger="search.engine.region.phase_election"):
         result, menu = _resolve_two_ended(
-            monkeypatch,
             "ODA goods donations from France to Kenya",
             ["France", "Kenya"],
             variable="ODA goods donations",

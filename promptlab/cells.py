@@ -29,7 +29,7 @@ from promptlab.llm import CallRecord, LadderLLM
 from promptlab.manifest import Rung
 from promptlab.scoring import menu_five_tuple
 from promptlab.store import BindRecord, CaptureStore, CellStore, ExtractRecord
-from search.engine.bind import UNRESOLVED_DENOMINATOR, _UniversalBindOutput, menu_denominator
+from search.engine.bind import UNRESOLVED_DENOMINATOR, bind_schema, menu_denominator
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import LLM, SupportsLLM, for_stage
 from search.engine.clients.sdmx import EngineSdmxClient
@@ -279,7 +279,7 @@ async def run_bind_cell(
             await for_stage(wrapped, "bind").generate_structured(
                 prompt=truncated,
                 system=bind_system,
-                schema=_UniversalBindOutput,
+                schema=bind_schema(len(menu)),
             )
             call = sink[0]
 

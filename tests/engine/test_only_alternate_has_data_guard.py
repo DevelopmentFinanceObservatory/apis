@@ -7,11 +7,13 @@ the first such alternate with data as its alternate match (status rule 1)."""
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 from collections.abc import Sequence
 
 import pytest
 
-from search.engine.bind import _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.region.codes import ELECTED_SHAPE_NO_DATA, ONLY_ALTERNATE_HAS_DATA
@@ -19,7 +21,12 @@ from search.engine.region.state import _elected_stat_vars
 from search.engine.retrieval.retrieve import NoDataDraft
 from search.engine.shape import ShapeDraft
 from search.models import GraphRef
-from tests.engine._fake_coverage import empty_coverage_snapshot
+from series_coverage.schema import RoleNames
+from tests.engine._fake_coverage import (
+    FakeCoverageService,
+    build_coverage_index,
+    empty_coverage_snapshot,
+)
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query
 from tests.engine._quantity import NO_QUANTITY
@@ -57,14 +64,21 @@ _ELECTED_NODE = {
 
 
 class _GuardBindLLM:
-    """Elects the data-empty shape and marks the standard alternatives as plausible."""
+    """Elects the data-empty shape, binds `bindings` on it and marks the standard
+    alternatives as plausible."""
 
     def __init__(
-        self, also_plausible: list[int], *, chosen_shape_index: int, unplaced: Sequence[str] = ()
+        self,
+        also_plausible: list[int],
+        *,
+        chosen_shape_index: int,
+        unplaced: Sequence[str] = (),
+        bindings: Sequence[SlotBindingDraft] = (),
     ):
         self._also_plausible = also_plausible
         self._chosen_shape_index = chosen_shape_index
         self._unplaced = list(unplaced)
+        self._bindings = list(bindings)
 
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
@@ -72,10 +86,7 @@ class _GuardBindLLM:
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=self._chosen_shape_index,
-            # No constraint slots on any candidate shape here -- every
-            # binding-carrying variant of this scenario lives in
-            # test_option_coverage.py instead.
-            bindings=[],
+            bindings=self._bindings,
             also_plausible=self._also_plausible,
             ask=None,
             unplaced=self._unplaced,
@@ -327,12 +338,100 @@ def test_role_bearing_elected_shape_no_observations_elects_stat_vars():
     assert result.elected_stat_vars == [GraphRef(ref=_ROLE_SV, label="aid flow")]
 
 
-def test_an_equivalent_reading_answers_for_an_empty_role_bearing_election():
-    """Status rule 1: a subject-only reading of the elected flow's own five-tuple is an
-    equivalent reading of it, so with data it answers in the elected flow's place."""
+def test_the_house_policy_elects_the_subject_only_twin_with_data(caplog):
+    """On a named place, the subject-only twin with data shares the elected flow's reading,
+    so the data-at-places policy elects it in the bind call: the part answers it as
+    definite, and no elected shape lacked data."""
+    caplog.set_level(logging.INFO, logger="search.engine.region.phase_rank_bind")
+
     result = _run_role_bearing_one_alt_scenario(aid_denominator="GrossDomesticProduction")
+
+    (decision,) = [
+        json.loads(r.getMessage().removeprefix("bind_decision "))
+        for r in caplog.records
+        if r.getMessage().startswith("bind_decision ")
+    ]
+    assert (decision["chosen"], decision["elected"], decision["answered"]) == (1, 0, 0)
+    assert decision["fired"] == ["data_at_places"]
     assert result.status == "definite"
     assert [sv.ref.ref for sv in result.specs[0].resolved.members] == [_AID_SV]
+    assert ELECTED_SHAPE_NO_DATA not in [w.code for w in result.warnings]
+
+
+_GRANT_SV = "TESTFIXTURE/OnlyAlternateHasDataGuard/AidGrant"
+_LOAN_SV = "TESTFIXTURE/OnlyAlternateHasDataGuard/AidLoan"
+_GRANT_FLOW_SV = "TESTFIXTURE/OnlyAlternateHasDataGuard/AidGrantFlow"
+_LOAN_FLOW_SV = "TESTFIXTURE/OnlyAlternateHasDataGuard/AidLoanFlow"
+_GRANT_QUERY = "grant aid to Kenya"
+_FLOW_ROLES = RoleNames(donor="creditor", recipient="debtor")
+
+
+def _flow_kind_node(label: str, kind: str, *, role_bearing: bool) -> dict:
+    arcs = {
+        **_std_arcs(label, pop_type="EconomicActivity", meas_prop="amount"),
+        "constraintProperties": {"nodes": [{"dcid": "flowKind"}]},
+        "flowKind": {"nodes": [{"dcid": kind}]},
+    }
+    if role_bearing:
+        arcs["observationProperties"] = {"nodes": [{"dcid": "creditor"}, {"dcid": "debtor"}]}
+    return {"label": label, "type": "StatisticalVariable", "arcs": arcs}
+
+
+def test_a_flow_twin_answers_when_the_bound_member_has_no_data():
+    """Status rule 1 past the house policies: menu availability reads each shape before
+    bind, so the subject-only aid shape has data at Kenya (its loan member does) beside its
+    by-role twin, and the data-at-places policy keeps the binder's pick. The grant the bind
+    draws has no data, so the elected shape holds none, and the twin on the same five-tuple,
+    whose grant flow has data, answers in its place."""
+    graph = FakeGraph(
+        nodes={
+            **_KEN_NODE,
+            _GRANT_SV: _flow_kind_node("grant aid", "Grant", role_bearing=False),
+            _LOAN_SV: _flow_kind_node("loan aid", "Loan", role_bearing=False),
+            _GRANT_FLOW_SV: _flow_kind_node("grant aid flow", "Grant", role_bearing=True),
+            _LOAN_FLOW_SV: _flow_kind_node("loan aid flow", "Loan", role_bearing=True),
+            "Grant": {"label": "Grant", "type": "FlowKind"},
+            "Loan": {"label": "Loan", "type": "FlowKind"},
+        },
+        detect={
+            _GRANT_QUERY: {
+                "svs": [_GRANT_SV, _LOAN_SV, _GRANT_FLOW_SV, _LOAN_FLOW_SV],
+                "cosine_scores": [0.85, 0.84, 0.83, 0.82],
+            }
+        },
+        resolve={"Kenya": "country/KEN"},
+        obs={
+            f"{_LOAN_SV}|country/KEN": [
+                {"earliestDate": "2015", "latestDate": "2022", "obsCount": 5}
+            ]
+        },
+    )
+    coverage = build_coverage_index(
+        [(_GRANT_FLOW_SV, "facet1", "country/USA", "country/KEN", [2015, 2016])],
+        role_names={_GRANT_FLOW_SV: _FLOW_ROLES, _LOAN_FLOW_SV: _FLOW_ROLES},
+    )
+    grant = SlotBindingDraft(
+        axis="how", property_dcid="flowKind", kind="value", value_dcids=["Grant"]
+    )
+    result = asyncio.run(
+        resolve_variable(
+            _GRANT_QUERY,
+            entities=["Kenya"],
+            date_request=None,
+            detect_query=_GRANT_QUERY,
+            role_query=_GRANT_QUERY,
+            entity_roles=door_roles_for_test_query(_GRANT_QUERY, ["Kenya"]),
+            pac=True,
+            graph=graph,
+            resolver=make_resolver(graph),
+            llm=_GuardBindLLM([], chosen_shape_index=0, bindings=[grant]),
+            base_timing={},
+            sdmx=FakeSdmxClient(observations={}, availability={}),
+            coverage=FakeCoverageService(coverage).snapshot(),
+        )
+    )
+    assert result.status == "definite"
+    assert [sv.ref.ref for sv in result.specs[0].resolved.members] == [_GRANT_FLOW_SV]
     assert ELECTED_SHAPE_NO_DATA in [w.code for w in result.warnings]
 
 

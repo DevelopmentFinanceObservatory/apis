@@ -13,7 +13,7 @@ import re
 from collections.abc import Iterable, Mapping, Sequence
 from importlib.resources.abc import Traversable
 from pathlib import Path
-from typing import get_args
+from typing import cast, get_args
 
 from code_index.query import CodeIndex, DuplicateDcid, partly_stated_five_tuples
 from code_index.types import (
@@ -23,6 +23,7 @@ from code_index.types import (
     CodeSystemDeclaration,
     DatasetDeclaration,
     DeclaredDefault,
+    HouseDefaultCase,
     ImpliedValue,
     IndexStamp,
     MeasureAxis,
@@ -49,6 +50,7 @@ _GZIP_MAGIC = b"\x1f\x8b"
 _INDEX_FILENAME = "index.json.gz"
 _ABSENT_OBSERVATION_VALUES: frozenset[AbsentObservation] = frozenset({"zero", "unknown"})
 _FLOW_ACCOUNTS: frozenset[FlowAccount] = frozenset(get_args(FlowAccount.__value__))
+_HOUSE_DEFAULT_CASES: frozenset[HouseDefaultCase] = frozenset(get_args(HouseDefaultCase))
 
 
 def default_index_path() -> Traversable:
@@ -331,7 +333,21 @@ def _parse_declaration(payload: Mapping) -> CodeSystemDeclaration:
         default=_parse_declared_default(payload["default"]),
         enum_dcid=payload["enum_dcid"],
         no_vocabulary_terms=_parse_no_vocabulary_terms(payload.get("no_vocabulary_terms", ())),
+        house_case=_parse_house_case(payload["code_system"], payload.get("house_case")),
     )
+
+
+def _parse_house_case(code_system: str, case: object) -> HouseDefaultCase | None:
+    """A declaration's `house_case`, refusing a value outside `HouseDefaultCase`. Absent
+    reads as none."""
+    if case is None:
+        return None
+    if case not in _HOUSE_DEFAULT_CASES:
+        raise IndexFormatError(
+            f"declaration for {code_system!r} carries house_case={case!r}, outside the "
+            f"vocabulary {sorted(_HOUSE_DEFAULT_CASES)!r}"
+        )
+    return cast(HouseDefaultCase, case)
 
 
 def _parse_no_vocabulary_terms(terms: Sequence[str]) -> tuple[str, ...]:
@@ -432,7 +448,8 @@ def _parse_datasets(rows: Sequence[Mapping]) -> list[DatasetDeclaration]:
     outside `dfo_platform.roles.FlowAccount`, an `opt_in` that is not a boolean,
     a `rank` that is not an integer, an empty `label`, an empty `description`,
     a `stated_words` row `_parse_stated_words` refuses or a `party_words` row
-    `_parse_party_words` refuses (both keys are optional), or a
+    `_parse_party_words` refuses (both keys are optional), a `house_default_for`
+    (optional) that is not a list of `HouseDefaultCase` values, or a
     `provenance` or `rank` repeated across rows. Each raises
     `IndexFormatError` naming the offending row (or the repeated value)."""
     datasets: list[DatasetDeclaration] = []
@@ -451,6 +468,7 @@ def _parse_datasets(rows: Sequence[Mapping]) -> list[DatasetDeclaration]:
                 invariants=dict(row["invariants"]),
                 stated_words=_parse_stated_words(row["provenance"], row.get("stated_words", ())),
                 party_words=_parse_party_words(row["provenance"], row.get("party_words", ())),
+                house_default_for=tuple(row.get("house_default_for", ())),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise IndexFormatError(f"malformed datasets row {row!r}: {exc}") from exc
@@ -475,6 +493,12 @@ def _parse_datasets(rows: Sequence[Mapping]) -> list[DatasetDeclaration]:
             raise IndexFormatError(
                 f"datasets row for {dataset.provenance!r} carries rank={dataset.rank!r}, "
                 "which is not an integer"
+            )
+        if not set(dataset.house_default_for) <= _HOUSE_DEFAULT_CASES:
+            raise IndexFormatError(
+                f"datasets row for {dataset.provenance!r} carries "
+                f"house_default_for={list(dataset.house_default_for)!r}, outside the "
+                f"vocabulary {sorted(_HOUSE_DEFAULT_CASES)!r}"
             )
         if not dataset.label:
             raise IndexFormatError(f"datasets row for {dataset.provenance!r} carries no label")
@@ -505,7 +529,17 @@ def _check_datasets(datasets: Sequence[DatasetDeclaration], statvars: Sequence[S
     `absent_reading`), a declared dataset has no row, or a dataset states a
     word (`DatasetDeclaration.stated_words`) or names a party for one
     (`DatasetDeclaration.party_words`) of a measured property none of its rows
-    has. A row with no provenance belongs to no dataset and passes."""
+    has, or two datasets claim one kind of question as its house default
+    (`DatasetDeclaration.house_default_for`). A row with no provenance belongs to no
+    dataset and passes."""
+    claimed: dict[str, str] = {}
+    for dataset in datasets:
+        for case in dataset.house_default_for:
+            if (holder := claimed.setdefault(case, dataset.provenance)) != dataset.provenance:
+                raise IndexFormatError(
+                    f"datasets {holder!r} and {dataset.provenance!r} both claim "
+                    f"house_default_for {case!r}"
+                )
     invariants = {dataset.provenance: dataset.invariants for dataset in datasets}
     populated: set[str] = set()
     measured: dict[str, set[str]] = {}

@@ -88,6 +88,7 @@ from search.models import (
 )
 from series_coverage.schema import RoleNames
 from tests.engine import test_first_answer_place_scenarios as scenarios
+from tests.engine._binders import MenuRecordingBinder
 from tests.engine._builders import place_sets, settled_place_roles
 from tests.engine._fake_coverage import (
     FakeCoverageService,
@@ -777,7 +778,7 @@ def test_placeless_role_bearing_shape_takes_no_default_scope() -> None:
     assert (["Earth"], "Country") not in enumerated
 
 
-def test_alternate_whose_role_cannot_take_the_place_is_dropped(monkeypatch) -> None:
+def test_alternate_whose_role_cannot_take_the_place_is_dropped() -> None:
     """Norway named as the origin binds as GNI PPP's subject, but the IDS series declares
     only a recipient, so it declares no role on the axis the query directs Norway to and is
     no candidate (`lacks_query_axis`): it never reaches bind, so no binding of it fails."""
@@ -793,14 +794,7 @@ def test_alternate_whose_role_cannot_take_the_place_is_dropped(monkeypatch) -> N
         resolve={"Norway": _NOR},
     )
 
-    menus: list[list[tuple[str, ...]]] = []
-    real_bind = phase_rank_bind.bind_universal
-
-    async def _spy(variable, shapes, **kwargs):
-        menus.append([tuple(shape.sv_arc_facts or ()) for shape in shapes])
-        return await real_bind(variable, shapes, **kwargs)
-
-    monkeypatch.setattr(phase_rank_bind, "bind_universal", _spy)
+    binder = MenuRecordingBinder()
     result = asyncio.run(
         resolve_variable(
             query,
@@ -813,6 +807,7 @@ def test_alternate_whose_role_cannot_take_the_place_is_dropped(monkeypatch) -> N
             graph=graph,
             resolver=make_resolver(graph),
             llm=_ElectFirstWithAlternate(),
+            binder=binder,
             sdmx=FakeSdmxClient(observations={}, scope_availability=graph.scope_availability),
             base_timing={},
             coverage=_coverage().snapshot(),
@@ -822,7 +817,7 @@ def test_alternate_whose_role_cannot_take_the_place_is_dropped(monkeypatch) -> N
     assert result.status == "definite", result
     assert [item.ref.ref for item in result.specs[0].resolved.members] == [_GNI_PPP]
     assert result.specs[0].definition.identity.entities == {"observationAbout": [_NOR]}
-    assert menus == [[(_GNI_PPP,)]]
+    assert binder.menus == [[(_GNI_PPP,)]]
 
 
 def _shape_for(arcs: dict) -> ShapeDraft:

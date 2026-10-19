@@ -126,6 +126,10 @@ class SearchSettings(BaseSettings):
     # Concrete default ties local evaluation baselines to one model. CI pins its own value.
     engine_model: str = "gemini-3.5-flash-lite"
 
+    # The binder that reads each part's stated quantity and elects its shape
+    # (`search.engine.binders`). The response cache keys each answer on it and its model.
+    binder: Literal["gemini"] = "gemini"
+
     # Best-effort Gemini seed. Repeated identical queries matched on the pinned model.
     # Defaults to 1. An explicit empty string selects unseeded sampling.
     llm_seed: int | None = 1

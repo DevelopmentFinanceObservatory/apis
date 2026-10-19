@@ -34,6 +34,7 @@ from search.engine.assemble import (
     skills_index_incomplete_warning,
     skills_index_unavailable_warning,
 )
+from search.engine.binders import configured_binder
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.graph_client import LiveGraphClient
 from search.engine.clients.llm import LLM, SupportsLLM
@@ -482,6 +483,10 @@ async def _resolve_pipeline_events(
 
     today = datetime.now(UTC).date().isoformat()
 
+    # The binder `Settings.binder` names, for the cache key. Each part resolves its own
+    # binder from the same setting (`region.resolve_variable`), so the two agree.
+    binder = configured_binder()
+
     # The cache key includes the resolved candidate cap and PAC setting. A transport that
     # streams trailing events stores the events from `response` to `done`, since the
     # response event lacks the trailing ones.
@@ -491,7 +496,8 @@ async def _resolve_pipeline_events(
         start_ms=start_ms,
         deadline=deadline,
         build_commit=build_commit(),
-        model=config.settings().engine_model,
+        binder=binder.name,
+        model=binder.model,
         seed=config.settings().llm_seed,
         today=today,
         max_candidates=_max_cand,

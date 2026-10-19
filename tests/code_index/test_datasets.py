@@ -506,6 +506,12 @@ def test_the_packaged_index_declares_crs_and_the_dac_tables_and_the_opt_in_imput
     }
     assert index.datasets[_CRS_PROVENANCE].label == "OECD Creditor Reporting System (CRS)"
     assert index.datasets[_IMPUTED_PROVENANCE].label == "ONE Imputed Multilateral Sectors"
+    assert index.house_defaults() == {
+        "sector": _CRS_PROVENANCE,
+        "recipient": _DAC2A_PROVENANCE,
+        "donor": _DAC1_PROVENANCE,
+    }
+    assert index.house_case_systems() == {"crsPurpose": "sector"}
 
 
 def test_every_packaged_declared_word_names_an_entity_kind_the_resolver_assigns():
@@ -798,4 +804,57 @@ def test_loader_rejects_an_implied_value_the_index_contradicts(declared: list[di
     payload["implied_values"] = declared
 
     with pytest.raises(IndexFormatError):
+        parse_index(payload)
+
+
+def test_loader_reads_the_house_default_each_dataset_claims():
+    payload = _with_imputed_dataset()
+    payload["datasets"][0]["house_default_for"] = ["sector", "recipient"]
+    payload["datasets"][1]["house_default_for"] = ["donor"]
+    index = parse_index(payload)
+
+    assert index.datasets[_CRS_PROVENANCE].house_default_for == ("sector", "recipient")
+    assert index.house_defaults() == {
+        "sector": _CRS_PROVENANCE,
+        "recipient": _CRS_PROVENANCE,
+        "donor": _IMPUTED_PROVENANCE,
+    }
+    assert parse_index(_fixture()).house_defaults() == {}
+
+
+@pytest.mark.parametrize(
+    ("crs", "imputed", "refusal"),
+    [
+        pytest.param(["sectors"], [], "house_default_for=\\['sectors'\\]", id="outside-vocabulary"),
+        pytest.param(
+            ["sector"], ["sector"], "both claim house_default_for 'sector'", id="claimed-twice"
+        ),
+    ],
+)
+def test_loader_rejects_a_house_default_outside_the_vocabulary_or_claimed_twice(
+    crs: list[str], imputed: list[str], refusal: str
+):
+    payload = _with_imputed_dataset()
+    payload["datasets"][0]["house_default_for"] = crs
+    payload["datasets"][1]["house_default_for"] = imputed
+
+    with pytest.raises(IndexFormatError, match=refusal):
+        parse_index(payload)
+
+
+def test_loader_reads_the_kind_of_question_a_code_system_declares():
+    payload = _fixture()
+    payload["declarations"][0]["house_case"] = "sector"
+    index = parse_index(payload)
+
+    assert index.declarations[payload["declarations"][0]["code_system"]].house_case == "sector"
+    assert index.house_case_systems() == {payload["declarations"][0]["code_system"]: "sector"}
+    assert parse_index(_fixture()).house_case_systems() == {}
+
+
+def test_loader_rejects_a_house_case_outside_the_vocabulary():
+    payload = _fixture()
+    payload["declarations"][0]["house_case"] = "sectors"
+
+    with pytest.raises(IndexFormatError, match="house_case='sectors'"):
         parse_index(payload)

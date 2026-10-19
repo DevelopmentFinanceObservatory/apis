@@ -22,6 +22,7 @@ from code_index.types import (
     CodeSystemDeclaration,
     ConstraintQuery,
     DatasetDeclaration,
+    HouseDefaultCase,
     ImpliedValue,
     IndexStamp,
     LevelOption,
@@ -806,6 +807,24 @@ class CodeIndex:
         declares `provenance`."""
         dataset = self.datasets.get(provenance)
         return dataset.absent_observation if dataset is not None else "unknown"
+
+    def house_case_systems(self) -> dict[str, HouseDefaultCase]:
+        """Each code system that declares a kind of question (`CodeSystemDeclaration.house_case`)
+        mapped to that kind. A system declaring none is absent."""
+        return {
+            system: declaration.house_case
+            for system, declaration in self.declarations.items()
+            if declaration.house_case is not None
+        }
+
+    def house_defaults(self) -> dict[HouseDefaultCase, str]:
+        """Each kind of question mapped to the provenance of its house default dataset
+        (`DatasetDeclaration.house_default_for`). A kind no dataset claims is absent."""
+        return {
+            case: dataset.provenance
+            for dataset in self.datasets.values()
+            for case in dataset.house_default_for
+        }
 
     # --- Descendants ---
 

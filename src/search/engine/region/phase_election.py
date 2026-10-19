@@ -8,7 +8,7 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 
 from code_index.shared import get_index, get_measure_index
-from search.engine.bind import SlotBindingDraft, rank_elected
+from search.engine.bind import SlotBindingDraft
 from search.engine.bind_repair import (
     apply_declared_defaults,
     apply_shape_slot_defaults,
@@ -33,6 +33,7 @@ from search.engine.region.phase_rank_bind import (
     _admit_qualifier_matches_against_elected_shape,
     _bound_code_records,
     _coverage_records,
+    _elected_index,
     _force_qualifier_bindings,
     _log_admitted_qualifiers,
     _menu_choices,
@@ -236,20 +237,6 @@ def _vet_election(state: ResolveState) -> RegionResult | None:
         )
 
     return None
-
-
-def _elected_index(state: ResolveState) -> int:
-    """The menu index of the elected reading: the first shape the bind menu states as the
-    reading the model chose, in the rank that orders the menu (`bind.rank_elected`), and
-    the model's own choice where the menu tells every higher-ranked shape apart from it.
-    The model's bindings and nominations stand as drafted: the bindings read the elected
-    shape unchanged, and a nominated shape that is elected here is no alternative to
-    itself (`phase_place_materialise._plan_status`). A reading the model declined every
-    menu shape for stands in as it is (`phase_rank_bind._stand_in_declined`)."""
-    bind_result = state.bind_result
-    if state.declined is not None:
-        return bind_result.chosen_shape_index
-    return rank_elected(state.capped_shapes, bind_result, availability=state.menu_availability)
 
 
 def _settle_bindings(

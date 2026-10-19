@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import date
 from typing import Literal, NamedTuple
 
@@ -23,13 +24,22 @@ from search.engine.bind import (
     CandidateMenu,
     SlotBindingDraft,
     _UniversalBindOutput,
-    bind_universal,
+    rank_elected,
     split_stray_bindings,
 )
 from search.engine.bind_repair import (
     _label_has_negated_occurrence,
     _label_named_in_text,
     _label_negated_in_text,
+)
+from search.engine.binders import BindRequest, BindResult
+from search.engine.binders.house_policy import (
+    Context,
+    PolicyChoice,
+    PolicyPool,
+    apply_house_policies,
+    context_of,
+    shape_facts,
 )
 from search.engine.config import settings
 from search.engine.degraded_reads import note_degraded_read
@@ -79,7 +89,7 @@ from search.engine.quantity import (
     statvar_denominators,
     with_stated_form,
 )
-from search.engine.quantity_read import QuantityOutput, read_stated_quantity
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region.admissibility import (
     judge_measure_and_roles,
     judge_pinned_parts,
@@ -301,7 +311,7 @@ async def _read_stated_quantity(
     state: ResolveState, shapes: Sequence[ShapeDraft]
 ) -> RegionResult | None:
     """Read the form and the base the variable phrase states, from its own words, over the
-    denominators `shapes` divide by (`quantity_read.read_stated_quantity`), and record them
+    denominators `shapes` divide by (`binders.Binder.read_quantity`), and record them
     (`_read_quantity_answer`). Return a terminal result for a malformed reading.
 
     The read runs after the measure and role rules and before the form rule, so a form
@@ -309,7 +319,7 @@ async def _read_stated_quantity(
     (`admissibility.judge_pinned_parts`), and the bind call elects among what is left. Its
     usage opens the part's LLM usage (`ResolveState.var_usage`)."""
     denominators = _quantity_denominators(state, shapes)
-    quantity, state.var_usage = await read_stated_quantity(
+    quantity, state.var_usage = await state.binder.read_quantity(
         _quantity_phrase(state), denominators, llm=state.llm
     )
     if _read_quantity_answer(state, quantity, denominators, shapes):
@@ -3569,11 +3579,102 @@ def _bind_variable(state: ResolveState) -> str:
     return min(named)[1] if named else state.variable
 
 
-async def _phase_bind(state: ResolveState) -> RegionResult | None:
-    """Run one choose-and-bind call. Return a terminal result for an ask that names no
-    nearest reading, or an invalid index.
+@dataclass(kw_only=True)
+class _HousePolicyStep:
+    """A part's house-policy step (`BindRequest.apply_policies`): the house policies over a
+    binder's pool (`house_policy.apply_house_policies`), the pool's first index the binder's
+    pick, read against the part's menu, frame, each shape's admitted qualifiers and
+    availability, and the code index's house default datasets, with the binder's ratings of
+    a rated pool. `calls` counts the binder's calls."""
 
-    The call elects a shape of the admissible menu and binds its slots. The part's frame
+    shapes: Sequence[ShapeDraft]
+    frame: Frame
+    admitted_qualifiers: Sequence[Sequence[QualifierMatch]]
+    availability: Sequence[bool | None]
+    code_index: CodeIndex
+    calls: int = 0
+
+    def __call__(
+        self, pool: PolicyPool, *, ratings: Mapping[int, float] | None = None
+    ) -> PolicyChoice:
+        self.calls += 1
+        facts = shape_facts(
+            self.shapes, self.availability, pool.measuring, code_index=self.code_index
+        )
+        context = self._context(pool.measuring)
+        return apply_house_policies(facts, pool, context, chosen=pool.measuring[0], ratings=ratings)
+
+    def _context(self, pool: Sequence[int]) -> Context:
+        return context_of(
+            self.frame,
+            self.admitted_qualifiers,
+            pool,
+            wanted_datasets=self.code_index.house_defaults(),
+            case_systems=self.code_index.house_case_systems(),
+        )
+
+
+def _elected_index(state: ResolveState) -> int:
+    """The menu index of the elected reading: the first shape the bind menu states as the
+    reading the model chose, in the rank that orders the menu (`bind.rank_elected`), and
+    the model's own choice where the menu tells every higher-ranked shape apart from it.
+    The rank reads only the shapes the house policies left standing in their pool
+    (`BindResult.policy_choice`), so it breaks a tie among the survivors and never undoes
+    a policy's move. The model's bindings and nominations stand as drafted: the bindings
+    read the elected shape unchanged, and a nominated shape that is elected here is no
+    alternative to itself (`phase_place_materialise._plan_status`). A reading the model
+    declined every menu shape for stands in as it is (`_stand_in_declined`)."""
+    bind_result = state.bind_result
+    if state.declined is not None:
+        return bind_result.chosen_shape_index
+    decision = state.bind_decision
+    among = None
+    if decision is not None and decision.policy_pool is not None:
+        dropped = decision.policy_choice.dropped if decision.policy_choice is not None else ()
+        among = frozenset(decision.policy_pool.measuring) - frozenset(dropped)
+    return rank_elected(
+        state.capped_shapes, bind_result, availability=state.menu_availability, among=among
+    )
+
+
+def _log_bind_decision(state: ResolveState, decision: BindResult | None) -> None:
+    """One line per bind call, ``bind_decision`` and a JSON object: the part and pass, the
+    binder, the menu's shape ids, the shape the binder chose (``chosen``), the one the house
+    policies elect (``elected``) and the one the part answers with after the menu-rank
+    tie-break (``answered``, `_elected_index`), each None when the reply elects none, the
+    policy pool and whether a rating bounds it, the policies that narrowed, the reply's
+    ratings as it wrote them (None on a refusal), the facts the policies read
+    of each pool shape, and whether the schema refused the reply (`decision` None)."""
+    pool = decision.policy_pool if decision is not None else None
+    choice = decision.policy_choice if decision is not None else None
+    output = decision.output if decision is not None else None
+    record = {
+        "part": state.variable_index,
+        "pass": state.pool,
+        "binder": decision.binder if decision is not None else state.binder.name,
+        "menu": [shape.shape_id for shape in state.capped_shapes],
+        "chosen": pool.measuring[0] if pool is not None else None,
+        "elected": choice.survivor if choice is not None else None,
+        "answered": _elected_index(state) if choice is not None else None,
+        "pool": list(pool.measuring) if pool is not None else [],
+        "rated": pool.rated if pool is not None else False,
+        "fired": list(choice.fired) if choice is not None else [],
+        "ratings": [r.model_dump() for r in output.measuring] if output is not None else None,
+        "facts": [asdict(f) for f in choice.facts] if choice is not None else [],
+        "refused": decision is None,
+    }
+    logger.info("bind_decision %s", json.dumps(record, separators=(",", ":")))
+
+
+async def _phase_bind(state: ResolveState) -> RegionResult | None:
+    """Run one choose-and-bind call through the part's binder (`ResolveState.binder`).
+    Return a terminal result for an ask that names no nearest reading, or an invalid index.
+
+    The call elects a shape of the admissible menu and binds its slots, and the house
+    policies choose among the shapes the binder elects from (`BindRequest.apply_policies`,
+    `_HousePolicyStep`), once on a reply that elects a shape and never on one that does
+    not. The binder's answer is `ResolveState.bind_decision`, logged as one
+    ``bind_decision`` line (`_log_bind_decision`). The part's frame
     opens the prompt, and the readings refused only on a pinned part follow the menu as not
     electable (`InterpretationSet.refused_on_pinned`). Each shape's own admitted qualifiers
     become its fixed context (`_shape_qualifiers`), less the terms inside a phrase its own
@@ -3623,24 +3724,31 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
             has_data_where_asked(state, shape, series=series) for shape in state.capped_shapes
         ]
     state.menu_availability = availability
+    policies = _HousePolicyStep(
+        shapes=state.capped_shapes,
+        frame=state.frame,
+        admitted_qualifiers=admitted_qualifiers,
+        availability=availability,
+        code_index=get_index(),
+    )
+    request = BindRequest(
+        variable=_bind_variable(state),
+        shapes=state.capped_shapes,
+        admitted_qualifiers=admitted_qualifiers,
+        admitted_ties=admitted_ties,
+        withheld_measure_axes=withheld_measure_axes,
+        dropped_qualifier_phrases=tuple(state.dropped_qualifier_phrases),
+        candidate_menus=candidate_menus if any(candidate_menus) else (),
+        frame=state.frame,
+        refused=state.interpretations.refused_on_pinned,
+        availability=availability,
+        query_text=state.query_text or state.role_query,
+        apply_policies=policies,
+    )
     t0 = now_ms()
     bind_result: _UniversalBindOutput
     _bind_usage: dict | None
-    bind_task = asyncio.create_task(
-        bind_universal(
-            _bind_variable(state),
-            state.capped_shapes,
-            admitted_qualifiers=admitted_qualifiers,
-            admitted_ties=admitted_ties,
-            withheld_measure_axes=withheld_measure_axes,
-            dropped_qualifier_phrases=tuple(state.dropped_qualifier_phrases),
-            candidate_menus=candidate_menus if any(candidate_menus) else (),
-            frame=state.frame,
-            refused=state.interpretations.refused_on_pinned,
-            availability=availability,
-            llm=state.llm,
-        )
-    )
+    bind_task = asyncio.create_task(state.binder.bind(request, llm=state.llm))
     refusal: LLMOutputRefused | None = None
     try:
         if state.emit is not None and state.capped_shapes:
@@ -3650,7 +3758,9 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
             )
             await state.emit(shape_event)
         try:
-            bind_result, _bind_usage = await bind_task
+            decision, _bind_usage = await bind_task
+            state.bind_decision = decision
+            bind_result = decision.output
         except LLMOutputRefused as exc:
             # The schema refuses a binding that names no value, so a model that answers
             # with one has bound nothing it can name: the variable is not resolved. Gemini
@@ -3658,7 +3768,15 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
             # infrastructure failure.
             logger.info("bind answer refused at parse for %r: %s", state.variable, exc)
             refusal = exc
+            assert policies.calls == 0, f"house policies ran {policies.calls} times on a refusal"
         else:
+            elects = not bind_result.ask and 0 <= bind_result.chosen_shape_index < len(
+                state.capped_shapes
+            )
+            assert policies.calls == int(elects), (
+                f"house policies ran {policies.calls} times on a bind call that "
+                f"{'elects' if elects else 'elects no'} shape"
+            )
             bind_result, stray = split_stray_bindings(bind_result, state.capped_shapes)
             state.bind_result = bind_result
             if stray:
@@ -3669,6 +3787,7 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
             bind_task.cancel()
             await asyncio.gather(bind_task, return_exceptions=True)
     state.timing["bind"] = now_ms() - t0
+    _log_bind_decision(state, None if refusal is not None else state.bind_decision)
     await _emit_step(
         state.emit,
         state.variable_index,

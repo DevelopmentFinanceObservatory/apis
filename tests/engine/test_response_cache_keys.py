@@ -37,6 +37,7 @@ def _scope(
     seam_default: bool = True,
     qualifier_coverage: Literal["log", "refuse"] = "log",
     build_commit: str = "commit-a",
+    binder: str = "gemini",
     model: str = "model-a",
     seed: int | None = 1,
     today: str = "2026-09-20",
@@ -53,6 +54,7 @@ def _scope(
         seam_default=seam_default,
         qualifier_coverage=qualifier_coverage,
         build_commit=build_commit,
+        binder=binder,
         model=model,
         seed=seed,
         today=today,
@@ -751,6 +753,15 @@ def test_different_model_changes_key() -> None:
     assert a != b
 
 
+def test_two_binders_never_share_a_key() -> None:
+    """The binder a request resolved to keys both layers, even when the two binders name
+    the same model, so an answer one binder gave is never served as the other's."""
+    gemini = _scope(binder="gemini", model="model-a")
+    other = _scope(binder="jev", model="model-a")
+    assert layer1_key(query="gdp kenya", scope=gemini) != layer1_key(query="gdp kenya", scope=other)
+    assert _layer2_key(scope=gemini) != _layer2_key(scope=other)
+
+
 def test_different_seed_changes_key() -> None:
     a = layer1_key(query="gdp kenya", scope=_scope(seed=1))
     b = layer1_key(query="gdp kenya", scope=_scope(seed=2))
@@ -806,6 +817,7 @@ def test_keys_are_stable_across_independently_built_equal_inputs() -> None:
         seam_default=True,
         qualifier_coverage="log",
         build_commit="commit-a",
+        binder="gemini",
         model="model-a",
         seed=1,
         today="2026-09-20",
@@ -818,6 +830,7 @@ def test_keys_are_stable_across_independently_built_equal_inputs() -> None:
     scope_reversed = scope_document(
         today="2026-09-20",
         seed=1,
+        binder="gemini",
         model="model-a",
         build_commit="commit-a",
         seam_default=True,
