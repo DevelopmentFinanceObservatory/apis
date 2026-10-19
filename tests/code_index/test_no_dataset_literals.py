@@ -4,6 +4,7 @@ Datasets enter Search, the Datasets API and the code index only through the inde
 declarations. A string literal equal to a declared dataset's provenance (with or without
 its `provenance/` prefix), or to a code value only one declared dataset's rows carry (with
 or without a `dcid:` prefix), would let a code path decide for one dataset by name.
+`code_index/declarations.py` is the one place dataset literals live, so the scan skips it.
 """
 
 from __future__ import annotations
@@ -12,9 +13,9 @@ import ast
 from collections import defaultdict
 from pathlib import Path
 
+from code_index.declarations import DATASETS
 from code_index.query import CodeIndex
 from code_index.shared import get_index
-from scripts.export_code_index import DATASETS
 
 _REPO = Path(__file__).resolve().parents[2]
 _ROOTS = (
@@ -23,6 +24,7 @@ _ROOTS = (
     _REPO / "src" / "datasets_api",
     _REPO / "packages" / "dfo-data-tools" / "src" / "code_index",
 )
+_DECLARATIONS = _ROOTS[-1] / "declarations.py"
 
 
 def _dataset_names(index: CodeIndex) -> set[str]:
@@ -62,7 +64,7 @@ def test_the_scan_finds_a_dataset_named_in_a_literal():
 def test_no_election_module_names_a_declared_dataset_or_its_own_codes():
     index = get_index()
     banned = _dataset_names(index) | _single_dataset_codes(index)
-    files = sorted(path for root in _ROOTS for path in root.rglob("*.py"))
+    files = sorted(path for root in _ROOTS for path in root.rglob("*.py") if path != _DECLARATIONS)
 
     hits = [
         f"{path.relative_to(_REPO)}:{line}: {value!r}"

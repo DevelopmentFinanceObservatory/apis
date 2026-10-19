@@ -55,6 +55,7 @@ from datasets_api.version_store import LiveHeadStore, LiveVersionLister, LiveVer
 from datasets_api.versions import HeadStore, VersionLister, VersionRecordWriter
 from dc_sdmx import SdmxClient
 from dfo_platform.build import build_commit
+from graph_release.service import ReleaseService
 from materialise import EnrichmentLookup
 from materialise.facets import VariableBreadthReader
 from materialise.graph import GraphReader
@@ -138,12 +139,14 @@ class DepsOverrides:
     """Dependencies the caller supplies in place of live ones. `None` builds the live one.
 
     `coverage`, `rate_cache`, and `code_index` are process-wide services the surface resolves
-    when it is built, so a missing coverage artifact fails construction.
+    when it is built, so a missing coverage artifact fails construction. `release` is the
+    process's graph release service, `None` when `GRAPH_RELEASE_URI` is unset.
     """
 
     coverage: CoverageService
     rate_cache: RateTableCache
     code_index: CodeIndex
+    release: ReleaseService | None = None
     registry: SpecRegistry | None = None
     spec_reader: SpecReader | None = None
     snapshot_reader: SnapshotReader | None = None
@@ -291,6 +294,11 @@ async def open_deps(
         # the estimate and the budget decision take, beside the frames other requests build.
         # A publish holds no permit, so its frame can be resident during a reload.
         stack.callback(overrides.coverage.register_load_guard(materialise_semaphore.every_permit))
+        # A release swap holds every permit for the same reason.
+        if overrides.release is not None:
+            stack.callback(
+                overrides.release.register_swap_guard(materialise_semaphore.every_permit)
+            )
 
         read_executor, work_executor = build_executors(settings)
         budget = ShutdownBudget()

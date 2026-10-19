@@ -18,7 +18,7 @@ from typing import Final, Literal
 
 from code_index.query import CodeIndex
 from code_index.types import StatVarRow
-from dc_graph import IMPORT_ADDED_CONSTRAINT_PROPERTIES
+from dc_graph import dfo_visible
 from origin_catalogue import Catalogue
 from origin_catalogue.un_mirror import UnArc
 from search.engine.region.codes import ARTIFACT_PAIR_STALE, CATALOGUE_INDEX_DRIFT
@@ -92,12 +92,12 @@ def pair_stale_warning(
 def index_drift(row: StatVarRow, arcs: Iterable[UnArc]) -> tuple[DriftAspect, ...]:
     """Where `arcs`, a StatVar's arcs in the catalogue, disagree with its code index
     `row`: its five-tuple, its constraint properties and their values, or its roles
-    (`observationProperties`). Arc values compare as sets, and the constraint list leaves
-    out `IMPORT_ADDED_CONSTRAINT_PROPERTIES`, as the graph client and the export do."""
+    (`observationProperties`). Arc values compare as sets over the arcs `dfo_visible` keeps,
+    as the graph client and the export do."""
     values: dict[str, set[str]] = {}
     for arc in arcs:
         target = arc.dcid or arc.value
-        if target is not None:
+        if target is not None and dfo_visible(arc.property, target):
             values.setdefault(arc.property, set()).add(target)
 
     def held(property: str) -> set[str]:
@@ -109,8 +109,7 @@ def index_drift(row: StatVarRow, arcs: Iterable[UnArc]) -> tuple[DriftAspect, ..
         for property, field in _FIVE_TUPLE_FIELDS
     ):
         aspects.append("five_tuple")
-    constraints = held("constraintProperties") - IMPORT_ADDED_CONSTRAINT_PROPERTIES
-    if constraints != set(row.constraint_properties) or any(
+    if held("constraintProperties") != set(row.constraint_properties) or any(
         held(property) != {value} for property, value in row.constraint_properties.items()
     ):
         aspects.append("constraints")

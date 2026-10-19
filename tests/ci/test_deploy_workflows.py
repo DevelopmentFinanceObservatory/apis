@@ -6,6 +6,7 @@ triggers and the GitHub Environment.
 
 import re
 import subprocess
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -179,6 +180,7 @@ def test_every_name_comes_from_the_environment_variables():
         "JOB_ORIGIN_CATALOGUE",
         "JOB_SEARCH_CATALOGUE",
         "JOB_DATASETS_MAINTENANCE",
+        "JOB_GRAPH_RELEASE",
     ):
         assert image["env"][name] == f"${{{{ vars.{name} }}}}"
         assert name in image["run"]
@@ -190,10 +192,21 @@ def test_every_name_comes_from_the_environment_variables():
             r"gcloud run (?:jobs|services) \w+ (\S+ \S+ \S+)", step.get("run", "")
         )
     ]
-    # Six job updates, ten job executions, and two service updates.
-    assert len(targets) == 18
-    for target in targets:
-        assert re.fullmatch(r'"\$\{\{ vars\.(JOB|SERVICE)_[A-Z_]+ \}\}"', target), target
+    # Seven job updates, ten job executions, and two service updates.
+    assert Counter(targets) == {
+        f'"${{{{ vars.{name} }}}}"': count
+        for name, count in {
+            "JOB_DATASETS_MIGRATE": 2,
+            "JOB_PRESENTATION_MIGRATE": 2,
+            "JOB_DATASETS_MAINTENANCE": 3,
+            "JOB_COVERAGE": 5,
+            "JOB_ORIGIN_CATALOGUE": 3,
+            "JOB_GRAPH_RELEASE": 1,
+            "JOB_SEARCH_CATALOGUE": 1,
+            "SERVICE_WORKER": 1,
+            "SERVICE_APIS": 1,
+        }.items()
+    }
 
 
 @pytest.mark.parametrize(
@@ -344,7 +357,7 @@ def test_decide_step_runs_gcloud_describe_and_git_diff_and_gates_every_later_ste
     steps = _steps()
     decide_index = steps.index(decide)
     later = steps[decide_index + 1 :]
-    assert len(later) == 19
+    assert len(later) == 20
     for step in later:
         assert step["if"] == "steps.decide.outputs.deploy == 'true'", step
 

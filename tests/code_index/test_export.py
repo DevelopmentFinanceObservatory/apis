@@ -1,4 +1,4 @@
-"""Offline tests for scripts/export_code_index.py. Drives a small in-memory
+"""Offline tests for code_index/export.py and scripts/export_code_index.py. Drives a small in-memory
 fake reader (`_FakeGraph`) implementing only the `ExportReader` surface the
 export actually calls (`node_subjects`, `node_arcs_many` and `node_arcs_batch`).
 Nothing here opens a socket.
@@ -9,12 +9,56 @@ from __future__ import annotations
 import dataclasses
 import gzip
 import json
+import sys
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
+from code_index.declarations import (
+    CODE_SYSTEMS,
+    CONCEPT_GROUPS,
+    DATASETS,
+    MEASURE_CLASSES,
+    MEASURE_VALUE_TEXT,
+    PARTLY_STATED_VALUES,
+    PARTY_KIND_OVERRIDES,
+    PARTY_TYPE_KINDS,
+    SHAPE_SLOT_DEFAULTS,
+    STAT_TYPE_WORDS,
+    TOTAL_GROUPS,
+    VARIABLE_ALIASES,
+    CodeSystemConfig,
+    KindOverride,
+    MeasureValueText,
+    TotalGroup,
+)
+from code_index.export import (
+    ExportRefused,
+    PartyPublication,
+    _apply_concept_groups,
+    _measure_class_to_dict,
+    _minimal_system_sets,
+    _partly_stated_value_to_dict,
+    _shape_slot_default_to_dict,
+    _stat_type_word_to_dict,
+    _validate_declared_defaults,
+    _verify_axis_coverage,
+    _verify_measure_label_named_values,
+    _verify_measure_nouns,
+    _verify_measure_partition_labels,
+    content_hash,
+    enumerate_statvar_dcids,
+    export_code_system,
+    export_graph_blocks,
+    export_measure_values,
+    export_source_codes,
+    export_statvars,
+    export_value_parents,
+    stamp_counts,
+    strip_system_suffix,
+)
 from code_index.loader import (
     IndexFormatError,
     default_index_path,
@@ -39,47 +83,9 @@ from materialise.graph import (
     SubjectPage,
 )
 from scripts.export_code_index import (
-    _CONCEPT_GROUPS,
-    _MEASURE_VALUE_TEXT,
-    CODE_SYSTEMS,
-    DATASETS,
-    MEASURE_CLASSES,
-    PARTLY_STATED_VALUES,
-    PARTY_KIND_OVERRIDES,
-    PARTY_TYPE_KINDS,
-    SHAPE_SLOT_DEFAULTS,
-    STAT_TYPE_WORDS,
-    TOTAL_GROUPS,
-    VARIABLE_ALIASES,
-    CodeSystemConfig,
     CoverageJoin,
-    KindOverride,
-    PartyPublication,
-    TotalGroup,
-    _apply_concept_groups,
-    _measure_class_to_dict,
-    _MeasureValueText,
-    _minimal_system_sets,
-    _partly_stated_value_to_dict,
-    _shape_slot_default_to_dict,
-    _stat_type_word_to_dict,
-    _validate_declared_defaults,
-    _verify_axis_coverage,
-    _verify_measure_label_named_values,
-    _verify_measure_nouns,
-    _verify_measure_partition_labels,
-    content_hash,
-    enumerate_statvar_dcids,
-    export_code_system,
-    export_graph_blocks,
     export_index,
-    export_measure_values,
-    export_source_codes,
-    export_statvars,
-    export_value_parents,
     load_coverage_join,
-    stamp_counts,
-    strip_system_suffix,
 )
 from series_coverage.loader import load_coverage
 
@@ -385,7 +391,7 @@ def test_hierarchical_declared_disagreement_raises_naming_both_values():
         declared_by_every_statvar_of=(_TEST_PROVENANCE,),
         plain_name="flat",
     )
-    with pytest.raises(SystemExit, match=r"derived hierarchical=False.*expected value True"):
+    with pytest.raises(ExportRefused, match=r"derived hierarchical=False.*expected value True"):
         export_code_system(graph, wrong)
 
 
@@ -412,7 +418,7 @@ def test_exporter_refuses_a_parent_outside_the_exported_code_system():
     """A cross-system parent would make hierarchy walks leave their vocabulary (#852)."""
     graph = _cross_system_parent_graph()
 
-    with pytest.raises(SystemExit, match=r"SysHierChild.*sysHier.*SysFlatRoot.*SysHierEnum"):
+    with pytest.raises(ExportRefused, match=r"SysHierChild.*sysHier.*SysFlatRoot.*SysHierEnum"):
         export_code_system(graph, _HIERARCHICAL)
 
 
@@ -430,10 +436,10 @@ def test_exporter_accepts_a_parent_the_exporting_enumeration_returned():
 # --- Truncation refusals (export_code_system's own typeOf read) ---
 
 
-def test_truncated_typeof_page_raises_systemexit():
+def test_truncated_typeof_page_raises_export_refused():
     graph = _two_system_graph()
     graph.truncate = frozenset({("SysHierEnum", "typeOf")})
-    with pytest.raises(SystemExit, match="truncated"):
+    with pytest.raises(ExportRefused, match="truncated"):
         export_code_system(graph, _HIERARCHICAL, max_results=1)
 
 
@@ -563,7 +569,7 @@ def test_partition_axes_exhausted_still_truncated_raises_naming_filter_path():
     purpose, finance = _purpose_config(), _finance_config()
     code_rows_by_system = {"sysPurpose": [{"dcid": "P1"}], "sysFinance": [{"dcid": "F1"}]}
 
-    with pytest.raises(SystemExit, match="exhausted every partition property") as exc_info:
+    with pytest.raises(ExportRefused, match="exhausted every partition property") as exc_info:
         enumerate_statvar_dcids(graph, code_rows_by_system, (purpose, finance), _TEST_DATASETS)
     assert "F1" in str(exc_info.value)
     assert "PT1" in str(exc_info.value)
@@ -590,7 +596,7 @@ def test_partition_depth_bound_exceeded_raises():
         "sysFinance": [{"dcid": "F1"}, {"dcid": "F2"}],
     }
 
-    with pytest.raises(SystemExit, match="max_depth=1"):
+    with pytest.raises(ExportRefused, match="max_depth=1"):
         enumerate_statvar_dcids(
             graph, code_rows_by_system, (purpose, finance), _TEST_DATASETS, max_partition_depth=1
         )
@@ -647,7 +653,7 @@ def test_spine_coverage_verification_fires_naming_outside_subject():
     purpose, finance = _purpose_config(), _finance_config()
     code_rows_by_system = {"sysPurpose": [{"dcid": "P1"}], "sysFinance": [{"dcid": "F1"}]}
 
-    with pytest.raises(SystemExit) as exc_info:
+    with pytest.raises(ExportRefused) as exc_info:
         enumerate_statvar_dcids(graph, code_rows_by_system, (purpose, finance), _TEST_DATASETS)
     assert "SV_OUTSIDE" in str(exc_info.value)
     assert "F1" in str(exc_info.value)
@@ -712,7 +718,7 @@ def test_spine_coverage_continues_past_a_skipped_code_to_a_later_one():
         "sysFinance": [{"dcid": "F1"}, {"dcid": "F2"}],
     }
 
-    with pytest.raises(SystemExit) as exc_info:
+    with pytest.raises(ExportRefused) as exc_info:
         enumerate_statvar_dcids(graph, code_rows_by_system, (purpose, finance), _TEST_DATASETS)
     assert "SV_OUTSIDE" in str(exc_info.value)
     assert "F2" in str(exc_info.value)
@@ -822,7 +828,7 @@ def test_not_advancing_leaf_with_no_prior_observation_raises_naming_axis():
     purpose = _purpose_config()
     code_rows_by_system = {"sysPurpose": [{"dcid": "P1"}]}
 
-    with pytest.raises(SystemExit, match=r"could not observe.*populationType"):
+    with pytest.raises(ExportRefused, match=r"could not observe.*populationType"):
         enumerate_statvar_dcids(graph, code_rows_by_system, (purpose,), _TEST_DATASETS)
 
 
@@ -857,7 +863,7 @@ def test_verify_axis_coverage_raises_on_a_value_never_partitioned_on():
     statvars = [{"dcid": "SV_X", "population_type": "PT_UNSEEN"}]
     observed_axis_usage = {"populationType": ("PT1", "PT2")}
 
-    with pytest.raises(SystemExit, match=r"SV_X.*PT_UNSEEN.*populationType"):
+    with pytest.raises(ExportRefused, match=r"SV_X.*PT_UNSEEN.*populationType"):
         _verify_axis_coverage(statvars, observed_axis_usage)
 
 
@@ -898,11 +904,11 @@ def test_undeclared_constraint_property_is_absent_not_a_placeholder():
     }
 
 
-def test_declared_but_unreadable_constraint_property_raises_systemexit():
+def test_declared_but_unreadable_constraint_property_raises_export_refused():
     # `nettingBasis` is declared, but its forward read has no value.
     graph = _two_system_graph()
     del graph.forward_arcs["SV_Disbursement_Gross"]["nettingBasis"]
-    with pytest.raises(SystemExit, match=r"SV_Disbursement_Gross.*'nettingBasis'.*no value"):
+    with pytest.raises(ExportRefused, match=r"SV_Disbursement_Gross.*'nettingBasis'.*no value"):
         export_statvars(graph, ("SV_Disbursement_Gross",))
 
 
@@ -910,23 +916,23 @@ def test_declared_but_unreadable_constraint_property_raises_systemexit():
 # plain dcid indistinguishable from a real one ---
 
 
-def test_unresolved_constraint_value_raises_systemexit():
+def test_unresolved_constraint_value_raises_export_refused():
     # The arc exists but resolves to `UNRESOLVED_NODE`, so export cannot write a valid dcid.
     graph = _two_system_graph()
     graph.forward_arcs["SV_Disbursement_Gross"]["nettingBasis"] = (UNRESOLVED_NODE,)
     with pytest.raises(
-        SystemExit, match=r"SV_Disbursement_Gross.*'nettingBasis'.*could not resolve"
+        ExportRefused, match=r"SV_Disbursement_Gross.*'nettingBasis'.*could not resolve"
     ):
         export_statvars(graph, ("SV_Disbursement_Gross",))
 
 
-def test_provisional_node_typed_constraint_value_raises_systemexit():
+def test_provisional_node_typed_constraint_value_raises_export_refused():
     # `DanglingStub` resolves as a node whose only type is `ProvisionalNode`.
     graph = _two_system_graph()
     graph.forward_arcs["SV_Disbursement_Gross"]["nettingBasis"] = ("DanglingStub",)
     graph.forward_arcs["DanglingStub"] = {"typeOf": ("ProvisionalNode",)}
     with pytest.raises(
-        SystemExit,
+        ExportRefused,
         match=r"SV_Disbursement_Gross.*'nettingBasis'.*'DanglingStub'.*ProvisionalNode",
     ):
         export_statvars(graph, ("SV_Disbursement_Gross",))
@@ -955,28 +961,28 @@ def test_provisional_node_check_runs_once_batched_across_every_row():
     )
     graph.forward_arcs["DanglingStub"] = {"typeOf": ("ProvisionalNode",)}
 
-    with pytest.raises(SystemExit, match=r"SV_Disbursement_NoNetting.*ProvisionalNode"):
+    with pytest.raises(ExportRefused, match=r"SV_Disbursement_NoNetting.*ProvisionalNode"):
         export_statvars(graph, ("SV_Disbursement_Gross", "SV_Disbursement_NoNetting"))
 
 
-def test_constraint_value_absent_from_graph_raises_systemexit():
+def test_constraint_value_absent_from_graph_raises_export_refused():
     # The value dcid is absent from the graph, unlike a held `ProvisionalNode` stub.
     graph = _two_system_graph()
     graph.forward_arcs["SV_Disbursement_Gross"]["nettingBasis"] = ("TrulyAbsentDcid",)
     with pytest.raises(
-        SystemExit,
+        ExportRefused,
         match=r"SV_Disbursement_Gross.*'nettingBasis'.*'TrulyAbsentDcid'.*holds no node",
     ):
         export_statvars(graph, ("SV_Disbursement_Gross",))
 
 
-def test_constraint_value_with_no_typeof_arc_raises_systemexit():
+def test_constraint_value_with_no_typeof_arc_raises_export_refused():
     # The graph holds `UntypedStub`, but its node has no `typeOf` arc.
     graph = _two_system_graph()
     graph.forward_arcs["SV_Disbursement_Gross"]["nettingBasis"] = ("UntypedStub",)
     graph.forward_arcs["UntypedStub"] = {"classificationCode": ("999",)}
     with pytest.raises(
-        SystemExit,
+        ExportRefused,
         match=r"SV_Disbursement_Gross.*'nettingBasis'.*'UntypedStub'.*no typeOf arc",
     ):
         export_statvars(graph, ("SV_Disbursement_Gross",))
@@ -985,22 +991,22 @@ def test_constraint_value_with_no_typeof_arc_raises_systemexit():
 # StatVar rows must carry their own `StatisticalVariable` type.
 
 
-def test_statvar_missing_statistical_variable_type_raises_systemexit():
+def test_statvar_missing_statistical_variable_type_raises_export_refused():
     graph = _two_system_graph()
     graph.forward_arcs["SV_Disbursement_Gross"]["typeOf"] = ("SomeOtherType",)
     with pytest.raises(
-        SystemExit,
+        ExportRefused,
         match=r"SV_Disbursement_Gross.*typeOf arc.*'SomeOtherType'.*does not include "
         "StatisticalVariable",
     ):
         export_statvars(graph, ("SV_Disbursement_Gross",))
 
 
-def test_statvar_with_no_typeof_arc_at_all_raises_systemexit():
+def test_statvar_with_no_typeof_arc_at_all_raises_export_refused():
     # The fake returns an empty type set for a node without `typeOf`.
     graph = _two_system_graph()
     graph.forward_arcs["SV_Disbursement_Gross"]["typeOf"] = ()
-    with pytest.raises(SystemExit, match=r"SV_Disbursement_Gross.*typeOf arc.*\(\)"):
+    with pytest.raises(ExportRefused, match=r"SV_Disbursement_Gross.*typeOf arc.*\(\)"):
         export_statvars(graph, ("SV_Disbursement_Gross",))
 
 
@@ -1025,22 +1031,22 @@ def test_statvar_typed_provisional_alongside_statistical_variable_is_not_refused
     "shape_property",
     ["populationType", "measuredProperty", "statType", "measurementQualifier"],
 )
-def test_multi_valued_shape_field_raises_systemexit(shape_property: str):
+def test_multi_valued_shape_field_raises_export_refused(shape_property: str):
     graph = _two_system_graph()
     graph.forward_arcs["SV_Disbursement_Gross"][shape_property] = ("ValueA", "ValueB")
     with pytest.raises(
-        SystemExit,
+        ExportRefused,
         match=f"SV_Disbursement_Gross.*{shape_property!r}.*2 bound values.*'ValueA', 'ValueB'",
     ):
         export_statvars(graph, ("SV_Disbursement_Gross",))
 
 
-def test_multi_valued_measurement_denominator_raises_systemexit():
+def test_multi_valued_measurement_denominator_raises_export_refused():
     # The base fixture has no `measurementDenominator` value.
     graph = _two_system_graph()
     graph.forward_arcs["SV_Disbursement_Gross"]["measurementDenominator"] = ("DenomA", "DenomB")
     with pytest.raises(
-        SystemExit,
+        ExportRefused,
         match=r"SV_Disbursement_Gross.*'measurementDenominator'.*2 bound values",
     ):
         export_statvars(graph, ("SV_Disbursement_Gross",))
@@ -1059,12 +1065,12 @@ def test_duplicate_identical_shape_value_is_not_refused():
     assert rows[0]["population_type"] == "FinancialFlow"
 
 
-def test_multi_valued_declared_constraint_property_raises_systemexit():
+def test_multi_valued_declared_constraint_property_raises_export_refused():
     graph = _two_system_graph()
     graph.forward_arcs["SV_Disbursement_Gross"]["nettingBasis"] = ("Gross", "Net")
     graph.forward_arcs["Net"] = {"typeOf": ("NettingBasisEnum",)}
     with pytest.raises(
-        SystemExit,
+        ExportRefused,
         match=r"SV_Disbursement_Gross.*'nettingBasis'.*2 bound values.*'Gross', 'Net'",
     ):
         export_statvars(graph, ("SV_Disbursement_Gross",))
@@ -1247,7 +1253,7 @@ def test_content_hash_identical_across_runs_and_differs_on_a_row_change():
 def test_dcid_enumerated_via_reverse_arc_but_missing_from_forward_read_raises():
     graph = _two_system_graph()
     # The reverse read finds `DanglingGhostDcid`, but the forward graph has no node for it.
-    with pytest.raises(SystemExit, match="holds no node for DanglingGhostDcid"):
+    with pytest.raises(ExportRefused, match="holds no node for DanglingGhostDcid"):
         export_statvars(graph, ("SV_Disbursement_Gross", "DanglingGhostDcid"))
 
 
@@ -1399,7 +1405,7 @@ def test_export_measure_values_stamps_matchable_from_the_authored_table():
     rows = export_measure_values(graph, statvars, _MEASURE_AXES_FOR_TEST)
     by_dcid = {row["dcid"]: row for row in rows}
 
-    # `_MEASURE_VALUE_TEXT` marks `amount` unmatchable; other observed values are matchable.
+    # `MEASURE_VALUE_TEXT` marks `amount` unmatchable; other observed values are matchable.
     assert by_dcid["amount"]["matchable"] is False
     assert by_dcid["Gross"]["matchable"] is True
     assert by_dcid["Nominal"]["matchable"] is True
@@ -1441,11 +1447,11 @@ def test_export_index_refuses_an_alias_whose_canonical_value_is_not_exported(
 ):
     graph = _two_system_graph_with_measure_labels()
     monkeypatch.setitem(
-        _MEASURE_VALUE_TEXT,
+        MEASURE_VALUE_TEXT,
         "Gross",
-        _MeasureValueText(same_reading_as="NotAMeasureValue"),
+        MeasureValueText(same_reading_as="NotAMeasureValue"),
     )
-    with pytest.raises(SystemExit, match=r"does not load.*NotAMeasureValue"):
+    with pytest.raises(ExportRefused, match=r"does not load.*NotAMeasureValue"):
         export_index(
             graph,
             coverage=_covered(graph),
@@ -1466,7 +1472,7 @@ def test_export_measure_values_raises_on_a_value_with_no_name_arc():
     del graph.forward_arcs["Gross"]["name"]
     statvars = export_statvars(graph, ("SV_Disbursement_Gross",))
 
-    with pytest.raises(SystemExit, match="Gross carries no name arc"):
+    with pytest.raises(ExportRefused, match="Gross carries no name arc"):
         export_measure_values(graph, statvars, _MEASURE_AXES_FOR_TEST)
 
 
@@ -1477,7 +1483,7 @@ def test_export_measure_values_raises_on_a_dcid_the_graph_holds_no_node_for():
     del graph.forward_arcs["amount"]
     statvars = export_statvars(graph, ("SV_Disbursement_Gross",))
 
-    with pytest.raises(SystemExit, match="no node for it"):
+    with pytest.raises(ExportRefused, match="no node for it"):
         export_measure_values(graph, statvars, _MEASURE_AXES_FOR_TEST)
 
 
@@ -1716,7 +1722,7 @@ def test_guard_refuses_when_an_exhibited_partition_matches_no_authored_label():
         MeasurePartitionLabel(axis_values=(("nettingBasis", "Net"),), label="net disbursements"),
     )
 
-    with pytest.raises(SystemExit, match="Disbursement") as exc_info:
+    with pytest.raises(ExportRefused, match="Disbursement") as exc_info:
         _verify_measure_partition_labels(rows, _GUARD_AXES, labels)
     assert "Gross" in str(exc_info.value)
 
@@ -1730,7 +1736,7 @@ def test_guard_refuses_when_two_labels_tie_on_an_exhibited_partition():
         MeasurePartitionLabel(axis_values=(("nettingBasis", "Gross"),), label="gross"),
     )
 
-    with pytest.raises(SystemExit, match="Disbursement"):
+    with pytest.raises(ExportRefused, match="Disbursement"):
         _verify_measure_partition_labels(rows, _GUARD_AXES, labels)
 
 
@@ -1773,7 +1779,7 @@ def test_guard_names_every_offending_partition_not_just_the_first():
         _guard_row(financial_flow_type="Disbursement", netting_basis="Net"),
     ]
 
-    with pytest.raises(SystemExit) as exc_info:
+    with pytest.raises(ExportRefused) as exc_info:
         _verify_measure_partition_labels(rows, _GUARD_AXES, labels=())
     message = str(exc_info.value)
     assert "Gross" in message
@@ -1789,7 +1795,7 @@ def test_guard_is_a_noop_when_no_measure_axes_are_declared():
 def test_export_index_refuses_when_the_guard_fails():
     graph = _two_system_graph_with_measure_labels()
 
-    with pytest.raises(SystemExit, match="resolve to no single authored label"):
+    with pytest.raises(ExportRefused, match="resolve to no single authored label"):
         export_index(
             graph,
             coverage=_covered(graph),
@@ -1847,7 +1853,7 @@ def test_a_statvar_row_matching_a_measure_noun_aborts_the_export():
         "stat_type": "measuredValue",
         "constraint_properties": {},
     }
-    with pytest.raises(SystemExit, match="sv_gdp"):
+    with pytest.raises(ExportRefused, match="sv_gdp"):
         _verify_measure_nouns([row], _MEASURE_NOUNS_FOR_TEST)
     _verify_measure_nouns([{**row, "population_type": "FinancialFlow"}], _MEASURE_NOUNS_FOR_TEST)
 
@@ -1886,7 +1892,7 @@ def test_a_measure_label_named_value_no_partition_row_carries_aborts_the_export(
     ]
     _verify_measure_label_named_values([row], codes, _MEASURE_AXES_FOR_TEST, [label])
     wrong = dataclasses.replace(label, named_values=(named_value,))
-    with pytest.raises(SystemExit, match=named_value[1]):
+    with pytest.raises(ExportRefused, match=named_value[1]):
         _verify_measure_label_named_values([row], codes, _MEASURE_AXES_FOR_TEST, [wrong])
 
 
@@ -2023,7 +2029,7 @@ def test_export_index_refuses_a_declared_default_when_named_entry_that_is_not_lo
         ),
     )
 
-    with pytest.raises(SystemExit, match="when_named entry 'Aid' must be a non-empty lowercase"):
+    with pytest.raises(ExportRefused, match="when_named entry 'Aid' must be a non-empty lowercase"):
         export_index(
             graph,
             coverage=_covered(graph),
@@ -2054,7 +2060,7 @@ def test_export_index_refuses_a_declared_default_when_named_entry_that_is_empty(
         ),
     )
 
-    with pytest.raises(SystemExit, match="when_named entry '' must be a non-empty lowercase"):
+    with pytest.raises(ExportRefused, match="when_named entry '' must be a non-empty lowercase"):
         export_index(
             graph,
             coverage=_covered(graph),
@@ -2088,7 +2094,7 @@ def test_export_index_refuses_a_declared_default_when_named_entry_that_is_null()
         ),
     )
 
-    with pytest.raises(SystemExit, match="when_named entry None must be a non-empty lowercase"):
+    with pytest.raises(ExportRefused, match="when_named entry None must be a non-empty lowercase"):
         export_index(
             graph,
             coverage=_covered(graph),
@@ -2118,7 +2124,7 @@ def test_export_index_refuses_a_declared_default_code_outside_its_own_system():
         default=DeclaredDefault(code="SysFlatA", when_bound_under=("SysFlatA",)),
     )
 
-    with pytest.raises(SystemExit, match="declared default code 'SysFlatA' is not a row"):
+    with pytest.raises(ExportRefused, match="declared default code 'SysFlatA' is not a row"):
         export_index(
             graph,
             coverage=_covered(graph),
@@ -2147,7 +2153,7 @@ def test_export_index_refuses_a_declared_default_scoped_under_an_unknown_dcid():
         default=DeclaredDefault(code="SysHierChild", when_bound_under=("NotARealDcid",)),
     )
 
-    with pytest.raises(SystemExit, match=r"NotARealDcid.*not a row of any exported code system"):
+    with pytest.raises(ExportRefused, match=r"NotARealDcid.*not a row of any exported code system"):
         export_index(
             graph,
             coverage=_covered(graph),
@@ -2177,7 +2183,7 @@ def test_export_index_refuses_a_declared_default_scoped_under_its_own_code_syste
         default=DeclaredDefault(code="SysHierChild", when_bound_under=("SysHierRoot",)),
     )
 
-    with pytest.raises(SystemExit, match="belongs to its own code system"):
+    with pytest.raises(ExportRefused, match="belongs to its own code system"):
         export_index(
             graph,
             coverage=_covered(graph),
@@ -2293,7 +2299,7 @@ def test_export_index_refuses_a_row_without_its_datasets_declared_invariant():
     graph = _two_system_graph()
     declared = dataclasses.replace(_TEST_DATASETS[0], invariants={"sysHier": "SysHierRoot"})
 
-    with pytest.raises(SystemExit, match=r"sysHier=.*declares sysHier='SysHierRoot'"):
+    with pytest.raises(ExportRefused, match=r"sysHier=.*declares sysHier='SysHierRoot'"):
         _export_two_system_graph(_covered(graph), datasets=(declared,))
 
 
@@ -2377,12 +2383,34 @@ def test_export_index_refuses_a_partly_stated_value_no_row_bears_out():
     """The finished document must load, so a declaration the rows contradict stops the export."""
     coverage = _covered(_two_system_graph())
 
-    with pytest.raises(SystemExit):
+    with pytest.raises(ExportRefused):
         _export_two_system_graph(coverage, partly_stated_values=_NEVER_STATED)
 
 
+def test_main_exits_non_zero_with_the_refusal_when_the_export_refuses(monkeypatch, tmp_path):
+    import scripts.export_code_index as script
+
+    def refuse(*args, **kwargs):
+        raise ExportRefused("provenance/TestDataset has no StatVar row")
+
+    out = tmp_path / "index.json.gz"
+    monkeypatch.setenv("SEARCH_GRAPH_BASE", "http://graph.test")
+    monkeypatch.setenv("COVERAGE_ARTIFACT_URI", "file:///unused")
+    monkeypatch.setattr(
+        script, "load_coverage_join", lambda uri, *, datasets: CoverageJoin("b", {})
+    )
+    monkeypatch.setattr(script, "export_index", refuse)
+    monkeypatch.setattr(sys, "argv", ["export_code_index.py", "--out", str(out)])
+
+    with pytest.raises(SystemExit) as exited:
+        script.main()
+
+    assert exited.value.code == "provenance/TestDataset has no StatVar row"
+    assert not out.exists()
+
+
 def test_export_index_refuses_a_declared_dataset_with_no_row():
-    with pytest.raises(SystemExit, match=r"provenance/TestDataset.*no StatVar row"):
+    with pytest.raises(ExportRefused, match=r"provenance/TestDataset.*no StatVar row"):
         _export_two_system_graph(CoverageJoin(build_id="empty-build", provenances={}))
 
 
@@ -2455,7 +2483,7 @@ def test_export_index_lists_the_statvars_of_a_dataset_no_code_system_enumerates(
 def test_export_index_refuses_a_statvar_of_a_listed_five_tuple_it_neither_exports_nor_lists():
     """Members elected from the index stand for every StatVar of a listed row's five-tuple,
     so a StatVar there the coverage build does not list refuses the export, named."""
-    with pytest.raises(SystemExit, match=r"1 StatVar.*SV_Unlisted_Disbursement"):
+    with pytest.raises(ExportRefused, match=r"1 StatVar.*SV_Unlisted_Disbursement"):
         _export_with_listed(
             _graph_with_listed("SV_Unlisted_Disbursement"),
             {"SV_Listed_Disbursement": (_LISTED_PROVENANCE,)},
@@ -2463,7 +2491,7 @@ def test_export_index_refuses_a_statvar_of_a_listed_five_tuple_it_neither_export
 
 
 def test_export_index_refuses_a_listed_dataset_the_build_holds_no_statvar_of():
-    with pytest.raises(SystemExit, match=r"provenance/ListedDataset.*no StatVar"):
+    with pytest.raises(ExportRefused, match=r"provenance/ListedDataset.*no StatVar"):
         _export_with_listed(_graph_with_listed(), {})
 
 
@@ -2490,14 +2518,14 @@ def test_export_index_writes_each_listed_statvar_s_series_codes_upper_cased():
 def test_export_index_refuses_a_listed_statvar_with_no_series_code():
     graph = _graph_with_listed()
     graph.wire_arcs["SV_Listed_Disbursement"] = {}
-    with pytest.raises(SystemExit, match=r"1 listed StatVar.*SV_Listed_Disbursement"):
+    with pytest.raises(ExportRefused, match=r"1 listed StatVar.*SV_Listed_Disbursement"):
         _export_with_listed(graph, {"SV_Listed_Disbursement": (_LISTED_PROVENANCE,)})
 
 
 def test_export_index_refuses_a_code_whose_arc_provenance_the_coverage_build_does_not_give():
     graph = _graph_with_listed()
     graph.wire_arcs["SV_Listed_Disbursement"] = _code_arcs(("provenance/Elsewhere", "LST.DISB"))
-    with pytest.raises(SystemExit, match=r"does not load.*provenance/Elsewhere"):
+    with pytest.raises(ExportRefused, match=r"does not load.*provenance/Elsewhere"):
         _export_with_listed(graph, {"SV_Listed_Disbursement": (_LISTED_PROVENANCE,)})
 
 
@@ -2546,11 +2574,11 @@ def test_export_value_parents_writes_each_chain_and_refuses_two_parents_or_a_cyc
     ]
 
     graph.forward_arcs["Root"] = {"specializationOf": ("Child",)}
-    with pytest.raises(SystemExit, match="chain of Child returns to Child"):
+    with pytest.raises(ExportRefused, match="chain of Child returns to Child"):
         export_value_parents(graph, statvars)
 
     graph.forward_arcs["Child"] = {"specializationOf": ("Parent", "Other")}
-    with pytest.raises(SystemExit, match="Child's 'specializationOf'"):
+    with pytest.raises(ExportRefused, match="Child's 'specializationOf'"):
         export_value_parents(graph, statvars)
 
 
@@ -2561,7 +2589,7 @@ def test_export_index_refuses_a_provenance_no_dataset_declares():
         provenances=dict.fromkeys(graph.forward_arcs, ("provenance/ThirdSource", _TEST_PROVENANCE)),
     )
 
-    with pytest.raises(SystemExit, match=r"provenance/ThirdSource.*no dataset declares"):
+    with pytest.raises(ExportRefused, match=r"provenance/ThirdSource.*no dataset declares"):
         _export_two_system_graph(coverage)
 
 
@@ -2573,7 +2601,7 @@ def test_export_index_refuses_a_row_lacking_a_system_its_dataset_always_declares
         "financialObligationType",
     )
 
-    with pytest.raises(SystemExit, match=r"SV_Commitment_NoFlow.*does not declare 'sysFlat'"):
+    with pytest.raises(ExportRefused, match=r"SV_Commitment_NoFlow.*does not declare 'sysFlat'"):
         export_index(
             graph,
             graph_endpoint="https://fake.example",
@@ -2629,7 +2657,7 @@ def test_each_dataset_is_enumerated_through_its_own_largest_complete_system():
     )
 
     # Enumerating the first dataset alone drops them, and the coverage check says so.
-    with pytest.raises(SystemExit, match=r"sysAidType='A1' carries .*SV_OptIn_0"):
+    with pytest.raises(ExportRefused, match=r"sysAidType='A1' carries .*SV_OptIn_0"):
         enumerate_statvar_dcids(
             graph, code_rows_by_system, (purpose, finance, aid_type), _TEST_DATASETS
         )
@@ -2638,7 +2666,7 @@ def test_each_dataset_is_enumerated_through_its_own_largest_complete_system():
 def test_a_dataset_no_code_system_lists_refuses_enumeration():
     graph = _FakeGraph(forward_arcs={"SV_A": _statvar()})
 
-    with pytest.raises(SystemExit, match="cannot choose an enumeration spine"):
+    with pytest.raises(ExportRefused, match="cannot choose an enumeration spine"):
         enumerate_statvar_dcids(
             graph,
             {"sysPurpose": [{"dcid": "P1"}], "sysAidType": [{"dcid": "A1"}]},
@@ -2727,7 +2755,7 @@ def test_export_refuses_a_statvar_the_index_would_decide_naming_it():
         }
     )
 
-    with pytest.raises(SystemExit, match=r"1 StatVar\(s\).*\['SV_Unexported'\]"):
+    with pytest.raises(ExportRefused, match=r"1 StatVar\(s\).*\['SV_Unexported'\]"):
         _export_blocks(graph)
 
 
@@ -2790,18 +2818,18 @@ def test_export_refuses_a_five_tuple_subject_the_graph_holds_no_node_for():
         unreadable=frozenset({"SV_Unexported"}),
     )
 
-    with pytest.raises(SystemExit, match=r"SV_Unexported is a <-measuredProperty subject"):
+    with pytest.raises(ExportRefused, match=r"SV_Unexported is a <-measuredProperty subject"):
         _export_blocks(graph)
 
 
 def test_export_refuses_a_five_tuple_read_still_truncated_after_every_code_axis():
     graph = _graph_with_unexported({}, truncate={("amount", "measuredProperty")})
 
-    with pytest.raises(SystemExit, match=r"exhausted every partition property.*'amount'"):
+    with pytest.raises(ExportRefused, match=r"exhausted every partition property.*'amount'"):
         _export_blocks(graph)
 
 
-@pytest.mark.parametrize("group", _CONCEPT_GROUPS, ids=lambda group: "+".join(d for _s, d in group))
+@pytest.mark.parametrize("group", CONCEPT_GROUPS, ids=lambda group: "+".join(d for _s, d in group))
 def test_every_code_of_a_concept_group_reads_the_same_texts(group):
     """Codes of different tables that name one concept carry one set of texts in the
     packaged index, so a query phrase reads on all of them or none."""
@@ -2834,7 +2862,7 @@ def test_a_malformed_concept_group_refuses(groups, message):
         for system, dcid in (("sysA", "A1"), ("sysA", "A2"), ("sysB", "B1"), ("sysC", "C1"))
     ]
 
-    with pytest.raises(SystemExit, match=message):
+    with pytest.raises(ExportRefused, match=message):
         _apply_concept_groups(rows, groups, {"sysA", "sysB", "sysC"})
 
 
@@ -2998,7 +3026,7 @@ def test_export_index_writes_each_partys_kind_label_and_the_group_a_total_holds(
 def test_export_index_refuses_a_party_it_cannot_declare(
     types_by_party, parties, total_groups, message
 ):
-    with pytest.raises(SystemExit, match=message):
+    with pytest.raises(ExportRefused, match=message):
         _export_parties(types_by_party, parties=parties, total_groups=total_groups)
 
 
@@ -3036,7 +3064,7 @@ def test_a_kind_override_replaces_the_kind_the_types_give(tmp_path: Path):
 
 
 def test_export_index_refuses_a_kind_override_naming_a_party_no_dataset_publishes():
-    with pytest.raises(SystemExit, match=r"PARTY_KIND_OVERRIDES names .*Ghost"):
+    with pytest.raises(ExportRefused, match=r"PARTY_KIND_OVERRIDES names .*Ghost"):
         _export_parties(
             {"country/FRA": ("Country",)},
             kind_overrides={"Ghost": KindOverride("total", "named in error")},

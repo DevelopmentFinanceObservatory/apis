@@ -8,6 +8,7 @@ import time
 import types
 from collections.abc import Sequence
 from dataclasses import replace
+from datetime import UTC, datetime
 from importlib import resources
 from pathlib import Path
 from typing import Any, cast
@@ -49,7 +50,7 @@ from tests.origin_catalogue.un_fake import (
     FakeUn,
 )
 from tests.origin_catalogue.un_fake import target as un_target
-from tests.series_coverage.test_job import FakeBigQuery
+from tests.series_coverage.test_job import FakeBigQuery, history_row, import_key_responses
 
 _CONNECTION = "proj.region.conn"
 
@@ -394,10 +395,15 @@ def spanner_rows(edges: list[dict[str, str]], nodes: list[dict[str, Any]]) -> li
 
 
 def bq_responses(
-    *, row_count: int = 3, lock_owner: str | None = None, extra_crs_variables: int = 0
+    *,
+    execution: str = "wf-1",
+    lock_owner: str | None = None,
+    newest: dict[str, Any] | None = None,
+    extra_crs_variables: int = 0,
 ) -> dict[str, list]:
     """Spanner holds observations of `POPULATION` and declares no node for
-    it, as dev's Spanner does for `Count_Person`."""
+    it, as dev's Spanner does for `Count_Person`. `execution` names the
+    newest successful import, and `newest` a newer row of another status."""
     declared = [
         CRS_VARIABLE,
         IDS_VARIABLE,
@@ -405,9 +411,7 @@ def bq_responses(
     ]
     return {
         SPANNER_EDGES: spanner_rows(spanner_edges(declared), spanner_nodes(declared)),
-        "IngestionLock": [{"LockOwner": lock_owner}],
-        "IngestionHistory": [{"WorkflowExecutionID": "wf-1", "CreationTimestamp": "t1"}],
-        "COUNT(*) AS row_count": [{"row_count": row_count, "max_ts": "t2"}],
+        **import_key_responses(execution, lock_owner=lock_owner, newest=newest),
         "LEFT JOIN": [
             {"variable": CRS_VARIABLE, "provenance": CRS},
             {"variable": IDS_VARIABLE, "provenance": IDS},
@@ -611,20 +615,16 @@ def test_the_build_holds_every_node_a_resolver_index_names(tmp_path, capsys):
     assert WITHHELD_VARIABLE not in arcs.base
 
 
-def test_the_fingerprint_counts_every_observation_row(tmp_path):
-    """The catalogue's identity stamps this text's results, so a changed query moves every
-    published identity."""
+def test_the_change_check_scans_no_observation(tmp_path, capsys):
+    """A run that finds its identity published reads the import workflow's own rows only."""
+    run(tmp_path)
     bq = FakeBigQuery(bq_responses())
 
     run(tmp_path, bq=bq)
 
-    stats = [sql for sql in bq.queries if "COUNT(*) AS row_count" in sql]
-    assert stats
-    assert set(stats) == {
-        "SELECT COUNT(*) AS row_count, MAX(last_update_timestamp) AS max_ts\n"
-        f'FROM EXTERNAL_QUERY("{_CONNECTION}", '
-        '"SELECT last_update_timestamp FROM Observation")'
-    }
+    assert [e["event"] for e in events(capsys)][-1] == "origin_catalogue_job_noop"
+    assert bq.queries
+    assert not [sql for sql in bq.queries if "Observation" in sql or "last_update" in sql]
 
 
 def test_run_skips_when_the_published_identity_matches(tmp_path, capsys):
@@ -812,7 +812,7 @@ def test_a_carried_build_probes_again(tmp_path, capsys):
     un_graph = un_deployment()
     un_graph.refused = frozenset({"country/KEN"})
 
-    run(tmp_path, bq=FakeBigQuery(bq_responses(row_count=4)), un_graph=un_graph)
+    run(tmp_path, bq=FakeBigQuery(bq_responses(execution="wf-4")), un_graph=un_graph)
 
     [published] = events(capsys)
     assert published["base_tables"] == "carried"
@@ -827,7 +827,7 @@ def _publish_then_fail_the_un(tmp_path, capsys, un_graph: FakeGraph, **kwargs: A
     returns the second run's events."""
     run(tmp_path)
     capsys.readouterr()
-    run(tmp_path, bq=FakeBigQuery(bq_responses(row_count=4)), un_graph=un_graph, **kwargs)
+    run(tmp_path, bq=FakeBigQuery(bq_responses(execution="wf-4")), un_graph=un_graph, **kwargs)
     return events(capsys)
 
 
@@ -865,7 +865,7 @@ def test_a_un_refusal_refuses_even_with_a_published_build(tmp_path, capsys):
     del un_graph.arcs[WHO_GROUP]
 
     refused = _refused(
-        tmp_path, capsys, bq=FakeBigQuery(bq_responses(row_count=4)), un_graph=un_graph
+        tmp_path, capsys, bq=FakeBigQuery(bq_responses(execution="wf-4")), un_graph=un_graph
     )
 
     assert refused == [("un_agency_root_group_missing", WHO)]
@@ -881,7 +881,7 @@ def test_a_carried_row_whose_segment_the_registry_changed_is_refused(tmp_path, c
     refused = _refused(
         tmp_path,
         capsys,
-        bq=FakeBigQuery(bq_responses(row_count=4)),
+        bq=FakeBigQuery(bq_responses(execution="wf-4")),
         un_graph=un_graph,
         registry=REGISTRY.replace('segment = "who"', 'segment = "who2"'),
     )
@@ -897,7 +897,7 @@ def test_a_published_carry_forward_retries_the_un_on_an_unchanged_identity(tmp_p
     carried_build = CataloguePointer.from_json(
         (root(tmp_path) / "current.json").read_bytes()
     ).build_id
-    ingested = bq_responses(row_count=4)
+    ingested = bq_responses(execution="wf-4")
 
     # Still down: the retry publishes nothing new, and reads the UN before anything else,
     # so it reads no arc, provenance or holdings.
@@ -928,10 +928,10 @@ def test_a_carried_carry_forward_names_the_build_that_read_the_un(tmp_path, caps
     first = CataloguePointer.from_json((root(tmp_path) / "current.json").read_bytes()).build_id
     down = un_deployment()
     down.failing = frozenset({"node_arcs_many"})
-    run(tmp_path, bq=FakeBigQuery(bq_responses(row_count=4)), un_graph=down)
+    run(tmp_path, bq=FakeBigQuery(bq_responses(execution="wf-4")), un_graph=down)
     capsys.readouterr()
 
-    run(tmp_path, bq=FakeBigQuery(bq_responses(row_count=5)), un_graph=down)
+    run(tmp_path, bq=FakeBigQuery(bq_responses(execution="wf-5")), un_graph=down)
 
     published = events(capsys)[-1]
     assert published["un_carried_from"] == first
@@ -1025,7 +1025,7 @@ def test_an_ingestion_copies_the_un_tables_without_enumerating_them(tmp_path, ca
         lambda prefix, manifest: reads.append(prefix) or read(prefix, manifest),
     )
 
-    run(tmp_path, bq=FakeBigQuery(bq_responses(row_count=4)), un_graph=un_graph)
+    run(tmp_path, bq=FakeBigQuery(bq_responses(execution="wf-4")), un_graph=un_graph)
 
     # The published build's UN tables are read once, by the copy, and not by the carry check.
     assert len(reads) == 1
@@ -1375,7 +1375,7 @@ def test_an_ingestion_carries_the_base_tables_into_a_new_build_directory(tmp_pat
     first_arcs = load_catalogue(f"file://{tmp_path}").arcs
     graph = mixer()
 
-    run(tmp_path, bq=FakeBigQuery(bq_responses(row_count=4)), graph=graph, builder=builder)
+    run(tmp_path, bq=FakeBigQuery(bq_responses(execution="wf-4")), graph=graph, builder=builder)
 
     [published] = events(capsys)
     assert published["base_tables"] == "carried"
@@ -1410,7 +1410,9 @@ def test_a_new_dfo_variable_carries_the_base_tables_forward(tmp_path, capsys):
     capsys.readouterr()
 
     run(
-        tmp_path, bq=FakeBigQuery(bq_responses(row_count=4, extra_crs_variables=1)), builder=builder
+        tmp_path,
+        bq=FakeBigQuery(bq_responses(execution="wf-4", extra_crs_variables=1)),
+        builder=builder,
     )
 
     [published] = events(capsys)
@@ -1445,7 +1447,7 @@ def test_a_new_base_provenance_rebuilds_the_base_tables(tmp_path, capsys):
     graph.subjects[WORLD_BANK] = (*graph.subjects[WORLD_BANK], "dc/base/WorldBank_New")
     graph.arcs["dc/base/WorldBank_New"] = _provenance("https://data.worldbank.org/new")
 
-    run(tmp_path, bq=FakeBigQuery(bq_responses(row_count=4)), graph=graph, builder=builder)
+    run(tmp_path, bq=FakeBigQuery(bq_responses(execution="wf-4")), graph=graph, builder=builder)
 
     assert events(capsys)[0]["base_tables"] == "built"
     assert builder.calls[1]["provenances"] == [OECD_MAIN, "dc/base/WorldBank_New", WDI]
@@ -1458,7 +1460,7 @@ def test_a_new_dfo_provenance_rebuilds_the_base_tables(tmp_path, capsys):
     new = "provenance/NewDfoDataset"
     graph = mixer()
     graph.arcs[new] = _provenance("https://example.org/new", source="dc/s/NewSource")
-    responses = bq_responses(row_count=4)
+    responses = bq_responses(execution="wf-4")
     responses["LEFT JOIN"].append({"variable": "Amount_New", "provenance": new})
 
     run(tmp_path, bq=FakeBigQuery(responses), graph=graph, builder=builder)
@@ -1472,10 +1474,10 @@ _DROPPED = "Amount_FinancialFlow_CRSPurposeCode43010"
 _DROPPED_LATER = "Amount_FinancialFlow_CRSPurposeCode43020"
 
 
-def _indexing(*subjects: str, row_count: int = 3) -> FakeBigQuery:
+def _indexing(*subjects: str, execution: str = "wf-1") -> FakeBigQuery:
     """Spanner's answers with `subjects` added to our resolver index, each a
     subject Spanner holds no `Edge` row of and the mixer holds no node for."""
-    responses = bq_responses(row_count=row_count)
+    responses = bq_responses(execution=execution)
     responses["NodeEmbedding"] = [
         *responses["NodeEmbedding"],
         *({"subject_id": subject, "has_edges": False} for subject in subjects),
@@ -1501,7 +1503,7 @@ def test_an_ingestion_reads_the_type_of_only_the_subjects_the_published_build_do
     capsys.readouterr()
     graph = mixer()
 
-    run(tmp_path, bq=_indexing(_DROPPED, _DROPPED_LATER, row_count=4), graph=graph)
+    run(tmp_path, bq=_indexing(_DROPPED, _DROPPED_LATER, execution="wf-4"), graph=graph)
 
     [published] = events(capsys)
     assert _type_read(graph) == {_DROPPED_LATER}
@@ -1530,7 +1532,7 @@ def test_a_new_week_or_base_arc_code_reads_the_type_of_every_subject(
         )
     graph = mixer()
 
-    run(tmp_path, bq=_indexing(_DROPPED, row_count=4), graph=graph, clock=clock)
+    run(tmp_path, bq=_indexing(_DROPPED, execution="wf-4"), graph=graph, clock=clock)
 
     published = events(capsys)[0]
     assert _type_read(graph) == {_DROPPED}
@@ -1582,7 +1584,7 @@ def test_the_build_publishes_dfo_base_and_schema_arcs(tmp_path, capsys):
     }
     assert arcs.arcs("observationAbout") == ()
     assert snapshot.manifest.ingestion == Ingestion(
-        workflow_execution_id="wf-1", creation_timestamp="t1"
+        workflow_execution_id="wf-1", creation_timestamp="2026-09-24 10:00:00+00:00"
     )
     assert published["arc_row_counts"] == dict(snapshot.manifest.arc_tables.row_counts)
     assert published["arc_resident_bytes"] == snapshot.manifest.arc_tables.resident_bytes > 0
@@ -1904,11 +1906,11 @@ def test_a_dfo_provenance_under_an_unregistered_source_takes_the_graph_label(tmp
 # --- Discards and races ------------------------------------------------------
 
 
-def test_discards_the_build_when_the_fingerprint_moves(tmp_path, capsys):
+def test_discards_the_build_when_the_import_key_moves(tmp_path, capsys):
     bq = FakeBigQuery(bq_responses())
 
     def _ingest() -> None:
-        bq._responses["COUNT(*) AS row_count"] = [{"row_count": 99, "max_ts": "t3"}]
+        bq._responses.update(import_key_responses("wf-99"))
 
     run(tmp_path, bq=bq, builder=FakeBuilder(during=_ingest))
 
@@ -1922,7 +1924,7 @@ def test_discards_the_build_when_the_lock_is_taken(tmp_path, capsys):
     bq = FakeBigQuery(bq_responses())
 
     def _lock() -> None:
-        bq._responses["IngestionLock"] = [{"LockOwner": "ingestion"}]
+        bq._responses.update(import_key_responses(lock_owner="ingestion"))
 
     run(tmp_path, bq=bq, builder=FakeBuilder(during=_lock))
 
@@ -1979,7 +1981,7 @@ def test_every_run_that_returns_logs_one_heartbeat_last(tmp_path, capsys, outcom
         case "lease_held":
             assert acquire_lease(root(tmp_path).as_uri(), build_id="other", ttl_seconds=3600)
         case "discarded":
-            moved = {"COUNT(*) AS row_count": [{"row_count": 99, "max_ts": "t3"}]}
+            moved = import_key_responses("wf-99")
             kwargs["bq"] = bq
             kwargs["builder"] = FakeBuilder(during=lambda: bq._responses.update(moved))
         case "lost_publish_race":
@@ -2041,6 +2043,29 @@ def test_a_held_lock_reports_the_identity_the_last_run_left_unpublished(tmp_path
     assert stale["reason"] == "identity_unpublished"
     assert stale["published_identity"] is None
     assert stale["seconds_behind"] > 900
+
+
+def test_a_failed_import_publishes_nothing_and_alerts_after_a_cycle(tmp_path, capsys):
+    clock = Clock()
+    run(tmp_path, clock=clock)
+    published = CataloguePointer.from_json((root(tmp_path) / "current.json").read_text())
+    capsys.readouterr()
+    failed = history_row(
+        "wf-2", status="FAILURE", failed=True, created_at=datetime(2026, 9, 25, tzinfo=UTC)
+    )
+
+    for offset in (0.0, 901.0):
+        clock.offset = offset
+        run(tmp_path, bq=FakeBigQuery(bq_responses(newest=failed)), clock=clock)
+
+    found = events(capsys)
+    assert [(e["event"], e.get("reason")) for e in found] == [
+        ("origin_catalogue_job_skipped", "import_not_successful"),
+        ("origin_catalogue_publish_stale", "identity_unpublished"),
+        ("origin_catalogue_job_skipped", "import_not_successful"),
+    ]
+    assert found[1]["published_identity"] == published.identity != found[1]["identity"]
+    assert builds(tmp_path) == [published.build_id]
 
 
 def test_a_held_lock_reports_nothing_while_the_last_identity_is_published(tmp_path, capsys):

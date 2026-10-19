@@ -28,7 +28,8 @@ ceiling before proxy admission.
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+from collections.abc import Iterator
+from contextlib import asynccontextmanager, contextmanager, nullcontext
 
 from fastapi import FastAPI
 
@@ -74,6 +75,8 @@ from datasets_api.versions import HeadStore, VersionLister, VersionRecordWriter
 from dc_sdmx import SdmxClient
 from dfo_platform.app import Surface
 from dfo_platform.doors import combine_classifiers, flatten
+from graph_release.context import bound_release
+from graph_release.service import ReleaseService, optional_release_service
 from materialise.graph import GraphReader
 from materialise.rate_tables import RateTableCache
 from origin_catalogue import bound_catalogue
@@ -125,6 +128,7 @@ def datasets_surface(
     pin_allowed_principals: frozenset[str] | None = None,
     publish_allowed_principals: frozenset[str] | None = None,
     catalogue: CatalogueService | None = None,
+    release: ReleaseService | None = None,
 ) -> Surface:
     """Build the Datasets `Surface` from its doors.
 
@@ -148,13 +152,19 @@ def datasets_surface(
     so a missing or unloadable `ORIGIN_CATALOGUE_URI` fails startup. Without an injected `graph`,
     the lifespan acquires the process-wide graph generation the live graph client keys its
     caches on, and registers the default-scope memo on it.
+
+    With `GRAPH_RELEASE_URI` set, or `release` given, each request also binds the release
+    service's served release, and a swap holds every materialise permit. An unreadable
+    release fails startup.
     """
     _settings = settings if settings is not None else DatasetsBuildSettings.from_env()
     _catalogue = catalogue if catalogue is not None else get_catalogue_service()
+    _release = release if release is not None else optional_release_service()
     overrides = DepsOverrides(
         coverage=coverage if coverage is not None else get_coverage_service(),
         rate_cache=rate_cache if rate_cache is not None else RateTableCache(),
         code_index=code_index if code_index is not None else get_index(),
+        release=_release,
         registry=registry,
         spec_reader=spec_reader,
         snapshot_reader=snapshot_reader,
@@ -197,6 +207,12 @@ def datasets_surface(
     # Append grammar refusals after real routes. The converter excludes valid ids.
     router.routes.extend(build_id_grammar_refusal_router().routes)
 
+    @contextmanager
+    def request_scope() -> Iterator[None]:
+        release_scope = nullcontext() if _release is None else bound_release(_release.snapshot())
+        with bound_catalogue(_catalogue.snapshot()), release_scope:
+            yield
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         async with open_deps(settings=_settings, overrides=overrides, catalogue=_catalogue) as deps:
@@ -233,5 +249,5 @@ def datasets_surface(
         registry_endpoints={
             path: endpoint for door in doors for path, endpoint in door.registry_endpoints.items()
         },
-        request_scope=lambda: bound_catalogue(_catalogue.snapshot()),
+        request_scope=request_scope,
     )
