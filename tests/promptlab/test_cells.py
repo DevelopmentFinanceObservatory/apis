@@ -35,7 +35,7 @@ from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.fixtures import PINNED_DATE, FakeGraph, FakeLLM
 from tests.fixtures.keys import fixture_key
 
-_CASE_IDS = ("sdg-03", "life-expectancy", "conj-01")
+_CASE_IDS = ("synth-tb-incidence-ethiopia", "life-expectancy", "conj-01")
 
 
 def _cases(*case_ids: str) -> list[Case]:
@@ -431,8 +431,8 @@ def test_run_capture_completes_end_to_end(tmp_path: Path):
     bind_by_case: dict[str, list[int]] = {}
     for record in store.bind_records():
         bind_by_case.setdefault(record.case_id, []).append(record.leg)
-    # conj-01 has two variables. sdg-03's SDG code is a dropped qualifier, not a second measure.
-    assert sorted(bind_by_case["sdg-03"]) == [0]
+    # The recorded conj-01 extraction names two variables.
+    assert sorted(bind_by_case["synth-tb-incidence-ethiopia"]) == [0]
     assert sorted(bind_by_case["life-expectancy"]) == [0]
     assert sorted(bind_by_case["conj-01"]) == [0, 1]
 
@@ -850,7 +850,7 @@ def test_run_extract_cell_resume_produces_equal_scores(tmp_path: Path):
 def test_run_extract_cell_raises_when_case_missing_for_captured_record(tmp_path: Path):
     # One case and seed isolates the missing-case failure.
     cases = _cases()
-    capture = asyncio.run(_run_capture(tmp_path, cases[:1]))  # sdg-03
+    capture = asyncio.run(_run_capture(tmp_path, cases[:1]))  # synth-tb-incidence-ethiopia
     rung = dataclasses.replace(_RUNG0, run=dataclasses.replace(_RUNG0.run, seeds=(11,)))
     llm = _fake_llm_for_extract_cell(capture, rung)
     out = CellStore.create(tmp_path / "extract-cell-missing-case", manifest=_cell_manifest())

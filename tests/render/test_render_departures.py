@@ -73,6 +73,18 @@ _CASES: list[tuple[DepartureFact, str | None, str]] = [
         "aid",
         'You asked for "through regional development banks". This shows the measure without it.',
     ),
+    # A phrase that asked to leave something out says the search did not apply it, which
+    # holds whether or not the answer happens to leave it out.
+    (
+        DepartureFact(
+            code="measure_not_applied",
+            binding_ref=None,
+            asked="excluding humanitarian aid",
+            left_out=True,
+        ),
+        "aid",
+        'You asked for "excluding humanitarian aid". The search did not apply it.',
+    ),
     # crs-038: a price basis is cleared by the unit token, which states the prices shown,
     # and is stated without its leading preposition.
     (
@@ -646,6 +658,11 @@ _NO_DATA_CASES: list[tuple[DepartureFact, str | None, str]] = [
         DepartureFact(code="measure_not_applied", binding_ref="how:nettingBasis", asked="gross"),
         None,
         'You asked for "gross". This check left it out.',
+    ),
+    (
+        DepartureFact(code="measure_not_applied", binding_ref=None, asked="not net", left_out=True),
+        None,
+        'You asked for "not net". The search did not apply it.',
     ),
     (
         DepartureFact(

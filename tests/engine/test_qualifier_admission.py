@@ -30,6 +30,7 @@ from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.departures import warning_key
+from search.engine.extract import ExtractedExclusion, Extraction, _admit_exclusions
 from search.engine.fanout import _FanOutResult, _run_variables_streaming
 from search.engine.interpret import Recall
 from search.engine.qualifier_match import (
@@ -42,7 +43,8 @@ from search.engine.qualifier_match import (
     match_qualifiers,
 )
 from search.engine.quantity_read import QuantityOutput
-from search.engine.region import RegionResult
+from search.engine.region import RegionResult, pipeline
+from search.engine.region import state as region_state
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
 from search.engine.region.phase_election import _vet_election
 from search.engine.region.phase_rank_bind import (
@@ -62,7 +64,8 @@ from search.engine.region.phase_rank_bind import (
 )
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.qualifier_readings import match_query_readings
-from search.engine.region.state import ResolveState, shape_vocabulary
+from search.engine.region.requirements import judge
+from search.engine.region.state import ResolveState, exclusion_requirements, shape_vocabulary
 from search.engine.retrieval.bound_values import held_codes, shape_for_part
 from search.engine.retrieval.derive import derive_shapes
 from search.engine.shape import ShapeDraft, SlotKeyDraft
@@ -84,6 +87,7 @@ from tests.engine._index_slots import (
 from tests.engine._quantity import NO_QUANTITY, QuantityReadOnlyLLM
 from tests.engine._requirements import depart_requirements
 from tests.engine._source_scopes import part_scope
+from tests.engine.test_pass_end_cancellation import _state, _terminal
 from tests.engine.test_two_ended_menu import _CRS_SV as _TWO_ENDED_CRS_SV
 from tests.engine.test_two_ended_menu import _DAC2A_ODA_SV as _TWO_ENDED_DAC2A_ODA_SV
 from tests.engine.test_two_ended_menu import _SUBJECT_SV as _TWO_ENDED_SUBJECT_SV
@@ -2490,3 +2494,228 @@ def test_e2e_a_menu_choice_binds_and_the_confirmation_sentence_names_it(
         if f.key.property is not None and f.key.property.ref == "crsPurpose"
     )
     assert purpose_filter.provenance == "binder"
+
+
+# What the query asks to leave out: never matched as asked for, and judged on the answer
+
+
+def _request_text(query: str, variable: str, exclusion: str) -> str | None:
+    """The request text extraction gives a single-variable leg for `query`."""
+    left_out = exclusion.removeprefix("excluding ")
+    extraction = Extraction(
+        kind="resolution",
+        variables=[variable],
+        exclusions=[ExtractedExclusion(phrase=exclusion, left_out=left_out)],
+    )
+    return _admit_exclusions(query, extraction)[1]
+
+
+@pytest.mark.parametrize(
+    ("variable", "query", "exclusion", "left_out"),
+    [
+        (
+            "aid",
+            "aid to Kenya excluding humanitarian aid in 2022",
+            "excluding humanitarian aid",
+            "CRSPurposeCode700",
+        ),
+        (
+            "health aid",
+            "health aid to Kenya excluding malaria control",
+            "excluding malaria control",
+            "CRSPurposeCode12262",
+        ),
+        (
+            "education aid",
+            "education aid to Kenya in 2022 excluding standard grants",
+            "excluding standard grants",
+            "CRSTypeOfFinance110",
+        ),
+    ],
+)
+def test_a_code_the_query_leaves_out_is_never_admitted_or_bound(
+    variable, query, exclusion, left_out
+):
+    """The raw query names the code, so matching it would bind the thing left out."""
+    raw = _admit(variable, [_CRS_SHAPE], query_text=query)
+    assert left_out in {m.code_dcid for m in raw}
+
+    matches = _admit(variable, [_CRS_SHAPE], query_text=_request_text(query, variable, exclusion))
+    forced, _ = _force_qualifier_bindings([], matches, _CRS_SHAPE, variable=variable)
+    assert left_out not in {m.code_dcid for m in matches}
+    assert left_out not in {value for binding in forced for value in binding.value_dcids}
+
+
+def _bound(property_dcid: str, *values: str) -> SlotBindingDraft:
+    return SlotBindingDraft(
+        axis="what", property_dcid=property_dcid, kind="value", value_dcids=list(values)
+    )
+
+
+def _excluding(phrase: str, *things: str) -> list[ExtractedExclusion]:
+    """`phrase` as the request's exclusions state it, one entry for each thing left out."""
+    return [ExtractedExclusion(phrase=phrase, left_out=thing) for thing in things]
+
+
+@pytest.mark.parametrize(
+    ("phrase", "thing", "bindings", "met"),
+    [
+        # A netting basis is one reading or the other: a gross answer leaves net out.
+        ("not net", "net", [_bound("nettingBasis", "Gross")], True),
+        ("not net", "net", [_bound("nettingBasis", "Net")], False),
+        ("not net", "net", [], False),
+        # A summable code system: grants hold no loan, a parent holds its child, and a
+        # child lies under the code left out.
+        (
+            "excluding standard grants",
+            "standard grants",
+            [_bound("crsTypeOfFinance", "CRSTypeOfFinance421")],
+            True,
+        ),
+        (
+            "excluding standard grants",
+            "standard grants",
+            [_bound("crsTypeOfFinance", "CRSTypeOfFinance100")],
+            False,
+        ),
+        (
+            "excluding malaria control",
+            "malaria control",
+            [_bound("crsPurpose", "CRSPurposeCode122")],
+            False,
+        ),
+        (
+            "excluding malaria control",
+            "malaria control",
+            [_bound("crsPurpose", "CRSPurposeCode110")],
+            True,
+        ),
+        # A tie leaves out each of its rows.
+        ("excluding grants", "grants", [_bound("crsTypeOfFinance", "CRSTypeOfFinance110")], False),
+    ],
+)
+def test_an_answer_meets_an_exclusion_by_binding_a_value_that_holds_none_of_its_codes(
+    phrase, thing, bindings, met
+):
+    requirements = exclusion_requirements(_excluding(phrase, thing), variable="aid")
+    judgement = judge(requirements, [(_CRS_SHAPE_WITH_MEASURE, bindings)])
+
+    assert judgement.met_exclusions() == (frozenset({phrase}) if met else frozenset())
+    # An exclusion the answer does not meet still answers: no term, no refusal, and the
+    # door that holds the phrase discloses it.
+    assert judgement.terms(0) == ()
+    assert judgement.departures() == ()
+
+
+def test_an_exclusion_is_judged_only_on_a_property_whose_values_partition():
+    """DAC2a aid types overlap: "official development assistance" counts "humanitarian
+    aid", so binding one says nothing of the other and the phrase stays disclosed."""
+    requirements = exclusion_requirements(
+        _excluding("excluding humanitarian aid", "humanitarian aid"), variable="ODA"
+    )
+    assert {r.rule.property_dcid for r in requirements} == {"crsPurpose"}
+    assert exclusion_requirements(_excluding("except Kenya", "Kenya"), variable="ODA") == ()
+    # "imputed" names a DAC2a aid type alone, so no answer can show the phrase left out.
+    phrase = "excluding grants and imputed multilateral aid"
+    exclusions = _excluding(phrase, "grants", "imputed multilateral aid")
+    assert exclusion_requirements(exclusions, variable="ODA") == ()
+
+
+def test_a_word_the_variable_holds_is_not_left_out():
+    """ "not net ODA" beside the variable "ODA" leaves out net, and a gross ODA answer
+    meets it; read whole, the phrase would also leave out ODA."""
+    gross_oda = [_bound("nettingBasis", "Gross"), _bound("crsTypeOfFlow", "CRSTypeOfFlow10")]
+
+    def met(variable: str) -> frozenset[str]:
+        requirements = exclusion_requirements(_excluding("not net ODA", "net"), variable=variable)
+        return judge(requirements, [(_CRS_SHAPE_WITH_MEASURE, gross_oda)]).met_exclusions()
+
+    assert met("ODA") == {"not net ODA"}
+    assert met("aid") == frozenset()
+
+
+def test_an_exclusion_is_met_only_when_every_run_of_it_is_left_out():
+    """A run whose property the answer's shape lacks is not left out, and neither is one the
+    answer leaves open."""
+    phrase = "excluding grants and humanitarian aid"
+    requirements = exclusion_requirements(
+        _excluding(phrase, "grants", "humanitarian aid"), variable="ODA"
+    )
+    health = _bound("crsPurpose", "CRSPurposeCode120")
+    loans = _bound("crsTypeOfFinance", "CRSTypeOfFinance421")
+    purpose_only = _shape(
+        "purpose_only", (SlotKeyDraft(axis="how", property_dcid="crsPurpose", label="sector"),)
+    )
+
+    def met(shape: ShapeDraft, *bindings: SlotBindingDraft) -> frozenset[str]:
+        return judge(requirements, [(shape, list(bindings))]).met_exclusions()
+
+    assert met(purpose_only, health) == frozenset()
+    assert met(_CRS_SHAPE, health) == frozenset()
+    assert met(_CRS_SHAPE, health, loans) == {phrase}
+
+
+@pytest.mark.parametrize(
+    ("phrase", "things", "judged"),
+    [
+        ("excluding standard grants", ["standard grants"], True),
+        ("not net", ["net"], True),
+        ("excluding humanitarian aid", ["humanitarian aid"], True),
+        ("excluding debt relief", ["debt relief"], True),
+        # "loans" and "and" name no code, so an answer of loans would be shown as leaving
+        # the phrase out.
+        ("excluding standard grants and loans", ["standard grants", "loans"], False),
+        ("excluding standard grants and loans", ["standard grants and loans"], False),
+        ("excluding loans and standard grants", ["loans", "standard grants"], False),
+        # Leaving out every standard grant leaves out more than the French ones.
+        ("excluding French standard grants", ["French standard grants"], False),
+        ("excluding standard grants from France", ["standard grants from France"], False),
+        # A phrase that names no thing.
+        ("excluding standard grants", [""], False),
+    ],
+)
+def test_an_exclusion_is_judged_only_when_codes_name_every_word_of_what_it_leaves_out(
+    phrase, things, judged
+):
+    requirements = exclusion_requirements(_excluding(phrase, *things), variable="ODA")
+    loans = judge(
+        requirements,
+        [(_CRS_SHAPE_WITH_MEASURE, [_bound("crsTypeOfFinance", "CRSTypeOfFinance421")])],
+    )
+
+    assert bool(requirements) is judged
+    # An answer of loans leaves out standard grants, and leaves out no unjudged phrase.
+    assert loans.met_exclusions() == (
+        frozenset({phrase}) if judged and phrase == "excluding standard grants" else frozenset()
+    )
+
+
+def test_a_part_with_no_exclusion_reads_no_index(monkeypatch: pytest.MonkeyPatch):
+    def refuse() -> None:
+        raise AssertionError("read the code index")
+
+    monkeypatch.setattr(region_state, "get_index", refuse)
+    assert exclusion_requirements((), variable="ODA") == ()
+
+
+def test_a_pass_names_the_exclusions_its_answer_meets(monkeypatch: pytest.MonkeyPatch):
+    """The region's result carries what its final answer left out, for the door to clear."""
+
+    async def _judges_a_gross_answer(state: ResolveState) -> None:
+        state.judgement = judge(
+            state.requirements, [(_CRS_SHAPE_WITH_MEASURE, [_bound("nettingBasis", "Gross")])]
+        )
+
+    monkeypatch.setattr(pipeline, "_PHASES", (_judges_a_gross_answer, _terminal))
+    state = _state()
+    state.requirements = exclusion_requirements(
+        [
+            *_excluding("not net", "net"),
+            *_excluding("excluding standard grants", "standard grants"),
+        ],
+        variable="ODA",
+    )
+
+    result = asyncio.run(pipeline._run_phases(state))
+
+    assert result.met_exclusions == {"not net"}

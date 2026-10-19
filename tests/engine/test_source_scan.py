@@ -12,7 +12,7 @@ from origin_catalogue import CatalogueSnapshot, bound_catalogue
 from origin_catalogue.artifact import load_catalogue
 from scripts.stage_origin_catalogue_fixture import stage_fixture
 from search.engine.entry import raw_text
-from search.engine.extract import ExtractedEntity, Extraction, ExtractionResult
+from search.engine.extract import ExtractedEntity, ExtractedExclusion, Extraction, ExtractionResult
 from search.engine.source_code import SourceCodeRefusal
 from search.engine.source_scan import scan_sources, source_phrases
 from search.engine.source_scope import SourceDictionary, source_dictionary
@@ -259,6 +259,24 @@ def test_the_raw_text_door_reads_a_source_entity_as_the_source_alone(
     assert set(prep.entity_roles) == {"Kenya"}
     assert prep.entity_words == {"Kenya": "Kenya"}
     assert prep.per_variable_sources == [(_in("OECD"),)]
+
+
+def test_a_question_with_no_measure_warns_of_no_exclusion_that_only_names_a_source(
+    catalogue: CatalogueSnapshot,
+):
+    """ "everything excluding the CRS, except Kenya": the first phrase names a source, which
+    is no qualifier left unapplied; the second names a place and is reported."""
+    query = "everything excluding the CRS, except Kenya"
+    extraction = Extraction(
+        kind="resolution",
+        variables=[],
+        exclusions=[
+            ExtractedExclusion(phrase="excluding the CRS", left_out="the CRS"),
+            ExtractedExclusion(phrase="except Kenya", left_out="Kenya"),
+        ],
+    )
+    with bound_catalogue(catalogue):
+        assert raw_text._exclusions_naming_no_source(query, extraction) == ["except Kenya"]
 
 
 def test_the_raw_text_door_keeps_an_entity_read_as_a_source_only_once(

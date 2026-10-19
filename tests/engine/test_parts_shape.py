@@ -6,6 +6,7 @@ import threading
 from datetime import date
 from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from search.engine.assemble import OBSERVATIONS_OMITTED
@@ -117,17 +118,31 @@ def test_clamp_truncates_parts_to_the_unique_clamped_list():
 # ---------------------------------------------------------------------------
 
 
-def test_no_variable_extracted_yields_one_part_with_the_whole_query_as_variable_text():
+@pytest.mark.parametrize(
+    ("query", "extracted", "warnings"),
+    [
+        ("asdfghjkl qwertyuiop no variable here", {"variables": []}, []),
+        # An exclusion that removes the only measure names itself in the refusal.
+        (
+            "everything but humanitarian aid to Kenya in 2022",
+            {
+                "variables": ["humanitarian aid"],
+                "exclusions": [
+                    {"phrase": "everything but humanitarian aid", "left_out": "humanitarian aid"}
+                ],
+                "entities": [{"text": "Kenya", "span": "Kenya"}],
+            },
+            ['The requested qualifier "everything but humanitarian aid" was not applied.'],
+        ),
+    ],
+)
+def test_no_variable_extracted_yields_one_part_with_the_whole_query_as_variable_text(
+    query, extracted, warnings
+):
     """Zero extracted variables produce one `no_data` part with the query text."""
-    query = "asdfghjkl qwertyuiop no variable here"
     fake_llm = FakeLLM(
         responses={
-            _extract_key(query): {
-                "kind": "resolution",
-                "variables": [],
-                "entities": [],
-                "dates": [],
-            }
+            _extract_key(query): {"kind": "resolution", "entities": [], "dates": [], **extracted}
         }
     )
     result = offline_resolve(make_request(query), llm=fake_llm)
@@ -138,6 +153,7 @@ def test_no_variable_extracted_yields_one_part_with_the_whole_query_as_variable_
     assert isinstance(part, NoDataPart)
     assert part.no_data.reason == "variable_not_resolved"
     assert part.variable_text == query.strip()
+    assert [w.message for w in part.warnings if w.code == "query_qualifier_dropped"] == warnings
 
 
 # ---------------------------------------------------------------------------

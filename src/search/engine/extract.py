@@ -11,6 +11,7 @@ import re
 import unicodedata
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal
@@ -31,6 +32,7 @@ from search.engine.qualifier_match import (
     _normalize,
     _ranges_overlap,
     is_coded_only_phrase,
+    names_a_label,
     names_plain_name,
     slot_noun_named,
 )
@@ -185,6 +187,23 @@ class ExtractedEntity(BaseModel):
     members: bool = Field(default=False, description=_ENTITY_MEMBERS_DESCRIPTION)
 
 
+class ExtractedExclusion(BaseModel):
+    """Something the query asks to leave out."""
+
+    phrase: str = Field(
+        description=(
+            "The query's own words copied verbatim with the word that leaves the thing out: "
+            '"excluding humanitarian aid", "except Kenya", "not from the United States".'
+        )
+    )
+    left_out: str = Field(
+        description=(
+            "The thing left out, copied verbatim from within `phrase`: "
+            '"humanitarian aid", "Kenya", "the United States".'
+        )
+    )
+
+
 class ExtractedOperation(BaseModel):
     """Something the query asks to be done with one measure beyond showing it.
 
@@ -216,7 +235,9 @@ class Extraction(BaseModel):
 
     This is a data schema only; imported by bind, core, and tests. Gemini
     generates fields in declaration order, so `kind` is decided before the
-    measures and `operations` follows the `variables` it indexes.
+    measures, `operations` follows the `variables` it indexes, and a phrase that
+    leaves something out reaches `exclusions` before the catch-all
+    `dropped_qualifiers`.
     """
 
     kind: ExtractionKind = Field(
@@ -263,6 +284,13 @@ class Extraction(BaseModel):
         description=(
             "One entry per phrase that asks for something done with a measure beyond "
             "showing it, by the deletion test in the instructions. Empty for most queries."
+        ),
+    )
+    exclusions: list[ExtractedExclusion] = Field(
+        default_factory=list,
+        description=(
+            "One entry per thing the query asks to leave out. The words left out appear in "
+            "no other field. Leave empty when the query leaves nothing out."
         ),
     )
     dropped_qualifiers: list[str] = Field(
@@ -400,6 +428,30 @@ entity "Africa" with `members` true, where "Africa" alone has it false. The clas
 is never a role_span: "African countries" takes its flow_role and role_span from the
 words around it, exactly as "Africa" would. Do not infer qualifiers that the query did
 not state.
+
+A query can ask to leave something out ("excluding humanitarian aid", "except Kenya",
+"not from the United States", "other than grants", "everything but humanitarian aid").
+Copy each such phrase, with the word that leaves the thing out, into an `exclusions`
+entry's `phrase`, and the thing left out into its `left_out`; keep the thing left out
+out of `variables`, `entities` and `dropped_qualifiers`. A
+negating word that is part of an indicator's or group's own name stays in that field and
+makes no exclusion ("non-concessional loans", "non-DAC countries", "official development
+assistance excluding debt relief"). A restriction ("only grants") or a bound on time ("no
+later than 2015") leaves nothing out.
+
+Example — "ODA to Kenya excluding humanitarian aid in 2022":
+{"variables": ["ODA"], "entities": ["Kenya"],
+ "exclusions": [{"phrase": "excluding humanitarian aid", "left_out": "humanitarian aid"}],
+ "dates": [{"kind": "point", "start": "2022", "end": "2022"}]}
+
+Example — "ODA to Africa except Kenya in 2022":
+{"variables": ["ODA"], "entities": ["Africa"],
+ "exclusions": [{"phrase": "except Kenya", "left_out": "Kenya"}],
+ "dates": [{"kind": "point", "start": "2022", "end": "2022"}]}
+
+Example — "non-concessional loans from France to India":
+{"variables": ["non-concessional loans"], "entities": ["France", "India"],
+ "exclusions": [], "dates": []}
 
 Example — "health ODA grants from USA to Ethiopia":
 {"variables": ["health ODA grants"], "entities": ["USA", "Ethiopia"], "dates": []}
@@ -866,18 +918,27 @@ def _bound_extraction(
     attach a qualifier to the wrong surviving measure.
 
     Cap qualifier count before scanning, but preserve each phrase's full text
-    until coded-value checks finish. Truncation can change acceptance. Return the
-    pre-cap qualifier count for the overflow warning and the admitted variable set.
+    until coded-value checks finish. Truncation can change acceptance. The admitted
+    exclusions, which join the dropped qualifiers later (`_merge_exclusions`), count
+    toward the cap and fill it first. Return the pre-cap count of both for the overflow
+    warning and the admitted variable set.
     The result is `(extraction, raw_variable_count, raw_dropped_qualifier_count,
     admitted_variables)`.
     """
     raw_variable_count = len(_dedupe_stripped(extraction.variables))
     admitted_variables = _admitted_variables(extraction.variables)
 
-    raw_dropped_qualifier_count = len(extraction.dropped_qualifiers)
-    bounded_dropped = extraction.dropped_qualifiers[: settings().max_dropped_qualifiers]
-    if bounded_dropped != extraction.dropped_qualifiers:
-        extraction = extraction.model_copy(update={"dropped_qualifiers": bounded_dropped})
+    limit = settings().max_dropped_qualifiers
+    # An exclusion has one entry for each thing its phrase leaves out; the cap counts phrases.
+    phrases = list(dict.fromkeys(exclusion.phrase for exclusion in extraction.exclusions))
+    raw_dropped_qualifier_count = len(extraction.dropped_qualifiers) + len(phrases)
+    kept = set(phrases[:limit])
+    exclusions = [exclusion for exclusion in extraction.exclusions if exclusion.phrase in kept]
+    bounded_dropped = extraction.dropped_qualifiers[: limit - len(kept)]
+    if (bounded_dropped, exclusions) != (extraction.dropped_qualifiers, extraction.exclusions):
+        extraction = extraction.model_copy(
+            update={"dropped_qualifiers": bounded_dropped, "exclusions": exclusions}
+        )
 
     return extraction, raw_variable_count, raw_dropped_qualifier_count, admitted_variables
 
@@ -998,15 +1059,15 @@ def _clamp_variables(
 def _truncate_dropped_qualifiers_for_display(extraction: Extraction) -> Extraction:
     """Limit caller-visible phrase length after coded-qualifier checks finish.
 
-    Truncation affects display only. Verdicts use the full phrase text.
+    Truncation affects display only. Verdicts use the full phrase text, so `exclusions`
+    keeps each whole phrase, which answers are judged on; its entry in
+    `dropped_qualifiers` is the shown form.
     """
-    truncated = [
-        phrase[: settings().max_dropped_qualifier_length]
-        for phrase in extraction.dropped_qualifiers
-    ]
-    if truncated == extraction.dropped_qualifiers:
+    limit = settings().max_dropped_qualifier_length
+    dropped = [phrase[:limit] for phrase in extraction.dropped_qualifiers]
+    if dropped == extraction.dropped_qualifiers:
         return extraction
-    return extraction.model_copy(update={"dropped_qualifiers": truncated})
+    return extraction.model_copy(update={"dropped_qualifiers": dropped})
 
 
 # A non-resolution query that names a measure resolves, so the measure is shown. One
@@ -1202,6 +1263,326 @@ def _occurs_in(phrase: str, query: str) -> bool:
         if cursor is None:
             return False
     return bool(pieces)
+
+
+@dataclass(frozen=True, slots=True)
+class _Piece:
+    """One piece of a text as `_occurs_in` reads it: its folded form (`_folded`) and the
+    text's characters `start` to `end`."""
+
+    word: str
+    start: int
+    end: int
+
+
+def _located_pieces(text: str) -> list[_Piece]:
+    """The pieces of `text` (`_phrase_pieces`, read in the text as written so each keeps
+    its offsets). An apostrophe or a hyphen inside a word parts it, so a name stands apart
+    from an elided article, a possessive and a hyphen: "l'aide", "Kenya's" and
+    "debt-relief" each give two pieces."""
+    pieces: list[_Piece] = []
+    for spaced in re.finditer(r"\S+", text):
+        if any(char.isalnum() and _in_unspaced_script(char) for char in _folded(spaced.group())):
+            found = [(spaced.start(), spaced.end())]
+        else:
+            found = [
+                (spaced.start() + piece.start(), spaced.start() + piece.end())
+                for piece in _PIECE_RE.finditer(spaced.group())
+            ]
+        pieces += [_Piece(_folded(text[start:end]), start, end) for start, end in found]
+    return pieces
+
+
+def _occurrences(text: str, words: Sequence[str]) -> list[range]:
+    """The positions in `words` of each run of consecutive words equal to `text`'s
+    (`_located_pieces`)."""
+    wanted = tuple(piece.word for piece in _located_pieces(text))
+    if not wanted:
+        return []
+    return [
+        range(at, at + len(wanted))
+        for at in range(len(words) - len(wanted) + 1)
+        if tuple(words[at : at + len(wanted)]) == wanted
+    ]
+
+
+def _may_exclude(phrase: str, named: Sequence[str]) -> bool:
+    """Whether `phrase`, whose words the query writes in order, may be something the query
+    leaves out: none of `named`, the variables and entity spans, holds it beside words of
+    its own, and none is a label of the code index it words whole (`names_a_label`).
+
+    A variable that holds it carries it to bind, which reads its words: "non-humanitarian
+    aid" binds a set of aid types without humanitarian aid. An entity that holds it is
+    named by it: "non-DAC" in "non-DAC countries". A label a variable or an entity words
+    names a thing asked for; a label none of them names ("grants" beside the variable
+    "ODA") is left out.
+    """
+    holding = [name for name in named if _occurs_in(phrase, name)]
+    if any(not _occurs_in(name, phrase) for name in holding):
+        return False
+    return not (holding and names_a_label(phrase, get_index(), get_measure_index()))
+
+
+def _label_with_a_variable(
+    query: str, run: range, tokens: Sequence[_Piece], words: Sequence[str], variables: Sequence[str]
+) -> tuple[int, range] | None:
+    """The position of a variable and the positions in `words` of the stretch of `query`
+    from an occurrence of it to the phrase at `run`, when that stretch is one label of the
+    code index (`names_a_label`): "official development assistance" beside "excluding debt
+    relief" is DAC2a's series "official development assistance excluding debt relief". A
+    phrase that is a label alone ("grants" after "ODA") is the thing left out and joins no
+    variable."""
+    index, measure_index = get_index(), get_measure_index()
+    phrase = query[tokens[run.start].start : tokens[run.stop - 1].end]
+    if names_a_label(phrase, index, measure_index):
+        return None
+    for position, variable in enumerate(variables):
+        for written in _occurrences(variable, words):
+            stretch = range(min(written.start, run.start), max(written.stop, run.stop))
+            label = query[tokens[stretch.start].start : tokens[stretch.stop - 1].end]
+            if names_a_label(label, index, measure_index):
+                return position, stretch
+    return None
+
+
+# What stands in the request text for a stretch an exclusion covers. A separator no label
+# holds, so no label reads across the gap (`code_index.tokens`).
+_LEFT_OUT_MARK = ";"
+
+
+def _without(query: str, tokens: Sequence[_Piece], covered: AbstractSet[int]) -> str:
+    """`query` with each run of tokens at `covered` positions replaced by
+    `_LEFT_OUT_MARK`."""
+    pieces: list[str] = []
+    cursor = 0
+    position = 0
+    while position < len(tokens):
+        if position not in covered:
+            position += 1
+            continue
+        last = position
+        while last + 1 in covered:
+            last += 1
+        pieces += [query[cursor : tokens[position].start], _LEFT_OUT_MARK]
+        cursor = tokens[last].end
+        position = last + 1
+    return "".join([*pieces, query[cursor:]])
+
+
+def _variable_left(
+    variable: str,
+    words: Sequence[str],
+    covered: AbstractSet[int],
+    left_out: Sequence[tuple[str, ...]],
+) -> str | None:
+    """What the exclusions leave of `variable`, `None` when they leave nothing.
+
+    A variable the query writes as one run of consecutive words (`_occurrences`) outside
+    the stretches at `covered`, the positions of the query's `words` the exclusions write,
+    is unchanged. Any other loses each run of its words that is one of `left_out`, the
+    things the exclusions leave out, and goes when nothing is left: "humanitarian aid"
+    beside "excluding humanitarian aid" goes, "net ODA" beside "not net" leaves "ODA", and
+    "ODA grants" for "ODA to Kenya excluding grants" leaves "ODA". A variable holding no
+    such run is unchanged, as the model's own word for the measure: "aid" beside
+    "excluding humanitarian aid", "debt" beside "excluding debt relief".
+    """
+    if any(covered.isdisjoint(run) for run in _occurrences(variable, words)):
+        return variable
+    own = _located_pieces(variable)
+    mine = [piece.word for piece in own]
+    cut = {
+        at + offset
+        for wanted in left_out
+        for at in range(len(mine) - len(wanted) + 1)
+        if tuple(mine[at : at + len(wanted)]) == wanted
+        for offset in range(len(wanted))
+    }
+    kept = [at for at in range(len(own)) if at not in cut]
+    if len(kept) == len(own):
+        return variable
+    if not kept:
+        return None
+    if kept == list(range(kept[0], kept[-1] + 1)):
+        return variable[own[kept[0]].start : own[kept[-1]].end]
+    return " ".join(variable[own[at].start : own[at].end] for at in kept)
+
+
+def _admit_exclusions(query: str, extraction: Extraction) -> tuple[Extraction, str | None]:
+    """Keep the exclusions the query states and remove what they leave out. The second
+    value is the request text: `query` without the stretches the kept exclusions' phrases
+    cover (`_without`), `None` when they cover none.
+
+    A phrase whose words the query does not write in order (`_occurs_in`) is the model's
+    wording ("excluding humanitarian aid" for "minus humanitarian aid"): it leaves
+    `exclusions` for `dropped_qualifiers`, which warn that it was not applied, and removes
+    nothing. An exclusion whose `phrase` `_may_exclude` refuses leaves `exclusions`, and so
+    does one whose phrase is every word of the query, which leaves nothing to answer. A
+    phrase that
+    names one label together with a variable written apart from it
+    (`_label_with_a_variable`) is part of that measure's name: the variable becomes the
+    query's words for the label, and a variable written only among those words goes
+    ("debt relief" in "official development assistance excluding debt relief").
+    `exclusions` keeps each other exclusion, stripped, with one entry for each distinct
+    `left_out` the entries give its phrase (`_folded`): "except Kenya and Uganda" with
+    "Kenya" and with "Uganda". Removal reads every one, and so do the legs that judge the
+    phrase (`state.exclusion_requirements`). A kept phrase the query writes as one run of
+    consecutive words (`_occurrences`) covers those words, and the run of each `left_out`
+    inside them is left out. A `left_out` that is no run of its phrase's words
+    (`_located_pieces`), as a translated or reworded one or one inside a single piece of
+    an unspaced script, removes nothing, and its phrase is still covered and reported; so
+    is a phrase whose words the query writes apart, which covers nothing.
+    Removal reads what is left out, by position in the query:
+
+    - a variable keeps what the exclusions leave of it and goes when that is nothing
+      (`_variable_left`). Variables left with the same words become one, the first.
+    - an entity goes when its span occurs in the query and every occurrence holds a word
+      left out, so a span wider than the thing left out goes ("la France" beside "sauf de
+      la France", left out "France"): "ODA to Africa excluding North Africa" keeps
+      "Africa".
+    - an operation goes when its variable goes, or its phrase occurs in the query and
+      every occurrence is left out ("excluding the top 5 donors"); the rest are
+      re-indexed onto the variables left, as `_admit_operations` re-indexes them.
+    - a dropped qualifier goes when every occurrence of it is left out, or it occurs
+      nowhere as one run and a kept phrase holds it (`_occurs_in`), so the later passes
+      never read it as something asked for and one thing left out is reported once. One
+      the query also writes elsewhere ("bilateral" in "bilateral ODA to Kenya excluding
+      bilateral loans") stays.
+    """
+    if not extraction.exclusions:
+        return extraction, None
+    variables = list(extraction.variables)
+    tokens = _located_pieces(query)
+    words = [piece.word for piece in tokens]
+    named = [*variables, *(entity.span or entity.text for entity in extraction.entities)]
+    # Each phrase once (`_folded`), with every thing an entry says it leaves out.
+    stated: dict[str, tuple[ExtractedExclusion, list[str]]] = {}
+    for exclusion in extraction.exclusions:
+        phrase, thing = exclusion.phrase.strip(), exclusion.left_out.strip()
+        first = ExtractedExclusion(phrase=phrase, left_out=thing)
+        _, things = stated.setdefault(_folded(phrase), (first, []))
+        if thing and thing not in things:
+            things.append(thing)
+    admitted: list[tuple[ExtractedExclusion, list[str]]] = []
+    # Phrases the query does not write in order, for `dropped_qualifiers` unless there.
+    unwritten: list[str] = []
+    dropped = {phrase.strip() for phrase in extraction.dropped_qualifiers}
+    labels: dict[int, range] = {}
+    for exclusion, things in stated.values():
+        if not _occurs_in(exclusion.phrase, query):
+            if exclusion.phrase not in dropped:
+                unwritten.append(exclusion.phrase)
+            continue
+        if not _may_exclude(exclusion.phrase, named):
+            continue
+        runs = _occurrences(exclusion.phrase, words)
+        if any(len(run) == len(words) for run in runs):
+            continue
+        label = _label_with_a_variable(query, runs[0], tokens, words, variables) if runs else None
+        if label is not None:
+            position, stretch = label
+            labels[position] = stretch
+            variables[position] = query[tokens[stretch.start].start : tokens[stretch.stop - 1].end]
+            continue
+        admitted.append((exclusion, things))
+    covered: set[int] = set()
+    removed: set[int] = set()
+    left_out: list[tuple[str, ...]] = []
+    for exclusion, things in admitted:
+        own = [piece.word for piece in _located_pieces(exclusion.phrase)]
+        # A thing that is no run of its phrase's words (translated, reworded, or inside
+        # one piece of an unspaced script) removes nothing.
+        located = [thing for thing in things if _occurrences(thing, own)]
+        for run in _occurrences(exclusion.phrase, words):
+            covered.update(run)
+            for thing in located:
+                removed.update(
+                    run.start + at
+                    for inner in _occurrences(thing, words[run.start : run.stop])
+                    for at in inner
+                )
+                left_out.append(tuple(piece.word for piece in _located_pieces(thing)))
+    # The words of each label a phrase formed, and the variables written only among them.
+    in_a_label = {at for stretch in labels.values() for at in stretch}
+
+    def every_occurrence_within(text: str, positions: AbstractSet[int]) -> bool:
+        runs = _occurrences(text, words)
+        return bool(runs) and all(positions >= set(run) for run in runs)
+
+    def every_occurrence_left_out(text: str) -> bool:
+        return every_occurrence_within(text, removed)
+
+    def every_occurrence_touches_what_is_left_out(text: str) -> bool:
+        runs = _occurrences(text, words)
+        return bool(runs) and all(not removed.isdisjoint(run) for run in runs)
+
+    # Each variable's place among the variables left, by the words it is left with.
+    left: dict[tuple[str, ...], str] = {}
+    place: dict[int, int] = {}
+    for position, variable in enumerate(variables):
+        if position not in labels and every_occurrence_within(variable, in_a_label):
+            continue
+        kept = _variable_left(variable, words, covered, left_out)
+        if kept is None:
+            continue
+        key = tuple(piece.word for piece in _located_pieces(kept))
+        left.setdefault(key, kept)
+        place[position] = list(left).index(key)
+    operations = [
+        operation.model_copy(update={"variable": place[operation.variable]})
+        if operation.variable in place
+        else operation
+        for operation in extraction.operations
+        if not every_occurrence_left_out(operation.phrase)
+        and (operation.variable in place or not 0 <= operation.variable < len(variables))
+    ]
+    extraction = extraction.model_copy(
+        update={
+            "variables": list(left.values()),
+            "entities": [
+                entity
+                for entity in extraction.entities
+                if not every_occurrence_touches_what_is_left_out(entity.span or entity.text)
+            ],
+            "operations": operations,
+            "exclusions": [
+                exclusion.model_copy(update={"left_out": thing})
+                for exclusion, things in admitted
+                for thing in things or [exclusion.left_out]
+            ],
+            "dropped_qualifiers": [
+                *(
+                    phrase
+                    for phrase in extraction.dropped_qualifiers
+                    if not (
+                        every_occurrence_left_out(phrase)
+                        if _occurrences(phrase, words)
+                        else any(_occurs_in(phrase, excluded.phrase) for excluded, _ in admitted)
+                    )
+                ),
+                *unwritten,
+            ],
+        }
+    )
+    return extraction, _without(query, tokens, covered) if covered else None
+
+
+def _merge_exclusions(extraction: Extraction) -> Extraction:
+    """Append the admitted exclusions to `dropped_qualifiers`.
+
+    `extract` runs this after the passes that read a dropped phrase as something asked
+    for (`_trim_qualifiers_to_what_operations_leave`, `_reattach_coded_qualifiers`), so
+    no exclusion is trimmed or attached as a code.
+    """
+    if not extraction.exclusions:
+        return extraction
+    return extraction.model_copy(
+        update={
+            "dropped_qualifiers": [
+                *extraction.dropped_qualifiers,
+                *dict.fromkeys(exclusion.phrase for exclusion in extraction.exclusions),
+            ]
+        }
+    )
 
 
 def _wire_operation(operation: ExtractedOperation) -> Operation | None:
@@ -1579,6 +1960,10 @@ class ExtractionResult:
     `dates_by_variable` holds a variable's own dates where they differ from
     `extraction.dates`, keyed the same way: a forecasting variable in a query whose
     other variables keep a future year. `extraction.kind` is the enforced kind.
+    `extraction.exclusions` holds the admitted exclusions, each also among
+    `extraction.dropped_qualifiers`. `request_text` is the query without the stretches
+    those exclusions cover, the text every reader of the request's words past extraction
+    takes; `None` when the query stands whole.
 
     `raw_variable_count` counts distinct stripped measures before the cap, for the
     clamp warning. `raw_dropped_qualifier_count` records the model's phrase count
@@ -1592,6 +1977,7 @@ class ExtractionResult:
     raw_dropped_qualifier_count: int = 0
     operations: Mapping[str, tuple[Operation, ...]] = field(default_factory=dict)
     dates_by_variable: Mapping[str, list[ExtractedDate]] = field(default_factory=dict)
+    request_text: str | None = None
 
 
 async def extract(
@@ -1601,8 +1987,9 @@ async def extract(
 ) -> tuple[ExtractionResult, dict | None]:
     """Extract structured fields and return the result with token usage.
 
-    `result.extraction` has its kind enforced, the query's word order restored in
-    reordered variables, its entities bounded, its operations admitted (a forecast over a past
+    `result.extraction` has the query's word order restored in reordered variables, its
+    exclusions admitted and what they leave out removed (`_admit_exclusions`), its kind
+    enforced on the variables left, its entities bounded, its operations admitted (a forecast over a past
     year returns the year to `dates`), each admitted forecast's target year set on it
     (`_target_forecasts`) and then removed from its variable's dates (`dates`, or
     `result.dates_by_variable` when another variable keeps them), and its role spans
@@ -1610,10 +1997,14 @@ async def extract(
     accounts for are then cut from its dropped
     qualifiers, crediting only the role spans of roles that passed validation
     (`_applied_phrases`), before the qualifier cap counts them. It is then bounded, reattached, clamped, and display-truncated in
-    that order. Qualifier checks use full phrases and variables before caps can change
-    their meaning. Usage is `None` when the client does not provide it. The stage
+    that order, and the admitted exclusions join the dropped qualifiers
+    (`_merge_exclusions`) before the display truncation. Qualifier checks use full
+    phrases and variables before caps can change their meaning. Usage is `None` when the client does not provide it. The stage
     wrapper applies extract-specific settings.
     """
+    # One normal form (NFC) for the query and every span the model copies from it, so a
+    # name typed with combining accents reads as the same pieces (`_located_pieces`).
+    query = unicodedata.normalize("NFC", query)
     system = _system_instruction()
     # Resolve off-loop. Memoising clients coalesce identical concurrent queries.
     extraction, usage = await generate_structured_async(
@@ -1622,7 +2013,13 @@ async def extract(
         system=system,
         schema=Extraction,
     )
-    extraction = _bound_entities(_restore_query_word_order(query, _enforce_kind(extraction)))
+    extraction = Extraction.model_validate_json(
+        unicodedata.normalize("NFC", extraction.model_dump_json())
+    )
+    extraction, request_text = _admit_exclusions(
+        query, _restore_query_word_order(query, extraction)
+    )
+    extraction = _bound_entities(_enforce_kind(extraction))
     today_year = date.today().year
     extraction, operations = _admit_operations(query, extraction, today_year=today_year)
     operations = _target_forecasts(extraction, operations, today_year=today_year)
@@ -1640,7 +2037,7 @@ async def extract(
     )
     extraction, qualifiers = _reattach_coded_qualifiers(query, extraction)
     extraction, qualifiers = _clamp_variables(extraction, qualifiers, admitted_variables)
-    extraction = _truncate_dropped_qualifiers_for_display(extraction)
+    extraction = _truncate_dropped_qualifiers_for_display(_merge_exclusions(extraction))
     return (
         ExtractionResult(
             extraction=extraction,
@@ -1649,6 +2046,7 @@ async def extract(
             raw_dropped_qualifier_count=raw_dropped_qualifier_count,
             operations=operations,
             dates_by_variable=dates_by_variable,
+            request_text=request_text,
         ),
         usage,
     )

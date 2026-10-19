@@ -38,7 +38,7 @@ def _load_rung0() -> Rung:
 # ---------------------------------------------------------------------------
 
 
-def test_ablate_totals_24_for_the_landed_production_manifests():
+def test_ablate_totals_25_for_the_landed_production_manifests():
     rung = _load_production_rung()
 
     expected_unit_count = sum(
@@ -58,15 +58,15 @@ def test_ablate_totals_24_for_the_landed_production_manifests():
     generated = rungs_gen.ablate(rung, granularity="both")
 
     assert len(generated) == expected_unit_count + expected_sub_block_count
-    assert len(generated) == 24  # pins the 17 unit + 7 sub-block arithmetic
+    assert len(generated) == 25  # pins the 18 unit + 7 sub-block arithmetic
     assert len(generated) == len({g.name for g in generated})  # every name is unique
 
 
 def test_ablate_granularity_selects_the_family():
     rung = _load_production_rung()
-    assert len(rungs_gen.ablate(rung, granularity="unit")) == 17
+    assert len(rungs_gen.ablate(rung, granularity="unit")) == 18
     assert len(rungs_gen.ablate(rung, granularity="block")) == 7
-    assert len(rungs_gen.ablate(rung, granularity="both")) == 24
+    assert len(rungs_gen.ablate(rung, granularity="both")) == 25
 
 
 def test_ablate_raises_when_nothing_is_ablatable():

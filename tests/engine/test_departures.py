@@ -11,6 +11,7 @@ from search.engine.assemble import build_no_data_part, part_departure_facts
 from search.engine.clients.graph import Facet
 from search.engine.departures import (
     breakdown_not_applied,
+    exclusion_not_applied,
     measure_not_applied,
     merged_entity_facts,
     price_basis_not_applied,
@@ -975,6 +976,9 @@ def test_a_dropped_phrase_departs_unless_it_is_operation_wording(phrase, fact):
 _GROSS = measure_not_applied(asked="gross", property_dcid="nettingBasis")
 _NET = measure_not_applied(asked="net", property_dcid="nettingBasis")
 _CURRENT_PRICES = price_basis_not_applied(asked="current prices", shown=None)
+_NOT_NET = exclusion_not_applied(asked="not net")
+_EXCLUDING_DEBT_RELIEF = exclusion_not_applied(asked="excluding debt relief")
+_GRANTS_LEFT_OUT = exclusion_not_applied(asked="grants")
 # The recorded sentences of weo-013 and mls-030.
 _WEO_013 = (
     "Sub-Saharan Africa's GDP, 1980 to 2025. Current US dollars · IMF World Economic Outlook (WEO)."
@@ -1012,6 +1016,15 @@ _MLS_030 = (
         ),
         # A part with no sentence keeps the qualifier.
         ([_GROSS], [], [_GROSS]),
+        # A part that states what an exclusion names shows the thing left out, so it never
+        # clears the departure, cue or no cue.
+        ([_NOT_NET], ["Net ODA disbursements."], [_NOT_NET]),
+        ([_GRANTS_LEFT_OUT], ["ODA grants to Kenya, 2022."], [_GRANTS_LEFT_OUT]),
+        (
+            [_EXCLUDING_DEBT_RELIEF],
+            ["Official development assistance excluding debt relief to Kenya, 2022."],
+            [_EXCLUDING_DEBT_RELIEF],
+        ),
         # weo-002, weo-045: a price basis the part's byline does not state.
         ([_CURRENT_PRICES], ["GDP."], []),
         (

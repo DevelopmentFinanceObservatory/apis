@@ -19,6 +19,7 @@ import dataclasses
 import json
 import logging
 import sys
+import unicodedata
 from collections import Counter
 from collections.abc import Callable, Mapping
 from typing import Any, cast
@@ -352,7 +353,7 @@ def _assert_imputed_part(spec: Spec) -> None:
     [
         ("top donors of education aid to Kenya", _E, CRS_MEMBER_COUNT, ["origin"]),
         (f"{_E} to Kenya", _E, CRS_MEMBER_COUNT, None),
-        ("total aid to Kenya", "aid", _PLAIN_AID_MEMBER_COUNT, None),
+        ("total aid to Kenya", "total aid", _PLAIN_AID_MEMBER_COUNT, None),
         ("top 5 donantes de ayuda a Kenia", "aid", _PLAIN_AID_MEMBER_COUNT, ["origin"]),
     ],
 )
@@ -385,6 +386,141 @@ def test_a_ranked_education_aid_question_asks_every_donor_and_keeps_its_operatio
     assert response.parts[0].operations == [
         Operation(verb="rank", phrase="top donors", over="origin")
     ]
+
+
+class _StubbedLLM:
+    """Answer extraction with `payload` in the form given, and every bind with the first
+    shape and `bindings`, nothing bound unless given, keeping each bind prompt."""
+
+    def __init__(self, payload: dict, bindings: tuple[SlotBindingDraft, ...] = ()) -> None:
+        self.payload = payload
+        self.bindings = list(bindings)
+        self.bind_prompts: list[str] = []
+
+    async def generate_structured(self, *, prompt, system, schema):
+        if schema is Extraction:
+            return Extraction.model_validate({"kind": "resolution", **self.payload}), None
+        if schema is QuantityOutput:
+            return NO_QUANTITY
+        self.bind_prompts.append(prompt)
+        return _UniversalBindOutput(chosen_shape_index=0, bindings=self.bindings, ask=None), None
+
+
+@pytest.mark.parametrize(
+    "spans_form",
+    [
+        pytest.param("NFD", id="spans-copied-in-the-query-form"),
+        pytest.param("NFC", id="spans-in-composed-form"),
+    ],
+)
+def test_a_query_typed_with_combining_accents_reads_as_its_composed_form(spans_form):
+    """Every reader of the query, extraction's spans and the door's role readers alike,
+    shares one form, so the bind prompt is the composed query's."""
+    query = "aide de la France \u00e0 Kenya en 2020"
+
+    def prompts(form: str, spans: str) -> list[str]:
+        llm = _StubbedLLM(
+            {
+                "variables": ["aide"],
+                "entities": [
+                    {"text": "France", "span": "France", "flow_role": "origin", "role_span": "de"},
+                    {
+                        "text": "Kenya",
+                        "span": "Kenya",
+                        "flow_role": "destination",
+                        "role_span": unicodedata.normalize(spans, "\u00e0"),
+                    },
+                ],
+                "dates": [{"kind": "point", "start": "2020", "end": "2020"}],
+            }
+        )
+        offline_resolve(
+            make_request(unicodedata.normalize(form, query)),
+            graph=_graph("aide", members=(_CRS_MEMBER,)),
+            llm=llm,
+            sdmx=FakeSdmxClient(observations={}, availability={}),
+        )
+        return llm.bind_prompts
+
+    composed = prompts("NFC", "NFC")
+    assert composed and "destination, stated" in composed[0]
+    assert prompts("NFD", spans_form) == composed
+
+
+_LOANS_MEMBER = _CRS_MEMBER.replace("CRSTypeOfFinance110", "CRSTypeOfFinance421")
+
+
+@pytest.mark.parametrize(
+    ("phrase", "things", "warned"),
+    [
+        pytest.param("excluding standard grants", ["standard grants"], False, id="judged"),
+        pytest.param(
+            "excluding standard grants and loans",
+            ["standard grants", "loans"],
+            True,
+            id="a-thing-no-code-names",
+        ),
+        pytest.param(
+            "excluding standard grants and loans",
+            ["standard grants and loans"],
+            True,
+            id="a-word-no-code-names",
+        ),
+        pytest.param(
+            "excluding French standard grants",
+            ["French standard grants"],
+            True,
+            id="a-donor-word-before",
+        ),
+        pytest.param(
+            "excluding standard grants from France",
+            ["standard grants from France"],
+            True,
+            id="a-donor-words-after",
+        ),
+    ],
+)
+def test_an_answer_of_loans_leaves_out_only_a_phrase_codes_name_whole(
+    phrase: str, things: list[str], warned: bool, monkeypatch: pytest.MonkeyPatch
+):
+    """Bind lands on loans. That leaves out every standard grant, so a phrase that leaves
+    out only standard grants is met and makes no claim; one that also leaves out loans,
+    or only the French grants, is disclosed."""
+    names = RoleNames(donor="financingProvider", recipient="financingRecipient")
+    patch_coverage(
+        monkeypatch,
+        [(_LOANS_MEMBER, "crs", _FRA, _KEN, [2019, 2020, 2021])],
+        role_names={_LOANS_MEMBER: names},
+        facet_metadata={"crs": FacetMetadata(provenance_id=CRS_PROVENANCE, unit="USD")},
+    )
+    llm = _StubbedLLM(
+        {
+            "variables": ["aid"],
+            "entities": [
+                {"text": "Kenya", "span": "Kenya", "flow_role": "destination", "role_span": "to"}
+            ],
+            "exclusions": [{"phrase": phrase, "left_out": thing} for thing in things],
+        },
+        bindings=(
+            SlotBindingDraft(
+                axis="how",
+                property_dcid="crsTypeOfFinance",
+                kind="value",
+                value_dcids=["CRSTypeOfFinance421"],
+            ),
+        ),
+    )
+
+    response = offline_resolve(
+        make_request(f"aid to Kenya {phrase}"),
+        graph=_graph("aid", members=(_LOANS_MEMBER,)),
+        llm=llm,
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+    )
+
+    (part,) = response.parts
+    assert isinstance(part, DefinitePart), part
+    assert [departure.asked for departure in part.departures] == ([phrase] if warned else [])
 
 
 # ---------------------------------------------------------------------------
@@ -510,13 +646,13 @@ def test_a_second_table_on_the_family_leaves_the_bind_prompt_as_it_was(
     """The bind menu offers no source: a second table publishing the CRS aid family leaves
     the prompt of a question naming no table as it was, and the part answers the CRS under
     its plain identity."""
-    _response, plain = _resolve("total aid to Kenya", "aid")
+    _response, plain = _resolve("total aid to Kenya", "total aid")
     _use_second_table(monkeypatch, opt_in=False)
 
-    response, shared = _resolve("total aid to Kenya", "aid")
+    response, shared = _resolve("total aid to Kenya", "total aid")
 
-    assert shared.bind_prompts["aid"] == plain.bind_prompts["aid"]
-    assert "axis=source" not in shared.bind_prompts["aid"]
+    assert shared.bind_prompts["total aid"] == plain.bind_prompts["total aid"]
+    assert "axis=source" not in shared.bind_prompts["total aid"]
     (spec,) = _specs(response)
     assert "source" not in _bound(spec)
     assert spec.spec_id == _spec_id(_plain_aid_identity())

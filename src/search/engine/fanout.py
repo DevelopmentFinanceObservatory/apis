@@ -32,7 +32,7 @@ from search.engine.errors import (
     EngineInfraError,
 )
 from search.engine.events import Event
-from search.engine.extract import DateRequest
+from search.engine.extract import DateRequest, ExtractedExclusion
 from search.engine.leg_phase import LegPhase, enter_phase, track_leg_phase
 from search.engine.options.population_memo import OptionsPopulationMemo
 from search.engine.qualifier_match import CodedQualifier, recall_text
@@ -453,6 +453,7 @@ async def _stream_one_variable(
     source_scope: SourceScope | SourceRefusal | None = None,
     source_code: PartCode | None = None,
     dropped_qualifier_phrases: list[str] | None = None,
+    exclusions: Sequence[ExtractedExclusion] = (),
     operations: tuple[Operation, ...] = (),
     open_axes: frozenset[RoleAxis] = frozenset(),
     separate: bool = False,
@@ -526,6 +527,7 @@ async def _stream_one_variable(
             source_scope=source_scope,
             source_code=source_code if isinstance(source_code, SeriesCodeMembers) else None,
             dropped_qualifier_phrases=_bind_phrases(dropped_qualifier_phrases, operations),
+            exclusions=exclusions,
             operations=operations,
             open_axes=_asked_open_axes(open_axes, operations),
             query_text=query_text,
@@ -826,6 +828,7 @@ def _launch_variable_tasks(
     include_observations: bool,
     stream_observations: bool,
     dropped_qualifier_phrases: list[str] | None,
+    exclusions: Sequence[ExtractedExclusion],
     query_text: str | None,
     materialise_graph: GraphReader | None,
     materialise_sdmx: MaterialiseSdmxClient | None,
@@ -885,6 +888,7 @@ def _launch_variable_tasks(
                 source_code=_leg_source_code(overrides, i),
                 qualifiers=_leg_qualifiers(overrides, i),
                 dropped_qualifier_phrases=dropped_qualifier_phrases,
+                exclusions=exclusions,
                 operations=_leg_operations(overrides, i),
                 open_axes=_leg_open_axes(overrides, i),
                 separate=_leg_separate(overrides, i),
@@ -979,6 +983,7 @@ async def _run_variables_streaming(
     per_variable_open_axes: list[frozenset[RoleAxis]] | None = None,
     per_variable_separate: list[bool] | None = None,
     dropped_qualifier_phrases: list[str] | None = None,
+    exclusions: Sequence[ExtractedExclusion] = (),
     query_text: str | None = None,
     materialise_graph: GraphReader | None = None,
     materialise_sdmx: MaterialiseSdmxClient | None = None,
@@ -1072,6 +1077,7 @@ async def _run_variables_streaming(
         include_observations=include_observations,
         stream_observations=stream_observations,
         dropped_qualifier_phrases=dropped_qualifier_phrases,
+        exclusions=exclusions,
         query_text=query_text,
         materialise_graph=materialise_graph,
         materialise_sdmx=materialise_sdmx,
