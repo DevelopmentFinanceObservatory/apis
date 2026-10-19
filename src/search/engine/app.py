@@ -356,7 +356,7 @@ def _schema_payload_response_schema() -> dict:
 
 
 def search_documents() -> SearchDocuments:
-    """Freeze the public schema, and the capability document of the index read now. Build
+    """Freeze the public schema, and the capability document of the index `get_index()` returns. Build
     errors propagate."""
 
     @per_index

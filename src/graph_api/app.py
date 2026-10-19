@@ -14,9 +14,10 @@ It publishes the shared resolver's membership policy, which the node, resolve
 and members doors classify groups and regions by. Surface
 construction loads the origin catalogue, so a missing or unloadable
 `ORIGIN_CATALOGUE_URI` fails startup, and each request binds its loaded
-snapshot. With `GRAPH_RELEASE_URI` set, each request also binds the release
-service's served release, and an unreadable release fails startup. Resolve confirmation and region reads, node reads, and
-source-document reads share them. Resolvekit matching uses its
+snapshot. Resolve confirmation and region reads, node reads, and
+source-document reads share them. With `GRAPH_RELEASE_URI` set, each request also
+binds the release service's served release, and an unreadable release fails startup.
+Resolvekit matching uses its
 own single-worker executor. A live surface also acquires the process-wide
 coverage service when `COVERAGE_ARTIFACT_URI` is set, and the sources door
 reads currency and granularity from it. A missing URI, a missing `coverage`

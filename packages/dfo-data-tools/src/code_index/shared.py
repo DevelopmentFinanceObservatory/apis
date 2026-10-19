@@ -54,7 +54,7 @@ def per_index[T](build: Callable[[CodeIndex], T]) -> Callable[[CodeIndex], T]:
     """Memoise `build` on the code index it is called with, for as long as that index lives.
 
     The index a request reads can change between requests, so a value derived from it is
-    cached per index and never for the process. Entries are keyed on the index object, as
+    cached per index. Entries are keyed on the index object, as
     `code_index.members` keys its views, since in-memory indexes share placeholder content
     hashes, and each entry is dropped when its index is collected. `build` must return a value
     that does not hold its index, or the entry would keep the index alive.

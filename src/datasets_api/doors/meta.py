@@ -402,7 +402,7 @@ def build_meta_door(*, deps: DepsCell, settings: DatasetsBuildSettings) -> DoorC
         )
         return freeze_public_json(payload.model_dump(mode="json"), max_age=300)
 
-    # Built now, so a failure to build it stops construction rather than a request.
+    # Built at construction, so a build failure stops startup.
     capabilities_document(get_index())
 
     @router.get("/api/datasets/capabilities", response_model=Capabilities)

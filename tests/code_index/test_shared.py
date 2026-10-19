@@ -1,5 +1,6 @@
 """Test process-wide `get_index` caching, the `reset_index` rebuild hook and the `per_index`
 memo.
+
 The autouse fixture runs each test on an empty index and restores the process's own after it,
 so a later test in the worker does not parse the index again inside its own deadline."""
 

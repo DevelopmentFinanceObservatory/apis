@@ -175,8 +175,7 @@ def _price_basis_words(text: str) -> set[str]:
     return kept
 
 
-# Keyed on the qualifier rows' text, not on the measure index, so the cache never holds an
-# index object. A release swap that changes the labels adds an entry, and two entries hold
+# Keyed on the qualifier rows' text, so the cache holds no index object. A release swap that changes the labels adds an entry, and two entries hold
 # the served vocabulary and the one it replaced.
 @functools.lru_cache(maxsize=2)
 def _price_basis_vocabulary_of(

@@ -339,7 +339,7 @@ def _run_nightly(
     from search.eval.live_clients import score_clients
 
     # The graph client reads under a bound origin catalogue, and the served graph release when
-    # `GRAPH_RELEASE_URI` is set; the experiment's tasks and the scoring threads inherit both
+    # `GRAPH_RELEASE_URI` is set. The experiment's tasks and the scoring threads inherit both
     # bindings.
     catalogue = get_catalogue_service().snapshot()
     with (

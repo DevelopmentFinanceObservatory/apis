@@ -149,7 +149,7 @@ class DepsOverrides:
 
     `coverage` and `rate_cache` are process-wide services the surface resolves when it is
     built, so a missing coverage artifact fails construction. A given `code_index` serves
-    every request; `None` reads `get_index()` per request. `release` is the process's graph
+    every request, and `None` reads `get_index()` per request. `release` is the process's graph
     release service, `None` when `GRAPH_RELEASE_URI` is unset.
     """
 

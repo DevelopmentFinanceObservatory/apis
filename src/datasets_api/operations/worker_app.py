@@ -320,8 +320,8 @@ def build_worker_app(
                         stack.callback(
                             _release.register_swap_guard(materialise_semaphore.every_permit)
                         )
-                    # Parse the index now so a missing or malformed export fails startup. The
-                    # result is dropped: each run reads its own under its bindings.
+                    # Parse the index at startup so a missing or malformed export fails it. Each
+                    # run reads its own index under its bindings, so the result is dropped.
                     get_index()
                     # Run state uses the top-level store. This worker only runs tasks.
                     # Dependency defaults stay inert.

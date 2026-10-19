@@ -4,8 +4,7 @@ Injected stores are shared across doors. Missing stores are built in each door's
 Construction resolves the pinned catalogue to compute `capability_version` from packaged data,
 and loads the origin catalogue, whose snapshot each request binds. With `GRAPH_RELEASE_URI` set,
 each request also binds the release service's served release, and an unreadable release fails
-construction. Live stores and credentials
-load in door lifespans. The fronting Data access proxy authenticates requests. A `cmp_` or
+construction. Live stores and credentials load in door lifespans. The fronting Data access proxy authenticates requests. A `cmp_` or
 `cps_` id grants read of a draft, and the write token its create returned grants write, so the
 doors take no caller or session. The two render routes of `presentation_api.doors.render` are
 the exception. They admit the live-refresh principal the composition passes in, and refuse

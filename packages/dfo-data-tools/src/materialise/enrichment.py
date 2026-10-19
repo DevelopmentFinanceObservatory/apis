@@ -49,8 +49,8 @@ class EnrichmentLookup:
 
     `parties` returns the code index's party rows (`CodeIndex.parties`), which give a ref its
     `party_kind` (`party_kind_of`). A ref they do not list has no kind, whatever its graph
-    types. It is read on every lookup and the kind is never cached, since the index can
-    change between requests.
+    types. It is read on every lookup and the kind is computed from it each time, since the
+    index can change between requests.
 
     The lock guards cache access only. Graph calls run unlocked, so concurrent misses may
     duplicate requests. Results use each call's own hits and fetches, even if another call
@@ -69,7 +69,7 @@ class EnrichmentLookup:
 
     @property
     def parties(self) -> Mapping[str, PartyRow]:
-        """The party rows `parties` returns now."""
+        """The party rows the `parties` callable returns on this read."""
         return self._parties()
 
     def lookup(

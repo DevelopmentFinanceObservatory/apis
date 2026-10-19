@@ -626,8 +626,9 @@ class LiveFrameStore:
     requests. `now` supplies the clock for expiry checks and reference timestamps.
     `read_budget_seconds` bounds the graph reads of one `load()` from its start, as the module
     docstring describes, for a caller that sets no door deadline. `frame_max_rows` bounds the
-    rows of a canonical frame `load()` decodes, since the whole frame is built in memory. A larger frame refuses `missing_rendering`, before its
-    object is fetched when the version's facts record its row count.
+    rows of a canonical frame `load()` decodes, since the whole frame is built in memory. A
+    larger frame refuses `missing_rendering`, before its object is fetched when the version's
+    facts record its row count.
     """
 
     def __init__(
