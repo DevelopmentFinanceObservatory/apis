@@ -671,6 +671,35 @@ def test_a_coverage_reload_takes_every_permit_under_a_stream_of_arrivals() -> No
     reload.join(timeout=5)
 
 
+def test_two_concurrent_drains_run_one_after_the_other() -> None:
+    """A coverage reload and a release swap drain the same two permits at once. Without a
+    drain mutex each takes one permit and waits forever for the other, which a pause after
+    each acquire makes certain."""
+    permits = MaterialisePermits(2)
+    acquire = permits._semaphore.acquire
+
+    def _acquire_then_pause() -> bool:
+        taken = acquire()
+        time.sleep(0.02)
+        return taken
+
+    done: list[int] = []
+
+    def _drain(position: int) -> None:
+        with permits.every_permit():
+            done.append(position)
+
+    with mock.patch.object(permits._semaphore, "acquire", _acquire_then_pause):
+        drains = [threading.Thread(target=_drain, args=(n,), daemon=True) for n in range(2)]
+        for drain in drains:
+            drain.start()
+        for drain in drains:
+            drain.join(timeout=3)
+    assert sorted(done) == [0, 1]
+    assert permits.acquire(timeout=0)
+    assert permits.acquire(timeout=0)
+
+
 def test_a_coverage_reload_drains_callers_already_past_the_gate() -> None:
     """Two callers wait for the one permit past the gate when a reload closes it. Each takes the
     permit and releases it, or gives up at its own bound, so the reload takes the permit once
