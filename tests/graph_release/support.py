@@ -11,6 +11,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 
 from artifact_publication.uri import read_uri_bytes_and_generation
+from code_index.loader import default_index_path
 from graph_release.format import (
     PART_SCHEMAS,
     Manifest,
@@ -172,6 +173,14 @@ def build_test_release(
     if hold:
         hold_release(root_uri, manifest.release_id)
     return manifest
+
+
+def build_packaged_index_release(root_uri: str) -> Manifest:
+    """Publishes a release under `root_uri` whose only part is the code index, the
+    packaged `index.json.gz` document byte for byte."""
+    return build_test_release(
+        root_uri, tables={}, blobs={"code_index_blocks": default_index_path().read_bytes()}
+    )
 
 
 def _provenance_files(

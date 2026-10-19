@@ -232,6 +232,7 @@ class TestService:
         assert before is after
         assert after.release_id == first.release_id
 
+    @pytest.mark.unbound_release
     def test_unbound_current_release_raises(self):
         with pytest.raises(ReleaseNotBound):
             current_release()
@@ -354,6 +355,7 @@ class TestProcessService:
 
 
 class TestDatasetsSurface:
+    @pytest.mark.unbound_release
     def test_without_a_release_a_request_binds_the_catalogue_alone(
         self, monkeypatch: pytest.MonkeyPatch
     ):
@@ -491,6 +493,7 @@ class TestWorker:
 
         assert self._bound_release(service) == [second.release_id]
 
+    @pytest.mark.unbound_release
     def test_without_a_release_an_operation_binds_none(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.delenv("GRAPH_RELEASE_URI", raising=False)
 

@@ -1,4 +1,5 @@
-"""Suite-wide fixtures: response contracts, offline clients, coverage, catalogue, resolvekit."""
+"""Suite-wide fixtures: response contracts, offline clients, coverage, catalogue, graph
+release, resolvekit."""
 
 import importlib
 import os
@@ -15,6 +16,8 @@ import httpx
 import pytest
 
 import origin_catalogue.service as catalogue_service_module
+from graph_release.context import bound_release
+from graph_release.service import Release, ReleaseService
 from materialise import place_scope
 from origin_catalogue import Catalogue, bound_catalogue, unbind_catalogue
 from origin_catalogue import bind_catalogue as _bind
@@ -24,6 +27,7 @@ from tests.file_shards import (  # noqa: F401  (hooks pytest collects here)
     pytest_collect_file,
     pytest_sessionstart,
 )
+from tests.graph_release.support import build_packaged_index_release
 from tests.llm_miss_guard import (  # noqa: F401  (hooks pytest collects here)
     pytest_runtest_makereport,
     pytest_runtest_setup,
@@ -49,6 +53,11 @@ _session_services = ExitStack()
 
 
 def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers",
+        "unbound_release: runs with no graph release bound, opting out of "
+        "`_bound_packaged_index_release`",
+    )
     _session_services.enter_context(
         catalogue_service_module._singleton.poisoned_for_test(fake_catalogue_service())
     )
@@ -252,6 +261,27 @@ def _bound_fake_catalogue() -> Iterator[None]:
     Code that reads the request's origin catalogue then behaves as it did before admission.
     """
     with bound_catalogue(FakeCatalogue()):
+        yield
+
+
+@pytest.fixture(scope="session")
+def _packaged_index_release(tmp_path_factory: pytest.TempPathFactory) -> Release:
+    """A graph release whose code index part is the packaged `index.json.gz` document,
+    published and opened once per session."""
+    root = tmp_path_factory.mktemp("graph_release")
+    uri = (root / "releases").as_uri()
+    build_packaged_index_release(uri)
+    return ReleaseService(uri=uri, local_dir=root / "local", recheck_seconds=0).snapshot()
+
+
+@pytest.fixture(autouse=True)
+def _bound_packaged_index_release(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Bind `_packaged_index_release` for every test not marked `unbound_release`, as a
+    request binds its served release. A surface's own request scope binds over it."""
+    if request.node.get_closest_marker("unbound_release"):
+        yield
+        return
+    with bound_release(request.getfixturevalue("_packaged_index_release")):
         yield
 
 
