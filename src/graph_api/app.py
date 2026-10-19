@@ -359,14 +359,8 @@ def graph_surface(
                 clear=provenance_docs.clear,
             )
             node_entries = NodeEntryCache(generation=resolved_generation)
-            loop = asyncio.get_running_loop()
-
-            def _clear_node_entries() -> None:
-                # The provider clears from a worker thread. Only the loop touches the cache.
-                loop.call_soon_threadsafe(node_entries.clear)
-
             node_entries_registration = resolved_generation.register(
-                "graph_api.node_entries", stats=node_entries.stats, clear=_clear_node_entries
+                "graph_api.node_entries", stats=node_entries.stats, clear=node_entries.clear
             )
 
             if resolved_coverage is None and graph is None:

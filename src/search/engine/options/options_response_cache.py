@@ -27,13 +27,17 @@ rather than re-derived, since it is already the exact fact
 
 The caller passes one `CoverageSnapshot` to the cache key and response
 builder. Its stamp ensures a republished coverage artifact cannot reuse
-results built against earlier donor or recipient membership.
+results built against earlier donor or recipient membership. The key also holds the
+build id and UN System setting of the origin catalogue the request bound, which decide
+what provenances the options admit and which places the UN front door refuses. A
+catalogue reload changes them and not the graph generation. The caller reads the bound
+catalogue once and passes it to the key; `compute_options` reads the same bound snapshot.
 
 The cache stores results whose reads all answered (`is_cacheable`), with their
 warnings. A coverage probe failure, a failed UN System Data Commons read and a UN
 front door refusal of a place outside the origin catalogue build's refused set make a
 result transient and leave it uncached. Places in that set are a fact of the build,
-which the generation stamp keys, so a result naming only them is stored and a hit
+which the key holds, so a result naming only them is stored and a hit
 returns their warning. A compute that noted a degraded read
 (`degraded_reads.note_degraded_read`), such as a place's facet tie left to the unit's
 name because its whole-variable breadth was not read, remains uncached; refusals and
@@ -71,6 +75,7 @@ import search.engine.config as config  # module-attribute access for runtime-res
 from dfo_platform.single_flight_cache import SingleFlightCache
 from graph_generation import UNKNOWN_GENERATION, GenerationProvider
 from materialise.roles import RoleAxis
+from origin_catalogue import Catalogue
 from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.options.population_memo import _population_key
 from search.engine.options.resolve import ResolvedOptionsTarget
@@ -142,14 +147,15 @@ def options_response_cache_key(
     *,
     build_commit: str,
     coverage: CoverageSnapshot,
+    catalogue: Catalogue,
 ) -> str:
     """The `OptionsResponseCache` key for `req`/`target`. See the module
-    docstring for every ingredient and why each is there. `build_commit` and
-    `coverage` are both passed in by the caller (`app.py`'s `options_endpoint`,
-    which takes one `get_coverage_service().snapshot()` read per request and
-    threads it here and into `compute_options`, rather than this
-    function reading `get_coverage_service().stamp` again on its own) rather
-    than read here, keeping this function pure -- no I/O, no config import --
+    docstring for every ingredient and why each is there. `build_commit`,
+    `coverage` and `catalogue` are passed in by the caller (`app.py`'s
+    `options_endpoint`, which takes one `get_coverage_service().snapshot()` read and
+    one `current_catalogue()` read per request and threads them here and into
+    `compute_options`, rather than this function reading either again on its own)
+    rather than read here, keeping this function pure -- no I/O, no config import --
     the same discipline `response_cache_keys.py`'s own key builders follow.
     """
     if req.for_.role == "observationAbout":
@@ -182,6 +188,8 @@ def options_response_cache_key(
         "facets": facets_doc,
         "requested_window": window_doc,
         "coverage_stamp": coverage.stamp,
+        "origin_catalogue": catalogue.build_id,
+        "un_system_enabled": catalogue.un_system_enabled,
     }
     canonical = rfc8785.dumps(document)
     return f"opt_{hashlib.sha256(canonical).hexdigest()}"

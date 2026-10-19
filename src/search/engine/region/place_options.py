@@ -44,6 +44,7 @@ from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from dfo_platform.build import build_commit
 from dfo_platform.executor import submit_with_context
 from materialise import GraphReader
+from origin_catalogue import current_catalogue
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.concurrency import create_owned_task
@@ -205,6 +206,8 @@ async def build_place_options_events(
         return []
     anchor_ref = anchor_dcids[0]
     deadline = start_ms / 1000.0 + settings().request_timeout_s
+    # The request's bound origin catalogue, which every compute below reads, keys the entries.
+    catalogue = current_catalogue()
 
     def _request(scope: Literal["peers", "children"] | None) -> OptionsRequest:
         # `for` is an aliased reserved word, so build the model from wire keys.
@@ -267,7 +270,11 @@ async def build_place_options_events(
             cache,
             _computed_for_scope,
             key_for_scope=lambda scope: options_response_cache_key(
-                _request(scope), target, build_commit=build_commit(), coverage=coverage
+                _request(scope),
+                target,
+                build_commit=build_commit(),
+                coverage=coverage,
+                catalogue=catalogue,
             ),
         )
     return [

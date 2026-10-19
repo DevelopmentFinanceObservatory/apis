@@ -8,11 +8,11 @@ that sees the new build finds it. `put` stores nothing when the generation's cur
 no longer the key's, since no lookup under the new stamp reaches such an entry. Entries expire
 with their stamp's lifetime (`graph_generation.ttu_from_stamp_key`).
 
-Requests call `get` and `put` on the event loop, and the generation provider calls `stats` on
-its refresh thread. `TLRUCache.__len__` expires entries, so a read of the size mutates the
-cache; one lock covers every operation on the entries and the counters. The graph lifespan
-registers the cache with the provider as `graph_api.node_entries`, with a `clear` callback that
-schedules `clear` on the loop.
+Requests call `get` and `put` on the event loop, and the generation provider calls `stats` and
+`clear` on its refresh thread. `TLRUCache.__len__` expires entries, so a read of the size
+mutates the cache; one lock covers every operation on the entries and the counters, so any
+thread may call any of them. The graph lifespan registers the cache with the provider as
+`graph_api.node_entries`.
 """
 
 from __future__ import annotations

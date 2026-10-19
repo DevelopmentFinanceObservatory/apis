@@ -19,6 +19,7 @@ from dfo_platform.build import build_commit
 from graph_generation import FakeGeneration
 from materialise.graph import Facet as MaterialiseFacet
 from materialise.graph import SubjectPage
+from origin_catalogue import current_catalogue
 from search.engine.envelope import now_ms
 from search.engine.errors import EngineInfraError
 from search.engine.events import Event, PlaceOptionsEvent, serialize_sse
@@ -452,7 +453,11 @@ def _kenya_peers_key() -> str:
     )
     target = resolve_options_target(request, graph=_graph(), materialise_graph=_materialise_graph())
     return options_response_cache_key(
-        request, target, build_commit=build_commit(), coverage=_COVERAGE
+        request,
+        target,
+        build_commit=build_commit(),
+        coverage=_COVERAGE,
+        catalogue=current_catalogue(),
     )
 
 

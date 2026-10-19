@@ -187,10 +187,18 @@ class TestCacheKeyMovesWithTheCoverageStamp:
         target = _peers_target()
 
         key_a = options_response_cache_key(
-            req, target, build_commit="commit-x", coverage=empty_coverage_snapshot(stamp="stamp-a")
+            req,
+            target,
+            build_commit="commit-x",
+            coverage=empty_coverage_snapshot(stamp="stamp-a"),
+            catalogue=FakeCatalogue(),
         )
         key_b = options_response_cache_key(
-            req, target, build_commit="commit-x", coverage=empty_coverage_snapshot(stamp="stamp-b")
+            req,
+            target,
+            build_commit="commit-x",
+            coverage=empty_coverage_snapshot(stamp="stamp-b"),
+            catalogue=FakeCatalogue(),
         )
 
         assert key_a != key_b
@@ -201,13 +209,39 @@ class TestCacheKeyMovesWithTheCoverageStamp:
         coverage = empty_coverage_snapshot(stamp="stamp-a")
 
         key_first = options_response_cache_key(
-            req, target, build_commit="commit-x", coverage=coverage
+            req, target, build_commit="commit-x", coverage=coverage, catalogue=FakeCatalogue()
         )
         key_second = options_response_cache_key(
-            req, target, build_commit="commit-x", coverage=coverage
+            req, target, build_commit="commit-x", coverage=coverage, catalogue=FakeCatalogue()
         )
 
         assert key_first == key_second
+
+
+class TestCacheKeyMovesWithTheOriginCatalogue:
+    @pytest.mark.parametrize(
+        "other",
+        [
+            FakeCatalogue(build_id="build-b"),
+            FakeCatalogue(build_id="build-a", un_system_enabled=False),
+        ],
+        ids=["build", "un-system-setting"],
+    )
+    def test_a_catalogue_reload_changes_the_key(self, other: FakeCatalogue):
+        """A reload moves the origin catalogue build and leaves the graph generation, so the
+        build and the UN System setting it admits by are part of the key."""
+        req = _peers_request(_KENYA_DCID)
+        target = _peers_target()
+        coverage = empty_coverage_snapshot()
+
+        key_a, key_b = (
+            options_response_cache_key(
+                req, target, build_commit="commit-x", coverage=coverage, catalogue=catalogue
+            )
+            for catalogue in (FakeCatalogue(build_id="build-a"), other)
+        )
+
+        assert key_a != key_b
 
 
 class TestCacheKeyMovesWithTheOpenedRole:
@@ -230,6 +264,7 @@ class TestCacheKeyMovesWithTheOpenedRole:
                 ),
                 build_commit="commit-x",
                 coverage=coverage,
+                catalogue=FakeCatalogue(),
             )
             for open_roles in (None, ["origin"], ["destination"])
         }
@@ -462,6 +497,33 @@ class TestUnSystemWarnings:
         codes = [[w["code"] for w in r.json()["diagnostics"]["warnings"]] for r in (resp1, resp2)]
         assert codes == [["un_system_unavailable"]] * 2
         assert (graph.child_places_batch_calls == after_first) is stored
+
+
+class TestCatalogueReload:
+    def test_a_stored_result_is_not_served_after_the_catalogue_build_changes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A reload changes the origin catalogue build and not the graph generation, so the
+        entry stored under the old build must not answer a request bound to the new one."""
+        graph = _counting_graph()
+        service = fake_catalogue_service()
+        served = [FakeCatalogue(build_id="build-a")]
+        monkeypatch.setattr(service, "snapshot", lambda: served[0])
+        with catalogue_service_module._singleton.poisoned_for_test(service):
+            client = _make_client(
+                graph=graph, materialise_graph=_materialise_graph(), cache=OptionsResponseCache()
+            )
+            body = _body(_peers_request(_KENYA_DCID))
+
+            client.post("/api/search/options", json=body)
+            after_first = graph.child_places_batch_calls
+            client.post("/api/search/options", json=body)
+            after_repeat = graph.child_places_batch_calls
+            served[0] = FakeCatalogue(build_id="build-b")
+            client.post("/api/search/options", json=body)
+
+        assert after_repeat == after_first
+        assert graph.child_places_batch_calls > after_repeat
 
 
 # ---------------------------------------------------------------------------

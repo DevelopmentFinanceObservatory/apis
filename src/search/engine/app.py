@@ -67,7 +67,7 @@ from materialise.shared_profiles import (
     acquire_shared_profiles,
     release_shared_profiles,
 )
-from origin_catalogue import bound_catalogue
+from origin_catalogue import bound_catalogue, current_catalogue
 from origin_catalogue.service import CatalogueService, get_catalogue_service
 from search.catalogue.response import (
     CatalogueResponse,
@@ -495,8 +495,10 @@ async def options_endpoint(body: OptionsRequest, deps: SearchDepsDep) -> Respons
     await deps.generation.refresh_if_stale()
     # Start request timing before resolution. The deadline tracks elapsed time separately.
     start_ms = now_ms()
-    # Share one coverage snapshot between response computation and the cache key.
+    # Share one coverage snapshot and one origin catalogue (the request's bound build, which
+    # compute_options reads too) between response computation and the cache key.
     coverage_snapshot = get_coverage_service().snapshot()
+    catalogue = current_catalogue()
     # Separate worker hops provide a cancellation boundary. An elapsed deadline maps to 504.
     deadline = time.monotonic() + settings().request_timeout_s
     target = await _await_bounded(
@@ -526,7 +528,11 @@ async def options_endpoint(body: OptionsRequest, deps: SearchDepsDep) -> Respons
     options_response_cache = deps.options_response_cache
     if options_response_cache is not None:
         key = options_response_cache_key(
-            body, target, build_commit=engine_build, coverage=coverage_snapshot
+            body,
+            target,
+            build_commit=engine_build,
+            coverage=coverage_snapshot,
+            catalogue=catalogue,
         )
         # A shared compute reads by its flight's deadline, so this request's deadline never
         # cuts a result others reuse. get_or_compute bounds this request's wait.

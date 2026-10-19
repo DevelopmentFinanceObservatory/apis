@@ -362,7 +362,8 @@ def _materialise_alt_shapes(
     the request's (`_AlternatesRead`).
 
     Batched observation-facet requests warm the cache before the loop, avoiding up to
-    ``max_candidates - 1`` sequential reads. Shapes probed over the same places share one
+    ``max_candidates - 1`` sequential reads. A role-bearing shape resolves from coverage
+    and is not warmed. Shapes probed over the same places share one
     batch, and every default-scoped shape joins one batch that reads each member at its own
     scope (`_prewarm_places`, `facets_at_own_places`), in first-shape order. A shape whose
     read decides a place set is warmed at every place either reading binds
@@ -391,6 +392,9 @@ def _materialise_alt_shapes(
             )
             continue
         readable.append((alternate, unsettled))
+        if is_role_bearing(shape):
+            # It resolves from coverage (`graph_confirm_resolve`), so it reads no warmed facet.
+            continue
         role_keys = entity_role_keys(place.roles.resolved_entities, open_axes=place.roles.open_axes)
         shape_members, _index_sourced = shape_member_facts(
             shape,
