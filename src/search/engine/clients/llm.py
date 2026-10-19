@@ -316,6 +316,27 @@ def recording_llm_usage() -> Iterator[SpentUsage]:
             outer.calls.extend(record.calls)
 
 
+@contextmanager
+def unrecorded_llm_usage() -> Iterator[None]:
+    """Keep the usage of every call in the body of the `with` block out of the enclosing
+    `recording_llm_usage` record: the calls of a detached comparison are not the answer's."""
+    token = _SPENT.set(None)
+    try:
+        yield
+    finally:
+        _SPENT.reset(token)
+
+
+def without_memo(llm: SupportsLLM) -> SupportsLLM:
+    """`llm`, or a shallow copy of it with no memo, so its call reaches the model even when
+    an identical request is in flight or stored."""
+    if not isinstance(llm, LLM) or llm._memo is None:
+        return llm
+    clone = copy.copy(llm)
+    clone._memo = None
+    return clone
+
+
 def _note_spent(usage: dict | None) -> None:
     record = _SPENT.get()
     if record is not None and usage is not None:

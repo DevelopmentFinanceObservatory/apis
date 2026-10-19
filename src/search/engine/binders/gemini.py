@@ -17,7 +17,12 @@ from search.engine.bind import (
     stated_reading,
 )
 from search.engine.bind_repair import _label_named_in_text
-from search.engine.binders.base import BindRequest, BindResult, PolicyContractError
+from search.engine.binders.base import (
+    BindRequest,
+    BindResult,
+    PolicyContractError,
+    QuantityRequest,
+)
 from search.engine.binders.house_policy import PolicyChoice, PolicyPool
 from search.engine.config import settings
 from search.engine.quantity_read import read_stated_quantity
@@ -27,7 +32,6 @@ if TYPE_CHECKING:
     from search.engine.qualifier_match import QualifierMatch
     from search.engine.quantity_read import QuantityOutput
     from search.engine.shape import ShapeDraft
-    from search.models import GraphRef
 
 # The rated pool's bounds (`rated_pool`): a shape joins with a rating above
 # `RATED_POOL_FLOOR` and at least (1 - `RATED_POOL_FRACTION`) times the best rating.
@@ -68,10 +72,14 @@ class GeminiBinder:
     def model(self) -> str:
         return settings().engine_model
 
+    @property
+    def reads_query_text(self) -> bool:
+        return False
+
     async def read_quantity(
-        self, variable: str, denominators: Sequence[GraphRef], *, llm: SupportsLLM
+        self, request: QuantityRequest, *, llm: SupportsLLM
     ) -> tuple[QuantityOutput, dict | None]:
-        return await read_stated_quantity(variable, denominators, llm=llm)
+        return await read_stated_quantity(request.variable, request.denominators, llm=llm)
 
     async def bind(
         self, request: BindRequest, *, llm: SupportsLLM

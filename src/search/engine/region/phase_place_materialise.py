@@ -461,11 +461,12 @@ def _plan_status(state: ResolveState) -> StatusPlan:
     bind (`state.alternate_place_roles`, which holds no `state.unbindable_alternates`) and
     that the alternate guard admits (`AlternateJudge.inadmissible`, as `_plan_admission`
     judges it), each with D read on its own assignment
-    (`availability.has_data_where_asked`), whether bind nominated it, and whether the
-    registry pairs it with the elected shape. The guard runs first, so `sole` means P is the
-    only admissible reading with data. The measure axes the question leaves open for the
-    elected shape are read here (`_open_axes`) and kept as `state.open_measure_axes`, which
-    the rule and the guard both read. A base the question states that the quantity read
+    (`availability.has_data_where_asked`), whether bind nominated it and with what support
+    (`BindResult.also_plausible_support`), and whether the registry pairs it with the
+    elected shape. The guard runs first, so `sole` means P is the only admissible reading
+    with data. The measure axes the question leaves open for the elected shape are read here
+    (`_open_axes`) and kept as `state.open_measure_axes`, which the rule and the guard both
+    read. A base the question states that the quantity read
     matched to no listed denominator (`NamedDenominator.ref` `None`) is the rule's
     `base_unmatched`. A reading the model declined in favour of a refused one has no
     alternatives: the part refuses with it."""
@@ -482,6 +483,8 @@ def _plan_status(state: ResolveState) -> StatusPlan:
     bindable = [(i, shape) for i, shape in bindable if i not in inadmissible]
     twins = set(judge.twin_alternates(bindable))
     nominated = set(state.bind_result.also_plausible or ())
+    decision = state.bind_decision
+    support = (decision.also_plausible_support if decision is not None else None) or {}
     series = series_at_places(state)
     menu = [
         MenuReading(
@@ -492,6 +495,7 @@ def _plan_status(state: ResolveState) -> StatusPlan:
             ),
             nominated=i in nominated,
             registry_twin=i in twins,
+            support=support.get(i),
         )
         for i, shape in bindable
     ]

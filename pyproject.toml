@@ -53,6 +53,10 @@ coverage = ["dfo-data-tools[coverage]"]
 engine = [
     "google-genai>=2.6.0",
     "httpx>=0.28.1",
+    # binders/jev_client.py's System One client. Pinned exactly: the SDK's 0.6.0 and 0.7.0
+    # releases broke its API. `zstd` brings backports-zstd, without which the SDK sends
+    # request bodies uncompressed below Python 3.14.
+    "typesafe-sdk[zstd]==0.7.5",
     "search[api]",
     "pydantic>=2.13",
     # `resolve` pulls in entity_resolution's resolvekit dependency -- the

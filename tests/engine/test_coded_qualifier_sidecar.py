@@ -672,6 +672,7 @@ _KEY_SCOPE = scope_document(
     build_commit="commit-a",
     binder="gemini",
     model="model-a",
+    engine_model="model-a",
     seed=1,
     today="2026-09-22",
     graph_generation="unknown",

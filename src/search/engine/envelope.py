@@ -175,16 +175,14 @@ def make_response(
 
 
 def _sum_usage(a: dict | None, b: dict | None) -> dict | None:
-    """Sum two LLM usage dicts. Return `None` when both are `None`."""
+    """Sum two LLM usage dicts key by key, over every key either holds, in the order they
+    first appear: the Gemini counts and, from a Jev call, ``jev_input_tokens`` and
+    ``jev_output_tokens``. Return `None` when both are `None`."""
     if a is None:
         return b
     if b is None:
         return a
-    return {
-        "input_tokens": a["input_tokens"] + b["input_tokens"],
-        "output_tokens": a["output_tokens"] + b["output_tokens"],
-        "cached_tokens": a["cached_tokens"] + b["cached_tokens"],
-    }
+    return {key: a.get(key, 0) + b.get(key, 0) for key in a | b}
 
 
 def _terminal_events(

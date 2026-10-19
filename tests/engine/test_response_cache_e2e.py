@@ -10,7 +10,9 @@ from unittest.mock import patch
 import pytest
 
 from graph_generation import UNKNOWN_GENERATION, FakeGeneration, GenerationProvider
+from search.engine import binders
 from search.engine.bind import _UniversalBindOutput
+from search.engine.binders import JevBinder, jev_client
 from search.engine.core import resolve_async, resolve_events
 from search.engine.degraded_reads import note_degraded_read
 from search.engine.errors import GraphInfraError, LLMInfraError
@@ -28,7 +30,7 @@ from search.models import (
 )
 from series_coverage.schema import RoleNames
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
-from tests.engine._binders import elected_reply
+from tests.engine._binders import FakeAsk, elected_reply
 from tests.engine._fake_coverage import patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import EMPTY_SDMX, make_request, member_walk_reader
@@ -678,3 +680,48 @@ def test_written_entry_lifetime_matches_the_known_generations_max_age():
     assert entries  # the request stored at least one entry
     for entry in entries:
         assert abs(entry.expires_at - (before + expected_max_age)) < 5.0
+
+
+@pytest.fixture
+def jev_routed(search_settings, monkeypatch):
+    """Every request routes to Jev (`binder="jev"`), with a fresh circuit breaker; Jev has
+    no key, so each Jev call falls back to Gemini."""
+    search_settings(binder="jev")
+    monkeypatch.setattr(jev_client, "_BREAKER", jev_client.CircuitBreaker())
+
+
+def test_a_request_whose_jev_calls_fell_back_is_not_cached(jev_routed):
+    """With no TypeSafe key every Jev call falls back to Gemini, so the answer is not the
+    Jev binder's its key names: the repeat runs the whole pipeline again."""
+    llm = _CountingLLM(FakeLLM())
+    cache = ResponseCache()
+    r1 = _run(make_request(_QUERY_A), llm=llm, cache=cache)
+    r2 = _run(make_request(_QUERY_A), llm=llm, cache=cache)
+    assert llm.calls == ["Extraction", "QuantityOutput", "_UniversalBindOutput"] * 2
+    assert r1.status == r2.status == "definite"
+
+
+def test_a_repeated_query_under_jev_hits_layer1_and_never_a_gemini_entry(
+    search_settings, monkeypatch
+):
+    """A Jev answer is stored under the Jev binder's key: its repeat is a layer-1 hit that
+    asks Jev nothing, and an answer the Gemini binder stored for the same query is never
+    served for it."""
+    monkeypatch.setattr(jev_client, "_BREAKER", jev_client.CircuitBreaker())
+    ask = FakeAsk()
+    monkeypatch.setattr(binders, "JevBinder", lambda: JevBinder(ask=ask))
+    llm = _CountingLLM(FakeLLM())
+    cache = ResponseCache()
+    _run(make_request(_QUERY_A), llm=llm, cache=cache)
+    search_settings(binder="jev")
+    gemini_calls = len(llm.calls)
+
+    first = _run(make_request(_QUERY_A), llm=llm, cache=cache)
+    jev_requests = len(ask.requests)
+    second = _run(make_request(_QUERY_A), llm=llm, cache=cache)
+
+    assert llm.calls[gemini_calls:] == ["Extraction"]
+    assert jev_requests == 2
+    assert len(ask.requests) == jev_requests
+    assert set(second.diagnostics.timing_ms.by_step or {}) == {"response_cache_layer1"}
+    assert second.parts == first.parts

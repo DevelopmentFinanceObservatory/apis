@@ -19,11 +19,13 @@ import dataclasses
 import pytest
 
 from search.engine.bind import ShapeRating, _UniversalBindOutput
+from search.engine.binders import BindRequest, BindResult, GeminiBinder
 from search.engine.config import settings
 from search.engine.extract import DateRequest
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import RegionResult, resolve_variable
 from search.engine.region.status_rule import (
+    NOMINATION_FLOOR,
     Alternative,
     MenuReading,
     OpenAxes,
@@ -242,6 +244,43 @@ def test_rule_two_offers_only_open_axes_and_nominations(elected, menu, named, ri
     assert _plan(elected, menu, **named).rivals == rivals
 
 
+@pytest.mark.parametrize(
+    ("elected", "reading", "support", "basis"),
+    [
+        pytest.param(_MORTALITY, _UNRELATED, None, "nominated", id="another-measure-no-support"),
+        pytest.param(
+            _MORTALITY, _UNRELATED, NOMINATION_FLOOR, "nominated", id="another-measure-at-floor"
+        ),
+        pytest.param(_MORTALITY, _UNRELATED, 0.6, "nominated", id="another-measure-above"),
+        pytest.param(_MORTALITY, _UNRELATED, 0.49, None, id="another-measure-just-below"),
+        pytest.param(_MORTALITY, _UNRELATED, 0.3, None, id="another-measure-below"),
+        pytest.param(_NOMINAL_GDP, _REAL_GDP, 0.9, None, id="same-measure-on-a-closed-axis"),
+        pytest.param(
+            _EDUCATION_SHARE_OF_GDP,
+            _EDUCATION_SHARE_OF_SPENDING,
+            0.1,
+            "structural",
+            id="same-measure-on-an-open-axis",
+        ),
+    ],
+)
+def test_a_nomination_of_another_measure_needs_the_floor(elected, reading, support, basis):
+    """Rule 2(b): the floor applies to a nominated reading of another measure only, and a
+    nomination the binder states no support for is a rival, as every Gemini one is."""
+    menu = [MenuReading(index=1, shape=reading, has_data=True, nominated=True, support=support)]
+    expected = (Alternative(index=1, basis=basis),) if basis else ()
+    assert _plan(elected, menu).rivals == expected
+
+
+def test_a_registry_twin_is_no_rival_at_any_support():
+    menu = [
+        MenuReading(
+            index=1, shape=_IMF_GDP, has_data=True, nominated=True, registry_twin=True, support=0.9
+        )
+    ]
+    assert _plan(_NOMINAL_GDP, menu).rivals == ()
+
+
 def test_rule_one_tries_equivalents_then_qualifier_siblings_then_riders():
     """Beside an elected reading with no data, its five-tuple's other reading is an
     equivalent, a price-basis sibling a stand-in, and a nomination of another measure, a
@@ -379,8 +418,24 @@ class _FixedBindLLM:
         ), None
 
 
+class _SupportingBinder(GeminiBinder):
+    """Gemini's bind, with a stated support for every index it nominates."""
+
+    def __init__(self, support: float) -> None:
+        self._support = support
+
+    async def bind(self, request: BindRequest, *, llm) -> tuple[BindResult, dict | None]:
+        result, usage = await super().bind(request, llm=llm)
+        support = dict.fromkeys(result.output.also_plausible or (), self._support)
+        return dataclasses.replace(result, also_plausible_support=support), usage
+
+
 def _run(
-    variable: str, *, scores: list[float], also_plausible: list[int] | None = None
+    variable: str,
+    *,
+    scores: list[float],
+    also_plausible: list[int] | None = None,
+    support: float | None = None,
 ) -> RegionResult:
     svs = [_SV_FOREST, _SV_POPULATION]
     graph = FakeGraph(
@@ -403,6 +458,7 @@ def _run(
             graph=graph,
             resolver=make_resolver(graph),
             llm=_FixedBindLLM(also_plausible),
+            binder=GeminiBinder() if support is None else _SupportingBinder(support),
             base_timing={},
             sdmx=FakeSdmxClient(
                 observations={}, availability={}, scope_availability=graph.scope_availability
@@ -420,13 +476,21 @@ def test_a_thin_retrieval_margin_sets_no_status():
     assert [spec.resolved.members[0].ref.ref for spec in result.specs] == [_SV_FOREST]
 
 
-def test_a_nomination_with_data_is_offered_as_nominated():
-    result = _run("land use statistic", scores=[0.90, 0.70], also_plausible=[1])
+@pytest.mark.parametrize("support", [None, NOMINATION_FLOOR], ids=["gemini", "at-floor"])
+def test_a_nomination_with_data_is_offered_as_nominated(support):
+    """A Gemini bind states no support, so its nomination is offered as before the floor."""
+    result = _run("land use statistic", scores=[0.90, 0.70], also_plausible=[1], support=support)
     assert result.status == "candidates"
     assert [(spec.resolved.members[0].ref.ref, spec.resolved.basis) for spec in result.specs] == [
         (_SV_FOREST, None),
         (_SV_POPULATION, "nominated"),
     ]
+
+
+def test_a_nomination_below_the_floor_leaves_the_part_definite():
+    result = _run("land use statistic", scores=[0.90, 0.70], also_plausible=[1], support=0.49)
+    assert result.status == "definite"
+    assert [spec.resolved.members[0].ref.ref for spec in result.specs] == [_SV_FOREST]
 
 
 def test_the_only_reading_with_data_is_high_confidence_despite_a_weak_score():

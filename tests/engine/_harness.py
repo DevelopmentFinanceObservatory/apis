@@ -1092,7 +1092,7 @@ def _offline(pac: bool | None) -> Iterator[None]:
             yield
             return
         base = config.settings().model_dump(
-            exclude={"capability_version_override", "max_entity_occurrences"}
+            exclude={"capability_version_override", "jev_api_key", "max_entity_occurrences"}
         )
         overridden = config.SearchSettings.model_validate({**base, "seam_default": pac})
         with patch.object(config, "_SETTINGS", overridden):

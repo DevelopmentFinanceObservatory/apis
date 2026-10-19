@@ -32,7 +32,7 @@ from search.engine.bind_repair import (
     _label_named_in_text,
     _label_negated_in_text,
 )
-from search.engine.binders import BindRequest, BindResult
+from search.engine.binders import BindRequest, BindResult, QuantityRequest
 from search.engine.binders.base import PolicyContractError
 from search.engine.binders.house_policy import (
     Context,
@@ -320,9 +320,15 @@ async def _read_stated_quantity(
     (`admissibility.judge_pinned_parts`), and the bind call elects among what is left. Its
     usage opens the part's LLM usage (`ResolveState.var_usage`)."""
     denominators = _quantity_denominators(state, shapes)
-    quantity, state.var_usage = await state.binder.read_quantity(
-        _quantity_phrase(state), denominators, llm=state.llm
+    request = QuantityRequest(
+        variable=_quantity_phrase(state),
+        denominators=denominators,
+        bind_variable=_bind_variable(state, shapes),
+        query_text=state.query_text or state.role_query,
+        part=state.variable_index,
+        pool=state.pool,
     )
+    quantity, state.var_usage = await state.binder.read_quantity(request, llm=state.llm)
     if _read_quantity_answer(state, quantity, denominators, shapes):
         return None
     await _record_shape_step(state)
@@ -3570,18 +3576,20 @@ def _open_operation_slots(
     return result
 
 
-def _bind_variable(state: ResolveState) -> str:
+def _bind_variable(state: ResolveState, shapes: Sequence[ShapeDraft]) -> str:
     """The variable phrase the bind model reads: the part's own, or the graph name of its
     series code's StatVars when the code is all the part's variable text writes
     (`ResolveState.source_code`), so the model reads the measure in place of an opaque code.
-    The name is that of the menu's code member declaring the fewest roles, the code's
-    aggregate. A part none of whose members has a name reads its own phrase."""
+    The name is that of the code member declaring the fewest roles among `shapes`, the
+    code's aggregate: the admissible shapes for the quantity read, which runs before the
+    menu is seated, and the seated menu for the bind call. A part none of whose members has
+    a name reads its own phrase."""
     code = state.source_code
     if code is None or not names_only_code(state.variable, code.code):
         return state.variable
     named = [
         (len(arcs.get("observationProperties", {}).get("nodes", [])), name)
-        for shape in state.capped_shapes
+        for shape in shapes
         for dcid, arcs in (shape.sv_arc_facts or {}).items()
         if dcid in code.dcids and (name := read_name(arcs)) is not None
     ]
@@ -3750,7 +3758,7 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
         code_index=get_index(),
     )
     request = BindRequest(
-        variable=_bind_variable(state),
+        variable=_bind_variable(state, state.capped_shapes),
         shapes=state.capped_shapes,
         admitted_qualifiers=admitted_qualifiers,
         admitted_ties=admitted_ties,
@@ -3762,6 +3770,8 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
         availability=availability,
         query_text=state.query_text or state.role_query,
         apply_policies=policies,
+        part=state.variable_index,
+        pool=state.pool,
     )
     t0 = now_ms()
     bind_result: _UniversalBindOutput

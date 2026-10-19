@@ -17,7 +17,7 @@ from dc_sdmx import SdmxCapExceededError
 from entity_resolution import Admission, EntityResolver, Resolution
 from materialise.member_conversion import request_conversion_reader
 from origin_catalogue import note_un_unserved, recording_un_blocked_places, scoped_reads
-from search.engine.binders import Binder, configured_binder
+from search.engine.binders import Binder, GeminiBinder
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM, recording_llm_usage
 from search.engine.clients.sdmx import EngineSdmxClient
@@ -205,8 +205,9 @@ async def resolve_variable(
 
     `graph` and `sdmx` are shared, thread-safe clients. Dev-finance role-keyed observation and
     availability reads use `sdmx`. `llm` is stateless per call. `binder` reads the quantity
-    and binds on `llm`. `None` takes the one `Settings.binder` names
-    (`binders.configured_binder`). `date_request` is the shared window, while `base_timing`
+    and binds on `llm`. It is the request's own, which `core` routes once per request
+    (`binders.configured_binder`) and every door passes down, or the Gemini binder for a
+    direct caller that passes none. `date_request` is the shared window, while `base_timing`
     carries extraction timing.
 
     Recall runs once. Our pass elects over our candidates first, while the UN System Data
@@ -229,7 +230,7 @@ async def resolve_variable(
     """
     _admission = admission if admission is not None else Admission(graph=graph)
     _options = options if options is not None else EngineOptions()
-    _binder = binder if binder is not None else configured_binder()
+    _binder = binder if binder is not None else GeminiBinder()
 
     # One conversion memo serves every unit decision, coverage check and preview of the call.
     materialise_graph = (

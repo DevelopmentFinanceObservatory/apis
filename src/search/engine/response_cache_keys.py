@@ -118,6 +118,7 @@ def scope_document(
     build_commit: str,
     binder: str,
     model: str,
+    engine_model: str,
     seed: int | None,
     today: str,
     graph_generation: str,
@@ -131,7 +132,9 @@ def scope_document(
 
     Includes the schema, defaulted response options, effective candidate cap,
     place-as-constraint default, qualifier coverage mode, build commit, the binder the
-    request resolved to and the model it answers with, seed, day, graph and coverage
+    request resolved to and the model it answers with, the engine's Gemini model, which
+    runs extraction and every other model call whichever binder answers, seed, day, graph
+    and coverage
     stamps, the revision of the conversion catalogue the request
     bound (None when it bound none), and the build of the origin catalogue it bound with
     its UN System setting, which decide what provenances an answer admits. The cap, the
@@ -151,6 +154,7 @@ def scope_document(
         "build_commit": build_commit,
         "binder": binder,
         "model": model,
+        "engine_model": engine_model,
         "seed": seed,
         "today": today,
         "graph_generation": graph_generation,
@@ -349,7 +353,9 @@ def part_memo_key(
     `engine_flags` are the four enrichment flags of the call's `EngineOptions`. The build commit covers the
     code index, and the graph generation, coverage stamp, conversion catalogue revision,
     origin catalogue build with its UN System setting, and UTC day cover what the graph,
-    coverage and conversion reads return and what the answer admits."""
+    coverage and conversion reads return and what the answer admits. Its entries come from
+    regions that make no model call (`region.resolve_spec_resubmit`), so the binder a
+    request was routed to is not in the key."""
     document = {
         "payload": payload.model_dump(mode="json"),
         "engine_flags": dict(engine_flags),

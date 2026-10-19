@@ -39,6 +39,7 @@ def _scope(
     build_commit: str = "commit-a",
     binder: str = "gemini",
     model: str = "model-a",
+    engine_model: str = "model-a",
     seed: int | None = 1,
     today: str = "2026-09-20",
     graph_generation: str = "gen-a",
@@ -56,6 +57,7 @@ def _scope(
         build_commit=build_commit,
         binder=binder,
         model=model,
+        engine_model=engine_model,
         seed=seed,
         today=today,
         graph_generation=graph_generation,
@@ -762,6 +764,15 @@ def test_two_binders_never_share_a_key() -> None:
     assert _layer2_key(scope=gemini) != _layer2_key(scope=other)
 
 
+def test_the_engine_model_keys_a_jev_answer() -> None:
+    """Extraction runs on the engine's Gemini model whichever binder answers, so a change
+    of it changes the key under a Jev-named binder whose own model stays the same."""
+    a = _scope(binder="jev", model="jev-1.13.0", engine_model="gemini-a")
+    b = _scope(binder="jev", model="jev-1.13.0", engine_model="gemini-b")
+    assert layer1_key(query="gdp kenya", scope=a) != layer1_key(query="gdp kenya", scope=b)
+    assert _layer2_key(scope=a) != _layer2_key(scope=b)
+
+
 def test_different_seed_changes_key() -> None:
     a = layer1_key(query="gdp kenya", scope=_scope(seed=1))
     b = layer1_key(query="gdp kenya", scope=_scope(seed=2))
@@ -819,6 +830,7 @@ def test_keys_are_stable_across_independently_built_equal_inputs() -> None:
         build_commit="commit-a",
         binder="gemini",
         model="model-a",
+        engine_model="model-a",
         seed=1,
         today="2026-09-20",
         graph_generation="gen-a",
@@ -832,6 +844,7 @@ def test_keys_are_stable_across_independently_built_equal_inputs() -> None:
         seed=1,
         binder="gemini",
         model="model-a",
+        engine_model="model-a",
         build_commit="commit-a",
         seam_default=True,
         qualifier_coverage="log",

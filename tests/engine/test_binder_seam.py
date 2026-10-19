@@ -5,6 +5,9 @@ request `bind_universal` sends."""
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+import json
+import logging
 from typing import cast
 
 import pytest
@@ -18,17 +21,26 @@ from search.engine.bind import (
     bind_universal,
     ground_bind_output,
 )
-from search.engine.binders import Binder
+from search.engine.binders import (
+    Binder,
+    FallbackBinder,
+    GeminiBinder,
+    JevBinder,
+    QuantityRequest,
+    ShadowBinder,
+)
 from search.engine.binders.house_policy import PolicyPool
+from search.engine.binders.jev_client import JevError
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.interpret import Recall
 from search.engine.quantity_read import QuantityOutput
-from search.engine.region.phase_rank_bind import _phase_bind
+from search.engine.region.phase_rank_bind import _phase_bind, _read_stated_quantity
 from search.engine.region.state import ResolveState
 from search.engine.shape import ShapeDraft, SlotKeyDraft
-from tests.engine._binders import FixedBinder, elected_reply
+from search.engine.source_code import SeriesCodeMembers
+from tests.engine._binders import FakeAsk, FixedBinder, elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._quantity import NO_QUANTITY
 
@@ -215,3 +227,97 @@ def test_a_reply_rating_its_pick_below_the_decline_floor_declines(measuring, dec
         assert result is None
         assert state.bind_result.ask is None
         assert state.bind_result.chosen_shape_index == 1
+
+
+class _SlowRecordingLLM(_RecordingLLM):
+    """`_RecordingLLM` answering after a pause, so a call started beside it ends first."""
+
+    async def generate_structured(self, *, prompt, system, schema):
+        await asyncio.sleep(0.01)
+        return await super().generate_structured(prompt=prompt, system=system, schema=schema)
+
+
+@pytest.mark.parametrize(
+    ("binder", "served_by"),
+    [
+        pytest.param(
+            FallbackBinder(
+                primary=JevBinder(ask=FakeAsk(fail=JevError(None, "timeout"))),
+                fallback=GeminiBinder(),
+            ),
+            "gemini",
+            id="jev-failed",
+        ),
+        pytest.param(
+            FallbackBinder(primary=JevBinder(ask=FakeAsk()), fallback=GeminiBinder()),
+            "jev",
+            id="jev",
+        ),
+        pytest.param(
+            ShadowBinder(served=GeminiBinder(), shadow=JevBinder(ask=FakeAsk()), sample=1.0),
+            "gemini",
+            id="shadow",
+        ),
+    ],
+)
+def test_every_binder_runs_the_house_policies_once_per_election(caplog, binder, served_by):
+    """`_phase_bind` holds the house policies to one run on a call that elects a shape,
+    which it asserts, under the fallback, Jev and the shadow, whose Jev call answers
+    before Gemini's and elects on its own copy of the policy step."""
+    caplog.set_level(logging.INFO, logger="search.engine.binders")
+    caplog.set_level(logging.INFO, logger="search.engine.region.phase_rank_bind")
+    state = _state(llm=_SlowRecordingLLM(), binder=binder)
+
+    assert asyncio.run(_phase_bind(state)) is None
+
+    assert state.bind_decision is not None
+    assert state.bind_decision.binder == served_by
+    assert state.bind_decision.policy_choice is not None
+    if isinstance(binder, ShadowBinder):
+        # The shadow line joins the part's bind_decision line on its part and pass.
+        (shadow,), (decision,) = (
+            [
+                json.loads(r.getMessage().removeprefix(prefix))
+                for r in caplog.records
+                if r.getMessage().startswith(prefix)
+            ]
+            for prefix in ("binder_shadow ", "bind_decision ")
+        )
+        assert (shadow["call"], shadow["failure"], shadow["menu"]) == (
+            "bind",
+            None,
+            decision["menu"],
+        )
+        assert (shadow["part"], shadow["pass"]) == (decision["part"], decision["pass"])
+
+
+class _QuantityRecordingBinder(GeminiBinder):
+    """Records each quantity request and reads no form."""
+
+    def __init__(self) -> None:
+        self.quantity_requests: list[QuantityRequest] = []
+
+    async def read_quantity(self, request, *, llm):
+        self.quantity_requests.append(request)
+        return NO_QUANTITY
+
+
+def test_a_code_only_part_sends_the_quantity_read_the_codes_graph_name():
+    """The quantity read runs before the menu is seated, and a part whose text is only its
+    series code still sends the bind phrase the bind call reads: the graph name of the
+    code's member among the admissible shapes."""
+    code = SeriesCodeMembers(code="DT.DOD.DECT.CD", provenance="WorldBank/IDS", dcids=("sv_debt",))
+    name = "External debt stocks, total (DOD, current US$)"
+    shape = dataclasses.replace(
+        _shape("debt"), sv_arc_facts={"sv_debt": {"name": {"nodes": [{"value": name}]}}}
+    )
+    binder = _QuantityRecordingBinder()
+    state = _state(llm=_NoCallLLM(), binder=binder)
+    state.variable = "DT.DOD.DECT.CD"
+    state.source_code = code
+    state.capped_shapes = []
+
+    assert asyncio.run(_read_stated_quantity(state, [shape])) is None
+
+    (request,) = binder.quantity_requests
+    assert (request.variable, request.bind_variable) == ("DT.DOD.DECT.CD", name)

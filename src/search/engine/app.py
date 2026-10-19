@@ -1087,6 +1087,14 @@ async def _release_skills_index(skills_index: SharedSkillsIndex) -> None:
     logger.info("SharedSkillsIndex released")
 
 
+def _require_jev_key() -> None:
+    """Refuse to serve when `Settings.binder` is ``jev`` or ``shadow`` and no TypeSafe key
+    is set, since every call routed to Jev would then fall back to Gemini."""
+    config = settings()
+    if config.binder in ("jev", "shadow") and not config.jev_api_key.get_secret_value():
+        raise RuntimeError(f"SEARCH_BINDER={config.binder} needs TYPESAFE_API_KEY; it is unset")
+
+
 def search_surface(
     *,
     graph: EngineGraphClient | None = None,
@@ -1115,7 +1123,12 @@ def search_surface(
     catalogue's and the conversion catalogue's loaded snapshots for its whole run, and the
     release service's served release. An injected `conversion_catalogue` is served as loaded;
     without one the lifespan loads a new one.
+
+    Raises:
+        RuntimeError: `Settings.binder` sends calls to Jev and ``TYPESAFE_API_KEY`` is
+            unset (`_require_jev_key`).
     """
+    _require_jev_key()
     # Fail during construction when an artifact or the graph release is missing or unreadable.
     catalogue = get_catalogue_service()
     release = get_release_service()

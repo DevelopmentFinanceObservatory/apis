@@ -34,7 +34,7 @@ from search.engine.assemble import (
     skills_index_incomplete_warning,
     skills_index_unavailable_warning,
 )
-from search.engine.binders import Binder, configured_binder
+from search.engine.binders import Binder, Fallbacks, configured_binder, recording_fallbacks
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.graph_client import LiveGraphClient
 from search.engine.clients.llm import LLM, SupportsLLM
@@ -64,6 +64,7 @@ from search.models import (
     QueryEcho,
     RawTextInput,
     Resolution,
+    ResolveInput,
     ResolveRequest,
     ResolveResponse,
     Warning,
@@ -260,8 +261,8 @@ async def resolve_events(
     ``budget`` is the route's ``request_budget``, so the pipeline's soft deadline and the
     route's hard cap share one start. Without one the request starts here.
 
-    ``binder`` reads the quantity and binds every part. ``None`` takes the one
-    ``Settings.binder`` names (``binders.configured_binder``). The cache key reads it.
+    ``binder`` reads the quantity and binds every part. ``None`` takes the one the request
+    routes to (``binders.configured_binder``). The cache key reads it.
     """
     if budget is None:
         budget = request_budget(kind=request.input.kind)
@@ -296,7 +297,7 @@ async def resolve_events(
         coverage_ms = now_ms() - coverage_t0
         checks = CatalogueSettings()
         async with scoped_concurrency():
-            with held_family_memo():
+            with held_family_memo(), recording_fallbacks() as fallbacks:
                 async for event in _resolve_pipeline_events(
                     request,
                     graph=_graph,
@@ -320,6 +321,7 @@ async def resolve_events(
                     coverage_snapshot=coverage,
                     warn_index_drift=checks.warn_index_drift,
                     record=record,
+                    fallbacks=fallbacks,
                 ):
                     event = _with_request_step(
                         _with_stale_catalogue_warning(event), step="coverage", ms=coverage_ms
@@ -364,6 +366,14 @@ def _with_request_step(event: Event, *, step: str, ms: int) -> Event:
             update={"diagnostics": diagnostics.model_copy(update={"timing_ms": stepped})}
         )
     )
+
+
+def _routing_query(inp: ResolveInput) -> str | None:
+    """The query text a request is routed to its binder on: a raw-text request's query, else
+    the raw query a parsed or resubmitted request posts beside its parts."""
+    if isinstance(inp, RawTextInput):
+        return inp.query
+    return inp.raw_query
 
 
 def _with_response_warning(event: ResponseEvent, warning: Warning | None) -> ResponseEvent:
@@ -436,6 +446,7 @@ async def _resolve_pipeline_events(
     coverage_snapshot: CoverageSnapshot,
     warn_index_drift: bool,
     record: _ResolveRecord,
+    fallbacks: Fallbacks,
 ) -> AsyncIterator[Event]:
     """Compute shared request settings, then dispatch by input kind.
 
@@ -454,6 +465,12 @@ async def _resolve_pipeline_events(
     ``deadline``, the request's soft deadline, governs every pipeline stage and thread hop.
     ``coverage_snapshot`` is the request's one coverage snapshot, shared by the cache key and every
     reader. ``warn_index_drift`` is `CatalogueSettings.warn_index_drift`.
+
+    The request takes one binder here: ``binder`` when the caller injects one, else the one
+    it routes to on the query text it states (`_routing_query`, `binders.configured_binder`).
+    Every door's parts read their quantity and bind through it. The response cache keys on
+    it, and ``fallbacks`` records each call it served from its fallback, which keeps the
+    response out of the cache.
     """
     inp = request.input
 
@@ -489,9 +506,9 @@ async def _resolve_pipeline_events(
 
     today = datetime.now(UTC).date().isoformat()
 
-    # The request's binder, the one `Settings.binder` names unless the caller injects one.
-    # The cache key reads it and every part binds with it (`EntryParams.binder`).
-    binder = binder if binder is not None else configured_binder()
+    # The request's binder: the caller's when it injects one, else the one the request
+    # routes to. The cache key reads it and every part binds with it (`EntryParams.binder`).
+    binder = binder if binder is not None else configured_binder(_routing_query(inp))
 
     # The cache key includes the resolved candidate cap and PAC setting. A transport that
     # streams trailing events stores the events from `response` to `done`, since the
@@ -502,8 +519,8 @@ async def _resolve_pipeline_events(
         start_ms=start_ms,
         deadline=deadline,
         build_commit=build_commit(),
-        binder=binder.name,
-        model=binder.model,
+        binder=binder,
+        fallbacks=fallbacks,
         seed=config.settings().llm_seed,
         today=today,
         max_candidates=_max_cand,

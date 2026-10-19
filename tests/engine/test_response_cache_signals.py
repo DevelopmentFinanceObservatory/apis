@@ -33,18 +33,20 @@ def _count_state_attribute_reads(attr: str) -> int:
 
 def test_query_text_and_role_query_reader_counts_are_covered() -> None:
     """Pin the 7 `query_text` readers and 1 `role_query` reader covered by cache signals,
-    plus the one read of each that fills `BindRequest.query_text` in `_phase_bind`. The
-    Gemini binder sends no query text, so its answers need no signal for that read."""
+    plus the two reads of each that fill `QuantityRequest.query_text` in
+    `_read_stated_quantity` and `BindRequest.query_text` in `_phase_bind`. Those two reach
+    a model only through a binder that reads the query text, which looks up nothing on
+    layer 2 (`CacheScope`), so they need no signal."""
     query_text_reads = _count_state_attribute_reads("query_text")
     role_query_reads = _count_state_attribute_reads("role_query")
-    assert query_text_reads == 8, (
+    assert query_text_reads == 9, (
         f"state.query_text has {query_text_reads} readers in src/search/engine/region/, "
-        "not the 7 compute_layer2_signals computes signals for and the bind request's. "
+        "not the 7 compute_layer2_signals computes signals for and the binder requests' 2. "
         "Update compute_layer2_signals (and this test) to cover the new reader."
     )
-    assert role_query_reads == 2, (
+    assert role_query_reads == 3, (
         f"state.role_query has {role_query_reads} readers in src/search/engine/region/, "
-        "not the 1 compute_layer2_signals computes a signal for and the bind request's. "
+        "not the 1 compute_layer2_signals computes a signal for and the binder requests' 2. "
         "Update compute_layer2_signals (and this test) to cover the new reader."
     )
 

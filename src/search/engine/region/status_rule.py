@@ -26,7 +26,10 @@ open (`OpenAxes`).
    read matched to no listed denominator, since the question then picked no reading's
    base (`base_unmatched`). (a) x shares P's population type and measured property, and
    differs from it only on the stat type, the measurement qualifier or the denominator,
-   at least one of them open (`structural`). (b) the model nominated x (`nominated`).
+   at least one of them open (`structural`). (b) the model nominated x (`nominated`). A
+   nominated x of another measure meets (b) only when the binder states no support for it
+   or a support of at least `NOMINATION_FLOOR` (`MenuReading.support`); a binder that
+   states none, as Gemini's does, leaves every nomination in.
 3. R empty gives `definite`; else `candidates`, P first and R in menu order.
 4. A pinned part never produces candidates. A reading that fails the form the question
    asks for or a code it names is inadmissible before bind, so it is never on the menu. A
@@ -62,6 +65,10 @@ from search.models import CandidateBasis
 
 _DEFAULT_STAT_TYPE = "measuredValue"
 
+# The least support a binder may state for a nominated reading of another measure that
+# enters R under rule 2(b).
+NOMINATION_FLOOR = 0.5
+
 
 @dataclass(frozen=True, slots=True)
 class OpenAxes:
@@ -79,14 +86,16 @@ CLOSED_AXES = OpenAxes(stat_type=False, denominator=False, price_basis=False)
 @dataclass(frozen=True, slots=True)
 class MenuReading:
     """One admissible reading beside P, as the status rule reads it: its menu index, its
-    shape, D (`None` when no read settled it), whether the bind model nominated it, and
-    whether the equivalent-series registry pairs it with P."""
+    shape, D (`None` when no read settled it), whether the bind model nominated it, whether
+    the equivalent-series registry pairs it with P, and the binder's support for the
+    nomination (`BindResult.also_plausible_support`, `None` when the binder states none)."""
 
     index: int
     shape: ShapeDraft
     has_data: bool | None
     nominated: bool = False
     registry_twin: bool = False
+    support: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,7 +235,9 @@ def _rival_basis(
         if reading.nominated and base_unmatched and "denominator" in differing:
             return "nominated"
         return None
-    return "nominated" if reading.nominated else None
+    if not reading.nominated:
+        return None
+    return "nominated" if reading.support is None or reading.support >= NOMINATION_FLOOR else None
 
 
 def plan_status(

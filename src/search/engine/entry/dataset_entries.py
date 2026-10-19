@@ -274,7 +274,7 @@ async def resolve_parsed_entries(
     resolver: EntityResolver,
     admission: Admission,
     llm: SupportsLLM,
-    binder: Binder | None = None,
+    binder: Binder,
     sdmx: EngineSdmxClient,
     materialise_graph: GraphReader | None,
     materialise_sdmx: MaterialiseSdmxClient | None,

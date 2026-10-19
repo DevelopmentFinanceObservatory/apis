@@ -8,6 +8,7 @@ from datetime import date
 from unittest.mock import patch
 
 import search.engine.fanout as fanout_module
+from search.engine.binders import Fallbacks
 from search.engine.core import resolve_async, resolve_events
 from search.engine.envelope import now_ms
 from search.engine.events import DoneEvent, Event, ResponseEvent, StepEvent
@@ -16,6 +17,7 @@ from search.engine.region import RegionResult
 from search.engine.response_cache import ResponseCache
 from search.engine.response_cache_flow import CacheScope
 from search.models import RawTextInput, ResolveRequest, ResolveResponse
+from tests.engine._binders import KeyedBinder
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._harness import (
     DEADLINE_TIMEOUT_S,
@@ -51,8 +53,8 @@ def _make_scope(cache: ResponseCache | None, *, deadline: float | None = None) -
         start_ms=now_ms(),
         deadline=deadline if deadline is not None else time.monotonic() + _DEADLINE_HORIZON_S,
         build_commit=_BUILD_COMMIT,
-        binder="gemini",
-        model=_MODEL,
+        binder=KeyedBinder(model=_MODEL),
+        fallbacks=Fallbacks(),
         seed=_SEED,
         today=_TODAY,
         max_candidates=_MAX_CANDIDATES,

@@ -29,6 +29,7 @@ from entity_resolution import Admission
 from origin_catalogue import BASE
 from search.engine import core as search_core
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.binders import GeminiBinder
 from search.engine.departures import warning_key
 from search.engine.entry.parsed import _open_axes_for_part
 from search.engine.errors import EngineInputError, FamilyNotResolvableError, RoleSignatureError
@@ -1070,6 +1071,7 @@ def _run_leg(
             resolver=make_resolver(graph),
             admission=Admission(graph=graph),
             llm=_BindLLM(),
+            binder=GeminiBinder(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             base_timing={},
             pre_resolved=None,

@@ -25,6 +25,7 @@ from search.engine.bind import (
     SlotBindingDraft,
     _build_universal_bind_prompt,
 )
+from search.engine.binders import GeminiBinder
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
@@ -1494,6 +1495,7 @@ def test_n2_fanout_broadcasts_query_text_none_to_every_leg():
                 resolver=resolver,
                 admission=admission,
                 llm=FakeLLM(responses={}),
+                binder=GeminiBinder(),
                 sdmx=sdmx,
                 base_timing={},
                 pre_resolved=None,

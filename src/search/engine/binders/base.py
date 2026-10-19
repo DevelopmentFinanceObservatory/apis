@@ -3,7 +3,8 @@
 A `Binder` answers the two model questions of a part: which form and base the variable
 phrase states (`Binder.read_quantity`), and which menu shape the part means with its slot
 bindings (`Binder.bind`). The engine builds one `BindRequest` per bind call and reads the
-binder's `BindResult`.
+binder's `BindResult`. The quantity read
+takes one `QuantityRequest`.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ if TYPE_CHECKING:
     from search.engine.interpretation import Interpretation
     from search.engine.qualifier_match import QualifierMatch, QualifierTie
     from search.engine.quantity_read import QuantityOutput
-    from search.engine.shape import ShapeDraft
+    from search.engine.shape import Pool, ShapeDraft
     from search.models import GraphRef
 
 
@@ -47,6 +48,23 @@ class PolicyContractError(Exception):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class QuantityRequest:
+    """One quantity read: the variable phrase less the words its places own (`variable`),
+    the numbered StatVar denominators the admissible shapes divide by, the phrase the bind
+    call reads (`bind_variable`) and the query's own text, as `BindRequest.query_text`
+    holds it. The Gemini binder reads `variable` and `denominators` alone. `part` and
+    `pool` are the part's index and pass, as the ``bind_decision`` line states them, and
+    join a binder's log lines to it; None outside a resolve."""
+
+    variable: str
+    denominators: Sequence[GraphRef]
+    bind_variable: str
+    query_text: str | None
+    part: int | None = None
+    pool: Pool | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class BindRequest:
     """One bind call: the menu and its context as `bind.bind_universal` takes them, the
     query's own text, and the engine's house-policy step.
@@ -54,7 +72,8 @@ class BindRequest:
     `shapes` is the seated menu in rank order, and `admitted_qualifiers`, `admitted_ties`,
     `candidate_menus` and `availability` are each shape's own, in that order. `query_text`
     is the verbatim query of a single-variable raw-text request, else the query the part's
-    roles were read from.
+    roles were read from. `part` and `pool` join a binder's log lines to the part's, as
+    on `QuantityRequest`.
     """
 
     variable: str
@@ -69,6 +88,8 @@ class BindRequest:
     availability: Sequence[bool | None] = ()
     query_text: str | None
     apply_policies: ApplyPolicies
+    part: int | None = None
+    pool: Pool | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -81,7 +102,8 @@ class BindResult:
     place of the binder's. `policy_pool` is the pool the house policies chose from and
     `policy_choice` what they chose, both None on a reply that elects no shape.
     `also_plausible_support` is the binder's support for each `also_plausible` index, and
-    None for a binder that states none. `binder` names the binder that answered.
+    None for a binder that states none. `binder` names the binder that answered, and
+    `fallback_reason` why the configured binder's primary did not, None when it did.
     """
 
     output: _UniversalBindOutput
@@ -89,6 +111,7 @@ class BindResult:
     policy_pool: PolicyPool | None = None
     policy_choice: PolicyChoice | None = None
     also_plausible_support: dict[int, float] | None = None
+    fallback_reason: str | None = None
 
 
 class Binder(Protocol):
@@ -104,11 +127,18 @@ class Binder(Protocol):
         """The model the binder answers with, which the response cache key carries."""
         ...
 
+    @property
+    def reads_query_text(self) -> bool:
+        """Whether the binder's model calls read the query's own text
+        (`BindRequest.query_text`, `QuantityRequest.query_text`), so two queries with one
+        extraction can bind differently."""
+        ...
+
     async def read_quantity(
-        self, variable: str, denominators: Sequence[GraphRef], *, llm: SupportsLLM
+        self, request: QuantityRequest, *, llm: SupportsLLM
     ) -> tuple[QuantityOutput, dict | None]:
-        """The form and the base among `denominators` the variable phrase states, and the
-        call's token usage (`quantity_read.read_stated_quantity`)."""
+        """The form and the base among `request.denominators` the variable phrase states,
+        and the call's token usage (`quantity_read.read_stated_quantity`)."""
         ...
 
     async def bind(

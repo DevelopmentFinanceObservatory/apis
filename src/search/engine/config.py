@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from dfo_platform.flags import lenient_bool
@@ -108,9 +108,10 @@ class SearchSettings(BaseSettings):
     Constructed once at import (`_SETTINGS` below); every consumer reads a
     field off `settings()`'s return value at the point of use. Field names
     are the `SEARCH_` env var name lowercased with that prefix stripped
-    (e.g. `SEARCH_MAX_VARIABLES` -> `max_variables`). Two fields are aliased:
+    (e.g. `SEARCH_MAX_VARIABLES` -> `max_variables`). Three fields are aliased:
     `gemini_api_key` to the unprefixed `GEMINI_API_KEY` that every other
-    Gemini-touching tool in this ecosystem already expects, and
+    Gemini-touching tool in this ecosystem already expects, `jev_api_key` to
+    the TypeSafe SDK's own `TYPESAFE_API_KEY`, and
     `capability_version_override` to `SEARCH_CAPABILITY_VERSION`, which sets the
     `capability_version` property.
 
@@ -127,8 +128,11 @@ class SearchSettings(BaseSettings):
     engine_model: str = "gemini-3.5-flash-lite"
 
     # The binder that reads each part's stated quantity and elects its shape
-    # (`search.engine.binders`). The response cache keys each answer on it and its model.
-    binder: Literal["gemini"] = "gemini"
+    # (`search.engine.binders.configured_binder`): "gemini"; "jev", Jev with Gemini as its
+    # fallback on the `jev_traffic_pct` share of queries and Gemini on the rest; or
+    # "shadow", Gemini answering with Jev run beside it on `jev_shadow_sample` of calls. The
+    # response cache keys each answer on the binder its request was routed to and its model.
+    binder: Literal["gemini", "jev", "shadow"] = "gemini"
 
     # Best-effort Gemini seed. Repeated identical queries matched on the pinned model.
     # Defaults to 1. An explicit empty string selects unseeded sampling.
@@ -139,6 +143,37 @@ class SearchSettings(BaseSettings):
 
     # Gemini API key for LLM calls. Reads unprefixed GEMINI_API_KEY.
     gemini_api_key: str = Field(default="", validation_alias="GEMINI_API_KEY")
+
+    # -- Jev ------------------------------------------------------------
+    # TypeSafe's System One model the Jev binder asks (`binders.jev_client`). A versioned id:
+    # the `jev-latest` alias moves when a release ships, and the Jev thresholds are fitted
+    # on this version.
+    jev_model: str = "jev-1.13.0"
+
+    # TypeSafe API key. Reads unprefixed TYPESAFE_API_KEY, the SDK's own variable.
+    jev_api_key: SecretStr = Field(default=SecretStr(""), validation_alias="TYPESAFE_API_KEY")
+
+    # Seconds one Jev call may take in all, from the wait for a concurrency slot through
+    # its retry and every chunk of a split request. Jev per part ran p50 281 ms and p95
+    # 622 ms, and chunked requests p95 about 1.1 s.
+    jev_ceiling_s: float = 2.5
+
+    # Jev requests in flight per event loop, chunks of a split request included.
+    jev_max_concurrency: int = 8
+
+    # Percent of queries, 0 to 100, `binder="jev"` routes to Jev, picked by a hash of the
+    # normalised query so a repeated query keeps its binder; the rest go to Gemini. Read only
+    # under `binder="jev"`, where every query goes to Jev unless a partial rollout sets it
+    # below 100.
+    jev_traffic_pct: int = 100
+
+    # Share of quantity reads and bind calls, 0 to 1, `binder="shadow"` also sends to Jev
+    # to compare with Gemini's answer.
+    jev_shadow_sample: float = 0.0
+
+    # Share of those shadowed calls, 0 to 1, that ask Gemini a second time in place of Jev,
+    # so the comparison measures Gemini's disagreement with itself as its control.
+    jev_shadow_control: float = 0.05
 
     # -- Graph ------------------------------------------------------------
     # Bare host of the Data Commons service, from SEARCH_GRAPH_BASE. Required, so
@@ -765,7 +800,7 @@ class SearchSettings(BaseSettings):
             raise ValueError(f"SEARCH_MAX_OPTIONS must be >= 1; got {self.max_options!r}")
 
     def _validate_timeout_and_preview_bounds(self) -> None:
-        """Graph/LLM/request timeouts, Gemini and observation-preview concurrency."""
+        """Graph/LLM/Jev/request timeouts, Gemini, Jev and observation-preview concurrency."""
         if self.graph_timeout_s <= 0:
             raise ValueError(f"SEARCH_GRAPH_TIMEOUT_S must be > 0; got {self.graph_timeout_s!r}")
         if self.llm_timeout_s <= 0:
@@ -773,6 +808,26 @@ class SearchSettings(BaseSettings):
         if self.llm_max_concurrency < 1:
             raise ValueError(
                 f"SEARCH_LLM_MAX_CONCURRENCY must be >= 1; got {self.llm_max_concurrency!r}"
+            )
+        if not math.isfinite(self.jev_ceiling_s) or self.jev_ceiling_s <= 0:
+            raise ValueError(
+                f"SEARCH_JEV_CEILING_S must be a finite number > 0; got {self.jev_ceiling_s!r}"
+            )
+        if self.jev_max_concurrency < 1:
+            raise ValueError(
+                f"SEARCH_JEV_MAX_CONCURRENCY must be >= 1; got {self.jev_max_concurrency!r}"
+            )
+        if not 0 <= self.jev_traffic_pct <= 100:
+            raise ValueError(
+                f"SEARCH_JEV_TRAFFIC_PCT must be in [0, 100]; got {self.jev_traffic_pct!r}"
+            )
+        if not 0.0 <= self.jev_shadow_sample <= 1.0:
+            raise ValueError(
+                f"SEARCH_JEV_SHADOW_SAMPLE must be in [0, 1]; got {self.jev_shadow_sample!r}"
+            )
+        if not 0.0 <= self.jev_shadow_control <= 1.0:
+            raise ValueError(
+                f"SEARCH_JEV_SHADOW_CONTROL must be in [0, 1]; got {self.jev_shadow_control!r}"
             )
         if self.max_query_chars < 1:
             raise ValueError(f"SEARCH_MAX_QUERY_CHARS must be >= 1; got {self.max_query_chars!r}")

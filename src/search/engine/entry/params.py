@@ -45,6 +45,6 @@ class EntryParams:
     # index and stamp from the same artifact generation. Required at construction.
     coverage: CoverageSnapshot
 
-    # The request's binder, which every part binds with and the cache key reads. None
-    # takes the one `Settings.binder` names (`binders.configured_binder`).
-    binder: Binder | None = None
+    # The binder the request was routed to (`binders.configured_binder`), which every part
+    # of every door reads its quantity and binds through, and the cache keys name.
+    binder: Binder

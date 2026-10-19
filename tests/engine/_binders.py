@@ -1,15 +1,18 @@
 """Binder doubles: a scripted elected bind reply that rates its pick, the Gemini binder
 with its menus recorded, one that elects without a model call, one that answers with the
-reply its model double scripts, a house-policy step that keeps the binder's pick, and a
-recorded-fixture LLM whose bind call answers with a fixed reply."""
+reply its model double scripts, one under a chosen name and model, a house-policy step that
+keeps the binder's pick, a recorded-fixture LLM whose bind call answers with a fixed reply,
+and Jev's `ask` answering without the network."""
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Collection, Mapping, Sequence
 
 from search.engine.bind import ShapeRating, SlotBindingDraft, _UniversalBindOutput, bind_universal
 from search.engine.binders import BindRequest, BindResult, GeminiBinder
 from search.engine.binders.house_policy import PolicyChoice, PolicyPool
+from search.engine.binders.jev_client import JevResponse, JevUsage
 from tests.fixtures import FakeLLM
 
 # The rating a scripted reply gives each shape it nominates: the lowest a nomination stands
@@ -184,3 +187,78 @@ BIRTH_RATE_CANDIDATES = {
         also_plausible=[1],
     )
 }
+
+
+class KeyedBinder(GeminiBinder):
+    """The Gemini binder under `name` and `model`, stating whether it reads the query
+    text, as the response cache keys a binder."""
+
+    def __init__(
+        self, *, name: str = "gemini", model: str = "model-a", reads_query_text: bool = False
+    ) -> None:
+        self._name = name
+        self._model = model
+        self._reads_query_text = reads_query_text
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def model(self) -> str:
+        return self._model
+
+    @property
+    def reads_query_text(self) -> bool:
+        return self._reads_query_text
+
+
+class FakeAsk:
+    """`jev_client.ask` answering from `answers` (`answer_all` when None), or raising
+    `fail`, and recording each request; a `gate` holds every answer until it is set."""
+
+    def __init__(
+        self,
+        answers: Mapping[str, dict] | None = None,
+        *,
+        fail: Exception | None = None,
+        gate: asyncio.Event | None = None,
+    ) -> None:
+        self.answers = answers
+        self.fail = fail
+        self.gate = gate
+        self.requests: list[tuple[object, dict]] = []
+
+    async def __call__(self, state, questions, *, settings) -> JevResponse:
+        self.requests.append((state, dict(questions)))
+        if self.gate is not None:
+            await self.gate.wait()
+        if self.fail is not None:
+            raise self.fail
+        stored = self.answers if self.answers is not None else answer_all(questions)
+        asked = {qid: stored[qid] for qid in questions if qid in stored}
+        return JevResponse(
+            nouls={k: float(v["noul"]) for k, v in asked.items() if v["type"] == "noul"},
+            choices={
+                k: {o: float(p) for o, p in v["probabilities"].items()}
+                for k, v in asked.items()
+                if v["type"] == "choice"
+            },
+            model="jev-1.13.0",
+            usage=JevUsage(input_tokens=120, output_tokens=4),
+            seconds=0.2,
+            chunks=1,
+        )
+
+
+def answer_all(questions: Mapping[str, dict]) -> dict[str, dict]:
+    """Yes at 0.9 to every noul, and every choice's first option at 0.9."""
+    answers: dict[str, dict] = {}
+    for qid, question in questions.items():
+        if question["type"] == "noul":
+            answers[qid] = {"type": "noul", "noul": 0.9}
+        else:
+            first, *rest = question["criteria"]
+            probabilities = {first: 0.9} | dict.fromkeys(rest, 0.1 / max(len(rest), 1))
+            answers[qid] = {"type": "choice", "probabilities": probabilities}
+    return answers
