@@ -183,6 +183,7 @@ JSON_PARTS: Final[Mapping[str, JsonPart]] = {
     for part in (
         JsonPart(name="declarations", layer=DFO, suffix=".json"),
         JsonPart(name="code_index_blocks", layer=DFO, suffix=".json.gz"),
+        JsonPart(name="base_parties", layer=DFO, suffix=".json"),
     )
 }
 

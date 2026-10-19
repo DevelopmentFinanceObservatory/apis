@@ -88,6 +88,7 @@ from code_index.declarations import (
 )
 from code_index.export import (
     ExportReader,
+    ExportRefused,
     PartyPublication,
     content_hash,
     export_graph_blocks,
@@ -217,7 +218,7 @@ def export_index(
     Tests can pass smaller config tables for fixture graphs. Empty `measure_axes` yields an empty
     `measure_values` list. The finished document must load: a document `parse_index` refuses,
     such as one whose declared dataset has no row or whose datasets share a rank, raises
-    `SystemExit`.
+    `ExportRefused`.
     """
     blocks = export_graph_blocks(
         reader,
@@ -254,7 +255,7 @@ def export_index(
         parse_index(document)
         parse_measure_axes(document)
     except IndexFormatError as exc:
-        raise SystemExit(f"the export does not load as a code index: {exc}") from exc
+        raise ExportRefused(f"the export does not load as a code index: {exc}") from exc
     return document
 
 
@@ -285,6 +286,8 @@ def main() -> None:
             coverage=coverage,
             listed_datasets=LISTED_DATASETS,
         )
+    except ExportRefused as exc:
+        raise SystemExit(str(exc)) from exc
     finally:
         reader.close()
     _write_index(Path(args.out), document)

@@ -102,6 +102,11 @@ _STATVAR_PASS1_PROPERTIES = (
 )
 
 
+class ExportRefused(Exception):
+    """The graph or the declarations break a rule the code index relies on, so the export
+    refuses to build it. The message names the rule and the offending rows."""
+
+
 @dataclass(frozen=True)
 class PartyPublication:
     """The datasets that publish one party, by provenance, and the flow axes they publish it
@@ -114,19 +119,19 @@ class PartyPublication:
 def _kind_from_types(
     dcid: str, types: Collection[str], type_kinds: Mapping[str, PartyKind | None]
 ) -> PartyKind:
-    """The kind `types` give the party `dcid` under `type_kinds`, or `SystemExit` naming why they
+    """The kind `types` give the party `dcid` under `type_kinds`, or `ExportRefused` naming why they
     give none."""
     if not types:
-        raise SystemExit(f"party {dcid!r} has no typeOf arc -- its kind cannot be declared")
+        raise ExportRefused(f"party {dcid!r} has no typeOf arc -- its kind cannot be declared")
     undeclared = sorted(set(types) - type_kinds.keys())
     if undeclared:
-        raise SystemExit(
+        raise ExportRefused(
             f"party {dcid!r} carries type(s) {undeclared!r} that PARTY_TYPE_KINDS does not "
             "declare -- add each with the kind it gives a party"
         )
     kind = party_kind(types, type_kinds)
     if kind is None:
-        raise SystemExit(
+        raise ExportRefused(
             f"party {dcid!r}'s types {sorted(types)!r} give it no single kind under "
             "PARTY_TYPE_KINDS"
         )
@@ -148,7 +153,7 @@ def export_parties(
     types give under `type_kinds`. Its label is its graph name, `None` when the graph gives it
     none.
 
-    Raises `SystemExit` for a `kind_overrides` row naming a party not in `parties`, a party the
+    Raises `ExportRefused` for a `kind_overrides` row naming a party not in `parties`, a party the
     graph holds no node or type for, a party carrying a type `type_kinds` does not name, a party
     whose types give it no single kind, a `total_groups` row naming a party that is not a total
     of `parties`, and a `total_groups` residual that is not a residual of `parties`.
@@ -156,7 +161,7 @@ def export_parties(
     published = frozenset(parties)
     unpublished = sorted(kind_overrides.keys() - published)
     if unpublished:
-        raise SystemExit(
+        raise ExportRefused(
             f"PARTY_KIND_OVERRIDES names {unpublished!r}, which no declared or listed dataset publishes"
         )
     arcs = _fetch_arcs_many(reader, sorted(published), properties=("typeOf", "name"))
@@ -183,7 +188,7 @@ def export_parties(
     kinds = {row["dcid"]: row["kind"] for row in rows}
     stale = sorted(dcid for dcid in total_groups if kinds.get(dcid) != "total")
     if stale:
-        raise SystemExit(
+        raise ExportRefused(
             f"TOTAL_GROUPS names {stale!r}, which no declared or listed dataset publishes as a total"
         )
     not_residuals = sorted(
@@ -193,7 +198,7 @@ def export_parties(
         if kinds.get(residual) != "residual"
     )
     if not_residuals:
-        raise SystemExit(
+        raise ExportRefused(
             f"TOTAL_GROUPS counts {not_residuals!r} as residuals, which no declared or listed dataset "
             "publishes as a residual"
         )
@@ -211,7 +216,7 @@ def strip_system_suffix(name: str) -> str:
 
 def _single_value(dcid: str, prop: str, values: tuple[str, ...]) -> str:
     if not values:
-        raise SystemExit(f"{dcid} carries no {prop} arc -- cannot export a row missing it")
+        raise ExportRefused(f"{dcid} carries no {prop} arc -- cannot export a row missing it")
     return values[0]
 
 
@@ -221,7 +226,7 @@ def _check_single_valued(dcid: str, prop: str, values: tuple[str, ...]) -> None:
     `parse_arcs` collapses repeated imports. Callers apply this to shape and constraint fields.
     """
     if len(values) > 1:
-        raise SystemExit(
+        raise ExportRefused(
             f"{dcid}'s {prop!r} arc carries {len(values)} bound values, not one: {values!r} -- "
             "cannot export a row that would silently pick one of several"
         )
@@ -233,7 +238,7 @@ def _check_typed_as_statvar(dcid: str, type_of: tuple[str, ...]) -> None:
     `ProvisionalNode` alongside a real type is allowed.
     """
     if "StatisticalVariable" not in type_of:
-        raise SystemExit(
+        raise ExportRefused(
             f"{dcid}'s typeOf arc {type_of!r} does not include StatisticalVariable -- cannot "
             "export a row the graph does not hold as a StatisticalVariable"
         )
@@ -315,7 +320,7 @@ def _apply_concept_groups(
     enumerate (`exported_systems`) is skipped.
 
     Raises:
-        SystemExit: a code is in two groups, a group joins two codes of one code system, or
+        ExportRefused: a code is in two groups, a group joins two codes of one code system, or
             a group names a code of an exported system that the export holds no row of.
     """
     by_dcid = {row["dcid"]: row for row in codes}
@@ -325,11 +330,11 @@ def _apply_concept_groups(
         if count > 1
     )
     if repeated:
-        raise SystemExit(f"concept groups name codes in more than one group: {repeated}")
+        raise ExportRefused(f"concept groups name codes in more than one group: {repeated}")
     for group in groups:
         systems = [system for system, _dcid in group]
         if len(set(systems)) != len(systems):
-            raise SystemExit(f"concept group {group!r} joins two codes of one code system")
+            raise ExportRefused(f"concept group {group!r} joins two codes of one code system")
         members = [(system, dcid) for system, dcid in group if system in exported_systems]
         missing = [
             dcid
@@ -337,7 +342,7 @@ def _apply_concept_groups(
             if dcid not in by_dcid or by_dcid[dcid]["code_system"] != system
         ]
         if missing:
-            raise SystemExit(
+            raise ExportRefused(
                 f"concept group {group!r} names codes the export holds no row of: {missing}"
             )
         rows = [by_dcid[dcid] for _system, dcid in members]
@@ -490,7 +495,7 @@ def _strip_measure_words(
 def _reject_cross_system_parents(
     config: CodeSystemConfig, enumerated: set[str], rows: Sequence[dict]
 ) -> None:
-    """Reject parents outside this code system's enumeration with `SystemExit`.
+    """Reject parents outside this code system's enumeration with `ExportRefused`.
 
     `specializationOf` must stay within one vocabulary. Parent and child dcids are already in hand,
     so this check needs no graph read.
@@ -498,7 +503,7 @@ def _reject_cross_system_parents(
     for row in rows:
         parent = row["parent"]
         if parent is not None and parent not in enumerated:
-            raise SystemExit(
+            raise ExportRefused(
                 f"{row['dcid']} in code system {config.code_system!r} has parent {parent!r}, "
                 f"which {config.enum_dcid} does not enumerate -- a code row's parent must be a "
                 "code of its own code system"
@@ -543,7 +548,7 @@ def export_code_system(
     """
     page = reader.node_subjects(config.enum_dcid, property="typeOf", max_results=max_results)
     if page.truncated:
-        raise SystemExit(
+        raise ExportRefused(
             f"{config.code_system} ({config.enum_dcid}) population truncated at "
             f"{max_results} dcids -- raise max_results, the export must read the full "
             "code system"
@@ -555,7 +560,7 @@ def export_code_system(
     for dcid in dcids:
         arcs = arcs_by_dcid.get(dcid)
         if arcs is None:
-            raise SystemExit(
+            raise ExportRefused(
                 f"{dcid} was enumerated via <-typeOf on {config.enum_dcid} but the graph "
                 "holds no node for it"
             )
@@ -565,7 +570,7 @@ def export_code_system(
 
     derived_hierarchical = any(row["parent"] is not None for row in rows)
     if derived_hierarchical != config.expected_hierarchical:
-        raise SystemExit(
+        raise ExportRefused(
             f"{config.code_system}: derived hierarchical={derived_hierarchical} disagrees "
             f"with the declared expected value {config.expected_hierarchical}"
         )
@@ -599,7 +604,7 @@ def _declared_default_to_dict(default: DeclaredDefault | None) -> dict | None:
 def _validate_declared_defaults(
     code_systems: Sequence[CodeSystemConfig], code_rows_by_system: dict[str, list[dict]]
 ) -> None:
-    """Validate each default against exported rows, raising `SystemExit` on invalid entries.
+    """Validate each default against exported rows, raising `ExportRefused` on invalid entries.
 
     Its code must belong to its own system. `when_bound_under` codes must belong to other systems.
     `when_named` entries are non-empty lowercase strings. A default that fires on an open slot
@@ -613,7 +618,7 @@ def _validate_declared_defaults(
         if default is None:
             continue
         if default.code not in dcids_by_system.get(config.code_system, set()):
-            raise SystemExit(
+            raise ExportRefused(
                 f"{config.code_system}: declared default code {default.code!r} is not a row "
                 "of that code system"
             )
@@ -623,24 +628,24 @@ def _validate_declared_defaults(
                 None,
             )
             if owning_system is None:
-                raise SystemExit(
+                raise ExportRefused(
                     f"{config.code_system}: declared default when_bound_under code "
                     f"{scoping_dcid!r} is not a row of any exported code system"
                 )
             if owning_system == config.code_system:
-                raise SystemExit(
+                raise ExportRefused(
                     f"{config.code_system}: declared default when_bound_under code "
                     f"{scoping_dcid!r} belongs to its own code system -- a default cannot "
                     "condition on the slot it defaults"
                 )
         invalid = invalid_when_named_entry(default.when_named)
         if invalid is not None:
-            raise SystemExit(
+            raise ExportRefused(
                 f"{config.code_system}: declared default when_named entry "
                 f"{default.when_named[invalid]!r} must be a non-empty lowercase string"
             )
         if default.when_open and not (default.note and default.note.strip()):
-            raise SystemExit(
+            raise ExportRefused(
                 f"{config.code_system}: declared default {default.code!r} fires on an open "
                 "slot and carries no note"
             )
@@ -678,7 +683,7 @@ def _choose_spine(
     """
     eligible = _complete_systems(dataset, code_systems)
     if not eligible:
-        raise SystemExit(
+        raise ExportRefused(
             f"no code system in the table is declared by every StatVar of dataset "
             f"{dataset.provenance!r} -- cannot choose an enumeration spine"
         )
@@ -772,7 +777,7 @@ def _read_partitioned(
     partitioning. Other `GraphReadError`s propagate.
 
     Split along remaining axes in order, using declared code values or the run-wide observed
-    `populationType` pool. Union completed leaves. `SystemExit` names the filter path when axes,
+    `populationType` pool. Union completed leaves. `ExportRefused` names the filter path when axes,
     observed values, or `max_depth` are exhausted.
     """
     from dc_graph import GraphNotAdvancingError
@@ -792,12 +797,12 @@ def _read_partitioned(
 
     filter_path = _format_filter_path(base_property, base_dcid, filters)
     if depth >= max_depth:
-        raise SystemExit(
+        raise ExportRefused(
             f"partition recursion exceeded max_depth={max_depth} reading {filter_path} -- "
             "still truncated"
         )
     if not remaining_axes:
-        raise SystemExit(
+        raise ExportRefused(
             f"exhausted every partition property reading {filter_path} -- still truncated"
         )
 
@@ -807,7 +812,7 @@ def _read_partitioned(
             pool.observe(reader, page.dcids, axis.property)
         values = pool.values_for(axis.property)
         if not values:
-            raise SystemExit(
+            raise ExportRefused(
                 f"could not observe any {axis.property!r} value while partitioning "
                 f"{filter_path} -- cannot split further"
             )
@@ -842,7 +847,7 @@ def _verify_spine_coverage(
 ) -> int:
     """Check that complete one-page reads from non-spine codes stay within `enumerated`.
 
-    An outside subject raises `SystemExit`. Truncated or non-advancing reads are skipped, and the
+    An outside subject raises `ExportRefused`. Truncated or non-advancing reads are skipped, and the
     function returns their count.
     """
     from dc_graph import GraphNotAdvancingError
@@ -868,7 +873,7 @@ def _verify_spine_coverage(
                 continue
             outside = set(page.dcids) - enumerated
             if outside:
-                raise SystemExit(
+                raise ExportRefused(
                     f"{config.code_system}={code_dcid!r} carries {sorted(outside)!r} outside "
                     f"the population enumerated through {sorted(spine_systems)!r} -- the "
                     "declared datasets do not cover the whole StatVar population"
@@ -891,7 +896,7 @@ def _verify_axis_coverage(
 ) -> None:
     """Require every exported value on a used observed axis to appear in its partition filters.
 
-    Unexpected values raise `SystemExit` with the axis and StatVar dcid.
+    Unexpected values raise `ExportRefused` with the axis and StatVar dcid.
     """
     for axis_property, used_values in observed_axis_usage.items():
         row_field = _AXIS_ROW_FIELD[axis_property]
@@ -899,7 +904,7 @@ def _verify_axis_coverage(
         for row in statvars:
             value = row.get(row_field)
             if value is not None and value not in used:
-                raise SystemExit(
+                raise ExportRefused(
                     f"{row['dcid']} carries {axis_property}={value!r}, which was never used to "
                     f"partition the {axis_property} axis (used values: {sorted(used)!r}) -- some "
                     "leaf may have split on an incomplete sample and dropped rows silently"
@@ -936,12 +941,12 @@ def _read_five_tuple_subjects(
 
     Filters on the tuple's other set fields and splits first on every value of the first axis,
     since an unsplit read of a CRS five-tuple does not finish inside a request. A read still
-    truncated after the last axis raises `SystemExit` through `_read_partitioned`.
+    truncated after the last axis raises `ExportRefused` through `_read_partitioned`.
     """
     shape = dict(zip(_STATVAR_SHAPE_PROPERTIES, five_tuple, strict=True))
     measured_property = shape.pop("measuredProperty")
     if measured_property is None:
-        raise SystemExit(f"five-tuple {five_tuple!r} has no measuredProperty to read from")
+        raise ExportRefused(f"five-tuple {five_tuple!r} has no measuredProperty to read from")
     filters = {prop: value for prop, value in shape.items() if value is not None}
     pool = _ObservedAxisPool()
     if not axes:
@@ -1061,7 +1066,7 @@ def _verify_five_tuple_completeness(
     for dcid in candidates:
         arcs = arcs_by_dcid.get(dcid)
         if arcs is None:
-            raise SystemExit(
+            raise ExportRefused(
                 f"{dcid} is a <-measuredProperty subject of an exported five-tuple but the "
                 "graph holds no node for it"
             )
@@ -1072,7 +1077,7 @@ def _verify_five_tuple_completeness(
     if missing:
         named = missing[:_MISSING_STATVAR_NAME_CAP]
         more = f" and {len(missing) - len(named)} more" if len(missing) > len(named) else ""
-        raise SystemExit(
+        raise ExportRefused(
             f"{len(missing)} StatVar(s) on an exported five-tuple carry the constraint "
             f"properties of an exported row but are not exported rows: {named!r}{more} -- the "
             "index would decide their family without them"
@@ -1086,12 +1091,12 @@ def listed_dcids(
 
     `provenances` maps a StatVar to the datasets publishing it: a coverage build's
     (`CoverageJoin.provenances`), or the committed index's listed rows for the drift test. A
-    dataset of `datasets` with no StatVar raises `SystemExit`, since the export could not list
+    dataset of `datasets` with no StatVar raises `ExportRefused`, since the export could not list
     its rows."""
     found = {dcid: set(datasets).intersection(sets) for dcid, sets in provenances.items()}
     empty = sorted(set(datasets).difference(*found.values()))
     if empty:
-        raise SystemExit(
+        raise ExportRefused(
             f"listed dataset(s) {empty!r} hold no StatVar in the coverage build -- the export "
             "cannot list their rows"
         )
@@ -1105,7 +1110,7 @@ def export_source_codes(reader: ExportReader, dcids: Sequence[str]) -> list[dict
     The rows key on the provenance each arc value carries. The coverage build gives the same
     StatVar its provenances separately, and `parse_index` refuses a code row whose provenance
     its StatVar's row lacks. A StatVar of `dcids` with no code, and a code value with no
-    provenance or no text, raise `SystemExit`. Every listed dataset gives each of its
+    provenance or no text, raise `ExportRefused`. Every listed dataset gives each of its
     StatVars a series code (World Bank IDS is the only one), so a listed dataset without codes
     must lift this rule before it is listed."""
     arcs = reader.node_arcs_batch(list(dcids))
@@ -1119,7 +1124,7 @@ def export_source_codes(reader: ExportReader, dcids: Sequence[str]) -> list[dict
         for value in values:
             provenance, code = value.get("provenanceId"), (value.get("value") or "").strip()
             if not provenance or not code:
-                raise SystemExit(
+                raise ExportRefused(
                     f"{dcid}'s {_SOURCE_CODE} arc carries {value!r}, which names no provenance "
                     "or no code -- cannot key a series code on it"
                 )
@@ -1127,7 +1132,7 @@ def export_source_codes(reader: ExportReader, dcids: Sequence[str]) -> list[dict
     if uncoded:
         named = uncoded[:_MISSING_STATVAR_NAME_CAP]
         more = f" and {len(uncoded) - len(named)} more" if len(uncoded) > len(named) else ""
-        raise SystemExit(
+        raise ExportRefused(
             f"{len(uncoded)} listed StatVar(s) carry no {_SOURCE_CODE}: {named!r}{more} -- "
             "search could not answer their series code"
         )
@@ -1143,7 +1148,7 @@ def export_value_parents(reader: ExportReader, statvars: Sequence[dict]) -> list
     parents included, sorted by dcid.
 
     A value with two parents, and a chain that returns to a value it holds, raise
-    `SystemExit`, since `CodeIndex.value_ancestors` walks one finite chain."""
+    `ExportRefused`, since `CodeIndex.value_ancestors` walks one finite chain."""
     parent_of: dict[str, str] = {}
     read: set[str] = set()
     frontier = sorted(
@@ -1162,7 +1167,7 @@ def export_value_parents(reader: ExportReader, statvars: Sequence[dict]) -> list
         chain = [dcid]
         while (node := parent_of.get(chain[-1])) is not None:
             if node in chain:
-                raise SystemExit(
+                raise ExportRefused(
                     f"the specializationOf chain of {dcid} returns to {node}: "
                     f"{' -> '.join([*chain, node])}"
                 )
@@ -1189,7 +1194,7 @@ def _verify_listed_five_tuples(
     exported = {row["dcid"] for row in statvars}
     both = sorted(exported.intersection(row["dcid"] for row in listed))
     if both:
-        raise SystemExit(
+        raise ExportRefused(
             f"{len(both)} listed StatVar(s) are also exported rows: "
             f"{both[:_MISSING_STATVAR_NAME_CAP]!r}"
         )
@@ -1205,7 +1210,7 @@ def _verify_listed_five_tuples(
     if unknown:
         named = sorted(unknown)[:_MISSING_STATVAR_NAME_CAP]
         more = f" and {len(unknown) - len(named)} more" if len(unknown) > len(named) else ""
-        raise SystemExit(
+        raise ExportRefused(
             f"{len(unknown)} StatVar(s) on a listed row's five-tuple are neither exported nor "
             f"listed rows: {named!r}{more} -- members elected from the index would miss them"
         )
@@ -1267,7 +1272,7 @@ def _reject_provisional_constraint_values(
     """Require each constraint value to identify a resolved graph node.
 
     One batched read covers all distinct values. Missing nodes, missing `typeOf`, or nodes typed
-    only `ProvisionalNode` raise `SystemExit`; a provisional type alongside a real type passes.
+    only `ProvisionalNode` raise `ExportRefused`; a provisional type alongside a real type passes.
     """
     candidate_values = sorted(
         {value for _, constraint_properties in rows for value in constraint_properties.values()}
@@ -1279,20 +1284,20 @@ def _reject_provisional_constraint_values(
         for prop, value in constraint_properties.items():
             held = type_arcs.get(value)
             if held is None:
-                raise SystemExit(
+                raise ExportRefused(
                     f"{dcid} binds {prop!r} to {value!r}, which the graph holds no node for "
                     "at all -- cannot export a dangling reference as a plain dcid "
                     "indistinguishable from a resolved code"
                 )
             types = set(held.get("typeOf", ()))
             if not types:
-                raise SystemExit(
+                raise ExportRefused(
                     f"{dcid} binds {prop!r} to {value!r}, whose node carries no typeOf arc "
                     "at all -- cannot export a dangling reference as a plain dcid "
                     "indistinguishable from a resolved code"
                 )
             if types == {"ProvisionalNode"}:
-                raise SystemExit(
+                raise ExportRefused(
                     f"{dcid} binds {prop!r} to {value!r}, which the graph types exactly "
                     "ProvisionalNode -- cannot export a dangling reference as a plain dcid "
                     "indistinguishable from a resolved code"
@@ -1307,7 +1312,7 @@ def export_statvars(reader: ExportReader, statvar_dcids: Sequence[str]) -> list[
     Constraint and observation properties remain list-valued.
 
     Missing declared values, unresolved dcids, non-StatisticalVariables, multi-valued single-value
-    fields, and unverified targets raise `SystemExit`. The target check rejects missing nodes,
+    fields, and unverified targets raise `ExportRefused`. The target check rejects missing nodes,
     missing `typeOf`, and nodes typed only `ProvisionalNode`.
     """
     from dc_graph import UNRESOLVED_NODE
@@ -1319,7 +1324,7 @@ def export_statvars(reader: ExportReader, statvar_dcids: Sequence[str]) -> list[
     for dcid in statvar_dcids:
         arcs = pass1.get(dcid)
         if arcs is None:
-            raise SystemExit(
+            raise ExportRefused(
                 f"the graph holds no node for {dcid} -- it is either a StatVar this "
                 "export just enumerated and the graph dropped mid-read, or a row the "
                 "committed index still carries and the graph no longer holds"
@@ -1343,7 +1348,7 @@ def export_statvars(reader: ExportReader, statvar_dcids: Sequence[str]) -> list[
         for prop in declared_properties:
             values = values_by_property.get(prop, ())
             if not values:
-                raise SystemExit(
+                raise ExportRefused(
                     f"{dcid} declares {prop!r} in its constraintProperties but the pass-2 "
                     "forward read returned no value for it -- cannot export a row that "
                     "would silently drop a declared constraint"
@@ -1351,7 +1356,7 @@ def export_statvars(reader: ExportReader, statvar_dcids: Sequence[str]) -> list[
             _check_single_valued(dcid, prop, values)
             value = values[0]
             if value == UNRESOLVED_NODE:
-                raise SystemExit(
+                raise ExportRefused(
                     f"{dcid} declares {prop!r} in its constraintProperties but the graph "
                     "could not resolve its value to a dcid -- cannot export a constraint "
                     "value the index would carry as if it were resolved"
@@ -1424,7 +1429,7 @@ def export_measure_values(
     text overrides. A row's `definition` is the value's graph `description`.
 
     Authored labels replace graph names. Synonyms merge with `alternateName`, and `matchable`
-    and `same_reading_as` pass through. A missing `name` raises `SystemExit` because a
+    and `same_reading_as` pass through. A missing `name` raises `ExportRefused` because a
     dcid fallback would enter text matching as a query term.
     """
     observed = _observed_measure_values(statvars, axes, declared)
@@ -1436,7 +1441,7 @@ def export_measure_values(
         for dcid in sorted(observed[axis.axis]):
             arcs = arcs_by_dcid.get(dcid)
             if arcs is None:
-                raise SystemExit(
+                raise ExportRefused(
                     f"{dcid} is a {axis.axis!r} measure value an exported StatVar row carries "
                     "or the export declares, but the graph holds no node for it"
                 )
@@ -1495,7 +1500,7 @@ def _verify_measure_partition_labels(
         if match is None:
             offending.append(pairs)
     if offending:
-        raise SystemExit(
+        raise ExportRefused(
             f"{len(offending)} measure partition(s) carried by the exported StatVar rows "
             f"resolve to no single authored label: {offending!r} -- add or fix entries in "
             "MEASURE_PARTITION_LABELS to cover each"
@@ -1521,7 +1526,7 @@ def _verify_measure_nouns(statvars: Sequence[dict], nouns: Sequence[MeasureParti
         is not None
     )
     if matched:
-        raise SystemExit(
+        raise ExportRefused(
             f"{len(matched)} exported StatVar row(s) match a measure noun as well as their "
             f"partition label, first {matched[:5]!r} -- narrow the entries in MEASURE_NOUNS"
         )
@@ -1558,7 +1563,7 @@ def _verify_measure_label_named_values(
             or not any(row["constraint_properties"].get(prop) == code for row in rows)
         )
     if offending:
-        raise SystemExit(
+        raise ExportRefused(
             f"{len(offending)} measure label named value(s) are no exported code carried by "
             f"a StatVar row under the label's partition: {offending!r} -- fix the entries' "
             "named_values in MEASURE_PARTITION_LABELS"
@@ -1629,7 +1634,7 @@ def verify_complete_systems(
     statvars: Sequence[dict], code_systems: Sequence[CodeSystemConfig]
 ) -> None:
     """Require every row of a dataset to declare each code system listing that dataset in
-    `declared_by_every_statvar_of`. A row that does not raises `SystemExit`, since the enumeration
+    `declared_by_every_statvar_of`. A row that does not raises `ExportRefused`, since the enumeration
     split that dataset's reads on the system and can have dropped rows like it."""
     for config in code_systems:
         complete_in = set(config.declared_by_every_statvar_of)
@@ -1638,7 +1643,7 @@ def verify_complete_systems(
                 complete_in.intersection(row["provenances"])
                 and config.code_system not in row["constraint_properties"]
             ):
-                raise SystemExit(
+                raise ExportRefused(
                     f"{row['dcid']} belongs to {row['provenances']!r} and does not declare "
                     f"{config.code_system!r}, which is configured as declared by every StatVar "
                     f"of {sorted(complete_in)!r}"
