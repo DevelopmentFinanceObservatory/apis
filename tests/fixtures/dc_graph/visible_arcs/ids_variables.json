@@ -1,0 +1,1587 @@
+{
+ "mixer_response": {
+  "data": {
+   "Amount_FinancialFlow_Buyback_PublicOrPubliclyGuaranteed_Nominal": {
+    "arcs": {
+     "constraintProperties": {
+      "nodes": [
+       {
+        "dcid": "financialFlowType",
+        "name": "financial flow type",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Property"
+        ]
+       },
+       {
+        "dcid": "guaranteeStatus",
+        "name": "guarantee status",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Property"
+        ]
+       },
+       {
+        "dcid": "sourceIndicatorCode",
+        "name": "source indicator code",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Property"
+        ]
+       }
+      ]
+     },
+     "description": {
+      "nodes": [
+       {
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "value": "Debt buyback"
+       }
+      ]
+     },
+     "financialFlowType": {
+      "nodes": [
+       {
+        "dcid": "Buyback",
+        "name": "buyback",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "FinancialFlowTypeEnum"
+        ]
+       }
+      ]
+     },
+     "guaranteeStatus": {
+      "nodes": [
+       {
+        "dcid": "PublicOrPubliclyGuaranteed",
+        "name": "public or publicly guaranteed",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "GuaranteeStatusEnum"
+        ]
+       }
+      ]
+     },
+     "measuredProperty": {
+      "nodes": [
+       {
+        "dcid": "amount",
+        "name": "amount",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Property"
+        ]
+       }
+      ]
+     },
+     "measurementQualifier": {
+      "nodes": [
+       {
+        "dcid": "Nominal",
+        "name": "Nominal",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "EconomicMetricEnum"
+        ]
+       }
+      ]
+     },
+     "name": {
+      "nodes": [
+       {
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "value": "Buyback of public or publicly guaranteed external debt"
+       }
+      ]
+     },
+     "observationProperties": {
+      "nodes": [
+       {
+        "dcid": "financingRecipient",
+        "name": "financing recipient",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Property"
+        ]
+       }
+      ]
+     },
+     "populationType": {
+      "nodes": [
+       {
+        "dcid": "FinancialFlow",
+        "name": "financial flow",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Class"
+        ]
+       }
+      ]
+     },
+     "sourceIndicatorCode": {
+      "nodes": [
+       {
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "value": "DT.DSB.DPPG.CD"
+       }
+      ]
+     },
+     "statType": {
+      "nodes": [
+       {
+        "dcid": "measuredValue",
+        "name": "measuredValue",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Property"
+        ]
+       }
+      ]
+     },
+     "typeOf": {
+      "nodes": [
+       {
+        "dcid": "StatisticalVariable",
+        "name": "StatisticalVariable",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Class"
+        ]
+       }
+      ]
+     }
+    }
+   },
+   "Amount_FinancialFlow_ClaimReduction_PublicOrPubliclyGuaranteed_ByCreditor_Nominal": {
+    "arcs": {
+     "constraintProperties": {
+      "nodes": [
+       {
+        "dcid": "financialFlowType",
+        "name": "financial flow type",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Property"
+        ]
+       },
+       {
+        "dcid": "guaranteeStatus",
+        "name": "guarantee status",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Property"
+        ]
+       },
+       {
+        "dcid": "sourceIndicatorCode",
+        "name": "source indicator code",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Property"
+        ]
+       }
+      ]
+     },
+     "description": {
+      "nodes": [
+       {
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "value": "Debt forgiveness or reduction"
+       }
+      ]
+     },
+     "financialFlowType": {
+      "nodes": [
+       {
+        "dcid": "ClaimReduction",
+        "name": "claim reduction",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "FinancialFlowTypeEnum"
+        ]
+       }
+      ]
+     },
+     "guaranteeStatus": {
+      "nodes": [
+       {
+        "dcid": "PublicOrPubliclyGuaranteed",
+        "name": "public or publicly guaranteed",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "GuaranteeStatusEnum"
+        ]
+       }
+      ]
+     },
+     "measuredProperty": {
+      "nodes": [
+       {
+        "dcid": "amount",
+        "name": "amount",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Property"
+        ]
+       }
+      ]
+     },
+     "measurementQualifier": {
+      "nodes": [
+       {
+        "dcid": "Nominal",
+        "name": "Nominal",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "EconomicMetricEnum"
+        ]
+       }
+      ]
+     },
+     "name": {
+      "nodes": [
+       {
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "value": "Claim reduction of public or publicly guaranteed external debt, by creditor"
+       }
+      ]
+     },
+     "observationProperties": {
+      "nodes": [
+       {
+        "dcid": "financingProvider",
+        "name": "financing provider",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Property"
+        ]
+       },
+       {
+        "dcid": "financingRecipient",
+        "name": "financing recipient",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Property"
+        ]
+       }
+      ]
+     },
+     "populationType": {
+      "nodes": [
+       {
+        "dcid": "FinancialFlow",
+        "name": "financial flow",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Class"
+        ]
+       }
+      ]
+     },
+     "sourceIndicatorCode": {
+      "nodes": [
+       {
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "value": "DT.DFR.DPPG.CD"
+       }
+      ]
+     },
+     "statType": {
+      "nodes": [
+       {
+        "dcid": "measuredValue",
+        "name": "measuredValue",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Property"
+        ]
+       }
+      ]
+     },
+     "typeOf": {
+      "nodes": [
+       {
+        "dcid": "StatisticalVariable",
+        "name": "StatisticalVariable",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Class"
+        ]
+       }
+      ]
+     }
+    }
+   },
+   "Amount_FinancialFlow_Disbursement_DebtInstrument_IDSConcessional_Nominal": {
+    "arcs": {
+     "constraintProperties": {
+      "nodes": [
+       {
+        "dcid": "financialFlowType",
+        "name": "financial flow type",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Property"
+        ]
+       },
+       {
+        "dcid": "financingResource",
+        "name": "financing resource",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Property"
+        ]
+       },
+       {
+        "dcid": "idsConcessionality",
+        "name": "IDS concessionality",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Property"
+        ]
+       },
+       {
+        "dcid": "sourceIndicatorCode",
+        "name": "source indicator code",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Property"
+        ]
+       }
+      ]
+     },
+     "description": {
+      "nodes": [
+       {
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "value": "PPG, IDA (DIS)"
+       }
+      ]
+     },
+     "financialFlowType": {
+      "nodes": [
+       {
+        "dcid": "Disbursement",
+        "name": "disbursement",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "FinancialFlowTypeEnum"
+        ]
+       }
+      ]
+     },
+     "financingResource": {
+      "nodes": [
+       {
+        "dcid": "DebtInstrument",
+        "name": "debt instrument",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "FinancingResourceEnum"
+        ]
+       }
+      ]
+     },
+     "idsConcessionality": {
+      "nodes": [
+       {
+        "dcid": "IDSConcessional",
+        "name": "concessional (IDS concessionality)",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "IDSConcessionalityEnum"
+        ]
+       }
+      ]
+     },
+     "measuredProperty": {
+      "nodes": [
+       {
+        "dcid": "amount",
+        "name": "amount",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Property"
+        ]
+       }
+      ]
+     },
+     "measurementQualifier": {
+      "nodes": [
+       {
+        "dcid": "Nominal",
+        "name": "Nominal",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "EconomicMetricEnum"
+        ]
+       }
+      ]
+     },
+     "name": {
+      "nodes": [
+       {
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "value": "Disbursements on concessional external debt (debt instrument)"
+       }
+      ]
+     },
+     "observationProperties": {
+      "nodes": [
+       {
+        "dcid": "financingProvider",
+        "name": "financing provider",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Property"
+        ]
+       },
+       {
+        "dcid": "financingRecipient",
+        "name": "financing recipient",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Property"
+        ]
+       }
+      ]
+     },
+     "populationType": {
+      "nodes": [
+       {
+        "dcid": "FinancialFlow",
+        "name": "financial flow",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Class"
+        ]
+       }
+      ]
+     },
+     "sourceIndicatorCode": {
+      "nodes": [
+       {
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "value": "DT.DIS.MIDA.CD"
+       }
+      ]
+     },
+     "statType": {
+      "nodes": [
+       {
+        "dcid": "measuredValue",
+        "name": "measuredValue",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Property"
+        ]
+       }
+      ]
+     },
+     "typeOf": {
+      "nodes": [
+       {
+        "dcid": "StatisticalVariable",
+        "name": "StatisticalVariable",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Class"
+        ]
+       }
+      ]
+     }
+    }
+   },
+   "Amount_FinancialFlow_Disbursement_IDSCreditorTypeBLAT_IDSDebtorTypeCB_Nominal": {
+    "arcs": {
+     "constraintProperties": {
+      "nodes": [
+       {
+        "dcid": "financialFlowType",
+        "name": "financial flow type",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Property"
+        ]
+       },
+       {
+        "dcid": "idsCreditorType",
+        "name": "IDS creditor type",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Property"
+        ]
+       },
+       {
+        "dcid": "idsDebtorType",
+        "name": "IDS debtor type",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Property"
+        ]
+       },
+       {
+        "dcid": "sourceIndicatorCode",
+        "name": "source indicator code",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Property"
+        ]
+       }
+      ]
+     },
+     "description": {
+      "nodes": [
+       {
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "value": "CB, bilateral (DIS)"
+       }
+      ]
+     },
+     "financialFlowType": {
+      "nodes": [
+       {
+        "dcid": "Disbursement",
+        "name": "disbursement",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "FinancialFlowTypeEnum"
+        ]
+       }
+      ]
+     },
+     "idsCreditorType": {
+      "nodes": [
+       {
+        "dcid": "IDSCreditorTypeBLAT",
+        "name": "bilateral (IDS creditor type)",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "IDSCreditorTypeEnum"
+        ]
+       }
+      ]
+     },
+     "idsDebtorType": {
+      "nodes": [
+       {
+        "dcid": "IDSDebtorTypeCB",
+        "name": "central bank (IDS debtor type)",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "IDSDebtorTypeEnum"
+        ]
+       }
+      ]
+     },
+     "measuredProperty": {
+      "nodes": [
+       {
+        "dcid": "amount",
+        "name": "amount",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Property"
+        ]
+       }
+      ]
+     },
+     "measurementQualifier": {
+      "nodes": [
+       {
+        "dcid": "Nominal",
+        "name": "Nominal",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "EconomicMetricEnum"
+        ]
+       }
+      ]
+     },
+     "name": {
+      "nodes": [
+       {
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "value": "Disbursements on external debt owed by the central bank to bilateral creditors"
+       }
+      ]
+     },
+     "observationProperties": {
+      "nodes": [
+       {
+        "dcid": "financingRecipient",
+        "name": "financing recipient",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Property"
+        ]
+       }
+      ]
+     },
+     "populationType": {
+      "nodes": [
+       {
+        "dcid": "FinancialFlow",
+        "name": "financial flow",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Class"
+        ]
+       }
+      ]
+     },
+     "sourceIndicatorCode": {
+      "nodes": [
+       {
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "value": "DT.DIS.BLAT.CB.CD"
+       }
+      ]
+     },
+     "statType": {
+      "nodes": [
+       {
+        "dcid": "measuredValue",
+        "name": "measuredValue",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Property"
+        ]
+       }
+      ]
+     },
+     "typeOf": {
+      "nodes": [
+       {
+        "dcid": "StatisticalVariable",
+        "name": "StatisticalVariable",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Class"
+        ]
+       }
+      ]
+     }
+    }
+   },
+   "Mean_InterestRate_FinancialObligation_Commitment_IDSCreditorTypeOFFT": {
+    "arcs": {
+     "constraintProperties": {
+      "nodes": [
+       {
+        "dcid": "financialObligationType",
+        "name": "financial obligation type",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Property"
+        ]
+       },
+       {
+        "dcid": "idsCreditorType",
+        "name": "IDS creditor type",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Property"
+        ]
+       },
+       {
+        "dcid": "sourceIndicatorCode",
+        "name": "source indicator code",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Property"
+        ]
+       }
+      ]
+     },
+     "description": {
+      "nodes": [
+       {
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "value": "Average interest on new external debt commitments, official (%)"
+       }
+      ]
+     },
+     "financialObligationType": {
+      "nodes": [
+       {
+        "dcid": "Commitment",
+        "name": "commitment",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "FinancialObligationTypeEnum"
+        ]
+       }
+      ]
+     },
+     "idsCreditorType": {
+      "nodes": [
+       {
+        "dcid": "IDSCreditorTypeOFFT",
+        "name": "official creditors (IDS creditor type)",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "IDSCreditorTypeEnum"
+        ]
+       }
+      ]
+     },
+     "measuredProperty": {
+      "nodes": [
+       {
+        "dcid": "interestRate",
+        "name": "interestRate",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Property"
+        ]
+       }
+      ]
+     },
+     "name": {
+      "nodes": [
+       {
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "value": "Average interest rate on new commitments of external debt to official creditors (%)"
+       }
+      ]
+     },
+     "observationProperties": {
+      "nodes": [
+       {
+        "dcid": "financingRecipient",
+        "name": "financing recipient",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Property"
+        ]
+       }
+      ]
+     },
+     "populationType": {
+      "nodes": [
+       {
+        "dcid": "FinancialObligation",
+        "name": "financial obligation",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Class"
+        ]
+       }
+      ]
+     },
+     "sourceIndicatorCode": {
+      "nodes": [
+       {
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "value": "DT.INR.OFFT"
+       }
+      ]
+     },
+     "statType": {
+      "nodes": [
+       {
+        "dcid": "meanValue",
+        "name": "meanValue",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Property"
+        ]
+       }
+      ]
+     },
+     "typeOf": {
+      "nodes": [
+       {
+        "dcid": "StatisticalVariable",
+        "name": "StatisticalVariable",
+        "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+        "types": [
+         "Class"
+        ]
+       }
+      ]
+     }
+    }
+   }
+  }
+ },
+ "source": "Spanner dev-fin-observatory/dfo-dev-dc-instance/dfo-dev-dc-db Edge LEFT JOIN Node at 2026-10-19T06:12:24.682599+00:00; dev mixer POST /v2/node ->* recorded 2026-10-19",
+ "spanner_rows": [
+  {
+   "name": "financial flow type",
+   "object_id": "financialFlowType",
+   "predicate": "constraintProperties",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Buyback_PublicOrPubliclyGuaranteed_Nominal",
+   "types": [
+    "Property"
+   ],
+   "value": "financialFlowType"
+  },
+  {
+   "name": "guarantee status",
+   "object_id": "guaranteeStatus",
+   "predicate": "constraintProperties",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Buyback_PublicOrPubliclyGuaranteed_Nominal",
+   "types": [
+    "Property"
+   ],
+   "value": "guaranteeStatus"
+  },
+  {
+   "name": "source indicator code",
+   "object_id": "sourceIndicatorCode",
+   "predicate": "constraintProperties",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Buyback_PublicOrPubliclyGuaranteed_Nominal",
+   "types": [
+    "Property"
+   ],
+   "value": "sourceIndicatorCode"
+  },
+  {
+   "name": "",
+   "object_id": "Debt buyback:q/qz+yXpjg2B1sxVo1po8j2QSbiftcbPYv5tWOADHX4=",
+   "predicate": "description",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Buyback_PublicOrPubliclyGuaranteed_Nominal",
+   "types": [],
+   "value": "Debt buyback"
+  },
+  {
+   "name": "buyback",
+   "object_id": "Buyback",
+   "predicate": "financialFlowType",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Buyback_PublicOrPubliclyGuaranteed_Nominal",
+   "types": [
+    "FinancialFlowTypeEnum"
+   ],
+   "value": "Buyback"
+  },
+  {
+   "name": "public or publicly guaranteed",
+   "object_id": "PublicOrPubliclyGuaranteed",
+   "predicate": "guaranteeStatus",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Buyback_PublicOrPubliclyGuaranteed_Nominal",
+   "types": [
+    "GuaranteeStatusEnum"
+   ],
+   "value": "PublicOrPubliclyGuaranteed"
+  },
+  {
+   "name": null,
+   "object_id": "amount",
+   "predicate": "measuredProperty",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Buyback_PublicOrPubliclyGuaranteed_Nominal",
+   "types": null,
+   "value": null
+  },
+  {
+   "name": null,
+   "object_id": "Nominal",
+   "predicate": "measurementQualifier",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Buyback_PublicOrPubliclyGuaranteed_Nominal",
+   "types": null,
+   "value": null
+  },
+  {
+   "name": "",
+   "object_id": "Buyback of publi:Ip4eeSjucOiQ5tj8hR9/mgvPTCA40mmf9x1KTs8pziA=",
+   "predicate": "name",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Buyback_PublicOrPubliclyGuaranteed_Nominal",
+   "types": [],
+   "value": "Buyback of public or publicly guaranteed external debt"
+  },
+  {
+   "name": "financing recipient",
+   "object_id": "financingRecipient",
+   "predicate": "observationProperties",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Buyback_PublicOrPubliclyGuaranteed_Nominal",
+   "types": [
+    "Property"
+   ],
+   "value": "financingRecipient"
+  },
+  {
+   "name": "financial flow",
+   "object_id": "FinancialFlow",
+   "predicate": "populationType",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Buyback_PublicOrPubliclyGuaranteed_Nominal",
+   "types": [
+    "Class"
+   ],
+   "value": "FinancialFlow"
+  },
+  {
+   "name": "",
+   "object_id": "DT.DSB.DPPG.CD:impaTl17rWt+rbHUTdWQSuUDjXqT0rp33NFydvOjC3w=",
+   "predicate": "sourceIndicatorCode",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Buyback_PublicOrPubliclyGuaranteed_Nominal",
+   "types": [],
+   "value": "DT.DSB.DPPG.CD"
+  },
+  {
+   "name": null,
+   "object_id": "measuredValue",
+   "predicate": "statType",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Buyback_PublicOrPubliclyGuaranteed_Nominal",
+   "types": null,
+   "value": null
+  },
+  {
+   "name": "StatisticalVariable",
+   "object_id": "StatisticalVariable",
+   "predicate": "typeOf",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Buyback_PublicOrPubliclyGuaranteed_Nominal",
+   "types": [
+    "Class"
+   ],
+   "value": "StatisticalVariable"
+  },
+  {
+   "name": "financial flow type",
+   "object_id": "financialFlowType",
+   "predicate": "constraintProperties",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_ClaimReduction_PublicOrPubliclyGuaranteed_ByCreditor_Nominal",
+   "types": [
+    "Property"
+   ],
+   "value": "financialFlowType"
+  },
+  {
+   "name": "guarantee status",
+   "object_id": "guaranteeStatus",
+   "predicate": "constraintProperties",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_ClaimReduction_PublicOrPubliclyGuaranteed_ByCreditor_Nominal",
+   "types": [
+    "Property"
+   ],
+   "value": "guaranteeStatus"
+  },
+  {
+   "name": "source indicator code",
+   "object_id": "sourceIndicatorCode",
+   "predicate": "constraintProperties",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_ClaimReduction_PublicOrPubliclyGuaranteed_ByCreditor_Nominal",
+   "types": [
+    "Property"
+   ],
+   "value": "sourceIndicatorCode"
+  },
+  {
+   "name": "",
+   "object_id": "Debt forgiveness:zUviytMvy2QwzQp8Md2V/XsW9Omr6yOq2MyMueha55Y=",
+   "predicate": "description",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_ClaimReduction_PublicOrPubliclyGuaranteed_ByCreditor_Nominal",
+   "types": [],
+   "value": "Debt forgiveness or reduction"
+  },
+  {
+   "name": "claim reduction",
+   "object_id": "ClaimReduction",
+   "predicate": "financialFlowType",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_ClaimReduction_PublicOrPubliclyGuaranteed_ByCreditor_Nominal",
+   "types": [
+    "FinancialFlowTypeEnum"
+   ],
+   "value": "ClaimReduction"
+  },
+  {
+   "name": "public or publicly guaranteed",
+   "object_id": "PublicOrPubliclyGuaranteed",
+   "predicate": "guaranteeStatus",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_ClaimReduction_PublicOrPubliclyGuaranteed_ByCreditor_Nominal",
+   "types": [
+    "GuaranteeStatusEnum"
+   ],
+   "value": "PublicOrPubliclyGuaranteed"
+  },
+  {
+   "name": null,
+   "object_id": "amount",
+   "predicate": "measuredProperty",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_ClaimReduction_PublicOrPubliclyGuaranteed_ByCreditor_Nominal",
+   "types": null,
+   "value": null
+  },
+  {
+   "name": null,
+   "object_id": "Nominal",
+   "predicate": "measurementQualifier",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_ClaimReduction_PublicOrPubliclyGuaranteed_ByCreditor_Nominal",
+   "types": null,
+   "value": null
+  },
+  {
+   "name": "",
+   "object_id": "Claim reduction :DkjyY45tFjTG7IxWL5nlsMUkR5HhK51dsUPTOj76oHM=",
+   "predicate": "name",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_ClaimReduction_PublicOrPubliclyGuaranteed_ByCreditor_Nominal",
+   "types": [],
+   "value": "Claim reduction of public or publicly guaranteed external debt, by creditor"
+  },
+  {
+   "name": "financing provider",
+   "object_id": "financingProvider",
+   "predicate": "observationProperties",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_ClaimReduction_PublicOrPubliclyGuaranteed_ByCreditor_Nominal",
+   "types": [
+    "Property"
+   ],
+   "value": "financingProvider"
+  },
+  {
+   "name": "financing recipient",
+   "object_id": "financingRecipient",
+   "predicate": "observationProperties",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_ClaimReduction_PublicOrPubliclyGuaranteed_ByCreditor_Nominal",
+   "types": [
+    "Property"
+   ],
+   "value": "financingRecipient"
+  },
+  {
+   "name": "financial flow",
+   "object_id": "FinancialFlow",
+   "predicate": "populationType",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_ClaimReduction_PublicOrPubliclyGuaranteed_ByCreditor_Nominal",
+   "types": [
+    "Class"
+   ],
+   "value": "FinancialFlow"
+  },
+  {
+   "name": "",
+   "object_id": "DT.DFR.DPPG.CD:Z+5ADr7D9TvK4U4jJGhsz5J/RpEKLGJyEgIkxbitlK4=",
+   "predicate": "sourceIndicatorCode",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_ClaimReduction_PublicOrPubliclyGuaranteed_ByCreditor_Nominal",
+   "types": [],
+   "value": "DT.DFR.DPPG.CD"
+  },
+  {
+   "name": null,
+   "object_id": "measuredValue",
+   "predicate": "statType",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_ClaimReduction_PublicOrPubliclyGuaranteed_ByCreditor_Nominal",
+   "types": null,
+   "value": null
+  },
+  {
+   "name": "StatisticalVariable",
+   "object_id": "StatisticalVariable",
+   "predicate": "typeOf",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_ClaimReduction_PublicOrPubliclyGuaranteed_ByCreditor_Nominal",
+   "types": [
+    "Class"
+   ],
+   "value": "StatisticalVariable"
+  },
+  {
+   "name": "financial flow type",
+   "object_id": "financialFlowType",
+   "predicate": "constraintProperties",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Disbursement_DebtInstrument_IDSConcessional_Nominal",
+   "types": [
+    "Property"
+   ],
+   "value": "financialFlowType"
+  },
+  {
+   "name": "financing resource",
+   "object_id": "financingResource",
+   "predicate": "constraintProperties",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Disbursement_DebtInstrument_IDSConcessional_Nominal",
+   "types": [
+    "Property"
+   ],
+   "value": "financingResource"
+  },
+  {
+   "name": "IDS concessionality",
+   "object_id": "idsConcessionality",
+   "predicate": "constraintProperties",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Disbursement_DebtInstrument_IDSConcessional_Nominal",
+   "types": [
+    "Property"
+   ],
+   "value": "idsConcessionality"
+  },
+  {
+   "name": "source indicator code",
+   "object_id": "sourceIndicatorCode",
+   "predicate": "constraintProperties",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Disbursement_DebtInstrument_IDSConcessional_Nominal",
+   "types": [
+    "Property"
+   ],
+   "value": "sourceIndicatorCode"
+  },
+  {
+   "name": "",
+   "object_id": "PPG, IDA (DIS):zw3BuMv61oKEsBPeMhfA+ab7YfOn5p3K9RB/XSh9mdA=",
+   "predicate": "description",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Disbursement_DebtInstrument_IDSConcessional_Nominal",
+   "types": [],
+   "value": "PPG, IDA (DIS)"
+  },
+  {
+   "name": "disbursement",
+   "object_id": "Disbursement",
+   "predicate": "financialFlowType",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Disbursement_DebtInstrument_IDSConcessional_Nominal",
+   "types": [
+    "FinancialFlowTypeEnum"
+   ],
+   "value": "Disbursement"
+  },
+  {
+   "name": "debt instrument",
+   "object_id": "DebtInstrument",
+   "predicate": "financingResource",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Disbursement_DebtInstrument_IDSConcessional_Nominal",
+   "types": [
+    "FinancingResourceEnum"
+   ],
+   "value": "DebtInstrument"
+  },
+  {
+   "name": "concessional (IDS concessionality)",
+   "object_id": "IDSConcessional",
+   "predicate": "idsConcessionality",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Disbursement_DebtInstrument_IDSConcessional_Nominal",
+   "types": [
+    "IDSConcessionalityEnum"
+   ],
+   "value": "IDSConcessional"
+  },
+  {
+   "name": null,
+   "object_id": "amount",
+   "predicate": "measuredProperty",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Disbursement_DebtInstrument_IDSConcessional_Nominal",
+   "types": null,
+   "value": null
+  },
+  {
+   "name": null,
+   "object_id": "Nominal",
+   "predicate": "measurementQualifier",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Disbursement_DebtInstrument_IDSConcessional_Nominal",
+   "types": null,
+   "value": null
+  },
+  {
+   "name": "",
+   "object_id": "Disbursements on:yOqp1bizaLi/yJaNvf6nyjr/DSBQ7mCr7ZEi/hNAjRg=",
+   "predicate": "name",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Disbursement_DebtInstrument_IDSConcessional_Nominal",
+   "types": [],
+   "value": "Disbursements on concessional external debt (debt instrument)"
+  },
+  {
+   "name": "financing provider",
+   "object_id": "financingProvider",
+   "predicate": "observationProperties",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Disbursement_DebtInstrument_IDSConcessional_Nominal",
+   "types": [
+    "Property"
+   ],
+   "value": "financingProvider"
+  },
+  {
+   "name": "financing recipient",
+   "object_id": "financingRecipient",
+   "predicate": "observationProperties",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Disbursement_DebtInstrument_IDSConcessional_Nominal",
+   "types": [
+    "Property"
+   ],
+   "value": "financingRecipient"
+  },
+  {
+   "name": "financial flow",
+   "object_id": "FinancialFlow",
+   "predicate": "populationType",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Disbursement_DebtInstrument_IDSConcessional_Nominal",
+   "types": [
+    "Class"
+   ],
+   "value": "FinancialFlow"
+  },
+  {
+   "name": "",
+   "object_id": "DT.DIS.MIDA.CD:3aA5irJEoVWijzAe7QhlqvzBy48xi0nKXjYvhgQYTyY=",
+   "predicate": "sourceIndicatorCode",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Disbursement_DebtInstrument_IDSConcessional_Nominal",
+   "types": [],
+   "value": "DT.DIS.MIDA.CD"
+  },
+  {
+   "name": null,
+   "object_id": "measuredValue",
+   "predicate": "statType",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Disbursement_DebtInstrument_IDSConcessional_Nominal",
+   "types": null,
+   "value": null
+  },
+  {
+   "name": "StatisticalVariable",
+   "object_id": "StatisticalVariable",
+   "predicate": "typeOf",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Disbursement_DebtInstrument_IDSConcessional_Nominal",
+   "types": [
+    "Class"
+   ],
+   "value": "StatisticalVariable"
+  },
+  {
+   "name": "financial flow type",
+   "object_id": "financialFlowType",
+   "predicate": "constraintProperties",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Disbursement_IDSCreditorTypeBLAT_IDSDebtorTypeCB_Nominal",
+   "types": [
+    "Property"
+   ],
+   "value": "financialFlowType"
+  },
+  {
+   "name": "IDS creditor type",
+   "object_id": "idsCreditorType",
+   "predicate": "constraintProperties",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Disbursement_IDSCreditorTypeBLAT_IDSDebtorTypeCB_Nominal",
+   "types": [
+    "Property"
+   ],
+   "value": "idsCreditorType"
+  },
+  {
+   "name": "IDS debtor type",
+   "object_id": "idsDebtorType",
+   "predicate": "constraintProperties",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Disbursement_IDSCreditorTypeBLAT_IDSDebtorTypeCB_Nominal",
+   "types": [
+    "Property"
+   ],
+   "value": "idsDebtorType"
+  },
+  {
+   "name": "source indicator code",
+   "object_id": "sourceIndicatorCode",
+   "predicate": "constraintProperties",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Disbursement_IDSCreditorTypeBLAT_IDSDebtorTypeCB_Nominal",
+   "types": [
+    "Property"
+   ],
+   "value": "sourceIndicatorCode"
+  },
+  {
+   "name": "",
+   "object_id": "CB, bilateral (D:/uo7DUAtSz/lc0BYCI2e9dwq/lwVG/Cj4h8MDzGsUTk=",
+   "predicate": "description",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Disbursement_IDSCreditorTypeBLAT_IDSDebtorTypeCB_Nominal",
+   "types": [],
+   "value": "CB, bilateral (DIS)"
+  },
+  {
+   "name": "disbursement",
+   "object_id": "Disbursement",
+   "predicate": "financialFlowType",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Disbursement_IDSCreditorTypeBLAT_IDSDebtorTypeCB_Nominal",
+   "types": [
+    "FinancialFlowTypeEnum"
+   ],
+   "value": "Disbursement"
+  },
+  {
+   "name": "bilateral (IDS creditor type)",
+   "object_id": "IDSCreditorTypeBLAT",
+   "predicate": "idsCreditorType",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Disbursement_IDSCreditorTypeBLAT_IDSDebtorTypeCB_Nominal",
+   "types": [
+    "IDSCreditorTypeEnum"
+   ],
+   "value": "IDSCreditorTypeBLAT"
+  },
+  {
+   "name": "central bank (IDS debtor type)",
+   "object_id": "IDSDebtorTypeCB",
+   "predicate": "idsDebtorType",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Disbursement_IDSCreditorTypeBLAT_IDSDebtorTypeCB_Nominal",
+   "types": [
+    "IDSDebtorTypeEnum"
+   ],
+   "value": "IDSDebtorTypeCB"
+  },
+  {
+   "name": null,
+   "object_id": "amount",
+   "predicate": "measuredProperty",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Disbursement_IDSCreditorTypeBLAT_IDSDebtorTypeCB_Nominal",
+   "types": null,
+   "value": null
+  },
+  {
+   "name": null,
+   "object_id": "Nominal",
+   "predicate": "measurementQualifier",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Disbursement_IDSCreditorTypeBLAT_IDSDebtorTypeCB_Nominal",
+   "types": null,
+   "value": null
+  },
+  {
+   "name": "",
+   "object_id": "Disbursements on:9cdrlKQ9DjmokGU7NBlwq0tgmM2ougu2HEoJ/I2TiZk=",
+   "predicate": "name",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Disbursement_IDSCreditorTypeBLAT_IDSDebtorTypeCB_Nominal",
+   "types": [],
+   "value": "Disbursements on external debt owed by the central bank to bilateral creditors"
+  },
+  {
+   "name": "financing recipient",
+   "object_id": "financingRecipient",
+   "predicate": "observationProperties",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Disbursement_IDSCreditorTypeBLAT_IDSDebtorTypeCB_Nominal",
+   "types": [
+    "Property"
+   ],
+   "value": "financingRecipient"
+  },
+  {
+   "name": "financial flow",
+   "object_id": "FinancialFlow",
+   "predicate": "populationType",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Disbursement_IDSCreditorTypeBLAT_IDSDebtorTypeCB_Nominal",
+   "types": [
+    "Class"
+   ],
+   "value": "FinancialFlow"
+  },
+  {
+   "name": "",
+   "object_id": "DT.DIS.BLAT.CB.C:D7GN6w0eecMCA3XDLCltWG8SwLXA/1FgDv8dPEmDFBQ=",
+   "predicate": "sourceIndicatorCode",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Disbursement_IDSCreditorTypeBLAT_IDSDebtorTypeCB_Nominal",
+   "types": [],
+   "value": "DT.DIS.BLAT.CB.CD"
+  },
+  {
+   "name": null,
+   "object_id": "measuredValue",
+   "predicate": "statType",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Disbursement_IDSCreditorTypeBLAT_IDSDebtorTypeCB_Nominal",
+   "types": null,
+   "value": null
+  },
+  {
+   "name": "StatisticalVariable",
+   "object_id": "StatisticalVariable",
+   "predicate": "typeOf",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Amount_FinancialFlow_Disbursement_IDSCreditorTypeBLAT_IDSDebtorTypeCB_Nominal",
+   "types": [
+    "Class"
+   ],
+   "value": "StatisticalVariable"
+  },
+  {
+   "name": "financial obligation type",
+   "object_id": "financialObligationType",
+   "predicate": "constraintProperties",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Mean_InterestRate_FinancialObligation_Commitment_IDSCreditorTypeOFFT",
+   "types": [
+    "Property"
+   ],
+   "value": "financialObligationType"
+  },
+  {
+   "name": "IDS creditor type",
+   "object_id": "idsCreditorType",
+   "predicate": "constraintProperties",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Mean_InterestRate_FinancialObligation_Commitment_IDSCreditorTypeOFFT",
+   "types": [
+    "Property"
+   ],
+   "value": "idsCreditorType"
+  },
+  {
+   "name": "source indicator code",
+   "object_id": "sourceIndicatorCode",
+   "predicate": "constraintProperties",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Mean_InterestRate_FinancialObligation_Commitment_IDSCreditorTypeOFFT",
+   "types": [
+    "Property"
+   ],
+   "value": "sourceIndicatorCode"
+  },
+  {
+   "name": "",
+   "object_id": "Average interest:mRupGkdQixc4NzCMoFUzaO74XQEpurFSm6CKcePVWoE=",
+   "predicate": "description",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Mean_InterestRate_FinancialObligation_Commitment_IDSCreditorTypeOFFT",
+   "types": [],
+   "value": "Average interest on new external debt commitments, official (%)"
+  },
+  {
+   "name": "commitment",
+   "object_id": "Commitment",
+   "predicate": "financialObligationType",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Mean_InterestRate_FinancialObligation_Commitment_IDSCreditorTypeOFFT",
+   "types": [
+    "FinancialObligationTypeEnum"
+   ],
+   "value": "Commitment"
+  },
+  {
+   "name": "official creditors (IDS creditor type)",
+   "object_id": "IDSCreditorTypeOFFT",
+   "predicate": "idsCreditorType",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Mean_InterestRate_FinancialObligation_Commitment_IDSCreditorTypeOFFT",
+   "types": [
+    "IDSCreditorTypeEnum"
+   ],
+   "value": "IDSCreditorTypeOFFT"
+  },
+  {
+   "name": null,
+   "object_id": "interestRate",
+   "predicate": "measuredProperty",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Mean_InterestRate_FinancialObligation_Commitment_IDSCreditorTypeOFFT",
+   "types": null,
+   "value": null
+  },
+  {
+   "name": "",
+   "object_id": "Average interest:AjRaO8EMqamo3zf9zvCYLTtjDQCM7AmBJTwKwiYI8M4=",
+   "predicate": "name",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Mean_InterestRate_FinancialObligation_Commitment_IDSCreditorTypeOFFT",
+   "types": [],
+   "value": "Average interest rate on new commitments of external debt to official creditors (%)"
+  },
+  {
+   "name": "financing recipient",
+   "object_id": "financingRecipient",
+   "predicate": "observationProperties",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Mean_InterestRate_FinancialObligation_Commitment_IDSCreditorTypeOFFT",
+   "types": [
+    "Property"
+   ],
+   "value": "financingRecipient"
+  },
+  {
+   "name": "financial obligation",
+   "object_id": "FinancialObligation",
+   "predicate": "populationType",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Mean_InterestRate_FinancialObligation_Commitment_IDSCreditorTypeOFFT",
+   "types": [
+    "Class"
+   ],
+   "value": "FinancialObligation"
+  },
+  {
+   "name": "",
+   "object_id": "DT.INR.OFFT:tVynqfpXYT1TjkuagIElzjyhI1isNHOqiS785caPkgE=",
+   "predicate": "sourceIndicatorCode",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Mean_InterestRate_FinancialObligation_Commitment_IDSCreditorTypeOFFT",
+   "types": [],
+   "value": "DT.INR.OFFT"
+  },
+  {
+   "name": null,
+   "object_id": "meanValue",
+   "predicate": "statType",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Mean_InterestRate_FinancialObligation_Commitment_IDSCreditorTypeOFFT",
+   "types": null,
+   "value": null
+  },
+  {
+   "name": "StatisticalVariable",
+   "object_id": "StatisticalVariable",
+   "predicate": "typeOf",
+   "provenance": "provenance/WorldBankInternationalDebtStatistics",
+   "subject_id": "Mean_InterestRate_FinancialObligation_Commitment_IDSCreditorTypeOFFT",
+   "types": [
+    "Class"
+   ],
+   "value": "StatisticalVariable"
+  }
+ ],
+ "variables": [
+  "Amount_FinancialFlow_Buyback_PublicOrPubliclyGuaranteed_Nominal",
+  "Amount_FinancialFlow_ClaimReduction_PublicOrPubliclyGuaranteed_ByCreditor_Nominal",
+  "Amount_FinancialFlow_Disbursement_DebtInstrument_IDSConcessional_Nominal",
+  "Amount_FinancialFlow_Disbursement_IDSCreditorTypeBLAT_IDSDebtorTypeCB_Nominal",
+  "Mean_InterestRate_FinancialObligation_Commitment_IDSCreditorTypeOFFT"
+ ]
+}
