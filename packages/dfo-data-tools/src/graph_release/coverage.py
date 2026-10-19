@@ -2,8 +2,8 @@
 
 `role_map` reads each variable's `observationProperties` from `edges` and names its donor and
 recipient roles by one rule: a variable declaring two roles takes the first in sorted order as
-its donor and must have that role on the origin axis and the second on the destination axis;
-a variable declaring one role holds it on the column of its role's flow axis. `coverage_rows`
+its donor and must have that role on the origin axis and the second on the destination axis.
+A variable declaring one role holds it on the column of its role's flow axis. `coverage_rows`
 turns `series` into the rows the published coverage build holds (`series_coverage.schema`), one
 per series of a variable the role map names: `entity1` is the donor, and the recipient for a
 lone destination-axis role, and `entity2` the recipient of a two-role variable.
@@ -113,8 +113,8 @@ def coverage_rows(series: pa.Table, role_map: RoleMap) -> pa.Table:
     loaded release does.
 
     Raises `PlatformRefusal` with code `missing_role_declaration` for a series whose `entity2`
-    disagrees with its variable's role count: set for a variable outside the role map or
-    declaring one role, absent for one declaring two.
+    disagrees with its variable's role count, set for a variable outside the role map or
+    declaring one role and absent for one declaring two.
     """
     ordered = sorted(role_map)
     variables = pa.array(ordered, pa.string())

@@ -436,7 +436,7 @@ def test_exporter_accepts_a_parent_the_exporting_enumeration_returned():
 # --- Truncation refusals (export_code_system's own typeOf read) ---
 
 
-def test_truncated_typeof_page_raises_systemexit():
+def test_truncated_typeof_page_raises_export_refused():
     graph = _two_system_graph()
     graph.truncate = frozenset({("SysHierEnum", "typeOf")})
     with pytest.raises(ExportRefused, match="truncated"):
@@ -904,7 +904,7 @@ def test_undeclared_constraint_property_is_absent_not_a_placeholder():
     }
 
 
-def test_declared_but_unreadable_constraint_property_raises_systemexit():
+def test_declared_but_unreadable_constraint_property_raises_export_refused():
     # `nettingBasis` is declared, but its forward read has no value.
     graph = _two_system_graph()
     del graph.forward_arcs["SV_Disbursement_Gross"]["nettingBasis"]
@@ -916,7 +916,7 @@ def test_declared_but_unreadable_constraint_property_raises_systemexit():
 # plain dcid indistinguishable from a real one ---
 
 
-def test_unresolved_constraint_value_raises_systemexit():
+def test_unresolved_constraint_value_raises_export_refused():
     # The arc exists but resolves to `UNRESOLVED_NODE`, so export cannot write a valid dcid.
     graph = _two_system_graph()
     graph.forward_arcs["SV_Disbursement_Gross"]["nettingBasis"] = (UNRESOLVED_NODE,)
@@ -926,7 +926,7 @@ def test_unresolved_constraint_value_raises_systemexit():
         export_statvars(graph, ("SV_Disbursement_Gross",))
 
 
-def test_provisional_node_typed_constraint_value_raises_systemexit():
+def test_provisional_node_typed_constraint_value_raises_export_refused():
     # `DanglingStub` resolves as a node whose only type is `ProvisionalNode`.
     graph = _two_system_graph()
     graph.forward_arcs["SV_Disbursement_Gross"]["nettingBasis"] = ("DanglingStub",)
@@ -965,7 +965,7 @@ def test_provisional_node_check_runs_once_batched_across_every_row():
         export_statvars(graph, ("SV_Disbursement_Gross", "SV_Disbursement_NoNetting"))
 
 
-def test_constraint_value_absent_from_graph_raises_systemexit():
+def test_constraint_value_absent_from_graph_raises_export_refused():
     # The value dcid is absent from the graph, unlike a held `ProvisionalNode` stub.
     graph = _two_system_graph()
     graph.forward_arcs["SV_Disbursement_Gross"]["nettingBasis"] = ("TrulyAbsentDcid",)
@@ -976,7 +976,7 @@ def test_constraint_value_absent_from_graph_raises_systemexit():
         export_statvars(graph, ("SV_Disbursement_Gross",))
 
 
-def test_constraint_value_with_no_typeof_arc_raises_systemexit():
+def test_constraint_value_with_no_typeof_arc_raises_export_refused():
     # The graph holds `UntypedStub`, but its node has no `typeOf` arc.
     graph = _two_system_graph()
     graph.forward_arcs["SV_Disbursement_Gross"]["nettingBasis"] = ("UntypedStub",)
@@ -991,7 +991,7 @@ def test_constraint_value_with_no_typeof_arc_raises_systemexit():
 # StatVar rows must carry their own `StatisticalVariable` type.
 
 
-def test_statvar_missing_statistical_variable_type_raises_systemexit():
+def test_statvar_missing_statistical_variable_type_raises_export_refused():
     graph = _two_system_graph()
     graph.forward_arcs["SV_Disbursement_Gross"]["typeOf"] = ("SomeOtherType",)
     with pytest.raises(
@@ -1002,7 +1002,7 @@ def test_statvar_missing_statistical_variable_type_raises_systemexit():
         export_statvars(graph, ("SV_Disbursement_Gross",))
 
 
-def test_statvar_with_no_typeof_arc_at_all_raises_systemexit():
+def test_statvar_with_no_typeof_arc_at_all_raises_export_refused():
     # The fake returns an empty type set for a node without `typeOf`.
     graph = _two_system_graph()
     graph.forward_arcs["SV_Disbursement_Gross"]["typeOf"] = ()
@@ -1031,7 +1031,7 @@ def test_statvar_typed_provisional_alongside_statistical_variable_is_not_refused
     "shape_property",
     ["populationType", "measuredProperty", "statType", "measurementQualifier"],
 )
-def test_multi_valued_shape_field_raises_systemexit(shape_property: str):
+def test_multi_valued_shape_field_raises_export_refused(shape_property: str):
     graph = _two_system_graph()
     graph.forward_arcs["SV_Disbursement_Gross"][shape_property] = ("ValueA", "ValueB")
     with pytest.raises(
@@ -1041,7 +1041,7 @@ def test_multi_valued_shape_field_raises_systemexit(shape_property: str):
         export_statvars(graph, ("SV_Disbursement_Gross",))
 
 
-def test_multi_valued_measurement_denominator_raises_systemexit():
+def test_multi_valued_measurement_denominator_raises_export_refused():
     # The base fixture has no `measurementDenominator` value.
     graph = _two_system_graph()
     graph.forward_arcs["SV_Disbursement_Gross"]["measurementDenominator"] = ("DenomA", "DenomB")
@@ -1065,7 +1065,7 @@ def test_duplicate_identical_shape_value_is_not_refused():
     assert rows[0]["population_type"] == "FinancialFlow"
 
 
-def test_multi_valued_declared_constraint_property_raises_systemexit():
+def test_multi_valued_declared_constraint_property_raises_export_refused():
     graph = _two_system_graph()
     graph.forward_arcs["SV_Disbursement_Gross"]["nettingBasis"] = ("Gross", "Net")
     graph.forward_arcs["Net"] = {"typeOf": ("NettingBasisEnum",)}

@@ -6,9 +6,9 @@ base graph. A release copies only DFO's Spanner, so it carries them as `nodes` r
 `authored`, and the four measure values' descriptions as literal nodes joined by `edges` rows
 under `AUTHORED_PROVENANCE`: 15 nodes and 4 edges.
 
-The values were recorded once from the dev mixer's `/v2/node` reads; the builder never reads
-them live. `graph_release.platform` refuses a build where Spanner gains a row for one of these
-nodes, so a change upstream reaches this module by hand.
+The values were recorded once from the dev mixer's `/v2/node` reads, and the builder takes them from this module. `graph_release.platform` refuses a build
+where Spanner gains a row for one of these nodes, so a change upstream reaches this module by
+hand.
 """
 
 from __future__ import annotations

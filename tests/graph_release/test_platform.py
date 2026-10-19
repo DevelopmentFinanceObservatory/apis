@@ -288,7 +288,7 @@ def _edges(rows: list[tuple[str, ...]]) -> pa.Table:
     )
 
 
-def _with_facet(raw: RawInputs, facet: dict, *, other: dict | None = None) -> RawInputs:
+def _with_facet(raw: RawInputs, facet: dict | None, *, other: dict | None = None) -> RawInputs:
     facets = raw.facets.to_pylist()
     facets[0] = {
         "facet_id": facets[0]["facet_id"],
@@ -316,6 +316,8 @@ _FACET = {"isDcAggregate": False, "provenance": "provenance/OECDDAC1", "unit": "
             ),
             "inconsistent_facet",
         ),
+        (lambda raw: _with_facet(raw, None), "inconsistent_facet"),
+        (lambda raw: _with_facet(raw, {"observationPeriod": "P1Y"}), "inconsistent_facet"),
         (lambda raw: dataclasses.replace(raw, facets=raw.facets.slice(1)), "unknown_facet"),
         (
             lambda raw: dataclasses.replace(
@@ -387,8 +389,9 @@ def test_observation_dates_parse_years_and_months_and_refuse_other_forms(raw):
         "earliest_date",
         pa.array(["2001-Q1"] * summary.num_rows),
     )
-    with pytest.raises(ValueError, match="2001-Q1"):
+    with pytest.raises(PlatformRefusal, match="2001-Q1") as refused:
         build_platform_parts(dataclasses.replace(raw, series_summary=quarters), authored=AUTHORED)
+    assert refused.value.code == "unsupported_observation_period"
 
 
 # ---------------------------------------------------------------- staging

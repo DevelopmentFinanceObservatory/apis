@@ -1,11 +1,11 @@
-"""The DFO layer: built from the platform parts, `Declarations` and the base parties.
+"""The DFO layer, built from the platform parts, `Declarations` and the base parties.
 
 `build_dfo_parts` returns each DFO part's bytes. `declarations` is `declarations_json`.
 `code_index_blocks` is the code index's graph blocks, built by `code_index.export` over
 `ReleaseGraphReader`, a reader over the `edges` and `nodes` parts. Where the export script joins
 a published coverage build, these blocks take each variable's provenances, the listed datasets'
 variables and the parties from `coverage_rows` over `series`, so the code index and coverage
-read one release. The blocks carry no stamp; a reader stamps them from the manifest.
+read one release. The blocks carry no stamp. A reader stamps them from the manifest.
 
 The parties block needs each donor's and recipient's type and name. DFO's Spanner holds them for
 organisations but not for the countries of the base Data Commons graph, which it holds as
@@ -98,24 +98,33 @@ class _Coverage:
 
 
 def base_party_ids(platform: PlatformParts, declarations: Declarations) -> tuple[str, ...]:
-    """The parties of the declared and listed datasets the release does not hold, sorted: the
-    ids `read_base_parties` reads."""
+    """The parties of the declared and listed datasets the release does not hold, sorted. These
+    are the ids `read_base_parties` reads."""
     coverage = _coverage(platform, declarations)
     parties = _parties(coverage, _party_datasets(declarations))
     reader = ReleaseGraphReader(edges=platform.edges, nodes=platform.nodes)
     return tuple(party for party in sorted(parties) if not _release_held(reader, party))
 
 
+class MissingBaseParties(LookupError):
+    """The mixer answered no node for some base parties. Every base party is a node of the base
+    graph, so an empty answer is a fault of the mixer."""
+
+
 def read_base_parties(party_ids: Sequence[str], *, graph: ArcReader) -> bytes:
     """Each party's `typeOf` and `name` as `graph` answers them, as JSON with sorted keys and
-    sorted values: `null` for a party the graph does not hold. A read error propagates."""
+    sorted values. Raises `MissingBaseParties` when `graph` holds no node for a party. A read
+    error propagates."""
     ids = sorted(set(party_ids))
-    arcs = graph.node_arcs_many(ids, properties=list(_PARTY_PROPERTIES))
+    found = graph.node_arcs_many(ids, properties=list(_PARTY_PROPERTIES))
+    answered = {party: arcs for party in ids if (arcs := found.get(party)) is not None}
+    if missing := [party for party in ids if party not in answered]:
+        raise MissingBaseParties(
+            f"the mixer holds no node for {len(missing)} base party(ies): {missing[:5]}"
+        )
     document = {
-        party: None
-        if (found := arcs.get(party)) is None
-        else {prop: sorted(set(found.get(prop, ()))) for prop in _PARTY_PROPERTIES}
-        for party in ids
+        party: {prop: sorted(set(arcs.get(prop, ()))) for prop in _PARTY_PROPERTIES}
+        for party, arcs in answered.items()
     }
     return (json.dumps(document, sort_keys=True, ensure_ascii=False, indent=1) + "\n").encode(
         "utf-8"
@@ -129,9 +138,10 @@ def build_dfo_parts(
     answering the parties the release does not.
 
     Raises `ValueError` for declarations with no role axes, code systems or datasets,
-    and `PlatformRefusal` where `role_map` or `coverage_rows` refuses, or with code
-    `code_index_export_refused` where the code-index export refuses the graph, as for a party
-    neither the release nor `base_parties` answers.
+    and `PlatformRefusal` where `role_map` or `coverage_rows` refuses, with code `dangling_edge`
+    where an edge names a node the `nodes` part lacks, or with code `code_index_export_refused`
+    where the code-index export refuses the graph, as for a party neither the release nor
+    `base_parties` answers.
     """
     empty = [
         name
@@ -221,7 +231,7 @@ def _party_datasets(declarations: Declarations) -> set[str]:
 
 def _release_held(reader: ReleaseGraphReader, party: str) -> bool:
     """Whether `edges` carries the `typeOf` and `name` arcs `export_parties` reads for `party`.
-    A placeholder `Node` row's types and name are not the party's: the mixer answers those
+    A placeholder `Node` row's types and name are not the party's. The mixer answers those
     parties from the base graph."""
     return all(reader.asserts(party, prop) for prop in _PARTY_PROPERTIES)
 
@@ -279,7 +289,8 @@ class ReleaseGraphReader:
     A node is held when it has an edge or its `Node` row carries a name, value or types. A
     target answers as `visible_arcs.mixer_target` names it. A node whose `typeOf` or `name` has
     no edge answers from its `Node` row's types or name, as the mixer does for the nodes DFO
-    authors. Values come distinct and sorted.
+    authors. Values come distinct and sorted. Raises `PlatformRefusal` with code
+    `dangling_edge` for an edge whose subject or object has no `nodes` row.
     """
 
     def __init__(self, *, edges: pa.Table, nodes: pa.Table) -> None:
@@ -325,7 +336,9 @@ class ReleaseGraphReader:
         codes = pc.index_in(column, value_set=value_set)
         if codes.null_count:
             missing = column.filter(pc.is_null(codes)).unique().to_pylist()[:5]
-            raise ValueError(f"edges name nodes the nodes part lacks: {missing}")
+            raise PlatformRefusal(
+                "dangling_edge", f"edges name nodes the nodes part lacks: {missing}"
+            )
         return codes.to_numpy().astype(np.int64)
 
     def _held(self, dcid: str) -> int | None:
@@ -467,6 +480,7 @@ def _strings(column: pa.ChunkedArray) -> pa.Array:
 __all__ = [
     "ArcReader",
     "DfoParts",
+    "MissingBaseParties",
     "ReleaseGraphReader",
     "base_party_ids",
     "build_dfo_parts",

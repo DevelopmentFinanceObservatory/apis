@@ -16,6 +16,7 @@ The samples are seeded, so one seed and one release always check the same variab
 from __future__ import annotations
 
 import hashlib
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -25,6 +26,7 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 
+from dc_graph import parse_arcs
 from dc_graph.errors import GraphCapExceededError, GraphReadError
 from dc_graph.visible_arcs import mixer_target, visible_mask
 from dc_sdmx.errors import SdmxClientError, SdmxQueryError
@@ -33,7 +35,7 @@ from dfo_platform.roles import RoleAxis
 from graph_release.coverage import coverage_rows, role_map
 from graph_release.declarations import Declarations
 from graph_release.dfo import build_dfo_parts
-from graph_release.format import DFO, PLATFORM, LoadedRelease, StagedPart, conform_part
+from graph_release.format import DFO, PLATFORM, LoadedRelease, StagedPart, join_part_files
 from graph_release.platform import PlatformParts, PlatformRefusal
 from series_coverage.schema import VARIABLE_COLUMN
 
@@ -106,8 +108,8 @@ class GateUnavailable:
 
 @dataclass(frozen=True)
 class GateResult:
-    """One gate run. A finding decides the outcome when there is one, since it is deterministic;
-    otherwise any unavailable entry does."""
+    """One gate run. A finding decides the outcome when there is one, since it is deterministic.
+    Otherwise any unavailable entry does."""
 
     findings: tuple[GateFinding, ...] = ()
     unavailable: tuple[GateUnavailable, ...] = ()
@@ -152,12 +154,16 @@ def refused(refusal: PlatformRefusal) -> GateResult:
 
 
 class ArcReader(Protocol):
-    """`dc_graph.GraphClient.node_arcs_many`: each dcid's values per property, `None` for a node
-    the graph does not hold."""
+    """`dc_graph.GraphClient`'s arc reads. `node_arcs_many` answers each dcid's values per
+    property, `None` for a node the graph does not hold; `node_arcs_batch` answers each dcid's
+    `->*` arcs in the `/v2/node` wire form, `{property: {"nodes": [{"dcid" or "value": ...}]}}`,
+    `None` for a node with none."""
 
     def node_arcs_many(
         self, dcids: Sequence[str], *, properties: Sequence[str]
     ) -> Mapping[str, Mapping[str, tuple[str, ...]] | None]: ...
+
+    def node_arcs_batch(self, dcids: list[str]) -> Mapping[str, Mapping[str, object] | None]: ...
 
 
 class SeriesReader(Protocol):
@@ -184,8 +190,8 @@ def run_gate(
     """Gates the release whose files are `staged`.
 
     The platform parts are read back from the staged files, so every check covers the bytes
-    that would be uploaded. `previous` is the serving release, `None` when none is published;
-    the mixer differential reads the variables whose arcs changed since it. `seed` (the import
+    that would be uploaded. `previous` is the serving release, `None` when none is published.
+    The mixer differential reads the variables whose arcs changed since it. `seed` (the import
     stamp) fixes the samples.
     """
     parts = read_back(staged)
@@ -206,8 +212,8 @@ def run_gate(
 
 
 def read_back(staged: Sequence[StagedPart]) -> PlatformParts:
-    """The platform parts as the staged files hold them, each part's files joined and put back
-    in key order."""
+    """The platform parts as the staged files hold them, each part's files mapped, joined and
+    put back in key order without decoding a dictionary (`join_part_files`)."""
     files: dict[str, list[pa.Table]] = {}
     for part in staged:
         if part.ref.layer == PLATFORM:
@@ -215,7 +221,7 @@ def read_back(staged: Sequence[StagedPart]) -> PlatformParts:
             files.setdefault(part.ref.name, []).append(table)
     return PlatformParts(
         **{
-            name: conform_part(pa.concat_tables(files[name]), name=name)
+            name: join_part_files(files[name], name=name)
             for name in ("series", "facets", "edges", "nodes", "imports")
         }
     )
@@ -232,7 +238,7 @@ def check_invariants(
     variable, and no dangling edge.
 
     The rest of the subset chain, variables with arcs within the live variables, needs the
-    live variables, which come from `TimeSeries` and which no platform part holds: `series`
+    live variables, which come from `TimeSeries` and which no platform part holds. `series`
     lacks a live variable with no observation, and `edges` holds the arcs of the second-hop
     variables the closure keeps."""
     findings: list[GateFinding] = []
@@ -297,7 +303,7 @@ def check_invariants(
 
 
 def _observation_properties(edges: pa.Table) -> dict[str, tuple[str, ...]]:
-    """Each variable's `observationProperties` values, sorted: the order of its series'
+    """Each variable's `observationProperties` values, sorted into the order of its series'
     entities."""
     rows = edges.filter(pc.equal(_decoded(edges["predicate"]), pa.scalar(_OBSERVATION_PROPERTIES)))
     found: dict[str, set[str]] = {}
@@ -366,9 +372,15 @@ def check_mixer(
     variables whose arcs changed since the previous release's `previous_edges`, every variable
     counting as changed when it is `None`, plus `MIXER_RANDOM` others.
 
-    Variables with an authored `nodes` row are left out: the mixer answers them from the base
-    graph, which the release does not copy. A variable the mixer does not hold is a mismatch. A
-    read error is unavailable.
+    The comparison covers the properties the sampled release arcs hold. Variables with an
+    authored `nodes` row are left out: the mixer answers them from the base graph, which the
+    release does not copy. The variables the mixer omits are read once more, and a second
+    omission is a mismatch. A read error is unavailable.
+
+    The `mixer_only` report counts, per property, the sampled variables whose `->*` arcs hold a
+    property outside the compared ones with a DFO-visible target. It decides nothing, since
+    `->*` also answers arcs from the base graph the release does not copy; a failed read is
+    reported as `unread`.
     """
     edges = visible_edges(parts.edges)
     candidates = dfo_variables(parts)
@@ -380,19 +392,22 @@ def check_mixer(
     changed = _seeded(changed, seed)[:MIXER_CHANGED_CAP]
     rest = _seeded(sorted(set(candidates) - set(changed)), seed)[:MIXER_RANDOM]
     sample = sorted([*changed, *rest])
-    reports = {"mixer": {"changed": len(changed), "sampled": len(sample)}}
+    reports: dict[str, object] = {"mixer": {"changed": len(changed), "sampled": len(sample)}}
     if not sample:
         return GateResult(reports=reports)
 
     release = release_arcs(edges, parts.nodes, sample)
     properties = sorted({prop for arcs in release.values() for prop in arcs})
     try:
-        served = graph.node_arcs_many(sample, properties=properties)
+        served = dict(graph.node_arcs_many(sample, properties=properties))
+        if omitted := [variable for variable in sample if served.get(variable) is None]:
+            served.update(graph.node_arcs_many(omitted, properties=properties))
     except (GraphReadError, GraphCapExceededError) as exc:
         return GateResult(
             unavailable=(GateUnavailable(Dependency.MIXER, f"node_arcs_many failed: {exc}"),),
             reports=reports,
         )
+    reports["mixer_only"] = _mixer_only(graph, sample, compared=set(properties))
 
     mismatched = []
     for variable in sample:
@@ -420,6 +435,23 @@ def check_mixer(
         ),
         reports=reports,
     )
+
+
+def _mixer_only(graph: ArcReader, sample: list[str], *, compared: set[str]) -> dict[str, object]:
+    """Per property outside `compared`, how many of `sample` the mixer's `->*` arcs give a
+    DFO-visible target for."""
+    try:
+        served = graph.node_arcs_batch(sample)
+    except (GraphReadError, GraphCapExceededError) as exc:
+        return {"unread": str(exc)}
+    found: Counter[str] = Counter()
+    for arcs in served.values():
+        if not arcs:
+            continue
+        # `parse_arcs` keeps only the targets `dfo_visible` keeps.
+        extra = parse_arcs(dict(arcs), [prop for prop in arcs if prop not in compared])
+        found.update(prop for prop, values in extra.items() if values)
+    return dict(sorted(found.items()))
 
 
 def visible_edges(edges: pa.Table) -> pa.Table:
@@ -463,7 +495,7 @@ def release_arcs(
 
 
 def dfo_variables(parts: PlatformParts) -> list[str]:
-    """The live variables, less those with an authored `nodes` row, sorted: the variables whose
+    """The live variables, less those with an authored `nodes` row, sorted. These are the variables whose
     arcs the release copies from DFO's Spanner."""
     nodes = parts.nodes
     return _missing(

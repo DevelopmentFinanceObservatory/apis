@@ -9,7 +9,7 @@ The graph release is one build of DFO's Data Commons graph and the DFO layer per
 - `format-1/current.json`, the pointer: `{"release_id": ..., "hold": null}`. The job moves it last, conditional on the version it read, so it is the commit point.
 - `manifests/<release_id>.json`, one per release, create-only. The release id hashes the part hashes, the import execution id, the DC serving revision and the format.
 - `parts/<sha256>.arrow` and `.json.gz`, named by content and shared between releases.
-- `lease.json`, the build lease, and `builder_state.json`, the last built and last failed inputs and the shadow wait.
+- `lease.json`, the build lease, and `builder_state.json`: the last built inputs and the release they built, the last failed inputs, the last unavailable inputs and when, and the shadow wait.
 
 ## What a tick does
 
@@ -17,38 +17,47 @@ Cloud Scheduler starts the job every 2 minutes. Each tick:
 
 1. Reads the import key (`IngestionLock` and `IngestionHistory`) in one read-only snapshot, and exits unless the lock is free and the newest row is the newest success.
 2. Reads the DC service's serving revisions through the Cloud Run Admin API, and exits until every one was created after the import completed. The ingestion workflow restarts the DC service after each import, and the mixer reads Spanner as of the last ingestion it saw at start.
-3. Forms the inputs: the import's execution id, the serving revision, the format, a hash of the builder's source (`graph_release.job.BUILDER_MODULES`) and the declarations hash. It exits when they equal the last built or last failed inputs in `builder_state.json`, or when the pointer is held. With `GRAPH_RELEASE_SHADOW=1` it exits `graph_release_shadow_waiting` until the published coverage build's `stamp` and the origin catalogue's `dfo_fingerprint` both equal the import's stamp.
+3. Forms the inputs: the import's execution id, the serving revision, the format, a hash of the builder's source (`graph_release.job.BUILDER_MODULES`), the declarations hash and, with `GRAPH_RELEASE_SHADOW=1`, the build ids of the published coverage build and origin catalogue. It exits when they equal the last built inputs and the pointer names the release they built, when they equal the last failed inputs, when the pointer is held, or when they ended unavailable less than 600 seconds ago (outcome `unavailable_backoff`, exit 0, logging the recorded `graph_release_unavailable` line again with `backoff: true`). With shadow on it exits `graph_release_shadow_waiting` until the published coverage build's `stamp` and the origin catalogue's `dfo_fingerprint` both equal the import's stamp, and exits unavailable, naming each comparator that is behind, once it has waited 10800 seconds.
 4. Takes `lease.json` for 1800 seconds, the task timeout, or exits.
 5. Reads every input in one snapshot at the current time, and discards the build when the import key in it differs from step 1's.
 6. Builds the parts, reads the base parties from the mixer, and runs the gate: the invariants, the DFO rebuild from the staged files, the mixer differential, the SDMX counts and, with shadow on, the diff against the coverage build and the origin catalogue.
-7. Re-reads the serving revision and discards the build if it moved. A release id equal to the serving one records the inputs and publishes nothing. Otherwise it uploads the missing parts, writes the manifest and moves the pointer. It prunes while still holding the lease, then releases it.
+7. Re-reads the serving revision and discards the build if it moved. A release id equal to the serving one records the inputs and publishes nothing. Otherwise it uploads the missing parts, writes the manifest and moves the pointer. It prunes while still holding the lease, then releases it. A failed prune logs `graph_release_prune_failed` and a failed lease release a warning. Neither changes the tick's outcome.
 
 Pruning keeps the ten newest manifests, every manifest younger than 24 hours and the pointer's release, and deletes the parts none of them names.
 
 ## Gate outcomes
 
-A finding is deterministic: the same inputs fail the same way. The tick logs `graph_release_gate_failed` with the findings, records the inputs as the last failed build and exits 1. Later ticks skip those inputs (`graph_release_skipped`, reason `inputs_failed`) until the import, the serving revision or the builder changes.
+A finding is deterministic: the same inputs fail the same way. The tick logs `graph_release_gate_failed` with the findings, records the inputs as the last failed build and exits 1. Later ticks skip those inputs (`graph_release_skipped`, reason `inputs_failed`) until the import, the serving revision, the builder, the declarations or, with shadow on, a comparator build changes, or until `graph_release.hold retry` clears them.
 
-An unavailable dependency (Spanner, the Admin API, the mixer, SDMX, the bucket, or a shadow comparator) logs `graph_release_unavailable`, records nothing and exits 1. The next tick retries.
+An unavailable dependency (Spanner, the Admin API, the mixer, SDMX, the bucket, a shadow comparator, or the credentials any of them needs) logs `graph_release_unavailable` and exits 1. A base party the mixer answers with no node counts as the mixer unavailable, since every base party is in the base graph. Once the inputs are formed, the tick records them with the time and the unavailable entries. For the next 600 seconds, ticks with the same inputs build nothing, exit 0 and log the recorded `graph_release_unavailable` line again with `backoff: true`, so the line recurs every tick while the outage lasts. The first tick after that retries.
+
+Any other exception ends the tick with `graph_release_heartbeat` at outcome `error`, naming the exception type, and a traceback. It records nothing, so the next tick builds again.
 
 ## Hold and rollback
 
 ```bash
 uv run python -m graph_release.hold set <release_id>
 uv run python -m graph_release.hold clear
+uv run python -m graph_release.hold retry
 ```
 
-`set` points at a published release and holds it there; the job then exits at step 3 (`graph_release_skipped`, reason `held`). `clear` lifts the hold, leaving the held release serving until the job publishes the next one. Both act on `GRAPH_RELEASE_URI`, or on `--local-dir`.
+`set` points at a published release and holds it there; the job then exits at step 3 (`graph_release_skipped`, reason `held`) and logs no `graph_release_stale`. `clear` lifts the hold. The pointer then no longer names the release the last built inputs built, so the next tick rebuilds, finds that release's manifest, and moves the pointer back to it.
+
+`retry` removes the last failed inputs from `builder_state.json`, so the next tick builds them again. Use it when a finding came from a fault that has since cleared. It logs `graph_release_retry` with the inputs it removed, or `null`.
+
+All three act on `GRAPH_RELEASE_URI`, or on `--local-dir`, and refuse while a build holds the lease.
 
 ## Monitoring
 
-Every tick that completes logs `graph_release_heartbeat` last, with its `outcome`. `graph_release_stale` comes before it while the newest import of any status completed more than 1800 seconds ago and the serving release is not built from it, less any time spent shadow waiting. A failed import never gets a release, so it raises the line until the next success.
+Every tick logs `graph_release_heartbeat` last, with its `outcome`. `graph_release_stale` comes before it while the newest import of any status completed more than 1800 seconds ago and the serving release is not built from it, less up to 10800 seconds spent shadow waiting, unless the pointer is held. A failed import never gets a release, so it raises the line until the next success.
 
-The `infra` repository's `graph_release.tf` alerts on `graph_release_stale` or `graph_release_gate_failed` at once, on `graph_release_unavailable` logged for 15 minutes, and on no heartbeat for 2100 seconds, the task timeout plus one tick. `graph_release_enabled` in the dfo-infra env tfvars switches the Scheduler and both alert policies: false creates the Scheduler paused and the alerts disabled. Set it true once the deployed image carries `graph_release.job`.
+`graph_release_published`, `graph_release_gate_failed` and a `graph_release_unavailable` from a build carry `phases`, which gives each of `reads`, `platform`, `dfo`, `gate`, `shadow` and `publish` that ran its wall time in seconds and the process's peak RSS in bytes when it ended.
+
+The `infra` repository's `graph_release.tf` alerts on `graph_release_stale` or `graph_release_gate_failed` at once, on `graph_release_unavailable` logged for 15 minutes, and on no heartbeat for 2100 seconds, the task timeout plus one tick. The heartbeat metric leaves out outcome `error`, so a tick that crashes on every run raises the no-heartbeat alert. `graph_release_enabled` in the dfo-infra env tfvars switches the Scheduler and both alert policies: false creates the Scheduler paused and the alerts disabled. Set it true once the deployed image carries `graph_release.job`.
 
 ## Running it locally
 
-`--local-dir` publishes under a local directory in place of `GRAPH_RELEASE_URI`. The run needs ADC with read access to the dev Spanner database, the Admin API's `run.services.get` and `run.revisions.get` on the DC service, and the coverage and origin buckets for the shadow diff:
+`--local-dir` publishes under a local directory, overriding `GRAPH_RELEASE_URI`. The run needs ADC with read access to the dev Spanner database, the Admin API's `run.services.get` and `run.revisions.get` on the DC service, and the coverage and origin buckets for the shadow diff:
 
 ```bash
 export GRAPH_RELEASE_SPANNER_PROJECT=dev-fin-observatory

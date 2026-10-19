@@ -1,15 +1,20 @@
-"""Pins or releases the serving graph release, the rollback for a bad one:
+"""Pins or releases the serving graph release, the rollback for a bad one, and
+retries inputs the builder recorded as failed:
 
     python -m graph_release.hold set <release_id>
     python -m graph_release.hold clear
+    python -m graph_release.hold retry
 
 `set` points at a published release and holds it, so the builder leaves the
-pointer alone. `clear` lifts the hold. The held release keeps serving until
-the builder publishes the next one. Both act on `GRAPH_RELEASE_URI`, or on
-`--local-dir`, and take the builder's lease, so pruning cannot delete the
-release a hold names. Both refuse while a build holds the lease, and refuse
-with nothing written once too little of their own lease remains for the
-pointer write to finish inside it.
+pointer alone and raises no stale line. `clear` lifts the hold; the builder's
+next tick republishes the release its newest inputs built. `retry` drops the
+last failed inputs from the builder's state file, so the next tick builds them
+again, as after a transient fault recorded as a finding. All three act on
+`GRAPH_RELEASE_URI`, or on `--local-dir`, and take the builder's lease, so
+pruning cannot delete the release a hold names and no tick reads the state
+file half-written. All three refuse while a build holds the lease. `set` and
+`clear` also refuse, with nothing written, once too little of their own lease
+remains for the pointer write to finish inside it.
 """
 
 from __future__ import annotations
@@ -31,6 +36,7 @@ from artifact_publication.jobs import (
     release_lease,
 )
 from graph_release.format import ReleaseFormatError
+from graph_release.job import clear_failed
 from graph_release.publish import HoldError, clear_hold, hold_release
 
 LEASE_TTL_SECONDS: Final[float] = 900.0
@@ -62,6 +68,7 @@ def main(argv: Sequence[str] | None = None, *, clock: Callable[[], float] = time
     held = commands.add_parser("set", help="point at a release and hold it")
     held.add_argument("release_id")
     commands.add_parser("clear", help="lift the hold")
+    commands.add_parser("retry", help="build the last failed inputs again")
     args = parser.parse_args(argv)
 
     overrides = {"release_uri": args.local_dir.resolve().as_uri()} if args.local_dir else {}
@@ -77,6 +84,9 @@ def main(argv: Sequence[str] | None = None, *, clock: Callable[[], float] = time
         )
         return 1
     try:
+        if args.command == "retry":
+            emit("graph_release_retry", inputs=clear_failed(root))
+            return 0
         if args.command == "set":
             pointer = hold_release(root, args.release_id, write_by=write_by, clock=clock)
         else:

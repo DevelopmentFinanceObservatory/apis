@@ -20,12 +20,15 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 import pytest
+from google.auth.exceptions import RefreshError
 
 from dc_graph import GraphClient
 from dc_graph.errors import GraphReadError
+from dc_graph.visible_arcs import IMPORT_ADDED_CONSTRAINT_PROPERTIES
 from dc_sdmx.errors import SdmxQueryError, SdmxTransportError
 from dc_sdmx.results import SdmxDataResult, SdmxObservation
 from dfo_platform.roles import ROLE_AXES
+from graph_release import shadow
 from graph_release.coverage import HORIZON, coverage_rows, role_map
 from graph_release.dfo import build_dfo_parts, stage_dfo_parts
 from graph_release.format import StagedPart, conform_part
@@ -43,11 +46,13 @@ from graph_release.gate import (
 )
 from graph_release.platform import PlatformParts, PlatformRefusal, stage_platform_parts
 from graph_release.shadow import (
+    PINNED_ARC_PROPERTY,
     PINNED_INDEX_VARIABLES,
+    ComparatorBuild,
     diff_coverage,
     diff_origin_arcs,
     index_report,
-    shadow_ready,
+    shadow_builds,
 )
 from origin_catalogue.artifact import encode_build, publish_build
 from series_coverage.io import (
@@ -270,13 +275,16 @@ def _recorded_mixer(ids: dict, monkeypatch: pytest.MonkeyPatch) -> GraphClient:
 
 
 class _Recording:
-    """An `ArcReader` that records the dcids it is asked for and holds none of them."""
+    """An `ArcReader` that records the dcids it is asked for and holds each with no arcs."""
 
     def __init__(self) -> None:
         self.asked: list[str] = []
 
     def node_arcs_many(self, dcids: Sequence[str], *, properties: Sequence[str]):
         self.asked.extend(dcids)
+        return {dcid: {} for dcid in dcids}
+
+    def node_arcs_batch(self, dcids: list[str]):
         return {}
 
 
@@ -290,6 +298,7 @@ def test_the_mixer_differential_passes_on_the_recorded_mixer_answer(ids, monkeyp
 
     assert result.passed, result.summary()
     assert result.reports["mixer"] == {"changed": 5, "sampled": 5}
+    assert result.reports["mixer_only"] == {}
 
 
 def test_an_arc_the_release_lacks_is_a_mixer_mismatch(ids, monkeypatch):
@@ -320,23 +329,68 @@ def test_a_variable_the_mixer_omits_is_a_mismatch_and_a_read_error_is_unavailabl
     omitted = ids["variables"][1]
 
     class Omitting:
+        def __init__(self, times: int) -> None:
+            self.times = times
+
         def node_arcs_many(self, dcids, *, properties):
             served = graph.node_arcs_many(dcids, properties=properties)
-            return {dcid: arcs for dcid, arcs in served.items() if dcid != omitted}
+            if omitted in dcids and self.times:
+                self.times -= 1
+                del served[omitted]
+            return served
+
+        def node_arcs_batch(self, dcids):
+            return graph.node_arcs_batch(dcids)
 
     class Failing:
         def node_arcs_many(self, dcids, *, properties):
             raise GraphReadError("503 from /v2/node", upstream_status=503)
 
     assert check_mixer(parts, previous_edges=None, graph=graph, seed=_SEED).passed
-    missing = check_mixer(parts, previous_edges=None, graph=Omitting(), seed=_SEED)
+    once = check_mixer(parts, previous_edges=None, graph=Omitting(1), seed=_SEED)
+    missing = check_mixer(parts, previous_edges=None, graph=Omitting(2), seed=_SEED)
     failed = check_mixer(parts, previous_edges=None, graph=Failing(), seed=_SEED)
 
+    assert once.passed, once.summary()
     assert _codes(missing) == ["mixer_arc_mismatch"]
     assert missing.findings[0].examples == (f"{omitted}: the mixer holds no node",)
     assert failed.findings == ()
     assert [u.dependency for u in failed.unavailable] == [Dependency.MIXER]
     assert not failed.passed
+
+
+def test_a_property_only_the_mixer_holds_is_reported_and_decides_nothing(ids, monkeypatch):
+    """The release here holds no `constraintProperties`, so the report sees the mixer's; an
+    import-added target is hidden, as every reader hides it."""
+    graph = _recorded_mixer(ids, monkeypatch)
+    parts = _ids_parts(ids)
+    parts = dataclasses.replace(
+        parts,
+        edges=parts.edges.filter(
+            pc.not_equal(parts.edges["predicate"].cast(pa.string()), PINNED_ARC_PROPERTY)
+        ),
+    )
+    variable = ids["variables"][3]
+    import_added = sorted(IMPORT_ADDED_CONSTRAINT_PROPERTIES)[0]
+
+    class Extra:
+        def node_arcs_many(self, dcids, *, properties):
+            return graph.node_arcs_many(dcids, properties=properties)
+
+        def node_arcs_batch(self, dcids):
+            served = graph.node_arcs_batch(dcids)
+            for dcid in dcids:
+                served[dcid] = {
+                    **served[dcid],
+                    PINNED_ARC_PROPERTY: {"nodes": [{"dcid": import_added}]},
+                }
+            served[variable]["extraProperty"] = {"nodes": [{"value": "x"}]}
+            return served
+
+    result = check_mixer(parts, previous_edges=None, graph=Extra(), seed=_SEED)
+
+    assert result.passed, result.summary()
+    assert result.reports["mixer_only"] == {"extraProperty": 1}
 
 
 def test_the_mixer_sample_takes_changed_variables_first_then_seeded_others(ids, monkeypatch):
@@ -519,11 +573,22 @@ def test_the_coverage_diff_finds_a_changed_or_missing_row(parts, tmp_path):
     changed = diff_coverage(parts, import_stamp=_STAMP, role_axes=ROLE_AXES, uri=uri)
     _rewrite_published(base, lambda table: table.slice(1))
     missing = diff_coverage(parts, import_stamp=_STAMP, role_axes=ROLE_AXES, uri=uri)
+    _rewrite_published(base, _with_unknown_recipient)  # and still without the first row
+    extra = diff_coverage(parts, import_stamp=_STAMP, role_axes=ROLE_AXES, uri=uri)
 
     assert _codes(changed) == ["shadow_coverage_diff"]
     assert changed.findings[0].detail.startswith("1 coverage row")
     assert _codes(missing) == ["shadow_coverage_diff"]
     assert missing.findings[0].detail.startswith("1 coverage row")
+    assert _codes(extra) == ["shadow_coverage_diff"]
+    assert extra.findings[0].detail.startswith("2 coverage row")
+    assert "country/ZZZ" in [example.split()[-1] for example in extra.findings[0].examples]
+
+
+def _with_unknown_recipient(table: pa.Table) -> pa.Table:
+    """`table` plus a copy of its first row for a recipient no release row names."""
+    row = table.slice(0, 1).to_pylist()[0] | {"recipient": "country/ZZZ"}
+    return pa.concat_tables([table, pa.Table.from_pylist([row], schema=table.schema)])
 
 
 def test_the_coverage_diff_finds_other_role_names(parts, tmp_path):
@@ -615,20 +680,46 @@ def test_the_origin_arc_diff_pins_the_import_added_property_and_finds_any_other(
         assert all(name in e and e.endswith(side) for e in result.findings[0].examples), name
 
 
-def test_shadow_ready_waits_for_both_comparators_at_the_import(parts, ids, tmp_path):
+def test_shadow_builds_names_each_comparator_build_and_its_import(parts, ids, tmp_path):
     coverage = build_test_artifact(tmp_path / "coverage", stamp=_STAMP)
     origin = _publish_origin(tmp_path / "origin", _mixer_answers(ids))
     old_origin = _publish_origin(tmp_path / "old", _mixer_answers(ids), stamp="stamp-old")
 
-    assert shadow_ready(_STAMP, coverage_uri=coverage, origin_uri=origin) is True
-    assert shadow_ready("stamp-b", coverage_uri=coverage, origin_uri=origin) is False
-    assert shadow_ready(_STAMP, coverage_uri=coverage, origin_uri=old_origin) is False
+    assert shadow_builds(coverage_uri=coverage, origin_uri=origin) == (
+        ComparatorBuild(Dependency.COVERAGE_BUILD, _STAMP, f"{_STAMP}-build"),
+        ComparatorBuild(Dependency.ORIGIN_CATALOGUE, _STAMP, "build-a"),
+    )
+    assert shadow_builds(coverage_uri=coverage, origin_uri=old_origin) == (
+        ComparatorBuild(Dependency.COVERAGE_BUILD, _STAMP, f"{_STAMP}-build"),
+        ComparatorBuild(Dependency.ORIGIN_CATALOGUE, "stamp-old", "build-a"),
+    )
 
-    missing = shadow_ready(_STAMP, coverage_uri=coverage, origin_uri=f"file://{tmp_path / 'x'}")
+    missing = shadow_builds(coverage_uri=coverage, origin_uri=f"file://{tmp_path / 'x'}")
     assert getattr(missing, "dependency", None) == Dependency.ORIGIN_CATALOGUE
     pointer_path(tmp_path / "coverage").write_text("{")
-    malformed = shadow_ready(_STAMP, coverage_uri=coverage, origin_uri=origin)
+    malformed = shadow_builds(coverage_uri=coverage, origin_uri=origin)
     assert getattr(malformed, "dependency", None) == Dependency.COVERAGE_BUILD
+
+
+@pytest.mark.parametrize("failing", [Dependency.COVERAGE_BUILD, Dependency.ORIGIN_CATALOGUE])
+def test_shadow_builds_count_a_credentials_failure_as_unavailable(
+    ids, tmp_path, monkeypatch, failing
+):
+    coverage = build_test_artifact(tmp_path / "coverage", stamp=_STAMP)
+    origin = _publish_origin(tmp_path / "origin", _mixer_answers(ids))
+    broken = coverage if failing is Dependency.COVERAGE_BUILD else origin
+    read = shadow.read_uri_bytes
+
+    def refreshing(uri, *args, **kwargs):
+        if uri.startswith(broken):
+            raise RefreshError("token refresh failed")
+        return read(uri, *args, **kwargs)
+
+    monkeypatch.setattr(shadow, "read_uri_bytes", refreshing)
+
+    result = shadow_builds(coverage_uri=coverage, origin_uri=origin)
+
+    assert getattr(result, "dependency", None) == failing
 
 
 def test_the_index_report_marks_the_pinned_variable_and_counts_the_rest(tmp_path):

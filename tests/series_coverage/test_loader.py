@@ -11,6 +11,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
+from series_coverage import loader
 from series_coverage.io import (
     read_manifest,
     write_coverage_table,
@@ -29,6 +30,7 @@ from series_coverage.schema import (
     ABSENT_ENTITY,
     BUILD_EPOCH_YEAR,
     COVERAGE_FORMAT_VERSION,
+    VARIABLE_COLUMN,
     CoverageManifest,
     CoveragePointer,
     FacetMetadata,
@@ -37,6 +39,7 @@ from series_coverage.schema import (
 )
 from tests.series_coverage.support import (
     KEN,
+    ROLE_NAMES,
     V1,
     build_dir,
     build_single_mask_artifact,
@@ -83,6 +86,24 @@ def test_load_coverage_reads_a_real_shaped_artifact(tmp_path: Path) -> None:
     assert loaded.index.num_rows > 0
     assert loaded.index.build_year == 2026
     assert loaded.index.filter_candidates(variables=[V1], bound={"recipient": frozenset({KEN})})
+
+
+def test_the_public_reads_return_the_files_load_coverage_reads(tmp_path: Path) -> None:
+    uri = build_test_artifact(tmp_path / "coverage", build_id="b1")
+    root = format_root(uri)
+    prefix = f"{root}/versions/b1"
+    loaded = load_coverage(uri)
+
+    manifest = loader.read_manifest(
+        prefix, root=root, pointer=CoveragePointer(stamp="test-coverage-stamp", build_id="b1")
+    )
+    table = loader.read_table(prefix, manifest)
+
+    assert manifest == loaded.manifest
+    assert table.num_rows == loaded.index.num_rows
+    assert pa.types.is_dictionary(table.schema.field(VARIABLE_COLUMN).type)
+    assert loader.read_role_names(prefix, manifest) == ROLE_NAMES
+    assert {"read_manifest", "read_table", "read_role_names"} <= set(loader.__all__)
 
 
 def test_build_test_artifact_writes_the_format_root_layout(tmp_path: Path) -> None:

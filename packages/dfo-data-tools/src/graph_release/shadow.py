@@ -1,18 +1,19 @@
 """The shadow diff: a release against the artifacts it will replace, behind `GRAPH_RELEASE_SHADOW`.
 
-`shadow_ready` tells the builder whether both comparators, the published coverage build and the
-origin catalogue, were built from the release's import. The builder waits until they were,
-since a diff against an earlier import fails for reasons the release did not cause.
+`shadow_builds` names the comparators' published builds, the coverage build and the origin
+catalogue, with the import each was built from. The builder waits until both were built from
+the release's import, since a diff against an earlier import fails for reasons the release did
+not cause.
 
 `shadow_diff` compares the release's coverage rows and role map with the published coverage
 build, and its DFO arcs with the origin catalogue's DFO arc table. A difference is a finding,
-except the pinned one, which the report counts: the origin catalogue stores raw
+except the pinned one, which the report counts. The origin catalogue stores raw
 `constraintProperties` rows, so its arcs keep the import-added properties every reader drops
 (`dc_graph.visible_arcs.IMPORT_ADDED_CONSTRAINT_PROPERTIES`). A comparator that cannot be read,
-or that no longer holds the release's import, is unavailable.
+or that holds an import other than the release's, is unavailable.
 
-The code index's graph blocks are compared with the committed `index.json.gz` as a report only:
-that file is refreshed by hand, so it is not at the release's import. The report marks the
+The code index's graph blocks are compared with the committed `index.json.gz` as a report only.
+That file is refreshed by hand, so it is not at the release's import. The report marks the
 differences that name `PINNED_INDEX_VARIABLES`.
 """
 
@@ -22,6 +23,7 @@ import gzip
 import json
 from collections import Counter
 from collections.abc import Mapping
+from dataclasses import dataclass
 from importlib.resources.abc import Traversable
 from pathlib import Path
 from typing import Final, cast
@@ -30,6 +32,7 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 from google.api_core.exceptions import GoogleAPIError
+from google.auth.exceptions import GoogleAuthError
 
 from artifact_publication.uri import join_uri, read_uri_bytes
 from code_index.loader import default_index_path
@@ -53,11 +56,11 @@ from origin_catalogue.artifact import format_root as origin_root
 from origin_catalogue.schema import CataloguePointer
 from series_coverage.loader import (
     CoverageArtifactError,
-    _read_manifest,
-    _read_role_names,
-    _read_table,
+    read_role_names,
+    read_table,
 )
 from series_coverage.loader import format_root as coverage_root
+from series_coverage.loader import read_manifest as read_coverage_manifest
 from series_coverage.schema import (
     DONOR_COLUMN,
     FACET_COLUMN,
@@ -96,36 +99,48 @@ _KEY_COLUMNS: Final[tuple[str, ...]] = (
     DONOR_COLUMN,
     RECIPIENT_COLUMN,
 )
-_RELEASE: Final[str] = ":release"
-_PUBLISHED: Final[str] = ":published"
 _EXAMPLES: Final[int] = 5
 
 _UNREADABLE: Final = (
     OSError,
     ValueError,
     GoogleAPIError,
+    GoogleAuthError,
     CoverageArtifactError,
     CatalogueArtifactError,
 )
 """What reading a comparator raises when it cannot be read: a missing or malformed object, a
-bucket error, or an artifact its loader refuses."""
+bucket error, credentials that cannot be refreshed, or an artifact its loader refuses."""
 
 
-def shadow_ready(
-    import_stamp: str, *, coverage_uri: str, origin_uri: str
-) -> bool | GateUnavailable:
-    """Whether the published coverage build's `stamp` and the origin catalogue's
-    `dfo_fingerprint` are both `import_stamp`. A pointer or manifest that cannot be read is
-    unavailable."""
+@dataclass(frozen=True)
+class ComparatorBuild:
+    """A comparator's published build: `stamp` is the import it was built from, the coverage
+    build's `stamp` or the origin catalogue's `dfo_fingerprint`."""
+
+    dependency: Dependency
+    stamp: str
+    build_id: str
+
+
+def shadow_builds(
+    *, coverage_uri: str, origin_uri: str
+) -> tuple[ComparatorBuild, ComparatorBuild] | GateUnavailable:
+    """The published coverage build and origin catalogue build, in that order. A pointer or
+    manifest that cannot be read is unavailable."""
     try:
-        coverage = _coverage_pointer(coverage_uri).stamp
+        coverage = _coverage_pointer(coverage_uri)
     except _UNREADABLE as exc:
         return GateUnavailable(Dependency.COVERAGE_BUILD, f"coverage pointer unreadable: {exc}")
     try:
-        origin = _origin_fingerprint(origin_uri, _origin_pointer(origin_uri))
+        origin = _origin_pointer(origin_uri)
+        fingerprint = _origin_fingerprint(origin_uri, origin)
     except _UNREADABLE as exc:
         return GateUnavailable(Dependency.ORIGIN_CATALOGUE, f"origin identity unreadable: {exc}")
-    return coverage == import_stamp and origin == import_stamp
+    return (
+        ComparatorBuild(Dependency.COVERAGE_BUILD, coverage.stamp, coverage.build_id),
+        ComparatorBuild(Dependency.ORIGIN_CATALOGUE, fingerprint, origin.build_id),
+    )
 
 
 def shadow_diff(
@@ -158,25 +173,31 @@ def diff_coverage(
     parts: PlatformParts, *, import_stamp: str, role_axes: Mapping[str, RoleAxis], uri: str
 ) -> GateResult:
     """The release's coverage rows and role map against the coverage build published at `uri`,
-    row by row on the series key."""
+    row by row on the series key. The release's rows are built before the published table is
+    read, so the build's working memory and the published table are not held together."""
     root = coverage_root(uri)
     try:
         pointer = _coverage_pointer(uri)
         prefix = join_uri(root, VERSIONS_PREFIX, pointer.build_id)
-        manifest = _read_manifest(prefix, root=root, pointer=pointer)
-        if manifest.stamp != import_stamp:
-            return _moved(Dependency.COVERAGE_BUILD, manifest.stamp, import_stamp)
-        published = _read_table(prefix, manifest)
-        published_roles = _read_role_names(prefix, manifest)
+        manifest = read_coverage_manifest(prefix, root=root, pointer=pointer)
     except _UNREADABLE as exc:
-        return GateResult(
-            unavailable=(GateUnavailable(Dependency.COVERAGE_BUILD, f"unreadable: {exc}"),)
-        )
+        return _unreadable(exc)
+    if manifest.stamp != import_stamp:
+        return _moved(Dependency.COVERAGE_BUILD, manifest.stamp, import_stamp)
 
     try:
         roles = role_map(parts.edges, role_axes)
         rows = coverage_rows(parts.series, roles)
-    except PlatformRefusal as refusal:
+    except PlatformRefusal as exc:
+        refusal: PlatformRefusal | None = exc
+    else:
+        refusal = None
+    try:
+        published = read_table(prefix, manifest)
+        published_roles = read_role_names(prefix, manifest)
+    except _UNREADABLE as exc:
+        return _unreadable(exc)
+    if refusal is not None:
         return _finding(GateCode.SHADOW_COVERAGE_DIFF, f"the release's coverage refuses: {refusal}")
 
     findings = []
@@ -219,50 +240,77 @@ def diff_coverage(
 
 def _row_diff(ours: pa.Table, theirs: pa.Table) -> tuple[int, tuple[str, ...]]:
     """How many series keys hold different rows in `ours` and `theirs`, a key held by one
-    table only counting as one, and the first few. Keys are compared as positions in the union
-    of the two tables' dictionaries, so no key column is decoded."""
-    ours = ours.unify_dictionaries().combine_chunks()
-    theirs = theirs.unify_dictionaries().combine_chunks()
-    dictionaries: dict[str, pa.Array] = {}
-    left: dict[str, pa.Array] = {}
-    right: dict[str, pa.Array] = {}
+    table only, or more than once by one table, counting as one, and the first few in key code
+    order.
+
+    Each key column becomes codes into the union of both tables' dictionaries, so no key is
+    decoded and no join builds a table. The codes fold into one dense rank per key. The rows of
+    both tables are ordered by it, equal keys fall next to each other, and each value column is
+    compared over the matched pairs, one column at a time."""
+    size = ours.num_rows
+    if not size + theirs.num_rows:
+        return 0, ()
+    rank = np.zeros(size + theirs.num_rows, dtype=np.int64)
     for name in _KEY_COLUMNS:
-        mine, other = _dictionary(ours[name]), _dictionary(theirs[name])
-        union = pc.unique(pa.concat_arrays([mine.dictionary, other.dictionary.cast(pa.string())]))
-        dictionaries[name] = union
-        left[name] = pc.take(pc.index_in(mine.dictionary, value_set=union), mine.indices)
-        right[name] = pc.take(
-            pc.index_in(other.dictionary.cast(pa.string()), value_set=union), other.indices
-        )
-    values = [name for name in ours.column_names if name not in _KEY_COLUMNS]
-    for name in values:
-        left[name] = ours[name].combine_chunks()
-        right[name] = theirs[name].combine_chunks()
-    joined = pa.table(left).join(
-        pa.table(right),
-        keys=list(_KEY_COLUMNS),
-        join_type="full outer",
-        left_suffix=_RELEASE,
-        right_suffix=_PUBLISHED,
-        coalesce_keys=True,
-    )
-    differs = np.zeros(joined.num_rows, dtype=bool)
-    for name in values:
-        unequal = pc.not_equal(joined[name + _RELEASE], joined[name + _PUBLISHED])
-        differs |= cast("pa.ChunkedArray", unequal).fill_null(pa.scalar(True)).to_numpy()
-    found = joined.filter(pa.array(differs))
-    head = found.slice(0, _EXAMPLES)
+        union = _union(ours[name], theirs[name])
+        codes = np.concatenate([_key_codes(ours[name], union), _key_codes(theirs[name], union)])
+        # A rank is below the row count, so the product stays far inside int64.
+        rank = np.unique(rank * len(union) + codes, return_inverse=True)[1]
+    order = np.argsort(rank, kind="stable")
+    same = rank[order[1:]] == rank[order[:-1]]
+    del rank
+    starts = np.flatnonzero(np.concatenate([[True], ~same]))
+    lengths = np.diff(np.append(starts, len(order)))
+    first, second = order[starts], order[np.minimum(starts + 1, len(order) - 1)]
+    paired = (lengths == 2) & ((first < size) != (second < size))
+    mine = np.minimum(first, second)[paired]
+    other = np.maximum(first, second)[paired] - size
+
+    differs = ~paired
+    unequal = np.zeros(len(mine), dtype=bool)
+    for name in ours.column_names:
+        if name in _KEY_COLUMNS:
+            continue
+        compared = pc.not_equal(ours[name].take(mine), theirs[name].take(other))
+        unequal |= cast("pa.ChunkedArray", compared).fill_null(pa.scalar(True)).to_numpy()
+    differs[np.flatnonzero(paired)[unequal]] = True
+
+    found = first[differs]
     examples = tuple(
         " ".join(
             str(value)
-            for value in (
-                dictionaries[name].take(head[name].combine_chunks()).to_pylist()[i]
-                for name in _KEY_COLUMNS
-            )
+            for value in (ours.slice(row, 1) if row < size else theirs.slice(row - size, 1))
+            .select(list(_KEY_COLUMNS))
+            .to_pylist()[0]
+            .values()
         )
-        for i in range(head.num_rows)
+        for row in found[:_EXAMPLES].tolist()
     )
-    return found.num_rows, examples
+    return len(found), examples
+
+
+def _union(*columns: pa.ChunkedArray) -> pa.Array:
+    """The distinct values of the dictionary-encoded `columns`' dictionaries, as strings."""
+    return pc.unique(
+        pa.concat_arrays(
+            [
+                cast("pa.DictionaryArray", chunk).dictionary.cast(pa.string())
+                for column in columns
+                for chunk in column.chunks
+            ]
+        )
+    )
+
+
+def _key_codes(column: pa.ChunkedArray, union: pa.Array) -> np.ndarray:
+    """Each row's key as its value's position in `union`."""
+    chunks = [
+        pc.take(
+            pc.index_in(chunk.dictionary.cast(pa.string()), value_set=union), chunk.indices
+        ).to_numpy(zero_copy_only=False)
+        for chunk in cast("list[pa.DictionaryArray]", column.chunks)
+    ]
+    return np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.int32)
 
 
 # ---------------------------------------------------------------- origin arcs
@@ -397,21 +445,24 @@ def _moved(dependency: Dependency, found: str, wanted: str) -> GateResult:
     return GateResult(unavailable=(GateUnavailable(dependency, detail),))
 
 
+def _unreadable(exc: Exception) -> GateResult:
+    return GateResult(
+        unavailable=(GateUnavailable(Dependency.COVERAGE_BUILD, f"unreadable: {exc}"),)
+    )
+
+
 def _finding(code: GateCode, detail: str) -> GateResult:
     return GateResult(findings=(GateFinding(code, detail),))
-
-
-def _dictionary(column: pa.ChunkedArray) -> pa.DictionaryArray:
-    return cast("pa.DictionaryArray", column.combine_chunks())
 
 
 __all__ = [
     "INDEX_BLOCK_KEYS",
     "PINNED_ARC_PROPERTY",
     "PINNED_INDEX_VARIABLES",
+    "ComparatorBuild",
     "diff_coverage",
     "diff_origin_arcs",
     "index_report",
+    "shadow_builds",
     "shadow_diff",
-    "shadow_ready",
 ]

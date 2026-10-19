@@ -1,12 +1,12 @@
 """The builder's Spanner statements and `read_inputs`, which runs them in one snapshot.
 
 Every statement runs in the snapshot the caller opens, so the release reads one database state.
-The first re-reads the import key; the rest read what the platform parts copy. Rows stream into
+The first re-reads the import key. The rest read what the platform parts copy. Rows stream into
 Arrow record batches of `CHUNK_ROWS`, so no read holds a whole table as Python rows. Each
 statement carries a request tag, `app=graph-release,action=<read>`, so Spanner's query
 statistics name it.
 
-The statements copy Spanner and apply no rule; `graph_release.platform` decides what the parts
+The statements copy Spanner and apply no rule. `graph_release.platform` decides what the parts
 keep. `google-cloud-spanner` (the `graph-release` extra) is imported only to type array
 parameters, so a test can pass any object with `execute_sql`.
 """
@@ -38,7 +38,7 @@ _KEY = pa.dictionary(pa.int32(), pa.string())
 
 def _mask_columns() -> str:
     """`period_mask_<w>`: bit `b` of word `w` set when the series has an observation in year
-    `epoch + 64w + b`. Annual periods only; `graph_release.platform` refuses a facet with another
+    `epoch + 64w + b`. Annual periods only. `graph_release.platform` refuses a facet with another
     `observation_period`. The shift reaches bit 63, so a word is a signed INT64 as Spanner stores
     it."""
     epoch = date.fromisoformat(MASK_EPOCH).year
@@ -66,7 +66,7 @@ JOIN Observation o
   AND o.extra_entities_id = t.extra_entities_id AND o.facet_id = t.facet_id
 GROUP BY t.variable_measured, t.entity1, t.extra_entities_id, t.facet_id, t.entity2, t.entity3"""
 
-# Each facet's JSON, twice: `graph_release.platform` refuses a facet whose series disagree.
+# Each facet's JSON twice, so `graph_release.platform` can refuse a facet whose series disagree.
 FACETS_SQL: Final[str] = """SELECT facet_id, MIN(TO_JSON_STRING(facet)) AS facet_min,
   MAX(TO_JSON_STRING(facet)) AS facet_max
 FROM TimeSeries
@@ -74,7 +74,7 @@ GROUP BY facet_id"""
 
 LIVE_VARIABLES_SQL: Final[str] = "SELECT DISTINCT variable_measured FROM TimeSeries"
 
-# The live variables' edges, each with whether its target has a typed `Node` row: the typed
+# The live variables' edges, each with whether its target has a typed `Node` row. The typed
 # targets (measure values, enum members, properties, other variables) are read next.
 VARIABLE_EDGES_SQL: Final[str] = """SELECT e.subject_id, e.predicate, e.object_id, e.provenance,
   ARRAY_LENGTH(n.types) > 0 AS target_typed
@@ -88,7 +88,7 @@ FROM Edge@{FORCE_INDEX=InEdge} t
 JOIN@{JOIN_METHOD=APPLY_JOIN} Edge@{FORCE_INDEX=_BASE_TABLE} e ON e.subject_id = t.subject_id
 WHERE t.object_id IN UNNEST(@enums) AND t.predicate = 'typeOf'"""
 
-# The `specializationOf` chain above each constraint value, six levels deep; `child` holds every
+# The `specializationOf` chain above each constraint value, six levels deep. `child` holds every
 # value and ancestor that has a parent.
 CLOSURE_SQL: Final[str] = """WITH l0 AS (SELECT v AS code FROM UNNEST(@values) AS v),
 l1 AS (SELECT e.subject_id AS child, e.object_id AS code FROM l0 JOIN@{JOIN_METHOD=APPLY_JOIN} Edge@{FORCE_INDEX=_BASE_TABLE} e ON e.subject_id = l0.code AND e.predicate = 'specializationOf'),
@@ -286,7 +286,7 @@ def read_inputs(snapshot: Snapshot) -> RawInputs:
 
 
 def read_ingested_imports(snapshot: Snapshot, *, execution_id: str) -> tuple[str, ...]:
-    """`IngestionHistory.IngestedImports` of the run `execution_id`, in stored order; empty when
+    """`IngestionHistory.IngestedImports` of the run `execution_id`, in stored order, empty when
     the row holds none. Raises `LookupError` when no row has that id."""
     from google.cloud.spanner_v1 import param_types as types
 

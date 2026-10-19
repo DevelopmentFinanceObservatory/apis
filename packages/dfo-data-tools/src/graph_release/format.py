@@ -31,7 +31,7 @@ import hashlib
 import json
 import re
 import tempfile
-from collections.abc import Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
@@ -515,6 +515,62 @@ def conform_part(table: pa.Table, *, name: str) -> pa.Table:
     return _sort(_conform(table, part), part)
 
 
+def join_part_files(files: Sequence[pa.Table], *, name: str) -> pa.Table:
+    """The files of tabular part `name`, each as `write_part` wrote it, as one
+    table in the part's form: the table `conform_part` gives for their rows.
+    Each dictionary column is moved onto the sorted union of the files'
+    dictionaries by its indices, so no value is decoded, and the rows are
+    copied once, by the sort. Raises `ValueError` for an unknown part, no
+    files, files whose columns differ, or several files of a part with a list
+    column, which `write_part` never splits."""
+    part = PART_SCHEMAS.get(name)
+    if part is None:
+        raise ValueError(f"unknown tabular part {name!r}; known: {sorted(PART_SCHEMAS)}")
+    if not files:
+        raise ValueError(f"part {name!r} has no files")
+    schema = files[0].schema
+    if any(not file.schema.equals(schema) for file in files[1:]):
+        raise ValueError(f"part {name!r} files hold different columns")
+    if len(files) == 1:
+        return files[0]
+    if _KEY_LIST in schema.types:
+        raise ValueError(f"part {name!r} has a list column and is never split")
+    batches = [batch for file in files for batch in file.to_batches()]
+    unions = {
+        index: _sorted_union([cast("pa.DictionaryArray", b.column(index)) for b in batches])
+        for index, column_type in enumerate(schema.types)
+        if pa.types.is_dictionary(column_type)
+    }
+    joined = pa.Table.from_batches(
+        [
+            pa.RecordBatch.from_arrays(
+                [
+                    _onto(cast("pa.DictionaryArray", column), unions[index])
+                    if index in unions
+                    else column
+                    for index, column in enumerate(batch.columns)
+                ],
+                schema=schema,
+            )
+            for batch in batches
+        ],
+        schema=schema,
+    )
+    return _sort(joined, part)
+
+
+def _sorted_union(arrays: Sequence[pa.DictionaryArray]) -> pa.Array:
+    """The distinct values of the dictionaries of `arrays`, sorted."""
+    union = pc.unique(pa.concat_arrays([array.dictionary for array in arrays]))
+    return union.take(pc.sort_indices(union))
+
+
+def _onto(array: pa.DictionaryArray, dictionary: pa.Array) -> pa.DictionaryArray:
+    """`array` over `dictionary`, which holds every value of its own, by its indices."""
+    indices = pc.take(pc.index_in(array.dictionary, value_set=dictionary), array.indices)
+    return pa.DictionaryArray.from_arrays(indices.cast(pa.int32()), dictionary)
+
+
 def write_blob_part(
     data: bytes,
     *,
@@ -672,14 +728,24 @@ def read_pointer(root_uri: str) -> Pointer | None:
     return Pointer.from_json(data)
 
 
-def open_release(root_uri: str, *, local_dir: Path, release_id: str | None = None) -> LoadedRelease:
+def open_release(
+    root_uri: str,
+    *,
+    local_dir: Path,
+    release_id: str | None = None,
+    parts: Collection[str] | None = None,
+) -> LoadedRelease:
     """Opens the pointer's release, or `release_id` when given.
 
     Downloads each part this reader knows and `local_dir` lacks with one
-    streamed GET, checks its SHA-256, and maps it. Raises `FileNotFoundError`
-    when no pointer is published and `ReleaseFormatError` for a release this
-    reader must refuse.
+    streamed GET, checks its SHA-256, and maps it. `parts`, when given, names
+    the only parts to download and map; the others are left out of `tables`
+    and `blobs`. Raises `FileNotFoundError` when no pointer is published,
+    `ValueError` for a name in `parts` this reader does not know, and
+    `ReleaseFormatError` for a release this reader must refuse.
     """
+    if parts is not None and (unknown := set(parts) - PART_SCHEMAS.keys() - JSON_PARTS.keys()):
+        raise ValueError(f"unknown parts {sorted(unknown)}")
     if release_id is None:
         pointer = read_pointer(root_uri)
         if pointer is None:
@@ -694,6 +760,8 @@ def open_release(root_uri: str, *, local_dir: Path, release_id: str | None = Non
     blobs: dict[str, bytes] = {}
     file_names: set[str] = set()
     for ref in manifest.parts:
+        if parts is not None and ref.name not in parts:
+            continue
         if ref.name in PART_SCHEMAS:
             path = _fetch(root_uri, ref, local_dir)
             pieces.setdefault(ref.name, []).append(_map(path, PART_SCHEMAS[ref.name]))
@@ -788,6 +856,7 @@ __all__ = [
     "StagedPart",
     "compute_release_id",
     "conform_part",
+    "join_part_files",
     "manifest_uri",
     "open_release",
     "part_uri",

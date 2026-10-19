@@ -1,6 +1,6 @@
 """The Data Commons service's serving revision, read through the Cloud Run Admin API v2.
 
-`CloudRunAdmin.serving` reads the service and names the revisions that take traffic;
+`CloudRunAdmin.serving` reads the service and names the revisions that take traffic.
 `CloudRunAdmin.created_at` reads one revision's creation time. The builder compares that time
 with the import's completion, because the mixer reads Spanner as of the last ingestion it saw
 when it started. `graph_generation.source` derives its generation token from the same read.

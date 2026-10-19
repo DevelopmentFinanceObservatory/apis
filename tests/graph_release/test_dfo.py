@@ -16,6 +16,7 @@ import json
 from pathlib import Path
 
 import pyarrow as pa
+import pyarrow.compute as pc
 import pytest
 
 from code_index import declarations as code_index_declarations
@@ -23,6 +24,7 @@ from dc_graph import GraphClient, parse_arcs
 from graph_release import declarations as release_declarations
 from graph_release.declarations import DECLARATIONS, Declarations
 from graph_release.dfo import (
+    MissingBaseParties,
     ReleaseGraphReader,
     base_party_ids,
     build_dfo_parts,
@@ -117,6 +119,17 @@ def test_reader_answers_nodes_without_edges_from_their_node_rows() -> None:
     }
 
 
+def test_reader_refuses_an_edge_to_a_node_the_nodes_part_lacks() -> None:
+    parts = platform_parts()
+    subjects = parts.edges["subject_id"].cast(pa.string())
+    nodes = parts.nodes.filter(pc.invert(pc.is_in(parts.nodes["subject_id"], value_set=subjects)))
+
+    with pytest.raises(PlatformRefusal) as refused:
+        ReleaseGraphReader(edges=parts.edges, nodes=nodes)
+
+    assert refused.value.code == "dangling_edge"
+
+
 def test_reader_pages_subjects_and_narrows_them_by_filters() -> None:
     parts = platform_parts()
     reader = ReleaseGraphReader(edges=parts.edges, nodes=parts.nodes)
@@ -155,6 +168,15 @@ def test_base_parties_are_the_parties_the_release_does_not_answer() -> None:
         party: {prop: list(values) for prop, values in sorted(arcs.items())}
         for party, arcs in MIXER_PARTIES.items()
     }
+
+
+def test_base_parties_refuse_a_party_the_mixer_answers_with_no_node() -> None:
+    class Empty:
+        def node_arcs_many(self, dcids, *, properties):
+            return dict.fromkeys(dcids)
+
+    with pytest.raises(MissingBaseParties, match="country/KGZ"):
+        read_base_parties(["country/KGZ"], graph=Empty())
 
 
 def test_base_parties_let_a_mixer_error_propagate() -> None:

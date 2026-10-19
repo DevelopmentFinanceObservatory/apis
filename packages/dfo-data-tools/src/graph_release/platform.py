@@ -65,8 +65,9 @@ def build_platform_parts(raw: RawInputs, *, authored: Authored) -> PlatformParts
 
     Raises `PlatformRefusal` with code `unsupported_observation_period` for a facet whose period
     the mask does not count, `inconsistent_facet` for a facet whose series carry different facet
-    JSON, `unknown_facet` for a series whose facet was not read, `authored_mismatch` for an
-    authored node Spanner now holds, and `dangling_edge` for a kept edge whose subject or object
+    JSON or a facet whose JSON is null or lacks `provenance`, `unknown_facet` for a series whose
+    facet was not read, `authored_mismatch` for an authored node that Spanner holds, and
+    `dangling_edge` for a kept edge whose subject or object
     has no `Node` row.
     """
     facets = _facets(raw.facets)
@@ -160,7 +161,7 @@ def _facets(raw: pa.Table) -> pa.Table:
             "is_dc_aggregate",
         )
     }
-    inconsistent, unsupported = [], []
+    inconsistent, malformed, unsupported = [], [], []
     for facet_id, low, high in zip(
         cast("list[str]", raw["facet_id"].to_pylist()),
         cast("list[str]", raw["facet_min"].to_pylist()),
@@ -171,6 +172,9 @@ def _facets(raw: pa.Table) -> pa.Table:
             inconsistent.append(facet_id)
             continue
         facet = json.loads(low)
+        if not isinstance(facet, dict) or not facet.get("provenance"):
+            malformed.append(facet_id)
+            continue
         if facet.get("observationPeriod") not in MASK_PERIODS:
             unsupported.append(f"{facet_id} ({facet.get('observationPeriod')})")
         scaling = facet.get("scalingFactor")
@@ -186,6 +190,11 @@ def _facets(raw: pa.Table) -> pa.Table:
         raise PlatformRefusal(
             "inconsistent_facet",
             f"series of one facet carry different facet JSON: {_examples(inconsistent)}",
+        )
+    if malformed:
+        raise PlatformRefusal(
+            "inconsistent_facet",
+            f"facet JSON is null or lacks provenance: {_examples(malformed)}",
         )
     if unsupported:
         raise PlatformRefusal(
@@ -220,7 +229,7 @@ def _series(raw: pa.Table) -> pa.Table:
 
 def _dates(column: pa.ChunkedArray) -> pa.ChunkedArray:
     """`Observation.date` strings as dates: `YYYY` is 1 January, `YYYY-MM` the first of the
-    month, `YYYY-MM-DD` itself. Raises `ValueError` for any other form."""
+    month, `YYYY-MM-DD` itself. Raises `PlatformRefusal` for any other form."""
     parsed = pc.coalesce(
         *(
             pc.strptime(column, format=form, unit="s", error_is_null=True)
@@ -229,7 +238,10 @@ def _dates(column: pa.ChunkedArray) -> pa.ChunkedArray:
     )
     unparsed = column.filter(pc.and_(pc.is_null(parsed), pc.is_valid(column)))
     if len(unparsed):
-        raise ValueError(f"observation dates of no known form: {_examples(unparsed)}")
+        raise PlatformRefusal(
+            "unsupported_observation_period",
+            f"observation dates of no known form: {_examples(unparsed)}",
+        )
     return cast("pa.ChunkedArray", parsed.cast(pa.date32()))
 
 

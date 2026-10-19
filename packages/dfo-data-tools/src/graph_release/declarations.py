@@ -48,8 +48,8 @@ from its arguments."""
 
 @dataclass(frozen=True)
 class Declarations:
-    """The declarations one release is built with. `DECLARATIONS` holds today's; a test may
-    replace fields to build from a smaller graph."""
+    """The declarations one release is built with. `DECLARATIONS` holds the committed ones. A test
+    may replace fields to build from a smaller graph."""
 
     code_systems: Sequence[CodeSystemConfig]
     datasets: Sequence[DatasetDeclaration]

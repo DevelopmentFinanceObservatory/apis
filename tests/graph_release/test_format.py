@@ -23,6 +23,8 @@ from graph_release.format import (
     PartRef,
     ReleaseFormatError,
     compute_release_id,
+    conform_part,
+    join_part_files,
     manifest_uri,
     open_release,
     part_uri,
@@ -184,6 +186,33 @@ def test_series_splits_on_variable_boundaries_at_max_rows(
     )
 
 
+def test_joined_files_equal_the_conformed_table_of_their_rows(tmp_path, monkeypatch):
+    monkeypatch.setattr(release_format, "MAX_ROWS", 100)
+    first = _series_rows(250, rows_per_variable=30)
+    second = _series_rows(120, rows_per_variable=7)
+    second = second.set_column(3, "facet_id", pa.array(["f2"] * second.num_rows))
+    second = second.set_column(4, "entity2", pa.array(["country/DEU", None] * 60))
+    files = [
+        pa.ipc.open_file(pa.memory_map(str(part.path))).read_all()
+        for provenance, table in (("dc/p1", first), ("dc/p2", second))
+        for part in write_part(
+            table,
+            staging_dir=tmp_path,
+            name="series",
+            layer="platform",
+            source="test",
+            produced_by_execution="e",
+            provenance=provenance,
+        )
+    ]
+
+    joined = join_part_files(files, name="series")
+
+    assert len(files) == 5
+    assert joined.equals(conform_part(pa.concat_tables(files), name="series"))
+    assert join_part_files(files[:1], name="series") is files[0]
+
+
 def _series_rows(rows: int, *, rows_per_variable: int) -> pa.Table:
     variables = [f"Var_{n // rows_per_variable:03d}" for n in range(rows)]
     return pa.table(
@@ -331,6 +360,23 @@ def _publish_file(root: str, table: pa.Table, *, name: str, suffix: str = ".arro
     )
     write_uri_bytes(part_uri(root, ref), data)
     return ref
+
+
+def test_open_release_downloads_and_maps_only_the_named_parts(tmp_path):
+    root = f"file://{tmp_path / 'bucket'}"
+    manifest = build_test_release(root, tables=sample_tables(), blobs={"declarations": b'{"a":1}'})
+    whole = open_release(root, local_dir=tmp_path / "whole")
+
+    edges = open_release(root, local_dir=tmp_path / "edges", parts=("edges",))
+
+    assert set(edges.tables) == {"edges"}
+    assert edges.blobs == {}
+    assert edges.tables["edges"].equals(whole.tables["edges"])
+    assert {path.name for path in (tmp_path / "edges").iterdir()} == {
+        ref.file_name for ref in manifest.parts if ref.name == "edges"
+    }
+    with pytest.raises(ValueError, match="edgez"):
+        open_release(root, local_dir=tmp_path / "edges", parts=("edgez",))
 
 
 def test_open_release_without_a_pointer_raises_file_not_found(tmp_path):
