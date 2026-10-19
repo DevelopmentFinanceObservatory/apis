@@ -23,6 +23,7 @@ from code_index.types import (
     CodeSystemDeclaration,
     DatasetDeclaration,
     DeclaredDefault,
+    ImpliedValue,
     IndexStamp,
     MeasureAxis,
     MeasureClassDeclaration,
@@ -82,14 +83,15 @@ def parse_index(payload: Mapping, *, source: object = "<document>") -> CodeIndex
     are optional: an index without the first two declares no party kind, one without the third
     lists no StatVar outside its code systems (`CodeIndex.listed_statvars`), one without the
     fourth holds no series code, and one without the fifth no value parent. So are
-    `shape_slot_defaults`, `partly_stated_values`, `measure_classes`, `variable_aliases`
-    and `stat_type_words`, each reading as empty where absent; a measure class or stat-type
+    `shape_slot_defaults`, `partly_stated_values`, `implied_values`, `measure_classes`,
+    `variable_aliases` and `stat_type_words`, each reading as empty where absent; a measure class or stat-type
     pattern that does not compile, or a variable alias or a `no_vocabulary_terms` entry that
     is not a non-empty lowercase string, raises `IndexFormatError`. A value that two
     `value_parents` rows name raises `DuplicateDcid`, and a parent chain that cycles
     `CyclicParent`. A `source_codes` row the StatVar rows contradict raises `IndexFormatError`
     (`_check_source_codes`), as does a `partly_stated_values` row they contradict
-    (`_check_partly_stated_values`). A kind outside `PartyKind`, a type declared twice, a
+    (`_check_partly_stated_values`), and an `implied_values` row the code or StatVar rows
+    contradict (`_check_implied_values`). A kind outside `PartyKind`, a type declared twice, a
     `totals` on a party that is not a total, or a false `sums_members` on a party holding no
     group raises `IndexFormatError`. A code row without a `definition` carries none, as does
     a measure value or measure label in `parse_measure_axes`."""
@@ -108,6 +110,7 @@ def parse_index(payload: Mapping, *, source: object = "<document>") -> CodeIndex
         partly_stated_values = [
             _parse_partly_stated_value(row) for row in payload.get("partly_stated_values", ())
         ]
+        implied_values = [_parse_implied_value(row) for row in payload.get("implied_values", ())]
         measure_classes = [_parse_measure_class(row) for row in payload.get("measure_classes", ())]
         variable_aliases = _parse_variable_aliases(payload.get("variable_aliases", {}))
         stat_type_words = [_parse_stat_type_word(row) for row in payload.get("stat_type_words", ())]
@@ -119,6 +122,7 @@ def parse_index(payload: Mapping, *, source: object = "<document>") -> CodeIndex
     _check_party_words(datasets, parties)
     _check_source_codes(source_codes, [*statvars, *listed_statvars])
     _check_partly_stated_values(partly_stated_values, [*statvars, *listed_statvars])
+    _check_implied_values(implied_values, declarations, codes, [*statvars, *listed_statvars])
     return CodeIndex(
         stamp=stamp,
         declarations=declarations,
@@ -130,6 +134,7 @@ def parse_index(payload: Mapping, *, source: object = "<document>") -> CodeIndex
         listed_statvars=listed_statvars,
         shape_slot_defaults=shape_slot_defaults,
         partly_stated_values=partly_stated_values,
+        implied_values=implied_values,
         measure_classes=measure_classes,
         variable_aliases=variable_aliases,
         stat_type_words=stat_type_words,
@@ -149,6 +154,15 @@ def _parse_shape_slot_default(row: Mapping) -> ShapeSlotDefault:
 def _parse_partly_stated_value(row: Mapping) -> PartlyStatedValue:
     return PartlyStatedValue(
         provenance=row["provenance"],
+        property_dcid=row["property"],
+        value_dcid=row["value"],
+    )
+
+
+def _parse_implied_value(row: Mapping) -> ImpliedValue:
+    return ImpliedValue(
+        population_type=row["population_type"],
+        measured_property=row["measured_property"],
         property_dcid=row["property"],
         value_dcid=row["value"],
     )
@@ -655,6 +669,48 @@ def _check_partly_stated_values(
                 f"{declared.provenance!r} states {declared.property_dcid}="
                 f"{declared.value_dcid} on every row or on none of each five-tuple, so it is "
                 "not partly stated; delete the declaration"
+            )
+
+
+def _check_implied_values(
+    rows: Sequence[ImpliedValue],
+    declarations: Sequence[CodeSystemDeclaration],
+    codes: Sequence[CodeRow],
+    statvars: Sequence[StatVarRow],
+) -> None:
+    """Checks the `implied_values` rows against what the index holds of each.
+
+    Raises `IndexFormatError` for two rows on one measure's property, for a value that is
+    not a code of the property where a code system of the index is the property, and for a
+    measure the index holds rows of where no row states the value. A measure the index
+    holds no row of, such as a catalogue family, is checked against the graph at export
+    (`code_index.export.verify_implied_values`)."""
+    systems = {declaration.code_system for declaration in declarations}
+    seen: set[tuple[str, str, str]] = set()
+    for declared in rows:
+        prop, value = declared.property_dcid, declared.value_dcid
+        measure = f"{declared.population_type}/{declared.measured_property}"
+        key = (declared.population_type, declared.measured_property, prop)
+        if key in seen:
+            raise IndexFormatError(f"{measure} declares an implied {prop} more than once")
+        seen.add(key)
+        if prop in systems and not any(
+            code.code_system == prop and code.dcid == value for code in codes
+        ):
+            raise IndexFormatError(
+                f"{measure} declares {prop}={value} implied, but {value!r} is not a code of {prop}"
+            )
+        measure_rows = [
+            row
+            for row in statvars
+            if (row.population_type, row.measured_property)
+            == (declared.population_type, declared.measured_property)
+        ]
+        if measure_rows and not any(
+            row.constraint_properties.get(prop) == value for row in measure_rows
+        ):
+            raise IndexFormatError(
+                f"{measure} declares {prop}={value} implied, but no row of it states the value"
             )
 
 

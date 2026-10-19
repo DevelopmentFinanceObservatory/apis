@@ -80,6 +80,20 @@ def make_diagnostics(
     )
 
 
+def with_step_timing(response: ResolveResponse, step: str, ms: int) -> ResolveResponse:
+    """`response` with `ms` booked under `step` in the envelope's `timing_ms.by_step`, for
+    a step that ran before the handler that built the response. A response without
+    timing passes through."""
+    timing = response.diagnostics.timing_ms
+    if timing is None:
+        return response
+    by_step = {**(timing.by_step or {}), step: ms}
+    diagnostics = response.diagnostics.model_copy(
+        update={"timing_ms": timing.model_copy(update={"by_step": by_step})}
+    )
+    return response.model_copy(update={"diagnostics": diagnostics})
+
+
 def iter_response_specs(parts: list[Part]) -> Iterator[Spec]:
     """Yield every response Spec and its equivalent readings, including candidates
     and all matched Specs on no-data parts. Called after region collapse.

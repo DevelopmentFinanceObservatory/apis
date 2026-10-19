@@ -41,7 +41,13 @@ from search.engine.clients.sdmx import EngineSdmxClient, LiveSdmxClient
 from search.engine.concurrency import scoped_concurrency
 from search.engine.entry import dataset_resubmit, parsed, raw_text
 from search.engine.entry.params import EntryParams
-from search.engine.envelope import _terminal_events, make_diagnostics, make_response, now_ms
+from search.engine.envelope import (
+    _terminal_events,
+    make_diagnostics,
+    make_response,
+    now_ms,
+    with_step_timing,
+)
 from search.engine.events import DoneEvent, Event, ResponseEvent
 from search.engine.options.population_memo import OptionsPopulationMemo
 from search.engine.region.codes import ORIGIN_CATALOGUE_STALE
@@ -554,9 +560,12 @@ async def _resolve_pipeline_events(
             yield ev
         return
 
+    lookup_ms: int | None = None
     if isinstance(inp, RawTextInput):
         # Key the first lookup by raw query string. A hit skips extraction and binding.
+        lookup_t0 = now_ms()
         cached = await scope.lookup_raw(inp.query)
+        lookup_ms = now_ms() - lookup_t0
         if cached is not None:
             record.cache = scope.outcome
             async with aclosing(
@@ -619,7 +628,11 @@ async def _resolve_pipeline_events(
         async for ev in events:
             ev = _with_index_drift_warning(ev, warn=warn_index_drift)
             await scope.observe(ev)
-            if isinstance(ev, DoneEvent) and scope.degraded_leg:
+            if isinstance(ev, ResponseEvent) and scope.active and lookup_ms is not None:
+                ev = ResponseEvent(
+                    response=with_step_timing(ev.response, "cache_lookup", lookup_ms)
+                )
+            elif isinstance(ev, DoneEvent) and scope.degraded_leg:
                 ev = ev.model_copy(update={"degraded_leg": True})
             yield ev
     finally:

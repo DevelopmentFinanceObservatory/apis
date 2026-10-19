@@ -21,6 +21,9 @@ its own recall score, capped at the best scored shape of the list: it stands beh
 scored shape at or above that rank, wherever those shapes stand, so a root never leads the
 reading recall scored best.
 
+The seat count is also the root-size limit: a root of more than that many leaves never
+reaches the menu, so a lower count removes whole roots, not a sample of them.
+
 The bind menu and the not-electable list beside it are both seated this way
 (`phase_rank_bind._phase_prune_and_rank`, `phase_rank_bind._refused_on_pinned`).
 """

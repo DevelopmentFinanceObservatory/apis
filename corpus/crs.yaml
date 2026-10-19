@@ -54,7 +54,7 @@
   expect:
     definite:
       measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
-      entities: [{label: DAC, role: origin, expands: true}]
+      entities: [{label: DAC countries, role: origin, expands: true}]
       window: {kind: all}
       operations: []
 

@@ -671,9 +671,17 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
     none is refused on a pinned part, the part refuses without a bind call
     (`_refusal_before_bind`), flagging nothing.
 
-    The shapes are one pool's, ours or the UN System Data Commons' on the pass that runs
-    when ours ends no_data (`ResolveState.pool`), and meet that pool's score floor
-    (`_meets_score_floor`). The open-axis preference, five-tuple family election, the
+    The steps run in this order, and any binder that reads the quantity late keeps it:
+    measure and roles; the quantity read; the form rule; pinned codes; the refusals
+    written to `ResolveState.interpretations`; open-axis preference, family election and
+    collapse; seating; the availability read; bind. The form rule runs before seating, so
+    a shape it refuses holds no seat, and a menu it empties ends in a refusal because the
+    refusals are already recorded.
+
+    The shapes are ours, with `SEARCH_UN_ON_FIRST_MENU` joined by the UN System Data
+    Commons' (`phase_intake._merge_un_pool`), or the UN System Data Commons' alone on the
+    pass that runs when ours ends no_data (`ResolveState.pool`). Each shape meets its own
+    pool's score floor (`_meets_score_floor`). The open-axis preference, five-tuple family election, the
     unasked-axes rule and the measure-family collapse narrow the admissible shapes, and
     the menu seats them in rank order under ``bind_top_k``, a topic root with every leaf
     or none (`seating.seat_menu`). What the phase reads for the readings it may offer
@@ -977,7 +985,11 @@ def _refusal_before_bind(state: ResolveState, *, llm_usage: dict | None = None) 
     on them cannot bind."""
     judged = state.interpretations.interpretations
     reason = state.interpretations.refusal_reason()
-    assert reason is not None
+    if reason is None:
+        # A menu emptied without recording why is a fault upstream; refuse the part loudly
+        # rather than answer from a menu nobody judged.
+        logger.error("part %r reached a refusal with no refused reading recorded", state.variable)
+        return state.no_data("variable_not_resolved", llm_usage=llm_usage)
     return state.no_data(
         reason,
         unbound_qualifiers=tuple(

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import functools
 import hashlib
 import json
 import logging
@@ -35,6 +36,8 @@ if TYPE_CHECKING:
     from google import genai
     from google.genai.types import GenerateContentConfig, ThinkingConfig
 
+    from search.engine.extraction_store import ExtractionStore
+
 _SchemaT = TypeVar("_SchemaT", bound=BaseModel)
 
 logger = logging.getLogger(__name__)
@@ -42,9 +45,9 @@ logger = logging.getLogger(__name__)
 # Lazy singleton, built on first call to generate_structured.
 _CLIENT = None
 
-# Memo hits report zero usage because they skip Gemini. Live calls return None
+# Memo and extraction-store hits report zero usage because they skip Gemini. Live calls return None
 # when Gemini omits usage metadata.
-_MEMO_HIT_USAGE: dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "cached_tokens": 0}
+MEMO_HIT_USAGE: dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "cached_tokens": 0}
 
 # Follower wait limit. HttpOptions.timeout is per phase, so a stalled
 # connection can outlast it. This overall wait uses the same configured bound.
@@ -369,7 +372,7 @@ async def _generate_structured[SchemaT: BaseModel](
     if stored is not None:
         logger.info("LLM memo hit: schema=%s", schema.__name__)
         # Each hit builds a fresh instance so callers can mutate their results independently.
-        return _served(stored, schema, model=llm._model), dict(_MEMO_HIT_USAGE)
+        return _served(stored, schema, model=llm._model), dict(MEMO_HIT_USAGE)
 
     assert lease is not None  # acquire() returns a lease exactly when it missed
     if lease.is_leader:
@@ -393,13 +396,13 @@ async def _generate_structured[SchemaT: BaseModel](
     value, _timed_out, _storable = published
     # Followers report zero usage. The leader's live call reports its token cost.
     logger.info("LLM memo hit: schema=%s", schema.__name__)
-    return _served(value, schema, model=llm._model), dict(_MEMO_HIT_USAGE)
+    return _served(value, schema, model=llm._model), dict(MEMO_HIT_USAGE)
 
 
 def _served[SchemaT: BaseModel](text: bytes, schema: type[SchemaT], *, model: str) -> SchemaT:
     """Parse the model's text the memo holds, for a caller that made no call. A refusal
     reaches that caller as `LLMOutputRefused` with zero usage."""
-    return _parse(text, schema, model=model, usage=dict(_MEMO_HIT_USAGE))
+    return _parse(text, schema, model=model, usage=dict(MEMO_HIT_USAGE))
 
 
 # The loop keeps weak task refs. This set retains leaders serving followers after cancellation.
@@ -507,6 +510,13 @@ def build_memo() -> LLMMemo | None:
     )
 
 
+@functools.cache
+def schema_digest(schema: type[BaseModel]) -> str:
+    """SHA-256 of `schema`'s JSON schema, computed once per class."""
+    canonical = json.dumps(schema.model_json_schema(), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def _memo_key(
     *,
     model: str,
@@ -516,9 +526,10 @@ def _memo_key(
 ) -> str:
     """Hash the resolved model, prompt, schema, and generation config.
 
-    The config dump excludes ``response_schema``. The schema's qualified
-    name identifies it within the process. Other config fields, including the
-    system instruction, temperature, thinking config, and seed, enter the key.
+    The config dump excludes ``response_schema``. The schema enters as its
+    qualified name and a hash of its JSON schema, so a field added without a
+    rename moves the key. Other config fields, including the system
+    instruction, temperature, thinking config, and seed, enter the key.
     A floating model alias keeps its key until the memo entry expires.
 
     ASCII-escaped JSON handles lone surrogates that can survive request
@@ -529,6 +540,7 @@ def _memo_key(
         "model": model,
         "prompt": prompt,
         "schema": f"{schema.__module__}.{schema.__qualname__}",
+        "schema_fields": schema_digest(schema),
         "config": config.model_dump(mode="json", exclude={"response_schema"}),
     }
     canonical = json.dumps(
@@ -548,13 +560,16 @@ class LLM:
         )
 
     Calls are always live. The engine uses ``generate_structured_async`` for
-    memoisation. Tests inject ``FakeLLM``. Subclasses that skip ``__init__``
-    inherit ``_memo = None`` and keep the live-call behaviour.
+    memoisation. ``extraction_store`` holds the extractions ``extract()`` reads
+    before it calls the model. Tests inject ``FakeLLM``. Subclasses that skip
+    ``__init__`` inherit ``_memo = None`` and ``extraction_store = None`` and keep
+    the live-call behaviour.
     """
 
-    # Class-level default lets subclasses that skip __init__ access `_memo`.
-    # Memo-carrying instances override it in __init__.
+    # Class-level defaults let subclasses that skip __init__ access both stores.
+    # Store-carrying instances override them in __init__.
     _memo: LLMMemo | None = None
+    extraction_store: ExtractionStore | None = None
 
     def __init__(
         self,
@@ -564,6 +579,7 @@ class LLM:
         seed: int | None = None,
         thinking_level: str | None = None,
         memo: LLMMemo | None = None,
+        extraction_store: ExtractionStore | None = None,
     ):
         # An instance api_key creates one client shared with its stage clones. Otherwise _client()
         # uses the singleton.
@@ -578,6 +594,11 @@ class LLM:
         # A shared memo serves both app surfaces, and for_stage clones share it.
         # None keeps every call live.
         self._memo = memo
+        self.extraction_store = extraction_store
+
+    def sampling_identity(self) -> dict[str, object]:
+        """The model id, seed and thinking level that, with the request, decide the answer."""
+        return {"model": self._model, "seed": self._seed, "thinking_level": self._thinking_level}
 
     def _client(self) -> genai.Client:
         if self._override_client is not None:

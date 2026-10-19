@@ -22,6 +22,7 @@ from code_index.types import (
     CodeSystemDeclaration,
     ConstraintQuery,
     DatasetDeclaration,
+    ImpliedValue,
     IndexStamp,
     LevelOption,
     MeasureClassDeclaration,
@@ -35,6 +36,8 @@ from code_index.types import (
     party_kind,
 )
 from statvar_members import FiveTuple
+
+_NO_IMPLIED: Mapping[str, str] = MappingProxyType({})
 
 
 class DuplicateDcid(ValueError):
@@ -363,6 +366,7 @@ class CodeIndex:
         "_codes_by_text",
         "_codes_by_tokens",
         "_codes_by_word",
+        "_implied_by_measure",
         "_members_by_source_code",
         "_partly_stated_by_five_tuple",
         "_source_codes_by_dcid",
@@ -376,6 +380,7 @@ class CodeIndex:
         "declarations",
         "families_by_five_tuple",
         "family_by_dcid",
+        "implied_values",
         "listed_by_five_tuple",
         "listed_statvars",
         "measure_classes",
@@ -407,6 +412,7 @@ class CodeIndex:
         listed_statvars: Iterable[StatVarRow] = (),
         shape_slot_defaults: Iterable[ShapeSlotDefault] = (),
         partly_stated_values: Iterable[PartlyStatedValue] = (),
+        implied_values: Iterable[ImpliedValue] = (),
         measure_classes: Iterable[MeasureClassDeclaration] = (),
         variable_aliases: Mapping[str, str] | None = None,
         stat_type_words: Iterable[StatTypeWordDeclaration] = (),
@@ -420,6 +426,17 @@ class CodeIndex:
         self.partly_stated_values = tuple(partly_stated_values)
         """The constraint values a dataset states on only some of its series
         (`PartlyStatedValue`), in declaration order."""
+        self.implied_values = tuple(implied_values)
+        """The constraint values each measure's headline series already means
+        (`ImpliedValue`), in declaration order."""
+        implied_by_measure: dict[tuple[str, str], dict[str, str]] = defaultdict(dict)
+        for implied in self.implied_values:
+            implied_by_measure[(implied.population_type, implied.measured_property)][
+                implied.property_dcid
+            ] = implied.value_dcid
+        self._implied_by_measure = {
+            measure: MappingProxyType(values) for measure, values in implied_by_measure.items()
+        }
         self.measure_classes = tuple(measure_classes)
         """The patterns naming each measure class, in declaration order."""
         self.variable_aliases: dict[str, str] = dict(variable_aliases or {})
@@ -594,6 +611,12 @@ class CodeIndex:
         }
 
     # --- Lookup ---
+
+    def implied_values_of(self, population_type: str, measured_property: str) -> Mapping[str, str]:
+        """Each property mapped to the value the headline series of the measure
+        (`population_type`, `measured_property`) already means (`implied_values`). Empty
+        for a measure that declares none."""
+        return self._implied_by_measure.get((population_type, measured_property), _NO_IMPLIED)
 
     def partly_stated_on(self, five_tuple: FiveTuple) -> Mapping[str, frozenset[tuple[str, str]]]:
         """Each dataset mapped to the (property, value) pairs it states partly on `five_tuple`:

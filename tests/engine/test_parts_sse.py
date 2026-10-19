@@ -16,7 +16,6 @@ from search.engine.extract import _EXTRACTION_SYSTEM_PROMPT, Extraction
 from search.models import RawTextInput, ResolveOptions, ResolveRequest
 from tests.engine._harness import (
     EMPTY_SDMX,
-    PINNED_DATE,
     make_request,
     materialise_double_from_obs,
     offline_resolve,
@@ -24,11 +23,9 @@ from tests.engine._harness import (
 from tests.fixtures import FakeGraph, FakeLLM, _load_json
 from tests.fixtures.keys import fixture_key
 
-_EXTRACT_SYS = _EXTRACTION_SYSTEM_PROMPT.replace("[[TODAY]]", PINNED_DATE.isoformat())
-
 
 def _extract_key(query: str) -> str:
-    return fixture_key(Extraction, _EXTRACT_SYS, query)
+    return fixture_key(Extraction, _EXTRACTION_SYSTEM_PROMPT, query)
 
 
 def _run(coro):

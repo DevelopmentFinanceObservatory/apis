@@ -624,19 +624,20 @@ def test_a_level_refused_on_its_form_is_flagged_when_bind_declines_and_names_it(
     assert "materialise" not in result.timing_by_step
 
 
+@pytest.mark.parametrize("query", ["aid density", "aid per capita"])
 @pytest.mark.parametrize(
     ("nearest", "flagged"), [("ODA", [_ODA_AMOUNT]), (None, [])], ids=["named", "none-named"]
 )
 def test_a_density_no_reading_serves_binds_over_an_empty_menu(
-    nearest: str | None, flagged: list[str], monkeypatch
+    query: str, nearest: str | None, flagged: list[str], monkeypatch
 ):
-    """Neither the ODA amount nor its share of GNI is a density, so no reading of "aid
-    density" is admissible. Bind runs over an empty menu with both readings not electable,
-    and the part refuses on the form, flagging the reading the model names as nearest, or
-    nothing when it names none."""
+    """Neither the ODA amount nor its share of GNI is a density or a per-person series, so
+    no reading of "aid density" or "aid per capita" is admissible. Bind runs over an empty
+    menu with both readings not electable, and the part refuses on the form, flagging the
+    reading the model names as nearest, or nothing when it names none, with no exception."""
     llm = _ReadingLLM(None, nearest=nearest)
     result, _, _ = _resolve(
-        "aid density",
+        query,
         nodes=_ODA_NODES,
         svs=[_ODA_AMOUNT, _ODA_GNI_SHARE],
         place=("Norway", "country/NOR"),

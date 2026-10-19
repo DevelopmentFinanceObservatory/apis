@@ -997,8 +997,6 @@
   tags:
     directional_flow: na
     conjunction: none
-  # Known failure: The family's new age slot lets the model bind Years0, so LifeExpectancy_Person_0Years (1980 to 2020) answers instead of the total.
-  known_failure: {issue: 1298, checks: [measure]}
   expect:
     definite:
       measure:

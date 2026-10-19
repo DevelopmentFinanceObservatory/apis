@@ -39,11 +39,9 @@ from tests.fixtures import FakeGraph, FakeLLM, _load_json, make_resolver
 from tests.fixtures.keys import fixture_key
 from tests.materialise.conftest import FakeGraphReader
 
-_EXTRACT_SYS = _EXTRACTION_SYSTEM_PROMPT.replace("[[TODAY]]", PINNED_DATE.isoformat())
-
 
 def _extract_key(query: str) -> str:
-    return fixture_key(Extraction, _EXTRACT_SYS, query)
+    return fixture_key(Extraction, _EXTRACTION_SYSTEM_PROMPT, query)
 
 
 def _llm_with_extraction(query: str, *, variables: list[str], entities: list[str]) -> FakeLLM:
@@ -118,14 +116,16 @@ def test_clamp_truncates_parts_to_the_unique_clamped_list():
 
 
 def test_no_variable_extracted_yields_one_part_with_the_whole_query_as_variable_text():
-    """Zero extracted variables produce one `no_data` part with the query text."""
-    query = "asdfghjkl qwertyuiop no variable here"
+    """A resolution naming an operation and no variable produces one `no_data` part with
+    the query text. With no operation either it would answer as a catalogue."""
+    query = "rank asdfghjkl qwertyuiop no variable here"
     fake_llm = FakeLLM(
         responses={
             _extract_key(query): {
                 "kind": "resolution",
                 "variables": [],
                 "entities": [],
+                "operations": [{"verb": "rank", "variable": 0, "phrase": "rank", "over": None}],
                 "dates": [],
             }
         }

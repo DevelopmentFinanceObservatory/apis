@@ -79,10 +79,13 @@ class Timing(StrictModel):
     """Latency breakdown, reused at two scopes: the envelope's own
     diagnostics.timing_ms, where total is the whole request's wall-clock
     elapsed time and by_step names the steps that run once per request,
-    shared across every part (e.g. extract), and a part's own timing_ms,
-    where total sums that part's own by_step values and by_step names only
-    the phases that part ran, excluding the shared steps already reported
-    on the envelope. A part's shape_arcs, shape_probe, shape_probe_coverage,
+    shared across every part (coverage; extract; cache_lookup on a raw-text
+    request with the response cache active; entity_check on a request that
+    runs the place check), and a part's own timing_ms, where total sums
+    that part's own by_step values and by_step names the steps that part
+    ran plus a phase_<name> entry for each phase it ran, holding the time
+    no step booked, excluding the shared steps already reported on the
+    envelope. A part's shape_arcs, shape_probe, shape_probe_coverage,
     shape_labels, shape_groups and shape_admission steps are nested inside
     its shape step, so its total leaves them out.
     """

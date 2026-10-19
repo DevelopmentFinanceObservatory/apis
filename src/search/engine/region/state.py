@@ -578,8 +578,8 @@ class UnPool:
     has none to fill a gap with (`None` when it need not), and what the leg's own reads could
     not serve, the UN places they named that the UN front door refuses and their failed UN
     reads (`unserved`), and the reads they swallowed (`lost`). Those reads describe the UN
-    pool alone, so they join the part's records only when the UN pass runs
-    (`pipeline._fill_gap`)."""
+    pool alone, so they join the part's records only when the pool reaches a menu: on the
+    UN pass (`pipeline._fill_gap`), or merged onto ours (`phase_intake._merge_un_pool`)."""
 
     shapes: list[ShapeDraft]
     missed: str | None = None
@@ -845,6 +845,11 @@ class ResolveState:
     # derivation (`phase_intake._phase_derive_shapes`), `None` on the UN pass and on a part
     # whose scope allows no UN provenance or that ended before derivation.
     un_leg: UnLeg | None = None
+    # The UN leg's pool when our pass took it under `SEARCH_UN_ON_FIRST_MENU`
+    # (`phase_intake._merge_un_pool`): merged onto its menu, or late or failed after the
+    # pass waited for it, which `pipeline._fill_gap` warns on. `None` when the pass left the
+    # leg to the UN pass.
+    un_pool: UnPool | None = None
     # Whether the part posted source mentions, so each answer's identity binds the
     # provenances that served it (`spec_build.build_spec`'s `pin_served_provenance`).
     pin_served_provenance: bool = False

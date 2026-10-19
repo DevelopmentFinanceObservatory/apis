@@ -6,11 +6,18 @@ optional lead, a start year, a separator and an end, and the lead fixes the sepa
 ``between`` takes ``and``, ``from`` takes ``to`` or ``until``, and no lead takes ``to``,
 ``-`` or ``–``. A year end yields an ordered range; a latest end ("the latest", "most
 recent year available") yields an open-ended range, as ``since``, ``depuis``, and
-``desde`` do. The latest phrase alone yields a latest entry. ``last``/``past`` year spans
-and decades yield closed ranges ending at caller-supplied ``current_year``.
-``TIME_TEXT_FORMS`` lists every accepted form. Counts accept digits or
-number words through twenty. Relative spans include the current year, and the fixed
-vocabulary covers English, French, and Spanish.
+``desde`` do. The latest phrase alone yields a latest entry.
+
+Wording measured from now resolves against the caller-supplied ``current_year``. Spans
+("last 5 years", "la última década", "au cours des dix dernières années") yield closed
+ranges that include the current year, and "last year", "this year" and "next year" yield
+single years. "The past year" and "the last year" are the last twelve months, the range
+from the year before the current one to the current year; bare "last year" is the
+previous calendar year. The relative rows read with accents folded and after any leading
+"in", "during", "over", "for" or "within" and their Spanish and French counterparts. An
+English "the" stays, since it separates "the last year" from "last year".
+``TIME_TEXT_FORMS`` lists every accepted form. Counts accept digits or number words
+through twenty, and the fixed vocabulary covers English, French, and Spanish.
 
 Other phrases, including reversed ranges, return an empty list and a
 ``TIME_TEXT_NOT_PARSED`` warning. The request stays valid and dateless.
@@ -19,9 +26,10 @@ Other phrases, including reversed ranges, return an empty list and a
 from __future__ import annotations
 
 import re
+import unicodedata
 
 from dfo_platform import WarningSeverity
-from search.engine.extract import ExtractedDate
+from search.engine.extracted_date import ExtractedDate
 from search.models import Warning
 
 TIME_TEXT_NOT_PARSED: str = "time_text_not_parsed"
@@ -68,39 +76,114 @@ TIME_TEXT_FORMS: tuple[str, ...] = (
     "now",
     "last N years",
     "past N years",
+    "in the last N years",
+    "within the past N years",
     "last decade",
     "past decade",
     "over the last decade",
+    "the past N decades",
+    "recent years",
+    "the last few years",
+    "the past year",
+    "the last year",
+    "last year",
+    "this year",
+    "next year",
+    "los últimos N años",
+    "la última década",
+    "las últimas N décadas",
+    "los últimos años",
+    "el último año",
+    "el año pasado",
+    "este año",
+    "el próximo año",
+    "au cours des N dernières années",
+    "les N derniers ans",
+    "derniers N ans",
+    "la dernière décennie",
+    "ces dernières années",
+    "la dernière année",
+    "l'année dernière",
+    "l'année passée",
+    "cette année",
+    "l'année prochaine",
 )
 
-# Relative spans accept single number words through twenty. Larger counts use digits.
+# Number words one to twenty in English, Spanish and French, accents folded. Larger
+# counts use digits.
+_NUMBER_WORDS_BY_LANGUAGE: tuple[str, ...] = (
+    "one two three four five six seven eight nine ten eleven twelve thirteen fourteen "
+    "fifteen sixteen seventeen eighteen nineteen twenty",
+    "uno dos tres cuatro cinco seis siete ocho nueve diez once doce trece catorce quince "
+    "dieciseis diecisiete dieciocho diecinueve veinte",
+    "un deux trois quatre cinq six sept huit neuf dix onze douze treize quatorze quinze "
+    "seize dix-sept dix-huit dix-neuf vingt",
+)
 _NUMBER_WORDS: dict[str, int] = {
-    "one": 1,
-    "two": 2,
-    "three": 3,
-    "four": 4,
-    "five": 5,
-    "six": 6,
-    "seven": 7,
-    "eight": 8,
-    "nine": 9,
-    "ten": 10,
-    "eleven": 11,
-    "twelve": 12,
-    "thirteen": 13,
-    "fourteen": 14,
-    "fifteen": 15,
-    "sixteen": 16,
-    "seventeen": 17,
-    "eighteen": 18,
-    "nineteen": 19,
-    "twenty": 20,
+    word: count
+    for words in _NUMBER_WORDS_BY_LANGUAGE
+    for count, word in enumerate(words.split(), start=1)
 }
-_SPAN_WORDS = r"(?:last|past)"
-_SPAN_COUNT = rf"(\d{{1,2}}|{'|'.join(_NUMBER_WORDS)})"
-_RELATIVE_YEARS_RE = re.compile(rf"^(?:over\s+the\s+)?{_SPAN_WORDS}\s+{_SPAN_COUNT}\s+years?$")
-_RELATIVE_DECADE_RE = re.compile(rf"^(?:over\s+the\s+)?{_SPAN_WORDS}\s+decade$")
+_COUNT = rf"(?P<count>\d{{1,2}}|{'|'.join(_NUMBER_WORDS)})"
+
+# Words that may open a relative wording and add nothing to its years, in any number
+# and order: "in the last 5 years", "durante los últimos 10 años", "au cours des dix
+# dernières années". The English rows take "the" themselves.
+_RELATIVE_LEADS_RE = re.compile(
+    r"^(?:(?:in|during|over|for|within|en|durante|los|las|la|el"
+    r"|au\s+cours\s+des?|pendant|durant|sur|les|ces)\s+)*"
+)
+
 _DECADE_YEARS = 10
+# "Recent years" states no count and reads as the last five years ending at the
+# current year, as do "the last few years", "los últimos años" and "ces dernières
+# années".
+_RECENT_YEARS = 5
+# Twelve months back from now cross into the year before, so "the past year", "the last
+# year", "el último año" and "la dernière année" cover that year and the current one.
+_TWELVE_MONTH_YEARS = 2
+_THE = r"(?:the\s+)?"
+
+# Each row is a span measured back from now, accents folded and leads removed, and the
+# years one counted unit covers. A row without a count covers one unit.
+_RELATIVE_SPANS: tuple[tuple[re.Pattern[str], int], ...] = tuple(
+    (re.compile(rf"^(?:{pattern})$"), unit_years)
+    for pattern, unit_years in (
+        (rf"{_THE}(?:last|past)\s+{_COUNT}\s+years?", 1),
+        (rf"{_THE}(?:last|past)\s+decade", _DECADE_YEARS),
+        (rf"{_THE}(?:last|past)\s+{_COUNT}\s+decades", _DECADE_YEARS),
+        (rf"{_THE}(?:recent\s+years|(?:last|past)\s+few\s+years)", _RECENT_YEARS),
+        (rf"{_THE}past\s+year|the\s+last\s+year", _TWELVE_MONTH_YEARS),
+        (rf"ultimos\s+{_COUNT}\s+anos", 1),
+        (r"ultima\s+decada", _DECADE_YEARS),
+        (rf"ultimas\s+{_COUNT}\s+decadas", _DECADE_YEARS),
+        (r"ultimos\s+anos|anos\s+recientes", _RECENT_YEARS),
+        (r"ultimo\s+ano", _TWELVE_MONTH_YEARS),
+        (rf"{_COUNT}\s+(?:dernieres\s+annees|derniers\s+ans)", 1),
+        (rf"dernieres\s+{_COUNT}\s+annees", 1),
+        (rf"derniers\s+{_COUNT}\s+ans", 1),
+        (r"derniere\s+decennie", _DECADE_YEARS),
+        (rf"{_COUNT}\s+dernieres\s+decennies", _DECADE_YEARS),
+        (r"dernieres\s+annees|annees\s+recentes", _RECENT_YEARS),
+        (r"derniere\s+annee", _TWELVE_MONTH_YEARS),
+    )
+)
+# Each row is a single year measured from now, read like the spans, and its offset
+# from the current year.
+_RELATIVE_YEARS: tuple[tuple[re.Pattern[str], int], ...] = tuple(
+    (re.compile(rf"^(?:{pattern})$"), offset)
+    for pattern, offset in (
+        (r"last\s+year", -1),
+        (r"this\s+year", 0),
+        (r"next\s+year", 1),
+        (r"ano\s+pasado", -1),
+        (r"este\s+ano", 0),
+        (r"proximo\s+ano|ano\s+(?:proximo|que\s+viene)", 1),
+        (r"l'\s*(?:annee\s+(?:derniere|passee)|an\s+dernier)", -1),
+        (r"cette\s+annee", 0),
+        (r"l'\s*(?:annee\s+prochaine|an\s+prochain)", 1),
+    )
+)
 
 _WARN_SEVERITY: WarningSeverity = "warn"
 
@@ -109,9 +192,10 @@ def parse_time_text(text: str, *, current_year: int) -> tuple[list[ExtractedDate
     """Parse a free-form time phrase into zero or more ExtractedDate entries
     -- the same structured shape raw_text's LLM extraction produces -- so a
     caller feeds the result through extract.dates_to_request() unchanged.
-    Pure and deterministic. Returns dates or a warning without I/O. ``current_year`` resolves the
-    relative-span rows ("last N years", "last decade") against a closed
-    range ending at that year."""
+    Pure and deterministic. Returns dates or a warning without I/O. ``current_year`` resolves
+    wording measured from now: a span ("last N years", "last decade", "recent years", "the
+    past year") is a closed range ending at that year, and "last year", "this year" and
+    "next year" are the years before, at and after it."""
     normalised = text.strip().casefold()
 
     if _LATEST_RE.match(normalised):
@@ -127,17 +211,26 @@ def parse_time_text(text: str, *, current_year: int) -> tuple[list[ExtractedDate
         )
         return (dates, None) if dates else ([], _not_parsed_warning(text))
 
-    years_match = _RELATIVE_YEARS_RE.match(normalised)
-    if years_match:
-        span_years = _resolve_span_count(years_match.group(1))
-        if span_years is not None:
-            return _relative_range(current_year, span_years), None
-        return [], _not_parsed_warning(text)
-
-    if _RELATIVE_DECADE_RE.match(normalised):
-        return _relative_range(current_year, _DECADE_YEARS), None
+    relative = _RELATIVE_LEADS_RE.sub("", _fold_accents(normalised), count=1)
+    for pattern, unit_years in _RELATIVE_SPANS:
+        if span_match := pattern.match(relative):
+            token = span_match.groupdict().get("count")
+            count = 1 if token is None else _resolve_span_count(token)
+            if count is None:
+                return [], _not_parsed_warning(text)
+            return _relative_range(current_year, count * unit_years), None
+    for pattern, offset in _RELATIVE_YEARS:
+        if pattern.match(relative):
+            return [ExtractedDate(kind="point", start=str(current_year + offset))], None
 
     return [], _not_parsed_warning(text)
+
+
+def _fold_accents(text: str) -> str:
+    """`text` with combining accents dropped and a typographic apostrophe made plain, so
+    "últimos años" reads as "ultimos anos" and "l’année" as "l'annee"."""
+    decomposed = unicodedata.normalize("NFKD", text.replace("\u2019", "'"))
+    return "".join(char for char in decomposed if not unicodedata.combining(char))
 
 
 def _bounded_dates(
@@ -158,9 +251,9 @@ def _bounded_dates(
 
 
 def _resolve_span_count(token: str) -> int | None:
-    """A relative-span count token (a bare digit string or a number word up
-    to twenty) resolved to a positive int, or None for a zero count ("last 0
-    years" is well-formed grammar with no representable range)."""
+    """A relative-span count token (a bare digit string or a number word up to twenty
+    in English, Spanish or French) resolved to a positive int, or None for a zero count
+    ("last 0 years" is well-formed grammar with no representable range)."""
     count = int(token) if token.isdigit() else _NUMBER_WORDS[token]
     return count if count > 0 else None
 

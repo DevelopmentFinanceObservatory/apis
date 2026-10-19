@@ -41,7 +41,7 @@ from tests.engine._builders import (
 from tests.engine._builders import (
     shape_five_tuple as _shape,
 )
-from tests.engine._harness import PINNED_DATE, make_request, offline_resolve
+from tests.engine._harness import make_request, offline_resolve
 from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, FakeLLM, _load_json
 from tests.fixtures.keys import fixture_key
@@ -50,11 +50,9 @@ from tests.fixtures.keys import fixture_key
 # Extraction key helper for per-test FakeLLM fixtures
 # ---------------------------------------------------------------------------
 
-_EXTRACT_SYS = _EXTRACTION_SYSTEM_PROMPT.replace("[[TODAY]]", PINNED_DATE.isoformat())
-
 
 def _extract_key(query: str) -> str:
-    return fixture_key(Extraction, _EXTRACT_SYS, query)
+    return fixture_key(Extraction, _EXTRACTION_SYSTEM_PROMPT, query)
 
 
 def _rr(

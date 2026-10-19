@@ -29,6 +29,7 @@ from origin_catalogue.graph import (
     UN_BASE_URL_ENV,
 )
 from origin_catalogue.topic_walk import TOPIC_EXPAND_MAX_DEPTH, TOPIC_EXPAND_MAX_MEMBERS
+from search.engine.extraction_store import is_extraction_store_mode
 from search.observations import observation_settings
 from statvar_members import DEFAULT_SUBJECT_CEILING
 from unit_words.currency_codes import ISO_4217_CODES
@@ -260,12 +261,19 @@ class SearchSettings(BaseSettings):
 
     # How long a part waits for the UN leg, its resolve and the derivation of its shapes,
     # from the start of derivation, in seconds. The UN derivation runs beside ours, and only
-    # a part whose own pass ends no_data waits for it. Past it that part keeps our answer
-    # and carries un_system_unavailable. Run
+    # a part whose own pass ends no_data waits for it, or with un_on_first_menu one whose
+    # best shape is weak. Past it that part keeps our answer and carries
+    # un_system_unavailable. Run
     # beside ours against the live UN deployment, ten queries' UN legs finished 0.89 to
     # 1.57 s after derivation began; a 1.0 s wait missed one of the ten. The `un_derive` log
     # line gives each derivation's time. Must be in (0, un_resolve_timeout_s].
     un_first_pass_wait_s: float = 1.5
+
+    # Whether our pass's menu also holds the UN leg's shapes, each meeting the same admission
+    # and its own pool's floor (`phase_intake._merge_un_pool`). Only a part whose best shape
+    # scores below `phase_intake.UN_MERGE_WEAK_SCORE` takes them, waiting for the UN leg up
+    # to un_first_pass_wait_s. A part whose merged pass ends no_data still runs the UN pass.
+    un_on_first_menu: bool = False
 
     # Timeout in seconds for a definite answer's related-measures reads (`related`), which
     # start beside the answer's other post-election reads. Past it the answer states
@@ -328,6 +336,11 @@ class SearchSettings(BaseSettings):
 
     # Maximum number of candidate shapes (across all families) presented to the universal
     # choose+bind prompt. Retrieval ranks shapes. The LLM elects the winner.
+    # 4 seats lose 21 elections on 399 definite dev items (97.5% to 93.0%).
+    # No acceptable shape ranks below 8: recall found an expected shape for 131 parts, the
+    # menu seated one for 127, and policy refused the other 4.
+    # Seating all 255 shapes fills more than 8 on 123 menus, gains nothing, adds 300 ms at
+    # p95, and sends up to 60,010 tokens against a 64k request ceiling.
     bind_top_k: int = 8
 
     # A Topic expands when its score is within this margin of the pool top, including the
@@ -438,6 +451,11 @@ class SearchSettings(BaseSettings):
 
     # Oversized answers are served without storage, protecting other memo entries from eviction.
     llm_memo_max_entry_bytes: int = 256 * 1024
+
+    # Where extract() keeps the model's reading of each query: `off`, `memory` (an in-process
+    # LRU with no TTL) or `file:<path>` (JSON lines a later run replays). Keys hold the extract
+    # prompt and schema, so an edit to either reads afresh.
+    extract_store: str = "memory"
 
     # -- Observation values ------------------------------------------------
     # Worker cap for one preview fetch. 1 runs its pairs sequentially.
@@ -846,7 +864,7 @@ class SearchSettings(BaseSettings):
             )
 
     def _validate_cache_and_memo_bounds(self) -> None:
-        """Response-cache and LLM-memo cache bounds."""
+        """Response-cache, LLM-memo and extraction-store settings."""
         if self.response_cache_max_bytes < 1:
             raise ValueError(
                 "SEARCH_RESPONSE_CACHE_MAX_BYTES must be >= 1; got "
@@ -885,6 +903,11 @@ class SearchSettings(BaseSettings):
                 "SEARCH_LLM_MEMO_MAX_ENTRY_BYTES "
                 f"({self.llm_memo_max_entry_bytes!r}) must be <= "
                 f"SEARCH_LLM_MEMO_MAX_BYTES ({self.llm_memo_max_bytes!r})"
+            )
+        if not is_extraction_store_mode(self.extract_store):
+            raise ValueError(
+                "SEARCH_EXTRACT_STORE must be off, memory or file:<path>; got "
+                f"{self.extract_store!r}"
             )
 
 

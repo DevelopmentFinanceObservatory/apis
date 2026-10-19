@@ -106,6 +106,7 @@ from search.engine.errors import (
     LLMInfraError,
 )
 from search.engine.events import DoneEvent, ErrorEvent, Event, serialize_sse
+from search.engine.extraction_store import build_extraction_store
 from search.engine.options.options_response_cache import (
     ComputedOptions,
     OptionsResponseCache,
@@ -893,18 +894,23 @@ async def _open_search_deps(
         logger.info("SharedSkillsIndex started")
 
     if llm is None:
-        # Check `GEMINI_API_KEY` before building the LLM. A zero memo limit disables the memo.
+        # Check `GEMINI_API_KEY` before building the LLM. A zero memo limit disables the memo,
+        # and `SEARCH_EXTRACT_STORE=off` the extraction store.
         try:
             _llm_mod.warm()
         except LLMInfraError:
             logger.critical("LLM warm-up failed; check GEMINI_API_KEY", exc_info=True)
             raise
-        llm = LLM(memo=build_memo())
+        llm = LLM(
+            memo=build_memo(),
+            extraction_store=build_extraction_store(settings().extract_store),
+        )
         logger.info(
-            "LLM memo built (max_bytes=%d max_entry_bytes=%d ttl_s=%.0f)",
+            "LLM memo built (max_bytes=%d max_entry_bytes=%d ttl_s=%.0f), extraction store %s",
             settings().llm_memo_max_bytes,
             settings().llm_memo_max_entry_bytes,
             settings().llm_memo_ttl_s,
+            settings().extract_store,
         )
 
     variable_breadth: VariableBreadthReader | None = None

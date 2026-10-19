@@ -430,11 +430,17 @@ async def run_extract_cell(
 ) -> None:
     """Re-extract captured queries with the rung's prompt and seeds. Score shape
     recall, resolved entities, dates, and the variable split against the capture.
-    Replace `[[TODAY]]` with the capture's date so extraction matches its bind menus.
+    Replace `[[TODAY]]` with the capture's date and `[[YEAR]]` with its year so extraction
+    matches its bind menus.
     Store each single extract call under `leg=0`."""
     capture.require_complete()
     case_by_id = {c.id: c for c in cases}
-    extract_system = compose(rung.extract).replace("[[TODAY]]", capture.manifest.substituted_date)
+    substituted_date = capture.manifest.substituted_date
+    extract_system = (
+        compose(rung.extract)
+        .replace("[[TODAY]]", substituted_date)
+        .replace("[[YEAR]]", substituted_date[:4])
+    )
     done = out.done_keys()
     semaphore = asyncio.Semaphore(concurrency)
 

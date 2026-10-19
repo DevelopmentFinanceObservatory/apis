@@ -54,6 +54,8 @@ class TestNumericBounds:
             ("SEARCH_LLM_MEMO_TTL_S", "nan"),
             ("SEARCH_LLM_MEMO_MAX_BYTES", "-1"),
             ("SEARCH_LLM_MEMO_MAX_ENTRY_BYTES", "0"),
+            ("SEARCH_EXTRACT_STORE", "disk"),
+            ("SEARCH_EXTRACT_STORE", "file:"),
         ],
     )
     def test_numeric_bounds_out_of_range_raises(

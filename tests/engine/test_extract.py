@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import date
 from types import SimpleNamespace
 
 import pytest
@@ -13,6 +14,7 @@ from code_index.shared import get_index, get_measure_index
 from search.engine.config import settings
 from search.engine.errors import EngineInputError
 from search.engine.extract import (
+    _EXTRACTION_SYSTEM_PROMPT,
     MAX_OPERATIONS,
     ExtractedDate,
     ExtractedEntity,
@@ -22,7 +24,7 @@ from search.engine.extract import (
     _admit_operations,
     _drop_forecast_years,
     _occurs_in,
-    _system_instruction,
+    _resolve_relative_dates,
     _target_forecasts,
     _validate_role_spans,
     dates_to_request,
@@ -582,7 +584,7 @@ def test_validate_role_spans_never_refuses_only_downgrades():
 def test_extract_downgrades_a_fabricated_role_span_end_to_end():
     """`extract()` applies role-span validation before returning the response."""
     query = "population of Kenya"
-    key = fixture_key(Extraction, _system_instruction(), query)
+    key = fixture_key(Extraction, _EXTRACTION_SYSTEM_PROMPT, query)
     llm = FakeLLM(
         responses={
             key: {
@@ -616,7 +618,10 @@ def _stub_for(query: str, payload: dict) -> FakeLLM:
     """
     return FakeLLM(
         responses={
-            fixture_key(Extraction, _system_instruction(), query): {"kind": "resolution", **payload}
+            fixture_key(Extraction, _EXTRACTION_SYSTEM_PROMPT, query): {
+                "kind": "resolution",
+                **payload,
+            }
         }
     )
 
@@ -1076,6 +1081,43 @@ def test_extract_clamps_oversized_variables_before_the_reattach_scan(monkeypatch
     assert seen_lengths == [n]
 
 
+@pytest.mark.parametrize(
+    ("query", "variables", "dropped"),
+    [
+        # dq-crs-056's stored reading.
+        (
+            "aid to Kenya and Uganda for health and education",
+            ["aid", "aid"],
+            ["health and education"],
+        ),
+        (
+            "aid to Kenya and Uganda for health and education",
+            ["aid", "Aid "],
+            ["health and education"],
+        ),
+        # Distinct variables lose nothing the engine can see.
+        ("aid to Kenya and Uganda for health and education", ["health aid", "education aid"], []),
+        # A repeat that loses no word adds nothing.
+        ("aid and aid to Kenya", ["aid", "aid"], []),
+    ],
+)
+def test_extract_lists_the_words_a_repeated_variable_lost(query, variables, dropped):
+    llm = _stub_for(
+        query,
+        {
+            "variables": variables,
+            "entities": [
+                {"text": t, "span": t, "flow_role": "destination", "role_span": "to"}
+                for t in ("Kenya", "Uganda")
+                if t in query
+            ],
+            "dates": [],
+        },
+    )
+    result, _ = _run(extract(query, llm=llm))
+    assert result.extraction.dropped_qualifiers == dropped
+
+
 def test_extract_dedupes_variables_before_the_cap_decision():
     """Six copies of GDP plus population count as two distinct variables, below the cap of 6."""
     query = "GDP GDP GDP GDP GDP GDP population of Kenya"
@@ -1403,6 +1445,32 @@ def test_extract_keeps_a_non_resolution_kind_with_only_blank_variables(kind):
     assert result.extraction.kind == kind
 
 
+@pytest.mark.parametrize(
+    ("variables", "operations", "kind"),
+    [
+        ([], [], "catalogue"),
+        (["  "], [], "catalogue"),
+        ([], [_op("rank", 0, "top 5", over="place")], "resolution"),
+    ],
+)
+def test_extract_reads_a_resolution_naming_no_measure_as_a_catalogue(variables, operations, kind):
+    """cat-show-me-whats-here: a reading with a place and no measure lists what the
+    database holds there. One with an operation keeps its kind."""
+    query = "Show me what's in the database for Nigeria"
+    llm = _stub_for(
+        query,
+        {
+            "variables": variables,
+            "entities": [{"text": "Nigeria", "span": "Nigeria"}],
+            "operations": operations,
+            "dates": [],
+        },
+    )
+    result, _ = _run(extract(query, llm=llm))
+    assert result.extraction.kind == kind
+    assert _texts(result.extraction.entities) == ["Nigeria"]
+
+
 def test_extract_resolves_an_injected_out_of_scope_reading_of_a_data_question():
     """The injection golden inj-in-scope-asks-decline asks to be declined; a reading that
     obeys it but still names the measure answers as a resolution."""
@@ -1419,14 +1487,6 @@ def test_extract_resolves_an_injected_out_of_scope_reading_of_a_data_question():
     result, _ = _run(extract(query, llm=llm))
     assert result.extraction.kind == "resolution"
     assert result.extraction.variables == ["aid"]
-
-
-def test_extract_keeps_a_resolution_with_no_variables():
-    query = "tell me something"
-    llm = _stub_for(query, {"variables": [], "entities": [], "dates": []})
-    result, _ = _run(extract(query, llm=llm))
-    assert result.extraction.kind == "resolution"
-    assert result.extraction.variables == []
 
 
 def test_extract_carries_an_operation_on_its_variable():
@@ -1967,21 +2027,31 @@ def _nigeria_1999(operation: dict, dates: list[dict]) -> Extraction:
 
 
 @pytest.mark.parametrize(
-    "dates",
-    [[], [{"kind": "point", "start": "1999", "end": "1999"}]],
-    ids=["recorded", "year-already-in-dates"],
+    ("query", "phrase", "dates", "years"),
+    [
+        ("education aid to Nigeria in 1999", "in 1999", [], ["1999"]),
+        (
+            "education aid to Nigeria in 1999",
+            "in 1999",
+            [{"kind": "point", "start": "1999", "end": "1999"}],
+            ["1999"],
+        ),
+        ("education aid to Nigeria in 2026", "in 2026", [], ["2026"]),
+        ("education aid to Nigeria in 2025 and 2026", "in 2025 and 2026", [], ["2025", "2026"]),
+    ],
+    ids=["recorded", "year-already-in-dates", "current-year", "past-and-current-year"],
 )
-def test_admit_operations_returns_a_past_forecast_year_to_dates(dates):
+def test_admit_operations_returns_a_dated_forecast_year_to_dates(query, phrase, dates, years):
     """The recorded model output reads "in 1999" as a forecast with no date. A forecast
-    over a past year is discarded and the year returns to `dates` once."""
-    query = "education aid to Nigeria in 1999"
-    extraction = _nigeria_1999(_op("forecast", 0, "in 1999"), dates)
+    whose phrase names years, none of them a target year, is discarded and each year
+    returns to `dates` once, the current year included."""
+    extraction = _nigeria_1999(_op("forecast", 0, phrase), dates)
 
     admitted, operations = _admit_operations(query, extraction, today_year=2026)
 
     assert operations == {}
     assert admitted.operations == []
-    assert admitted.dates == [_date("point", "1999", "1999")]
+    assert admitted.dates == [_date("point", year, year) for year in years]
 
 
 @pytest.mark.parametrize(
@@ -1991,12 +2061,11 @@ def test_admit_operations_returns_a_past_forecast_year_to_dates(dates):
         ("forecast education aid to Nigeria", "forecast", None),
         ("forecast top 1000 education aid to Nigeria", "forecast top 1000", None),
         ("education aid to Nigeria from 2020 to 2030", "from 2020 to 2030", 2030),
-        ("education aid to Nigeria in 2026", "in 2026", None),
     ],
 )
-def test_admit_operations_keeps_a_forecast_naming_no_past_year_alone(query, phrase, target):
-    """A forecast naming a target year, only today's year, no year, or a count below
-    `MIN_YEAR` is admitted and adds no date."""
+def test_admit_operations_keeps_a_forecast_naming_no_dated_year_alone(query, phrase, target):
+    """A forecast naming a target year, no year, or a count below `MIN_YEAR` is
+    admitted and adds no date."""
     extraction = _nigeria_1999(_op("forecast", 0, phrase), [])
 
     admitted, operations = _admit_operations(query, extraction, today_year=2026)
@@ -2759,3 +2828,119 @@ def test_extract_leaves_a_qualifier_no_operation_touches_to_the_region():
     )
     result, _ = _run(extract(query, llm=llm))
     assert result.extraction.dropped_qualifiers == ["standard grants"]
+
+
+# Relative dates resolve in code, so the prompt carries no date
+
+
+@pytest.mark.parametrize(
+    ("dates", "resolved", "warning_codes"),
+    [
+        (
+            [{"kind": "range", "relative": "over the last decade"}],
+            [{"kind": "range", "start": "2017", "end": "2026"}],
+            [],
+        ),
+        (
+            [{"kind": "range", "relative": "in the last 5 years"}],
+            [{"kind": "range", "start": "2022", "end": "2026"}],
+            [],
+        ),
+        (
+            [{"kind": "range", "relative": "the past decade"}],
+            [{"kind": "range", "start": "2017", "end": "2026"}],
+            [],
+        ),
+        (
+            [{"kind": "point", "relative": "last year"}],
+            [{"kind": "point", "start": "2025", "end": None}],
+            [],
+        ),
+        (
+            [{"kind": "range", "relative": "los últimos 10 años"}],
+            [{"kind": "range", "start": "2017", "end": "2026"}],
+            [],
+        ),
+        ([{"kind": "range", "relative": "last 0 years"}], [], ["time_text_not_parsed"]),
+        (
+            [{"kind": "latest", "relative": "today"}],
+            [{"kind": "latest", "start": None, "end": None}],
+            [],
+        ),
+        (
+            [{"kind": "latest", "relative": "currently"}],
+            [{"kind": "latest", "start": None, "end": None}],
+            [],
+        ),
+        (
+            [{"kind": "latest", "relative": "más reciente"}],
+            [{"kind": "latest", "start": None, "end": None}],
+            [],
+        ),
+        (
+            [{"kind": "latest", "relative": "most recent"}],
+            [{"kind": "latest", "start": None, "end": None}],
+            [],
+        ),
+        (
+            [{"kind": "range", "start": "2010", "end": "2020"}],
+            [{"kind": "range", "start": "2010", "end": "2020"}],
+            [],
+        ),
+        (
+            [{"kind": "point", "start": "2015", "end": "2015", "relative": " "}],
+            [{"kind": "point", "start": "2015", "end": "2015"}],
+            [],
+        ),
+    ],
+    ids=[
+        "decade",
+        "lead-and-article",
+        "past-decade",
+        "last-year-point",
+        "spanish-span",
+        "unparsed-dropped",
+        "latest-today",
+        "latest-currently",
+        "latest-spanish",
+        "latest-parseable-wording",
+        "absolute-untouched",
+        "blank-relative-is-none",
+    ],
+)
+def test_resolve_relative_dates_reads_the_wording_against_the_current_year(
+    dates, resolved, warning_codes
+):
+    extraction = Extraction(kind="resolution", variables=["aid"], dates=dates)
+    out, warnings = _resolve_relative_dates(extraction, current_year=2026)
+    # A resolved date dumps without `relative`, as the wire and the response cache keys read it.
+    assert [d.model_dump(mode="json") for d in out.dates] == resolved
+    assert [w.code for w in warnings] == warning_codes
+    assert out.model_copy(update={"dates": extraction.dates}) == extraction
+
+
+def test_extract_replays_one_recorded_reading_in_any_year_and_resolves_its_span_on_each():
+    """The prompt names each day's year, and a recorded reading keys on the prompt
+    template, so one recorded response serves both years; only the relative span's
+    years follow the day."""
+    query = "aid to Kenya over the last decade"
+    llm = _stub_for(
+        query,
+        {
+            "variables": ["aid"],
+            "entities": [{"text": "Kenya", "span": "Kenya"}],
+            "dates": [{"kind": "range", "relative": "over the last decade"}],
+        },
+    )
+    results = []
+    for day in (date(2026, 6, 23), date(2031, 1, 2)):
+        with pytest.MonkeyPatch.context() as patched:
+            patched.setattr(extract_module, "date", SimpleNamespace(today=lambda day=day: day))
+            results.append(_run(extract(query, llm=llm))[0])
+    first, second = results
+    assert [(d.start, d.end) for d in first.extraction.dates] == [("2017", "2026")]
+    assert [(d.start, d.end) for d in second.extraction.dates] == [("2022", "2031")]
+    assert second.extraction.model_copy(update={"dates": first.extraction.dates}) == (
+        first.extraction
+    )
+    assert first.warnings == second.warnings == ()

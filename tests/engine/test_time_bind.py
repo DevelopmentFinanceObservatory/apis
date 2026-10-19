@@ -176,10 +176,85 @@ class TestRelativeSpans:
         assert warning is None
         assert dates[0].start == str(_CURRENT_YEAR - 5 + 1)
 
-    def test_recent_years_stays_unparsed(self) -> None:
-        """ "In recent years" carries no stated span and stays unparsed,
-        defaulting the same way a part with no time_text does."""
-        dates, warning = parse_time_text("in recent years", current_year=_CURRENT_YEAR)
+    @pytest.mark.parametrize(
+        ("text", "start"),
+        [
+            ("the last 5 years", "2022"),
+            ("in the last 5 years", "2022"),
+            ("during the last 5 years", "2022"),
+            ("for the past 5 years", "2022"),
+            ("within the last five years", "2022"),
+            ("over the past 10 years", "2017"),
+            ("the past three years", "2024"),
+            ("in the past decade", "2017"),
+            ("the past decade", "2017"),
+            ("the last two decades", "2007"),
+            ("over the past 2 decades", "2007"),
+            ("recent years", "2022"),
+            ("in recent years", "2022"),
+            ("over the last few years", "2022"),
+            ("los últimos 10 años", "2017"),
+            ("en los últimos diez años", "2017"),
+            ("últimos 5 años", "2022"),
+            ("ultimos 5 anos", "2022"),
+            ("durante la última década", "2017"),
+            ("las últimas dos décadas", "2007"),
+            ("en los últimos años", "2022"),
+            ("au cours des dix dernières années", "2017"),
+            ("les 5 derniers ans", "2022"),
+            ("derniers 5 ans", "2022"),
+            ("pendant les dernières dix années", "2017"),
+            ("la dernière décennie", "2017"),
+            ("sur les deux dernières décennies", "2007"),
+            ("ces dernières années", "2022"),
+            ("past year", "2025"),
+            ("the past year", "2025"),
+            ("in the past year", "2025"),
+            ("over the past year", "2025"),
+            ("the last year", "2025"),
+            ("in the last year", "2025"),
+            ("over the last year", "2025"),
+            ("el último año", "2025"),
+            ("en el último año", "2025"),
+            ("la dernière année", "2025"),
+            ("au cours de la dernière année", "2025"),
+        ],
+    )
+    def test_spans_measured_from_now(self, text: str, start: str) -> None:
+        """A lead, an article, "past" or "last", a count in digits or words, decades,
+        "recent years" and the Spanish and French forms all close at current_year."""
+        dates, warning = parse_time_text(text, current_year=_CURRENT_YEAR)
+        assert warning is None
+        assert [(d.kind, d.start, d.end) for d in dates] == [("range", start, "2026")]
+
+    @pytest.mark.parametrize(
+        ("text", "year"),
+        [
+            ("last year", "2025"),
+            ("for last year", "2025"),
+            ("this year", "2026"),
+            ("for this year", "2026"),
+            ("next year", "2027"),
+            ("el año pasado", "2025"),
+            ("este año", "2026"),
+            ("el próximo año", "2027"),
+            ("el año que viene", "2027"),
+            ("l'année dernière", "2025"),
+            ("l'année passée", "2025"),
+            ("l\u2019an dernier", "2025"),
+            ("cette année", "2026"),
+            ("l'année prochaine", "2027"),
+            ("l'an prochain", "2027"),
+        ],
+    )
+    def test_years_measured_from_now_are_points(self, text: str, year: str) -> None:
+        dates, warning = parse_time_text(text, current_year=_CURRENT_YEAR)
+        assert warning is None
+        assert [(d.kind, d.start, d.end) for d in dates] == [("point", year, None)]
+
+    def test_relative_wording_needs_a_relative_word(self) -> None:
+        """Leads alone make nothing relative: "in 2015" stays outside the grammar."""
+        dates, warning = parse_time_text("in 2015", current_year=_CURRENT_YEAR)
         assert dates == []
         assert warning is not None
         assert warning.code == TIME_TEXT_NOT_PARSED
@@ -217,7 +292,8 @@ class TestUnparsed:
             "202",
             "20155",
             "2015 until 2024",
-            "next year",
+            "last 0 decades",
+            "the next year",
             "Q1 2015",
             "current year",
             "the current year",

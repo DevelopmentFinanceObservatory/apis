@@ -168,6 +168,24 @@ class ShapeSlotDefault:
 
 
 @dataclass(frozen=True, slots=True)
+class ImpliedValue:
+    """A constraint value the headline series of one measure already means.
+
+    The measure is a `populationType` and `measuredProperty` pair, whatever its statType,
+    qualifier or denominator. Its headline series states nothing on the property, and the
+    series stating the value read the same thing: life expectancy is life expectancy at
+    age 0, and gross domestic product is the product of all economic activities. A binding
+    of the value adds nothing where the family's totals state nothing on the property, so
+    election releases it and the headline answers.
+    """
+
+    population_type: str
+    measured_property: str
+    property_dcid: str
+    value_dcid: str
+
+
+@dataclass(frozen=True, slots=True)
 class PartlyStatedValue:
     """A constraint value a dataset states on only some of the series that hold it.
 

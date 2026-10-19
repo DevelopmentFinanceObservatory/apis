@@ -27,7 +27,7 @@ from code_index import (
     parse_index,
 )
 from code_index.query import row_five_tuple
-from code_index.types import PartlyStatedValue, PartyWord, StatedWord
+from code_index.types import ImpliedValue, PartlyStatedValue, PartyWord, StatedWord
 from entity_resolution.types import KINDS
 
 from .conftest import FIXTURE_PATH
@@ -741,3 +741,61 @@ def test_loader_rejects_a_partly_stated_value_the_rows_do_not_bear_out(
 ):
     with pytest.raises(IndexFormatError):
         parse_index(_debt_statistics(*rows, partly_stated=declared))
+
+
+def _implied(population_type: str, measured_property: str, prop: str, value: str) -> dict:
+    return {
+        "population_type": population_type,
+        "measured_property": measured_property,
+        "property": prop,
+        "value": value,
+    }
+
+
+# A catalogue family the index holds no row of, so only the export checks it against the graph.
+_AT_BIRTH = _implied("Person", "lifeExpectancy", "age", "Years0")
+
+
+def test_loader_parses_implied_values_and_reads_them_by_measure():
+    payload = _fixture()
+    payload["implied_values"] = [
+        _AT_BIRTH,
+        _implied("FinancialFlow", "amount", "crsTypeOfFlow", "CRSTypeOfFlow21"),
+    ]
+    index = parse_index(payload)
+
+    assert index.implied_values[0] == ImpliedValue(
+        population_type="Person",
+        measured_property="lifeExpectancy",
+        property_dcid="age",
+        value_dcid="Years0",
+    )
+    assert index.implied_values_of("Person", "lifeExpectancy") == {"age": "Years0"}
+    assert index.implied_values_of("FinancialFlow", "amount") == {
+        "crsTypeOfFlow": "CRSTypeOfFlow21"
+    }
+    assert index.implied_values_of("Person", "age") == {}
+    assert parse_index(_fixture()).implied_values == ()
+
+
+@pytest.mark.parametrize(
+    "declared",
+    [
+        pytest.param([_AT_BIRTH, _AT_BIRTH], id="duplicate"),
+        pytest.param(
+            [_implied("Person", "lifeExpectancy", "crsTypeOfFlow", "Years0")],
+            id="not-a-code-of-the-property",
+        ),
+        # The index holds rows of the measure, and none states the value.
+        pytest.param(
+            [_implied("FinancialFlow", "amount", "nettingBasis", "NetOfRepayment")],
+            id="no-row-of-the-measure-states-the-value",
+        ),
+    ],
+)
+def test_loader_rejects_an_implied_value_the_index_contradicts(declared: list[dict]):
+    payload = _fixture()
+    payload["implied_values"] = declared
+
+    with pytest.raises(IndexFormatError):
+        parse_index(payload)

@@ -1,7 +1,8 @@
 """The authored declarations the code index export reads.
 
 Code systems, datasets, party kinds and total groups, measure axes, labels and nouns,
-synonyms, concept groups, shape slot defaults, measure classes and variable aliases. The export
+synonyms, concept groups, shape slot defaults, implied values, measure classes and variable
+aliases. The export
 (`code_index.export`) reads them beside the graph. Nothing here reads the graph or imports a
 script, so a build that has no graph client can load them.
 """
@@ -15,6 +16,7 @@ from dataclasses import dataclass
 from code_index.types import (
     DatasetDeclaration,
     DeclaredDefault,
+    ImpliedValue,
     MeasureAxis,
     MeasureClassDeclaration,
     MeasurePartitionLabel,
@@ -1233,6 +1235,26 @@ MEASURE_NOUNS: tuple[MeasurePartitionLabel, ...] = (
 SHAPE_SLOT_DEFAULTS: tuple[ShapeSlotDefault, ...] = (
     ShapeSlotDefault(
         population_type="BirthEvent", property_dcid="medicalStatus", value_dcid="LiveBirth"
+    ),
+)
+
+# Life expectancy is life expectancy at birth, and gross domestic product is the product of
+# all economic activities. The headline series of each states nothing on the property, and
+# the series stating the value covers fewer years (`LifeExpectancy_Person_0Years` runs 1980
+# to 2020). The export refuses a declaration no StatVar of the measure states
+# (`code_index.export.verify_implied_values`).
+IMPLIED_VALUES: tuple[ImpliedValue, ...] = (
+    ImpliedValue(
+        population_type="Person",
+        measured_property="lifeExpectancy",
+        property_dcid="age",
+        value_dcid="Years0",
+    ),
+    ImpliedValue(
+        population_type="EconomicActivity",
+        measured_property="amount",
+        property_dcid="economicSector",
+        value_dcid="AllEconomicActivities",
     ),
 )
 

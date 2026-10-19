@@ -14,8 +14,6 @@ Entry encoding and storability checks also live here.
 from __future__ import annotations
 
 import hashlib
-import re
-import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from typing import Literal, NamedTuple
@@ -26,6 +24,7 @@ from pydantic import TypeAdapter
 from search.engine.envelope import make_diagnostics, make_query_echo, now_ms
 from search.engine.events import DoneEvent, Event, ResponseEvent
 from search.engine.extract import ExtractedDate, ExtractedEntity
+from search.engine.extraction_store import normalise_query
 from search.engine.qualifier_match import CodedQualifier, QualifierMatch, recall_text
 from search.engine.region.codes import (
     AVAILABILITY_PROBE_FAILED,
@@ -54,7 +53,6 @@ from search.models import (
     Warning,
 )
 
-_INTERNAL_WHITESPACE = re.compile(r"\s+")
 # Warnings that mark an answer a dependency could not complete: the skills index, a UN
 # System Data Commons read that failed (`_is_unstorable_warning`), the member walk that settles a role-bearing answer's members, the
 # role declarations a population re-reads, the conversion catalogue its unit conversion
@@ -78,15 +76,6 @@ _UNSTORABLE_WARNING_CODES = frozenset(
         OBSERVATIONS_BULK_FETCH_FAILED,
     }
 )
-
-
-def normalise_query(query: str) -> str:
-    """NFKC-normalise, strip, and collapse whitespace while preserving case.
-
-    Layer 1 preserves case because extraction can depend on it. Layer 2 can
-    still share results when case variants produce the same extraction.
-    """
-    return _INTERNAL_WHITESPACE.sub(" ", unicodedata.normalize("NFKC", query).strip())
 
 
 def _resolved_options(options: ResolveOptions | None, *, max_candidates: int) -> dict[str, object]:
