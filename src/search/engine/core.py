@@ -277,7 +277,10 @@ async def resolve_events(
         # snapshot, the process's code index and each cache scope's one generation stamp.
         # Separate coverage reads could straddle an artifact swap and mismatch its index and
         # stamp. Both reads sit inside the `try`, so the clients are released whatever raises.
+        # The snapshot's time is a once-per-request step on the envelope's timing.
+        coverage_t0 = now_ms()
         coverage = get_coverage_service().snapshot()
+        coverage_ms = now_ms() - coverage_t0
         checks = CatalogueSettings()
         async with scoped_concurrency():
             with held_family_memo():
@@ -304,7 +307,9 @@ async def resolve_events(
                     warn_index_drift=checks.warn_index_drift,
                     record=record,
                 ):
-                    event = _with_stale_catalogue_warning(event)
+                    event = _with_request_step(
+                        _with_stale_catalogue_warning(event), step="coverage", ms=coverage_ms
+                    )
                     if isinstance(event, ResponseEvent):
                         event = _with_response_warning(
                             event,
@@ -327,6 +332,24 @@ async def resolve_events(
             _sdmx.close()  # ty: ignore[call-non-callable]  # hasattr
         if _shared_resolvekit is not None:
             release_shared(_shared_resolvekit)
+
+
+def _with_request_step(event: Event, *, step: str, ms: int) -> Event:
+    """A response event whose envelope `timing_ms.by_step` starts with `step` at `ms`, for a
+    step that runs once per request before the pipeline. It runs after the response cache, so
+    a cached answer reports this request's time. Any other event passes through unchanged."""
+    if not isinstance(event, ResponseEvent):
+        return event
+    diagnostics = event.response.diagnostics
+    timing = diagnostics.timing_ms
+    if timing is None:
+        return event
+    stepped = timing.model_copy(update={"by_step": {step: ms, **(timing.by_step or {})}})
+    return ResponseEvent(
+        response=event.response.model_copy(
+            update={"diagnostics": diagnostics.model_copy(update={"timing_ms": stepped})}
+        )
+    )
 
 
 def _with_response_warning(event: ResponseEvent, warning: Warning | None) -> ResponseEvent:

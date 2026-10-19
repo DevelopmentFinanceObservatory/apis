@@ -11,6 +11,13 @@ DAC1 flows, are separate shapes.
 Each shape carries confirmed member arcs and a slot taxonomy sourced from the index, the
 family members the catalogue's tables hold, or its recall pool, so bind needs no further
 graph reads.
+
+`derive_shapes` marks its stages with `dfo_platform.timings.phase`: `shape_arcs` (Topic
+expansion and the candidates' arc read), `shape_probe` (the place-availability probe),
+`shape_labels` (the constraint label read) and `shape_groups` (grouping and building the
+shapes). The marks record onto the collector the caller binds with `dfo_platform.timings.collecting`
+(`_derive_pool` in `region/phase_intake.py` does so inside its worker closure), and nothing
+when none is bound.
 """
 
 from __future__ import annotations
@@ -26,6 +33,7 @@ from dataclasses import dataclass
 from code_index.labels import index_family_label
 from code_index.query import IndexFamily
 from code_index.shared import get_index, get_measure_index
+from dfo_platform.timings import phase
 from materialise.recipe_bodies import RECIPE_BODIES
 from materialise.roles import DegenerateObservationProperties, declared_roles
 from origin_catalogue import (
@@ -912,123 +920,131 @@ def derive_shapes(
     sv_scores = dict(sv_scores) if sv_scores else {}
     sv_types = sv_types or {}
 
-    topic_expansion = _split_and_expand_topics(
-        confirmed_svs, sv_scores=sv_scores, sv_types=sv_types, graph=graph
-    )
-    recall_svs = topic_expansion.recall_svs
-    expansion_rank = topic_expansion.expansion_rank
+    with phase("shape_arcs"):
+        topic_expansion = _split_and_expand_topics(
+            confirmed_svs, sv_scores=sv_scores, sv_types=sv_types, graph=graph
+        )
+        recall_svs = topic_expansion.recall_svs
+        expansion_rank = topic_expansion.expansion_rank
 
-    candidate_pool = _rank_candidate_pool(
-        topic_expansion.non_topic_svs,
-        topic_expansion.expanded_svs,
-        sv_scores=sv_scores,
-        expansion_rank=expansion_rank,
-    )
+        candidate_pool = _rank_candidate_pool(
+            topic_expansion.non_topic_svs,
+            topic_expansion.expanded_svs,
+            sv_scores=sv_scores,
+            expansion_rank=expansion_rank,
+        )
 
-    candidate_pool = _stand_pool(
-        candidate_pool,
-        sv_scores=sv_scores,
-        recall_svs=recall_svs,
-        expansion_rank=expansion_rank,
-        expansion_root_score=topic_expansion.expansion_root_score,
-        expansion_root=topic_expansion.expansion_root,
-    )
-
-    # Full arcs supply five-tuples, constraints, and member facts; the roles-only read is insufficient.
-    arcs_by_dcid, table_answered = _read_candidate_arcs(candidate_pool, graph=graph)
-
-    sv_facts = _build_sv_facts(candidate_pool, arcs_by_dcid)
-    if not sv_facts:
-        return []
-
-    place_probe = _probe_place_availability(
-        sv_facts,
-        place_dcids=place_dcids,
-        full_facets_max_candidates=full_facets_max_candidates,
-        graph=graph,
-        deadline=deadline,
-    )
-
-    # A degenerate arc reads as role-bearing, and `group_roles` refuses its group.
-    groups: dict[_GroupKey, list[str]] = defaultdict(list)
-    group_families: dict[_GroupKey, IndexFamily | None] = {}
-    for sv_dcid, facts in sv_facts.items():
-        five_tuple = facts["five_tuple"]
-        role_bearing, family = member_group_class(sv_dcid, five_tuple, facts["arcs"])
-        key = (five_tuple, role_bearing, family.properties if family is not None else None)
-        groups[key].append(sv_dcid)
-        group_families[key] = family
-
-    # A five-tuple the code index carries reads its slot values from the index.
-    walked = [key for key in groups if key[2] is None and not five_tuple_families(key[0])]
-    held_families: dict[_GroupKey, FamilySummary] = {}
-    for key in walked:
-        five_tuple, role_bearing, _properties = key
-        if (found := held_family(five_tuple, role_bearing=role_bearing)) is not None:
-            held_families[key] = found
-    family_members = sum(len(family.members) for family in held_families.values())
-    walked_groups = len(walked)
-    logger.info(
-        "derive_shapes: read arcs for %d candidate(s), %d from the catalogue's tables and %d "
-        "live; %d of %d graph-walked group(s) read their family from the tables (%d member(s) "
-        "in all), %d read their confirmed members alone",
-        len(candidate_pool),
-        table_answered,
-        len(candidate_pool) - table_answered,
-        len(held_families),
-        walked_groups,
-        family_members,
-        walked_groups - len(held_families),
-        extra={
-            "table_answered": table_answered,
-            "live_read": len(candidate_pool) - table_answered,
-            "families_held": len(held_families),
-            "families_sampled": walked_groups - len(held_families),
-            "family_members": family_members,
-        },
-    )
-
-    prop_labels_raw, value_labels = _fetch_constraint_labels(
-        sv_facts, graph=graph, families=held_families.values()
-    )
-
-    shapes: list[ShapeDraft] = []
-    unusable_role_groups = 0
-    zero_member_groups = 0
-    for key, group_svs in groups.items():
-        five_tuple, role_bearing, _properties = key
-        shape_id = group_shape_id(five_tuple, role_bearing=role_bearing, family=group_families[key])
-        shape, unusable_roles, zero_member = _build_group_shape(
-            five_tuple,
-            group_svs,
-            shape_id=shape_id,
-            family=group_families[key],
-            sv_facts=sv_facts,
+        candidate_pool = _stand_pool(
+            candidate_pool,
             sv_scores=sv_scores,
             recall_svs=recall_svs,
             expansion_rank=expansion_rank,
             expansion_root_score=topic_expansion.expansion_root_score,
             expansion_root=topic_expansion.expansion_root,
-            place_probe=place_probe,
-            prop_labels_raw=prop_labels_raw,
-            value_labels=value_labels,
-            held=held_families.get(key),
-            held_role_arcs=_held_role_arcs(five_tuple, role_bearing)
-            if key in held_families
-            else None,
         )
-        if zero_member:
-            zero_member_groups += 1
-            continue
-        if unusable_roles:
-            unusable_role_groups += 1
-            continue
-        assert shape is not None
-        if key in held_families:
-            shape = dataclasses.replace(shape, held_family=FamilyKey(*five_tuple, role_bearing))
-        if rival_svs.issuperset(group_svs):
-            shape = dataclasses.replace(shape, rival=True)
-        shapes.append(shape)
+
+        # Full arcs supply five-tuples, constraints, and member facts. The roles-only read
+        # is insufficient.
+        arcs_by_dcid, table_answered = _read_candidate_arcs(candidate_pool, graph=graph)
+
+        sv_facts = _build_sv_facts(candidate_pool, arcs_by_dcid)
+    if not sv_facts:
+        return []
+
+    with phase("shape_probe"):
+        place_probe = _probe_place_availability(
+            sv_facts,
+            place_dcids=place_dcids,
+            full_facets_max_candidates=full_facets_max_candidates,
+            graph=graph,
+            deadline=deadline,
+        )
+
+    with phase("shape_groups"):
+        # A degenerate arc reads as role-bearing, and `group_roles` refuses its group.
+        groups: dict[_GroupKey, list[str]] = defaultdict(list)
+        group_families: dict[_GroupKey, IndexFamily | None] = {}
+        for sv_dcid, facts in sv_facts.items():
+            five_tuple = facts["five_tuple"]
+            role_bearing, family = member_group_class(sv_dcid, five_tuple, facts["arcs"])
+            key = (five_tuple, role_bearing, family.properties if family is not None else None)
+            groups[key].append(sv_dcid)
+            group_families[key] = family
+
+        # A five-tuple the code index carries reads its slot values from the index.
+        walked = [key for key in groups if key[2] is None and not five_tuple_families(key[0])]
+        held_families: dict[_GroupKey, FamilySummary] = {}
+        for key in walked:
+            five_tuple, role_bearing, _properties = key
+            if (found := held_family(five_tuple, role_bearing=role_bearing)) is not None:
+                held_families[key] = found
+        family_members = sum(len(family.members) for family in held_families.values())
+        walked_groups = len(walked)
+        logger.info(
+            "derive_shapes: read arcs for %d candidate(s), %d from the catalogue's tables and %d "
+            "live; %d of %d graph-walked group(s) read their family from the tables (%d member(s) "
+            "in all), %d read their confirmed members alone",
+            len(candidate_pool),
+            table_answered,
+            len(candidate_pool) - table_answered,
+            len(held_families),
+            walked_groups,
+            family_members,
+            walked_groups - len(held_families),
+            extra={
+                "table_answered": table_answered,
+                "live_read": len(candidate_pool) - table_answered,
+                "families_held": len(held_families),
+                "families_sampled": walked_groups - len(held_families),
+                "family_members": family_members,
+            },
+        )
+
+    with phase("shape_labels"):
+        prop_labels_raw, value_labels = _fetch_constraint_labels(
+            sv_facts, graph=graph, families=held_families.values()
+        )
+
+    with phase("shape_groups"):
+        shapes: list[ShapeDraft] = []
+        unusable_role_groups = 0
+        zero_member_groups = 0
+        for key, group_svs in groups.items():
+            five_tuple, role_bearing, _properties = key
+            shape_id = group_shape_id(
+                five_tuple, role_bearing=role_bearing, family=group_families[key]
+            )
+            shape, unusable_roles, zero_member = _build_group_shape(
+                five_tuple,
+                group_svs,
+                shape_id=shape_id,
+                family=group_families[key],
+                sv_facts=sv_facts,
+                sv_scores=sv_scores,
+                recall_svs=recall_svs,
+                expansion_rank=expansion_rank,
+                expansion_root_score=topic_expansion.expansion_root_score,
+                expansion_root=topic_expansion.expansion_root,
+                place_probe=place_probe,
+                prop_labels_raw=prop_labels_raw,
+                value_labels=value_labels,
+                held=held_families.get(key),
+                held_role_arcs=_held_role_arcs(five_tuple, role_bearing)
+                if key in held_families
+                else None,
+            )
+            if zero_member:
+                zero_member_groups += 1
+                continue
+            if unusable_roles:
+                unusable_role_groups += 1
+                continue
+            assert shape is not None
+            if key in held_families:
+                shape = dataclasses.replace(shape, held_family=FamilyKey(*five_tuple, role_bearing))
+            if rival_svs.issuperset(group_svs):
+                shape = dataclasses.replace(shape, rival=True)
+            shapes.append(shape)
 
     viable_groups = len(groups) - zero_member_groups
     if unusable_role_groups and unusable_role_groups == viable_groups:

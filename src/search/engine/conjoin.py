@@ -55,6 +55,12 @@ VARIABLES_CLAMPED = "variables_clamped"
 # once, on the envelope's own timing_ms.by_step.
 _SHARED_TIMING_STEP = "extract"
 
+# The steps that time stages inside `shape` (`phase_intake._phase_derive_shapes`). A part's
+# by_step reports them, and its total leaves them out, since `shape` already spans them.
+NESTED_SHAPE_STEPS = frozenset(
+    {"shape_arcs", "shape_probe", "shape_labels", "shape_groups", "shape_admission"}
+)
+
 
 def _binding_folded_msg(variable_text: str | None) -> str:
     if variable_text:
@@ -279,7 +285,10 @@ def _build_part(
         step: ms for step, ms in region.timing_by_step.items() if step != _SHARED_TIMING_STEP
     }
     raised = {**region.departure_facts, **representative.departure_facts}
-    timing_ms = Timing(total=sum(own_timing_by_step.values()), by_step=own_timing_by_step or None)
+    timing_ms = Timing(
+        total=sum(ms for step, ms in own_timing_by_step.items() if step not in NESTED_SHAPE_STEPS),
+        by_step=own_timing_by_step or None,
+    )
     variable_text = region.variable_text or None
 
     if representative.status == "definite":

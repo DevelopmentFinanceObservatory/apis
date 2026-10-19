@@ -20,6 +20,7 @@ from typing import cast
 
 import pytest
 
+from dfo_platform.timings import record_elapsed
 from materialise.errors import UpstreamVersionChangedError
 from origin_catalogue import note_un_blocked_places
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
@@ -28,7 +29,7 @@ from search.engine.errors import DeclaredDefaultUnsupportedError, GraphInfraErro
 from search.engine.events import Event, EventSink, FrameEvent, SentenceEvent, StepEvent
 from search.engine.qualifier_match import CodedQualifier, QualifierMatch
 from search.engine.quantity_read import NONE_OF_THESE, QuantityOutput
-from search.engine.region import pipeline
+from search.engine.region import phase_intake, pipeline
 from search.engine.region.phase_rank_bind import _dataset_candidates
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.result import RegionResult
@@ -625,6 +626,33 @@ def test_the_un_legs_unserved_reads_mark_only_an_answer_the_un_pass_ran_for(
     assert _elected(result) == [_OURS if ours_have_data else _UN]
     assert ("un_system_unavailable" in _codes(result)) is not ours_have_data
     assert result.degraded is not ours_have_data
+
+
+_SHAPE_STAGES = ("shape_arcs", "shape_probe", "shape_labels", "shape_groups", "shape_admission")
+
+
+def test_the_un_legs_derivation_stays_out_of_our_shape_timing(monkeypatch, search_settings) -> None:
+    """The UN leg's derivation records an hour of `shape_arcs` before ours starts deriving.
+    Each derivation records onto its own collector, so our part's shape stages are ours."""
+    search_settings(un_first_pass_wait_s=2.0)
+    real_derive = phase_intake.derive_shapes
+    un_recorded = threading.Event()
+
+    def derive(**kwargs):
+        if any(dcid.startswith("undata/") for dcid in kwargs["confirmed_svs"]):
+            record_elapsed("shape_arcs", 3600.0)
+            un_recorded.set()
+        else:
+            assert un_recorded.wait(2)
+        return real_derive(**kwargs)
+
+    monkeypatch.setattr(phase_intake, "derive_shapes", derive)
+
+    result = _resolve(_graph(data=(_OURS, _UN)), llm=_ElectLLM(_UN))
+
+    assert _elected(result) == [_OURS]
+    assert set(_SHAPE_STAGES) <= set(result.timing_by_step)
+    assert result.timing_by_step["shape_arcs"] < 3_600_000
 
 
 # -- the UN pass's own failures and bounds --

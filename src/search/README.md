@@ -105,7 +105,7 @@ Every `no_data` part carries `no_data.message`, the plain-language sentence for 
 
 An `entity_ambiguous` part carries `no_data.data_query`, a one-part `ParsedInput` built from the part's parsed inputs whether or not it carries a restatement: every entity that resolved to one node is pinned to its dcid, except a set read as its members, and each ambiguous wording is left unpinned. A client pins the candidate the user picks from `no_data.ambiguous_entities` and posts the part back through the `parsed` door or as a `dataset_resubmit` `parsed` entry. The part's sentence plan marks each ambiguous wording as a `slot` token carrying the role the query gave it, so the client hangs the candidate menu on that phrase.
 
-Timing splits the same way. Each part's own `timing_ms.by_step` names the phases that variable's own leg ran (`recall`, `shape`, `bind`, `materialise`, `answer`), and `total` sums them. `diagnostics.timing_ms` carries the whole request's wall-clock `total` plus `by_step: {"extract": ...}` for extraction, the one step every part shares.
+Timing splits the same way. Each part's own `timing_ms.by_step` names the phases that variable's own leg ran (`recall`, `shape`, `bind`, `materialise`, `answer`), and `total` sums them. `shape_arcs`, `shape_probe`, `shape_labels`, `shape_groups` and `shape_admission` time stages inside `shape`, so `total` leaves them out (`conjoin.NESTED_SHAPE_STEPS`). `diagnostics.timing_ms` carries the whole request's wall-clock `total` plus `by_step` for the steps every part shares: `coverage` for the request's coverage snapshot and `extract` for extraction.
 
 "population and GDP in Brazil" resolves `population` and leaves `GDP` ambiguous:
 
@@ -122,7 +122,7 @@ Timing splits the same way. Each part's own `timing_ms.by_step` names the phases
     "engine_build": "...",
     "trace_id": "...",
     "warnings": [],
-    "timing_ms": { "total": 2870, "by_step": { "extract": 340 } }
+    "timing_ms": { "total": 2870, "by_step": { "coverage": 2, "extract": 340 } }
   },
   "parts": [
     {
