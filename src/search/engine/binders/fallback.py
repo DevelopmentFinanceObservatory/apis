@@ -10,6 +10,9 @@ enclosing `recording_fallbacks` record, so the request that holds it can decline
 an answer its configured binder did not give. A successful fallback is a normal answer: it
 marks nothing degraded.
 
+A part whose Jev call fell back sends its later calls straight to the fallback, so a slow
+Jev costs each part one Jev ceiling (`Settings.jev_ceiling_s`), not one per call.
+
 A Jev request fails before its answer is assembled, so the house policies have not run when
 the fallback starts. A bind call whose Jev path raised after they ran re-raises, so each
 bind call runs them at most once whichever binder serves it.
@@ -26,7 +29,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from search.engine.binders.base import BindRequest, BindResult, QuantityRequest
+from search.engine.binders.base import ApplyPolicies, BindRequest, BindResult, QuantityRequest
 from search.engine.binders.house_policy import PolicyChoice, PolicyPool
 from search.engine.binders.jev import FallbackCause, JevCall, JevFailure
 from search.engine.binders.part_log import Call, elapsed_ms, log_binder_part
@@ -71,16 +74,20 @@ def _note_fallback(reason: FallbackCause) -> None:
 class FallbackBinder:
     """`primary` (Jev) for every call, and `fallback` (Gemini) for a call the Jev path did
     not answer. Its name and model are the primary's, which the response cache key carries.
+    It serves one request, whose parts its calls name (`QuantityRequest.part`,
+    `BindRequest.part`).
 
     A `JevFailure` falls back under its own cause. Any other exception from the Jev path is
     a defect: it is logged at ERROR with its traceback and falls back under ``error``, so
-    the part still answers. A bind call whose Jev path raised after the house policies ran
-    on its election re-raises instead, since the fallback's election would run them a
-    second time. Cancellation propagates."""
+    the part still answers. Every later call of a part that fell back goes to the fallback
+    under the same cause without a Jev request. A bind call whose Jev path raised after the
+    house policies ran on its election re-raises instead, since the fallback's election
+    would run them a second time. Cancellation propagates."""
 
     def __init__(self, *, primary: JevBinder, fallback: Binder) -> None:
         self.primary = primary
         self.fallback = fallback
+        self._failures: dict[int, JevFailure] = {}
 
     @property
     def name(self) -> str:
@@ -98,23 +105,30 @@ class FallbackBinder:
         self, request: QuantityRequest, *, llm: SupportsLLM
     ) -> tuple[QuantityOutput, dict | None]:
         started = time.perf_counter()
-        try:
-            output, call = await self.primary.quantity(request)
-        except Exception as exc:
-            failure = _failure("quantity", exc, started=started)
-            answer = await self.fallback.read_quantity(request, llm=llm)
-            log_binder_part(
-                call="quantity",
-                binder=self.name,
-                served_by=self.fallback.name,
-                ms=elapsed_ms(started),
-                failure=failure,
-            )
-            return answer
+        failure = self._earlier_failure(request.part)
+        if failure is None:
+            try:
+                output, call = await self.primary.quantity(request)
+            except Exception as exc:
+                failure = self._failure("quantity", exc, part=request.part, started=started)
+            else:
+                log_binder_part(
+                    call="quantity",
+                    binder=self.name,
+                    served_by=self.name,
+                    ms=elapsed_ms(started),
+                    jev=call,
+                )
+                return output, call.usage
+        answer = await self.fallback.read_quantity(request, llm=llm)
         log_binder_part(
-            call="quantity", binder=self.name, served_by=self.name, ms=elapsed_ms(started), jev=call
+            call="quantity",
+            binder=self.name,
+            served_by=self.fallback.name,
+            ms=elapsed_ms(started),
+            failure=failure,
         )
-        return output, call.usage
+        return answer
 
     async def bind(
         self, request: BindRequest, *, llm: SupportsLLM
@@ -132,34 +146,55 @@ class FallbackBinder:
             policies_ran = True
             return request.apply_policies(pool, ratings=ratings, holds=holds)
 
-        try:
-            result, call = await self.primary.elect(
-                dataclasses.replace(request, apply_policies=apply_policies)
-            )
-        except Exception as exc:
-            if policies_ran:
-                raise
-            failure = _failure("bind", exc, started=started)
-            result, usage = await self.fallback.bind(request, llm=llm)
-            log_binder_part(
-                call="bind",
-                binder=self.name,
-                served_by=self.fallback.name,
-                ms=elapsed_ms(started),
-                failure=failure,
-            )
-            return dataclasses.replace(result, fallback_reason=failure.reason), usage
+        step: ApplyPolicies = apply_policies
+        failure = self._earlier_failure(request.part)
+        if failure is None:
+            try:
+                result, call = await self.primary.elect(
+                    dataclasses.replace(request, apply_policies=step)
+                )
+            except Exception as exc:
+                if policies_ran:
+                    raise
+                failure = self._failure("bind", exc, part=request.part, started=started)
+            else:
+                log_binder_part(
+                    call="bind",
+                    binder=self.name,
+                    served_by=self.name,
+                    ms=elapsed_ms(started),
+                    jev=call,
+                )
+                return result, call.usage
+        result, usage = await self.fallback.bind(request, llm=llm)
         log_binder_part(
-            call="bind", binder=self.name, served_by=self.name, ms=elapsed_ms(started), jev=call
+            call="bind",
+            binder=self.name,
+            served_by=self.fallback.name,
+            ms=elapsed_ms(started),
+            failure=failure,
         )
-        return result, call.usage
+        return dataclasses.replace(result, fallback_reason=failure.reason), usage
 
+    def _earlier_failure(self, part: int | None) -> JevFailure | None:
+        """The failure an earlier call of `part` fell back on, recorded for this call as one
+        that sent no request, or None when no call of `part` fell back."""
+        earlier = None if part is None else self._failures.get(part)
+        if earlier is None:
+            return None
+        _note_fallback(earlier.reason)
+        return JevFailure(earlier.reason, earlier.kind, JevCall(ms=0))
 
-def _failure(call: Call, exc: Exception, *, started: float) -> JevFailure:
-    """`exc` as the failure a fallback records: itself when it is a `JevFailure`, else a
-    defect logged at ERROR and recorded under ``error``."""
-    if not isinstance(exc, JevFailure):
-        logger.error("jev %s call raised; falling back to Gemini", call, exc_info=exc)
-        exc = JevFailure("error", type(exc).__name__, JevCall(ms=elapsed_ms(started)))
-    _note_fallback(exc.reason)
-    return exc
+    def _failure(
+        self, call: Call, exc: Exception, *, part: int | None, started: float
+    ) -> JevFailure:
+        """`exc` as the failure a fallback records: itself when it is a `JevFailure`, else
+        a defect logged at ERROR and recorded under ``error``. Later calls of `part` fall
+        back on it."""
+        if not isinstance(exc, JevFailure):
+            logger.error("jev %s call raised; falling back to Gemini", call, exc_info=exc)
+            exc = JevFailure("error", type(exc).__name__, JevCall(ms=elapsed_ms(started)))
+        _note_fallback(exc.reason)
+        if part is not None:
+            self._failures[part] = exc
+        return exc

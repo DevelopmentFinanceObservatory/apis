@@ -83,13 +83,16 @@ class _GeminiDouble(FixedBinder):
 
 
 class _CountingStep:
-    """A house-policy step keeping the binder's pick, counting its calls."""
+    """A house-policy step keeping the binder's pick, counting its calls and keeping the
+    ratings each was passed."""
 
     def __init__(self) -> None:
         self.calls = 0
+        self.ratings: list[object] = []
 
     def __call__(self, pool, *, ratings=None, holds=None):
         self.calls += 1
+        self.ratings.append(ratings)
         return keep_the_pick(pool)
 
 
@@ -303,6 +306,50 @@ def test_a_defect_after_the_house_policies_ran_is_raised_not_bound_twice(monkeyp
     with pytest.raises(RuntimeError, match="after the policies ran"):
         asyncio.run(binder.bind(_golden_request(step), llm=None))
     assert (step.calls, gemini.requests) == (1, [])
+
+
+def test_a_part_whose_jev_call_fell_back_sends_its_later_calls_to_gemini_alone():
+    """The quantity read of part 0 pays Jev's ceiling once; its bind call goes straight to
+    Gemini under the same cause, while part 1 still asks Jev."""
+    ask = FakeAsk(fail=JevError(None, "timeout"))
+    gemini = _GeminiDouble(_ELECTS_FIRST)
+    binder = FallbackBinder(primary=JevBinder(ask=ask), fallback=gemini)
+
+    async def run() -> tuple[BindResult, BindResult]:
+        await binder.read_quantity(dataclasses.replace(_QUANTITY, part=0), llm=None)
+        first, _usage = await binder.bind(
+            dataclasses.replace(_golden_request(_CountingStep()), part=0), llm=None
+        )
+        other, _usage = await binder.bind(
+            dataclasses.replace(_golden_request(_CountingStep()), part=1), llm=None
+        )
+        return first, other
+
+    with recording_fallbacks() as record:
+        first, other = asyncio.run(run())
+
+    assert len(ask.requests) == 2
+    assert (first.binder, first.fallback_reason) == ("gemini", "timeout")
+    assert (other.binder, other.fallback_reason) == ("gemini", "timeout")
+    assert record.reasons == ["timeout"] * 3
+
+
+def test_the_fallback_hands_the_jev_binder_a_policy_step_that_takes_ratings(monkeypatch):
+    ratings = {0: 0.8}
+
+    def assemble_with_ratings(menu, answers, *, stated_form, **_kwargs):
+        choice = menu.request.apply_policies(PolicyPool(measuring=(0,)), ratings=ratings)
+        return BindResult(output=_ELECTS_FIRST, binder="jev", policy_choice=choice), None
+
+    monkeypatch.setattr(jev_module, "bind_result", assemble_with_ratings)
+    gemini = _GeminiDouble(_ELECTS_FIRST)
+    binder = FallbackBinder(primary=JevBinder(ask=FakeAsk(_GOLDEN.stored)), fallback=gemini)
+    step = _CountingStep()
+
+    result, _usage = asyncio.run(binder.bind(_golden_request(step), llm=None))
+
+    assert (result.binder, result.fallback_reason) == ("jev", None)
+    assert step.ratings == [ratings]
 
 
 def test_a_cancelled_jev_call_is_not_served_by_the_fallback():

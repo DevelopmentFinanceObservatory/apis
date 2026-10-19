@@ -11,6 +11,7 @@ from pydantic import SecretStr
 
 from search.engine import app, binders, config, core
 from search.engine.binders import GeminiBinder
+from search.models import ParsedEntity, ParsedInput, ParsedPart
 from tests.engine._harness import make_request, offline_resolve
 
 _SRC = Path(__file__).parents[2] / "src"
@@ -58,6 +59,20 @@ def test_the_request_routes_once_and_its_parts_bind_through_that_binder(monkeypa
     assert response.status == "definite"
     assert routed == ["fertility rate in Kenya"]
     assert binder.binds == 1
+
+
+def test_a_parsed_request_routes_on_its_parts_whatever_raw_query_it_echoes():
+    def parsed(variable: str, raw_query: str | None) -> ParsedInput:
+        part = ParsedPart(variable_text=variable, entities=[ParsedEntity(text="Kenya")])
+        return ParsedInput(parts=[part], raw_query=raw_query)
+
+    routed = {
+        core._routing_text(parsed("fertility rate", raw_query))
+        for raw_query in ("fertility rate in Kenya", "births per woman, Kenya", None)
+    }
+
+    assert len(routed) == 1
+    assert core._routing_text(parsed("life expectancy", None)) not in routed
 
 
 def test_the_default_binder_keys_as_before_the_routing():

@@ -4,12 +4,16 @@
 first use and shared by every call in the process. A request too large to send whole goes
 as concurrent chunks (`jev_split.split_questions`) whose answers merge into one response.
 One `asyncio.timeout` at `Settings.jev_ceiling_s` bounds the whole call: the wait for a
-concurrency slot, every chunk, and the one retry. Every failure leaves as `JevError`.
+concurrency slot, every chunk, and the one retry. Every failure leaves as `JevError`; a call
+that ran out of time before any of its chunks took a slot fails as ``slot_wait``.
 
-A circuit breaker shared by the process opens after `BREAKER_FAILURES` consecutive failed
-calls inside `BREAKER_WINDOW_S`; for `BREAKER_OPEN_S` every call then fails at once without
-a request. The first call after that is the probe: its success closes the breaker, its
-failure opens it again.
+A circuit breaker shared by the process opens after `BREAKER_FAILURES` consecutive calls
+inside `BREAKER_WINDOW_S` that failed in a way that says Jev is unhealthy (`_HEALTH_KINDS`:
+a timed-out or failed connection, a 408, a 429 or a 5xx); for `BREAKER_OPEN_S` every call
+then fails at once without a request. The first call after that is the probe: its success
+closes the breaker, its unhealthy failure opens it again. A failure particular to the
+request (a refusal, a missing key, an unanswered question) or a wait for a slot moves the
+breaker neither way.
 """
 
 from __future__ import annotations
@@ -38,6 +42,7 @@ from typesafe_sdk import (
 )
 
 from search.engine.binders.jev_split import split_questions
+from search.engine.clients.loop_local import LoopLocal
 
 if TYPE_CHECKING:
     from search.engine.config import SearchSettings
@@ -47,6 +52,7 @@ type JevQuestion = NoulModel | ChoiceModel
 type JevErrorKind = Literal[
     "breaker_open",
     "no_key",
+    "slot_wait",
     "timeout",
     "connection",
     "rate_limited",
@@ -63,6 +69,11 @@ type JevErrorKind = Literal[
 BREAKER_FAILURES = 5
 BREAKER_WINDOW_S = 10.0
 BREAKER_OPEN_S = 30.0
+
+# The failures that say Jev itself is unhealthy, the only ones the breaker counts.
+_HEALTH_KINDS: frozenset[JevErrorKind] = frozenset(
+    {"timeout", "request_timeout", "connection", "rate_limited", "server"}
+)
 
 # The one retry goes to a rate limit, a server error, or a connection that failed without
 # timing out (a refusal, or a reset on a pooled connection the server closed), which fails
@@ -118,8 +129,9 @@ class CircuitBreaker:
     """Consecutive-failure breaker over whole Jev calls, safe across threads.
 
     `enter` admits a call or raises `JevError(None, "breaker_open")`, and returns whether
-    the call is the probe; `leave` records its outcome: True for success, False for a Jev
-    failure, None for a call abandoned by cancellation, which counts as neither.
+    the call is the probe; `leave` records its outcome: True for success, False for a
+    failure that says Jev is unhealthy, None for any other failure or a call abandoned by
+    cancellation, which counts as neither.
     """
 
     def __init__(self, *, clock: Callable[[], float] = time.monotonic) -> None:
@@ -162,32 +174,23 @@ class CircuitBreaker:
 
 
 class _LoopLocalTransport(httpx2.AsyncBaseTransport):
-    """One connection pool per event loop, since a pooled connection belongs to the loop
-    that opened it. Pools of closed loops are dropped on the next lookup."""
+    """One connection pool per event loop (`loop_local.LoopLocal`), since a pooled
+    connection belongs to the loop that opened it."""
 
     def __init__(self) -> None:
-        self._lock = threading.Lock()
         self._ssl_context = httpx2.create_ssl_context()
-        self._pools: dict[asyncio.AbstractEventLoop, httpx2.AsyncHTTPTransport] = {}
+        self._pools: LoopLocal[httpx2.AsyncHTTPTransport] = LoopLocal()
 
     def _pool(self) -> httpx2.AsyncHTTPTransport:
-        loop = asyncio.get_running_loop()
-        with self._lock:
-            for closed in [known for known in self._pools if known.is_closed()]:
-                del self._pools[closed]
-            pool = self._pools.get(loop)
-            if pool is None:
-                pool = self._pools[loop] = httpx2.AsyncHTTPTransport(
-                    verify=self._ssl_context, limits=_LIMITS
-                )
-            return pool
+        return self._pools.get(
+            lambda: httpx2.AsyncHTTPTransport(verify=self._ssl_context, limits=_LIMITS)
+        )
 
     async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
         return await self._pool().handle_async_request(request)
 
     async def aclose(self) -> None:
-        with self._lock:
-            pool = self._pools.pop(asyncio.get_running_loop(), None)
+        pool = self._pools.pop()
         if pool is not None:
             await pool.aclose()
 
@@ -221,8 +224,8 @@ def build_client(
 _CLIENT: AsyncTypeSafeClient | None = None
 _CLIENT_LOCK = threading.Lock()
 _BREAKER = CircuitBreaker()
-_SEMAPHORES: dict[asyncio.AbstractEventLoop, asyncio.Semaphore] = {}
-_SEMAPHORES_LOCK = threading.Lock()
+# The running loop's Jev request semaphore; an asyncio semaphore serves one loop.
+_SEMAPHORES: LoopLocal[asyncio.Semaphore] = LoopLocal()
 
 
 def _client(settings: SearchSettings) -> AsyncTypeSafeClient:
@@ -231,18 +234,6 @@ def _client(settings: SearchSettings) -> AsyncTypeSafeClient:
         if _CLIENT is None:
             _CLIENT = build_client(settings)
         return _CLIENT
-
-
-def _semaphore(size: int) -> asyncio.Semaphore:
-    """The running loop's Jev request semaphore; an asyncio semaphore serves one loop."""
-    loop = asyncio.get_running_loop()
-    with _SEMAPHORES_LOCK:
-        for closed in [known for known in _SEMAPHORES if known.is_closed()]:
-            del _SEMAPHORES[closed]
-        semaphore = _SEMAPHORES.get(loop)
-        if semaphore is None:
-            semaphore = _SEMAPHORES[loop] = asyncio.Semaphore(size)
-        return semaphore
 
 
 def _jev_error(exc: TypeSafeError) -> JevError:
@@ -279,13 +270,16 @@ async def _send(
     *,
     deadline: float,
     semaphore: asyncio.Semaphore,
+    admitted: asyncio.Event,
 ) -> SystemOneResponse:
     """One request, retried once on a rate limit or server error when the delay before the
-    retry, a `Retry-After` included, ends before `deadline` (loop time)."""
+    retry, a `Retry-After` included, ends before `deadline` (loop time). `admitted` is set
+    once the request holds a slot with time left to send it."""
     async with semaphore:
         budget = deadline - asyncio.get_running_loop().time()
         if budget <= 0:
-            raise JevError(None, "timeout")
+            raise JevError(None, "slot_wait")
+        admitted.set()
         retry = RetryPolicy(
             max_retries=1,
             http_statuses=set(_RETRY_STATUSES),
@@ -307,21 +301,30 @@ async def _ask_chunks(
     settings: SearchSettings,
 ) -> list[SystemOneResponse]:
     """Every chunk's response, sent concurrently under one deadline. The first failed
-    chunk cancels the rest and fails the call."""
+    chunk cancels the rest and fails the call: as ``timeout`` when the deadline passed with
+    a request sent, as ``slot_wait`` when it passed before any chunk took a slot."""
     client = _client(settings)
-    semaphore = _semaphore(settings.jev_max_concurrency)
+    semaphore = _SEMAPHORES.get(lambda: asyncio.Semaphore(settings.jev_max_concurrency))
+    admitted = asyncio.Event()
     deadline = asyncio.get_running_loop().time() + settings.jev_ceiling_s
     try:
         async with asyncio.timeout_at(deadline):
             async with asyncio.TaskGroup() as group:
                 tasks = [
                     group.create_task(
-                        _send(client, state, chunk, deadline=deadline, semaphore=semaphore)
+                        _send(
+                            client,
+                            state,
+                            chunk,
+                            deadline=deadline,
+                            semaphore=semaphore,
+                            admitted=admitted,
+                        )
                     )
                     for chunk in chunks
                 ]
     except TimeoutError as exc:
-        raise JevError(None, "timeout") from exc
+        raise JevError(None, "timeout" if admitted.is_set() else "slot_wait") from exc
     except ExceptionGroup as group:
         first = group.exceptions[0]
         if isinstance(first, JevError):
@@ -341,7 +344,8 @@ async def ask(
     Raises:
         ValueError: `state`, or `state` with one question, exceeds the request budget.
         JevError: The breaker is open, the call failed or overran `jev_ceiling_s`, or a
-            question came back unanswered.
+            question came back unanswered. Only a kind in `_HEALTH_KINDS` counts against
+            the breaker.
     """
     chunks = split_questions(state, questions)
     probe = _BREAKER.enter()
@@ -353,8 +357,8 @@ async def ask(
             raise JevError(None, "unanswered")
         ok = True
         return response
-    except JevError:
-        ok = False
+    except JevError as exc:
+        ok = False if exc.kind in _HEALTH_KINDS else None
         raise
     finally:
         _BREAKER.leave(ok, probe=probe)

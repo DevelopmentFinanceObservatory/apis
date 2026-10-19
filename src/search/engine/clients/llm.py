@@ -19,7 +19,6 @@ import hashlib
 import json
 import logging
 import re
-import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -29,6 +28,7 @@ import httpx
 from pydantic import BaseModel, ValidationError
 
 import search.engine.config as config  # module-attribute access for runtime-resolved values
+from search.engine.clients.loop_local import LoopLocal
 from search.engine.errors import LLMInfraError, LLMOutputRefused
 from search.engine.response_cache import Lease, ResponseCache
 
@@ -64,35 +64,25 @@ class _LoopLocalTransport(httpx.AsyncBaseTransport):
     """Keep one ``max_connections`` pool per event loop.
 
     Connections belong to their creating loop, so calls on different loops
-    need separate pools. Pools for closed loops are removed on the next lookup.
-    The lock protects simultaneous loop access from different threads.
+    need separate pools (`loop_local.LoopLocal`).
     HTTP/1.1 uses one request per connection, so the limit bounds each
     loop's concurrent Gemini requests. Pool waits use the request timeout.
     """
 
     def __init__(self, *, max_connections: int) -> None:
-        self._lock = threading.Lock()
         self._limits = httpx.Limits(
             max_connections=max_connections, max_keepalive_connections=max_connections
         )
-        self._pools: dict[asyncio.AbstractEventLoop, httpx.AsyncHTTPTransport] = {}
+        self._pools: LoopLocal[httpx.AsyncHTTPTransport] = LoopLocal()
 
     def _pool(self) -> httpx.AsyncHTTPTransport:
-        loop = asyncio.get_running_loop()
-        with self._lock:
-            for closed in [known for known in self._pools if known.is_closed()]:
-                del self._pools[closed]
-            pool = self._pools.get(loop)
-            if pool is None:
-                pool = self._pools[loop] = httpx.AsyncHTTPTransport(limits=self._limits)
-            return pool
+        return self._pools.get(lambda: httpx.AsyncHTTPTransport(limits=self._limits))
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         return await self._pool().handle_async_request(request)
 
     async def aclose(self) -> None:
-        with self._lock:
-            pool = self._pools.pop(asyncio.get_running_loop(), None)
+        pool = self._pools.pop()
         if pool is not None:
             await pool.aclose()
 

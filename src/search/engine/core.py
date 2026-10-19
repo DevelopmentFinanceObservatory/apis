@@ -368,12 +368,18 @@ def _with_request_step(event: Event, *, step: str, ms: int) -> Event:
     )
 
 
-def _routing_query(inp: ResolveInput) -> str | None:
-    """The query text a request is routed to its binder on: a raw-text request's query, else
-    the raw query a parsed or resubmitted request posts beside its parts."""
+def _routing_text(inp: ResolveInput) -> str:
+    """The text a request is routed to its binder on, which is what resolution reads: a
+    raw-text request's query, else the canonical JSON of a parsed or resubmitted request's
+    input less `raw_query`, which is for echo only."""
     if isinstance(inp, RawTextInput):
         return inp.query
-    return inp.raw_query
+    return json.dumps(
+        inp.model_dump(mode="json", exclude={"raw_query"}),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
 
 
 def _with_response_warning(event: ResponseEvent, warning: Warning | None) -> ResponseEvent:
@@ -467,7 +473,7 @@ async def _resolve_pipeline_events(
     reader. ``warn_index_drift`` is `CatalogueSettings.warn_index_drift`.
 
     The request takes one binder here: ``binder`` when the caller injects one, else the one
-    it routes to on the query text it states (`_routing_query`, `binders.configured_binder`).
+    it routes to on what resolution reads of it (`_routing_text`, `binders.configured_binder`).
     Every door's parts read their quantity and bind through it. The response cache keys on
     it, and ``fallbacks`` records each call it served from its fallback, which keeps the
     response out of the cache.
@@ -508,7 +514,7 @@ async def _resolve_pipeline_events(
 
     # The request's binder: the caller's when it injects one, else the one the request
     # routes to. The cache key reads it and every part binds with it (`EntryParams.binder`).
-    binder = binder if binder is not None else configured_binder(_routing_query(inp))
+    binder = binder if binder is not None else configured_binder(_routing_text(inp))
 
     # The cache key includes the resolved candidate cap and PAC setting. A transport that
     # streams trailing events stores the events from `response` to `done`, since the

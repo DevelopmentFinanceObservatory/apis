@@ -27,6 +27,7 @@ from search.engine.binders.jev_client import (
     ask,
     build_client,
 )
+from search.engine.clients.loop_local import LoopLocal
 
 type Handler = Callable[[httpx2.Request], Awaitable[httpx2.Response]]
 
@@ -56,7 +57,7 @@ class _Jev:
             update={"jev_api_key": SecretStr("test-key"), "jev_ceiling_s": 2.5}
         )
         monkeypatch.setattr(jev_client, "_BREAKER", CircuitBreaker(clock=self.clock))
-        monkeypatch.setattr(jev_client, "_SEMAPHORES", {})
+        monkeypatch.setattr(jev_client, "_SEMAPHORES", LoopLocal())
 
     def serve(self, handler: Handler, **settings: object) -> None:
         self.settings = self.settings.model_copy(update=settings)
@@ -241,6 +242,11 @@ def test_an_unanswered_question_fails_the_call(jev: _Jev) -> None:
     assert raised.value.kind == "unanswered"
 
 
+def _unhealthy(calls: int) -> Handler:
+    """Fail `calls` calls with a 503 and its retry, then answer."""
+    return _script(*[503] * (2 * calls), headers=_NOW)
+
+
 def _fail(jev: _Jev, times: int) -> None:
     for _ in range(times):
         with pytest.raises(JevError):
@@ -248,7 +254,7 @@ def _fail(jev: _Jev, times: int) -> None:
 
 
 def test_breaker_opens_after_consecutive_failures_and_a_probe_closes_it(jev: _Jev) -> None:
-    jev.serve(_script(*[402] * BREAKER_FAILURES))
+    jev.serve(_unhealthy(BREAKER_FAILURES))
     _fail(jev, BREAKER_FAILURES)
     sent = len(jev.requests)
 
@@ -264,7 +270,7 @@ def test_breaker_opens_after_consecutive_failures_and_a_probe_closes_it(jev: _Je
 
 
 def test_a_failed_probe_opens_the_breaker_again(jev: _Jev) -> None:
-    jev.serve(_script(*[402] * (BREAKER_FAILURES + 1)))
+    jev.serve(_unhealthy(BREAKER_FAILURES + 1))
     _fail(jev, BREAKER_FAILURES)
     jev.clock.now += BREAKER_OPEN_S
     _fail(jev, 1)
@@ -278,7 +284,7 @@ def test_a_failed_probe_opens_the_breaker_again(jev: _Jev) -> None:
 
 
 def test_failures_spread_past_the_window_leave_the_breaker_closed(jev: _Jev) -> None:
-    jev.serve(_script(*[402] * BREAKER_FAILURES))
+    jev.serve(_unhealthy(BREAKER_FAILURES))
     _fail(jev, BREAKER_FAILURES - 1)
     jev.clock.now += BREAKER_WINDOW_S + 1
     _fail(jev, 1)
@@ -286,12 +292,73 @@ def test_failures_spread_past_the_window_leave_the_breaker_closed(jev: _Jev) -> 
 
 
 def test_a_success_resets_the_consecutive_count(jev: _Jev) -> None:
-    jev.serve(_script(*[402] * (BREAKER_FAILURES - 1)))
+    jev.serve(_unhealthy(BREAKER_FAILURES - 1))
     _fail(jev, BREAKER_FAILURES - 1)
     jev.ask()
-    jev.serve(_script(*[402] * (BREAKER_FAILURES - 1)))
+    jev.serve(_unhealthy(BREAKER_FAILURES - 1))
     _fail(jev, BREAKER_FAILURES - 1)
     assert jev.ask().nouls == {"control": 0.9}
+
+
+async def _unanswered(request: httpx2.Request) -> httpx2.Response:
+    body = _answers(request).json()
+    body["answers"].clear()
+    return httpx2.Response(200, json=body)
+
+
+async def _rejected(request: httpx2.Request) -> httpx2.Response:
+    return httpx2.Response(400, json={"error": "scripted"})
+
+
+@pytest.mark.parametrize(
+    ("handler", "kind"), [(_rejected, "rejected"), (_unanswered, "unanswered")]
+)
+def test_a_failure_particular_to_the_request_leaves_the_breaker_closed(
+    jev: _Jev, handler: Handler, kind: str
+) -> None:
+    jev.serve(handler)
+    for _ in range(BREAKER_FAILURES + 1):
+        with pytest.raises(JevError) as raised:
+            jev.ask()
+        assert raised.value.kind == kind
+
+    jev.serve(_script())
+    assert jev.ask().nouls == {"control": 0.9}
+
+
+def test_a_missing_key_leaves_the_breaker_closed(
+    jev: _Jev, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(jev_client, "_CLIENT", None)
+    keyless = jev.settings.model_copy(update={"jev_api_key": SecretStr("")})
+    for _ in range(BREAKER_FAILURES + 1):
+        with pytest.raises(JevError, match="no_key"):
+            asyncio.run(ask(_STATE, _QUESTIONS, settings=keyless))
+
+    jev.serve(_script())
+    assert jev.ask().nouls == {"control": 0.9}
+
+
+def test_a_call_that_never_took_a_slot_fails_as_slot_wait_and_leaves_the_breaker_closed(
+    jev: _Jev,
+) -> None:
+    """Every slot is held past the ceiling, so each call times out before it sends: it fails
+    under its own kind and the breaker, which counts only Jev's own failures, stays shut."""
+    jev.serve(_script(), jev_max_concurrency=1, jev_ceiling_s=0.05)
+
+    async def run() -> list[BaseException | JevResponse]:
+        semaphore = jev_client._SEMAPHORES.get(lambda: asyncio.Semaphore(1))
+        async with semaphore:
+            waits = await asyncio.gather(
+                *(ask(_STATE, _QUESTIONS, settings=jev.settings) for _ in range(BREAKER_FAILURES)),
+                return_exceptions=True,
+            )
+        return [*waits, await ask(_STATE, _QUESTIONS, settings=jev.settings)]
+
+    *waits, answered = asyncio.run(run())
+    assert [getattr(w, "kind", w) for w in waits] == ["slot_wait"] * BREAKER_FAILURES
+    assert isinstance(answered, JevResponse)
+    assert len(jev.requests) == 1
 
 
 def test_only_one_probe_runs_while_the_breaker_is_half_open() -> None:
