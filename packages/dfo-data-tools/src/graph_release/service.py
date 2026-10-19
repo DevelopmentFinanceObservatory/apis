@@ -18,7 +18,9 @@ Parts live in one `local_dir` by content hash, so consecutive releases share
 the files they have in common. A release unlinks the files no other live
 release names once its last holder drops it (`weakref.finalize`). A drop that
 lands while a load is running defers its unlinks to the end of that load,
-since the load may have found the file present and be about to map it.
+since the load may have found the file present and be about to map it. A load
+that fails unlinks every file no live release names, so its downloads do not
+stay resident.
 
 A `Release` maps the parts and builds nothing. The coverage, origin and skills
 steps add the indexes each surface reads from it.
@@ -39,7 +41,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from dfo_platform.singleton import RefCountedSingleton
@@ -62,9 +64,14 @@ class _ReleaseEnv(BaseSettings):
 
     uri: str | None = Field(default=None, alias=_URI_ENV_VAR)
 
+    @field_validator("uri", mode="before")
+    @classmethod
+    def _blank_is_unset(cls, value: object) -> object:
+        return None if isinstance(value, str) and not value.strip() else value
+
 
 class ReleaseUriMissingError(RuntimeError):
-    """Raised by `get_release_service()` when `GRAPH_RELEASE_URI` is unset."""
+    """Raised by `get_release_service()` when `GRAPH_RELEASE_URI` is unset or blank."""
 
 
 class ReleaseLoader(Protocol):
@@ -134,6 +141,16 @@ class _LocalFiles:
                 for name in deferred:
                     if name not in self._holders:
                         self._unlink(name)
+
+    def unlink_unheld(self) -> None:
+        """Unlinks every file in `local_dir` no live release names, such as the
+        parts a failed load downloaded."""
+        with self._lock:
+            if not self._local_dir.is_dir():
+                return
+            for path in self._local_dir.iterdir():
+                if path.name not in self._holders:
+                    self._unlink(path.name)
 
     def _unlink(self, name: str) -> None:
         # A table still mapped from the file stays readable after its unlink.
@@ -217,7 +234,11 @@ class ReleaseService:
 
     def _open(self, *, release_id: str | None) -> Release:
         with self._files.loading():
-            loaded = self._loader(self._uri, local_dir=self._local_dir, release_id=release_id)
+            try:
+                loaded = self._loader(self._uri, local_dir=self._local_dir, release_id=release_id)
+            except Exception:
+                self._files.unlink_unheld()
+                raise
             release = Release(loaded=loaded)
             names = [ref.file_name for ref in loaded.manifest.parts]
             self._files.hold(names)
@@ -319,7 +340,7 @@ _singleton: RefCountedSingleton[ReleaseService] = RefCountedSingleton(
 def get_release_service() -> ReleaseService:
     """Returns the process-wide service, opening the release on first call.
 
-    Raises `ReleaseUriMissingError` when `GRAPH_RELEASE_URI` is unset and
+    Raises `ReleaseUriMissingError` when `GRAPH_RELEASE_URI` is unset or blank and
     `FileNotFoundError` when no release is published there, so a surface that
     asks for it fails startup, not a later request.
     """
@@ -327,7 +348,8 @@ def get_release_service() -> ReleaseService:
 
 
 def optional_release_service() -> ReleaseService | None:
-    """The process-wide service when `GRAPH_RELEASE_URI` is set, `None` otherwise."""
+    """The process-wide service when `GRAPH_RELEASE_URI` is set, `None` when it
+    is unset or blank."""
     return None if _ReleaseEnv().uri is None else get_release_service()
 
 

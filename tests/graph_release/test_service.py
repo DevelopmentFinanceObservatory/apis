@@ -247,6 +247,23 @@ class TestService:
         assert {path.name for path in local_dir.iterdir()} == _files(second)
         assert _files(first) - _files(second)
 
+    def test_a_failed_load_unlinks_what_it_downloaded(self, root: str, local_dir: Path):
+        first = build_test_release(root, tables=sample_tables())
+        clock = _Clock()
+
+        def failing_after_download(root_uri: str, *, local_dir: Path, release_id: str | None):
+            loaded = open_release(root_uri, local_dir=local_dir, release_id=release_id)
+            if release_id is not None:
+                raise OSError("refused after the download")
+            return loaded
+
+        service = _service(root, local_dir, clock=clock, loader=failing_after_download)
+        second = build_test_release(root, tables=_other_tables())
+
+        assert _recheck(service, clock).release_id == first.release_id
+        assert _files(second) - _files(first)
+        assert {path.name for path in local_dir.iterdir()} == _files(first)
+
     def test_a_drop_during_a_load_unlinks_only_what_the_load_did_not_take_up(self, tmp_path: Path):
         files = _LocalFiles(tmp_path)
         for name in ("shared", "old"):
@@ -268,8 +285,12 @@ class TestProcessService:
         yield
         reset_release_service()
 
-    def test_unset_uri_builds_no_service(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.delenv("GRAPH_RELEASE_URI", raising=False)
+    @pytest.mark.parametrize("value", [None, "", "  "])
+    def test_unset_uri_builds_no_service(self, monkeypatch: pytest.MonkeyPatch, value: str | None):
+        if value is None:
+            monkeypatch.delenv("GRAPH_RELEASE_URI", raising=False)
+        else:
+            monkeypatch.setenv("GRAPH_RELEASE_URI", value)
 
         assert optional_release_service() is None
         with pytest.raises(ReleaseUriMissingError):

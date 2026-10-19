@@ -67,6 +67,11 @@ class PublishOutcome:
     uploaded: tuple[str, ...]
 
 
+class PartWriteError(ReleaseFormatError):
+    """A part's create-only write did not land: the object exists with other
+    bytes, or vanished between the failed write and its re-read."""
+
+
 def publish_release(
     root_uri: str,
     *,
@@ -80,8 +85,10 @@ def publish_release(
     read (`None` when it read no pointer). The pointer is checked before
     anything is uploaded, so a held or moved pointer costs one read.
     `staged` must hold exactly the parts the manifest names. Raises
-    `ValueError` when it does not, and `ReleaseFormatError` when the pointer
-    or an existing manifest under this release id does not parse.
+    `ValueError` when it does not, `ReleaseFormatError` when the pointer or
+    an existing manifest under this release id does not parse, and
+    `PartWriteError` when a part the listing lacked does not land, before
+    the manifest or pointer is written.
     """
     release_id = manifest.release_id
     staged_names = {part.ref.file_name for part in staged}
@@ -99,17 +106,19 @@ def publish_release(
         return PublishOutcome(PublishStatus.HELD, release_id, ())
 
     # One listing finds the parts earlier releases share, so a republish
-    # uploads none of them. A create-only write that loses to a concurrent
-    # writer still leaves the right bytes, since a part's name is its hash.
+    # uploads none of them.
     present = list_uri_object_times(join_uri(root_uri, PARTS_DIR))
     uploaded = []
     for part in sorted(staged, key=lambda part: part.ref.file_name):
         if part.ref.file_name in present:
             continue
-        if write_uri_bytes_if_unchanged(
+        if not write_uri_bytes_if_unchanged(
             part_uri(root_uri, part.ref), part.path.read_bytes(), expected_generation=None
         ):
-            uploaded.append(part.ref.file_name)
+            raise PartWriteError(
+                f"part {part.ref.file_name} exists with other bytes or vanished during upload"
+            )
+        uploaded.append(part.ref.file_name)
 
     # A manifest already under this id names the same parts, since the id
     # hashes them, so it is kept as written and the pointer moves to it.
@@ -235,6 +244,7 @@ __all__ = [
     "KEEP_RELEASES",
     "KEEP_SECONDS",
     "HoldError",
+    "PartWriteError",
     "PublishOutcome",
     "PublishStatus",
     "clear_hold",

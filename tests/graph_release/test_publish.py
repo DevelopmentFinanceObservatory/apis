@@ -16,6 +16,8 @@ from pathlib import Path
 
 import pytest
 
+import graph_release.publish
+from artifact_publication.jobs import acquire_lease, release_lease
 from artifact_publication.uri import (
     list_uri_object_times,
     read_uri_bytes,
@@ -38,6 +40,7 @@ from graph_release.publish import (
     KEEP_RELEASES,
     KEEP_SECONDS,
     HoldError,
+    PartWriteError,
     PublishStatus,
     clear_hold,
     hold_release,
@@ -174,6 +177,23 @@ def test_an_existing_part_is_never_overwritten(bucket, tmp_path):
     assert read_uri_bytes(target) == b"written by another run"
 
 
+def test_a_part_write_that_does_not_land_writes_no_manifest_or_pointer(
+    bucket, tmp_path, monkeypatch
+):
+    _publish(bucket.root, *_release(tmp_path / "seed", revision="seed", blocks="seed"))
+    before = read_uri_bytes(pointer_uri(bucket.root))
+    staged, manifest = _release(tmp_path / "new", revision="rev", blocks="new")
+    # Another writer lands bytes under a part name after the listing.
+    monkeypatch.setattr(graph_release.publish, "list_uri_object_times", lambda _uri: {})
+    write_uri_bytes(part_uri(bucket.root, staged[0].ref), b"written by another run")
+
+    with pytest.raises(PartWriteError):
+        _publish(bucket.root, staged, manifest)
+
+    assert read_uri_bytes(pointer_uri(bucket.root)) == before
+    assert read_uri_bytes_and_generation(manifest_uri(bucket.root, manifest.release_id)) is None
+
+
 def test_an_existing_manifest_under_the_same_id_is_kept_and_pointed_at(bucket, tmp_path):
     staged, manifest = _release(tmp_path, revision="rev")
     earlier = dataclasses.replace(manifest, read_timestamp="2026-10-18T00:00:00+00:00")
@@ -269,6 +289,15 @@ def test_the_hold_cli_sets_and_clears_the_hold(tmp_path, monkeypatch, capsys, by
 
     assert hold_main([*target, "set", "0" * 64]) == 1
     assert read_pointer(releases.as_uri()) == Pointer(manifest.release_id)
+
+    # A running build holds the lease, so pruning may be under way.
+    lease = acquire_lease(releases.as_uri(), build_id="build", ttl_seconds=60)
+    assert lease is not None
+    capsys.readouterr()
+    assert hold_main([*target, "set", manifest.release_id]) == 1
+    assert "a build holds the lease" in capsys.readouterr().err
+    assert read_pointer(releases.as_uri()) == Pointer(manifest.release_id)
+    assert release_lease(releases.as_uri(), lease)
 
 
 def _objects(root: str) -> set[str]:
