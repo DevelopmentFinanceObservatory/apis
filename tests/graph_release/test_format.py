@@ -22,6 +22,7 @@ from graph_release.format import (
     Manifest,
     PartRef,
     ReleaseFormatError,
+    compute_release_id,
     manifest_uri,
     open_release,
     part_uri,
@@ -224,6 +225,38 @@ def test_reader_refuses_a_manifest_it_was_not_built_for(tmp_path, changes, reaso
         open_release(f"file://{tmp_path}", local_dir=tmp_path / "local")
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("sha256", "../../outside"),
+        ("sha256", "A" * 64),
+        ("sha256", "0" * 63),
+        ("suffix", "/../../outside.arrow"),
+    ],
+    ids=["traversal-hash", "uppercase-hash", "short-hash", "traversal-suffix"],
+)
+def test_reader_refuses_a_part_whose_file_name_is_not_a_hash_and_plain_suffix(
+    tmp_path, field, value
+):
+    root = f"file://{tmp_path}"
+    manifest = build_test_release(root, tables={"nodes": sample_tables()["nodes"]})
+    payload = json.loads(manifest.to_json())
+    (entry,) = payload["parts"]
+    payload["parts"] = [entry | {field: value}]
+    # A release id consistent with the tampered entry, so only the entry is wrong.
+    release_id = compute_release_id(
+        part_hashes=[part["sha256"] for part in payload["parts"]],
+        import_execution_id=manifest.import_execution_id,
+        dc_serving_revision=manifest.dc_serving_revision,
+    )
+    payload["release_id"] = release_id
+    write_uri_bytes(manifest_uri(root, release_id), json.dumps(payload).encode())
+
+    with pytest.raises(ReleaseFormatError, match=field):
+        open_release(root, local_dir=tmp_path / "local", release_id=release_id)
+    assert not (tmp_path / "local").exists()
+
+
 def test_reader_refuses_a_part_whose_bytes_do_not_match_its_hash(tmp_path):
     manifest = build_test_release(f"file://{tmp_path}", tables={"nodes": sample_tables()["nodes"]})
     (ref,) = manifest.parts
@@ -236,6 +269,7 @@ def test_reader_refuses_a_part_whose_bytes_do_not_match_its_hash(tmp_path):
 
 
 def test_reader_ignores_unknown_parts_and_columns_and_nulls_absent_optional_ones(tmp_path):
+    """An unknown part with a suffix this reader has never seen still loads."""
     root = f"file://{tmp_path}"
     series = pa.table(
         {
@@ -252,7 +286,10 @@ def test_reader_ignores_unknown_parts_and_columns_and_nulls_absent_optional_ones
             "future_column": pa.array([7]),
         }
     )
-    refs = [_publish_file(root, series, name="series"), _publish_file(root, series, name="future")]
+    refs = [
+        _publish_file(root, series, name="series"),
+        _publish_file(root, pa.table({"future_column": [7]}), name="future", suffix=".parquet"),
+    ]
     manifest = Manifest(
         import_execution_id="e",
         import_completed_at="t",
@@ -270,9 +307,11 @@ def test_reader_ignores_unknown_parts_and_columns_and_nulls_absent_optional_ones
     assert set(loaded.tables) == {"series"}
     assert loaded.tables["series"].schema == SERIES.schema
     assert loaded.tables["series"]["entity3"].to_pylist() == [None]
+    assert loaded.file_names == {refs[0].file_name}
+    assert {path.name for path in (tmp_path / "local").iterdir()} == {refs[0].file_name}
 
 
-def _publish_file(root: str, table: pa.Table, *, name: str) -> PartRef:
+def _publish_file(root: str, table: pa.Table, *, name: str, suffix: str = ".arrow") -> PartRef:
     sink = pa.BufferOutputStream()
     with pa.ipc.new_file(sink, table.schema) as writer:
         writer.write_table(table)
@@ -288,6 +327,7 @@ def _publish_file(root: str, table: pa.Table, *, name: str) -> PartRef:
         produced_by_execution="e",
         provenance="dc/p1",
         key_range=("Var_0", "Var_0"),
+        suffix=suffix,
     )
     write_uri_bytes(part_uri(root, ref), data)
     return ref

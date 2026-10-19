@@ -11,7 +11,8 @@ pins the release it names until `clear_hold`, and a publish leaves it alone.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping, Sequence, Set
+import time
+from collections.abc import Callable, Mapping, Sequence, Set
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final
@@ -137,29 +138,51 @@ def publish_release(
 
 
 class HoldError(Exception):
-    """A hold or clear that cannot land: an unknown release, no pointer, or a
-    pointer that moved between the read and the write."""
+    """A hold or clear that cannot land: an unknown release, no pointer, a
+    pointer that moved between the read and the write, or a write deadline
+    that passed before the write."""
 
 
-def hold_release(root_uri: str, release_id: str) -> Pointer:
+def hold_release(
+    root_uri: str,
+    release_id: str,
+    *,
+    write_by: float | None = None,
+    clock: Callable[[], float] = time.monotonic,
+) -> Pointer:
     """Points at `release_id` and holds it there. Returns the pointer written.
-    Raises `HoldError` when no manifest names the release or the pointer
-    moved during the call, and `ReleaseFormatError` when the manifest does
-    not parse."""
+
+    `write_by` is the latest `clock()` reading at which the pointer write may
+    start; `None` sets no deadline. Raises `HoldError` when no manifest names
+    the release, the pointer moved during the call, or `write_by` has passed
+    (nothing is written), and `ReleaseFormatError` when the manifest does not
+    parse."""
     try:
         Manifest.from_json(read_uri_bytes(manifest_uri(root_uri, release_id)))
     except FileNotFoundError as exc:
         raise HoldError(f"no manifest for release {release_id!r}") from exc
     found = read_uri_bytes_and_generation(pointer_uri(root_uri))
     pointer = Pointer(release_id=release_id, hold=release_id)
-    _write_pointer(root_uri, pointer, expected_generation=found[1] if found else None)
+    _write_pointer(
+        root_uri,
+        pointer,
+        expected_generation=found[1] if found else None,
+        write_by=write_by,
+        clock=clock,
+    )
     return pointer
 
 
-def clear_hold(root_uri: str) -> Pointer:
+def clear_hold(
+    root_uri: str,
+    *,
+    write_by: float | None = None,
+    clock: Callable[[], float] = time.monotonic,
+) -> Pointer:
     """Clears `hold`, leaving the held release serving until the builder
-    publishes the next one. Returns the pointer as it now stands. Raises
-    `HoldError` when no pointer exists or it moved during the call."""
+    publishes the next one. Returns the pointer as it now stands. `write_by`
+    is as for `hold_release`. Raises `HoldError` when no pointer exists, it
+    moved during the call, or `write_by` has passed before a needed write."""
     found = read_uri_bytes_and_generation(pointer_uri(root_uri))
     if found is None:
         raise HoldError(f"no release pointer at {pointer_uri(root_uri)}")
@@ -167,11 +190,20 @@ def clear_hold(root_uri: str) -> Pointer:
     if current.hold is None:
         return current
     pointer = Pointer(release_id=current.release_id)
-    _write_pointer(root_uri, pointer, expected_generation=found[1])
+    _write_pointer(root_uri, pointer, expected_generation=found[1], write_by=write_by, clock=clock)
     return pointer
 
 
-def _write_pointer(root_uri: str, pointer: Pointer, *, expected_generation: str | None) -> None:
+def _write_pointer(
+    root_uri: str,
+    pointer: Pointer,
+    *,
+    expected_generation: str | None,
+    write_by: float | None,
+    clock: Callable[[], float],
+) -> None:
+    if write_by is not None and clock() > write_by:
+        raise HoldError("the write deadline passed before the pointer write; nothing was written")
     if not write_uri_bytes_if_unchanged(
         pointer_uri(root_uri), pointer.to_json(), expected_generation=expected_generation
     ):

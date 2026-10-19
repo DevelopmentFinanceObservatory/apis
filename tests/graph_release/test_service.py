@@ -6,6 +6,7 @@ the last holder, and the Datasets surface and worker wiring with and without
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import gc
 import threading
 from collections.abc import Iterator
@@ -16,6 +17,7 @@ import pyarrow as pa
 import pytest
 from fastapi.testclient import TestClient
 
+from artifact_publication.uri import write_uri_bytes
 from code_index.shared import get_index
 from datasets_api.admission import MaterialisePermits
 from datasets_api.app import datasets_surface
@@ -25,7 +27,7 @@ from datasets_api.operation_store import LiveOperationStore
 from datasets_api.operations.oidc import FakeOidcVerifier
 from datasets_api.operations.worker_app import RUN_ROUTE_PATH, build_worker_app
 from graph_release.context import ReleaseNotBound, bound_release, current_release
-from graph_release.format import Manifest, open_release
+from graph_release.format import Manifest, Pointer, manifest_uri, open_release, pointer_uri
 from graph_release.service import (
     Release,
     ReleaseService,
@@ -43,6 +45,7 @@ from tests.datasets_api._artifact_doubles import FakeArtifactStore
 from tests.datasets_api._operation_store import FakeOperationDatasetStore
 from tests.datasets_api.test_worker_app import _complete_run, _submit, _task_body
 from tests.graph_release.support import build_test_release, sample_tables
+from tests.graph_release.test_format import _publish_file
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue
 
 _RECHECK = 60.0
@@ -246,6 +249,27 @@ class TestService:
         gc.collect()
         assert {path.name for path in local_dir.iterdir()} == _files(second)
         assert _files(first) - _files(second)
+
+    def test_a_release_never_unlinks_the_file_of_a_part_its_loader_skipped(
+        self, root: str, local_dir: Path
+    ):
+        first = build_test_release(root, tables=sample_tables())
+        unknown = _publish_file(root, pa.table({"future_column": [7]}), name="future")
+        with_unknown = dataclasses.replace(first, parts=(*first.parts, unknown))
+        write_uri_bytes(manifest_uri(root, with_unknown.release_id), with_unknown.to_json())
+        write_uri_bytes(pointer_uri(root), Pointer(with_unknown.release_id).to_json())
+        local_dir.mkdir()
+        (local_dir / unknown.file_name).write_bytes(b"another owner's file")
+        clock = _Clock()
+        service = _service(root, local_dir, clock=clock)
+        assert unknown.file_name not in service.snapshot().loaded.file_names
+        second = build_test_release(root, tables=_other_tables())
+
+        _recheck(service, clock)
+        gc.collect()
+
+        on_disk = {path.name for path in local_dir.iterdir()}
+        assert on_disk == _files(second) | {unknown.file_name}
 
     def test_a_failed_load_unlinks_what_it_downloaded(self, root: str, local_dir: Path):
         first = build_test_release(root, tables=sample_tables())

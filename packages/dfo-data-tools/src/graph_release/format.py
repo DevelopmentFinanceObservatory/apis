@@ -29,6 +29,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import re
 import tempfile
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -187,6 +188,11 @@ JSON_PARTS: Final[Mapping[str, JsonPart]] = {
 
 _ARROW_SUFFIX: Final[str] = ".arrow"
 
+_SHA256_HEX: Final[re.Pattern[str]] = re.compile(r"[0-9a-f]{64}")
+_SUFFIX: Final[re.Pattern[str]] = re.compile(r"(\.[a-z0-9]+)+")
+"""A part suffix: dot-led lowercase alphanumeric segments, so a part of a
+kind this reader does not know may carry a new one."""
+
 
 class ReleaseFormatError(Exception):
     """A release this reader must refuse: a foreign format, a malformed
@@ -205,7 +211,12 @@ listed `observation_period` from `MASK_EPOCH`."""
 class PartRef:
     """One part file as a manifest lists it. `rows` is `None` and `columns`
     empty for a JSON part. `key_range` is the first and last value of the
-    split column for `series` and `edges` files."""
+    split column for `series` and `edges` files.
+
+    Raises `ReleaseFormatError` when `sha256` is not 64 lowercase hex
+    characters or `suffix` is not dot-led lowercase alphanumeric segments,
+    so `file_name` is always one plain name under `parts/` and the local
+    directory."""
 
     name: str
     layer: str
@@ -218,6 +229,17 @@ class PartRef:
     provenance: str | None = None
     key_range: tuple[str, str] | None = None
     suffix: str = ".arrow"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.sha256, str) or not _SHA256_HEX.fullmatch(self.sha256):
+            raise ReleaseFormatError(
+                f"part {self.name!r} has sha256 {self.sha256!r}, not 64 lowercase hex characters"
+            )
+        if not isinstance(self.suffix, str) or not _SUFFIX.fullmatch(self.suffix):
+            raise ReleaseFormatError(
+                f"part {self.name!r} has suffix {self.suffix!r}, "
+                "not dot-led lowercase alphanumeric segments"
+            )
 
     @property
     def file_name(self) -> str:
@@ -390,12 +412,15 @@ class Pointer:
 class LoadedRelease:
     """A release mapped from `local_dir`. `tables` maps a part name to its
     files concatenated in manifest order, in this reader's schema. `blobs`
-    maps a JSON part name to its file bytes, gzipped where its suffix says."""
+    maps a JSON part name to its file bytes, gzipped where its suffix says.
+    `file_names` lists the files in `local_dir` the release reads, which
+    leaves out the parts this reader does not know."""
 
     manifest: Manifest
     tables: Mapping[str, pa.Table]
     blobs: Mapping[str, bytes]
     local_dir: Path
+    file_names: frozenset[str]
 
 
 def pointer_uri(root_uri: str) -> str:
@@ -654,6 +679,7 @@ def open_release(root_uri: str, *, local_dir: Path, release_id: str | None = Non
     local_dir.mkdir(parents=True, exist_ok=True)
     pieces: dict[str, list[pa.Table]] = {}
     blobs: dict[str, bytes] = {}
+    file_names: set[str] = set()
     for ref in manifest.parts:
         if ref.name in PART_SCHEMAS:
             path = _fetch(root_uri, ref, local_dir)
@@ -662,8 +688,17 @@ def open_release(root_uri: str, *, local_dir: Path, release_id: str | None = Non
             if ref.name in blobs:
                 raise ReleaseFormatError(f"manifest lists JSON part {ref.name!r} twice")
             blobs[ref.name] = _fetch(root_uri, ref, local_dir).read_bytes()
+        else:
+            continue
+        file_names.add(ref.file_name)
     tables = {name: pa.concat_tables(files) for name, files in pieces.items()}
-    return LoadedRelease(manifest=manifest, tables=tables, blobs=blobs, local_dir=local_dir)
+    return LoadedRelease(
+        manifest=manifest,
+        tables=tables,
+        blobs=blobs,
+        local_dir=local_dir,
+        file_names=frozenset(file_names),
+    )
 
 
 def _fetch(root_uri: str, ref: PartRef, local_dir: Path) -> Path:

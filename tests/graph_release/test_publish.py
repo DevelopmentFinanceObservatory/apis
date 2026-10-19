@@ -35,6 +35,7 @@ from graph_release.format import (
     read_pointer,
     write_blob_part,
 )
+from graph_release.hold import LEASE_TTL_SECONDS, WRITE_MARGIN_SECONDS
 from graph_release.hold import main as hold_main
 from graph_release.publish import (
     KEEP_RELEASES,
@@ -297,6 +298,46 @@ def test_the_hold_cli_sets_and_clears_the_hold(tmp_path, monkeypatch, capsys, by
     assert hold_main([*target, "set", manifest.release_id]) == 1
     assert "a build holds the lease" in capsys.readouterr().err
     assert read_pointer(releases.as_uri()) == Pointer(manifest.release_id)
+    assert release_lease(releases.as_uri(), lease)
+
+
+@pytest.mark.parametrize(
+    ("command", "elapsed", "status"),
+    [
+        ("set", LEASE_TTL_SECONDS - WRITE_MARGIN_SECONDS, 0),
+        ("set", LEASE_TTL_SECONDS - WRITE_MARGIN_SECONDS + 1, 1),
+        ("clear", LEASE_TTL_SECONDS - WRITE_MARGIN_SECONDS + 1, 1),
+    ],
+    ids=["set-at-the-deadline", "set-past-the-deadline", "clear-past-the-deadline"],
+)
+def test_the_hold_cli_writes_nothing_once_its_lease_is_too_short_for_the_write(
+    tmp_path, capsys, command, elapsed, status
+):
+    releases = tmp_path / "releases"
+    staged, first = _release(tmp_path / "a", revision="rev-1", blocks="one")
+    _publish(releases.as_uri(), staged, first)
+    staged, second = _release(tmp_path / "b", revision="rev-2", blocks="two")
+    _publish(releases.as_uri(), staged, second)
+    if command == "clear":
+        hold_release(releases.as_uri(), second.release_id)
+    before = read_pointer(releases.as_uri())
+    # The first reading starts the lease; every later one is `elapsed` on.
+    readings = iter([0.0])
+
+    def clock() -> float:
+        return next(readings, elapsed)
+
+    args = ["set", first.release_id] if command == "set" else ["clear"]
+    assert hold_main(["--local-dir", str(releases), *args], clock=clock) == status
+
+    if status:
+        assert read_pointer(releases.as_uri()) == before
+        assert "deadline" in capsys.readouterr().err
+    else:
+        assert read_pointer(releases.as_uri()) == Pointer(first.release_id, first.release_id)
+    # The lease is released either way, so the next build is not kept waiting.
+    lease = acquire_lease(releases.as_uri(), build_id="build", ttl_seconds=60)
+    assert lease is not None
     assert release_lease(releases.as_uri(), lease)
 
 

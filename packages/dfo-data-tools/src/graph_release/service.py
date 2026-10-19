@@ -15,11 +15,12 @@ so the flip waits for the frames being built to finish. A failed recheck
 keeps the served release and logs.
 
 Parts live in one `local_dir` by content hash, so consecutive releases share
-the files they have in common. A release unlinks the files no other live
-release names once its last holder drops it (`weakref.finalize`). A drop that
+the files they have in common. A release holds the files its loader read
+(`LoadedRelease.file_names`) and, once its last holder drops it
+(`weakref.finalize`), unlinks those no other live release holds. A drop that
 lands while a load is running defers its unlinks to the end of that load,
 since the load may have found the file present and be about to map it. A load
-that fails unlinks every file no live release names, so its downloads do not
+that fails unlinks every file no live release holds, so its downloads do not
 stay resident.
 
 A `Release` maps the parts and builds no indexes.
@@ -239,7 +240,7 @@ class ReleaseService:
                 self._files.unlink_unheld()
                 raise
             release = Release(loaded=loaded)
-            names = [ref.file_name for ref in loaded.manifest.parts]
+            names = loaded.file_names
             self._files.hold(names)
         weakref.finalize(release, self._files.drop, names)
         return release
