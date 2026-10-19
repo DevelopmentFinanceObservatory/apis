@@ -62,7 +62,7 @@ def test_each_part_round_trips_sorted_by_its_key(tmp_path, name):
 
 
 def _input_schema(table: pa.Table, part: release_format.PartSchema) -> pa.Schema:
-    # The sample's strings are plain; compare values.
+    # The sample's strings are plain, so compare values.
     return pa.schema(
         part.schema.field(name).with_type(_plain(part.schema.field(name).type))
         for name in table.column_names

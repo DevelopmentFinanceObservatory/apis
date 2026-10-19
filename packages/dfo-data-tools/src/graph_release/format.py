@@ -63,7 +63,7 @@ _KEY_LIST = pa.list_(_KEY)
 class PartSchema:
     """A tabular part: its columns, key (also its sort order) and the column
     a file splits on. `optional` columns may be absent from a file and read
-    as null; every other column is required."""
+    as null. Every other column is required."""
 
     name: str
     layer: str
@@ -75,7 +75,7 @@ class PartSchema:
 
 @dataclass(frozen=True)
 class JsonPart:
-    """A JSON part, decoded whole at load. Its writer serialises it; the
+    """A JSON part, decoded whole at load. Its writer serialises it. The
     suffix records whether the bytes are gzipped."""
 
     name: str
@@ -97,7 +97,7 @@ SERIES = PartSchema(
             pa.field("observation_count", pa.uint32(), nullable=False),
             pa.field("earliest_date", pa.date32(), nullable=False),
             pa.field("latest_date", pa.date32(), nullable=False),
-            # Signed, as Spanner stores them; readers view them as uint64 for
+            # Signed, as Spanner stores them. Readers view them as uint64 for
             # bit tests. Bit `b` of word `w` is period `64w + b` from the
             # manifest's mask epoch, null for a period the mask does not list.
             pa.field("period_mask_0", pa.int64()),
@@ -389,7 +389,7 @@ class Pointer:
 @dataclass(frozen=True)
 class LoadedRelease:
     """A release mapped from `local_dir`. `tables` maps a part name to its
-    files concatenated in manifest order, in this reader's schema; `blobs`
+    files concatenated in manifest order, in this reader's schema. `blobs`
     maps a JSON part name to its file bytes, gzipped where its suffix says."""
 
     manifest: Manifest

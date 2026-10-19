@@ -124,8 +124,8 @@ def build_test_release(
     through `publish_release`, holds the release when `hold`, and returns
     the manifest. Raises `AssertionError` when a held pointer refuses it.
 
-    `series` is written one file per facet provenance, so it needs `facets`;
-    `edges` one file per its own `provenance` column.
+    `series` is written one file per facet provenance, so it needs `facets`.
+    `edges` is written one file per its own `provenance` column.
     """
     with tempfile.TemporaryDirectory() as staging:
         staging_dir = Path(staging)

@@ -370,7 +370,7 @@ class TestDatasetsSurface:
                 assert permits.acquire(timeout=0)
                 clock.now += _RECHECK
                 service.snapshot()
-                # The new release opens while the permit is held; the flip waits for it.
+                # The new release opens while the permit is held, and the flip waits for it.
                 assert loaded.wait(5)
                 await asyncio.sleep(0.2)
                 assert service.snapshot().release_id == first.release_id

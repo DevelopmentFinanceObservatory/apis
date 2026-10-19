@@ -3,7 +3,7 @@ releases. This is the only code that writes under `GRAPH_RELEASE_URI`.
 
 A publish uploads the parts the bucket lacks, writes the manifest, then moves
 the pointer with a generation precondition. Parts and manifests are
-create-only, and the pointer write is the commit point: a run that stops
+create-only, and the pointer write is the commit point. A run that stops
 before it leaves the serving release untouched. A pointer with `hold` set
 pins the release it names until `clear_hold`, and a publish leaves it alone.
 """

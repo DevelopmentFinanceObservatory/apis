@@ -8,8 +8,8 @@ The recheck is request-triggered because background loops starve when
 `cpu_idle=true`, as in `series_coverage.shared`. When the pointer has moved,
 the thread downloads and opens the new release beside the old one, then
 enters every registered swap guard only to flip the served release. The
-download needs no guard: the local directory is an in-memory filesystem on
-Cloud Run, so the files are resident whether or not a guard is held. On the
+download needs no guard, since the local directory is an in-memory filesystem
+on Cloud Run and the files are resident whether or not a guard is held. On the
 Datasets surface and its worker the guard is `MaterialisePermits.every_permit`,
 so the flip waits for the frames being built to finish. A failed recheck
 keeps the served release and logs.
@@ -22,8 +22,7 @@ since the load may have found the file present and be about to map it. A load
 that fails unlinks every file no live release names, so its downloads do not
 stay resident.
 
-A `Release` maps the parts and builds nothing. The coverage, origin and skills
-steps add the indexes each surface reads from it.
+A `Release` maps the parts and builds no indexes.
 """
 
 from __future__ import annotations
@@ -195,7 +194,7 @@ class ReleaseService:
         self._swap_guards: tuple[Callable[[], AbstractContextManager[object]], ...] = ()
         self._swap_callbacks: tuple[Callable[[Release], None], ...] = ()
         self._consecutive_failures = 0
-        # `snapshot()` reads this reference lock-free; the GIL makes its assignment atomic.
+        # `snapshot()` reads this reference lock-free. The GIL makes its assignment atomic.
         self._served = _Served(release=self._open(release_id=None), checked_at=clock())
 
     def snapshot(self) -> Release:
@@ -342,7 +341,7 @@ def get_release_service() -> ReleaseService:
 
     Raises `ReleaseUriMissingError` when `GRAPH_RELEASE_URI` is unset or blank and
     `FileNotFoundError` when no release is published there, so a surface that
-    asks for it fails startup, not a later request.
+    asks for it fails at startup.
     """
     return _singleton.acquire()
 
