@@ -17,6 +17,9 @@
     "datasets_api": {
       "level": "INFO"
     },
+    "graph_release": {
+      "level": "INFO"
+    },
     "search": {
       "level": "INFO"
     },
