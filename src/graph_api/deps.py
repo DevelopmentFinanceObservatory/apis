@@ -11,7 +11,7 @@ profile comes from the process's shared `FacetProfileCache` for its source
 runs on. The national currencies and node facts a
 variable's availability reads beside its profile (`CardReadCaches`) run their
 flights on the DCP-read executor. The node routes keep the envelopes they build in
-`node_entries`, which only the event loop touches.
+`node_entries`, which guards every operation with its own lock.
 
 This module holds the bundle and the doors' one way onto the executor,
 `run_dcp_read`, to keep door imports separate from the composition root,

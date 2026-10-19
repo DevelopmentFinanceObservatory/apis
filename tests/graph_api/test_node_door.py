@@ -976,7 +976,7 @@ class TestNodesBatchCache:
 
     def test_a_generation_change_clears_the_entries(self, monkeypatch):
         """The lifespan registers the entries with the generation provider, whose clear
-        empties them on the event loop."""
+        empties them."""
         generation = FakeGeneration(token="rev-1")
         monkeypatch.setattr(graph_app, "acquire_shared_generation", lambda **_kwargs: generation)
         monkeypatch.setattr(graph_app, "release_shared_generation", lambda _generation: None)
