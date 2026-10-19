@@ -244,8 +244,8 @@ class CoverageManifest:
     """Manifest for one artifact build.
 
     `files` maps `coverage`, `role_names`, and `facets` to paths relative to
-    the build directory. `ingestion` is the `IngestionHistory` row the
-    build's fingerprint read, which the origin catalogue's manifest records
+    the build directory. `ingestion` is the successful `IngestionHistory`
+    row the build's import key names, which the origin catalogue's manifest records
     too, and `None` for a build written before manifests recorded it.
     `format_version` defaults to the current format.
     """

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import dataclasses
 
+import pytest
+
 from code_index.shared import get_index
 from materialise.place_scope import DefaultPresence, scope_of_places
 from search.engine.config import settings
@@ -225,3 +227,32 @@ def test_the_prewarm_reads_the_pairs_the_probe_reads():
     prewarm, probe = graph.calls[:2]
     assert prewarm == (["sv_worldwide", "sv_kenya"], [earth, ken])
     assert probe == prewarm
+
+
+@pytest.mark.parametrize(
+    ("declared_roles", "prewarmed"),
+    [
+        pytest.param((), True, id="subject-only"),
+        pytest.param(("financingProvider", "financingRecipient"), False, id="role-bearing"),
+    ],
+)
+def test_the_prewarm_reads_only_alternates_the_standard_path_resolves(declared_roles, prewarmed):
+    """A role-bearing alternate resolves from coverage (`graph_confirm_resolve`) and reads no
+    warmed facet, so the prewarm leaves it out; a subject-only alternate is warmed."""
+    ken = "country/KEN"
+    shape = dataclasses.replace(_one_member_shape("sv_alt"), declared_roles=declared_roles)
+    graph = _EntitySpyGraph()
+
+    materialise_alternates(
+        [shape],
+        places=[bound_place_context(subject_place_roles(ken), ken)],
+        elected_bindings=[],
+        elected_has_data=False,
+        named_place_dcids=[ken],
+        graph=graph,
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+        date_request=None,
+        coverage=empty_coverage_snapshot(),
+    )
+
+    assert ((["sv_alt"], [ken]) in graph.calls) is prewarmed

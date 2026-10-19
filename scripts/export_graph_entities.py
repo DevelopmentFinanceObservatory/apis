@@ -69,7 +69,7 @@ _ENTITY_PROPERTIES = ("typeOf", "name", "alternateName", "dacCode")
 
 # The graph holds two "Africa Finance Corporation" nodes. The debt StatVars name the base-schema node
 # `Africa_Finance_Corporation` as lendingEntity. The DFO ontology node `AfricaFinanceCorporation`
-# carries the "AFC" alias and no data. Delete this entry once ONEcampaign/dfo-ontology#38 mints AFC
+# carries the "AFC" alias and no data. Delete this entry once the DFO ontology mints AFC
 # under the base-schema dcid; the export fails until then if either node disappears or is renamed.
 _MERGED_DCIDS = {"AfricaFinanceCorporation": "Africa_Finance_Corporation"}
 

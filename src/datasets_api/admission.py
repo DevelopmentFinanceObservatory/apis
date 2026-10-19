@@ -118,6 +118,7 @@ class MaterialisePermits:
         self._semaphore = threading.BoundedSemaphore(permits)
         self._gate = threading.Condition()
         self._draining = 0
+        self._drain_lock = threading.Lock()
 
     def acquire(self, *, timeout: float, keep_waiting: Callable[[], bool] | None = None) -> bool:
         """Take one permit within `timeout` seconds, counting the wait at the gate. A zero
@@ -147,19 +148,28 @@ class MaterialisePermits:
     @contextmanager
     def every_permit(self) -> Iterator[None]:
         """Hold every permit, waiting as long as the frames alive now take to finish, so no
-        materialisation overlaps the block. A coverage reload runs under it, since the old and
-        new index are both resident while it loads."""
+        materialisation overlaps the block. A coverage reload and a graph release swap run
+        under it, since the old and new index are both resident while they load.
+
+        Concurrent callers run one at a time: a drain mutex is held from the first permit
+        taken to the last one released, so two drains never each hold part of the permits
+        and wait for the rest. A caller waiting for its turn keeps the gate closed, so
+        arrivals stay at the gate through back-to-back drains.
+        """
         with self._gate:
             self._draining += 1
-        held = 0
         try:
-            for _ in range(self.permits):
-                self._semaphore.acquire()
-                held += 1
-            yield
+            with self._drain_lock:
+                held = 0
+                try:
+                    for _ in range(self.permits):
+                        self._semaphore.acquire()
+                        held += 1
+                    yield
+                finally:
+                    for _ in range(held):
+                        self._semaphore.release()
         finally:
-            for _ in range(held):
-                self._semaphore.release()
             with self._gate:
                 self._draining -= 1
                 self._gate.notify_all()

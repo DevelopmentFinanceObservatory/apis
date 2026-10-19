@@ -544,11 +544,10 @@ async def _assemble_definite(
     _family = state.family_total_absent_departures((_survivor_spec,))
     # Place-option tasks run only when `materialise_graph` is available.
     _place_options_materialise_graph = state.materialise_graph
-    # Bind the identity confirmed by materialisation. Candidate merging preserves that identity.
+    # Each launch reads the identity of the Spec it is given, a merged one included.
     _relaunch_place_options_bound = functools.partial(
         _relaunch_place_options,
         state=state,
-        spec_identity=_survivor_spec.definition.identity,
         place_options_materialise_graph=cast(GraphReader, _place_options_materialise_graph),
     )
     _stream_place_options = (
@@ -557,7 +556,7 @@ async def _assemble_definite(
         and state.place_options_pool is not None
     )
     _place_options_task = (
-        _relaunch_place_options_bound(_survivor_spec.spec_id) if _stream_place_options else None
+        _relaunch_place_options_bound(_survivor_spec) if _stream_place_options else None
     )
     _survivor_spec = await with_related(_survivor_spec, _related_read)
     # This is the final await. Passing a live observation task to `RegionResult` keeps it reachable

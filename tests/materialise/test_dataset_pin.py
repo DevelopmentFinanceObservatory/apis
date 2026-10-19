@@ -20,6 +20,7 @@ from materialise.facets import (
     dataset_candidates,
     probe_collection_candidates,
     role_bearing_facet_candidates,
+    role_bearing_facet_candidates_by_donor,
     role_bearing_facets,
 )
 from materialise.generation import _select_member_facets
@@ -241,9 +242,14 @@ def test_role_facet_candidates_ignore_source_scope_but_exclude_globally_unavaila
         candidates = role_bearing_facet_candidates(
             stat_var=_BARE_A, role_bindings={}, coverage=coverage
         )
+        by_donor = role_bearing_facet_candidates_by_donor(
+            stat_vars=[_BARE_A], donors=["country/DONOR", "country/NONE"], coverage=coverage
+        )
 
     assert [facet.provenance_id for facet in served_facets or []] == [served]
     assert {facet.provenance_id for facet in candidates or []} == {served, other}
+    # Read by donor in one grouped pass, the choices are the same, ranked the same.
+    assert by_donor == {_BARE_A: {"country/DONOR": candidates, "country/NONE": []}}
 
 
 def test_role_facet_candidates_keep_known_provenance_less_method_and_unit():

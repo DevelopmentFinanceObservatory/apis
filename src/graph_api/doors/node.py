@@ -1,8 +1,8 @@
 """Serve `GET /api/graph/node/{dcid}` and `POST /api/graph/nodes` as one envelope per node.
 
-Both routes make one job on the shared DCP-read executor: the allowlisted arc read, then the
-classification of every held node (`graph_api.kinds.classify`, over the code index and the
-membership policy), then one batched name read for the label targets the kinds show, skipped
+Both routes make at most one job on the shared DCP-read executor: the allowlisted arc read,
+then the classification of every held node (`graph_api.kinds.classify`, over the code index and
+the membership policy), then one batched name read for the label targets the kinds show, skipped
 when none has a target. `GRAPH_NODE_TIMEOUT_SECONDS` bounds the client wait and the deadline
 both reads share; every worker busy refuses the read at once. The GET route checks
 `DCID_MAX_LENGTH` before reading and returns 400 for longer ids; the batch request model applies
@@ -40,6 +40,12 @@ refuses 400 `request_invalid` at `/as_of`; any other kind ignores it.
 The GET route answers `public, max-age=300` with an `ETag` when every gap is permanent, and
 `no-store` when a gap comes from a failed read (`gapped_public_json`). The batch is a POST and
 is not cached over HTTP.
+
+The batch keeps each envelope it builds with no transient gap in `GraphDeps.node_entries`
+(`graph_api.node_cache`), keyed by the generation stamp, the code index, origin catalogue,
+coverage and membership builds, and the dcid, and reads only the dcids it misses there, so a
+batch whose every node is held makes no graph read. The GET route reads and fills the same
+entries when it carries no `as_of`; a GET with `as_of` dates a membership and always reads.
 """
 
 from __future__ import annotations
@@ -84,6 +90,7 @@ from graph_api.deps import (
     run_dcp_read,
 )
 from graph_api.kinds import PLACE_KINDS, Kind, classify, code_system_of
+from graph_api.node_cache import NodeKey
 from graph_api.node_models import (
     Authority,
     BuiltFromTable,
@@ -594,23 +601,24 @@ def _admission(request: Request, deps: GraphDeps) -> Admission:
     return held[1]
 
 
-async def _read_held(
-    request: Request, deps: GraphDeps, dcids: list[str]
-) -> tuple[_Read, _Tables, float]:
-    """Run `_read_nodes_sync` as one job on the shared DCP-read executor, and return the read,
-    the tables it classified against and its deadline.
-
-    Compute the deadline before submission so queue time counts against it."""
-    tables = _Tables(
+def _tables(request: Request) -> _Tables:
+    return _Tables(
         code_index=get_index(),
         measure_index=get_measure_index(),
         membership=published_membership(request),
     )
+
+
+async def _read_held(deps: GraphDeps, dcids: list[str], tables: _Tables) -> tuple[_Read, float]:
+    """Run `_read_nodes_sync` as one job on the shared DCP-read executor, and return the read
+    and its deadline.
+
+    Compute the deadline before submission so queue time counts against it."""
     deadline = time.monotonic() + GRAPH_NODE_TIMEOUT_SECONDS
     read = await run_dcp_read(
         deps.dcp_executor, _read_nodes_sync, deps.graph, dcids, tables, deadline=deadline
     )
-    return read, tables, deadline
+    return read, deadline
 
 
 async def holds_node(request: Request, deps: GraphDeps, dcid: str) -> bool:
@@ -619,15 +627,15 @@ async def holds_node(request: Request, deps: GraphDeps, dcid: str) -> bool:
     membership = published_membership(request)
     if membership is not None and dcid in membership:
         return True
-    read, _, _ = await _read_held(request, deps, [dcid])
+    read, _ = await _read_held(deps, [dcid], _tables(request))
     return dcid in read.kinds
 
 
 async def _read(
-    request: Request, deps: GraphDeps, dcids: list[str], *, as_of: date | None
+    request: Request, deps: GraphDeps, dcids: list[str], tables: _Tables, *, as_of: date | None
 ) -> tuple[_Read, _NodeBuilder]:
     """The batch's hold read (`_read_held`) and a builder over it."""
-    read, tables, deadline = await _read_held(request, deps, dcids)
+    read, deadline = await _read_held(deps, dcids, tables)
     code_index = tables.code_index
     answer_deadline = deadline - _ANSWER_MARGIN_SECONDS
     builder = _NodeBuilder(
@@ -666,26 +674,70 @@ async def _availability(
     )
 
 
+def _lookup_keys(deps: GraphDeps, tables: _Tables, dcids: list[str]) -> dict[str, NodeKey]:
+    """The key each dcid's envelope is looked up under, from the builds the request sees
+    before its read."""
+    stamp = deps.generation.stamp().key
+    code_index = tables.code_index.stamp.content_hash
+    catalogue = current_catalogue().build_id
+    coverage = deps.coverage.snapshot().manifest.build_id if deps.coverage is not None else None
+    keys: dict[str, NodeKey] = {}
+    for dcid in dcids:
+        membership = tables.held_membership(dcid)
+        keys[dcid] = NodeKey(
+            stamp=stamp,
+            code_index=code_index,
+            origin_catalogue=catalogue,
+            coverage_index=coverage,
+            membership=membership.authority.version if membership is not None else None,
+            dcid=dcid,
+        )
+    return keys
+
+
 async def _build_response(
     request: Request, deps: GraphDeps, dcid: str, as_of: date | None
 ) -> tuple[NodeResponse, bool]:
-    read, builder = await _read(request, deps, [dcid], as_of=as_of)
+    """Build `dcid`'s envelope and whether it has a transient gap. Without `as_of` the read
+    goes through `deps.node_entries` as the batch's does; a dated read always reads."""
+    tables = _tables(request)
+    key = _lookup_keys(deps, tables, [dcid])[dcid] if as_of is None else None
+    if key is not None and (held := deps.node_entries.get(key)) is not None:
+        return held, False
+    read, builder = await _read(request, deps, [dcid], tables, as_of=as_of)
     if dcid not in read.kinds:
         raise NodeNotHeld(dcid)
-    return await builder.build(dcid)
+    node, transient = await builder.build(dcid)
+    if key is not None and not transient:
+        deps.node_entries.put(key, node)
+    return node, transient
 
 
 async def _build_batch_response(
     request: Request, deps: GraphDeps, dcids: list[str]
 ) -> NodesResponse:
+    """Serve each envelope `deps.node_entries` holds, read only the rest, and store each one
+    built with no transient gap. The batch takes no `as_of`, so every envelope it builds is
+    one the cache can hold."""
     unique = list(dict.fromkeys(dcids))
-    read, builder = await _read(request, deps, unique, as_of=None)
+    tables = _tables(request)
+    keys = _lookup_keys(deps, tables, unique)
     entries: dict[str, NodesEntry] = {}
-    for dcid in unique:
-        if dcid in read.kinds:
-            entries[dcid], _ = await builder.build(dcid)
-        else:
-            entries[dcid] = NotHeldEntry(ref=dcid)
+    for dcid, key in keys.items():
+        node = deps.node_entries.get(key)
+        if node is not None:
+            entries[dcid] = node
+    misses = [dcid for dcid in unique if dcid not in entries]
+    if misses:
+        read, builder = await _read(request, deps, misses, tables, as_of=None)
+        for dcid in misses:
+            if dcid not in read.kinds:
+                entries[dcid] = NotHeldEntry(ref=dcid)
+                continue
+            node, transient = await builder.build(dcid)
+            entries[dcid] = node
+            if not transient:
+                deps.node_entries.put(keys[dcid], node)
     return NodesResponse(nodes=[entries[dcid] for dcid in dcids])
 
 

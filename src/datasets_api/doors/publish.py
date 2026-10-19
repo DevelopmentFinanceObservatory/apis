@@ -1,8 +1,8 @@
 """The publish door stores derived `ops_`/`ocv_` frames from analysis-mcp so
 `LiveFrameStore` can serve them through the existing version and artifact path.
 
-The request sends grammar-independent JSON in `role_keys` and `rows`. dfo-apis
-and dfo-ai pin different `dfo-spec-kit` revisions, so this door builds the frame
+The request sends grammar-independent JSON in `role_keys` and `rows`. `apis`
+and `ai` pin different `spec-kit` revisions, so this door builds the frame
 with `Frame.build` and stores it as the version's canonical frame with
 `render_and_store_canonical_frame`.
 

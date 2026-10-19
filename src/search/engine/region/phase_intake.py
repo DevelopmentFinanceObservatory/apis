@@ -11,6 +11,7 @@ from typing import Final, cast
 
 import dc_graph
 from code_index.shared import get_index
+from dfo_platform.timings import PhaseTimings, collecting
 from entity_resolution import Ambiguous, Entity, Group, Resolved
 from origin_catalogue import recording_un_blocked_places
 from search.engine.clients.graph import DetectedSV, force_full_facets
@@ -518,10 +519,30 @@ def not_admitted_entity(place_set: PlaceSet) -> RoleNotAdmittedEntity:
     )
 
 
-async def _derive_pool(state: ResolveState, pool: Sequence[DetectedSV]) -> list[ShapeDraft]:
-    """The shapes `pool`'s candidates derive, off the event loop. Raises
-    `RoleSignatureError` when no candidate group has a consistent entity-role signature."""
+async def _derive_pool(
+    state: ResolveState, pool: Sequence[DetectedSV], *, timings: PhaseTimings
+) -> list[ShapeDraft]:
+    """The shapes `pool`'s candidates derive, off the event loop, with derivation's stages
+    (`derive.derive_shapes`) recorded on `timings`. Raises `RoleSignatureError` when no
+    candidate group has a consistent entity-role signature."""
     pool_svs = [c.dcid for c in pool]
+
+    def derive() -> list[ShapeDraft]:
+        with collecting(timings):
+            return derive_shapes(
+                confirmed_svs=pool_svs,
+                graph=state.graph,
+                sv_scores={c.dcid: c.score for c in pool},
+                sv_types={c.dcid: c.type_of for c in pool},
+                rival_svs=frozenset(c.dcid for c in pool if c.rival),
+                # Use recall's country snapshot. Place sets and Group members stay off the
+                # floor.
+                place_dcids=state.recall_only_place_dcids,
+                full_facets_max_candidates=_FLOOR_PROBE_FULL_FACETS_MAX_CANDIDATES,
+                deadline=state.deadline,
+                coverage=state.coverage.index,
+            )
+
     # Dated observation reads use ``needs_dates=True``. This scope lets the availability
     # probe share that cache key when raw recall has at most 6 candidates. derive_shapes
     # rechecks the limit after confirmation and Topic expansion, bounding the full-history
@@ -529,18 +550,7 @@ async def _derive_pool(state: ResolveState, pool: Sequence[DetectedSV]) -> list[
     with force_full_facets(
         state.date_request is not None and len(pool_svs) <= _FLOOR_PROBE_FULL_FACETS_MAX_CANDIDATES
     ):
-        return await asyncio.to_thread(
-            derive_shapes,
-            confirmed_svs=pool_svs,
-            graph=state.graph,
-            sv_scores={c.dcid: c.score for c in pool},
-            sv_types={c.dcid: c.type_of for c in pool},
-            rival_svs=frozenset(c.dcid for c in pool if c.rival),
-            # Use recall's country snapshot. Place sets and Group members stay off the floor.
-            place_dcids=state.recall_only_place_dcids,
-            full_facets_max_candidates=_FLOOR_PROBE_FULL_FACETS_MAX_CANDIDATES,
-            deadline=state.deadline,
-        )
+        return await asyncio.to_thread(derive)
 
 
 async def _un_shapes(state: ResolveState, rcl: Recall) -> UnPool:
@@ -562,7 +572,8 @@ async def _un_shapes(state: ResolveState, rcl: Recall) -> UnPool:
         recording_degraded_reads(detached=True) as lost,
     ):
         try:
-            shapes = await _derive_pool(state, candidates)
+            # The leg runs beside our pass, so its stages stay out of the part's timing.
+            shapes = await _derive_pool(state, candidates, timings=PhaseTimings())
         except RoleSignatureError:
             shapes, missed = [], None
         except _UPSTREAM_FAILURES as exc:
@@ -610,6 +621,11 @@ async def _phase_derive_shapes(state: ResolveState) -> RegionResult | None:
     them refuses ``source_code_not_held`` in place of ``variable_not_resolved``
     (`ResolveState.no_data`). Surviving
     shapes proceed to ranking.
+
+    Beside `shape`, `state.timing` gets our pass's derivation stages (`derive.derive_shapes`:
+    `shape_arcs`, `shape_probe` with `shape_probe_coverage` inside it, `shape_labels`,
+    `shape_groups`) and the admission prune,
+    `shape_admission`. The UN leg's derivation runs concurrently and records none of them.
     """
     rcl = cast(Recall, state.rcl)
     t0 = state.shape_t0 = now_ms()
@@ -624,10 +640,13 @@ async def _phase_derive_shapes(state: ResolveState) -> RegionResult | None:
         # hit as it did while its provenance was admitted; derivation reads each as its
         # successor.
         ours = rcl.candidates if rcl.hits is None else rcl.hits
+        derive_timings = PhaseTimings()
         try:
-            state.shapes_found = await _derive_pool(state, ours)
+            state.shapes_found = await _derive_pool(state, ours, timings=derive_timings)
         except RoleSignatureError:
             state.shapes_found, signature_refused = [], True
+        finally:
+            state.timing.update({name: round(ms) for name, ms in derive_timings.snapshot().items()})
     shapes_found = state.shapes_found
 
     # No confirmed StatVar means there is no shape to bind.
@@ -651,7 +670,9 @@ async def _phase_derive_shapes(state: ResolveState) -> RegionResult | None:
         return state.no_data("variable_not_resolved")
 
     # Prune before ranking so every later count sees only compatible shapes.
+    admission_t0 = now_ms()
     shapes_found, never_admitted = await _prune_shapes_by_admission(state, shapes_found)
+    state.timing["shape_admission"] = now_ms() - admission_t0
     state.shapes_found = shapes_found
     if not shapes_found:
         state.timing["shape"] = now_ms() - t0

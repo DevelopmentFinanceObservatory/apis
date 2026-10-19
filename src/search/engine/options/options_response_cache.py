@@ -1,11 +1,11 @@
-"""Cache option sets produced by `options.surface.build_options_response`.
+"""Cache option sets produced by `options.surface.compute_options`.
 
 Keyed by the resolved target after identity and role validation.
 Resolution checks run on every request, including identity validation and role/anchor refusals (`invalid_role_
 ref`, `role_incompatible`, `role_signature_incompatible`, `option_target_
 invalid`), and none of those checks may be skipped just because an identical
-target was already answered once. Only `options.surface.build_options_
-response`'s own compute -- the graph/SDMX work that turns a resolved target
+target was already answered once. Only `options.surface.compute_options`'s
+own compute -- the graph/SDMX work that turns a resolved target
 into candidates -- is what a hit skips.
 
 The key includes the caller-supplied
@@ -15,7 +15,7 @@ population, and the identity carries the requested flow axis as an open role),
 `req.for_.role` and
 `req.include_coverage`, `target.facets` and `target.requested_window`
 (carried through from the identity, unchanged), and finally one piece that
-depends on which half of `build_options_response` will run: for `for.role ==
+depends on which half of `compute_options` will run: for `for.role ==
 "observationAbout"`, the bound anchors' own entity_type(s) for a `peers` ask
 (so a Kenya-anchored ask and a Ghana-anchored ask -- both Country -- share
 one entry) or the single bound anchor's own dcid for a `children` ask (which
@@ -27,14 +27,22 @@ rather than re-derived, since it is already the exact fact
 
 The caller passes one `CoverageSnapshot` to the cache key and response
 builder. Its stamp ensures a republished coverage artifact cannot reuse
-results built against earlier donor or recipient membership.
+results built against earlier donor or recipient membership. The key also holds the
+build id and UN System setting of the origin catalogue the request bound, which decide
+what provenances the options admit and which places the UN front door refuses. A
+catalogue reload changes them and not the graph generation. The caller reads the bound
+catalogue once and passes it to the key; `compute_options` reads the same bound snapshot.
 
-The cache stores results without warnings that read everything they needed.
-Coverage-only probe failures return warnings and remain uncached; a compute that
-noted a degraded read (`degraded_reads.note_degraded_read`), such as a place's
-facet tie left to the unit's name because its whole-variable breadth was not
-read, remains uncached; refusals and infrastructure failures raise and remain
-uncached. A later request retries every uncached result.
+The cache stores results whose reads all answered (`is_cacheable`), with their
+warnings. A coverage probe failure, a failed UN System Data Commons read and a UN
+front door refusal of a place outside the origin catalogue build's refused set make a
+result transient and leave it uncached. Places in that set are a fact of the build,
+which the key holds, so a result naming only them is stored and a hit
+returns their warning. A compute that noted a degraded read
+(`degraded_reads.note_degraded_read`), such as a place's facet tie left to the unit's
+name because its whole-variable breadth was not read, remains uncached; refusals and
+infrastructure failures raise and remain uncached. A later request retries every
+uncached result.
 
 Each entry's generation stamp is part of its key and sets its `max_age_s`.
 A coverage republish changes the caller-supplied key. Single-flight starts
@@ -44,8 +52,8 @@ flight's deadline, `request_timeout_s` from when it starts, is passed to
 bounds the reads `compute` makes. Callers await that task through
 `asyncio.shield`, each with its own deadline.
 Timeout or cancellation detaches that caller's wait; the shared task continues.
-Concurrent callers receive the computed result, including results with
-warnings, even though warned results are never stored. Followers wait on the
+Concurrent callers receive the computed result, including a transient one that
+is never stored. Followers wait on the
 event loop and do not occupy worker threads.
 
 Both option caches are injected into `search_surface` and created in its
@@ -58,7 +66,7 @@ from __future__ import annotations
 import hashlib
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from typing import cast
 
 import rfc8785
@@ -67,15 +75,17 @@ import search.engine.config as config  # module-attribute access for runtime-res
 from dfo_platform.single_flight_cache import SingleFlightCache
 from graph_generation import UNKNOWN_GENERATION, GenerationProvider
 from materialise.roles import RoleAxis
+from origin_catalogue import Catalogue
 from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.options.population_memo import _population_key
 from search.engine.options.resolve import ResolvedOptionsTarget
 from search.engine.options.surface import (
     _DEFAULT_PEER_TYPE,
+    ComputedOptions,
     _directional_opposite_bound,
     _entities_with_role,
 )
-from search.models import OptionsRequest, OptionsSet, Warning
+from search.models import OptionsRequest
 from series_coverage.shared import CoverageSnapshot
 
 # ---------------------------------------------------------------------------
@@ -90,7 +100,7 @@ def _observation_about_key_component(req: OptionsRequest, target: ResolvedOption
     options_set` itself falls back to, so an unbound ask and a
     `_DEFAULT_PEER_TYPE`-anchored ask share one entry); `children` keys on
     the bound anchors' own dcid(s). Either branch can carry more than one
-    distinct value only on a request `build_options_response` itself refuses
+    distinct value only on a request `compute_options` itself refuses
     (`mixed_peers_anchor_types`, `children_anchor_ambiguous`) -- never
     stored either way (see the module docstring), so this need not special-
     case that shape beyond staying a plain, order-invariant, JSON-safe
@@ -137,14 +147,15 @@ def options_response_cache_key(
     *,
     build_commit: str,
     coverage: CoverageSnapshot,
+    catalogue: Catalogue,
 ) -> str:
     """The `OptionsResponseCache` key for `req`/`target`. See the module
-    docstring for every ingredient and why each is there. `build_commit` and
-    `coverage` are both passed in by the caller (`app.py`'s `options_endpoint`,
-    which takes one `get_coverage_service().snapshot()` read per request and
-    threads it here and into `build_options_response`, rather than this
-    function reading `get_coverage_service().stamp` again on its own) rather
-    than read here, keeping this function pure -- no I/O, no config import --
+    docstring for every ingredient and why each is there. `build_commit`,
+    `coverage` and `catalogue` are passed in by the caller (`app.py`'s
+    `options_endpoint`, which takes one `get_coverage_service().snapshot()` read and
+    one `current_catalogue()` read per request and threads them here and into
+    `compute_options`, rather than this function reading either again on its own)
+    rather than read here, keeping this function pure -- no I/O, no config import --
     the same discipline `response_cache_keys.py`'s own key builders follow.
     """
     if req.for_.role == "observationAbout":
@@ -177,6 +188,8 @@ def options_response_cache_key(
         "facets": facets_doc,
         "requested_window": window_doc,
         "coverage_stamp": coverage.stamp,
+        "origin_catalogue": catalogue.build_id,
+        "un_system_enabled": catalogue.un_system_enabled,
     }
     canonical = rfc8785.dumps(document)
     return f"opt_{hashlib.sha256(canonical).hexdigest()}"
@@ -188,21 +201,11 @@ def options_response_cache_key(
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class ComputedOptions:
-    """One `get_or_compute` result: the `OptionsSet` `build_options_
-    response` produced, plus whatever `Warning`s it carried. A non-empty
-    `warnings` means this result was never, and will never be, written to
-    the store, as does `degraded`, set when the compute noted a read it
-    stands without. See `OptionsResponseCache`'s own docstring."""
-
-    options: OptionsSet
-    warnings: tuple[Warning, ...]
-    degraded: bool = False
-
-
-def _is_cacheable(computed: ComputedOptions) -> bool:
-    return not computed.warnings and not computed.degraded
+def is_cacheable(computed: ComputedOptions) -> bool:
+    """Whether `computed` may be stored: no read failed during its compute
+    (`ComputedOptions.transient`) and it noted no degraded read. A stored result keeps its
+    warnings, so a hit returns the UN front door's refusals as the compute did."""
+    return not computed.transient and not computed.degraded
 
 
 def _recording_degraded(
@@ -258,16 +261,35 @@ class OptionsResponseCache:
     ) -> ComputedOptions:
         """Return the cached result or compute it on a miss.
 
-        Exceptions propagate and are not stored. Results with warnings or a
-        degraded read are shared with concurrent callers but not cached. `deadline` bounds only
+        Exceptions propagate and are not stored. Transient or degraded results are
+        shared with concurrent callers but not cached. `deadline` bounds only
         this caller's wait; timeout raises `asyncio.TimeoutError` without
         cancelling the shared task. `compute` receives the absolute deadline
         its reads must honour: the flight's, or this caller's when the cache
         is disabled.
         """
         return await self._cache.aget_or_fetch(
-            key, _recording_degraded(compute), deadline=deadline, is_cacheable=_is_cacheable
+            key, _recording_degraded(compute), deadline=deadline, is_cacheable=is_cacheable
         )
+
+    def cached(self, key: str) -> ComputedOptions | None:
+        """The stored result under `key`, without computing or joining a flight. A result
+        found counts a hit. A key not found counts nothing, since the caller computes it
+        next and `get_or_compute` counts the miss."""
+        return self._cache.cached_many([key]).get(key)
+
+    def stamp_key(self) -> str:
+        """The current generation stamp's key, read before a compute whose result is then
+        passed to `offer`."""
+        return self._cache.stamp_key()
+
+    def offer(self, key: str, value: ComputedOptions, *, stamp_key: str) -> bool:
+        """Store `value`, computed outside the cache, without joining or waiting on a flight.
+
+        Stores only when the generation stamp still has `stamp_key`, `value` is cacheable and
+        no live entry holds `key`, so an options request computing the same key can neither
+        delay nor fail the caller. Return whether it stored."""
+        return is_cacheable(value) and self._cache.offer(key, value, stamp_key=stamp_key)
 
     def stats(self) -> Mapping[str, int]:
         """Hit/miss/eviction counters plus the current entry count, for the

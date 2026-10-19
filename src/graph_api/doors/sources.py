@@ -57,7 +57,7 @@ listed as admitted. Each Dataset
 group carries the card facts the catalogue job computed for it
 (`origin_catalogue.card_facts`), with the cadence token mapped to its label
 here as the documentation route maps it. Existing codes
-are reused because a new code needs a `dfo-spec-kit`
+are reused because a new code needs a `spec-kit`
 registry row and a `rev` bump. They map missing nodes to 404, invalid source nodes and
 oversized ids to 400, truncated children to non-retryable 503, deadline
 expiry to 504, and DCP 4xx or other errors to

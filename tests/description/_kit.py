@@ -1,4 +1,4 @@
-"""dfo-spec-kit's descriptions distribution, `dfo_descriptions`, as the tests reach it.
+"""The `spec-kit` repository's descriptions distribution, `dfo_descriptions`, as the tests reach it.
 
 `validate_description` checks a served description against the kit's description schema and
 its structure rules for a description.

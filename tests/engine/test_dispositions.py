@@ -197,7 +197,7 @@ def test_a_declining_kind_answers_declined_with_its_reason(reason: str):
         "cached_tokens": 0,
     }
     assert response.diagnostics.timing_ms.by_step is not None
-    assert set(response.diagnostics.timing_ms.by_step) == {"extract"}
+    assert set(response.diagnostics.timing_ms.by_step) == {"coverage", "extract"}
     assert llm.schemas == ["Extraction"], "only extract ran: no bind or other LLM call"
     assert graph.reads == [], "a question naming no place reads nothing from the graph"
     assert _done(events).timed_out is False
@@ -359,7 +359,7 @@ def test_a_repeated_catalogue_question_is_a_layer1_hit():
     assert served.query_echo.raw_query == "What can I find  on Kenya?"
     assert served.query_echo.extract_skipped is True
     assert served.diagnostics.timing_ms.by_step is not None
-    assert set(served.diagnostics.timing_ms.by_step) == {"response_cache_layer1"}
+    assert set(served.diagnostics.timing_ms.by_step) == {"coverage", "response_cache_layer1"}
 
 
 def test_a_repeated_declined_question_is_a_layer1_hit():

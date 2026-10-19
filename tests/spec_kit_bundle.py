@@ -1,4 +1,4 @@
-"""Resolve the presentation catalogue from dfo-spec-kit for tests that need a real release.
+"""Resolve the presentation catalogue from `spec-kit` for tests that need a real release.
 
 Each package wraps `require_catalogue_dir` in its own fixture so skip and failure reporting stays
 local to that package.

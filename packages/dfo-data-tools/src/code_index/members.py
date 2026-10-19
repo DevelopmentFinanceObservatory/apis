@@ -1241,7 +1241,7 @@ def listed_group(index: CodeIndex, query: FamilyQuery, *, member_cap: int) -> Me
 
     The export reads every StatVar of each five-tuple a listed row has and refuses unless
     each is an index row or a listed row (`_verify_listed_five_tuples` in
-    `scripts/export_code_index.py`), so those rows are the walk's candidates.
+    `code_index/export.py`), so those rows are the walk's candidates.
     `statvar_members.group_of_arcs` runs the walk's admission and election over them, so
     Search and the Datasets mint elect the walk's members without its reads, which take
     about 50 s for an IDS family on the dev graph. Raises what the walk raises for its

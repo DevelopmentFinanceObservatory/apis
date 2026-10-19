@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from dc_graph.client import (
     CURRENCY_UNIT_OF_MEASURE_ISO_CODES,
-    IMPORT_ADDED_CONSTRAINT_PROPERTIES,
     NODE_PATH,
     UNRESOLVED_NODE,
     Facet,
@@ -34,10 +33,18 @@ from dc_graph.errors import (
     GraphReadError,
     ReadErrorFactory,
 )
+from dc_graph.visible_arcs import (
+    IMPORT_ADDED_CONSTRAINT_PROPERTIES,
+    MIXER_BLOCKED_PREDICATES,
+    dfo_visible,
+    mixer_visible,
+    visible_mask,
+)
 
 __all__ = [
     "CURRENCY_UNIT_OF_MEASURE_ISO_CODES",
     "IMPORT_ADDED_CONSTRAINT_PROPERTIES",
+    "MIXER_BLOCKED_PREDICATES",
     "NODE_PATH",
     "UNRESOLVED_NODE",
     "CapErrorFactory",
@@ -54,10 +61,13 @@ __all__ = [
     "SubjectPage",
     "SubjectsCoverageFlag",
     "declared_role_refresh_deadline",
+    "dfo_visible",
     "earliest_date",
     "is_front_door_refusal",
     "latest_date",
+    "mixer_visible",
     "parse_arcs",
     "reject_unsafe_filter_token",
     "reject_unsafe_property_token",
+    "visible_mask",
 ]

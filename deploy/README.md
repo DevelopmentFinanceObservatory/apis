@@ -74,6 +74,7 @@ Each caller has its own concurrency group (`deploy-dev`, `deploy-production`) wi
 1. Executes `JOB_COVERAGE` with `-m series_coverage.verify_index --record`, checking the image's code index against the published coverage build and recording its compatibility pointer. A difference stops the run before either service moves onto the new image.
 1. Points `JOB_ORIGIN_CATALOGUE` at the new image, so scheduled runs use the new code (see [deploy/origin-catalogue.md](origin-catalogue.md)).
 1. Executes `JOB_ORIGIN_CATALOGUE` with its args overridden to `-m origin_catalogue.verify`, confirming a compatible catalogue is published in the new image's format root. Only when verify fails, executes the build job (`python -m origin_catalogue.job`) and verifies again; a second failure stops the run before either service moves onto the new image (see [deploy/origin-catalogue.md](origin-catalogue.md)'s "Deploy order" section).
+1. Points `JOB_GRAPH_RELEASE` at the new image without executing it, so its scheduled ticks build with the new code (see [deploy/graph-release.md](graph-release.md)).
 1. Points `JOB_SEARCH_CATALOGUE` at the new image without executing it. The apis service starts without a search catalogue and answers 503 on `GET /api/search/catalogue` until one loads. The job's Cloud Scheduler tick runs every 15 minutes, and its build key includes the image's commit, so the first tick after a deploy rebuilds the catalogue on the new image in about 90 seconds.
 1. Updates the datasets worker service revision (`SERVICE_WORKER`, the async operations worker) using `gcloud run services update`.
 1. Updates the apis service revision (`SERVICE_APIS`) using `gcloud run services update`.
@@ -123,6 +124,7 @@ Configuration values map to GitHub Environment secrets and variables:
 | `JOB_COVERAGE`             | Environment | Variable | Cloud Run Job that builds and verifies the coverage artifact (`dfo-dev-coverage` in dev).                                                                        | `just handoff apis` in infra |
 | `JOB_ORIGIN_CATALOGUE`     | Environment | Variable | Cloud Run Job that builds and verifies the origin catalogue (`dfo-dev-origin-catalogue` in dev).                                                                 | `just handoff apis` in infra |
 | `JOB_SEARCH_CATALOGUE`     | Environment | Variable | Cloud Run Job that builds the search catalogue (`dfo-dev-search-catalogue` in dev).                                                                              | `just handoff apis` in infra |
+| `JOB_GRAPH_RELEASE`        | Environment | Variable | Cloud Run Job that builds and publishes the graph release (`dfo-dev-graph-release` in dev).                                                                      | `just handoff apis` in infra |
 
 Every environment variable lives in both the `dev` and `production` GitHub Environments under the same name. In infra, `just handoff apis` sets every environment variable and secret on `dev`, and `just ENV=dfo-prod handoff apis` sets them on `production`.
 

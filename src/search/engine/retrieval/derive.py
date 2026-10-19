@@ -11,6 +11,14 @@ DAC1 flows, are separate shapes.
 Each shape carries confirmed member arcs and a slot taxonomy sourced from the index, the
 family members the catalogue's tables hold, or its recall pool, so bind needs no further
 graph reads.
+
+`derive_shapes` marks its stages with `dfo_platform.timings.phase`: `shape_arcs` (Topic
+expansion and the candidates' arc read), `shape_probe` (the place-availability probe, and
+within it `shape_probe_coverage`, the part coverage answers),
+`shape_labels` (the constraint label read) and `shape_groups` (grouping and building the
+shapes). The marks record onto the collector the caller binds with `dfo_platform.timings.collecting`
+(`_derive_pool` in `region/phase_intake.py` does so inside its worker closure), and nothing
+when none is bound.
 """
 
 from __future__ import annotations
@@ -19,13 +27,17 @@ import contextlib
 import dataclasses
 import hashlib
 import logging
+import time
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from code_index.labels import index_family_label
 from code_index.query import IndexFamily
 from code_index.shared import get_index, get_measure_index
+from dfo_platform.timings import phase
+from materialise.facets import role_bearing_facet_candidates_by_donor
 from materialise.recipe_bodies import RECIPE_BODIES
 from materialise.roles import DegenerateObservationProperties, declared_roles
 from origin_catalogue import (
@@ -70,6 +82,10 @@ from search.engine.shape import (
     shape_draft_from,
 )
 from search.heading.measure_noun import denominator_noun
+
+if TYPE_CHECKING:
+    from dc_graph import Facet
+    from series_coverage.index import CoverageIndex
 
 logger = logging.getLogger(__name__)
 
@@ -350,13 +366,20 @@ def _probe_place_availability(
     full_facets_max_candidates: int | None,
     graph: EngineGraphClient,
     deadline: float | None,
+    coverage: CoverageIndex | None,
 ) -> _PlaceProbe | None:
-    """Probe all confirmed candidates for observations at `place_dcids` in one batch, under
-    the monotonic `deadline` (None for no bound).
+    """Probe all confirmed candidates for observations at `place_dcids`, under the monotonic
+    `deadline` (None for no bound).
 
-    Return `None` when no place is known or the optional probe fails; otherwise
+    A candidate `coverage` holds with both a donor and a recipient role answers from
+    coverage (`_two_role_covered`) in one grouped pass, timed as `shape_probe_coverage`, with
+    no graph read. Every other candidate is read in one graph batch. The mixer answers a
+    two-role variable's facet read from one series alone, while a subject-only or one-role
+    variable has one series per place, so the two sources agree there.
+
+    Return `None` when no place is known or the optional graph read fails; otherwise
     each dcid's units and per-place year spans (`_PlaceProbe`). A dated request can widen
-    this read under `force_full_facets(True)`. Recheck the confirmed count against
+    the graph read under `force_full_facets(True)`. Recheck the count it reads against
     `full_facets_max_candidates` because Topic expansion follows the caller's
     raw-count check; above the bound, `force_full_facets(False)` keeps this
     probe from fetching full history. Within the bound, the widened read shares
@@ -365,44 +388,33 @@ def _probe_place_availability(
     """
     if not place_dcids:
         return None
+    places = list(dict.fromkeys(place_dcids))
 
-    narrow_scope: contextlib.AbstractContextManager[None] = contextlib.nullcontext()
-    if full_facets_max_candidates is not None and len(sv_facts) > full_facets_max_candidates:
-        logger.info(
-            "derive_shapes: %d confirmed candidates exceeds the %d-candidate "
-            "full-facets bound; re-narrowing the place-availability probe to "
-            "needs_dates=False",
-            len(sv_facts),
-            full_facets_max_candidates,
-        )
-        narrow_scope = force_full_facets(False)
-    try:
-        with narrow_scope:
-            probe = graph.observation_facets_batch(
-                list(sv_facts.keys()), list(dict.fromkeys(place_dcids)), False, deadline=deadline
+    probe: dict[str, dict[str, list[Facet]]] = {}
+    if coverage is not None and (two_role := _two_role_covered(sv_facts, coverage)):
+        if deadline is not None and time.monotonic() >= deadline:
+            logger.warning(
+                "derive_shapes: the deadline passed before the place-availability probe; "
+                "place availability stays unknown"
             )
-    except GraphCapExceededError as exc:
-        logger.warning(
-            "derive_shapes: place-availability probe for %d candidates against "
-            "place_dcids=%r hit its %s cap (cap=%d, observed=%d); place availability "
-            "stays unknown",
-            len(sv_facts),
-            place_dcids,
-            exc.cap_kind,
-            exc.cap,
-            exc.observed,
+            note_degraded_read("place-availability probe")
+            return None
+        with phase("shape_probe_coverage"):
+            probe = role_bearing_facet_candidates_by_donor(
+                stat_vars=two_role, donors=places, coverage=coverage
+            )
+    graph_svs = [sv for sv in sv_facts if sv not in probe]
+    if graph_svs:
+        read = _graph_facets_at(
+            graph_svs,
+            places,
+            full_facets_max_candidates=full_facets_max_candidates,
+            graph=graph,
+            deadline=deadline,
         )
-        return None
-    except Exception:
-        logger.warning(
-            "derive_shapes: place-availability probe failed for %d candidates "
-            "against place_dcids=%r; place availability stays unknown",
-            len(sv_facts),
-            place_dcids,
-            exc_info=True,
-        )
-        note_degraded_read("place-availability probe")
-        return None
+        if read is None:
+            return None
+        probe.update(read)
 
     held = {
         sv: {
@@ -428,6 +440,71 @@ def _probe_place_availability(
         },
         places=frozenset(place_dcids),
     )
+
+
+def _two_role_covered(sv_facts: Mapping[str, dict], coverage: CoverageIndex) -> list[str]:
+    """The candidates `coverage` holds with both a donor and a recipient role, whose place
+    availability it answers.
+
+    A place is bound to the donor role and the recipient stays open, the series position a
+    graph facet read matches. The facets are coverage's catalogue-admitted candidates with
+    no per-series precedence (`role_bearing_facet_candidates_by_donor`), the closest match
+    to the graph read's every facet. A served-rows read would drop facets and so narrow the
+    units or the availability the probe reports."""
+    return [
+        sv
+        for sv in sv_facts
+        if (names := coverage.role_names.get(sv)) is not None
+        and names.donor is not None
+        and names.recipient is not None
+    ]
+
+
+def _graph_facets_at(
+    svs: list[str],
+    places: list[str],
+    *,
+    full_facets_max_candidates: int | None,
+    graph: EngineGraphClient,
+    deadline: float | None,
+) -> dict[str, dict[str, list[Facet]]] | None:
+    """`svs`' facets at `places` in one graph batch, or None when the read fails
+    (`_probe_place_availability`)."""
+    narrow_scope: contextlib.AbstractContextManager[None] = contextlib.nullcontext()
+    if full_facets_max_candidates is not None and len(svs) > full_facets_max_candidates:
+        logger.info(
+            "derive_shapes: %d candidates to read exceeds the %d-candidate "
+            "full-facets bound; re-narrowing the place-availability probe to "
+            "needs_dates=False",
+            len(svs),
+            full_facets_max_candidates,
+        )
+        narrow_scope = force_full_facets(False)
+    try:
+        with narrow_scope:
+            return graph.observation_facets_batch(svs, places, False, deadline=deadline)
+    except GraphCapExceededError as exc:
+        logger.warning(
+            "derive_shapes: place-availability probe for %d candidates against "
+            "place_dcids=%r hit its %s cap (cap=%d, observed=%d); place availability "
+            "stays unknown",
+            len(svs),
+            places,
+            exc.cap_kind,
+            exc.cap,
+            exc.observed,
+        )
+        return None
+    except Exception:
+        logger.warning(
+            "derive_shapes: place-availability probe failed for %d candidates "
+            "against place_dcids=%r; place availability stays unknown",
+            len(svs),
+            places,
+            exc_info=True,
+        )
+        note_degraded_read("place-availability probe")
+        return None
 
 
 def _fetch_constraint_labels(
@@ -829,7 +906,8 @@ def _build_group_shape(
         if held is not None and not index_sourced
         else read_slot_taxonomy(slot_keys=shape.slot_keys, member_facts=member_facts)
     )
-    # The probe reads subject facets, so a role-bearing member's coverage is unknown.
+    # The probe reads facets per place, not per role tuple, so a role-bearing member's
+    # coverage is unknown.
     member_coverage = (
         {sv: place_probe.coverage.get(sv, {}) for sv in group_svs}
         if place_probe is not None and not is_role_bearing(shape)
@@ -866,6 +944,7 @@ def derive_shapes(
     place_dcids: list[str] | None = None,
     full_facets_max_candidates: int | None = None,
     deadline: float | None = None,
+    coverage: CoverageIndex | None = None,
 ) -> list[ShapeDraft]:
     """Confirm recall candidates and build one shape per five-tuple and role class.
 
@@ -897,7 +976,9 @@ def derive_shapes(
     ambient facet scope unchanged. `deadline`, the part's monotonic soft deadline, bounds
     the availability probe, which reads every confirmed candidate: at most recall's
     `detect_k` candidates, `topic_expand_max_roots` roots of `topic_expand_max_members`
-    leaves each, and the rival rows.
+    leaves each, and the rival rows. `coverage` is the request's coverage index. The probe
+    answers the candidates it holds with two roles from it and reads only the rest from the
+    graph (`_probe_place_availability`). `None` reads every candidate from the graph.
 
     Return one shape per group: the members of one five-tuple that are subject-only or
     role-bearing, and whose family the packaged code index decides or does not
@@ -912,123 +993,132 @@ def derive_shapes(
     sv_scores = dict(sv_scores) if sv_scores else {}
     sv_types = sv_types or {}
 
-    topic_expansion = _split_and_expand_topics(
-        confirmed_svs, sv_scores=sv_scores, sv_types=sv_types, graph=graph
-    )
-    recall_svs = topic_expansion.recall_svs
-    expansion_rank = topic_expansion.expansion_rank
+    with phase("shape_arcs"):
+        topic_expansion = _split_and_expand_topics(
+            confirmed_svs, sv_scores=sv_scores, sv_types=sv_types, graph=graph
+        )
+        recall_svs = topic_expansion.recall_svs
+        expansion_rank = topic_expansion.expansion_rank
 
-    candidate_pool = _rank_candidate_pool(
-        topic_expansion.non_topic_svs,
-        topic_expansion.expanded_svs,
-        sv_scores=sv_scores,
-        expansion_rank=expansion_rank,
-    )
+        candidate_pool = _rank_candidate_pool(
+            topic_expansion.non_topic_svs,
+            topic_expansion.expanded_svs,
+            sv_scores=sv_scores,
+            expansion_rank=expansion_rank,
+        )
 
-    candidate_pool = _stand_pool(
-        candidate_pool,
-        sv_scores=sv_scores,
-        recall_svs=recall_svs,
-        expansion_rank=expansion_rank,
-        expansion_root_score=topic_expansion.expansion_root_score,
-        expansion_root=topic_expansion.expansion_root,
-    )
-
-    # Full arcs supply five-tuples, constraints, and member facts; the roles-only read is insufficient.
-    arcs_by_dcid, table_answered = _read_candidate_arcs(candidate_pool, graph=graph)
-
-    sv_facts = _build_sv_facts(candidate_pool, arcs_by_dcid)
-    if not sv_facts:
-        return []
-
-    place_probe = _probe_place_availability(
-        sv_facts,
-        place_dcids=place_dcids,
-        full_facets_max_candidates=full_facets_max_candidates,
-        graph=graph,
-        deadline=deadline,
-    )
-
-    # A degenerate arc reads as role-bearing, and `group_roles` refuses its group.
-    groups: dict[_GroupKey, list[str]] = defaultdict(list)
-    group_families: dict[_GroupKey, IndexFamily | None] = {}
-    for sv_dcid, facts in sv_facts.items():
-        five_tuple = facts["five_tuple"]
-        role_bearing, family = member_group_class(sv_dcid, five_tuple, facts["arcs"])
-        key = (five_tuple, role_bearing, family.properties if family is not None else None)
-        groups[key].append(sv_dcid)
-        group_families[key] = family
-
-    # A five-tuple the code index carries reads its slot values from the index.
-    walked = [key for key in groups if key[2] is None and not five_tuple_families(key[0])]
-    held_families: dict[_GroupKey, FamilySummary] = {}
-    for key in walked:
-        five_tuple, role_bearing, _properties = key
-        if (found := held_family(five_tuple, role_bearing=role_bearing)) is not None:
-            held_families[key] = found
-    family_members = sum(len(family.members) for family in held_families.values())
-    walked_groups = len(walked)
-    logger.info(
-        "derive_shapes: read arcs for %d candidate(s), %d from the catalogue's tables and %d "
-        "live; %d of %d graph-walked group(s) read their family from the tables (%d member(s) "
-        "in all), %d read their confirmed members alone",
-        len(candidate_pool),
-        table_answered,
-        len(candidate_pool) - table_answered,
-        len(held_families),
-        walked_groups,
-        family_members,
-        walked_groups - len(held_families),
-        extra={
-            "table_answered": table_answered,
-            "live_read": len(candidate_pool) - table_answered,
-            "families_held": len(held_families),
-            "families_sampled": walked_groups - len(held_families),
-            "family_members": family_members,
-        },
-    )
-
-    prop_labels_raw, value_labels = _fetch_constraint_labels(
-        sv_facts, graph=graph, families=held_families.values()
-    )
-
-    shapes: list[ShapeDraft] = []
-    unusable_role_groups = 0
-    zero_member_groups = 0
-    for key, group_svs in groups.items():
-        five_tuple, role_bearing, _properties = key
-        shape_id = group_shape_id(five_tuple, role_bearing=role_bearing, family=group_families[key])
-        shape, unusable_roles, zero_member = _build_group_shape(
-            five_tuple,
-            group_svs,
-            shape_id=shape_id,
-            family=group_families[key],
-            sv_facts=sv_facts,
+        candidate_pool = _stand_pool(
+            candidate_pool,
             sv_scores=sv_scores,
             recall_svs=recall_svs,
             expansion_rank=expansion_rank,
             expansion_root_score=topic_expansion.expansion_root_score,
             expansion_root=topic_expansion.expansion_root,
-            place_probe=place_probe,
-            prop_labels_raw=prop_labels_raw,
-            value_labels=value_labels,
-            held=held_families.get(key),
-            held_role_arcs=_held_role_arcs(five_tuple, role_bearing)
-            if key in held_families
-            else None,
         )
-        if zero_member:
-            zero_member_groups += 1
-            continue
-        if unusable_roles:
-            unusable_role_groups += 1
-            continue
-        assert shape is not None
-        if key in held_families:
-            shape = dataclasses.replace(shape, held_family=FamilyKey(*five_tuple, role_bearing))
-        if rival_svs.issuperset(group_svs):
-            shape = dataclasses.replace(shape, rival=True)
-        shapes.append(shape)
+
+        # Full arcs supply five-tuples, constraints, and member facts. The roles-only read
+        # is insufficient.
+        arcs_by_dcid, table_answered = _read_candidate_arcs(candidate_pool, graph=graph)
+
+        sv_facts = _build_sv_facts(candidate_pool, arcs_by_dcid)
+    if not sv_facts:
+        return []
+
+    with phase("shape_probe"):
+        place_probe = _probe_place_availability(
+            sv_facts,
+            place_dcids=place_dcids,
+            full_facets_max_candidates=full_facets_max_candidates,
+            graph=graph,
+            deadline=deadline,
+            coverage=coverage,
+        )
+
+    with phase("shape_groups"):
+        # A degenerate arc reads as role-bearing, and `group_roles` refuses its group.
+        groups: dict[_GroupKey, list[str]] = defaultdict(list)
+        group_families: dict[_GroupKey, IndexFamily | None] = {}
+        for sv_dcid, facts in sv_facts.items():
+            five_tuple = facts["five_tuple"]
+            role_bearing, family = member_group_class(sv_dcid, five_tuple, facts["arcs"])
+            key = (five_tuple, role_bearing, family.properties if family is not None else None)
+            groups[key].append(sv_dcid)
+            group_families[key] = family
+
+        # A five-tuple the code index carries reads its slot values from the index.
+        walked = [key for key in groups if key[2] is None and not five_tuple_families(key[0])]
+        held_families: dict[_GroupKey, FamilySummary] = {}
+        for key in walked:
+            five_tuple, role_bearing, _properties = key
+            if (found := held_family(five_tuple, role_bearing=role_bearing)) is not None:
+                held_families[key] = found
+        family_members = sum(len(family.members) for family in held_families.values())
+        walked_groups = len(walked)
+        logger.info(
+            "derive_shapes: read arcs for %d candidate(s), %d from the catalogue's tables and %d "
+            "live; %d of %d graph-walked group(s) read their family from the tables (%d member(s) "
+            "in all), %d read their confirmed members alone",
+            len(candidate_pool),
+            table_answered,
+            len(candidate_pool) - table_answered,
+            len(held_families),
+            walked_groups,
+            family_members,
+            walked_groups - len(held_families),
+            extra={
+                "table_answered": table_answered,
+                "live_read": len(candidate_pool) - table_answered,
+                "families_held": len(held_families),
+                "families_sampled": walked_groups - len(held_families),
+                "family_members": family_members,
+            },
+        )
+
+    with phase("shape_labels"):
+        prop_labels_raw, value_labels = _fetch_constraint_labels(
+            sv_facts, graph=graph, families=held_families.values()
+        )
+
+    with phase("shape_groups"):
+        shapes: list[ShapeDraft] = []
+        unusable_role_groups = 0
+        zero_member_groups = 0
+        for key, group_svs in groups.items():
+            five_tuple, role_bearing, _properties = key
+            shape_id = group_shape_id(
+                five_tuple, role_bearing=role_bearing, family=group_families[key]
+            )
+            shape, unusable_roles, zero_member = _build_group_shape(
+                five_tuple,
+                group_svs,
+                shape_id=shape_id,
+                family=group_families[key],
+                sv_facts=sv_facts,
+                sv_scores=sv_scores,
+                recall_svs=recall_svs,
+                expansion_rank=expansion_rank,
+                expansion_root_score=topic_expansion.expansion_root_score,
+                expansion_root=topic_expansion.expansion_root,
+                place_probe=place_probe,
+                prop_labels_raw=prop_labels_raw,
+                value_labels=value_labels,
+                held=held_families.get(key),
+                held_role_arcs=_held_role_arcs(five_tuple, role_bearing)
+                if key in held_families
+                else None,
+            )
+            if zero_member:
+                zero_member_groups += 1
+                continue
+            if unusable_roles:
+                unusable_role_groups += 1
+                continue
+            assert shape is not None
+            if key in held_families:
+                shape = dataclasses.replace(shape, held_family=FamilyKey(*five_tuple, role_bearing))
+            if rival_svs.issuperset(group_svs):
+                shape = dataclasses.replace(shape, rival=True)
+            shapes.append(shape)
 
     viable_groups = len(groups) - zero_member_groups
     if unusable_role_groups and unusable_role_groups == viable_groups:

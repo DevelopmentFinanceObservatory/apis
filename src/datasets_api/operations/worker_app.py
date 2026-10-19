@@ -22,7 +22,10 @@ the final writes need. The operation runs under one origin catalogue build. It i
 when it is the one the row names, otherwise the published build
 (`CatalogueService.snapshot_current`), so an operation submitted under a build newer than this
 instance's loaded one runs under the newer admission. A row with no build also takes the published
-build. A failed catalogue read is a transient failure of the claimed attempt.
+build. A failed catalogue read is a transient failure of the claimed attempt. With
+`GRAPH_RELEASE_URI` set, the operation also runs under the release the process serves when the
+delivery arrives, whichever release served its submission, and a release swap holds the run's
+permit.
 
 Tests can inject every dependency. With dependencies omitted, `build_worker_app` resolves live
 services in its lifespan from shared and worker-specific settings.
@@ -35,7 +38,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager, nullcontext
 from datetime import timedelta
 
 from fastapi import FastAPI, Request
@@ -66,6 +69,8 @@ from datasets_api.version import DATASETS_CAPABILITY_VERSION
 from datasets_api.version_store import LiveHeadStore, LiveVersionRecordWriter
 from dc_sdmx import SdmxClient
 from dfo_platform.build import build_commit
+from graph_release.context import bound_release
+from graph_release.service import ReleaseService, optional_release_service
 from materialise import EnrichmentLookup
 from materialise.facets import VariableBreadthReader
 from materialise.graph import GraphReader
@@ -205,6 +210,7 @@ def build_worker_app(
     max_attempts: int | None = None,
     run_in_thread: Callable[..., None] = run_operation,
     catalogue: CatalogueService | None = None,
+    release: ReleaseService | None = None,
     now: Clock = utc_now,
 ) -> FastAPI:
     """Builds the worker app, resolving omitted dependencies in its lifespan.
@@ -215,6 +221,8 @@ def build_worker_app(
     stamps `claimed_at` with. After a normal return, the route reads the stored terminal state and
     answers 2xx so Cloud Tasks does not retry completed or failed work. `catalogue` defaults to the
     process-wide service, so a missing or unloadable `ORIGIN_CATALOGUE_URI` fails construction.
+    `release` defaults to the process-wide graph release service when `GRAPH_RELEASE_URI` is set,
+    and to none otherwise.
     """
     _settings = settings if settings is not None else DatasetsBuildSettings.from_env()
     _max_attempts = max_attempts if max_attempts is not None else _settings.operation_max_attempts
@@ -226,6 +234,7 @@ def build_worker_app(
     _worker_url = worker_url
     _worker_invoker_service_account = worker_invoker_service_account
     _catalogue = catalogue if catalogue is not None else get_catalogue_service()
+    _release = release if release is not None else optional_release_service()
     _lock = threading.Lock()
 
     @asynccontextmanager
@@ -299,6 +308,11 @@ def build_worker_app(
                     # index for as long as its head checks, its graph reads, member
                     # resolution, the estimate and the budget decision take.
                     stack.callback(coverage.register_load_guard(materialise_semaphore.every_permit))
+                    # A release swap holds the run's permit for the same reason.
+                    if _release is not None:
+                        stack.callback(
+                            _release.register_swap_guard(materialise_semaphore.every_permit)
+                        )
                     # Run state uses the top-level store. This worker only runs tasks.
                     # Dependency defaults stay inert.
                     _deps = _build_live_definition_deps(
@@ -428,8 +442,12 @@ def build_worker_app(
                 _operation_store.release(operation_id, attempt=operation.attempt_count)
                 return JSONResponse({"detail": "origin catalogue unavailable"}, status_code=503)
         try:
-            # One catalogue version serves the whole operation. `to_thread` carries the binding.
-            with bound_catalogue(catalogue):
+            # One catalogue version and one release serve the whole operation. `to_thread`
+            # carries the bindings.
+            release_scope = (
+                nullcontext() if _release is None else bound_release(_release.snapshot())
+            )
+            with bound_catalogue(catalogue), release_scope:
                 await asyncio.to_thread(
                     run_in_thread,
                     operation=operation,

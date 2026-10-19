@@ -174,7 +174,6 @@ def test_definition_retrieval_reports_the_same_injected_code_index_the_mint_used
 
 
 def test_definition_options_route_reports_the_same_injected_code_index():
-    # `/options` runs the definition door's write-free prewrite path.
     fixture = _fixture_code_index()
     store = FakeDatasetStore()
     client, _store = _client(code_index=fixture, store=store)

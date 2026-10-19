@@ -30,7 +30,9 @@ from search.models import (
     IdentityBindingUnbound,
     IdentityBindingValue,
     IdentityFacetValueAbsent,
+    IdentityFacetValueRequest,
     IdentitySlot,
+    IdentityUnitRequest,
     IdentityWindowAll,
     IdentityWindowRange,
     OptionsFor,
@@ -44,6 +46,7 @@ from tests.engine._fake_coverage import (
     patch_coverage,
 )
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._harness import sdmx_double
 from tests.engine._search_app import search_app
 from tests.fixtures import FakeGraph, FakeLLM, make_resolver
 from tests.materialise.conftest import FakeGraphReader
@@ -627,6 +630,43 @@ class TestObservationAboutFacetBoundMembership:
         _target, resp = _options_response(req, graph=_place_graph(obs=_UNIT_BOUND_OBS))
         dcids = {i.value.ref.ref for i in resp.options.items}
         assert dcids == {"country/GTM"}
+
+    def test_a_unit_request_on_a_cold_cache_answers_with_the_converted_options(self):
+        """The route hands `compute_options` the materialise SDMX client, so a request-form
+        unit binding decides its conversion instead of refusing 503 for a missing client.
+        Every candidate carries the requested currency, so both places answer."""
+        req = _place_request(
+            facets={
+                "unit": IdentityFacetValueRequest(
+                    request=IdentityUnitRequest(currency="USD", prices="current")
+                )
+            }
+        )
+        obs = {
+            key: [{**facet, "unit": "CurrencyUSD"} for facet in facets]
+            for key, facets in _UNIT_BOUND_OBS.items()
+        }
+        graph = _place_graph(obs=obs)
+        client = TestClient(
+            search_app(
+                graph=graph,
+                resolver=make_resolver(graph),
+                llm=FakeLLM(),
+                sdmx=FakeSdmxClient(observations={}),
+                materialise_graph=_materialise_graph_for(
+                    graph,
+                    arcs={**_LIFE_EXPECTANCY_ARCS, "CurrencyUSD": {"typeOf": ("CurrencyUnit",)}},
+                ),
+                materialise_sdmx=sdmx_double(),
+            ),
+            raise_server_exceptions=False,
+        )
+
+        resp = client.post("/api/search/options", json=req.model_dump(by_alias=True, mode="json"))
+
+        assert resp.status_code == 200, resp.text
+        dcids = {i["value"]["ref"]["ref"] for i in resp.json()["options"]["items"]}
+        assert dcids == {"country/GTM", "country/USA"}
 
     def test_membership_admitted_when_any_one_population_member_satisfies(self):
         """GTM qualifies from its first StatVar's USD facet.

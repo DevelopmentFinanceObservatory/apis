@@ -10,6 +10,7 @@ from dataclasses import replace
 
 import pytest
 
+from code_index.declarations import MEASURE_WORD_SYNONYMS_KEPT
 from code_index.query import CodeIndex
 from code_index.shared import get_index, get_measure_index
 from code_index.tokens import tokenize, word_tokens
@@ -21,7 +22,6 @@ from code_index.types import (
     MeasureValueRow,
     StatVarRow,
 )
-from scripts.export_code_index import _MEASURE_WORD_SYNONYMS_KEPT
 from search.engine.qualifier_match import (
     QualifierMatch,
     QualifierTie,
@@ -713,14 +713,14 @@ def _carries(statvar: StatVarRow, value: MeasureValueRow) -> bool:
 def test_no_code_synonym_takes_a_measure_value_its_code_does_not_imply():
     """A code synonym the matcher reads whole, holding a measure value's words, would take
     them from the measure reading in every vocabulary
-    (`scripts.export_code_index._strip_measure_words`). It may hold them only when every
+    (`code_index.export._strip_measure_words`). It may hold them only when every
     series carrying its code has that measure, as DAC1AidType11017's "ODA grant equivalents
     of bilateral loans" does. A synonym that is itself a measure text ("PPP") keeps both
     readings on its one span, and a declared one names no measure."""
     synonyms = sorted(
         text
         for text in {text for row in _REAL_INDEX.codes for text in row.synonyms}
-        if text.casefold() not in _MEASURE_WORD_SYNONYMS_KEPT
+        if text.casefold() not in MEASURE_WORD_SYNONYMS_KEPT
     )
     together = read_by_vocabulary(synonyms, _REAL_INDEX, get_measure_index(), vocabularies=())
     measures_alone = read_by_vocabulary(
@@ -761,7 +761,7 @@ def test_no_code_synonym_takes_a_measure_value_its_code_does_not_imply():
 
 def test_a_declared_measure_word_synonym_keeps_its_code_and_reads_no_basis():
     """The word "net" in "social safety net" names no netting basis
-    (`scripts.export_code_index._MEASURE_WORD_SYNONYMS_KEPT`)."""
+    (`code_index.declarations.MEASURE_WORD_SYNONYMS_KEPT`)."""
     reading = read_text(
         "social safety nets in Kenya", _REAL_INDEX, get_measure_index(), vocabularies=[_CRS]
     ).by_vocabulary[_CRS]

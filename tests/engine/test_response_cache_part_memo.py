@@ -7,6 +7,8 @@ import asyncio
 import dataclasses
 import json
 import logging
+import threading
+import time
 
 import pytest
 
@@ -564,3 +566,25 @@ def test_a_zero_byte_bound_turns_the_memo_off():
         memo, build_commit="b", today="2026-10-06", coverage=empty_coverage_snapshot()
     )
     assert not scope.active
+
+
+def test_stats_from_another_thread_waits_for_a_request_in_progress():
+    # The timer runs inside `get`, after the request has entered the memo. From there it starts
+    # `stats` on a second thread, the way the generation provider's refresh thread calls it, and
+    # gives it 0.2 s to finish. `stats` expires entries through `len` and `currsize`, so it must
+    # wait for the request instead of mutating the store under it.
+    outcome: dict[str, bool] = {}
+    caller = threading.get_ident()
+
+    def timer() -> float:
+        if threading.get_ident() == caller and "stats_ran_inside" not in outcome:
+            reader = threading.Thread(target=memo.stats)
+            reader.start()
+            reader.join(timeout=0.2)
+            outcome["stats_ran_inside"] = not reader.is_alive()
+        return time.monotonic()
+
+    memo = PartMemo(timer=timer)
+    memo.get("stamp", "key")
+
+    assert outcome == {"stats_ran_inside": False}

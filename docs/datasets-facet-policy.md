@@ -9,7 +9,7 @@ declare its own default policy for a given StatVar and axis
 (`default_facet_policies_live: false` on the capabilities document). This
 document is the fallback this deployment applies when the graph declares
 none. It states the rule and the two enforcement points that implement it.
-`dfo-spec-kit` does not record facet conventions, so this
+`spec-kit` does not record facet conventions, so this
 document is the policy's authoritative record until it does.
 
 The capabilities document publishes this policy's identity as

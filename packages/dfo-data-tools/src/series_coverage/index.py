@@ -922,13 +922,17 @@ class CoverageIndex:
         pair_roles: Sequence[Role],
         first_year: int | None,
         last_year: int | None,
+        facet_candidates: bool = False,
     ) -> tuple[pa.Table, np.ndarray, np.ndarray]:
         """The rows of `variables` surviving `bound` over every year, each row's pair key (its
         variable and its dcid on each role in `pair_roles`, as one integer), and the distinct
         keys of the pairs with a row holding data inside `[first_year, last_year]`, every row
         when both bounds are open, since each row holds data. `pair_count` and
-        `pair_facet_candidates` both select pairs here."""
-        rows = self._member_rows(variables=variables, bound=bound).combine_chunks()
+        `pair_facet_candidates` both select pairs here. `facet_candidates` reads the rows
+        `filter_facet_candidates` reads (`_candidate_member_rows`) in place of the served
+        rows (`_member_rows`)."""
+        member_rows = self._candidate_member_rows if facet_candidates else self._member_rows
+        rows = member_rows(variables=variables, bound=bound).combine_chunks()
         if rows.num_rows == 0:
             empty = np.empty(0, dtype=np.int64)
             return rows, empty, empty
@@ -951,6 +955,7 @@ class CoverageIndex:
         pair_roles: Sequence[Role],
         first_year: int | None = None,
         last_year: int | None = None,
+        facet_candidates: bool = False,
     ) -> dict[tuple[str, tuple[str, ...]], tuple[FacetCoverage, ...]]:
         """Each pair's facet coverage over every year it holds, keyed by `(variable, dcids)`
         with one dcid per role in `pair_roles`, in that order, and facets sorted by
@@ -961,7 +966,9 @@ class CoverageIndex:
         `pair_roles`, with `bound` limiting those dcids. Rows on a role outside `pair_roles`
         pool into the pair, as `filter_candidates` pools them for a request binding that
         pair alone, so each value equals `filter_candidates(variables=[variable],
-        bound=<the pair's dcids>)`'s facets from one grouped read.
+        bound=<the pair's dcids>)`'s facets from one grouped read. With `facet_candidates`,
+        each value equals `filter_facet_candidates`' facets for the pair instead: every
+        globally admitted facet, with no source scope or per-series precedence.
         """
         rows, keys, kept = self._pairs_with_data(
             variables=variables,
@@ -969,6 +976,7 @@ class CoverageIndex:
             pair_roles=pair_roles,
             first_year=first_year,
             last_year=last_year,
+            facet_candidates=facet_candidates,
         )
         if kept.size == 0:
             return {}
