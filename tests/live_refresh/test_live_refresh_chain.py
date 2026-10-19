@@ -254,6 +254,8 @@ def test_a_card_on_a_groupby_sum_is_redrawn_on_the_sum_of_the_new_data(rig: _Rig
         "base_content_version": new_head,
         "rendering": "groupby",
         "groupby": GROUPBY,
+        # The sum keeps the recipient role, so its kind file carries the serving stamp.
+        "enrichment_stamp": versions["enrichment_stamp"],
     }
     payload = rig.redrawn(card, target)
     assert _points(payload) == _expected(
