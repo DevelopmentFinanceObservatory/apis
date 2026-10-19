@@ -2,7 +2,7 @@
 Its prewrite half materialises resolved requests and builds a manifest with an empty artifact list.
 Its write half stores artifacts, renders the requested rendering, records the version, and
 advances the head. `datasets_api.current.serve_current` calls it for every materialising entry
-point. The options route's answer for an unregistered definition uses the prewrite half alone.
+point.
 
 Group members materialise across `member_concurrency` workers. The materialise timing covers
 the full fan-out. The prewrite half records output-profile CPU in a separate `Server-Timing`
@@ -562,8 +562,7 @@ def prewrite_definition(
     The citation read takes each source's documentation only when `documented` and the
     version is not on record. `snapshot_reader` is read, in one transaction, only when the
     caller's head names the result's `content_version` (`head_content_version`). A re-mint
-    renders from the stored citation (`bundle_citations`), and the options route's write-free
-    answer for an unregistered definition passes `documented=False`.
+    renders from the stored citation (`bundle_citations`).
 
     Every read runs under the identity's pinned provenances
     (`adapter.pinned_provenance_scope`), so a pinned source is admitted before DFO

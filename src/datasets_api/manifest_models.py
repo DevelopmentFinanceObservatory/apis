@@ -531,11 +531,10 @@ class Manifest(BaseModel):
 class OptionsEnvelope(BaseModel):
     """`GET /api/datasets/{id}/options`'s response. It is the projection
     of a materialising door's manifest onto the fields this route's callers
-    need (content_version, coverage, output_options, warnings, trace). A
-    rebuild returns the pre-write manifest of `serve_definition`
-    (`datasets_api.serve.prewrite_definition`), which runs no reshape, so
-    `warnings` here excludes reshape-level warnings such as
-    `enrichment_unavailable`.
+    need (content_version, coverage, output_options, warnings, trace). The
+    route serves with no rendering (`doors.definition._serve_spec_options`),
+    so no reshape runs and `warnings` here excludes reshape-level warnings
+    such as `enrichment_unavailable`.
     """
 
     model_config = ConfigDict(extra="forbid")
