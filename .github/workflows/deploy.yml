@@ -46,7 +46,8 @@ name: Deploy
 # maintenance job (vars.JOB_DATASETS_MAINTENANCE), the coverage
 # job (vars.JOB_COVERAGE), the origin catalogue job
 # (vars.JOB_ORIGIN_CATALOGUE), the search catalogue job
-# (vars.JOB_SEARCH_CATALOGUE), and the datasets worker service
+# (vars.JOB_SEARCH_CATALOGUE), the graph release job
+# (vars.JOB_GRAPH_RELEASE), and the datasets worker service
 # (vars.SERVICE_WORKER) have moved onto that same image: build and push the
 # SHA-tagged image, point each job at it, run both migration jobs, make sure a
 # compatible coverage artifact and a compatible origin catalogue are
@@ -65,8 +66,9 @@ name: Deploy
 # deploy when it is missing.
 # The coverage and origin catalogue jobs are pointed at the new image on
 # every deploy but built only when no compatible artifact is published for
-# the image's format (see their steps below). The search catalogue job is
-# pointed at the new image and left to its Scheduler (see its step). A
+# the image's format (see their steps below). The search catalogue and graph
+# release jobs are pointed at the new image and left to their Schedulers (see
+# their steps). A
 # failed step stops the job before any step after it runs, so a failed
 # migration or artifact build leaves both services on their current image.
 
@@ -150,20 +152,21 @@ jobs:
           JOB_ORIGIN_CATALOGUE: ${{ vars.JOB_ORIGIN_CATALOGUE }}
           JOB_SEARCH_CATALOGUE: ${{ vars.JOB_SEARCH_CATALOGUE }}
           JOB_DATASETS_MAINTENANCE: ${{ vars.JOB_DATASETS_MAINTENANCE }}
+          JOB_GRAPH_RELEASE: ${{ vars.JOB_GRAPH_RELEASE }}
         run: |
           set -euo pipefail
           missing=0
           checked=0
           for name in PROJECT_ID REGION AR_REPO SERVICE_APIS SERVICE_WORKER \
             JOB_DATASETS_MIGRATE JOB_PRESENTATION_MIGRATE JOB_COVERAGE JOB_ORIGIN_CATALOGUE \
-            JOB_SEARCH_CATALOGUE JOB_DATASETS_MAINTENANCE; do
+            JOB_SEARCH_CATALOGUE JOB_DATASETS_MAINTENANCE JOB_GRAPH_RELEASE; do
             checked=$((checked + 1))
             if [ -z "${!name}" ]; then
               echo "::error::Missing vars.$name in the '${{ inputs.environment }}' GitHub Environment."
               missing=1
             fi
           done
-          [ "$checked" -eq 11 ] || { echo "::error::checked $checked variables, expected 11."; exit 1; }
+          [ "$checked" -eq 12 ] || { echo "::error::checked $checked variables, expected 12."; exit 1; }
           [ "$missing" -eq 0 ] || exit 1
           image="$REGION-docker.pkg.dev/$PROJECT_ID/$AR_REPO/dfo-apis:${{ steps.target.outputs.sha }}"
           echo "image=$image" >> "$GITHUB_OUTPUT"
@@ -437,6 +440,19 @@ jobs:
               --wait
             verify
           fi
+
+      # The graph release job moves onto the new image on every deploy so its
+      # scheduled ticks (Cloud Scheduler, every 2 minutes) build with the new
+      # code. The deploy does not execute it; see deploy/graph-release.md.
+      - name: Point the graph release job at the new image
+        if: steps.decide.outputs.deploy == 'true'
+        run: |
+          set -euo pipefail
+          gcloud run jobs update "${{ vars.JOB_GRAPH_RELEASE }}" \
+            --image="${{ steps.image.outputs.image }}" \
+            --region="${{ vars.REGION }}" \
+            --project="${{ vars.PROJECT_ID }}" \
+            --quiet
 
       # The search catalogue job (`python -m search.catalogue.job`) builds the
       # example sentences GET /api/search/catalogue serves. It moves onto the

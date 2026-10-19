@@ -119,6 +119,10 @@ WHERE subject_id IN UNNEST(@ids)"""
 IMPORTS_SQL: Final[str] = """SELECT ImportName, LatestVersion, State, DataImportTimestamp
 FROM ImportStatus"""
 
+# The imports one ingestion run wrote, for the manifest's `ingested_imports`.
+INGESTED_IMPORTS_SQL: Final[str] = """SELECT IngestedImports FROM IngestionHistory
+WHERE WorkflowExecutionID = @execution"""
+
 CODE_ENUMS: Final[tuple[str, ...]] = tuple(system.enum_dcid for system in CODE_SYSTEMS)
 
 RAW_SERIES = pa.schema(
@@ -281,6 +285,22 @@ def read_inputs(snapshot: Snapshot) -> RawInputs:
     )
 
 
+def read_ingested_imports(snapshot: Snapshot, *, execution_id: str) -> tuple[str, ...]:
+    """`IngestionHistory.IngestedImports` of the run `execution_id`, in stored order; empty when
+    the row holds none. Raises `LookupError` when no row has that id."""
+    from google.cloud.spanner_v1 import param_types as types
+
+    rows = snapshot.execute_sql(
+        INGESTED_IMPORTS_SQL,
+        params={"execution": execution_id},
+        param_types={"execution": types.STRING},
+        request_options=_request_options("ingested_imports"),
+    )
+    for (imports,) in rows:
+        return tuple(str(name) for name in cast("Sequence[object]", imports or ()))
+    raise LookupError(f"IngestionHistory has no row {execution_id!r}")
+
+
 def _constraint_values(variable_edges: pa.Table) -> list[str]:
     """The objects of every property a variable names in its `constraintProperties`, sorted."""
     named = variable_edges.filter(
@@ -387,6 +407,7 @@ __all__ = [
     "CODE_ENUMS",
     "FACETS_SQL",
     "IMPORTS_SQL",
+    "INGESTED_IMPORTS_SQL",
     "LIVE_VARIABLES_SQL",
     "NODES_SQL",
     "RAW_EDGES",
@@ -401,6 +422,7 @@ __all__ = [
     "VARIABLE_EDGES_SQL",
     "RawInputs",
     "Snapshot",
+    "read_ingested_imports",
     "read_inputs",
     "snapshot_at",
 ]

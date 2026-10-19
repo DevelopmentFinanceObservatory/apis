@@ -84,6 +84,7 @@ class Dependency(StrEnum):
     ADMIN_API = "admin_api"
     COVERAGE_BUILD = "coverage_build"
     ORIGIN_CATALOGUE = "origin_catalogue"
+    SPANNER = "spanner"
 
 
 @dataclass(frozen=True)

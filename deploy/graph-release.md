@@ -1,0 +1,74 @@
+# Graph release (`graph_release`)
+
+The graph release is one build of DFO's Data Commons graph and the DFO layer per import: the series summary, facets, edges, nodes and imports read from Spanner, plus the code-index blocks, declarations and base parties derived from them. The builder job, `python -m graph_release.job`, builds, gates and publishes a release after each import. No serving process reads it unless `GRAPH_RELEASE_URI` is set on it.
+
+## Layout
+
+`GRAPH_RELEASE_URI` (`gs://` or `file://`) is the release root:
+
+- `format-1/current.json`, the pointer: `{"release_id": ..., "hold": null}`. The job moves it last, conditional on the version it read, so it is the commit point.
+- `manifests/<release_id>.json`, one per release, create-only. The release id hashes the part hashes, the import execution id, the DC serving revision and the format.
+- `parts/<sha256>.arrow` and `.json.gz`, named by content and shared between releases.
+- `lease.json`, the build lease, and `builder_state.json`, the last built and last failed inputs and the shadow wait.
+
+## What a tick does
+
+Cloud Scheduler starts the job every 2 minutes. Each tick:
+
+1. Reads the import key (`IngestionLock` and `IngestionHistory`) in one read-only snapshot, and exits unless the lock is free and the newest row is the newest success.
+2. Reads the DC service's serving revisions through the Cloud Run Admin API, and exits until every one was created after the import completed. The ingestion workflow restarts the DC service after each import, and the mixer reads Spanner as of the last ingestion it saw at start.
+3. Forms the inputs: the import's execution id, the serving revision, the format, a hash of the builder's source (`graph_release.job.BUILDER_MODULES`) and the declarations hash. It exits when they equal the last built or last failed inputs in `builder_state.json`, or when the pointer is held. With `GRAPH_RELEASE_SHADOW=1` it exits `graph_release_shadow_waiting` until the published coverage build's `stamp` and the origin catalogue's `dfo_fingerprint` both equal the import's stamp.
+4. Takes `lease.json` for 1800 seconds, the task timeout, or exits.
+5. Reads every input in one snapshot at the current time, and discards the build when the import key in it differs from step 1's.
+6. Builds the parts, reads the base parties from the mixer, and runs the gate: the invariants, the DFO rebuild from the staged files, the mixer differential, the SDMX counts and, with shadow on, the diff against the coverage build and the origin catalogue.
+7. Re-reads the serving revision and discards the build if it moved. A release id equal to the serving one records the inputs and publishes nothing. Otherwise it uploads the missing parts, writes the manifest and moves the pointer. It prunes while still holding the lease, then releases it.
+
+Pruning keeps the ten newest manifests, every manifest younger than 24 hours and the pointer's release, and deletes the parts none of them names.
+
+## Gate outcomes
+
+A finding is deterministic: the same inputs fail the same way. The tick logs `graph_release_gate_failed` with the findings, records the inputs as the last failed build and exits 1. Later ticks skip those inputs (`graph_release_skipped`, reason `inputs_failed`) until the import, the serving revision or the builder changes.
+
+An unavailable dependency (Spanner, the Admin API, the mixer, SDMX, the bucket, or a shadow comparator) logs `graph_release_unavailable`, records nothing and exits 1. The next tick retries.
+
+## Hold and rollback
+
+```bash
+uv run python -m graph_release.hold set <release_id>
+uv run python -m graph_release.hold clear
+```
+
+`set` points at a published release and holds it there; the job then exits at step 3 (`graph_release_skipped`, reason `held`). `clear` lifts the hold, leaving the held release serving until the job publishes the next one. Both act on `GRAPH_RELEASE_URI`, or on `--local-dir`.
+
+## Monitoring
+
+Every tick that completes logs `graph_release_heartbeat` last, with its `outcome`. `graph_release_stale` comes before it while the newest import of any status completed more than 1800 seconds ago and the serving release is not built from it, less any time spent shadow waiting. A failed import never gets a release, so it raises the line until the next success.
+
+The `infra` repository's `graph_release.tf` alerts on `graph_release_stale` or `graph_release_gate_failed` at once, on `graph_release_unavailable` logged for 15 minutes, and on no heartbeat for 2100 seconds, the task timeout plus one tick. `graph_release_enabled` in the dfo-infra env tfvars switches the Scheduler and both alert policies: false creates the Scheduler paused and the alerts disabled. Set it true once the deployed image carries `graph_release.job`.
+
+## Running it locally
+
+`--local-dir` publishes under a local directory in place of `GRAPH_RELEASE_URI`. The run needs ADC with read access to the dev Spanner database, the Admin API's `run.services.get` and `run.revisions.get` on the DC service, and the coverage and origin buckets for the shadow diff:
+
+```bash
+export GRAPH_RELEASE_SPANNER_PROJECT=dev-fin-observatory
+export GRAPH_RELEASE_SPANNER_INSTANCE=dfo-dev-dc-instance
+export GRAPH_RELEASE_SPANNER_DATABASE=dfo-dev-dc-db
+export DATACOMMONS_SERVICE_NAME=projects/dev-fin-observatory/locations/northamerica-northeast1/services/dfo-dev-dc-datacommons-service
+export DATASETS_GRAPH_BASE_URL=https://dfo-dev-dc-datacommons-service-zms5lj4zhq-nn.a.run.app/core/api
+export DATASETS_SDMX_BASE_URL=$DATASETS_GRAPH_BASE_URL
+export GRAPH_RELEASE_SHADOW=1
+export COVERAGE_ARTIFACT_URI=gs://dfo-dev-coverage-dev-fin-observatory/
+export ORIGIN_CATALOGUE_URI=gs://dfo-dev-origin-catalogue-dev-fin-observatory/
+uv run python -m graph_release.job --local-dir /tmp/graph-release-local
+```
+
+Point a local service's `GRAPH_RELEASE_URI` at `file:///tmp/graph-release-local` to load the release.
+
+## Environment
+
+- `GRAPH_RELEASE_URI`: required, `gs://` or `file://`.
+- `GRAPH_RELEASE_SPANNER_PROJECT`, `GRAPH_RELEASE_SPANNER_INSTANCE`, `GRAPH_RELEASE_SPANNER_DATABASE`: required, the DC Spanner database.
+- `DATACOMMONS_SERVICE_NAME`: required, the DC service as `projects/<p>/locations/<r>/services/<s>`.
+- `DATASETS_GRAPH_BASE_URL`, `DATASETS_SDMX_BASE_URL`: required, our mixer's API root including `/core/api`. The dev graph serves reads anonymously, so the job sends no token.
+- `GRAPH_RELEASE_SHADOW`: optional, default off. On, it needs `COVERAGE_ARTIFACT_URI` and `ORIGIN_CATALOGUE_URI`.
