@@ -14,16 +14,20 @@ Each tick:
    With shadow on, it exits `graph_release_shadow_waiting` while the coverage build or the
    origin catalogue is behind the import, before building anything, and exits unavailable once
    that wait passes `SHADOW_WAIT_LIMIT_SECONDS`.
-4. Takes the build lease, or exits.
+4. Takes the build lease, or exits. A tick that exits here with inputs that ended unavailable
+   logs their recorded `graph_release_unavailable` line again with `backoff`, since the lease
+   holder is retrying them.
 5. Reads every input in one snapshot whose first statements re-read the import key, and
    discards the build when the key moved since step 1.
 6. Builds the platform and DFO parts and gates them, then re-reads the serving revision and
-   discards the build, recording nothing, when it moved. Otherwise a finding records the inputs
-   as the last failed build, and an unavailable dependency records them as the last unavailable
+   discards the build, recording nothing, when it moved. A dependency unavailable during the
+   build re-reads it at once, with the same discard. Otherwise a finding records the inputs as
+   the last failed build, and an unavailable dependency records them as the last unavailable
    inputs, which only the backoff reads.
 7. Publishes, unless the release id is the serving one, in which case it records the inputs
    and publishes nothing. Prunes while still holding the lease, then releases it. A failed
-   prune or lease release is logged and leaves the outcome alone.
+   prune or lease release, or a failed write of the built inputs after the pointer moved, is
+   logged and leaves the outcome alone.
 
 Every outcome the tick classifies exits 0, a gate finding and an unavailable dependency
 included, since their log lines raise the alerts. Only an exception the tick does not classify,
@@ -87,6 +91,7 @@ from graph_release.dfo import (
     MissingBaseParties,
     base_party_ids,
     build_dfo_parts,
+    dfo_inputs,
     read_base_parties,
     stage_dfo_parts,
 )
@@ -459,17 +464,9 @@ def _tick(
     if pointer is not None and pointer.hold is not None:
         return _skipped("held", release_id=pointer.hold)
     unavailable = state.get("last_unavailable") or {}
-    if (
-        unavailable.get("inputs") == inputs.to_json()
-        and clock() - float(unavailable["at"]) < UNAVAILABLE_BACKOFF_SECONDS
-    ):
-        # Logged again each tick, so the unavailable alert sees the outage for as long as it lasts.
-        emit(
-            "graph_release_unavailable",
-            severity="WARNING",
-            unavailable=unavailable.get("unavailable", []),
-            backoff=True,
-        )
+    retrying = unavailable.get("inputs") == inputs.to_json()
+    if retrying and clock() - float(unavailable["at"]) < UNAVAILABLE_BACKOFF_SECONDS:
+        _repeat_unavailable(unavailable)
         return _Exit("unavailable_backoff")
 
     try:
@@ -484,6 +481,9 @@ def _tick(
         with _needs(Dependency.BUCKET, *_BUCKET_ERRORS):
             lease = acquire_lease(root, build_id=build_id, ttl_seconds=LEASE_TTL_SECONDS, now=clock)
         if lease is None:
+            if retrying:
+                # The lease holder is retrying these inputs, so the outage has not yet cleared.
+                _repeat_unavailable(unavailable)
             return _skipped("lease_held")
         try:
             result = _build(
@@ -507,6 +507,17 @@ def _tick(
         _note_unavailable(root, inputs, exc, now=clock())
         raise
     return result
+
+
+def _repeat_unavailable(recorded: Mapping[str, Any]) -> None:
+    """Logs the recorded `graph_release_unavailable` line again with `backoff`, so the unavailable
+    alert sees the outage for as long as it lasts, the retry build included."""
+    emit(
+        "graph_release_unavailable",
+        severity="WARNING",
+        unavailable=recorded.get("unavailable", []),
+        backoff=True,
+    )
 
 
 def _shadow_waiting(stamp: str, behind: Sequence[ComparatorBuild], *, waited: float) -> _Exit:
@@ -620,60 +631,65 @@ def _build_phases(
         staging = Path(scratch) / "staging"
         execution = inputs.import_execution_id
         try:
-            with phases("platform"):
-                platform = build_platform_parts(raw, authored=declarations.authored)
-                del raw  # the platform parts hold everything the build reads from here
-                staged = stage_platform_parts(platform, staging_dir=staging, execution_id=execution)
-            with phases("dfo"):
-                party_ids = base_party_ids(platform, declarations)
-                with _needs(Dependency.MIXER, *_MIXER_ERRORS):
-                    base_parties = read_base_parties(party_ids, graph=graph)
-                dfo = build_dfo_parts(platform, declarations, base_parties)
-                staged.extend(stage_dfo_parts(dfo, staging_dir=staging, execution_id=execution))
-        except PlatformRefusal as refusal:
-            gate = refused(refusal)
-        else:
-            # The gate reads the staged files; only the shadow diff reads the built parts again.
-            shadow_parts = platform if settings.shadow else None
-            del platform
-            with phases("gate"):
-                gate = run_gate(
-                    staged,
-                    declarations=declarations,
-                    previous=_open_previous(root, pointer, local_dir=Path(scratch) / "previous"),
-                    graph=graph,
-                    sdmx=sdmx,
-                    seed=key.stamp,
-                )
-            if shadow_parts is not None:
-                # With shadow on the inputs name both comparator builds (step 3).
-                assert inputs.coverage_build_id is not None and inputs.origin_build_id is not None
-                with phases("shadow"):
-                    gate = merge(
-                        gate,
-                        shadow_diff(
-                            shadow_parts,
-                            import_stamp=key.stamp,
-                            role_axes=declarations.role_axes,
-                            code_index_blocks=dfo.code_index_blocks,
-                            coverage_uri=settings.coverage_uri,
-                            coverage_build_id=inputs.coverage_build_id,
-                            origin_uri=settings.origin_uri,
-                            origin_build_id=inputs.origin_build_id,
-                        ),
+            try:
+                with phases("platform"):
+                    platform = build_platform_parts(raw, authored=declarations.authored)
+                    del raw  # the platform parts hold everything the build reads from here
+                    staged = stage_platform_parts(
+                        platform, staging_dir=staging, execution_id=execution
                     )
+                with phases("dfo"):
+                    release = dfo_inputs(platform, declarations)
+                    party_ids = base_party_ids(release)
+                    with _needs(Dependency.MIXER, *_MIXER_ERRORS):
+                        base_parties = read_base_parties(party_ids, graph=graph)
+                    dfo = build_dfo_parts(release, base_parties)
+                    del release
+                    staged.extend(stage_dfo_parts(dfo, staging_dir=staging, execution_id=execution))
+            except PlatformRefusal as refusal:
+                gate = refused(refusal)
+            else:
+                # The gate reads the staged files; only the shadow diff reads the built parts.
+                shadow_parts = platform if settings.shadow else None
+                del platform
+                with phases("gate"):
+                    gate = run_gate(
+                        staged,
+                        declarations=declarations,
+                        previous=_open_previous(
+                            root, pointer, local_dir=Path(scratch) / "previous"
+                        ),
+                        graph=graph,
+                        sdmx=sdmx,
+                        seed=key.stamp,
+                    )
+                if shadow_parts is not None:
+                    # With shadow on the inputs name both comparator builds (step 3).
+                    assert inputs.coverage_build_id is not None
+                    assert inputs.origin_build_id is not None
+                    with phases("shadow"):
+                        gate = merge(
+                            gate,
+                            shadow_diff(
+                                shadow_parts,
+                                import_stamp=key.stamp,
+                                role_axes=declarations.role_axes,
+                                code_index_blocks=dfo.code_index_blocks,
+                                coverage_uri=settings.coverage_uri,
+                                coverage_build_id=inputs.coverage_build_id,
+                                origin_uri=settings.origin_uri,
+                                origin_build_id=inputs.origin_build_id,
+                            ),
+                        )
+        except _Unavailable as exc:
+            # The read that failed may have failed because the revision moved under it.
+            if (moved := _serving_moved(admin, inputs, pending=exc)) is not None:
+                return moved
+            raise
         # The mixer reads above may have answered from a revision the inputs do not name, so a
         # moved revision discards whatever they decided, a finding or an unavailable read alike.
-        with _needs(Dependency.ADMIN_API, ServingRevisionError):
-            serving = admin.serving()
-        if serving.token != inputs.dc_serving_revision:
-            emit(
-                "graph_release_discarded",
-                reason="serving_revision_moved",
-                revision=serving.token,
-                **inputs.to_json(),
-            )
-            return _Exit("serving_revision_moved")
+        if (moved := _serving_moved(admin, inputs)) is not None:
+            return moved
 
         if gate.findings:
             with _needs(Dependency.BUCKET, *_BUCKET_ERRORS):
@@ -697,6 +713,30 @@ def _build_phases(
             generation=generation,
             phases=phases,
         )
+
+
+def _serving_moved(
+    admin: ServingRevisions, inputs: BuildInputs, *, pending: _Unavailable | None = None
+) -> _Exit | None:
+    """Re-reads the serving revision and discards the build, logging
+    `graph_release_discarded`, when it no longer equals the inputs'. With an unavailable
+    dependency `pending`, an Admin API that cannot answer adds its entry to `pending`'s."""
+    try:
+        with _needs(Dependency.ADMIN_API, ServingRevisionError):
+            serving = admin.serving()
+    except _Unavailable as exc:
+        if pending is None:
+            raise
+        raise _Unavailable(*pending.entries, *exc.entries) from pending
+    if serving.token == inputs.dc_serving_revision:
+        return None
+    emit(
+        "graph_release_discarded",
+        reason="serving_revision_moved",
+        revision=serving.token,
+        **inputs.to_json(),
+    )
+    return _Exit("serving_revision_moved")
 
 
 def _manifest(
@@ -750,14 +790,18 @@ def _publish(
         outcome = publish_release(
             root, staged=staged, manifest=manifest, expected_pointer_generation=generation
         )
-        if outcome.status is PublishStatus.PUBLISHED:
-            _update_state(root, last_built=built)
     match outcome.status:
         case PublishStatus.HELD:
             return _skipped("held")
         case PublishStatus.POINTER_MOVED:
             emit("graph_release_discarded", reason="pointer_moved", release_id=outcome.release_id)
             return _Exit("pointer_moved")
+    try:
+        _update_state(root, last_built=built)
+    except _BUCKET_ERRORS as exc:
+        # The pointer has moved, so the release is published. The next tick builds the same
+        # inputs again, finds the release unchanged and records them.
+        emit("graph_release_state_write_failed", severity="WARNING", detail=str(exc))
     rows: dict[str, int] = {}
     for ref in manifest.parts:
         if ref.rows is not None:

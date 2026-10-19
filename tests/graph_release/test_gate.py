@@ -32,7 +32,7 @@ from dc_sdmx.results import SdmxDataResult, SdmxObservation
 from dfo_platform.roles import ROLE_AXES
 from graph_release import shadow
 from graph_release.coverage import HORIZON, coverage_rows, role_map
-from graph_release.dfo import build_dfo_parts, stage_dfo_parts
+from graph_release.dfo import build_dfo_parts, dfo_inputs, stage_dfo_parts
 from graph_release.format import StagedPart, conform_part
 from graph_release.gate import (
     Dependency,
@@ -119,10 +119,20 @@ def _first_variable(parts: PlatformParts, *, roles: int) -> str:
 
 
 def _plus_one_observation(parts: PlatformParts) -> PlatformParts:
+    """Every series with one more observation than its mask has years, as a second date in one
+    year or a year outside the mask gives it."""
     series = parts.series
     counts = pc.add(series["observation_count"], pa.scalar(1, pa.uint32()))
     index = series.schema.get_field_index("observation_count")
     return _replace(parts, series=series.set_column(index, "observation_count", counts))
+
+
+def _one_more_mask_year(parts: PlatformParts) -> PlatformParts:
+    """Every series with a mask bit for 2086, a year none of the recorded series holds."""
+    series = parts.series
+    words = pc.bit_wise_or(series["period_mask_1"], pa.scalar(1 << 62, pa.int64()))
+    index = series.schema.get_field_index("period_mask_1")
+    return _replace(parts, series=series.set_column(index, "period_mask_1", words))
 
 
 def _without_first_facet(parts: PlatformParts) -> PlatformParts:
@@ -171,7 +181,7 @@ def _undeclared_role(parts: PlatformParts) -> PlatformParts:
 @pytest.mark.parametrize(
     ("break_parts", "code"),
     [
-        (_plus_one_observation, "popcount_mismatch"),
+        (_one_more_mask_year, "popcount_mismatch"),
         (_without_first_facet, "unknown_facet"),
         (_untyped, "subset_chain"),
         (_undeclared_role, "missing_role_declaration"),
@@ -185,6 +195,12 @@ def test_each_invariant_fails_on_a_release_built_to_break_it(
     assert check_invariants(parts, role_axes=ROLE_AXES) == ()
 
     assert _codes(check_invariants(break_parts(parts), role_axes=ROLE_AXES)) == [code]
+
+
+def test_observations_the_mask_does_not_count_are_no_popcount_mismatch(
+    parts: PlatformParts,
+) -> None:
+    assert check_invariants(_plus_one_observation(parts), role_axes=ROLE_AXES) == ()
 
 
 def test_a_platform_refusal_is_a_finding_under_its_own_code() -> None:
@@ -304,7 +320,7 @@ def test_the_mixer_differential_passes_on_the_recorded_mixer_answer(ids, monkeyp
 
     assert result.passed, result.summary()
     assert result.reports["mixer"] == {"changed": 5, "sampled": 5}
-    assert result.reports["mixer_only"] == {}
+    assert result.reports["mixer_only"] == {"variables": 5, "properties": {}}
 
 
 def test_an_arc_the_release_lacks_is_a_mixer_mismatch(ids, monkeypatch):
@@ -396,7 +412,33 @@ def test_a_property_only_the_mixer_holds_is_reported_and_decides_nothing(ids, mo
     result = check_mixer(parts, previous_edges=None, graph=Extra(), seed=_SEED)
 
     assert result.passed, result.summary()
-    assert result.reports["mixer_only"] == {"extraProperty": 1}
+    assert result.reports["mixer_only"] == {"variables": 5, "properties": {"extraProperty": 1}}
+
+
+def test_the_mixer_only_report_reads_a_seeded_subset_of_the_sample(ids, monkeypatch):
+    graph = _recorded_mixer(ids, monkeypatch)
+    monkeypatch.setattr("graph_release.gate.MIXER_ONLY_VARIABLES", 2)
+
+    class Recording:
+        def __init__(self) -> None:
+            self.batches: list[list[str]] = []
+
+        def node_arcs_many(self, dcids, *, properties):
+            return graph.node_arcs_many(dcids, properties=properties)
+
+        def node_arcs_batch(self, dcids):
+            self.batches.append(list(dcids))
+            return graph.node_arcs_batch(dcids)
+
+    first, second = Recording(), Recording()
+    result = check_mixer(_ids_parts(ids), previous_edges=None, graph=first, seed=_SEED)
+    check_mixer(_ids_parts(ids), previous_edges=None, graph=second, seed=_SEED)
+
+    assert result.reports["mixer"] == {"changed": 5, "sampled": 5}
+    assert result.reports["mixer_only"] == {"variables": 2, "properties": {}}
+    assert len(first.batches) == 1 and len(first.batches[0]) == 2
+    assert set(first.batches[0]) <= set(ids["variables"])
+    assert first.batches == second.batches
 
 
 def test_the_mixer_sample_takes_changed_variables_first_then_seeded_others(ids, monkeypatch):
@@ -785,7 +827,7 @@ def _staged_release(tmp_path: Path) -> tuple[PlatformParts, list[StagedPart]]:
     staged = [
         *stage_platform_parts(parts, staging_dir=tmp_path, execution_id="exec-1"),
         *stage_dfo_parts(
-            build_dfo_parts(parts, SLICE_DECLARATIONS, SLICE_BASE_PARTIES),
+            build_dfo_parts(dfo_inputs(parts, SLICE_DECLARATIONS), SLICE_BASE_PARTIES),
             staging_dir=tmp_path,
             execution_id="exec-1",
         ),

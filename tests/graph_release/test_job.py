@@ -25,7 +25,7 @@ from google.api_core.exceptions import ServiceUnavailable
 from google.auth.exceptions import RefreshError
 from pydantic import ValidationError
 
-from artifact_publication.jobs import acquire_lease, read_import_key
+from artifact_publication.jobs import acquire_lease, read_import_key, release_lease
 from artifact_publication.uri import (
     join_uri,
     read_uri_bytes,
@@ -434,6 +434,7 @@ def test_a_held_lease_stops_the_tick(builder):
     events = builder.tick()
 
     assert _outcome(events) == "lease_held"
+    assert _named(events, "graph_release_unavailable") == []
     assert read_pointer(builder.root) is None
 
 
@@ -690,7 +691,21 @@ def test_inputs_that_ended_unavailable_back_off_for_ten_minutes(builder):
     assert repeated["backoff"] is True
     assert repeated["unavailable"] == unavailable["unavailable"]
 
+    # The retry build holds the lease for minutes; the ticks that overlap it keep the line.
     builder.now += timedelta(seconds=1)
+    retry = acquire_lease(
+        builder.root, build_id="retry", ttl_seconds=600, now=builder.now.timestamp
+    )
+    assert retry is not None
+
+    events = builder.tick()
+
+    assert _outcome(events) == "lease_held"
+    (overlapping,) = _named(events, "graph_release_unavailable")
+    assert overlapping["backoff"] is True
+    assert overlapping["unavailable"] == unavailable["unavailable"]
+
+    release_lease(builder.root, retry)
     assert _outcome(builder.tick()) == "published"
 
 
@@ -765,6 +780,11 @@ def _sdmx_unavailable(builder: Builder, monkeypatch: pytest.MonkeyPatch) -> None
         pytest.param(lambda b, m: setattr(b.sdmx, "extra", 1), "gate_failed", id="finding"),
         pytest.param(_inconsistent_facets, "gate_failed", id="platform_refusal"),
         pytest.param(_sdmx_unavailable, "unavailable", id="unavailable"),
+        pytest.param(
+            lambda b, m: setattr(b.mixer, "error", GraphReadError("connection reset")),
+            "unavailable",
+            id="mixer_unavailable_mid_build",
+        ),
     ],
 )
 def test_a_serving_revision_that_moves_during_the_build_discards_it(
@@ -784,6 +804,20 @@ def test_a_serving_revision_that_moves_during_the_build_discards_it(
 
     builder.admin.revisions = ["dc-00001"]
     assert _outcome(builder.tick()) == rebuilt
+
+
+def test_an_admin_api_that_cannot_recheck_an_unavailable_build_joins_its_line(builder, monkeypatch):
+    def unreadable(dcids, *, properties):
+        builder.admin.status = 503
+        raise GraphReadError("connection reset")
+
+    monkeypatch.setattr(builder.mixer, "node_arcs_many", unreadable)
+
+    events = builder.tick()
+
+    assert _outcome(events) == "unavailable"
+    (unavailable,) = _named(events, "graph_release_unavailable")
+    assert [u["dependency"] for u in unavailable["unavailable"]] == ["mixer", "admin_api"]
 
 
 # ---------------------------------------------------------------- lease and prune
@@ -823,6 +857,30 @@ def test_a_failed_prune_or_lease_release_leaves_the_outcome_published(
     assert _outcome(events) == "published"
     assert _named(events, "graph_release_unavailable") == []
     assert len(_named(events, "graph_release_prune_failed")) == (failing == "prune_releases")
+
+
+def test_a_failed_state_write_after_publishing_leaves_the_outcome_published(builder, monkeypatch):
+    update = job._update_state
+
+    def failing(root, **fields):
+        if "last_built" in fields:
+            raise OSError("bucket down")
+        update(root, **fields)
+
+    monkeypatch.setattr(job, "_update_state", failing)
+
+    events = builder.tick()
+
+    assert _outcome(events) == "published"
+    assert len(_named(events, "graph_release_published")) == 1
+    assert len(_named(events, "graph_release_state_write_failed")) == 1
+    assert _named(events, "graph_release_unavailable") == []
+    assert builder.state() == {}
+
+    monkeypatch.setattr(job, "_update_state", update)
+
+    assert _outcome(builder.tick()) == "release_unchanged"
+    assert _outcome(builder.tick()) == "inputs_built"
 
 
 def test_the_gate_reads_only_the_previous_release_edges(builder, monkeypatch):

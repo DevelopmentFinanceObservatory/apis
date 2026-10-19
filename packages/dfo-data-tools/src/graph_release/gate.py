@@ -34,7 +34,7 @@ from dc_sdmx.results import SdmxDataResult
 from dfo_platform.roles import RoleAxis
 from graph_release.coverage import coverage_rows, role_map
 from graph_release.declarations import Declarations
-from graph_release.dfo import build_dfo_parts
+from graph_release.dfo import build_dfo_parts, dfo_inputs
 from graph_release.format import DFO, PLATFORM, LoadedRelease, StagedPart, join_part_files
 from graph_release.platform import PlatformParts, PlatformRefusal
 from series_coverage.schema import VARIABLE_COLUMN
@@ -45,6 +45,9 @@ reads."""
 
 MIXER_RANDOM: Final[int] = 100
 """Variables the mixer differential reads beyond the changed ones, drawn from the rest."""
+
+MIXER_ONLY_VARIABLES: Final[int] = 25
+"""Sampled variables whose `->*` arcs the `mixer_only` report reads."""
 
 SDMX_ROWS: Final[int] = 30
 """`series` rows whose `observation_count` the SDMX check compares with `/data`."""
@@ -233,7 +236,8 @@ def read_back(staged: Sequence[StagedPart]) -> PlatformParts:
 def check_invariants(
     parts: PlatformParts, *, role_axes: Mapping[str, RoleAxis]
 ) -> tuple[GateFinding, ...]:
-    """The invariants over the platform parts: mask popcounts, facet ids, coverage variables
+    """The invariants over the platform parts: mask popcounts within the observation counts,
+    facet ids, coverage variables
     within the variables with arcs, a role declaration in `role_axes` for every coverage
     variable, and no dangling edge.
 
@@ -249,13 +253,15 @@ def check_invariants(
         for name in series.column_names
         if name.startswith("period_mask_")
     )
-    wrong = np.flatnonzero(series["observation_count"].to_numpy().astype(np.int64) != counted)
+    # A mask sets one bit per year inside it, so two dates in one year, or a year outside the
+    # mask, count observations it does not.
+    wrong = np.flatnonzero(series["observation_count"].to_numpy().astype(np.int64) < counted)
     if len(wrong):
         rows = series.take(wrong[:_EXAMPLES])
         findings.append(
             GateFinding(
                 GateCode.POPCOUNT_MISMATCH,
-                f"{len(wrong)} series row(s) count observations their period masks do not",
+                f"{len(wrong)} series row(s) whose period masks count more years than observations",
                 tuple(
                     f"{row['variable_measured']} {row['entity1']} {row['facet_id']}"
                     for row in rows.to_pylist()
@@ -340,7 +346,7 @@ def check_dfo_rebuild(
     if base_parties is None:
         return (GateFinding(GateCode.DFO_REBUILD_MISMATCH, "no base_parties part is staged"),)
     try:
-        rebuilt = build_dfo_parts(parts, declarations, base_parties).blobs()
+        rebuilt = build_dfo_parts(dfo_inputs(parts, declarations), base_parties).blobs()
     except PlatformRefusal as refusal:
         return (
             GateFinding(
@@ -378,10 +384,10 @@ def check_mixer(
     release does not copy. The variables the mixer omits are read once more, and a second
     omission is a mismatch. A read error is unavailable.
 
-    The `mixer_only` report counts, per property, the sampled variables whose `->*` arcs hold a
-    property outside the compared ones with a DFO-visible target. It decides nothing, since
-    `->*` also answers arcs from the base graph the release does not copy; a failed read is
-    reported as `unread`.
+    The `mixer_only` report reads the `->*` arcs of `MIXER_ONLY_VARIABLES` of the sampled
+    variables, chosen by `seed`, and counts, per property outside the compared ones, those with
+    a DFO-visible target. It decides nothing, since `->*` also answers arcs from the base graph
+    the release does not copy; a failed read is reported as `unread`.
     """
     edges = visible_edges(parts.edges)
     candidates = dfo_variables(parts)
@@ -408,7 +414,9 @@ def check_mixer(
             unavailable=(GateUnavailable(Dependency.MIXER, f"node_arcs_many failed: {exc}"),),
             reports=reports,
         )
-    reports["mixer_only"] = _mixer_only(graph, sample, compared=set(properties))
+    reports["mixer_only"] = _mixer_only(
+        graph, sorted(_seeded(sample, seed)[:MIXER_ONLY_VARIABLES]), compared=set(properties)
+    )
 
     mismatched = []
     for variable in sample:
@@ -438,13 +446,13 @@ def check_mixer(
     )
 
 
-def _mixer_only(graph: ArcReader, sample: list[str], *, compared: set[str]) -> dict[str, object]:
-    """Per property outside `compared`, how many of `sample` the mixer's `->*` arcs give a
-    DFO-visible target for."""
+def _mixer_only(graph: ArcReader, variables: list[str], *, compared: set[str]) -> dict[str, object]:
+    """How many `variables` the report read, and per property outside `compared`, how many of
+    them the mixer's `->*` arcs give a DFO-visible target for."""
     try:
-        served = graph.node_arcs_batch(sample)
+        served = graph.node_arcs_batch(variables)
     except (GraphReadError, GraphCapExceededError) as exc:
-        return {"unread": str(exc)}
+        return {"variables": len(variables), "unread": str(exc)}
     found: Counter[str] = Counter()
     for arcs in served.values():
         if not arcs:
@@ -452,7 +460,7 @@ def _mixer_only(graph: ArcReader, sample: list[str], *, compared: set[str]) -> d
         # `parse_arcs` keeps only the targets `dfo_visible` keeps.
         extra = parse_arcs(dict(arcs), [prop for prop in arcs if prop not in compared])
         found.update(prop for prop, values in extra.items() if values)
-    return dict(sorted(found.items()))
+    return {"variables": len(variables), "properties": dict(sorted(found.items()))}
 
 
 def visible_edges(edges: pa.Table) -> pa.Table:
@@ -607,6 +615,7 @@ def _row_counts(parts: PlatformParts) -> dict[str, int]:
 
 __all__ = [
     "MIXER_CHANGED_CAP",
+    "MIXER_ONLY_VARIABLES",
     "MIXER_RANDOM",
     "SDMX_ROWS",
     "ArcReader",

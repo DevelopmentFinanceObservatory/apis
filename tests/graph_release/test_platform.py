@@ -336,6 +336,30 @@ def _with_facet(raw: RawInputs, facet: dict | None, *, other: dict | None = None
 _FACET = {"isDcAggregate": False, "provenance": "provenance/OECDDAC1", "unit": "CurrencyUSD"}
 
 
+def _role_counts(raw: RawInputs) -> dict[str, int]:
+    """Each variable's count of declared `observationProperties` roles."""
+    roles: dict[str, set[str]] = {}
+    for edge in raw.edges_raw.to_pylist():
+        if edge["predicate"] == "observationProperties":
+            roles.setdefault(edge["subject_id"], set()).add(edge["object_id"])
+    return {variable: len(found) for variable, found in roles.items()}
+
+
+def _with_series_column(
+    raw: RawInputs, name: str, value: object, *, variables: set[str] | None = None
+) -> RawInputs:
+    """`raw` with `name` set to `value` on the series of `variables`, every series when
+    `None`."""
+    summary = raw.series_summary
+    rows = summary.to_pylist()
+    for row in rows:
+        if variables is None or row["variable_measured"] in variables:
+            row[name] = value(row[name]) if callable(value) else value
+    return dataclasses.replace(
+        raw, series_summary=pa.Table.from_pylist(rows, schema=summary.schema)
+    )
+
+
 @pytest.mark.parametrize(
     ("break_inputs", "code"),
     [
@@ -354,6 +378,28 @@ _FACET = {"isDcAggregate": False, "provenance": "provenance/OECDDAC1", "unit": "
         (lambda raw: _with_facet(raw, None), "inconsistent_facet"),
         (lambda raw: _with_facet(raw, {"observationPeriod": "P1Y"}), "inconsistent_facet"),
         (lambda raw: dataclasses.replace(raw, facets=raw.facets.slice(1)), "unknown_facet"),
+        (
+            lambda raw: _with_series_column(raw, "mask_years", lambda years: years + 1),
+            "popcount_mismatch",
+        ),
+        (
+            lambda raw: _with_series_column(
+                raw,
+                "outside_mask",
+                True,
+                variables={v for v, count in _role_counts(raw).items() if count <= 2},
+            ),
+            "unsupported_observation_period",
+        ),
+        (
+            lambda raw: _with_series_column(
+                raw,
+                "observation_count",
+                lambda count: count + 1,
+                variables={v for v, count in _role_counts(raw).items() if count <= 2},
+            ),
+            "popcount_mismatch",
+        ),
         (
             lambda raw: dataclasses.replace(
                 raw,
@@ -407,6 +453,26 @@ def test_platform_refuses_inputs_the_release_cannot_hold(raw, break_inputs, code
         build_platform_parts(break_inputs(raw), authored=AUTHORED)
 
     assert refused.value.code == code
+
+
+def test_a_series_with_no_roles_keeps_years_outside_the_mask_and_same_year_dates(raw):
+    """Its dates and `observation_count` hold the observations; its mask and the part's columns
+    do not change."""
+    declared = _role_counts(raw)
+    live = set(raw.live_variables["variable_measured"].to_pylist())
+    first, *rest = sorted(live - {v for v, count in declared.items() if count <= 2})
+    assert rest, "the fixture must hold two variables declaring no role"
+    # `first` has a year outside the mask, the rest a second date in one year.
+    unmasked = _with_series_column(raw, "outside_mask", True, variables={first})
+    unmasked = _with_series_column(
+        unmasked, "observation_count", lambda count: count + 1, variables={first, *rest}
+    )
+
+    parts = build_platform_parts(unmasked, authored=AUTHORED)
+
+    assert parts.series.schema == build_platform_parts(raw, authored=AUTHORED).series.schema
+    assert "outside_mask" not in parts.series.column_names
+    assert parts.series.num_rows == raw.series_summary.num_rows
 
 
 def test_observation_dates_parse_years_and_months_and_refuse_other_forms(raw):

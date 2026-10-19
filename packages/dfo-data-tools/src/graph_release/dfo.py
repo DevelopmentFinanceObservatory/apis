@@ -1,6 +1,7 @@
 """The DFO layer, built from the platform parts, `Declarations` and the base parties.
 
-`build_dfo_parts` returns each DFO part's bytes. `declarations` is `declarations_json`.
+`dfo_inputs` reads a release's coverage view and a `ReleaseGraphReader` once, for both
+`base_party_ids` and `build_dfo_parts`. `build_dfo_parts` returns each DFO part's bytes. `declarations` is `declarations_json`.
 `code_index_blocks` is the code index's graph blocks, built by `code_index.export` over
 `ReleaseGraphReader`, a reader over the `edges` and `nodes` parts. Where the export script joins
 a published coverage build, these blocks take each variable's provenances, the listed datasets'
@@ -90,20 +91,44 @@ class DfoParts:
 
 
 @dataclass(frozen=True)
-class _Coverage:
-    """The coverage view of a release and each facet's provenance."""
+class DfoInputs:
+    """What the DFO layer reads of one release: `declarations`, the coverage view `coverage`
+    (`coverage_rows` over `series`), each facet's provenance and a `ReleaseGraphReader` over
+    `edges` and `nodes`."""
 
-    rows: pa.Table
+    declarations: Declarations
+    coverage: pa.Table
     facet_provenances: Mapping[str, str]
+    reader: ReleaseGraphReader
 
 
-def base_party_ids(platform: PlatformParts, declarations: Declarations) -> tuple[str, ...]:
+def dfo_inputs(platform: PlatformParts, declarations: Declarations) -> DfoInputs:
+    """The `DfoInputs` of `platform` under `declarations`.
+
+    Raises `ValueError` for declarations with no role axes, code systems or datasets, and
+    `PlatformRefusal` where `role_map` or `coverage_rows` refuses, or with code `dangling_edge`
+    where an edge names a node the `nodes` part lacks.
+    """
+    empty = [
+        name
+        for name in ("role_axes", "code_systems", "datasets")
+        if not getattr(declarations, name)
+    ]
+    if empty:
+        raise ValueError(f"declarations hold no {', '.join(empty)}; the DFO layer needs them")
+    return DfoInputs(
+        declarations=declarations,
+        coverage=coverage_rows(platform.series, role_map(platform.edges, declarations.role_axes)),
+        facet_provenances=_facet_provenances(platform.facets),
+        reader=ReleaseGraphReader(edges=platform.edges, nodes=platform.nodes),
+    )
+
+
+def base_party_ids(inputs: DfoInputs) -> tuple[str, ...]:
     """The parties of the declared and listed datasets the release does not hold, sorted. These
     are the ids `read_base_parties` reads."""
-    coverage = _coverage(platform, declarations)
-    parties = _parties(coverage, _party_datasets(declarations))
-    reader = ReleaseGraphReader(edges=platform.edges, nodes=platform.nodes)
-    return tuple(party for party in sorted(parties) if not _release_held(reader, party))
+    parties = _parties(inputs, _party_datasets(inputs.declarations))
+    return tuple(party for party in sorted(parties) if not _release_held(inputs.reader, party))
 
 
 class MissingBaseParties(LookupError):
@@ -131,48 +156,30 @@ def read_base_parties(party_ids: Sequence[str], *, graph: ArcReader) -> bytes:
     )
 
 
-def build_dfo_parts(
-    platform: PlatformParts, declarations: Declarations, base_parties: bytes
-) -> DfoParts:
-    """The DFO parts of `platform` under `declarations`, with `base_parties` (`read_base_parties`)
-    answering the parties the release does not.
+def build_dfo_parts(inputs: DfoInputs, base_parties: bytes) -> DfoParts:
+    """The DFO parts of `inputs`, with `base_parties` (`read_base_parties`) answering the parties
+    the release does not.
 
-    Raises `ValueError` for declarations with no role axes, code systems or datasets,
-    and `PlatformRefusal` where `role_map` or `coverage_rows` refuses, with code `dangling_edge`
-    where an edge names a node the `nodes` part lacks, or with code `code_index_export_refused`
-    where the code-index export refuses the graph, as for a party neither the release nor
-    `base_parties` answers.
+    Raises `PlatformRefusal` with code `code_index_export_refused` where the code-index export
+    refuses the graph, as for a party neither the release nor `base_parties` answers.
     """
-    empty = [
-        name
-        for name in ("role_axes", "code_systems", "datasets")
-        if not getattr(declarations, name)
-    ]
-    if empty:
-        raise ValueError(f"declarations hold no {', '.join(empty)}; the DFO layer needs them")
-
-    coverage = _coverage(platform, declarations)
     try:
-        blocks = _code_index_blocks(platform, declarations, coverage, json.loads(base_parties))
+        blocks = _code_index_blocks(inputs, json.loads(base_parties))
     except ExportRefused as exc:
         raise PlatformRefusal("code_index_export_refused", str(exc)) from exc
     return DfoParts(
-        declarations=declarations.declarations_json(),
+        declarations=inputs.declarations.declarations_json(),
         code_index_blocks=index_bytes(blocks),
         base_parties=base_parties,
     )
 
 
-def _code_index_blocks(
-    platform: PlatformParts,
-    declarations: Declarations,
-    coverage: _Coverage,
-    base_parties: Mapping[str, dict | None],
-) -> dict:
+def _code_index_blocks(inputs: DfoInputs, base_parties: Mapping[str, dict | None]) -> dict:
     """The code index's blocks: the graph blocks over the release, provenances and parties from
-    `coverage`, party types and names from the release or `base_parties`."""
-    provenances = _variable_provenances(coverage)
-    reader = ReleaseGraphReader(edges=platform.edges, nodes=platform.nodes)
+    the coverage view, party types and names from the release or `base_parties`."""
+    declarations = inputs.declarations
+    provenances = _variable_provenances(inputs)
+    reader = inputs.reader
     blocks = export_graph_blocks(
         reader,
         code_systems=declarations.code_systems,
@@ -194,7 +201,7 @@ def _code_index_blocks(
     verify_complete_systems(blocks["statvars"], declarations.code_systems)
     blocks["parties"] = export_parties(
         _PartyReader(reader, base=base_parties),
-        _parties(coverage, _party_datasets(declarations)),
+        _parties(inputs, _party_datasets(declarations)),
         type_kinds=declarations.party_type_kinds,
         kind_overrides=declarations.party_kind_overrides,
         total_groups=declarations.total_groups,
@@ -214,13 +221,6 @@ def stage_dfo_parts(parts: DfoParts, *, staging_dir: Path, execution_id: str) ->
         )
         for name, data in parts.blobs().items()
     ]
-
-
-def _coverage(platform: PlatformParts, declarations: Declarations) -> _Coverage:
-    return _Coverage(
-        rows=coverage_rows(platform.series, role_map(platform.edges, declarations.role_axes)),
-        facet_provenances=_facet_provenances(platform.facets),
-    )
 
 
 def _party_datasets(declarations: Declarations) -> set[str]:
@@ -246,32 +246,32 @@ def _facet_provenances(facets: pa.Table) -> dict[str, str]:
     )
 
 
-def _variable_provenances(coverage: _Coverage) -> dict[str, tuple[str, ...]]:
+def _variable_provenances(inputs: DfoInputs) -> dict[str, tuple[str, ...]]:
     """Each covered variable's sorted provenances, from its rows' facets."""
-    pairs = coverage.rows.group_by(["variable", FACET_COLUMN], use_threads=False).aggregate([])
+    pairs = inputs.coverage.group_by(["variable", FACET_COLUMN], use_threads=False).aggregate([])
     found: dict[str, set[str]] = {}
     for variable, facet_id in zip(
         cast("list[str]", _strings(pairs["variable"]).to_pylist()),
         cast("list[str]", _strings(pairs[FACET_COLUMN]).to_pylist()),
         strict=True,
     ):
-        found.setdefault(variable, set()).add(coverage.facet_provenances[facet_id])
+        found.setdefault(variable, set()).add(inputs.facet_provenances[facet_id])
     return {variable: tuple(sorted(provenances)) for variable, provenances in found.items()}
 
 
-def _parties(coverage: _Coverage, datasets: set[str]) -> dict[str, PartyPublication]:
+def _parties(inputs: DfoInputs, datasets: set[str]) -> dict[str, PartyPublication]:
     """Every donor and recipient on a row of `datasets`, with the datasets that publish it and
     the flow axes they publish it on: `origin` as a donor, `destination` as a recipient."""
     publishers: dict[str, set[str]] = {}
     axes: dict[str, set[RoleAxis]] = {}
     for column, axis in _PARTY_AXES.items():
-        pairs = coverage.rows.group_by([column, FACET_COLUMN], use_threads=False).aggregate([])
+        pairs = inputs.coverage.group_by([column, FACET_COLUMN], use_threads=False).aggregate([])
         for party, facet_id in zip(
             cast("list[str]", _strings(pairs[column]).to_pylist()),
             cast("list[str]", _strings(pairs[FACET_COLUMN]).to_pylist()),
             strict=True,
         ):
-            provenance = coverage.facet_provenances[facet_id]
+            provenance = inputs.facet_provenances[facet_id]
             if party == ABSENT_ENTITY or provenance not in datasets:
                 continue
             publishers.setdefault(party, set()).add(provenance)
@@ -479,11 +479,13 @@ def _strings(column: pa.ChunkedArray) -> pa.Array:
 
 __all__ = [
     "ArcReader",
+    "DfoInputs",
     "DfoParts",
     "MissingBaseParties",
     "ReleaseGraphReader",
     "base_party_ids",
     "build_dfo_parts",
+    "dfo_inputs",
     "read_base_parties",
     "stage_dfo_parts",
 ]

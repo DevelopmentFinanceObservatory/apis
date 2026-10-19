@@ -20,7 +20,7 @@ _BUILD = """
 import json, sys, tempfile
 from pathlib import Path
 
-from graph_release.dfo import build_dfo_parts, stage_dfo_parts
+from graph_release.dfo import build_dfo_parts, dfo_inputs, stage_dfo_parts
 from graph_release.format import compute_release_id
 from graph_release.platform import stage_platform_parts
 from tests.graph_release.recorded import (
@@ -34,7 +34,7 @@ with tempfile.TemporaryDirectory() as staging:
     staged = [
         *stage_platform_parts(parts, staging_dir=Path(staging), execution_id="exec-1"),
         *stage_dfo_parts(
-            build_dfo_parts(parts, SLICE_DECLARATIONS, SLICE_BASE_PARTIES),
+            build_dfo_parts(dfo_inputs(parts, SLICE_DECLARATIONS), SLICE_BASE_PARTIES),
             staging_dir=Path(staging),
             execution_id="exec-1",
         ),

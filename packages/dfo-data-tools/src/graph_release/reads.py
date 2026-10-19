@@ -40,17 +40,28 @@ def _mask_columns() -> str:
     """`period_mask_<w>`: bit `b` of word `w` set when the series has an observation in year
     `epoch + 64w + b`. Annual periods only. `graph_release.platform` refuses a facet with another
     `observation_period`. The shift reaches bit 63, so a word is a signed INT64 as Spanner stores
-    it."""
+    it.
+
+    `mask_years` counts the distinct years inside the mask, which the words' popcount must
+    equal. `outside_mask` is whether any observation's year falls outside the mask or does not
+    parse."""
     epoch = date.fromisoformat(MASK_EPOCH).year
+    last = epoch + 64 * MASK_WORDS - 1
     year = "SAFE_CAST(SUBSTR(o.date, 1, 4) AS INT64)"
-    words = []
+    columns = []
     for word in range(MASK_WORDS):
         first = epoch + 64 * word
-        words.append(
+        columns.append(
             f"BIT_OR(IF({year} BETWEEN {first} AND {first + 63}, "
             f"CAST(1 AS INT64) << ({year} - {first}), 0)) AS period_mask_{word}"
         )
-    return ",\n  ".join(words)
+    columns.append(
+        f"COUNT(DISTINCT IF({year} BETWEEN {epoch} AND {last}, {year}, NULL)) AS mask_years"
+    )
+    columns.append(
+        f"LOGICAL_OR(IFNULL({year} NOT BETWEEN {epoch} AND {last}, TRUE)) AS outside_mask"
+    )
+    return ",\n  ".join(columns)
 
 
 # One row per `TimeSeries` row with observations: its key, `entity2` and `entity3`, and the
@@ -132,6 +143,9 @@ RAW_SERIES = pa.schema(
         ("earliest_date", pa.string()),
         ("latest_date", pa.string()),
         *((f"period_mask_{word}", pa.int64()) for word in range(MASK_WORDS)),
+        # Read for `graph_release.platform`'s checks; the `series` part does not carry them.
+        ("mask_years", pa.int64()),
+        ("outside_mask", pa.bool_()),
     ]
 )
 RAW_FACETS = pa.schema(

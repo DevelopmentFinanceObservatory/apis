@@ -28,6 +28,7 @@ from graph_release.dfo import (
     ReleaseGraphReader,
     base_party_ids,
     build_dfo_parts,
+    dfo_inputs,
     read_base_parties,
     stage_dfo_parts,
 )
@@ -157,7 +158,7 @@ def test_base_parties_are_the_parties_the_release_does_not_answer() -> None:
         [PLACEHOLDER_PARTY, UNHELD_PARTY], properties=["typeOf"]
     )
 
-    ids = base_party_ids(parts, SLICE_DECLARATIONS)
+    ids = base_party_ids(dfo_inputs(parts, SLICE_DECLARATIONS))
     stored = read_base_parties(list(reversed(ids)), graph=mixer)
 
     assert placeholder == {PLACEHOLDER_PARTY: {"typeOf": ("Thing",)}, UNHELD_PARTY: None}
@@ -190,11 +191,12 @@ def test_base_parties_let_a_mixer_error_propagate() -> None:
 
 def test_dfo_parts_rebuild_byte_for_byte_and_join_coverage(tmp_path: Path) -> None:
     parts = slice_platform_parts()
+    inputs = dfo_inputs(parts, SLICE_DECLARATIONS)
 
-    built = build_dfo_parts(parts, SLICE_DECLARATIONS, SLICE_BASE_PARTIES)
+    built = build_dfo_parts(inputs, SLICE_BASE_PARTIES)
     staged = stage_dfo_parts(built, staging_dir=tmp_path, execution_id="exec-1")
     stored = {part.ref.name: part.path.read_bytes() for part in staged}
-    again = build_dfo_parts(parts, SLICE_DECLARATIONS, stored["base_parties"])
+    again = build_dfo_parts(inputs, stored["base_parties"])
 
     assert stored == built.blobs()
     assert again == built
@@ -219,7 +221,8 @@ def test_dfo_parts_refuse_a_party_neither_the_release_nor_the_mixer_answers() ->
 
     with pytest.raises(PlatformRefusal, match="country/TJK") as refused:
         build_dfo_parts(
-            slice_platform_parts(), SLICE_DECLARATIONS, json.dumps(base).encode("utf-8")
+            dfo_inputs(slice_platform_parts(), SLICE_DECLARATIONS),
+            json.dumps(base).encode("utf-8"),
         )
 
     assert refused.value.code == "code_index_export_refused"
@@ -228,11 +231,11 @@ def test_dfo_parts_refuse_a_party_neither_the_release_nor_the_mixer_answers() ->
 @pytest.mark.parametrize(
     ("field", "empty"), [("role_axes", {}), ("code_systems", ()), ("datasets", ())]
 )
-def test_dfo_parts_refuse_empty_declarations(field: str, empty: object) -> None:
+def test_dfo_inputs_refuse_empty_declarations(field: str, empty: object) -> None:
     declarations = dataclasses.replace(SLICE_DECLARATIONS, **{field: empty})
 
     with pytest.raises(ValueError, match=field):
-        build_dfo_parts(slice_platform_parts(), declarations, SLICE_BASE_PARTIES)
+        dfo_inputs(slice_platform_parts(), declarations)
 
 
 @pytest.mark.parametrize(
