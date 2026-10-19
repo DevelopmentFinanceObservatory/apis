@@ -94,7 +94,7 @@
   tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: none, language: fr}
   # Extraction drops "imputée", and "multilateral" without "imputed" refuses qualifier_not_bound
   # on the CRS answer instead of answering from the imputed table.
-  known_failure: {issue: 1156, checks: [disposition, measure, provenance]}
+  known_failure: {issue: 1156, checks: [measure]}
   expect:
     definite:
       measure: {family: dac2a.imputed_multilateral}
@@ -272,7 +272,6 @@
   query: education aid to Kenya from the CRS
   why: '"From the CRS" names the source, not a provider, so the CRS answers with its provenance pinned.'
   tags: {theme: education, entity: country, direction: destination_only, door: raw_text, dataset: named, breakdown: sector}
-  known_failure: {issue: 1164, checks: [disposition]}
   expect:
     definite:
       measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode110}}

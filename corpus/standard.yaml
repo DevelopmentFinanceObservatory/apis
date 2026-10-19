@@ -4,8 +4,6 @@
   tags:
     directional_flow: na
     conjunction: none
-  # Known failure: The wider activitySource list on the expenditure shape sends the election to the UN pool, which offers three UN series instead of the two education spending shares.
-  known_failure: {issue: 1298, checks: [measure]}
   expect:
     candidates:
       measure:
@@ -338,8 +336,6 @@
   tags:
     directional_flow: na
     conjunction: none
-  # Known failure: The held family's slot values are not narrowed to the place, so the model leaves ageGroupClassification and age open and the family total, with no Kenya data, elects.
-  known_failure: {issue: 1298, checks: [measure]}
   expect:
     definite:
       measure:
@@ -361,9 +357,6 @@
   tags:
     directional_flow: na
     conjunction: none
-  known_failure:
-    issue: 1156
-    checks: [refusal]
   expect:
     no_data:
       entities:
@@ -398,9 +391,6 @@
   tags:
     directional_flow: na
     conjunction: none
-  known_failure:
-    issue: 1156
-    checks: [disposition]
   expect:
     definite:
       measure:
@@ -537,9 +527,6 @@
   tags:
     directional_flow: na
     conjunction: none
-  known_failure:
-    issue: 1156
-    checks: [disposition]
   expect:
     definite:
       measure:
@@ -643,9 +630,6 @@
   tags:
     directional_flow: na
     conjunction: none
-  known_failure:
-    issue: 1156
-    checks: [disposition]
   expect:
     definite:
       measure:
@@ -928,9 +912,6 @@
   tags:
     directional_flow: na
     conjunction: none
-  known_failure:
-    issue: 1156
-    checks: [measure]
   expect:
     definite:
       measure:
@@ -1291,9 +1272,6 @@
   tags:
     directional_flow: na
     conjunction: none
-  known_failure:
-    issue: 1156
-    checks: [disposition]
   expect:
     definite:
       measure:
@@ -1711,8 +1689,6 @@
   tags:
     directional_flow: na
     conjunction: none
-  # Known failure: The wider slot lists change the model's binding, so the part refuses no_matching_slice instead of qualifier_not_bound.
-  known_failure: {issue: 1298, checks: [refusal]}
   expect:
     no_data:
       reason: qualifier_not_bound
@@ -2813,9 +2789,6 @@
   tags:
     directional_flow: na
     conjunction: none
-  known_failure:
-    issue: 1156
-    checks: [measure]
   expect:
     definite:
       measure:
@@ -2839,9 +2812,6 @@
   tags:
     directional_flow: na
     conjunction: none
-  known_failure:
-    issue: 1156
-    checks: [measure]
   expect:
     definite:
       measure:

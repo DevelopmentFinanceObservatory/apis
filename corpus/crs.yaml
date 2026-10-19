@@ -48,12 +48,12 @@
 
 - id: dq-crs-005
   query: ODA from DAC countries
-  why: CRS holds no DAC-total provider, so DAC countries read as the DAC member group on the origin role.
+  why: DAC countries name the DAC1 donors and the query names no recipient, so DAC1's gross ODA disbursements by donor answer it.
   reuse: panel/crs-005
-  tags: {theme: aid, entity: region_group, direction: origin_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical, overlap: [dac1]}
+  tags: {theme: aid, entity: region_group, direction: origin_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical, overlap: [crs]}
   expect:
     definite:
-      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      measure: {family: dac1.disbursement_gross, bound: {dac1AidType: DAC1AidType1010}}
       entities: [{label: DAC countries, role: origin, expands: true}]
       window: {kind: all}
       operations: []
@@ -311,8 +311,6 @@
   why: The pipeline drops Rio markers, so no series measures climate finance; returning all German aid to Bangladesh under that label is wrong.
   reuse: panel/crs-031
   tags: {theme: climate_energy, entity: two_roles, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, probe: [crs_quirk, missing_data]}
-  # Known failure: A longer CRS member sample leaves "climate" out of the unplaced words, so the part answers gross disbursements instead of refusing qualifier_not_bound.
-  known_failure: {issue: 1298, checks: [disposition]}
   expect:
     no_data:
       entities: [{dcid: country/DEU, role: origin}, {dcid: country/BGD, role: destination}]
