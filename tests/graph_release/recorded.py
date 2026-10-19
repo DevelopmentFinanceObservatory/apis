@@ -3,9 +3,10 @@ platform parts built from them, and the inputs that build the slice's DFO parts.
 
 `SLICE_DECLARATIONS` cuts the declarations to what the twenty-variable slice holds: the CRS
 dataset through `crsTypeOfFlow`, the only code enum the slice read, and no listed dataset. The
-slice reads no party nodes, so `slice_platform_parts` adds the two organisation-like parties of
-its CRS rows as the release would hold them, and `SLICE_BASE_PARTIES` answers its two countries
-as the mixer does.
+slice reads no party nodes, so `slice_platform_parts` adds its CRS rows' parties as dev's
+Spanner holds them: two by `typeOf` and `name` edges, one country as a placeholder `Node` row
+an edge names, and one country not at all. `SLICE_BASE_PARTIES` answers the two countries as
+the mixer does.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ import pyarrow as pa
 
 from artifact_publication.jobs import ImportKey
 from graph_release import reads
-from graph_release.authored import AUTHORED
+from graph_release.authored import AUTHORED, literal_id
 from graph_release.declarations import DECLARATIONS
 from graph_release.dfo import read_base_parties
 from graph_release.format import conform_part
@@ -95,7 +96,14 @@ RELEASE_PARTIES: Final[Mapping[str, tuple[str, str]]] = {
     "AsianDevelopmentBank": ("Asian Development Bank", "Organization"),
     "DACAsiaUnallocated": ("Asia, regional", "DACRecipientUnallocatedByCountry"),
 }
-"""The slice's parties the release answers, as `nodes` rows: name and type."""
+"""The slice's parties the release holds, by `typeOf` and `name` edges: name and type."""
+
+PLACEHOLDER_PARTY: Final[str] = "country/KGZ"
+"""A country DFO's Spanner holds only as a placeholder `Node` row (its dcid as name, typed
+`Thing`), there because an edge names it."""
+
+UNHELD_PARTY: Final[str] = "country/TJK"
+"""A country with no `Node` row, which therefore no kept edge names."""
 
 MIXER_PARTIES: Final[Mapping[str, dict[str, tuple[str, ...]]]] = {
     "country/KGZ": {"typeOf": ("Country",), "name": ("Kyrgyzstan",)},
@@ -125,22 +133,50 @@ class RecordedMixer:
 SLICE_BASE_PARTIES: Final[bytes] = read_base_parties(sorted(MIXER_PARTIES), graph=RecordedMixer())
 
 
+_PROVENANCE: Final[str] = "provenance/DFOOntology"
+
+
 @cache
 def slice_platform_parts() -> PlatformParts:
-    """`platform_parts` with `RELEASE_PARTIES` added to `nodes`."""
+    """`platform_parts` with `RELEASE_PARTIES` held by `typeOf` and `name` edges, and
+    `PLACEHOLDER_PARTY` as a placeholder `Node` row the first of them names."""
     parts = platform_parts()
-    added = pa.table(
+    nodes: list[tuple[str, str | None, list[str], str | None]] = []
+    edges: list[tuple[str, str, str, str]] = []
+    for party, (name, kind) in RELEASE_PARTIES.items():
+        nodes += [
+            (party, name, [kind], None),
+            (kind, kind, ["Class"], None),
+            (literal_id(name), "", [], name),
+        ]
+        edges += [
+            (party, "typeOf", kind, _PROVENANCE),
+            (party, "name", literal_id(name), _PROVENANCE),
+        ]
+    nodes.append((PLACEHOLDER_PARTY, PLACEHOLDER_PARTY, ["Thing"], None))
+    edges.append((next(iter(RELEASE_PARTIES)), "memberOf", PLACEHOLDER_PARTY, _PROVENANCE))
+
+    node_rows = pa.table(
         {
-            "subject_id": list(RELEASE_PARTIES),
-            "name": [name for name, _ in RELEASE_PARTIES.values()],
-            "types": pa.array(
-                [[kind] for _, kind in RELEASE_PARTIES.values()], pa.list_(pa.string())
-            ),
-            "value": pa.nulls(len(RELEASE_PARTIES), pa.string()),
-            "authored": [False] * len(RELEASE_PARTIES),
+            "subject_id": [row[0] for row in nodes],
+            "name": [row[1] for row in nodes],
+            "types": pa.array([row[2] for row in nodes], pa.list_(pa.string())),
+            "value": pa.array([row[3] for row in nodes], pa.string()),
+            "authored": [False] * len(nodes),
         }
     )
-    nodes = parts.nodes.cast(added.schema)
+    edge_rows = pa.table(
+        {
+            column: [row[index] for row in edges]
+            for index, column in enumerate(("subject_id", "predicate", "object_id", "provenance"))
+        }
+    )
     return dataclasses.replace(
-        parts, nodes=conform_part(pa.concat_tables([nodes, added]), name="nodes")
+        parts,
+        nodes=conform_part(
+            pa.concat_tables([parts.nodes.cast(node_rows.schema), node_rows]), name="nodes"
+        ),
+        edges=conform_part(
+            pa.concat_tables([parts.edges.cast(edge_rows.schema), edge_rows]), name="edges"
+        ),
     )

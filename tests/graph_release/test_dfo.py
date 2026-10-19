@@ -3,8 +3,9 @@ declarations.
 
 The reader is checked against the dev mixer's recorded `/v2/node` answer for five IDS variables
 (`tests/fixtures/dc_graph/visible_arcs/ids_variables.json`). The parts are built from the
-recorded slice with `tests.graph_release.recorded`'s declarations and parties: two parties the
-release answers and two only the mixer does.
+recorded slice with `tests.graph_release.recorded`'s declarations and parties: two the release
+holds by edges, and two countries only the mixer answers, one of them a placeholder `Node` row
+typed `Thing` that an edge names.
 """
 
 from __future__ import annotations
@@ -32,8 +33,10 @@ from graph_release.format import conform_part
 from graph_release.platform import PlatformRefusal
 from tests.graph_release.recorded import (
     MIXER_PARTIES,
+    PLACEHOLDER_PARTY,
     SLICE_BASE_PARTIES,
     SLICE_DECLARATIONS,
+    UNHELD_PARTY,
     RecordedMixer,
     platform_parts,
     slice_platform_parts,
@@ -136,10 +139,16 @@ def test_reader_pages_subjects_and_narrows_them_by_filters() -> None:
 def test_base_parties_are_the_parties_the_release_does_not_answer() -> None:
     mixer = RecordedMixer()
 
-    ids = base_party_ids(slice_platform_parts(), SLICE_DECLARATIONS)
+    parts = slice_platform_parts()
+    placeholder = ReleaseGraphReader(edges=parts.edges, nodes=parts.nodes).node_arcs_many(
+        [PLACEHOLDER_PARTY, UNHELD_PARTY], properties=["typeOf"]
+    )
+
+    ids = base_party_ids(parts, SLICE_DECLARATIONS)
     stored = read_base_parties(list(reversed(ids)), graph=mixer)
 
-    assert ids == tuple(sorted(MIXER_PARTIES))
+    assert placeholder == {PLACEHOLDER_PARTY: {"typeOf": ("Thing",)}, UNHELD_PARTY: None}
+    assert ids == (PLACEHOLDER_PARTY, UNHELD_PARTY) == tuple(sorted(MIXER_PARTIES))
     assert mixer.calls == [ids]
     assert stored == SLICE_BASE_PARTIES
     assert json.loads(stored) == {

@@ -8,8 +8,10 @@ variables and the parties from `coverage_rows` over `series`, so the code index 
 read one release. The blocks carry no stamp; a reader stamps them from the manifest.
 
 The parties block needs each donor's and recipient's type and name. DFO's Spanner holds them for
-organisations but not for the countries of the base Data Commons graph, so the builder reads the
-parties the release does not answer (`base_party_ids`) from the mixer once
+organisations but not for the countries of the base Data Commons graph, which it holds as
+placeholder `Node` rows (types `Thing` or `Country`, the dcid as name) or not at all. A party is
+release-held only when `edges` carries its `typeOf` and `name` arcs; the builder reads every
+other party (`base_party_ids`) from the mixer once
 (`read_base_parties`) and stores the answer as the `base_parties` part. `export_parties` reads
 the release first and `base_parties` for the rest; every other block reads the release alone.
 Every part serialises deterministically, so a rebuild from the stored parts gives the same
@@ -96,13 +98,12 @@ class _Coverage:
 
 
 def base_party_ids(platform: PlatformParts, declarations: Declarations) -> tuple[str, ...]:
-    """The parties of the declared and listed datasets whose type the release does not answer,
-    sorted: the ids `read_base_parties` reads."""
+    """The parties of the declared and listed datasets the release does not hold, sorted: the
+    ids `read_base_parties` reads."""
     coverage = _coverage(platform, declarations)
     parties = _parties(coverage, _party_datasets(declarations))
     reader = ReleaseGraphReader(edges=platform.edges, nodes=platform.nodes)
-    answered = _answered(reader, sorted(parties))
-    return tuple(party for party in sorted(parties) if party not in answered)
+    return tuple(party for party in sorted(parties) if not _release_held(reader, party))
 
 
 def read_base_parties(party_ids: Sequence[str], *, graph: ArcReader) -> bytes:
@@ -218,10 +219,11 @@ def _party_datasets(declarations: Declarations) -> set[str]:
     )
 
 
-def _answered(reader: ReleaseGraphReader, dcids: Sequence[str]) -> set[str]:
-    """The dcids whose type `reader` answers."""
-    arcs = reader.node_arcs_many(dcids, properties=[_TYPE_OF])
-    return {dcid for dcid, found in arcs.items() if found and found[_TYPE_OF]}
+def _release_held(reader: ReleaseGraphReader, party: str) -> bool:
+    """Whether `edges` carries the `typeOf` and `name` arcs `export_parties` reads for `party`.
+    A placeholder `Node` row's types and name are not the party's: the mixer answers those
+    parties from the base graph."""
+    return all(reader.asserts(party, prop) for prop in _PARTY_PROPERTIES)
 
 
 def _facet_provenances(facets: pa.Table) -> dict[str, str]:
@@ -334,6 +336,13 @@ class ReleaseGraphReader:
             return code
         return None
 
+    def asserts(self, dcid: str, predicate: str) -> bool:
+        """Whether an edge of `predicate` leaves `dcid`."""
+        code, wanted = self._code.get(dcid), self._predicate_code.get(predicate)
+        if code is None or wanted is None:
+            return False
+        return bool((self._p[self._starts[code] : self._starts[code + 1]] == wanted).any())
+
     def _subjects(self, property: str, dcid: str) -> np.ndarray:
         predicate, code = self._predicate_code.get(property), self._code.get(dcid)
         if predicate is None or code is None:
@@ -410,8 +419,8 @@ class ReleaseGraphReader:
 
 
 class _PartyReader:
-    """The reader `export_parties` reads: the release for a dcid whose type it answers, the
-    stored `base_parties` answer for any other."""
+    """The reader `export_parties` reads: the release for a party it holds (`_release_held`),
+    the stored `base_parties` answer for any other."""
 
     def __init__(self, release: ReleaseGraphReader, *, base: Mapping[str, dict | None]) -> None:
         self._release = release
@@ -432,12 +441,12 @@ class _PartyReader:
     def node_arcs_many(
         self, dcids: Sequence[str], *, properties: Sequence[str]
     ) -> dict[str, dict[str, tuple[str, ...]] | None]:
-        answered = _answered(self._release, dcids)
+        held = {dcid for dcid in dcids if _release_held(self._release, dcid)}
         out = self._release.node_arcs_many(
-            [dcid for dcid in dcids if dcid in answered], properties=properties
+            [dcid for dcid in dcids if dcid in held], properties=properties
         )
         for dcid in dcids:
-            if dcid in answered:
+            if dcid in held:
                 continue
             found = self._base.get(dcid)
             out[dcid] = (
