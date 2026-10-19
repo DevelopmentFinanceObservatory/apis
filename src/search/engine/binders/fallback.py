@@ -14,8 +14,9 @@ A part whose Jev call fell back sends its later calls straight to the fallback, 
 Jev costs each part one Jev ceiling (`Settings.jev_ceiling_s`), not one per call.
 
 A Jev request fails before its answer is assembled, so the house policies have not run when
-the fallback starts. A bind call whose Jev path raised after they ran re-raises, so each
-bind call runs them at most once whichever binder serves it.
+the fallback starts. A bind call whose Jev path raised after they ran raises
+`PolicyContractError` from it, so each bind call runs them at most once whichever binder
+serves it, and the part refuses.
 """
 
 from __future__ import annotations
@@ -29,7 +30,13 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from search.engine.binders.base import ApplyPolicies, BindRequest, BindResult, QuantityRequest
+from search.engine.binders.base import (
+    ApplyPolicies,
+    BindRequest,
+    BindResult,
+    PolicyContractError,
+    QuantityRequest,
+)
 from search.engine.binders.house_policy import PolicyChoice, PolicyPool
 from search.engine.binders.jev import FallbackCause, JevCall, JevFailure
 from search.engine.binders.part_log import Call, elapsed_ms, log_binder_part
@@ -81,8 +88,8 @@ class FallbackBinder:
     a defect: it is logged at ERROR with its traceback and falls back under ``error``, so
     the part still answers. Every later call of a part that fell back goes to the fallback
     under the same cause without a Jev request. A bind call whose Jev path raised after the
-    house policies ran on its election re-raises instead, since the fallback's election
-    would run them a second time. Cancellation propagates."""
+    house policies ran on its election raises `PolicyContractError` from it instead, since
+    the fallback's election would run them a second time. Cancellation propagates."""
 
     def __init__(self, *, primary: JevBinder, fallback: Binder) -> None:
         self.primary = primary
@@ -155,7 +162,9 @@ class FallbackBinder:
                 )
             except Exception as exc:
                 if policies_ran:
-                    raise
+                    raise PolicyContractError(
+                        "the jev bind call raised after the house policies ran"
+                    ) from exc
                 failure = self._failure("bind", exc, part=request.part, started=started)
             else:
                 log_binder_part(

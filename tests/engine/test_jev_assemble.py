@@ -10,7 +10,7 @@ import pytest
 
 from code_index.shared import get_index
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
-from search.engine.binders.base import BindRequest
+from search.engine.binders.base import ApplyPolicies, BindRequest
 from search.engine.binders.house_policy import PolicyChoice, PolicyPool
 from search.engine.binders.jev_assemble import (
     ASK_TEXT,
@@ -77,7 +77,7 @@ def _request(
     shapes: Sequence[ShapeDraft],
     *,
     dropped: tuple[str, ...] = (),
-    apply_policies: Callable[[PolicyPool], PolicyChoice] | None = None,
+    apply_policies: ApplyPolicies | None = None,
 ) -> BindRequest:
     frame = _frame()
     step = apply_policies or _HousePolicyStep(
@@ -393,7 +393,7 @@ def test_equal_elections_go_to_the_lower_menu_index():
 def test_the_house_policies_see_the_pool_with_the_election():
     seen: list[PolicyPool] = []
 
-    def record(pool: PolicyPool) -> PolicyChoice:
+    def record(pool: PolicyPool, **_kwargs: object) -> PolicyChoice:
         seen.append(pool)
         return PolicyChoice(survivor=1, fired=(), dropped=frozenset({0}), facts=())
 
@@ -409,7 +409,7 @@ def test_the_house_policies_see_the_pool_with_the_election():
 def test_an_ask_runs_no_house_policy():
     calls: list[PolicyPool] = []
 
-    def record(pool: PolicyPool) -> PolicyChoice:
+    def record(pool: PolicyPool, **_kwargs: object) -> PolicyChoice:
         calls.append(pool)
         raise AssertionError("no policy on an ask")
 

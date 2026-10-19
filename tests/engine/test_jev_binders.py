@@ -13,7 +13,7 @@ import string
 import pytest
 
 from search.engine import config
-from search.engine.bind import _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.binders import (
     BindRequest,
     BindResult,
@@ -28,6 +28,7 @@ from search.engine.binders import (
     routes_to_jev,
 )
 from search.engine.binders import jev as jev_module
+from search.engine.binders.base import PolicyContractError
 from search.engine.binders.house_policy import PolicyPool
 from search.engine.binders.jev import JevCall
 from search.engine.binders.jev_assemble import (
@@ -290,9 +291,10 @@ def test_a_failed_jev_call_falls_back_to_gemini(caplog, fail, reason):
         assert [(r.exc_info or (None,))[0] for r in defects] == [type(fail)] * 2
 
 
-def test_a_defect_after_the_house_policies_ran_is_raised_not_bound_twice(monkeypatch):
-    """A Jev bind that raises once the house policies chose on its election re-raises, so
-    no Gemini election runs them a second time."""
+def test_a_defect_after_the_house_policies_ran_breaks_the_contract_not_bound_twice(monkeypatch):
+    """A Jev bind that raises once the house policies chose on its election raises
+    `PolicyContractError` from it, so no Gemini election runs them a second time and the
+    part refuses."""
 
     def assemble_then_fail(menu, answers, *, stated_form, **_kwargs):
         menu.request.apply_policies(PolicyPool(measuring=(0,)))
@@ -303,8 +305,9 @@ def test_a_defect_after_the_house_policies_ran_is_raised_not_bound_twice(monkeyp
     binder = FallbackBinder(primary=JevBinder(ask=FakeAsk(_GOLDEN.stored)), fallback=gemini)
     step = _CountingStep()
 
-    with pytest.raises(RuntimeError, match="after the policies ran"):
+    with pytest.raises(PolicyContractError) as raised:
         asyncio.run(binder.bind(_golden_request(step), llm=None))
+    assert isinstance(raised.value.__cause__, RuntimeError)
     assert (step.calls, gemini.requests) == (1, [])
 
 
@@ -571,8 +574,14 @@ class _TwiceGemini(_GeminiDouble):
 
 def test_the_control_asks_gemini_again_and_never_jev_or_the_answer(caplog):
     """On the control share the second call is Gemini's, on an LLM without the memo, and
-    it changes neither the answer, its usage, nor the served call's policy step."""
-    gemini = _TwiceGemini(_ELECTS_FIRST, _UniversalBindOutput(chosen_shape_index=1))
+    it changes neither the answer, its usage, nor the served call's policy step. The line
+    judges the shape, the bindings and the alternates apiece: the control's open slot
+    binds nothing, so the bindings agree, and its alternate does not."""
+    open_slot = SlotBindingDraft(axis="how", property_dcid="dac2aAidType", kind="unbound")
+    control_output = _UniversalBindOutput(
+        chosen_shape_index=1, bindings=[open_slot], also_plausible=[0]
+    )
+    gemini = _TwiceGemini(_ELECTS_FIRST, control_output)
     ask = FakeAsk(_GOLDEN.stored)
     binder = ShadowBinder(
         served=gemini,
@@ -603,6 +612,7 @@ def test_the_control_asks_gemini_again_and_never_jev_or_the_answer(caplog):
     assert served_llm is llm and control_llm._memo is None
     (line,) = _shadow_lines(caplog)
     assert (line["control"], line["shadow_binder"], line["agree"]) == (True, "gemini", False)
+    assert (line["agree_bindings"], line["agree_also_plausible"]) == (True, False)
     assert line["served"]["shape"] == line["menu"][0]
     assert line["shadow"]["shape"] == line["menu"][1]
     assert (line["input_tokens"], line["questions"], line["chunks"]) == (7, None, None)

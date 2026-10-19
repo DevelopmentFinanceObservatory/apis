@@ -12,7 +12,15 @@ from pathlib import Path
 
 import pytest
 
-from tests.engine._jev_golden import asked_ids, golden_paths, load_item, replay, stored_ids
+from search.engine.binders.jev_assemble import JevAnswers
+from tests.engine._jev_golden import (
+    GOLDEN,
+    asked_ids,
+    golden_paths,
+    load_item,
+    replay,
+    stored_ids,
+)
 
 _PATHS = golden_paths()
 
@@ -51,3 +59,23 @@ def test_the_house_policies_run_once_on_an_election_and_never_on_an_ask(path: Pa
     out, _conf = replay(item)
 
     assert item.policies.calls == (0 if out["bind"]["ask"] else 1)
+
+
+def test_a_house_policy_keeps_the_loan_jev_recognised_on_its_crs_pick():
+    """ "World Bank loans" to Tanzania, with Jev's support for DAC2a's non-grant finance at
+    0.01 in place of the stored 0.74: DAC2a, the recipient default, then states none of the
+    constraints Jev recognised on its CRS pick, so the CRS shape stays with its loan. With
+    the stored answers DAC2a states the loan in its own taxonomy and the policy moves the
+    part there (the golden item)."""
+    item = load_item(GOLDEN / "synthetic-74b382efc5_p0.json")
+    stored = item.answers
+    answers = JevAnswers(
+        nouls={**stored.nouls, "n|how:dacTypeOfFinance|1": 0.01}, choices=stored.choices
+    )
+
+    out, _conf = replay(item, answers=answers)
+
+    assert out["bind"]["shape"] == 0
+    assert ["how", "crsTypeOfFinance", "value", ["CRSTypeOfFinance420"], "mentioned"] in out[
+        "bind"
+    ]["bindings"]

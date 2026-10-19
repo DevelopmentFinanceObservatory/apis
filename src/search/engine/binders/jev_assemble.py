@@ -27,6 +27,7 @@ from search.engine.bind import (
     stated_reading,
 )
 from search.engine.binders.base import BindResult
+from search.engine.binders.gemini import holds_drafted_values, mentioned_drafts
 from search.engine.binders.house_policy import PolicyChoice, PolicyPool
 from search.engine.binders.jev_menu import (
     AXIS_FIELDS,
@@ -340,18 +341,48 @@ def _elect(
     if named and len(named) < len(pool):
         conf.rules.append("named: dataset")
         pool = named
-    # The house policies decide what the phrase leaves open, the election among what they
-    # keep, and menu rank between equal elections.
+    # The house policies decide what the phrase leaves open, among the shapes that hold
+    # what Jev recognised on its pick; the election among what they keep, and menu rank
+    # between equal elections.
     pick = max(pool, key=lambda i: conf.election.get(i, 0.0))
     conf.pool = PolicyPool(
         measuring=(pick, *(i for i in pool if i != pick)),
         election=dict(conf.election),
         rated=True,
     )
-    choice = menu.request.apply_policies(conf.pool)
+    holds = _holds(menu, answers, pick, conf.pool.measuring, t)
+    choice = menu.request.apply_policies(conf.pool, holds=holds)
     conf.choice = choice
     conf.rules += [f"house: {p}" for p in choice.fired]
     return choice.survivor
+
+
+def _holds(
+    menu: JevMenu, answers: JevAnswers, pick: int, pool: Sequence[int], t: Thresholds
+) -> dict[int, bool]:
+    """Whether each `pool` shape holds the constraints Jev recognised on `pick`: the value
+    and set drafts the phrase names (`gemini.mentioned_drafts`) that `pick`'s slots bind at
+    the thresholds (`_bind_slot`).
+
+    A shape holds them when it holds each value on its own slot as `pick` does
+    (`gemini.holds_drafted_values`), or when Jev recognises a value on a slot of that shape
+    that `pick` lacks: one dataset's taxonomy then states the constraint another's states
+    on `pick`, as DAC2a's type of finance states the CRS's loans. The second test does not
+    pair constraints one to one, so a shape stating one of `pick`'s several constraints in
+    its own taxonomy holds them all."""
+    shapes = menu.request.shapes
+
+    def recognised(s: int) -> list[SlotBindingDraft]:
+        drafts = [_bind_slot(menu, answers, s, prop, Confidence(), t) for prop in menu.listed[s]]
+        return mentioned_drafts(drafts)
+
+    on_pick = recognised(pick)
+    pick_slots = {slot.property_dcid for slot in shapes[pick].slot_keys}
+    return {
+        k: holds_drafted_values(shapes[pick], shapes[k], on_pick)
+        or any(d.property_dcid not in pick_slots for d in recognised(k))
+        for k in pool
+    }
 
 
 def _alternates(

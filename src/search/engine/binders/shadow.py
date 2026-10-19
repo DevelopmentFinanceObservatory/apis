@@ -18,8 +18,9 @@ Once the shadow task ends, the call's ``binder_part`` line is logged with the Je
 time, questions, chunks and tokens, and one ``binder_shadow`` line with a JSON object
 carrying what an offline replay reads: the part and pass that join it to the part's
 ``bind_decision`` line, whether it is the control, the phrase and the menu's shape ids or
-the denominators, both readings and whether they agree, and the shadow request's time,
-question and chunk counts and tokens.
+the denominators, both readings and whether they agree (on a bind call the shape and ask,
+the bindings and the alternates apiece), and the shadow request's time, question and chunk
+counts and tokens.
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ import random
 import time
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from search.engine.binders.base import BindRequest, BindResult, QuantityRequest
 from search.engine.binders.jev import JevFailure
@@ -42,7 +43,7 @@ from search.engine.clients.llm import unrecorded_llm_usage, without_memo
 from search.engine.degraded_reads import recording_degraded_reads
 
 if TYPE_CHECKING:
-    from search.engine.bind import _UniversalBindOutput
+    from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
     from search.engine.binders.base import Binder
     from search.engine.binders.jev import JevBinder, JevCall
     from search.engine.clients.llm import SupportsLLM
@@ -271,7 +272,7 @@ def _log_when_done[R](
         log_binder_part(call=call, binder="shadow", served_by=served_by, ms=ms, jev=spent.jev)
         line = record | {
             "shadow_binder": "gemini" if record["control"] else "jev",
-            "agree": None if shadow_reading is None else _agree(call, served, shadow_reading),
+            **_agreement(call, served, shadow_reading),
             "failure": failure,
             "served": served,
             "shadow": shadow_reading,
@@ -287,11 +288,26 @@ def _log_when_done[R](
     shadow.add_done_callback(done)
 
 
-def _agree(call: Call, served: dict[str, object], shadow: dict[str, object]) -> bool:
-    """Whether the shadow read what Gemini read: the elected shape and the ask on a bind
-    call, the form and base on a quantity read."""
+def _agreement(
+    call: Call, served: dict[str, object], shadow: dict[str, object] | None
+) -> dict[str, bool | None]:
+    """Whether the shadow read what Gemini read, each None when the shadow gave no answer.
+
+    ``agree`` compares the elected shape and the ask on a bind call, the form and base on a
+    quantity read. A bind call also states ``agree_bindings``, the same constraining
+    bindings, and ``agree_also_plausible``, the same alternates in any order."""
     keys = ("shape", "ask") if call == "bind" else ("form", "denominator")
-    return all(served[key] == shadow[key] for key in keys)
+    agree = None if shadow is None else all(served[key] == shadow[key] for key in keys)
+    if call != "bind":
+        return {"agree": agree}
+    if shadow is None:
+        return {"agree": None, "agree_bindings": None, "agree_also_plausible": None}
+    return {
+        "agree": agree,
+        "agree_bindings": served["bindings"] == shadow["bindings"],
+        "agree_also_plausible": sorted(cast("list[str]", served["also_plausible"]))
+        == sorted(cast("list[str]", shadow["also_plausible"])),
+    }
 
 
 def _quantity_reading(output: QuantityOutput) -> dict[str, object]:
@@ -299,16 +315,24 @@ def _quantity_reading(output: QuantityOutput) -> dict[str, object]:
 
 
 def _bind_reading(output: _UniversalBindOutput, shapes: list[ShapeDraft]) -> dict[str, object]:
-    """The output canonically: the elected shape's id, whether it asks, each binding as
-    its property and value ids, and the alternates' shape ids."""
+    """The output canonically: the elected shape's id, whether it asks, each binding that
+    constrains the answer as its property and value ids (``*`` for every value the phrase
+    asks for), and the alternates' shape ids. A slot left open has no entry, since
+    binders differ in whether they list one."""
     elects = not output.ask and 0 <= output.chosen_shape_index < len(shapes)
     return {
         "shape": shapes[output.chosen_shape_index].shape_id if elects else None,
         "ask": bool(output.ask),
         "bindings": sorted(
-            f"{draft.property_dcid}={','.join(draft.value_dcids)}" for draft in output.bindings
+            f"{draft.property_dcid}={_bound_values(draft)}"
+            for draft in output.bindings
+            if draft.value_dcids or draft.evidence == "requested_all"
         ),
         "also_plausible": [
             shapes[i].shape_id for i in output.also_plausible or () if 0 <= i < len(shapes)
         ],
     }
+
+
+def _bound_values(draft: SlotBindingDraft) -> str:
+    return "*" if draft.evidence == "requested_all" else ",".join(draft.value_dcids)
