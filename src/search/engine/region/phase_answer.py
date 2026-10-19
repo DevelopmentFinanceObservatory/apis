@@ -1122,10 +1122,9 @@ async def _finalize_definite_result(
     relaunch_place_options = functools.partial(
         _relaunch_place_options,
         state=state,
-        spec_identity=spec.definition.identity,
         place_options_materialise_graph=cast(GraphReader, place_options_materialise_graph),
     )
-    place_options_task = relaunch_place_options(spec.spec_id) if stream_place_options else None
+    place_options_task = relaunch_place_options(spec) if stream_place_options else None
 
     # Create the deferred SSE task only after the Spec has an ID for correlation.
     observations_task: asyncio.Task[_ObsProbeResult] | None = None

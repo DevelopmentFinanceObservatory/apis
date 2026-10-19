@@ -567,6 +567,7 @@ def test_stream_slot_options_never_yields_event_for_a_spec_id_absent_from_respon
                 deadline=time.monotonic() + 5,
                 warnings_out=warnings_out,
                 late_departures_out=[],
+                incomplete_out=[],
                 response=None,
                 answered=(),
             )
@@ -663,6 +664,7 @@ def test_window_refusal_keeps_original_enrichment_tasks_joinable_to_visible_part
                 deadline=time.monotonic() + 5,
                 warnings_out=warnings_out,
                 late_departures_out=[],
+                incomplete_out=[],
                 response=None,
                 answered=(),
             )
@@ -771,6 +773,7 @@ def test_each_part_of_a_fold_gets_its_own_late_departures_over_sse():
             deadline=time.monotonic() + 5,
             warnings_out=[],
             late_departures_out=late,
+            incomplete_out=[],
             response=response,
             answered=regions,
         ):

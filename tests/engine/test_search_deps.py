@@ -130,7 +130,7 @@ def _record_releases(monkeypatch: pytest.MonkeyPatch) -> tuple[list[str], FakeGe
 
     class _Pool:
         @classmethod
-        def build(cls, *, max_workers: int):
+        def build(cls, *, max_workers: int, options_cache: object = None):
             return cls()
 
         def shutdown(self) -> None:

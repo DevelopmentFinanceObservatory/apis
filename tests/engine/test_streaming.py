@@ -58,6 +58,7 @@ from search.models import (
     Slot,
     SlotKey,
     SlotValue,
+    Spec,
     StatVar,
 )
 from search.render.tokens import sentence_from_plan
@@ -1056,7 +1057,8 @@ def _same_shape_region_with_place_options_task(
     )
     created.append(task)
 
-    def _relaunch(spec_id: str) -> asyncio.Task[list[PlaceOptionsEvent]]:
+    def _relaunch(merged: Spec) -> asyncio.Task[list[PlaceOptionsEvent]]:
+        spec_id = merged.spec_id
         relaunch_calls.append((variable_text, spec_id))
         t = asyncio.create_task(
             _fake_place_options_probe(
@@ -1186,6 +1188,7 @@ def test_drain_reraises_a_non_infra_error_from_a_trailing_task():
                 deadline=time.monotonic() + 5,
                 warnings_out=[],
                 late_departures_out=[],
+                incomplete_out=[],
                 response=None,
                 answered=(),
             ):
@@ -1212,6 +1215,7 @@ def test_drain_degrades_a_graph_infra_error_without_suppressing_a_sibling_task(c
                 deadline=time.monotonic() + 5,
                 warnings_out=[],
                 late_departures_out=[],
+                incomplete_out=[],
                 response=None,
                 answered=(),
             )
@@ -1252,6 +1256,7 @@ def test_drain_retrieves_a_sibling_tasks_exception_from_the_same_wait_batch():
                 deadline=time.monotonic() + 5,
                 warnings_out=[],
                 late_departures_out=[],
+                incomplete_out=[],
                 response=None,
                 answered=(),
             ):
@@ -1291,6 +1296,7 @@ def test_deadline_synthesizes_observations_timed_out_event_for_a_pending_task():
                 deadline=time.monotonic() + 0.05,
                 warnings_out=warnings_out,
                 late_departures_out=[],
+                incomplete_out=[],
                 response=None,
                 answered=(),
             )
@@ -1383,6 +1389,7 @@ def test_done_carries_the_departures_a_streamed_read_adds(projected_count, late)
             deadline=time.monotonic() + 5,
             warnings_out=[],
             late_departures_out=late_departures,
+            incomplete_out=[],
             response=response,
             answered=[region],
         ):

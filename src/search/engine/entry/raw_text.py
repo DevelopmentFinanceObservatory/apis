@@ -82,7 +82,7 @@ from search.engine.qualifier_match import (
     recall_text,
 )
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
-from search.engine.region.place_options import PlaceOptionsPool
+from search.engine.region.place_options import PlaceOptionsPool, replayed_place_options
 from search.engine.region.result import RegionResult, with_departure_facts, with_entity_words
 from search.engine.region.sentence_events import answer_events
 from search.engine.response_cache_flow import CacheScope
@@ -860,15 +860,19 @@ async def _handle_single_variable(
         yield event
     slot_options_warnings: list[Warning] = []
     late_departures: list[LateDepartures] = []
+    incomplete: list[str] = []
     async for ev in _stream_slot_options(
         [answered],
         deadline=params.deadline,
         warnings_out=slot_options_warnings,
         late_departures_out=late_departures,
+        incomplete_out=incomplete,
         response=response,
         answered=[answered],
     ):
         yield ev
+    if scope is not None:
+        scope.note_health(trailing_incomplete=bool(incomplete))
     yield DoneEvent(
         elapsed_ms=now_ms() - start_ms,
         timed_out=out.timed_out,
@@ -1096,13 +1100,25 @@ async def handle(
         )
     _log_unclaimed_words(prep, extraction, query=query)
     if scope is not None and cached is not None:
-        for ev in _terminal_events(
-            cached,
-            start_ms=start_ms,
-            llm_usage=extract_usage,
-            timed_out=scope.served_timed_out,
-        ):
-            yield ev
+        async with aclosing(
+            scope.hit_events(
+                cached,
+                start_ms=start_ms,
+                llm_usage=extract_usage,
+                place_options=replayed_place_options(
+                    stream=params.stream_option_coverage,
+                    graph=graph,
+                    sdmx=sdmx,
+                    materialise_graph=materialise_graph,
+                    materialise_sdmx=materialise_sdmx,
+                    pool=place_options_pool,
+                    coverage=params.coverage,
+                    population_memo=population_memo,
+                ),
+            )
+        ) as hit:
+            async for ev in hit:
+                yield ev
         return
 
     if len(prep.unique) == 1:
