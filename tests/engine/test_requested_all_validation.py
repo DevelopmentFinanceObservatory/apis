@@ -131,7 +131,7 @@ def test_a_mixed_batch_only_demotes_the_invalid_claim():
     [
         # "total" asks for a sum and names no slot.
         ("crsTypeOfFlow", "total"),
-        # The phrase names the flow slot, not the instrument slot the claim is on.
+        # The phrase names the flow slot, and the claim is on the instrument slot.
         ("crsTypeOfFinance", _PHRASE),
     ],
 )

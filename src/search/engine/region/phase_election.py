@@ -384,7 +384,7 @@ def _claim_single_member_slots(
     (`ShapeDraft.slot_taxonomy`) drafted as that value with evidence ``sole_option``.
 
     The bind prompt asks the reply to bind a single-member slot that way, and a reply can
-    leave it unbound: the recorded reply to "infant mortality rate" leaves ``age`` unbound
+    leave it unbound. The recorded reply to "infant mortality rate" leaves ``age`` unbound
     where the taxonomy holds only ``Years0``. The claim is the one the prompt asks of the
     reply, so it is stamped as the reply's (`SlotBindingDraft.drafted_by`) and every reader
     of the reply's claims judges it. A taxonomy read from a recall sample can show one value

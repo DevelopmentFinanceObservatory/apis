@@ -2,8 +2,8 @@
 
 A bare "GDP", "aid" or "ODA" measures several menu shapes that differ by a house convention
 alone. The policies choose among the shapes a binder declares as measuring the phrase (its
-`PolicyPool`), whichever binder elected, so the answer follows the convention and not the
-model. Pure module: every fact comes from shape data, the frame and declared dataset
+`PolicyPool`), whichever binder elected, so the answer follows the convention.
+Every fact the module reads comes from shape data, the frame and declared dataset
 defaults.
 
 The six policies run in order, each over the survivors of the one before:
@@ -26,7 +26,7 @@ recognised on its pick (`apply_house_policies`'s `holds`), so a policy never tra
 the phrase names for a convention. The pick holds its own.
 
 A policy narrows only when some, not all, candidates fit it, and does nothing with one
-candidate left. A rated pool (bounded by a near-best rating) runs all six; an unrated pool
+candidate left. A rated pool (bounded by a near-best rating) runs all six. An unrated pool
 runs policies 4 to 6, since a policy that trades the measure itself needs the rating to keep
 rejected shapes out of the pool.
 
@@ -106,9 +106,9 @@ class Context:
 
     `pre_ge` says the window starts before `GE_STARTS`, or, open at its start, ends before
     it. A part that names no years asks for every year the data holds, those before
-    `GE_STARTS` included, so it is pre-GE; a part that asks for the latest year is not.
+    `GE_STARTS` included, so it is pre-GE. A part that asks for the latest year is not.
     `dataset_case` is the kind of question the part is for the default-dataset policy, and
-    `wanted_dataset` that kind's declared house default; both are `None` when the part names
+    `wanted_dataset` that kind's declared house default. Both are `None` when the part names
     no place and admits no code that declares a kind.
     """
 
@@ -195,9 +195,9 @@ def context_of(
     `wanted_datasets` maps each kind of question to its house default dataset
     (`CodeIndex.house_defaults`), and `case_systems` each code system that declares a kind
     to that kind (`CodeIndex.house_case_systems`). A code of such a system admitted on a
-    pool shape makes the part that kind of question (`sector` for a sector or purpose);
-    else a place on the destination axis, on both axes or on none makes it a `recipient`
-    question; else the named places are all donors and make it a `donor` question.
+    pool shape makes the part that kind of question (`sector` for a sector or purpose).
+    Otherwise a place on the destination axis, on both axes or on none makes it a
+    `recipient` question, and places that are all donors make it a `donor` question.
     """
     window = frame.window.value
     if window == "all":
@@ -287,7 +287,8 @@ _FITS: Mapping[PolicyName, Callable[[Sequence[ShapeFacts], Context], list[int]]]
 def apply_policy(
     policy: PolicyName, candidates: Sequence[ShapeFacts], ctx: Context
 ) -> list[ShapeFacts]:
-    """The candidates `policy` keeps: the ones that fit when some, not all, fit; else all."""
+    """The candidates `policy` keeps. These are the ones that fit when some, not all, fit, and
+    all of them otherwise."""
     if len(candidates) < 2:
         return list(candidates)
     fitting = set(_FITS[policy](candidates, ctx))
@@ -310,7 +311,7 @@ def apply_house_policies(
     `facts` covers every pool shape (`shape_facts`), `chosen` is the binder's pick, and
     `ratings` the binder's per-index rating of a rated pool when it gives no election
     probability. `holds` says, per pool shape, whether it holds every constraint the binder
-    recognised on `chosen`; the policies run over `chosen` and the shapes that hold, and
+    recognised on `chosen`. The policies run over `chosen` and the shapes that hold, and
     set the rest aside. A pool shape `holds` leaves out does not hold, and None holds them
     all. Raises `ValueError` when `chosen` or a pool shape's facts are missing.
     """

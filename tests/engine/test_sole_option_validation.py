@@ -713,7 +713,7 @@ def test_a_single_member_slot_the_reply_leaves_unbound_binds_where_the_populatio
     """The bind prompt asks the reply to bind a slot whose taxonomy holds one value, and the
     recorded reply to "infant mortality rate" leaves `age` unbound over the one value
     `Years0`. The engine claims it as a `sole_option` value and the population judges the
-    claim: beside members stating an age group classification instead, the age of zero is
+    claim. Beside members stating an age group classification instead, the age of zero is
     forced, while the two-value age group classification stays unbound. A population sample
     holding one gender beside its total forces none, and the slot stays as the reply
     drafted it."""

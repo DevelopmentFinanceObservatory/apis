@@ -120,7 +120,7 @@ def _state(*, llm: SupportsLLM, binder: Binder | None = None) -> ResolveState:
 def test_a_binder_answering_as_gemini_leaves_the_part_in_the_same_state():
     """A binder whose reply, with the shared post-steps applied, is the Gemini stub's
     drives `_phase_bind` to the same bind result, usage and menu state, with no model
-    call of its own; the request it gets carries the part's menu and query text."""
+    call of its own. The request it gets carries the part's menu and query text."""
     gemini = _state(llm=_RecordingLLM())
     binder = FixedBinder(ground_bind_output(_REPLY, _MENU), usage=_USAGE)
     fixed = _state(llm=_NoCallLLM(), binder=binder)

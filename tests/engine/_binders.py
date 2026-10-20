@@ -39,9 +39,9 @@ def elected_reply(
     rating: float | None = 1.0,
 ) -> _UniversalBindOutput:
     """A bind reply electing `chosen_shape_index` that rates its pick at `rating` and each
-    shape it nominates in `also_plausible` at `NOMINEE_RATING` in `measuring`, as the bind prompt asks of
-    a reply that elects. The Gemini binder reads a pick the reply leaves unrated as a
-    decline, so a test pinning that decline passes `rating=None`."""
+    shape it nominates in `also_plausible` at `NOMINEE_RATING` in `measuring`, as the bind
+    prompt asks of a reply that elects. The Gemini binder reads a pick the reply leaves
+    unrated as a decline, so a test pinning that decline passes `rating=None`."""
     return _UniversalBindOutput(
         chosen_shape_index=chosen_shape_index,
         bindings=list(bindings),

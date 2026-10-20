@@ -3,7 +3,7 @@
 A `Binder` answers the two model questions of a part: which form and base the variable
 phrase states (`Binder.read_quantity`), and which menu shape the part means with its slot
 bindings (`Binder.bind`). The engine builds one `BindRequest` per bind call and reads the
-binder's `BindResult`; it never reaches into a binder's model calls.
+binder's `BindResult`.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ class ApplyPolicies(Protocol):
 
 
 class PolicyContractError(Exception):
-    """A binder broke the house-policy contract: the step ran other than once on a reply
+    """A binder broke the house-policy contract. The step ran other than once on a reply
     that elects a shape, or the election moved to a shape that does not hold a constraint
     the binder recognised on its pick. The part refuses (`phase_rank_bind._phase_bind`)."""
 

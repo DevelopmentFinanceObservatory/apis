@@ -3474,7 +3474,7 @@ def _validate_requested_all_bindings(
     A claim must be unbound, name a property on the elected shape, and reproduce a dropped
     phrase exactly. A claim on a code system the index declares must also name that slot by
     its declared plain name (`names_plain_name`), the noun the part shows for it and the
-    slot a declared default narrows: "across all flows" asks for every flow, and "total"
+    slot a declared default narrows. "Across all flows" asks for every flow, while "total"
     names no slot, so the flow default still binds. Demote invalid claims to ``mentioned``
     and clear their phrase. Return bindings in order plus normalised phrases from valid
     claims only.
@@ -3635,8 +3635,8 @@ def _elected_index(state: ResolveState) -> int:
     reading the model chose, in the rank that orders the menu (`bind.rank_elected`), and
     the model's own choice where the menu tells every higher-ranked shape apart from it.
     The rank reads only the shapes the house policies left standing in their pool
-    (`BindResult.policy_choice`), so it breaks a tie among the survivors and never undoes
-    a policy's move. The model's bindings and nominations stand as drafted: the bindings
+    (`BindResult.policy_choice`), so it breaks a tie among the survivors and leaves
+    a policy's move in place. The model's bindings and nominations stand as drafted: the bindings
     read the elected shape unchanged, and a nominated shape that is elected here is no
     alternative to itself (`phase_place_materialise._plan_status`). A reading the model
     declined every menu shape for stands in as it is (`_stand_in_declined`)."""
@@ -3691,7 +3691,7 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
     `_HousePolicyStep`), once on a reply that elects a shape and never on one that does
     not. The binder's answer is `ResolveState.bind_decision`, logged as one
     ``bind_decision`` line (`_log_bind_decision`). A binder that runs the step any other
-    number of times, or raises `PolicyContractError`, breaks that contract: the breach is
+    number of times, or raises `PolicyContractError`, breaks that contract. The breach is
     logged at ERROR in place of the line and the part refuses ``variable_not_resolved``
     with the call's usage. The part's frame
     opens the prompt, and the readings refused only on a pinned part follow the menu as not
@@ -3823,7 +3823,7 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
     )
     if breach is not None:
         # A binder that breaks the house-policy contract has an election nobody can
-        # vouch for; refuse the part loudly rather than answer from it.
+        # vouch for, so the part refuses loudly.
         logger.error(
             "part %r: the binder broke the house-policy contract: %s", state.variable, breach
         )

@@ -386,7 +386,7 @@ def test_recorded_measles_menu_lists_the_case_count_as_nearest_and_refuses_its_f
     """The case count serves no rate, so it is not electable beside the immunization
     coverage, which measures something else. Bind declines the coverage and names the case
     count as nearest, so the answer refuses `denominator_not_available` flagging the measles
-    case count alone: the reading the question asked for, settled on the condition it names.
+    case count alone, the reading the question asked for, settled on the condition it names.
     The bind reply is that decline, held fixed."""
     llm = FixedBindReplyLLM(
         _UniversalBindOutput(

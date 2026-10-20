@@ -648,7 +648,7 @@ def test_the_rank_elects_between_two_shapes_the_menu_states_alike(variable, also
     ProvisionalNode `PerCapita`, ranked first, and one dividing by `Count_Person`. The menu
     prints both as per person, and the model elects the second and rates both alike. The
     first is elected in its place, whether or not the model also nominated it, and the
-    second is no rival: it is the same reading, on a denominator "GDP per capita" closes
+    second is no rival. It is the same reading, on a denominator "GDP per capita" closes
     and "living standard", which names no form, leaves open. The nominated income series is
     offered beside it."""
     svs = [_GDP_PER_CAPITA_SV, _GDP_PER_HEAD_SV, _INCOME_PER_CAPITA_SV]

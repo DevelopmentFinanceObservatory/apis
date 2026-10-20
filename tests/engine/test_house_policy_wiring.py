@@ -236,7 +236,7 @@ def _rated_alike(shapes: Sequence[ShapeDraft], reply: _UniversalBindOutput) -> P
 
 def test_the_pool_admits_a_shape_only_with_a_slot_for_each_mentioned_value():
     """A value the phrase names keeps every shape without a slot holding it out of the
-    pool, a shape whose slot lacks the value as one with no slot; a value drafted as a
+    pool, a shape whose slot lacks the value as one with no slot. A value drafted as a
     slot's sole option, or an open slot, keeps none out. A slot the phrase asks for in full
     keeps out each shape whose slot lacks a value the pick's holds."""
     shapes = [_CRS, _DAC2A, _DAC1]
@@ -340,8 +340,8 @@ def test_a_move_to_a_shape_without_a_named_value_is_refused():
 def test_a_moved_election_judges_unplaced_on_the_new_shape():
     """A phrase the reply left unplaced on the DAC2a shape is one the CRS shape admits a
     qualifier for, so after the sector moves the election to the CRS it is no longer
-    unplaced, and the answer reports no missing vocabulary for it; a phrase the CRS shape
-    admits nothing for stays."""
+    unplaced, and the answer reports no missing vocabulary for it. A phrase the CRS shape
+    admits nothing for stays unplaced."""
     grant = QualifierMatch(
         code_system="crsFlowKind",
         code_dcid="Grant",
@@ -409,7 +409,7 @@ def test_a_part_moved_to_the_recipient_dataset_keeps_no_stray_value(
 ):
     """Aid to a recipient prefers DAC2a. Gemini's CRS pick moves there when its channel
     draft bound only as a sole option, and the part settles with no stray requirement and
-    no refusal; a channel the phrase names keeps the CRS shape."""
+    no refusal. A channel the phrase names keeps the CRS shape."""
     reply = _reply(0, _value("crsChannel", "ChannelA", evidence), rated=(0, 1))
     state = _state([_CRS, _DAC2A], llm=_StubLLM(reply), frame=_TO_UGANDA)
 
@@ -422,10 +422,10 @@ def test_a_part_moved_to_the_recipient_dataset_keeps_no_stray_value(
 
 
 def test_the_menu_rank_never_undoes_a_policy_move(caplog: pytest.LogCaptureFixture):
-    """Two shapes the menu states alike, served from the sector and the recipient default:
-    on aid to a recipient the dataset policy moves Gemini's pick to the recipient one, and
-    the menu-rank tie-break, which reads only the policy's survivors, keeps it there. The
-    line reports the election the part answers with."""
+    """Two shapes the menu states alike are served from the sector and the recipient
+    default. On aid to a recipient the dataset policy moves Gemini's pick to the recipient
+    one, and the menu-rank tie-break, which reads only the policy's survivors, keeps it
+    there. The line reports the election the part answers with."""
     first = replace(_shape("a", datasets=(_HOUSE["sector"],)), label="aid")
     second = replace(_shape("b", datasets=(_HOUSE["recipient"],)), label="aid")
     caplog.set_level(logging.INFO, logger="search.engine.region.phase_rank_bind")
@@ -518,7 +518,7 @@ def test_a_binder_that_miscounts_the_policy_step_refuses_the_part(
     output: _UniversalBindOutput, calls: int, caplog: pytest.LogCaptureFixture
 ):
     """A binder that runs the policy step other than once on an election breaks the
-    contract: the part refuses ``variable_not_resolved``, the breach is logged at ERROR,
+    contract. The part refuses ``variable_not_resolved``, the breach is logged at ERROR,
     and no ``bind_decision`` line vouches for the election."""
     caplog.set_level(logging.INFO, logger="search.engine.region.phase_rank_bind")
     state = _state([_DAC2A, _CRS], llm=_StubLLM(None))
@@ -667,8 +667,8 @@ _GROSS_AMOUNT = _shape(
 @pytest.mark.parametrize(
     ("shapes", "ratings", "pool", "elected"),
     [
-        # The spec's guard test: the best-rated shape is a grant-equivalent series, and a
-        # lower-rated amount series that offers Gross stays out of the pool.
+        # The best-rated shape is a grant-equivalent series, and a lower-rated amount series
+        # that offers Gross stays out of the pool.
         pytest.param([_GRANT_EQUIVALENT, _GROSS_AMOUNT], {0: 0.9, 1: 0.5}, (0,), 0, id="guard"),
         # Rated far below value added, the output series cannot win on policy 1.
         pytest.param([_VALUE_ADDED, _OUTPUT], {0: 0.9, 1: 0.5}, (0,), 0, id="guard-gdp"),
@@ -710,8 +710,9 @@ def test_the_rated_pool_reads_each_rating_against_the_bound(
     ratings: Mapping[int, float], pool: tuple[int, ...]
 ):
     """With the fraction at 0.1 a shape joins at 0.9 of the best, whatever the float product
-    of the bound rounds to, and not below, and not at the 0.1 floor. A shape the reply leaves unrated reads 0, as does a rating outside 0 to
-    1, which sets no best either. The chosen shape stays whatever its rating."""
+    of the bound rounds to, and not below, and not at the 0.1 floor. A shape the reply
+    leaves unrated reads 0, as does a rating outside 0 to 1, which sets no best either. The
+    chosen shape stays whatever its rating."""
     shapes = [_OUTPUT, replace(_OUTPUT, shape_id="output_other", label="other output")]
     reply = _rated(0, ratings)
 
@@ -768,7 +769,7 @@ def test_the_bind_decision_line_records_the_ratings_as_the_reply_wrote_them(
     caplog: pytest.LogCaptureFixture,
 ):
     """Value added rated within the fraction of the output series joins its pool, and
-    nominal output beats it; the line holds the reply's ratings in its own order."""
+    nominal output beats it. The line holds the reply's ratings in its own order."""
     caplog.set_level(logging.INFO, logger="search.engine.region.phase_rank_bind")
     reply = _rated(1, {1: 0.9, 0: 0.85})
     state = _state([_VALUE_ADDED, _OUTPUT], llm=_StubLLM(reply))

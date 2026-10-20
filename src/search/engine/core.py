@@ -260,7 +260,7 @@ async def resolve_events(
     ``budget`` is the route's ``request_budget``, so the pipeline's soft deadline and the
     route's hard cap share one start. Without one the request starts here.
 
-    ``binder`` reads the quantity and binds every part; ``None`` takes the one
+    ``binder`` reads the quantity and binds every part. ``None`` takes the one
     ``Settings.binder`` names (``binders.configured_binder``). The cache key reads it.
     """
     if budget is None:

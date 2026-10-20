@@ -136,7 +136,7 @@ def _with_forced_values(
 ) -> list[SlotBindingDraft]:
     """`bindings` with each single-member slot the unbinding left open bound to the value
     its population forces (`phase_election._settle_sole_options`), so the answer states
-    what the elected shape forces whatever path opened the slot: "female unemployment rate"
+    what the elected shape forces whatever path opened the slot. "Female unemployment rate"
     over a shape whose one member is male reads `gender=Male`, as it does when the bind
     reply leaves gender unbound. A slot keeps open when the forced value is the one the
     unbinding released from it, since that value is what no member holds beside the rest,

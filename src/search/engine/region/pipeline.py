@@ -205,7 +205,7 @@ async def resolve_variable(
 
     `graph` and `sdmx` are shared, thread-safe clients. Dev-finance role-keyed observation and
     availability reads use `sdmx`. `llm` is stateless per call. `binder` reads the quantity
-    and binds on `llm`; `None` takes the one `Settings.binder` names
+    and binds on `llm`. `None` takes the one `Settings.binder` names
     (`binders.configured_binder`). `date_request` is the shared window, while `base_timing`
     carries extraction timing.
 

@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 RATED_POOL_FLOOR = 0.1
 RATED_POOL_FRACTION = 0.1
 
-# A reply that rates its own pick below `DECLINE_FLOOR` declines (`declined`): the part
+# A reply that rates its own pick below `DECLINE_FLOOR` declines (`declined`). The part
 # asks, as a reply that asked does, and no policy runs.
 DECLINE_FLOOR = 0.6
 
@@ -92,9 +92,6 @@ class GeminiBinder:
             return BindResult(output=output, binder=self.name), usage
         shapes = request.shapes
         ratings = shape_ratings(output, len(shapes))
-        # A reply that leaves its pick out of `measuring`, an empty one included, or rates
-        # it below the decline floor, says by its own rating that the pick measures
-        # something else, so it declines.
         if ratings.get(output.chosen_shape_index, 0.0) < DECLINE_FLOOR:
             return BindResult(output=declined(output), binder=self.name), usage
         pool = rated_pool(shapes, output, ratings)
@@ -155,8 +152,8 @@ def rated_pool(
     tie-break (`bind.rank_elected`) can choose between the two.
 
     A rated shape joins only when it holds every value the phrase names as the chosen shape
-    does (`holds_mentioned_values`), so the phrase's own words stand before any policy runs;
-    a twin holds them by being one reading."""
+    does (`holds_mentioned_values`), so the phrase's own words stand before any policy runs.
+    A twin holds them by being one reading."""
     chosen = output.chosen_shape_index
     denominator = stated_reading(shapes[chosen]).denominator
     best = max(ratings.values(), default=0.0)
@@ -249,15 +246,14 @@ def reelect(
 
     The reply drafted its bindings and judged its `unplaced` phrases on the shape it
     elected. On a move, a ``sole_option`` draft leaves unless the new shape's slot holds
-    its value, since it bound only because the old slot held one member; the rest are
+    its value, since it bound only because the old slot held one member. The rest are
     grounded in the new shape's taxonomy (`bind._grounded_in_taxonomy`,
-    `bind._without_partly_stated_values`), and the pool admitted the new shape only if it
-    holds each value the phrase names (`holds_mentioned_values`); a move to one that does
-    not raises `PolicyContractError`. An unplaced phrase leaves
-    `unplaced` when the new shape admits a qualifier read from its words
-    (`admitted_qualifiers`, each menu shape's own, as the bind request carries them), since
-    that shape's vocabulary reads it. An output the policies leave as it was is returned as
-    it is."""
+    `bind._without_partly_stated_values`). The pool admitted the new shape only if it
+    holds each value the phrase names (`holds_mentioned_values`), and a move to one that
+    does not raises `PolicyContractError`. An unplaced phrase leaves `unplaced` when the
+    new shape admits a qualifier read from its words (`admitted_qualifiers`, each menu
+    shape's own, as the bind request carries them), since that shape's vocabulary reads it.
+    An output the policies leave as it was is returned as it is."""
     elected = choice.survivor
     old = output.chosen_shape_index
     moved = elected != old

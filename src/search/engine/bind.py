@@ -224,7 +224,7 @@ class _UniversalBindOutput(BaseModel):
     )
 
 
-# The header line of the bind prompt's DROPPED QUALIFIERS block; `promptlab.bindmenu` parses it.
+# The header line of the bind prompt's DROPPED QUALIFIERS block. `promptlab.bindmenu` parses it.
 DROPPED_QUALIFIERS_HEADER = (
     "DROPPED QUALIFIERS (the query asked for these but no earlier stage could "
     "apply them -- for the shape you choose, if one of these phrases asks for "
@@ -241,12 +241,12 @@ def bind_schema(size: int) -> type[_UniversalBindOutput]:
     """`_UniversalBindOutput` for a menu of `size` shapes, whose `measuring` holds at most
     `size` entries, one per shape.
 
-    The bound is what ends a reply that repeats an entry: asked to rate a menu none of whose
-    shapes measures the phrase, the bind model can write ``{"index": 0, "rating": 0.0}``
-    until its output runs out, and the call times out instead of asking.
+    The bound ends a reply that repeats an entry. Asked to rate a menu none of whose shapes
+    measures the phrase, the bind model can write ``{"index": 0, "rating": 0.0}`` until its
+    output runs out, and the call times out instead of asking.
 
     An empty menu, every reading refused, has no shape to rate, so its schema leaves
-    `measuring` out of what the model fills and drops whatever a reply writes there: a reply
+    `measuring` out of what the model fills and drops whatever a reply writes there. A reply
     that asks and rates the nearest refused reading validates, with `measuring` empty."""
     measuring = _UniversalBindOutput.model_fields["measuring"]
     if size == 0:
@@ -421,8 +421,8 @@ def _inserted(text: str, *, before: str, insert: str) -> str:
     return text.replace(before, insert + before)
 
 
-# The bind system prompt the bind call sends: `_UNIVERSAL_BIND_SYSTEM_PROMPT` asking for
-# `_UniversalBindOutput.measuring` in one paragraph before the binding rules and in both
+# The bind system prompt the bind call sends. It is `_UNIVERSAL_BIND_SYSTEM_PROMPT` asking
+# for `_UniversalBindOutput.measuring` in one paragraph before the binding rules and in both
 # example outputs.
 _MEASURING_BIND_SYSTEM_PROMPT: str = _inserted(
     _inserted(
@@ -534,9 +534,9 @@ def _states_same_reading(
     the same arc, since two unresolved arcs that name no schema term print alike
     (`UNRESOLVED_DENOMINATOR`). Each slot reads the same members on both. A value the
     bindings bind on it applies to the same taxonomy codes on both, and to at least one
-    (`reads_bound_values_alike`): a code only one of them offers outside the bound value tells no
-    reading apart, and a shape holding only a child of a bound parent reads the child
-    alone. A slot the bindings bind no value on holds one taxonomy on both, since it stays
+    (`reads_bound_values_alike`). A code only one of them offers outside the bound value
+    tells no reading apart, and a shape holding only a child of a bound parent reads the
+    child alone. A slot the bindings bind no value on holds one taxonomy on both, since it stays
     open over every value it holds."""
     if stated_reading(elected) != stated_reading(other):
         return False
@@ -601,8 +601,8 @@ def rank_elected(
     is.
 
     `among` holds the shapes the house policies left standing (`house_policy.PolicyChoice`),
-    `None` where no policy step ran. The rank breaks ties among those survivors alone: a
-    shape the policies set aside, or one outside their pool, is never elected here, so the
+    `None` where no policy step ran. The rank breaks ties among those survivors alone. A
+    shape the policies set aside, or one outside their pool, is not elected here, so the
     rank cannot undo a policy's move."""
     chosen = output.chosen_shape_index
     return next(

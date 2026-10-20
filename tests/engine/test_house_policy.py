@@ -132,7 +132,7 @@ _BY_DATASET = (
             id="data-at-the-named-places",
         ),
         pytest.param((_GE,), _ctx(pre_ge=True), 0, 0, id="single-candidate"),
-        # amount_vs_ge runs first, so a gross amount never displaces grant equivalent.
+        # amount_vs_ge runs first, so grant equivalent wins over a gross amount.
         pytest.param((_GE, _AMOUNT), _ctx(), 0, 0, id="grant-equivalent-before-gross"),
     ],
 )

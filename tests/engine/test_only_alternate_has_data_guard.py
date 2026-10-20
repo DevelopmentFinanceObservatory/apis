@@ -358,7 +358,7 @@ def test_role_bearing_elected_shape_no_observations_elects_stat_vars():
 def test_the_house_policy_elects_the_subject_only_twin_with_data(caplog):
     """On a named place, the subject-only twin with data shares the elected flow's reading
     and the reply rates both alike, so the data-at-places policy elects it in the bind
-    call: the part answers it as definite, and no elected shape lacked data."""
+    call. The part answers it as definite, and no elected shape lacked data."""
     caplog.set_level(logging.INFO, logger="search.engine.region.phase_rank_bind")
 
     result = _run_role_bearing_one_alt_scenario(
@@ -397,7 +397,7 @@ def _flow_kind_node(label: str, kind: str, *, role_bearing: bool) -> dict:
 
 
 def test_a_flow_twin_answers_when_the_bound_member_has_no_data():
-    """Status rule 1 past the house policies: menu availability reads each shape before
+    """Status rule 1 applies past the house policies. Menu availability reads each shape before
     bind, so the subject-only aid shape has data at Kenya (its loan member does) beside its
     by-role twin, and the data-at-places policy keeps the binder's pick. The grant the bind
     draws has no data, so the elected shape holds none, and the twin on the same five-tuple,

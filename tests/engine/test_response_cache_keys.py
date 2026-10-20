@@ -755,7 +755,7 @@ def test_different_model_changes_key() -> None:
 
 def test_two_binders_never_share_a_key() -> None:
     """The binder a request resolved to keys both layers, even when the two binders name
-    the same model, so an answer one binder gave is never served as the other's."""
+    the same model, so each binder's answers are served only to its own requests."""
     gemini = _scope(binder="gemini", model="model-a")
     other = _scope(binder="jev", model="model-a")
     assert layer1_key(query="gdp kenya", scope=gemini) != layer1_key(query="gdp kenya", scope=other)

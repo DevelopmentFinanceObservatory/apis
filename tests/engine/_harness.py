@@ -1033,8 +1033,9 @@ def offline_events(
 ) -> list[Event]:
     """Every event `resolve_events` streams for `request`, in order, under the shared fakes
     and the pinned extraction date `offline_resolve` runs with. `graph` and `llm` replace
-    the shared fakes for this call, and `binder` the configured binder. `stream_slot_options` streams the trailing events as the
-    SSE route does; `response_cache` and `place_options_pool` are the app's shared ones.
+    the shared fakes for this call, and `binder` the configured binder. `stream_slot_options`
+    streams the trailing events as the SSE route does; `response_cache` and
+    `place_options_pool` are the app's shared ones.
     `close_after` names an event kind: the stream is closed after the first such event, as
     when a client disconnects."""
     graph = _FAKE_GRAPH if graph is None else graph
