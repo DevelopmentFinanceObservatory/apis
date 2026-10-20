@@ -165,24 +165,30 @@ def test_two_dropped_qualifiers_keeps_only_the_unadmitted_one():
     ] == [("measure_not_applied", "an entirely unrelated qualifier")]
 
 
-def test_unadmitted_dropped_qualifier_survives_unchanged():
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "a phrase naming nothing in the index",
+        # Asks for every member of a flow role, which a subject-only answer has none of.
+        "from all donors",
+    ],
+)
+def test_unadmitted_dropped_qualifier_survives_unchanged(phrase):
     """A dropped qualifier no region admitted survives unchanged -- the
     regression guard that behaviour still works unchanged."""
     response = offline_resolve(
         make_request(_E2E_QUERY),
         graph=_e2e_graph(),
-        llm=_ExtractAndBindLLM(dropped_qualifiers=["a phrase naming nothing in the index"]),
+        llm=_ExtractAndBindLLM(dropped_qualifiers=[phrase]),
         sdmx=FakeSdmxClient(observations={}, availability={}),
     )
     warnings = [w for w in response.diagnostics.warnings if w.code == QUERY_QUALIFIER_DROPPED]
     assert len(warnings) == 1
-    assert warnings[0].message == (
-        'The requested qualifier "a phrase naming nothing in the index" was not applied.'
-    )
+    assert warnings[0].message == f'The requested qualifier "{phrase}" was not applied.'
     assert warnings[0].message not in response.parts[0].spec.resolved.rendered_sentence
     assert [
         (d.code, d.asked) for d in response.parts[0].departures if d.code == "measure_not_applied"
-    ] == [("measure_not_applied", "a phrase naming nothing in the index")]
+    ] == [("measure_not_applied", phrase)]
 
 
 def test_terminal_before_election_reports_no_admitted_phrases():

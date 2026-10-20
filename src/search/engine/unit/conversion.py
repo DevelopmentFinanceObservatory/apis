@@ -95,6 +95,13 @@ type ConversionTable = Literal["exchange_rates", "deflators"]
 
 _NOMINAL = "Nominal"
 
+PRICE_BASIS_MEASURES: Final[Mapping[PriceBasis, str]] = {
+    "current": _NOMINAL,
+    "constant": "RealValue",
+}
+"""The measure value whose reading a unit request's `prices` serves: a series converted to
+constant prices reads as `RealValue`, one served at current prices as `Nominal`."""
+
 
 @dataclass(frozen=True)
 class ConvertedYears:
@@ -516,12 +523,17 @@ def conversion_period(*, served: YearRun, converted: ConvertedYears) -> Conversi
     return ConversionPeriod(served=served, years=run, limited_by=limited_by)
 
 
+def served_prices(spec: Spec) -> PriceBasis | None:
+    """The price basis of the unit request the answer's identity binds its unit through,
+    served natively or converted. None when no unit request binds it."""
+    unit = (spec.definition.identity.facets or {}).get("unit")
+    return unit.request.prices if isinstance(unit, IdentityFacetValueRequest) else None
+
+
 def _unit_requested(spec: Spec) -> bool:
     """Whether the answer's identity binds its unit through a unit request, served natively
     or converted."""
-    return isinstance(
-        (spec.definition.identity.facets or {}).get("unit"), IdentityFacetValueRequest
-    )
+    return served_prices(spec) is not None
 
 
 def _states_currency(spec: Spec) -> bool:

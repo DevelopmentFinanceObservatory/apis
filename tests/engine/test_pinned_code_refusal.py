@@ -28,6 +28,7 @@ from search.engine.departures import (
 from search.engine.qualifier_match import QualifierMatch
 from search.engine.region.phase_answer import _assemble_carve_outs
 from search.engine.region.requirements import (
+    judge,
     record_reading,
     refusal_terms,
     settle_answer,
@@ -36,9 +37,11 @@ from search.engine.region.requirements import (
 )
 from search.engine.region.result import RegionResult
 from search.engine.region.state import (
+    Requirement,
     ResolveState,
     code_requirement,
     qualifier_dropped_warning,
+    unapplied_departure,
     with_requirement,
 )
 from search.engine.region.unrealisable import unbind_unrealisable
@@ -449,3 +452,77 @@ def test_a_stand_in_is_judged_on_the_code_the_request_named(bound, unbound):
 
     assert [(t.slot, t.text) for t in refused] == unbound
     assert _departed(state) == []
+
+
+# A price basis is met by the unit request an answer is served under: a Nominal series
+# converted to constant prices reads as RealValue.
+
+_CONSTANT = "constant"
+
+
+def _price_basis_requirement(code: str) -> Requirement:
+    return code_requirement(
+        property_dcid="measurementQualifier",
+        codes=(code,),
+        asked=_CONSTANT,
+        named=[GraphRef(ref=code, label=code)],
+        departure=unapplied_departure(
+            _CONSTANT, asked=_CONSTANT, property_dcid="measurementQualifier"
+        ),
+        origin="bind",
+    )
+
+
+def _nominal_flow() -> ShapeDraft:
+    return replace(_education_share(), shape_id="flow_nominal", meas_qual_dcid="Nominal")
+
+
+@pytest.mark.parametrize(
+    ("served", "code", "departs"),
+    [
+        ("constant", "RealValue", False),
+        ("constant", "InflationAdjusted", False),
+        ("current", "RealValue", True),
+        (None, "RealValue", True),
+        ("constant", "PurchasingPowerParity", True),
+        ("current", "Nominal", False),
+    ],
+)
+def test_a_price_basis_is_met_by_the_served_unit_request(served, code, departs):
+    judgement = judge([_price_basis_requirement(code)], [(_nominal_flow(), [])], served=(served,))
+
+    assert bool(judgement.departures()) is departs
+
+
+def _unit_spec(prices: str | None) -> Spec:
+    spec = minimal_spec()
+    if prices is not None:
+        request = {"currency": "EUR", "prices": prices}
+        if prices == "constant":
+            request["base_year"] = 2022
+        spec["definition"]["identity"]["facets"] = {"unit": {"state": "value", "request": request}}
+    return Spec.model_validate(spec)
+
+
+@pytest.mark.parametrize(("prices", "departs"), [("constant", False), ("current", True)])
+def test_the_definite_answer_is_judged_under_its_spec_unit_request(prices, departs):
+    """Germany's bilateral ODA to Kenya in constant 2022 euros: the bind leaves "constant"
+    unapplied on the Nominal flow, and the definite Spec converts it to constant euros, which
+    meets the price basis. Served at current prices it departs."""
+    state = _state()
+    state.shape_draft = _nominal_flow()
+    state.measure_query_matches = (
+        QualifierMatch(
+            code_system="measurementQualifier",
+            code_dcid="RealValue",
+            label="Real value",
+            source="synonym",
+            matched_text=_CONSTANT,
+        ),
+    )
+    state.require_unapplied(
+        _CONSTANT, asked=_CONSTANT, property_dcid="measurementQualifier", origin="bind"
+    )
+
+    assert _carve_out(state, _unit_spec(prices)) is None
+    assert bool(_departed(state)) is departs

@@ -251,6 +251,7 @@ def layer2_key(
     source_codes: Sequence[str | None] = (),
     separate: Sequence[bool] = (),
     written_variable_phrases: Sequence[str | None] = (),
+    every_member_axes: Sequence[str | None] = (),
 ) -> str:
     """Key the effective extraction and raw-text signals over the shared scope.
 
@@ -276,7 +277,9 @@ def layer2_key(
     slots with a declared default whose plain name the query names, the stretch of the query
     that writes each variable (`written_phrase.written_phrase`), which the key states only
     when one is given, and the words a dataset states of its rows that the query negates
-    (`bind_repair.stated_words_negated`), which the key states only when there is one. They keep
+    (`bind_repair.stated_words_negated`), which the key states only when there is one, and
+    the flow axis each dropped qualifier asks every member of (`role_text.every_member_axis`),
+    which the key states only when one does. They keep
     layer 2 sound when distinct queries produce the same extraction without
     hashing raw query text, preserving reuse when those readers agree.
     """
@@ -306,6 +309,8 @@ def layer2_key(
         document["separate"] = separate_positions
     if any(phrase is not None for phrase in written_variable_phrases):
         document["written_variable_phrases"] = list(written_variable_phrases)
+    if any(axis is not None for axis in every_member_axes):
+        document["every_member_axes"] = list(every_member_axes)
     return _digest("l2", document)
 
 

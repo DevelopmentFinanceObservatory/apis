@@ -63,7 +63,7 @@ from search.engine.region.phase_shared import settle_unjudged_refusal
 from search.engine.region.place_roles import group_request_names, stated_party_words
 from search.engine.region.related_read import cancel_related_reads, settle_related_reads
 from search.engine.region.requirements import unbinding_phrases, with_requirement_departures
-from search.engine.region.result import RegionResult
+from search.engine.region.result import RegionResult, every_member_phrases
 from search.engine.region.source_choice import (
     allows_un_system,
     answer_provenances,
@@ -712,6 +712,9 @@ async def _run_phases(state: ResolveState) -> RegionResult:
                         | state.applied_dropped_qualifier_phrases
                         | unbinding_phrases(state.requirements)
                         | state.slot_default_phrases
+                        | every_member_phrases(
+                            result, state.dropped_qualifier_phrases, query=state.role_query
+                        )
                         if state.shape_draft is not None
                         else _refused_pinned_phrases(state, result)
                     )

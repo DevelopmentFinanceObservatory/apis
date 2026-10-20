@@ -22,6 +22,8 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
+from code_index.labels import PRICE_BASIS_AXIS
+from code_index.shared import get_measure_index
 from search.engine.bind import SlotBindingDraft
 from search.engine.departures import (
     WarningKey,
@@ -45,6 +47,7 @@ from search.engine.region.state import (
 )
 from search.engine.retrieval.bound_values import applies_value
 from search.engine.shape import ShapeDraft
+from search.engine.unit.conversion import PRICE_BASIS_MEASURES, PriceBasis
 from search.models import GraphRef, ResolvedQualifier
 
 if TYPE_CHECKING:
@@ -234,12 +237,17 @@ def judge(
     answers: Iterable[Answer],
     *,
     state: ResolveState | None = None,
+    served: Sequence[PriceBasis | None] = (),
 ) -> Judgement:
     """Judge each of `answers` on its own shape and bindings against every requirement.
+    `served[i]` is the price basis of the unit request answer `i` is served under, None
+    when it is served under none; an empty `served` serves every answer under none.
 
     A `CodeRule` is met when the answer's bindings bind one of its codes or a descendant on
     its property, unmet when the answer's shape holds the property and binds none of them,
-    and outside an answer whose shape lacks it. A `ValueRule` is met or unmet as
+    and outside an answer whose shape lacks it. A price-basis `CodeRule` is also met by an
+    answer served under a unit request whose price basis reads as one of its codes
+    (`_serves_price_basis`). A `ValueRule` is met or unmet as
     `phase_rank_bind.judge_value_requirements` decides, and an answer leaving it unmet
     names it by its slot when its shape has one (`_value_term`). A value of a drafted set
     (origin ``set_value``) is met when the answer's bindings or some selected member hold
@@ -248,10 +256,12 @@ def judge(
     is unmet on every answer, and a term no answer is judged on (`None`) is outside every
     answer."""
     requirements = tuple(requirements)
+    answers = tuple(answers)
+    served = tuple(served) or (None,) * len(answers)
     values = [r for r in requirements if isinstance(r.rule, ValueRule)]
     outcomes: list[tuple[Outcome, ...]] = []
     slot_terms: list[dict[int, ResolvedQualifier]] = []
-    for shape, bindings in answers:
+    for (shape, bindings), prices in zip(answers, served, strict=True):
         held = shape_vocabulary(shape)
         bound: dict[str, set[str]] = {}
         for binding in bindings:
@@ -269,7 +279,8 @@ def judge(
         for j, requirement in enumerate(requirements):
             rule = requirement.rule
             if isinstance(rule, CodeRule):
-                answer.append(_code_outcome(rule, held, bound))
+                met_by_unit = prices is not None and _serves_price_basis(rule, prices)
+                answer.append("met" if met_by_unit else _code_outcome(rule, held, bound))
             elif isinstance(rule, ValueRule) and requirement.origin == "set_value":
                 # A value of a drafted set: met when the answer applies it or leaves the
                 # whole set unmet, which the refusal names; else disclosed, never refused.
@@ -316,6 +327,17 @@ def _value_term(
             "disposition": "unbound",
         }
     )
+
+
+def _serves_price_basis(rule: CodeRule, prices: PriceBasis) -> bool:
+    """Whether an answer served under a unit request at `prices` meets the price-basis
+    `rule`: the measure value those prices serve (`PRICE_BASIS_MEASURES`) spells the reading
+    of one of its codes. Constant prices meet `RealValue` and `InflationAdjusted`, current
+    prices meet `Nominal`, and no unit request meets `PurchasingPowerParity`."""
+    if rule.property_dcid != PRICE_BASIS_AXIS:
+        return False
+    index = get_measure_index()
+    return any(PRICE_BASIS_MEASURES[prices] in index.reading_set(code) for code in rule.codes)
 
 
 def _code_outcome(rule: CodeRule, held: frozenset[str], bound: Mapping[str, set[str]]) -> Outcome:
@@ -370,13 +392,18 @@ def _unbound(terms: Iterable[ResolvedQualifier]) -> tuple[ResolvedQualifier, ...
 
 
 def settle_answer(
-    state: ResolveState, shape: ShapeDraft, bindings: Sequence[SlotBindingDraft]
+    state: ResolveState,
+    shape: ShapeDraft,
+    bindings: Sequence[SlotBindingDraft],
+    *,
+    served: PriceBasis | None = None,
 ) -> tuple[ResolvedQualifier, ...]:
-    """Judge the part's one final answer, of `shape` read under `bindings`, and keep the
-    judgement for the part's departures (`ResolveState.judgement`). Return the terms its
-    refusal names (`refusal_terms`), empty when the answer meets every requirement it can
-    be judged on. A refused term departs nothing beside the refusal."""
-    judgement = judge(state.requirements, [(shape, bindings)], state=state)
+    """Judge the part's one final answer, of `shape` read under `bindings` and served under
+    a unit request at `served` prices (None for none, as a refusal serving no Spec), and
+    keep the judgement for the part's departures (`ResolveState.judgement`). Return the
+    terms its refusal names (`refusal_terms`), empty when the answer meets every requirement
+    it can be judged on. A refused term departs nothing beside the refusal."""
+    judgement = judge(state.requirements, [(shape, bindings)], state=state, served=(served,))
     refused = _unbound(_in_reading_order(_reading(state, bindings), judgement.terms(0)))
     state.judgement = dataclasses.replace(judgement, refused=refused)
     return refused
@@ -415,12 +442,17 @@ def settle_unanswered(state: ResolveState) -> tuple[ResolvedQualifier, ...]:
     return refused
 
 
-def settle_candidate_set(state: ResolveState, answers: Sequence[Answer]) -> None:
-    """Judge a candidate set, each surviving answer on its own shape and bindings, and keep
-    the judgement for the part's departures. The client chooses among the answers and can
-    weigh an omission, so the set refuses nothing, and a requirement departs unless every
-    answer meets it."""
-    state.judgement = judge(state.requirements, answers, state=state)
+def settle_candidate_set(
+    state: ResolveState,
+    answers: Sequence[Answer],
+    *,
+    served: Sequence[PriceBasis | None] = (),
+) -> None:
+    """Judge a candidate set, each surviving answer on its own shape and bindings and served
+    under a unit request at its `served` prices, and keep the judgement for the part's
+    departures. The client chooses among the answers and can weigh an omission, so the set
+    refuses nothing, and a requirement departs unless every answer meets it."""
+    state.judgement = judge(state.requirements, answers, state=state, served=served)
 
 
 def settle_posted(state: _PromoteState) -> tuple[ResolvedQualifier, ...]:

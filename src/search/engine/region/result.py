@@ -27,6 +27,7 @@ from search.engine.retrieval.bound_values import (
 )
 from search.engine.retrieval.member_facts import MemberFacts
 from search.engine.retrieval.retrieve import MemberPopulation
+from search.engine.role_text import every_member_axis
 from search.engine.shape import ShapeDraft
 from search.engine.source_code import SourceCodeRefusal
 from search.engine.source_scope import AmbiguousSource, SourceRefusal, SourceScope
@@ -198,8 +199,9 @@ class RegionResult:
     # refusal about the elected reading. A refusal that judged no answer is judged on it
     # (`phase_shared.settle_unjudged_refusal`).
     refused_answer: tuple[ShapeDraft, tuple[SlotBindingDraft, ...]] | None = None
-    # Stripped, case-folded qualifier spans forced into bindings by this region, or
-    # answered by a slot default it warns about. Same-shape merges union the sets.
+    # Stripped, case-folded qualifier spans forced into bindings by this region, answered
+    # by a slot default it warns about, or asking for every member of a flow role its
+    # answer leaves unbound (`every_member_phrases`). Same-shape merges union the sets.
     # The entry door uses them to retain or drop `QUERY_QUALIFIER_DROPPED` warnings
     # across the request.
     admitted_qualifier_phrases: frozenset[str] = frozenset()
@@ -530,6 +532,28 @@ def with_dropped_open_roles(region: RegionResult, open_axes: Collection[RoleAxis
             warnings.append(warning)
             departure_facts[warning_key(warning)] = breakdown_not_applied(axis, asked=None)
     return dataclasses.replace(region, warnings=tuple(warnings), departure_facts=departure_facts)
+
+
+def every_member_phrases(
+    region: RegionResult, phrases: Sequence[str], *, query: str
+) -> frozenset[str]:
+    """The `phrases`, stripped and casefolded, that ask for every member of a flow axis
+    (`role_text.every_member_axis`, reading prepositions in `query`) and that `region`'s
+    answer meets.
+
+    A role-bearing answer (`RegionResult.answered_roles`) that binds no entity on the axis
+    holds every member on it: one series per member where it declares a role there, and
+    the total over them where it declares none. A subject-only answer and a result with no
+    Spec meet none, so their phrases stay dropped.
+    """
+    if not region.specs or all(role == "observationAbout" for role in region.answered_roles or ()):
+        return frozenset()
+    bound = {key for spec in region.specs for key in spec.definition.identity.entities}
+    return frozenset(
+        phrase.strip().casefold()
+        for phrase in phrases
+        if (axis := every_member_axis(phrase, query=query)) is not None and axis not in bound
+    )
 
 
 def _bound_open_role_warning(axis: RoleAxis) -> Warning:
