@@ -563,6 +563,7 @@ def _build_part(
             ),
             request_words=region.entity_words is not None,
             asked_axes=region.every_member_axes,
+            assumption_echoes=region.reading_assumption_echoes,
         )
     if region.status == "unsupported":
         assert region.unsupported is not None, (

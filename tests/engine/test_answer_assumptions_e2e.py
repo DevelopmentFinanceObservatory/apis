@@ -530,3 +530,89 @@ def test_a_picked_reading_echoing_its_own_list_states_it(echo: str, expected: li
     clause = "; ".join(item.text for item in expected)
     assert response.rendered_sentence.endswith(f" Assumed: {clause}." if expected else ".")
     assert ("Assumed:" in response.rendered_sentence) == bool(expected)
+
+
+def _in_2020(identity: BaseIdentity) -> BaseIdentity:
+    """`identity` with its years edited to 2020 alone."""
+    return identity.model_copy(
+        update={"requested_window": IdentityWindowRange(start_year=2020, end_year=2020)}
+    )
+
+
+def _edited_set(
+    identities: list[BaseIdentity], echoes: list[list[Assumption] | None]
+) -> tuple[CandidatesPart, str]:
+    """The candidates part, and its response's sentence, a dataset_resubmit answers with
+    when it posts each of ``identities`` edited to 2020 with its echo."""
+    response = _post(
+        ResubmitCandidatesEntry(
+            variable_text="aid flows",
+            ordering="intent_rank",
+            truncated=False,
+            candidates=[
+                ResubmitCandidate(identity=_in_2020(identity), assumptions=echo)
+                for identity, echo in zip(identities, echoes, strict=True)
+            ],
+        )
+    )
+    part = response.parts[0]
+    assert isinstance(part, CandidatesPart)
+    assert response.rendered_sentence is not None
+    return part, response.rendered_sentence
+
+
+@pytest.mark.parametrize(
+    ("aid_echo", "loan_echo", "aid", "loans"),
+    [
+        pytest.param(
+            [_ASSUMED_ODA, *_ASSUMED_ROLES],
+            _ASSUMED_LOAN_ROLES,
+            [_ASSUMED_ODA, *_ASSUMED_ROLES],
+            _ASSUMED_LOAN_ROLES,
+            id="each-reading-echoes-its-list",
+        ),
+        # The echo of a reading that stated none states none for that reading alone.
+        pytest.param([], _ASSUMED_LOAN_ROLES, [], _ASSUMED_LOAN_ROLES, id="aid-echoes-empty"),
+        # With no echo the posted identity binds the flow, so no reading states its default.
+        pytest.param(None, None, _ASSUMED_ROLES, _ASSUMED_LOAN_ROLES, id="no-echo"),
+    ],
+)
+def test_an_edited_candidates_set_restates_each_reading_s_echo(
+    aid_echo: list[Assumption] | None,
+    loan_echo: list[Assumption] | None,
+    aid: list[Assumption],
+    loans: list[Assumption],
+):
+    """A year edit of the aid-or-loans set keeps the official development assistance
+    default on the aid reading that echoes it, each reading read with its own echo."""
+    part, sentence = _edited_set(
+        [_first_answer().spec.definition.identity, _loan_identity()], [aid_echo, loan_echo]
+    )
+    aid_spec, loan_spec = part.candidates.specs
+    assert part.reading_assumptions == {aid_spec.spec_id: aid, loan_spec.spec_id: loans}
+    assert part.assumptions == []
+    assert "Assumed:" not in sentence
+
+
+@pytest.mark.parametrize(
+    ("echo", "shared"),
+    [
+        pytest.param([_ASSUMED_ODA, *_ASSUMED_ROLES], [_ASSUMED_ODA, *_ASSUMED_ROLES], id="echoed"),
+        # With no echo the posted identity binds the flow, so the readings share the roles.
+        pytest.param(None, _ASSUMED_ROLES, id="no-echo"),
+    ],
+)
+def test_an_edited_candidates_set_states_the_default_and_roles_its_readings_share(
+    echo: list[Assumption] | None, shared: list[Assumption]
+):
+    """Two aid readings, one binding the standard grant the other leaves to the series,
+    both echo the official development assistance default and both read every recipient
+    and every provider; after a year edit the part and its clause state each item every
+    reading's own list holds."""
+    identity = _first_answer().spec.definition.identity
+    part, sentence = _edited_set(
+        [identity, _bound(identity, "crsTypeOfFinance", "CRSTypeOfFinance110")], [echo, echo]
+    )
+    assert list(part.reading_assumptions.values()) == [shared, shared]
+    assert part.assumptions == shared
+    assert sentence.endswith(f" Assumed: {'; '.join(item.text for item in shared)}.")

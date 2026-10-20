@@ -118,8 +118,18 @@ def _build_candidates_region(
     """Keep definite promotes in posted order, which `gather` preserves.
     No-data and unsupported promotes both drop. Two or more survivors rebuild
     the set. One becomes definite and zero becomes no-data, each with a warning.
+    Each survivor carries its candidate's assumptions echo: a set reads each reading with
+    its own, and a lone survivor's definite part states its own.
     """
-    survivors = [r for r in promoted if r.status == "definite"]
+    echoes = [
+        None if candidate.assumptions is None else tuple(candidate.assumptions)
+        for candidate in entry.candidates
+    ]
+    survivors = [
+        dataclasses.replace(r, assumption_echo=echo)
+        for r, echo in zip(promoted, echoes, strict=True)
+        if r.status == "definite"
+    ]
     timing_by_step = _merge_timing_by_step(promoted)
 
     if len(survivors) >= 2:
@@ -142,6 +152,11 @@ def _build_candidates_region(
             # elected shape's do on a first pass.
             answered_roles=survivors[0].answered_roles,
             separate=entry.separate,
+            reading_assumption_echoes={
+                r.spec.spec_id: r.assumption_echo
+                for r in survivors
+                if r.assumption_echo is not None
+            },
         )
     if len(survivors) == 1:
         (only,) = survivors

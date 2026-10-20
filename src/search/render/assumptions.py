@@ -59,7 +59,6 @@ _WORLD = "Earth"
 def assumptions_for(
     spec: Spec,
     *,
-    keep_how_properties: frozenset[str] = frozenset(),
     echo: Sequence[Assumption] | None = None,
     asked_axes: frozenset[RoleAxis] = frozenset(),
     operations: Sequence[Operation] = (),
@@ -72,9 +71,8 @@ def assumptions_for(
     (`same_shape._merge_slot_filter_properties`), so a slot one member's request left open
     and another's named reads `text_recognized` on the merged Spec. The declared defaults
     are read from ``own_spec``: each states the values its slot fixed there that the same
-    slot of `spec` still binds, worded from `spec`.
-    ``keep_how_properties`` are the how properties a candidates part keeps visible, under
-    which its heading states its roles. ``asked_axes`` are the flow axes the request's words
+    slot of `spec` still binds, worded from `spec`. The open roles are those the heading of
+    a definite part answering `spec` states. ``asked_axes`` are the flow axes the request's words
     asked every member of (`RegionResult.every_member_axes`), and ``operations`` the part's
     operations, each asking the flow axis it runs over; neither states an open role.
 
@@ -85,7 +83,7 @@ def assumptions_for(
     `spec` that still names no place. An item the echo lacks is left out, since the posted
     identity or its edit asked for it, so an empty echo states none. With no echo, `spec`
     reads as a fresh request does."""
-    heading = heading_for(spec, keep_how_properties=keep_how_properties).heading
+    heading = heading_for(spec).heading
     echoed = {_echo_key(item) for item in echo or ()}
     # The posted identity of an echo binds every slot, so none carries declared_default
     # provenance: on an echo a how slot holds its default while it binds the echoed values.
@@ -140,26 +138,14 @@ def _declared_default(slot_filter: ResolvedFilter, *, refs: set[str]) -> Assumpt
     )
 
 
-def common_assumptions(
-    specs: Sequence[Spec],
-    *,
-    keep_how_properties: frozenset[str] = frozenset(),
-    asked_axes: frozenset[RoleAxis] = frozenset(),
-    operations: Sequence[Operation] = (),
-) -> list[Assumption]:
-    """The assumptions every one of `specs` yields alike, in the first one's order: what a
-    candidates part assumed whichever reading is chosen. [] when there are no specs."""
-    if not specs:
+def common_assumptions(lists: Sequence[Sequence[Assumption]]) -> list[Assumption]:
+    """The items every one of `lists` holds alike, compared on the whole item, in the first
+    one's order: what a candidates part assumed whichever reading is chosen, from each
+    shown reading's own list (`CandidatesPart.reading_assumptions`). [] when there are no
+    lists."""
+    if not lists:
         return []
-    first, *rest = (
-        assumptions_for(
-            spec,
-            keep_how_properties=keep_how_properties,
-            asked_axes=asked_axes,
-            operations=operations,
-        )
-        for spec in specs
-    )
+    first, *rest = lists
     return [item for item in first if all(item in others for others in rest)]
 
 

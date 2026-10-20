@@ -600,6 +600,24 @@ class ResubmitCandidate(StrictModel):
 
     identity: BaseIdentity = Field(description="this candidate's complete identity")
     entity_groups: ResubmitEntityGroups
+    assumptions: list[Assumption] | None = Field(
+        default=None,
+        max_length=_RESUBMIT_MAX_ASSUMPTIONS,
+        description=(
+            "the assumptions of the reading this candidate rebuilds, echoed as the "
+            "response gave them: the candidates part's reading_assumptions under the "
+            "reading's spec_id. The rebuilt reading's reading_assumptions entry states "
+            "the echoed items that still hold, each worded from the rebuilt reading, by "
+            "the rule ResubmitIdentityEntry.assumptions states, and the rebuilt part's "
+            "assumptions are the items every reading_assumptions list holds alike. An item the "
+            "echo lacks is not stated, so an edit of a defaulted slot to another value "
+            "drops that default, and [], the echo of a reading that stated none, states "
+            "none. None, the default, means the client echoes nothing for this reading, "
+            "which yields what a fresh request would: no declared default, since the "
+            "posted identity binds every slot, and the open roles and place scope the "
+            "reading reads"
+        ),
+    )
 
 
 _RESUBMIT_MAX_CANDIDATES = 50

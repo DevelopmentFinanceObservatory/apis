@@ -261,6 +261,11 @@ class RegionResult:
     # (`render.assumptions.assumptions_for`). None when the entry echoes none and on every
     # other door.
     assumption_echo: tuple[Assumption, ...] | None = None
+    # The assumptions each reading of a dataset resubmit candidates entry echoed back
+    # (`ResubmitCandidate.assumptions`), keyed by the rebuilt reading's spec_id. Its
+    # candidates part reads each reading with its echo (`render.assumptions.assumptions_for`);
+    # a reading absent here echoed none. Empty on every other door.
+    reading_assumption_echoes: Mapping[str, tuple[Assumption, ...]] = field(default_factory=dict)
     # Unawaited coverage probe for streamed slot options, sent after `response`.
     # It leaves `specs[].slot_options` and the buffered response unchanged.
     # Its events and warnings feed the terminal `done` event.

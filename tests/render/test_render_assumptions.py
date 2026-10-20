@@ -189,17 +189,17 @@ def test_a_role_the_request_words_asked_every_member_of_is_no_assumption():
     """ "aid from all donors to Bangladesh": the words asked for every provider."""
     spec = _panel_spec("crs-002")
     assert _open_roles(assumptions_for(spec, asked_axes=frozenset({"origin"}))) == []
-    assert _open_roles(common_assumptions([spec], asked_axes=frozenset({"origin"}))) == []
 
 
 def test_a_candidates_part_assumes_what_every_reading_assumes():
     """ids-001's and ids-003's readings both read every creditor; beside a reading that
     names its creditor (ids-002), nothing is common."""
     specs = [_panel_spec("ids-001"), _panel_spec("ids-003")]
-    assert common_assumptions(specs) == [_EVERY_CREDITOR]
-    assert common_assumptions([*specs, _panel_spec("ids-002")]) == []
+    lists = [assumptions_for(spec) for spec in specs]
+    assert common_assumptions(lists) == [_EVERY_CREDITOR]
+    assert common_assumptions([*lists, assumptions_for(_panel_spec("ids-002"))]) == []
 
-    plan = candidates_sentence_plan(specs, assumptions=common_assumptions(specs))
+    plan = candidates_sentence_plan(specs, assumptions=common_assumptions(lists))
     assert sentence_from_plan(plan).endswith(" Assumed: every creditor.")
     assert {t.segment for t in plan[-4:]} == {"assumption"}
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Mapping, Sequence
+from types import MappingProxyType
 from typing import TYPE_CHECKING, cast
 
 from dfo_platform import Cause
@@ -762,6 +763,7 @@ def build_candidates_part(
     departure_facts: Sequence[DepartureFact] = (),
     request_words: bool = True,
     asked_axes: frozenset[RoleAxis] = frozenset(),
+    assumption_echoes: Mapping[str, Sequence[Assumption]] = MappingProxyType({}),
 ) -> CandidatesPart:
     """Build a candidates part from competing specs, in the order given: the elected
     reading first and its rivals in menu order (`region.status_rule`), or the order a
@@ -783,9 +785,12 @@ def build_candidates_part(
     ``request_words`` is false on a door that holds no words of the request (a resubmit).
     ``asked_axes`` are the flow axes the request's words asked every member of
     (`RegionResult.every_member_axes`); they and the axes ``operations`` run over state no
-    open role. The part's assumptions are the items every shown reading yields alike
-    (`common_assumptions`); `CandidatesPart.reading_assumptions` holds each reading's own
-    list, as a definite part answering it would carry (`assumptions_for`).
+    open role. `CandidatesPart.reading_assumptions` holds each shown reading's own list, as
+    a definite part answering it would carry (`assumptions_for`), and the part's
+    assumptions are the items every one of those lists holds alike (`common_assumptions`).
+    ``assumption_echoes`` holds the list a dataset resubmit candidates entry echoed for a
+    reading, under its spec_id (`RegionResult.reading_assumption_echoes`), with which that
+    reading's list is read.
     """
     cap = max_candidates if max_candidates is not None else len(specs)
     clamped = list(specs)[:cap]
@@ -814,16 +819,20 @@ def build_candidates_part(
         keep_how_properties=keep_how_properties,
         request_words=request_words,
     )
-    assumptions = common_assumptions(
-        clamped,
-        keep_how_properties=keep_how_properties,
-        asked_axes=asked_axes,
-        operations=operations,
-    )
-    # What each reading assumes once picked: the list its definite part would carry.
-    reading_assumptions = {
-        spec.spec_id: assumptions_for(spec, asked_axes=asked_axes, operations=operations)
+    # What each reading assumes once picked: the list its definite part would carry. The
+    # part assumes what every one of them holds.
+    reading_lists = [
+        assumptions_for(
+            spec,
+            echo=assumption_echoes.get(spec.spec_id),
+            asked_axes=asked_axes,
+            operations=operations,
+        )
         for spec in clamped
+    ]
+    assumptions = common_assumptions(reading_lists)
+    reading_assumptions = {
+        spec.spec_id: items for spec, items in zip(clamped, reading_lists, strict=True)
     }
     plan = candidates_sentence_plan(
         clamped,

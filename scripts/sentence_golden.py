@@ -45,8 +45,8 @@ A no-data part's own plan needs inputs the wire does not carry, so it stays as r
 
 A recording keeps each part's assumptions as the answer gave them. A re-render recomputes
 them from what the golden holds: a definite part's from its Spec and operations
-(`assumptions_for`) and a candidates part's from its shown Specs and operations
-(`common_assumptions`), as `engine.assemble` does. The golden records no every-member axes
+(`assumptions_for`) and a candidates part's as the items every shown Spec's list so read
+holds alike (`common_assumptions`), as `engine.assemble` does. The golden records no every-member axes
 ("all donors") and no resubmit echo, so a re-render states an open role on an axis the
 request's words asked every member of; a part of another status keeps what it recorded.
 
@@ -353,9 +353,7 @@ def rerender_line(line: dict[str, Any]) -> dict[str, Any]:
             for raw_spec, plan in zip(raw_specs, rerendered_candidates(specs), strict=True):
                 _set_plan(raw_spec["resolved"], plan)
             assumptions = common_assumptions(
-                specs,
-                keep_how_properties=sibling_how_properties(specs),
-                operations=part.operations,
+                [assumptions_for(spec, operations=part.operations) for spec in specs]
             )
             _set_assumptions(raw, assumptions)
             _set_plan(
