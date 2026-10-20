@@ -10,7 +10,7 @@ swallows stays out of the served part's degraded reads (`degraded_reads`).
 
 The served path never awaits the shadow task, so the shadow adds no wait to the answer: a
 shadow request still running when Gemini answers goes on alone, a Jev request bounded by
-its own ceiling (`Settings.jev_ceiling_s`), and its failure is logged, never raised. The
+its own ceiling (`Settings.jev_ceiling_s`), and its failure is logged and does not propagate. The
 shadow bind call runs the house policies on its own copy of the request's policy step, so
 the served call's step counts the served call alone.
 

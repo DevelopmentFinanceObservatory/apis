@@ -7,7 +7,7 @@ request too large to send, any other Jev error), or any other exception, which i
 and is logged as one. A bind call it serves from the fallback says so in
 `BindResult.fallback_reason`, and every call it serves from the fallback is noted in the
 enclosing `recording_fallbacks` record, so the request that holds it can decline to cache
-an answer its configured binder did not give. A successful fallback is a normal answer: it
+an answer its configured binder did not give. A successful fallback is a normal answer and
 marks nothing degraded.
 
 A part whose Jev call fell back sends its later calls straight to the fallback, so a slow
@@ -85,7 +85,7 @@ class FallbackBinder:
     `BindRequest.part`).
 
     A `JevFailure` falls back under its own cause. Any other exception from the Jev path is
-    a defect: it is logged at ERROR with its traceback and falls back under ``error``, so
+    a defect. It is logged at ERROR with its traceback and falls back under ``error``, so
     the part still answers. Every later call of a part that fell back goes to the fallback
     under the same cause without a Jev request. A bind call whose Jev path raised after the
     house policies ran on its election raises `PolicyContractError` from it instead, since

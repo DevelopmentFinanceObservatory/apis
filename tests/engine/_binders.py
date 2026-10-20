@@ -215,7 +215,7 @@ class KeyedBinder(GeminiBinder):
 
 class FakeAsk:
     """`jev_client.ask` answering from `answers` (`answer_all` when None), or raising
-    `fail`, and recording each request; a `gate` holds every answer until it is set."""
+    `fail`, and recording each request. A `gate` holds every answer until it is set."""
 
     def __init__(
         self,

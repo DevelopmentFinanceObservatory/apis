@@ -593,7 +593,7 @@ def test_stats_from_another_thread_waits_for_a_request_in_progress():
 
 
 class _NoCallBinder(GeminiBinder):
-    """A binder any call to which fails the test."""
+    """A binder that fails the test when called."""
 
     async def read_quantity(self, request, *, llm):
         raise AssertionError("an identity entry read a quantity through the binder")

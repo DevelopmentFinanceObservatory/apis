@@ -967,7 +967,7 @@ def test_a_un_refusal_is_stored_only_under_a_build_that_refuses_the_place(
 
 def test_a_binder_reading_the_query_text_looks_up_nothing_on_layer_two():
     """A reworded query with the same extraction misses under a binder whose calls read the
-    query's own text, since its answer may differ; the stored query's repeat still hits
+    query's own text, since its answer may differ. The stored query's repeat still hits
     layer 1."""
     jev = KeyedBinder(name="jev", model="jev-1.13.0", reads_query_text=True)
 

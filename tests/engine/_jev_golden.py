@@ -60,7 +60,7 @@ _BIND_FIELDS = (
     "refused",
     "availability",
 )
-# Stored answers to questions the bind request no longer asks.
+# Stored answers to questions the bind request does not ask.
 _UNASKED_PREFIXES = ("topic", "within|")
 
 

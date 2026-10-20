@@ -40,9 +40,8 @@ def test_stored_answers_give_the_stored_output(path: Path):
 
 @pytest.mark.parametrize("path", _PATHS, ids=lambda p: p.stem)
 def test_the_two_requests_ask_the_stored_questions(path: Path):
-    """The bind and quantity requests together ask every stored question but the ``topic``
-    and ``within|i`` the release no longer asks, and only the quantity request asks the
-    ``q|`` questions."""
+    """The bind and quantity requests together ask every stored question except ``topic``
+    and ``within|i``, and only the quantity request asks the ``q|`` questions."""
     item = load_item(path)
 
     bind, quantity = asked_ids(item)

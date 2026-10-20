@@ -201,14 +201,14 @@ class CacheScope:
     response at the `response` event. A hit sends either entry through `hit_events`. A
     follower of an in-flight streamed leader therefore waits
     for the leader's `done` before it sends anything. The generation stamp is read once
-    and sets both the key and entry lifetime. New stamps produce new keys, leaving old entries unreachable. `binder` is the binder the
-    request was routed to; its name and model join the key, so answers two binders give
-    never share one. Layer 2 serves one query's answer to any query with the same
+    and sets both the key and entry lifetime. New stamps produce new keys, leaving old
+    entries unreachable. `binder` is the binder the request was routed to. Its name and
+    model join the key, so answers two binders give never share one. Layer 2 serves one query's answer to any query with the same
     extraction, which holds only while the bind reads the extraction alone: a binder that
     reads the query's own text (`Binder.reads_query_text`) skips the extraction-keyed
     lookup (`lookup_parsed`), and layer 1, which keys on the query, serves its repeats.
     `fallbacks` is the request's record of calls its binder served from a fallback
-    (`binders.recording_fallbacks`); a request that holds any stores nothing, since its
+    (`binders.recording_fallbacks`). A request that holds any stores nothing, since its
     answer is not the one its key names. The caller's
     coverage snapshot contributes its stamp to the same scope; this class does
     not read the coverage service again. The revision of the conversion catalogue and the

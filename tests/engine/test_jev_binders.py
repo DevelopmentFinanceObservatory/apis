@@ -1,5 +1,5 @@
 """The Jev binder, the fallback to Gemini, the shadow binder and the routing between them,
-over an injected `ask` that never reaches the network."""
+over an injected `ask` that makes no network call."""
 
 from __future__ import annotations
 
@@ -189,7 +189,7 @@ def test_the_jev_setting_alone_routes_every_query_to_jev(monkeypatch):
 
 def test_the_jev_bind_call_sends_the_bind_request_and_assembles_its_answers():
     """The bind call asks `bind_request` over the menu, and its result is `bind_result` on
-    the answers with the frame's stated form; the house policies run once."""
+    the answers with the frame's stated form. The house policies run once."""
     step = _CountingStep()
     request = _golden_request(step)
     ask = FakeAsk(_GOLDEN.stored)
@@ -312,7 +312,7 @@ def test_a_defect_after_the_house_policies_ran_breaks_the_contract_not_bound_twi
 
 
 def test_a_part_whose_jev_call_fell_back_sends_its_later_calls_to_gemini_alone():
-    """The quantity read of part 0 pays Jev's ceiling once; its bind call goes straight to
+    """The quantity read of part 0 pays Jev's ceiling once. Its bind call goes straight to
     Gemini under the same cause, while part 1 still asks Jev."""
     ask = FakeAsk(fail=JevError(None, "timeout"))
     gemini = _GeminiDouble(_ELECTS_FIRST)
@@ -404,7 +404,7 @@ def _draws(*values: float):
 
 def test_the_shadow_answers_with_gemini_without_waiting_for_jev(caplog):
     """A sampled call returns Gemini's answer while Jev is still held, so Jev is not on the
-    answer's path; the Jev call runs its policies on its own step, and once Jev answers
+    answer's path. The Jev call runs its policies on its own step, and once Jev answers
     the comparison is logged with the part's join keys and Jev's request, and the
     ``binder_part`` line with Jev's tokens."""
     gemini = _GeminiDouble(_ELECTS_FIRST)
@@ -503,8 +503,8 @@ class _FailsSecondQuantityRead:
 
 
 def test_a_failed_control_read_leaves_the_served_part_whole():
-    """The control's quantity read fails and notes a degraded read inside its own task;
-    the served part's record, which the task's context copy still points at, stays empty."""
+    """The control's quantity read fails and notes a degraded read inside its own task.
+    The served part's record, which the task's context copy still points at, stays empty."""
     llm = _FailsSecondQuantityRead()
     binder = ShadowBinder(
         served=GeminiBinder(),

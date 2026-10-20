@@ -1,5 +1,5 @@
-"""A request routes to its binder once, in `core`, and every part binds through that one;
-the app refuses to start when the configured binder asks Jev without a key."""
+"""A request routes to its binder once, in `core`, and every part binds through that one.
+The app refuses to start when the configured binder asks Jev without a key."""
 
 from __future__ import annotations
 

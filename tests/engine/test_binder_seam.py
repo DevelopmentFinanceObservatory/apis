@@ -94,7 +94,7 @@ class _NoCallLLM:
 
 
 def _state(*, llm: SupportsLLM, binder: Binder | None = None) -> ResolveState:
-    """A part whose seated menu is `_MENU`; the services bind never reads are unset."""
+    """A part whose seated menu is `_MENU`. The services bind does not read are unset."""
     state = ResolveState(
         variable="female population",
         entities=[],

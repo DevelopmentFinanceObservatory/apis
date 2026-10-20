@@ -77,7 +77,7 @@ class JevCall:
 
     @property
     def usage(self) -> dict[str, int]:
-        """The call's token usage, tagged as Jev's so it never sums into the Gemini
+        """The call's token usage, tagged as Jev's so it stays out of the Gemini
         counts."""
         return {
             "input_tokens": 0,

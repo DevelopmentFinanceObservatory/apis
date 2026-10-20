@@ -327,7 +327,7 @@ def test_a_qualifier_sibling_is_planned_where_its_walk_may_share_the_role_class(
     elected, sibling, planned
 ):
     """A role-bearing sibling of a subject-only reading is planned, since its walk may elect
-    the subject-only family of its five-tuple; a subject-only sibling of a role-bearing
+    the subject-only family of its five-tuple. A subject-only sibling of a role-bearing
     reading differs from it by a role and is not."""
     plan = _plan(elected, _menu((sibling, True, False, False)))
     assert plan.stand_ins == ((1,) if planned else ())

@@ -684,7 +684,7 @@ def test_written_entry_lifetime_matches_the_known_generations_max_age():
 
 @pytest.fixture
 def jev_routed(search_settings, monkeypatch):
-    """Every request routes to Jev (`binder="jev"`), with a fresh circuit breaker; Jev has
+    """Every request routes to Jev (`binder="jev"`), with a fresh circuit breaker. Jev has
     no key, so each Jev call falls back to Gemini."""
     search_settings(binder="jev")
     monkeypatch.setattr(jev_client, "_BREAKER", jev_client.CircuitBreaker())
@@ -705,7 +705,7 @@ def test_a_repeated_query_under_jev_hits_layer1_and_never_a_gemini_entry(
     search_settings, monkeypatch
 ):
     """A Jev answer is stored under the Jev binder's key: its repeat is a layer-1 hit that
-    asks Jev nothing, and an answer the Gemini binder stored for the same query is never
+    asks Jev nothing, and an answer the Gemini binder stored for the same query is not
     served for it."""
     monkeypatch.setattr(jev_client, "_BREAKER", jev_client.CircuitBreaker())
     ask = FakeAsk()
