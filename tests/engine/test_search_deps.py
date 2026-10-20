@@ -138,7 +138,7 @@ def _record_releases(monkeypatch: pytest.MonkeyPatch) -> tuple[list[str], FakeGe
 
     monkeypatch.setattr(app_module, "PlaceOptionsPool", _Pool)
 
-    async def _acquire_index(*, graph, catalogue):
+    async def _acquire_index(*, graph, catalogue, release):
         return object()
 
     async def _release_index(_index) -> None:

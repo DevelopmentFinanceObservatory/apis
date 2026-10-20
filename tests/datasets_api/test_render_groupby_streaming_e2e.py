@@ -124,7 +124,7 @@ def _render(chunks: tuple[Table, ...]):
         content_version="sha256:" + "0" * 64,
         artifact_store=artifact_store,
         entity_columns=("recipient",),
-        enrichment=EnrichmentLookup(_GRAPH, parties={}),
+        enrichment=EnrichmentLookup(_GRAPH, parties=lambda: {}),
         code_index=_INDEX,
         resolved_stat_var_refs=_RESOLVED_STAT_VAR_REFS,
         pivot_max_output_cells=5_000_000,

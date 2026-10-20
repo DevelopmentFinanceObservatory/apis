@@ -11,7 +11,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Literal
 
-from search.models import DEPARTURE_ORDER, DepartureCode, OperationVerb, PartyKind, RoleAxis
+from search.models import DEPARTURE_ORDER, DepartureCode, MemberClass, OperationVerb, RoleAxis
 
 
 @dataclass(frozen=True)
@@ -61,15 +61,15 @@ class DepartureFact:
     - `group` (`whole_total_read`): the label of the whole population the side reads
       (`EntityGroup.label`); `asked` is the request's own words for it, `None` when the
       request named nothing on the side or its door holds no words.
-    - `whole_of` (`whole_total_read`): the kinds of party the population holds
+    - `whole_of` (`whole_total_read`): the classes of party the population covers
       (`EntityGroup.whole_of`).
-    - `side_kinds` (`whole_total_read`): the kinds of party, totals aside, the answer's
-      dataset holds on the side (`whole_totals.side_kinds`).
+    - `side_classes` (`whole_total_read`): the classes of party, totals aside, the answer's
+      dataset holds on the side (`EntityGroup.side_classes`).
     - `inferred` (`whole_total_read`): the request named nothing on the side, so the answer
       read it whole. False on a door that holds no words of the request (a resubmit).
     - `shown`, `over` and `whole_of` (`whole_total_unpublished`): the name of the dataset
       that publishes no total of the whole population the request named, the side it
-      leaves unnamed, and the kinds of party the dataset holds there; `asked` is the
+      leaves unnamed, and the classes of party the dataset holds there; `asked` is the
       request's words for the population.
     - `excluded` (`group_read_as_members`): the labels of the residuals the total of the
       group counts beside its members ("Africa, unallocated by country (DAC)"), which the
@@ -119,8 +119,8 @@ class DepartureFact:
     group_dcid: str | None = None
     excluded: tuple[str, ...] = ()
     sum_differs: bool = False
-    whole_of: tuple[PartyKind, ...] = ()
-    side_kinds: tuple[PartyKind, ...] = ()
+    whole_of: tuple[MemberClass, ...] = ()
+    side_classes: tuple[MemberClass, ...] = ()
     inferred: bool = False
     sources: tuple[str, ...] = ()
     latest_years: tuple[int, int] | None = None

@@ -11,11 +11,11 @@ from search.models import (
     Departure,
     EntityRoleKey,
     GraphRef,
+    MemberClass,
     NearestRealSpec,
     NoDataDenominator,
     NoDataGate,
     NoDataReason,
-    PartyKind,
     ResolvedQualifier,
     RoleAxis,
     SentenceToken,
@@ -196,20 +196,27 @@ class UnlistedPopulation:
     request asks so. An open side lists every party its source holds, so such a population
     refuses `entity_role_not_admitted`.
 
-    `axis` is its side. Where no source lists it exactly, `left_out` is the kinds of party,
-    totals aside, that every source holds there and the population leaves out, sorted,
-    possibly none when the sources share no such kind. Where some source lists it exactly,
-    but none that also lists the request's other populations, `listed_alone` is true and
-    `left_out` empty."""
+    `axis` is its side. Where no source lists it exactly, `left_out` is the classes of party,
+    totals aside, that every source holds there and the population leaves out, sorted, and
+    never empty: a population whose sources share no such class has no account here. Where
+    some source lists it exactly, but none that also lists the request's other populations,
+    `listed_alone` is true and `left_out` empty."""
 
     axis: RoleAxis
-    left_out: tuple[PartyKind, ...]
+    left_out: tuple[MemberClass, ...]
     listed_alone: bool = False
 
+    def __post_init__(self) -> None:
+        if bool(self.left_out) == self.listed_alone:
+            raise ValueError(
+                "UnlistedPopulation names the classes it leaves out unless it lists alone: "
+                f"left_out={self.left_out!r}, listed_alone={self.listed_alone}"
+            )
 
-# The words for the parties of each kind a population leaves out, by its side's noun.
-_LEFT_OUT_WORDS: Mapping[PartyKind, str] = {
-    "party": "official {noun}s",
+
+# The words for the parties of each class a population leaves out, by its side's noun.
+_LEFT_OUT_WORDS: Mapping[MemberClass, str] = {
+    "official": "official {noun}s",
     "private": "private {noun}s",
     "residual": "residual {noun} entries",
 }
@@ -219,7 +226,7 @@ def _unlisted_phrase(
     terms: Sequence[str], unlisted: Mapping[str, UnlistedPopulation], variable_term: str | None
 ) -> str:
     """The entity_role_not_admitted phrase for populations no source lists exactly
-    (`UnlistedPopulation`): for each, the kinds of party every source holds beside it, and
+    (`UnlistedPopulation`): for each, the classes of party every source holds beside it, and
     the two ways to ask instead. Populations each listed alone are named together, as ones
     no source lists side by side."""
     data = f'the "{variable_term}" data' if variable_term else "the data"
@@ -233,14 +240,11 @@ def _unlisted_phrase(
     for term in terms:
         population = unlisted[term]
         noun = "donor" if population.axis == "origin" else "recipient"
-        if population.left_out:
-            kinds = [_LEFT_OUT_WORDS[kind].format(noun=noun) for kind in population.left_out]
-            held = f'{_join_labels(kinds)}, which "{term}" leaves out'
-        else:
-            held = f'{noun}s "{term}" leaves out'
+        classes = [_LEFT_OUT_WORDS[cls].format(noun=noun) for cls in population.left_out]
         sentences.append(
             f'"{term}" cannot be listed {noun} by {noun}: every source of {data} also holds '
-            f"{held}. Ask for its total, or name the {noun}s to list."
+            f'{_join_labels(classes)}, which "{term}" leaves out. Ask for its total, or name '
+            f"the {noun}s to list."
         )
     return " ".join(sentences)
 

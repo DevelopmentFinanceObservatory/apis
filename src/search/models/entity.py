@@ -7,7 +7,7 @@ from pydantic import Field, model_validator
 from .base import StrictModel
 from .grammar import GraphRef
 from .identity import IdentityString
-from .vocab import Confidence, EntityRoleKey, PartyKind, RoleAxis
+from .vocab import Confidence, EntityRoleKey, MemberClass, RoleAxis
 
 # ---------------------------------------------------------------------------
 # Entity and EntityRole
@@ -108,8 +108,8 @@ class EntityGroup(StrictModel):
     party and the role's one dcid is it. A role read as the whole population of
     its side, the source's total of every party there ("Official Donors, Total")
     or a union of such totals ("all donors including private"), states the
-    kinds of party that population holds in `whole_of`, and the kinds the answer's
-    dataset publishes on that side in `side_kinds`; a resubmit derives both from the
+    classes of party that population covers in `whole_of`, and the classes the answer's
+    dataset publishes on that side in `side_classes`; a resubmit derives both from the
     identity and the code index, whatever it posts. A Spec serves its groups on
     `ResolvedSpec.entity_groups`, and a resubmit posts them beside the identity
     (`ResubmitIdentityEntry.entity_groups`, `ResubmitCandidate.entity_groups`)."""
@@ -147,22 +147,22 @@ class EntityGroup(StrictModel):
         ),
     )
 
-    whole_of: list[PartyKind] | None = Field(
+    whole_of: list[MemberClass] | None = Field(
         default=None,
         exclude_if=_is_none,
         description=(
-            'the kinds of party the role\'s whole population holds, e.g. ["party"] for '
-            "Official Donors, Total, which holds every official donor and no private one; "
-            "absent for any other group"
+            "the classes of party the role's whole population covers, sorted: official, "
+            'private or residual, e.g. ["official"] for Official Donors, Total, which holds '
+            "every official donor and no private one; absent for any other group"
         ),
     )
-    side_kinds: list[PartyKind] | None = Field(
+    side_classes: list[MemberClass] | None = Field(
         default=None,
         exclude_if=_is_none,
         description=(
-            "for a role read as its whole population, the kinds of party, totals aside, the "
-            'answer\'s dataset publishes on that side, sorted, e.g. ["party", "private", '
-            '"residual"] for donors in DAC2a; a kind here and not in whole_of, such as '
+            "for a role read as its whole population, the classes of party, totals aside, the "
+            'answer\'s dataset publishes on that side, sorted, e.g. ["official", "private", '
+            '"residual"] for donors in DAC2a; a class here and not in whole_of, such as '
             '"private", is outside the total. Absent for any other group. Derived from the '
             "identity on every answer; a posted value is ignored"
         ),

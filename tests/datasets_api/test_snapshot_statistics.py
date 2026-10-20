@@ -101,7 +101,7 @@ def _statistics_fixture_result(frame) -> MaterialisationResult:
         output_profile=compute_output_profile(
             frame,
             role_columns=("recipient",),
-            enrichment=EnrichmentLookup(FakeMintGraphReader(), parties={}),
+            enrichment=EnrichmentLookup(FakeMintGraphReader(), parties=lambda: {}),
         ),
         conversion_record=None,
         member_conversion_records={"dcid:GrantA": None},

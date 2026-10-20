@@ -42,6 +42,13 @@ _BUILD_1, _BUILD_2, _BUILD_3 = (
 _SLICE_URI = (Path(__file__).resolve().parents[1] / "fixtures" / "coverage_slice").as_uri()
 
 
+@pytest.fixture(autouse=True)
+def _artifact_coverage(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`get_coverage_service` serves the published build only with `GRAPH_RELEASE_COVERAGE`
+    off, which these tests run with."""
+    monkeypatch.delenv("GRAPH_RELEASE_COVERAGE", raising=False)
+
+
 @pytest.fixture
 def base(tmp_path: Path) -> Path:
     return tmp_path / "coverage"

@@ -40,7 +40,9 @@ _RENDERING_FORMATS: tuple[str, ...] = ("csv", "xlsx", "parquet")
 # `SUPPORTED_ENRICHMENTS - ENABLED_ENRICHMENTS` to `capability_unavailable`
 # once `materialise.reshape.parse_column_tokens` has parsed it as an
 # enrichment request against the materialised frame's own entity columns.
-ENABLED_ENRICHMENTS: frozenset[str] = frozenset({"iso2", "iso3", "label", "party_kind", "type"})
+ENABLED_ENRICHMENTS: frozenset[str] = frozenset(
+    {"iso2", "iso3", "label", "party_kind", "party_sector", "party_whole", "type"}
+)
 
 # `groupby` reads summability from the packaged code index, loaded for the process lifetime.
 # This capability is always live because the index is available whenever this module is used.
@@ -184,15 +186,21 @@ class Capabilities(BaseModel):
     enrichment_fields: list[str] = Field(
         description=(
             "enrichment field names this deployment enables. A live token qualifies one as "
-            "{entity_column}_{field} on the columns option. party_kind is a party's kind "
-            "(party, private, total, residual) from the code index's declaration for it; a "
-            "total that holds every party of its kinds on its axis, such as Official Donors, "
-            "Total, is written whole_total. Long output "
-            "writes {role}_party_kind beside {role}_label "
-            "for every role on a flow axis without a token; a bare party_kind token requests "
-            "it for every role on a flow axis the table has. party_kind qualifies no subject "
-            "role, so observationAbout_party_kind refuses column_unknown. A party the index "
-            "does not list gets an empty cell and an enrichment_unavailable warning"
+            "{entity_column}_{field} on the columns option. Three fields come from the code "
+            "index's declaration of a party: party_kind is its kind (party, total, residual); "
+            "party_sector is official or private, empty for a residual and for a total that "
+            "covers no single sector; party_whole is true on a row whose party is a total that "
+            "holds every party of its classes on its axis in that row's dataset and year, such "
+            "as Official Donors, Total, false on a row where it is not, and empty where the "
+            "row names no one dataset and year, as in a pivot. A bare party field token "
+            "requests it for every role on a flow axis the table has, and a file holds a party "
+            "field only when a token asks for it. Long output writes one {role}_kind beside "
+            "{role}_label for every role on a flow axis instead, in words: official or private "
+            "for a provider or creditor, country or organisation for a recipient or debtor, "
+            "total, whole total or unallocated, and ignores party field tokens. A party field "
+            "qualifies no subject role, so observationAbout_party_kind refuses column_unknown. "
+            "A party the index does not list gets an empty cell and an enrichment_unavailable "
+            "warning"
         )
     )
     decode_code_systems: list[str] = Field(

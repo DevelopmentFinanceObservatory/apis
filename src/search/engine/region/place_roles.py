@@ -830,7 +830,7 @@ def _named_wholes(
     (`PlaceAssignment.whole`). It is a label: the side binds the same parties either way. A
     side no place is named on stays unnamed where, for every population named on it, no
     dataset the shape answers from publishes its total and every party they hold there is
-    of a kind it holds (`whole_totals.covers_unpublished`), as the CRS's recipients do for
+    of a class it covers (`whole_totals.covers_unpublished`), as the CRS's recipients do for
     "all recipients": its sum over the side is every party the population holds. A side
     where one population covers and another does not ("official donors and all donors" on
     the CRS) binds both as named parties. The assignment carries the sides left unnamed

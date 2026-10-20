@@ -43,8 +43,9 @@ StatVar row aborts the export.
 
 The same build names every donor and recipient of a declared or listed dataset. Each party's graph
 types give it a kind (party, total or residual) under the authored `PARTY_TYPE_KINDS`, except a
-party the authored `PARTY_KIND_OVERRIDES` names, and a party the authored `PRIVATE_PROVIDERS`
-lists by OECD donor code (`dacCode`), which is `private`. Its graph name is its label, and its row lists the
+party the authored `PARTY_KIND_OVERRIDES` names. A party the authored `PRIVATE_PROVIDERS` lists by
+OECD donor code (`dacCode`) has the sector `private`, and every other party `official`. Its graph
+name is its label, and its row lists the
 datasets that publish it and the flow axes they publish it on. The authored `TOTAL_GROUPS` names the group each total holds, whether
 the total equals the sum of the group's members plus the residuals it counts beside them, and those
 residuals. A party with an undeclared type, or whose types
@@ -53,13 +54,13 @@ naming a party no declared or listed dataset publishes (a `TOTAL_GROUPS` row als
 total, and each residual it names to be a published residual).
 
 The authored `WHOLE_POPULATION_TOTALS` marks the totals that hold a whole population on their one
-axis in the datasets it names (`PartyRow.whole`, with the years its composition check holds),
-and `WHOLE_TOTAL_SETS` the unions of such totals read as one population. The export aborts when a
+axis in the datasets it names (`PartyRow.whole`, with the classes it covers and the years its
+composition check holds), gives each the sector those classes share, and `WHOLE_TOTAL_SETS` the unions of such totals read as one population. The export aborts when a
 `PRIVATE_PROVIDERS` code is carried by another party than its listed one, when a published donor
 carries an unlisted code from 1601 to 1699, and when a whole-population row names a party that is
 no published total, is published on another axis or is marked in a dataset that does not publish
-it; the finished document must also load, which
-refuses two whole totals that hold one kind on one dataset and axis.
+it; the finished document must also load, which refuses two whole totals that cover one class on
+one dataset and axis, and a whole total that covers different sectors in different datasets.
 
 Requires `SEARCH_GRAPH_BASE` and `COVERAGE_ARTIFACT_URI`, with read access to the coverage bucket
 for a `gs://` URI. Sorted JSON is stable. `content_hash` covers data blocks and excludes the stamp.
@@ -79,6 +80,7 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from code_index.declarations import (
     CODE_SYSTEMS,
@@ -122,6 +124,9 @@ from code_index.types import (
 )
 from dc_graph import GraphClient
 
+if TYPE_CHECKING:
+    from series_coverage.loader import LoadedCoverage
+
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_OUT = (
     _REPO_ROOT / "packages" / "dfo-data-tools" / "src" / "code_index" / "data" / "index.json.gz"
@@ -142,15 +147,19 @@ class CoverageJoin:
 
 
 def load_coverage_join(base_uri: str, *, datasets: Collection[str]) -> CoverageJoin:
-    """Load the published coverage build under `base_uri` and read its variable provenances and
-    the parties on the facets of the `datasets` provenances, with the years each publishes them.
+    """`coverage_join` of the published coverage build under `base_uri`.
 
     `series_coverage` needs the `coverage` extra, which the graph-only callers of this module
     run without, so the import stays inside this function.
     """
     from series_coverage.loader import load_coverage
 
-    loaded = load_coverage(base_uri)
+    return coverage_join(load_coverage(base_uri), datasets=datasets)
+
+
+def coverage_join(loaded: LoadedCoverage, *, datasets: Collection[str]) -> CoverageJoin:
+    """The variable provenances of the coverage build `loaded` and the parties on the facets
+    of the `datasets` provenances, with the years each publishes them."""
     years = loaded.index.dataset_party_years(datasets)
     return CoverageJoin(
         build_id=loaded.manifest.build_id,

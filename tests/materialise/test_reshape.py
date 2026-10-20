@@ -1151,9 +1151,11 @@ _WINDOWED_PARTIES = {
     "donor/ALL": PartyRow(
         dcid="donor/ALL",
         kind="total",
-        whole=(WholeMarker(dataset=_DAC2A, holds=("party",), years=(2020, 2021)),),
+        sector="official",
+        whole=(WholeMarker(dataset=_DAC2A, covers=("official",), years=(2020, 2021)),),
     ),
-    "donor/A": PartyRow(dcid="donor/A", kind="party"),
+    "donor/A": PartyRow(dcid="donor/A", kind="party", sector="private"),
+    "donor/R": PartyRow(dcid="donor/R", kind="residual"),
 }
 
 
@@ -1187,7 +1189,7 @@ class TestEnrichColumns:
         assert warnings == ()
 
     @pytest.mark.parametrize(
-        ("columns", "rows", "kinds"),
+        ("columns", "rows", "cells"),
         [
             pytest.param(
                 ("donor", "time_period", "provenance"),
@@ -1196,21 +1198,28 @@ class TestEnrichColumns:
                     ("donor/ALL", "2021", _DAC2A),
                     ("donor/ALL", "2021", _DAC2B),
                     ("donor/A", "2021", _DAC2A),
+                    ("donor/R", "2021", _DAC2A),
                 ),
-                ["total", "whole_total", "total", "party"],
+                [
+                    ("total", "official", "false"),
+                    ("total", "official", "true"),
+                    ("total", "official", "false"),
+                    ("party", "private", "false"),
+                    ("residual", "", "false"),
+                ],
                 id="the-row-dataset-and-year-decide",
             ),
             pytest.param(
                 ("donor", "time_period"),
                 (("donor/ALL", "2021"), ("donor/A", "2021")),
-                ["total", "party"],
-                id="no-provenance-column-reads-total",
+                [("total", "official", ""), ("party", "private", "false")],
+                id="no-provenance-column-leaves-a-whole-total-empty",
             ),
             pytest.param(
                 ("donor", "provenance"),
                 (("donor/ALL", _DAC2A), ("donor/A", _DAC2A)),
-                ["total", "party"],
-                id="no-time-period-column-reads-total",
+                [("total", "official", ""), ("party", "private", "false")],
+                id="no-time-period-column-leaves-a-windowed-total-empty",
             ),
             pytest.param(
                 ("donor", "time_period", "provenance"),
@@ -1220,23 +1229,52 @@ class TestEnrichColumns:
                     ("donor/ALL", None, _DAC2A),
                     ("donor/ALL", "2021", None),
                 ),
-                ["total", "total", "total", "total"],
-                id="unreadable-or-multi-year-period-or-null-provenance-reads-total",
+                [("total", "official", "")] * 4,
+                id="unreadable-or-multi-year-period-or-null-provenance-reads-empty",
             ),
         ],
     )
-    def test_a_party_kind_cell_follows_the_dataset_and_year_of_its_row(self, columns, rows, kinds):
+    def test_party_cells_follow_the_dataset_and_year_of_their_row(self, columns, rows, cells):
+        """An empty `party_sector` of a listed residual is its value, so it counts no miss."""
         table = Table(columns=columns, rows=rows)
 
         result, warnings = enrich_columns(
             table,
-            requests=(("donor", "party_kind"),),
+            requests=(
+                ("donor", "party_kind"),
+                ("donor", "party_sector"),
+                ("donor", "party_whole"),
+            ),
             lookup={},
             parties=_WINDOWED_PARTIES,
         )
 
-        assert [row[-1] for row in result.rows] == kinds
+        assert result.columns == (
+            *columns,
+            "donor_party_kind",
+            "donor_party_sector",
+            "donor_party_whole",
+        )
+        assert [row[-3:] for row in result.rows] == cells
         assert warnings == ()
+
+    def test_a_party_field_writes_only_its_own_column_and_an_unlisted_party_counts_a_miss(self):
+        table = Table(
+            columns=("donor", "time_period"), rows=(("donor/A", "2021"), ("donor/X", "2021"))
+        )
+
+        result, warnings = enrich_columns(
+            table, requests=(("donor", "party_sector"),), lookup={}, parties=_WINDOWED_PARTIES
+        )
+
+        assert result.columns == ("donor", "time_period", "donor_party_sector")
+        assert [row[-1] for row in result.rows] == ["private", ""]
+        (warning,) = (cast(EnrichmentUnavailableWarning, warning) for warning in warnings)
+        assert (warning["code"], warning["column"], warning["count"]) == (
+            "enrichment_unavailable",
+            "donor_party_sector",
+            1,
+        )
 
     def test_two_entity_columns_in_one_call_each_get_their_own_columns(self):
         table = Table(
@@ -1519,6 +1557,8 @@ class TestParseColumnTokens:
             ("origin_iso3", "origin_iso3"),
             ("origin_label", "origin_label"),
             ("origin_party_kind", "origin_party_kind"),
+            ("origin_party_sector", "origin_party_sector"),
+            ("origin_party_whole", "origin_party_whole"),
             ("origin_type", "origin_type"),
         ]
 
@@ -1536,6 +1576,27 @@ class TestParseColumnTokens:
             select=("value",),
             enrichments=(("destination", "party_kind"), ("origin", "party_kind")),
         )
+
+    @pytest.mark.parametrize("field", ["party_sector", "party_whole"])
+    def test_each_party_field_is_a_bare_token_for_party_roles_only(self, field):
+        result = parse_column_tokens(
+            (field, "observationAbout_iso3"),
+            table_columns=self._TABLE_COLUMNS,
+            entity_columns=("destination", "observationAbout", "origin"),
+            supported_fields=SUPPORTED_ENRICHMENTS,
+        )
+
+        assert result == ParsedColumns(
+            select=(),
+            enrichments=(("destination", field), ("origin", field), ("observationAbout", "iso3")),
+        )
+        with pytest.raises(ColumnUnknownError):
+            parse_column_tokens(
+                (f"observationAbout_{field}",),
+                table_columns=self._TABLE_COLUMNS,
+                entity_columns=("observationAbout", "origin"),
+                supported_fields=SUPPORTED_ENRICHMENTS,
+            )
 
     def test_an_entity_column_containing_an_underscore_resolves_correctly(self):
         table_columns = ("stat_var", "observation_about", "time_period", "value")

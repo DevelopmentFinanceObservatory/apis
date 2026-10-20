@@ -27,12 +27,19 @@ ignored. Requests, pivot output, frames and collapse frames keep the grammar nam
 does a bare parquet file requested with `options.layout = "frame"` (`FRAME_LAYOUT`), which is
 written as reshaped, with no projection and no name read.
 
+Long output gives each party role one `<role>_kind` column in words
+(`materialise.projection.long_kind_cell`): `official` or `private` for a provider, `country or
+organisation` for a recipient, `total`, `whole total` or `unallocated`. Pivot output and the
+frame layout write the machine cells instead, each only when a token asks for it: `party_kind`
+(`party`, `total` or `residual`), `party_sector` (`official`, `private` or empty) and
+`party_whole` (`true` on a row whose total is whole for the row's dataset and year, `false`
+otherwise).
+
 A long CSV or XLSX keeps total rows out of its main table (`_TotalRows`). A row is a total when a
 role that can hold a total (`datasets_api.output_options.movable_totals_roles`, the rule the
-options document's `long_layout_totals` reads) holds a party the code index declares a `total`.
-A role bound to one entity makes no total row, and residuals and `private` parties (a private donor
-reporting beside the official ones) stay with the parties. A published whole-population total is a
-`total` with a marker for the row's dataset (`PartyRow.whole`); its frame cell is `whole_total` in the years of the marker's window and `total` outside them or where the row has no readable dataset or year. A bundle's CSV writes the totals as a second data file
+options document's `long_layout_totals` reads) holds a party the code index declares a `total`,
+whole or not. A role bound to one entity makes no total row, and residuals and private parties
+stay with the parties. A bundle's CSV writes the totals as a second data file
 (`data/<slug>-totals.csv`), an XLSX on a second sheet (`totals`), and a bare CSV leaves them
 out. Parquet, pivot output and the frame layout keep every row.
 
@@ -155,7 +162,7 @@ from materialise.bundle_naming import heading, member_slugs, sources_slug
 from materialise.bundle_sources import source_provenance
 from materialise.codes import MaterialisationWarning
 from materialise.content_version import mint_version_from_digest
-from materialise.enrichment import PARTY_KIND_FIELD, EnrichmentLookup, is_party_role
+from materialise.enrichment import PARTY_FIELDS, EnrichmentLookup, is_party_role
 from materialise.formats import (
     DATA_SHEET_TITLE,
     FORMAT_COLUMN_CAPS,
@@ -176,6 +183,7 @@ from materialise.formats import (
 from materialise.frame_build import ParquetFrameChunks, build_frame, unit_cell_for_rebuild
 from materialise.profile import OutputProfile, PivotFeasibility
 from materialise.projection import (
+    KIND_SUFFIX,
     LongProjection,
     PriceBasis,
     UnitNaming,
@@ -205,6 +213,7 @@ from materialise.reshape import (
     fold_groupby_sum_chunks,
     fold_pivot_chunks,
     known_pivot_cap_violation,
+    lookup_cell,
     parse_column_tokens,
     select_columns,
 )
@@ -771,7 +780,8 @@ def _reshape_select_pivot_enrich(
     Without a pivot the output is long and `long_output_selection` widens the selection: decoded
     axis columns come with `stat_var` unless the list names some of them. Long output leaves out
     `status` and writes each role's `<role>_label` by default (`materialise.projection`), so both
-    tokens are accepted and ignored there, and a selection naming `<role>_label` keeps `<role>`.
+    tokens are accepted and ignored there, as are the party field tokens and `<role>_kind`,
+    which its `<role>_kind` column answers, and a selection naming `<role>_label` keeps `<role>`.
     A frame-layout request (`FRAME_LAYOUT`) is not long output: its selection is the list as
     parsed, as for pivot output.
 
@@ -847,8 +857,9 @@ def _reshape_select_pivot_enrich(
         enrichment_plan = EnrichmentPlan(
             requests=parsed.enrichments,
             lookup=reads.fields_of(refs, fields={field for _, field in parsed.enrichments}),
-            # A pivot's index and columns group rows, so a kind that varies with the period
-            # would split one party into several index rows; its kind cell stays year-free.
+            # A pivot's index and columns group rows, so a cell that varied with the period
+            # would split one party into several index rows. Its party cells are read for no
+            # dataset and year, where a whole total's `party_whole` is empty (`whole_cell`).
             parties=None if pivot is not None else reads.enrichment.parties,
         )
     warning_order = (
@@ -1472,17 +1483,21 @@ def _long_output_tokens(
 ) -> tuple[list[str], tuple[str, ...]]:
     """The `options.columns` tokens a long output parses, and the roles whose name or kind the
     list asked for. Long output writes `status` nowhere, and writes each role's `<role>_label`
-    and each party role's `<role>_party_kind` by default (`materialise.projection`), so those
-    tokens are dropped. A list that selects keeps each named role's entity column, which its
-    name and kind sit beside."""
+    and each party role's `<role>_kind` by default (`materialise.projection`), so those tokens
+    are dropped. `<role>_kind` reads every party field (`PARTY_FIELDS`), so their tokens, bare
+    or qualified, are dropped too. A list that selects keeps each named role's entity column,
+    which its name and kind sit beside."""
+    party_roles = [role for role in entity_columns if is_party_role(role)]
     defaults = {
         f"{role}_label": role for role in entity_columns if f"{role}_label" not in table_columns
     } | {
-        f"{role}_{PARTY_KIND_FIELD}": role
-        for role in entity_columns
-        if is_party_role(role) and f"{role}_{PARTY_KIND_FIELD}" not in table_columns
+        column: role
+        for role in party_roles
+        for suffix in (KIND_SUFFIX, *(f"_{field}" for field in PARTY_FIELDS))
+        if (column := f"{role}{suffix}") not in table_columns
     }
-    tokens = [token for token in columns if token != _STATUS_COLUMN and token not in defaults]
+    dropped = {_STATUS_COLUMN, *(field for field in PARTY_FIELDS if field not in table_columns)}
+    tokens = [token for token in columns if token not in dropped and token not in defaults]
     named_roles = tuple(dict.fromkeys(defaults[t] for t in columns if t in defaults))
     return tokens, named_roles
 
@@ -1589,17 +1604,19 @@ class _RenderReads:
         self, nodes: Sequence[str], *, fields: Collection[str]
     ) -> dict[str, dict[str, str]]:
         """Each of `nodes` mapped to those of its enrichment `fields` that could be read. A
-        party's `party_kind` is the one the code index declares
-        (`EnrichmentLookup.party_kind`), read with no graph call; a party the index does not
-        list has none. One `lookup` reads the graph fields of every node, and runs only when one
-        is asked for. A read that fails, or follows a failed one, leaves those fields out. An
-        absent field's cells stay empty and count as `enrichment_unavailable`."""
+        party's cells for the party fields (`PARTY_FIELDS`) are the ones the code index declares
+        for no dataset and year (`EnrichmentLookup.party_cells`), read with no graph call; a
+        party the index does not list has none. One `lookup` reads the graph fields of every
+        node, and runs only when one is asked for. A read that fails, or follows a failed one,
+        leaves those fields out. An absent field's cells stay empty and count as
+        `enrichment_unavailable`."""
         read: dict[str, dict[str, str]] = {node: {} for node in nodes}
-        if PARTY_KIND_FIELD in fields:
+        if party_fields := set(fields).intersection(PARTY_FIELDS):
             for node, node_fields in read.items():
-                if kind := self.enrichment.party_kind(node):
-                    node_fields[PARTY_KIND_FIELD] = kind
-        graph_fields = set(fields) - {PARTY_KIND_FIELD}
+                for field_name, cell in self.enrichment.party_cells(node).items():
+                    if field_name in party_fields:
+                        node_fields[field_name] = cell
+        graph_fields = set(fields).difference(PARTY_FIELDS)
         if not graph_fields or not nodes or self.failed:
             return read
         try:
@@ -1628,8 +1645,8 @@ _TOTALS_FORMATS = frozenset(("csv", "xlsx"))
 class _TotalRows:
     """The total rows a long CSV or XLSX render keeps out of its main table
     (`materialise.projection.split_totals`): the rows where one of `roles` holds a party of
-    kind `total`. Its cell reads `total`, or `whole_total` for a published whole-population
-    total inside its years. The cells `party`, `private` and `residual` stay in the main table.
+    kind `total`, its `<role>_kind` cell reading `total` or `whole total`. Parties and
+    residuals stay in the main table.
     `roles` are the roles that can hold a total
     (`datasets_api.output_options.movable_totals_roles`), the ones the options document's
     `long_layout_totals` names, read from the definition before the first chunk, since the
@@ -1751,14 +1768,14 @@ class _LongLayout:
     boundary. The layout is planned from the first table it sees, and every later chunk of the
     same render has the same columns.
 
-    A party's kind cell is the one the code index declares (`materialise.enrichment.party_kind_cell`)
-    for the year of its row, read with no graph call, so the split of totals is the same in every
-    chunk and every render of a version, whether or not a graph read succeeds. A whole total
-    (`PartyRow.whole`) reads `whole_total` in the dataset and years its marker holds and
-    `total` outside them. A party the index does not list has an
-    empty kind cell and stays in the main table. Each chunk's names come from one
-    `reads.fields_of` read before it is projected, the read the reshape enrichment also uses,
-    and a value is asked for once per layout. A graph read that fails or runs out of time
+    A party's kind cell is the one the code index declares
+    (`materialise.projection.long_kind_cell`) for the dataset and year of its row, read with no
+    graph call, so the split of totals is the same in every chunk and every render of a
+    version, whether or not a graph read succeeds. A whole total (`PartyRow.whole`) reads
+    `whole total` in the dataset and years its marker holds and `total` outside them. A party
+    the index does not list has an empty kind cell and stays in the main table. Each chunk's
+    names come from one `reads.fields_of` read before it is projected, the read the reshape
+    enrichment also uses, and a value is asked for once per layout. A graph read that fails or runs out of time
     leaves the names it would have given empty and stops further reads for the whole render
     (`_RenderReads`), so the render completes with those cells empty. `warnings` then counts
     the empty name, kind and code cells per column as `enrichment_unavailable`.
@@ -2176,7 +2193,7 @@ def _stream_bare_pivot(
         for entity_column, field_name in parsed.enrichments:
             total_missing = enrichment_non_string_counts.get(entity_column, 0)
             for ref, row_count in enrichment_ref_counts.get(entity_column, {}).items():
-                if lookup.get(ref, {}).get(field_name, "") == "":
+                if lookup_cell(lookup, ref, field_name) is None:
                     total_missing += row_count
             if total_missing:
                 missing_counts[(entity_column, field_name)] = total_missing
@@ -2845,12 +2862,13 @@ def _derived_version(
     )
 
 
-BUNDLE_LAYOUT_VERSION = 3
+BUNDLE_LAYOUT_VERSION = 4
 """The bundle layout `rendition_token` hashes. Bump it with any change to a bundle's files or
 their contents for unchanged data and settings (a file added, renamed or reworded, a column or
 code described differently), so every version renders and links a new bundle on its next
 request while each old bundle stays listed under its own rendering key. Version 3 writes
-integer years and keeps total rows out of a CSV or XLSX data table (`_TotalRows`)."""
+integer years and keeps total rows out of a CSV or XLSX data table (`_TotalRows`). Version 4
+writes each party role's kind in words as `<role>_kind` in place of `<role>_party_kind`."""
 
 _WITHOUT_PARTY_TOTALS_KEY = "without_party_totals"
 """The rendering key `options.without_party_totals` is recorded under, present only when true."""
@@ -2870,13 +2888,14 @@ METADATA_INCOMPLETE = "incomplete"
 """The `METADATA_KEY` value of an artifact rendered without its sources' documentation or
 without graph names, because the read failed."""
 
-DATA_LAYOUT_VERSION = 3
+DATA_LAYOUT_VERSION = 4
 """The column layout of a bare data file. Bump it with any change to a bare file's columns or
 cells for unchanged data and options, so a request renders a new file under a new rendering key
 and cannot match one written in the old layout. Version 2 is the long layout of
 `materialise.projection`. Version 3 adds integer years and keeps total rows out of the main
 table (`_TotalRows`): a bundle's CSV writes them to a second file, a bare CSV drops them, and an
-XLSX moves them to a second sheet. A rendering without `LAYOUT_KEY` predates
+XLSX moves them to a second sheet. Version 4 writes each party role's kind in words as
+`<role>_kind` in place of `<role>_party_kind`. A rendering without `LAYOUT_KEY` predates
 version 2."""
 
 FRAME_LAYOUT = "frame"

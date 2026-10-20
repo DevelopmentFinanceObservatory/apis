@@ -26,7 +26,7 @@ from types import MappingProxyType
 from typing import Final
 
 from code_index.labels import HOW_PHRASE_LEADS_WITH_PREPOSITION
-from code_index.types import PartyKind
+from code_index.types import MemberClass
 from dfo_platform.roles import GENERIC_ROLE_WORDING, FlowFamily, role_wording
 from search.heading.departure_fact import DepartureFact, ordered_facts
 from search.models import (
@@ -403,24 +403,26 @@ WHOLE_MEMBER_NOUNS: Final[Mapping[RoleAxis, str]] = MappingProxyType(
 """The `open_roles` word naming the members of each side a whole population is read on."""
 
 
-def whole_population_is_official(axis: RoleAxis, whole_of: Collection[PartyKind]) -> bool:
-    """Whether a whole population of the `whole_of` kinds on `axis` holds the official
-    donors alone: a donor side holding no private donor."""
-    return axis == "origin" and "private" not in whole_of
+def private_outside(
+    axis: RoleAxis, whole_of: Collection[MemberClass], side_classes: Collection[MemberClass]
+) -> bool:
+    """Whether the private donors a dataset holds on a donor side (`side_classes`) are
+    outside a whole population covering the `whole_of` classes there."""
+    return axis == "origin" and "private" in side_classes and "private" not in whole_of
 
 
-def whole_population_text(axis: RoleAxis, whole_of: Collection[PartyKind]) -> str:
-    """The members a whole population of the `whole_of` kinds on `axis` holds: "every
-    official donor" for a donor side holding no private donor, else "every donor" or
-    "every recipient"."""
+def whole_population_text(axis: RoleAxis, whole_of: Collection[MemberClass]) -> str:
+    """The members a whole population covering the `whole_of` classes on `axis` holds:
+    "every official donor" for a donor side covering no private donor, else "every donor"
+    or "every recipient"."""
     noun = WHOLE_MEMBER_NOUNS.get(axis, "member")
-    official = whole_population_is_official(axis, whole_of)
+    official = axis == "origin" and "private" not in whole_of
     return f"every official {noun}" if official else f"every {noun}"
 
 
-def whole_residual_text(whole_of: Collection[PartyKind]) -> str:
-    """The clause saying a whole population of the `whole_of` kinds holds aid allocated to
-    no country, empty when it holds no residual."""
+def whole_residual_text(whole_of: Collection[MemberClass]) -> str:
+    """The clause saying a whole population covering the `whole_of` classes holds aid
+    allocated to no country, empty when it covers no residual."""
     return ", which includes aid not allocated to a country" if "residual" in whole_of else ""
 
 
@@ -431,7 +433,7 @@ def _whole_total_read(fact: DepartureFact, _family: FlowFamily | None, shows_dat
     and its way back replaces those words with `open_roles`. A union of totals names each
     (`DepartureFact.entities`). A donor total that holds no private donor says they are
     outside it where the answer's dataset holds private donors on the side
-    (`DepartureFact.side_kinds`), and a total holding residuals says it holds aid allocated
+    (`DepartureFact.side_classes`), and a total holding residuals says it holds aid allocated
     to no country."""
     if fact.over is None or fact.group is None:
         raise ValueError("whole_total_read needs the side and the population it shows")
@@ -442,9 +444,10 @@ def _whole_total_read(fact: DepartureFact, _family: FlowFamily | None, shows_dat
     else:
         every = whole_population_text(fact.over, fact.whole_of)
         holds = whole_residual_text(fact.whole_of)
-        official = whole_population_is_official(fact.over, fact.whole_of)
         outside = (
-            " Private donors are outside it." if official and "private" in fact.side_kinds else ""
+            " Private donors are outside it."
+            if private_outside(fact.over, fact.whole_of, fact.side_classes)
+            else ""
         )
         shown = f"{fact.group}, the source's total for {every}{holds}.{outside}"
     if not shown.endswith("."):

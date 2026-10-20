@@ -78,8 +78,8 @@ from code_index.types import (
     DeclaredDefault,
     MeasureAxis,
     MeasurePartitionLabel,
+    MemberClass,
     PartlyStatedValue,
-    PartyKind,
     PartyRow,
     WholeMarker,
     WholeTotalSet,
@@ -3015,12 +3015,19 @@ def test_export_index_writes_each_partys_kind_label_and_the_group_a_total_holds(
     published, recipient = (_TEST_PROVENANCE,), ("destination",)
     assert index.parties == {
         "country/FRA": PartyRow(
-            dcid="country/FRA", kind="party", label="France", datasets=published, axes=recipient
+            dcid="country/FRA",
+            kind="party",
+            sector="official",
+            label="France",
+            datasets=published,
+            axes=recipient,
         ),
         "country/IND": PartyRow(
-            dcid="country/IND", kind="party", datasets=published, axes=recipient
+            dcid="country/IND", kind="party", sector="official", datasets=published, axes=recipient
         ),
-        "IDA": PartyRow(dcid="IDA", kind="party", datasets=published, axes=recipient),
+        "IDA": PartyRow(
+            dcid="IDA", kind="party", sector="official", datasets=published, axes=recipient
+        ),
         "DACAfrica": PartyRow(
             dcid="DACAfrica",
             kind="total",
@@ -3138,7 +3145,11 @@ def test_a_kind_override_replaces_the_kind_the_types_give(tmp_path: Path):
             axes=recipient,
         ),
         "InternationalFinanceCorporation": PartyRow(
-            dcid="InternationalFinanceCorporation", kind="party", datasets=published, axes=recipient
+            dcid="InternationalFinanceCorporation",
+            kind="party",
+            sector="official",
+            datasets=published,
+            axes=recipient,
         ),
         "Mystery": PartyRow(dcid="Mystery", kind="residual", datasets=published, axes=recipient),
     }
@@ -3186,9 +3197,12 @@ def test_party_kind_overrides_holds_only_reviewed_total_rows():
 def test_the_packaged_index_carries_each_reviewed_kind_override(group: str, members: tuple[str]):
     index = get_index()
     assert (index.parties[group].kind, index.parties[group].totals) == ("total", None)
-    # The five national lotteries are private providers; every other member is a plain party.
-    assert {member: index.parties[member].kind for member in members} == {
-        member: "private" if member in PRIVATE_PROVIDERS.values() else "party" for member in members
+    # The five national lotteries are private providers; every other member is official.
+    assert {
+        member: (index.parties[member].kind, index.parties[member].sector) for member in members
+    } == {
+        member: ("party", "private" if member in PRIVATE_PROVIDERS.values() else "official")
+        for member in members
     }
 
 
@@ -3330,7 +3344,7 @@ def test_the_packaged_index_declares_the_exporters_party_types():
 # --- Private providers ---
 
 
-def test_a_listed_private_provider_takes_the_kind_private(tmp_path: Path):
+def test_a_listed_private_provider_takes_the_sector_private(tmp_path: Path):
     document = _export_parties(
         {"GatesFoundation": ("Organization",), "WorldBank": ("Organization",)},
         dac_codes={"GatesFoundation": ("1601",), "WorldBank": ("1011",)},
@@ -3341,9 +3355,9 @@ def test_a_listed_private_provider_takes_the_kind_private(tmp_path: Path):
     out.write_text(json.dumps(document))
 
     parties = load_index(out).parties
-    assert {dcid: row.kind for dcid, row in parties.items()} == {
-        "GatesFoundation": "private",
-        "WorldBank": "party",
+    assert {dcid: (row.kind, row.sector) for dcid, row in parties.items()} == {
+        "GatesFoundation": ("party", "private"),
+        "WorldBank": ("party", "official"),
     }
 
 
@@ -3406,29 +3420,29 @@ def test_export_index_refuses_a_private_provider_table_the_graph_contradicts(
 
 
 @pytest.mark.parametrize(
-    ("types_by_party", "dac_codes", "private_providers", "kind"),
+    ("types_by_party", "dac_codes", "private_providers", "refused"),
     [
         pytest.param(
             {"GatesFoundation": ("Organization",)},
             {"GatesFoundation": ("1601",)},
             {1601: "GatesFoundation"},
-            "private",
+            "'party', 'private'",
             id="private-party",
         ),
         pytest.param(
             {"DACAfricaUnallocated": ("DACRecipientUnallocatedByCountry",)},
             {},
             {},
-            "residual",
+            "'residual', None",
             id="residual",
         ),
-        pytest.param({"DACAllRecipients": ("DACGroup",)}, {}, {}, "total", id="total"),
+        pytest.param({"DACAllRecipients": ("DACGroup",)}, {}, {}, "'total', None", id="total"),
     ],
 )
-def test_export_index_refuses_a_party_of_one_kind_on_both_axes(
-    types_by_party, dac_codes, private_providers, kind
+def test_export_index_refuses_a_party_other_than_official_on_both_axes(
+    types_by_party, dac_codes, private_providers, refused
 ):
-    with pytest.raises(ExportRefused, match=rf"more than one axis.*{kind}.*destination.*origin"):
+    with pytest.raises(ExportRefused, match=rf"more than one axis.*{refused}.*destination.*origin"):
         _export_parties(
             types_by_party,
             dac_codes=dac_codes,
@@ -3437,10 +3451,10 @@ def test_export_index_refuses_a_party_of_one_kind_on_both_axes(
         )
 
 
-def test_export_index_accepts_a_plain_party_on_both_axes():
+def test_export_index_accepts_an_official_party_on_both_axes():
     document = _export_parties({"Canada": ("Country",)}, axes=frozenset({"origin", "destination"}))
-    assert [(row["kind"], row["axes"]) for row in document["parties"]] == [
-        ("party", ["destination", "origin"])
+    assert [(row["kind"], row["sector"], row["axes"]) for row in document["parties"]] == [
+        ("party", "official", ["destination", "origin"])
     ]
 
 
@@ -3448,7 +3462,7 @@ def test_a_private_code_on_a_recipient_is_no_donor_to_list():
     document = _export_parties(
         {"SomeRecipient": ("Country",)}, dac_codes={"SomeRecipient": ("1607",)}, axis="destination"
     )
-    assert [row["kind"] for row in document["parties"]] == ["party"]
+    assert [(row["kind"], row["sector"]) for row in document["parties"]] == [("party", "official")]
 
 
 # The OECD donor codes 1601 to 1650 marked `Private donor` in the donor code list, with the party
@@ -3513,9 +3527,19 @@ def test_private_providers_holds_only_reviewed_rows():
 
 def test_the_packaged_index_makes_exactly_the_listed_providers_private():
     index = get_index()
-    private = {dcid for dcid, row in index.parties.items() if row.kind == "private"}
-    assert private == set(_REVIEWED_PRIVATE_PROVIDERS.values())
+    sectors = {(row.kind, row.sector) for row in index.parties.values()}
+    private = {dcid for dcid, row in index.parties.items() if row.sector == "private"}
+    assert private - {"DACPrivateDonors"} == set(_REVIEWED_PRIVATE_PROVIDERS.values())
     assert all(index.parties[dcid].axes == ("origin",) for dcid in private)
+    # Every other party is official, and a residual carries no sector.
+    assert sectors == {
+        ("party", "official"),
+        ("party", "private"),
+        ("total", None),
+        ("total", "official"),
+        ("total", "private"),
+        ("residual", None),
+    }
 
 
 # --- Whole-population totals ---
@@ -3528,8 +3552,8 @@ _OTHER = "provenance/OtherDataset"
 _BOTH = frozenset({_TEST_PROVENANCE, _OTHER})
 
 
-def _window(*holds: PartyKind, first_year: int | None = None) -> WholeWindow:
-    return WholeWindow(holds, first_year)
+def _window(*covers: MemberClass, first_year: int | None = None) -> WholeWindow:
+    return WholeWindow(covers, first_year)
 
 
 def test_a_whole_total_carries_one_marker_per_named_dataset_and_a_set_joins_two(tmp_path: Path):
@@ -3538,7 +3562,10 @@ def test_a_whole_total_carries_one_marker_per_named_dataset_and_a_set_joins_two(
         whole_totals={
             "DACOfficialDonors": WholePopulationTotal(
                 "origin",
-                {_TEST_PROVENANCE: _window("party", first_year=1960), _OTHER: _window("party")},
+                {
+                    _TEST_PROVENANCE: _window("official", first_year=1960),
+                    _OTHER: _window("official"),
+                },
                 "a",
             ),
             "DACPrivateDonors": WholePopulationTotal(
@@ -3555,13 +3582,16 @@ def test_a_whole_total_carries_one_marker_per_named_dataset_and_a_set_joins_two(
     out.write_text(json.dumps(document))
 
     index = load_index(out)
-    assert {dcid: row.whole for dcid, row in index.parties.items()} == {
+    assert {dcid: (row.sector, row.whole) for dcid, row in index.parties.items()} == {
         "DACOfficialDonors": (
-            WholeMarker(_OTHER, ("party",)),
-            WholeMarker(_TEST_PROVENANCE, ("party",), (1960, 2024)),
+            "official",
+            (
+                WholeMarker(_OTHER, ("official",)),
+                WholeMarker(_TEST_PROVENANCE, ("official",), (1960, 2024)),
+            ),
         ),
-        "DACPrivateDonors": (WholeMarker(_TEST_PROVENANCE, ("private",)),),
-        "DACMultilaterals": (),
+        "DACPrivateDonors": ("private", (WholeMarker(_TEST_PROVENANCE, ("private",)),)),
+        "DACMultilaterals": (None, ()),
     }
     assert index.whole_total_sets == (
         WholeTotalSet("all donors including private", "origin", tuple(_OFFICIAL_AND_PRIVATE)),
@@ -3570,7 +3600,7 @@ def test_a_whole_total_carries_one_marker_per_named_dataset_and_a_set_joins_two(
     rows = {row["dcid"]: row for row in document["parties"]}
     assert "whole" not in rows["DACMultilaterals"]
     assert rows["DACPrivateDonors"]["whole"] == [
-        {"dataset": _TEST_PROVENANCE, "holds": ["private"]}
+        {"dataset": _TEST_PROVENANCE, "covers": ["private"]}
     ]
 
 
@@ -3589,7 +3619,7 @@ def test_a_dataset_the_whole_row_leaves_out_reads_the_total_as_ordinary(
         whole_totals={
             "DACAllRecipients": WholePopulationTotal(
                 "destination",
-                {_TEST_PROVENANCE: _window("party", "residual", first_year=1984)},
+                {_TEST_PROVENANCE: _window("official", "residual", first_year=1984)},
                 "a",
             )
         },
@@ -3600,13 +3630,14 @@ def test_a_dataset_the_whole_row_leaves_out_reads_the_total_as_ordinary(
     out.write_text(json.dumps(document))
 
     row = load_index(out).parties["DACAllRecipients"]
+    assert row.sector == "official"
     assert row.marker(_TEST_PROVENANCE) == WholeMarker(
-        _TEST_PROVENANCE, ("party", "residual"), window
+        _TEST_PROVENANCE, ("official", "residual"), window
     )
     assert row.marker(_OTHER) is None
 
 
-_ORIGIN_TOTAL = {_TEST_PROVENANCE: WholeWindow(("party",))}
+_ORIGIN_TOTAL = {_TEST_PROVENANCE: WholeWindow(("official",))}
 
 
 @pytest.mark.parametrize(
@@ -3617,11 +3648,11 @@ _ORIGIN_TOTAL = {_TEST_PROVENANCE: WholeWindow(("party",))}
             {
                 "DACOfficialDonors": WholePopulationTotal("origin", _ORIGIN_TOTAL, "a"),
                 "DACPrivateDonors": WholePopulationTotal(
-                    "origin", {_TEST_PROVENANCE: _window("party", "private")}, "b"
+                    "origin", {_TEST_PROVENANCE: _window("official", "private")}, "b"
                 ),
             },
             "origin",
-            "both hold",
+            "both cover",
             id="overlapping-markers",
         ),
         pytest.param(
@@ -3640,7 +3671,11 @@ _ORIGIN_TOTAL = {_TEST_PROVENANCE: WholeWindow(("party",))}
         ),
         pytest.param(
             _OFFICIAL_AND_PRIVATE,
-            {"DACOfficialDonors": WholePopulationTotal("origin", {_OTHER: _window("party")}, "a")},
+            {
+                "DACOfficialDonors": WholePopulationTotal(
+                    "origin", {_OTHER: _window("official")}, "a"
+                )
+            },
             "origin",
             "do not publish it",
             id="dataset-named-for-a-party-it-does-not-publish",
@@ -3681,7 +3716,7 @@ _ORIGIN_TOTAL = {_TEST_PROVENANCE: WholeWindow(("party",))}
             _OFFICIAL_AND_PRIVATE,
             {
                 "DACOfficialDonors": WholePopulationTotal(
-                    "origin", {_TEST_PROVENANCE: _window("party", first_year=2025)}, "a"
+                    "origin", {_TEST_PROVENANCE: _window("official", first_year=2025)}, "a"
                 )
             },
             "origin",
@@ -3692,7 +3727,7 @@ _ORIGIN_TOTAL = {_TEST_PROVENANCE: WholeWindow(("party",))}
             _OFFICIAL_AND_PRIVATE,
             {
                 "DACOfficialDonors": WholePopulationTotal(
-                    "origin", {_TEST_PROVENANCE: _window("party", first_year=1950)}, "a"
+                    "origin", {_TEST_PROVENANCE: _window("official", first_year=1950)}, "a"
                 )
             },
             "origin",
@@ -3723,11 +3758,20 @@ def test_export_index_refuses_a_whole_total_set_naming_a_total_that_holds_no_pop
 _DAC2A = "provenance/OECDDAC2A"
 _DAC2B = "provenance/OECDDAC2B"
 # Each whole-population total with the markers its composition checks gave, as reviewed against
-# the comment on `WHOLE_POPULATION_TOTALS`: the axis, then each dataset's kinds and window.
+# the comment on `WHOLE_POPULATION_TOTALS`: the axis, then each dataset's classes and window. The
+# packaged index ends DACAllRecipients' window in the last year its coverage build publishes it.
 _REVIEWED_WHOLE_TOTALS = {
-    "DACAllRecipients": ("destination", {_DAC2A: (("party", "residual"), (1984, 2024))}),
-    "DACOfficialDonors": ("origin", {_DAC2A: (("party",), None), _DAC2B: (("party",), None)}),
+    "DACAllRecipients": ("destination", {_DAC2A: (("official", "residual"), (1984, 2025))}),
+    "DACOfficialDonors": (
+        "origin",
+        {_DAC2A: (("official",), None), _DAC2B: (("official",), None)},
+    ),
     "DACPrivateDonors": ("origin", {_DAC2A: (("private",), None)}),
+}
+_REVIEWED_WHOLE_SECTORS = {
+    "DACAllRecipients": "official",
+    "DACOfficialDonors": "official",
+    "DACPrivateDonors": "private",
 }
 _REVIEWED_WHOLE_TOTAL_SETS = (
     WholeTotalSet(
@@ -3744,10 +3788,10 @@ def test_whole_population_totals_holds_only_reviewed_rows():
     # The declaration states a window's first year, and the export ends it in the last year the
     # dataset publishes the total.
     assert {
-        dcid: (row.axis, {d: (w.holds, w.first_year) for d, w in row.datasets.items()})
+        dcid: (row.axis, {d: (w.covers, w.first_year) for d, w in row.datasets.items()})
         for dcid, row in WHOLE_POPULATION_TOTALS.items()
     } == {
-        dcid: (axis, {d: (holds, years and years[0]) for d, (holds, years) in datasets.items()})
+        dcid: (axis, {d: (covers, years and years[0]) for d, (covers, years) in datasets.items()})
         for dcid, (axis, datasets) in _REVIEWED_WHOLE_TOTALS.items()
     }
     assert all(row.reason for row in WHOLE_POPULATION_TOTALS.values())
@@ -3758,10 +3802,10 @@ def test_the_packaged_index_carries_each_reviewed_whole_total():
     index = get_index()
     for dcid, (axis, datasets) in _REVIEWED_WHOLE_TOTALS.items():
         row = index.parties[dcid]
-        assert (row.kind, row.axes) == ("total", (axis,))
+        assert (row.kind, row.sector, row.axes) == ("total", _REVIEWED_WHOLE_SECTORS[dcid], (axis,))
         assert row.whole == tuple(
-            WholeMarker(dataset, holds, years)
-            for dataset, (holds, years) in sorted(datasets.items())
+            WholeMarker(dataset, covers, years)
+            for dataset, (covers, years) in sorted(datasets.items())
         )
     assert {dcid for dcid, row in index.parties.items() if row.whole} == set(_REVIEWED_WHOLE_TOTALS)
     assert index.parties["DACAllRecipients"].marker(_DAC2B) is None

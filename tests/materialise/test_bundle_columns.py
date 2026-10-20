@@ -190,3 +190,29 @@ def test_a_role_column_and_its_name_column_read_the_role_noun(role, noun):
         f"{role}_label": f"{noun} name",
         "provenance": "Source dataset",
     }
+
+
+@pytest.mark.parametrize(
+    ("role", "title", "party_words"),
+    [
+        ("financingProvider", "Provider kind", "`official` or `private`"),
+        ("creditor", "Creditor kind", "`official` or `private`"),
+        ("financingRecipient", "Recipient kind", "`country or organisation`"),
+        ("debtor", "Debtor kind", "`country or organisation`"),
+    ],
+)
+def test_a_party_roles_kind_column_reads_its_role_and_what_its_parties_read(
+    role, title, party_words
+):
+    table = Table(
+        columns=("stat_var", role, f"{role}_kind"),
+        rows=(("dcid:Amount_A", "country/KEN", "official"),),
+    )
+    scan = TableScan(role_columns=(role,))
+    list(scan.observe((table,)))
+
+    doc = {doc.name: doc for doc in column_docs(scan, code_system_names={})}[f"{role}_kind"]
+
+    assert doc.title == title
+    assert party_words in doc.description
+    assert "party" not in doc.description

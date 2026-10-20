@@ -106,7 +106,7 @@ class RoleNotAdmittedEntity:
     # `None` for a set with no node whose members share no stated type.
     graph_type: str | None
     # A whole population asked member by member that no shape lists exactly
-    # (`phase_intake._prune_shapes_by_listing`): its side and the kinds it leaves out.
+    # (`phase_intake._prune_shapes_by_listing`): its side and the classes it leaves out.
     unlisted: UnlistedPopulation | None = None
 
 

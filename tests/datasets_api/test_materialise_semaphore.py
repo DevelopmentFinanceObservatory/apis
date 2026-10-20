@@ -21,8 +21,9 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+import graph_release.service as release_service_module
 from artifact_store import StoredArtifact, Tier
-from code_index.shared import get_index
+from code_index.shared import get_index, get_measure_index
 from datasets_api import deps as deps_module
 from datasets_api import serve as serve_module
 from datasets_api.admission import (
@@ -41,6 +42,7 @@ from datasets_api.operations.task_client import NullTaskClient
 from datasets_api.versions import NullHeadWriter, NullVersionRecordWriter, SubjectHead
 from dc_sdmx import SdmxClient
 from dfo_platform.app import create_app
+from graph_release.service import ReleaseService, ReleaseViews
 from materialise.graph import Facet
 from series_coverage import shared as coverage_shared
 from series_coverage.index import CoverageIndex
@@ -56,6 +58,7 @@ from series_coverage.shared import CoverageService, CoverageSnapshot
 from spec_registry import LiveSpecRegistry
 from spec_registry.reader import LiveSpecReader
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
+from tests.graph_release.support import build_test_release, sample_tables
 
 from ._app_factories import offline_recipe_stores
 from ._artifact_doubles import FakeArtifactStore
@@ -199,10 +202,12 @@ def _client(
     artifact_store: FakeArtifactStore | None = None,
     coverage: object | None = None,
     timeout_seconds: float | None = None,
+    release: ReleaseService | None = None,
 ):
     """Builds a client under `TestClient` lifespan with one portal for threaded requests.
     Every store is injected, so the lifespan opens no pool. `timeout_seconds` sets both the
-    mint and the definition timeout."""
+    mint and the definition timeout. `release` is the graph release service each request
+    binds from."""
     store = store if store is not None else FakeDatasetStore()
     graph = graph if graph is not None else _default_graph()
     sdmx = SdmxClient(base_url=_BASE_URL, transport=httpx.MockTransport(transport))
@@ -236,6 +241,7 @@ def _client(
         operation_store=NullOperationStore(),
         task_client=NullTaskClient(),
         coverage=coverage if coverage is not None else _coverage_service(),
+        release=release,
         **offline_recipe_stores(),
     )
     with (
@@ -1324,6 +1330,86 @@ def test_a_mint_whose_snapshot_a_reload_replaced_materialises_on_the_served_buil
     assert kinds[:4] == ["acquire", "release", "acquire", "sdmx"]
     assert kinds.count("acquire") == kinds.count("release") == 2
     assert "coverage_restarts;desc=1" in resp.headers["server-timing"]
+
+
+class _SwapBeforePermit(_CountedPermits):
+    """Permits whose next `acquire` first runs `before_acquire` once in the caller's thread,
+    where a test swaps the graph release between a request's entry and its permit. It passes
+    `keep_waiting` on, so the request's first look before the wait sees the swap."""
+
+    before_acquire: Callable[[], None] | None = None
+
+    def acquire(self, *, timeout: float, keep_waiting: Callable[[], bool] | None = None) -> bool:
+        before, self.before_acquire = self.before_acquire, None
+        if before is not None:
+            before()
+        return super().acquire(timeout=timeout, keep_waiting=keep_waiting)
+
+    @contextmanager
+    def every_permit(self) -> Iterator[None]:
+        """Log the drain as `swap`, so `acquire` and `release` count requests alone."""
+        with MaterialisePermits.every_permit(self):
+            self._log.record("swap")
+            yield
+
+
+def _swapping_release(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> tuple[ReleaseService, Callable[[], None]]:
+    """A graph release service serving the first of two published releases, and the function
+    that swaps it to the second. Each release's views are the packaged code index and
+    `_coverage_index()`, so a request reads the same index from either."""
+    views = ReleaseViews(
+        code_index=get_index(), measure_index=get_measure_index(), coverage=_coverage_index()
+    )
+    monkeypatch.setattr(release_service_module, "build_release_views", lambda _loaded: views)
+    root = (tmp_path / "releases").as_uri()
+    build_test_release(root, tables=sample_tables())
+    clock = [0.0]
+    service = ReleaseService(
+        uri=root,
+        local_dir=tmp_path / "local",
+        recheck_seconds=60,
+        clock=lambda: clock[0],
+        build_views=True,
+    )
+    second = build_test_release(root, tables=sample_tables(), dc_serving_revision="second")
+
+    def swap() -> None:
+        clock[0] += 60
+        service.snapshot()
+        service.close()
+        assert service.snapshot().release_id == second.release_id
+
+    return service, swap
+
+
+def test_a_mint_bound_to_a_swapped_out_release_refuses_backpressure_without_a_permit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """The mint bound the first release at entry, and the service swapped to the second
+    before the mint's permit. The mint resolved its members from the first release's code
+    index, so it cannot start again on the second: it answers the retryable backpressure
+    refusal having taken no permit and fetched nothing. The next mint binds the second
+    release and is served."""
+    monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1")
+    log = _PermitLog()
+    permit = _SwapBeforePermit(1, log=log)
+    monkeypatch.setattr(deps_module, "MaterialisePermits", lambda _permits: permit)
+    release, swap = _swapping_release(monkeypatch, tmp_path)
+    transport, _ = _logged_transport(log)
+    with _client(materialise_max_concurrency=1, transport=transport, release=release) as client:
+        permit.before_acquire = swap
+        refused = client.post("/api/datasets", json=_scope(statvar=_REF_A))
+        refused_kinds = log.kinds()
+        served = client.post("/api/datasets", json=_scope(statvar=_REF_A))
+
+    assert refused.status_code == 503, refused.text
+    assert refused.json()["code"] == "service_unavailable"
+    assert refused.json()["retryable"] is True
+    assert refused_kinds == ["swap"]
+    assert served.status_code == 200, served.text
+    assert "acquire" in log.kinds()
 
 
 def test_a_mint_whose_snapshot_is_replaced_on_every_start_refuses_backpressure(

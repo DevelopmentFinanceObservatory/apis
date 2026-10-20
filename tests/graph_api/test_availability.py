@@ -137,7 +137,8 @@ def _crs_coverage() -> tuple[CoverageIndex, dict[str, PartyRow]]:
         },
     )
     parties = {
-        d: PartyRow(dcid=d, kind="private" if i >= 24 else "party") for i, d in enumerate(donors)
+        d: PartyRow(dcid=d, kind="party", sector="private" if i >= 24 else "official")
+        for i, d in enumerate(donors)
     }
     parties.update(
         {
@@ -161,7 +162,7 @@ def test_the_crs_example_folds_from_the_coverage_summary():
         "places": None,
         "entities": {
             "financingProvider": {
-                "parties": 24,
+                "parties": 29,
                 "private": 5,
                 "totals": 0,
                 "residual": 0,
@@ -180,11 +181,11 @@ def test_the_crs_example_folds_from_the_coverage_summary():
         "sources": 1,
         "facets": 1,
     }
-    # Every kind count adds up to the role's distinct entities, private donors included.
-    assert {role: sum(counts.values()) for role, counts in card["summary"]["entities"].items()} == {
-        "financingProvider": 29,
-        "financingRecipient": 183,
-    }
+    # The kind counts add up to the role's distinct entities; private is a subset of parties.
+    assert {
+        role: sum(count for kind, count in counts.items() if kind != "private")
+        for role, counts in card["summary"]["entities"].items()
+    } == {"financingProvider": 29, "financingRecipient": 183}
     assert card["default"] == {
         "facets": ["fCRS"],
         "source": {"ref": _CRS, "label": _CRS, "documentation": f"/api/graph/documentation/{_CRS}"},

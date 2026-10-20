@@ -86,7 +86,7 @@ def _whole(columns: list[str]):
         Table(columns=_COLUMNS, rows=_ROWS),
         options=MintOptions(format="csv", bundle=False, columns=columns),
         reads=_RenderReads(
-            enrichment=EnrichmentLookup(_GRAPH, parties={}), known={}, deadline=None
+            enrichment=EnrichmentLookup(_GRAPH, parties=lambda: {}), known={}, deadline=None
         ),
         provenance_refs=(),
         **_COMMON,
@@ -110,7 +110,7 @@ def _streamed(columns: list[str], *, chunk_size: int):
         chunks,
         options=_pivot_options(columns),
         reads=_RenderReads(
-            enrichment=EnrichmentLookup(_GRAPH, parties={}), known={}, deadline=None
+            enrichment=EnrichmentLookup(_GRAPH, parties=lambda: {}), known={}, deadline=None
         ),
         provenance_refs=(),
         subject_id="enrichment-only-columns-test",
@@ -145,7 +145,7 @@ def test_an_enrichment_only_list_keeps_the_decoded_column_a_streamed_pivot_names
         Table(columns=_COLUMNS, rows=_ROWS[:2]),
         options=_pivot_options(["observationAbout_type"]),
         reads=_RenderReads(
-            enrichment=EnrichmentLookup(_GRAPH, parties={}), known={}, deadline=None
+            enrichment=EnrichmentLookup(_GRAPH, parties=lambda: {}), known={}, deadline=None
         ),
         provenance_refs=(),
         **_COMMON,

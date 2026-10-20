@@ -216,7 +216,9 @@ def mint_deps(
         member_concurrency=member_concurrency,
         enumerator=enumerator if enumerator is not None else MemberEnumerator(),
         enrichment=(
-            enrichment if enrichment is not None else EnrichmentLookup(graph, parties=index.parties)
+            enrichment
+            if enrichment is not None
+            else EnrichmentLookup(graph, parties=lambda: index.parties)
         ),
         code_index=index,
         rate_cache=rate_cache if rate_cache is not None else RateTableCache(),

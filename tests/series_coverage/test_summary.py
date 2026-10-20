@@ -94,10 +94,10 @@ def test_party_counts_split_the_union_of_facets_by_code_index_kind() -> None:
     )
     index = CoverageIndex(table, {"V-a": _FLOW_ROLES}, horizon=horizon)
     parties = {
-        FRA: PartyRow(dcid=FRA, kind="party"),
-        DEU: PartyRow(dcid=DEU, kind="party"),
-        gates: PartyRow(dcid=gates, kind="private"),
-        KEN: PartyRow(dcid=KEN, kind="party"),
+        FRA: PartyRow(dcid=FRA, kind="party", sector="official"),
+        DEU: PartyRow(dcid=DEU, kind="party", sector="official"),
+        gates: PartyRow(dcid=gates, kind="party", sector="private"),
+        KEN: PartyRow(dcid=KEN, kind="party", sector="official"),
         africa_total: PartyRow(dcid=africa_total, kind="total", totals="africa"),
         africa_residual: PartyRow(dcid=africa_residual, kind="residual"),
     }
@@ -106,9 +106,9 @@ def test_party_counts_split_the_union_of_facets_by_code_index_kind() -> None:
 
     assert summary is not None
     # KEN sits in both facets and counts once; ZWE is not listed in the code index. A private
-    # donor counts as private, not as a party.
+    # donor is a party, and counts again among the private ones.
     assert summary.party_counts(parties=parties) == {
-        "donor": PartyCounts(parties=2, private=1),
+        "donor": PartyCounts(parties=3, private=1),
         "recipient": PartyCounts(parties=1, totals=1, residual=1, unclassified=1),
     }
     assert summary.party_counts(parties=parties, facet_ids={"f-1"}) == {

@@ -96,8 +96,7 @@ class SeriesEntityRef(StrictModel):
         default=None,
         description=(
             "on an origin or destination entity, what the party is beside the others on its "
-            "side: 'party' (a country, territory or organisation), 'private' (a private "
-            "provider, summed like a party and counted apart), 'total' (other parties' "
+            "side: 'party' (a country, territory or organisation), 'total' (other parties' "
             "figures, so a sum "
             "across the role that counts it counts its members twice) or 'residual' (figures "
             "no other party holds), as the code index lists it. Absent for a party the index "

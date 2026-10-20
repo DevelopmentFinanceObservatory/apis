@@ -6,7 +6,7 @@ This module has no graph or file-I/O imports.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal, get_args
 
@@ -357,43 +357,56 @@ class DatasetDeclaration:
     party_words: tuple[PartyWord, ...] = ()
 
 
-PartyKind = Literal["party", "private", "total", "residual"]
+PartyKind = Literal["party", "total", "residual"]
 """What one party of a flow is beside the other parties on its side.
 
-A `party` is a country, a territory or an organisation. A `private` party is a private
-provider of development finance, such as a foundation; it sums like a `party` and is
-counted and labelled apart. A `total` holds other parties' figures: DAC2A publishes
-"Africa, Total" (`DACAfrica`) and DAC1 the G7 (`GroupOfSeven`) beside the countries they
-hold, so a sum across a flow role that counts a total counts its members twice. A `residual`
-holds figures no other party does ("Africa, unallocated by country", `DACAfricaUnallocated`).
+A `party` is a country, a territory or an organisation. A `total` holds other parties'
+figures: DAC2A publishes "Africa, Total" (`DACAfrica`) and DAC1 the G7 (`GroupOfSeven`)
+beside the countries they hold, so a sum across a flow role that counts a total counts its
+members twice. A `residual` holds figures no other party does ("Africa, unallocated by
+country", `DACAfricaUnallocated`).
 """
 
 PARTY_KINDS: frozenset[str] = frozenset(get_args(PartyKind))
 
-WHOLE_OF_KINDS: frozenset[str] = frozenset({"party", "private", "residual"})
-"""The kinds a whole total can hold (`WholeMarker.holds`). A `total` is never one of them, so
-no whole total holds another."""
+Sector = Literal["official", "private"]
+"""Whose money a party's figures count (`PartyRow.sector`). A `private` party is a private
+provider of development finance, such as a foundation; every other party is `official`."""
 
-POPULATION_KIND: PartyKind = "party"
-"""The kind every whole population holds: a side read whole holds its ordinary parties, so a
-total whose markers hold it stands for a population (`CodeIndex.population_totals_by_axis`)."""
+SECTORS: frozenset[str] = frozenset(get_args(Sector))
+
+MemberClass = Literal["official", "private", "residual"]
+"""The class of a party that is not a total (`member_class`): its sector for a `party`,
+`residual` for a residual. A whole total covers classes (`WholeMarker.covers`)."""
+
+MEMBER_CLASSES: frozenset[str] = frozenset(get_args(MemberClass))
+
+POPULATION_CLASS: MemberClass = "official"
+"""The class every whole population covers: a side read whole holds its official parties, so a
+total whose markers cover it stands for a population (`CodeIndex.population_totals_by_axis`)."""
 
 
 @dataclass(frozen=True, slots=True)
 class WholeMarker:
-    """What a total holds in one dataset: every party of the kinds in `holds` on its axis.
+    """What a total holds in one dataset: every party of the classes in `covers` on its axis.
 
-    `dataset` is a provenance among `PartyRow.datasets`, and `holds` a non-empty, sorted
-    subset of `party`, `private` and `residual`. `years` is the first and last year,
-    inclusive, in which the total holds that population in `dataset`, or `None` for every
-    year the dataset publishes it. "All Recipients, Total" (`DACAllRecipients`) holds every
-    `party` and `residual` recipient in DAC2A from the year its composition check starts, and
-    in DAC2B it holds nothing of the kind, so it has no marker there.
+    `dataset` is a provenance among `PartyRow.datasets`, and `covers` a non-empty, sorted
+    subset of `MemberClass`. `years` is the first and last year, inclusive, in which the total
+    holds that population in `dataset`, or `None` for every year the dataset publishes it.
+    "All Recipients, Total" (`DACAllRecipients`) covers every `official` and `residual`
+    recipient in DAC2A from the year its composition check starts, and in DAC2B it holds
+    nothing of the kind, so it has no marker there.
     """
 
     dataset: str
-    holds: tuple[PartyKind, ...]
+    covers: tuple[MemberClass, ...]
     years: tuple[int, int] | None = None
+
+
+def covered_sector(covers: Collection[MemberClass]) -> Sector | None:
+    """The one sector among `covers`, or `None` when they name no sector or both."""
+    sectors: list[Sector] = [sector for sector in ("official", "private") if sector in covers]
+    return sectors[0] if len(sectors) == 1 else None
 
 
 def party_kind(
@@ -435,16 +448,22 @@ class PartyRow:
     party, and `axes` the flow axes they publish it on (`origin` as a donor, `destination` as a
     recipient), each sorted.
 
+    `sector` is `private` for a party the export's `PRIVATE_PROVIDERS` lists and `official`
+    for every other party, on every axis. A total takes the one sector its whole markers cover
+    (`covered_sector`), `None` when they cover no single sector or it has none. A residual has
+    none.
+
     `whole` is empty for every row but a whole total: a `total` that holds the whole
-    population of a kind on its one axis in the datasets it carries a marker for
+    population of some classes on its one axis in the datasets it carries a marker for
     (`WholeMarker`), sorted by dataset, one per dataset. "Official Donors, Total"
-    (`DACOfficialDonors`) holds every `party` donor in DAC2A and DAC2B. A dataset with no
+    (`DACOfficialDonors`) covers every `official` donor in DAC2A and DAC2B. A dataset with no
     marker reads the party as an ordinary `total`. The kind stays `total`, so a reader of
     `kind == "total"` stays correct.
     """
 
     dcid: str
     kind: PartyKind
+    sector: Sector | None = None
     totals: str | None = None
     residuals: tuple[str, ...] = ()
     sums_members: bool = True
@@ -456,6 +475,14 @@ class PartyRow:
     def marker(self, dataset: str) -> WholeMarker | None:
         """The marker for `dataset`, or `None` where the party is an ordinary total."""
         return next((marker for marker in self.whole if marker.dataset == dataset), None)
+
+
+def member_class(row: PartyRow) -> MemberClass | None:
+    """The class `row` counts in when it is no total: its sector for a `party`, `residual` for
+    a residual. `None` for a total, and for a party built without a sector."""
+    if row.kind == "residual":
+        return "residual"
+    return row.sector if row.kind == "party" else None
 
 
 def marked_datasets(parties: Iterable[PartyRow]) -> frozenset[str]:
@@ -471,7 +498,7 @@ class WholeTotalSet:
     `phrase` is the words that name the union ("all donors including private"), `axis` the
     flow axis it stands on, and `members` the dcids of the whole totals it joins, which
     are each marked in at least one dataset where all are marked
-    (`marked_datasets`), and hold disjoint kinds there, so their sum counts no
+    (`marked_datasets`), and cover disjoint classes there, so their sum counts no
     party twice (`code_index.loader._check_whole_totals`).
     """
 

@@ -306,8 +306,8 @@ def _whole_total_fact(
     words for it (`words`, keyed by the group's label) are `asked`; with none on a door that
     holds the request's words (`request_words`), the request named nothing on the side, so
     the fact is `inferred`. A union of totals (`EntityGroup.total` `None`) names each by its
-    code index label, as the group names a single total. `side_kinds` is the group's
-    (`spec_build.with_side_kinds`)."""
+    code index label, as the group names a single total. `side_classes` is the group's
+    (`spec_build.with_side_classes`)."""
     asked = words.get(group.label)
     parties = get_index().parties
     axis = role_key_axis(role)
@@ -325,7 +325,7 @@ def _whole_total_fact(
             for dcid in totals
         ),
         whole_of=tuple(group.whole_of or ()),
-        side_kinds=tuple(group.side_kinds or ()),
+        side_classes=tuple(group.side_classes or ()),
         inferred=asked is None and request_words,
     )
 

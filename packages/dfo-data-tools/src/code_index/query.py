@@ -17,7 +17,7 @@ from types import MappingProxyType
 
 from code_index.tokens import Token, TokenLookup, word_tokens
 from code_index.types import (
-    POPULATION_KIND,
+    POPULATION_CLASS,
     AbsentObservation,
     Bound,
     BoundSet,
@@ -28,6 +28,7 @@ from code_index.types import (
     IndexStamp,
     LevelOption,
     MeasureClassDeclaration,
+    MemberClass,
     PartlyStatedValue,
     PartyKind,
     PartyRow,
@@ -36,6 +37,7 @@ from code_index.types import (
     StatTypeWordDeclaration,
     StatVarRow,
     WholeTotalSet,
+    member_class,
     party_kind,
 )
 from dfo_platform.roles import RoleAxis
@@ -247,15 +249,17 @@ def _dataset_pins(
 
 
 def _enrichment_digest(parties: Iterable[PartyRow]) -> str:
-    """The hex SHA-256 of `parties`' `(dcid, kind, whole markers)` rows, sorted by dcid, each
-    marker as `(dataset, holds, years)`. Neither row order nor a label, group or dataset-list
-    change moves it. The markers are in it, windows included, because a whole total's frame
-    cell depends on the row's dataset and on whether its year falls inside the window."""
+    """The hex SHA-256 of `parties`' `(dcid, kind, sector, whole markers)` rows, sorted by dcid,
+    each marker as `(dataset, covers, years)`. Neither row order nor a label, group or
+    dataset-list change moves it. The markers are in it, windows included, because a whole
+    total's frame cell depends on the row's dataset and on whether its year falls inside the
+    window."""
     rows = sorted(
         (
             party.dcid,
             party.kind,
-            [(marker.dataset, sorted(marker.holds), marker.years) for marker in party.whole],
+            party.sector,
+            [(marker.dataset, sorted(marker.covers), marker.years) for marker in party.whole],
         )
         for party in parties
     )
@@ -404,10 +408,10 @@ class CodeIndex:
         "measure_classes",
         "parties",
         "partly_stated_values",
-        "party_kinds_by_side",
         "party_types",
         "population_totals_by_axis",
         "shape_slot_defaults",
+        "side_classes",
         "source_code_provenances",
         "source_codes",
         "stamp",
@@ -497,31 +501,32 @@ class CodeIndex:
                 if party.totals in self.totals_by_group:
                     raise DuplicateDcid(f"two totals hold the group {party.totals!r}")
                 self.totals_by_group[party.totals] = party
-        party_kinds_by_side: dict[tuple[RoleAxis, str], set[PartyKind]] = defaultdict(set)
+        side_classes: dict[tuple[RoleAxis, str], set[MemberClass]] = defaultdict(set)
         population_totals_by_axis: dict[RoleAxis, list[str]] = defaultdict(list)
         for party in self.parties.values():
-            if party.kind != "total":
+            if (cls := member_class(party)) is not None:
                 for axis in party.axes:
                     for dataset in party.datasets:
-                        party_kinds_by_side[axis, dataset].add(party.kind)
-            elif any(POPULATION_KIND in marker.holds for marker in party.whole):
+                        side_classes[axis, dataset].add(cls)
+            elif any(POPULATION_CLASS in marker.covers for marker in party.whole):
                 population_totals_by_axis[party.axes[0]].append(party.dcid)
-        self.party_kinds_by_side: dict[tuple[RoleAxis, str], frozenset[PartyKind]] = {
-            side: frozenset(kinds) for side, kinds in party_kinds_by_side.items()
+        self.side_classes: dict[tuple[RoleAxis, str], frozenset[MemberClass]] = {
+            side: frozenset(classes) for side, classes in side_classes.items()
         }
-        """The kinds of party, totals aside, each dataset publishes on each flow axis, by
-        `(axis, dataset)`. A `PartyRow` keeps its axes and datasets apart, so a party
-        published on both axes counts on each in every dataset that publishes it."""
+        """The classes of party, totals aside (`member_class`), each dataset publishes on each
+        flow axis, by `(axis, dataset)`. A `PartyRow` keeps its axes and datasets apart, so a
+        party published on both axes counts on each in every dataset that publishes it."""
         self.population_totals_by_axis: dict[RoleAxis, tuple[str, ...]] = {
             axis: tuple(sorted(dcids)) for axis, dcids in population_totals_by_axis.items()
         }
-        """The totals some dataset marks as holding the `party` kind (`PartyRow.whole`), by
-        the one axis each stands on, sorted by dcid."""
+        """The totals some dataset marks as covering the `official` class (`PartyRow.whole`),
+        by the one axis each stands on, sorted by dcid."""
         self.enrichment_digest = _enrichment_digest(self.parties.values())
-        """SHA-256 over the sorted `(dcid, kind, whole markers)` rows of `parties`, the part of
-        the index a `{role}_party_kind` cell is read from. A file holding such cells is linked
-        under a key salted with it (`datasets_api.version_store.enriched_rendering_key`), so an
-        export that changes no kind and no whole marker leaves every link in place."""
+        """SHA-256 over the sorted `(dcid, kind, sector, whole markers)` rows of `parties`, the
+        part of the index the `{role}_party_kind`, `{role}_party_sector` and `{role}_party_whole`
+        cells are read from. A file holding such cells is linked under a key salted with it
+        (`datasets_api.version_store.enriched_rendering_key`), so an export that changes no
+        kind, sector or whole marker leaves every link in place."""
         self.whole_total_sets = tuple(whole_total_sets)
         """The unions of whole totals read as one population (`WholeTotalSet`), in declaration
         order. The loader refuses two that share a phrase (`loader._check_whole_totals`)."""

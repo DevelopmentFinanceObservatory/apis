@@ -25,7 +25,7 @@ from artifact_store.inventory import InventoryEntry
 from dataset_store.snapshot import StoredVersion, VersionFacts, VersionState
 from description.facts import Basis, DescriptionRecord
 from description.stored import FieldPath
-from materialise.enrichment import PARTY_KIND_FIELD, is_party_role
+from materialise.enrichment import PARTY_FIELDS, is_party_role
 
 logger = logging.getLogger(__name__)
 
@@ -40,15 +40,16 @@ Trigger = Literal["mint", "get", "options", "refresh", "worker"]
 
 def carries_party_kind(rendering: Mapping[str, object]) -> bool:
     """Whether the options of `rendering` ask for party-kind cells, which the code index's
-    party kinds fill.
+    party rows fill.
 
     A requested rendering (`bundle` is always set on one; the canonical frame, a frame1 document
     and the series statistics have none) asks for them in two cases. The long layout, which has
     neither a `pivot` nor `layout: "frame"` (a bare long file records its layout version under
-    `layout`, so only the value `"frame"` marks the frame layout), writes a `{role}_party_kind`
+    `layout`, so only the value `"frame"` marks the frame layout), writes a `{role}_kind`
     column for every party role of its frame by default. Any other layout asks for them when its
-    `columns` name the bare `party_kind` token or a qualified `{role}_party_kind`. A frame with
-    no party role gets no such cell either way (`enrichment_stamp`).
+    `columns` name a party field (`party_kind`, `party_sector` or `party_whole`), bare or
+    qualified as `{role}_{field}`. A frame with no party role gets no such cell either way
+    (`enrichment_stamp`).
     """
     if "bundle" not in rendering:
         return False
@@ -57,7 +58,7 @@ def carries_party_kind(rendering: Mapping[str, object]) -> bool:
     columns = rendering.get("columns")
     return isinstance(columns, list) and any(
         isinstance(column, str)
-        and (column == PARTY_KIND_FIELD or column.endswith(f"_{PARTY_KIND_FIELD}"))
+        and any(column == field or column.endswith(f"_{field}") for field in PARTY_FIELDS)
         for column in columns
     )
 

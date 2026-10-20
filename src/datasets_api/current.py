@@ -159,7 +159,7 @@ from materialise.profile import OutputProfile
 from materialise.projection import totals_axes
 from materialise.rate_tables import RateTableCache
 from series_coverage.index import CoverageIndex, Estimate
-from series_coverage.shared import CoverageService, CoverageSnapshot
+from series_coverage.shared import CoverageSnapshot, ServedCoverage
 from spec_registry import SpecRegistry
 from spec_registry.reader import SpecReader, StoredDefinition
 from statvar_members import MemberEnumerator
@@ -190,12 +190,12 @@ class DefinitionDeps:
     enumerator: MemberEnumerator
     # Process-wide country-code and label cache, built with the graph and passed to `ServeDeps`.
     enrichment: EnrichmentLookup
-    # Process-wide code index passed to `ServeDeps`.
+    # The code index this request or run reads, passed to `ServeDeps`.
     code_index: CodeIndex
     # Shared by re-materialisations and passed to `ServeDeps`.
     rate_cache: RateTableCache
     # Used for coverage estimates before any SDMX call.
-    coverage: CoverageService
+    coverage: ServedCoverage
     version_writer: VersionRecordWriter = field(default_factory=NullVersionRecordWriter)
     # Freshness reads and confirms the head, and a rebuild advances it. Re-materialisation receives
     # the observed head as `expected_head` to prevent overwriting a concurrent update. The null

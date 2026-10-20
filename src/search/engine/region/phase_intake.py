@@ -11,6 +11,7 @@ from typing import Final, cast
 
 import dc_graph
 from code_index.shared import get_index
+from code_index.types import MemberClass
 from dfo_platform.timings import PhaseTimings, collecting
 from entity_resolution import Ambiguous, Entity, Group, Resolved
 from origin_catalogue import recording_un_blocked_places
@@ -41,11 +42,11 @@ from search.engine.region.result import (
 )
 from search.engine.region.source_choice import allows_un_system
 from search.engine.region.state import ResolveState, UnLeg, UnPool
-from search.engine.region.whole_totals import named_whole, population_totals, side_kinds
+from search.engine.region.whole_totals import named_whole, population_totals, side_classes
 from search.engine.retrieval.bound_values import declared_datasets
 from search.engine.retrieval.derive import derive_shapes
 from search.engine.shape import ShapeDraft, role_names_by_axis
-from search.models import EntityRoleKey, NoDataReason, PartyKind, RoleAxis, elect_no_data_reason
+from search.models import EntityRoleKey, NoDataReason, RoleAxis, elect_no_data_reason
 from search.render.no_data import UnlistedPopulation
 
 # Full-facet probing is capped at 6 candidates. This phase checks raw recall count before
@@ -515,15 +516,20 @@ def _prune_shapes_by_listing(
     state: ResolveState, shapes: list[ShapeDraft]
 ) -> tuple[list[ShapeDraft], list[RoleNotAdmittedEntity]]:
     """Keep shapes on which each whole population a text asks the members of
-    (`ResolveState.whole_listed`) opens its side to exactly its parties: every kind of party
-    the shape's declared datasets hold there, totals aside (`whole_totals.side_kinds`), is
-    one the population's markers hold (`WholeMarker.holds`). An open side lists every party
-    its dataset holds, and a Spec states no kind it leaves out, so "official donors" asked
-    member by member lists on no CRS shape, where private donors stand beside official ones.
+    (`ResolveState.whole_listed`) opens its side to exactly its parties: the classes of party
+    the shape's declared datasets hold there, totals aside (`whole_totals.side_classes`), are
+    a subset of the ones the population's markers cover (`WholeMarker.covers`). An open side
+    lists every party its dataset holds, and a Spec states no class it leaves out, so
+    "official donors" asked member by member lists on no CRS shape, where private donors
+    stand beside official ones. A shape whose datasets hold no class the index reads on the
+    side, such as one no declared dataset publishes, lists no population, since nothing
+    shows what its open side would hold.
 
     Return the rejected populations, each named by its first party (`UnlistedPopulation`),
     only when every shape fails. Where some population fails on every shape, those are the
-    ones named, each with the kinds every shape's datasets hold beside it. Otherwise each
+    ones named, each with the classes every shape's datasets hold beside it, or with no
+    account (`RoleNotAdmittedEntity.unlisted` `None`) where the shapes share no class they
+    are known to hold beside it, as where one shape's classes cannot be read. Otherwise each
     population fails only beside the others, and every one some shape fails is named as
     listing alone. A population every shape lists exactly is no cause of the refusal."""
     if not state.whole_listed:
@@ -539,37 +545,42 @@ def _prune_shapes_by_listing(
         if name in state.whole_listed
     }
     parties = get_index().parties
-    held = {
-        name: {kind for dcid in dcids for marker in parties[dcid].whole for kind in marker.holds}
+    covered = {
+        name: {cls for dcid in dcids for marker in parties[dcid].whole for cls in marker.covers}
         for name, dcids in listed.items()
     }
 
-    def left_out(shape: ShapeDraft, name: str) -> set[PartyKind]:
+    def left_out(shape: ShapeDraft, name: str) -> set[MemberClass] | None:
         datasets = [dataset.provenance for dataset in declared_datasets(shape, get_index())]
-        return set(side_kinds(state.whole_listed[name], datasets=datasets)) - held[name]
+        classes = side_classes(state.whole_listed[name], datasets=datasets)
+        return set(classes) - covered[name] if classes else None
+
+    def fails(classes: set[MemberClass] | None) -> bool:
+        return classes is None or bool(classes)
 
     left_outs = {name: [left_out(shape, name) for shape in shapes] for name in listed}
     survivors = [
         shape
         for position, shape in enumerate(shapes)
-        if not any(kinds[position] for kinds in left_outs.values())
+        if not any(fails(classes[position]) for classes in left_outs.values())
     ]
     if survivors:
         return survivors, []
-    nowhere = [name for name, kinds in left_outs.items() if all(kinds)]
+    nowhere = [name for name, classes in left_outs.items() if all(map(fails, classes))]
+    unlisted: dict[str, UnlistedPopulation | None]
     if nowhere:
+        held = {name: set.intersection(*(c or set() for c in left_outs[name])) for name in nowhere}
         unlisted = {
-            name: UnlistedPopulation(
-                axis=state.whole_listed[name],
-                left_out=tuple(sorted(set.intersection(*left_outs[name]))),
-            )
-            for name in nowhere
+            name: UnlistedPopulation(axis=state.whole_listed[name], left_out=tuple(sorted(classes)))
+            if classes
+            else None
+            for name, classes in held.items()
         }
     else:
         unlisted = {
             name: UnlistedPopulation(axis=state.whole_listed[name], left_out=(), listed_alone=True)
-            for name, kinds in left_outs.items()
-            if any(kinds)
+            for name, classes in left_outs.items()
+            if any(map(fails, classes))
         }
     return [], [
         RoleNotAdmittedEntity(text=name, dcid=listed[name][0], graph_type=None, unlisted=population)

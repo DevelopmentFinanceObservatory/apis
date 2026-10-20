@@ -2,11 +2,13 @@
 platform parts built from them, and the inputs that build the slice's DFO parts.
 
 `SLICE_DECLARATIONS` cuts the declarations to what the twenty-variable slice holds: the CRS
-dataset through `crsTypeOfFlow`, the only code enum the slice read, and no listed dataset. The
-slice reads no party nodes, so `slice_platform_parts` adds its CRS rows' parties as dev's
-Spanner holds them: two by `typeOf` and `name` edges, one country as a placeholder `Node` row
-an edge names, and one country not at all. `SLICE_BASE_PARTIES` answers the two countries as
-the mixer does.
+dataset through `crsTypeOfFlow`, the only code enum the slice read, the imputed multilateral
+dataset whose variables that enum also reaches, no stated or party words the slice's measured
+properties cannot back, and no listed dataset, so the slice's code index loads. The slice reads
+no party nodes, so `slice_platform_parts` adds its CRS rows' parties as dev's Spanner holds
+them: two by `typeOf` and `name` edges, one country as a placeholder `Node` row an edge names,
+and one country not at all. `SLICE_BASE_PARTIES` answers those two countries and the imputed
+dataset's donors as the mixer does.
 """
 
 from __future__ import annotations
@@ -73,6 +75,7 @@ def platform_parts() -> PlatformParts:
 
 
 _CRS: Final[str] = "provenance/OECDCreditorReportingSystem"
+_IMPUTED: Final[str] = "provenance/ONEImputedMultilateralSectors"
 
 SLICE_DECLARATIONS = dataclasses.replace(
     DECLARATIONS,
@@ -81,7 +84,11 @@ SLICE_DECLARATIONS = dataclasses.replace(
         for config in DECLARATIONS.code_systems
         if config.code_system == "crsTypeOfFlow"
     ),
-    datasets=tuple(dataset for dataset in DECLARATIONS.datasets if dataset.provenance == _CRS),
+    datasets=tuple(
+        dataclasses.replace(dataset, stated_words=(), party_words=())
+        for dataset in DECLARATIONS.datasets
+        if dataset.provenance in (_CRS, _IMPUTED)
+    ),
     listed_datasets=(),
     party_kind_overrides={},
     total_groups={},
@@ -111,8 +118,26 @@ UNHELD_PARTY: Final[str] = "country/TJK"
 MIXER_PARTIES: Final[Mapping[str, dict[str, tuple[str, ...]]]] = {
     "country/KGZ": {"typeOf": ("Country",), "name": ("Kyrgyzstan",), "dacCode": ()},
     "country/TJK": {"typeOf": ("Country",), "name": ("Tajikistan",), "dacCode": ()},
+    **{
+        f"country/{iso3}": {"typeOf": ("Country",), "name": (name,), "dacCode": ()}
+        for iso3, name in (
+            ("ARE", "United Arab Emirates"),
+            ("CIV", "Côte d'Ivoire"),
+            ("CRI", "Costa Rica"),
+            ("DNK", "Denmark"),
+            ("FRA", "France"),
+            ("IRL", "Ireland"),
+            ("ISR", "Israel"),
+            ("LUX", "Luxembourg"),
+            ("PRT", "Portugal"),
+            ("SAU", "Saudi Arabia"),
+            ("TUN", "Tunisia"),
+            ("TUR", "Türkiye"),
+        )
+    },
 }
-"""The slice's parties only the mixer answers."""
+"""The slice's parties only the mixer answers: the CRS rows' two countries and the imputed
+dataset's donors."""
 
 
 class RecordedMixer:

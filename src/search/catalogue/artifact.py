@@ -128,7 +128,8 @@ class CataloguePlace(_Model):
 
 
 class BuildInputs(_Model):
-    """What a build read. `build_key` hashes these."""
+    """What a build read. `build_key` hashes these. `coverage_build_id` is the
+    graph release id for a build the job ran with `GRAPH_RELEASE_COVERAGE` on."""
 
     origin_catalogue_build_id: str
     coverage_build_id: str

@@ -288,7 +288,7 @@ def _mint(world: World) -> MaterialisationResult:
         graph=graph,
         materialiser_build="latest-parity",
         capability_version="v1",
-        enrichment=EnrichmentLookup(graph, parties={}),
+        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
         coverage=world.index,
     )
 

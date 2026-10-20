@@ -72,7 +72,7 @@ class Warning(StrictModel):
             "search itself was "
             "unavailable. whole_total_available: {total, total_label, whole_of}, the dcid "
             "and label of the total the source publishes for the side the answer lists "
-            "member by member, and the kinds of party it holds, comma-joined (party, "
+            "member by member, and the classes of party it covers, comma-joined (official, "
             "private, residual). Omitted for every other code"
         ),
     )

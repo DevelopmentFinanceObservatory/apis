@@ -19,7 +19,7 @@ from code_index.types import PartyRow
 from dfo_platform.codes import CodeCatalogue
 from dfo_platform.problem import Alternative, ProblemIssue
 from materialise.codes import MaterialisationWarning
-from materialise.enrichment import PARTY_KIND_FIELD, is_party_role, row_party_kind_cell
+from materialise.enrichment import PARTY_FIELDS, is_party_role, row_party_cell
 from materialise.errors import MaterialisationError, MaterialisationUsageError
 from materialise.method_status import method_status_classes
 
@@ -36,15 +36,16 @@ _MEASUREMENT_METHOD_COLUMN = "measurementMethod"
 _PROVENANCE_COLUMN = "provenance"
 _FACET_IDENTITY_COLUMNS: tuple[str, ...] = (_MEASUREMENT_METHOD_COLUMN, _PROVENANCE_COLUMN)
 
-SUPPORTED_ENRICHMENTS: frozenset[str] = frozenset({"iso2", "iso3", "label", "party_kind", "type"})
+SUPPORTED_ENRICHMENTS: frozenset[str] = frozenset({"iso2", "iso3", "label", "type", *PARTY_FIELDS})
 """The closed enrichment field vocabulary this engine can fill. Capabilities
 publishing reads this constant directly rather than duplicating it."""
 
-TABLE_WIDE_ENRICHMENTS: frozenset[str] = frozenset({"party_kind"})
+TABLE_WIDE_ENRICHMENTS: frozenset[str] = frozenset(PARTY_FIELDS)
 """The enrichment fields a bare token requests for every party role of the
-table (`materialise.enrichment.is_party_role`). A sum across any party role needs
-each party's kind, so a caller asks for it without knowing which roles the table
-carries. Every other field needs its entity-column prefix."""
+table (`materialise.enrichment.is_party_role`): `party_kind`, `party_sector` and
+`party_whole`. A sum across any party role needs each party's kind, so a caller
+asks for it without knowing which roles the table carries. Every other field
+needs its entity-column prefix."""
 
 _MAX_NAMED_DUPLICATE_KEYS = 10
 """Cap on how many duplicate pivot keys a `pivot_not_unique` message names,
@@ -1178,11 +1179,14 @@ def _fill_lookup_columns(
     gets an `enrichment_unavailable` warning with its empty-cell count.
     Callers validate entity columns, field names, and duplicate requests.
 
-    With `parties` (the code index's rows), a `party_kind` cell is `party_kind_cell` of the
-    row's party for the row's `provenance` and the year of its `time_period`, so a whole total
-    reads `whole_total` only in the dataset and years its marker holds (`PartyRow.whole`). A
-    table with no `provenance` or `time_period` column, or a row with no readable value in one,
-    reads `total`. Without `parties` the cell comes from `lookup` like every field.
+    With `parties` (the code index's rows), a party field's cell (`PARTY_FIELDS`) is
+    `party_cell` of the row's party for the row's `provenance` and the year of its
+    `time_period`, so `party_whole` reads `true` only in the dataset and years a whole total's
+    marker holds (`PartyRow.whole`). Where a table has no `provenance` or `time_period` column,
+    or a row no readable value in one, the `party_whole` cell of a party with whole markers is
+    empty (`materialise.enrichment.whole_cell`). Without
+    `parties` the cell comes from `lookup` like every field. Only a cell `lookup_cell` reads as
+    absent counts as missing.
     """
     entity_positions = {
         entity_column: table.columns.index(entity_column) for entity_column, _field in requests
@@ -1199,23 +1203,21 @@ def _fill_lookup_columns(
         extra: list[object] = []
         for entity_column, field_name in requests:
             ref = row[entity_positions[entity_column]]
-            if parties is not None and field_name == PARTY_KIND_FIELD:
-                value = (
-                    row_party_kind_cell(
-                        ref,
-                        parties=parties,
-                        period=None if period_at is None else row[period_at],
-                        provenance=None if provenance_at is None else row[provenance_at],
-                    )
-                    or ""
+            value: str | None
+            if parties is not None and field_name in PARTY_FIELDS:
+                value = row_party_cell(
+                    field_name,
+                    ref,
+                    parties=parties,
+                    period=None if period_at is None else row[period_at],
+                    provenance=None if provenance_at is None else row[provenance_at],
                 )
             else:
-                entry = lookup.get(ref, {}) if isinstance(ref, str) else {}
-                value = entry.get(field_name, "")
-            if value == "":
+                value = lookup_cell(lookup, ref, field_name)
+            if value is None:
                 request = (entity_column, field_name)
                 missing_counts[request] = missing_counts.get(request, 0) + 1
-            extra.append(value)
+            extra.append("" if value is None else value)
         new_rows.append((*row, *extra))
 
     output_columns = (
@@ -1231,6 +1233,17 @@ def _fill_lookup_columns(
         if (entity_column, field_name) in missing_counts
     )
     return Table(columns=output_columns, rows=tuple(new_rows)), warnings
+
+
+def lookup_cell(
+    lookup: Mapping[str, Mapping[str, str]], ref: object, field_name: str
+) -> str | None:
+    """The `field_name` cell `lookup` gives `ref`. `None` when it gives none: a `ref` that is not
+    text, or one `lookup` lacks or holds no such field for. An empty string is a value, such as
+    the `party_sector` of a residual, so it counts as no miss."""
+    if not isinstance(ref, str):
+        return None
+    return lookup.get(ref, {}).get(field_name)
 
 
 def _refuse_unknown_entity_columns(
@@ -1274,7 +1287,7 @@ def enrich_columns(
     """Append `{entity_column}_{field}` columns in request order.
     Fields must be supported, entity columns must exist, and requests must
     be unique. Invalid input raises `MaterialisationUsageError` before rows
-    are processed. `parties` gives `party_kind` cells their year-aware reading
+    are processed. `parties` gives party fields' cells their year-aware reading
     (`_fill_lookup_columns`).
     """
     unsupported = sorted(
@@ -1956,8 +1969,8 @@ class EnrichmentPlan:
     """One `enrich_columns` invocation's parameters. `requests` is a tuple
     of `(entity_column, field)` pairs, in the order `enrich_columns` should
     append their output columns. `parties` is the code index's rows, which give
-    each row's `party_kind` cell for the year of its `time_period`; `None` reads
-    the cell from `lookup`, as for every other field.
+    each row's party cells (`PARTY_FIELDS`) for the dataset and year of the row;
+    `None` reads the cells from `lookup`, as for every other field.
     """
 
     requests: tuple[tuple[str, str], ...]
@@ -1985,10 +1998,10 @@ def parse_column_tokens(
     """Split tokens into selected columns and enrichment requests. Exact
     table-column matches take priority; other tokens match an entity-column
     prefix plus a supported field, since names can contain underscores. A bare
-    field in `TABLE_WIDE_ENRICHMENTS` (`party_kind`) requests that field for every
+    field in `TABLE_WIDE_ENRICHMENTS` (the party fields) requests that field for every
     party role of the table (`materialise.enrichment.is_party_role`), and a qualified
-    token the bare one already covers adds nothing. `party_kind` belongs to party roles
-    only, so a token qualifying a subject role with it (`observationAbout_party_kind`)
+    token the bare one already covers adds nothing. A party field belongs to party roles
+    only, so a token qualifying a subject role with one (`observationAbout_party_kind`)
     does not parse.
     Unknown tokens raise `ColumnUnknownError` with all qualified alternatives,
     independent of field enablement. Preserve token order; callers reject
@@ -2044,9 +2057,9 @@ def parse_column_tokens(
 
 
 def enrichment_qualifies(entity_column: str, field_name: str) -> bool:
-    """Whether `field_name` can qualify `entity_column`: every field but `party_kind`, which
-    qualifies a party role only."""
-    return field_name != PARTY_KIND_FIELD or is_party_role(entity_column)
+    """Whether `field_name` can qualify `entity_column`: every field but the party fields
+    (`PARTY_FIELDS`), which qualify a party role only."""
+    return field_name not in PARTY_FIELDS or is_party_role(entity_column)
 
 
 @dataclass(frozen=True)

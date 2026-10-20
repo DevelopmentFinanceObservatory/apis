@@ -51,7 +51,6 @@ entries when it carries no `as_of`; a GET with `as_of` dates a membership and al
 from __future__ import annotations
 
 import asyncio
-import functools
 import logging
 import time
 from dataclasses import dataclass, field
@@ -62,7 +61,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, TypeAdapter
 
 from code_index.query import CodeIndex
-from code_index.shared import get_index, get_measure_index
+from code_index.shared import get_index, get_measure_index, per_index
 from code_index.types import MeasureIndex
 from dfo_platform import ProblemSpec
 from dfo_platform.doors import DoorContribution
@@ -566,7 +565,7 @@ def _is_iso_code(dcid: str) -> bool:
     return len(dcid) == 3 and dcid.isascii() and dcid.isalpha() and dcid.isupper()
 
 
-@functools.cache
+@per_index
 def _role_properties(code_index: CodeIndex) -> tuple[str, ...]:
     """The role properties the code index's variables declare, sorted."""
     return tuple(

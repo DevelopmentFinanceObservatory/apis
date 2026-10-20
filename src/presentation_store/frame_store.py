@@ -621,12 +621,14 @@ class LiveFrameStore:
     `recipe_reader` supplies a derived frame's rolling anchor, and `None` loads every frame
     without one. `description_reader` supplies each version's description record, and `None`
     loads every frame without one.
-    `code_index` and `measure_index` default to the packaged indexes. `now` supplies the clock
-    for expiry checks and reference timestamps. `read_budget_seconds` bounds the graph reads of
-    one `load()` from its start, as the module docstring describes, for a caller that sets no
-    door deadline. `frame_max_rows` bounds the rows of a canonical frame `load()` decodes, since
-    the whole frame is built in memory. A larger frame refuses `missing_rendering`, before its
-    object is fetched when the version's facts record its row count.
+    `code_index` and `measure_index` are fixed when given. Left out, each read takes the
+    indexes the request reads (`get_index`, `get_measure_index`), which can change between
+    requests. `now` supplies the clock for expiry checks and reference timestamps.
+    `read_budget_seconds` bounds the graph reads of one `load()` from its start, as the module
+    docstring describes, for a caller that sets no door deadline. `frame_max_rows` bounds the
+    rows of a canonical frame `load()` decodes, since the whole frame is built in memory. A
+    larger frame refuses `missing_rendering`, before its object is fetched when the version's
+    facts record its row count.
     """
 
     def __init__(
@@ -653,8 +655,8 @@ class LiveFrameStore:
         self._spec_reader = spec_reader
         self._recipe_reader = recipe_reader
         self._description_reader = description_reader
-        self._code_index = code_index if code_index is not None else get_index()
-        self._measure_index = measure_index if measure_index is not None else get_measure_index()
+        self._given_code_index = code_index
+        self._given_measure_index = measure_index
         self._now = now
         self._cache_max_bytes = cache_max_bytes
         self._read_budget_seconds = read_budget_seconds
@@ -664,6 +666,16 @@ class LiveFrameStore:
         self._cache_bytes = 0
         self._refreshing: set[tuple[str, str]] = set()
         self._refresh_ended = threading.Condition(self._cache_lock)
+
+    @property
+    def _code_index(self) -> CodeIndex:
+        return self._given_code_index if self._given_code_index is not None else get_index()
+
+    @property
+    def _measure_index(self) -> MeasureIndex:
+        if self._given_measure_index is not None:
+            return self._given_measure_index
+        return get_measure_index()
 
     # -- FrameStore ---------------------------------------------------
 

@@ -1,14 +1,14 @@
 """Whole totals: the published total of every party on one side of a flow.
 
-The code index marks a total as whole in a dataset where it holds every party of some kinds
-on its one axis (`code_index.types.WholeMarker`): "Official Donors, Total"
-(`DACOfficialDonors`) holds every `party` donor in DAC2a and DAC2b, and "All Recipients,
-Total" (`DACAllRecipients`) every `party` and `residual` recipient in DAC2a from 1984. It
+The code index marks a total as whole in a dataset where it holds every party of some classes
+on its one axis (`code_index.types.WholeMarker.covers`): "Official Donors, Total"
+(`DACOfficialDonors`) covers every `official` donor in DAC2a and DAC2b, and "All Recipients,
+Total" (`DACAllRecipients`) every `official` and `residual` recipient in DAC2a from 1984. It
 also names unions of whole totals read as one population (`code_index.types.WholeTotalSet`):
 "all donors including private" is the official donors' total and the private donors'.
 
 A side reads as its whole population (`whole_reading`) where it binds exactly one whole total
-whose marker holds the `party` kind, or exactly the members of one whole total set, in every
+whose marker covers the `official` class, or exactly the members of one whole total set, in every
 dataset the answer is read from, within the marker's years. A total of a narrower population,
 "Private Donors, Total" alone, is a party the request names and no whole population. Search
 binds such a reading on a side the part totals (`place_roles.whole_total_candidates`), reads
@@ -27,7 +27,13 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
 from code_index.shared import get_index
-from code_index.types import POPULATION_KIND, PartyKind, PartyRow, WholeMarker, WholeTotalSet
+from code_index.types import (
+    POPULATION_CLASS,
+    MemberClass,
+    PartyRow,
+    WholeMarker,
+    WholeTotalSet,
+)
 from dfo_platform.roles import role_key_axis
 from search.engine.extract import DateRequest
 from search.engine.region.codes import WHOLE_TOTAL_AVAILABLE
@@ -38,7 +44,7 @@ from search.heading.departure_fact import DepartureFact
 from search.models import IdentityWindow, RoleAxis, Spec, TimeWindow, Warning, role_ref
 from search.render.departures import (
     WHOLE_MEMBER_NOUNS,
-    whole_population_is_official,
+    private_outside,
     whole_population_text,
     whole_residual_text,
 )
@@ -53,15 +59,15 @@ class WholeReading:
 
     `members` are the parties the side binds: one whole total, or the members of one whole
     total set. `total` is the one whole total, `None` for a set. `label` names the population:
-    the total's graph label, or the set's phrase. `whole_of` is the kinds of party the
-    population holds, sorted: the total's marker's, or the union of the set members'.
+    the total's graph label, or the set's phrase. `whole_of` is the classes of party the
+    population covers, sorted: the total's marker's, or the union of the set members'.
     """
 
     axis: RoleAxis
     members: tuple[str, ...]
     total: str | None
     label: str
-    whole_of: tuple[PartyKind, ...]
+    whole_of: tuple[MemberClass, ...]
 
     def named_group(self) -> NamedGroup:
         """The group a Spec carries for the side (`spec_build.role_entity_groups`): a single
@@ -123,9 +129,9 @@ def whole_reading(
     `datasets` over `years` (`requested_years`), or `None`.
 
     One dcid reads whole when every dataset marks it within `years` and the markers agree on
-    what it holds, which includes the `party` kind. Several read whole when they are exactly
-    the members of one whole total set and each member reads so in every dataset, its kinds
-    then the union of theirs. No dataset reads nothing whole."""
+    what it covers, which includes the `official` class. Several read whole when they are
+    exactly the members of one whole total set and each member reads so in every dataset, its
+    classes then the union of theirs. No dataset reads nothing whole."""
     index = get_index()
     members = frozenset(dcids)
     if not datasets or not members:
@@ -139,16 +145,16 @@ def whole_reading(
         if whole_set is None:
             return None
         parties = [index.parties.get(dcid) for dcid in whole_set.members]
-    held: set[PartyKind] = set()
+    covered: set[MemberClass] = set()
     for party in parties:
         if party is None or (markers := _markers(party, datasets)) is None:
             return None
-        if len({marker.holds for marker in markers}) != 1:
+        if len({marker.covers for marker in markers}) != 1:
             return None
         if not all(_within(marker, years) for marker in markers):
             return None
-        held.update(markers[0].holds)
-    if POPULATION_KIND not in held:
+        covered.update(markers[0].covers)
+    if POPULATION_CLASS not in covered:
         return None
     first = parties[0]
     assert first is not None
@@ -158,14 +164,14 @@ def whole_reading(
             members=whole_set.members,
             total=None,
             label=whole_set.phrase,
-            whole_of=tuple(sorted(held)),
+            whole_of=tuple(sorted(covered)),
         )
     return WholeReading(
         axis=first.axes[0],
         members=(first.dcid,),
         total=first.dcid,
         label=first.label or first.dcid,
-        whole_of=tuple(sorted(held)),
+        whole_of=tuple(sorted(covered)),
     )
 
 
@@ -173,13 +179,13 @@ def covers_unpublished(dcids: Collection[str], *, datasets: Sequence[str]) -> bo
     """Whether the whole population `dcids` names reads, on a shape answered from
     `datasets`, as its side left unnamed: none of `datasets` publishes any of its parties
     (`PartyRow.datasets`), with a whole marker or without one, those datasets hold some
-    party on its side, and every one, totals aside, is of a kind its markers elsewhere say
-    it holds. The CRS publishes no total of its recipients and holds `party` and `residual`
-    ones, so "all recipients" (`DACAllRecipients`, `party` and `residual`) reads as every
-    recipient it holds. DAC2b publishes `DACAllRecipients` with no marker, so there it
-    binds as a named party and reads as no whole population. The CRS holds private donors
-    beside official ones, so "official donors" (`DACOfficialDonors`, `party` alone) never
-    reads as every donor it holds; DAC1 holds official donors alone, so there it does."""
+    party on its side, and every one, totals aside, is of a class its markers elsewhere say
+    it covers. The CRS publishes no total of its recipients and holds `official` and
+    `residual` ones, so "all recipients" (`DACAllRecipients`, `official` and `residual`)
+    reads as every recipient it holds. DAC2b publishes `DACAllRecipients` with no marker, so
+    there it binds as a named party and reads as no whole population. The CRS holds private
+    donors beside official ones, so "official donors" (`DACOfficialDonors`, `official` alone)
+    never reads as every donor it holds; DAC1 holds official donors alone, so there it does."""
     index = get_index()
     rows = [index.parties.get(dcid) for dcid in dcids]
     if not datasets or not rows or any(row is None for row in rows):
@@ -187,18 +193,16 @@ def covers_unpublished(dcids: Collection[str], *, datasets: Sequence[str]) -> bo
     parties = cast(list[PartyRow], rows)
     if any(dataset in row.datasets for row in parties for dataset in datasets):
         return False
-    holds = {kind for row in parties for marker in row.whole for kind in marker.holds}
-    kinds = side_kinds(parties[0].axes[0], datasets=datasets)
-    return bool(kinds) and set(kinds) <= holds
+    covers = {cls for row in parties for marker in row.whole for cls in marker.covers}
+    classes = side_classes(parties[0].axes[0], datasets=datasets)
+    return bool(classes) and set(classes) <= covers
 
 
-def side_kinds(axis: RoleAxis, *, datasets: Sequence[str]) -> tuple[PartyKind, ...]:
-    """The kinds of party, totals aside, that `datasets` hold on `axis`, sorted
-    (`CodeIndex.party_kinds_by_side`)."""
-    by_side = get_index().party_kinds_by_side
-    return tuple(
-        sorted({kind for dataset in datasets for kind in by_side.get((axis, dataset), ())})
-    )
+def side_classes(axis: RoleAxis, *, datasets: Sequence[str]) -> tuple[MemberClass, ...]:
+    """The classes of party, totals aside, that `datasets` hold on `axis`, sorted
+    (`CodeIndex.side_classes`)."""
+    by_side = get_index().side_classes
+    return tuple(sorted({cls for dataset in datasets for cls in by_side.get((axis, dataset), ())}))
 
 
 def whole_total_unpublished_facts(
@@ -208,8 +212,8 @@ def whole_total_unpublished_facts(
     (`whole_named`, each text with the dcids it names) whose side `spec`'s identity leaves
     unnamed because the dataset elected for it publishes no total of the population and
     holds no party outside it there (`covers_unpublished`). `asked` is the text, `shown`
-    the dataset's name, `over` the side and `whole_of` the kinds of party the dataset holds
-    there (`side_kinds`). A door that holds no words of the request (a resubmit) names no
+    the dataset's name, `over` the side and `whole_of` the classes of party the dataset holds
+    there (`side_classes`). A door that holds no words of the request (a resubmit) names no
     population, so it states none."""
     identity = spec.definition.identity
     dataset = identity_dataset(identity)
@@ -235,7 +239,7 @@ def whole_total_unpublished_facts(
                 asked=text,
                 shown=shown,
                 over=axis,
-                whole_of=side_kinds(axis, datasets=(dataset,)),
+                whole_of=side_classes(axis, datasets=(dataset,)),
             )
         )
     return facts
@@ -244,16 +248,16 @@ def whole_total_unpublished_facts(
 def named_whole(text: str, resolved: str | None) -> tuple[str, ...] | None:
     """The parties a text of the part names as a whole population, `None` when it names
     none: the members of the whole total set whose phrase it is, else the one party it
-    resolved to (`resolved`) when some dataset marks that party as holding the `party`
-    kind. "All donors" is a phrase of the official and private donors' set; "official
+    resolved to (`resolved`) when some dataset marks that party as covering the `official`
+    class. "All donors" is a phrase of the official and private donors' set; "official
     donors" resolves to `DACOfficialDonors`; "private donors" resolves to
-    `DACPrivateDonors`, which holds private donors alone, and names a party, not a
+    `DACPrivateDonors`, which covers private donors alone, and names a party, not a
     population."""
     index = get_index()
     if (whole_set := index.whole_set(text)) is not None:
         return whole_set.members
     party = None if resolved is None else index.parties.get(resolved)
-    if party is None or not any(POPULATION_KIND in marker.holds for marker in party.whole):
+    if party is None or not any(POPULATION_CLASS in marker.covers for marker in party.whole):
         return None
     return (party.dcid,)
 
@@ -272,7 +276,7 @@ def named_whole_label(dcids: Collection[str]) -> str | None:
 
 
 def population_totals(axes: Collection[RoleAxis]) -> tuple[str, ...]:
-    """The parties some dataset marks as holding the `party` kind on one of `axes`, by
+    """The parties some dataset marks as covering the `official` class on one of `axes`, by
     dcid: the totals a side the part totals can bind (`place_roles.totalled_axes`)."""
     by_axis = get_index().population_totals_by_axis
     return tuple(sorted(dcid for axis in set(axes) for dcid in by_axis.get(axis, ())))
@@ -354,9 +358,8 @@ def _available_message(reading: WholeReading, *, dataset: str) -> str:
     noun = WHOLE_MEMBER_NOUNS.get(reading.axis, "member")
     population = whole_population_text(reading.axis, reading.whole_of)
     holds = whole_residual_text(reading.whole_of)
-    private = whole_population_is_official(
-        reading.axis, reading.whole_of
-    ) and "private" in get_index().party_kinds_by_side.get((reading.axis, dataset), ())
+    side = side_classes(reading.axis, datasets=(dataset,))
+    private = private_outside(reading.axis, reading.whole_of, side)
     differs = " includes private donors and" if private else ""
     return (
         f"The source publishes the total of {population} as {reading.label}{holds}; "

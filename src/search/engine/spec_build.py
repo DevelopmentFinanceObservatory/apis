@@ -82,9 +82,9 @@ from search.models import (
     Headline,
     IdentityFacetBinding,
     MeasureAxisValue,
+    MemberClass,
     OpenAxisValueCount,
     OpenConstraintAxisFact,
-    PartyKind,
     ProvenanceRef,
     QuantityForm,
     RequestedWindow,
@@ -294,7 +294,7 @@ class NamedGroup:
     dcid. `total` is the party a flow dataset publishes as the group's total
     (`PlaceSet.total`), which a role can bind in place of the members. `group_id` is the
     membership registry's id for a group the graph holds no node for (`EntityGroup.group_id`).
-    `whole_of` is the kinds of party a side read as its whole population holds
+    `whole_of` is the classes of party a side read as its whole population covers
     (`region.whole_totals.WholeReading`), empty for any other group.
     """
 
@@ -305,7 +305,7 @@ class NamedGroup:
     named_alone: frozenset[tuple[str, str]] = frozenset()
     total: str | None = None
     group_id: str | None = None
-    whole_of: tuple[PartyKind, ...] = ()
+    whole_of: tuple[MemberClass, ...] = ()
 
 
 def spec_named_groups(spec: Spec) -> tuple[NamedGroup, ...]:
@@ -393,7 +393,7 @@ def role_entity_groups(
 
     A role takes a group when its bound dcids are exactly the group's members, or exactly
     the group's total (`NamedGroup.total`), which the group then names
-    (`EntityGroup.total`). A group read as a whole population states the kinds it holds
+    (`EntityGroup.total`). A group read as a whole population states the classes it covers
     (`EntityGroup.whole_of`). A role whose entities were capped, widened or edited reads as
     its members instead. Of groups with the same members, one with a node wins over one
     without, then the first by dcid, then label, whatever order the request named them in.
@@ -414,22 +414,22 @@ def role_entity_groups(
     return result
 
 
-def with_side_kinds(
+def with_side_classes(
     groups: Mapping[str, EntityGroup], *, dataset: str | None
 ) -> dict[str, EntityGroup]:
     """`groups` with each group read as a whole population (`EntityGroup.whole_of`) stating
-    the kinds of party, totals aside, `dataset` publishes on its role's side
-    (`CodeIndex.party_kinds_by_side`): "Official Donors, Total" read from DAC2a states
-    `party`, `private` and `residual`, and from DAC2b `party` and `residual`. A group with
-    no whole reading, and every group where no dataset is elected, is unchanged."""
-    by_side = get_index().party_kinds_by_side
+    the classes of party, totals aside, `dataset` publishes on its role's side
+    (`CodeIndex.side_classes`): "Official Donors, Total" read from DAC2a states
+    `official`, `private` and `residual`, and from DAC2b `official` and `residual`. A group
+    with no whole reading, and every group where no dataset is elected, is unchanged."""
+    by_side = get_index().side_classes
     result = dict(groups)
     for role, group in groups.items():
         axis = role_key_axis(role)
         if not group.whole_of or axis is None or dataset is None:
             continue
-        kinds = sorted(by_side.get((axis, dataset), ()))
-        result[role] = group.model_copy(update={"side_kinds": kinds or None})
+        classes = sorted(by_side.get((axis, dataset), ()))
+        result[role] = group.model_copy(update={"side_classes": classes or None})
     return result
 
 
@@ -1226,7 +1226,7 @@ def build_spec(
         requested_window=requested_window,
         explicit_facets=facet_bindings,
     )
-    entity_groups = with_side_kinds(
+    entity_groups = with_side_classes(
         role_entity_groups(named_groups, hashed_entities), dataset=identity_dataset(identity_doc)
     )
     definition = SpecDefinition(spec_id=spec_id, identity=identity_doc)
