@@ -111,7 +111,7 @@ from origin_catalogue.graph import (
 from origin_catalogue.service import get_catalogue_service
 
 if TYPE_CHECKING:
-    from series_coverage.shared import CoverageService
+    from series_coverage.shared import ServedCoverage
 
 logger = logging.getLogger(__name__)
 
@@ -157,7 +157,7 @@ def _classify_deps_exception(exc: BaseException) -> ProblemSpec | None:
     return None
 
 
-async def _acquire_coverage() -> tuple[CoverageService | None, bool]:
+async def _acquire_coverage() -> tuple[ServedCoverage | None, bool]:
     """Return the process-wide coverage service, or `None` when it is unavailable, and whether
     the unavailability is a failure. An unset `COVERAGE_ARTIFACT_URI` and a missing `coverage`
     extra are configuration, so they are not failures; an artifact that failed to load is.
@@ -196,7 +196,7 @@ def graph_surface(
     graph: GraphNodeReader | None = None,
     resolver: EntityResolver | None = None,
     node_pool_size: int | None = None,
-    coverage: CoverageService | None = None,
+    coverage: ServedCoverage | None = None,
     profile_graph: ProfileGraphReader | None = None,
     availability: AvailabilityReader | None = None,
 ) -> Surface:

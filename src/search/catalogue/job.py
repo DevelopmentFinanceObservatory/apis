@@ -104,8 +104,8 @@ from series_coverage.loader import CoverageArtifactError
 from series_coverage.shared import (
     CoverageIncompatibleError,
     CoverageIndexCheckValueError,
-    CoverageService,
     CoverageSnapshot,
+    ServedCoverage,
     get_coverage_service,
 )
 
@@ -489,7 +489,7 @@ def _heartbeat(settings: JobSettings, *, clock: Callable[[], float]) -> None:
 
 
 def _pointer_inputs(
-    settings: JobSettings, *, coverage: CoverageService, examples: ExampleSet, commit: str
+    settings: JobSettings, *, coverage: ServedCoverage, examples: ExampleSet, commit: str
 ) -> BuildInputs | None:
     """The build inputs the origin pointer and the served coverage build name,
     or `None` when the origin pointer is missing or malformed. The service

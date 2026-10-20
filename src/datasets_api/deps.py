@@ -63,7 +63,7 @@ from materialise.graph import GraphReader
 from materialise.rate_tables import RateTableCache
 from origin_catalogue.graph import build_graph_client
 from origin_catalogue.service import CatalogueService
-from series_coverage.shared import CoverageService
+from series_coverage.shared import ServedCoverage
 from spec_registry import LiveSpecRegistry, SpecRegistry
 from spec_registry.reader import LiveSpecReader, SpecReader
 
@@ -92,7 +92,7 @@ class Deps:
     sdmx: SdmxClient
     artifact_store: ArtifactStore
     task_client: TaskClient
-    coverage: CoverageService
+    coverage: ServedCoverage
     rate_cache: RateTableCache
     # The code index a request reads (`code_index`): the caller's when it supplied one, else
     # `get_index()`, which can change between requests.
@@ -153,7 +153,7 @@ class DepsOverrides:
     release service, `None` when `GRAPH_RELEASE_URI` is unset.
     """
 
-    coverage: CoverageService
+    coverage: ServedCoverage
     rate_cache: RateTableCache
     code_index: CodeIndex | None = None
     release: ReleaseService | None = None

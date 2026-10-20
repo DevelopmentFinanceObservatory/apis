@@ -79,7 +79,7 @@ from materialise.rate_tables import RateTableCache
 from origin_catalogue import bound_catalogue
 from origin_catalogue.graph import OriginGraphClient, build_graph_client
 from origin_catalogue.service import CatalogueService, get_catalogue_service
-from series_coverage.shared import CoverageService, get_coverage_service
+from series_coverage.shared import ServedCoverage, get_coverage_service
 from spec_registry import LiveSpecRegistry
 from spec_registry.reader import LiveSpecReader
 from statvar_members import shared_enumerator
@@ -98,7 +98,7 @@ def _live_deps_factory(
     graph: GraphReader,
     sdmx: SdmxClient,
     artifact_store: ArtifactStore,
-    coverage: CoverageService,
+    coverage: ServedCoverage,
     materialise_semaphore: MaterialisePermits,
     variable_breadth: VariableBreadthReader | None = None,
     settings: DatasetsBuildSettings | None = None,

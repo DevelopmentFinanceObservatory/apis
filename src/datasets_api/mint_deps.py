@@ -29,7 +29,7 @@ from materialise import EnrichmentLookup
 from materialise.facets import VariableBreadthReader
 from materialise.graph import GraphReader
 from materialise.rate_tables import RateTableCache
-from series_coverage.shared import CoverageService
+from series_coverage.shared import ServedCoverage
 from spec_registry import SpecRegistry
 from spec_registry.reader import SpecReader
 from statvar_members import MemberEnumerator
@@ -56,7 +56,7 @@ class MintDeps:
     # One process-wide cache shared by materialisations.
     rate_cache: RateTableCache
     # Process-wide service used by admission before SDMX calls. It stays outside `ServeDeps`.
-    coverage: CoverageService
+    coverage: ServedCoverage
     version_writer: VersionRecordWriter = field(default_factory=NullVersionRecordWriter)
     # Passed to `datasets_api.serve.ServeDeps.snapshot_reader`.
     snapshot_reader: SnapshotReader | None = None

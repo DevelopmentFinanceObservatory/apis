@@ -18,6 +18,7 @@ import pyarrow as pa
 import pytest
 from fastapi.testclient import TestClient
 
+import graph_release.service as service_module
 from artifact_publication.uri import write_uri_bytes
 from code_index.shared import get_index
 from datasets_api.admission import MaterialisePermits
@@ -452,9 +453,16 @@ class TestDatasetsSurface:
         with surface.request_scope():
             assert current_release().release_id == second.release_id
 
+    @pytest.mark.parametrize("flag", [None, "1"], ids=["flag-off", "flag-on"])
     def test_a_swap_waits_for_every_materialise_permit_while_the_deps_are_open(
-        self, root: str, local_dir: Path
+        self, root: str, local_dir: Path, monkeypatch: pytest.MonkeyPatch, flag: str | None
     ):
+        """With `GRAPH_RELEASE_COVERAGE` on, the coverage the deps register a load guard on is the
+        release's (`ReleaseCoverage`), and the swap still takes every permit once: a second
+        `every_permit` on the same permits would wait on the first, and the flip never end."""
+        if flag is not None:
+            monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", flag)
+        monkeypatch.setenv("GRAPH_RELEASE_URI", root)
         first = build_test_release(root, tables=sample_tables())
         clock = _Clock()
         loaded = threading.Event()
@@ -488,11 +496,16 @@ class TestDatasetsSurface:
                 await asyncio.sleep(0.2)
                 assert service.snapshot().release_id == first.release_id
                 permits.release()
+                # Polled, so a flip that waits on itself fails here rather than hanging `close`.
+                for _ in range(50):
+                    if service.snapshot().release_id == second.release_id:
+                        break
+                    await asyncio.sleep(0.1)
+                assert service.snapshot().release_id == second.release_id, "the flip never ended"
                 await asyncio.to_thread(service.close)
 
-        asyncio.run(swap_while_a_permit_is_held())
-
-        assert service.snapshot().release_id == second.release_id
+        with service_module._singleton.poisoned_for_test(service):
+            asyncio.run(swap_while_a_permit_is_held())
 
 
 def _every_dependency_injected() -> dict[str, object]:

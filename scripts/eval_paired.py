@@ -122,7 +122,7 @@ if TYPE_CHECKING:
     from graph_release.service import ReleaseService
     from search.engine.clients.sdmx import EngineSdmxClient
     from search.eval.graph import GraphClient
-    from series_coverage.shared import CoverageService
+    from series_coverage.shared import ServedCoverage
 
 type Side = Literal["head", "base"]
 type Round = Literal["head", "base", "confirm_head", "confirm_base"]
@@ -141,7 +141,7 @@ class Reads:
     release: ReleaseService | None = None
     graph: GraphClient | None = None
     sdmx: EngineSdmxClient | None = None
-    coverage: CoverageService | None = None
+    coverage: ServedCoverage | None = None
 
     def context(self, schema: Mapping[str, Any], side: Side, *, url: str) -> ScoreContext:
         """The context scoring answers of the app at `url`, whose members door names the

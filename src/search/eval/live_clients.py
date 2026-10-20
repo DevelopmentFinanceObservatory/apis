@@ -18,7 +18,7 @@ from origin_catalogue.service import get_catalogue_service
 from search.engine.clients.graph_client import LiveGraphClient
 from search.engine.clients.sdmx import LiveSdmxClient
 from search.engine.config import settings
-from series_coverage.shared import CoverageService, get_coverage_service
+from series_coverage.shared import ServedCoverage, get_coverage_service
 from skills_index import SkillsIndex, build_index
 
 
@@ -63,7 +63,7 @@ class ScoreClients:
 
     graph: LiveGraphClient
     sdmx: LiveSdmxClient
-    coverage: CoverageService
+    coverage: ServedCoverage
 
 
 @contextmanager

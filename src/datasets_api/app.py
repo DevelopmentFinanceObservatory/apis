@@ -81,7 +81,7 @@ from materialise.graph import GraphReader
 from materialise.rate_tables import RateTableCache
 from origin_catalogue import bound_catalogue
 from origin_catalogue.service import CatalogueService, get_catalogue_service
-from series_coverage.shared import CoverageService, get_coverage_service
+from series_coverage.shared import ServedCoverage, get_coverage_service
 from spec_registry import SpecRegistry
 from spec_registry.errors import SpecRegistryStoreError
 from spec_registry.reader import SpecReader
@@ -123,7 +123,7 @@ def datasets_surface(
     task_client: TaskClient | None = None,
     code_index: CodeIndex | None = None,
     rate_cache: RateTableCache | None = None,
-    coverage: CoverageService | None = None,
+    coverage: ServedCoverage | None = None,
     now: Clock = utc_now,
     pin_allowed_principals: frozenset[str] | None = None,
     publish_allowed_principals: frozenset[str] | None = None,
@@ -142,7 +142,8 @@ def datasets_surface(
     which can change between requests; the index is read here, under the served release as a
     request reads it, so a missing or malformed export fails construction. `coverage` defaults
     to the process-wide service, resolved here, so a missing or unreadable
-    `COVERAGE_ARTIFACT_URI` fails construction.
+    `COVERAGE_ARTIFACT_URI` fails construction; with `GRAPH_RELEASE_COVERAGE` on it is the bound
+    release's coverage (`series_coverage.shared.ReleaseCoverage`), which reads no artifact.
     `rate_cache` defaults to a cache of this surface's own; pass Search's when composing both.
 
     `pin_allowed_principals` and `publish_allowed_principals` set separate allowlists,

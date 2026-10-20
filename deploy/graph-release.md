@@ -74,6 +74,12 @@ uv run python -m graph_release.job --local-dir /tmp/graph-release-local
 
 Point a local service's `GRAPH_RELEASE_URI` at `file:///tmp/graph-release-local` to load the release.
 
+## Serving from a release
+
+A serving process with `GRAPH_RELEASE_URI` set opens the pointer's release at startup, binds it to each request and operation, and swaps to a newer one in the background (`graph_release.service.ReleaseService`).
+
+`GRAPH_RELEASE_COVERAGE=1` also builds each release's serving views as it opens, and serves the code index, the measure index and the coverage index from the bound release (`code_index.shared.get_index`, `series_coverage.shared.get_coverage_service`). The coverage stamp and build id a request records are then the release id, `COVERAGE_ARTIFACT_URI`, `COVERAGE_RECHECK_SECONDS` and `COVERAGE_INDEX_CHECK` are not read, and no coverage and code index compatibility check runs, since both come from one release. Set it on the apis service and the datasets worker only, each with `GRAPH_RELEASE_URI`; with the flag on and no release bound, a code index or coverage read raises `ReleaseNotBound` and the surface fails startup. Jobs and scripts run with it off.
+
 ## Environment
 
 - `GRAPH_RELEASE_URI`: required, `gs://` or `file://`.
