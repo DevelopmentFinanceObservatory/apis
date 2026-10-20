@@ -42,6 +42,8 @@ _ASSUMED_ROLES = [
     Assumption(kind="open_role", binding_ref="origin:", text="every provider"),
 ]
 _ASSUMED_CLAUSE = " Assumed: ODA; every recipient; every provider."
+# A parametrize row's echo that is the first answer's own list.
+_FIRST = "first"
 
 
 def _first_answer() -> DefinitePart:
@@ -109,7 +111,7 @@ def _bound(identity: BaseIdentity, prop: str, ref: str) -> BaseIdentity:
 
 
 def _resubmit(
-    identity: BaseIdentity, *, echo: list[Assumption], graph: FakeGraph | None = None
+    identity: BaseIdentity, *, echo: list[Assumption] | None, graph: FakeGraph | None = None
 ) -> DefinitePart:
     response = offline_resolve(
         ResolveRequest(
@@ -140,8 +142,10 @@ def test_a_first_answer_lists_its_declared_default_and_every_open_role():
 @pytest.mark.parametrize(
     ("edit", "echo", "expected"),
     [
-        pytest.param(None, None, [_ASSUMED_ODA, *_ASSUMED_ROLES], id="unchanged"),
-        pytest.param("year", None, [_ASSUMED_ODA, *_ASSUMED_ROLES], id="year-edited"),
+        pytest.param(None, _FIRST, [_ASSUMED_ODA, *_ASSUMED_ROLES], id="unchanged"),
+        pytest.param("year", _FIRST, [_ASSUMED_ODA, *_ASSUMED_ROLES], id="year-edited"),
+        # The echo of a part that stated none states none, whatever a fresh request yields.
+        pytest.param("year", [], [], id="year-edited-empty-echo"),
         # The echo's words differ from the rebuilt ones, as after a label change between
         # deploys; the refs still match, so the default holds in the rebuilt words.
         pytest.param(
@@ -184,7 +188,7 @@ def test_a_first_answer_lists_its_declared_default_and_every_open_role():
     ],
 )
 def test_a_resubmit_states_the_echoed_assumptions_that_still_hold(
-    edit: str | None, echo: list[Assumption] | None, expected: list[Assumption]
+    edit: str | None, echo: list[Assumption] | str, expected: list[Assumption]
 ):
     """Each echoed item holds while the rebuilt answer still yields it, matched by kind,
     binding and value dcids, and is worded from the rebuilt answer. With no edit to the
@@ -197,7 +201,7 @@ def test_a_resubmit_states_the_echoed_assumptions_that_still_hold(
         )
     elif edit == "finance":
         identity = _bound(identity, "crsTypeOfFinance", "CRSTypeOfFinance110")
-    part = _resubmit(identity, echo=first.assumptions if echo is None else echo)
+    part = _resubmit(identity, echo=first.assumptions if isinstance(echo, str) else echo)
     assert part.assumptions == expected
 
 
@@ -205,7 +209,7 @@ def test_a_resubmit_with_no_echo_states_the_roles_alone():
     """The posted identity binds the flow, so with no echo the engine records it as posted
     and assumes only what the identity leaves open."""
     first = _first_answer()
-    assert _resubmit(first.spec.definition.identity, echo=[]).assumptions == _ASSUMED_ROLES
+    assert _resubmit(first.spec.definition.identity, echo=None).assumptions == _ASSUMED_ROLES
 
 
 def test_an_edit_that_changes_the_defaulted_slot_drops_its_assumption():

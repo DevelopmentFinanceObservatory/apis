@@ -397,7 +397,8 @@ def build_definite_part(
     skills_index: SkillsIndex | None = None,
     departure_facts: Sequence[DepartureFact] = (),
     entity_words: Mapping[str, str] | None = NO_ENTITY_WORDS,
-    assumption_echo: Sequence[Assumption] = (),
+    assumption_echo: Sequence[Assumption] | None = None,
+    asked_axes: frozenset[RoleAxis] = frozenset(),
 ) -> DefinitePart:
     """Build a definite part around its answering spec.
 
@@ -409,7 +410,9 @@ def build_definite_part(
     entity name (`RegionResult.entity_words`), in which a group read as members is asked.
     ``assumption_echo`` is the list a dataset resubmit entry echoed
     (`RegionResult.assumption_echo`), of which the part states those that still hold
-    (`render.assumptions.assumptions_for`).
+    (`render.assumptions.assumptions_for`), None when it echoed none. ``asked_axes`` are
+    the flow axes the request's words asked every member of
+    (`RegionResult.every_member_axes`), which state no open role.
     """
     # A definite spec must carry at least one confirmed StatVar.
     assert spec.resolved.members, "definite Spec has empty stat_vars"
@@ -433,7 +436,7 @@ def build_definite_part(
             operations=operations,
             entity_words=entity_words,
         ),
-        assumptions=assumptions_for(spec, echo=assumption_echo),
+        assumptions=assumptions_for(spec, echo=assumption_echo, asked_axes=asked_axes),
     )
 
 
@@ -749,6 +752,7 @@ def build_candidates_part(
     skills_index: SkillsIndex | None = None,
     departure_facts: Sequence[DepartureFact] = (),
     request_words: bool = True,
+    asked_axes: frozenset[RoleAxis] = frozenset(),
 ) -> CandidatesPart:
     """Build a candidates part from competing specs, in the order given: the elected
     reading first and its rivals in menu order (`region.status_rule`), or the order a
@@ -768,6 +772,8 @@ def build_candidates_part(
     `elected_shape_no_data` states one `closest_match` departure
     (`_with_readings_substituted`).
     ``request_words`` is false on a door that holds no words of the request (a resubmit).
+    ``asked_axes`` are the flow axes the request's words asked every member of
+    (`RegionResult.every_member_axes`), which state no open role.
     """
     cap = max_candidates if max_candidates is not None else len(specs)
     clamped = list(specs)[:cap]
@@ -796,7 +802,9 @@ def build_candidates_part(
         keep_how_properties=keep_how_properties,
         request_words=request_words,
     )
-    assumptions = common_assumptions(clamped, keep_how_properties=keep_how_properties)
+    assumptions = common_assumptions(
+        clamped, keep_how_properties=keep_how_properties, asked_axes=asked_axes
+    )
     plan = candidates_sentence_plan(
         clamped,
         departures=departures,

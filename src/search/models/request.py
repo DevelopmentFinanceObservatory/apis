@@ -553,8 +553,8 @@ class ResubmitIdentityEntry(StrictModel):
         max_length=_PARSED_MAX_PART_OPERATIONS,
         description=_OPERATIONS_DESCRIPTION,
     )
-    assumptions: list[Assumption] = Field(
-        default_factory=list,
+    assumptions: list[Assumption] | None = Field(
+        default=None,
         max_length=_RESUBMIT_MAX_ASSUMPTIONS,
         description=(
             "the assumptions of the part this entry rebuilds, echoed as the response "
@@ -564,10 +564,11 @@ class ResubmitIdentityEntry(StrictModel):
             "still reads across every member with no entity of the identity's, and a "
             "place_scope on an answer that still names no place. An item the echo lacks "
             "is not stated, since the posted identity or its edit asked for it, so an "
-            "edit of a defaulted slot to another value drops that default. [], the "
-            "default, yields what a fresh request would: no declared default, since the "
-            "posted identity binds every slot, and the open roles and place scope the "
-            "answer reads. The "
+            "edit of a defaulted slot to another value drops that default, and [], the "
+            "echo of a part that stated none, states none. None, the default, means the "
+            "client echoes nothing and yields what a fresh request would: no declared "
+            "default, since the posted identity binds every slot, and the open roles and "
+            "place scope the answer reads. The "
             "engine cannot tell an echoed default from one the caller writes for a slot "
             "it chose itself, and states such an item while its refs match the slot; an "
             "echo only shapes the caller's own response"

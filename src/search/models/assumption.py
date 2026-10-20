@@ -33,9 +33,10 @@ class Assumption(StrictModel):
         description=(
             "what the engine filled: 'declared_default', a slot the request left open "
             "that its code system's or shape's declared default fixed; 'open_role', a "
-            "flow role the request neither named an entity on nor asked member by member, "
-            "read as the total over every entity on it; 'place_scope', a request that "
-            "named no place, read across every place with data"
+            "flow role no request word asked for, read across every entity on it with "
+            "data: one series per member where the role scope default filled it and the "
+            "shape declares the role, else the total over them; 'place_scope', a request "
+            "that named no place, read across every place with data"
         )
     )
     binding_ref: str = Field(
@@ -54,7 +55,7 @@ class Assumption(StrictModel):
             "heading's words for a declared default ('official development assistance'), "
             "'every' and the role's noun in the answer's flow family for an open role "
             "('every provider', 'every creditor'), and 'every country', 'every place' or "
-            "'the world as a whole' for the place scope, as the heading counts it"
+            "'the world as a whole' for the place scope, as its members are typed"
         ),
     )
     refs: list[Annotated[str, Field(max_length=_MAX_REF_CHARS)]] = Field(

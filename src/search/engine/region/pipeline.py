@@ -705,6 +705,13 @@ async def _run_phases(state: ResolveState) -> RegionResult:
                         result = await settle_unjudged_refusal(state, result)
                     # Only a vetted election can report qualifier matches: earlier terminals
                     # may hold pre-bind candidates without a forced binding or elected shape.
+                    every_member = (
+                        every_member_phrases(
+                            result, state.dropped_qualifier_phrases, query=state.role_query
+                        )
+                        if state.shape_draft is not None
+                        else {}
+                    )
                     admitted = (
                         _admitted_qualifier_phrases(state.admitted_qualifiers)
                         | state.satisfied_measure_phrases
@@ -712,9 +719,7 @@ async def _run_phases(state: ResolveState) -> RegionResult:
                         | state.applied_dropped_qualifier_phrases
                         | unbinding_phrases(state.requirements)
                         | state.slot_default_phrases
-                        | every_member_phrases(
-                            result, state.dropped_qualifier_phrases, query=state.role_query
-                        )
+                        | frozenset(every_member)
                         if state.shape_draft is not None
                         else _refused_pinned_phrases(state, result)
                     )
@@ -726,6 +731,7 @@ async def _run_phases(state: ResolveState) -> RegionResult:
                                 result, state.requirements, state.judgement
                             ),
                             admitted_qualifier_phrases=admitted,
+                            every_member_axes=frozenset(every_member.values()),
                             scope_unsettled=_scope_unsettled(state),
                             entity_words=group_request_names(state),
                             inferred_facts=(

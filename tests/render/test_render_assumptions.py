@@ -128,16 +128,17 @@ def test_a_role_asked_member_by_member_is_no_assumption():
 @pytest.mark.parametrize(
     ("label", "members", "text"),
     [
-        ("places", ["country/KEN", "geoId/06"], "every place"),
-        ("countries", ["country/KEN", "country/UGA"], "every country"),
-        ("worldwide", ["Earth"], "the world as a whole"),
+        ("places", [("country/KEN", "Country"), ("geoId/06", "State")], "every place"),
+        ("places", [("country/GHA", "Country"), ("country/KEN", "Country")], "every country"),
+        ("countries", [("country/KEN", "Country"), ("country/UGA", None)], "every place"),
+        ("worldwide", [("Earth", "Place")], "the world as a whole"),
     ],
 )
-def test_a_request_naming_no_place_assumes_the_place_scope_as_the_heading_counts_it(
-    label: str, members: list[str], text: str
+def test_a_request_naming_no_place_assumes_the_place_scope_as_its_members_are_typed(
+    label: str, members: list[tuple[str, str | None]], text: str
 ):
-    """ "government debt in 2020" reads across 46 places: "every place", the heading's
-    noun, and "every country" only where the heading counts countries."""
+    """ "government debt in 2020" reads across 46 places: "every country" when every member
+    is a Country, whatever the coverage dimension counts, else "every place"."""
     spec = _spec(
         slots=[_what_slot("Gross public sector debt")],
         coverage=CoverageBreadth(
@@ -145,12 +146,33 @@ def test_a_request_naming_no_place_assumes_the_place_scope_as_the_heading_counts
         ),
         scope=ResolvedScope(
             axis="observationAbout",
-            members=[ResolvedEntity(ref=m, role="observationAbout") for m in members],
+            members=[
+                ResolvedEntity(ref=ref, role="observationAbout", entity_type=entity_type)
+                for ref, entity_type in members
+            ],
         ),
     )
     assert assumptions_for(spec) == [
         Assumption(kind="place_scope", binding_ref="where:", text=text)
     ]
+
+
+def test_a_role_the_scope_default_filled_is_assumed_whatever_its_member_count():
+    """crs-002 names Bangladesh and no provider. With the provider scope defaulted to Japan
+    alone, the heading reads "from Japan", and the role is still assumed."""
+    spec = _panel_spec("crs-002")
+    scope = ResolvedScope(
+        axis="origin", members=[ResolvedEntity(ref="country/JPN", role="origin", label="Japan")]
+    )
+    scoped = spec.model_copy(update={"resolved": spec.resolved.model_copy(update={"scope": scope})})
+    assert assumptions_for(scoped) == [_EVERY_PROVIDER]
+
+
+def test_a_role_the_request_words_asked_every_member_of_is_no_assumption():
+    """ "aid from all donors to Bangladesh": the words asked for every provider."""
+    spec = _panel_spec("crs-002")
+    assert assumptions_for(spec, asked_axes=frozenset({"origin"})) == []
+    assert common_assumptions([spec], asked_axes=frozenset({"origin"})) == []
 
 
 def test_a_candidates_part_assumes_what_every_reading_assumes():

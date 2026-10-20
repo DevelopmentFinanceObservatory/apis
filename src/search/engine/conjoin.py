@@ -527,6 +527,7 @@ def _build_part(
             ),
             entity_words=region.entity_words,
             assumption_echo=region.assumption_echo,
+            asked_axes=region.every_member_axes,
         )
     if region.status == "candidates":
         return build_candidates_part(
@@ -559,6 +560,7 @@ def _build_part(
                 ],
             ),
             request_words=region.entity_words is not None,
+            asked_axes=region.every_member_axes,
         )
     if region.status == "unsupported":
         assert region.unsupported is not None, (

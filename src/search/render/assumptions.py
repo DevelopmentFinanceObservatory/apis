@@ -4,15 +4,19 @@
 
 - a slot whose trace records `declared_default` provenance, a value its code system's or
   shape's declared default fixed, named in the heading's words for that slot;
-- a flow role the heading states with no entity of its own on an axis the identity neither
-  binds in `entities` nor lists in `open_roles`, read as the total over every entity on it
-  ("every provider", "every creditor");
+- a flow role no request word asked for, read across every entity on it with data
+  ("every provider", "every creditor"): one the engine's role scope default filled
+  (`resolved.scope` on that axis), whatever its member count, or one the heading states
+  with no entity of its own. An axis the identity binds in `entities` or lists in
+  `open_roles`, or that the request's words asked every member of ("all donors"), is asked;
 - the place scope of a request that named no place (`resolved.scope` on
-  `observationAbout`), named as the heading counts it ("every country", "every place").
+  `observationAbout`), named by its members' types ("the world as a whole", "every
+  country", "every place").
 
-A `dataset_resubmit` identity entry posts every slot bound and echoes the part's list
+A `dataset_resubmit` identity entry posts every slot bound and may echo the part's list
 back. Its part states the echoed items that still hold, matched by kind, binding and value
-dcids (`Assumption.refs`) and worded from the rebuilt Spec.
+dcids (`Assumption.refs`) and worded from the rebuilt Spec. An entry with no echo reads as
+a fresh request.
 
 The sentence closes with the items as one clause (`clause_tokens`): "Assumed:
 official development assistance; every provider."
@@ -26,9 +30,8 @@ from dfo_platform.roles import role_key_axis, role_wording
 from search.models import (
     WHERE_REF,
     Assumption,
-    CoverageBreadth,
-    CoverageExact,
     ResolvedFilter,
+    RoleAxis,
     SentenceToken,
     Spec,
     role_ref,
@@ -51,21 +54,24 @@ def assumptions_for(
     spec: Spec,
     *,
     keep_how_properties: frozenset[str] = frozenset(),
-    echo: Sequence[Assumption] = (),
+    echo: Sequence[Assumption] | None = None,
+    asked_axes: frozenset[RoleAxis] = frozenset(),
 ) -> list[Assumption]:
     """The values `spec` filled that its request did not ask for, in clause order: declared
     defaults in `trace.slot_filters` order, then open roles, then the place scope.
     ``keep_how_properties`` are the how properties a candidates part keeps visible, under
-    which its heading names each value.
+    which its heading names each value. ``asked_axes`` are the flow axes the request's words
+    asked every member of (`RegionResult.every_member_axes`), which state no open role.
 
-    ``echo`` is the list a `dataset_resubmit` identity entry posts back. When it holds items,
-    the result is the echoed items that still hold for `spec`, each with its words read from
-    `spec`: a declared default whose slot still binds exactly the echoed `refs`, an open role
-    `spec` still reads open on the echoed axis, and the place scope of a `spec` that still
-    names no place. An item the echo lacks is left out, since the posted identity or its edit
-    asked for it. An empty echo reads `spec` as a fresh request does."""
+    ``echo`` is the list a `dataset_resubmit` identity entry posts back, None when it posts
+    none. With an echo, the result is the echoed items that still hold for `spec`, each with
+    its words read from `spec`: a declared default whose slot still binds exactly the echoed
+    `refs`, an open role `spec` still reads open on the echoed axis, and the place scope of a
+    `spec` that still names no place. An item the echo lacks is left out, since the posted
+    identity or its edit asked for it, so an empty echo states none. With no echo, `spec`
+    reads as a fresh request does."""
     heading = heading_for(spec, keep_how_properties=keep_how_properties).heading
-    echoed = {_echo_key(item) for item in echo}
+    echoed = {_echo_key(item) for item in echo or ()}
     # The posted identity of an echo binds every slot, so none carries declared_default
     # provenance: on an echo a how slot holds its default while it binds the echoed values.
     defaults = [
@@ -74,12 +80,12 @@ def assumptions_for(
         if slot_filter.refs
         and (
             slot_filter.key.axis == "how" and _slot_key(slot_filter) in echoed
-            if echo
+            if echo is not None
             else slot_filter.provenance == "declared_default"
         )
     ]
-    filled = [*_open_roles(spec, heading), *_place_scope(spec)]
-    if echo:
+    filled = [*_open_roles(spec, heading, asked_axes), *_place_scope(spec)]
+    if echo is not None:
         filled = [item for item in filled if _echo_key(item) in echoed]
     return [*defaults, *filled]
 
@@ -111,14 +117,18 @@ def _declared_default(slot_filter: ResolvedFilter, heading: Heading) -> Assumpti
 
 
 def common_assumptions(
-    specs: Sequence[Spec], *, keep_how_properties: frozenset[str] = frozenset()
+    specs: Sequence[Spec],
+    *,
+    keep_how_properties: frozenset[str] = frozenset(),
+    asked_axes: frozenset[RoleAxis] = frozenset(),
 ) -> list[Assumption]:
     """The assumptions every one of `specs` yields alike, in the first one's order: what a
     candidates part assumed whichever reading is chosen. [] when there are no specs."""
     if not specs:
         return []
     first, *rest = (
-        assumptions_for(spec, keep_how_properties=keep_how_properties) for spec in specs
+        assumptions_for(spec, keep_how_properties=keep_how_properties, asked_axes=asked_axes)
+        for spec in specs
     )
     return [item for item in first if all(item in others for others in rest)]
 
@@ -145,14 +155,23 @@ def declared_default_text(slot_filter: ResolvedFilter, heading: Heading) -> str:
     )
 
 
-def _open_roles(spec: Spec, heading: Heading) -> list[Assumption]:
-    """An `open_role` assumption for each flow role the heading states with no entity of its
-    own ("from 164 providers", "owed to all creditors") on an axis the identity neither binds
-    in `entities` nor lists in `open_roles`, in the heading's role order. The noun is the
-    role's in the answer's flow family (`role_wording`). A role a spoken how value narrows
-    ("owed to bondholders") states no open role, so it assumes none."""
+def _open_roles(spec: Spec, heading: Heading, asked_axes: frozenset[RoleAxis]) -> list[Assumption]:
+    """An `open_role` assumption for each flow role the heading states that no request word
+    asked for, in the heading's role order: the role the role scope default filled
+    (`resolved.scope` on a flow axis), named or counted ("to Norway", "to 2 recipients"),
+    and a role stated with no entity of its own ("from 164 providers", "owed to all
+    creditors"). A role is asked when the identity binds it in `entities` or lists it in
+    `open_roles`, or when it is in ``asked_axes``. The noun is the role's in the answer's
+    flow family (`role_wording`). A role a spoken how value narrows ("owed to bondholders")
+    states no open role, so it assumes none."""
     identity = spec.definition.identity
-    asked = {role_key_axis(key) for key in identity.entities} | set(identity.open_roles or ())
+    asked = (
+        {role_key_axis(key) for key in identity.entities}
+        | set(identity.open_roles or ())
+        | asked_axes
+    )
+    scope = spec.resolved.scope
+    scoped = role_key_axis(scope.axis) if scope is not None else None
     wording = role_wording(heading.family)
     return [
         Assumption(
@@ -161,14 +180,15 @@ def _open_roles(spec: Spec, heading: Heading) -> list[Assumption]:
             text=f"every {wording.noun(phrase.axis).singular}",
         )
         for phrase in heading.roles
-        if phrase.axis is not None and not phrase.entity_dcids and phrase.axis not in asked
+        if phrase.axis is not None
+        and (not phrase.entity_dcids or phrase.axis == scoped)
+        and phrase.axis not in asked
     ]
 
 
 def _place_scope(spec: Spec) -> list[Assumption]:
     """The `place_scope` assumption of an answer read across every place because its
-    request named none, named as the heading counts the places: the world as a whole,
-    every country, or every place."""
+    request named none, named by its members' types (`_place_scope_text`)."""
     scope = spec.resolved.scope
     if scope is None or scope.axis != "observationAbout":
         return []
@@ -176,20 +196,14 @@ def _place_scope(spec: Spec) -> list[Assumption]:
 
 
 def _place_scope_text(spec: Spec) -> str:
-    """The place scope's words from the coverage dimension the heading counts places by
-    (`heading._resolved_where_text`), the world when the scope is Earth alone."""
+    """The place scope's words from its members: the world as a whole for Earth alone,
+    every country when every member is typed Country, else every place."""
     scope = spec.resolved.scope
-    if scope is not None and [member.ref for member in scope.members] == [_WORLD]:
+    members = scope.members if scope is not None else []
+    if [member.ref for member in members] == [_WORLD]:
         return "the world as a whole"
-    coverage = spec.resolved.coverage
-    if isinstance(coverage, (CoverageExact, CoverageBreadth)):
-        for dim in coverage.dimensions or ():
-            if dim.label == "worldwide":
-                return "the world as a whole"
-            if dim.label == "countries":
-                return "every country"
-            if dim.label == "places":
-                return "every place"
+    if members and all(member.entity_type == "Country" for member in members):
+        return "every country"
     return "every place"
 
 

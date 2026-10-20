@@ -299,7 +299,7 @@ async def handle(
                 memo.store(key, region)
         return dataclasses.replace(
             region,
-            assumption_echo=tuple(entry.assumptions),
+            assumption_echo=None if entry.assumptions is None else tuple(entry.assumptions),
             variable_text=entry.variable_text,
             earliest_index=index,
             separate=entry.separate,
