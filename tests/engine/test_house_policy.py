@@ -75,8 +75,27 @@ _BY_DATASET = (
         pytest.param(
             (_OUTPUT, replace(_OUTPUT, index=1)), _ctx(), 1, 1, id="nominal-output-only-unchanged"
         ),
+        pytest.param(
+            (
+                _facts(
+                    0, population_type="EconomicActivity", stat_type="growthRate", qualifier=None
+                ),
+                _facts(1, population_type="EconomicActivity", stat_type="growthRate"),
+            ),
+            _ctx(),
+            0,
+            0,
+            id="output-growth-rates-without-value-added-unchanged",
+        ),
         pytest.param((_GE, _AMOUNT), _ctx(pre_ge=True), 0, 1, id="pre-2018-window-amount"),
         pytest.param((_GE, _AMOUNT), _ctx(), 1, 0, id="later-window-grant-equivalent"),
+        pytest.param(
+            (replace(_GE, population_type="FinancialObligation"), _AMOUNT),
+            _ctx(),
+            1,
+            1,
+            id="grant-equivalent-off-financial-flows-unchanged",
+        ),
         pytest.param(
             (_facts(0, netting=("Net",)), _facts(1, netting=("Gross", "Net"))),
             _ctx(),
@@ -447,8 +466,9 @@ def _purpose(code_system: str) -> QualifierMatch:
         pytest.param(_frame(window=TimeWindow(start_year=2019)), False, id="open-end-from-2019"),
         pytest.param(_frame(window=TimeWindow(end_year=2017)), True, id="open-start-to-2017"),
         pytest.param(_frame(window=TimeWindow(end_year=2022)), False, id="open-start-to-2022"),
+        pytest.param(_frame(window=TimeWindow(start_year=2022, end_year=2022)), False, id="2022"),
         pytest.param(_frame(latest=True), False, id="latest"),
-        pytest.param(_frame(), False, id="no-window"),
+        pytest.param(_frame(), True, id="no-window"),
     ],
 )
 def test_the_window_is_pre_grant_equivalent_when_it_starts_before_2018(

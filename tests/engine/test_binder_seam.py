@@ -184,15 +184,23 @@ class _ReplyLLM:
         ([], True),
         ([ShapeRating(index=0, rating=1.0)], True),
         ([ShapeRating(index=1, rating=0.0), ShapeRating(index=0, rating=1.0)], True),
-        ([ShapeRating(index=1, rating=0.11)], False),
+        ([ShapeRating(index=1, rating=0.11)], True),
+        ([ShapeRating(index=1, rating=0.5)], True),
+        ([ShapeRating(index=1, rating=0.6)], False),
     ],
-    ids=["rates-nothing", "pick-unrated", "pick-rated-0", "pick-just-above-the-floor"],
+    ids=[
+        "rates-nothing",
+        "pick-unrated",
+        "pick-rated-0",
+        "pick-just-above-the-pool-floor",
+        "pick-below-the-decline-floor",
+        "pick-at-the-decline-floor",
+    ],
 )
-def test_a_reply_rating_its_pick_at_or_below_the_floor_declines(measuring, declines):
+def test_a_reply_rating_its_pick_below_the_decline_floor_declines(measuring, declines):
     """A reply that leaves its pick out of `measuring`, an empty one included, or rates it
-    at or below `RATED_POOL_FLOOR`, says the pick measures something else: the part refuses
-    `variable_not_resolved` as a reply that asked does. A pick rated just above the floor
-    stands."""
+    below `DECLINE_FLOOR`, says the pick measures something else: the part refuses
+    `variable_not_resolved` as a reply that asked does. A pick rated at the floor stands."""
     reply = _REPLY.model_copy(update={"measuring": measuring})
     state = _state(llm=_ReplyLLM(reply))
 

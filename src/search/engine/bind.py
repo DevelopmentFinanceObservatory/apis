@@ -11,9 +11,9 @@ from __future__ import annotations
 import functools
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, NamedTuple
+from typing import TYPE_CHECKING, Annotated, Literal, NamedTuple
 
-from pydantic import BaseModel, Field, create_model, model_validator
+from pydantic import BaseModel, BeforeValidator, Field, create_model, model_validator
 from pydantic.json_schema import SkipJsonSchema
 from pydantic_core import PydanticCustomError
 
@@ -231,17 +231,33 @@ def bind_schema(size: int) -> type[_UniversalBindOutput]:
 
     The bound is what ends a reply that repeats an entry: asked to rate a menu none of whose
     shapes measures the phrase, the bind model can write ``{"index": 0, "rating": 0.0}``
-    until its output runs out, and the call times out instead of asking."""
+    until its output runs out, and the call times out instead of asking.
+
+    An empty menu, every reading refused, has no shape to rate, so its schema leaves
+    `measuring` out of what the model fills and drops whatever a reply writes there: a reply
+    that asks and rates the nearest refused reading validates, with `measuring` empty."""
     measuring = _UniversalBindOutput.model_fields["measuring"]
+    if size == 0:
+        field = (
+            Annotated[SkipJsonSchema[list[ShapeRating]], BeforeValidator(_unrated)],
+            Field(default_factory=list, description=measuring.description),
+        )
+    else:
+        field = (
+            list[ShapeRating],
+            Field(default_factory=list, max_length=size, description=measuring.description),
+        )
     return create_model(
         _UniversalBindOutput.__name__,
         __base__=_UniversalBindOutput,
         __module__=__name__,
-        measuring=(
-            list[ShapeRating],
-            Field(default_factory=list, max_length=size, description=measuring.description),
-        ),
+        measuring=field,
     )
+
+
+def _unrated(_: object) -> list[ShapeRating]:
+    """No rating, the `measuring` of a reply over an empty menu whatever it wrote."""
+    return []
 
 
 _UNIVERSAL_BIND_SYSTEM_PROMPT: str = """\

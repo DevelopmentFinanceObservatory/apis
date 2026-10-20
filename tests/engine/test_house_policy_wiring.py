@@ -237,7 +237,8 @@ def _rated_alike(shapes: Sequence[ShapeDraft], reply: _UniversalBindOutput) -> P
 def test_the_pool_admits_a_shape_only_with_a_slot_for_each_mentioned_value():
     """A value the phrase names keeps every shape without a slot holding it out of the
     pool, a shape whose slot lacks the value as one with no slot; a value drafted as a
-    slot's sole option, or an open slot, keeps none out."""
+    slot's sole option, or an open slot, keeps none out. A slot the phrase asks for in full
+    keeps out each shape whose slot lacks a value the pick's holds."""
     shapes = [_CRS, _DAC2A, _DAC1]
     channel = _value("crsChannel", "ChannelA")
     open_channel = SlotBindingDraft(axis="how", property_dcid="crsChannel", kind="unbound")
@@ -251,6 +252,10 @@ def test_the_pool_admits_a_shape_only_with_a_slot_for_each_mentioned_value():
     )
     assert _rated_alike(shapes, _reply(1, _SOLE_AID_TYPE)).measuring == (1, 0, 2)
     assert _rated_alike(shapes, _reply(0, open_channel)).measuring == (0, 1, 2)
+    every_flow = SlotBindingDraft(
+        axis="how", property_dcid="flowKind", kind="unbound", evidence="requested_all"
+    )
+    assert _rated_alike([grants, loans, both], _reply(0, every_flow)).measuring == (0, 2)
     assert _rated_alike(shapes, _reply(0, _value("crsChannel", "ChannelA", "sole_option"))) == (
         PolicyPool(measuring=(0, 1, 2), rated=True)
     )
@@ -753,7 +758,7 @@ def test_a_chosen_shape_below_the_bound_survives_as_the_pick():
     survives them, over a higher-rated twin."""
     shapes = [_OUTPUT, replace(_OUTPUT, shape_id="output_twin")]
 
-    result = _rated_bind(shapes, _rated(0, {0: 0.3, 1: 1.0}))
+    result = _rated_bind(shapes, _rated(0, {0: 0.6, 1: 1.0}))
 
     assert result.policy_pool == PolicyPool(measuring=(0, 1), rated=True)
     assert result.output.chosen_shape_index == 0

@@ -12,8 +12,9 @@ def _contract(schema: type[BaseModel]) -> type[BaseModel]:
     """The root model of `schema`'s name in its MRO.
 
     `bind_schema(size)` subclasses `_UniversalBindOutput` under the same name to cap
-    `measuring` at the menu's size. The menu is in the prompt the key hashes, so every size
-    shares one reply contract and one fingerprint.
+    `measuring` at the menu's size, and for an empty menu to leave it out of the schema the
+    model fills. The menu is in the prompt the key hashes, so every size shares one reply
+    contract and one fingerprint.
     """
     return next(
         base

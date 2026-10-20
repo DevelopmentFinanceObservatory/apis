@@ -33,6 +33,10 @@ if TYPE_CHECKING:
 RATED_POOL_FLOOR = 0.1
 RATED_POOL_FRACTION = 0.1
 
+# A reply that rates its own pick below `DECLINE_FLOOR` declines (`declined`): the part
+# asks, as a reply that asked does, and no policy runs.
+DECLINE_FLOOR = 0.6
+
 # The slack `near_best` gives the bound, wider than a float product's rounding and far
 # narrower than the two decimals a reply writes a rating to.
 _BOUND_SLACK = 1e-9
@@ -47,10 +51,11 @@ class GeminiBinder:
     The reply rates each shape that measures the phrase, and the pool is the shapes it rates
     near the best and the pick's twins (`rated_pool`), over which all six policies run with
     the ratings. Each pool shape holds the pick's constraints when it holds each value the
-    reply drafted as named (`holds_mentioned_values`).
+    reply drafted as named and every value of each slot the reply asks for in full
+    (`holds_mentioned_values`).
 
-    A reply that leaves its pick out of `measuring`, an empty one included, or rates it at
-    or below `RATED_POOL_FLOOR`, says the pick measures something else, so it declines
+    A reply that leaves its pick out of `measuring`, an empty one included, or rates it
+    below `DECLINE_FLOOR`, says the pick measures something else, so it declines
     (`declined`) and no policy runs."""
 
     @property
@@ -87,9 +92,9 @@ class GeminiBinder:
         shapes = request.shapes
         ratings = shape_ratings(output, len(shapes))
         # A reply that leaves its pick out of `measuring`, an empty one included, or rates
-        # it at or below the pool's floor, says by its own rating that the pick measures
+        # it below the decline floor, says by its own rating that the pick measures
         # something else, so it declines.
-        if ratings.get(output.chosen_shape_index, 0.0) <= RATED_POOL_FLOOR:
+        if ratings.get(output.chosen_shape_index, 0.0) < DECLINE_FLOOR:
             return BindResult(output=declined(output), binder=self.name), usage
         pool = rated_pool(shapes, output, ratings)
         chosen = shapes[output.chosen_shape_index]
@@ -180,8 +185,22 @@ def holds_mentioned_values(
     chosen: ShapeDraft, shape: ShapeDraft, output: _UniversalBindOutput
 ) -> bool:
     """Whether `shape` holds each value the reply drafted on `chosen` that the phrase names
-    (`holds_drafted_values` over `mentioned_drafts`)."""
-    return holds_drafted_values(chosen, shape, mentioned_drafts(output.bindings))
+    (`holds_drafted_values` over `mentioned_drafts`), and every value `chosen`'s slot holds
+    for each slot the reply asks for in full (`holds_requested_slots`), so "across all
+    flows" keeps every flow type."""
+    return holds_drafted_values(
+        chosen, shape, mentioned_drafts(output.bindings)
+    ) and holds_requested_slots(chosen, shape, output.bindings)
+
+
+def holds_requested_slots(
+    chosen: ShapeDraft, shape: ShapeDraft, bindings: Sequence[SlotBindingDraft]
+) -> bool:
+    """Whether, for each ``requested_all`` draft of `bindings`, `shape`'s slot on its
+    property holds every taxonomy code `chosen`'s slot holds."""
+    own, held = chosen.slot_taxonomy or {}, shape.slot_taxonomy or {}
+    keys = [f"{d.axis}:{d.property_dcid}" for d in bindings if d.evidence == "requested_all"]
+    return all(set(own.get(key, ())) <= set(held.get(key, ())) for key in keys)
 
 
 def holds_drafted_values(

@@ -9,10 +9,10 @@ defaults.
 The six policies run in order, each over the survivors of the one before:
 
 1. `nominal_vs_va`: nominal output (EconomicActivity `amount`, Nominal where only some
-   output shapes are) over value added.
-2. `amount_vs_ge`: grant equivalent, or `amount` on a FinancialFlow shape when the window
-   starts before grant-equivalent reporting does (`GE_STARTS`), so the years before it
-   stay in the answer.
+   output shapes are) over value added, when a value-added shape is among the candidates.
+2. `amount_vs_ge`: on FinancialFlow shapes, grant equivalent, or `amount` when the window
+   starts before grant-equivalent reporting does (`GE_STARTS`) or names no years, so the
+   years before it stay in the answer.
 3. `net_vs_gross`: a shape whose `nettingBasis` slot offers Gross.
 4. `default_dataset`: a shape whose family the part's house default dataset
    (`Context.wanted_dataset`) publishes. An opt-in table is its own dataset, so the
@@ -105,10 +105,11 @@ class Context:
     """What the part asks, as the policies read it.
 
     `pre_ge` says the window starts before `GE_STARTS`, or, open at its start, ends before
-    it. A part that names no window, or the latest year, is not pre-GE. `dataset_case` is the kind of question
-    the part is for the default-dataset policy, and `wanted_dataset` that kind's declared
-    house default; both are `None` when the part names no place and admits no code that
-    declares a kind.
+    it. A part that names no years asks for every year the data holds, those before
+    `GE_STARTS` included, so it is pre-GE; a part that asks for the latest year is not.
+    `dataset_case` is the kind of question the part is for the default-dataset policy, and
+    `wanted_dataset` that kind's declared house default; both are `None` when the part names
+    no place and admits no code that declares a kind.
     """
 
     pre_ge: bool
@@ -199,8 +200,14 @@ def context_of(
     question; else the named places are all donors and make it a `donor` question.
     """
     window = frame.window.value
-    # A window open at its start states its end year alone.
-    first_year = None if isinstance(window, str) else window.start_year or window.end_year
+    if window == "all":
+        pre_ge = True
+    elif window == "latest":
+        pre_ge = False
+    else:
+        # A window open at its start states its end year alone.
+        first_year = window.start_year if window.start_year is not None else window.end_year
+        pre_ge = first_year is not None and first_year < GE_STARTS
     directions = [place.direction for place in frame.places]
     admitted = {
         case_systems[match.code_system]
@@ -218,13 +225,15 @@ def context_of(
     else:
         case = None
     return Context(
-        pre_ge=first_year is not None and first_year < GE_STARTS,
+        pre_ge=pre_ge,
         dataset_case=case,
         wanted_dataset=wanted_datasets.get(case) if case else None,
     )
 
 
 def _nominal_output(shapes: Sequence[ShapeFacts], _ctx: Context) -> list[int]:
+    if not any(s.measured_property == "valueAdded" for s in shapes):
+        return []
     output = [
         s
         for s in shapes
@@ -235,13 +244,12 @@ def _nominal_output(shapes: Sequence[ShapeFacts], _ctx: Context) -> list[int]:
 
 
 def _amount_or_ge(shapes: Sequence[ShapeFacts], ctx: Context) -> list[int]:
-    if ctx.pre_ge:
-        return [
-            s.index
-            for s in shapes
-            if s.measured_property == "amount" and s.population_type == "FinancialFlow"
-        ]
-    return [s.index for s in shapes if s.measured_property == "grantEquivalent"]
+    measure = "amount" if ctx.pre_ge else "grantEquivalent"
+    return [
+        s.index
+        for s in shapes
+        if s.population_type == "FinancialFlow" and s.measured_property == measure
+    ]
 
 
 def _gross(shapes: Sequence[ShapeFacts], _ctx: Context) -> list[int]:

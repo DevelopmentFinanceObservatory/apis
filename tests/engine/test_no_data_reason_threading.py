@@ -8,10 +8,12 @@ refusal before bind that flags the reading the bind model names as nearest.
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft
+from search.engine.clients.llm import _parse
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.region.codes import NO_MEMBER_ASSERTS_BOUND_PROPERTIES
@@ -370,11 +372,20 @@ class _PerCapitaSplitOwnershipBindLLM:
         )
 
 
+_DECLINED_REPLY = {
+    "chosen_shape_index": 0,
+    "ask": "no shape on the menu measures this per person",
+    "nearest_refused_index": 0,
+}
+
+
 class _PerCapitaDeclinedBindLLM:
     """Answers the quantity read with the per-person form, which leaves the sole reading not
-    electable, and declines in bind, naming that reading as nearest."""
+    electable, and declines in bind with `reply`, naming that reading as nearest. The reply
+    goes through the parse a live call runs (`clients.llm._parse`)."""
 
-    def __init__(self) -> None:
+    def __init__(self, reply: dict) -> None:
+        self.reply = reply
         self.prompts: list[str] = []
 
     async def generate_structured(self, *, prompt, system, schema):
@@ -382,14 +393,7 @@ class _PerCapitaDeclinedBindLLM:
             return QuantityOutput(stated_form="per_person"), None
         assert schema.__name__ == "_UniversalBindOutput"
         self.prompts.append(prompt)
-        return (
-            _UniversalBindOutput(
-                chosen_shape_index=0,
-                ask="no shape on the menu measures this per person",
-                nearest_refused_index=0,
-            ),
-            None,
-        )
+        return _parse(json.dumps(self.reply), schema, model="fake", usage=None), None
 
 
 def test_place_less_split_ownership_no_matching_slice_defers_to_mint_with_flagged_match():
@@ -427,11 +431,20 @@ def test_place_less_split_ownership_no_matching_slice_defers_to_mint_with_flagge
     assert result.llm_usage == _PC_USAGE
 
 
-def test_place_less_per_capita_fully_asserted_member_reports_denominator_not_available():
+@pytest.mark.parametrize(
+    "reply",
+    [
+        _DECLINED_REPLY,
+        {**_DECLINED_REPLY, "measuring": [{"index": 0, "rating": 1.0}]},
+    ],
+    ids=["asks", "asks-and-rates-the-nearest-refused"],
+)
+def test_place_less_per_capita_fully_asserted_member_reports_denominator_not_available(reply):
     """The member asserts Female and has a 2020 Kenya observation, but it is no per-capita
     series, so the per-person form the quantity read states leaves it not electable. Bind
     declines and names it as nearest, so the query reports `denominator_not_available`,
-    flagging that member, before any read.
+    flagging that member, before any read. The menu is empty, so a reply that also rates
+    the nearest refused reading answers the same.
     """
     graph = FakeGraph(
         nodes=_PC_NODES,
@@ -443,7 +456,7 @@ def test_place_less_per_capita_fully_asserted_member_reports_denominator_not_ava
             ]
         },
     )
-    llm = _PerCapitaDeclinedBindLLM()
+    llm = _PerCapitaDeclinedBindLLM(reply)
     result = asyncio.run(
         resolve_variable(
             _PC_FULLY_ASSERTED_QUERY,
