@@ -31,6 +31,7 @@ from search.engine import config
 from search.engine import deadline as deadline_mod
 from search.engine import envelope as envelope_mod
 from search.engine import fanout as fanout_mod
+from search.engine.binders import Binder
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient, RoleFacetIndex
@@ -974,12 +975,14 @@ def offline_resolve(
     materialise_sdmx: MaterialiseSdmxClient | None = None,
     rate_cache: RateTableCache | None = None,
     part_memo: PartMemo | None = None,
+    binder: Binder | None = None,
 ) -> ResolveResponse:
     """Run `resolve_async` with fake clients and a fixed extraction date.
 
     The 2026-06-23 pin keeps fixture keys stable across calendar days.
 
-    `graph` and `llm` replace shared fakes for this call.
+    `graph` and `llm` replace shared fakes for this call, and `binder` the configured
+    binder.
 
     `sdmx` overrides the empty default; inject a fake for SDMX behavior without live calls.
 
@@ -1008,6 +1011,7 @@ def offline_resolve(
                 materialise_sdmx=materialise_sdmx,
                 rate_cache=rate_cache,
                 part_memo=part_memo,
+                binder=binder,
             )
         )
 
@@ -1025,10 +1029,11 @@ def offline_events(
     response_cache: ResponseCache | None = None,
     place_options_pool: PlaceOptionsPool | None = None,
     close_after: str | None = None,
+    binder: Binder | None = None,
 ) -> list[Event]:
     """Every event `resolve_events` streams for `request`, in order, under the shared fakes
     and the pinned extraction date `offline_resolve` runs with. `graph` and `llm` replace
-    the shared fakes for this call. `stream_slot_options` streams the trailing events as the
+    the shared fakes for this call, and `binder` the configured binder. `stream_slot_options` streams the trailing events as the
     SSE route does; `response_cache` and `place_options_pool` are the app's shared ones.
     `close_after` names an event kind: the stream is closed after the first such event, as
     when a client disconnects."""
@@ -1047,6 +1052,7 @@ def offline_events(
             stream_slot_options=stream_slot_options,
             response_cache=response_cache,
             place_options_pool=place_options_pool,
+            binder=binder,
         )
         async with aclosing(stream):
             async for event in stream:

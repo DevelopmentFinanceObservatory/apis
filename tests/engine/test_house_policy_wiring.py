@@ -783,3 +783,31 @@ def test_the_bind_decision_line_records_the_ratings_as_the_reply_wrote_them(
         1,
     )
     assert line["ratings"] == [{"index": 1, "rating": 0.9}, {"index": 0, "rating": 0.85}]
+
+
+_BIRTHS = _shape("births", population_type="BirthEvent", measured_property="count")
+_DEATHS = _shape("deaths", population_type="MortalityEvent", measured_property="count")
+_BIRTHS_PER_CAPITA = replace(_BIRTHS, shape_id="births_per_capita", meas_denom_dcid="Count_Person")
+
+
+@pytest.mark.parametrize(
+    ("nominee", "rating", "nominated"),
+    [
+        pytest.param(_DEATHS, 0.8, [], id="below-the-bar-leaves"),
+        pytest.param(_DEATHS, 0.9, [1], id="at-the-bar-stays"),
+        pytest.param(_BIRTHS_PER_CAPITA, 0.95, [1], id="another-denominator-near-best-stays"),
+        pytest.param(_BIRTHS_PER_CAPITA, 0.8, [], id="another-denominator-below-the-bar-leaves"),
+    ],
+)
+def test_a_nomination_stands_only_when_rated_near_the_best(
+    nominee: ShapeDraft, rating: float, nominated: list[int]
+):
+    """A reply that copies its rating of another reading into `also_plausible` nominates it
+    only when it rates it at least 0.9 of its best, whatever its denominator, whether or
+    not the election moves."""
+    reply = _rated(0, {0: 1.0, 1: rating}).model_copy(update={"also_plausible": [1]})
+
+    result = _rated_bind([_BIRTHS, nominee], reply)
+
+    assert result.output.chosen_shape_index == 0
+    assert result.output.also_plausible == nominated

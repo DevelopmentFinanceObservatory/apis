@@ -14,6 +14,7 @@ from collections.abc import Sequence
 import pytest
 
 from search.engine.bind import ShapeRating, SlotBindingDraft, _UniversalBindOutput
+from search.engine.binders import Binder
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.region.codes import ELECTED_SHAPE_NO_DATA, ONLY_ALTERNATE_HAS_DATA
@@ -22,6 +23,7 @@ from search.engine.retrieval.retrieve import NoDataDraft
 from search.engine.shape import ShapeDraft
 from search.models import GraphRef
 from series_coverage.schema import RoleNames
+from tests.engine._binders import ReplyBinder, nominee_ratings
 from tests.engine._fake_coverage import (
     FakeCoverageService,
     build_coverage_index,
@@ -93,14 +95,20 @@ class _GuardBindLLM:
             ask=None,
             unplaced=self._unplaced,
             measuring=[
-                ShapeRating(index=i, rating=1.0)
-                for i in dict.fromkeys([self._chosen_shape_index, *self._rated])
+                *(
+                    ShapeRating(index=i, rating=1.0)
+                    for i in dict.fromkeys([self._chosen_shape_index, *self._rated])
+                ),
+                *nominee_ratings(
+                    self._also_plausible, rated=(self._chosen_shape_index, *self._rated)
+                ),
             ],
         ), None
 
 
 def _run(
     *,
+    binder: Binder | None = None,
     nodes: dict,
     detect: dict,
     obs: dict,
@@ -119,6 +127,7 @@ def _run(
             pac=True,
             graph=graph,
             resolver=make_resolver(graph),
+            binder=binder,
             llm=_GuardBindLLM(
                 also_plausible, chosen_shape_index=chosen_shape_index, unplaced=unplaced or ()
             ),
@@ -486,7 +495,7 @@ _TWO_ALT_OBS = {
 }
 
 
-def _run_two_alt_scenario():
+def _run_two_alt_scenario(*, binder: Binder | None = None):
     # 3 shapes ranked by score: STD_SV(0.86) index 0, STD_SV_2(0.85) index 1,
     # ELECTED_SV(0.82) index 2.
     return _run(
@@ -495,6 +504,7 @@ def _run_two_alt_scenario():
         obs=_TWO_ALT_OBS,
         also_plausible=[0, 1],
         chosen_shape_index=2,
+        binder=binder,
     )
 
 
@@ -502,7 +512,7 @@ def test_two_alt_survivors_leave_the_part_refused_with_the_first_riding():
     """Status rule 1: neither nominated reading is an equivalent or a price-basis sibling
     of the empty elected shape, so the part refuses, and the first nominated reading with
     data rides on the refusal as its alternate match."""
-    result = _run_two_alt_scenario()
+    result = _run_two_alt_scenario(binder=ReplyBinder())
     assert (result.status, result.no_data_reason) == ("no_data", "no_observations")
     assert result.gate == ONLY_ALTERNATE_HAS_DATA
     assert result.alternate_match is not None

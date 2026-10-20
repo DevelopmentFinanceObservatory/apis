@@ -14,6 +14,7 @@ import pytest
 
 from search.engine.assemble import build_no_data_part
 from search.engine.bind import SlotBindingDraft
+from search.engine.binders import Binder
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import (
     candidate_collapse,
@@ -30,7 +31,7 @@ from search.engine.region.codes import (
 from search.engine.region.state import EngineOptions
 from search.models import DatasetResubmitInput, Operation, ResolveRequest
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
-from tests.engine._binders import elected_reply
+from tests.engine._binders import ReplyBinder, elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import offline_resolve
@@ -180,6 +181,7 @@ class _RecordingWalkReader(FakeMintGraphReader):
 
 def _run(
     *,
+    binder: Binder | None = None,
     svs: list[str],
     scores: list[float],
     obs: dict,
@@ -200,6 +202,7 @@ def _run(
             pac=True,
             graph=graph,
             resolver=make_resolver(graph),
+            binder=binder,
             llm=_NoAmbiguityBindLLM(chosen_shape_index, also_plausible),
             base_timing={},
             sdmx=FakeSdmxClient(
@@ -294,16 +297,20 @@ _FEMALE_SIBLING_NAME = "Estimated female mortality event count"
 
 
 @pytest.mark.parametrize(
-    ("far_obs", "also_plausible", "status"),
+    ("far_obs", "also_plausible", "status", "binder"),
     [
-        pytest.param({}, None, "definite", id="stand-in-alone"),
+        pytest.param({}, None, "definite", None, id="stand-in-alone"),
         pytest.param(
-            {f"{_FAR_SV}|country/KEN": _KEN_OBS}, [2], "candidates", id="beside-an-alternate"
+            {f"{_FAR_SV}|country/KEN": _KEN_OBS},
+            [2],
+            "candidates",
+            ReplyBinder(),
+            id="beside-an-alternate",
         ),
     ],
 )
 def test_single_sibling_reelection_names_the_stand_in_specs_shape_label(
-    far_obs, also_plausible, status
+    far_obs, also_plausible, status, binder
 ):
     """The sibling shape holds two series. Recall ranks the female one first, so the shape
     is drafted under its name, and only the other holds data in Kenya. The warning's
@@ -329,6 +336,7 @@ def test_single_sibling_reelection_names_the_stand_in_specs_shape_label(
         obs={f"{_SIBLING_SV}|country/KEN": _KEN_OBS, **far_obs},
         nodes=nodes,
         also_plausible=also_plausible,
+        binder=binder,
     )
 
     assert result.status == status

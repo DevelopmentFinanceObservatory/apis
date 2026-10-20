@@ -21,6 +21,7 @@ from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from entity_resolution import Admission, EntityResolver, Resolution
 from materialise import GraphReader
 from materialise.rate_tables import RateTableCache
+from search.engine.binders import Binder
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
@@ -432,6 +433,7 @@ async def _stream_one_variable(
     resolver: EntityResolver,
     admission: Admission,
     llm: SupportsLLM,
+    binder: Binder | None = None,
     sdmx: EngineSdmxClient,
     base_timing: dict[str, int],
     pre_resolved: dict[str, Resolution] | None,
@@ -535,6 +537,7 @@ async def _stream_one_variable(
             resolver=resolver,
             admission=admission,
             llm=llm,
+            binder=binder,
             sdmx=sdmx,
             base_timing=base_timing,
             pre_resolved=pre_resolved,
@@ -814,6 +817,7 @@ def _launch_variable_tasks(
     resolver: EntityResolver,
     admission: Admission,
     llm: SupportsLLM,
+    binder: Binder | None = None,
     sdmx: EngineSdmxClient,
     base_timing: dict[str, int],
     deadline: float,
@@ -859,6 +863,7 @@ def _launch_variable_tasks(
                 resolver=resolver,
                 admission=admission,
                 llm=llm,
+                binder=binder,
                 sdmx=sdmx,
                 deadline=deadline,
                 base_timing=base_timing,
@@ -950,6 +955,7 @@ async def _run_variables_streaming(
     resolver: EntityResolver,
     admission: Admission,
     llm: SupportsLLM,
+    binder: Binder | None = None,
     sdmx: EngineSdmxClient,
     base_timing: dict[str, int],
     pre_resolved: dict[str, Resolution] | None,
@@ -1060,6 +1066,7 @@ async def _run_variables_streaming(
         resolver=resolver,
         admission=admission,
         llm=llm,
+        binder=binder,
         sdmx=sdmx,
         base_timing=base_timing,
         deadline=deadline,

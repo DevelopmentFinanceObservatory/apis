@@ -71,6 +71,7 @@ from search.models import (
 )
 from series_coverage.shared import CoverageSnapshot
 from tests.engine import test_pool_election as pools
+from tests.engine._binders import nominee_ratings
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
@@ -832,7 +833,13 @@ class _NominatingLLM(pools._ElectLLM):
             prompt=prompt, system=system, schema=schema
         )
         nominated = [i for i, block in enumerate(pools._menu_blocks(prompt)) if _NUMERATE in block]
-        return output.model_copy(update={"also_plausible": nominated}), usage
+        measuring = [
+            *output.measuring,
+            *nominee_ratings(nominated, rated={e.index for e in output.measuring}),
+        ]
+        return output.model_copy(
+            update={"also_plausible": nominated, "measuring": measuring}
+        ), usage
 
 
 @pytest.mark.parametrize(

@@ -52,7 +52,8 @@ class GeminiBinder:
     near the best and the pick's twins (`rated_pool`), over which all six policies run with
     the ratings. Each pool shape holds the pick's constraints when it holds each value the
     reply drafted as named and every value of each slot the reply asks for in full
-    (`holds_mentioned_values`).
+    (`holds_mentioned_values`). A nomination in `also_plausible` stands only when the reply
+    rates it near its best rating, whatever its denominator (`nominated_near_best`).
 
     A reply that leaves its pick out of `measuring`, an empty one included, or rates it
     below `DECLINE_FLOOR`, says the pick measures something else, so it declines
@@ -101,7 +102,9 @@ class GeminiBinder:
         holds = {i: holds_mentioned_values(chosen, shapes[i], output) for i in pool.measuring}
         choice = request.apply_policies(pool, ratings=ratings, holds=holds)
         result = BindResult(
-            output=reelect(output, choice, shapes, request.admitted_qualifiers),
+            output=nominated_near_best(
+                reelect(output, choice, shapes, request.admitted_qualifiers), ratings
+            ),
             binder=self.name,
             policy_pool=pool,
             policy_choice=choice,
@@ -173,6 +176,27 @@ def rated_pool(
         index for index, shape in enumerate(shapes) if index != chosen and joins(index, shape)
     )
     return PolicyPool(measuring=(chosen, *others), rated=True)
+
+
+def nominated_near_best(
+    output: _UniversalBindOutput, ratings: Mapping[int, float]
+) -> _UniversalBindOutput:
+    """`output` nominating in `also_plausible` only the shapes `ratings` rates near the best
+    rating of the menu (`near_best` with `RATED_POOL_FRACTION`), the bar a pool shape
+    clears, without the pool's denominator test, so a reading of another denominator the
+    reply rates as highly stays a rival. A shape the reply rates lower is a weaker reading
+    it copied from its ratings, and an unrated one reads 0."""
+    if not output.also_plausible:
+        return output
+    best = max(ratings.values(), default=0.0)
+    kept = [
+        index
+        for index in output.also_plausible
+        if near_best(ratings.get(index, 0.0), best, RATED_POOL_FRACTION)
+    ]
+    if kept == output.also_plausible:
+        return output
+    return output.model_copy(update={"also_plausible": kept})
 
 
 def near_best(rating: float, best: float, fraction: float) -> bool:

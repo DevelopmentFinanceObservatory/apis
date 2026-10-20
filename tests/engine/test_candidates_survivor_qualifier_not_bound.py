@@ -10,7 +10,7 @@ from search.engine.departures import warning_key
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region.pipeline import resolve_variable
 from search.heading.departure_fact import DepartureFact
-from tests.engine._binders import elected_reply
+from tests.engine._binders import ReplyBinder, elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
@@ -153,6 +153,7 @@ def test_two_survivors_candidates_carries_query_qualifier_dropped_warning():
             llm=_ElectShape0AlsoPlausibleShape1LLM(),
             base_timing={},
             coverage=empty_coverage_snapshot(),
+            binder=ReplyBinder(),
         )
     )
 

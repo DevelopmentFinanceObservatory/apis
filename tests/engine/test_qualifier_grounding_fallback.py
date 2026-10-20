@@ -13,11 +13,12 @@ from __future__ import annotations
 import pytest
 
 from search.engine.bind import _UniversalBindOutput
+from search.engine.binders import Binder
 from search.engine.events import Event, FrameEvent, ResponseEvent
 from search.engine.extract import ExtractedEntity, Extraction
 from search.engine.quantity_read import QuantityOutput
 from search.models import DefinitePart, NoDataPart, Resolution, Spec
-from tests.engine._binders import elected_reply
+from tests.engine._binders import ReplyBinder, elected_reply
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import make_request, offline_events
 from tests.engine._quantity import NO_QUANTITY
@@ -87,6 +88,7 @@ def _events(
     also_plausible=None,
     without_data=frozenset(),
     nearest: bool = False,
+    binder: Binder | None = None,
 ) -> list[Event]:
     """The events of resolving the variable over `members`, each a StatVar's measured
     property and purpose, recalled in order and each holding data at Kenya unless named in
@@ -127,6 +129,7 @@ def _events(
         graph=graph,
         llm=_LLM(also_plausible, nearest=nearest),
         sdmx=FakeSdmxClient(observations={}, availability={}),
+        binder=binder,
     )
 
 
@@ -219,6 +222,7 @@ def test_a_measure_sibling_whose_purpose_filter_held_rides_on_the_refusal():
         {_AMOUNT: ("amount", _EDUCATION), _COUNT: ("count", _EDUCATION)},
         also_plausible=[1],
         without_data={_AMOUNT},
+        binder=ReplyBinder(),
     )
 
     (part,) = response.parts

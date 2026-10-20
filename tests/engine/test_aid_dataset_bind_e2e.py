@@ -37,7 +37,8 @@ from materialise.errors import UpstreamVersionChangedError
 from materialise.rate_tables import RateTableInvalidError
 from origin_catalogue import DFO, Catalogue, ProvenanceRow, SourceRef
 from search.engine import degraded_reads as degraded_reads_module
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import ShapeRating, SlotBindingDraft, _UniversalBindOutput
+from search.engine.binders import Binder
 from search.engine.errors import (
     DeclaredDefaultUnsupportedError,
     DefaultScopeIndexSourcedError,
@@ -80,6 +81,7 @@ from tests.code_index.aid_identity import (
 )
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
 from tests.datasets_api._member_bounds import mint_bounds
+from tests.engine._binders import ReplyBinder, nominee_ratings
 from tests.engine._fake_coverage import patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import make_request, offline_events, offline_resolve
@@ -1157,7 +1159,10 @@ class _ScriptedLLM:
             bindings=self._drafted,
             also_plausible=self._also_plausible,
             ask=self._ask,
-            measuring=[{"index": 0, "rating": 1.0}],
+            measuring=[
+                ShapeRating(index=0, rating=1.0),
+                *nominee_ratings(self._also_plausible, rated=(0,)),
+            ],
         ), None
 
 
@@ -1380,13 +1385,18 @@ class _CountingLLM(_ScriptedLLM):
 
 
 def _resolve_scripted(
-    query: str, llm: _ScriptedLLM, *variables: str, graph: FakeGraph | None = None
+    query: str,
+    llm: _ScriptedLLM,
+    *variables: str,
+    graph: FakeGraph | None = None,
+    binder: Binder | None = None,
 ) -> ResolveResponse:
     return offline_resolve(
         make_request(query),
         graph=graph if graph is not None else _graph(*variables),
         llm=llm,
         sdmx=FakeSdmxClient(observations={}, availability={}),
+        binder=binder,
     )
 
 
@@ -1471,6 +1481,7 @@ def test_the_opt_in_table_reached_as_an_alternate_mints_the_identity_electing_it
         "aid to Kenya",
         _ScriptedLLM("aid", also_plausible=[1]),
         graph=_graph("aid", members=(_COMMITMENTS_MEMBER, _IMPUTED_MEMBER)),
+        binder=ReplyBinder(),
     )
     fresh = _resolve_scripted(
         "aid to Kenya",
@@ -1498,6 +1509,7 @@ def test_the_opt_in_measure_alternative_mints_the_identity_electing_it():
         f"{_E} to Kenya",
         _ScriptedLLM(_E, also_plausible=[1]),
         graph=_graph(_E, members=(_CRS_MEMBER, _IMPUTED_MEMBER)),
+        binder=ReplyBinder(),
     )
     fresh = _resolve_scripted(
         f"{_E} to Kenya", _ScriptedLLM(_E), graph=_graph(_E, members=(_IMPUTED_MEMBER, _CRS_MEMBER))

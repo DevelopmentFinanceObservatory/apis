@@ -23,7 +23,7 @@ from search.models import (
     ResubmitIdentityEntry,
 )
 from tests.engine._axis_doubles import TOTAL_POPULATION_INDIA_FAMILY, axis_confirming_reader
-from tests.engine._binders import elected_reply
+from tests.engine._binders import BIRTH_RATE_CANDIDATES, KeyedBindReplyLLM, elected_reply
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import (
     PINNED_DATE,
@@ -238,6 +238,7 @@ def test_candidates_part_carries_observations_omitted_alongside_definite_with_ob
     result = offline_resolve(
         request,
         graph=graph,
+        llm=KeyedBindReplyLLM(BIRTH_RATE_CANDIDATES),
         materialise_graph=materialise_graph,
         materialise_sdmx=materialise_sdmx,
     )
@@ -259,16 +260,19 @@ def _mixed_obs_app(graph, materialise_graph, materialise_sdmx):
     return search_app(
         graph=graph,
         resolver=make_resolver(graph),
-        llm=FakeLLM(
-            responses={
-                **_load_json("llm_responses.json"),
-                _extract_key(_MIXED_OBS_QUERY): {
-                    "kind": "resolution",
-                    "variables": ["population", "birth rate"],
-                    "entities": [{"text": "Ethiopia"}],
-                    "dates": [],
-                },
-            }
+        llm=KeyedBindReplyLLM(
+            BIRTH_RATE_CANDIDATES,
+            delegate=FakeLLM(
+                responses={
+                    **_load_json("llm_responses.json"),
+                    _extract_key(_MIXED_OBS_QUERY): {
+                        "kind": "resolution",
+                        "variables": ["population", "birth rate"],
+                        "entities": [{"text": "Ethiopia"}],
+                        "dates": [],
+                    },
+                }
+            ),
         ),
         sdmx=FakeSdmxClient(observations={}, availability={}),
         materialise_graph=materialise_graph,

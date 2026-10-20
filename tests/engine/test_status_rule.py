@@ -36,6 +36,7 @@ from search.engine.shape import ShapeDraft
 from search.models import TimeWindow
 from series_coverage.schema import RoleNames
 from tests.engine import test_first_answer_place_scenarios as scenarios
+from tests.engine._binders import nominee_ratings
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
@@ -379,8 +380,11 @@ class _FixedBindLLM:
             also_plausible=self._also_plausible,
             ask=None,
             measuring=[
-                ShapeRating(index=i, rating=1.0)
-                for i in dict.fromkeys([self._chosen, *self._rated])
+                *(
+                    ShapeRating(index=i, rating=1.0)
+                    for i in dict.fromkeys([self._chosen, *self._rated])
+                ),
+                *nominee_ratings(self._also_plausible, rated=(self._chosen, *self._rated)),
             ],
         ), None
 

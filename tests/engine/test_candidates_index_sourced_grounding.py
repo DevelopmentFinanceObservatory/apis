@@ -11,9 +11,10 @@ import asyncio
 
 from code_index.shared import get_index
 from search.engine.bind import SlotBindingDraft
+from search.engine.binders import Binder
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
-from tests.engine._binders import elected_reply
+from tests.engine._binders import ReplyBinder, elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
@@ -157,7 +158,7 @@ class _ChooseShape1AlsoPlausibleShape2LLM:
         ), None
 
 
-def _run():
+def _run(*, binder: Binder | None = None):
     graph = FakeGraph(nodes=_NODES, detect=_DETECT, resolve={"Kenya": _KEN_DCID}, obs=_OBS)
     return asyncio.run(
         resolve_variable(
@@ -170,6 +171,7 @@ def _run():
             graph=graph,
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations={}, availability={}),
+            binder=binder,
             llm=_ChooseShape1AlsoPlausibleShape2LLM(),
             base_timing={},
             coverage=empty_coverage_snapshot(),
@@ -179,7 +181,7 @@ def _run():
 
 def test_alternate_shapes_index_only_winner_renders_its_slot_values_on_the_wire():
     """The alternate's index-only StatVar must carry all four bound slot values."""
-    result = _run()
+    result = _run(binder=ReplyBinder())
     assert result.status == "candidates"
     assert len(result.specs) == 2
     alt_spec = next(

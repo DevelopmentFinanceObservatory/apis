@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from search.engine.binders import Binder
 from series_coverage.shared import CoverageSnapshot
 from skills_index import SkillsIndex
 
@@ -43,3 +44,7 @@ class EntryParams:
     # Single coverage snapshot shared by consumers and the cache key, keeping its
     # index and stamp from the same artifact generation. Required at construction.
     coverage: CoverageSnapshot
+
+    # The request's binder, which every part binds with and the cache key reads. None
+    # takes the one `Settings.binder` names (`binders.configured_binder`).
+    binder: Binder | None = None

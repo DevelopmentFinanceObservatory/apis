@@ -376,6 +376,7 @@ async def handle(
                     rate_cache=rate_cache,
                     population_memo=population_memo,
                     place_options_pool=place_options_pool,
+                    binder=params.binder,
                     pac=params.pac,
                     deadline=params.deadline,
                     include_option_coverage=params.include_option_coverage,

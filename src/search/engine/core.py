@@ -34,7 +34,7 @@ from search.engine.assemble import (
     skills_index_incomplete_warning,
     skills_index_unavailable_warning,
 )
-from search.engine.binders import configured_binder
+from search.engine.binders import Binder, configured_binder
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.graph_client import LiveGraphClient
 from search.engine.clients.llm import LLM, SupportsLLM
@@ -214,6 +214,7 @@ async def resolve_events(
     generation: GenerationProvider = UNKNOWN_GENERATION,
     caller: str | None = None,
     budget: RequestBudget | None = None,
+    binder: Binder | None = None,
 ) -> AsyncIterator[Event]:
     """Stream typed events for one resolve request.
 
@@ -258,6 +259,9 @@ async def resolve_events(
 
     ``budget`` is the route's ``request_budget``, so the pipeline's soft deadline and the
     route's hard cap share one start. Without one the request starts here.
+
+    ``binder`` reads the quantity and binds every part; ``None`` takes the one
+    ``Settings.binder`` names (``binders.configured_binder``). The cache key reads it.
     """
     if budget is None:
         budget = request_budget(kind=request.input.kind)
@@ -300,6 +304,7 @@ async def resolve_events(
                     admission=_admission,
                     llm=_llm,
                     sdmx=_sdmx,
+                    binder=binder,
                     start_ms=start_ms,
                     deadline=budget.soft,
                     stream_slot_options=stream_slot_options,
@@ -415,6 +420,7 @@ async def _resolve_pipeline_events(
     admission: Admission,
     llm: SupportsLLM,
     sdmx: EngineSdmxClient,
+    binder: Binder | None,
     start_ms: int,
     deadline: float,
     stream_slot_options: bool = False,
@@ -483,9 +489,9 @@ async def _resolve_pipeline_events(
 
     today = datetime.now(UTC).date().isoformat()
 
-    # The binder `Settings.binder` names, for the cache key. Each part resolves its own
-    # binder from the same setting (`region.resolve_variable`), so the two agree.
-    binder = configured_binder()
+    # The request's binder, the one `Settings.binder` names unless the caller injects one.
+    # The cache key reads it and every part binds with it (`EntryParams.binder`).
+    binder = binder if binder is not None else configured_binder()
 
     # The cache key includes the resolved candidate cap and PAC setting. A transport that
     # streams trailing events stores the events from `response` to `done`, since the
@@ -518,6 +524,7 @@ async def _resolve_pipeline_events(
         include_skills=include_skills,
         skills_index=skills_index,
         coverage=coverage_snapshot,
+        binder=binder,
     )
 
     if inp.kind == "dataset_resubmit":
@@ -666,6 +673,7 @@ async def resolve_async(
     health: ResolveHealth | None = None,
     caller: str | None = None,
     budget: RequestBudget | None = None,
+    binder: Binder | None = None,
 ) -> ResolveResponse:
     """Drain ``resolve_events`` into one buffered response.
 
@@ -674,7 +682,8 @@ async def resolve_async(
     when given, receives ``done.degraded_leg``, which the body omits. Client
     injection and lifetimes match ``resolve_events``. The buffered path emits
     no trailing SSE events, so ``place_options_pool`` launches no tasks.
-    ``caller`` reaches the ``resolve`` log line, and ``budget`` reaches ``resolve_events``.
+    ``caller`` reaches the ``resolve`` log line, and ``budget`` and ``binder`` reach
+    ``resolve_events``.
 
     Returns a ``ResolveResponse``: a ``Resolution`` carries one part per requested
     variable.
@@ -698,6 +707,7 @@ async def resolve_async(
         part_memo=part_memo,
         generation=generation,
         caller=caller,
+        binder=binder,
         budget=budget,
     ):
         if isinstance(event, ResponseEvent):

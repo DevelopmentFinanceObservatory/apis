@@ -39,6 +39,7 @@ from search.engine.region.state import EngineOptions, ResolveState, UnLeg, UnPoo
 from search.engine.shape import Pool, ShapeDraft
 from search.engine.source_scope import SourceScope
 from search.models import Warning
+from tests.engine._binders import nominee_ratings
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine.test_ids_index_sourcing import _crs_shape
@@ -184,7 +185,10 @@ class _ElectLLM:
             bindings=list(self.bindings) if len(self.prompts) == 1 else [],
             also_plausible=nominated or None,
             ask="Which measure do you mean?" if chosen is None and self.ask_without else None,
-            measuring=[ShapeRating(index=chosen or 0, rating=1.0)],
+            measuring=[
+                ShapeRating(index=chosen or 0, rating=1.0),
+                *nominee_ratings(nominated, rated=(chosen or 0,)),
+            ],
         )
         return output, usage
 

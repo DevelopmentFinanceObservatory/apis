@@ -122,7 +122,7 @@ class _RecordedBirthRateLLM:
             '{"chosen_shape_index":0,"bindings":[{"axis":"how","property_dcid":"medicalStatus",'
             '"kind":"unbound","value_dcids":[],"evidence":"mentioned",'
             '"requested_all_phrase":null}],"also_plausible":[1],"ask":null,"unplaced":[],'
-            '"measuring":[{"index":0,"rating":1.0}]}'
+            '"measuring":[{"index":0,"rating":1.0},{"index":1,"rating":0.9}]}'
         )
         return recorded, {"input_tokens": 1, "output_tokens": 1, "cached_tokens": 0}
 

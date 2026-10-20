@@ -11,6 +11,7 @@ import asyncio
 
 import pytest
 
+from search.engine.binders import Binder
 from search.engine.conjoin import assemble_region
 from search.engine.envelope import now_ms
 from search.engine.extract import DateRequest
@@ -21,7 +22,7 @@ from search.engine.retrieval import standard
 from search.models import TimeWindow
 from tests.engine import test_equivalent_readings_divert as twins
 from tests.engine import test_zero_observation_election as reelection
-from tests.engine._binders import elected_reply
+from tests.engine._binders import ReplyBinder, elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
@@ -58,6 +59,7 @@ def _resolve(
     query: str,
     nodes: dict[str, dict],
     *,
+    binder: Binder | None = None,
     scores: list[float],
     with_data: dict[str, dict],
     also_plausible: list[int] | None = None,
@@ -79,6 +81,7 @@ def _resolve(
             pac=True,
             graph=graph,
             resolver=make_resolver(graph),
+            binder=binder,
             llm=_BindLLM(also_plausible),
             base_timing={},
             sdmx=FakeSdmxClient(observations={}, availability={}),
@@ -228,6 +231,7 @@ def test_a_no_data_part_warns_for_the_alternate_it_holds_and_not_for_the_elected
         scores=[0.9, 0.89, 0.85, 0.8],
         with_data={_RATE_DISABLED: _OBS[0]},
         also_plausible=[1],
+        binder=ReplyBinder(),
     )
 
     assert result.status == "no_data", result

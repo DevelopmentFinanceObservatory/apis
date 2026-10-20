@@ -28,7 +28,7 @@ import logging
 import time
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextlib import AsyncExitStack, ExitStack, asynccontextmanager, contextmanager
-from typing import Annotated
+from typing import Annotated, TypedDict
 
 from fastapi import APIRouter, FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
@@ -395,6 +395,27 @@ _RESOLVE_RESPONSES: dict[int | str, dict[str, object]] = {
 }
 
 
+class _PipelineDeps(TypedDict):
+    """The keywords `resolve_endpoint` passes `resolve_events` and `resolve_async` from the
+    app's dependencies and the request. The binder is left to `Settings.binder`."""
+
+    graph: EngineGraphClient
+    resolver: EntityResolver
+    admission: Admission | None
+    llm: SupportsLLM
+    sdmx: EngineSdmxClient
+    materialise_graph: GraphReader | None
+    materialise_sdmx: MaterialiseSdmxClient | None
+    rate_cache: RateTableCache | None
+    population_memo: OptionsPopulationMemo | None
+    place_options_pool: PlaceOptionsPool | None
+    shared_skills_index: SharedSkillsIndex | None
+    response_cache: ResponseCache | None
+    part_memo: PartMemo | None
+    generation: GenerationProvider
+    caller: str | None
+
+
 async def resolve_endpoint(body: ResolveRequest, request: Request, deps: SearchDepsDep) -> Response:
     # Share the unimplemented-door set with capabilities so liveness and refusals agree.
     if body.input.kind in SEARCH_UNIMPLEMENTED_DOORS:
@@ -420,7 +441,7 @@ async def resolve_endpoint(body: ResolveRequest, request: Request, deps: SearchD
     # Refresh before every generation-keyed cache lookup.
     await deps.generation.refresh_if_stale()
 
-    pipeline_deps = {
+    pipeline_deps: _PipelineDeps = {
         "graph": deps.graph,
         "resolver": deps.resolver,
         "admission": deps.admission,

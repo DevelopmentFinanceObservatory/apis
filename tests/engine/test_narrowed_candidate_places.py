@@ -20,7 +20,7 @@ from search.engine.bind import SlotBindingDraft
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region.pipeline import resolve_variable
 from series_coverage.schema import RoleNames
-from tests.engine._binders import elected_reply
+from tests.engine._binders import ReplyBinder, elected_reply
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
@@ -192,6 +192,7 @@ def test_a_two_role_alternate_binds_the_place_where_the_elected_shape_bound_it()
             sdmx=FakeSdmxClient(observations={}, availability={}),
             base_timing={},
             coverage=coverage,
+            binder=ReplyBinder(),
         )
     )
 
