@@ -374,7 +374,7 @@ def build_meta_door(*, deps: DepsCell, settings: DatasetsBuildSettings) -> DoorC
     router = APIRouter()
 
     @router.get("/api/datasets/healthz", response_model=HealthResponse)
-    async def healthz() -> HealthResponse:
+    async def get_health() -> HealthResponse:
         return health_response(capability_version=DATASETS_CAPABILITY_VERSION)
 
     if SCHEMA_ROUTE_LIVE:
@@ -388,7 +388,7 @@ def build_meta_door(*, deps: DepsCell, settings: DatasetsBuildSettings) -> DoorC
                 }
             },
         )
-        async def schema(request: Request) -> Response:
+        async def get_schema(request: Request) -> Response:
             return schema_document.respond(request)
 
     @per_index
@@ -406,7 +406,7 @@ def build_meta_door(*, deps: DepsCell, settings: DatasetsBuildSettings) -> DoorC
     capabilities_document(get_index())
 
     @router.get("/api/datasets/capabilities", response_model=Capabilities)
-    async def capabilities(request: Request) -> Response:
+    async def get_capabilities(request: Request) -> Response:
         # The document carries the code index's stamp, so it is frozen per index.
         return capabilities_document(get_index()).respond(request)
 

@@ -25,7 +25,7 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 from datasets_api.deps import MATERIALISE_RAW_FETCH_GUARD_ROWS, Deps, DepsCell
-from datasets_api.doors.definition import ROUTE_EXCEPTION_TYPES
+from datasets_api.doors.definition import OPERATION_SUBMITTED_RESPONSES, ROUTE_EXCEPTION_TYPES
 from datasets_api.doors.mint_errors import MintBackpressure, classify_mint_exception
 from datasets_api.doors.mint_inventory import MINT_EXCEPTION_EXEMPLARS, MINT_EXCEPTION_TYPES
 from datasets_api.headers import no_store_headers
@@ -152,8 +152,8 @@ def build_mint_door(*, deps: DepsCell) -> DoorContribution:
     """Build the mint door over the surface's dependency cell."""
     router = APIRouter()
 
-    @router.post("/api/datasets", response_model=Manifest)
-    async def mint_endpoint(body: MintRequest) -> JSONResponse:
+    @router.post("/api/datasets", response_model=Manifest, responses=OPERATION_SUBMITTED_RESPONSES)
+    async def mint(body: MintRequest) -> JSONResponse:
         return await _mint_response(body, deps=deps.get())
 
     return DoorContribution(

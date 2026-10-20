@@ -334,7 +334,7 @@ class ColumnOptionModel(BaseModel):
     name: str
     kind: str
     droppable: bool
-    distinct: int | None
+    distinct: int | None = Field(default=None, exclude_if=_is_none)
 
 
 class FormatOptionModel(BaseModel):

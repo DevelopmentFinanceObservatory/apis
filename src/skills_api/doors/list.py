@@ -39,7 +39,7 @@ def _build_response(index: SkillsIndex) -> SkillListResponse:
     return SkillListResponse(skills=skills, warnings=corpus_warnings)
 
 
-async def list_endpoint(request: Request, deps: SkillsDepsDep) -> object:
+async def list_skills(request: Request, deps: SkillsDepsDep) -> object:
     shared = deps.skills_index
     index = shared.index
     if index is None:
@@ -56,7 +56,7 @@ async def list_endpoint(request: Request, deps: SkillsDepsDep) -> object:
 def build_list_door() -> DoorContribution:
     router = APIRouter()
     router.add_api_route(
-        "/api/skills", list_endpoint, methods=["GET"], response_model=SkillListResponse
+        "/api/skills", list_skills, methods=["GET"], response_model=SkillListResponse
     )
     return DoorContribution(
         router=router,

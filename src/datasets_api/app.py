@@ -21,9 +21,9 @@ mounts before the snapshot door, whose `GET /api/datasets/{spec_id}/{content_ver
 otherwise read `versions` as a content version. Unknown operation ids return `operation_not_found`. Other errors use RFC 9457
 problem details.
 
-The Data access proxy authenticates and authorises requests and enforces `401`, `413`, `415`, and
-`429`. The deployment bounds request bodies, except publish, which checks its own `Content-Length`
-ceiling before proxy admission.
+Callers reach the API through the website's proxy, which may answer a per-IP `429` and passes
+`Authorization` upstream unread. The deployment bounds request bodies, and publish also checks its
+own `Content-Length` ceiling at admission, before it reads the body.
 """
 
 from __future__ import annotations
@@ -232,6 +232,7 @@ def datasets_surface(
 
     return Surface(
         name="datasets",
+        description="Register and mint datasets, poll their operations, and read versions, observations and files.",
         prefix="/api/datasets",
         router=router,
         capability_version=DATASETS_CAPABILITY_VERSION,

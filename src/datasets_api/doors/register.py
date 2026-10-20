@@ -7,8 +7,9 @@ return retryable 503s. Invalid identity documents return `request_invalid`
 (400). Platform validation handles other malformed bodies and unsupported
 schema versions.
 
-The fronting Data access proxy authenticates requests and enforces 401, 413,
-415, and 429. The deployment platform limits request-body size.
+Callers reach the API through the website's proxy, which may answer a per-IP
+429 and passes `Authorization` upstream unread. The deployment platform limits
+request-body size.
 """
 
 from __future__ import annotations
@@ -81,7 +82,7 @@ def build_register_door(*, deps: DepsCell) -> DoorContribution:
     router = APIRouter()
 
     @router.post("/api/datasets/register", response_model=DefinitionResponse)
-    async def register_endpoint(body: RegisterRequest) -> Response:
+    async def register(body: RegisterRequest) -> Response:
         current = deps.get()
         trace_id = get_trace_id()
         definition = body.definition

@@ -113,6 +113,7 @@ def presentation_surface(
 
     return Surface(
         name="presentation",
+        description="Create, revise and render presentation components, and read frames and the release.",
         prefix="/api/presentation",
         router=router,
         capability_version=capability_version,

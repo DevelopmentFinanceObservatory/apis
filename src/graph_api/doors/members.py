@@ -588,7 +588,7 @@ async def _graph_labels(
     return labelled, False
 
 
-async def members_endpoint(
+async def list_members(
     dcid: str,
     request: Request,
     deps: GraphDepsDep,
@@ -672,7 +672,7 @@ def _membership_roots(policy: MembershipPolicy, kind: MembershipKind) -> list[Ro
     )
 
 
-async def roots_endpoint(request: Request) -> Response:
+async def list_roots(request: Request) -> Response:
     index = get_index()
     catalogue = current_catalogue()
     lists = _catalogue_lists(catalogue.build_id)
@@ -733,11 +733,11 @@ def build_members_door() -> DoorContribution:
     # through.
     router.add_api_route(
         "/api/graph/node/{dcid:dcid}/members",
-        members_endpoint,
+        list_members,
         methods=["GET"],
         response_model=MembersPage,
     )
-    router.add_api_route("/api/graph/roots", roots_endpoint, methods=["GET"], response_model=Roots)
+    router.add_api_route("/api/graph/roots", list_roots, methods=["GET"], response_model=Roots)
     return DoorContribution(
         router=router,
         registry_endpoints={

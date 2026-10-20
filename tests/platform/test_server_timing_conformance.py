@@ -52,7 +52,7 @@ _VALIDATION_PROBES = [
 class _UnreadResolver:
     """An `EntityResolver`-shaped stand-in for `client`'s own `GraphDeps`,
     never called: every probe below fails FastAPI's own request validation
-    before `resolve_endpoint`'s body runs.
+    before `resolve`'s body runs.
     """
 
     async def resolve(self, texts: list[str], *, deadline: float | None = None) -> list[Resolution]:

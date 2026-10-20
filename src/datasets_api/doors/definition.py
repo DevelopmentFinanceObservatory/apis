@@ -51,6 +51,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from datetime import timedelta
 from itertools import chain
+from typing import Any
 
 from dfo_frame_grammar import FrameError
 from dfo_spec_kit.identity import IdentityError
@@ -875,6 +876,31 @@ ROUTE_EXCEPTION_TYPES: Mapping[str, tuple[type[Exception], ...]] = {
 The door's `exception_types` is their union."""
 
 
+OPERATION_SUBMITTED_RESPONSES: dict[int | str, dict[str, Any]] = {
+    202: {
+        "model": OperationResource,
+        "description": (
+            "The build runs as a background operation. Poll `Location` until the operation "
+            "is done; the done poll carries the manifest."
+        ),
+        "headers": {
+            "Location": {
+                "description": "The operation's poll URL, `operation.poll` in the body.",
+                "schema": {"type": "string"},
+            },
+            "Retry-After": {
+                "description": (
+                    "Whole seconds to wait before the next poll, rounded up from "
+                    "`operation.retry_after_ms`. The value grows with the operation's age."
+                ),
+                "schema": {"type": "integer", "minimum": 1},
+            },
+        },
+    }
+}
+"""The `202` the mint and definition routes answer when a build exceeds the inline budget."""
+
+
 def build_definition_door(*, deps: DepsCell) -> DoorContribution:
     """Build the retrieval door over the surface's dependency cell.
 
@@ -883,7 +909,11 @@ def build_definition_door(*, deps: DepsCell) -> DoorContribution:
     """
     router = APIRouter()
 
-    @router.get("/api/datasets/{id:dfo_spec_id}", response_model=Manifest)
+    @router.get(
+        "/api/datasets/{id:dfo_spec_id}",
+        response_model=Manifest,
+        responses=OPERATION_SUBMITTED_RESPONSES,
+    )
     async def get_definition(id: str, request: Request) -> JSONResponse:
         return await _get_definition_impl(id, request, deps=deps.get())
 

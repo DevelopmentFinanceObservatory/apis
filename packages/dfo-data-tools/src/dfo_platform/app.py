@@ -27,6 +27,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.routing import BaseRoute, Match
@@ -115,6 +116,10 @@ class Surface:
     Surfaces pass private pools to `run_in_executor`. Changing the loop's
     default executor is rejected. The guard covers the serving loop. Separate
     loops in other threads keep their own executors.
+
+    `description` is the one line the OpenAPI document gives the surface's tag. Every
+    route the surface serves carries that one tag, `name` capitalised, and the operation
+    id `{name}_{handler}`, so adding a route never changes another route's id.
     """
 
     name: str
@@ -129,6 +134,24 @@ class Surface:
     middleware: tuple[Callable[[Request], ProblemSpec | None], ...] = ()
     registry_endpoints: Mapping[str, str] = field(default_factory=dict)
     request_scope: Callable[[], AbstractContextManager[object]] | None = None
+    description: str = ""
+
+    @property
+    def tag(self) -> str:
+        """The OpenAPI tag every route of this surface carries."""
+        return self.name.capitalize()
+
+
+_CODES_TAG = "Codes"
+
+
+def _surface_operation_id(surface_name: str) -> Callable[[APIRoute], str]:
+    """Name each of a surface's operations `{surface}_{handler}`."""
+
+    def operation_id(route: APIRoute) -> str:
+        return f"{surface_name}_{route.name}"
+
+    return operation_id
 
 
 class SurfaceConfigurationError(Exception):
@@ -926,7 +949,7 @@ def _code_registry_route(ctx: _AppContext) -> Callable[[str], Any]:
     render through the envelope and carry `PLATFORM_CAPABILITY_VERSION`.
     """
 
-    async def code_registry_entry(code: str) -> CodeRegistryEntry | JSONResponse:
+    async def get_code(code: str) -> CodeRegistryEntry | JSONResponse:
         catalogue_entry = ctx.registry.get(code)
         registry_entry = REGISTRY[code] if code in REGISTRY else None  # noqa: SIM401 -- CodeRegistry has no .get()
         if catalogue_entry is None and registry_entry is None:
@@ -935,7 +958,7 @@ def _code_registry_route(ctx: _AppContext) -> Callable[[str], Any]:
             code=code, registry_entry=registry_entry, catalogue_entry=catalogue_entry
         )
 
-    return code_registry_entry
+    return get_code
 
 
 def create_app(
@@ -991,6 +1014,10 @@ def create_app(
     app = FastAPI(
         title=title,
         version=version,
+        openapi_tags=[
+            *({"name": surface.tag, "description": surface.description} for surface in surfaces),
+            {"name": _CODES_TAG, "description": "Look up a problem code's registry entry."},
+        ],
         lifespan=functools.partial(
             _lifespan, surfaces=surfaces, executor_max_workers=executor_max_workers
         ),
@@ -1040,7 +1067,11 @@ def create_app(
         app.add_exception_handler(exc_type, dispatch)
 
     for surface in surfaces:
-        app.include_router(surface.router)
+        app.include_router(
+            surface.router,
+            tags=[surface.tag],
+            generate_unique_id_function=_surface_operation_id(surface.name),
+        )
 
     platform_router = APIRouter()
     platform_router.add_api_route(
@@ -1048,6 +1079,8 @@ def create_app(
         _code_registry_route(ctx),
         methods=["GET"],
         response_model=CodeRegistryEntry,
+        tags=[_CODES_TAG],
+        generate_unique_id_function=_surface_operation_id("codes"),
     )
     app.include_router(platform_router)
 
