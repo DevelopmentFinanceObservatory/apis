@@ -21,7 +21,7 @@ from materialise.shared_profiles import (
     acquire_shared_profiles,
     release_shared_profiles,
 )
-from series_coverage.shared import CoverageService
+from series_coverage.shared import ServedCoverage
 
 
 def open_profile_breadth(
@@ -30,7 +30,7 @@ def open_profile_breadth(
     settings: DatasetsBuildSettings,
     live_settings: DatasetsSettings,
     generation: GenerationProvider,
-    coverage: CoverageService,
+    coverage: ServedCoverage,
 ) -> VariableBreadthReader:
     """A reader over the process's profile cache, acquired over the Datasets graph and SDMX
     roots and released off the event loop when `stack` closes."""

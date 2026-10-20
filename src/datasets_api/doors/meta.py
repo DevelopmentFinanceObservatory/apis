@@ -64,7 +64,8 @@ from datetime import timedelta
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 
-from code_index.shared import get_index
+from code_index.query import CodeIndex
+from code_index.shared import get_index, per_index
 from dataset_store.clock import Clock
 from dataset_store.snapshot import SnapshotNotFound, SnapshotReader, SnapshotRevoked
 from datasets_api.backpressure import Backpressure
@@ -105,7 +106,7 @@ from dfo_platform import HealthResponse, ProblemSpec, health_response
 from dfo_platform.build import build_commit
 from dfo_platform.doors import DoorContribution
 from dfo_platform.problem import PROBLEM_JSON, Cause, Refusal
-from dfo_platform.static_response import freeze_public_json
+from dfo_platform.static_response import FrozenJSON, freeze_public_json
 from spec_registry import IdentityQuarantined
 from spec_registry.reader import SpecReader
 
@@ -395,20 +396,24 @@ def build_meta_door(*, deps: DepsCell, settings: DatasetsBuildSettings) -> DoorC
         async def schema(request: Request) -> Response:
             return schema_document.respond(request)
 
-    capabilities_payload = build_capabilities(
-        capability_version=DATASETS_CAPABILITY_VERSION,
-        build=build_commit(),
-        code_index_stamp=get_index().stamp,
-        declarations=get_index().declarations,
-        settings=settings,
-    )
-    capabilities_document = freeze_public_json(
-        capabilities_payload.model_dump(mode="json"), max_age=300
-    )
+    @per_index
+    def capabilities_document(index: CodeIndex) -> FrozenJSON:
+        payload = build_capabilities(
+            capability_version=DATASETS_CAPABILITY_VERSION,
+            build=build_commit(),
+            code_index_stamp=index.stamp,
+            declarations=index.declarations,
+            settings=settings,
+        )
+        return freeze_public_json(payload.model_dump(mode="json"), max_age=300)
+
+    # Built at construction, so a build failure stops startup.
+    capabilities_document(get_index())
 
     @router.get("/api/datasets/capabilities", response_model=Capabilities)
     async def capabilities(request: Request) -> Response:
-        return capabilities_document.respond(request)
+        # The document carries the code index's stamp, so it is frozen per index.
+        return capabilities_document(get_index()).respond(request)
 
     @router.get(
         "/api/datasets/operations/{operation_id}",

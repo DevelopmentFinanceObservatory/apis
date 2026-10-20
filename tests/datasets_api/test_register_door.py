@@ -465,7 +465,7 @@ def test_shutdown_cancels_a_queued_call_and_frees_its_permit(
 
     `NeverStartingExecutor` reproduces this state deterministically.
     """
-    monkeypatch.setattr(door_executor, "ThreadPoolExecutor", NeverStartingExecutor)
+    monkeypatch.setattr(door_executor, "ContextCarryingExecutor", NeverStartingExecutor)
     store = FakeDatasetStore()
     cell = fake_deps_cell(
         settings=DatasetsBuildSettings.from_env().model_copy(update={"read_max_concurrency": 1}),
@@ -501,7 +501,7 @@ def test_broken_thread_pool_surfaces_as_internal_error_not_backpressure(
     """A broken pool returns a non-retryable 500. `BrokenThreadPool` subclasses `RuntimeError`,
     so it needs separate classification from post-shutdown errors.
     """
-    monkeypatch.setattr(door_executor, "ThreadPoolExecutor", BrokenSubmitExecutor)
+    monkeypatch.setattr(door_executor, "ContextCarryingExecutor", BrokenSubmitExecutor)
     client = make_client(
         registry=LiveSpecRegistry(store=FakeDatasetStore()), read_max_concurrency=1
     )

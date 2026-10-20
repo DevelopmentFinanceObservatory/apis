@@ -1022,7 +1022,7 @@ def _worker_deps(plain: _PlainRig) -> DefinitionDeps:
         ceiling=1_000_000,
         member_concurrency=4,
         enumerator=MemberEnumerator(),
-        enrichment=EnrichmentLookup(plain.graph, parties={}),
+        enrichment=EnrichmentLookup(plain.graph, parties=lambda: {}),
         code_index=get_index(),
         rate_cache=RateTableCache(),
         coverage=plain.coverage,

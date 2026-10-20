@@ -34,7 +34,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
-from code_index.shared import get_index
+from code_index.query import CodeIndex
+from code_index.shared import get_index, per_index
 from origin_catalogue import Catalogue, ProvenanceRow, current_catalogue
 from origin_catalogue.registry import Alias, load_registry
 from search.engine.errors import EngineInputError
@@ -197,10 +198,10 @@ def _aliases() -> tuple[Alias, ...]:
     return load_registry().alias
 
 
-@functools.cache
-def _opt_in_products() -> frozenset[str]:
-    """The provenances the code index declares opt-in."""
-    return frozenset(ref for ref, dataset in get_index().datasets.items() if dataset.opt_in)
+@per_index
+def _opt_in_products(index: CodeIndex) -> frozenset[str]:
+    """The provenances `index` declares opt-in."""
+    return frozenset(ref for ref, dataset in index.datasets.items() if dataset.opt_in)
 
 
 _DICTIONARIES_KEPT = 4
@@ -308,7 +309,7 @@ def _expand(dictionary: SourceDictionary, named: NamedSource, *, include: bool) 
     provenances = dictionary.provenances.get(reference.ref, (reference.ref,))
     if not include or reference.kind == "provenance":
         return frozenset(provenances)
-    opt_in = _opt_in_products()
+    opt_in = _opt_in_products(get_index())
     default = frozenset(p for p in provenances if p not in opt_in)
     return default or frozenset(provenances)
 

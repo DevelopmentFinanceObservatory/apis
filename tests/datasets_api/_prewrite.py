@@ -38,7 +38,7 @@ def prewrite(
         ceiling=DEFAULT_SYNC_CEILING_ROWS,
         materialiser_build="build-1",
         capability_version="cap-1",
-        enrichment=EnrichmentLookup(graph, parties={}),
+        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
         code_index=get_index(),
         rate_cache=RateTableCache(),
         member_concurrency=2,

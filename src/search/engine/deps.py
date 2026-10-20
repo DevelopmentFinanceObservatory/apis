@@ -5,11 +5,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Annotated, NamedTuple
 
 from fastapi import Depends
 
+from code_index.query import CodeIndex
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from dfo_platform.state import StateSlot
 from dfo_platform.static_response import FrozenJSON
@@ -41,10 +43,12 @@ class SearchDepsNotSet(EngineInfraError):
 
 
 class SearchDocuments(NamedTuple):
-    """The two process-scoped public documents, frozen at surface construction."""
+    """The two public documents. The schema is frozen at surface construction. The capability
+    document carries the code index's stamp, so it is frozen per index, and `capabilities`
+    takes the index the request reads."""
 
     schema: FrozenJSON
-    capabilities: FrozenJSON
+    capabilities: Callable[[CodeIndex], FrozenJSON]
 
 
 @dataclass(frozen=True, slots=True)

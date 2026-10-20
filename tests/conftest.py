@@ -1,12 +1,14 @@
-"""Suite-wide fixtures: response contracts, offline clients, coverage, catalogue, resolvekit."""
+"""Suite-wide fixtures: response contracts, offline clients, coverage, catalogue, graph
+release, resolvekit."""
 
 import importlib
 import os
 import sys
+import tempfile
 import time
 from collections.abc import Callable, Iterator
 from concurrent import futures
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import patch
@@ -14,7 +16,10 @@ from unittest.mock import patch
 import httpx
 import pytest
 
+import graph_release.context as release_context_module
 import origin_catalogue.service as catalogue_service_module
+from graph_release.context import bind_release, bound_release, unbind_release
+from graph_release.service import Release, ReleaseService
 from materialise import place_scope
 from origin_catalogue import Catalogue, bound_catalogue, unbind_catalogue
 from origin_catalogue import bind_catalogue as _bind
@@ -24,6 +29,7 @@ from tests.file_shards import (  # noqa: F401  (hooks pytest collects here)
     pytest_collect_file,
     pytest_sessionstart,
 )
+from tests.graph_release.support import build_view_release
 from tests.llm_miss_guard import (  # noqa: F401  (hooks pytest collects here)
     pytest_runtest_makereport,
     pytest_runtest_setup,
@@ -45,14 +51,44 @@ os.environ.setdefault("DFO_PUBLIC_SITE_URL", "https://site.example")
 
 # Surfaces acquire the catalogue and coverage services at construction, some during collection,
 # so both are installed for the whole session. Tests of either service isolate its singleton.
+# Surfaces and test modules also read the code index during collection, and `get_index()` reads
+# the bound release's views, so a release with views is bound for the whole session too.
 _session_services = ExitStack()
+_session_release: Release | None = None
+
+
+@contextmanager
+def _bound_session_release() -> Iterator[Release]:
+    """Publishes a graph release whose code index part is the packaged `index.json.gz`
+    document, opens it with its views, and binds it until the block ends. Its coverage view is
+    the recorded slice's (`build_view_release`), which no test reads through the release."""
+    with tempfile.TemporaryDirectory(prefix="graph-release-") as directory:
+        root = Path(directory)
+        uri = (root / "releases").as_uri()
+        build_view_release(uri)
+        service = ReleaseService(
+            uri=uri, local_dir=root / "local", recheck_seconds=0, build_views=True
+        )
+        release = service.snapshot()
+        token = bind_release(release)
+        try:
+            yield release
+        finally:
+            unbind_release(token)
 
 
 def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers",
+        "unbound_release: runs with no graph release bound, opting out of "
+        "`_bound_packaged_index_release`",
+    )
     _session_services.enter_context(
         catalogue_service_module._singleton.poisoned_for_test(fake_catalogue_service())
     )
     _session_services.enter_context(session_coverage_service())
+    global _session_release
+    _session_release = _session_services.enter_context(_bound_session_release())
 
 
 def pytest_unconfigure(config: pytest.Config) -> None:
@@ -252,6 +288,30 @@ def _bound_fake_catalogue() -> Iterator[None]:
     Code that reads the request's origin catalogue then behaves as it did before admission.
     """
     with bound_catalogue(FakeCatalogue()):
+        yield
+
+
+@pytest.fixture(scope="session")
+def _packaged_index_release() -> Release:
+    """The session's bound graph release (`_bound_session_release`), whose code index is the
+    packaged `index.json.gz` document."""
+    assert _session_release is not None
+    return _session_release
+
+
+@pytest.fixture(autouse=True)
+def _bound_packaged_index_release(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Bind `_packaged_index_release` for every test not marked `unbound_release`, as a
+    request binds its served release, and bind none for a test that is. A surface's own
+    request scope binds over it."""
+    if request.node.get_closest_marker("unbound_release"):
+        token = release_context_module._BOUND.set(None)
+        try:
+            yield
+        finally:
+            release_context_module._BOUND.reset(token)
+        return
+    with bound_release(request.getfixturevalue("_packaged_index_release")):
         yield
 
 

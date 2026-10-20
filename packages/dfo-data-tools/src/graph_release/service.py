@@ -6,13 +6,16 @@ construction. `snapshot()` returns the served release without I/O and, at
 most once per `recheck_seconds`, starts a daemon thread that reads the pointer.
 The recheck is request-triggered because background loops starve when
 `cpu_idle=true`, as in `series_coverage.shared`. When the pointer has moved,
-the thread downloads and opens the new release beside the old one, then
-enters every registered swap guard only to flip the served release. The
-download needs no guard, since the local directory is an in-memory filesystem
-on Cloud Run and the files are resident whether or not a guard is held. On the
-Datasets surface and its worker the guard is `MaterialisePermits.every_permit`,
-so the flip waits for the frames being built to finish. A failed recheck
-keeps the served release and logs.
+the thread downloads and maps the new release beside the old one, then
+enters every registered swap guard to build its views and flip the served
+release. The download needs no guard, since the local directory is an
+in-memory filesystem on Cloud Run and the files are resident whether or not a
+guard is held. The views live on the heap, where they would otherwise sit
+beside the old release's views and every frame being built. On the Datasets
+surface and its worker the guard is `MaterialisePermits.every_permit`, so the
+build and the flip wait for those frames to finish, and no frame starts until
+the flip ends. A failed recheck keeps the served release, leaves the guards
+and logs.
 
 Parts live in one `local_dir` by content hash, so consecutive releases share
 the files they have in common. A release holds the files its loader read
@@ -23,7 +26,18 @@ since the load may have found the file present and be about to map it. A load
 that fails unlinks every file no live release holds, so its downloads do not
 stay resident.
 
-A `Release` maps the parts and builds no indexes.
+With `build_views`, which `get_release_service()` sets from `GRAPH_RELEASE_COVERAGE`
+(`graph_release.context.coverage_views_enabled`), opening a release also builds its serving
+views (`graph_release.views`): the code index, the measure index and the `CoverageIndex`. They
+are built in the thread that opens the release, so at construction or in the recheck inside the
+swap guards, and live on the `Release`, so they die with it. A release whose views do not build
+is refused as an unreadable one is, and its files are unlinked. Construction raises, and a
+recheck keeps the served release. Without `build_views` a `Release` maps the parts and builds
+nothing.
+
+A `Release` the service opened knows whether the service still serves it (`Release.served`),
+so a request bound to a replaced release can refuse rather than build a frame beside both
+releases' views (`series_coverage.shared.ReleaseCoverage.serves`).
 """
 
 from __future__ import annotations
@@ -37,37 +51,24 @@ import weakref
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import AbstractContextManager, ExitStack, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
-from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
-
+from code_index.query import CodeIndex
+from code_index.types import MeasureIndex
 from dfo_platform.singleton import RefCountedSingleton
+from graph_release.context import URI_ENV_VAR, coverage_views_enabled, release_uri
 from graph_release.format import LoadedRelease, Manifest, open_release, read_pointer
+from graph_release.views import release_code_indexes, release_coverage_index
+from series_coverage.index import CoverageIndex
 
 logger = logging.getLogger(__name__)
 
-_URI_ENV_VAR = "GRAPH_RELEASE_URI"
 DEFAULT_RECHECK_SECONDS = 60.0
 
 # Logs the first recheck failure and each tenth consecutive failure.
 _FAILURE_LOG_EVERY_N = 10
-
-
-class _ReleaseEnv(BaseSettings):
-    """Env reads for `get_release_service()`, constructed fresh on each call so a
-    `GRAPH_RELEASE_URI` set after import is still honoured."""
-
-    model_config = SettingsConfigDict()
-
-    uri: str | None = Field(default=None, alias=_URI_ENV_VAR)
-
-    @field_validator("uri", mode="before")
-    @classmethod
-    def _blank_is_unset(cls, value: object) -> object:
-        return None if isinstance(value, str) and not value.strip() else value
 
 
 class ReleaseUriMissingError(RuntimeError):
@@ -83,11 +84,40 @@ class ReleaseLoader(Protocol):
 
 
 @dataclass(frozen=True, eq=False)
+class ReleaseViews:
+    """The serving views of one release, built when it opens."""
+
+    code_index: CodeIndex
+    measure_index: MeasureIndex
+    coverage: CoverageIndex
+
+
+def build_release_views(loaded: LoadedRelease) -> ReleaseViews:
+    """The serving views of `loaded`. Raises `graph_release.views.ViewRefused` when one does
+    not build."""
+    code_index, measure_index = release_code_indexes(loaded)
+    return ReleaseViews(
+        code_index=code_index,
+        measure_index=measure_index,
+        coverage=release_coverage_index(loaded),
+    )
+
+
+@dataclass(frozen=True, eq=False)
 class Release:
-    """One mapped release. Requests and operations hold it for their lifetime
-    through `graph_release.context`."""
+    """One mapped release and, when its service builds them, its serving views. Requests and
+    operations hold it for their lifetime through `graph_release.context`. `service` is the
+    service that opened it, `None` for a release built outside one."""
 
     loaded: LoadedRelease
+    views: ReleaseViews | None = None
+    service: ReleaseService | None = field(default=None, repr=False)
+
+    @property
+    def served(self) -> bool:
+        """Whether the service that opened this release still serves it. A release built
+        outside a service is always served."""
+        return self.service is None or self.service.serves(self)
 
     @property
     def manifest(self) -> Manifest:
@@ -167,9 +197,11 @@ class ReleaseService:
     """Opens the published release at construction and swaps to a newer one in
     the background.
 
-    `recheck_seconds <= 0` disables the recheck. Construction raises
-    `FileNotFoundError` when no release is published and propagates the
-    loader's errors for one that cannot be read.
+    `recheck_seconds <= 0` disables the recheck. `build_views` builds each
+    release's serving views as it opens. Construction raises
+    `FileNotFoundError` when no release is published, propagates the
+    loader's errors for one that cannot be read, and raises
+    `graph_release.views.ViewRefused` for one whose views do not build.
     """
 
     def __init__(
@@ -180,8 +212,10 @@ class ReleaseService:
         recheck_seconds: float = DEFAULT_RECHECK_SECONDS,
         clock: Callable[[], float] = time.monotonic,
         loader: ReleaseLoader = open_release,
+        build_views: bool = False,
     ) -> None:
         self._uri = uri
+        self._build_views = build_views
         self._local_dir = local_dir
         self._recheck_seconds = recheck_seconds
         self._clock = clock
@@ -196,7 +230,9 @@ class ReleaseService:
         self._swap_callbacks: tuple[Callable[[Release], None], ...] = ()
         self._consecutive_failures = 0
         # `snapshot()` reads this reference lock-free. The GIL makes its assignment atomic.
-        self._served = _Served(release=self._open(release_id=None), checked_at=clock())
+        self._served = _Served(
+            release=self._release(self._load(release_id=None)), checked_at=clock()
+        )
 
     def snapshot(self) -> Release:
         """The served release, without waiting for I/O. Starts a due pointer
@@ -204,12 +240,17 @@ class ReleaseService:
         self._maybe_start_recheck()
         return self._served.release
 
+    def serves(self, release: Release) -> bool:
+        """Whether `release` is the served release, without starting a recheck."""
+        return self._served.release is release
+
     def register_swap_guard(
         self, guard: Callable[[], AbstractContextManager[object]]
     ) -> Callable[[], None]:
-        """Runs every later flip inside a fresh `guard()`, entered once the new
-        release is open and left once the service serves it and holds no
-        reference to the old one. Returns the function that unregisters it."""
+        """Runs every later view build and flip inside a fresh `guard()`, entered
+        once the new release's parts are mapped and left once the service serves
+        it and holds no reference to the old one, or once its views fail to
+        build. Returns the function that unregisters it."""
         with self._hooks_lock:
             self._swap_guards = (*self._swap_guards, guard)
 
@@ -232,16 +273,27 @@ class ReleaseService:
         if future is not None:
             future.result()
 
-    def _open(self, *, release_id: str | None) -> Release:
+    def _load(self, *, release_id: str | None) -> LoadedRelease:
+        """Downloads and maps a release's parts and holds their files. Pass the result to
+        `_release`, which drops them again when the views do not build."""
         with self._files.loading():
             try:
                 loaded = self._loader(self._uri, local_dir=self._local_dir, release_id=release_id)
             except Exception:
                 self._files.unlink_unheld()
                 raise
-            release = Release(loaded=loaded)
-            names = loaded.file_names
-            self._files.hold(names)
+            self._files.hold(loaded.file_names)
+        return loaded
+
+    def _release(self, loaded: LoadedRelease) -> Release:
+        """`loaded` with its views, holding its files until the release dies."""
+        names = loaded.file_names
+        try:
+            views = build_release_views(loaded) if self._build_views else None
+        except Exception:
+            self._files.drop(names)
+            raise
+        release = Release(loaded=loaded, views=views, service=self)
         weakref.finalize(release, self._files.drop, names)
         return release
 
@@ -283,12 +335,18 @@ class ReleaseService:
             if pointer.release_id == replaced:
                 self._served = _Served(release=served, checked_at=self._clock())
                 return
-            release = self._open(release_id=pointer.release_id)
+            loaded = self._load(release_id=pointer.release_id)
             with ExitStack() as guards:
                 with self._hooks_lock:
                     registered, callbacks = self._swap_guards, self._swap_callbacks
-                for guard in registered:
-                    guards.enter_context(guard())
+                try:
+                    for guard in registered:
+                        guards.enter_context(guard())
+                except Exception:
+                    self._files.drop(loaded.file_names)
+                    raise
+                # The views build inside the guards, so they are never resident beside a frame.
+                release = self._release(loaded)
                 self._served = _Served(release=release, checked_at=self._clock())
                 del served
             logger.info(
@@ -325,11 +383,15 @@ class ReleaseService:
 
 
 def _build() -> ReleaseService:
-    uri = _ReleaseEnv().uri
+    uri = release_uri()
     if uri is None:
-        raise ReleaseUriMissingError(f"{_URI_ENV_VAR} is not set")
+        raise ReleaseUriMissingError(f"{URI_ENV_VAR} is not set")
     # On Cloud Run the temporary directory is the in-memory filesystem.
-    return ReleaseService(uri=uri, local_dir=Path(tempfile.mkdtemp(prefix="graph-release-")))
+    return ReleaseService(
+        uri=uri,
+        local_dir=Path(tempfile.mkdtemp(prefix="graph-release-")),
+        build_views=coverage_views_enabled(),
+    )
 
 
 _singleton: RefCountedSingleton[ReleaseService] = RefCountedSingleton(
@@ -340,9 +402,10 @@ _singleton: RefCountedSingleton[ReleaseService] = RefCountedSingleton(
 def get_release_service() -> ReleaseService:
     """Returns the process-wide service, opening the release on first call.
 
-    Raises `ReleaseUriMissingError` when `GRAPH_RELEASE_URI` is unset or blank and
-    `FileNotFoundError` when no release is published there, so a surface that
-    asks for it fails at startup.
+    Raises `ReleaseUriMissingError` when `GRAPH_RELEASE_URI` is unset or blank,
+    `FileNotFoundError` when no release is published there, and, with
+    `GRAPH_RELEASE_COVERAGE` on, `graph_release.views.ViewRefused` when the
+    release's views do not build, so a surface that asks for it fails at startup.
     """
     return _singleton.acquire()
 
@@ -350,7 +413,7 @@ def get_release_service() -> ReleaseService:
 def optional_release_service() -> ReleaseService | None:
     """The process-wide service when `GRAPH_RELEASE_URI` is set, `None` when it
     is unset or blank."""
-    return None if _ReleaseEnv().uri is None else get_release_service()
+    return None if release_uri() is None else get_release_service()
 
 
 def reset_release_service() -> None:
@@ -364,6 +427,8 @@ __all__ = [
     "ReleaseLoader",
     "ReleaseService",
     "ReleaseUriMissingError",
+    "ReleaseViews",
+    "build_release_views",
     "get_release_service",
     "optional_release_service",
     "reset_release_service",

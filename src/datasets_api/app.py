@@ -29,7 +29,7 @@ ceiling before proxy admission.
 from __future__ import annotations
 
 from collections.abc import Iterator
-from contextlib import asynccontextmanager, contextmanager, nullcontext
+from contextlib import asynccontextmanager, contextmanager
 
 from fastapi import FastAPI
 
@@ -75,13 +75,13 @@ from datasets_api.versions import HeadStore, VersionLister, VersionRecordWriter
 from dc_sdmx import SdmxClient
 from dfo_platform.app import Surface
 from dfo_platform.doors import combine_classifiers, flatten
-from graph_release.context import bound_release
+from graph_release.context import bound_served_release
 from graph_release.service import ReleaseService, optional_release_service
 from materialise.graph import GraphReader
 from materialise.rate_tables import RateTableCache
 from origin_catalogue import bound_catalogue
 from origin_catalogue.service import CatalogueService, get_catalogue_service
-from series_coverage.shared import CoverageService, get_coverage_service
+from series_coverage.shared import ServedCoverage, get_coverage_service
 from spec_registry import SpecRegistry
 from spec_registry.errors import SpecRegistryStoreError
 from spec_registry.reader import SpecReader
@@ -123,7 +123,7 @@ def datasets_surface(
     task_client: TaskClient | None = None,
     code_index: CodeIndex | None = None,
     rate_cache: RateTableCache | None = None,
-    coverage: CoverageService | None = None,
+    coverage: ServedCoverage | None = None,
     now: Clock = utc_now,
     pin_allowed_principals: frozenset[str] | None = None,
     publish_allowed_principals: frozenset[str] | None = None,
@@ -138,8 +138,12 @@ def datasets_surface(
     store left out is built over one `dataset_store` pool borrow shared by every omitted store.
     `head_writer` is the head store. `now` is the clock every door reads.
 
-    `code_index` defaults to the process-wide index and `coverage` to the process-wide service,
-    resolved here, so a missing or unreadable `COVERAGE_ARTIFACT_URI` fails construction.
+    A given `code_index` serves every request. Left out, each request reads `get_index()`,
+    which can change between requests. The index is read here, under the served release as a
+    request reads it, so a missing or malformed export fails construction. `coverage` defaults
+    to the process-wide service, resolved here, so a missing or unreadable
+    `COVERAGE_ARTIFACT_URI` fails construction. With `GRAPH_RELEASE_COVERAGE` on it is the bound
+    release's coverage (`series_coverage.shared.ReleaseCoverage`), which reads no artifact.
     `rate_cache` defaults to a cache of this surface's own; pass Search's when composing both.
 
     `pin_allowed_principals` and `publish_allowed_principals` set separate allowlists,
@@ -160,10 +164,36 @@ def datasets_surface(
     _settings = settings if settings is not None else DatasetsBuildSettings.from_env()
     _catalogue = catalogue if catalogue is not None else get_catalogue_service()
     _release = release if release is not None else optional_release_service()
+    cell = DepsCell()
+    # The doors read the code index as they are built, so they are built under the release a
+    # request would bind, and keep none of what they read.
+    with bound_served_release(_release):
+        if code_index is None:
+            get_index()
+        doors = (
+            build_meta_door(deps=cell, settings=_settings),
+            build_register_door(deps=cell),
+            build_mint_door(deps=cell),
+            build_definition_door(deps=cell),
+            build_refresh_door(deps=cell, settings=_settings),
+            build_recipe_door(
+                deps=cell, settings=_settings, allowed_principals=publish_allowed_principals
+            ),
+            build_snapshot_door(deps=cell),
+            build_description_door(deps=cell),
+            build_files_door(deps=cell),
+            build_observations_door(deps=cell),
+            build_pin_door(
+                deps=cell, settings=_settings, allowed_principals=pin_allowed_principals
+            ),
+            build_publish_door(
+                deps=cell, settings=_settings, allowed_principals=publish_allowed_principals
+            ),
+        )
     overrides = DepsOverrides(
         coverage=coverage if coverage is not None else get_coverage_service(),
         rate_cache=rate_cache if rate_cache is not None else RateTableCache(),
-        code_index=code_index if code_index is not None else get_index(),
+        code_index=code_index,
         release=_release,
         registry=registry,
         spec_reader=spec_reader,
@@ -181,26 +211,6 @@ def datasets_surface(
         task_client=task_client,
         now=now,
     )
-    cell = DepsCell()
-
-    doors = (
-        build_meta_door(deps=cell, settings=_settings),
-        build_register_door(deps=cell),
-        build_mint_door(deps=cell),
-        build_definition_door(deps=cell),
-        build_refresh_door(deps=cell, settings=_settings),
-        build_recipe_door(
-            deps=cell, settings=_settings, allowed_principals=publish_allowed_principals
-        ),
-        build_snapshot_door(deps=cell),
-        build_description_door(deps=cell),
-        build_files_door(deps=cell),
-        build_observations_door(deps=cell),
-        build_pin_door(deps=cell, settings=_settings, allowed_principals=pin_allowed_principals),
-        build_publish_door(
-            deps=cell, settings=_settings, allowed_principals=publish_allowed_principals
-        ),
-    )
 
     router = flatten(doors)
 
@@ -209,8 +219,7 @@ def datasets_surface(
 
     @contextmanager
     def request_scope() -> Iterator[None]:
-        release_scope = nullcontext() if _release is None else bound_release(_release.snapshot())
-        with bound_catalogue(_catalogue.snapshot()), release_scope:
+        with bound_catalogue(_catalogue.snapshot()), bound_served_release(_release):
             yield
 
     @asynccontextmanager

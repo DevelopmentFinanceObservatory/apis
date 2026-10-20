@@ -41,6 +41,7 @@ from graph_release.gate import (
     check_invariants,
     check_mixer,
     check_sdmx,
+    check_views,
     merge,
     read_back,
     refused,
@@ -911,3 +912,75 @@ def test_run_gate_reads_the_staged_files_and_never_passes_an_unavailable_depende
         seed=_SEED,
     )
     assert "dfo_rebuild_mismatch" in _codes(broken)
+
+
+# ---------------------------------------------------------------- serving views
+
+
+def _rewrite_index(staged: list[StagedPart], change: Callable[[dict], dict]) -> None:
+    """Rewrites the staged `code_index_blocks` file in place with `change` applied to its
+    document, keeping its name."""
+    part = next(part for part in staged if part.ref.name == "code_index_blocks")
+    document = change(json.loads(gzip.decompress(part.path.read_bytes())))
+    part.path.write_bytes(gzip.compress(json.dumps(document).encode(), mtime=0))
+
+
+def _unstamped(document: dict) -> dict:
+    """The document without its stamp, as the builder wrote the part before it stamped it."""
+    return {block: rows for block, rows in document.items() if block != "stamp"}
+
+
+def _undeclared_dataset(document: dict) -> dict:
+    """The document with a dataset declared that no StatVar row belongs to."""
+    extra = {**document["datasets"][0], "provenance": "provenance/NoSuchDataset", "rank": 99}
+    return {**document, "datasets": [*document["datasets"], extra]}
+
+
+def test_the_views_of_the_staged_slice_build(tmp_path):
+    parts, staged = _staged_release(tmp_path)
+
+    assert check_views(parts, staged=staged) == ()
+
+
+@pytest.mark.parametrize(
+    ("break_index", "code"),
+    [(_unstamped, "code_index_unloadable"), (_undeclared_dataset, "code_index_unloadable")],
+    ids=lambda value: getattr(value, "__name__", value),
+)
+def test_a_code_index_the_service_cannot_load_fails_the_gate(tmp_path, break_index, code):
+    parts, staged = _staged_release(tmp_path)
+
+    _rewrite_index(staged, break_index)
+
+    assert _codes(check_views(parts, staged=staged)) == [code]
+
+
+def test_coverage_rows_the_service_cannot_index_fail_the_gate(tmp_path):
+    parts, staged = _staged_release(tmp_path)
+    broken = _plus_one_observation(parts)
+
+    assert check_invariants(broken, role_axes=SLICE_DECLARATIONS.role_axes) == ()
+    assert _codes(check_views(broken, staged=staged)) == ["coverage_view_refused"]
+
+
+def test_run_gate_refuses_a_release_whose_view_does_not_build(tmp_path):
+    _, staged = _staged_release(tmp_path)
+    _rewrite_index(staged, _unstamped)
+
+    class Failing:
+        def node_arcs_many(self, dcids, *, properties):
+            raise GraphReadError("connection reset")
+
+    def drop(*_):
+        raise SdmxTransportError("connection reset")
+
+    result = run_gate(
+        staged,
+        declarations=SLICE_DECLARATIONS,
+        previous=None,
+        graph=Failing(),
+        sdmx=_Sdmx(drop),
+        seed=_SEED,
+    )
+
+    assert "code_index_unloadable" in _codes(result)

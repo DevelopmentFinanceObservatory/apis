@@ -133,7 +133,7 @@ def _both(chunks: list[TableLike]) -> tuple[OutputProfile, OutputProfile]:
         return compute(
             factory,
             role_columns=_ROLES,
-            enrichment=EnrichmentLookup(FakeGraphReader(arcs=_ARCS), parties={}),
+            enrichment=EnrichmentLookup(FakeGraphReader(arcs=_ARCS), parties=lambda: {}),
         )
 
     return run(compute_output_profile_from_chunks), run(reference_output_profile_from_chunks)

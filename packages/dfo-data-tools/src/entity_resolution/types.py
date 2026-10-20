@@ -227,9 +227,23 @@ class CodeLookup(Protocol):
         ...
 
 
+class IndexStampLike(Protocol):
+    """The part of a code index's stamp the resolver keys its cache on."""
+
+    @property
+    def content_hash(self) -> str:
+        """The hash of the index's exported rows."""
+        ...
+
+
 class KindIndex(Protocol):
-    """The code index's facts the kind rule reads (`kinds.classify`). `code_index.CodeIndex`
-    serves them."""
+    """The code index's facts the kind rule reads (`kinds.classify`), and its stamp, which the
+    resolver keys its cache on. `code_index.CodeIndex` serves them."""
+
+    @property
+    def stamp(self) -> IndexStampLike:
+        """The index's export stamp."""
+        ...
 
     def is_code_system(self, dcid: str) -> bool:
         """Whether `dcid` is a code system's graph id."""

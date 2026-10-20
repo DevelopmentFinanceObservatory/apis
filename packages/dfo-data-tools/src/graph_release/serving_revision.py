@@ -4,6 +4,8 @@
 `CloudRunAdmin.created_at` reads one revision's creation time. The builder compares that time
 with the import's completion, because the mixer reads Spanner as of the last ingestion it saw
 when it started. `graph_generation.source` derives its generation token from the same read.
+`CloudRunAdmin.run_job` starts an execution of a Cloud Run job, which the builder uses to start
+the search catalogue job after each publish.
 
 Reads use ADC bearer tokens unless a credentials factory is given. Inject a transport and a
 credentials factory for tests.
@@ -27,7 +29,7 @@ _DEFAULT_TIMEOUT_SECONDS = 5.0
 
 
 class ServingRevisionError(Exception):
-    """Raised for HTTP, timeout, JSON, response-field, or ADC failures."""
+    """Raised for HTTP, timeout, JSON, response-field, or ADC failures of any Admin API call."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,7 +62,7 @@ def _default_credentials_factory() -> Credentials:
 
 
 class CloudRunAdmin:
-    """Reads one Cloud Run v2 service and its revisions.
+    """Reads one Cloud Run v2 service and its revisions, and starts Cloud Run job executions.
 
     The serving revisions are those with `percent > 0` in `trafficStatuses`, or the final path
     segment of `latestReadyRevision` when `trafficStatuses` is absent. Invalid responses raise
@@ -84,14 +86,14 @@ class CloudRunAdmin:
         )
 
     def serving(self) -> ServingRevision:
-        payload = self._get(f"/{self._service}")
+        payload = self._request("GET", f"/{self._service}")
         return ServingRevision(
             revisions=self._revisions_from_payload(payload), urls=self._urls_from_payload(payload)
         )
 
     def created_at(self, revision: str) -> datetime:
         """The revision's `createTime`, timezone-aware."""
-        payload = self._get(f"/{self._service}/revisions/{revision}")
+        payload = self._request("GET", f"/{self._service}/revisions/{revision}")
         created = payload.get("createTime")
         try:
             if not isinstance(created, str):
@@ -105,13 +107,29 @@ class CloudRunAdmin:
             ) from exc
         return parsed
 
+    def run_job(self, job: str) -> str:
+        """Starts an execution of `job` (`projects/<p>/locations/<r>/jobs/<j>`) with its own
+        configuration, and returns the name of the long-running operation tracking it. Returns
+        once the Admin API accepts the request, without waiting for the execution."""
+        payload = self._request("POST", f"/{job}:run", body={})
+        operation = payload.get("name")
+        if not isinstance(operation, str) or not operation:
+            raise ServingRevisionError(
+                f"Cloud Run Admin API run of {job!r} returned no operation name"
+            )
+        return operation
+
     def close(self) -> None:
         self._client.close()
 
-    def _get(self, path: str) -> dict[str, object]:
+    def _request(
+        self, method: str, path: str, *, body: dict[str, object] | None = None
+    ) -> dict[str, object]:
         token = self._bearer_token()
         try:
-            response = self._client.get(path, headers={"Authorization": f"Bearer {token}"})
+            response = self._client.request(
+                method, path, json=body, headers={"Authorization": f"Bearer {token}"}
+            )
         except httpx.HTTPError as exc:
             raise ServingRevisionError(
                 f"Cloud Run Admin API request for {path!r} failed: {exc}"

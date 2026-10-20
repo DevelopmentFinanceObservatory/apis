@@ -31,7 +31,6 @@ import asyncio
 
 import pytest
 
-from code_index import shared as code_index_shared
 from code_index.query import CodeIndex
 from code_index.shared import get_index
 from code_index.types import DatasetDeclaration, IndexStamp, StatVarRow
@@ -46,6 +45,7 @@ from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query
 from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
+from tests.graph_release.support import serving_index
 
 _KEN = "country/KEN"
 _CHN = "country/CHN"
@@ -468,7 +468,7 @@ def test_two_open_axes_keep_the_index_shape_declaring_the_destination(
     shapes, each declaring one of the two axes. The axes are read in sorted order, so the
     destination is read first: the provider-only shape leaves for the recipient-only one,
     whichever ranks first, and no shape left declares the origin, so that one stays."""
-    with code_index_shared._singleton.poisoned_for_test(_one_end_index()):
+    with serving_index(_one_end_index()):
         _result, menu = _resolve(
             monkeypatch,
             "aid",

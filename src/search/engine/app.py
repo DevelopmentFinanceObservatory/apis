@@ -28,7 +28,7 @@ import logging
 import time
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextlib import AsyncExitStack, ExitStack, asynccontextmanager, contextmanager
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 from fastapi import APIRouter, FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
@@ -36,7 +36,8 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 import graph_generation.config as generation_config
 import search.engine.clients.llm as _llm_mod
-from code_index.shared import get_index
+from code_index.query import CodeIndex
+from code_index.shared import get_index, per_index
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from dfo_platform import Envelope, HealthResponse, ProblemSpec, health_response, refusal
 from dfo_platform.app import Surface
@@ -45,7 +46,7 @@ from dfo_platform.build import build_commit
 from dfo_platform.config import parse_cors_origins
 from dfo_platform.named import cut
 from dfo_platform.request_deadline import request_deadline
-from dfo_platform.static_response import freeze_public_json
+from dfo_platform.static_response import FrozenJSON, freeze_public_json
 from dfo_platform.trace import get_trace_id
 from dfo_platform.validation import error_field_loc, pointer_for_error, validation_problem
 from entity_resolution import (
@@ -58,6 +59,7 @@ from entity_resolution import (
 from graph_generation import GenerationProvider
 from graph_generation import acquire_shared as acquire_shared_generation
 from graph_generation import release_shared as release_shared_generation
+from graph_release.context import bound_served_release, optional_release_service
 from materialise import GraphReader, place_scope
 from materialise.errors import UpstreamVersionChangedError
 from materialise.facets import VariableBreadthReader, bound_variable_breadth
@@ -130,6 +132,10 @@ from search.models import (
 )
 from series_coverage.shared import get_coverage_service
 from skills_index import SharedSkillsIndex, acquire_shared_index, release_shared_index
+
+if TYPE_CHECKING:
+    # Annotation-only: `graph_release.service` needs the `graph-release` extra.
+    from graph_release.service import ReleaseService
 
 logger = logging.getLogger(__name__)
 
@@ -353,10 +359,16 @@ def _schema_payload_response_schema() -> dict:
 
 
 def search_documents() -> SearchDocuments:
-    """Freeze the public schema and capability documents. Build errors propagate."""
+    """Freeze the public schema, and the capability document of the index `get_index()` returns. Build
+    errors propagate."""
+
+    @per_index
+    def capabilities(index: CodeIndex) -> FrozenJSON:
+        return freeze_public_json(build_capabilities(index).model_dump(mode="json"), max_age=300)
+
+    capabilities(get_index())
     return SearchDocuments(
-        schema=freeze_public_json(schema_payload(), max_age=300),
-        capabilities=freeze_public_json(build_capabilities().model_dump(mode="json"), max_age=300),
+        schema=freeze_public_json(schema_payload(), max_age=300), capabilities=capabilities
     )
 
 
@@ -557,7 +569,7 @@ async def schema(request: Request, deps: SearchDepsDep) -> Response:
 
 async def capabilities(request: Request, deps: SearchDepsDep) -> Response:
     # Deployment configuration can change capabilities without changing the contract schema.
-    return deps.documents.capabilities.respond(request)
+    return deps.documents.capabilities(get_index()).respond(request)
 
 
 class SearchCatalogueUnavailable(EngineInfraError):
@@ -688,6 +700,7 @@ async def _open_search_deps(
     place_options_pool: PlaceOptionsPool | None,
     generation: GenerationProvider | None,
     catalogue: CatalogueService,
+    release: ReleaseService | None,
     conversion_catalogue: ConversionCatalogueService | None,
 ) -> SearchDeps:
     """Build missing dependencies and return the bundle. The `owned` stack closes clients in
@@ -708,8 +721,10 @@ async def _open_search_deps(
         )
         logger.info("graph generation provider acquired (service base: %s)", settings().graph_base)
 
-    # The code index's views are built on first read, so build them before serving.
-    await asyncio.to_thread(prepare_index_views)
+    # The code index's views are built on first read, so build them before serving, from the
+    # index a request would read. `to_thread` carries the binding into the worker thread.
+    with bound_served_release(release):
+        await asyncio.to_thread(prepare_index_views)
 
     shared_resolvekit: SharedResolver | None = None
     if resolver is None:
@@ -770,6 +785,7 @@ async def _open_search_deps(
         conversion_catalogue,
         generation=generation,
         catalogue=catalogue,
+        release=release,
         graph=graph,
         reader=materialise_graph if materialise_graph is not None else live_graph,
         sdmx=materialise_sdmx,
@@ -845,7 +861,7 @@ async def _open_search_deps(
     if resolver is None:
         assert shared_resolvekit is not None
         resolver = EntityResolver(
-            graph=graph, shared=shared_resolvekit, generation=generation, code_index=get_index()
+            graph=graph, shared=shared_resolvekit, generation=generation, code_index=get_index
         )
         logger.info("EntityResolver started")
         _register(
@@ -873,6 +889,7 @@ async def _open_search_deps(
         skills_index = await acquire_shared_index(
             graph=graph,  # ty: ignore[invalid-argument-type]
             catalogue=catalogue.snapshot,
+            release=release.snapshot if release is not None else None,
         )
         # Stop the index refresh task before closing the graph it reads.
         owned.push_async_callback(_release_skills_index, skills_index)
@@ -969,6 +986,7 @@ def _start_conversion_catalogue_load(
     *,
     generation: GenerationProvider,
     catalogue: CatalogueService,
+    release: ReleaseService | None,
     graph: EngineGraphClient,
     reader: GraphReader | None,
     sdmx: MaterialiseSdmxClient,
@@ -985,7 +1003,7 @@ def _start_conversion_catalogue_load(
         return None
 
     def load() -> ConversionCatalogue:
-        with bound_catalogue(catalogue.snapshot()):
+        with bound_catalogue(catalogue.snapshot()), bound_served_release(release):
             return load_conversion_catalogue(
                 graph=graph,
                 reader=reader,
@@ -1020,14 +1038,17 @@ async def _wait_for_conversion_catalogue(service: ConversionCatalogueService) ->
 @contextmanager
 def _request_scope(
     catalogue: CatalogueService,
+    release: ReleaseService | None,
     conversion_catalogue: ConversionCatalogueService | None,
     variable_breadth: VariableBreadthReader | None,
 ) -> Iterator[None]:
-    """Bind the origin catalogue's and the conversion catalogue's loaded snapshots, and the
-    process's whole-variable breadth reader, for one request."""
+    """Bind the origin catalogue's and the conversion catalogue's loaded snapshots, the
+    served graph release when there is a release service, and the process's whole-variable
+    breadth reader, for one request."""
     conversion = conversion_catalogue.snapshot() if conversion_catalogue is not None else None
     with (
         bound_catalogue(catalogue.snapshot()),
+        bound_served_release(release),
         bound_conversion_catalogue(conversion),
         # Search stores no election, so a tie an unread breadth would have decided falls
         # back to the unit's name and marks the answer degraded.
@@ -1068,13 +1089,18 @@ def search_surface(
     Injected instances remain caller-owned. `materialise_graph` defaults to the live graph
     client. The process-wide generation provider rejects duplicate cache registrations, so
     concurrent apps need separate injected generation providers. Each request binds the origin
-    catalogue's and the conversion catalogue's loaded snapshots for its whole run. An injected
+    catalogue's and the conversion catalogue's loaded snapshots for its whole run, and, with
+    `GRAPH_RELEASE_URI` set, the release service's served release. An injected
     `conversion_catalogue` is served as loaded; without one the lifespan loads a new one.
     """
     # Fail during construction when an artifact is missing or unreadable.
     get_coverage_service()
     catalogue = get_catalogue_service()
-    documents = search_documents()
+    release = optional_release_service()
+    # The documents read the code index as they are built, so they are built under the
+    # release a request would bind.
+    with bound_served_release(release):
+        documents = search_documents()
     owns_conversion = conversion_catalogue is None
     conversions = conversion_catalogue or ConversionCatalogueService()
     # The lifespan sets the reader it builds, so each request binds it (`_request_scope`).
@@ -1107,6 +1133,7 @@ def search_surface(
                     place_options_pool=place_options_pool,
                     generation=generation,
                     catalogue=catalogue,
+                    release=release,
                     conversion_catalogue=conversions if owns_conversion else None,
                 )
                 SEARCH_DEPS_SLOT.set(app, deps)
@@ -1172,7 +1199,7 @@ def search_surface(
             UpstreamVersionChangedError("exemplar rate table changed version during its load"),
         ),
         lifespan=lifespan,
-        request_scope=lambda: _request_scope(catalogue, conversions, variable_breadth),
+        request_scope=lambda: _request_scope(catalogue, release, conversions, variable_breadth),
     )
 
 

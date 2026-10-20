@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import cast
@@ -101,24 +102,41 @@ def load_coverage(base_uri: str, *, pointer: CoveragePointer | None = None) -> L
             f"{pointer.build_id!r}, but the manifest at {prefix!r} carries stamp "
             f"{manifest.stamp!r} build {manifest.build_id!r}; the two disagree"
         )
-    table = read_table(prefix, manifest)
-    role_names = read_role_names(prefix, manifest)
-    facet_metadata = _read_facet_metadata(prefix, manifest)
-    label = f"coverage artifact at {prefix!r} (stamp {pointer.stamp!r})"
-    _check_popcount_invariant(table, manifest.horizon, label=label)
+    index = checked_index(
+        read_table(prefix, manifest),
+        read_role_names(prefix, manifest),
+        _read_facet_metadata(prefix, manifest),
+        horizon=manifest.horizon,
+        build_year=datetime.fromisoformat(manifest.built_at).year,
+        label=f"coverage artifact at {prefix!r} (stamp {pointer.stamp!r})",
+    )
+    return LoadedCoverage(manifest=manifest, index=index)
+
+
+def checked_index(
+    table: pa.Table,
+    role_names: Mapping[str, RoleNames],
+    facet_metadata: Mapping[str, FacetMetadata],
+    *,
+    horizon: YearHorizon,
+    build_year: int | None,
+    label: str,
+) -> CoverageIndex:
+    """The `CoverageIndex` over `table`, once every row's mask popcount equals its `n_obs`,
+    every facet has metadata and every row's entities match its variable's role names.
+    `label` names the source in errors.
+
+    Raises `CoverageArtifactError` for a failed check or a table `CoverageIndex` refuses.
+    """
+    _check_popcount_invariant(table, horizon, label=label)
     _check_facet_metadata_completeness(table, facet_metadata, label=label)
     _check_role_slots(table, role_names, label=label)
     try:
-        index = CoverageIndex(
-            table,
-            role_names,
-            facet_metadata,
-            horizon=manifest.horizon,
-            build_year=datetime.fromisoformat(manifest.built_at).year,
+        return CoverageIndex(
+            table, role_names, facet_metadata, horizon=horizon, build_year=build_year
         )
     except ValueError as exc:
         raise CoverageArtifactError(f"{label}: {exc}") from exc
-    return LoadedCoverage(manifest=manifest, index=index)
 
 
 def _read_pointer(root: str) -> CoveragePointer:
@@ -310,7 +328,7 @@ def _read_facet_metadata(prefix: str, manifest: CoverageManifest) -> dict[str, F
 
 
 def _check_facet_metadata_completeness(
-    table: pa.Table, facet_metadata: dict[str, FacetMetadata], *, label: str
+    table: pa.Table, facet_metadata: Mapping[str, FacetMetadata], *, label: str
 ) -> None:
     """Requires metadata for every `facet_id` in `table`.
 
@@ -349,7 +367,7 @@ def _variables_by_absent_entity(table: pa.Table, column: str) -> tuple[set[str],
     return variables(absent_rows), variables(pc.invert(absent_rows))
 
 
-def _check_role_slots(table: pa.Table, role_names: dict[str, RoleNames], *, label: str) -> None:
+def _check_role_slots(table: pa.Table, role_names: Mapping[str, RoleNames], *, label: str) -> None:
     """Requires every row's entities to match its variable's `RoleNames`: every row of a
     variable with no donor role holds an empty `donor`, and no row of any other variable
     does, and the same for `recipient`."""
@@ -396,6 +414,7 @@ __all__ = [
     "VERSIONS_PREFIX",
     "CoverageArtifactError",
     "LoadedCoverage",
+    "checked_index",
     "format_root",
     "load_coverage",
     "read_manifest",

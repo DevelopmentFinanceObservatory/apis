@@ -1,7 +1,8 @@
 """Pins `ReleaseService`: load at start, a request-triggered recheck, the swap
 inside its guards, one release per request across a swap, file cleanup after
-the last holder, and the Datasets surface and worker wiring with and without
-`GRAPH_RELEASE_URI`."""
+the last holder, the serving views built as a release opens, the Datasets
+surface and worker wiring with and without `GRAPH_RELEASE_URI`, and the Graph,
+Presentation and Search surfaces' binding under it."""
 
 from __future__ import annotations
 
@@ -9,6 +10,7 @@ import asyncio
 import dataclasses
 import gc
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -17,6 +19,7 @@ import pyarrow as pa
 import pytest
 from fastapi.testclient import TestClient
 
+import graph_release.service as service_module
 from artifact_publication.uri import write_uri_bytes
 from code_index.shared import get_index
 from datasets_api.admission import MaterialisePermits
@@ -26,6 +29,8 @@ from datasets_api.deps import DepsOverrides, open_deps
 from datasets_api.operation_store import LiveOperationStore
 from datasets_api.operations.oidc import FakeOidcVerifier
 from datasets_api.operations.worker_app import RUN_ROUTE_PATH, build_worker_app
+from graph_api.app import graph_surface
+from graph_release import context
 from graph_release.context import ReleaseNotBound, bound_release, current_release
 from graph_release.format import Manifest, Pointer, manifest_uri, open_release, pointer_uri
 from graph_release.service import (
@@ -37,14 +42,17 @@ from graph_release.service import (
     optional_release_service,
     reset_release_service,
 )
+from graph_release.views import ViewRefused
 from materialise.rate_tables import RateTableCache
 from origin_catalogue import current_catalogue
 from origin_catalogue.service import CatalogueService
+from presentation_api.app import presentation_surface
+from search.engine.app import search_surface
 from series_coverage.shared import get_coverage_service
 from tests.datasets_api._artifact_doubles import FakeArtifactStore
 from tests.datasets_api._operation_store import FakeOperationDatasetStore
 from tests.datasets_api.test_worker_app import _complete_run, _submit, _task_body
-from tests.graph_release.support import build_test_release, sample_tables
+from tests.graph_release.support import build_test_release, build_view_release, sample_tables
 from tests.graph_release.test_format import _publish_file
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue
 
@@ -57,6 +65,13 @@ class _Clock:
 
     def __call__(self) -> float:
         return self.now
+
+
+@pytest.fixture(autouse=True)
+def _views_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Most releases here hold no view parts, so the process service builds no views unless a
+    test sets `GRAPH_RELEASE_COVERAGE` itself."""
+    monkeypatch.delenv("GRAPH_RELEASE_COVERAGE", raising=False)
 
 
 @pytest.fixture
@@ -228,6 +243,7 @@ class TestService:
         assert before is after
         assert after.release_id == first.release_id
 
+    @pytest.mark.unbound_release
     def test_unbound_current_release_raises(self):
         with pytest.raises(ReleaseNotBound):
             current_release()
@@ -302,6 +318,96 @@ class TestService:
         assert {path.name for path in tmp_path.iterdir()} == {"shared"}
 
 
+class TestViews:
+    @pytest.mark.parametrize("build_views", [False, True])
+    def test_views_are_built_as_a_release_opens_only_when_asked(
+        self, root: str, local_dir: Path, build_views: bool
+    ):
+        manifest = build_view_release(root)
+
+        release = _service(root, local_dir, clock=_Clock(), build_views=build_views).snapshot()
+
+        if not build_views:
+            assert release.views is None
+            return
+        assert release.views is not None
+        assert release.views.code_index.stamp.coverage_build == manifest.release_id
+        assert release.views.measure_index.axes
+        assert release.views.coverage.num_rows > 0
+
+    def test_construction_refuses_a_release_whose_views_do_not_build(
+        self, root: str, local_dir: Path
+    ):
+        build_test_release(root, tables=sample_tables())
+
+        with pytest.raises(ViewRefused):
+            _service(root, local_dir, clock=_Clock(), build_views=True)
+        assert list(local_dir.iterdir()) == []
+
+    def test_a_swap_builds_the_new_views_only_once_every_permit_is_held(
+        self, root: str, local_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The views are heap that would sit beside the old release's and every frame being
+        built, so a swap builds them inside the guard, after a running materialisation has
+        given its permit back."""
+        build_test_release(root, tables=sample_tables())
+        clock = _Clock()
+        permits = MaterialisePermits(1)
+        loaded = threading.Event()
+        # Whether a materialisation could take a permit as each release's views were built.
+        permit_free: list[bool] = []
+
+        def loader(root_uri: str, *, local_dir: Path, release_id: str | None = None):
+            opened = open_release(root_uri, local_dir=local_dir, release_id=release_id)
+            loaded.set()
+            return opened
+
+        def build_views(_loaded) -> object:
+            free = permits.acquire(timeout=0)
+            if free:
+                permits.release()
+            permit_free.append(free)
+            return object()
+
+        monkeypatch.setattr(service_module, "build_release_views", build_views)
+        service = _service(root, local_dir, clock=clock, loader=loader, build_views=True)
+        service.register_swap_guard(permits.every_permit)
+        loaded.clear()
+        second = build_test_release(root, tables=_other_tables())
+
+        assert permits.acquire(timeout=0)
+        clock.now += _RECHECK
+        service.snapshot()
+        assert loaded.wait(5)
+        time.sleep(0.2)
+        assert permit_free == [True], "the new views were built while a permit was held"
+        permits.release()
+        service.close()
+
+        assert service.snapshot().release_id == second.release_id
+        assert permit_free == [True, False]
+
+    def test_a_recheck_keeps_the_served_release_when_the_new_views_do_not_build(
+        self, root: str, local_dir: Path
+    ):
+        """The views fail inside the guard, which the recheck then leaves, and the new
+        release's own files are unlinked."""
+        first = build_view_release(root)
+        clock = _Clock()
+        service = _service(root, local_dir, clock=clock, build_views=True)
+        permits = MaterialisePermits(1)
+        service.register_swap_guard(permits.every_permit)
+        build_test_release(root, tables=sample_tables())
+
+        served = _recheck(service, clock)
+
+        assert served.release_id == first.release_id
+        assert served.views is not None
+        assert permits.acquire(timeout=0)
+        gc.collect()
+        assert {path.name for path in local_dir.iterdir()} == _files(first)
+
+
 class TestProcessService:
     @pytest.fixture(autouse=True)
     def _fresh_singleton(self) -> Iterator[None]:
@@ -317,8 +423,24 @@ class TestProcessService:
             monkeypatch.setenv("GRAPH_RELEASE_URI", value)
 
         assert optional_release_service() is None
+        assert context.optional_release_service() is None
         with pytest.raises(ReleaseUriMissingError):
             get_release_service()
+
+    @pytest.mark.parametrize("flag", [None, "1"])
+    def test_the_coverage_flag_builds_the_served_releases_views(
+        self, root: str, monkeypatch: pytest.MonkeyPatch, flag: str | None
+    ):
+        build_view_release(root)
+        monkeypatch.setenv("GRAPH_RELEASE_URI", root)
+        if flag is None:
+            monkeypatch.delenv("GRAPH_RELEASE_COVERAGE", raising=False)
+        else:
+            monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", flag)
+
+        views = get_release_service().snapshot().views
+
+        assert (views is not None) == (flag is not None)
 
     def test_a_set_uri_loads_its_release_once_per_process(
         self, root: str, monkeypatch: pytest.MonkeyPatch
@@ -330,9 +452,28 @@ class TestProcessService:
 
         assert service is get_release_service()
         assert service is not None and service.snapshot().release_id == manifest.release_id
+        assert context.optional_release_service() is service
+
+    @pytest.mark.parametrize(
+        "build_surface",
+        [graph_surface, presentation_surface, search_surface],
+        ids=["graph", "presentation", "search"],
+    )
+    def test_a_request_binds_the_served_release_beside_the_catalogue(
+        self, root: str, monkeypatch: pytest.MonkeyPatch, build_surface
+    ):
+        manifest = build_test_release(root, tables=sample_tables())
+        monkeypatch.setenv("GRAPH_RELEASE_URI", root)
+        surface = build_surface()
+
+        assert surface.request_scope is not None
+        with surface.request_scope():
+            assert current_release().release_id == manifest.release_id
+            current_catalogue()
 
 
 class TestDatasetsSurface:
+    @pytest.mark.unbound_release
     def test_without_a_release_a_request_binds_the_catalogue_alone(
         self, monkeypatch: pytest.MonkeyPatch
     ):
@@ -363,9 +504,17 @@ class TestDatasetsSurface:
         with surface.request_scope():
             assert current_release().release_id == second.release_id
 
+    @pytest.mark.parametrize("flag", [None, "1"], ids=["flag-off", "flag-on"])
     def test_a_swap_waits_for_every_materialise_permit_while_the_deps_are_open(
-        self, root: str, local_dir: Path
+        self, root: str, local_dir: Path, monkeypatch: pytest.MonkeyPatch, flag: str | None
     ):
+        """With `GRAPH_RELEASE_COVERAGE` on, the coverage the deps register a load guard on is the
+        release's (`ReleaseCoverage`), and the swap still takes every permit once. A second
+        `every_permit` on the same permits would wait on the first, and the flip would never
+        end."""
+        if flag is not None:
+            monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", flag)
+        monkeypatch.setenv("GRAPH_RELEASE_URI", root)
         first = build_test_release(root, tables=sample_tables())
         clock = _Clock()
         loaded = threading.Event()
@@ -399,11 +548,16 @@ class TestDatasetsSurface:
                 await asyncio.sleep(0.2)
                 assert service.snapshot().release_id == first.release_id
                 permits.release()
+                # Polled, so a flip that waits on itself fails here rather than hanging `close`.
+                for _ in range(50):
+                    if service.snapshot().release_id == second.release_id:
+                        break
+                    await asyncio.sleep(0.1)
+                assert service.snapshot().release_id == second.release_id, "the flip never ended"
                 await asyncio.to_thread(service.close)
 
-        asyncio.run(swap_while_a_permit_is_held())
-
-        assert service.snapshot().release_id == second.release_id
+        with service_module._singleton.poisoned_for_test(service):
+            asyncio.run(swap_while_a_permit_is_held())
 
 
 def _every_dependency_injected() -> dict[str, object]:
@@ -470,6 +624,7 @@ class TestWorker:
 
         assert self._bound_release(service) == [second.release_id]
 
+    @pytest.mark.unbound_release
     def test_without_a_release_an_operation_binds_none(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.delenv("GRAPH_RELEASE_URI", raising=False)
 

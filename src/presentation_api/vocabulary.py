@@ -1,7 +1,7 @@
 """The words Presentation words a card's description from.
 
-`LiveVocabularySource` holds the vocabulary of the process-wide code and measure indexes and the
-packaged publisher short names (`description.vocabulary.build_vocabulary`). The labels of the
+`LiveVocabularySource` gives the vocabulary of the code and measure indexes the request reads and
+the packaged publisher short names (`description.vocabulary.build_vocabulary`). The labels of the
 places, organisations, variables and sources a card draws come from its frame, which the frame
 store labelled when it loaded it (`assembler.mint.card_description`), so building the
 vocabulary reads no graph and serves under no catalogue, so it carries no graph generation or
@@ -19,12 +19,13 @@ __all__ = ["LiveVocabularySource"]
 
 
 class LiveVocabularySource:
-    """`assembler.ports.VocabularySource` over the process-wide code and measure indexes.
+    """`assembler.ports.VocabularySource` over the code and measure indexes the request reads.
 
-    Builds its vocabulary once, at construction, which parses the indexes on first use."""
+    Builds the vocabulary on each read, since the indexes can change between requests. A
+    build wraps the indexes and hashes one revision, so it reads nothing."""
 
-    def __init__(self) -> None:
-        self._vocabulary = build_vocabulary(
+    def current(self) -> Vocabulary:
+        return build_vocabulary(
             index=get_index(),
             measure_index=get_measure_index(),
             labels={},
@@ -33,6 +34,3 @@ class LiveVocabularySource:
             graph_generation=None,
             catalogue_build=None,
         )
-
-    def current(self) -> Vocabulary:
-        return self._vocabulary

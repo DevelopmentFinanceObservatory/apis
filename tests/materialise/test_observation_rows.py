@@ -419,7 +419,7 @@ def _mint_kwargs(graph: OriginGraphClient) -> dict:
         "graph": graph,
         "materialiser_build": "build-1",
         "capability_version": "cap-1",
-        "enrichment": EnrichmentLookup(graph, parties={}),
+        "enrichment": EnrichmentLookup(graph, parties=lambda: {}),
     }
 
 

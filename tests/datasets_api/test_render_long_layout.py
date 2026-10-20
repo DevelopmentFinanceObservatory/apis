@@ -195,7 +195,7 @@ def _render(
         site=SITE,
         artifact_store=store,
         entity_columns=_ENTITY_COLUMNS,
-        enrichment=EnrichmentLookup(graph, parties=parties),
+        enrichment=EnrichmentLookup(graph, parties=lambda: parties),
         pivot_max_output_cells=5_000_000,
         code_index=index,
         resolved_stat_var_refs=tuple(str(row[0]) for row in rows),

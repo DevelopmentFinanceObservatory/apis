@@ -126,7 +126,7 @@ _TABLE_COLUMNS = (
 
 
 def _enrichment() -> EnrichmentLookup:
-    return EnrichmentLookup(FakeMintGraphReader(), parties={})
+    return EnrichmentLookup(FakeMintGraphReader(), parties=lambda: {})
 
 
 def _single_axis_by() -> GroupbyOptions:

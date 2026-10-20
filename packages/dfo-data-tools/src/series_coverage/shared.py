@@ -40,6 +40,16 @@ reload. Before it waits, a request can hold a replaced index for as long as its 
 checks, its graph reads, member resolution, the estimate and the budget decision take,
 beside the frames other requests build.
 
+With `GRAPH_RELEASE_COVERAGE` on (`graph_release.context.coverage_views_enabled`),
+`get_coverage_service()` returns `ReleaseCoverage` and reads none of the variables above. It
+serves the coverage view of the release bound to the current request or operation
+(`graph_release.context.current_views`), whose code index comes from the same release, so no
+compatibility check runs. Its stamp and build id are the release id. A release swap holds every
+materialise permit through the release service's swap guard (`ReleaseService.register_swap_guard`),
+so `ReleaseCoverage` registers no load guard of its own. A request still bound to the replaced
+release is refused at the Datasets admission checks rather than restarted, since it read its
+code index from that release.
+
 For the 1,782,460-row artifact, a full load takes 0.43 to 0.47 s and two
 concurrent loads use up to 1.72 GiB. The compatibility check over 22,208
 index rows takes 0.20 to 0.25 s and runs only after a load. A pointer read
@@ -55,14 +65,16 @@ import time
 from collections.abc import Callable
 from contextlib import AbstractContextManager, ExitStack
 from dataclasses import dataclass
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from artifact_publication.jobs import Ingestion
 from code_index.query import CodeIndex
 from code_index.shared import get_index
 from dfo_platform.singleton import RefCountedSingleton
+from graph_release.context import coverage_views_enabled, current_release, current_views
 from series_coverage.compatibility import (
     IndexCoverageDifferences,
     describe_differences,
@@ -72,6 +84,9 @@ from series_coverage.compatibility import (
 from series_coverage.index import CoverageIndex
 from series_coverage.loader import LoadedCoverage, load_coverage, read_published_pointer
 from series_coverage.schema import CoverageManifest, CoveragePointer
+
+if TYPE_CHECKING:
+    from graph_release.service import Release, ReleaseViews
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +156,29 @@ class CoverageSnapshot:
     stamp: str
 
 
+class ServedCoverage(Protocol):
+    """The coverage a surface serves: `CoverageService` over a published coverage build, or
+    `ReleaseCoverage` over the bound graph release's coverage view."""
+
+    def current(self) -> CoverageIndex: ...
+
+    @property
+    def stamp(self) -> str: ...
+
+    @property
+    def manifest(self) -> CoverageManifest: ...
+
+    def snapshot(self) -> CoverageSnapshot: ...
+
+    def snapshot_current(self) -> CoverageSnapshot: ...
+
+    def serves(self, snapshot: CoverageSnapshot) -> bool: ...
+
+    def register_load_guard(
+        self, guard: Callable[[], AbstractContextManager[object]]
+    ) -> Callable[[], None]: ...
+
+
 class CoverageService:
     """Loads one artifact compatible with `index` at construction and refreshes it in the
     background.
@@ -196,7 +234,7 @@ class CoverageService:
         return self._snapshot.loaded.manifest.stamp
 
     @property
-    def manifest(self):
+    def manifest(self) -> CoverageManifest:
         return self._snapshot.loaded.manifest
 
     @property
@@ -430,6 +468,78 @@ class CoverageService:
             self._snapshot = _Snapshot(loaded=self._snapshot.loaded, checked_at=self._clock())
 
 
+class ReleaseCoverage:
+    """The coverage view of the graph release bound to the current context, read on every call,
+    so a request serves the coverage of the release it bound and the next request after a swap
+    serves the new one. Holds no index, so a swapped-out release dies with the last request that
+    bound it.
+
+    Every read raises `graph_release.context.ReleaseNotBound` when no release is bound and
+    `ReleaseViewsNotBuilt` when the bound release carries no views.
+    """
+
+    def current(self) -> CoverageIndex:
+        return self.snapshot().index
+
+    @property
+    def stamp(self) -> str:
+        """The bound release's id."""
+        return current_release().release_id
+
+    @property
+    def manifest(self) -> CoverageManifest:
+        return self.snapshot().manifest
+
+    def snapshot(self) -> CoverageSnapshot:
+        return _release_snapshot(current_release(), current_views())
+
+    def snapshot_current(self) -> CoverageSnapshot:
+        """The bound release's snapshot, as `snapshot()`. A request reads one release from its
+        start, and the release service's recheck moves the served one."""
+        return self.snapshot()
+
+    def serves(self, snapshot: CoverageSnapshot) -> bool:
+        """Whether `snapshot` holds the bound release's coverage index. A request keeps its
+        release across a swap, and with it the index, so a snapshot it took stays served to it,
+        and a replaced snapshot here would come back from every retry of the same request. The
+        Datasets admission checks refuse a request whose bound release the release service no
+        longer serves (`graph_release.service.Release.served`) before they ask this."""
+        return snapshot.index is self.current()
+
+    def register_load_guard(
+        self, guard: Callable[[], AbstractContextManager[object]]
+    ) -> Callable[[], None]:
+        """Registers nothing and returns a no-op. The release service enters the surface's
+        swap guard around a swap, the same `every_permit` a coverage load guard takes, and a
+        swap that took it twice would wait on itself."""
+        return lambda: None
+
+
+def _release_snapshot(release: Release, views: ReleaseViews) -> CoverageSnapshot:
+    """`release`'s coverage view, with a manifest naming the release as the build."""
+    index = views.coverage
+    manifest = release.manifest
+    return CoverageSnapshot(
+        index=index,
+        manifest=CoverageManifest(
+            stamp=release.release_id,
+            build_id=release.release_id,
+            built_at=manifest.read_timestamp,
+            source="graph_release",
+            row_counts={},
+            files={},
+            horizon=index.horizon,
+            # The release records its import's completion time and no creation time, so the
+            # `artifact_pair_stale` warning, which compares execution ids, names the former.
+            ingestion=Ingestion(
+                workflow_execution_id=manifest.import_execution_id,
+                creation_timestamp=manifest.import_completed_at,
+            ),
+        ),
+        stamp=release.release_id,
+    )
+
+
 def _build() -> CoverageService:
     env = _CoverageEnv()
     if env.artifact_uri is None:
@@ -455,8 +565,14 @@ _singleton: RefCountedSingleton[CoverageService] = RefCountedSingleton(
 )
 
 
-def get_coverage_service() -> CoverageService:
+_RELEASE_COVERAGE = ReleaseCoverage()
+
+
+def get_coverage_service() -> ServedCoverage:
     """Returns the process-wide service, loading the artifact on first call.
+
+    With `GRAPH_RELEASE_COVERAGE` on, returns `ReleaseCoverage`, which reads the bound release
+    and none of the variables below.
 
     Reads `COVERAGE_ARTIFACT_URI` (required) and `COVERAGE_RECHECK_SECONDS`
     (default 300), and checks builds against the packaged code index
@@ -471,6 +587,8 @@ def get_coverage_service() -> CoverageService:
     `off`, and `CoverageIncompatibleError` when no compatible build loads. Errors from
     `load_coverage` propagate for an unreadable artifact.
     """
+    if coverage_views_enabled():
+        return _RELEASE_COVERAGE
     return _singleton.acquire()
 
 
@@ -487,6 +605,8 @@ __all__ = [
     "CoverageLoader",
     "CoverageService",
     "CoverageSnapshot",
+    "ReleaseCoverage",
+    "ServedCoverage",
     "get_coverage_service",
     "reset_coverage_service",
 ]

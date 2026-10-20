@@ -838,7 +838,7 @@ class _PublishDoorState:
 async def _run_publish(
     permit: _PublishPermit, fn, /, *, timings: PhaseTimings, **kwargs
 ) -> PublishResult:
-    """Run a publish call on the work executor under the request's permit.
+    """Run a publish call on the work executor under the request's permit and context.
 
     A shutdown submission failure raises `PublishBackpressure`. `BrokenExecutor`
     signals a failed worker pool. The submitted future releases the permit when
