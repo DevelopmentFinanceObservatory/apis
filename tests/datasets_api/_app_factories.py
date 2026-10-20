@@ -24,7 +24,7 @@ from spec_registry import SpecRegistry
 from spec_registry.reader import SpecReader
 
 from ._deps_doubles import Unwired
-from ._snapshot_doubles import FakeSnapshotReader
+from ._snapshot_doubles import offline_version_pair
 from ._version_record_store import FakeVersionRecordDatasetStore
 
 
@@ -71,8 +71,10 @@ def make_app(
     """Compose an app from injected dependencies, with offline stand-ins for the rest, so its
     lifespan builds no live client and opens no pool.
 
-    Omitted writers, the head store and the operation store are the null implementations, an
-    omitted snapshot reader reads nothing, and `task_client` defaults to `FakeTaskClient`.
+    The head store, the operation store and other omitted writers are the null implementations,
+    and the version writer and snapshot reader follow `offline_version_pair`: an omitted reader
+    reads nothing until a write, and an omitted writer records what it writes into a fake
+    reader. `task_client` defaults to `FakeTaskClient`.
     `recipe_store` and `version_lister` default to `offline_recipe_stores()`. A recipe test
     injects both over the store its version writer shares. `description_store` defaults to one
     over an empty SQLite-backed store. Every other omitted client is
@@ -113,10 +115,7 @@ def make_app(
         "artifact_store": artifact_store
         if artifact_store is not None
         else Unwired("artifact_store"),
-        "snapshot_reader": snapshot_reader if snapshot_reader is not None else FakeSnapshotReader(),
-        "version_writer": version_writer
-        if version_writer is not None
-        else NullVersionRecordWriter(),
+        **offline_version_pair(version_writer=version_writer, snapshot_reader=snapshot_reader),
         "head_writer": head_writer if head_writer is not None else NullHeadWriter(),
         "operation_store": operation_store if operation_store is not None else NullOperationStore(),
         "reference_writer": (
@@ -197,7 +196,6 @@ def mint_deps(
     one-StatVar slice. Inject matching coverage for fake StatVars outside the slice.
     """
     from code_index.shared import get_index
-    from datasets_api.versions import NullVersionRecordWriter
     from materialise import EnrichmentLookup
     from materialise.rate_tables import RateTableCache
     from series_coverage.shared import get_coverage_service

@@ -31,8 +31,13 @@ Pinning any artifact of a definition version also retains that version's stored 
 The door promotes a working-tier frame to the pinned tier and records the same principal's reference
 to it, with the same revocation recheck, on every pin call, including a repeat pin of an artifact
 that is already pinned, so a retry or a re-pin heals a version whose frame is still working-tier. A
-version with no servable frame (one that aged out unpinned) pins the named artifact alone. The frame
-copy skips the budget check and counts toward later calls.
+derived version (`base_content_version` set: a groupby collapse or a party-totals cut) renders its
+files from its base version's frame, so its pin also retains that frame, with the reference naming
+the base version, and the derived version stays fetchable in every format and reports
+`retention.pinned`. A version with no servable frame (one that aged out unpinned) pins the named
+artifact alone. A frame copy skips the budget check. It holds a `pin` reference, so it counts
+toward later calls: a pin of a derived version can add three pinned copies to the count, the named
+artifact, the version's own frame and its base frame, while only the first waits on the budget.
 
 A daily budget bounds the pinned copies this door creates. Before a copy, the
 door counts pinned-tier locations stored in the trailing 24 hours whose digest
@@ -149,15 +154,15 @@ def pin_artifact(
     daily_max: int,
     now: Clock,
 ) -> datetime:
-    """Pin an artifact and the version's canonical frame, and return the named artifact's
-    reference `created_at` as `pinned_at`.
+    """Pin an artifact, the version's canonical frame and, for a derived version, its base
+    version's frame, and return the named artifact's reference `created_at` as `pinned_at`.
 
     A new pinned copy first needs room in the budget: fewer than `daily_max`
     pinned copies of `pin`-referenced digests stored within `PIN_BUDGET_WINDOW`,
     else `PinBudgetExhausted` before any copy. An artifact that already has a
     pinned copy skips the budget.
 
-    The refusals concern the named artifact alone. The stored frame is retained after the named
+    The refusals concern the named artifact alone. The stored frames are retained after the named
     artifact's reference is recorded, and only when it is servable at the call's read time.
     A missing or aged-out frame leaves the response unchanged. The transactional revocation
     and link rechecks propagate unlogged. Other reference-write failures are logged and
@@ -205,8 +210,17 @@ def pin_artifact(
         now=read_at,
     )
 
-    frame = servable_frame_location(stored.servable, now=read_at)
-    if frame is not None and frame.artifact_digest != artifact_digest:
+    frames = [(content_version, servable_frame_location(stored.servable, now=read_at))]
+    base_content_version = stored.version.base_content_version
+    if base_content_version is not None:
+        # A derived version's files render from its base version's frame.
+        base_locations = snapshot_reader.read_artifact_locations(subject_id, base_content_version)
+        frames.append((base_content_version, servable_frame_location(base_locations, now=read_at)))
+    promoted = {artifact_digest}
+    for frame_version, frame in frames:
+        if frame is None or frame.artifact_digest in promoted:
+            continue
+        promoted.add(frame.artifact_digest)
         frame_already_pinned = frame.tier == "pinned"
         if not frame_already_pinned:
             with phase("copy"):
@@ -218,7 +232,7 @@ def pin_artifact(
             principal=principal,
             artifact_digest=frame.artifact_digest,
             id=subject_id,
-            content_version=content_version,
+            content_version=frame_version,
             revoked_under=subject_ids,
             already_pinned=frame_already_pinned,
             now=read_at,
@@ -288,7 +302,17 @@ def build_pin_door(
 
     router = APIRouter(route_class=granted_route_class(require_pin))
 
-    @router.post("/api/datasets/{id:dfo_spec_id}/{content_version}/pin", response_model=PinResponse)
+    @router.post(
+        "/api/datasets/{id:dfo_spec_id}/{content_version}/pin",
+        response_model=PinResponse,
+        description=(
+            "Pin an artifact of a version, and the frame its files render from: the version's "
+            "own frame and, for a derived version, its base version's frame, so every format "
+            "stays fetchable and the version reports `retention.pinned`. Only the named "
+            "artifact's copy waits on the daily pin budget; the frame copies skip it and count "
+            "toward later calls, so one pin can add up to three copies to the count."
+        ),
+    )
     async def post_pin(
         id: str, content_version: str, body: PinRequest, request: Request
     ) -> JSONResponse:
