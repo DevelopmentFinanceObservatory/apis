@@ -40,6 +40,7 @@ class TestNumericBounds:
             ("SEARCH_JEV_SHADOW_SAMPLE", "nan"),
             ("SEARCH_JEV_SHADOW_CONTROL", "-0.1"),
             ("SEARCH_JEV_SHADOW_CONTROL", "nan"),
+            ("SEARCH_JEV_SHADOW_MAX_INFLIGHT", "0"),
             ("SEARCH_MAX_QUERY_CHARS", "0"),
             ("SEARCH_REQUEST_TIMEOUT_S", "0"),
             ("SEARCH_REQUEST_TIMEOUT_S", "-1"),

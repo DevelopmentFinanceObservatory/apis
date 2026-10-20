@@ -175,6 +175,12 @@ class SearchSettings(BaseSettings):
     # so the comparison measures Gemini's disagreement with itself as its control.
     jev_shadow_control: float = 0.05
 
+    # Shadow calls, Jev and control alike, in flight per event loop; a sampled call made
+    # while this many run goes unshadowed. Control calls take a Gemini pool of this many
+    # connections per event loop of their own (`clients.llm.detached`), so a control never
+    # waits for a connection and never takes one from a served call.
+    jev_shadow_max_inflight: int = 4
+
     # -- Graph ------------------------------------------------------------
     # Bare host of the Data Commons service, from SEARCH_GRAPH_BASE. Required, so
     # a process with no graph target fails at import rather than reading another
@@ -828,6 +834,10 @@ class SearchSettings(BaseSettings):
         if not 0.0 <= self.jev_shadow_control <= 1.0:
             raise ValueError(
                 f"SEARCH_JEV_SHADOW_CONTROL must be in [0, 1]; got {self.jev_shadow_control!r}"
+            )
+        if self.jev_shadow_max_inflight < 1:
+            raise ValueError(
+                f"SEARCH_JEV_SHADOW_MAX_INFLIGHT must be >= 1; got {self.jev_shadow_max_inflight!r}"
             )
         if self.max_query_chars < 1:
             raise ValueError(f"SEARCH_MAX_QUERY_CHARS must be >= 1; got {self.max_query_chars!r}")

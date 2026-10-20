@@ -21,7 +21,7 @@ from pydantic import BaseModel
 
 import search.engine.clients.llm as llm_module
 from search.engine.bind import _UniversalBindOutput
-from search.engine.clients.llm import LLM, LLMMemo, generate_structured_async
+from search.engine.clients.llm import LLM, LLMMemo, detached, generate_structured_async
 from search.engine.errors import LLMInfraError, LLMOutputRefused
 
 # Captured at import, before the autouse `_guard_outbound_http` fixture swaps
@@ -57,6 +57,7 @@ def live_client_env(monkeypatch: pytest.MonkeyPatch, search_settings) -> None:
     """A fresh module singleton, built with a key, with no cached client."""
     search_settings(gemini_api_key="test-key", llm_timeout_s=5.0)
     monkeypatch.setattr(llm_module, "_CLIENT", None)
+    monkeypatch.setattr(llm_module, "_DETACHED_CLIENT", None)
 
 
 def _point_at(monkeypatch: pytest.MonkeyPatch, port: int) -> None:
@@ -493,6 +494,30 @@ def test_a_cancelled_pool_waiter_leaves_the_pool_usable(
 
     assert asyncio.run(scenario()) < 1.0
     assert len(holding_listener.arrivals) == 2
+
+
+@pytest.mark.usefixtures("live_client_env", "loopback_transport")
+def test_a_held_detached_call_leaves_the_served_connection_free(
+    search_settings, holding_listener: _HoldingListener
+):
+    """With one served connection and one detached, a detached call held at the listener
+    takes no served capacity: a served call started after it reaches the listener at
+    once, well inside the pool wait that would fail it."""
+    search_settings(llm_max_concurrency=1, jev_shadow_max_inflight=1, llm_timeout_s=1.0)
+    llm = _memo_llm()
+
+    async def scenario() -> list:
+        control = asyncio.create_task(_memo_call(detached(llm)))
+        await _until(lambda: len(holding_listener.arrivals) == 1)
+        served = asyncio.create_task(_memo_call(llm))
+        await _until(lambda: len(holding_listener.arrivals) == 2, timeout=0.5)
+        holding_listener.release(2)
+        return await asyncio.gather(served, control)
+
+    results = asyncio.run(scenario())
+
+    assert [parsed for parsed, _usage in results] == [_Value(value=1)] * 2
+    assert holding_listener.max_open == 2
 
 
 @pytest.mark.usefixtures("live_client_env", "loopback_transport")

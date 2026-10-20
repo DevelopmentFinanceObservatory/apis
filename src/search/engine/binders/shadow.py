@@ -5,7 +5,10 @@
 awaits Gemini: to Jev, or on the control share of sampled calls
 (`Settings.jev_shadow_control`) to Gemini again, so the comparison has Gemini's
 disagreement with itself to read Jev's against. The control call skips the LLM memo, so it
-reaches the model. A shadow call's tokens stay out of the answer's usage, and a read it
+reaches the model, and takes the detached Gemini client (`clients.llm.detached`), whose
+connections are its own, so it never takes a served call's connection. At most
+`Settings.jev_shadow_max_inflight` shadow calls run per event loop; a sampled call made
+while that many run goes unshadowed. A shadow call's tokens stay out of the answer's usage, and a read it
 swallows stays out of the served part's degraded reads (`degraded_reads`).
 
 The served path never awaits the shadow task, so the shadow adds no wait to the answer: a
@@ -39,7 +42,9 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from search.engine.binders.base import BindRequest, BindResult, QuantityRequest
 from search.engine.binders.jev import JevFailure
 from search.engine.binders.part_log import Call, elapsed_ms, log_binder_part
-from search.engine.clients.llm import unrecorded_llm_usage, without_memo
+from search.engine.clients.llm import detached, unrecorded_llm_usage
+from search.engine.clients.loop_local import LoopLocal
+from search.engine.config import settings
 from search.engine.degraded_reads import recording_degraded_reads
 
 if TYPE_CHECKING:
@@ -54,8 +59,9 @@ logger = logging.getLogger(__name__)
 
 type Mode = Literal["jev", "control"]
 
-# Shadow tasks still running, held so the loop does not collect them mid-flight.
-_RUNNING: set[asyncio.Task[Any]] = set()
+# Each event loop's shadow tasks still running, held so the loop does not collect them
+# mid-flight and counted against `Settings.jev_shadow_max_inflight`.
+_RUNNING: LoopLocal[set[asyncio.Task[Any]]] = LoopLocal()
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -123,7 +129,7 @@ class ShadowBinder:
         if mode == "jev":
             shadow = _detach(_jev(self.shadow.quantity(request)))
         elif mode == "control":
-            shadow = _detach(_control(self.served.read_quantity(request, llm=without_memo(llm))))
+            shadow = _detach(_control(self.served.read_quantity(request, llm=detached(llm))))
         started = time.perf_counter()
         answer = await _served(shadow, self.served.read_quantity(request, llm=llm))
         ms = elapsed_ms(started)
@@ -161,7 +167,7 @@ class ShadowBinder:
             shadow = _detach(
                 _jev(self.shadow.elect(own_step))
                 if mode == "jev"
-                else _control(self.served.bind(own_step, llm=without_memo(llm)))
+                else _control(self.served.bind(own_step, llm=detached(llm)))
             )
         started = time.perf_counter()
         answer = await _served(shadow, self.served.bind(request, llm=llm))
@@ -189,10 +195,14 @@ class ShadowBinder:
         return answer
 
     def _mode(self) -> Mode | None:
-        """Whether this call is shadowed, and by Jev or by Gemini as the control."""
+        """Whether this call is shadowed, and by Jev or by Gemini as the control. A call
+        made while `Settings.jev_shadow_max_inflight` shadow calls run is not."""
         if self._draw() >= self.sample:
             return None
-        return "control" if self._draw() < self.control else "jev"
+        mode: Mode = "control" if self._draw() < self.control else "jev"
+        if len(_RUNNING.get(set)) >= settings().jev_shadow_max_inflight:
+            return None
+        return mode
 
 
 async def _jev[R](call: Awaitable[tuple[R, JevCall]]) -> tuple[R, _Spent]:
@@ -222,8 +232,9 @@ async def _isolated[T](call: Awaitable[T]) -> T:
 
 def _detach[T](call: Coroutine[Any, Any, T]) -> asyncio.Task[T]:
     task = asyncio.create_task(_isolated(call))
-    _RUNNING.add(task)
-    task.add_done_callback(_RUNNING.discard)
+    running = _RUNNING.get(set)
+    running.add(task)
+    task.add_done_callback(running.discard)
     return task
 
 

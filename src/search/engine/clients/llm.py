@@ -42,8 +42,10 @@ _SchemaT = TypeVar("_SchemaT", bound=BaseModel)
 
 logger = logging.getLogger(__name__)
 
-# Lazy singleton, built on first call to generate_structured.
+# Lazy singletons, built on first call to generate_structured: the served calls' client, and
+# the client of detached calls (`detached`) with its own pools.
 _CLIENT = None
+_DETACHED_CLIENT = None
 
 # Memo and extraction-store hits report zero usage because they skip Gemini. Live calls return None
 # when Gemini omits usage metadata.
@@ -87,7 +89,7 @@ class _LoopLocalTransport(httpx.AsyncBaseTransport):
             await pool.aclose()
 
 
-def _build_client(api_key: str) -> genai.Client:
+def _build_client(api_key: str, *, max_connections: int) -> genai.Client:
     """Build a Gemini client using one-attempt httpx requests.
 
     Passing an async httpx client selects google-genai's httpx path, avoiding
@@ -98,6 +100,7 @@ def _build_client(api_key: str) -> genai.Client:
     ``HttpOptions.timeout`` is converted from milliseconds to seconds and
     bounds connect, read, write, and pool waits. Saturated pools raise
     ``httpx.PoolTimeout``, translated to ``LLMInfraError`` by the caller.
+    ``max_connections`` caps each event loop's pool.
     """
     try:
         from google import genai
@@ -108,7 +111,7 @@ def _build_client(api_key: str) -> genai.Client:
             "Install with: uv sync --extra engine (or pip install 'search[engine]')."
         ) from exc
     async_client = httpx.AsyncClient(
-        transport=_LoopLocalTransport(max_connections=config.settings().llm_max_concurrency),
+        transport=_LoopLocalTransport(max_connections=max_connections),
         # Every request carries HttpOptions.timeout. google-genai's httpx clients follow redirects.
         timeout=None,
         follow_redirects=True,
@@ -124,21 +127,39 @@ def _build_client(api_key: str) -> genai.Client:
 
 
 def _get_client() -> genai.Client:
-    """Return (or build) the singleton genai.Client.
+    """Return (or build) the singleton genai.Client of served calls, with
+    ``llm_max_concurrency`` connections per event loop.
 
     Raises LLMInfraError only when a live call is attempted and GEMINI_API_KEY
     is absent. Tests use FakeLLM instead, bypassing this path.
     """
     global _CLIENT
     if _CLIENT is None:
-        api_key = config.settings().gemini_api_key
-        if not api_key:
-            raise LLMInfraError(
-                "GEMINI_API_KEY is required for live LLM calls. "
-                "Set the environment variable or use FakeLLM in tests."
-            )
-        _CLIENT = _build_client(api_key)
+        _CLIENT = _build_client(
+            _required_api_key(), max_connections=config.settings().llm_max_concurrency
+        )
     return _CLIENT
+
+
+def _get_detached_client() -> genai.Client:
+    """Return (or build) the singleton genai.Client of detached calls, with
+    ``jev_shadow_max_inflight`` connections per event loop of its own."""
+    global _DETACHED_CLIENT
+    if _DETACHED_CLIENT is None:
+        _DETACHED_CLIENT = _build_client(
+            _required_api_key(), max_connections=config.settings().jev_shadow_max_inflight
+        )
+    return _DETACHED_CLIENT
+
+
+def _required_api_key() -> str:
+    api_key = config.settings().gemini_api_key
+    if not api_key:
+        raise LLMInfraError(
+            "GEMINI_API_KEY is required for live LLM calls. "
+            "Set the environment variable or use FakeLLM in tests."
+        )
+    return api_key
 
 
 _GEMINI_3_MINOR_RE = re.compile(r"^gemini-3\.(\d+)")
@@ -317,13 +338,16 @@ def unrecorded_llm_usage() -> Iterator[None]:
         _SPENT.reset(token)
 
 
-def without_memo(llm: SupportsLLM) -> SupportsLLM:
-    """`llm`, or a shallow copy of it with no memo, so its call reaches the model even when
-    an identical request is in flight or stored."""
-    if not isinstance(llm, LLM) or llm._memo is None:
+def detached(llm: SupportsLLM) -> SupportsLLM:
+    """`llm` for a call no answer waits on: a shallow copy with no memo, so the call reaches
+    the model even when an identical request is in flight or stored, on the detached
+    client, whose connections are its own, so the call never takes a served call's
+    connection. Any other `SupportsLLM` comes back as it is."""
+    if not isinstance(llm, LLM):
         return llm
     clone = copy.copy(llm)
     clone._memo = None
+    clone._detached = True
     return clone
 
 
@@ -581,6 +605,7 @@ class LLM:
     # Store-carrying instances override them in __init__.
     _memo: LLMMemo | None = None
     extraction_store: ExtractionStore | None = None
+    _detached = False
 
     def __init__(
         self,
@@ -592,10 +617,20 @@ class LLM:
         memo: LLMMemo | None = None,
         extraction_store: ExtractionStore | None = None,
     ):
-        # An instance api_key creates one client shared with its stage clones. Otherwise _client()
-        # uses the singleton.
+        # An instance api_key creates one client, and one for detached calls, shared with its
+        # clones. Otherwise _client() uses the singletons.
         self._model = model or config.settings().engine_model
-        self._override_client = _build_client(api_key) if api_key else None
+        settings = config.settings()
+        self._override_client = (
+            _build_client(api_key, max_connections=settings.llm_max_concurrency)
+            if api_key
+            else None
+        )
+        self._override_detached_client = (
+            _build_client(api_key, max_connections=settings.jev_shadow_max_inflight)
+            if api_key
+            else None
+        )
         # Explicit seed and thinking_level kwargs override settings.
         # Unset kwargs use process defaults.
         self._seed = seed if seed is not None else config.settings().llm_seed
@@ -612,9 +647,9 @@ class LLM:
         return {"model": self._model, "seed": self._seed, "thinking_level": self._thinking_level}
 
     def _client(self) -> genai.Client:
-        if self._override_client is not None:
-            return self._override_client
-        return _get_client()
+        if self._detached:
+            return self._override_detached_client or _get_detached_client()
+        return self._override_client or _get_client()
 
     def _resolve_config(self, *, system: str, schema: type[BaseModel]) -> GenerateContentConfig:
         """Build the config shared by live calls and the memo key."""

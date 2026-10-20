@@ -24,6 +24,7 @@ from search.engine.binders.jev_assemble import (
 from search.engine.binders.jev_menu import jev_menu
 from search.engine.binders.jev_request import bind_request, quantity_request
 from search.engine.frame import Frame, FrameNormalisation, Stated, StatedBy, door_frame
+from search.engine.qualifier_match import QualifierMatch, QualifierTie
 from search.engine.region.phase_rank_bind import _HousePolicyStep
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.models import Axis, GraphRef
@@ -77,6 +78,7 @@ def _request(
     shapes: Sequence[ShapeDraft],
     *,
     dropped: tuple[str, ...] = (),
+    ties: Sequence[tuple[QualifierTie, ...]] = (),
     apply_policies: ApplyPolicies | None = None,
 ) -> BindRequest:
     frame = _frame()
@@ -86,6 +88,7 @@ def _request(
     return BindRequest(
         variable="aid",
         shapes=list(shapes),
+        admitted_ties=ties,
         dropped_qualifier_phrases=dropped,
         frame=frame,
         query_text="aid",
@@ -334,6 +337,57 @@ def test_a_one_member_slot_binds_its_member(named: float, evidence: str):
         ["CRSPurposeCode111"],
         evidence,
     )
+
+
+@pytest.mark.parametrize(
+    ("chosen", "bound"),
+    [
+        ("CRSPurposeCode510", "how:crsPurpose"),
+        ("CRSCooperationModalityA", "how:crsCooperationModality"),
+    ],
+)
+def test_a_tie_binds_the_chosen_row_on_its_own_slot(chosen: str, bound: str):
+    """ "budget support" ties a cooperation modality with a CRS purpose, and the row Jev
+    chooses binds on its own code system's slot whichever row the tie lists first."""
+    index = get_index()
+    rows = tuple(
+        QualifierMatch(
+            code_system=row.code_system,
+            code_dcid=row.dcid,
+            label=row.label,
+            source="label",
+            matched_text="budget support",
+        )
+        for row in (
+            index.code_by_dcid("CRSCooperationModalityA"),
+            index.code_by_dcid("CRSPurposeCode510"),
+        )
+        if row is not None
+    )
+    shape = _shape(
+        0,
+        slots=[
+            (
+                "how",
+                "crsCooperationModality",
+                ["CRSCooperationModalityA", "CRSCooperationModalityB"],
+            ),
+            ("how", "crsPurpose", ["CRSPurposeCode510", "CRSPurposeCode111"]),
+        ],
+    )
+    other = next(r.code_dcid for r in rows if r.code_dcid != chosen)
+    answers = _answers({"m|0": 0.9}, elect={0: 1.0}, choices={"tie|0|0": {chosen: 0.8, other: 0.2}})
+
+    output, _conf = _assemble(
+        _request([shape], ties=[(QualifierTie(matched_text="budget support", rows=rows),)]),
+        answers,
+    )
+
+    assert len(rows) == 2
+    assert {f"{b.axis}:{b.property_dcid}": (b.kind, b.value_dcids) for b in output.bindings} == {
+        "how:crsCooperationModality": ("unbound", []),
+        "how:crsPurpose": ("unbound", []),
+    } | {bound: ("value", [chosen])}
 
 
 def test_a_source_slot_is_unbound_and_asked_about():

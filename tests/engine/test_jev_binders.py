@@ -12,7 +12,7 @@ import string
 
 import pytest
 
-from search.engine import config
+from search.engine import config, core
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.binders import (
     BindRequest,
@@ -49,7 +49,12 @@ from search.engine.quantity_read import (
     QuantityOutput,
     build_quantity_prompt,
 )
-from search.models import GraphRef
+from search.models import (
+    DatasetResubmitInput,
+    GraphRef,
+    RawTextInput,
+    ResubmitPlaceholderEntry,
+)
 from tests.engine._binders import FakeAsk, FixedBinder, keep_the_pick
 from tests.engine._jev_golden import golden_paths, load_item
 
@@ -182,6 +187,30 @@ def test_the_jev_setting_alone_routes_every_query_to_jev(monkeypatch):
 
     assert routed == {FallbackBinder}
     assert type(configured_binder(None)) is FallbackBinder
+
+
+def _routed_input(door: str, n: int) -> RawTextInput | DatasetResubmitInput:
+    """A request the models accept holding a lone surrogate: a raw query, or the code a
+    resubmitted placeholder restates (a parsed request's text fields refuse one)."""
+    if door == "raw":
+        return RawTextInput(query=f"aid to Kenya {n}\ud800")
+    entry = ResubmitPlaceholderEntry(
+        variable_text=f"aid to Kenya {n}", status="unsupported", code="code\ud800"
+    )
+    return DatasetResubmitInput(entries=[entry])
+
+
+@pytest.mark.parametrize("door", ["raw", "resubmit"])
+def test_a_request_with_a_lone_surrogate_routes_at_a_partial_share(monkeypatch, door: str):
+    """A lone surrogate in an accepted request routes by its hash as any other text, the
+    same way on every call."""
+    _with_settings(monkeypatch, binder="jev", jev_traffic_pct=50)
+    texts = [core._routing_text(_routed_input(door, n)) for n in range(200)]
+
+    routed = [type(configured_binder(text)) for text in texts]
+
+    assert routed == [type(configured_binder(text)) for text in texts]
+    assert set(routed) == {FallbackBinder, DirectBinder}
 
 
 # -- the Jev binder ----------------------------------------------------------------------
@@ -466,6 +495,36 @@ def test_an_unsampled_call_sends_nothing_to_jev(caplog):
     (part,) = _binder_parts(caplog)
     assert "binder=shadow served_by=gemini" in part
     assert "jev_input_tokens=- " in part
+
+
+def test_a_sampled_call_over_the_in_flight_cap_goes_unshadowed(monkeypatch):
+    """With one shadow call allowed in flight, a call sampled while a held Jev shadow runs
+    sends nothing to Jev, and once that shadow ends the next sampled call is shadowed."""
+    _with_settings(monkeypatch, jev_shadow_max_inflight=1)
+
+    async def run() -> list[int]:
+        gate = asyncio.Event()
+        ask = FakeAsk(_GOLDEN.stored, gate=gate)
+        binder = ShadowBinder(
+            served=_GeminiDouble(_ELECTS_FIRST),
+            shadow=JevBinder(ask=ask),
+            sample=1.0,
+            draw=_draws(0.0, 0.5, 0.0, 0.5, 0.0, 0.5),
+        )
+        asked = []
+        for _ in range(2):
+            await binder.bind(_golden_request(_CountingStep()), llm=None)
+            await asyncio.sleep(0)
+            asked.append(len(ask.requests))
+        gate.set()
+        for _ in range(5):
+            await asyncio.sleep(0)
+        await binder.bind(_golden_request(_CountingStep()), llm=None)
+        await asyncio.sleep(0)
+        asked.append(len(ask.requests))
+        return asked
+
+    assert asyncio.run(run()) == [1, 1, 2]
 
 
 def test_a_failed_shadow_call_leaves_the_answer_as_gemini_gives_it(caplog):

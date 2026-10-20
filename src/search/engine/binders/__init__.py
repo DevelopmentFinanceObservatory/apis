@@ -49,13 +49,15 @@ def routes_to_jev(query: str | None, percent: int) -> bool:
     request's query, or a parsed or resubmitted request's canonical input), falls in the
     `percent` share of queries Jev serves: the bucket a hash of its normalised form
     (`extraction_store.normalise_query`) falls in, of 100, is below `percent`, so a
-    repeated query always takes the same binder. A request with no query text goes to Jev
-    only when every query does."""
+    repeated query always takes the same binder. The hash reads the text's UTF-8 bytes with
+    lone surrogates passed through (``surrogatepass``), so every string a request model
+    accepts routes, and a string without one hashes as plain UTF-8. A request with no query
+    text goes to Jev only when every query does."""
     if percent >= 100:
         return True
     if query is None or percent <= 0:
         return False
-    digest = hashlib.sha256(normalise_query(query).encode("utf-8")).digest()
+    digest = hashlib.sha256(normalise_query(query).encode("utf-8", "surrogatepass")).digest()
     return int.from_bytes(digest[:8], "big") % 100 < percent
 
 

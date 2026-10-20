@@ -24,7 +24,7 @@ from search.engine.bind import (
     bind_universal,
     rank_elected,
 )
-from search.engine.binders import BindRequest, BindResult, GeminiBinder
+from search.engine.binders import BindRequest, BindResult, GeminiBinder, JevBinder
 from search.engine.binders.base import PolicyContractError
 from search.engine.binders.gemini import (
     RATED_POOL_FRACTION,
@@ -45,6 +45,7 @@ from search.engine.region.phase_rank_bind import _elected_index, _HousePolicySte
 from search.engine.region.state import ResolveState
 from search.engine.role_text import DoorRole
 from search.engine.shape import Pool, ShapeDraft, SlotKeyDraft
+from tests.engine._binders import FakeAsk
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._quantity import NO_QUANTITY
 from tests.engine.test_bind import _EDUCATION_AMOUNT, _EDUCATION_LEAVES
@@ -854,3 +855,73 @@ def test_a_nomination_stands_only_when_rated_near_the_best(
 
     assert result.output.chosen_shape_index == 0
     assert result.output.also_plausible == nominated
+
+
+_SECTOR_SLOT = SlotKeyDraft(axis="how", property_dcid="crsPurpose", label="sector")
+_NETTING = SlotKeyDraft(axis="how", property_dcid="nettingBasis", label="netting basis")
+_EVERY_SECTOR = _shape(
+    "every_sector",
+    _SECTOR_SLOT,
+    taxonomy={"how:crsPurpose": ["CRSPurposeCode111", "CRSPurposeCode112"]},
+)
+# A rival offering Gross, which `net_vs_gross` elects, on one sector of the two.
+_ONE_SECTOR_GROSS = _shape(
+    "one_sector_gross",
+    _SECTOR_SLOT,
+    _NETTING,
+    taxonomy={"how:crsPurpose": ["CRSPurposeCode111"], "how:nettingBasis": ["Gross", "Net"]},
+)
+
+
+def _bind_every_sector(binder: str, *, every: bool) -> BindResult:
+    """`binder`'s answer electing `_EVERY_SECTOR` over `_ONE_SECTOR_GROSS` for "aid across
+    all sectors" (`every`) or plain "aid", through the engine's house-policy step."""
+    shapes = [_EVERY_SECTOR, _ONE_SECTOR_GROSS]
+    step = _HousePolicyStep(
+        shapes=shapes,
+        frame=_NO_PLACE,
+        admitted_qualifiers=[(), ()],
+        availability=[],
+        code_index=get_index(),
+    )
+    request = BindRequest(
+        variable="aid",
+        shapes=shapes,
+        admitted_qualifiers=[(), ()],
+        dropped_qualifier_phrases=("across all sectors",) if every else (),
+        frame=_NO_PLACE,
+        query_text=None,
+        apply_policies=step,
+    )
+    if binder == "gemini":
+        sectors = SlotBindingDraft(
+            axis="how",
+            property_dcid="crsPurpose",
+            kind="unbound",
+            evidence="requested_all" if every else "mentioned",
+            requested_all_phrase="across all sectors" if every else None,
+        )
+        reply = _reply(0, sectors, rated=(0, 1))
+        result, _usage = asyncio.run(GeminiBinder().bind(request, llm=_StubLLM(reply)))
+    else:
+        stored = {
+            "m|0": {"type": "noul", "noul": 0.9},
+            "m|1": {"type": "noul", "noul": 0.9},
+            "elect": {"type": "choice", "probabilities": {"Shape 0": 0.6, "Shape 1": 0.4}},
+            "all|how:crsPurpose|0": {"type": "noul", "noul": 0.9},
+        }
+        result, _usage = asyncio.run(JevBinder(ask=FakeAsk(stored)).bind(request, llm=None))
+    assert step.calls == 1
+    return result
+
+
+@pytest.mark.parametrize("binder", ["gemini", "jev"])
+@pytest.mark.parametrize(("every", "elected"), [(True, 0), (False, 1)])
+def test_a_slot_asked_for_in_full_keeps_every_value_through_the_policies(
+    binder: str, every: bool, elected: int
+):
+    """`net_vs_gross` moves plain "aid" to the rival offering Gross, and "across all
+    sectors" keeps the shape holding both sectors, since the rival holds one."""
+    result = _bind_every_sector(binder, every=every)
+
+    assert result.output.chosen_shape_index == elected

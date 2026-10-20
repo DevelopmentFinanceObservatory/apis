@@ -27,7 +27,11 @@ from search.engine.bind import (
     stated_reading,
 )
 from search.engine.binders.base import BindResult
-from search.engine.binders.gemini import holds_drafted_values, mentioned_drafts
+from search.engine.binders.gemini import (
+    holds_drafted_values,
+    holds_requested_slots,
+    mentioned_drafts,
+)
 from search.engine.binders.house_policy import PolicyChoice, PolicyPool
 from search.engine.binders.jev_menu import (
     AXIS_FIELDS,
@@ -360,27 +364,32 @@ def _elect(
 def _holds(
     menu: JevMenu, answers: JevAnswers, pick: int, pool: Sequence[int], t: Thresholds
 ) -> dict[int, bool]:
-    """Whether each `pool` shape holds the constraints Jev recognised on `pick`: the value
-    and set drafts the phrase names (`gemini.mentioned_drafts`) that `pick`'s slots bind at
-    the thresholds (`_bind_slot`).
+    """Whether each `pool` shape holds the constraints Jev recognised on `pick`, as
+    `pick`'s slots bind them at the thresholds (`_bind_slot`): the value and set drafts the
+    phrase names (`gemini.mentioned_drafts`), and the slots it asks for in full.
 
-    A shape holds them when it holds each value on its own slot as `pick` does
+    A shape holds the named values when it holds each on its own slot as `pick` does
     (`gemini.holds_drafted_values`), or when Jev recognises a value on a slot of that shape
     that `pick` lacks: one dataset's taxonomy then states the constraint another's states
     on `pick`, as DAC2a's type of finance states the CRS's loans. The second test does not
     pair constraints one to one, so a shape stating one of `pick`'s several constraints in
-    its own taxonomy holds them all."""
+    its own taxonomy holds them all. A slot asked for in full it holds as the Gemini binder
+    reads one (`gemini.holds_requested_slots`), so "across all sectors" keeps every
+    sector."""
     shapes = menu.request.shapes
 
-    def recognised(s: int) -> list[SlotBindingDraft]:
-        drafts = [_bind_slot(menu, answers, s, prop, Confidence(), t) for prop in menu.listed[s]]
-        return mentioned_drafts(drafts)
+    def drafts(s: int) -> list[SlotBindingDraft]:
+        return [_bind_slot(menu, answers, s, prop, Confidence(), t) for prop in menu.listed[s]]
 
-    on_pick = recognised(pick)
+    on_pick = drafts(pick)
+    named = mentioned_drafts(on_pick)
     pick_slots = {slot.property_dcid for slot in shapes[pick].slot_keys}
     return {
-        k: holds_drafted_values(shapes[pick], shapes[k], on_pick)
-        or any(d.property_dcid not in pick_slots for d in recognised(k))
+        k: (
+            holds_drafted_values(shapes[pick], shapes[k], named)
+            or any(d.property_dcid not in pick_slots for d in mentioned_drafts(drafts(k)))
+        )
+        and holds_requested_slots(shapes[pick], shapes[k], on_pick)
         for k in pool
     }
 
@@ -513,9 +522,13 @@ def _bind_slot(
     }
     # Fixed values bind as given, and a tie group binds the option Jev chose.
     fixed = [m.code_dcid for m in qmenu.fixed if m.code_system == property_dcid]
+    # A tie can span code systems ("budget support" is a cooperation modality and a CRS
+    # purpose), so the chosen row's own system names the slot it binds.
     for g, rows in enumerate(qmenu.groups):
         qid = f"tie|{s}|{g}"
-        if rows[0].code_system == property_dcid and (choice := answers.choice(qid)):
+        if (choice := answers.choice(qid)) and any(
+            r.code_dcid == choice and r.code_system == property_dcid for r in rows
+        ):
             fixed.append(choice)
             conf.slots[pid] = float(answers.choices[qid][choice])
     forced = list(dict.fromkeys(fixed))
