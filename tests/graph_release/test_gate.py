@@ -1089,33 +1089,39 @@ def test_blind_spots_outside_the_release_families_are_reported_and_pass(parts):
     }
 
 
-def test_an_unobserved_variable_in_a_release_family_fails_the_gate(parts):
+@pytest.mark.parametrize("blind_spot", ["unobserved", "unread"])
+def test_a_blind_spot_in_a_release_family_fails_the_gate(parts, blind_spot):
     origin = _origin(parts)
     graph = _ReverseReads(parts.edges)
-    broken = _copy_of(parts, min(origin.arcs), as_variable="Unobserved_Copy")
-
-    result = check_blind_spots(origin, parts=broken, graph=graph)
-
-    assert _codes(result) == ["release_family_blind_spot"]
-    assert result.findings[0].examples == ("Unobserved_Copy",)
-    assert result.notices == ()
-
-
-@pytest.mark.parametrize("shared", ["variable", "unread"])
-def test_a_variable_sharing_a_release_five_tuple_is_a_notice_and_passes(parts, shared):
-    origin = _origin(parts)
-    graph = _ReverseReads(parts.edges)
-    if shared == "variable":
-        graph = _ReverseReads(parts.edges, extra={"Base_Copy": graph.arcs[min(origin.arcs)]})
+    if blind_spot == "unobserved":
+        parts = _copy_of(parts, min(origin.arcs), as_variable="Unobserved_Copy")
     else:
         graph.truncated = True
 
     result = check_blind_spots(origin, parts=parts, graph=graph)
 
-    assert result.passed, result.summary()
-    assert _codes(result.notices) == ["shared_release_five_tuple"]
+    assert _codes(result) == ["release_family_blind_spot"]
+    assert result.notices == ()
     report = result.reports["blind_spots"]
-    assert (report["shared"], report["unread"]) == {"variable": (1, 0), "unread": (0, 6)}[shared]
+    assert (report["unobserved"]["in_release_families"], report["unread"]) == {
+        "unobserved": (1, 0),
+        "unread": (0, 6),
+    }[blind_spot]
+    if blind_spot == "unobserved":
+        assert result.findings[0].examples == ("Unobserved_Copy",)
+
+
+def test_a_mixer_variable_sharing_a_release_five_tuple_is_reported_and_passes(parts):
+    origin = _origin(parts)
+    arcs = _ReverseReads(parts.edges).arcs[min(origin.arcs)]
+    graph = _ReverseReads(parts.edges, extra={"Base_Copy": arcs})
+
+    result = check_blind_spots(origin, parts=parts, graph=graph)
+
+    assert result.passed, result.summary()
+    assert _codes(result.notices) == ["release_family_shared_with_base"]
+    assert result.notices[0].examples == ("Base_Copy",)
+    assert result.reports["blind_spots"]["shared"] == 1
 
 
 def test_a_blind_spot_read_error_is_unavailable(parts):

@@ -116,7 +116,7 @@ class GateCode(StrEnum):
     CODE_INDEX_UNLOADABLE = "code_index_unloadable"
     ORIGIN_VIEW_REFUSED = "origin_view_refused"
     RELEASE_FAMILY_BLIND_SPOT = "release_family_blind_spot"
-    SHARED_RELEASE_FIVE_TUPLE = "shared_release_five_tuple"
+    RELEASE_FAMILY_SHARED_WITH_BASE = "release_family_shared_with_base"
     RELEASE_OVER_SIZE_CEILING = "release_over_size_ceiling"
 
 
@@ -666,11 +666,11 @@ def check_blind_spots(
     A StatisticalVariable the release's edges declare with no observation in its series
     (`unobserved_variables`) whose five-tuple is such a one is a `release_family_blind_spot`
     finding: the catalogue leaves it out as the release does, so serving walks the release and
-    misses it.
+    misses it. So is a reverse read that stops at `DEFAULT_SUBJECT_CEILING`, since the gate
+    then cannot see the whole family.
 
     A variable the mixer's reverse read finds for such a five-tuple that is no DFO variable of
-    the release (`unlisted_candidates`) is a `shared_release_five_tuple` notice, and so is a
-    reverse read that stops at `DEFAULT_SUBJECT_CEILING`, leaving subjects unread. Serving
+    the release (`unlisted_candidates`) is a `release_family_shared_with_base` notice. Serving
     walks the graph for a family the catalogue it binds lists such a variable in, which is
     correct, and the gate does not read that catalogue. Only a variable the catalogue misses
     too is a blind spot.
@@ -699,23 +699,23 @@ def check_blind_spots(
         if truncated
     ]
     findings: tuple[GateFinding, ...] = ()
-    if inside:
+    if inside or unread:
         findings = (
             GateFinding(
                 GateCode.RELEASE_FAMILY_BLIND_SPOT,
-                f"{len(inside)} StatisticalVariable(s) without observations in a release family",
-                tuple(inside[:_EXAMPLES]),
+                f"{len(inside)} StatisticalVariable(s) without observations in a release "
+                f"family, and {len(unread)} release five-tuple(s) whose reverse read stops at "
+                f"{DEFAULT_SUBJECT_CEILING}",
+                tuple([*inside, *unread][:_EXAMPLES]),
             ),
         )
     notices: tuple[GateFinding, ...] = ()
-    if shared or unread:
+    if shared:
         notices = (
             GateFinding(
-                GateCode.SHARED_RELEASE_FIVE_TUPLE,
-                f"{len(shared)} variable(s) outside the release share a release five-tuple, and "
-                f"{len(unread)} release five-tuple(s) have a reverse read that stops at "
-                f"{DEFAULT_SUBJECT_CEILING}",
-                tuple([*shared, *unread][:_EXAMPLES]),
+                GateCode.RELEASE_FAMILY_SHARED_WITH_BASE,
+                f"{len(shared)} variable(s) outside the release share a release five-tuple",
+                tuple(shared[:_EXAMPLES]),
             ),
         )
     return GateResult(

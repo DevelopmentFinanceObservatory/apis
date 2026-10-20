@@ -709,7 +709,7 @@ def test_a_variable_sharing_a_release_five_tuple_publishes_with_a_notice(builder
 
     assert _outcome(events) == "published"
     (published,) = _named(events, "graph_release_published")
-    assert [n["code"] for n in published["notices"]] == ["shared_release_five_tuple"]
+    assert [n["code"] for n in published["notices"]] == ["release_family_shared_with_base"]
     assert published["notices"][0]["examples"] == ["Base_Copy"]
     assert published["blind_spots"]["shared"] == 1
 

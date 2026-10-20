@@ -827,7 +827,7 @@ def _publish(
     gate: GateResult,
 ) -> _Exit:
     """Publishes `manifest`. The published event carries `gate`'s notices and its
-    `blind_spots` report, whose `shared` and `unread` counts the notices alert on."""
+    `blind_spots` report, whose `shared` count the notices alert on."""
     built = {"inputs": inputs.to_json(), "release_id": manifest.release_id}
     if pointer is not None and manifest.release_id == pointer.release_id:
         with _needs(Dependency.BUCKET, *_BUCKET_ERRORS):
