@@ -34,9 +34,9 @@ def fake_deps(**overrides: object) -> Deps:
     """A `Deps` of offline doubles. The head store, the operation store and the other writers
     are the null implementations, the version writer and snapshot reader follow
     `offline_version_pair`, the task client is a `FakeTaskClient`, and every other client or
-    store is `Unwired` unless `overrides` names it. A `code_index` override serves every read, and without
-    one each read takes `get_index()`. No breadth reader is bound, `now` defaults to `utc_now`,
-    and the executors and semaphore follow `settings`."""
+    store is `Unwired` unless `overrides` names it. A `code_index` override serves every read,
+    and without one each read takes `get_index()`. No breadth reader is bound, `now` defaults to
+    `utc_now`, and the executors and semaphore follow `settings`."""
     settings = overrides.pop("settings", None) or DatasetsBuildSettings.from_env()
     assert isinstance(settings, DatasetsBuildSettings)
     read_executor, work_executor = build_executors(settings)

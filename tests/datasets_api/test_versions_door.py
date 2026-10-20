@@ -188,7 +188,7 @@ def test_versions_list_is_newest_first_with_each_version_s_rendering_for_any_cal
         renderings=({**_PLAIN_RENDERING, "groupby": {"by": ["donor"], "op": "sum"}},),
     )
 
-    # No principal header: the route is open.
+    # The request sends no principal header, since the route is open.
     response = rig.client().get(_VERSIONS_PATH)
 
     assert response.status_code == 200, response.text

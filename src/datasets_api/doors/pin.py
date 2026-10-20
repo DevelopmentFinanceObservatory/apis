@@ -38,8 +38,8 @@ files from its base version's frame, so its pin also retains that frame, with th
 the base version, and the derived version stays fetchable in every format and reports
 `retention.pinned`. A version whose frame's bytes are gone, or that links no frame, pins the
 named artifact alone. A frame copy skips the budget check. It holds a `pin` reference, so it counts
-toward later calls: a pin of a derived version can add three pinned copies to the count, the named
-artifact, the version's own frame and its base frame, while only the first waits on the budget.
+toward later calls. A pin of a derived version can add three pinned copies to the count (the named
+artifact, the version's own frame and its base frame), and only the first waits on the budget.
 
 A daily budget bounds the pinned copies this door creates. Before a copy, the
 door counts pinned-tier locations stored in the trailing 24 hours whose digest
@@ -165,7 +165,7 @@ def pin_artifact(
     pinned copy skips the budget.
 
     The refusals concern the named artifact alone. The stored frames are retained after the named
-    artifact's reference is recorded: each is the one the version's retention reads at the call's
+    artifact's reference is recorded. Each is the one the version's retention reads at the call's
     read time (`retention.retained_frame_location`), servable or aged. A frame that is missing,
     or whose bytes are gone, leaves the response unchanged, and a frame whose bytes are gone logs
     a warning. The transactional revocation

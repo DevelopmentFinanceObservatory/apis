@@ -170,8 +170,8 @@ class StoreBackedSnapshotReader(FakeSnapshotReader):
 
 @dataclass
 class RecordingVersionWriter:
-    """`inner`, whose writes this writer also records into `reader`: the writer `make_app` and
-    `fake_deps` wire beside a fake reader.
+    """`inner`, whose writes this writer also records into `reader`. `make_app` and `fake_deps`
+    wire it beside a fake reader.
 
     Every call answers as `inner` does, the null writer by default, so the serve path runs as
     under it. `reader` gains each written version, keeping one it already holds, and a working

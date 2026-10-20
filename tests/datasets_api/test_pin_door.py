@@ -515,7 +515,7 @@ def test_a_pin_retains_an_aged_frame_while_its_bytes_survive(
 
 
 def test_a_pin_whose_named_bytes_are_gone_refuses_artifact_expired():
-    """The working copy aged out after the location was read; the copy finds no object."""
+    """The working copy aged out after the location was read, so the copy finds no object."""
     store = FakeArtifactStore()
     parquet = _parquet_location(store)
     del store._objects[(parquet.artifact_digest, Tier.working.value)]

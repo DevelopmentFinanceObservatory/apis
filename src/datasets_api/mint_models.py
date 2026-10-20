@@ -182,18 +182,18 @@ class Scope(BaseModel):
     # accepts them. Identity-core `entities` allows only dcid arrays, so containment bindings fail.
     model_config = ConfigDict(extra="forbid")
     window: WindowScope | None = Field(
-        default=None, description="the years to serve; replaces the spec's window whole"
+        default=None, description="the years to serve. Replaces the spec's window whole"
     )
     entities: dict[str, list[str]] | None = Field(
         default=None,
         description=(
-            "role name to dcids. Replaces the spec's whole entity binding: a role this map "
+            "role name to dcids. Replaces the spec's whole entity binding. A role this map "
             "omits is unbound, so a client narrowing one role repeats the spec's other roles, "
             "and {} unbinds every bound role. An open role the map binds is no longer open"
         ),
     )
     facets: dict[str, FacetBinding] | None = Field(
-        default=None, description="axis to binding; replaces the spec's whole facet binding"
+        default=None, description="axis to binding. Replaces the spec's whole facet binding"
     )
 
     @model_validator(mode="after")

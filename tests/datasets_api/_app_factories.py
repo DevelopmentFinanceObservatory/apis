@@ -72,7 +72,7 @@ def make_app(
     lifespan builds no live client and opens no pool.
 
     The head store, the operation store and other omitted writers are the null implementations,
-    and the version writer and snapshot reader follow `offline_version_pair`: an omitted reader
+    and the version writer and snapshot reader follow `offline_version_pair`. An omitted reader
     reads nothing until a write, and an omitted writer records what it writes into a fake
     reader. `task_client` defaults to `FakeTaskClient`.
     `recipe_store` and `version_lister` default to `offline_recipe_stores()`. A recipe test

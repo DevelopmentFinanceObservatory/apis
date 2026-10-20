@@ -56,7 +56,8 @@ def _frame(*, digest: str, tier: str = "working", stored_at: datetime = _NOW):
 
 
 def _held_wire(stored_at: datetime) -> dict:
-    """`_held` as the wire writes the instant (`Z` for UTC)."""
+    """The `retention` of a working frame stored at `stored_at`, with the instant as the wire
+    writes it (`Z` for UTC)."""
     held = stored_at + WORKING_TIER_RETENTION
     return {"pinned": False, "held_until": held.isoformat().replace("+00:00", "Z")}
 
@@ -165,7 +166,7 @@ def test_the_mint_definition_and_snapshot_doors_report_the_frame_retention_and_s
     version_store,
 ):
     """The mint rebuilds, the first GET hits the head, and a GET for another rendering rebuilds
-    on the work executor; each reports the canonical frame's 30 days, as does the snapshot.
+    on the work executor. Each reports the canonical frame's 30 days, as does the snapshot.
     The stored body and the version document carry no retention."""
     artifact_store = _InventoryRecordingArtifactStore(
         inventory=LiveArtifactInventory(store=version_store)
@@ -298,7 +299,7 @@ def _pin(store, reader, writer, digest: str, *, daily_max: int = 500) -> datetim
     "base_stored_at",
     [
         pytest.param(_NOW, id="servable-base-frame"),
-        # Day 31: a click renewed the parquet file alone, and the base frame aged.
+        # On day 31 a click had renewed the parquet file alone, and the base frame aged.
         pytest.param(_LONG_AGO, id="aged-base-frame-whose-bytes-survive"),
     ],
 )
@@ -325,7 +326,7 @@ def test_pinning_a_derived_version_promotes_its_base_frame_and_reports_it_pinned
 
 
 def test_a_pin_whose_base_frame_bytes_are_gone_pins_the_named_file_alone():
-    """The aged base frame's bytes are gone, so nothing is left to pin: the named parquet still
+    """The aged base frame's bytes are gone, so nothing is left to pin. The named parquet still
     pins and the version keeps the base frame's past `held_until`."""
     store, reader, base_frame, parquet = _derived_world(base_stored_at=_LONG_AGO)
     del store._objects[(base_frame.artifact_digest, Tier.working.value)]

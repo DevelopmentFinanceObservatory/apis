@@ -115,7 +115,7 @@ class SlotOption(StrictModel):
 
     @model_serializer(mode="wrap")
     def _serialize(self, handler: SerializerFunctionWrapHandler, info: SerializationInfo):
-        # Unannotated on purpose: pydantic publishes a wrap serializer's return annotation as
+        # Unannotated on purpose. Pydantic publishes a wrap serializer's return annotation as
         # the model's serialization schema, and `dict[str, Any]` reads as an open object.
         # coverage=null carries two different meanings depending on surface, and a
         # bare field value can't distinguish them -- so the serialisation context

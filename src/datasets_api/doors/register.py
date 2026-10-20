@@ -10,8 +10,8 @@ schema versions.
 Callers reach the API through the website's proxy, which answers `429` once an
 IP passes its allowance, 120 calls a minute on `/api/*` by default, counted in a
 fixed window that every proxy instance shares in Postgres. A call whose count
-fails goes through. The proxy passes `Authorization` upstream unread. The deployment platform limits
-request-body size.
+fails goes through. The proxy passes `Authorization` upstream unread. The deployment platform
+limits request-body size.
 """
 
 from __future__ import annotations

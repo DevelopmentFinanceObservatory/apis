@@ -22,7 +22,7 @@ page of that walk. A cursor is bound to the path id, and one that does not decod
 for another id refuses `request_invalid` at `/cursor`. `complete` is true on the page that
 reaches the end of the list, and `next_cursor` is null there.
 
-Reads run on the surface's read executor; a full executor refuses retryable
+Reads run on the surface's read executor, and a full executor refuses retryable
 `service_unavailable` (503). The door mounts before the snapshot door, whose
 `GET /api/datasets/{id}/{content_version}` would otherwise read `versions` as a content
 version (`datasets_api.app`).
@@ -102,7 +102,7 @@ class DatasetVersion(BaseModel):
     base_content_version: str | None = Field(
         description=(
             "the raw version a derived version (a full groupby collapse, a party-totals cut, "
-            "or both) was rendered from; null on every other version"
+            "or both) was rendered from. Null on every other version"
         )
     )
     rendering: Literal["plain", "groupby", "without_party_totals", "not_recorded"] = Field(
@@ -116,7 +116,7 @@ class DatasetVersion(BaseModel):
     )
     groupby: GroupbyOptions | None = Field(
         description=(
-            "the groupby a collapse was summed by, as its file's rendering records it; null "
+            "the groupby a collapse was summed by, as its file's rendering records it. Null "
             "unless `rendering` is groupby"
         )
     )
@@ -124,7 +124,7 @@ class DatasetVersion(BaseModel):
         default=False,
         description=(
             "true when the derived version's frame leaves out the group totals of its open "
-            "party roles, as its file's rendering records it; absent when false"
+            "party roles, as its file's rendering records it. Absent when false"
         ),
     )
 
@@ -251,7 +251,7 @@ def build_versions_door(*, deps: DepsCell) -> DoorContribution:
         id: str,
         limit: Annotated[
             int,
-            # Declared for the OpenAPI document only: `read_versions_page` enforces the range,
+            # Declared for the OpenAPI document only. `read_versions_page` enforces the range,
             # so an out-of-range value keeps its `request_invalid` refusal and `/limit` pointer.
             Query(json_schema_extra={"minimum": 1, "maximum": VERSIONS_PAGE_MAX}),
         ] = VERSIONS_PAGE_DEFAULT,

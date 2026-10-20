@@ -1,4 +1,4 @@
-"""The retention a Manifest reports: how long its version can still be fetched.
+"""The retention a Manifest reports, which is how long its version can still be fetched.
 
 Every file of a version renders from one stored frame: its own, or, for a derived version
 (`StoredVersion.base_content_version` set: a groupby collapse or a party-totals cut), its base
@@ -8,12 +8,12 @@ promotes. A pinned frame has no expiry. A working frame is guaranteed until
 copy and stores nothing, so `stored_at` stays. A download of the frame itself after that point,
 while its bytes survive, renews it (`doors.files.renew_and_resolve`) and restarts the clock.
 Past that point the frame also renews when a render from it re-uploads its bytes
-(`doors.files.render_version_from_frame`): the file selector rendering a file the version holds
-no surviving copy of, or a link click whose own file's bytes are gone. When the frame's bytes
-are gone too, both refuse `artifact_expired`. A definition GET over an aged frame and a mint build
-from upstream instead, and a build of unchanged data uploads the frame again, restarting its
-clock. The snapshot and observations routes refuse `artifact_expired` once no listed file of
-the version is in retention, whatever the frame's bytes.
+(`doors.files.render_version_from_frame`). That happens when the file selector renders a file the
+version holds no surviving copy of, and when a link click finds its own file's bytes gone. When
+the frame's bytes are gone too, both refuse `artifact_expired`. A definition GET or a mint over
+an aged frame builds the data from upstream, and a build of unchanged data uploads the frame
+again, which restarts its clock. The snapshot and observations routes refuse `artifact_expired`
+once no listed file of the version is in retention, whatever the frame's bytes.
 
 A version that links no frame renders nothing, so it reports over its own listed data artifacts
 instead: pinned when one is pinned, else the latest of their 30-day guarantees.
@@ -69,9 +69,9 @@ def _retention_of(locations: Sequence[StoredArtifactLocation]) -> RetentionModel
 def retained_frame_location(
     locations: Sequence[StoredArtifactLocation], *, now: datetime
 ) -> StoredArtifactLocation | None:
-    """The frame among a version's `locations` whose retention the version reports: its servable
-    frame (`render.servable_frame_location`), so a pinned copy wins, else its stored frame over
-    aged locations (`render.stored_frame_location`), the one a renewal would renew."""
+    """The frame among a version's `locations` whose retention the version reports. That is its
+    servable frame (`render.servable_frame_location`), so a pinned copy wins, else its stored
+    frame over aged locations (`render.stored_frame_location`), the one a renewal would renew."""
     return servable_frame_location(locations, now=now) or stored_frame_location(locations)
 
 

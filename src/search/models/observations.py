@@ -31,7 +31,7 @@ class ObservationPoint(StrictModel):
 
     @model_serializer(mode="wrap")
     def _serialize(self, handler: SerializerFunctionWrapHandler):
-        # Unannotated on purpose: pydantic publishes a wrap serializer's return annotation as
+        # Unannotated on purpose. Pydantic publishes a wrap serializer's return annotation as
         # the model's serialization schema, and `dict[str, Any]` reads as an open object.
         # Null marks a reported observation point without a measurement. Both serializers
         # use exclude_none, so restore it to preserve series length and gaps.

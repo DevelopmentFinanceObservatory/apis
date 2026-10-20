@@ -3,9 +3,9 @@
 The surface combines health, list, fetch, and resource doors. Its lifespan binds one shared
 skills index and per-door response caches in a fresh `SkillsDeps` for each entry. Door
 classifiers run in registration order, and the platform envelope renders RFC 9457 problem
-responses. Callers reach the API through the website's proxy, which answers `429` once an IP passes its
-allowance, 120 calls a minute on `/api/*` by default, counted in a fixed window that every proxy
-instance shares in Postgres. A call whose count fails goes through. The proxy passes
+responses. Callers reach the API through the website's proxy, which answers `429` once an IP
+passes its allowance, 120 calls a minute on `/api/*` by default, counted in a fixed window that
+every proxy instance shares in Postgres. A call whose count fails goes through. The proxy passes
 `Authorization` upstream unread.
 """
 

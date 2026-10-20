@@ -628,11 +628,11 @@ class LiveVersionLister:
         self, subject_ids: Sequence[str], *, after: VersionsPageKey | None, limit: int
     ) -> list[ListedVersion]:
         """The page of `subject_ids`' versions after `after`, as `VersionLister` states, read in
-        one transaction: the page's rows, then the renderings linked under its versions.
+        one transaction. It reads the page's rows, then the renderings linked under its versions.
 
         A version recorded under several of the ids lists once, at its latest `recorded_at`.
         The revocation filter reads `datasets.version_revocation` in the statement that reads
-        the rows, so a version is never listed past a revocation that statement sees."""
+        the rows, so a revocation that statement sees removes the version from the page."""
         subjects = list(dict.fromkeys(subject_ids))
         in_subjects = _placeholders(len(subjects))
         keyset = (

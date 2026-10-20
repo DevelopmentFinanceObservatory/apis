@@ -57,9 +57,9 @@ class Retention(ResponseModel):
         "stored. A download of the frame after `held_until`, while its bytes survive, renews it "
         "for 30 days. After it, a file selector or download link request "
         "that must render its file again renews the frame for 30 days if the frame's bytes "
-        "survive, else refuses `artifact_expired`; a rebuild of unchanged data through "
+        "survive, and otherwise refuses `artifact_expired`. A rebuild of unchanged data through "
         "`GET /api/datasets/{id}` or `POST /api/datasets` stores the frame again. Absent when "
-        "pinned; can be in the past",
+        "pinned. It can be in the past",
     )
 
 
@@ -303,8 +303,8 @@ class OperationEnvelope(ResponseModel):
         exclude_if=is_none,
         description=(
             "Milliseconds to wait before the next poll. Present on the 202 submit response "
-            "and on every pending or running poll; absent on a done poll. It "
-            "grows as the build runs: a quarter of the time since the operation's current "
+            "and on every pending or running poll. Absent on a done poll. It "
+            "grows as the build runs, at a quarter of the time since the operation's current "
             "submission, from 1,500 to 8,000. The `Retry-After` response header carries the "
             "same value in whole seconds, rounded up."
         ),

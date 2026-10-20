@@ -129,8 +129,8 @@ def request_identity_member_dcids(request_identity: Mapping[str, object]) -> tup
 
 
 def poll_interval_ms(operation: Operation, *, now: datetime) -> int:
-    """The milliseconds a caller waits before polling `operation` again: a quarter of the time
-    since its current submission (`submitted_at`), held between
+    """The milliseconds a caller waits before polling `operation` again. That is a quarter of the
+    time since its current submission (`submitted_at`), held between
     `OPERATION_SUBMIT_RETRY_AFTER_MS` and `OPERATION_POLL_MAX_MS`. A repeat submission that
     joins a long build gets the slow value, a resubmission that restarts a failed build starts
     at the floor, and a waiting browser backs off as the build runs. A done or failed

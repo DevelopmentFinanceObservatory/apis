@@ -119,7 +119,7 @@ class Surface:
 
     `description` is the one line the OpenAPI document gives the surface's tag. Every
     route the surface serves carries that one tag, `name` capitalised, and the operation
-    id `{name}_{handler}`, so adding a route never changes another route's id.
+    id `{name}_{handler}`, so a new route leaves every other route's id as it was.
     """
 
     name: str
