@@ -197,7 +197,7 @@ class ArtifactStore(Protocol):
     def copy(self, digest: str, *, from_tier: Tier, to_tier: Tier) -> StoredArtifact:
         """Copy to the destination bucket. An existing digest is a deduplication.
 
-        Raises `ArtifactNotFoundError` if the source location is absent or
+        Raises `ArtifactNotFoundError` if the source location or its object is absent, or
         `ArtifactWriteError` for another copy failure.
         """
         ...
@@ -675,7 +675,8 @@ class LiveArtifactStore:
             )
 
     def copy(self, digest: str, *, from_tier: Tier, to_tier: Tier) -> StoredArtifact:
-        """Copy from the recorded source location. Record the destination after success."""
+        """Copy from the recorded source location. Record the destination after success. A
+        source object the lifecycle rule deleted raises `ArtifactNotFoundError`."""
         location = self._inventory.get_location(digest, tier=from_tier)
         if location is None:
             raise ArtifactNotFoundError(digest=digest, tier=from_tier)
@@ -685,6 +686,7 @@ class LiveArtifactStore:
         dest_bucket = self._client.bucket(dest_bucket_name)
 
         deduplicated = False
+        source_missing = False
         copy_failed = False
         size_bytes: int | None = None
         try:
@@ -694,8 +696,12 @@ class LiveArtifactStore:
             size_bytes = dest_blob.size
         except PreconditionFailed:
             deduplicated = True
+        except NotFound:
+            source_missing = True
         except Exception:
             copy_failed = True
+        if source_missing:
+            raise ArtifactNotFoundError(digest=digest, tier=from_tier)
         if copy_failed:
             raise ArtifactWriteError(object_name=digest, digest=digest)
         if size_bytes is None:

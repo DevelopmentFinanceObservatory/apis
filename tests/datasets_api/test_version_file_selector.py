@@ -8,13 +8,13 @@ itself, under its own recorded minting options.
 from __future__ import annotations
 
 import threading
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 
 from artifact_store import LiveArtifactInventory, Tier
-from dataset_store.snapshot import Revocation
+from dataset_store.snapshot import LiveSnapshotReader, Revocation
 from datasets_api import deps as deps_module
 from datasets_api.admission import MaterialisePermits
 from datasets_api.config import DatasetsBuildSettings
@@ -22,6 +22,7 @@ from datasets_api.doors import files as files_module
 from datasets_api.doors.files import build_files_door
 from datasets_api.mint_models import MintOptions
 from datasets_api.render import artifact_rendering, artifact_rendering_key
+from datasets_api.retention import version_retention
 from materialise.formats import EXCEL_MAX_ROWS
 from spec_registry import IdentityQuarantined
 
@@ -237,6 +238,66 @@ def test_a_selector_render_whose_frame_bytes_are_gone_refuses_artifact_expired(v
     assert resp.status_code == 410, resp.text
     assert resp.json()["code"] == "artifact_expired"
     assert artifact_store.signings == []
+
+
+def test_a_selector_serves_an_aged_file_whose_bytes_survive_though_the_frame_bytes_are_gone(
+    version_store, monkeypatch
+):
+    """The aged CSV renews as its link would renew it, with no render."""
+    spy = _RenderSpy(monkeypatch)
+    artifact_store = _RenewingArtifactStore(inventory=LiveArtifactInventory(store=version_store))
+    client = _surface_client(version_store, artifact_store)
+    manifest, frame_digest = _mint_and_age_every_location(client, version_store)
+    [csv] = [a for a in manifest["artifacts"] if a["media_type"] == "text/csv"]
+    del artifact_store._objects[(frame_digest, Tier.working.value)]
+
+    resp = client.get(_selector(manifest, "format=csv&bundle=false"), follow_redirects=False)
+
+    assert resp.status_code == 302, resp.text
+    assert _signed_digest(resp.headers["location"]) == csv["artifact_digest"]
+    assert artifact_store.renewals == [f"{csv['artifact_digest']}#r1"]
+    assert spy.options == []
+
+
+@pytest.mark.parametrize(
+    ("download", "frame_renews"),
+    [
+        pytest.param("frame-link", True, id="the-frame-link"),
+        pytest.param("layout-frame", True, id="the-selector-with-layout-frame"),
+        pytest.param("csv-link", False, id="another-file-link"),
+    ],
+)
+def test_only_a_download_of_the_frame_moves_held_until(
+    version_store, download: str, frame_renews: bool
+):
+    """A download renews only the file it names, and the frame is itself a listed file."""
+    artifact_store = _RenewingArtifactStore(inventory=LiveArtifactInventory(store=version_store))
+    client = _surface_client(version_store, artifact_store)
+    manifest, frame_digest = _mint_and_age_every_location(client, version_store)
+    [csv] = [a for a in manifest["artifacts"] if a["media_type"] == "text/csv"]
+    spec_id, content_version = manifest["definition"]["spec_id"], manifest["content_version"]
+    reader = LiveSnapshotReader(store=version_store)
+
+    def held_until():
+        retention = version_retention(
+            reader, subject_id=spec_id, content_version=content_version, now=datetime.now(UTC)
+        )
+        return retention.held_until
+
+    before = held_until()
+    path = {
+        "frame-link": f"/api/datasets/{spec_id}/{content_version}/files/{frame_digest}",
+        "layout-frame": _selector(manifest, f"{_PARQUET}&layout=frame"),
+        "csv-link": csv["url"],
+    }[download]
+
+    resp = client.get(path, follow_redirects=False)
+
+    assert resp.status_code == 302, resp.text
+    after = held_until()
+    assert before is not None and after is not None
+    assert (after > before + timedelta(days=30)) is frame_renews
+    assert (after == before) is not frame_renews
 
 
 def test_an_xlsx_over_the_sheet_limit_refuses_excel_limit():

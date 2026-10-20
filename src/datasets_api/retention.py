@@ -2,15 +2,14 @@
 
 Every file of a version renders from one stored frame: its own, or, for a derived version
 (`StoredVersion.base_content_version` set: a groupby collapse or a party-totals cut), its base
-version's. The frame is the one `render.servable_frame_location` gives, so a pinned copy wins,
-else the aged frame a renewal would renew (`render.stored_frame_location`). A pinned frame has
-no expiry. A working frame is guaranteed until `WORKING_TIER_RETENTION` after its `stored_at`.
-A download does not move that clock: a link click whose file is still stored renews that file
-alone (`doors.files.renew_and_resolve`), and a request for a file still in retention serves it.
-Past that point the frame renews only when a render from it re-uploads its bytes
+version's. The frame is the one `retained_frame_location` gives, which the pin door also
+promotes. A pinned frame has no expiry. A working frame is guaranteed until
+`WORKING_TIER_RETENTION` after its `stored_at`. A download renews only the file it names
+(`doors.files.renew_and_resolve`), so only a download of the frame itself moves that clock.
+Past that point the frame also renews when a render from it re-uploads its bytes
 (`doors.files.render_version_from_frame`): the file selector rendering a file the version holds
-no servable copy of, or a link click whose own file's bytes are gone. When the frame's bytes are
-gone too, both refuse `artifact_expired`. A definition GET over an aged frame and a mint build
+no surviving copy of, or a link click whose own file's bytes are gone. When the frame's bytes
+are gone too, both refuse `artifact_expired`. A definition GET over an aged frame and a mint build
 from upstream instead, and a build of unchanged data uploads the frame again, restarting its
 clock. The snapshot and observations routes refuse `artifact_expired` once no listed file of
 the version is in retention, whatever the frame's bytes.
@@ -66,6 +65,15 @@ def _retention_of(locations: Sequence[StoredArtifactLocation]) -> RetentionModel
     return RetentionModel(pinned=False, held_until=stored_at + WORKING_TIER_RETENTION)
 
 
+def retained_frame_location(
+    locations: Sequence[StoredArtifactLocation], *, now: datetime
+) -> StoredArtifactLocation | None:
+    """The frame among a version's `locations` whose retention the version reports: its servable
+    frame (`render.servable_frame_location`), so a pinned copy wins, else its stored frame over
+    aged locations (`render.stored_frame_location`), the one a renewal would renew."""
+    return servable_frame_location(locations, now=now) or stored_frame_location(locations)
+
+
 def version_retention(
     reader: SnapshotReader, *, subject_id: str, content_version: str, now: datetime
 ) -> RetentionModel:
@@ -86,7 +94,7 @@ def version_retention(
         if base_content_version is None
         else reader.read_artifact_locations(subject_id, base_content_version)
     )
-    frame = servable_frame_location(locations, now=now) or stored_frame_location(locations)
+    frame = retained_frame_location(locations, now=now)
     if frame is not None:
         return _retention_of([frame])
 

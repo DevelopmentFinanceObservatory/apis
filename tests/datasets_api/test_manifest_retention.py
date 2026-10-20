@@ -246,12 +246,13 @@ def test_a_done_operation_poll_reports_retention():
 # --- Pinning a derived version ---
 
 
-def _derived_world(*, parquet_tier: Tier = Tier.working):
+def _derived_world(*, parquet_tier: Tier = Tier.working, base_stored_at: datetime = _NOW):
     """`cv2` is a derived version of `cv1`. Each links its own working canonical frame, stored
-    at different instants, and `cv2` links a parquet rendering."""
+    at different instants, the base one at `base_stored_at`, and `cv2` links a parquet
+    rendering."""
     store = FakeArtifactStore()
     base_frame = _store_and_locate(
-        store, b"PAR1-base-frame", rendering=_FRAME, media_type=_PARQUET, stored_at=_NOW
+        store, b"PAR1-base-frame", rendering=_FRAME, media_type=_PARQUET, stored_at=base_stored_at
     )
     own_frame = _store_and_locate(
         store,
@@ -293,8 +294,18 @@ def _pin(store, reader, writer, digest: str, *, daily_max: int = 500) -> datetim
     )
 
 
-def test_pinning_a_derived_version_promotes_its_base_frame_and_reports_it_pinned():
-    store, reader, base_frame, parquet = _derived_world()
+@pytest.mark.parametrize(
+    "base_stored_at",
+    [
+        pytest.param(_NOW, id="servable-base-frame"),
+        # Day 31: a click renewed the parquet file alone, and the base frame aged.
+        pytest.param(_LONG_AGO, id="aged-base-frame-whose-bytes-survive"),
+    ],
+)
+def test_pinning_a_derived_version_promotes_its_base_frame_and_reports_it_pinned(
+    base_stored_at: datetime,
+):
+    store, reader, base_frame, parquet = _derived_world(base_stored_at=base_stored_at)
     writer = FakeArtifactReferenceWriter()
     before = version_retention(reader, subject_id="spec_a", content_version="cv2", now=_NOW)
     assert before.model_dump(mode="json") == {
@@ -311,6 +322,24 @@ def test_pinning_a_derived_version_promotes_its_base_frame_and_reports_it_pinned
     assert writer.records[base_key] == _NOW
     after = version_retention(reader, subject_id="spec_a", content_version="cv2", now=_NOW)
     assert after.model_dump(mode="json", exclude_none=True) == {"pinned": True}
+
+
+def test_a_pin_whose_base_frame_bytes_are_gone_pins_the_named_file_alone():
+    """The aged base frame's bytes are gone, so nothing is left to pin: the named parquet still
+    pins and the version keeps the base frame's past `held_until`."""
+    store, reader, base_frame, parquet = _derived_world(base_stored_at=_LONG_AGO)
+    del store._objects[(base_frame.artifact_digest, Tier.working.value)]
+    writer = FakeArtifactReferenceWriter()
+
+    pinned_at = _pin(store, reader, writer, parquet.artifact_digest)
+
+    assert pinned_at == _NOW
+    assert (parquet.artifact_digest, Tier.pinned.value) in store._objects
+    assert (_PRINCIPAL, base_frame.artifact_digest, "spec_a", "cv1", PIN_REFERENCE_KIND) not in (
+        writer.records
+    )
+    after = version_retention(reader, subject_id="spec_a", content_version="cv2", now=_NOW)
+    assert after.model_dump(mode="json") == _held_wire(_LONG_AGO)
 
 
 def test_the_base_frame_copy_skips_an_exhausted_budget_and_counts_toward_later_calls():

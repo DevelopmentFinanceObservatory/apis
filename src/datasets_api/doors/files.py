@@ -39,13 +39,14 @@ version reads under the same served-id, quarantine and revocation rules as a lin
 are the requested ones laid over the version's own minting options
 (`recorded_rendering.recorded_minting`), so a derived version renders as itself, and a derived
 version whose files record none refuses `artifact_expired`. A file the version's snapshot lists
-under that rendering is signed in hand. Otherwise the version renders from its stored frame
-(`render_version_from_frame`, which a link's renewal also calls) on the work executor under a
-materialise permit and the request deadline, and the redirect names the file the render
-returned. A frame past working retention renews first, and only frame bytes that are gone
-refuse `artifact_expired`. The render's refusals answer as the definition GET's do: an `xlsx`
-over a sheet's limit refuses `excel_limit` (422). A bundle render reads graph metadata for its
-citations.
+under that rendering is signed in hand. Otherwise, on the work executor under a materialise
+permit and the request deadline, a file of that rendering past working retention whose bytes
+survive renews as its link's renewal does, and failing that the version renders from its stored
+frame (`render_version_from_frame`, which a link's renewal also calls) and the redirect names
+the file the render returned. A frame past working retention renews first, and the selector
+refuses `artifact_expired` only when neither the file's bytes nor the frame's survive. The
+render's refusals answer as the definition GET's do: an `xlsx` over a sheet's limit refuses
+`excel_limit` (422). A bundle render reads graph metadata for its citations.
 
 The read and the signing run on the read executor. Presentation reads frames in process and
 never calls these routes.
@@ -490,45 +491,65 @@ def select_file(*, id: str, content_version: str, requested: MintOptions, deps: 
     return _signed_url(location, stored=stored, artifact_store=deps.artifact_store)
 
 
-def render_and_select(
-    *, id: str, content_version: str, requested: MintOptions, deps: DefinitionDeps
-) -> str:
-    """Render the rendering `requested` names of the version from its stored frame
-    (`render_version_from_frame`) and return the signed URL of the file the render returned.
-
-    The returned file is the manifest's artifact whose complete rendering
-    (`render.complete_rendering`) is the requested one, and the URL names it by digest, so a
-    render linked as incomplete (`render.incomplete_rendering`) is served too. A version with
-    no frame bytes left, or a render that gives another version, refuses `ArtifactExpired`."""
-    stored, subject_ids = _read_version(id=id, content_version=content_version, deps=deps)
-    options = _version_options(stored, requested, id=id)
+def _render_digest(
+    *,
+    stored: ServableVersion,
+    subject_ids: tuple[str, ...],
+    options: MintOptions,
+    key: str,
+    deps: DefinitionDeps,
+) -> str | None:
+    """The digest of the artifact whose complete rendering key is `key` in the manifest a render
+    of `options` from the version's stored frame gives (`render_version_from_frame`), or `None`
+    when no frame bytes are left or the render gives another version."""
     manifest = render_version_from_frame(
         stored=stored, subject_ids=subject_ids, options=options, deps=deps
     )
-    key = artifact_rendering_key(options, site=deps.settings.site)
-    artifact = (
-        next(
-            (
-                a
-                for a in manifest.artifacts
-                if rendering_key(complete_rendering(a.rendering)) == key
-            ),
-            None,
-        )
-        if manifest is not None and manifest.content_version == content_version
-        else None
+    if manifest is None or manifest.content_version != stored.version.content_version:
+        return None
+    return next(
+        (
+            artifact.artifact_digest
+            for artifact in manifest.artifacts
+            if rendering_key(complete_rendering(artifact.rendering)) == key
+        ),
+        None,
     )
-    if artifact is None:
+
+
+def render_and_select(
+    *, id: str, content_version: str, requested: MintOptions, deps: DefinitionDeps
+) -> str:
+    """Serve the rendering `requested` names of the version, which lists no servable file of
+    it, and return the signed URL of the file served.
+
+    A file of that rendering past working retention whose bytes survive renews (`_renew`), as
+    its download link's renewal does. Otherwise the version renders from its stored frame
+    (`render_version_from_frame`), and the file served is the manifest's artifact whose
+    complete rendering (`render.complete_rendering`) is the requested one, named by digest, so
+    a render linked as incomplete (`render.incomplete_rendering`) is served too. A version with
+    no frame bytes left, or a render that gives another version, refuses `ArtifactExpired`."""
+    stored, subject_ids = _read_version(id=id, content_version=content_version, deps=deps)
+    options = _version_options(stored, requested, id=id)
+    key = artifact_rendering_key(options, site=deps.settings.site)
+    aged = next((loc for loc in stored.aged_out if loc.rendering_key == key), None)
+    if aged is not None and _renew(aged, deps=deps):
+        digest = aged.artifact_digest
+    else:
+        digest = _render_digest(
+            stored=stored, subject_ids=subject_ids, options=options, key=key, deps=deps
+        )
+    if digest is None:
         raise ArtifactExpired(id=id, content_version=content_version)
     rendered = read_servable_version(
         deps.snapshot_reader,
         subject_id=stored.version.subject_id,
         content_version=content_version,
         now=deps.now(),
-        artifact_digest=artifact.artifact_digest,
+        artifact_digest=digest,
         revoked_under=subject_ids,
     )
-    location = rendered.servable_digest(artifact.artifact_digest)
+    location = rendered.servable_digest(digest)
     if location is None:
         raise ArtifactExpired(id=id, content_version=content_version)
     return _signed_url(location, stored=rendered, artifact_store=deps.artifact_store)
@@ -619,7 +640,8 @@ def build_files_door(*, deps: DepsCell) -> DoorContribution:
     )
     async def get_version_file(id: str, content_version: str, request: Request) -> RedirectResponse:
         """Redirect to the version's file in the format, bundle and layout the query names,
-        rendering it from the version's stored frame when the version links none."""
+        renewing an aged copy whose bytes survive, else rendering it from the version's stored
+        frame."""
         requested = selector_options(request.query_params.multi_items())
         current = deps.get()
         with door_call("file_selector", logger=logger) as call:

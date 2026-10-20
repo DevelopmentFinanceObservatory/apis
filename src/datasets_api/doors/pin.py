@@ -26,16 +26,17 @@ before the pinned location existed. The pin then refuses, because snapshot
 reads cannot list a pin the version does not link. A re-render that runs after a pin completes
 sees the pinned location and keeps the link.
 
-Pinning any artifact of a definition version also retains that version's stored frame
-(`render.servable_frame_location`, which gives its canonical frame, or else its frame1 document).
+Pinning any artifact of a definition version also retains that version's stored frame, the one
+its retention reads (`retention.retained_frame_location`: the servable frame, else the aged
+one, each its canonical frame or else its frame1 document).
 The door promotes a working-tier frame to the pinned tier and records the same principal's reference
 to it, with the same revocation recheck, on every pin call, including a repeat pin of an artifact
 that is already pinned, so a retry or a re-pin heals a version whose frame is still working-tier. A
 derived version (`base_content_version` set: a groupby collapse or a party-totals cut) renders its
 files from its base version's frame, so its pin also retains that frame, with the reference naming
 the base version, and the derived version stays fetchable in every format and reports
-`retention.pinned`. A version with no servable frame (one that aged out unpinned) pins the named
-artifact alone. A frame copy skips the budget check. It holds a `pin` reference, so it counts
+`retention.pinned`. A version whose frame's bytes are gone, or that links no frame, pins the
+named artifact alone. A frame copy skips the budget check. It holds a `pin` reference, so it counts
 toward later calls: a pin of a derived version can add three pinned copies to the count, the named
 artifact, the version's own frame and its base frame, while only the first waits on the budget.
 
@@ -67,7 +68,7 @@ from types import MappingProxyType
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from artifact_store import ArtifactStore, Tier
+from artifact_store import ArtifactNotFoundError, ArtifactStore, Tier
 from dataset_store.clock import Clock
 from dataset_store.snapshot import (
     ArtifactNotFound,
@@ -94,7 +95,7 @@ from datasets_api.reference_store import (
     PinReferenceWriter,
 )
 from datasets_api.refusals import classify_datasets_refusal
-from datasets_api.render import servable_frame_location
+from datasets_api.retention import retained_frame_location
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.timings import door_call, phase, run_with_timings
 from dfo_platform import ProblemSpec
@@ -163,8 +164,9 @@ def pin_artifact(
     pinned copy skips the budget.
 
     The refusals concern the named artifact alone. The stored frames are retained after the named
-    artifact's reference is recorded, and only when it is servable at the call's read time.
-    A missing or aged-out frame leaves the response unchanged. The transactional revocation
+    artifact's reference is recorded: each is the one the version's retention reads at the call's
+    read time (`retention.retained_frame_location`), servable or aged. A frame that is missing,
+    or whose bytes are gone, leaves the response unchanged. The transactional revocation
     and link rechecks propagate unlogged. Other reference-write failures are logged and
     re-raised. Pinned copies persist, so a retry attempts only the reference writes.
     """
@@ -210,12 +212,13 @@ def pin_artifact(
         now=read_at,
     )
 
-    frames = [(content_version, servable_frame_location(stored.servable, now=read_at))]
+    own_locations = [*stored.servable, *stored.aged_out]
+    frames = [(content_version, retained_frame_location(own_locations, now=read_at))]
     base_content_version = stored.version.base_content_version
     if base_content_version is not None:
         # A derived version's files render from its base version's frame.
         base_locations = snapshot_reader.read_artifact_locations(subject_id, base_content_version)
-        frames.append((base_content_version, servable_frame_location(base_locations, now=read_at)))
+        frames.append((base_content_version, retained_frame_location(base_locations, now=read_at)))
     promoted = {artifact_digest}
     for frame_version, frame in frames:
         if frame is None or frame.artifact_digest in promoted:
@@ -223,10 +226,14 @@ def pin_artifact(
         promoted.add(frame.artifact_digest)
         frame_already_pinned = frame.tier == "pinned"
         if not frame_already_pinned:
-            with phase("copy"):
-                artifact_store.copy(
-                    frame.artifact_digest, from_tier=Tier.working, to_tier=Tier.pinned
-                )
+            try:
+                with phase("copy"):
+                    artifact_store.copy(
+                        frame.artifact_digest, from_tier=Tier.working, to_tier=Tier.pinned
+                    )
+            except ArtifactNotFoundError:
+                # The aged frame's bytes are gone, so nothing is left to retain.
+                continue
         _record_pin_reference(
             reference_writer,
             principal=principal,
@@ -307,8 +314,10 @@ def build_pin_door(
         response_model=PinResponse,
         description=(
             "Pin an artifact of a version, and the frame its files render from: the version's "
-            "own frame and, for a derived version, its base version's frame, so every format "
-            "stays fetchable and the version reports `retention.pinned`. Only the named "
+            "own frame and, for a derived version, its base version's frame, servable or aged, "
+            "so every format stays fetchable and the version reports `retention.pinned`. A "
+            "frame whose bytes are gone stays unpinned: the named artifact still pins, and "
+            "`retention` keeps that frame's `held_until`. Only the named "
             "artifact's copy waits on the daily pin budget; the frame copies skip it and count "
             "toward later calls, so one pin can add up to three copies to the count."
         ),

@@ -483,7 +483,8 @@ class RetentionModel(BaseModel):
         default=None,
         exclude_if=_is_none,
         description="when the working-tier frame stops being guaranteed, 30 days after it was "
-        "stored. Downloads do not extend it. After it, a file selector or download link request "
+        "stored. A download renews only the file it names, so only a download of the frame "
+        "extends it. After it, a file selector or download link request "
         "that must render its file again renews the frame for 30 days if the frame's bytes "
         "survive, else refuses `artifact_expired`; a rebuild of unchanged data through "
         "`GET /api/datasets/{id}` or `POST /api/datasets` stores the frame again. Absent when "
