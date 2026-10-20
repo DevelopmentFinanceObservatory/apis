@@ -15,7 +15,14 @@ beside the old release's views and every frame being built. On the Datasets
 surface and its worker the guard is `MaterialisePermits.every_permit`, so the
 build and the flip wait for those frames to finish, and no frame starts until
 the flip ends. A failed recheck keeps the served release, leaves the guards
-and logs.
+and logs `graph_release_recheck_failed`. A release refused for what its bytes hold
+(`ReleaseFormatError`, which covers a part or manifest whose hash does not match, or
+`ViewRefused`) is remembered by id and logged once at ERROR (`graph_release_refused`), and
+later rechecks skip it while the pointer names it, so they download nothing and enter no
+guard. Any other failure, such as an unreachable bucket, is retried at the next recheck. A
+swap logs `graph_release_swapped` with the time spent entering the guards, the time spent
+building, and the process's memory after the build. A guard that takes longer than
+`_DRAIN_WARNING_SECONDS` to enter logs `graph_release_drain_slow` at each multiple of it.
 
 Parts live in one `local_dir` by content hash, so consecutive releases share
 the files they have in common. A release holds the files its loader read
@@ -52,6 +59,8 @@ from __future__ import annotations
 import concurrent.futures
 import ctypes
 import logging
+import os
+import resource
 import sys
 import tempfile
 import threading
@@ -68,6 +77,7 @@ import pyarrow as pa
 
 from code_index.query import CodeIndex
 from code_index.types import MeasureIndex
+from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
 from dfo_platform.singleton import RefCountedSingleton
 from graph_release.context import (
     URI_ENV_VAR,
@@ -75,17 +85,26 @@ from graph_release.context import (
     origin_release_enabled,
     release_uri,
 )
-from graph_release.format import LoadedRelease, Manifest, open_release, read_pointer
+from graph_release.format import (
+    LoadedRelease,
+    Manifest,
+    ReleaseFormatError,
+    open_release,
+    read_pointer,
+)
 from graph_release.origin import ReleaseOrigin, release_origin
-from graph_release.views import release_code_indexes, release_coverage_index
+from graph_release.views import ViewRefused, release_code_indexes, release_coverage_index
 from series_coverage.index import CoverageIndex
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_RECHECK_SECONDS = 60.0
 
-# Logs the first recheck failure and each tenth consecutive failure.
-_FAILURE_LOG_EVERY_N = 10
+# A permit drain longer than this already turns waiting mints into `MintBackpressure`.
+_DRAIN_WARNING_SECONDS = 30.0
+
+# Failures the same release raises on every load, so a recheck does not load it again.
+_DETERMINISTIC = (ReleaseFormatError, ViewRefused)
 
 
 def _resolve_malloc_trim() -> Callable[[int], int] | None:
@@ -108,6 +127,50 @@ def _return_freed_memory() -> None:
     pa.default_memory_pool().release_unused()
     if _malloc_trim is not None:
         _malloc_trim(0)
+
+
+def _rss_bytes() -> int | None:
+    """The process's resident memory, or `None` off Linux."""
+    try:
+        resident_pages = int(Path("/proc/self/statm").read_text().split()[1])
+    except OSError:
+        return None
+    return resident_pages * os.sysconf("SC_PAGE_SIZE")
+
+
+def _peak_rss_bytes() -> int:
+    """`ru_maxrss` in bytes. macOS reports bytes and Linux KiB."""
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return peak if sys.platform == "darwin" else peak * 1024
+
+
+def _event(level: int, event: str, **fields: object) -> None:
+    """One log line whose JSON entry carries `event` and `fields` as top-level fields."""
+    logger.log(level, event, extra={JSON_FIELDS_ATTR: {"event": event, **fields}})
+
+
+@contextmanager
+def _warn_while_draining(*, served: str, pointer: str) -> Iterator[None]:
+    """Logs `graph_release_drain_slow` each `_DRAIN_WARNING_SECONDS` the block runs."""
+    interval = _DRAIN_WARNING_SECONDS
+    started = time.monotonic()
+    done = threading.Event()
+
+    def watch() -> None:
+        while not done.wait(interval):
+            _event(
+                logging.WARNING,
+                "graph_release_drain_slow",
+                served_release_id=served,
+                pointer_release_id=pointer,
+                drain_seconds=round(time.monotonic() - started, 3),
+            )
+
+    threading.Thread(target=watch, daemon=True, name="graph-release-drain-watch").start()
+    try:
+        yield
+    finally:
+        done.set()
 
 
 class ReleaseUriMissingError(RuntimeError):
@@ -233,6 +296,14 @@ class _Served:
     checked_at: float
 
 
+@dataclass(frozen=True, slots=True)
+class _Refusal:
+    """A release a recheck refused for a deterministic reason."""
+
+    release_id: str
+    exception_type: str
+
+
 class ReleaseService:
     """Opens the published release at construction and swaps to a newer one in
     the background.
@@ -241,7 +312,8 @@ class ReleaseService:
     release's serving views as it opens, and `build_origin` its origin view. Construction raises
     `FileNotFoundError` when no release is published, propagates the
     loader's errors for one that cannot be read, and raises
-    `graph_release.views.ViewRefused` for one whose views do not build.
+    `graph_release.views.ViewRefused` for one whose views do not build. A recheck that refuses
+    a release for a deterministic reason skips it while the pointer names it.
     """
 
     def __init__(
@@ -270,7 +342,8 @@ class ReleaseService:
         self._hooks_lock = threading.Lock()
         self._swap_guards: tuple[Callable[[], AbstractContextManager[object]], ...] = ()
         self._swap_callbacks: tuple[Callable[[Release], None], ...] = ()
-        self._consecutive_failures = 0
+        # Written and read under the load lock.
+        self._refused: _Refusal | None = None
         # `snapshot()` reads this reference lock-free. The GIL makes its assignment atomic.
         self._served = _Served(
             release=self._release(self._load(release_id=None)), checked_at=clock()
@@ -366,73 +439,123 @@ class ReleaseService:
     def _run_recheck(self, future: concurrent.futures.Future[None]) -> None:
         try:
             self._swap_if_moved()
-        except Exception as exc:
-            self._record_recheck_failure(exc)
-        else:
-            self._consecutive_failures = 0
         finally:
             with self._refresh_lock:
                 self._in_flight = None
             future.set_result(None)
 
     def _swap_if_moved(self) -> None:
-        """Reads the pointer and swaps when it names another release. Errors
-        leave the served release in place."""
-        with self._load_lock:
-            served = self._served.release
-            replaced = served.release_id
-            pointer = read_pointer(self._uri)
-            if pointer is None:
-                raise FileNotFoundError(f"no release pointer under {self._uri!r}")
-            if pointer.release_id == replaced:
-                self._served = _Served(release=served, checked_at=self._clock())
-                return
-            loaded = self._load(release_id=pointer.release_id)
-            with ExitStack() as guards:
-                with self._hooks_lock:
-                    registered, callbacks = self._swap_guards, self._swap_callbacks
-                try:
-                    for guard in registered:
-                        guards.enter_context(guard())
-                except Exception:
-                    self._files.drop(loaded.file_names)
-                    raise
-                # The views build inside the guards, so they are never resident beside a frame.
-                release = self._release(loaded)
-                self._served = _Served(release=release, checked_at=self._clock())
-                del served
-            _return_freed_memory()
-            logger.info(
-                "graph release: served release changed (%r -> %r)", replaced, release.release_id
-            )
-            for callback in callbacks:
-                try:
-                    callback(release)
-                except Exception:
-                    logger.exception(
-                        "graph release: swap callback %r failed for release %r",
-                        callback,
-                        release.release_id,
+        """Reads the pointer and swaps when it names another release that was not refused.
+        Errors leave the served release in place and are logged."""
+        pointer_id: str | None = None
+        try:
+            with self._load_lock:
+                served = self._served.release
+                replaced = served.release_id
+                pointer = read_pointer(self._uri)
+                if pointer is None:
+                    raise FileNotFoundError(f"no release pointer under {self._uri!r}")
+                pointer_id = pointer.release_id
+                if pointer_id == replaced:
+                    self._served = _Served(release=served, checked_at=self._clock())
+                    return
+                refused = self._refused
+                if refused is not None and refused.release_id == pointer_id:
+                    self._served = _Served(release=served, checked_at=self._clock())
+                    self._log_recheck_failed(
+                        pointer_id=pointer_id,
+                        exception_type=refused.exception_type,
+                        deterministic=True,
+                        skipped=True,
                     )
+                    return
+                loaded = self._load(release_id=pointer_id)
+                with ExitStack() as guards:
+                    with self._hooks_lock:
+                        registered, callbacks = self._swap_guards, self._swap_callbacks
+                    drain_started = time.monotonic()
+                    try:
+                        with _warn_while_draining(served=replaced, pointer=pointer_id):
+                            for guard in registered:
+                                guards.enter_context(guard())
+                    except Exception:
+                        self._files.drop(loaded.file_names)
+                        raise
+                    build_started = time.monotonic()
+                    # The views build inside the guards, so they are never resident beside a
+                    # frame.
+                    release = self._release(loaded)
+                    build_seconds = time.monotonic() - build_started
+                    self._served = _Served(release=release, checked_at=self._clock())
+                    self._refused = None
+                    del served
+                _return_freed_memory()
+                _event(
+                    logging.INFO,
+                    "graph_release_swapped",
+                    from_release_id=replaced,
+                    to_release_id=release.release_id,
+                    drain_seconds=round(build_started - drain_started, 3),
+                    build_seconds=round(build_seconds, 3),
+                    rss_bytes=_rss_bytes(),
+                    peak_rss_bytes=_peak_rss_bytes(),
+                )
+                for callback in callbacks:
+                    try:
+                        callback(release)
+                    except Exception:
+                        logger.exception(
+                            "graph release: swap callback %r failed for release %r",
+                            callback,
+                            release.release_id,
+                        )
+        except Exception as exc:
+            self._record_recheck_failure(exc, pointer_id=pointer_id)
 
-    def _record_recheck_failure(self, exc: Exception) -> None:
-        """Logs the first and every tenth consecutive failure and resets the
-        check time, so the next recheck waits a full interval."""
-        self._consecutive_failures += 1
-        if (
-            self._consecutive_failures == 1
-            or self._consecutive_failures % _FAILURE_LOG_EVERY_N == 0
-        ):
-            logger.warning(
-                "graph release: recheck of %r failed (%d consecutive failure(s)), "
-                "still serving release %r: %s",
-                self._uri,
-                self._consecutive_failures,
-                self._served.release.release_id,
-                exc,
-            )
+    def _record_recheck_failure(self, exc: Exception, *, pointer_id: str | None) -> None:
+        """Logs the failure, remembers a deterministic refusal of the pointer's release, and
+        resets the check time, so the next recheck waits a full interval."""
+        deterministic = isinstance(exc, _DETERMINISTIC)
+        self._log_recheck_failed(
+            pointer_id=pointer_id,
+            exception_type=type(exc).__name__,
+            deterministic=deterministic,
+            skipped=False,
+            detail=str(exc),
+        )
         with self._load_lock:
+            if deterministic and pointer_id is not None:
+                self._refused = _Refusal(release_id=pointer_id, exception_type=type(exc).__name__)
+                _event(
+                    logging.ERROR,
+                    "graph_release_refused",
+                    release_id=pointer_id,
+                    served_release_id=self._served.release.release_id,
+                    exception_type=type(exc).__name__,
+                    reason=str(exc),
+                )
             self._served = _Served(release=self._served.release, checked_at=self._clock())
+
+    def _log_recheck_failed(
+        self,
+        *,
+        pointer_id: str | None,
+        exception_type: str,
+        deterministic: bool,
+        skipped: bool,
+        detail: str | None = None,
+    ) -> None:
+        _event(
+            logging.WARNING,
+            "graph_release_recheck_failed",
+            uri=self._uri,
+            served_release_id=self._served.release.release_id,
+            pointer_release_id=pointer_id,
+            exception_type=exception_type,
+            deterministic=deterministic,
+            skipped=skipped,
+            detail=detail,
+        )
 
 
 def _build() -> ReleaseService:
