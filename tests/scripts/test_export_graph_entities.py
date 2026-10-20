@@ -166,7 +166,7 @@ def test_export_entities_adds_origin_and_whole_dac_totals_and_lists_only_codes_o
         DACAllRecipients=_party(
             axes=("destination",),
             label="all recipients (DAC)",
-            whole=(WholeMarker("provenance/OECDDAC2A", ("party", "residual"), (1984, 2024)),),
+            whole=(WholeMarker("provenance/OECDDAC2A", ("official", "residual"), (1984, 2024)),),
         ),
         DACPairedTotal=_party(axes=("origin",), totals="groups/Paired", label="paired total"),
         DACUncodedPairedTotal=_party(
