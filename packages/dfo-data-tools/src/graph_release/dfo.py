@@ -314,6 +314,10 @@ class ReleaseGraphReader:
     no edge answers from its `Node` row's types or name, as the mixer does for the nodes DFO
     authors. Values come distinct and sorted. Raises `PlatformRefusal` with code
     `dangling_edge` for an edge whose subject or object has no `nodes` row.
+
+    It is also the `statvar_members.types.MemberArcReader` a member walk reads for a family the
+    release holds (`graph_release.origin.ReleaseOrigin.reader`). Reads are in memory, so the
+    walk's `deadline` and `individual_probe_budget` are accepted and ignored.
     """
 
     def __init__(self, *, edges: pa.Table, nodes: pa.Table) -> None:
@@ -394,6 +398,7 @@ class ReleaseGraphReader:
         property: str,
         filters: Mapping[str, str] | None = None,
         max_results: int,
+        deadline: float | None = None,
     ) -> SubjectPage:
         from dc_graph import SubjectPage
 
@@ -404,7 +409,12 @@ class ReleaseGraphReader:
         return SubjectPage(dcids=tuple(dcids[:max_results]), truncated=len(dcids) > max_results)
 
     def node_arcs_many(
-        self, dcids: Sequence[str], *, properties: Sequence[str]
+        self,
+        dcids: Sequence[str],
+        *,
+        properties: Sequence[str],
+        individual_probe_budget: int | None = None,
+        deadline: float | None = None,
     ) -> dict[str, dict[str, tuple[str, ...]] | None]:
         out: dict[str, dict[str, tuple[str, ...]] | None] = {}
         for dcid in dcids:

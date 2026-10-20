@@ -14,7 +14,9 @@ read in flight per key, and each running its reads on the DCP-read executor:
 - each place's national currency (`materialise.national_currency.read_national_currencies`),
   read once per generation;
 - each unit's, method's and place's `name` and `typeOf`, cached per dcid and shared by every
-  variable. A place counts under the kind its own node reports (`graph_api.kinds.classify`).
+  variable, and with `GRAPH_RELEASE_ORIGIN` on per bound release too, which answers a DFO
+  variable's (`graph_release.context.served_origin_key`). A place counts under the kind its own
+  node reports (`graph_api.kinds.classify`).
 
 Both reads outlive the request that starts them. The request waits until its deadline; the
 reads run on to a detached bound and fill the caches when they land, so a later request finds
@@ -73,6 +75,7 @@ from graph_api.kinds import Kind, classify
 from graph_api.reader import GraphNodeReader
 from graph_api.refs import first_name
 from graph_generation import GenerationProvider
+from graph_release.context import served_origin_key
 from materialise.errors import UpstreamResponseError
 from materialise.facet_profile import FacetProfile, ProfileOutcome
 from materialise.graph import GraphReadError
@@ -161,7 +164,7 @@ class CardReadCaches:
             executor=executor,
             generation=generation,
         )
-        self._facts: SingleFlightCache[str, NodeFacts] = SingleFlightCache(
+        self._facts: SingleFlightCache[_FactsKey, NodeFacts] = SingleFlightCache(
             maxsize=maxsize,
             flight_timeout_s=chunk_timeout_s,
             executor=executor,
@@ -187,9 +190,10 @@ class CardReadCaches:
         driver; `None` when the read fails, the executor refuses it, or `deadline` passes while
         it runs on."""
         try:
+            key = (dcid, served_origin_key())
             return await self._facts.aget_or_fetch(
-                dcid,
-                lambda flight_deadline: self._read_facts([dcid], flight_deadline)[dcid],
+                key,
+                lambda flight_deadline: self._read_facts([key], flight_deadline)[key],
                 deadline=deadline,
             )
         except _READ_FAILURES:
@@ -202,8 +206,14 @@ class CardReadCaches:
         read past `deadline` starts none. The driver runs on after `deadline` and fills the
         cache."""
         wanted = list(dict.fromkeys(dcids))
-        found = self._facts.cached_many(wanted)
-        missing = [dcid for dcid in wanted if dcid not in found]
+        release = served_origin_key()
+        found = {
+            dcid: facts
+            for (dcid, _release), facts in self._facts.cached_many(
+                [(dcid, release) for dcid in wanted]
+            ).items()
+        }
+        missing = [(dcid, release) for dcid in wanted if dcid not in found]
         if not missing:
             return FactsRead(facts=found, complete=True)
         try:
@@ -228,7 +238,7 @@ class CardReadCaches:
                         list(chunk), self._read_facts, deadline=stop
                     )
                     with lock:
-                        found.update(read)
+                        found.update((dcid, facts) for (dcid, _release), facts in read.items())
             except Exception:
                 logger.warning("Variable card's name and type read stopped", exc_info=True)
 
@@ -246,9 +256,15 @@ class CardReadCaches:
             facts = dict(found)
         return FactsRead(facts=facts, complete=len(facts) == len(wanted))
 
-    def _read_facts(self, dcids: list[str], deadline: float) -> dict[str, NodeFacts]:
+    def _read_facts(self, keys: list[_FactsKey], deadline: float) -> dict[_FactsKey, NodeFacts]:
+        dcids = [dcid for dcid, _release in keys]
         arcs = self._graph.node_arcs_many(dcids, properties=_FACTS, deadline=deadline)
-        return {dcid: _facts(dcid, arcs.get(dcid)) for dcid in dcids}
+        return {key: _facts(key[0], arcs.get(key[0])) for key in keys}
+
+
+type _FactsKey = tuple[str, str | None]
+"""A node's facts key: its dcid and the bound release under `GRAPH_RELEASE_ORIGIN`
+(`served_origin_key`), `None` with it off."""
 
 
 def _facts(dcid: str, arcs: Mapping[str, tuple[str, ...]] | None) -> NodeFacts:

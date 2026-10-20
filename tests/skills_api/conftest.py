@@ -80,10 +80,10 @@ def index_of(*entries: SkillEntry, issues: tuple[SkillIssue, ...] = ()) -> Skill
 
 
 class NoGraphSharedIndex:
-    """A stand-in for `skills_index.SharedSkillsIndex` exposing exactly the two
-    members a door may read: `.index` and `seconds_until_next_rebuild()`. Any
-    other attribute would be a graph read no door makes, so `__getattr__`, which
-    fires only once normal lookup fails, raises.
+    """A stand-in for `skills_index.SharedSkillsIndex` exposing exactly the three
+    members a door may read: `.index`, `.rebuilds_on_swap` and
+    `seconds_until_next_rebuild()`. Any other attribute would be a graph read no door
+    makes, so `__getattr__`, which fires only once normal lookup fails, raises.
 
     `seconds_until_next_rebuild=None` mirrors the real holder before its first
     build: the method raises, as it does when no generation is bound.
@@ -94,8 +94,10 @@ class NoGraphSharedIndex:
         index: SkillsIndex | None,
         *,
         seconds_until_next_rebuild: float | None = SKILLS_INDEX_REFRESH_SECONDS,
+        rebuilds_on_swap: bool = False,
     ) -> None:
         self.index = index
+        self.rebuilds_on_swap = rebuilds_on_swap
         self._seconds_until_next_rebuild = seconds_until_next_rebuild
 
     def seconds_until_next_rebuild(self) -> float:
@@ -108,7 +110,7 @@ class NoGraphSharedIndex:
     def __getattr__(self, name: str) -> object:
         raise AssertionError(
             f"a door read {name!r} off the shared index holder; it should read only "
-            "'.index' and 'seconds_until_next_rebuild()'"
+            "'.index', '.rebuilds_on_swap' and 'seconds_until_next_rebuild()'"
         )
 
 
@@ -121,8 +123,13 @@ def client_for(
     index: SkillsIndex | None,
     *,
     seconds_until_next_rebuild: float | None = SKILLS_INDEX_REFRESH_SECONDS,
+    rebuilds_on_swap: bool = False,
 ) -> TestClient:
     """A client for the Skills surface serving `index`."""
     return surface_client(
-        NoGraphSharedIndex(index, seconds_until_next_rebuild=seconds_until_next_rebuild)
+        NoGraphSharedIndex(
+            index,
+            seconds_until_next_rebuild=seconds_until_next_rebuild,
+            rebuilds_on_swap=rebuilds_on_swap,
+        )
     )

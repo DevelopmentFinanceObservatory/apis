@@ -889,7 +889,7 @@ async def _open_search_deps(
         skills_index = await acquire_shared_index(
             graph=graph,  # ty: ignore[invalid-argument-type]
             catalogue=catalogue.snapshot,
-            release=release.snapshot if release is not None else None,
+            release=release,
         )
         # Stop the index refresh task before closing the graph it reads.
         owned.push_async_callback(_release_skills_index, skills_index)

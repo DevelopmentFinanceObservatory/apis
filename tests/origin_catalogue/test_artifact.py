@@ -25,7 +25,7 @@ from origin_catalogue.artifact import (
     read_un_mirror,
     resident_bytes,
 )
-from origin_catalogue.families import FamilyKey, family_tables
+from origin_catalogue.families import FamilyKey, family_tables, summarise_table
 from origin_catalogue.schema import (
     ARC_TARGETS_FILE,
     BASE_ARCS_FILE,
@@ -876,10 +876,12 @@ def test_reading_arc_tables_refuses_a_node_twice_in_one_table(tmp_path: Path) ->
 
 
 def test_the_family_tables_round_trip_and_the_manifest_counts_and_measures_them(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The build holds one summary per family of its arc tables' and UN tables' variables,
-    computed when it is encoded, and the loaded snapshot serves them."""
+    computed when it is encoded, and the loaded snapshot serves them. With
+    `GRAPH_RELEASE_ORIGIN` on, loading also summarises the base variables alone."""
+    monkeypatch.delenv("GRAPH_RELEASE_ORIGIN", raising=False)
     uri = _uri(tmp_path)
     arcs, mirror = sample_arc_tables(), sample_un_mirror()
     manifest = publish_sample(uri, un_mirror=mirror, arcs=arcs).manifest
@@ -893,6 +895,12 @@ def test_the_family_tables_round_trip_and_the_manifest_counts_and_measures_them(
     assert family is not None
     assert len(family.members) == 2
     assert CatalogueManifest.from_json(manifest.to_json()) == manifest
+    assert snapshot.base_families is None
+    monkeypatch.setenv("GRAPH_RELEASE_ORIGIN", "1")
+    monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1")
+    base = summarise_table(arcs.base)
+    assert base
+    assert load_catalogue(uri).base_families == base
 
 
 def _rewrite_families(path: Path, column: str, value: object) -> None:

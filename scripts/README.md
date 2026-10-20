@@ -149,10 +149,12 @@ Run by `.github/workflows/bundle-round-trip.yml`, same trigger as `bundle_round_
 
 ## `graph_release_parity.py`
 
-Diffs what an environment's graph release serves against the artifacts built from the same import, the gate before `GRAPH_RELEASE_COVERAGE` is switched on. It builds the current release's views with `graph_release.views`, then compares its `CoverageIndex` with the published coverage build (every row, role names, variable provenances, facet metadata, horizon and build year) and its `code_index_blocks` document with a fresh `export_index` over the live mixer, joined with that coverage build, every block row by row.
+Diffs what an environment's graph release serves against what the old paths serve at the same import. It has two gates, each run by hand on an environment before its flag is switched on there.
+
+`coverage`, the gate before `GRAPH_RELEASE_COVERAGE`, builds the current release's views with `graph_release.views`, then compares its `CoverageIndex` with the published coverage build (every row, role names, variable provenances, facet metadata, horizon and build year) and its `code_index_blocks` document with a fresh `export_index` over the live mixer, joined with that coverage build, every block row by row.
 
 ```bash
-uv run python scripts/graph_release_parity.py \
+uv run python scripts/graph_release_parity.py coverage \
     --release-uri gs://dfo-dev-graph-release-dev-fin-observatory/ \
     --coverage-uri gs://dfo-dev-coverage-dev-fin-observatory/ \
     --graph-base https://dfo-dev-dc-datacommons-service-zms5lj4zhq-nn.a.run.app \
@@ -160,9 +162,20 @@ uv run python scripts/graph_release_parity.py \
     --out parity-dev.json
 ```
 
-It refuses with exit 2 and a `refused.code` when the coverage build and the release come from different ingestion executions (`import_mismatch`, `coverage_ingestion_unrecorded`), when the checkout's declarations hash differs from the release's (`declarations_moved`), when the DC service serves another revision than the release read (`serving_revision_moved`), or when the export refuses (`export_refused`). Otherwise the JSON report counts, per category, the items compared and the differences, with the first `--examples` of them; the exit status is 0 when nothing differs and 1 when anything does. On dev it takes about 15 minutes, nearly all of them the export's mixer reads.
+`origin`, the gate before `GRAPH_RELEASE_ORIGIN`, builds the release's origin view, loads the origin catalogue build as a serving process does with the flag on, and reads each answer the flag moves with the flag on and with it off: `held_family` on every family key, members in order; `held_arcs` of every DFO variable and the targets those arcs name; every member walk of every DFO family the release holds, over the release's graph reader against the mixer, each reading its whole population with no `CANDIDATE_CAP` page; and the skills index's roster, attachments and reach. It also counts the two kinds of variable the release-held rule cannot see: base Data Commons variables of a release-held five-tuple that the catalogue does not list, and StatisticalVariables in the release's edges with no observations. Every variable the mixer finds for a release-held five-tuple that the release does not hold is also a difference in `origin.members`.
 
-Needs Google credentials that read both buckets and `run.services.get` on the DC service, and `SEARCH_GRAPH_TOKEN` on a token-gated mixer. Run by hand on each environment before its `GRAPH_RELEASE_COVERAGE` flag is switched on.
+```bash
+uv run python scripts/graph_release_parity.py origin \
+    --release-uri gs://dfo-dev-graph-release-dev-fin-observatory/ \
+    --origin-catalogue-uri gs://dfo-dev-origin-catalogue-dev-fin-observatory/ \
+    --graph-base https://dfo-dev-dc-datacommons-service-zms5lj4zhq-nn.a.run.app \
+    --datacommons-service projects/dev-fin-observatory/locations/northamerica-northeast1/services/dfo-dev-dc-datacommons-service \
+    --out parity-origin-dev.json
+```
+
+Each gate refuses with exit 2 and a `refused.code` when the build it compares with and the release come from different ingestion executions (`import_mismatch`, `coverage_ingestion_unrecorded`, `catalogue_ingestion_unrecorded`) or when the DC service serves another revision than the release read (`serving_revision_moved`). `coverage` also refuses when the checkout's declarations hash differs from the release's (`declarations_moved`) or when the export refuses (`export_refused`). Otherwise the JSON report counts, per category, the items compared and the differences, with the first `--examples` of them; the exit status is 0 when nothing differs and 1 when anything does. On dev `coverage` takes about 15 minutes, nearly all of them the export's mixer reads, and `origin` about 5, half of them the catalogue load.
+
+Needs Google credentials that read the release, coverage and origin catalogue buckets and `run.services.get` on the DC service, and `SEARCH_GRAPH_TOKEN` on a token-gated mixer.
 
 ## `harvest_llm_fixtures.py`
 

@@ -20,8 +20,9 @@ one second or a tenth of its budget, whichever is smaller, so the graph reads st
 door's wait ends. A load whose graph label read or family definition read failed is not
 cached, so the next load reads again. A quarantined family identity is a lasting state, so its
 missing label is cached. The load that reads the labels stamps the frame with the graph
-generation the read starts under and the build of the catalogue the load is bound to
-(`ResolvedFrame.graph_generation`, `ResolvedFrame.catalogue_build`), and the cached frame keeps
+generation the read starts under and the build of the catalogue the load is bound to, with the
+bound release under `GRAPH_RELEASE_ORIGIN` (`ResolvedFrame.graph_generation`,
+`ResolvedFrame.catalogue_build`), and the cached frame keeps
 both, so a card's vocabulary revision names the read its labels came from. A cached frame's
 words, its labels, its anchor's left-out labels, its citation and its source documents, are
 read again from its cached bytes once the graph generation or the bound catalogue build moves
@@ -208,6 +209,7 @@ from materialise.graph import UNRESOLVED_NODE, GraphReader, GraphReadError
 from materialise.provenance_doc import SourceCitation, read_source_citations
 from materialise.unit_cells import composed_unit_sides
 from origin_catalogue import current_catalogue
+from origin_catalogue.context import current_words_build
 from spec_registry.errors import (
     IdentityQuarantined,
     SpecRegistryStoreError,
@@ -929,10 +931,12 @@ class LiveFrameStore:
 
     def _read_under(self) -> tuple[str | None, str | None]:
         """The graph generation token a graph read starts under now, and the build of the
-        catalogue this load is bound to, or `(None, None)` for a store with no graph."""
+        catalogue this load is bound to, joined to the bound release under
+        `GRAPH_RELEASE_ORIGIN` (`current_words_build`), or `(None, None)` for a store with no
+        graph."""
         if self._graph is None:
             return None, None
-        return self._graph.generation_stamp().token, current_catalogue().build_id
+        return self._graph.generation_stamp().token, current_words_build()
 
     def _description_records(
         self, frame_ref: FrameRef

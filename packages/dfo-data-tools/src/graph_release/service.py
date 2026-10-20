@@ -36,6 +36,12 @@ recheck keeps the served release. Without `build_views` a `Release` maps the par
 nothing. After the first load and after each swap, that thread hands the memory the load freed
 back to the OS (`_return_freed_memory`).
 
+With `build_origin`, which `get_release_service()` sets from `GRAPH_RELEASE_ORIGIN`
+(`graph_release.context.origin_release_enabled`), opening a release also builds its origin view
+(`graph_release.origin`), in the same place and under the same refusal as the serving views,
+and the process's member enumerator drops the member groups of each release it replaces
+(`statvar_members.MemberEnumerator.follow_swaps`).
+
 A `Release` the service opened knows whether the service still serves it (`Release.served`),
 so a request bound to a replaced release can refuse rather than build a frame beside both
 releases' views (`series_coverage.shared.ReleaseCoverage.serves`).
@@ -63,8 +69,14 @@ import pyarrow as pa
 from code_index.query import CodeIndex
 from code_index.types import MeasureIndex
 from dfo_platform.singleton import RefCountedSingleton
-from graph_release.context import URI_ENV_VAR, coverage_views_enabled, release_uri
+from graph_release.context import (
+    URI_ENV_VAR,
+    coverage_views_enabled,
+    origin_release_enabled,
+    release_uri,
+)
 from graph_release.format import LoadedRelease, Manifest, open_release, read_pointer
+from graph_release.origin import ReleaseOrigin, release_origin
 from graph_release.views import release_code_indexes, release_coverage_index
 from series_coverage.index import CoverageIndex
 
@@ -132,12 +144,13 @@ def build_release_views(loaded: LoadedRelease) -> ReleaseViews:
 
 @dataclass(frozen=True, eq=False)
 class Release:
-    """One mapped release and, when its service builds them, its serving views. Requests and
-    operations hold it for their lifetime through `graph_release.context`. `service` is the
-    service that opened it, `None` for a release built outside one."""
+    """One mapped release and, when its service builds them, its serving views and its origin
+    view. Requests and operations hold it for their lifetime through `graph_release.context`.
+    `service` is the service that opened it, `None` for a release built outside one."""
 
     loaded: LoadedRelease
     views: ReleaseViews | None = None
+    origin: ReleaseOrigin | None = None
     service: ReleaseService | None = field(default=None, repr=False)
 
     @property
@@ -225,7 +238,7 @@ class ReleaseService:
     the background.
 
     `recheck_seconds <= 0` disables the recheck. `build_views` builds each
-    release's serving views as it opens. Construction raises
+    release's serving views as it opens, and `build_origin` its origin view. Construction raises
     `FileNotFoundError` when no release is published, propagates the
     loader's errors for one that cannot be read, and raises
     `graph_release.views.ViewRefused` for one whose views do not build.
@@ -240,9 +253,11 @@ class ReleaseService:
         clock: Callable[[], float] = time.monotonic,
         loader: ReleaseLoader = open_release,
         build_views: bool = False,
+        build_origin: bool = False,
     ) -> None:
         self._uri = uri
         self._build_views = build_views
+        self._build_origin = build_origin
         self._local_dir = local_dir
         self._recheck_seconds = recheck_seconds
         self._clock = clock
@@ -288,11 +303,19 @@ class ReleaseService:
 
         return unregister
 
-    def on_swap(self, callback: Callable[[Release], None]) -> None:
+    def on_swap(self, callback: Callable[[Release], None]) -> Callable[[], None]:
         """Calls `callback` with each new release once it is served, outside the
-        swap guards. A callback that raises is logged and the others still run."""
+        swap guards, in the recheck thread and under its load lock, so a slow callback
+        delays the next recheck. A callback that raises is logged and the others still
+        run. Returns the function that unregisters it."""
         with self._hooks_lock:
             self._swap_callbacks = (*self._swap_callbacks, callback)
+
+        def unregister() -> None:
+            with self._hooks_lock:
+                self._swap_callbacks = tuple(c for c in self._swap_callbacks if c is not callback)
+
+        return unregister
 
     def close(self) -> None:
         """Waits for an in-flight recheck to finish."""
@@ -318,10 +341,11 @@ class ReleaseService:
         names = loaded.file_names
         try:
             views = build_release_views(loaded) if self._build_views else None
+            origin = release_origin(loaded) if self._build_origin else None
         except Exception:
             self._files.drop(names)
             raise
-        release = Release(loaded=loaded, views=views, service=self)
+        release = Release(loaded=loaded, views=views, origin=origin, service=self)
         weakref.finalize(release, self._files.drop, names)
         return release
 
@@ -415,12 +439,21 @@ def _build() -> ReleaseService:
     uri = release_uri()
     if uri is None:
         raise ReleaseUriMissingError(f"{URI_ENV_VAR} is not set")
+    origin = origin_release_enabled()
     # On Cloud Run the temporary directory is the in-memory filesystem.
-    return ReleaseService(
+    service = ReleaseService(
         uri=uri,
         local_dir=Path(tempfile.mkdtemp(prefix="graph-release-")),
         build_views=coverage_views_enabled(),
+        build_origin=origin,
     )
+    if origin:
+        # The process's member groups key on the release under the flag; a swap drops the
+        # replaced release's.
+        from statvar_members import shared_enumerator
+
+        shared_enumerator().follow_swaps(service)
+    return service
 
 
 _singleton: RefCountedSingleton[ReleaseService] = RefCountedSingleton(
@@ -433,8 +466,8 @@ def get_release_service() -> ReleaseService:
 
     Raises `ReleaseUriMissingError` when `GRAPH_RELEASE_URI` is unset or blank,
     `FileNotFoundError` when no release is published there, and, with
-    `GRAPH_RELEASE_COVERAGE` on, `graph_release.views.ViewRefused` when the
-    release's views do not build, so a surface that asks for it fails at startup.
+    `GRAPH_RELEASE_COVERAGE` or `GRAPH_RELEASE_ORIGIN` on, `graph_release.views.ViewRefused`
+    when the release's views do not build, so a surface that asks for it fails at startup.
     """
     return _singleton.acquire()
 

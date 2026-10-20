@@ -11,7 +11,7 @@ import threading
 import time
 from collections.abc import Callable, Generator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from contextvars import copy_context
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta, timezone
@@ -80,6 +80,7 @@ from description.steps import Step
 from description.vocabulary import SourceDocumentFacts
 from dfo_platform.timings import PhaseTimings, collecting
 from graph_generation import FakeGeneration, GenerationStamp
+from graph_release.context import bound_release
 from materialise import provenance_doc
 from materialise.continued_series import ContinuedSeries
 from materialise.formats import CANONICAL_FRAME_MEDIA_TYPE
@@ -101,6 +102,7 @@ from spec_registry.errors import (
 )
 from spec_registry.reader import StoredDefinition
 from tests.code_index.aid_identity import IMPUTED_PROVENANCE, imputed_education_aid_identity
+from tests.graph_release.support import release_at_revision
 from tests.materialise._canonical_frame import (
     canonical_frame_parquet,
     stored_canonical_frame_959f8bc,
@@ -900,17 +902,26 @@ def test_a_failed_description_read_is_logged_not_cached_and_read_again(caplog):
         pytest.param("none", False, id="same-stamps-within-a-day"),
         pytest.param("catalogue", True, id="catalogue-build-changed"),
         pytest.param("generation", True, id="graph-generation-changed"),
+        pytest.param("release", True, id="release-changed-under-the-origin-flag"),
         pytest.param("age", True, id="a-day-old"),
     ],
 )
 def test_a_cached_frame_rereads_its_words_once_its_stamps_change_or_age(
-    bind_catalogue, change, reread
+    bind_catalogue, monkeypatch, request, change, reread
 ):
     """A cached frame serves its labels, citation and source documents while the graph
     generation and catalogue build they were read under hold and they are younger than that
-    generation's cache lifetime. A new build, a new generation or a day's age re-reads them
-    from the cached bytes, so a card composed after a source's refresh dates change shows the
-    new dates, under the stamps of the read they came from."""
+    generation's cache lifetime. A new build, a new generation, a new release under
+    `GRAPH_RELEASE_ORIGIN` or a day's age re-reads them from the cached bytes, so a card
+    composed after a source's refresh dates change shows the new dates, under the stamps of the
+    read they came from."""
+    first_release, second_release = release_at_revision("rev-1"), release_at_revision("rev-2")
+    stack = ExitStack()
+    request.addfinalizer(stack.close)
+    if change == "release":
+        monkeypatch.setenv("GRAPH_RELEASE_ORIGIN", "1")
+        monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1")
+        stack.enter_context(bound_release(first_release))
     snapshots, artifacts, frame_ref, digest = _full_spec_fixture()
     generation = FakeGeneration(token="gen-1")
     graph = _documenting_graph()
@@ -935,6 +946,8 @@ def test_a_cached_frame_rereads_its_words_once_its_stamps_change_or_age(
         bind_catalogue(FakeCatalogue(build_id="build-2"))
     elif change == "generation":
         generation.advance("gen-2")
+    elif change == "release":
+        stack.enter_context(bound_release(second_release))
     elif change == "age":
         clock.now += timedelta(days=1)
     calls = graph.calls
@@ -952,6 +965,7 @@ def test_a_cached_frame_rereads_its_words_once_its_stamps_change_or_age(
         "none": ("gen-1", "build-1"),
         "catalogue": ("gen-1", "build-2"),
         "generation": ("gen-2", "build-1"),
+        "release": ("gen-1", f"build-1@{second_release.release_id}"),
         "age": ("gen-1", "build-1"),
     }[change]
     assert artifacts.calls.count(("get", Tier.working, digest)) == 1

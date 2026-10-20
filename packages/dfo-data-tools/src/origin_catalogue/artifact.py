@@ -106,6 +106,7 @@ import pyarrow.parquet as pq
 
 from artifact_publication.jobs import Ingestion
 from artifact_publication.uri import join_uri, read_uri_bytes, write_uri_bytes_if_unchanged
+from graph_release.context import origin_release_enabled
 from origin_catalogue.arc_tables import EMPTY_ARC_TABLES, ArcTables
 from origin_catalogue.catalogue import (
     BaseVariable,
@@ -125,6 +126,7 @@ from origin_catalogue.families import (
     FamilySummary,
     FamilyTables,
     family_tables,
+    summarise_table,
 )
 from origin_catalogue.origins import ORIGINS, UN_SYSTEM, DataCommons
 from origin_catalogue.schema import (
@@ -852,6 +854,9 @@ def load_catalogue(
     `CatalogueTooLargeError`, before reading any table, a build whose
     `resident_bytes`, `un_mirror.resident_bytes`, `arc_tables.resident_bytes`
     and `families.resident_bytes` together exceed `max_resident_bytes`.
+
+    With `GRAPH_RELEASE_ORIGIN` on, the snapshot also summarises the base arc table alone
+    (`CatalogueSnapshot.base_families`), which `max_resident_bytes` does not count.
     """
     manifest, tables = load_tables(base_uri, max_resident_bytes=max_resident_bytes)
     prefix = join_uri(format_root(base_uri), VERSIONS_PREFIX, manifest.build_id)
@@ -872,6 +877,8 @@ def load_catalogue(
         arcs=arcs,
         families=families,
         un_system_enabled=un_system_enabled,
+        # A graph release answers the DFO half of each family, which joins these.
+        base_families=summarise_table(arcs.base) if origin_release_enabled() else None,
     )
 
 

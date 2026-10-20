@@ -8,14 +8,16 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextlib import asynccontextmanager
 from unittest import mock
 
 import pytest
 from fastapi import FastAPI
 
+import skills_index.build as build_module
 import skills_index.shared as shared_module
+from graph_release.context import bound_release_or_none
 from skills_index.config import HIERARCHY_PROPERTIES
 from skills_index.graph import SubjectsCoverage, SubjectsPage
 from skills_index.shared import acquire_shared_index, release_shared_index
@@ -27,6 +29,15 @@ from .conftest import FakeSkillsGraph, skill_node
 def _isolated_singleton():
     with shared_module._singleton.isolated():
         yield
+
+
+@pytest.fixture(autouse=True)
+def _origin_flag_off(monkeypatch):
+    """The timer tests run with `GRAPH_RELEASE_ORIGIN` off. The swap tests turn it on."""
+    monkeypatch.delenv("GRAPH_RELEASE_ORIGIN", raising=False)
+
+
+_real_sleep = asyncio.sleep
 
 
 class _CountingRosterGraph:
@@ -520,5 +531,209 @@ def test_a_later_acquirer_passing_graph_none_is_fine():
         finally:
             await release_shared_index(first)
             await release_shared_index(first)
+
+    asyncio.run(scenario())
+
+
+class _ReleaseRecordingGraph(_CountingRosterGraph):
+    """Records the release bound to each build attempt's roster read."""
+
+    def __init__(self, *, fail_on_attempts: frozenset[int] = frozenset()) -> None:
+        super().__init__(fail_on_attempts=fail_on_attempts)
+        self.bound: list[object] = []
+
+    def node_subjects_many(
+        self, dcids: Sequence[str], *, property: str, max_results: int
+    ) -> dict[str, SubjectsPage]:
+        self.bound.append(bound_release_or_none())
+        return super().node_subjects_many(dcids, property=property, max_results=max_results)
+
+
+class _FakeReleaseService:
+    """Serves one release at a time and runs swap callbacks in another thread, as the
+    service's recheck thread does."""
+
+    def __init__(self, served: object) -> None:
+        self.served = served
+        self.callbacks: list[Callable[[object], None]] = []
+
+    def snapshot(self) -> object:
+        return self.served
+
+    def on_swap(self, callback: Callable[[object], None]) -> Callable[[], None]:
+        self.callbacks.append(callback)
+        return lambda: self.callbacks.remove(callback)
+
+    def swap(self, release: object) -> None:
+        self.served = release
+        thread = threading.Thread(target=lambda: [cb(release) for cb in list(self.callbacks)])
+        thread.start()
+        thread.join()
+
+
+async def _yield_to_the_loop() -> None:
+    for _ in range(10):
+        await _real_sleep(0)
+
+
+def test_with_the_origin_flag_a_swap_rebuilds_once_under_the_new_release(monkeypatch):
+    monkeypatch.setenv("GRAPH_RELEASE_ORIGIN", "true")
+    monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1")
+    first, second = object(), object()
+
+    async def scenario() -> None:
+        fake_sleep, calls = _recording_sleep()
+        service = _FakeReleaseService(first)
+        graph = _ReleaseRecordingGraph()
+        with mock.patch.object(shared_module.asyncio, "sleep", fake_sleep):
+            shared = await acquire_shared_index(
+                graph=graph,
+                refresh_seconds=900.0,
+                release=service,  # ty: ignore[invalid-argument-type]
+            )
+            try:
+                await shared.wait_for_build_attempt()
+                first_index = shared.index
+                assert first_index is not None
+                await _yield_to_the_loop()
+                assert graph.bound == [first]
+
+                service.swap(second)
+                await shared.wait_for_build_attempt()
+                await _yield_to_the_loop()
+                assert graph.bound == [first, second]
+                assert shared.index is not first_index
+                assert shared.seconds_until_next_rebuild() == 900.0
+            finally:
+                await release_shared_index(shared)
+
+        # No timer: the task waits on swaps alone.
+        assert calls == []
+        assert service.callbacks == []
+
+    asyncio.run(scenario())
+
+
+def test_with_the_origin_flag_a_failed_build_keeps_the_index_and_retries_with_backoff(
+    monkeypatch,
+):
+    monkeypatch.setenv("GRAPH_RELEASE_ORIGIN", "true")
+    monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1")
+    first, second = object(), object()
+
+    async def scenario() -> None:
+        fake_sleep, calls = _recording_sleep()
+        service = _FakeReleaseService(first)
+        graph = _ReleaseRecordingGraph(fail_on_attempts=frozenset({2, 3}))
+        with mock.patch.object(shared_module.asyncio, "sleep", fake_sleep):
+            shared = await acquire_shared_index(
+                graph=graph,
+                refresh_seconds=900.0,
+                release=service,  # ty: ignore[invalid-argument-type]
+            )
+            try:
+                await shared.wait_for_build_attempt()  # Attempt 1 succeeds.
+                first_index = shared.index
+                assert first_index is not None
+
+                service.swap(second)
+                await shared.wait_for_build_attempt()  # Attempt 2 fails.
+                assert shared.index is first_index
+                await shared.wait_for_build_attempt()  # Attempt 3 fails.
+                assert shared.index is first_index
+                await shared.wait_for_build_attempt()  # Attempt 4 succeeds.
+                await _yield_to_the_loop()
+                assert shared.index is not first_index
+                assert graph.bound == [first, second, second, second]
+            finally:
+                await release_shared_index(shared)
+
+        initial = shared_module.SKILLS_INDEX_FIRST_BUILD_RETRY_INITIAL_SECONDS
+        assert calls == [initial, initial * 2]
+
+    asyncio.run(scenario())
+
+
+def test_without_the_origin_flag_a_release_service_gets_no_swap_callback_and_the_timer_runs():
+    first = object()
+
+    async def scenario() -> None:
+        fake_sleep, calls = _recording_sleep()
+        service = _FakeReleaseService(first)
+        graph = _ReleaseRecordingGraph()
+        with mock.patch.object(shared_module.asyncio, "sleep", fake_sleep):
+            shared = await acquire_shared_index(
+                graph=graph,
+                refresh_seconds=900.0,
+                release=service,  # ty: ignore[invalid-argument-type]
+            )
+            try:
+                await shared.wait_for_build_attempt()
+                await shared.wait_for_build_attempt()
+                assert service.callbacks == []
+                assert graph.bound[:2] == [first, first]
+            finally:
+                await release_shared_index(shared)
+
+        assert calls[:2] == [900.0, 900.0]
+
+    asyncio.run(scenario())
+
+
+class _SkillReadFailingOnceGraph(FakeSkillsGraph):
+    """Two published skills whose node reads each take their own chunk, the read naming
+    `skill/b` raising on its first call alone."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            subjects={("AgentSkill", "typeOf"): ["skill/a", "skill/b"]},
+            arcs={"skill/a": skill_node("a"), "skill/b": skill_node("b")},
+        )
+        self.failed = False
+
+    def node_arcs_many(
+        self,
+        dcids: Sequence[str],
+        *,
+        properties: Sequence[str],
+        deadline: float | None = None,
+    ) -> dict[str, dict[str, tuple[str, ...]] | None]:
+        if "skill/b" in dcids and not self.failed:
+            self.failed = True
+            raise RuntimeError("simulated read failure for skill/b")
+        return super().node_arcs_many(dcids, properties=properties, deadline=deadline)
+
+
+def test_with_the_origin_flag_a_build_with_failed_reads_retries_until_a_clean_build(
+    monkeypatch,
+):
+    monkeypatch.setenv("GRAPH_RELEASE_ORIGIN", "true")
+    monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1")
+    monkeypatch.setattr(build_module, "_FRONT_MATTER_CHUNK_SIZE", 1)
+
+    async def scenario() -> None:
+        fake_sleep, calls = _recording_sleep()
+        service = _FakeReleaseService(object())
+        with mock.patch.object(shared_module.asyncio, "sleep", fake_sleep):
+            shared = await acquire_shared_index(
+                graph=_SkillReadFailingOnceGraph(),
+                refresh_seconds=900.0,
+                release=service,  # ty: ignore[invalid-argument-type]
+            )
+            try:
+                await shared.wait_for_build_attempt()
+                partial = shared.index
+                assert partial is not None
+                assert list(partial.skills) == ["a"]
+
+                await asyncio.wait_for(shared.wait_for_build_attempt(), timeout=5)
+                recovered = shared.index
+                assert recovered is not None
+                assert list(recovered.skills) == ["a", "b"]
+            finally:
+                await release_shared_index(shared)
+
+        # One backoff after the build with a failed read, then a wait on swaps alone.
+        assert calls == [shared_module.SKILLS_INDEX_FIRST_BUILD_RETRY_INITIAL_SECONDS]
 
     asyncio.run(scenario())

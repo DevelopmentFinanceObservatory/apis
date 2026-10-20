@@ -35,6 +35,7 @@ from dc_sdmx import SdmxClient
 from dfo_platform.request_deadline import submit_detached
 from graph_generation import UNKNOWN_GENERATION, GenerationProvider, GenerationStamp
 from graph_generation.stamp import ttu_from_stamp_key
+from graph_release.context import coverage_views_enabled
 from origin_catalogue.context import current_catalogue
 from origin_catalogue.graph import (
     ARCS_CACHE_SIZE,
@@ -254,7 +255,7 @@ class LiveGraphClient:
             node_arc_call_concurrency=node_arc_call_concurrency,
         )
         self._detect_cache: cachetools.TLRUCache[
-            tuple[str, str, bool, frozenset[str] | None, str, str, int], Detection
+            tuple[str, str, bool, frozenset[str] | None, str | None, str, str, int], Detection
         ] = cachetools.TLRUCache(
             maxsize=detect_cache_size, ttu=_ttu_from_stamp_key, timer=self._timer
         )
@@ -468,17 +469,20 @@ class LiveGraphClient:
 
         The cache keys on the generation stamp and the catalogue's build, UN setting and
         source scope, since admission ran before the cut and the scope adds rows past it
-        (`with_rival_families`). A detection enters the cache when its UN resolve
-        succeeds, before `Detection.un` settles, so a failed or unfinished one is never served
-        from it.
+        (`with_rival_families`). With `GRAPH_RELEASE_COVERAGE` on it also keys on the served
+        code index's content hash, since the rival rows come from the bound release's index. A
+        detection enters the cache when its UN resolve succeeds, before `Detection.un` settles,
+        so a failed or unfinished one is never served from it.
         """
         catalogue = current_catalogue()
         stamp = self._generation.stamp()
+        index = get_index()
         cache_key = (
             stamp.key,
             catalogue.build_id,
             catalogue.un_system_enabled,
             catalogue.scope,
+            index.stamp.content_hash if coverage_views_enabled() else None,
             query,
             self._resolve_target,
             self._detect_k,
@@ -494,7 +498,9 @@ class LiveGraphClient:
         # cancels its source) leaves it for `settle` to finish.
         un: Future[tuple[DetectedSV, ...] | None] = Future()
         un.set_running_or_notify_cancel()
-        hits = recall_hits(self._resolve_ours(query), catalogue=catalogue, detect_k=self._detect_k)
+        hits = recall_hits(
+            self._resolve_ours(query), catalogue=catalogue, detect_k=self._detect_k, index=index
+        )
         detection = Detection(
             candidates=stand_candidates(hits, catalogue=catalogue), un=un, hits=hits
         )
