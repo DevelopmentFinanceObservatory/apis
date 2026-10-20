@@ -224,6 +224,18 @@ class _UniversalBindOutput(BaseModel):
     )
 
 
+# The header line of the bind prompt's DROPPED QUALIFIERS block; `promptlab.bindmenu` parses it.
+DROPPED_QUALIFIERS_HEADER = (
+    "DROPPED QUALIFIERS (the query asked for these but no earlier stage could "
+    "apply them -- for the shape you choose, if one of these phrases asks for "
+    'every value of one of its constraint slots (e.g. "across all flows", '
+    '"regardless of flow type"), bind that slot kind=unbound, evidence=requested_all, '
+    "and set that binding's own requested_all_phrase to the phrase verbatim; "
+    "leave requested_all_phrase null when no phrase names one of the chosen "
+    "shape's own constraint slots):"
+)
+
+
 @functools.cache
 def bind_schema(size: int) -> type[_UniversalBindOutput]:
     """`_UniversalBindOutput` for a menu of `size` shapes, whose `measuring` holds at most
@@ -846,15 +858,7 @@ def _build_universal_bind_prompt(
         )
         lines.append("")
     if dropped_qualifier_phrases:
-        lines.append(
-            "DROPPED QUALIFIERS (the query asked for these but no earlier stage could "
-            "apply them -- for the shape you choose, if one of these phrases asks for "
-            'every value of one of its constraint slots (e.g. "across all flows", '
-            '"regardless of type"), bind that slot kind=unbound, evidence=requested_all, '
-            "and set that binding's own requested_all_phrase to the phrase verbatim; "
-            "leave requested_all_phrase null when no phrase names one of the chosen "
-            "shape's own constraint slots):"
-        )
+        lines.append(DROPPED_QUALIFIERS_HEADER)
         lines.extend(f"  {phrase}" for phrase in dropped_qualifier_phrases)
         lines.append("")
     lines.append(f"CANDIDATE SHAPES ({len(shapes)} total):")

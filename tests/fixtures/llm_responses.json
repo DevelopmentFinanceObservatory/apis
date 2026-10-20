@@ -19372,5 +19372,681 @@
         "rating": 1.0
       }
     ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:3914f949f96b61924afb6a14ff55e61f1e702b69": {
+    "chosen_shape_index": 0,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "dac2aAidType",
+        "kind": "value",
+        "value_dcids": [
+          "DAC2aAidType206"
+        ],
+        "evidence": "sole_option",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "dacTypeOfFinance",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": null,
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 0,
+        "rating": 1.0
+      }
+    ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:6add25994af30e724adbbeced6a418f300a9564b": {
+    "chosen_shape_index": 0,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "dac2aAidType",
+        "kind": "value",
+        "value_dcids": [
+          "DAC2aAidType206"
+        ],
+        "evidence": "sole_option",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "dacTypeOfFinance",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": null,
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 0,
+        "rating": 1.0
+      }
+    ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:b0ba4ec9810d40c34c01b5d9bccf718bb0a011b2": {
+    "chosen_shape_index": 0,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "sdg_sex",
+        "kind": "value",
+        "value_dcids": [
+          "SDG_SexEnum_F"
+        ],
+        "evidence": "sole_option",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": null,
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 0,
+        "rating": 1.0
+      }
+    ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:73d5d465a24c3c051ca715d7203dcfb5245cd839": {
+    "chosen_shape_index": 1,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "medicalCondition",
+        "kind": "value",
+        "value_dcids": [
+          "Tuberculosis"
+        ],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": [
+      0
+    ],
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 0,
+        "rating": 1.0
+      },
+      {
+        "index": 1,
+        "rating": 1.0
+      }
+    ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:7a9e3f4b0f5a8c0ee7583d02ca7e3c5dfa6344d0": {
+    "chosen_shape_index": 1,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "sdg_sex",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": null,
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 1,
+        "rating": 1.0
+      }
+    ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:7be2b8ecd758d087389d435e29ed79e278bf81f0": {
+    "chosen_shape_index": 2,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "activitySource",
+        "kind": "value",
+        "value_dcids": [
+          "GrossDomesticProduction"
+        ],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "economicSector",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "naics",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": [
+      3,
+      4,
+      5
+    ],
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 2,
+        "rating": 1.0
+      },
+      {
+        "index": 3,
+        "rating": 0.95
+      },
+      {
+        "index": 4,
+        "rating": 0.9
+      },
+      {
+        "index": 5,
+        "rating": 0.9
+      }
+    ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:e0f0c1614eca48a20b04f90f074f4590461311f9": {
+    "chosen_shape_index": 0,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "age",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "nativity",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "employment",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "race",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "placeOfResidenceClassification",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "religion",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "literacyStatus",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "gender",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "residenceType",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "educationalAttainment",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "placeOfBirth",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "armedForcesStatus",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": null,
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 0,
+        "rating": 1.0
+      }
+    ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:fcaa04f3103cdc04609d6c89053171ab5191d30b": {
+    "chosen_shape_index": 1,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "activitySource",
+        "kind": "value",
+        "value_dcids": [
+          "GrossDomesticProduction"
+        ],
+        "evidence": "sole_option",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": [
+      2
+    ],
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 1,
+        "rating": 1.0
+      },
+      {
+        "index": 2,
+        "rating": 0.8
+      }
+    ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:647bb6159627d9b728190627284519643fafcc35": {
+    "chosen_shape_index": 2,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "activitySource",
+        "kind": "value",
+        "value_dcids": [
+          "GrossDomesticProduction"
+        ],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "economicSector",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "naics",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": [
+      3,
+      4,
+      5
+    ],
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 2,
+        "rating": 1.0
+      },
+      {
+        "index": 3,
+        "rating": 0.95
+      },
+      {
+        "index": 4,
+        "rating": 0.9
+      },
+      {
+        "index": 5,
+        "rating": 0.9
+      }
+    ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:2ca137eef6ad6d4a726283c7c91d4386710b1e57": {
+    "chosen_shape_index": 0,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "gender",
+        "kind": "value",
+        "value_dcids": [
+          "Female"
+        ],
+        "evidence": "sole_option",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": null,
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 0,
+        "rating": 1.0
+      }
+    ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:970aa544ffe7d590d9b79182702c3644ebc91478": {
+    "chosen_shape_index": 0,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "gender",
+        "kind": "value",
+        "value_dcids": [
+          "Female"
+        ],
+        "evidence": "sole_option",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": null,
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 0,
+        "rating": 1.0
+      }
+    ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:7f0407fa989ad0677605d18fb922f2ccb8a09d3d": {
+    "chosen_shape_index": 5,
+    "bindings": [],
+    "also_plausible": [
+      2
+    ],
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 5,
+        "rating": 1.0
+      },
+      {
+        "index": 2,
+        "rating": 0.8
+      },
+      {
+        "index": 0,
+        "rating": 0.5
+      }
+    ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:bef83aa22b5c85f28dc618d6b260c6518ca2b3d3": {
+    "chosen_shape_index": 0,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "gender",
+        "kind": "value",
+        "value_dcids": [
+          "Female"
+        ],
+        "evidence": "sole_option",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": null,
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 0,
+        "rating": 1.0
+      }
+    ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:d667795e661c5a78b8e1699ae3cee49e70396c6f": {
+    "chosen_shape_index": 0,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "crsCooperationModality",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "crsPurpose",
+        "kind": "value",
+        "value_dcids": [
+          "CRSPurposeCode110"
+        ],
+        "evidence": "sole_option",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "crsTypeOfFinance",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "crsTypeOfFlow",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": null,
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 0,
+        "rating": 1.0
+      }
+    ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:ed6013f9c68b9678241c617851e18cf7703d93a5": {
+    "chosen_shape_index": 0,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "crsCooperationModality",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "crsPurpose",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "crsTypeOfFinance",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "crsTypeOfFlow",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": null,
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 0,
+        "rating": 1.0
+      }
+    ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:ad06d9cd8bd51e4f908c406c29d6c691c14a5169": {
+    "chosen_shape_index": 0,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "crsCooperationModality",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "crsPurpose",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "crsTypeOfFinance",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "crsTypeOfFlow",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": null,
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 0,
+        "rating": 1.0
+      }
+    ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:b0ec9fd8ade10fe5b2613d0987a2219a35fcc928": {
+    "chosen_shape_index": 0,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "dac2aAidType",
+        "kind": "value",
+        "value_dcids": [
+          "DAC2aAidType206"
+        ],
+        "evidence": "sole_option",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "dacTypeOfFinance",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": null,
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 0,
+        "rating": 1.0
+      }
+    ]
   }
 }
