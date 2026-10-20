@@ -357,7 +357,6 @@ def _elect(
     conf.pool = PolicyPool(
         measuring=(pick, *(i for i in pool if i != pick)),
         election=dict(conf.election),
-        rated=True,
     )
     holds = _holds(menu, answers, pick, conf.pool.measuring, t)
     choice = menu.request.apply_policies(conf.pool, holds=holds)
@@ -392,14 +391,15 @@ def _holds(
     `pick`'s slots bind them at the thresholds (`_bind_slot`): the value and set drafts the
     phrase names (`gemini.mentioned_drafts`), and the slots it asks for in full.
 
-    A shape holds the named values when it holds each on its own slot as `pick` does
-    (`gemini.holds_drafted_values`), or when Jev recognises a value on a slot of that shape
-    that `pick` lacks: one dataset's taxonomy then states the constraint another's states
-    on `pick`, as DAC2a's type of finance states the CRS's loans. The second test does not
-    pair constraints one to one, so a shape stating one of `pick`'s several constraints in
-    its own taxonomy holds them all. A slot asked for in full it holds as the Gemini binder
-    reads one (`gemini.holds_requested_slots`), so "across all sectors" keeps every
-    sector."""
+    A shape holds a named value when it holds it on its own slot as `pick` does
+    (`gemini.holds_drafted_values`), or in exchange for a value Jev recognises on a slot of
+    that shape that `pick` lacks: one dataset's taxonomy then states the constraint
+    another's states on `pick`, as DAC2a's type of finance states the CRS's loans. Each
+    such value stands for one constraint of `pick`, so a shape holds the named values only
+    when it states at least as many of them in its own taxonomy as it lacks on `pick`'s
+    slots, and "health loans" keeps the CRS sector DAC2a has no slot for. A slot asked for
+    in full it holds as the Gemini binder reads one (`gemini.holds_requested_slots`), so
+    "across all sectors" keeps every sector."""
     shapes = menu.request.shapes
 
     def drafts(s: int) -> list[SlotBindingDraft]:
@@ -408,13 +408,14 @@ def _holds(
     on_pick = drafts(pick)
     named = mentioned_drafts(on_pick)
     pick_slots = {slot.property_dcid for slot in shapes[pick].slot_keys}
+
+    def holds_named(k: int) -> bool:
+        lacked = sum(not holds_drafted_values(shapes[pick], shapes[k], [d]) for d in named)
+        stated = sum(d.property_dcid not in pick_slots for d in mentioned_drafts(drafts(k)))
+        return lacked <= stated
+
     return {
-        k: (
-            holds_drafted_values(shapes[pick], shapes[k], named)
-            or any(d.property_dcid not in pick_slots for d in mentioned_drafts(drafts(k)))
-        )
-        and holds_requested_slots(shapes[pick], shapes[k], on_pick)
-        for k in pool
+        k: holds_named(k) and holds_requested_slots(shapes[pick], shapes[k], on_pick) for k in pool
     }
 
 

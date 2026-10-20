@@ -7,9 +7,11 @@ tag (`decode`): ``$tuple``, ``$frozenset``, ``$dataclass``, ``$namedtuple``, ``$
 and ``$dict``, each naming its class by module and qualified name.
 
 `replay` runs an item through the Jev request builders and `jev_assemble`, then through the
-steps the engine applies after a binder returns (`bind.split_stray_bindings`,
-`bind.rank_elected`, `_validate_requested_all_bindings`, `_validate_sole_option_bindings`),
-and reads the result in the form `expected` holds (`canonical`).
+steps the engine applies after a binder returns (`bind.split_stray_bindings`, the menu-rank
+election among the house policies' survivors `phase_rank_bind._elected_index`, and the
+settlement of the elected shape's bindings `phase_election._settle_bindings`), and reads
+the result in the form `expected` holds (`canonical`). The items store no query qualifier
+matches, so the settlement forces no query code.
 """
 
 from __future__ import annotations
@@ -20,16 +22,16 @@ import json
 from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 from code_index.shared import get_index
+from entity_resolution import Admission, EntityResolver
 from search.engine.bind import (
     SlotBindingDraft,
     _UniversalBindOutput,
-    rank_elected,
     split_stray_bindings,
 )
-from search.engine.binders.base import BindRequest
+from search.engine.binders.base import BindRequest, BindResult
 from search.engine.binders.jev_assemble import (
     Confidence,
     JevAnswers,
@@ -38,14 +40,16 @@ from search.engine.binders.jev_assemble import (
 )
 from search.engine.binders.jev_menu import jev_menu
 from search.engine.binders.jev_request import bind_request, quantity_request
+from search.engine.clients.graph import EngineGraphClient
+from search.engine.clients.llm import SupportsLLM
+from search.engine.clients.sdmx import EngineSdmxClient
+from search.engine.interpret import Recall
 from search.engine.quantity_read import QuantityOutput
-from search.engine.region.phase_election import _validate_sole_option_bindings
-from search.engine.region.phase_rank_bind import (
-    _HousePolicyStep,
-    _names_base,
-    _validate_requested_all_bindings,
-)
+from search.engine.region.phase_election import _settle_bindings
+from search.engine.region.phase_rank_bind import _elected_index, _HousePolicyStep, _names_base
+from search.engine.region.state import ResolveState
 from search.engine.shape import ShapeDraft
+from tests.engine._fake_coverage import empty_coverage_snapshot
 
 GOLDEN = Path(__file__).parents[1] / "fixtures" / "jev" / "golden"
 _BIND_FIELDS = (
@@ -217,25 +221,60 @@ def canonical(
     }
 
 
-def after_bind(output: _UniversalBindOutput, request: BindRequest) -> dict[str, Any]:
-    """`canonical` of a binder's output after the steps the engine applies once the binder
-    returns: the stray split, the menu-rank election, and the ``requested_all`` and
-    ``sole_option`` checks on the elected shape."""
+def _state(result: BindResult, request: BindRequest) -> ResolveState:
+    """The part state the election reads once `request`'s binder returned `result`; the
+    services it never reads are unset."""
+    state = ResolveState(
+        variable=request.variable,
+        entities=[],
+        date_request=None,
+        detect_query=request.variable,
+        role_query=request.variable,
+        dropped_qualifier_phrases=list(request.dropped_qualifier_phrases),
+        operations=request.frame.operations.value,
+        pac=True,
+        graph=cast(EngineGraphClient, None),
+        resolver=cast(EntityResolver, None),
+        admission=cast(Admission, None),
+        llm=cast(SupportsLLM, None),
+        sdmx=cast(EngineSdmxClient, None),
+        deadline=None,
+        pre_resolved=None,
+        variable_index=0,
+        emit=None,
+        include_option_coverage=False,
+        stream_slot_options=False,
+        include_observations=False,
+        stream_observations=False,
+        unit_text=None,
+        materialise_graph=None,
+        materialise_sdmx=None,
+        timing={},
+        warnings=[],
+        rcl=Recall(candidates=[], resolutions={}),
+        coverage=empty_coverage_snapshot(),
+    )
+    state.frame = request.frame
+    state.capped_shapes = list(request.shapes)
+    state.menu_availability = list(request.availability)
+    state.bind_decision = result
+    return state
+
+
+def after_bind(result: BindResult, request: BindRequest) -> dict[str, Any]:
+    """`canonical` of a binder's result after the steps the engine applies once the binder
+    returns: the stray split, the menu-rank election among the house policies' survivors
+    (`_elected_index`), and the settlement of the elected shape's bindings
+    (`_settle_bindings`)."""
     shapes = request.shapes
-    output, strays = split_stray_bindings(output, shapes)
+    output, strays = split_stray_bindings(result.output.model_copy(deep=True), shapes)
     if output.ask or not 0 <= output.chosen_shape_index < len(shapes):
         return canonical(output, strays, None, frozenset())
-    elected = rank_elected(shapes, output, availability=request.availability)
-    slot_properties = frozenset(
-        s.property_dcid for s in shapes[elected].slot_keys if s.property_dcid is not None
-    )
-    validated, applied = _validate_requested_all_bindings(
-        list(output.bindings),
-        list(request.dropped_qualifier_phrases),
-        slot_properties=slot_properties,
-    )
-    settled = _validate_sole_option_bindings(validated, shapes[elected])
-    return canonical(output.model_copy(update={"bindings": settled}), strays, elected, applied)
+    state = _state(result, request)
+    state.bind_result = output
+    elected = _elected_index(state)
+    _settle_bindings(state, shapes[elected])
+    return canonical(state.bind_result, strays, elected, state.applied_dropped_qualifier_phrases)
 
 
 def replay(
@@ -248,7 +287,7 @@ def replay(
     quantity = ground(assemble_quantity(answers, item.denominators), item.quantity_variable, shapes)
     result, conf = bind_result(jev_menu(item.request), answers, stated_form=quantity.stated_form)
     out = {
-        "bind": after_bind(result.output, item.request),
+        "bind": after_bind(result, item.request),
         "quantity": quantity.model_dump(mode="json"),
         "rules": conf.rules,
     }

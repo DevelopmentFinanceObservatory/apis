@@ -33,6 +33,8 @@ from search.engine.binders.gemini import (
     shape_ratings,
 )
 from search.engine.binders.house_policy import PolicyChoice, PolicyPool
+from search.engine.binders.house_policy import context_of as policy_context_of
+from search.engine.binders.house_policy import shape_facts as policy_shape_facts
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
@@ -41,6 +43,7 @@ from search.engine.frame import Frame, door_frame
 from search.engine.interpret import Recall
 from search.engine.qualifier_match import QualifierMatch
 from search.engine.quantity_read import QuantityOutput
+from search.engine.region import phase_rank_bind
 from search.engine.region.phase_rank_bind import _elected_index, _HousePolicyStep, _phase_bind
 from search.engine.region.state import ResolveState
 from search.engine.role_text import DoorRole
@@ -527,6 +530,40 @@ def test_the_policy_step_runs_once_per_bind_call_that_elects(
     assert binder.calls == calls
     decision = state.bind_decision
     assert (decision is not None and decision.policy_choice is not None) == bool(calls)
+
+
+def test_the_policy_step_reads_each_shape_s_facts_once(monkeypatch: pytest.MonkeyPatch):
+    """The Jev binder asks `chooses_on` about 25 times per bind, so the step reads each
+    shape's facts once and each pool's context once, however often it is asked."""
+    read: list[int] = []
+    contexts: list[frozenset[int]] = []
+
+    def facts(shapes, availability, indices, *, code_index):
+        read.extend(indices)
+        return policy_shape_facts(shapes, availability, indices, code_index=code_index)
+
+    def context(frame, admitted, pool, **kwargs):
+        contexts.append(frozenset(pool))
+        return policy_context_of(frame, admitted, pool, **kwargs)
+
+    monkeypatch.setattr(phase_rank_bind, "shape_facts", facts)
+    monkeypatch.setattr(phase_rank_bind, "context_of", context)
+    step = _HousePolicyStep(
+        shapes=[_CRS, _DAC2A],
+        frame=_TO_UGANDA,
+        admitted_qualifiers=(),
+        availability=(),
+        code_index=get_index(),
+    )
+
+    for _ in range(3):
+        step.chooses_on((0, 1), "populationType")
+        step.chooses_on((1, 0), "measuredProperty")
+        step.chooses_on((1,), "measuredProperty")
+    step(PolicyPool(measuring=(0, 1)))
+
+    assert sorted(read) == [0, 1]
+    assert sorted(contexts, key=sorted) == [frozenset({0, 1}), frozenset({1})]
 
 
 class _MiscountingBinder(GeminiBinder):

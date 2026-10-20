@@ -188,7 +188,7 @@ def _bind_questions(menu: JevMenu, *, query: bool) -> dict[str, JevQuestion]:
                 type="noul",
                 instructions=(
                     f"Does the phrase '{phrase}' ask for every value of {label}, as 'across "
-                    "all flows' or 'regardless of type' do?"
+                    "all flows' or 'regardless of flow type' do?"
                 ),
             )
     for s, qmenu in enumerate(menu.menus):

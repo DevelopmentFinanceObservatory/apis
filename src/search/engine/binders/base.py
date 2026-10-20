@@ -111,15 +111,13 @@ class BindResult:
     lacks leave it (`bind.split_stray_bindings`), and with the house policies' election in
     place of the binder's. `policy_pool` is the pool the house policies chose from and
     `policy_choice` what they chose, both None on a reply that elects no shape. `binder`
-    names the binder that answered, and `fallback_reason` why the configured binder's
-    primary did not, None when it did.
+    names the binder that answered.
     """
 
     output: _UniversalBindOutput
     binder: str
     policy_pool: PolicyPool | None = None
     policy_choice: PolicyChoice | None = None
-    fallback_reason: str | None = None
 
 
 class Binder(Protocol):

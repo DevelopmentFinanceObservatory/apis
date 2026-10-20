@@ -4,9 +4,8 @@
 and from its fallback, the Gemini binder, when the Jev path gave no answer: a
 `jev.JevFailure` (a timeout or overrun ceiling, a 429, a 5xx, a 402, an open breaker, a
 request too large to send, any other Jev error), or any other exception, which is a defect
-and is logged as one. A bind call it serves from the fallback says so in
-`BindResult.fallback_reason`, and every call it serves from the fallback is noted in the
-enclosing `recording_fallbacks` record, so the request that holds it can decline to cache
+and is logged as one. Every call it serves from the fallback is noted in the enclosing
+`recording_fallbacks` record, so the request that holds it can decline to cache
 an answer its configured binder did not give. A successful fallback is a normal answer and
 marks nothing degraded.
 
@@ -183,7 +182,7 @@ class FallbackBinder:
             ms=elapsed_ms(started),
             failure=failure,
         )
-        return dataclasses.replace(result, fallback_reason=failure.reason), usage
+        return result, usage
 
     def _earlier_failure(self, part: int | None) -> JevFailure | None:
         """The failure an earlier call of `part` fell back on, recorded for this call as one

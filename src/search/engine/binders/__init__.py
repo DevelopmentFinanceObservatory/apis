@@ -18,7 +18,7 @@ from search.engine.binders.jev import JevBinder
 from search.engine.binders.part_log import DirectBinder
 from search.engine.binders.shadow import ShadowBinder
 from search.engine.config import settings
-from search.engine.extraction_store import normalise_query
+from search.engine.response_cache_keys import normalise_query
 
 
 def configured_binder(query: str | None = None) -> Binder:

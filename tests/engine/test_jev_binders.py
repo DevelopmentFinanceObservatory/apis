@@ -284,9 +284,8 @@ _ELECTS_FIRST = _UniversalBindOutput(chosen_shape_index=0)
     ],
 )
 def test_a_failed_jev_call_falls_back_to_gemini(caplog, fail, reason):
-    """Each failure serves both calls from Gemini, records why on the bind result and in
-    the request's fallback record, logs it on the ``binder_part`` line, and runs the house
-    policies once."""
+    """Each failure serves both calls from Gemini, records why in the request's fallback
+    record, logs it on the ``binder_part`` line, and runs the house policies once."""
     gemini = _GeminiDouble(_ELECTS_FIRST)
     binder = FallbackBinder(primary=JevBinder(ask=FakeAsk(fail=fail)), fallback=gemini)
     step = _CountingStep()
@@ -301,7 +300,7 @@ def test_a_failed_jev_call_falls_back_to_gemini(caplog, fail, reason):
         quantity, (result, usage) = asyncio.run(run())
 
     assert quantity == (_GEMINI_QUANTITY, _GEMINI_USAGE)
-    assert (result.binder, result.fallback_reason, usage) == ("gemini", reason, _GEMINI_USAGE)
+    assert (result.binder, usage) == ("gemini", _GEMINI_USAGE)
     assert result.output.chosen_shape_index == 0
     assert step.calls == 1
     assert record.reasons == [reason, reason]
@@ -358,8 +357,7 @@ def test_a_part_whose_jev_call_fell_back_sends_its_later_calls_to_gemini_alone()
         first, other = asyncio.run(run())
 
     assert len(ask.requests) == 2
-    assert (first.binder, first.fallback_reason) == ("gemini", "timeout")
-    assert (other.binder, other.fallback_reason) == ("gemini", "timeout")
+    assert (first.binder, other.binder) == ("gemini", "gemini")
     assert record.reasons == ["timeout"] * 3
 
 
@@ -377,7 +375,7 @@ def test_the_fallback_hands_the_jev_binder_a_policy_step_that_takes_ratings(monk
 
     result, _usage = asyncio.run(binder.bind(_golden_request(step), llm=None))
 
-    assert (result.binder, result.fallback_reason) == ("jev", None)
+    assert result.binder == "jev"
     assert step.ratings == [ratings]
 
 
@@ -401,7 +399,7 @@ def test_a_jev_answer_is_served_without_the_fallback(caplog):
     with recording_fallbacks() as record:
         result, _usage = asyncio.run(binder.bind(_golden_request(step), llm=None))
 
-    assert (result.binder, result.fallback_reason) == ("jev", None)
+    assert result.binder == "jev"
     assert gemini.requests == []
     assert record.reasons == []
     assert step.calls == (0 if result.output.ask else 1)

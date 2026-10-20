@@ -3,6 +3,7 @@ house policies on answer sets no dev item reaches."""
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
@@ -24,7 +25,7 @@ from search.engine.binders.jev_assemble import (
 from search.engine.binders.jev_menu import jev_menu
 from search.engine.binders.jev_request import bind_request, quantity_request
 from search.engine.frame import Frame, FrameNormalisation, Stated, StatedBy, door_frame
-from search.engine.qualifier_match import QualifierMatch, QualifierTie
+from search.engine.qualifier_match import QualifierMatch, QualifierTie, names_plain_name
 from search.engine.region.phase_rank_bind import _HousePolicyStep
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.models import Axis, GraphRef
@@ -621,6 +622,51 @@ def test_only_a_shape_measuring_the_phrase_above_ask_is_elected():
     assert conf.pool is not None and conf.pool.measuring == (1,)
 
 
+# A CRS shape with a sector and a type of finance, and a DAC2a shape stating the type of
+# finance in its own taxonomy, with no sector; `net_vs_gross` prefers the DAC2a shape.
+_CRS_LOANS = _shape(
+    0,
+    population="FinancialFlow",
+    slots=[
+        ("how", "crsPurpose", ["CRSPurposeCode121", "CRSPurposeCode111"]),
+        ("how", "crsTypeOfFinance", ["CRSTypeOfFinance420", "CRSTypeOfFinance110"]),
+        ("how", "nettingBasis", ["Net"]),
+    ],
+)
+_DAC2A_LOANS = _shape(
+    1,
+    population="FinancialFlow",
+    slots=[
+        ("how", "dacTypeOfFinance", ["DACTypeOfFinanceGrants", "DACTypeOfFinanceNonGrants"]),
+        ("how", "nettingBasis", ["Gross", "Net"]),
+    ],
+)
+
+
+@pytest.mark.parametrize(
+    ("health", "elected"),
+    [pytest.param(0.0, 1, id="loans-alone-moves"), pytest.param(0.9, 0, id="health-loans-stays")],
+)
+def test_another_taxonomy_holds_only_as_many_named_values_as_it_states(health: float, elected: int):
+    """DAC2a reads "loans" on its own type of finance, which stands for the CRS shape's
+    loan, so a policy moves "loans" there. "Health loans" names a sector too, which DAC2a
+    states nowhere, so the CRS pick keeps both."""
+    answers = _answers(
+        {
+            "m|0": 0.9,
+            "m|1": 0.9,
+            "n|how:crsPurpose|0": health,
+            "n|how:crsTypeOfFinance|0": 0.9,
+            "n|how:dacTypeOfFinance|1": 0.9,
+        },
+        elect={0: 0.6, 1: 0.4},
+    )
+
+    output, _conf = _assemble(_request([_CRS_LOANS, _DAC2A_LOANS]), answers)
+
+    assert output.chosen_shape_index == elected
+
+
 def test_a_request_without_a_query_asks_no_query_question():
     request = _request([_shape(0)])
     bare = BindRequest(
@@ -635,6 +681,18 @@ def test_a_request_without_a_query_asks_no_query_question():
 
     assert state == {"variable_phrase": "aid"}
     assert sorted(questions) == ["elect", "m|0", "named|0"]
+
+
+def test_the_all_question_s_examples_each_name_a_slot_by_its_plain_name():
+    """A ``requested_all`` claim stands only on a phrase naming the slot's plain name
+    (`_validate_requested_all_bindings`), so each example the question gives names one."""
+    plain_names = {d.plain_name for d in get_index().declarations.values()}
+    _state, questions = bind_request(jev_menu(_request([_SECTORS], dropped=("in total",))))
+    instructions = str(questions[f"all|{_SECTOR}|0"].get("instructions"))
+    examples = re.findall(r"'([^']+)'", instructions.split(" as ", 1)[1])
+
+    assert examples
+    assert all(any(names_plain_name(e, n) for n in plain_names) for e in examples)
 
 
 def test_the_quantity_request_reads_its_own_phrase_when_it_differs():

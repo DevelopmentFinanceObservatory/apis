@@ -9,8 +9,9 @@ import re
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import date
+from functools import cached_property
 from typing import Literal, NamedTuple
 
 from code_index.labels import without_property_suffix
@@ -38,6 +39,7 @@ from search.engine.binders.house_policy import (
     Context,
     PolicyChoice,
     PolicyPool,
+    ShapeFacts,
     apply_house_policies,
     chooses_on,
     context_of,
@@ -3604,7 +3606,8 @@ class _HousePolicyStep:
     pick, read against the part's menu, frame, each shape's admitted qualifiers and
     availability, and the code index's house default datasets, with the binder's ratings of
     the pool shapes and its report of the pool shapes that hold what it recognised on its
-    pick. `calls` counts the binder's calls."""
+    pick. `calls` counts the binder's calls. Each menu shape's facts are read once, and the
+    context once per pool, however often the binder asks `chooses_on`."""
 
     shapes: Sequence[ShapeDraft]
     frame: Frame
@@ -3612,6 +3615,7 @@ class _HousePolicyStep:
     availability: Sequence[bool | None]
     code_index: CodeIndex
     calls: int = 0
+    _contexts: dict[frozenset[int], Context] = field(default_factory=dict, init=False, repr=False)
 
     def __call__(
         self,
@@ -3621,28 +3625,42 @@ class _HousePolicyStep:
         holds: Mapping[int, bool] | None = None,
     ) -> PolicyChoice:
         self.calls += 1
-        facts = shape_facts(
-            self.shapes, self.availability, pool.measuring, code_index=self.code_index
-        )
-        context = self._context(pool.measuring)
         return apply_house_policies(
-            facts, pool, context, chosen=pool.measuring[0], ratings=ratings, holds=holds
+            self._facts_of(pool.measuring),
+            pool,
+            self._context(pool.measuring),
+            chosen=pool.measuring[0],
+            ratings=ratings,
+            holds=holds,
         )
 
     def chooses_on(self, indices: Sequence[int], axis: str) -> bool:
         """Whether a house policy would choose on measure axis `axis` among the menu shapes
         at `indices` (`house_policy.chooses_on`). Not a call of the step."""
-        facts = shape_facts(self.shapes, self.availability, indices, code_index=self.code_index)
-        return chooses_on(facts, self._context(indices), axis)
+        return chooses_on(self._facts_of(indices), self._context(indices), axis)
+
+    @cached_property
+    def _facts(self) -> tuple[ShapeFacts, ...]:
+        """The facts of every menu shape, by menu index."""
+        return shape_facts(
+            self.shapes, self.availability, range(len(self.shapes)), code_index=self.code_index
+        )
+
+    def _facts_of(self, indices: Sequence[int]) -> tuple[ShapeFacts, ...]:
+        return tuple(self._facts[i] for i in indices)
 
     def _context(self, pool: Sequence[int]) -> Context:
-        return context_of(
-            self.frame,
-            self.admitted_qualifiers,
-            pool,
-            wanted_datasets=self.code_index.house_defaults(),
-            case_systems=self.code_index.house_case_systems(),
-        )
+        """The context over `pool`, which reads the pool as a set."""
+        key = frozenset(pool)
+        if key not in self._contexts:
+            self._contexts[key] = context_of(
+                self.frame,
+                self.admitted_qualifiers,
+                pool,
+                wanted_datasets=self.code_index.house_defaults(),
+                case_systems=self.code_index.house_case_systems(),
+            )
+        return self._contexts[key]
 
 
 def _elected_index(state: ResolveState) -> int:
