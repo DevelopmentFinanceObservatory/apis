@@ -1,8 +1,9 @@
 """Checks what a resolved Spec assumed (`render.assumptions`) on Specs the sentence panel
 recorded live, and the clause a candidates part's own sentence closes with.
 
-The panel keeps no trace slot filters, so a test that needs a declared default records it
-on the slot as the election does (`provenance="declared_default"`).
+The panel keeps each Spec's trace slot filters, so a declared default the election fixed
+reads as recorded; a test that needs one on another slot records it there as the election
+does (`provenance="declared_default"`).
 """
 
 from __future__ import annotations
@@ -58,6 +59,10 @@ def _panel_spec(query_id: str) -> Spec:
     return part.spec
 
 
+def _open_roles(assumptions: list[Assumption]) -> list[Assumption]:
+    return [item for item in assumptions if item.kind == "open_role"]
+
+
 def _with_declared_default(spec: Spec, ref: str) -> Spec:
     """`spec` with its slot on `ref` recorded as the election's declared default."""
     slot = next(s for s in spec.resolved.slots if s.key.as_ref() == ref)
@@ -70,24 +75,34 @@ def _with_declared_default(spec: Spec, ref: str) -> Spec:
     return spec.model_copy(update={"resolved": spec.resolved.model_copy(update={"trace": trace})})
 
 
-def test_aid_to_a_named_recipient_assumes_the_default_flow_and_every_provider():
-    """crs-002, "aid to Bangladesh": the flow its declared default fixed, named as the code
-    index names it since the measure noun says it, then the providers no word named."""
-    spec = _with_declared_default(_panel_spec("crs-002"), "how:crsTypeOfFlow")
-    assert assumptions_for(spec) == [
+@pytest.mark.parametrize(
+    ("query_id", "binding_ref", "ref"),
+    [
+        pytest.param("crs-002", "how:dac2aAidType", "DAC2aAidType206", id="crs-002 DAC2a"),
+        # The CRS flow code's short name is "ODA"; the clause states its full label.
+        pytest.param("crs-026", "how:crsTypeOfFlow", "CRSTypeOfFlow10", id="crs-026 CRS"),
+    ],
+)
+def test_aid_to_a_named_recipient_assumes_the_default_flow_and_every_provider(
+    query_id: str, binding_ref: str, ref: str
+):
+    """crs-002, "aid to Bangladesh", and crs-026, malaria control in Uganda: the flow the
+    recorded declared default fixed, named by the code's full label, then the providers no
+    word named."""
+    assert assumptions_for(_panel_spec(query_id)) == [
         Assumption(
             kind="declared_default",
-            binding_ref="how:crsTypeOfFlow",
-            text="ODA",
-            refs=["CRSTypeOfFlow10"],
+            binding_ref=binding_ref,
+            text="official development assistance",
+            refs=[ref],
         ),
         _EVERY_PROVIDER,
     ]
 
 
-def test_a_declared_default_the_heading_states_takes_the_heading_words():
-    """crs-026: a purpose slot the heading states ("for malaria control") is named in the
-    heading's words."""
+def test_a_declared_default_the_heading_states_takes_the_code_label():
+    """crs-026: a purpose slot the heading states ("for malaria control") is named by its
+    code's label, as a slot the heading leaves silent is."""
     spec = _with_declared_default(_panel_spec("crs-026"), "how:crsPurpose")
     assert assumptions_for(spec)[0] == Assumption(
         kind="declared_default",
@@ -101,7 +116,9 @@ def test_a_declared_default_the_heading_states_takes_the_heading_words():
     ("query_id", "expected"),
     [
         pytest.param("crs-001", [], id="crs-001 both roles named"),
-        pytest.param("crs-004", [_EVERY_RECIPIENT, _EVERY_PROVIDER], id="crs-004 none named"),
+        # DAC1 declares no recipient, so "worldwide" reads across every provider alone.
+        pytest.param("crs-004", [_EVERY_PROVIDER], id="crs-004 none named"),
+        pytest.param("mls-004", [_EVERY_RECIPIENT, _EVERY_PROVIDER], id="mls-004 none named"),
         pytest.param("ids-001", [_EVERY_CREDITOR], id="ids-001 debt service of Ghana"),
         pytest.param("ids-008", [], id="ids-008 owed to bondholders"),
         pytest.param("weo-001", [], id="weo-001 subject place named"),
@@ -114,7 +131,7 @@ def test_open_roles_are_the_roles_the_heading_states_open(
     an axis the identity neither binds nor opens, named by its family's noun. A role a how
     value narrows ("owed to bondholders") states none, and a fully asked question lists
     none."""
-    assert assumptions_for(_panel_spec(query_id)) == expected
+    assert _open_roles(assumptions_for(_panel_spec(query_id))) == expected
 
 
 def test_a_role_asked_member_by_member_is_no_assumption():
@@ -122,7 +139,7 @@ def test_a_role_asked_member_by_member_is_no_assumption():
     spec = _panel_spec("crs-002")
     identity = spec.definition.identity.model_copy(update={"open_roles": ["origin"]})
     definition = spec.definition.model_copy(update={"identity": identity})
-    assert assumptions_for(spec.model_copy(update={"definition": definition})) == []
+    assert _open_roles(assumptions_for(spec.model_copy(update={"definition": definition}))) == []
 
 
 @pytest.mark.parametrize(
@@ -165,22 +182,20 @@ def test_a_role_the_scope_default_filled_is_assumed_whatever_its_member_count():
         axis="origin", members=[ResolvedEntity(ref="country/JPN", role="origin", label="Japan")]
     )
     scoped = spec.model_copy(update={"resolved": spec.resolved.model_copy(update={"scope": scope})})
-    assert assumptions_for(scoped) == [_EVERY_PROVIDER]
+    assert _open_roles(assumptions_for(scoped)) == [_EVERY_PROVIDER]
 
 
 def test_a_role_the_request_words_asked_every_member_of_is_no_assumption():
     """ "aid from all donors to Bangladesh": the words asked for every provider."""
     spec = _panel_spec("crs-002")
-    assert assumptions_for(spec, asked_axes=frozenset({"origin"})) == []
-    assert common_assumptions([spec], asked_axes=frozenset({"origin"})) == []
+    assert _open_roles(assumptions_for(spec, asked_axes=frozenset({"origin"}))) == []
+    assert _open_roles(common_assumptions([spec], asked_axes=frozenset({"origin"}))) == []
 
 
 def test_a_candidates_part_assumes_what_every_reading_assumes():
-    """ids-003's two readings both read every creditor; beside a reading that names its
-    creditor, nothing is common."""
-    part = _panel_part("ids-003")
-    assert isinstance(part, CandidatesPart)
-    specs = part.candidates.specs
+    """ids-001's and ids-003's readings both read every creditor; beside a reading that
+    names its creditor (ids-002), nothing is common."""
+    specs = [_panel_spec("ids-001"), _panel_spec("ids-003")]
     assert common_assumptions(specs) == [_EVERY_CREDITOR]
     assert common_assumptions([*specs, _panel_spec("ids-002")]) == []
 

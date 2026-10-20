@@ -36,7 +36,7 @@ FAMILIES = {
         fixed={"financialFlowType": "Disbursement", "nettingBasis": "Gross"},
     ),
     # crs.disbursement_gross's shape and slots with StatVar pins, or under another dataset:
-    # the "unserved" pins name a StatVar crs-001 does not serve, "served" one it does, and
+    # the "unserved" pins name a StatVar crs-032 does not serve, "served" one it does, and
     # the unconfirmed family's slots are unconfirmed.
     "crs.disbursement_unserved": Family(
         origin="dfo",
@@ -51,8 +51,8 @@ FAMILIES = {
         shape={"population_type": "FinancialFlow", "measurement_qualifier": "Nominal"},
         fixed={"financialFlowType": "Disbursement", "nettingBasis": "Gross"},
         stat_vars=[
-            "Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110"
-            "_CRSPurposeCode11120_Nominal"
+            "Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow21_CRSTypeOfFinance421"
+            "_CRSPurposeCode23230_Nominal"
         ],
     ),
     "ids.disbursement_unserved": Family(
@@ -96,6 +96,12 @@ FAMILIES = {
         origin="base",
         dataset="dc/base/WorldDevelopmentIndicators",
         shape={"population_type": "EconomicActivity", "measurement_denominator": None},
+        fixed={"activitySource": "GrossDomesticProduction"},
+    ),
+    "wdi.gdp_per_capita": Family(
+        origin="base",
+        dataset="dc/base/WorldDevelopmentIndicators",
+        shape={"population_type": "EconomicActivity", "measurement_denominator": "PerCapita"},
         fixed={"activitySource": "GrossDomesticProduction"},
     ),
     "weo.gdp_per_capita": Family(

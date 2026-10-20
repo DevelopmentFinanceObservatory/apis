@@ -9,21 +9,22 @@ the sentence renderer reads and the plans it wrote, and writes
 
 - `id`, `query`: the panel query.
 - `rendered_sentence`, `sentence_plan`: the envelope sentence and plan.
-- `parts`: each part with its status, `variable_text`, warnings, departures, assumptions
-  and own sentence; a definite part's Spec, a candidates part's shown Specs, a no-data part's reason.
+- `parts`: each part with its status, `variable_text`, warnings, departures, assumptions,
+  operations and own sentence; a definite part's Spec, a candidates part's shown Specs, a
+  no-data part's reason.
 
 A Spec keeps its definition and the resolved fields `render_sentence_plan` reads (shape,
 slots, StatVar counts and served dates, entities and groups, coverage, scope, facets, slot
-options, open-axis and role-axis facts, measure label, the trace's sources) with its recorded
-sentence. Beside `resolved` each Spec stores `sentence_facts`, what the renderer reads that
+options, open-axis and role-axis facts, measure label, the trace's sources and slot filters)
+with its recorded sentence. The slot filters carry each slot's key, binding kind, values and
+provenance, so a replay reads every declared default the answer stated. Beside `resolved` each Spec stores `sentence_facts`, what the renderer reads that
 the wire does not carry: the facts of its served members (`search.models.SentenceFacts`),
 which the in-process panel run records from each answer, and, for a Spec whose measure label
 names code pairs, those pairs (`measure_label_named_values`), which the script derives from
 the Spec's `measure_axis_values` and the packaged measure index, as
 `spec_build.measure_label_for_partition` does. A replay states both on the Spec it rebuilds
 (`golden_parts`). Observations, timing, diagnostics, skills, entity and facet options and the
-rest of the trace go; the model fields that are required but unread (the trace's entity and
-filter lists) are written empty, and a role-axis fact's `member_count`, which the wire omits
+rest of the trace go; the trace's entity list, required but unread, is written empty, and a role-axis fact's `member_count`, which the wire omits
 when it is null, is restored as null. A no-data part keeps only its reason, since the envelope
 composer reads no other `no_data` field.
 
@@ -42,11 +43,12 @@ panel run. It re-renders what the test compares: each definite Spec's plan, each
 part's candidate plans and its own plan, and the envelope plan, with the sentence of each.
 A no-data part's own plan needs inputs the wire does not carry, so it stays as recorded.
 
-A re-render also recomputes assumptions from the Spec alone: a definite part's from its Spec
-(`assumptions_for`) and a candidates part's from its shown Specs (`common_assumptions`), as
-`engine.assemble` does, with no asked axes and no echo, which the golden records neither of.
-A part of another status keeps what it recorded. The golden therefore never holds an
-assumption the request's own words would have suppressed.
+A recording keeps each part's assumptions as the answer gave them. A re-render recomputes
+them from what the golden holds: a definite part's from its Spec and operations
+(`assumptions_for`) and a candidates part's from its shown Specs and operations
+(`common_assumptions`), as `engine.assemble` does. The golden records no every-member axes
+("all donors") and no resubmit echo, so a re-render states an open role on an axis the
+request's words asked every member of; a part of another status keeps what it recorded.
 
 Usage:
     just sentence-panel --in-process
@@ -93,6 +95,7 @@ _PART_KEYS = (
     "warnings",
     "departures",
     "assumptions",
+    "operations",
     "rendered_sentence",
     "sentence_plan",
 )
@@ -113,6 +116,10 @@ _RESOLVED_KEYS = (
     "rendered_sentence",
     "sentence_plan",
 )
+
+# Every field of a `trace.slot_filters` entry: the assumptions read a declared default's
+# slot, values and provenance off it.
+_SLOT_FILTER_KEYS = ("key", "binding_kind", "refs", "provenance")
 
 _PARTS = TypeAdapter(list[Part])
 _PLAN = TypeAdapter(list[SentenceToken])
@@ -191,7 +198,10 @@ def trim_spec(spec: dict[str, Any], facts: dict[str, Any]) -> dict[str, Any]:
     trimmed["trace"] = {
         "resolved_sources": resolved["trace"]["resolved_sources"],
         "resolved_entities": [],
-        "slot_filters": [],
+        "slot_filters": [
+            _pick(slot_filter, _SLOT_FILTER_KEYS)
+            for slot_filter in resolved["trace"]["slot_filters"]
+        ],
     }
     if role_facts := resolved.get("role_axis_facts"):
         # The wire omits null fields and `RoleAxisFact.member_count` is required but
@@ -336,14 +346,16 @@ def rerender_line(line: dict[str, Any]) -> dict[str, Any]:
         if isinstance(part, DefinitePart):
             plan = render_sentence_plan(part.spec, axis_declarations=declarations)
             _set_plan(raw["spec"]["resolved"], plan)
-            _set_assumptions(raw, assumptions_for(part.spec))
+            _set_assumptions(raw, assumptions_for(part.spec, operations=part.operations))
         elif isinstance(part, CandidatesPart):
             specs = part.candidates.specs
             raw_specs = raw["candidates"]["specs"]
             for raw_spec, plan in zip(raw_specs, rerendered_candidates(specs), strict=True):
                 _set_plan(raw_spec["resolved"], plan)
             assumptions = common_assumptions(
-                specs, keep_how_properties=sibling_how_properties(specs)
+                specs,
+                keep_how_properties=sibling_how_properties(specs),
+                operations=part.operations,
             )
             _set_assumptions(raw, assumptions)
             _set_plan(
