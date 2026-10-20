@@ -244,6 +244,10 @@ jobs:
           # Turns a missing or moved vector suite into a failure rather than a
           # silent module-level skip.
           DFO_SPEC_KIT_REQUIRED: "1"
+          # Serves every surface from the bound graph release's views and its
+          # origin view, as tests/conftest.py's session release carries them.
+          GRAPH_RELEASE_COVERAGE: "1"
+          GRAPH_RELEASE_ORIGIN: "1"
         # -n auto lives here rather than in [tool.pytest.ini_options] addopts
         # so it never applies to a targeted single-test run, where it would
         # interleave output and break pdb. `--shard` runs this group's test

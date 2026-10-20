@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import json
 import threading
 from dataclasses import replace
@@ -880,9 +881,12 @@ class TestNodesBatch:
         with client:
             batch_response: list = []
             batch_thread = threading.Thread(
-                target=lambda: batch_response.append(
-                    client.post("/api/graph/nodes", json={"dcids": list(_BATCH_NODES)})
-                )
+                target=contextvars.copy_context().run,
+                args=(
+                    lambda: batch_response.append(
+                        client.post("/api/graph/nodes", json={"dcids": list(_BATCH_NODES)})
+                    ),
+                ),
             )
             batch_thread.start()
             assert graph.entered.wait(timeout=5.0), "the batch never reached the blocking read"

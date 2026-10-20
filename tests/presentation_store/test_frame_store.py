@@ -80,7 +80,7 @@ from description.steps import Step
 from description.vocabulary import SourceDocumentFacts
 from dfo_platform.timings import PhaseTimings, collecting
 from graph_generation import FakeGeneration, GenerationStamp
-from graph_release.context import bound_release
+from graph_release.context import bound_release, current_release
 from materialise import provenance_doc
 from materialise.continued_series import ContinuedSeries
 from materialise.formats import CANONICAL_FRAME_MEDIA_TYPE
@@ -783,7 +783,10 @@ def test_load_resolves_a_frame_with_view_manifest_and_labels(bind_catalogue):
     assert sorted(graph.node_arcs_many_calls[0]) == sorted(
         ["MalariaGrantDisbursements", "country/ETH", "src_oecd_dac"]
     )
-    assert (resolved.graph_generation, resolved.catalogue_build) == ("gen-1", "build-1")
+    assert (resolved.graph_generation, resolved.catalogue_build) == (
+        "gen-1",
+        f"build-1@{current_release().release_id}",
+    )
 
 
 _WDI_GDP = "worldBank/NY_GDP_MKTP_CD"
@@ -907,7 +910,7 @@ def test_a_failed_description_read_is_logged_not_cached_and_read_again(caplog):
     ],
 )
 def test_a_cached_frame_rereads_its_words_once_its_stamps_change_or_age(
-    bind_catalogue, monkeypatch, request, change, reread
+    bind_catalogue, request, change, reread
 ):
     """A cached frame serves its labels, citation and source documents while the graph
     generation and catalogue build they were read under hold and they are younger than that
@@ -918,10 +921,7 @@ def test_a_cached_frame_rereads_its_words_once_its_stamps_change_or_age(
     first_release, second_release = release_at_revision("rev-1"), release_at_revision("rev-2")
     stack = ExitStack()
     request.addfinalizer(stack.close)
-    if change == "release":
-        monkeypatch.setenv("GRAPH_RELEASE_ORIGIN", "1")
-        monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1")
-        stack.enter_context(bound_release(first_release))
+    stack.enter_context(bound_release(first_release))
     snapshots, artifacts, frame_ref, digest = _full_spec_fixture()
     generation = FakeGeneration(token="gen-1")
     graph = _documenting_graph()
@@ -962,11 +962,11 @@ def test_a_cached_frame_rereads_its_words_once_its_stamps_change_or_age(
     assert (second is first) is not reread
     assert (graph.calls > calls) is reread
     assert (second.graph_generation, second.catalogue_build) == {
-        "none": ("gen-1", "build-1"),
-        "catalogue": ("gen-1", "build-2"),
-        "generation": ("gen-2", "build-1"),
+        "none": ("gen-1", f"build-1@{first_release.release_id}"),
+        "catalogue": ("gen-1", f"build-2@{first_release.release_id}"),
+        "generation": ("gen-2", f"build-1@{first_release.release_id}"),
         "release": ("gen-1", f"build-1@{second_release.release_id}"),
-        "age": ("gen-1", "build-1"),
+        "age": ("gen-1", f"build-1@{first_release.release_id}"),
     }[change]
     assert artifacts.calls.count(("get", Tier.working, digest)) == 1
 
@@ -2442,12 +2442,13 @@ def test_load_names_a_variable_once_a_record_written_after_the_first_load_arrive
     cached = store.load(frame_ref=frame_ref)
 
     assert "dcid:ops_per_income" not in first.labels
-    assert (first.graph_generation, first.catalogue_build) == ("gen-1", "build-1")
+    release_id = current_release().release_id
+    assert (first.graph_generation, first.catalogue_build) == ("gen-1", f"build-1@{release_id}")
     assert second.labels["dcid:ops_per_income"] == (
         "Gross ODA disbursements per gross national income"
     )
     assert second.labels["country/ETH"] == "Ethiopia"
-    assert (second.graph_generation, second.catalogue_build) == ("gen-2", "build-2")
+    assert (second.graph_generation, second.catalogue_build) == ("gen-2", f"build-2@{release_id}")
     assert (reads_without_record, reads_on_arrival) == (0, 1)
     assert label_reads() - before_record == 1
     assert cached == second

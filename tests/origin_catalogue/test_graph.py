@@ -722,9 +722,11 @@ def test_with_the_un_off_the_un_tables_answer_nothing(
 
 
 def test_our_nodes_facts_come_from_the_arc_tables_with_no_request(
-    graph: _Graph, client: OriginGraphClient, bind_catalogue
+    graph: _Graph, client: OriginGraphClient, bind_catalogue, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Table answers reach neither backend nor its caches: the counters do not move."""
+    """Table answers reach neither backend nor its caches: the counters do not move. Runs with
+    `GRAPH_RELEASE_ORIGIN` off, as only then does the build's own DFO table answer."""
+    monkeypatch.delenv("GRAPH_RELEASE_ORIGIN", raising=False)
     bind_catalogue(_catalogue(arcs=_ARCS))
     before = client.stats()
 
@@ -788,11 +790,13 @@ def test_our_nodes_facts_come_from_the_arc_tables_with_no_request(
 
 
 def test_a_node_an_arc_names_takes_its_label_from_the_labels_and_keeps_its_arc_name(
-    graph: _Graph, client: OriginGraphClient, bind_catalogue
+    graph: _Graph, client: OriginGraphClient, bind_catalogue, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The graph's `->*` read names a nameless node by its dcid and a node of several names
     by its first, and `node_label` gives the first no label and the second its last name.
-    The tables answer each read as the graph does, with no request."""
+    The tables answer each read as the graph does, with no request. Runs with
+    `GRAPH_RELEASE_ORIGIN` off, as only then does the build's own DFO table answer."""
+    monkeypatch.delenv("GRAPH_RELEASE_ORIGIN", raising=False)
     age, alcohol = "Years0", "Alcohol"
     arcs = build_arc_tables(
         dfo={
@@ -845,11 +849,13 @@ def test_a_node_the_arc_tables_hold_empty_reads_as_absent_with_no_request(
 
 
 def test_a_dcid_outside_the_arc_tables_is_read_live_and_alone(
-    graph: _Graph, client: OriginGraphClient, bind_catalogue
+    graph: _Graph, client: OriginGraphClient, bind_catalogue, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An unlisted variable is out of the tables' scope, not absent, so it reads from our
     mixer, and a batch sends only it. A node an arc names with several types reads its type
-    live, since the arc gives them in no order the graph's `typeOf` read shares."""
+    live, since the arc gives them in no order the graph's `typeOf` read shares. Runs with
+    `GRAPH_RELEASE_ORIGIN` off, as only then does the build's own DFO table answer."""
+    monkeypatch.delenv("GRAPH_RELEASE_ORIGIN", raising=False)
     graph.labels[_UNLISTED] = "Female population"
     bind_catalogue(_catalogue(arcs=_ARCS))
 

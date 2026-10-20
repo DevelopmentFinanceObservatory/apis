@@ -70,6 +70,7 @@ from tests.engine._fake_coverage import (
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import member_walk_reader
 from tests.fixtures import FakeGraph
+from tests.origin_catalogue.support import listing_base_variables
 from tests.statvar_members.conftest import FakeMemberArcReader
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -498,9 +499,14 @@ def _promote_state(graph: FakeGraph, slots: list[Slot]) -> _PromoteState:
 
 
 @pytest.mark.usefixtures("unlisted_index")
-def test_an_ids_identity_with_guarantee_status_unbound_resubmits_over_its_walked_member():
+def test_an_ids_identity_with_guarantee_status_unbound_resubmits_over_its_walked_member(
+    bind_catalogue,
+):
     slots = [_slot("financialFlowType", None), _slot("guaranteeStatus", None)]
-    graph = _graph({_IDS_DEBT_SERVICE: _ids_arcs("ServicingPayment")})
+    arcs = {_IDS_DEBT_SERVICE: _ids_arcs("ServicingPayment")}
+    graph = _graph(arcs)
+    # The catalogue lists the walked member, so the member walk reads this graph.
+    bind_catalogue(listing_base_variables(arcs))
     state = _promote_state(graph, slots)
 
     _phase_validate(state)
@@ -520,7 +526,10 @@ def _index_listing(*rows: StatVarRow) -> CodeIndex:
 
 def test_an_ids_identity_elects_its_listed_members_without_walking_the_graph(monkeypatch):
     """A family holding a row the index lists is elected from the index: over a graph that
-    holds no StatVar, where a walk finds nothing, the listed debt-service total is elected."""
+    holds no StatVar, where a walk finds nothing, the listed debt-service total is elected.
+    Runs with `GRAPH_RELEASE_ORIGIN` off: with it on, the walk of this family reads the bound
+    release, which holds IDS members, in place of the empty graph."""
+    monkeypatch.delenv("GRAPH_RELEASE_ORIGIN", raising=False)
     listed = StatVarRow(
         dcid=_IDS_DEBT_SERVICE,
         population_type="FinancialFlow",

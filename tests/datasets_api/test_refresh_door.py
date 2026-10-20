@@ -4,6 +4,7 @@ the queued rebuild, the shared rebuild, and admission on `POST /api/datasets/fra
 
 from __future__ import annotations
 
+import contextvars
 import threading
 import time
 from collections.abc import Callable
@@ -1190,8 +1191,10 @@ class _HeldRebuild:
             self.responses.append(rig.client.get(f"/api/datasets/{plain.spec_id}?bundle=false"))
 
         # The client context keeps every request on one portal loop.
-        callers = [threading.Thread(target=refresh) for _ in range(3)]
-        callers.append(threading.Thread(target=read_definition))
+        callers = [
+            threading.Thread(target=contextvars.copy_context().run, args=(caller,))
+            for caller in (refresh, refresh, refresh, read_definition)
+        ]
         for caller in callers:
             caller.start()
         assert self.entered.wait(timeout=5.0), "no caller reached materialisation"
@@ -1308,7 +1311,7 @@ def test_a_saturated_work_executor_refuses_a_refresh_and_still_serves_a_head_hit
     def refresh() -> None:
         held.append(rig.refresh(spec_id=plain.spec_id, content_version=plain.content_version))
 
-    holder = threading.Thread(target=refresh)
+    holder = threading.Thread(target=contextvars.copy_context().run, args=(refresh,))
     holder.start()
     assert entered.wait(timeout=5.0), "the refresh never reached its worker"
     refused = rig.refresh(spec_id=plain.spec_id, content_version=plain.content_version)

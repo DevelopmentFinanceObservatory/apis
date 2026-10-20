@@ -78,6 +78,8 @@ jobs:
           DFO_SPEC_KIT_DIR: ${{ github.workspace }}/.spec-kit
           DFO_SPEC_KIT_REQUIRED: "1"
           DFO_FULL_GRIDS: "1"
+          GRAPH_RELEASE_COVERAGE: "1"
+          GRAPH_RELEASE_ORIGIN: "1"
         run: >-
           uv run pytest -q -n auto
           tests/engine/test_answer_invariants.py
