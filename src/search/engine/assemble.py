@@ -212,10 +212,23 @@ def _surviving_qualifier_warnings(
     """Keep dropped-qualifier warnings that remain true across all regions.
 
     Each warning stays paired with its extracted phrase. One region admitting a phrase
-    makes the request-wide warning false. Compare with the same strip-and-casefold
-    normalisation used by ``admitted_qualifier_phrases``.
+    makes the request-wide warning false. A part's departures read its own region's
+    admission instead (`unapplied_qualifier_warnings`, `RegionResult.unapplied_qualifier_warnings`).
     """
-    admitted = {phrase for region in regions for phrase in region.admitted_qualifier_phrases}
+    admitted = frozenset(
+        phrase for region in regions for phrase in region.admitted_qualifier_phrases
+    )
+    return unapplied_qualifier_warnings(qualifier_warnings, phrases, admitted=admitted)
+
+
+def unapplied_qualifier_warnings(
+    qualifier_warnings: Sequence[Warning],
+    phrases: Sequence[str],
+    *,
+    admitted: frozenset[str],
+) -> list[Warning]:
+    """The `qualifier_warnings` whose paired phrase `admitted` does not hold, compared with
+    the strip-and-casefold normalisation ``admitted_qualifier_phrases`` uses."""
     return [
         warning
         for warning, phrase in zip(qualifier_warnings, phrases, strict=True)

@@ -438,9 +438,11 @@ def _build_part(
     envelope, so part timing excludes it. Folded parts carry only
     ``binding_folded``. The representative's warnings appear on its first part.
 
-    A raised departure fact reaches the part only while the part's or the envelope's warnings hold
-    the warning it was raised beside. On a candidates part only warnings stamped with no
-    reading's `spec_id` count, since the part's departures speak for every reading it shows.
+    A raised departure fact reaches the part only while the part's or the envelope's warnings,
+    or the request-wide qualifier warnings its own region leaves unapplied
+    (`RegionResult.unapplied_qualifier_warnings`), hold the warning it was raised beside. On
+    a candidates part only warnings stamped with no reading's `spec_id` count, since the
+    part's departures speak for every reading it shows.
     """
     own_timing_by_step = {
         step: ms for step, ms in region.timing_by_step.items() if step != _SHARED_TIMING_STEP
@@ -477,7 +479,9 @@ def _build_part(
             include_skills=include_skills,
             skills_index=skills_index,
             departure_facts=(
-                *surviving_facts(raised, [*warnings, *envelope_warnings]),
+                *surviving_facts(
+                    raised, [*warnings, *region.unapplied_qualifier_warnings, *envelope_warnings]
+                ),
                 *(() if folded else representative.inferred_facts),
             ),
             entity_words=region.entity_words,
@@ -502,7 +506,15 @@ def _build_part(
             # on; one raised for some readings stays on their stamped warnings.
             departure_facts=surviving_facts(
                 raised,
-                [w for w in (*region.warnings, *envelope_warnings) if w.spec_id is None],
+                [
+                    w
+                    for w in (
+                        *region.warnings,
+                        *region.unapplied_qualifier_warnings,
+                        *envelope_warnings,
+                    )
+                    if w.spec_id is None
+                ],
             ),
             request_words=region.entity_words is not None,
         )
@@ -569,7 +581,10 @@ def _build_part(
         skills_index=skills_index,
         cause=region.cause,
         window_gap_fact=region.window_gap_fact,
-        departure_facts=surviving_facts(raised, [*region.warnings, *envelope_warnings]),
+        departure_facts=surviving_facts(
+            raised,
+            [*region.warnings, *region.unapplied_qualifier_warnings, *envelope_warnings],
+        ),
         request_words=region.entity_words is not None,
         source_code_refusal=region.source_code_refusal,
     )

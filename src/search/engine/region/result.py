@@ -208,6 +208,12 @@ class RegionResult:
     # The entry door uses them to retain or drop `QUERY_QUALIFIER_DROPPED` warnings
     # across the request.
     admitted_qualifier_phrases: frozenset[str] = frozenset()
+    # The raw-text door's request-wide `QUERY_QUALIFIER_DROPPED` warnings whose phrase this
+    # region leaves unapplied (`raw_text._ExtractionPrep.onto`). The envelope states such a
+    # warning only while no region admits its phrase. The part's departures read these
+    # beside its own and the envelope's warnings, so a phrase a sibling part applied still
+    # departs on this one. No part states them.
+    unapplied_qualifier_warnings: tuple[Warning, ...] = ()
     # Why a no_data outcome fired (models.NoData's own `cause`), populated
     # only for no_data_reason=="rate_coverage_gap".
     cause: Cause | None = None

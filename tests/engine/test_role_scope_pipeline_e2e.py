@@ -12,11 +12,12 @@ from materialise.roles import axis_for_role
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.clients.graph import Facet
 from search.engine.concurrency import scoped_concurrency
-from search.engine.extract import DateRequest
+from search.engine.extract import DateRequest, ExtractedEntity, Extraction
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import materialise_step as materialise_step_module
 from search.engine.region import observations as _observations_pkg  # noqa: F401
 from search.engine.region import resolve_spec_resubmit
+from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.result import every_member_phrases
 from search.engine.region.state import EngineOptions
@@ -29,7 +30,12 @@ from tests.engine._fake_coverage import (
     patch_coverage,
 )
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._harness import door_roles_for_test_query, walk_options
+from tests.engine._harness import (
+    door_roles_for_test_query,
+    make_request,
+    offline_resolve,
+    walk_options,
+)
 from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
@@ -837,6 +843,91 @@ def test_a_candidate_set_meets_an_every_member_phrase_only_when_every_candidate_
     met = every_member_phrases(candidates, ["to every recipient"], query=role_query)
 
     assert ("to every recipient" in met) is admitted
+
+
+_TWO_PART_GDP_SV = "Amount_EconomicActivity_GrossDomesticProduction_Nominal"
+
+
+class _TwoPartExtractLLM:
+    """Extracts a role-bearing "aid" and a subject-only "GDP" variable, both at Kenya, with
+    "from all donors" dropped, and elects the first shape with no bindings."""
+
+    async def generate_structured(self, *, prompt, system, schema):
+        if schema.__name__ == "Extraction":
+            return Extraction(
+                kind="resolution",
+                variables=["aid", "GDP"],
+                entities=[ExtractedEntity(text="Kenya")],
+                dates=[],
+                dropped_qualifiers=["from all donors"],
+            ), None
+        if schema is QuantityOutput:
+            return NO_QUANTITY
+        assert schema.__name__ == "_UniversalBindOutput"
+        return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
+
+
+def test_an_every_member_phrase_one_part_meets_still_departs_on_a_subject_only_sibling(
+    monkeypatch,
+):
+    """The role-bearing aid part leaves the origin unbound and so meets "from all donors";
+    the subject-only GDP part has no donors to meet it with. The request-wide warning goes,
+    as any part's admission clears it, but each part's `measure_not_applied` departure reads
+    its own region's admission (`RegionResult.unapplied_qualifier_warnings`)."""
+    rows, role_names = _coverage_seed_for("debtor", [_KEN], [_SV_DCID])
+    patch_coverage(monkeypatch, rows, role_names=role_names)
+    graph = FakeGraph(
+        nodes={
+            _KEN: {"label": "Kenya", "type": "Country"},
+            _SV_DCID: {
+                "label": "Test flow",
+                "arcs": _declaring_arcs(observation_properties=["creditor", "debtor"]),
+            },
+            _TWO_PART_GDP_SV: {
+                "label": "Gross domestic product",
+                "type": "StatisticalVariable",
+                "arcs": {
+                    "populationType": {"nodes": [{"dcid": "EconomicActivity"}]},
+                    "measuredProperty": {"nodes": [{"dcid": "amount"}]},
+                    "statType": {"nodes": [{"dcid": "measuredValue"}]},
+                    "measurementQualifier": {"nodes": [{"dcid": "Nominal"}]},
+                    "constraintProperties": {"nodes": [{"dcid": "economicActivityType"}]},
+                    "economicActivityType": {"nodes": [{"dcid": "GrossDomesticProduction"}]},
+                },
+            },
+        },
+        detect={
+            "aid": {"svs": [_SV_DCID], "cosine_scores": [0.9]},
+            "GDP": {"svs": [_TWO_PART_GDP_SV], "cosine_scores": [0.9]},
+        },
+        resolve={"Kenya": _KEN},
+        obs={
+            f"{_TWO_PART_GDP_SV}|{_KEN}": [
+                {"earliestDate": "2020", "latestDate": "2020", "obsCount": 3}
+            ]
+        },
+    )
+
+    response = offline_resolve(
+        make_request("aid to Kenya and GDP of Kenya from all donors"),
+        graph=graph,
+        llm=_TwoPartExtractLLM(),
+        sdmx=FakeSdmxClient(
+            observations={_SV_DCID: {(("debtor", _KEN),): [_facet()]}}, availability={}
+        ),
+    )
+
+    assert [
+        w.code for w in response.diagnostics.warnings if w.code == QUERY_QUALIFIER_DROPPED
+    ] == []
+    assert [(p.variable_text, p.status) for p in response.parts] == [
+        ("aid", "definite"),
+        ("GDP", "definite"),
+    ]
+    assert [
+        [d.asked for d in part.departures if d.code == "measure_not_applied"]
+        for part in response.parts
+    ] == [[], ["from all donors"]]
 
 
 # ---------------------------------------------------------------------------

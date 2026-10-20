@@ -25,6 +25,7 @@ from search.engine.assemble import (
     build_no_data_part,
     skills_index_incomplete_warning,
     skills_index_unavailable_warning,
+    unapplied_qualifier_warnings,
 )
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
@@ -561,9 +562,20 @@ class _ExtractionPrep:
 
     def onto(self, region: RegionResult) -> RegionResult:
         """`region` holding what this extraction knows beyond it: the departures raised
-        beside the request-wide qualifier warnings and the query's words for each entity."""
+        beside the request-wide qualifier warnings, those warnings whose phrase the region
+        leaves unapplied (`RegionResult.unapplied_qualifier_warnings`), and the query's words
+        for each entity."""
+        unapplied = unapplied_qualifier_warnings(
+            self.qualifier_warnings,
+            self.dropped_qualifier_phrases,
+            admitted=region.admitted_qualifier_phrases,
+        )
         return with_entity_words(
-            with_departure_facts(region, self.qualifier_facts), self.entity_words
+            dataclasses.replace(
+                with_departure_facts(region, self.qualifier_facts),
+                unapplied_qualifier_warnings=tuple(unapplied),
+            ),
+            self.entity_words,
         )
 
 
