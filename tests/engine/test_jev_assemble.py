@@ -473,7 +473,7 @@ def test_the_house_policies_see_the_pool_with_the_election():
 
     output, _conf = _assemble(_request(shapes, apply_policies=record), answers)
 
-    assert seen == [PolicyPool(measuring=(0, 1), election={0: 0.6, 1: 0.4}, rated=True)]
+    assert seen == [PolicyPool(measuring=(0, 1), election={0: 0.6, 1: 0.4})]
     assert output.chosen_shape_index == 1
 
 
