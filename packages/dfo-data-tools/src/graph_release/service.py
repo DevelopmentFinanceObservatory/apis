@@ -33,7 +33,8 @@ are built in the thread that opens the release, so at construction or in the rec
 swap guards, and live on the `Release`, so they die with it. A release whose views do not build
 is refused as an unreadable one is, and its files are unlinked. Construction raises, and a
 recheck keeps the served release. Without `build_views` a `Release` maps the parts and builds
-nothing.
+nothing. After the first load and after each swap, that thread hands the memory the load freed
+back to the OS (`_return_freed_memory`).
 
 A `Release` the service opened knows whether the service still serves it (`Release.served`),
 so a request bound to a replaced release can refuse rather than build a frame beside both
@@ -43,7 +44,9 @@ releases' views (`series_coverage.shared.ReleaseCoverage.serves`).
 from __future__ import annotations
 
 import concurrent.futures
+import ctypes
 import logging
+import sys
 import tempfile
 import threading
 import time
@@ -54,6 +57,8 @@ from contextlib import AbstractContextManager, ExitStack, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
+
+import pyarrow as pa
 
 from code_index.query import CodeIndex
 from code_index.types import MeasureIndex
@@ -69,6 +74,28 @@ DEFAULT_RECHECK_SECONDS = 60.0
 
 # Logs the first recheck failure and each tenth consecutive failure.
 _FAILURE_LOG_EVERY_N = 10
+
+
+def _resolve_malloc_trim() -> Callable[[int], int] | None:
+    """glibc's `malloc_trim`, or `None` off Linux or under a libc without it."""
+    if sys.platform != "linux":
+        return None
+    try:
+        return ctypes.CDLL(None).malloc_trim
+    except (OSError, AttributeError):
+        return None
+
+
+_malloc_trim = _resolve_malloc_trim()
+
+
+def _return_freed_memory() -> None:
+    """Hands the memory a view build freed back to the OS."""
+    # Freed view memory stays in glibc arenas and the Arrow pool: ~1.6-2.4 GB vs ~1.2-1.4 GB
+    # cgroup memory across six swaps in the deployed image.
+    pa.default_memory_pool().release_unused()
+    if _malloc_trim is not None:
+        _malloc_trim(0)
 
 
 class ReleaseUriMissingError(RuntimeError):
@@ -233,6 +260,7 @@ class ReleaseService:
         self._served = _Served(
             release=self._release(self._load(release_id=None)), checked_at=clock()
         )
+        _return_freed_memory()
 
     def snapshot(self) -> Release:
         """The served release, without waiting for I/O. Starts a due pointer
@@ -349,6 +377,7 @@ class ReleaseService:
                 release = self._release(loaded)
                 self._served = _Served(release=release, checked_at=self._clock())
                 del served
+            _return_freed_memory()
             logger.info(
                 "graph release: served release changed (%r -> %r)", replaced, release.release_id
             )
