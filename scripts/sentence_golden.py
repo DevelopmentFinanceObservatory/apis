@@ -48,7 +48,10 @@ them from what the golden holds: a definite part's from its Spec and operations
 (`assumptions_for`) and a candidates part's as the items every shown Spec's list so read
 holds alike (`common_assumptions`), as `engine.assemble` does. The golden records no every-member axes
 ("all donors") and no resubmit echo, so a re-render states an open role on an axis the
-request's words asked every member of; a part of another status keeps what it recorded.
+request's words asked every member of. Nor does it record the Spec each part of a same-shape
+merge or a fold resolved to before the merge, from which that part reads its declared
+defaults, so a definite part whose Spec another part of the line shares keeps the
+assumptions it recorded, as does a part of another status.
 
 Usage:
     just sentence-panel --in-process
@@ -64,6 +67,7 @@ import copy
 import gzip
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -339,14 +343,19 @@ def _set_assumptions(raw: dict[str, Any], assumptions: list[Assumption]) -> None
 
 def rerender_line(line: dict[str, Any]) -> dict[str, Any]:
     """`line` with every plan the golden test compares re-rendered by the current renderer,
-    each assumptions list recomputed from the Spec, and every other input unchanged."""
+    each assumptions list recomputed from the Spec but those of definite parts that share
+    one, and every other input unchanged."""
     parts = golden_parts(line["parts"])
     declarations = declared_axis_names()
+    spec_ids = Counter(part.spec.spec_id for part in parts if isinstance(part, DefinitePart))
     for part, raw in zip(parts, line["parts"], strict=True):
         if isinstance(part, DefinitePart):
             plan = render_sentence_plan(part.spec, axis_declarations=declarations)
             _set_plan(raw["spec"]["resolved"], plan)
-            _set_assumptions(raw, assumptions_for(part.spec, operations=part.operations))
+            # A Spec two parts share served a merge or a fold, whose parts read their
+            # declared defaults from their own pre-merge Specs, which the golden lacks.
+            if spec_ids[part.spec.spec_id] == 1:
+                _set_assumptions(raw, assumptions_for(part.spec, operations=part.operations))
         elif isinstance(part, CandidatesPart):
             specs = part.candidates.specs
             raw_specs = raw["candidates"]["specs"]

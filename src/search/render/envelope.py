@@ -252,9 +252,9 @@ def _compose_per_part(
     assumptions of the parts folded into it too (`_assumption_items`). A part that is not definite
     contributes `_unresolved_sentence`, and no-data parts refused for the same reason name
     their variables in one sentence (`_shared_refusals`), written where the first of them
-    stands. A sentence two parts state alike is stated once, unowned. A departure or
-    clause is stated once only beside the sentence it follows
-    (`_departures_stay_with_sentences`).
+    stands. A sentence two parts state alike with the same clause is stated once, unowned,
+    followed by each part's departures; a part whose sentence repeats another's beside a
+    different clause keeps its own sentence (`_departures_stay_with_sentences`).
     """
     refusals = _shared_refusals(contributing)
     chunks: list[list[Owned]] = []
@@ -282,26 +282,70 @@ def _compose_per_part(
 
 
 def _departures_stay_with_sentences(chunks: list[list[Owned]]) -> list[list[Owned]]:
-    """`chunks` in order with each sentence once, as `_stated_once` keeps them, and each
-    departure or clause after the sentence it follows. One equal to one already stated
-    after the same sentence is dropped and that one loses its owner. One stated after
-    another part's sentence is kept, so the reader sees which part each limit belongs
-    to."""
-    kept: list[list[Owned]] = []
-    sentence_start = 0
+    """`chunks` in order as statements, each a sentence followed by its departures, then
+    its clauses. A sentence equal to an earlier statement's, with the same clauses, is
+    dropped: the earlier statement loses its owners and takes the dropped one's departures
+    after its own. A sentence whose clauses differ keeps its own statement, so each clause
+    follows the sentence of its part. A departure or clause equal to one already in its
+    statement is dropped and that one loses its owner. A departure stated after another
+    part's sentence is kept, so the reader sees which part each limit belongs to."""
+    statements: list[_Statement] = []
     for chunk in chunks:
-        is_departure = _is_trailing(chunk)
-        start = sentence_start if is_departure else 0
-        earlier = next((i for i in range(start, len(kept)) if _same_text(kept[i], chunk)), None)
+        if _is_trailing(chunk) and statements:
+            statements[-1].add(chunk)
+        else:
+            statements.append(_Statement(chunk))
+    kept: list[_Statement] = []
+    for statement in statements:
+        earlier = next((seen for seen in kept if seen.repeated_by(statement)), None)
         if earlier is None:
-            if not is_departure:
-                sentence_start = len(kept)
-            kept.append(chunk)
-            continue
-        kept[earlier] = owned(None, _tokens(chunk))
-        if not is_departure:
-            sentence_start = earlier
-    return kept
+            kept.append(statement)
+        else:
+            earlier.absorb(statement)
+    return [chunk for statement in kept for chunk in statement.chunks()]
+
+
+class _Statement:
+    """A sentence with the departures and clauses that follow it. A statement opened by a
+    departure or clause has no sentence."""
+
+    def __init__(self, chunk: list[Owned]) -> None:
+        self.sentence: list[Owned] = []
+        self.departures: list[list[Owned]] = []
+        self.clauses: list[list[Owned]] = []
+        if _is_trailing(chunk):
+            self.add(chunk)
+        else:
+            self.sentence = chunk
+
+    def add(self, chunk: list[Owned]) -> None:
+        """Append a departure or clause, or unown an equal one already here."""
+        run = self.clauses if chunk[0][1].segment == "assumption" else self.departures
+        earlier = next((i for i, seen in enumerate(run) if _same_text(seen, chunk)), None)
+        if earlier is None:
+            run.append(chunk)
+        else:
+            run[earlier] = owned(None, _tokens(chunk))
+
+    def repeated_by(self, other: _Statement) -> bool:
+        """Whether `other` states this sentence again with the same clauses."""
+        return (
+            bool(self.sentence)
+            and _same_text(self.sentence, other.sentence)
+            and len(self.clauses) == len(other.clauses)
+            and all(_same_text(a, b) for a, b in zip(self.clauses, other.clauses, strict=True))
+        )
+
+    def absorb(self, other: _Statement) -> None:
+        """Take `other`, a repeat of this statement: the sentence and clauses lose their
+        owners, and `other`'s departures follow this one's."""
+        self.sentence = owned(None, _tokens(self.sentence))
+        self.clauses = [owned(None, _tokens(clause)) for clause in self.clauses]
+        for departure in other.departures:
+            self.add(departure)
+
+    def chunks(self) -> list[list[Owned]]:
+        return [*([self.sentence] if self.sentence else []), *self.departures, *self.clauses]
 
 
 def _shared_refusals(contributing: list[tuple[int, Part]]) -> dict[int, list[Owned]]:

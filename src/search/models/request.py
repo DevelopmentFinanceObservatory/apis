@@ -578,7 +578,7 @@ class ResubmitIdentityEntry(StrictModel):
             "candidates part, that part's reading_assumptions under the reading's "
             "spec_id. The rebuilt part states the echoed items that still hold, each "
             "worded from the rebuilt answer: a declared_default whose slot (binding_ref) "
-            "still binds exactly the echoed refs, an open_role whose axis the answer "
+            "still binds the echoed refs, an open_role whose axis the answer "
             "still reads across every member with no entity of the identity's, and a "
             "place_scope on an answer that still names no place. An item the echo lacks "
             "is not stated, since the posted identity or its edit asked for it, so an "
@@ -588,7 +588,7 @@ class ResubmitIdentityEntry(StrictModel):
             "default, since the posted identity binds every slot, and the open roles and "
             "place scope the answer reads. The "
             "engine cannot tell an echoed default from one the caller writes for a slot "
-            "it chose itself, and states such an item while its refs match the slot; an "
+            "it chose itself, and states such an item while the slot binds its refs; an "
             "echo only shapes the caller's own response"
         ),
     )

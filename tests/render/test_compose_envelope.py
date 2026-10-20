@@ -1776,6 +1776,39 @@ def test_a_part_by_part_sentence_closes_each_part_with_its_own_clause():
 
 
 @pytest.mark.parametrize(
+    ("second", "sentences", "owners"),
+    [
+        # The second part's clause differs, so it keeps its own sentence before it.
+        pytest.param(
+            (_ASSUMED_ODA,),
+            ["Assumed: every provider.", "Assumed: ODA."],
+            [0, 1],
+            id="own-clauses",
+        ),
+        # The whole statement repeats, so it is stated once, unowned.
+        pytest.param((_ASSUMED_PROVIDERS,), ["Assumed: every provider."], [None], id="alike"),
+    ],
+)
+def test_a_part_whose_sentence_repeats_keeps_it_when_its_clause_differs(
+    second: tuple[Assumption, ...], sentences: list[str], owners: list[int | None]
+):
+    """Two definite parts that read alike, beside a part that is not definite, each state
+    their sentence and clause unless the whole statement repeats."""
+    heading = "Germany's gross ODA disbursements to Kenya, 2015 to 2020." + _CRS_BYLINE
+    rendered, plan = compose_envelope_sentence(
+        [
+            _assuming(_crs_part("Germany", "Kenya", (2015, 2020)), _ASSUMED_PROVIDERS),
+            _assuming(_crs_part("Germany", "Kenya", (2015, 2020)), *second),
+            _unresolved("GDP"),
+        ]
+    )
+    statements = " ".join(f"{heading} {clause}" for clause in sentences)
+    assert rendered == f"Answered 2 of 3 parts. {statements} No data."
+    assert rendered == sentence_from_plan(plan)
+    assert [t.part_index for t in plan if t.text == "Assumed: "] == owners
+
+
+@pytest.mark.parametrize(
     ("folded_assumptions", "clause"),
     [
         # Both carry the item, so the clause belongs to both and carries no part index.

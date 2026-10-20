@@ -29,6 +29,7 @@ from search.models import (
     RawTextInput,
     ResolveOptions,
     ResolveRequest,
+    ResolveResponse,
     ResubmitCandidate,
     ResubmitCandidatesEntry,
     ResubmitIdentityEntry,
@@ -180,22 +181,20 @@ class _PsiFlowBindLLM(_OpenFlowAndSectorBindLLM):
         return result, usage
 
 
-def test_a_merged_part_keeps_the_default_its_own_request_left():
-    """ "aid flows" leaves the flow open and "psi flows" names private sector instruments, so
-    the two merge into one Spec whose flow slot reads as recognised. The first part's own
-    request still left its flow to the ODA default, which it states; the second asked for
-    its flow and states none. The merged heading names no flow role, so neither part
-    states one."""
-    detect = {
-        "aid flows": {"svs": [_E2E_SV_DCID], "cosine_scores": [0.9]},
-        "psi flows": {"svs": [_PSI_SV_DCID], "cosine_scores": [0.9]},
-    }
-    response = offline_resolve(
+_MERGED_DETECT = {
+    "aid flows": {"svs": [_E2E_SV_DCID], "cosine_scores": [0.9]},
+    "psi flows": {"svs": [_PSI_SV_DCID], "cosine_scores": [0.9]},
+}
+
+
+def _merged_answer() -> ResolveResponse:
+    """ "aid flows and psi flows to Kenya", whose two parts merge into one Spec."""
+    return offline_resolve(
         ResolveRequest(
             input=RawTextInput(query="aid flows and psi flows to Kenya"),
             response_options=ResolveOptions(),
         ),
-        graph=_graph_with_psi(detect),
+        graph=_graph_with_psi(_MERGED_DETECT),
         llm=_PsiFlowBindLLM(
             Extraction(
                 kind="resolution",
@@ -205,12 +204,51 @@ def test_a_merged_part_keeps_the_default_its_own_request_left():
         ),
         sdmx=_EMPTY_SDMX,
     )
+
+
+def test_a_merged_part_keeps_the_default_its_own_request_left():
+    """ "aid flows" leaves the flow open and "psi flows" names private sector instruments, so
+    the two merge into one Spec whose flow slot reads as recognised. The first part's own
+    request still left its flow to the ODA default, which it states; the second asked for
+    its flow and states none. The merged heading names no flow role, so neither part
+    states one."""
+    response = _merged_answer()
     first, second = response.parts
     assert isinstance(first, DefinitePart)
     assert isinstance(second, DefinitePart)
     assert first.spec.spec_id == second.spec.spec_id
     assert "slot_defaulted" in [warning.code for warning in first.warnings]
     assert [part.assumptions for part in response.parts] == [[_ASSUMED_ODA], []]
+    assert response.rendered_sentence is not None
+    assert response.rendered_sentence.endswith(" Assumed: official development assistance.")
+
+
+@pytest.mark.parametrize("reposted", [2, 1], ids=["both-parts", "first-part"])
+def test_an_unchanged_repost_of_a_merged_part_keeps_its_default(reposted: int):
+    """A merged part posts the merged identity, whose flow slot binds ODA and private sector
+    instruments, and echoes its own list, which names ODA alone. The slot still binds the
+    echoed ODA, so the repost states it again."""
+    parts = _merged_answer().parts[:reposted]
+    response = offline_resolve(
+        ResolveRequest(
+            input=DatasetResubmitInput(
+                entries=[
+                    ResubmitIdentityEntry(
+                        variable_text=part.variable_text or "",
+                        identity=part.spec.definition.identity,
+                        assumptions=part.assumptions,
+                    )
+                    for part in parts
+                    if isinstance(part, DefinitePart)
+                ]
+            ),
+            response_options=ResolveOptions(),
+        ),
+        graph=_graph_with_psi(_MERGED_DETECT),
+        llm=_OpenFlowAndSectorBindLLM(Extraction(kind="resolution", variables=[], entities=[])),
+        sdmx=_EMPTY_SDMX,
+    )
+    assert [part.assumptions for part in response.parts] == [[_ASSUMED_ODA], []][:reposted]
     assert response.rendered_sentence is not None
     assert response.rendered_sentence.endswith(" Assumed: official development assistance.")
 

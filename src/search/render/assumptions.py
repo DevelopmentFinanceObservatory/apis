@@ -17,8 +17,9 @@
   country", "every place").
 
 A `dataset_resubmit` identity entry posts every slot bound and may echo the part's list
-back. Its part states the echoed items that still hold, matched by kind, binding and value
-dcids (`Assumption.refs`) and worded from the rebuilt Spec. An entry with no echo reads as
+back. Its part states the echoed items that still hold, matched by kind and binding, a
+declared default while its slot still binds the echoed value dcids (`Assumption.refs`), and
+worded from the rebuilt Spec. An entry with no echo reads as
 a fresh request.
 
 The sentence closes with the items as one clause (`clause_tokens`): "Assumed:
@@ -78,25 +79,29 @@ def assumptions_for(
 
     ``echo`` is the list a `dataset_resubmit` identity entry posts back, None when it posts
     none. With an echo, the result is the echoed items that still hold for `spec`, each with
-    its words read from `spec`: a declared default whose slot still binds exactly the echoed
-    `refs`, an open role `spec` still reads open on the echoed axis, and the place scope of a
+    its words read from `spec`: a declared default whose slot still binds the echoed `refs`,
+    stating those refs, an open role `spec` still reads open on the echoed axis, and the place scope of a
     `spec` that still names no place. An item the echo lacks is left out, since the posted
     identity or its edit asked for it, so an empty echo states none. With no echo, `spec`
     reads as a fresh request does."""
     heading = heading_for(spec).heading
     echoed = {_echo_key(item) for item in echo or ()}
-    # The posted identity of an echo binds every slot, so none carries declared_default
-    # provenance: on an echo a how slot holds its default while it binds the echoed values.
-    fixed = {
-        slot_filter.key.as_ref(): {value.ref for value in slot_filter.refs}
-        for slot_filter in (own_spec or spec).resolved.trace.slot_filters
-        if slot_filter.refs
-        and (
-            slot_filter.key.axis == "how" and _slot_key(slot_filter) in echoed
-            if echo is not None
-            else slot_filter.provenance == "declared_default"
-        )
-    }
+    slots = (own_spec or spec).resolved.trace.slot_filters
+    if echo is None:
+        fixed = {
+            slot_filter.key.as_ref(): {value.ref for value in slot_filter.refs}
+            for slot_filter in slots
+            if slot_filter.refs and slot_filter.provenance == "declared_default"
+        }
+    else:
+        # The posted identity of an echo binds every slot, so none carries declared_default
+        # provenance: on an echo a how slot holds an echoed default while it binds its refs.
+        how = {slot_filter.key.as_ref() for slot_filter in slots if slot_filter.key.axis == "how"}
+        fixed = {
+            item.binding_ref: set(item.refs)
+            for item in echo
+            if item.kind == "declared_default" and item.refs and item.binding_ref in how
+        }
     defaults = [
         _declared_default(slot_filter, refs=fixed[ref])
         for slot_filter in spec.resolved.trace.slot_filters
@@ -113,15 +118,6 @@ def _echo_key(item: Assumption) -> tuple[str, str, frozenset[str]]:
     """What an echoed item shares with one the answer yields while it still holds: its kind,
     its binding and its values. Its words are read from the answer."""
     return item.kind, item.binding_ref, frozenset(item.refs)
-
-
-def _slot_key(slot_filter: ResolvedFilter) -> tuple[str, str, frozenset[str]]:
-    """The `_echo_key` of the declared default `slot_filter` would state."""
-    return (
-        "declared_default",
-        slot_filter.key.as_ref(),
-        frozenset(value.ref for value in slot_filter.refs),
-    )
 
 
 def _declared_default(slot_filter: ResolvedFilter, *, refs: set[str]) -> Assumption:
