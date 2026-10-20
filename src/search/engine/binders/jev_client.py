@@ -4,16 +4,18 @@
 first use and shared by every call in the process. A request too large to send whole goes
 as concurrent chunks (`jev_split.split_questions`) whose answers merge into one response.
 One `asyncio.timeout` at `Settings.jev_ceiling_s` bounds the whole call: the wait for a
-concurrency slot, every chunk, and the one retry. Every failure leaves as `JevError`; a call
-that ran out of time before any of its chunks took a slot fails as ``slot_wait``.
+concurrency slot, every chunk, and the one retry. Every failure leaves as `JevError`. A call
+the ceiling cuts fails as ``timeout`` when it cut a request that took its slot without
+waiting, whose own timer ran the full ceiling, and as ``slot_wait`` when every request it cut
+had queued for its slot, or none had taken one.
 
 A circuit breaker shared by the process opens after `BREAKER_FAILURES` consecutive calls
 inside `BREAKER_WINDOW_S` that failed in a way that says Jev is unhealthy (`_HEALTH_KINDS`:
-a timed-out or failed connection, a 408, a 429 or a 5xx); for `BREAKER_OPEN_S` every call
-then fails at once without a request. The first call after that is the probe: its success
-closes the breaker, its unhealthy failure opens it again. A failure particular to the
-request (a refusal, a missing key, an unanswered question) or a wait for a slot moves the
-breaker neither way.
+a timed-out or failed connection, a 401 or 403, a 402, a 408, a 429 or a 5xx); for
+`BREAKER_OPEN_S` every call then fails at once without a request. The first call after that
+is the probe: its success closes the breaker, its unhealthy failure opens it again. A
+failure particular to the request (a refusal, a missing key, an unanswered question) or a
+wait for a slot moves the breaker neither way.
 """
 
 from __future__ import annotations
@@ -70,9 +72,18 @@ BREAKER_FAILURES = 5
 BREAKER_WINDOW_S = 10.0
 BREAKER_OPEN_S = 30.0
 
-# The failures that say Jev itself is unhealthy, the only ones the breaker counts.
+# The failures that say Jev itself is unhealthy, the only ones the breaker counts. A
+# rejected key and exhausted credit fail every call on the account, so they count too.
 _HEALTH_KINDS: frozenset[JevErrorKind] = frozenset(
-    {"timeout", "request_timeout", "connection", "rate_limited", "server"}
+    {
+        "timeout",
+        "request_timeout",
+        "connection",
+        "rate_limited",
+        "server",
+        "auth",
+        "payment_required",
+    }
 )
 
 # The one retry goes to a rate limit, a server error, or a connection that failed without
@@ -270,16 +281,16 @@ async def _send(
     *,
     deadline: float,
     semaphore: asyncio.Semaphore,
-    admitted: asyncio.Event,
+    cut_on_time: asyncio.Event,
 ) -> SystemOneResponse:
     """One request, retried once on a rate limit or server error when the delay before the
-    retry, a `Retry-After` included, ends before `deadline` (loop time). `admitted` is set
-    once the request holds a slot with time left to send it."""
+    retry, a `Retry-After` included, ends before `deadline` (loop time). `cut_on_time` is set
+    when the request is cancelled after it took its slot without waiting."""
+    queued = semaphore.locked()
     async with semaphore:
         budget = deadline - asyncio.get_running_loop().time()
         if budget <= 0:
             raise JevError(None, "slot_wait")
-        admitted.set()
         retry = RetryPolicy(
             max_retries=1,
             http_statuses=set(_RETRY_STATUSES),
@@ -292,6 +303,10 @@ async def _send(
             return await client.system_one(state, questions, retry=retry)
         except TypeSafeError as exc:
             raise _jev_error(exc) from exc
+        except asyncio.CancelledError:
+            if not queued:
+                cut_on_time.set()
+            raise
 
 
 async def _ask_chunks(
@@ -301,11 +316,12 @@ async def _ask_chunks(
     settings: SearchSettings,
 ) -> list[SystemOneResponse]:
     """Every chunk's response, sent concurrently under one deadline. The first failed
-    chunk cancels the rest and fails the call: as ``timeout`` when the deadline passed with
-    a request sent, as ``slot_wait`` when it passed before any chunk took a slot."""
+    chunk cancels the rest and fails the call. A passed deadline fails it as ``timeout``
+    when it cut a request that took its slot without waiting, and as ``slot_wait``
+    otherwise."""
     client = _client(settings)
     semaphore = _SEMAPHORES.get(lambda: asyncio.Semaphore(settings.jev_max_concurrency))
-    admitted = asyncio.Event()
+    cut_on_time = asyncio.Event()
     deadline = asyncio.get_running_loop().time() + settings.jev_ceiling_s
     try:
         async with asyncio.timeout_at(deadline):
@@ -318,13 +334,13 @@ async def _ask_chunks(
                             chunk,
                             deadline=deadline,
                             semaphore=semaphore,
-                            admitted=admitted,
+                            cut_on_time=cut_on_time,
                         )
                     )
                     for chunk in chunks
                 ]
     except TimeoutError as exc:
-        raise JevError(None, "timeout" if admitted.is_set() else "slot_wait") from exc
+        raise JevError(None, "timeout" if cut_on_time.is_set() else "slot_wait") from exc
     except ExceptionGroup as group:
         first = group.exceptions[0]
         if isinstance(first, JevError):
