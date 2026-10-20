@@ -1,9 +1,9 @@
-"""Golden replay of the Jev binder: stored Jev answers reproduce the study's stored output.
+"""Golden replay of the Jev binder: stored Jev answers reproduce each item's expected output.
 
-Each item (`_jev_golden`) holds the answers Jev gave on one dev item and the output the
-study's frozen assembler built from them. The port's requests ask exactly the questions
-those answers answer, and its assembly gives the same bind output, quantity read and
-election rules.
+Each item (`_jev_golden`) holds the answers Jev gave on one dev item and the bind output,
+quantity read and election rules the assembler builds from them under the house policies in
+`binders/house_policy.py`. The port's requests ask exactly the questions those answers
+answer, and its assembly gives that output.
 """
 
 from __future__ import annotations

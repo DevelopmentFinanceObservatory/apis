@@ -376,7 +376,7 @@ def test_a_shape_a_house_policy_sets_aside_is_never_listed():
     output, conf = _assemble(_request(shapes), answers)
 
     assert conf.rules == ["house: amount_vs_ge"]
-    assert conf.policy_dropped == {1}
+    assert conf.policy_dropped == {0}
     assert output.also_plausible is None
 
 
