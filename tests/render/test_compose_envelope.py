@@ -1848,6 +1848,23 @@ def test_a_part_others_fold_into_states_its_clause_for_all_of_them(
     assert _clause_tokens(plan) == clause
 
 
+@pytest.mark.parametrize(
+    "after", [pytest.param([], id="joined"), pytest.param([_unresolved("GDP")], id="per-part")]
+)
+def test_a_folded_part_keeps_its_items_beside_a_separate_part_of_the_same_spec(
+    after: list[NoDataPart],
+):
+    """A separate part can carry the Spec a part folded into: the folded part's own item
+    stays in the clause of the part it folded into."""
+    representative = _assuming(_crs_part("Germany", "Kenya", (2015, 2020)), _ASSUMED_ODA)
+    folded = _assuming(representative, _ASSUMED_ODA, _ASSUMED_PROVIDERS).model_copy(
+        update={"warnings": [Warning(code="binding_folded", severity="info", message="folded")]}
+    )
+    compared = representative.model_copy(update={"separate": True})
+    _rendered, plan = compose_envelope_sentence([representative, folded, compared, *after])
+    assert ("every provider", 1) in _clause_tokens(plan)
+
+
 def test_a_mixed_answer_opens_with_how_many_parts_it_answered():
     """A definite part beside a no-data part: the plan opens with two unowned heading
     tokens, the opener and a space."""

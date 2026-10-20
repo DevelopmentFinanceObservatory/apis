@@ -120,11 +120,13 @@ def _fold_groups(
 ) -> dict[int, list[tuple[int, Part]]]:
     """Each contributing part by index, with itself first and then, for a definite part,
     every later part folded into it, in part order. A folded part carries the Spec of the
-    part it folded into."""
+    part it folded into, the first part of its fold group, which is never separate; a
+    separate part can carry the same spec_id and takes no folds."""
     groups = {index: [(index, part)] for index, part in contributing}
-    folded_into = {
-        part.spec.spec_id: index for index, part in contributing if isinstance(part, DefinitePart)
-    }
+    folded_into: dict[str, int] = {}
+    for index, part in contributing:
+        if isinstance(part, DefinitePart) and not part.separate:
+            folded_into.setdefault(part.spec.spec_id, index)
     for index, part in enumerate(parts):
         if (
             isinstance(part, DefinitePart)
@@ -254,7 +256,7 @@ def _compose_per_part(
     their variables in one sentence (`_shared_refusals`), written where the first of them
     stands. A sentence two parts state alike with the same clause is stated once, unowned,
     followed by each part's departures; a part whose sentence repeats another's beside a
-    different clause keeps its own sentence (`_departures_stay_with_sentences`).
+    different clause keeps its own sentence (`_statements_stated_once`).
     """
     refusals = _shared_refusals(contributing)
     chunks: list[list[Owned]] = []
@@ -278,10 +280,10 @@ def _compose_per_part(
         chunks.extend(_departure_sentence(text, index) for text in texts)
         if clause:
             chunks.append(clause)
-    return _joined_sentences(_departures_stay_with_sentences(chunks))
+    return _joined_sentences(_statements_stated_once(chunks))
 
 
-def _departures_stay_with_sentences(chunks: list[list[Owned]]) -> list[list[Owned]]:
+def _statements_stated_once(chunks: list[list[Owned]]) -> list[list[Owned]]:
     """`chunks` in order as statements, each a sentence followed by its departures, then
     its clauses. A sentence equal to an earlier statement's, with the same clauses, is
     dropped: the earlier statement loses its owners and takes the dropped one's departures

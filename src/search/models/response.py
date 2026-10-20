@@ -402,7 +402,11 @@ class Resolution(_AnswerBase):
             "sentence as segment='assumption' tokens: one clause after a joined "
             "sentence, each item carrying the part_index of its part and an item two "
             "parts share carrying none, or each part's own clause after its departures "
-            "when the sentence is written part by part. On a mixed resolution with at "
+            "when the sentence is written part by part. There, a part whose sentence and "
+            "clause both repeat an earlier part's is stated once with it, that sentence "
+            "and clause carrying no part_index, followed by each part's own departures, "
+            "and a part whose clause differs keeps its own sentence. On a mixed "
+            "resolution with at "
             "least one definite part, the sentence opens 'Answered N of M parts.', where "
             "N counts the definite parts, folded ones included, and M is len(parts)."
         ),
