@@ -138,6 +138,7 @@ from search.engine.unit.conversion import (
     ConversionPeriod,
     counted_conversion,
     pins_facets,
+    served_prices,
     with_unit_conversion,
 )
 from search.engine.unit.conversion_catalogue import current_conversion_catalogue
@@ -1032,8 +1033,11 @@ async def _assemble_carve_outs(
     """
     # Judge the final answer on every requirement (`requirements.settle_answer`). One it
     # leaves unmet refuses before any broader answer can pass as definite, naming the terms
-    # its trace records. The candidates path judges its answers the same way.
-    unbound_qualifiers = settle_answer(state, state.shape_draft, state.bindings)
+    # its trace records. The candidates path judges its answers the same way. The answer is
+    # judged under the unit request its Spec is served under, which meets a price basis.
+    unbound_qualifiers = settle_answer(
+        state, state.shape_draft, state.bindings, served=served_prices(spec)
+    )
     if unbound_qualifiers:
         return state.no_data(
             "qualifier_not_bound",
