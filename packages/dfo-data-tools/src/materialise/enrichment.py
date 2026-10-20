@@ -85,8 +85,7 @@ class EnrichmentLookup:
         if not requested:
             return {}
         parties = self._parties()
-        release = served_origin_key()
-        hits, missing = self._hits_and_missing(requested, release=release)
+        hits, missing = self._hits_and_missing(requested)
         if missing:
             fetched = self._graph.node_arcs_many(
                 missing,
@@ -98,7 +97,7 @@ class EnrichmentLookup:
                 ref: {} if (node := fetched.get(ref)) is None else _node_fields(node)
                 for ref in missing
             }
-            self._store(resolved, release=release)
+            self._store(resolved)
             hits.update(resolved)
         return {ref: _with_party_kind(ref, hits[ref], parties=parties) for ref in requested}
 
@@ -108,8 +107,9 @@ class EnrichmentLookup:
         return party_kind_of(ref, parties=self._parties())
 
     def _hits_and_missing(
-        self, requested: list[str], *, release: str | None
+        self, requested: list[str]
     ) -> tuple[dict[str, Mapping[str, str]], list[str]]:
+        release = served_origin_key()
         with self._lock:
             hits: dict[str, Mapping[str, str]] = {}
             missing: list[str] = []
@@ -121,7 +121,8 @@ class EnrichmentLookup:
                     missing.append(ref)
             return hits, missing
 
-    def _store(self, resolved: Mapping[str, Mapping[str, str]], *, release: str | None) -> None:
+    def _store(self, resolved: Mapping[str, Mapping[str, str]]) -> None:
+        release = served_origin_key()
         with self._lock:
             for ref, fields in resolved.items():
                 self._cache[ref, release] = fields
