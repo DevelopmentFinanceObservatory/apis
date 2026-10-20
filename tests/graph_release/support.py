@@ -30,7 +30,7 @@ from graph_release.format import (
     write_part,
 )
 from graph_release.publish import PublishStatus, hold_release, publish_release
-from graph_release.service import Release
+from graph_release.service import Release, ReleaseService
 from series_coverage.io import (
     write_coverage_table,
     write_current,
@@ -38,6 +38,7 @@ from series_coverage.io import (
     write_manifest,
     write_role_names,
 )
+from series_coverage.loader import load_coverage
 from series_coverage.schema import (
     FACET_COLUMN,
     CoverageManifest,
@@ -224,6 +225,33 @@ def build_view_release(root_uri: str, *, dc_serving_revision: str = TEST_REVISIO
         },
         dc_serving_revision=dc_serving_revision,
     )
+
+
+@contextmanager
+def slice_coverage_release(coverage_uri: str) -> Iterator[Release]:
+    """Publishes `build_view_release` into a temporary directory, opens it with its views and
+    its origin view, and yields it, until the block ends, with the coverage build current under
+    `coverage_uri` as its coverage view, so `ReleaseCoverage` serves the rows a
+    `CoverageService` over `coverage_uri` serves. The yielded release names no service, so it
+    stays served. Its origin view holds the recorded DFO variables."""
+    with tempfile.TemporaryDirectory(prefix="graph-release-") as directory:
+        root = Path(directory)
+        uri = (root / "releases").as_uri()
+        build_view_release(uri)
+        # Held for the block: the service's release holds the part files the views map.
+        service = ReleaseService(
+            uri=uri,
+            local_dir=root / "local",
+            recheck_seconds=0,
+            build_views=True,
+            build_origin=True,
+        )
+        opened = service.snapshot()
+        assert opened.views is not None
+        coverage = load_coverage(coverage_uri).index
+        yield dataclasses.replace(
+            opened, views=dataclasses.replace(opened.views, coverage=coverage), service=None
+        )
 
 
 def publish_coverage_build(

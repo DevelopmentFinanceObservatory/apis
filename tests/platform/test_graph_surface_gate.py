@@ -133,10 +133,13 @@ def test_unset_omits_the_graph_capabilities_route():
 def test_import_with_flag_unset_does_not_pull_in_graph_api() -> None:
     """A fresh subprocess verifies that the disabled Graph gate does not import `graph_api`."""
     script = (
+        "import os\n"
         "import sys\n"
         "import dfo_apis.app as app_module\n"
-        "from tests.series_coverage.support import session_coverage_service\n"
-        "with session_coverage_service():\n"
+        "from graph_release.context import bound_release\n"
+        "from tests.graph_release.support import slice_coverage_release\n"
+        "uri = os.environ['COVERAGE_ARTIFACT_URI']\n"
+        "with slice_coverage_release(uri) as release, bound_release(release):\n"
         "    app_module.deployed_surfaces()\n"
         "bad = [\n"
         "    m for m in sys.modules\n"

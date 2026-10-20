@@ -4,7 +4,6 @@ release, resolvekit."""
 import importlib
 import os
 import sys
-import tempfile
 import time
 from collections.abc import Callable, Iterator
 from concurrent import futures
@@ -18,13 +17,8 @@ import pytest
 
 import graph_release.context as release_context_module
 import origin_catalogue.service as catalogue_service_module
-from graph_release.context import (
-    bind_release,
-    bound_release,
-    origin_release_enabled,
-    unbind_release,
-)
-from graph_release.service import Release, ReleaseService
+from graph_release.context import bind_release, bound_release, unbind_release
+from graph_release.service import Release
 from materialise import place_scope
 from origin_catalogue import Catalogue, bound_catalogue, unbind_catalogue
 from origin_catalogue import bind_catalogue as _bind
@@ -34,7 +28,7 @@ from tests.file_shards import (  # noqa: F401  (hooks pytest collects here)
     pytest_collect_file,
     pytest_sessionstart,
 )
-from tests.graph_release.support import build_view_release
+from tests.graph_release.support import slice_coverage_release
 from tests.llm_miss_guard import (  # noqa: F401  (hooks pytest collects here)
     pytest_runtest_makereport,
     pytest_runtest_setup,
@@ -51,6 +45,9 @@ if TYPE_CHECKING:
 _COVERAGE_SLICE_DIR = Path(__file__).resolve().parent / "fixtures" / "coverage_slice"
 os.environ.setdefault("COVERAGE_ARTIFACT_URI", f"file://{_COVERAGE_SLICE_DIR}")
 os.environ.setdefault("COVERAGE_RECHECK_SECONDS", "0")
+# Every surface serves the bound graph release's views and its origin view.
+os.environ.setdefault("GRAPH_RELEASE_COVERAGE", "1")
+os.environ.setdefault("GRAPH_RELEASE_ORIGIN", "1")
 # Every bundle render links to the public website origin, which the surfaces require.
 os.environ.setdefault("DFO_PUBLIC_SITE_URL", "https://site.example")
 
@@ -64,23 +61,12 @@ _session_release: Release | None = None
 
 @contextmanager
 def _bound_session_release() -> Iterator[Release]:
-    """Publishes a graph release whose code index part is the packaged `index.json.gz`
-    document, opens it with its views, and with its origin view when `GRAPH_RELEASE_ORIGIN` is
-    on, and binds it until the block ends. Its coverage view is the recorded slice's
-    (`build_view_release`), which no test reads through the release. Its origin view holds the
-    slice's DFO variables, so with the flag on a catalogue's own DFO rows give way to them."""
-    with tempfile.TemporaryDirectory(prefix="graph-release-") as directory:
-        root = Path(directory)
-        uri = (root / "releases").as_uri()
-        build_view_release(uri)
-        service = ReleaseService(
-            uri=uri,
-            local_dir=root / "local",
-            recheck_seconds=0,
-            build_views=True,
-            build_origin=origin_release_enabled(),
-        )
-        release = service.snapshot()
+    """Binds, until the block ends, a graph release whose code index part is the packaged
+    `index.json.gz` document, with its views and its origin view, and the recorded coverage
+    slice at `COVERAGE_ARTIFACT_URI` as its coverage view (`slice_coverage_release`). Its
+    origin view holds the recorded DFO variables, so a catalogue's own DFO rows give way to
+    them."""
+    with slice_coverage_release(os.environ["COVERAGE_ARTIFACT_URI"]) as release:
         token = bind_release(release)
         try:
             yield release
