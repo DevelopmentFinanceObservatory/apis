@@ -14,6 +14,7 @@ from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.region.result import RegionResult
 from search.models import Binding, BindingSet, BindingUnbound, BindingValue
+from tests.engine._binders import FixedBindReplyLLM
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import make_request, offline_resolve
@@ -384,8 +385,18 @@ def test_recorded_measles_menu_lists_the_case_count_as_nearest_and_refuses_its_f
     """The case count serves no rate, so it is not electable beside the immunization
     coverage, which measures something else. Bind declines the coverage and names the case
     count as nearest, so the answer refuses `denominator_not_available` flagging the measles
-    case count alone: the reading the question asked for, settled on the condition it names."""
-    response = offline_resolve(make_request("measles incidence rate Kenya"), llm=FakeLLM())
+    case count alone: the reading the question asked for, settled on the condition it names.
+    The bind reply is that decline, held fixed."""
+    llm = FixedBindReplyLLM(
+        _UniversalBindOutput(
+            chosen_shape_index=0, ask="no shape measures the phrase", nearest_refused_index=0
+        )
+    )
+    response = offline_resolve(make_request("measles incidence rate Kenya"), llm=llm)
+
+    (prompt,) = llm.bind_prompts
+    assert "Measles Immunization Coverage" in prompt.partition("NOT ELECTABLE")[0]
+    assert "  0: Count of Measles incidents" in prompt.partition("NOT ELECTABLE")[2]
 
     assert response.status == "no_data"
     part = response.parts[0]

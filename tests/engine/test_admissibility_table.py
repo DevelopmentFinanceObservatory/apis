@@ -60,6 +60,7 @@ from search.engine.retrieval.bound_values import (
 from search.engine.role_text import DoorRole
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.models import CandidatesPart, Operation, Resolution, RoleAxis, TimeWindow
+from tests.engine._binders import FixedBindReplyLLM
 from tests.engine._builders import place_sets
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
@@ -2779,10 +2780,16 @@ def test_a_declined_reading_flagged_in_place_of_its_family_names_the_reading_ask
     """corpus nn-05: the model declines every admissible reading of "measles incidence rate"
     and names the reported case counts, refused on the rate the question names. The flagged
     match names measles, the condition the phrase states, and not every condition the
-    family counts."""
-    from tests.engine._harness import make_request, offline_resolve
+    family counts. The bind reply is that decline, held fixed."""
+    llm = FixedBindReplyLLM(
+        _UniversalBindOutput(
+            chosen_shape_index=0, ask="no shape measures the phrase", nearest_refused_index=0
+        )
+    )
+    response = offline_resolve(make_request("measles incidence rate Kenya"), llm=llm)
 
-    response = offline_resolve(make_request("measles incidence rate Kenya"))
+    (prompt,) = llm.bind_prompts
+    assert "  0: Count of Measles incidents" in prompt.partition("NOT ELECTABLE")[2]
 
     (part,) = response.parts
     assert part.status == "no_data"

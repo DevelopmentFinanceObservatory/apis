@@ -19,6 +19,7 @@ from origin_catalogue import BASE
 from search.engine.bind import DraftBindingEvidence, SlotBindingDraft
 from search.engine.region.phase_election import (
     _keep_the_noun_pinned_property,
+    _settle_sole_options,
     _unbind_implied_values,
     _validate_sole_option_bindings,
 )
@@ -657,3 +658,72 @@ def test_a_value_drafted_on_two_properties_keeps_the_one_a_measure_noun_pins(
 
     assert {b.property_dcid: b.value_dcids[0] for b in result if b.kind == "value"} == settled
     assert {b.property_dcid for b in result} == set(drafted)
+
+
+# ---------------------------------------------------------------------------
+# A single-member slot the reply leaves unbound
+# ---------------------------------------------------------------------------
+
+
+def _unbound(prop: str) -> SlotBindingDraft:
+    return SlotBindingDraft(
+        axis="how", property_dcid=prop, kind="unbound", value_dcids=[], drafted_by="reply"
+    )
+
+
+_INFANT_MEMBERS = {
+    "Count_Death_0Years_AsFractionOf_Count_BirthEvent_LiveBirth": _member_arcs(
+        "UnindexedMortalityEvent", "count", age="Years0"
+    ),
+    "Count_MortalityEvent_Infant_AsAFractionOf_Count_BirthEvent_LiveBirth": _member_arcs(
+        "UnindexedMortalityEvent", "count", ageGroupClassification="Infant"
+    ),
+    "Count_MortalityEvent_Newborn_AsAFractionOf_Count_BirthEvent_LiveBirth": _member_arcs(
+        "UnindexedMortalityEvent", "count", ageGroupClassification="Newborn"
+    ),
+}
+_POPULATION_MEMBERS = {
+    "Count_Person": _member_arcs("UnindexedPerson", "count"),
+    "Count_Person_Female": _member_arcs("UnindexedPerson", "count", gender="Female"),
+}
+
+
+@pytest.mark.parametrize(
+    ("population", "members", "taxonomy", "bound"),
+    [
+        pytest.param(
+            "UnindexedMortalityEvent",
+            _INFANT_MEMBERS,
+            {"how:age": ["Years0"], "how:ageGroupClassification": ["Infant", "Newborn"]},
+            {"age": "Years0"},
+            id="infant-mortality-binds-the-one-age",
+        ),
+        pytest.param(
+            "UnindexedPerson",
+            _POPULATION_MEMBERS,
+            {"how:gender": ["Female"]},
+            {},
+            id="population-sample-of-one-gender-stays-unbound",
+        ),
+    ],
+)
+def test_a_single_member_slot_the_reply_leaves_unbound_binds_where_the_population_forces_it(
+    population, members, taxonomy, bound
+):
+    """The bind prompt asks the reply to bind a slot whose taxonomy holds one value, and the
+    recorded reply to "infant mortality rate" leaves `age` unbound over the one value
+    `Years0`. The engine claims it as a `sole_option` value and the population judges the
+    claim: beside members stating an age group classification instead, the age of zero is
+    forced, while the two-value age group classification stays unbound. A population sample
+    holding one gender beside its total forces none, and the slot stays as the reply
+    drafted it."""
+    shape = replace(_measure_shape(population, "count", members), slot_taxonomy=taxonomy)
+    drafted = [_unbound(key.removeprefix("how:")) for key in taxonomy]
+
+    settled = _settle_sole_options(drafted, shape)
+
+    assert {b.property_dcid: b.value_dcids[0] for b in settled if b.kind == "value"} == bound
+    assert all(b.evidence == "sole_option" for b in settled if b.kind == "value")
+    assert [b for b in settled if b.kind != "value"] == [
+        b for b in drafted if b.property_dcid not in bound
+    ]

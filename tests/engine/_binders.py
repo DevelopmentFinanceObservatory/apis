@@ -1,5 +1,6 @@
 """Binder doubles: the Gemini binder with its menus recorded, one that elects without a
-model call, and a house-policy step that keeps the binder's pick."""
+model call, a house-policy step that keeps the binder's pick, and a recorded-fixture LLM
+whose bind call answers with a fixed reply."""
 
 from __future__ import annotations
 
@@ -8,6 +9,7 @@ from collections.abc import Mapping
 from search.engine.bind import _UniversalBindOutput
 from search.engine.binders import BindRequest, BindResult, GeminiBinder
 from search.engine.binders.house_policy import PolicyChoice, PolicyPool
+from tests.fixtures import FakeLLM
 
 
 def keep_the_pick(
@@ -58,3 +60,20 @@ class FixedBinder(GeminiBinder):
         choice = request.apply_policies(pool)
         result = BindResult(output=output, binder=self.name, policy_pool=pool, policy_choice=choice)
         return result, self._usage
+
+
+class FixedBindReplyLLM:
+    """The recorded fixtures (`FakeLLM`) for every call but the bind call, which answers
+    with `reply` and keeps its prompt. A test that pins what the engine does with one bind
+    reply holds that reply fixed while the rest of the pipeline replays its recordings."""
+
+    def __init__(self, reply: _UniversalBindOutput) -> None:
+        self._reply = reply
+        self._delegate = FakeLLM()
+        self.bind_prompts: list[str] = []
+
+    async def generate_structured(self, *, prompt, system, schema):
+        if schema.__name__ == "_UniversalBindOutput":
+            self.bind_prompts.append(prompt)
+            return self._reply, None
+        return await self._delegate.generate_structured(prompt=prompt, system=system, schema=schema)

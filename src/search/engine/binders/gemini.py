@@ -47,7 +47,11 @@ class GeminiBinder:
     The reply rates each shape that measures the phrase, and the pool is the shapes it rates
     near the best and the pick's twins (`rated_pool`), over which all six policies run with
     the ratings. Each pool shape holds the pick's constraints when it holds each value the
-    reply drafted as named (`holds_mentioned_values`)."""
+    reply drafted as named (`holds_mentioned_values`).
+
+    A reply that rates shapes but leaves its pick out of `measuring`, or rates it at or
+    below `RATED_POOL_FLOOR`, says the pick measures something else, so it declines
+    (`declined`) and no policy runs. A reply that rates no shape keeps its pick."""
 
     @property
     def name(self) -> str:
@@ -82,6 +86,11 @@ class GeminiBinder:
             return BindResult(output=output, binder=self.name), usage
         shapes = request.shapes
         ratings = shape_ratings(output, len(shapes))
+        # A reply that rates shapes and leaves its pick out of `measuring`, or rates it at or
+        # below the pool's floor, says by its own rating that the pick measures something
+        # else, so it declines. A reply that rates no shape says nothing of its pick.
+        if output.measuring and ratings.get(output.chosen_shape_index, 0.0) <= RATED_POOL_FLOOR:
+            return BindResult(output=declined(output), binder=self.name), usage
         pool = rated_pool(shapes, output, ratings)
         chosen = shapes[output.chosen_shape_index]
         holds = {i: holds_mentioned_values(chosen, shapes[i], output) for i in pool.measuring}
@@ -93,6 +102,24 @@ class GeminiBinder:
             policy_choice=choice,
         )
         return result, usage
+
+
+# The `ask` a reply declined on its own rating carries (`declined`).
+_UNRATED_PICK_ASK = "the reply rates its chosen shape as measuring something else"
+
+
+def declined(output: _UniversalBindOutput) -> _UniversalBindOutput:
+    """`output` as a decline: `ask` set, with no bindings, alternates or stand-in, so the
+    part refuses as a reply that asked does. The reply's `measuring` stays as it wrote it."""
+    return output.model_copy(
+        update={
+            "ask": _UNRATED_PICK_ASK,
+            "bindings": [],
+            "also_plausible": None,
+            "nearest_refused_index": None,
+            "unplaced": [],
+        }
+    )
 
 
 def shape_ratings(output: _UniversalBindOutput, size: int) -> dict[int, float]:

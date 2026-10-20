@@ -7,8 +7,11 @@ from __future__ import annotations
 import asyncio
 from typing import cast
 
+import pytest
+
 from entity_resolution import Admission, EntityResolver
 from search.engine.bind import (
+    ShapeRating,
     SlotBindingDraft,
     _UniversalBindOutput,
     bind_schema,
@@ -160,3 +163,45 @@ def test_the_gemini_binder_sends_the_request_bind_universal_sends():
     assert llm.requests == direct.requests
     (request,) = llm.requests
     assert request[2] is bind_schema(len(_MENU))
+
+
+class _ReplyLLM:
+    """Answers the bind call with `reply`."""
+
+    def __init__(self, reply: _UniversalBindOutput) -> None:
+        self.reply = reply
+
+    async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
+        return self.reply, _USAGE
+
+
+@pytest.mark.parametrize(
+    ("measuring", "declines"),
+    [
+        ([ShapeRating(index=0, rating=1.0)], True),
+        ([ShapeRating(index=1, rating=0.0), ShapeRating(index=0, rating=1.0)], True),
+        ([ShapeRating(index=1, rating=0.11)], False),
+    ],
+    ids=["pick-unrated", "pick-rated-0", "pick-just-above-the-floor"],
+)
+def test_a_reply_rating_its_pick_at_or_below_the_floor_declines(measuring, declines):
+    """A reply that rates shapes but leaves its pick out of `measuring`, or rates it at or
+    below `RATED_POOL_FLOOR`, says the pick measures something else: the part refuses
+    `variable_not_resolved` as a reply that asked does. A pick rated just above the floor
+    stands."""
+    reply = _REPLY.model_copy(update={"measuring": measuring})
+    state = _state(llm=_ReplyLLM(reply))
+
+    result = asyncio.run(_phase_bind(state))
+
+    if declines:
+        assert result is not None
+        assert result.no_data_reason == "variable_not_resolved"
+        assert state.bind_result.ask is not None
+        assert state.bind_result.bindings == []
+    else:
+        assert result is None
+        assert state.bind_result.ask is None
+        assert state.bind_result.chosen_shape_index == 1

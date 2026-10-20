@@ -249,7 +249,9 @@ def _settle_bindings(
     reading the shape keeps of each two-reading span
     (`reading_for_shape`), which admission read.
 
-    The source drafts leave and invalid ``requested_all`` claims are demoted. A
+    The source drafts leave and invalid ``requested_all`` claims are demoted. Each slot
+    whose taxonomy holds one value and that the reply left unbound is claimed as that
+    ``sole_option`` value (`_claim_single_member_slots`). A
     ``sole_option`` claim on a value the shape's population shows the slot a reading
     without leaves the slot unbound (`_validate_sole_option_bindings`), as does a value the
     measure's headline series already means (`_unbind_implied_values`). One value drafted
@@ -273,7 +275,7 @@ def _settle_bindings(
             ),
         )
     )
-    bind_result.bindings = _validate_sole_option_bindings(bind_result.bindings, shape_draft)
+    bind_result.bindings = _settle_sole_options(bind_result.bindings, shape_draft)
     bind_result.bindings = _unbind_implied_values(bind_result.bindings, shape_draft)
     bind_result.bindings = _keep_the_noun_pinned_property(bind_result.bindings, shape_draft)
     bind_result.bindings = _open_operation_slots(
@@ -358,6 +360,57 @@ def _settle_bindings(
         _log_admitted_qualifiers(admitted_qualifiers)
 
     return unresolved, readings
+
+
+def _settle_sole_options(
+    bindings: list[SlotBindingDraft], shape_draft: ShapeDraft
+) -> list[SlotBindingDraft]:
+    """`bindings` with each single-member slot the reply left unbound claimed
+    (`_claim_single_member_slots`) and every ``sole_option`` claim validated
+    (`_validate_sole_option_bindings`). A claim the validator demotes leaves its slot as
+    the reply drafted it."""
+    claimed = _claim_single_member_slots(bindings, shape_draft)
+    validated = _validate_sole_option_bindings(claimed, shape_draft)
+    return [
+        draft if claim is not draft and kept.kind == "unbound" else kept
+        for draft, claim, kept in zip(bindings, claimed, validated, strict=True)
+    ]
+
+
+def _claim_single_member_slots(
+    bindings: list[SlotBindingDraft], shape_draft: ShapeDraft
+) -> list[SlotBindingDraft]:
+    """`bindings` with each ``unbound`` draft on a slot whose taxonomy holds one value
+    (`ShapeDraft.slot_taxonomy`) drafted as that value with evidence ``sole_option``.
+
+    The bind prompt asks the reply to bind a single-member slot that way, and a reply can
+    leave it unbound: the recorded reply to "infant mortality rate" leaves ``age`` unbound
+    where the taxonomy holds only ``Years0``. The claim is the one the prompt asks of the
+    reply, so it is stamped as the reply's (`SlotBindingDraft.drafted_by`) and every reader
+    of the reply's claims judges it. A taxonomy read from a recall sample can show one value
+    the family's total does not hold (a population shape whose sample holds one gender),
+    which `_validate_sole_option_bindings` refutes. A ``requested_all`` draft asks for the
+    slot in full and stays."""
+    taxonomy = shape_draft.slot_taxonomy or {}
+    claimed: list[SlotBindingDraft] = []
+    for draft in bindings:
+        values = taxonomy.get(f"{draft.axis}:{draft.property_dcid}", [])
+        if (
+            draft.kind == "unbound"
+            and draft.evidence != "requested_all"
+            and draft.property_dcid is not None
+            and len(values) == 1
+        ):
+            draft = draft.model_copy(
+                update={
+                    "kind": "value",
+                    "value_dcids": list(values),
+                    "evidence": "sole_option",
+                    "drafted_by": "reply",
+                }
+            )
+        claimed.append(draft)
+    return claimed
 
 
 def _validate_sole_option_bindings(

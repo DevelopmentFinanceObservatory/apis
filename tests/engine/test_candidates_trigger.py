@@ -6,11 +6,13 @@ from __future__ import annotations
 
 import pytest
 
+from search.engine.bind import ShapeRating, SlotBindingDraft, _UniversalBindOutput
 from search.models import (
     CandidatesPart,
     DefinitePart,
     NoDataPart,
 )
+from tests.engine._binders import FixedBindReplyLLM
 from tests.engine._harness import make_request as _req
 from tests.engine._harness import offline_resolve
 from tests.fixtures import FakeGraph
@@ -149,8 +151,29 @@ class TestStd04bBirthsEthiopia:
 
     def test_the_live_birth_count_is_elected_with_the_per_capita_shape_as_alternate(self):
         """The gate leaves `flagged_match` empty, so only the message names the elected
-        variable."""
-        result = offline_resolve(_req(self._QUERY))
+        variable. The bind reply electing the live-birth count and nominating the birth
+        count and the per-capita shape is held fixed."""
+        llm = FixedBindReplyLLM(
+            _UniversalBindOutput(
+                chosen_shape_index=2,
+                bindings=[
+                    SlotBindingDraft(
+                        axis="how",
+                        property_dcid="medicalStatus",
+                        kind="value",
+                        value_dcids=["LiveBirth"],
+                        evidence="sole_option",
+                    )
+                ],
+                also_plausible=[0, 1],
+                measuring=[ShapeRating(index=2, rating=1.0), ShapeRating(index=0, rating=1.0)],
+            )
+        )
+        result = offline_resolve(_req(self._QUERY), llm=llm)
+
+        (prompt,) = llm.bind_prompts
+        assert "Shape 1:\n  label: Count of Birth Event (Per capita)\n" in prompt
+        assert "Shape 2:\n  label: Total number of reported live births\n" in prompt
         inner = result.parts[0]
         assert isinstance(inner, NoDataPart)
         assert inner.no_data.gate == "only_alternate_has_data"
