@@ -498,8 +498,8 @@ class ReleaseCoverage:
 
     def serves(self, snapshot: CoverageSnapshot) -> bool:
         """Whether `snapshot` holds the bound release's coverage index. A request keeps its
-        release across a swap, and with it the index, so a snapshot it took stays served to it:
-        a replaced snapshot here would come back from every retry of the same request."""
+        release across a swap, and with it the index, so a snapshot it took stays served to it.
+        A replaced snapshot here would come back from every retry of the same request."""
         return snapshot.index is self.current()
 
     def register_load_guard(

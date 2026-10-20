@@ -3,8 +3,9 @@ from one code index.
 
 When the graph release bound to the current context carries views (`graph_release.service`
 builds them under `GRAPH_RELEASE_COVERAGE`), they are its views, so a request reads its
-release's indexes and none outlives the release. Otherwise, with the flag off, they are
-process-wide, parsed once from the packaged export, and with it on reading them raises.
+release's indexes and none outlives the release. With no such views and the flag off, they are
+process-wide, parsed once from the packaged export. With no such views and the flag on, reading
+them raises.
 
 The cached values need no cleanup. Reset functions exist for tests only.
 """
@@ -35,7 +36,7 @@ _measure_singleton: RefCountedSingleton[MeasureIndex] = RefCountedSingleton(
 
 
 def _bound_views() -> ReleaseViews | None:
-    """The bound release's views; `None` when none carries any and `GRAPH_RELEASE_COVERAGE` is
+    """The bound release's views, or `None` when none carries any and `GRAPH_RELEASE_COVERAGE` is
     off. With the flag on, raises where `graph_release.context.current_views` does."""
     release = bound_release_or_none()
     if release is not None and release.views is not None:

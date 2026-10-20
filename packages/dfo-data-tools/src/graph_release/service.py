@@ -28,7 +28,7 @@ With `build_views`, which `get_release_service()` sets from `GRAPH_RELEASE_COVER
 views (`graph_release.views`): the code index, the measure index and the `CoverageIndex`. They
 are built in the thread that opens the release, so at construction or in the recheck before
 the flip, and live on the `Release`, so they die with it. A release whose views do not build is
-refused as an unreadable one is: construction raises, and a recheck keeps the served release.
+refused as an unreadable one is. Construction raises, and a recheck keeps the served release.
 Without `build_views` a `Release` maps the parts and builds nothing.
 """
 

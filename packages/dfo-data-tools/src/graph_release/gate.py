@@ -2,8 +2,8 @@
 
 `run_gate` reads the staged platform files back and checks what ships: the invariants, the DFO
 parts rebuilt byte for byte from the files, the serving views built from the files, the mixer
-differential and the SDMX counts. The
-shadow diff (`graph_release.shadow`) returns a `GateResult` of its own, which `merge` joins.
+differential and the SDMX counts. The shadow diff (`graph_release.shadow`) returns a
+`GateResult` of its own, which `merge` joins.
 
 A result has two kinds of failure. A finding is deterministic: the same inputs fail the same
 way, so the builder records them as the last failed build and does not retry them. An

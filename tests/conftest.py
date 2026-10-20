@@ -61,7 +61,7 @@ _session_release: Release | None = None
 def _bound_session_release() -> Iterator[Release]:
     """Publishes a graph release whose code index part is the packaged `index.json.gz`
     document, opens it with its views, and binds it until the block ends. Its coverage view is
-    the recorded slice's (`build_view_release`), which no test reads through the release yet."""
+    the recorded slice's (`build_view_release`), which no test reads through the release."""
     with tempfile.TemporaryDirectory(prefix="graph-release-") as directory:
         root = Path(directory)
         uri = (root / "releases").as_uri()

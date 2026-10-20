@@ -7,7 +7,7 @@ a pool runs under a copied context, as it does for the catalogue
 (`origin_catalogue.context`).
 
 `GRAPH_RELEASE_COVERAGE` turns on the release's serving views
-(`graph_release.service.ReleaseViews`): the service builds them as it opens a release.
+(`graph_release.service.ReleaseViews`). The service builds them as it opens a release.
 `code_index.shared.get_index` reads the bound release's views whenever it carries them, and with
 the flag on refuses to read anything else (`current_views`). The flag is read here, on every
 call, since `get_index` asks for it per read and a test may set it after import.
@@ -65,7 +65,7 @@ class ReleaseViewsNotBuilt(RuntimeError):
 
 
 def coverage_views_enabled() -> bool:
-    """Whether `GRAPH_RELEASE_COVERAGE` is on. Unset or blank is off; a value pydantic does
+    """Whether `GRAPH_RELEASE_COVERAGE` is on. Unset or blank is off. A value pydantic does
     not read as a boolean raises `pydantic.ValidationError`."""
     return _flag(os.environ.get(_COVERAGE_ENV_VAR))
 

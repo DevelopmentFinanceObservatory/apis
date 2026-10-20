@@ -139,10 +139,10 @@ def datasets_surface(
     `head_writer` is the head store. `now` is the clock every door reads.
 
     A given `code_index` serves every request. Left out, each request reads `get_index()`,
-    which can change between requests; the index is read here, under the served release as a
+    which can change between requests. The index is read here, under the served release as a
     request reads it, so a missing or malformed export fails construction. `coverage` defaults
     to the process-wide service, resolved here, so a missing or unreadable
-    `COVERAGE_ARTIFACT_URI` fails construction; with `GRAPH_RELEASE_COVERAGE` on it is the bound
+    `COVERAGE_ARTIFACT_URI` fails construction. With `GRAPH_RELEASE_COVERAGE` on it is the bound
     release's coverage (`series_coverage.shared.ReleaseCoverage`), which reads no artifact.
     `rate_cache` defaults to a cache of this surface's own; pass Search's when composing both.
 

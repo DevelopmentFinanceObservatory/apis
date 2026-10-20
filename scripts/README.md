@@ -149,7 +149,7 @@ Run by `.github/workflows/bundle-round-trip.yml`, same trigger as `bundle_round_
 
 ## `graph_release_parity.py`
 
-Diffs what an environment's graph release serves with what the old path serves for the same import, the switch gate for `GRAPH_RELEASE_COVERAGE`. It builds the current release's views with `graph_release.views`, then compares its `CoverageIndex` with the published coverage build (every row, role names, variable provenances, facet metadata, horizon and build year) and its `code_index_blocks` document with a fresh `export_index` over the live mixer, joined with that coverage build, every block row by row.
+Diffs what an environment's graph release serves against the artifacts built from the same import, the gate before `GRAPH_RELEASE_COVERAGE` is switched on. It builds the current release's views with `graph_release.views`, then compares its `CoverageIndex` with the published coverage build (every row, role names, variable provenances, facet metadata, horizon and build year) and its `code_index_blocks` document with a fresh `export_index` over the live mixer, joined with that coverage build, every block row by row.
 
 ```bash
 uv run python scripts/graph_release_parity.py \

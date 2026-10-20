@@ -444,7 +444,7 @@ jobs:
 
       # The graph release job moves onto the new image on every deploy so its
       # scheduled ticks (Cloud Scheduler, every 2 minutes) build with the new
-      # code. The deploy does not execute it; see deploy/graph-release.md.
+      # code. The deploy does not execute it. deploy/graph-release.md covers the job.
       - name: Point the graph release job at the new image
         if: steps.decide.outputs.deploy == 'true'
         run: |
@@ -461,7 +461,7 @@ jobs:
       # it reads both artifacts in the new image's formats. The apis service
       # starts without a catalogue, and only that route answers 503 until one
       # loads. The build key includes the image's commit, so every deploy
-      # needs a new build; the step after the apis service moves starts it.
+      # needs a new build. The step after the apis service moves starts it.
       - name: Point the search catalogue job at the new image
         if: steps.decide.outputs.deploy == 'true'
         run: |

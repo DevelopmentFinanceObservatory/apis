@@ -458,8 +458,9 @@ class TestDatasetsSurface:
         self, root: str, local_dir: Path, monkeypatch: pytest.MonkeyPatch, flag: str | None
     ):
         """With `GRAPH_RELEASE_COVERAGE` on, the coverage the deps register a load guard on is the
-        release's (`ReleaseCoverage`), and the swap still takes every permit once: a second
-        `every_permit` on the same permits would wait on the first, and the flip never end."""
+        release's (`ReleaseCoverage`), and the swap still takes every permit once. A second
+        `every_permit` on the same permits would wait on the first, and the flip would never
+        end."""
         if flag is not None:
             monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", flag)
         monkeypatch.setenv("GRAPH_RELEASE_URI", root)

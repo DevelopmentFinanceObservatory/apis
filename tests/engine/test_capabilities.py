@@ -183,9 +183,8 @@ print("computed")
 @pytest.mark.parametrize("flag", ["0", "1"])
 def test_the_capability_token_reads_no_code_index(flag: str):
     """The token hashes the served schema, whose datasets come from the declarations, so
-    neither importing the config nor computing the token reads the code index: not the
-    packaged one, which is unreadable here, and not a release's under
-    `GRAPH_RELEASE_COVERAGE`, since none is bound."""
+    importing the config and computing the token read no code index. The packaged index is
+    unreadable in the probe, and no release is bound for `GRAPH_RELEASE_COVERAGE` to read."""
     result = subprocess.run(
         [sys.executable, "-c", _UNREADABLE_INDEX_PROBE],
         capture_output=True,

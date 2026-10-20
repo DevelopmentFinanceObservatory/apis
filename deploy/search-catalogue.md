@@ -59,7 +59,7 @@ The job exits 1 on a refused build (`search_catalogue_job_refused`) and on a fai
 
 - `SEARCH_CATALOGUE_URI`: required, `gs://` or `file://`.
 - `ORIGIN_CATALOGUE_URI`: required, the origin catalogue the job counts from and binds for its engine calls. The job loads it under the serving surfaces' `ORIGIN_CATALOGUE_*` settings.
-- `COVERAGE_ARTIFACT_URI`: required, the coverage index the job counts from and the engine reads. With `GRAPH_RELEASE_COVERAGE` on, the job also needs `GRAPH_RELEASE_URI` and reads the bound release's coverage view; it still refuses to start without `COVERAGE_ARTIFACT_URI`, which it then does not read.
+- `COVERAGE_ARTIFACT_URI`: required, the coverage index the job counts from and the engine reads. With `GRAPH_RELEASE_COVERAGE` on, the job also needs `GRAPH_RELEASE_URI` and reads the bound release's coverage view. It still refuses to start without `COVERAGE_ARTIFACT_URI`, which it does not read.
 - `SEARCH_CATALOGUE_MAX_CONCURRENCY`: optional, default 4, the most engine calls in flight.
 - The engine's own settings, as on the apis service: `GEMINI_API_KEY`, `SEARCH_GRAPH_BASE`, `SEARCH_GRAPH_TOKEN`, `SEARCH_ENGINE_MODEL`, `UN_GRAPH_BASE_URL`.
 

@@ -10,8 +10,8 @@ def _with_declared_datasets(request_schema: dict) -> dict:
     """List the declared datasets (`code_index.declarations.DATASETS`), in rank order, as the
     values a parsed part's `provenance` takes: one `const` per dataset, titled with its label,
     described by its description and flagged with `x-opt-in`. The declarations are code, so
-    the schema, and the capability version that hashes it, are fixed per process and read no
-    code index, which needs a bound graph release under `GRAPH_RELEASE_COVERAGE`."""
+    the schema and the capability version that hashes it are fixed per process. Reading the
+    code index would need a bound graph release under `GRAPH_RELEASE_COVERAGE`."""
     field = request_schema["$defs"]["ParsedPart"]["properties"]["provenance"]
     named = next(branch for branch in field["anyOf"] if branch.get("type") == "string")
     named["oneOf"] = [

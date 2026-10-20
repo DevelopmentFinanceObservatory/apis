@@ -16,7 +16,7 @@ placeholder `Node` rows (types `Thing` or `Country`, the dcid as name) or not at
 release-held only when `edges` carries its `typeOf` and `name` arcs; the builder reads every
 other party (`base_party_ids`) from the mixer once
 (`read_base_parties`) and stores the answer as the `base_parties` part. `export_parties` reads
-the release first and `base_parties` for the rest; every other block reads the release alone.
+the release first and `base_parties` for the rest. Every other block reads the release alone.
 Every part serialises deterministically, so a rebuild from the stored parts gives the same
 bytes with no mixer call.
 """

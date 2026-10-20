@@ -45,7 +45,8 @@ the build inputs' `coverage_build_id`. The bound release never moves, so
 step 7 publishes a build of the release the run bound. A run with no release
 to bind, because `GRAPH_RELEASE_URI` is unset, no release is published or the
 release's views do not build, logs `search_catalogue_job_failed` with the
-`reason` and exits 1; the first two end it before the origin catalogue loads.
+`reason` and exits 1. The first two end the run before the origin catalogue
+loads.
 
 Environment: `SEARCH_CATALOGUE_URI` (`gs://` or `file://`),
 `ORIGIN_CATALOGUE_URI` and `COVERAGE_ARTIFACT_URI` are required, with the

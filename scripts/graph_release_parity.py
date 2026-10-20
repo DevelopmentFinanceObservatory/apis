@@ -1,9 +1,9 @@
-"""Diff the views a graph release serves with the artifacts they replace, built from one import.
+"""Diff the views a graph release serves against the artifacts built from the same import.
 
-The switch gate for `GRAPH_RELEASE_COVERAGE` on an environment. The script opens the release the
-pointer under `--release-uri` names and builds its serving views with `graph_release.views`, the
-functions a serving process opens it with. It then compares them with what the old path serves
-for the same import:
+The gate before `GRAPH_RELEASE_COVERAGE` is switched on in an environment. The script opens the
+release the pointer under `--release-uri` names and builds its serving views with
+`graph_release.views`, the functions a serving process opens it with. It then compares them with
+the published coverage build and a fresh code index export of the same import:
 
 - the release's `CoverageIndex` against the published coverage build under `--coverage-uri`:
   every row (`graph_release.shadow.row_diff`), each variable's role names and provenances, each
@@ -235,7 +235,7 @@ def code_index_parity(
     release: Mapping[str, object], export: Mapping[str, object], *, examples: int
 ) -> dict[str, Category]:
     """The blocks of the release's code index document against a fresh export's, row by row.
-    The `stamp` is no block: its counts and `content_hash` follow from the blocks, and its
+    The `stamp` is not a block. Its counts and `content_hash` follow from the blocks, and its
     endpoint, export time and coverage build name each side's source."""
     found: dict[str, Category] = {}
     for block in sorted((release.keys() | export.keys()) - {"stamp"}):

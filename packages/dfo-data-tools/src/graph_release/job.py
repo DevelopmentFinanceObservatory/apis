@@ -170,8 +170,9 @@ BUILDER_MODULES: Final[Mapping[str, tuple[str, ...]]] = {
     "series_coverage": ("index.py", "loader.py", "schema.py"),
 }
 """The modules whose source `builder_code_hash` covers: what reads, builds, gates and publishes
-a release, including the loaders whose refusals `graph_release.gate.check_views` applies. A change elsewhere that changes a part still changes the release id, but builds only
-at the next import or DC redeploy."""
+a release, including the loaders whose refusals `graph_release.gate.check_views` applies. A
+change elsewhere that changes a part still changes the release id, but builds only at the next
+import or DC redeploy."""
 
 
 class StateConflict(Exception):

@@ -229,8 +229,8 @@ def build_worker_app(
     process-wide service, so a missing or unloadable `ORIGIN_CATALOGUE_URI` fails construction.
     `release` defaults to the process-wide graph release service when `GRAPH_RELEASE_URI` is set,
     and to none otherwise. Injected `deps` serve every run as given. Deps the lifespan builds
-    take the code index each run reads under its bindings, since it can change between runs;
-    the lifespan reads it once under the served release, so a missing or malformed index fails
+    take the code index each run reads under its bindings, since it can change between runs.
+    The lifespan reads it once under the served release, so a missing or malformed index fails
     startup, and keeps none.
     """
     _settings = settings if settings is not None else DatasetsBuildSettings.from_env()
