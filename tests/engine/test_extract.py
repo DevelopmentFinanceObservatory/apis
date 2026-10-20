@@ -1109,6 +1109,26 @@ def test_extract_clamps_oversized_variables_before_the_reattach_scan(monkeypatch
         ),
         # A repeat that loses no word adds nothing.
         ("aid and aid to Kenya", ["aid", "aid"], [], [], []),
+        # The request's own words qualify no measure: only the phrase a preposition
+        # attaches is lost.
+        ("Show me aid to Kenya and aid to Uganda", ["aid", "aid"], [], [], []),
+        (
+            "How much aid did Kenya and Uganda get for health and education",
+            ["aid", "aid"],
+            [],
+            [],
+            ["health and education"],
+        ),
+        # A preposition that restricts stays in the phrase it opens.
+        (
+            "aid to Kenya excluding debt relief and aid to Uganda",
+            ["aid", "aid"],
+            [],
+            [],
+            ["excluding debt relief"],
+        ),
+        # A phrase right after the measure qualifies it with no preposition.
+        ("aid disbursements to Kenya and Uganda", ["aid", "aid"], [], [], ["disbursements"]),
         # A resolved relative date holds its wording, though its bounds are years.
         (
             "aid to Kenya and Uganda over the last five years",

@@ -319,10 +319,11 @@ def test_our_pass_answers_and_the_un_pool_reaches_no_menu(
     )
 
 
-def test_a_merged_menu_holds_both_pools_in_score_order(caplog, search_settings) -> None:
+def test_a_merged_menu_seats_our_pool_first(caplog, search_settings) -> None:
     """Our literacy rate clears its floor but is weak, so our pass waits for the UN leg,
-    whose GDP per capita series, another measure, scores higher. The menu holds both, each
-    showing its pool's origin, the UN's first."""
+    whose GDP per capita series, another measure, scores higher on its own resolver's
+    scale. The menu holds both, each showing its pool's origin, ours first
+    (`seating.seat_menu`)."""
     search_settings(un_on_first_menu=True)
     llm = _ElectLLM(_OURS)
     graph = _graph(ours=((_OURS, 0.68),), un=((_UN_GDP_PER_CAPITA, 0.85),), data=(_OURS,))
@@ -331,8 +332,8 @@ def test_a_merged_menu_holds_both_pools_in_score_order(caplog, search_settings) 
         result = _resolve(graph, llm=llm)
 
     assert _origins(_menu(llm)) == [
-        (_UN_GDP_PER_CAPITA, "UN System Data Commons"),
         (_OURS, "our Data Commons"),
+        (_UN_GDP_PER_CAPITA, "UN System Data Commons"),
     ]
     assert (result.status, _elected(result)) == ("definite", [_OURS])
     assert _gap_fill_line(caplog).endswith(" un_merged=true")
@@ -349,7 +350,7 @@ def test_one_measure_in_both_pools_stays_two_readings(search_settings, nominated
 
     result = _resolve(graph, llm=llm)
 
-    assert [dcid for dcid, _ in _origins(_menu(llm))] == [_UN, _OURS]
+    assert [dcid for dcid, _ in _origins(_menu(llm))] == [_OURS, _UN]
     assert _elected(result) == ([_OURS, _UN] if nominated else [_OURS])
     assert result.status == ("candidates" if nominated else "definite")
 
@@ -447,7 +448,7 @@ def test_each_pool_meets_its_own_score_floor(
         un_unknown_score_threshold=un_floor,
         un_on_first_menu=on_first_menu,
     )
-    llm = _ElectLLM()
+    llm = _ElectLLM(_UN)
 
     _resolve(_graph(ours=((_OURS, ours_score),), un=((_UN, un_score),), data=()), llm=llm)
 

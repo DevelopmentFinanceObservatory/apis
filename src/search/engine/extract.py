@@ -35,7 +35,12 @@ from search.engine.config import settings
 from search.engine.errors import EngineInputError
 from search.engine.extracted_date import ExtractedDate
 from search.engine.extraction_store import extraction_key
-from search.engine.function_words import FUNCTION_WORDS, JOINING_WORDS
+from search.engine.function_words import (
+    FUNCTION_WORDS,
+    JOINING_PREPOSITIONS,
+    JOINING_WORDS,
+    RESTRICTING_PREPOSITIONS,
+)
 from search.engine.qualifier_match import (
     CodedQualifier,
     QualifierMatch,
@@ -1043,12 +1048,16 @@ def _disclose_lost_words(
 
     Two variables equal after stripping and casefolding are one measure to the engine, so
     the words that told them apart are gone: "aid to Kenya and Uganda for health and
-    education" read as `["aid", "aid"]` loses "health and education". Each maximal run of
-    query words that no variable, place, role cue, operation phrase, dropped qualifier,
-    date bound or applied relative-date wording (`date_wording`, from
-    `_resolve_relative_dates`) holds, with function words trimmed from its ends, is added
-    when it keeps a word other than a function word or a number. A reading with no
-    repeated variable is returned unchanged.
+    education" read as `["aid", "aid"]` loses "health and education". A run is a maximal
+    stretch of query words that no variable, place, role cue, operation phrase, dropped
+    qualifier, date bound or applied relative-date wording (`date_wording`, from
+    `_resolve_relative_dates`) holds. A measure's qualifier attaches to it, so a run
+    qualifies one from its first preposition on ("get for health and education"), or whole
+    when it follows a variable's word ("aid disbursements to Kenya"); the request's own
+    words ("Show me", "How much") attach to nothing and stay out. That part, with function
+    words trimmed from its ends, is added when it keeps a word other than a function word
+    or a number. A qualifier before the measure is lost to this rule; the prompt folds it
+    into the variable. A reading with no repeated variable is returned unchanged.
     """
     variables = [v.strip().casefold() for v in extraction.variables if v.strip()]
     if len(variables) == len(set(variables)):
@@ -1062,15 +1071,24 @@ def _disclose_lost_words(
         *date_wording,
     ]
     covered = {word for text in held for word in _words(text)}
-    runs: list[list[re.Match[str]]] = [[]]
+    variable_words = {word for text in extraction.variables for word in _words(text)}
+    # Each run with whether the covered word before it is a variable's.
+    runs: list[tuple[bool, list[re.Match[str]]]] = [(False, [])]
     for match in _WORD_RE.finditer(query):
         word = match.group().casefold()
         if word in covered or word.isdigit():
-            runs.append([])
+            runs.append((word in variable_words, []))
         else:
-            runs[-1].append(match)
+            runs[-1][1].append(match)
     lost: list[str] = []
-    for run in runs:
+    for follows_variable, run in runs:
+        if not follows_variable:
+            opens = next(
+                (i for i, m in enumerate(run) if m.group().casefold() in _PREPOSITIONS), None
+            )
+            if opens is None:
+                continue
+            run = run[opens:]
         content = [i for i, m in enumerate(run) if m.group().casefold() not in FUNCTION_WORDS]
         if content:
             lost.append(query[run[content[0]].start() : run[content[-1]].end()])
@@ -1085,6 +1103,8 @@ def _disclose_lost_words(
 
 
 _WORD_RE = re.compile(r"\w+")
+
+_PREPOSITIONS = JOINING_PREPOSITIONS | RESTRICTING_PREPOSITIONS
 
 
 def _words(text: str) -> list[str]:

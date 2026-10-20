@@ -191,8 +191,10 @@ def _part_codes(shape: ShapeDraft, index: CodeIndex) -> dict[str, frozenset[str]
     return {prop: frozenset(values) for prop, values in held.items()}
 
 
-def _rank_key(shape: ShapeDraft) -> tuple[bool, float, int, int, str]:
-    """Order by recall or topic-root rank, breadth, country breadth, then ``shape_id``.
+def _rank_key(shape: ShapeDraft) -> tuple[bool, bool, float, int, int, str]:
+    """Order our pool's shapes ahead of the UN System Data Commons', since each resolver
+    scores on its own scale (`shape.Pool`), then by recall or topic-root rank, breadth,
+    country breadth, then ``shape_id``.
 
     Unscored shapes sort last. Breadth is the confirmed recall sample. It breaks
     flat-score ties, broadest first. Country breadth (`_country_breadth`) breaks the
@@ -201,6 +203,7 @@ def _rank_key(shape: ShapeDraft) -> tuple[bool, float, int, int, str]:
     same key selects the cross-population anchor.
     """
     return (
+        shape.pool != "ours",
         shape.rank_score is None,
         -(shape.rank_score or 0.0),
         -(len(shape.sv_arc_facts) if shape.sv_arc_facts else 1),

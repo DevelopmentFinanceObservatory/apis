@@ -66,14 +66,17 @@ def _extract(query: str, llm: LLM):
     return asyncio.run(extract(query, llm=llm))
 
 
-def test_a_query_in_another_whitespace_and_unicode_form_calls_the_model_once(monkeypatch):
+def test_a_repeated_query_calls_the_model_once_and_another_spelling_reads_afresh(monkeypatch):
+    """`extract()` post-processes a reading against the query text it was made from, so a
+    reading is stored under that exact text."""
     llm, models = _llm(monkeypatch, MemoryExtractionStore(max_bytes=1024 * 1024))
 
     first, first_usage = _extract(_QUERY, llm)
+    second, second_usage = _extract(_QUERY, llm)
     # A no-break space, a doubled space, and padding: the same query once NFKC-normalised.
-    second, second_usage = _extract(" GDP\u00a0of  Kenya ", llm)
+    _extract(" GDP\u00a0of  Kenya ", llm)
 
-    assert models.prompts == [_QUERY]
+    assert models.prompts == [_QUERY, " GDP\u00a0of  Kenya "]
     assert first_usage is not None and first_usage["input_tokens"] == 11
     assert second_usage == _NO_USAGE
     assert second == first
@@ -168,6 +171,18 @@ def test_a_file_store_written_by_one_process_is_read_by_a_second(monkeypatch, tm
     )
 
     assert Extraction.model_validate_json(read.stdout) == _ANSWER
+
+
+def test_a_file_store_skips_a_malformed_line_and_reads_the_lines_after_it(tmp_path, caplog):
+    path = tmp_path / "extractions.jsonl"
+    path.write_bytes(b'{"key": "k1", "value": "v1"}\nnot json\n{"key": "k2", "value": "v2"}\n')
+
+    store = FileExtractionStore(path)
+    # A miss reads on from past the bad line, so the line is logged once.
+    store.get("k3")
+
+    assert [store.get(key) for key in ("k1", "k2")] == ["v1", "v2"]
+    assert [r.name for r in caplog.records] == ["search.engine.extraction_store"]
 
 
 def test_the_memory_store_evicts_the_least_recently_read_entry_past_its_byte_budget():

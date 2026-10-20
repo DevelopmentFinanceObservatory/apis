@@ -2,7 +2,7 @@
 
 `extract()` consults the store before it calls the model and writes the model's
 `Extraction` JSON to it after a valid parse, before any post-processing. A key
-(`extraction_key`) hashes the normalised query, the extract version (the system
+(`extraction_key`) hashes the query as sent, the extract version (the system
 prompt and the `Extraction` schema) and the model id, seed and thinking level, so
 any edit to the prompt or schema reads afresh. `SEARCH_EXTRACT_STORE` selects the
 store: `off`, `memory` (an in-process LRU bounded in bytes, with no TTL) or
@@ -13,35 +13,28 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
-import unicodedata
+import logging
 from collections import OrderedDict
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Protocol
 
+logger = logging.getLogger(__name__)
+
 # The in-process store's byte budget. An extraction is under 1 KiB of JSON, so it
 # holds over 16,000 queries.
 MEMORY_STORE_MAX_BYTES = 16 * 1024 * 1024
 
-_INTERNAL_WHITESPACE = re.compile(r"\s+")
-
-
-def normalise_query(query: str) -> str:
-    """NFKC-normalise, strip, and collapse whitespace while preserving case.
-
-    Response-cache layer 1 and the extraction store key on this form. Case is
-    preserved because extraction can depend on it. Layer 2 can still share results
-    when case variants produce the same extraction.
-    """
-    return _INTERNAL_WHITESPACE.sub(" ", unicodedata.normalize("NFKC", query).strip())
-
 
 def extraction_key(query: str, *, version: str, year: int, identity: Mapping[str, object]) -> str:
-    """Hash `query`'s normalised form, the extract `version`, the `year` the prompt names
-    and the model's `identity` (its id, seed and thinking level)."""
+    """Hash `query` as sent to the model, the extract `version`, the `year` the prompt
+    names and the model's `identity` (its id, seed and thinking level).
+
+    The exact text keys the reading because `extract()` checks the reading against it:
+    role spans, operation phrases and restored word order all read the query's own text.
+    """
     document = {
-        "query": normalise_query(query),
+        "query": query,
         "version": version,
         "year": year,
         "identity": identity,
@@ -101,7 +94,8 @@ class FileExtractionStore:
     so writers in several processes do not interleave lines. A `get` that misses
     reads the lines appended since the last read, so a second process sees what the
     first recorded. A trailing line without its newline is still being written and is
-    read once it is complete. The last line for a key wins.
+    read once it is complete. A complete line that is not a `{"key", "value"}` object is
+    logged and skipped. The last line for a key wins.
     """
 
     def __init__(self, path: Path) -> None:
@@ -132,8 +126,11 @@ class FileExtractionStore:
         complete = appended[: appended.rfind(b"\n") + 1]
         self._offset += len(complete)
         for line in complete.splitlines():
-            record = json.loads(line)
-            self._entries[record["key"]] = record["value"]
+            try:
+                record = json.loads(line)
+                self._entries[record["key"]] = record["value"]
+            except (ValueError, TypeError, KeyError):
+                logger.warning("Extraction store %s: skipping a malformed line", self._path)
 
 
 def is_extraction_store_mode(mode: str) -> bool:
