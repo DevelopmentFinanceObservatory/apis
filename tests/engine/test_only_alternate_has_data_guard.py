@@ -13,7 +13,7 @@ from collections.abc import Sequence
 
 import pytest
 
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import ShapeRating, SlotBindingDraft, _UniversalBindOutput
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.region.codes import ELECTED_SHAPE_NO_DATA, ONLY_ALTERNATE_HAS_DATA
@@ -64,8 +64,8 @@ _ELECTED_NODE = {
 
 
 class _GuardBindLLM:
-    """Elects the data-empty shape, binds `bindings` on it and marks the standard
-    alternatives as plausible."""
+    """Elects the data-empty shape, binds `bindings` on it, marks the standard
+    alternatives as plausible and rates each shape in `rated` at 1."""
 
     def __init__(
         self,
@@ -74,8 +74,10 @@ class _GuardBindLLM:
         chosen_shape_index: int,
         unplaced: Sequence[str] = (),
         bindings: Sequence[SlotBindingDraft] = (),
+        rated: Sequence[int] = (),
     ):
         self._also_plausible = also_plausible
+        self._rated = list(rated)
         self._chosen_shape_index = chosen_shape_index
         self._unplaced = list(unplaced)
         self._bindings = list(bindings)
@@ -90,6 +92,7 @@ class _GuardBindLLM:
             also_plausible=self._also_plausible,
             ask=None,
             unplaced=self._unplaced,
+            measuring=[ShapeRating(index=i, rating=1.0) for i in self._rated],
         ), None
 
 
@@ -287,7 +290,9 @@ _ROLE_GUARD_OBS = {
 }
 
 
-def _run_role_bearing_one_alt_scenario(aid_denominator: str = "GrossNationalIncome"):
+def _run_role_bearing_one_alt_scenario(
+    aid_denominator: str = "GrossNationalIncome", *, rated: Sequence[int] = ()
+):
     # AID_SV ranks first at 0.85 and ROLE_SV second at 0.82.
     # ROLE_SV's creditor/debtor roles bind Kenya on the destination axis.
     graph = FakeGraph(
@@ -319,7 +324,7 @@ def _run_role_bearing_one_alt_scenario(aid_denominator: str = "GrossNationalInco
             pac=True,
             graph=graph,
             resolver=make_resolver(graph),
-            llm=_GuardBindLLM([0], chosen_shape_index=1),
+            llm=_GuardBindLLM([0], chosen_shape_index=1, rated=rated),
             base_timing={},
             sdmx=FakeSdmxClient(observations={}),
             coverage=empty_coverage_snapshot(),
@@ -339,12 +344,14 @@ def test_role_bearing_elected_shape_no_observations_elects_stat_vars():
 
 
 def test_the_house_policy_elects_the_subject_only_twin_with_data(caplog):
-    """On a named place, the subject-only twin with data shares the elected flow's reading,
-    so the data-at-places policy elects it in the bind call: the part answers it as
-    definite, and no elected shape lacked data."""
+    """On a named place, the subject-only twin with data shares the elected flow's reading
+    and the reply rates both alike, so the data-at-places policy elects it in the bind
+    call: the part answers it as definite, and no elected shape lacked data."""
     caplog.set_level(logging.INFO, logger="search.engine.region.phase_rank_bind")
 
-    result = _run_role_bearing_one_alt_scenario(aid_denominator="GrossDomesticProduction")
+    result = _run_role_bearing_one_alt_scenario(
+        aid_denominator="GrossDomesticProduction", rated=(0, 1)
+    )
 
     (decision,) = [
         json.loads(r.getMessage().removeprefix("bind_decision "))
