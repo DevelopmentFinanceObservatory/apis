@@ -1240,7 +1240,8 @@ def lookup_cell(
 ) -> str | None:
     """The `field_name` cell `lookup` gives `ref`. `None` when it gives none: a `ref` that is not
     text, or one `lookup` lacks or holds no such field for. An empty string is a value, such as
-    the `party_class` of a total that covers more than one class, so it counts as no miss."""
+    the `party_class` of a total whose whole markers cover no single class, so it counts as
+    no miss."""
     if not isinstance(ref, str):
         return None
     return lookup.get(ref, {}).get(field_name)

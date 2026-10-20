@@ -81,7 +81,7 @@ def test_facet_spans_agree_with_the_summary_for_every_variable(tmp_path: Path) -
 
 def test_party_counts_split_the_union_of_facets_by_code_index_kind() -> None:
     africa_total, africa_residual = "DACAfrica", "DACAfricaUnallocated"
-    gates = "GatesFoundation"
+    gates, private_total = "GatesFoundation", "DACPrivateDonors"
     table, horizon = coverage_table(
         [
             ("V-a", "f-1", FRA, KEN, [2020]),
@@ -90,6 +90,7 @@ def test_party_counts_split_the_union_of_facets_by_code_index_kind() -> None:
             ("V-a", "f-2", DEU, africa_residual, [2021]),
             ("V-a", "f-2", DEU, ZWE, [2021]),
             ("V-a", "f-2", gates, KEN, [2021]),
+            ("V-a", "f-2", private_total, KEN, [2021]),
         ]
     )
     index = CoverageIndex(table, {"V-a": _FLOW_ROLES}, horizon=horizon)
@@ -98,6 +99,7 @@ def test_party_counts_split_the_union_of_facets_by_code_index_kind() -> None:
         DEU: PartyRow(dcid=DEU, kind="party", party_class="official"),
         gates: PartyRow(dcid=gates, kind="party", party_class="private"),
         KEN: PartyRow(dcid=KEN, kind="party", party_class="official"),
+        private_total: PartyRow(dcid=private_total, kind="total", party_class="private"),
         africa_total: PartyRow(dcid=africa_total, kind="total", totals="africa"),
         africa_residual: PartyRow(dcid=africa_residual, kind="residual", party_class="residual"),
     }
@@ -106,9 +108,10 @@ def test_party_counts_split_the_union_of_facets_by_code_index_kind() -> None:
 
     assert summary is not None
     # KEN sits in both facets and counts once; ZWE is not listed in the code index. A private
-    # donor is a party, and counts again among the private ones.
+    # donor is a party, and counts again among the private ones; the private donors' total reads
+    # the private class and is not a private party.
     assert summary.party_counts(parties=parties) == {
-        "donor": PartyCounts(parties=3, private=1),
+        "donor": PartyCounts(parties=3, private=1, totals=1),
         "recipient": PartyCounts(parties=1, totals=1, residual=1, unclassified=1),
     }
     assert summary.party_counts(parties=parties, facet_ids={"f-1"}) == {

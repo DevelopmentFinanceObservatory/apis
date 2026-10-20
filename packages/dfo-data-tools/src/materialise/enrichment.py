@@ -30,8 +30,8 @@ PARTY_KIND_FIELD = "party_kind"
 `residual`) the code index declares (`party_kind_of`)."""
 
 PARTY_CLASS_FIELD = "party_class"
-"""The party's class (`official`, `private` or `residual`, `PartyRow.party_class`), empty for
-a total that covers no single class."""
+"""The party's class (`official`, `private` or `residual`, `PartyRow.party_class`), for a
+total the one class its whole markers cover, empty otherwise."""
 
 PARTY_WHOLE_FIELD = "party_whole"
 """`true` on a row whose party is a whole total for the row's dataset and year
