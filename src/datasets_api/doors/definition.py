@@ -124,6 +124,7 @@ from datasets_api.query_options import (
     pointer_for_key,
 )
 from datasets_api.render import check_options_supported, linked_under
+from datasets_api.retention import retaining
 from datasets_api.schema import MembersEnvelope, OperationResource, ServedMember
 from datasets_api.shape import StatVarShape
 from datasets_api.store_errors import DatasetsStoreUnavailable
@@ -636,7 +637,7 @@ async def _get_definition_impl(id: str, request: Request, *, deps: Deps) -> JSON
         try:
             head_answer = await _run_retrieval(
                 deps.read_executor,
-                _serve_spec_head,
+                retaining(_serve_spec_head, reader=deps.snapshot_reader, now=deps.now),
                 deps=request_deps,
                 timings=call.timings,
                 spec_id=id,
@@ -646,7 +647,7 @@ async def _get_definition_impl(id: str, request: Request, *, deps: Deps) -> JSON
             manifest = (
                 await _run_retrieval(
                     deps.work_executor,
-                    _serve_spec,
+                    retaining(_serve_spec, reader=deps.snapshot_reader, now=deps.now),
                     timings=call.timings,
                     stored=head_answer.stored,
                     options=options,

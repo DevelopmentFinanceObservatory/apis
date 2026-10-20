@@ -40,6 +40,7 @@ from datasets_api.operations.submit import (
     retry_after_headers,
 )
 from datasets_api.render import check_options_supported
+from datasets_api.retention import retaining
 from datasets_api.schema import OperationResource
 from datasets_api.timings import door_call, run_with_timings
 from datasets_api.version import DATASETS_CAPABILITY_VERSION
@@ -124,7 +125,11 @@ async def _mint_response(body: MintRequest, *, deps: Deps) -> JSONResponse:
         try:
             manifest = await asyncio.wait_for(
                 deps.work_executor.run(
-                    functools.partial(run_with_timings, mint, call.timings),
+                    functools.partial(
+                        run_with_timings,
+                        retaining(mint, reader=deps.snapshot_reader, now=deps.now),
+                        call.timings,
+                    ),
                     refuse=MintBackpressure,
                     timings=call.timings,
                 ),

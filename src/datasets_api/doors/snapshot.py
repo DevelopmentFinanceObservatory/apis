@@ -76,6 +76,7 @@ from datasets_api.render import (
     rendition_token,
     stored_artifact_entry,
 )
+from datasets_api.retention import with_retention
 from datasets_api.subject_ids import served_subject_ids
 from datasets_api.timings import door_call, run_with_timings
 from datasets_api.version import DATASETS_CAPABILITY_VERSION
@@ -414,7 +415,7 @@ def build_snapshot_door(*, deps: DepsCell) -> DoorContribution:
         current = deps.get()
 
         def _read(subject_id: str, subject_ids: tuple[str, ...]) -> Manifest:
-            return read_snapshot_manifest(
+            manifest = read_snapshot_manifest(
                 id=subject_id,
                 content_version=content_version,
                 spec_reader=None,
@@ -422,6 +423,12 @@ def build_snapshot_door(*, deps: DepsCell) -> DoorContribution:
                 now=current.now,
                 settings=current.settings,
                 revoked_under=subject_ids,
+            )
+            return with_retention(
+                manifest,
+                subject_id=subject_id,
+                reader=current.snapshot_reader,
+                now=current.now(),
             )
 
         with door_call("snapshot", logger=logger) as call:

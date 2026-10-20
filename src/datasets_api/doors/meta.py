@@ -94,6 +94,7 @@ from datasets_api.operations.task_client import (
 )
 from datasets_api.refusals import classify_datasets_refusal
 from datasets_api.render import artifact_rendering_key, is_statistics_rendering, rendition_token
+from datasets_api.retention import with_retention
 from datasets_api.schema import (
     OperationEnvelope,
     OperationProgress,
@@ -210,7 +211,8 @@ def _load_done_manifest(
     """The done operation's manifest, narrowed to the rendering its request posted.
 
     Its `trace` carries the currency pair a synchronous mint that materialised reports:
-    `served_from: materialise` and the `confirmed_at` the row recorded.
+    `served_from: materialise` and the `confirmed_at` the row recorded. It carries the
+    version's `retention` (`datasets_api.retention`).
 
     The rendering key is `artifact_rendering_key` of the row's `options` under this service's
     `settings.site`, the key the synchronous definition door narrows by. The read lists that
@@ -264,6 +266,9 @@ def _load_done_manifest(
             rendition_token(settings.site),
         )
         return None
+    manifest = with_retention(
+        manifest, subject_id=operation.subject_id, reader=snapshot_reader, now=now()
+    )
     if operation.confirmed_at is None:
         return manifest
     trace = served_trace(

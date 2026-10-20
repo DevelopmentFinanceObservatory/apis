@@ -495,7 +495,7 @@
     "surface": "datasets"
   },
   {
-    "has_description": false,
+    "has_description": true,
     "method": "POST",
     "name": "post_pin",
     "operation_id": "datasets_post_pin",
