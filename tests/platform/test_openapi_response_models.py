@@ -43,7 +43,10 @@ def _schema_path(path: str) -> str:
 
 # Operations allowed to omit a 2xx response. The Datasets download link answers 302.
 _NO_2XX_EXEMPT: frozenset[tuple[str, str]] = frozenset(
-    {("/api/datasets/{id}/{content_version}/files/{digest}", "get")}
+    {
+        ("/api/datasets/{id}/{content_version}/file", "get"),
+        ("/api/datasets/{id}/{content_version}/files/{digest}", "get"),
+    }
 )
 
 # Operations allowed to return an empty schema.

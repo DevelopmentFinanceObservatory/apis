@@ -28,8 +28,8 @@ route maps a revoked version and an unknown version to the platform's `internal_
 catch-all, as it does stored options that fail
 `MintOptions` validation.
 
-The fronting proxy authenticates operations-poll callers, as for public mint
-and snapshot reads.
+The operations poll checks no caller, as the public mint and snapshot reads
+check none.
 
 A poll of an abandoned row calls `OperationStore.abandon`, fenced on the attempt it read, and
 answers the retryable `operation_failed` with `cause.code` `internal_error`; a resubmit resets

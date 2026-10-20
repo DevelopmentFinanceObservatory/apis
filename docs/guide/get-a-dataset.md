@@ -142,6 +142,8 @@ This page stores the Search response in `resolve.json`, the response to the crea
 
    A snapshot reads the stored version and lists the same download links while its artifacts remain servable.
 
+   To fetch a stored version in another format, ask the file selector. `GET /api/v1/datasets/$spec_id/$content_version/file?format=csv&bundle=false` answers `302` with a signed URL for that rendering, laid over the version's own options, and renders it from the stored frame when the version holds none yet. `layout` takes `frame`, and any other query key answers `400 request_invalid`. `GET /api/v1/datasets/$spec_id/versions` lists the dataset's stored versions, newest first, with their `rendering`. It takes `limit` (1 to 500, default 100) and `cursor`, and the body carries `next_cursor` and `complete`.
+
 ## Verify it worked
 
 A manifest has a `content_version`, coverage, and an artifact whose rendering matches the requested format. The selected link downloads a file whose SHA-256 digest equals its `artifact_digest`.

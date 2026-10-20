@@ -263,10 +263,10 @@
   {
     "has_description": false,
     "method": "GET",
-    "name": "get_versions",
-    "operation_id": "datasets_get_versions",
+    "name": "list_versions",
+    "operation_id": "datasets_list_versions",
     "path": "/api/datasets/{id}/versions",
-    "summary": "Get Versions",
+    "summary": "List Versions",
     "surface": "datasets"
   },
   {
@@ -357,6 +357,15 @@
     "operation_id": "datasets_get_description_values",
     "path": "/api/datasets/{id}/{content_version}/description/values",
     "summary": "Get Description Values",
+    "surface": "datasets"
+  },
+  {
+    "has_description": true,
+    "method": "GET",
+    "name": "get_version_file",
+    "operation_id": "datasets_get_version_file",
+    "path": "/api/datasets/{id}/{content_version}/file",
+    "summary": "Get Version File",
     "surface": "datasets"
   },
   {
