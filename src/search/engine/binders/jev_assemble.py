@@ -12,11 +12,10 @@ applies the rules the engine applies to every binder's drafts (`bind.ground_bind
 
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import get_args
 
-from code_index.labels import PRICE_BASIS_AXIS
 from code_index.shared import get_index, get_measure_index
 from search.engine.bind import (
     DraftBindingEvidence,
@@ -33,7 +32,7 @@ from search.engine.binders.gemini import (
     mentioned_drafts,
     nominated_near_best,
 )
-from search.engine.binders.house_policy import PolicyChoice, PolicyPool, arbitrates
+from search.engine.binders.house_policy import PolicyChoice, PolicyPool
 from search.engine.binders.jev_menu import (
     AXIS_FIELDS,
     JevMenu,
@@ -92,10 +91,10 @@ class Thresholds:
     part_n: float = 0.8
     named: float = 0.5
     measure_value: float = 0.4
-    # On the recorded answers of the eval corpus, Jev scores 61 of the 64 policy values it
-    # was asked about at 0.76 or less, grant equivalent for "education aid" and an
-    # obligation for "ODA loans" among them, and the three a phrase names outright (debt
-    # is an obligation) at 0.94 or more.
+    # On the recorded answers of the eval corpus for amount against grant equivalent,
+    # nominal against real and flow against obligation, Jev scores 61 of 64 at 0.76 or
+    # less, grant equivalent for "education aid" and an obligation for "ODA loans" among
+    # them, and the three a phrase names outright (debt is an obligation) at 0.94 or more.
     policy_value: float = 0.8
     value: float = 0.6
     several: float = 0.5
@@ -323,17 +322,15 @@ def _elect(
     if best <= t.ask:
         conf.rules.append("ask: no shape measures the phrase")
         return None
+    # Only a shape measuring the phrase above `ask` is electable, on every path.
+    electable = [i for i in range(len(shapes)) if conf.measures[i] > t.ask]
     if conf.election:
-        score = {i: conf.election.get(i, 0.0) * conf.measures[i] for i in range(len(shapes))}
+        score = {i: conf.election.get(i, 0.0) * conf.measures[i] for i in electable}
         top = max(score.values())
-        pool = [
-            i
-            for i in range(len(shapes))
-            if conf.measures[i] > t.ask and score[i] >= (1 - t.near_elect) * top
-        ] or [max(score, key=score.__getitem__)]
+        pool = [i for i in electable if score[i] >= (1 - t.near_elect) * top]
         pool = _with_nominal_output(shapes, pool, conf, t)
     else:
-        pool = [i for i in range(len(shapes)) if conf.measures[i] >= best - t.near]
+        pool = [i for i in electable if conf.measures[i] >= best - t.near]
     # A phrase that states no form asks for the plain measure, not a share of a base.
     if form is None:
         plain = [i for i in pool if stated_reading(shapes[i]).denominator is None]
@@ -342,8 +339,10 @@ def _elect(
             pool = plain
     # A measure value or a dataset the phrase names keeps the shapes that hold it.
     for axis, field_name in AXIS_FIELDS.items():
-        values = {i: getattr(shapes[i], field_name) for i in pool}
-        holding = [i for i in pool if _names_value(answers, t, axis, values[i], values.values())]
+        owned = _policy_chooses(menu, pool, axis)
+        holding = [
+            i for i in pool if _names_value(answers, t, getattr(shapes[i], field_name), owned=owned)
+        ]
         if holding and len(holding) < len(pool):
             conf.rules.append(f"named: {axis}")
             pool = holding
@@ -367,28 +366,22 @@ def _elect(
     return choice.survivor
 
 
-def _names_value(
-    answers: JevAnswers,
-    t: Thresholds,
-    axis: str,
-    value: str | None,
-    others: Collection[str | None],
-) -> bool:
-    """Whether Jev's ``mv`` answer says the phrase names `value` on measure axis `axis`, in
-    any spelling of its reading: above `measure_value`, or above `policy_value` when a house
-    policy chooses between it and one of `others` (`house_policy.arbitrates`), so a
-    convention is traded only for a value the phrase names outright. A shape stating no
-    price basis reads at the declared default one, as `status_rule.holds_default_price_basis`
-    reads it."""
+def _policy_chooses(menu: JevMenu, indices: Sequence[int], axis: str) -> bool:
+    """Whether a house policy would choose on measure axis `axis` among the menu shapes at
+    `indices` (`BindRequest.policy_chooses_on`), False when no policy reads the menu."""
+    chooses = menu.request.policy_chooses_on
+    return chooses is not None and chooses(indices, axis)
+
+
+def _names_value(answers: JevAnswers, t: Thresholds, value: str | None, *, owned: bool) -> bool:
+    """Whether Jev's ``mv`` answer says the phrase names `value`, in any spelling of its
+    reading: above `measure_value`, or above `policy_value` on an axis a house policy would
+    choose on (`owned`), so a convention is traded only for a value the phrase names
+    outright."""
     if not value:
         return False
-    index = get_measure_index()
-    default = index.reading_order(PRICE_BASIS_AXIS)[:1] if axis == PRICE_BASIS_AXIS else ()
-    readings = {index.canonical_reading(v) for v in others if v}
-    if any(not v for v in others):
-        readings.update(default)
-    reading = index.canonical_reading(value)
-    bar = t.policy_value if arbitrates(axis, reading, readings) else t.measure_value
+    reading = get_measure_index().canonical_reading(value)
+    bar = t.policy_value if owned else t.measure_value
     return answers.noul(f"mv|{reading}") > bar
 
 
@@ -439,9 +432,10 @@ def _alternates(
     index = get_measure_index()
     family = next((a.prefer for a in index.axes if a.axis == "populationType"), ())
 
-    def named(axis: str, a: str | None, b: str | None) -> bool:
-        """Whether the phrase names either of two values that differ on `axis`."""
-        return any(_names_value(answers, t, axis, v, (a, b)) for v in (a, b))
+    def named(k: int, axis: str, a: str | None, b: str | None) -> bool:
+        """Whether the phrase names either of the values `e` and shape `k` hold on `axis`."""
+        owned = _policy_chooses(menu, (e, k), axis)
+        return any(_names_value(answers, t, v, owned=owned) for v in (a, b))
 
     elected = stated_reading(shapes[e])
     out: list[tuple[float, int]] = []
@@ -492,7 +486,7 @@ def _alternates(
                 )
                 if a != b
             ]
-            if any(named(axis, a, b) for axis, a, b in differing):
+            if any(named(k, axis, a, b) for axis, a, b in differing):
                 continue
             conf.alternates[k] = "measure family variant"
         elif (other.population_type, other.measured_property) != (
@@ -501,7 +495,7 @@ def _alternates(
         ):
             continue
         elif other.qualifier != elected.qualifier:
-            if named("measurementQualifier", elected.qualifier, other.qualifier):
+            if named(k, "measurementQualifier", elected.qualifier, other.qualifier):
                 continue
             conf.alternates[k] = "qualifier variant"
         else:

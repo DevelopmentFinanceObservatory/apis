@@ -116,6 +116,7 @@ def _golden_request(step: _CountingStep) -> BindRequest:
         availability=request.availability,
         query_text=request.query_text,
         apply_policies=step,
+        policy_chooses_on=request.policy_chooses_on,
     )
 
 

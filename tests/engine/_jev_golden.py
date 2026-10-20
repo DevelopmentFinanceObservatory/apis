@@ -147,7 +147,9 @@ def load_item(path: Path) -> GoldenItem:
         availability=args["availability"],
         code_index=get_index(),
     )
-    request = BindRequest(**args, query_text="", apply_policies=step)
+    request = BindRequest(
+        **args, query_text="", apply_policies=step, policy_chooses_on=step.chooses_on
+    )
     quantity = {k: decode(v) for k, v in record["quantity_args"].items()}
     return GoldenItem(
         item=record["item"],

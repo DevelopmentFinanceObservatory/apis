@@ -41,6 +41,14 @@ class ApplyPolicies(Protocol):
     ) -> PolicyChoice: ...
 
 
+class PolicyChoosesOn(Protocol):
+    """Whether a house policy, run over the menu shapes at `indices` alone, would choose
+    between their values on the shape-kind measure axis `axis` (`house_policy.chooses_on`).
+    It runs no policy step."""
+
+    def __call__(self, indices: Sequence[int], axis: str) -> bool: ...
+
+
 class PolicyContractError(Exception):
     """A binder broke the house-policy contract. The step ran other than once on a reply
     that elects a shape, or the election moved to a shape that does not hold a constraint
@@ -72,8 +80,9 @@ class BindRequest:
     `shapes` is the seated menu in rank order, and `admitted_qualifiers`, `admitted_ties`,
     `candidate_menus` and `availability` are each shape's own, in that order. `query_text`
     is the verbatim query of a single-variable raw-text request, else the query the part's
-    roles were read from. `part` and `pool` join a binder's log lines to the part's, as
-    on `QuantityRequest`.
+    roles were read from. `policy_chooses_on` asks whether a house policy would choose on
+    a measure axis among menu shapes, None when no policy reads the menu. `part` and `pool`
+    join a binder's log lines to the part's, as on `QuantityRequest`.
     """
 
     variable: str
@@ -88,6 +97,7 @@ class BindRequest:
     availability: Sequence[bool | None] = ()
     query_text: str | None
     apply_policies: ApplyPolicies
+    policy_chooses_on: PolicyChoosesOn | None = None
     part: int | None = None
     pool: Pool | None = None
 

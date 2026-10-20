@@ -82,7 +82,7 @@ def _request(
     apply_policies: ApplyPolicies | None = None,
 ) -> BindRequest:
     frame = _frame()
-    step = apply_policies or _HousePolicyStep(
+    step = _HousePolicyStep(
         shapes=shapes, frame=frame, admitted_qualifiers=(), availability=(), code_index=get_index()
     )
     return BindRequest(
@@ -92,7 +92,8 @@ def _request(
         dropped_qualifier_phrases=dropped,
         frame=frame,
         query_text="aid",
-        apply_policies=step,
+        apply_policies=apply_policies or step,
+        policy_chooses_on=step.chooses_on,
     )
 
 
@@ -198,7 +199,6 @@ def _gate(nouls: Mapping[str, float]) -> object:
 _PLAIN_AND_DIVIDED = [_shape(0), _shape(1, denominator="Count_Person")]
 _VALUE_ADDED = _shape(0, population="EconomicProduction", measured="valueAdded")
 _OUTPUT = _shape(1, population="EconomicActivity", measured="amount", qualifier="Nominal")
-_DEFAULT_AND_REAL = [_shape(0), _shape(1, qualifier="RealValue")]
 _PERSON_AND_PLACE = [_shape(0), _shape(1, population="Place")]
 _AMOUNT_AND_GE = [
     _shape(0, population="FinancialFlow", measured="grantEquivalent", qualifier="Nominal"),
@@ -576,35 +576,49 @@ def test_another_dataset_s_copy_of_the_elected_reading_is_no_alternate():
     assert not output.also_plausible
 
 
-@pytest.mark.parametrize(("real", "elected"), [(0.8, 0), (0.81, 1)])
-def test_a_shape_stating_no_price_basis_reads_at_the_default_one(real: float, elected: int):
-    """A shape with no measurement qualifier reads as Nominal, so real terms beside it is
-    `nominal_vs_va`'s choice, and Jev names it only above the policy bar."""
-    answers = _answers({"m|0": 0.9, "m|1": 0.9, "mv|RealValue": real}, elect={0: 0.6, 1: 0.4})
+_GDP = {"population": "EconomicActivity", "measured": "amount"}
+_NOMINAL_GDP = _shape(0, **_GDP, qualifier="Nominal")
+_REAL_GDP = _shape(1, **_GDP, qualifier="RealValue")
+_GDP_VALUE_ADDED = _shape(2, population="EconomicProduction", measured="valueAdded")
 
-    output, _conf = _assemble(_request(_DEFAULT_AND_REAL), answers)
+
+@pytest.mark.parametrize(
+    ("shapes", "real", "elected"),
+    [
+        pytest.param([_NOMINAL_GDP, _REAL_GDP], 0.7, 1, id="constant-prices-no-value-added"),
+        pytest.param([_shape(0, **_GDP), _REAL_GDP], 0.7, 1, id="no-qualifier-no-value-added"),
+        pytest.param(
+            [_NOMINAL_GDP, _REAL_GDP, _GDP_VALUE_ADDED], 0.7, 0, id="value-added-below-the-bar"
+        ),
+        pytest.param(
+            [_NOMINAL_GDP, _REAL_GDP, _GDP_VALUE_ADDED], 0.81, 1, id="value-added-above-the-bar"
+        ),
+    ],
+)
+def test_jev_names_real_terms_at_the_policy_bar_only_where_a_policy_chooses(
+    shapes: list[ShapeDraft], real: float, elected: int
+):
+    """`nominal_vs_va` chooses a price basis among output shapes only beside a value-added
+    shape, so "GDP in constant prices" over nominal and real GDP alone narrows to real
+    terms at the ordinary bar, and beside value added only above `policy_value`."""
+    nouls = {f"m|{i}": 0.9 for i in range(len(shapes))} | {"mv|RealValue": real}
+    answers = _answers(nouls, elect={0: 0.4, 1: 0.3, 2: 0.3})
+
+    output, _conf = _assemble(_request(shapes), answers)
 
     assert output.chosen_shape_index == elected
 
 
-def test_a_value_no_house_policy_chooses_narrows_at_the_measure_value_bar():
-    """Attributed amount is no policy's choice, so Jev naming it at the ordinary bar keeps
-    the shape beside an amount and a grant equivalent, which `amount_vs_ge` chooses
-    between."""
-    shapes = [
-        _shape(0, population="FinancialFlow", measured="amount", qualifier="Nominal"),
-        _shape(1, population="FinancialFlow", measured="grantEquivalent", qualifier="Nominal"),
-        _shape(2, population="FinancialFlow", measured="attributedAmount", qualifier="Nominal"),
-    ]
-    answers = _answers(
-        {"m|0": 0.9, "m|1": 0.9, "m|2": 0.9, "mv|attributedAmount": 0.5},
-        elect={0: 0.5, 1: 0.3, 2: 0.2},
-    )
+def test_only_a_shape_measuring_the_phrase_above_ask_is_elected():
+    """The one shape over `ask` wins though another, under it, holds nearly all the
+    election."""
+    shapes = [_shape(0), _shape(1, population="Place")]
+    answers = _answers({"m|0": 0.12, "m|1": 0.2}, elect={0: 0.97, 1: 0.03})
 
     output, conf = _assemble(_request(shapes), answers)
 
-    assert output.chosen_shape_index == 2
-    assert conf.rules == ["named: measuredProperty"]
+    assert output.chosen_shape_index == 1
+    assert conf.pool is not None and conf.pool.measuring == (1,)
 
 
 def test_a_request_without_a_query_asks_no_query_question():

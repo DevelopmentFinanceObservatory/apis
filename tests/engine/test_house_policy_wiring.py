@@ -892,6 +892,7 @@ def _bind_every_sector(binder: str, *, every: bool) -> BindResult:
         frame=_NO_PLACE,
         query_text=None,
         apply_policies=step,
+        policy_chooses_on=step.chooses_on,
     )
     if binder == "gemini":
         sectors = SlotBindingDraft(

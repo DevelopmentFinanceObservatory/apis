@@ -39,6 +39,7 @@ from search.engine.binders.house_policy import (
     PolicyChoice,
     PolicyPool,
     apply_house_policies,
+    chooses_on,
     context_of,
     shape_facts,
 )
@@ -3628,6 +3629,12 @@ class _HousePolicyStep:
             facts, pool, context, chosen=pool.measuring[0], ratings=ratings, holds=holds
         )
 
+    def chooses_on(self, indices: Sequence[int], axis: str) -> bool:
+        """Whether a house policy would choose on measure axis `axis` among the menu shapes
+        at `indices` (`house_policy.chooses_on`). Not a call of the step."""
+        facts = shape_facts(self.shapes, self.availability, indices, code_index=self.code_index)
+        return chooses_on(facts, self._context(indices), axis)
+
     def _context(self, pool: Sequence[int]) -> Context:
         return context_of(
             self.frame,
@@ -3770,6 +3777,7 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
         availability=availability,
         query_text=state.query_text or state.role_query,
         apply_policies=policies,
+        policy_chooses_on=policies.chooses_on,
         part=state.variable_index,
         pool=state.pool,
     )
