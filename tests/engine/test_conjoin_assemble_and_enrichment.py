@@ -8,6 +8,8 @@ import asyncio
 import dataclasses
 import time
 
+import pytest
+
 from search.engine.conjoin import BINDING_FOLDED, assemble_region, combine_regions
 from search.engine.deadline import _cancel_and_await
 from search.engine.enrichment import _reconcile_after_collapse, _stream_slot_options
@@ -362,9 +364,20 @@ def test_each_option_pins_one_ambiguous_wording_and_leaves_the_other_bare():
     ]
 
 
-def test_a_group_candidate_on_a_members_row_posts_the_group_name_without_a_pin():
+@pytest.mark.parametrize(
+    ("group_name", "group_option"),
+    [
+        ("European Union", [[ParsedEntity(text="European Union", members=True)]]),
+        (None, []),
+    ],
+    ids=["named", "no-name-resolves-to-the-group-alone"],
+)
+def test_a_group_candidate_on_a_members_row_posts_the_group_name_without_a_pin(
+    group_name, group_option
+):
     """A pin on a group's own node cannot ask for its members, so the candidate's option
-    posts the group's registered name with the members flag and no dcid."""
+    posts the group's registered name with the members flag and no dcid. A group node with
+    no name that resolves to its group alone has no option."""
     region = dataclasses.replace(
         _TWO_AMBIGUOUS,
         parsed_form=ParsedPart(
@@ -379,7 +392,8 @@ def test_a_group_candidate_on_a_members_row_posts_the_group_name_without_a_pin()
                         dcid="EuropeanUnion",
                         name="European Union",
                         kind="continental_union",
-                        group_name="European Union",
+                        group_node=True,
+                        group_name=group_name,
                     ),
                     AmbiguousEntityCandidate(dcid="africa", name="Africa", kind="continent"),
                 ),
@@ -390,10 +404,10 @@ def test_a_group_candidate_on_a_members_row_posts_the_group_name_without_a_pin()
     part = _entity_terms_part(region)
 
     assert [o.data_query.parts[0].entities for o in part.no_data.options] == [
-        [ParsedEntity(text="European Union", members=True)],
+        *group_option,
         [ParsedEntity(text="the Union", members=True, dcid="africa")],
     ]
-    assert [o.mentions for o in part.no_data.options] == [["the Union"], ["the Union"]]
+    assert {tuple(o.mentions) for o in part.no_data.options} == {("the Union",)}
 
 
 def test_assemble_region_non_entity_reason_ignores_unresolved_entity_names():

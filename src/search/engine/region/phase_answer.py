@@ -136,6 +136,7 @@ from search.engine.spec_build import (
 from search.engine.unit.bind import with_unit_lexicon_version
 from search.engine.unit.conversion import (
     ConversionPeriod,
+    bound_prices,
     counted_conversion,
     pins_facets,
     served_prices,
@@ -989,7 +990,14 @@ def _build_definite_spec(
         unresolved_slots=state.unresolved_slots,
         # Use qualifier bindings after election vetting and repair.
         text_recognized_properties=state.text_recognized_properties,
-        query_qualifiers=answer_terms(state, state.shape_draft, state.bindings),
+        # The trace is judged under the unit request the answer is served under, as its
+        # carve-outs judge it (`settle_answer`).
+        query_qualifiers=answer_terms(
+            state,
+            state.shape_draft,
+            state.bindings,
+            served=bound_prices(setup.facet_bindings),
+        ),
         facet_bindings=setup.facet_bindings,
         # Record properties forced by measure election.
         measure_elected_properties=state.measure_elected_properties,

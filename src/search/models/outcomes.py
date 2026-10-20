@@ -78,8 +78,8 @@ class AmbiguousEntityCandidate(StrictModel):
     an AmbiguousEntityGroup's own `candidates`. Mirrors engine.region.result.
     AmbiguousEntityCandidate field-for-field, with `label` in place of that
     dataclass's `name` (this contract's own vocabulary for a display
-    string, matching ResolvedEntity.label), and without its `group_name`,
-    which only NoData.options read."""
+    string, matching ResolvedEntity.label), and without its `group_node`
+    and `group_name`, which only NoData.options read."""
 
     ref: str = Field(description="the candidate's own dcid")
     label: str = Field(description="the candidate's display name")
@@ -475,7 +475,8 @@ class NoData(StrictModel):
             "groups, sets read as members and other ambiguous wordings stay unpinned, so a "
             "second ambiguity refuses again with the first pick kept. A candidate that is a "
             "group's own node, asked for its members, posts the group's registry name with "
-            "no dcid. A source option sets the candidate's ref on the ambiguous mention; a "
+            "no dcid, and has no option when no registry name resolves to the group alone. "
+            "A source option sets the candidate's ref on the ambiguous mention; a "
             "source-code option names the holding provenance as the part's only included "
             "source. A role option states a direction for every name the question left "
             "unstated, so that every axis the shape declares a role on and the part does "

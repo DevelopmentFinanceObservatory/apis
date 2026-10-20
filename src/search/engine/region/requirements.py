@@ -374,12 +374,17 @@ def _reading(state: ResolveState, bindings: Sequence[SlotBindingDraft]) -> list[
 
 
 def answer_terms(
-    state: ResolveState, shape: ShapeDraft, bindings: Sequence[SlotBindingDraft]
+    state: ResolveState,
+    shape: ShapeDraft,
+    bindings: Sequence[SlotBindingDraft],
+    *,
+    served: PriceBasis | None = None,
 ) -> list[ResolvedQualifier]:
-    """The query terms the trace of an answer of `shape` read under `bindings` records: the
-    elected reading's bound records when `bindings` are the elected ones, and the term of
-    each requirement the answer leaves unmet (`judge`)."""
-    unmet = judge(state.requirements, [(shape, bindings)], state=state).terms(0)
+    """The query terms the trace of an answer of `shape` read under `bindings` and served
+    under a unit request at `served` prices (None for none) records: the elected reading's
+    bound records when `bindings` are the elected ones, and the term of each requirement
+    the answer leaves unmet (`judge`)."""
+    unmet = judge(state.requirements, [(shape, bindings)], state=state, served=(served,)).terms(0)
     return _in_reading_order(_reading(state, bindings), unmet)
 
 

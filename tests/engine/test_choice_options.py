@@ -15,6 +15,8 @@ import origin_catalogue.service as catalogue_service_module
 from origin_catalogue import DFO, ProvenanceRow, SourceRef
 from search.engine.bind import _UniversalBindOutput
 from search.engine.quantity_read import QuantityOutput
+from series_coverage.schema import RoleNames
+from tests.engine._fake_coverage import patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import materialise_double_from_obs
 from tests.engine._quantity import NO_QUANTITY
@@ -243,12 +245,13 @@ def _entities(*names: str, role_text: str | None = None) -> list[dict]:
         pytest.param(
             [{"text": "Norway", "role_text": "from"}, {"text": "Kenya"}],
             None,
-            [],
-            id="one-untold-read-both-ways-empty",
+            ["Norway to Kenya"],
+            id="one-untold-read-unknown",
         ),
     ],
 )
 def test_an_untold_direction_offers_each_reading_within_the_cap(entities, open_roles, labels):
+    """The coverage index holds no row of the flow, so no direction is read empty."""
     client = _flow_client()
     part = {"variable_text": "aid", "entities": entities}
     if open_roles is not None:
@@ -259,6 +262,30 @@ def test_an_untold_direction_offers_each_reading_within_the_cap(entities, open_r
     assert no_data["reason"] == "role_not_resolved"
     assert [o["label"] for o in no_data["options"]] == labels
     _assert_options_settle(client, no_data)
+
+
+def test_an_untold_direction_read_empty_every_way_offers_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The coverage index holds the flow between Uganda and Rwanda only, so the one reading
+    of Kenya is read and holds no data."""
+    patch_coverage(
+        monkeypatch,
+        [(_FLOW_SV, "f_flow", _PLACES["Uganda"], _PLACES["Rwanda"], [2020])],
+        role_names={_FLOW_SV: RoleNames(donor="creditor", recipient="debtor")},
+    )
+    client = _flow_client()
+
+    no_data = _no_data(
+        client,
+        {
+            "variable_text": "aid",
+            "entities": [{"text": "Norway", "role_text": "from"}, {"text": "Kenya"}],
+        },
+    )
+
+    assert no_data["reason"] == "role_not_resolved"
+    assert no_data["options"] == []
 
 
 def test_a_role_option_states_a_direction_for_every_untold_name():

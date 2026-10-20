@@ -395,16 +395,20 @@ def _settle_direction(
     answer states the direction it reads the place on (`departures.direction_inferred`).
     When several hold data the first is served and each other is offered beside it as a
     `direction` candidate: a copy of the elected shape on the menu, bound on its own
-    assignment (`ResolveState.direction_rivals`). When readings exist and none holds data
-    the places refuse ``no_direction_holds``, a ``role_not_resolved`` that offers no
-    reading, since each is known empty. Otherwise they refuse ``role_not_resolved``, as a
-    question whose direction no data settles."""
+    assignment (`ResolveState.direction_rivals`). When readings exist and every read says
+    empty (`False`) the places refuse ``no_direction_holds``, a ``role_not_resolved`` that
+    offers no reading, since each is known empty. A read the coverage index cannot answer
+    (`None`) is unknown. Otherwise they refuse ``role_not_resolved``, as a question
+    whose direction no data settles."""
     shape = state.shape_draft
-    readings = direction_assignments(state, shape)
     series = series_at_places(state)
-    held = [(axis, assignment) for axis, assignment in readings if series(shape, assignment)]
-    if readings and not held:
+    reads = [
+        (axis, assignment, series(shape, assignment))
+        for axis, assignment in direction_assignments(state, shape)
+    ]
+    if reads and all(read is False for *_, read in reads):
         return "no_direction_holds"
+    held = [(axis, assignment) for axis, assignment, read in reads if read]
     name = undirected_place_name(state)
     if not held or name is None:
         return "role_not_resolved"

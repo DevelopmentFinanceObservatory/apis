@@ -28,6 +28,7 @@ from search.engine.departures import (
 from search.engine.qualifier_match import QualifierMatch
 from search.engine.region.phase_answer import _assemble_carve_outs
 from search.engine.region.requirements import (
+    answer_terms,
     judge,
     record_reading,
     refusal_terms,
@@ -47,6 +48,7 @@ from search.engine.region.state import (
 from search.engine.region.unrealisable import unbind_unrealisable
 from search.engine.retrieval.retrieve import BoundValuesUnrealisable, Materialised, MemberConflict
 from search.engine.shape import ShapeDraft, SlotKeyDraft
+from search.engine.unit.conversion import bound_prices, served_prices
 from search.heading.departure_fact import DepartureFact
 from search.models import CoverageBare, GraphRef, ResolvedQualifier, Spec, StatVar, Warning
 from tests.conftest import minimal_spec
@@ -526,3 +528,45 @@ def test_the_definite_answer_is_judged_under_its_spec_unit_request(prices, depar
 
     assert _carve_out(state, _unit_spec(prices)) is None
     assert bool(_departed(state)) is departs
+
+
+@pytest.mark.parametrize(("prices", "unbound"), [("constant", []), ("current", [_CONSTANT])])
+def test_the_trace_judges_a_price_basis_slot_under_the_served_unit_request(prices, unbound):
+    """A shape holding `measurementQualifier` as a slot binds Nominal, so "constant" is
+    unmet on its bindings alone. Served in constant euros the trace and the carve-out both
+    count it met; served at current prices both name it."""
+    state = _state()
+    state.shape_draft = replace(
+        _education_share(),
+        shape_id="flow_price_slot",
+        slot_keys=(SlotKeyDraft(axis="how", property_dcid="measurementQualifier", label="prices"),),
+    )
+    state.measure_query_matches = (
+        QualifierMatch(
+            code_system="measurementQualifier",
+            code_dcid="RealValue",
+            label="Real value",
+            source="synonym",
+            matched_text=_CONSTANT,
+        ),
+    )
+    state.require_unapplied(
+        _CONSTANT, asked=_CONSTANT, property_dcid="measurementQualifier", origin="bind"
+    )
+    state.bindings = [
+        SlotBindingDraft(
+            axis="how", property_dcid="measurementQualifier", kind="value", value_dcids=["Nominal"]
+        )
+    ]
+    spec = _unit_spec(prices)
+
+    trace = answer_terms(
+        state,
+        state.shape_draft,
+        state.bindings,
+        served=bound_prices(spec.definition.identity.facets),
+    )
+    refused = settle_answer(state, state.shape_draft, state.bindings, served=served_prices(spec))
+
+    assert [q.text for q in trace if q.disposition != "bound"] == unbound
+    assert [q.text for q in refused] == unbound

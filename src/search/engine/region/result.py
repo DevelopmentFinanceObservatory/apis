@@ -78,13 +78,16 @@ class FacetAxisFilter:
 class AmbiguousEntityCandidate:
     """One graph node that could match an ambiguous query wording.
 
-    `group_name` is the registered name of the group whose own node the candidate is, set
-    when the part asks for the wording's members: a pin on a group's node cannot ask for
-    its members, so the candidate's option posts this name instead. `None` otherwise."""
+    `group_node` is set when the candidate is a group's own node and the part asks for the
+    wording's members: a pin on a group's node cannot ask for its members, so the
+    candidate's option posts `group_name`, the group's registered name that resolves to it
+    alone, instead. A group node with no such name (`group_name` `None`) has no option.
+    `group_name` is `None` on every other candidate."""
 
     dcid: str
     name: str
     kind: str
+    group_node: bool = False
     group_name: str | None = None
 
 

@@ -365,25 +365,44 @@ def _unless_expired[*Ts, R](deadline: float | None, fn: Callable[[*Ts], R], /, *
     return fn(*args)
 
 
-def _group_nodes_job(shared: SharedResolver) -> dict[str, str]:
-    """The dcids `Group.entity` can hold, for every group resolvekit knows, each with the
-    first registered group name that resolves to it: the group's own id as a dcid, and each
-    organisation that survives the gate beside it (`EntityResolver._assemble_group`). A
-    region the membership policy holds is left out, since the policy answers its members
-    ("Africa (DAC)" resolves to `africa`). Runs on the shared resolver's single worker."""
+@dataclass(frozen=True, slots=True)
+class _GroupNodes:
+    """The dcids `Group.entity` can hold (`dcids`), and each of them with the first
+    registered group name that resolves to its group alone (`names`)."""
+
+    dcids: frozenset[str]
+    names: Mapping[str, str]
+
+
+def _group_nodes_job(shared: SharedResolver) -> _GroupNodes:
+    """The dcids `Group.entity` can hold, for every group resolvekit knows: the group's own
+    id as a dcid, and each organisation that survives the gate beside it
+    (`EntityResolver._assemble_group`). A region the membership policy holds is left out,
+    since the policy answers its members ("Africa (DAC)" resolves to `africa`).
+
+    Each dcid takes the first registered name that resolves to its group alone: a name whose
+    top survivor is a group the registry holds (`_group_hit`), which `resolve` answers as
+    that `Group` whatever else survives. A name whose top survivor the registry does not
+    hold is an ordinary hit, which can be ambiguous, so its dcids take a later name or none.
+    Runs on the shared resolver's single worker."""
     context = ResolutionContext(entity_types=ADMITTED_TYPES)
+    dcids: set[str] = set()
     names: dict[str, str] = {}
     for name in shared.resolver.known_groups():
         listed, _, _ = _resolve_text_survivors(shared, name, context)
         survivors = [candidate for candidate, _ in listed]
         if not survivors or survivors[0].entity_type not in _GROUP_TYPES:
             continue
+        alone = _group_hit(shared, survivors[0]) is not None
         nodes = [survivors[0]] + [c for c in survivors[1:] if c.entity_type == _ORG_ENTITY_TYPE]
         for node in nodes:
             dcid = identity_to_dcid(node.entity_id)
-            if dcid is not None and not shared.policy.holds_region(dcid):
+            if dcid is None or shared.policy.holds_region(dcid):
+                continue
+            dcids.add(dcid)
+            if alone:
                 names.setdefault(dcid, name)
-    return names
+    return _GroupNodes(dcids=frozenset(dcids), names=names)
 
 
 def _entity_from_confirmation(
@@ -468,7 +487,7 @@ class EntityResolver:
         self._cache: TLRUCache[_CacheKey, Resolution] = TLRUCache(maxsize=cache_size, ttu=_ttu)
         self._hits = 0
         self._misses = 0
-        self._group_nodes: Mapping[str, str] | None = None
+        self._group_nodes: _GroupNodes | None = None
 
     @property
     def membership(self) -> MembershipPolicy:
@@ -502,13 +521,16 @@ class EntityResolver:
         """The dcids that are the node of a group the resolver knows, such as
         `EuropeanUnion`: every dcid a `Group.entity` can hold. The packs fix the set, so it is
         computed once and no graph is read."""
-        return frozenset(await self.group_node_names())
+        return (await self._group_node_lookup()).dcids
 
     async def group_node_names(self) -> Mapping[str, str]:
-        """Each dcid of `group_node_dcids` with a registered group name that resolves to it,
-        such as `EuropeanUnion` to "European Union": the text that asks for the group's
-        members, which a pin on the node cannot. Computed once from the packs, with no
-        graph read."""
+        """Each dcid of `group_node_dcids` with a registered group name that resolves to its
+        group alone, such as `EuropeanUnion` to "European Union": the text that asks for the
+        group's members, which a pin on the node cannot. A dcid whose group has no such name
+        is left out. Computed once from the packs, with no graph read."""
+        return (await self._group_node_lookup()).names
+
+    async def _group_node_lookup(self) -> _GroupNodes:
         if self._group_nodes is None:
             self._group_nodes = await asyncio.get_running_loop().run_in_executor(
                 self._shared.executor, _group_nodes_job, self._shared

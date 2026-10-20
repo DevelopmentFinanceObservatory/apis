@@ -271,8 +271,9 @@ def _entity_options(region: RegionResult, part: ParsedPart) -> list[NoDataOption
     """One option per ambiguous wording and candidate: the part with every entity that
     resolved to one node pinned, and every row with the wording pinned to the candidate.
     A row asked for its members takes a group's own node by the group's registered name,
-    with no dcid, since a pin cannot ask for a group's members. Other ambiguous wordings
-    stay unpinned."""
+    with no dcid, since a pin cannot ask for a group's members; a group node with no
+    registered name that resolves to it alone has no option. Other ambiguous wordings stay
+    unpinned."""
     base = [
         entity.model_copy(
             update={"dcid": region.resolved_entity_dcids.get(entity.text, entity.dcid)}
@@ -280,27 +281,30 @@ def _entity_options(region: RegionResult, part: ParsedPart) -> list[NoDataOption
         for entity in part.entities or ()
     ]
 
-    def chosen(entity: ParsedEntity, candidate: EngineCandidate) -> ParsedEntity:
-        if entity.members and candidate.group_name is not None:
+    def chosen(entity: ParsedEntity, candidate: EngineCandidate) -> ParsedEntity | None:
+        if entity.members and candidate.group_node:
+            if candidate.group_name is None:
+                return None
             return entity.model_copy(update={"text": candidate.group_name, "dcid": None})
         return entity.model_copy(update={"dcid": candidate.dcid})
 
-    return [
-        _option(
-            [group.text],
-            candidate.name,
-            part.model_copy(
-                update={
-                    "entities": [
-                        chosen(entity, candidate) if entity.text == group.text else entity
-                        for entity in base
-                    ]
-                }
-            ),
-        )
-        for group in region.ambiguous_entities
-        for candidate in group.candidates
-    ]
+    options: list[NoDataOption | None] = []
+    for group in region.ambiguous_entities:
+        for candidate in group.candidates:
+            entities = [
+                chosen(entity, candidate) if entity.text == group.text else entity
+                for entity in base
+            ]
+            if None in entities:
+                continue
+            options.append(
+                _option(
+                    [group.text],
+                    candidate.name,
+                    part.model_copy(update={"entities": entities}),
+                )
+            )
+    return options
 
 
 def _source_options(region: RegionResult, part: ParsedPart) -> list[NoDataOption | None]:
