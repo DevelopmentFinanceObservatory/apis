@@ -222,8 +222,9 @@ def _normalise(text: str, *, casefold: bool = True) -> str:
     if casefold:
         normalised = normalised.casefold()
     normalised = normalised.replace(".", "")
-    # Apostrophe removal makes possessives match the lexicon's plain role phrases.
-    normalised = normalised.replace("'", "").replace("’", "")
+    # Apostrophe removal makes possessives match the lexicon's plain role phrases, and the
+    # okina (U+02BB) of the Tongan "pa'anga" display name match its plain spelling.
+    normalised = normalised.replace("'", "").replace("’", "").replace("\u02bb", "")
     normalised = normalised.replace("-", " ").replace("_", " ")
     return normalised
 
@@ -241,6 +242,12 @@ _SEPARATOR_RE = re.compile(f"[{re.escape(_SEPARATOR_CHARACTERS)}]+")
 
 def _tokenise(normalised: str) -> list[str]:
     return _TOKEN_RE.findall(normalised)
+
+
+# Each refusal alternative's display name, as the binder reads it, names that currency.
+_DISPLAY_NAME_CURRENCIES: dict[str, str] = {
+    " ".join(_tokenise(_normalise(name))): code for code, name in CURRENCY_DISPLAY_NAMES.items()
+}
 
 
 def _split_erasure(text: str) -> list[str]:
@@ -294,6 +301,8 @@ def _phrase_lookup(phrase: str) -> _LookupHit | None:
         return _LookupHit("unsupported", UNSUPPORTED_PHRASES[phrase])
     if phrase in CURRENCY_ALIASES:
         return _LookupHit("currency", CURRENCY_ALIASES[phrase])
+    if phrase in _DISPLAY_NAME_CURRENCIES:
+        return _LookupHit("currency", _DISPLAY_NAME_CURRENCIES[phrase])
     if phrase in AMBIGUOUS_CURRENCY_NAMES:
         return _LookupHit("ambiguous_currency", alternatives=AMBIGUOUS_CURRENCY_NAMES[phrase])
     if phrase in PRICE_BASIS_PHRASES:
@@ -652,11 +661,13 @@ def bind_unit_text(
 
 def _phrases_naming(currency: IdentityCurrency) -> list[str]:
     """The lexicon's words that name `currency` alone: an ISO code that collides with no
-    English word, then the code's curated aliases; for a role shape, its fixed-role
-    phrases."""
+    English word, then the code's curated aliases, then its display name; for a role
+    shape, its fixed-role phrases."""
     if isinstance(currency, str):
         code = [] if currency in AMBIGUOUS_ISO_CODES else [currency]
-        return [*code, *(alias for alias, named in CURRENCY_ALIASES.items() if named == currency)]
+        aliases = [alias for alias, named in CURRENCY_ALIASES.items() if named == currency]
+        names = [name for name, named in _DISPLAY_NAME_CURRENCIES.items() if named == currency]
+        return [*code, *aliases, *names]
     return [phrase for phrase, role in ROLE_CURRENCY_PHRASES.items() if role == currency.role]
 
 

@@ -95,13 +95,6 @@ type ConversionTable = Literal["exchange_rates", "deflators"]
 
 _NOMINAL = "Nominal"
 
-PRICE_BASIS_MEASURES: Final[Mapping[PriceBasis, str]] = {
-    "current": _NOMINAL,
-    "constant": "RealValue",
-}
-"""The measure value whose reading a unit request's `prices` serves: a series converted to
-constant prices reads as `RealValue`, one served at current prices as `Nominal`."""
-
 
 @dataclass(frozen=True)
 class ConvertedYears:

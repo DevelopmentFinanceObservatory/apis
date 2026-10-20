@@ -22,7 +22,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
-from code_index.labels import PRICE_BASIS_AXIS
+from code_index.labels import PRICE_BASIS_AXIS, PRICES_BY_QUALIFIER
 from code_index.shared import get_measure_index
 from search.engine.bind import SlotBindingDraft
 from search.engine.departures import (
@@ -47,7 +47,7 @@ from search.engine.region.state import (
 )
 from search.engine.retrieval.bound_values import applies_value
 from search.engine.shape import ShapeDraft
-from search.engine.unit.conversion import PRICE_BASIS_MEASURES, PriceBasis
+from search.engine.unit.conversion import PriceBasis
 from search.models import GraphRef, ResolvedQualifier
 
 if TYPE_CHECKING:
@@ -331,13 +331,17 @@ def _value_term(
 
 def _serves_price_basis(rule: CodeRule, prices: PriceBasis) -> bool:
     """Whether an answer served under a unit request at `prices` meets the price-basis
-    `rule`: the measure value those prices serve (`PRICE_BASIS_MEASURES`) spells the reading
-    of one of its codes. Constant prices meet `RealValue` and `InflationAdjusted`, current
-    prices meet `Nominal`, and no unit request meets `PurchasingPowerParity`."""
+    `rule`: the reading of one of its codes holds the measure value that states those
+    prices (`PRICES_BY_QUALIFIER`). Constant prices meet `RealValue` and `InflationAdjusted`,
+    current prices meet `Nominal`, and no unit request meets `PurchasingPowerParity`."""
     if rule.property_dcid != PRICE_BASIS_AXIS:
         return False
     index = get_measure_index()
-    return any(PRICE_BASIS_MEASURES[prices] in index.reading_set(code) for code in rule.codes)
+    return any(
+        PRICES_BY_QUALIFIER.get(value) == prices
+        for code in rule.codes
+        for value in index.reading_set(code)
+    )
 
 
 def _code_outcome(rule: CodeRule, held: frozenset[str], bound: Mapping[str, set[str]]) -> Outcome:

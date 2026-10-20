@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import sys
 
 import pytest
@@ -17,6 +18,7 @@ from search.engine.region import materialise_step as materialise_step_module
 from search.engine.region import observations as _observations_pkg  # noqa: F401
 from search.engine.region import resolve_spec_resubmit
 from search.engine.region.pipeline import resolve_variable
+from search.engine.region.result import every_member_phrases
 from search.engine.region.state import EngineOptions
 from search.models import CoverageBreadth, DateRange, ResubmitIdentityPayload, TimeWindow
 from series_coverage.schema import FacetMetadata, RoleNames
@@ -731,6 +733,20 @@ def test_origin_only_signature_discovers_the_provider_scope(monkeypatch):
             id="axis-the-answer-totals-over",
         ),
         pytest.param(
+            "aid from France to every recipient",
+            "to every recipient",
+            ["creditor", "debtor"],
+            True,
+            id="breakdown-over-an-axis-the-answer-declares",
+        ),
+        pytest.param(
+            "aid from France to each recipient",
+            "to each recipient",
+            ["creditor"],
+            False,
+            id="breakdown-over-an-axis-the-answer-totals-over",
+        ),
+        pytest.param(
             "aid from France and all donors",
             "all donors",
             ["creditor", "debtor"],
@@ -778,6 +794,49 @@ def test_a_dropped_phrase_asking_for_every_member_of_a_role_is_met_by_an_answer_
     assert result.status == "definite", result
     assert result.specs[0].definition.identity.entities.get("origin") == [_FRA]
     assert (phrase in result.admitted_qualifier_phrases) is admitted
+
+
+@pytest.mark.parametrize(
+    ("rival_roles", "admitted"),
+    [
+        pytest.param(("creditor", "debtor"), True, id="every-candidate-declares-the-axis"),
+        pytest.param(("creditor",), False, id="a-candidate-totals-over-the-axis"),
+        pytest.param(("observationAbout",), False, id="a-candidate-is-subject-only"),
+    ],
+)
+def test_a_candidate_set_meets_an_every_member_phrase_only_when_every_candidate_does(
+    monkeypatch, rival_roles, admitted
+):
+    """A role-bearing first candidate does not speak for a rival that would not meet the
+    phrase on its own (`RegionResult.candidate_answered_roles`)."""
+    rows, role_names = _coverage_seed_for(
+        "debtor", [_KEN], [_SV_DCID], filters={"creditor": [_FRA]}
+    )
+    role_query = "aid from France to every recipient"
+    result = _run(
+        entities=["France"],
+        sv_dcid=_SV_DCID,
+        sv_arcs=_declaring_arcs(observation_properties=["creditor", "debtor"]),
+        resolve={"France": _FRA},
+        sv_score=0.9,
+        role_query=role_query,
+        sdmx=FakeSdmxClient(
+            observations={_SV_DCID: {(("creditor", _FRA), ("debtor", _KEN)): [_facet()]}},
+            availability={},
+        ),
+        monkeypatch=monkeypatch,
+        coverage_rows=rows,
+        coverage_role_names=role_names,
+    )
+    assert result.status == "definite", result
+    assert result.answered_roles is not None
+    candidates = dataclasses.replace(
+        result, candidate_answered_roles=(result.answered_roles, rival_roles)
+    )
+
+    met = every_member_phrases(candidates, ["to every recipient"], query=role_query)
+
+    assert ("to every recipient" in met) is admitted
 
 
 # ---------------------------------------------------------------------------

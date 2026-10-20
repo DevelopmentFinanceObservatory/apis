@@ -373,6 +373,9 @@ def parsed_directions_contradicted(part: ParsedPart) -> bool:
 
 # Words that ask for every member of what follows them: "all donors", "every provider".
 _EVERY_WORDS: frozenset[str] = frozenset({"all", "every", "each"})
+# The every-member words that ask for one value per member, a breakdown along the axis:
+# "each recipient". "all recipients" is also met by the total over them.
+_BREAKDOWN_WORDS: frozenset[str] = frozenset({"every", "each"})
 # Nouns that name the places on either side of a flow without naming the side: "all
 # countries". The preposition that governs them names it.
 _PLACE_NOUNS: frozenset[str] = frozenset({"country", "countries"})
@@ -400,6 +403,19 @@ def _governing_axes(query_tokens: list[str], phrase_tokens: list[str]) -> set[Ro
     }
 
 
+def _after_role_prep(tokens: list[str]) -> list[str]:
+    """`tokens` past a leading role preposition ("to all recipients" -> "all recipients")."""
+    return tokens[1:] if tokens and tokens[0] in _ROLE_PREP_AXES else tokens
+
+
+def every_member_breakdown(phrase: str) -> bool:
+    """Whether an every-member ``phrase`` (`every_member_axis`) asks for one value per
+    member of its axis: ``each recipient`` and ``to every provider`` do, while ``all
+    recipients`` is also met by the total over them."""
+    rest = _after_role_prep(_tokenize(phrase))
+    return bool(rest) and rest[0] in _BREAKDOWN_WORDS
+
+
 def every_member_axis(phrase: str, *, query: str) -> RoleAxis | None:
     """The flow axis whose every member ``phrase`` asks for, or None.
 
@@ -414,7 +430,7 @@ def every_member_axis(phrase: str, *, query: str) -> RoleAxis | None:
     """
     tokens = _tokenize(phrase)
     prep_axis = _ROLE_PREP_AXES.get(tokens[0]) if tokens else None
-    rest = tokens[1:] if prep_axis is not None else tokens
+    rest = _after_role_prep(tokens)
     if not rest or rest[0] not in _EVERY_WORDS:
         return None
     nouns = rest[2:] if rest[1:2] == ["the"] else rest[1:]

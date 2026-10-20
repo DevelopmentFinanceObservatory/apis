@@ -685,6 +685,9 @@ async def _assemble_candidate_set(
         candidate_budget_truncated=candidate_budget_truncated,
         slot_options_task=_make_slot_options_task(state, grounded, unique_specs),
         answered_roles=grounded.cand_answered_roles[_candidate_specs[0].spec_id],
+        candidate_answered_roles=tuple(
+            grounded.cand_answered_roles[spec.spec_id] for spec in _candidate_specs
+        ),
     )
 
 

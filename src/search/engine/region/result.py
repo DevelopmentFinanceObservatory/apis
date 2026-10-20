@@ -27,7 +27,7 @@ from search.engine.retrieval.bound_values import (
 )
 from search.engine.retrieval.member_facts import MemberFacts
 from search.engine.retrieval.retrieve import MemberPopulation
-from search.engine.role_text import every_member_axis
+from search.engine.role_text import every_member_axis, every_member_breakdown
 from search.engine.shape import ShapeDraft
 from search.engine.source_code import SourceCodeRefusal
 from search.engine.source_scope import AmbiguousSource, SourceRefusal, SourceScope
@@ -304,6 +304,10 @@ class RegionResult:
     # for a candidate set. `with_runnable_operations` reads it to tell which flow axes the
     # answer's data carries. None on every other result.
     answered_roles: tuple[str, ...] | None = None
+    # Every candidate's `answered_roles`, in candidate order, on a candidate set the
+    # pipeline assembles, so `every_member_phrases` judges every answer. None on every
+    # other result.
+    candidate_answered_roles: tuple[tuple[str, ...], ...] | None = None
     # Served measure partition and sibling partitions. Same-shape merges need
     # these to mint new identities after member materialisations are gone.
     measure_partition: MeasurePartition | None = None
@@ -543,16 +547,29 @@ def every_member_phrases(
 
     A role-bearing answer (`RegionResult.answered_roles`) that binds no entity on the axis
     holds every member on it: one series per member where it declares a role there, and
-    the total over them where it declares none. A subject-only answer and a result with no
-    Spec meet none, so their phrases stay dropped.
+    the total over them where it declares none. An "all" phrase is met by either. An
+    "each" or "every" phrase asks for the breakdown (`role_text.every_member_breakdown`),
+    so only an answer declaring a role on the axis meets it, as for an open role
+    (`with_dropped_open_roles`). A candidate set meets a phrase only when every candidate
+    does (`RegionResult.candidate_answered_roles`). A subject-only answer and a result
+    with no Spec meet none, so their phrases stay dropped.
     """
-    if not region.specs or all(role == "observationAbout" for role in region.answered_roles or ()):
+    if not region.specs:
         return frozenset()
+    answers = region.candidate_answered_roles or (region.answered_roles or (),)
+    declared_by_answer = [
+        {axis_for_role(role) for role in roles if role != "observationAbout"} for roles in answers
+    ]
+    if not all(declared_by_answer):
+        return frozenset()
+    declared_by_all = set.intersection(*declared_by_answer)
     bound = {key for spec in region.specs for key in spec.definition.identity.entities}
     return frozenset(
         phrase.strip().casefold()
         for phrase in phrases
-        if (axis := every_member_axis(phrase, query=query)) is not None and axis not in bound
+        if (axis := every_member_axis(phrase, query=query)) is not None
+        and axis not in bound
+        and (axis in declared_by_all or not every_member_breakdown(phrase))
     )
 
 

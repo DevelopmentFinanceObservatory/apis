@@ -29,6 +29,7 @@ from search.engine.unit.bind import (
     with_unit_lexicon_version,
 )
 from search.engine.unit.lexicon import (
+    AMBIGUOUS_CURRENCY_NAMES,
     AMBIGUOUS_ISO_CODES,
     CONNECTIVE_WORDS,
     CURRENCY_ALIASES,
@@ -1198,3 +1199,25 @@ def test_unit_text_naming_replaces_the_ambiguous_words_with_ones_naming_the_choi
         rebound = _bind(named)
         assert not isinstance(rebound, UnitNotResolved)
         assert rebound.currency == currency
+
+
+@pytest.mark.parametrize(
+    ("text", "currency"),
+    [
+        *((f"in {code}", code) for code in sorted(AMBIGUOUS_ISO_CODES)),
+        *(
+            (f"in {name}", code)
+            for name, codes in sorted(AMBIGUOUS_CURRENCY_NAMES.items())
+            for code in codes
+        ),
+    ],
+)
+def test_every_refusal_alternative_has_words_that_bind_it(text, currency) -> None:
+    refused = _bind(text)
+    assert isinstance(refused, UnitNotResolved)
+    assert currency in {alternative.currency for alternative in refused.alternatives}
+    named = unit_text_naming(text, currency)
+    assert named is not None
+    rebound = _bind(named)
+    assert isinstance(rebound, BoundUnitRequest)
+    assert rebound.currency == currency

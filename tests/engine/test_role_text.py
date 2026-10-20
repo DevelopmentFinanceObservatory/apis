@@ -10,6 +10,7 @@ from search.engine.role_text import (
     contradicts,
     debt_axes,
     every_member_axis,
+    every_member_breakdown,
     role_axis_for_text,
 )
 from search.models import ParsedEntity, ParsedPart, RoleAxis
@@ -33,30 +34,32 @@ def test_each_axis_name_resolves_to_its_own_axis(axis: RoleAxis) -> None:
 
 
 @pytest.mark.parametrize(
-    ("phrase", "query", "axis"),
+    ("phrase", "query", "axis", "breakdown"),
     [
-        ("all donors", "aid from all donors to Ethiopia in 2022", "origin"),
-        ("from all donors", "aid to Ethiopia from all donors in 2022", "origin"),
-        ("every provider", "aid to Ethiopia from every provider in 2022", "origin"),
-        ("to all creditors", "debt owed to all creditors by Kenya", "origin"),
-        ("all the recipients", "aid from Germany to all the recipients", "destination"),
-        ("each beneficiary", "aid from Germany to each beneficiary", "destination"),
-        ("all countries", "aid to Ethiopia from all countries in 2022", "origin"),
-        ("to all countries", "aid from France to all countries", "destination"),
-        ("all donor countries", "aid to Ethiopia from all donor countries", "origin"),
-        ("all countries", "aid from all countries to all countries", None),
-        ("all countries", "GDP of all countries", None),
-        ("in all sectors", "aid to Ethiopia in all sectors in 2022", None),
-        ("all bilateral donors", "aid from all bilateral donors to Kenya", None),
-        ("all donors and recipients", "aid between all donors and recipients", None),
-        ("all", "aid to Ethiopia from all", None),
-        ("donors", "aid to Ethiopia from donors", None),
+        ("all donors", "aid from all donors to Ethiopia in 2022", "origin", False),
+        ("from all donors", "aid to Ethiopia from all donors in 2022", "origin", False),
+        ("every provider", "aid to Ethiopia from every provider in 2022", "origin", True),
+        ("to all creditors", "debt owed to all creditors by Kenya", "origin", False),
+        ("each recipient", "aid from Germany to each recipient in 2022", "destination", True),
+        ("all the recipients", "aid from Germany to all the recipients", "destination", False),
+        ("each beneficiary", "aid from Germany to each beneficiary", "destination", True),
+        ("all countries", "aid to Ethiopia from all countries in 2022", "origin", False),
+        ("to all countries", "aid from France to all countries", "destination", False),
+        ("all donor countries", "aid to Ethiopia from all donor countries", "origin", False),
+        ("all countries", "aid from all countries to all countries", None, False),
+        ("all countries", "GDP of all countries", None, False),
+        ("in all sectors", "aid to Ethiopia in all sectors in 2022", None, False),
+        ("all bilateral donors", "aid from all bilateral donors to Kenya", None, False),
+        ("all donors and recipients", "aid between all donors and recipients", None, False),
+        ("all", "aid to Ethiopia from all", None, False),
+        ("donors", "aid to Ethiopia from donors", None, False),
     ],
 )
 def test_every_member_axis_reads_the_role_a_phrase_asks_every_member_of(
-    phrase: str, query: str, axis: RoleAxis | None
+    phrase: str, query: str, axis: RoleAxis | None, breakdown: bool
 ) -> None:
     assert every_member_axis(phrase, query=query) == axis
+    assert every_member_breakdown(phrase) is breakdown
 
 
 class TestUnrecognised:
