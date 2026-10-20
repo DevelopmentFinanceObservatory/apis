@@ -478,6 +478,7 @@ def _state(
             party_sets={},
             whole_sets={},
             whole_named={},
+            whole_listed={},
             entity_roles=roles,
             operations=tuple(operations),
             open_axes=frozenset(),
