@@ -1373,6 +1373,58 @@ def test_a_resubmitted_candidate_set_states_the_total_for_its_own_reading(
     assert stated == [(dac2a.spec_id, _OFFICIAL)]
 
 
+def test_a_resubmit_refusing_its_posted_aid_type_states_the_total_beside_its_flagged_match(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A reading that lists DAC2a's donors to Ethiopia is posted back after the graph has
+    given its member another aid type, so the resubmit cannot apply the aid type the
+    identity posts and refuses `qualifier_not_bound` with the read without it as its flagged
+    match. DAC2a publishes the official donors' total with a series to Ethiopia, so the part
+    states the total, stamped with the match, as a fresh request's refusal does."""
+    _coverage(monkeypatch)
+    opened = {
+        "entities": [_TO_ETHIOPIA],
+        "open_roles": ["donor"],
+        "time": "2021",
+        "variable": _VARIABLE,
+    }
+    posted = _spec(_resolve(opened))
+    graph = _graph()
+    graph._nodes[_DAC2A_MEMBER]["arcs"]["dac2aAidType"] = {"nodes": [{"dcid": "DAC2aAidType999"}]}
+
+    response = offline_resolve(
+        ResolveRequest(
+            input=DatasetResubmitInput(
+                entries=[
+                    ResubmitIdentityEntry(
+                        variable_text=_VARIABLE, identity=posted.definition.identity
+                    )
+                ]
+            )
+        ),
+        graph=graph,
+        llm=_ScriptedLLM(_VARIABLE),
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+    )
+
+    assert isinstance(response, Resolution), response
+    (answer,) = response.parts
+    assert isinstance(answer, NoDataPart), answer
+    assert answer.no_data.reason == "qualifier_not_bound"
+    match = answer.no_data.flagged_match
+    assert match is not None
+    assert [
+        (warning.spec_id, warning.params)
+        for warning in answer.warnings
+        if warning.code == "whole_total_available"
+    ] == [
+        (
+            match.spec_id,
+            {"total": _OFFICIAL, "total_label": "official donors (DAC)", "whole_of": "official"},
+        )
+    ]
+
+
 @pytest.mark.parametrize(
     "france",
     [
