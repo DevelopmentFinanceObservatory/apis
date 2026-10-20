@@ -9,7 +9,7 @@ This module makes no graph or LLM calls.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
@@ -51,7 +51,7 @@ from search.models import (
     Warning,
 )
 from search.render.labels import _join_labels
-from search.render.no_data import ScopeSources
+from search.render.no_data import ScopeSources, untold_place_name
 from skills_index import SkillsIndex
 
 if TYPE_CHECKING:
@@ -180,17 +180,23 @@ def _no_data_entity_terms(region: RegionResult) -> tuple[list[str] | None, list[
     if region.no_data_reason == "entity_not_resolved":
         return list(region.unresolved_entity_names) or None, None
     if region.no_data_reason == "role_not_resolved":
-        words = region.entity_words or {}
-        terms = dict.fromkeys(words.get(name, name) for name in region.unresolved_entity_names)
-        return list(terms) or None, None
+        return _untold_terms(region) or None, None
     return None, None
+
+
+def _untold_terms(region: RegionResult) -> list[str]:
+    """Every request text of each place set a ``role_not_resolved`` refusal could not tell
+    the direction of (``RegionResult.unresolved_entity_names``), in query order and in the
+    request's own words (``RegionResult.entity_words``), each once: the refusal's entity
+    terms and every role option's mentions."""
+    words = region.entity_words or {}
+    return list(dict.fromkeys(words.get(name, name) for name in region.unresolved_entity_names))
 
 
 def _untold_place_terms(region: RegionResult) -> list[list[str]] | None:
     """The terms of a ``role_not_resolved`` refusal grouped by the place each names
-    (``RegionResult.untold_groups``), in the request's own words as
-    `_no_data_entity_terms` gives them, so the sentence counts places. ``None`` for every
-    other reason."""
+    (``RegionResult.untold_groups``), in the request's own words as `_untold_terms` gives
+    them, so the sentence counts places. ``None`` for every other reason."""
     if region.no_data_reason != "role_not_resolved":
         return None
     words = region.entity_words or {}
@@ -363,16 +369,10 @@ def _source_code_options(region: RegionResult, part: ParsedPart) -> list[NoDataO
 def _role_options(region: RegionResult, part: ParsedPart) -> list[NoDataOption | None]:
     """One option per reading of the directions the question left untold
     (`RegionResult.role_assignments`): every row of a mapped text states its axis, and a row
-    the reading repeats is dropped. Its mentions are the untold names
-    (`unresolved_entity_names`) the readings map, which every reading maps alike, in the
-    request's words and in query order. The label reads the option's own directions."""
-    words = region.entity_words or {}
-    mapped = region.role_assignments[0] if region.role_assignments else {}
-    mentions = list(
-        dict.fromkeys(
-            words.get(name, name) for name in region.unresolved_entity_names if name in mapped
-        )
-    )
+    the reading repeats is dropped. Its mentions are the refusal's own entity terms
+    (`_untold_terms`), the same for every reading. The label reads the option's own
+    directions (`_direction_label`)."""
+    mentions = _untold_terms(region)
     options: list[NoDataOption | None] = []
     for reading in region.role_assignments:
         rows = [
@@ -382,23 +382,39 @@ def _role_options(region: RegionResult, part: ParsedPart) -> list[NoDataOption |
             for entity in part.entities or ()
         ]
         entities = [row for i, row in enumerate(rows) if row not in rows[:i]]
-        label = _direction_label(entities)
+        label = _direction_label(entities, region)
         options.append(_option(mentions, label, part.model_copy(update={"entities": entities})))
     return options
 
 
-def _direction_label(entities: Sequence[ParsedEntity]) -> str:
+def _direction_label(entities: Sequence[ParsedEntity], region: RegionResult) -> str:
     """The directions `entities` state, in words: origins "to" destinations, or "From" or
-    "To" with the names when one axis holds them."""
-    by_axis: dict[RoleAxis, list[str]] = {"origin": [], "destination": []}
+    "To" with the names when one axis holds them. Each untold place set
+    (``RegionResult.untold_groups``) is named once, as the refusal's message names it
+    (`untold_place_name`): `Kenya ("KEN") to Norway`."""
+    words = region.entity_words or {}
+    group_of = {name: group for group in region.untold_groups for name in group}
+    by_axis: dict[RoleAxis, list[tuple[str, ...]]] = {"origin": [], "destination": []}
     for entity in entities:
         axis = role_axis_for_text(entity.role_text)
-        if axis is not None and entity.text not in by_axis[axis]:
-            by_axis[axis].append(entity.text)
-    origins, destinations = (_join_labels(by_axis[axis]) for axis in ("origin", "destination"))
+        group = group_of.get(entity.text, (entity.text,))
+        if axis is not None and group not in by_axis[axis]:
+            by_axis[axis].append(group)
+    origins, destinations = (
+        _axis_label(by_axis[axis], words) for axis in ("origin", "destination")
+    )
     if origins and destinations:
         return f"{origins} to {destinations}"
     return f"From {origins}" if origins else f"To {destinations}"
+
+
+def _axis_label(groups: Sequence[Sequence[str]], words: Mapping[str, str]) -> str:
+    """The places `groups` holds, one per group of request texts, in the request's words."""
+    names = (
+        untold_place_name([words.get(text, text) for text in group], quote_first=False)
+        for group in groups
+    )
+    return _join_labels([name for name in names if name])
 
 
 def _unit_options(region: RegionResult, part: ParsedPart) -> list[NoDataOption | None]:

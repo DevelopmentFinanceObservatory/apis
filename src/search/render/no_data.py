@@ -317,16 +317,23 @@ def no_data_phrase(
 
 
 def _untold_places(groups: Sequence[Sequence[str]]) -> list[str]:
-    """Each untold place quoted once, as a role_not_resolved phrase names it: its first
-    text, then any other texts it was named by in parentheses, `"the union" ("European
-    Union")`. A group left with no text after stripping names no place."""
-    places = []
-    for group in groups:
-        texts = [f'"{t.strip()}"' for t in group if t and t.strip()]
-        if texts:
-            others = f" ({', '.join(texts[1:])})" if len(texts) > 1 else ""
-            places.append(f"{texts[0]}{others}")
-    return places
+    """Each untold place as a role_not_resolved phrase names it, its first text quoted
+    (`untold_place_name`). A group left with no text after stripping names no place."""
+    return [name for group in groups if (name := untold_place_name(group, quote_first=True))]
+
+
+def untold_place_name(texts: Sequence[str], *, quote_first: bool) -> str | None:
+    """One place a `role_not_resolved` refusal names, from the request texts that name it in
+    query order: its first text, then its further texts, each once, quoted in parentheses.
+    The message quotes the first text as well, `"the union" ("European Union")`, and an
+    option label leaves it bare, `the union ("European Union")`. ``None`` when no text is
+    left after stripping."""
+    stripped = list(dict.fromkeys(t.strip() for t in texts if t and t.strip()))
+    if not stripped:
+        return None
+    first = f'"{stripped[0]}"' if quote_first else stripped[0]
+    others = ", ".join(f'"{t}"' for t in stripped[1:])
+    return f"{first} ({others})" if others else first
 
 
 def _source_phrase(

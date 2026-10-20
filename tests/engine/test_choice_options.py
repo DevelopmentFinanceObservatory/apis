@@ -33,6 +33,7 @@ _PLACES = {
     "Kenya": "country/KEN",
     "Uganda": "country/UGA",
     "Rwanda": "country/RWA",
+    "European Union": "EuropeanUnion",
 }
 
 
@@ -71,7 +72,8 @@ def _fertility_client(llm: FakeLLM | _ShapeZeroLLM | None = None) -> TestClient:
 
 
 def _flow_client() -> TestClient:
-    """A flow StatVar declaring a creditor and a debtor role, over four countries."""
+    """A flow StatVar declaring a creditor and a debtor role, over four countries and the
+    European Union."""
     graph = FakeGraph(
         nodes={
             **{dcid: {"label": name, "type": "Country"} for name, dcid in _PLACES.items()},
@@ -299,18 +301,20 @@ def test_a_role_option_states_a_direction_for_every_untold_name():
 
 
 @pytest.mark.parametrize(
-    ("entities", "names", "untold"),
+    ("entities", "names", "untold", "labels"),
     [
         pytest.param(
             [{"text": "KE", "dcid": "country/KEN"}, {"text": "Norway"}],
             ["KE", "Norway"],
             'Could not tell who is giving and who is receiving among "KE" and "Norway"',
+            ["KE to Norway", "Norway to KE"],
             id="pinned-only-text",
         ),
         pytest.param(
             [{"text": "Kenya"}, {"text": "Norway"}, {"text": "KEN", "dcid": "country/KEN"}],
             ["Kenya", "Norway", "KEN"],
             'Could not tell who is giving and who is receiving among "Kenya" ("KEN") and "Norway"',
+            ['Kenya ("KEN") to Norway', 'Norway to Kenya ("KEN")'],
             id="two-texts-of-one-set-apart",
         ),
         pytest.param(
@@ -321,14 +325,26 @@ def test_a_role_option_states_a_direction_for_every_untold_name():
             ],
             ["KE", "Kenya"],
             'Could not tell whether "KE" ("Kenya") is giving or receiving',
+            ['Norway to KE ("Kenya")'],
             id="one-set-named-twice",
+        ),
+        pytest.param(
+            [
+                {"text": "the union", "dcid": "EuropeanUnion"},
+                {"text": "European Union"},
+                {"text": "Kenya", "role_text": "to"},
+            ],
+            ["the union", "European Union"],
+            'Could not tell whether "the union" ("European Union") is giving or receiving',
+            ['the union ("European Union") to Kenya'],
+            id="pinned-group-named-twice",
         ),
     ],
 )
-def test_a_role_refusal_names_every_untold_text_in_query_order(entities, names, untold):
+def test_a_role_refusal_names_every_untold_text_in_query_order(entities, names, untold, labels):
     """The options' mentions and the refusal's entity terms name the same request texts in
-    query order, a pin's key included in place of its node's label. The message counts
-    places, naming one place set's several texts as one place."""
+    query order, a pin's key included in place of its node's label. The message and the
+    option labels name each untold place once, its further texts in parentheses."""
     client = _flow_client()
 
     no_data = _no_data(client, {"variable_text": "aid", "entities": entities})
@@ -338,6 +354,7 @@ def test_a_role_refusal_names_every_untold_text_in_query_order(entities, names, 
     assert [o["mentions"] for o in no_data["options"]] == [names] * len(no_data["options"])
     assert no_data["entity_terms"] == names
     assert no_data["message"].split(". ", 1)[0] == untold
+    assert [o["label"] for o in no_data["options"]] == labels
 
 
 def test_a_reading_its_own_wording_contradicts_is_not_offered():
