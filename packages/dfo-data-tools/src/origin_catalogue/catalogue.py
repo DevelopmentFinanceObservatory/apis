@@ -37,6 +37,12 @@ does not admit. A base variable
 the base variable table lists, or one that neither the withheld set nor a
 topic names, passes, since every facet read still admits facet by facet, and
 `data_commons` names base for it.
+
+With `GRAPH_RELEASE_ORIGIN` on, `CatalogueSnapshot` reads its DFO half from the request's
+graph release (`graph_release.context.served_origin`): a DFO variable's arcs come from the
+release's origin view, and so do the DFO members of each family, joined to the build's base
+summaries (`families.ReleaseFamilies`). The build's base and schema arcs, and the nodes it
+holds empty, still answer, and a DFO variable the release does not hold is read from the graph.
 """
 
 from __future__ import annotations
@@ -48,12 +54,14 @@ from typing import Final, Protocol
 from urllib.parse import urlsplit
 
 from artifact_publication.jobs import Ingestion
+from graph_release.context import served_origin
 from origin_catalogue.arc_tables import EMPTY_ARC_TABLES, ArcTables
 from origin_catalogue.families import (
     EMPTY_FAMILY_TABLES,
     FamilyKey,
     FamilySummary,
     FamilyTables,
+    ReleaseFamilies,
 )
 from origin_catalogue.origins import BASE, DFO, UN_ID_PREFIX, UN_SYSTEM, DataCommons
 from origin_catalogue.schema import CatalogueManifest, ScanLevel
@@ -649,7 +657,10 @@ class Catalogue(Protocol):
 @dataclass(frozen=True, slots=True)
 class CatalogueSnapshot:
     """One loaded catalogue version. `un` holds the build's UN tables, `arcs`
-    its arc tables and `families` the family summaries of both.
+    its arc tables and `families` the family summaries of both. `base_families` summarises
+    the `base` arc table alone (`families.summarise_table`), which `held_family` joins to a
+    graph release's DFO summaries with `GRAPH_RELEASE_ORIGIN` on, and is `None` for a build
+    loaded with it off.
     `un_system_enabled` gates UN admission; with it off, no UN provenance or
     candidate is admitted and the UN tables answer nothing.
     `scope` narrows `admit_series` to a request's allowed provenances (`scoped`)."""
@@ -661,6 +672,7 @@ class CatalogueSnapshot:
     families: FamilyTables = EMPTY_FAMILY_TABLES
     un_system_enabled: bool = True
     scope: frozenset[str] | None = None
+    base_families: Mapping[FamilyKey, FamilySummary] | None = None
 
     @property
     def build_id(self) -> str:
@@ -771,10 +783,30 @@ class CatalogueSnapshot:
         return self.un.nodes.get(dcid) if self.un_system_enabled else None
 
     def held_arcs(self, dcid: str) -> tuple[UnArc, ...] | None:
-        return self.arcs.arcs(dcid)
+        origin = served_origin()
+        if origin is None:
+            return self.arcs.arcs(dcid)
+        released = origin.arcs.get(dcid)
+        if released is not None:
+            return released
+        # The build's own DFO rows give way to the release's, which do not hold this one.
+        held = self.arcs.arcs(dcid)
+        return None if held and dcid in self.arcs.dfo else held
 
     def held_family(self, key: FamilyKey) -> FamilySummary | None:
-        return self.families.family(key, un_system_enabled=self.un_system_enabled)
+        origin = served_origin()
+        if origin is None:
+            return self.families.family(key, un_system_enabled=self.un_system_enabled)
+        if self.base_families is None:
+            raise ValueError(
+                f"catalogue build {self.build_id!r} was loaded without base family summaries, "
+                "which GRAPH_RELEASE_ORIGIN joins to the release's"
+            )
+        return self.families.family(
+            key,
+            un_system_enabled=self.un_system_enabled,
+            release=ReleaseFamilies(dfo=origin.families, base=self.base_families),
+        )
 
     def arc_target(self, dcid: str) -> UnArc | None:
         return self.arcs.targets.get(dcid)

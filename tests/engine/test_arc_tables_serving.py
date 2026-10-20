@@ -23,13 +23,16 @@ import pytest
 
 from code_index.tokens import tokenize
 from entity_resolution import Admission, EntityResolver
+from graph_release.context import ReleaseNotBound, ReleaseViewsNotBuilt, bound_release
+from graph_release.service import Release, ReleaseService
 from materialise.place_scope import DefaultPlaceScope, DefaultPresence
 from origin_catalogue import BASE, UN_SYSTEM
+from origin_catalogue.arc_tables import ArcTablesBuilder
 from origin_catalogue.artifact import load_catalogue
 from origin_catalogue.catalogue import CatalogueSnapshot
 from origin_catalogue.families import FamilyKey, FamilySummary, family_tables
-from origin_catalogue.graph import _wire
-from origin_catalogue.un_mirror import EMPTY_UN_MIRROR
+from origin_catalogue.graph import _table_arcs, _wire
+from origin_catalogue.un_mirror import EMPTY_UN_MIRROR, UnArc, UnVariable
 from scripts.stage_origin_catalogue_fixture import stage_fixture
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.clients.graph import EngineGraphClient
@@ -113,13 +116,15 @@ from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
+from tests.graph_release.recorded import platform_parts, recorded_dfo_arcs
+from tests.graph_release.support import build_test_release
 from tests.origin_catalogue.fake_catalogue import (
     provenance_row,
     restrictive_catalogue,
     un_mirror,
     un_variable,
 )
-from tests.origin_catalogue.support import build_arc_tables
+from tests.origin_catalogue.support import build_arc_tables, build_labelled
 
 _OURS_HOST = "ours.example.org"
 _UN_HOST = "un.example.org"
@@ -474,6 +479,141 @@ def test_the_family_tables_summarise_each_family_as_derive_reads_its_members() -
 
     assert family_tables(dfo={}, base=tables.base, un=EMPTY_UN_MIRROR).arcs == expected
     assert len(expected) == 6
+
+
+_FLOWS = FamilyKey("FinancialFlow", "amount", "measuredValue", "Nominal", None, False, True)
+"""The recorded slice's largest DFO family, which `_recorded_catalogue` gives base and UN
+members too."""
+_FLOW_TOTAL = "Amount_FinancialFlow_Base_Nominal"
+_FLOW_DEBT = "AAA_Amount_FinancialFlow_Debt_Nominal"
+_UN_FLOW = "undata/WB/Amount_FinancialFlow_Nominal"
+_FLOW_TOPIC = "dc/topic/Flows"
+
+
+def _flow(name: str, **constraints: str) -> dict:
+    """A base member of `_FLOWS`: its five-tuple, a recipient role, `name`, and
+    `constraints`."""
+
+    def node(dcid: str) -> dict:
+        return {"nodes": [{"dcid": dcid}]}
+
+    return {
+        "typeOf": node("StatisticalVariable"),
+        "populationType": node("FinancialFlow"),
+        "measuredProperty": node("amount"),
+        "statType": node("measuredValue"),
+        "measurementQualifier": node("Nominal"),
+        "observationProperties": node("financingRecipient"),
+        "name": {"nodes": [{"value": name}]},
+        **(
+            {"constraintProperties": {"nodes": [{"dcid": p} for p in constraints]}}
+            if constraints
+            else {}
+        ),
+        **{prop: node(value) for prop, value in constraints.items()},
+    }
+
+
+def _recorded_catalogue(*, with_dfo: bool) -> CatalogueSnapshot:
+    """A catalogue over the recorded slice's DFO variables, read as the catalogue job reads
+    them, and two base and one UN member of `_FLOWS`: a total and a member sorting before
+    every DFO one. `with_dfo` false leaves the DFO variables out of its tables, as a
+    catalogue of another import would hold other ones."""
+    builder = ArcTablesBuilder()
+    read = recorded_dfo_arcs(builder)
+    denominators = {
+        arc.dcid
+        for rows in builder.table("dfo").values()
+        for arc in rows
+        if arc.property == "measurementDenominator"
+        and arc.dcid is not None
+        and arc.dcid not in read.variables
+    }
+    if not with_dfo:
+        builder = ArcTablesBuilder()
+    # The schema nodes the catalogue job holds for the DFO denominators, Count_Person apart.
+    for denominator in sorted(denominators - {"Count_Person"}):
+        builder.add("schema", denominator, None)
+    builder.add("base", _FLOW_TOTAL, _flow("Financial flows"))
+    builder.add("base", _FLOW_DEBT, _flow("Debt flows", financialFlowType="Debt"))
+    builder.add("base", "Count_Person", {"typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]}})
+    un_flow = UnVariable(
+        series="FinancialFlow",
+        arcs=tuple(
+            UnArc(property=prop, dcid=target.get("dcid"), value=target.get("value"))
+            for prop, arcs in _flow("UN financial flows").items()
+            for target in arcs["nodes"]
+        ),
+    )
+    return restrictive_catalogue(
+        dfo_variables=read.variables,
+        topics={_FLOW_TOPIC: [_FLOW_DEBT, *sorted(read.variables)[:2]]},
+        un_mirror=un_mirror({_UN_FLOW: un_flow}),
+        arcs=build_labelled(builder),
+    )
+
+
+def _origin_release(root: Path) -> Release:
+    """The recorded slice's release, opened with its origin view."""
+    uri = (root / "releases").as_uri()
+    build_test_release(uri, tables=platform_parts().tables())
+    service = ReleaseService(
+        uri=uri, local_dir=root / "local", recheck_seconds=0, build_origin=True
+    )
+    return service.snapshot()
+
+
+def test_a_release_s_dfo_half_serves_the_catalogue_s_families_and_arcs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With `GRAPH_RELEASE_ORIGIN` on, the DFO variables' arcs and family members come from
+    the bound release, and every held family and table read equals the catalogue job's for
+    the same import, members in order: a catalogue holding no DFO variable answers as one
+    holding the job's."""
+    monkeypatch.delenv("GRAPH_RELEASE_ORIGIN", raising=False)
+    full, stripped = _recorded_catalogue(with_dfo=True), _recorded_catalogue(with_dfo=False)
+    release = _origin_release(tmp_path)
+    assert release.origin is not None
+    keys = [*full.families.arcs, *full.families.un]
+    dcids = [*full.arcs.dfo, *full.arcs.base, *full.arcs.schema, _UN_FLOW, _FLOW_TOPIC, _UNLISTED]
+
+    def reads(catalogue: CatalogueSnapshot) -> tuple[dict, dict]:
+        return (
+            {key: catalogue.held_family(key) for key in keys},
+            {dcid: _table_arcs(catalogue, dcid) for dcid in dcids},
+        )
+
+    served = reads(full)
+    monkeypatch.setenv("GRAPH_RELEASE_ORIGIN", "1")
+    with bound_release(release):
+        assert reads(full) == served
+        assert reads(stripped) == served
+
+    flows = served[0][_FLOWS]
+    assert flows is not None
+    dfo = sorted(dcid for dcid in full.arcs.dfo if dcid in flows.members)
+    assert flows.members == (*dfo, _FLOW_DEBT, _FLOW_TOTAL, _UN_FLOW)
+    assert len(dfo) > 1
+    assert flows.total == _FLOW_TOTAL
+
+
+@pytest.mark.unbound_release
+def test_the_origin_flag_refuses_a_read_without_a_release_s_origin_view(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    catalogue = _recorded_catalogue(with_dfo=False)
+    release = _origin_release(tmp_path)
+    monkeypatch.setenv("GRAPH_RELEASE_ORIGIN", "1")
+
+    with pytest.raises(ReleaseNotBound):
+        catalogue.held_family(_FLOWS)
+    with pytest.raises(ReleaseNotBound):
+        _table_arcs(catalogue, _FLOW_TOTAL)
+    with (
+        bound_release(dataclasses.replace(release, origin=None)),
+        pytest.raises(ReleaseViewsNotBuilt),
+    ):
+        catalogue.held_family(_FLOWS)
 
 
 def _held_debt_shape(

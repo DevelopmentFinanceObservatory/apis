@@ -18,7 +18,12 @@ import pytest
 
 import graph_release.context as release_context_module
 import origin_catalogue.service as catalogue_service_module
-from graph_release.context import bind_release, bound_release, unbind_release
+from graph_release.context import (
+    bind_release,
+    bound_release,
+    origin_release_enabled,
+    unbind_release,
+)
 from graph_release.service import Release, ReleaseService
 from materialise import place_scope
 from origin_catalogue import Catalogue, bound_catalogue, unbind_catalogue
@@ -60,14 +65,20 @@ _session_release: Release | None = None
 @contextmanager
 def _bound_session_release() -> Iterator[Release]:
     """Publishes a graph release whose code index part is the packaged `index.json.gz`
-    document, opens it with its views, and binds it until the block ends. Its coverage view is
-    the recorded slice's (`build_view_release`), which no test reads through the release."""
+    document, opens it with its views, and with its origin view when `GRAPH_RELEASE_ORIGIN` is
+    on, and binds it until the block ends. Its coverage view is the recorded slice's
+    (`build_view_release`), which no test reads through the release. Its origin view holds the
+    slice's DFO variables, so with the flag on a catalogue's own DFO rows give way to them."""
     with tempfile.TemporaryDirectory(prefix="graph-release-") as directory:
         root = Path(directory)
         uri = (root / "releases").as_uri()
         build_view_release(uri)
         service = ReleaseService(
-            uri=uri, local_dir=root / "local", recheck_seconds=0, build_views=True
+            uri=uri,
+            local_dir=root / "local",
+            recheck_seconds=0,
+            build_views=True,
+            build_origin=origin_release_enabled(),
         )
         release = service.snapshot()
         token = bind_release(release)

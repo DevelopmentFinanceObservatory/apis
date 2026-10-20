@@ -5,7 +5,8 @@ The coverage view of a release built from the recorded `RawInputs` equals the `C
 (`coverage_rows/published.json`), its facet metadata read from the recorded facets as the
 coverage job reads it from `TimeSeries`. The code index of a release whose part is the packaged
 `index.json.gz` equals the packaged index, its stamp naming the release. The recorded slice's
-own DFO parts open as both views.
+own DFO parts open as both views. The origin view of the recorded release is the DFO arc table
+and family summaries the origin catalogue job reads from the same rows.
 """
 
 from __future__ import annotations
@@ -21,24 +22,29 @@ from code_index.loader import default_index_path, load_index, load_measure_axes
 from graph_release.declarations import DECLARATIONS
 from graph_release.dfo import build_dfo_parts, dfo_inputs
 from graph_release.format import LoadedRelease, open_release
+from graph_release.origin import release_origin
 from graph_release.views import (
     ViewRefused,
     read_document,
     release_code_indexes,
     release_coverage_index,
 )
+from origin_catalogue.arc_tables import ArcTablesBuilder
+from origin_catalogue.families import summarise_table
 from series_coverage.loader import load_coverage
 from tests.graph_release.recorded import (
     FIXTURES,
     SLICE_BASE_PARTIES,
     SLICE_DECLARATIONS,
     platform_parts,
+    recorded_dfo_arcs,
     slice_platform_parts,
 )
 from tests.graph_release.support import (
     build_packaged_index_release,
     build_test_release,
     publish_coverage_build,
+    sample_tables,
 )
 
 _READ_AT = "2026-10-19T00:00:00Z"
@@ -100,12 +106,40 @@ def test_the_slice_release_opens_as_both_views(tmp_path: Path) -> None:
     assert {row.dcid for row in index.statvars} <= coverage.variable_provenances().keys()
 
 
+def test_the_origin_view_is_the_catalogue_job_s_dfo_table(tmp_path: Path) -> None:
+    """Each DFO variable's rows, the import-added `sourceIndicatorCode` constraint and the
+    authored base targets included, and each family's members in order."""
+    manifest = build_test_release(tmp_path.as_uri(), tables=platform_parts().tables())
+    builder = ArcTablesBuilder()
+    read = recorded_dfo_arcs(builder)
+    job = builder.table("dfo")
+
+    origin = release_origin(_open(tmp_path, manifest.release_id))
+
+    assert list(origin.arcs) == sorted(job)
+    assert origin.arcs == job
+    assert len(job) == 20
+    assert read.base_targets
+    assert list(origin.families.items()) == list(summarise_table(job).items())
+
+
+def test_a_release_declaring_no_variable_has_an_empty_origin_view(tmp_path: Path) -> None:
+    manifest = build_test_release(tmp_path.as_uri(), tables=sample_tables())
+
+    origin = release_origin(_open(tmp_path, manifest.release_id))
+
+    assert origin.arcs == {}
+    assert origin.families == {}
+
+
 def test_a_release_without_a_view_part_refuses_the_view(tmp_path: Path) -> None:
     manifest = build_packaged_index_release(tmp_path.as_uri())
     release = _open(tmp_path, manifest.release_id)
 
     with pytest.raises(ViewRefused, match="no series part"):
         release_coverage_index(release)
+    with pytest.raises(ViewRefused, match="no series part"):
+        release_origin(release)
     stripped = dataclasses.replace(release, blobs={})
     with pytest.raises(ViewRefused, match="no code_index_blocks part"):
         release_code_indexes(stripped)

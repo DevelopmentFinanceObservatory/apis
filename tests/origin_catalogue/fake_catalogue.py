@@ -37,7 +37,13 @@ from origin_catalogue import (
 )
 from origin_catalogue.arc_tables import EMPTY_ARC_TABLES, ArcTables
 from origin_catalogue.catalogue import EMPTY_UN_TABLES, SourceDocumentation
-from origin_catalogue.families import FamilyKey, FamilySummary, FamilyTables, family_tables
+from origin_catalogue.families import (
+    FamilyKey,
+    FamilySummary,
+    FamilyTables,
+    family_tables,
+    summarise_table,
+)
 from origin_catalogue.origins import UN_ID_PREFIX
 from origin_catalogue.schema import UnAgencyCounts
 from origin_catalogue.service import CatalogueService
@@ -254,7 +260,8 @@ def restrictive_catalogue(
     for every DFO and base row's entry (`empty_dataset_facts`),
     `source_documentation` to documentation covering no provenance for each
     (`empty_source_documentation`), and `build_id` to one naming its rows
-    and tables (`_fake_build_id`). `ingestion` is the ingestion its manifest records."""
+    and tables (`_fake_build_id`). `ingestion` is the ingestion its manifest records. It carries
+    the base summaries `GRAPH_RELEASE_ORIGIN` reads (`CatalogueSnapshot.base_families`)."""
     rows = {row.id: row for row in provenances}
     places = tuple(scan_places)
     index = {place: i for i, place in enumerate(places)}
@@ -304,6 +311,7 @@ def restrictive_catalogue(
         arcs=arcs,
         families=family_tables(dfo=arcs.dfo, base=arcs.base, un=un_mirror),
         un_system_enabled=un_system_enabled,
+        base_families=summarise_table(arcs.base),
     )
 
 

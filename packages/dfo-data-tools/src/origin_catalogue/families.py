@@ -75,18 +75,37 @@ class FamilyTables:
     arcs: Mapping[FamilyKey, FamilySummary] = field(default_factory=dict)
     un: Mapping[FamilyKey, FamilySummary] = field(default_factory=dict)
 
-    def family(self, key: FamilyKey, *, un_system_enabled: bool) -> FamilySummary | None:
+    def family(
+        self,
+        key: FamilyKey,
+        *,
+        un_system_enabled: bool,
+        release: ReleaseFamilies | None = None,
+    ) -> FamilySummary | None:
         """The summary of every member of `key` the build holds, the arc tables' first,
-        leaving the UN variables out with the UN origin off. None when it holds none."""
-        held = self.arcs.get(key)
-        un = self.un.get(key) if un_system_enabled else None
-        if held is None or un is None:
-            return held or un
-        return merge_summaries(held, un)
+        leaving the UN variables out with the UN origin off. With `release`, the arc tables'
+        part is `release`'s in place of the build's own. None when they hold none."""
+        held = self.arcs.get(key) if release is None else release.family(key)
+        return _joined(held, self.un.get(key) if un_system_enabled else None)
 
 
 EMPTY_FAMILY_TABLES: Final = FamilyTables()
 """The family tables of a build holding no variable."""
+
+
+@dataclass(frozen=True, slots=True)
+class ReleaseFamilies:
+    """The arc tables' part of each family with a graph release answering the DFO half:
+    `dfo`, the release's summaries of its DFO variables
+    (`graph_release.origin.ReleaseOrigin.families`), joined to `base`, a build's summaries of
+    its `base` arc table alone (`summarise_table`). `family_tables` joins the build's own
+    DFO and base summaries the same way, so for one import the two agree."""
+
+    dfo: Mapping[FamilyKey, FamilySummary]
+    base: Mapping[FamilyKey, FamilySummary]
+
+    def family(self, key: FamilyKey) -> FamilySummary | None:
+        return _joined(self.dfo.get(key), self.base.get(key))
 
 
 def merge_summaries(first: FamilySummary, second: FamilySummary) -> FamilySummary:
@@ -107,6 +126,12 @@ def merge_summaries(first: FamilySummary, second: FamilySummary) -> FamilySummar
     )
 
 
+def _joined(first: FamilySummary | None, second: FamilySummary | None) -> FamilySummary | None:
+    if first is None or second is None:
+        return first or second
+    return merge_summaries(first, second)
+
+
 def family_tables(
     *,
     dfo: Mapping[str, tuple[UnArc, ...]],
@@ -114,17 +139,33 @@ def family_tables(
     un: UnMirror,
 ) -> FamilyTables:
     """The summaries of the `dfo` and `base` variables, each table in dcid order, and of
-    `un`'s admitted variables in dcid order. A variable held empty has no family."""
+    `un`'s admitted variables in dcid order. A variable held empty has no family. A family's
+    `arcs` summary is its `dfo` summary joined to its `base` one, which is the summary of
+    both tables read in turn, since a summary's members, values and total keep the order
+    its members are read in."""
     return FamilyTables(
-        arcs=summarise(
-            [(dcid, dfo[dcid]) for dcid in sorted(dfo)]
-            + [(dcid, base[dcid]) for dcid in sorted(base)],
-            un_only=False,
-        ),
+        arcs=_merge_families(summarise_table(dfo), summarise_table(base)),
         un=summarise(
             ((dcid, un.variables[dcid].arcs) for dcid in sorted(un.variables)), un_only=True
         ),
     )
+
+
+def _merge_families(
+    first: Mapping[FamilyKey, FamilySummary], second: Mapping[FamilyKey, FamilySummary]
+) -> dict[FamilyKey, FamilySummary]:
+    """Each family of `first` or `second`, its `first` summary joined to its `second` one,
+    keyed in the order `first` then `second` name them."""
+    merged = dict(first)
+    for key, summary in second.items():
+        found = merged.get(key)
+        merged[key] = summary if found is None else merge_summaries(found, summary)
+    return merged
+
+
+def summarise_table(variables: Mapping[str, tuple[UnArc, ...]]) -> dict[FamilyKey, FamilySummary]:
+    """`summarise` over an arc table's variables in dcid order."""
+    return summarise(((dcid, variables[dcid]) for dcid in sorted(variables)), un_only=False)
 
 
 def summarise(
@@ -251,7 +292,9 @@ __all__ = [
     "FamilyKey",
     "FamilySummary",
     "FamilyTables",
+    "ReleaseFamilies",
     "family_tables",
     "merge_summaries",
     "summarise",
+    "summarise_table",
 ]

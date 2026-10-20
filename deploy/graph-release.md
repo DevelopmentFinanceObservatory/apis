@@ -83,6 +83,8 @@ A serving process with `GRAPH_RELEASE_URI` set opens the pointer's release at st
 
 With the flag on, the search catalogue job (`python -m search.catalogue.job`) keys its build on the release id in place of the coverage build id. It reads the release pointer to decide whether anything changed, and opens and binds the served release for the whole build only when something did. A new release therefore gives a new catalogue key, and the builder starts the job after each publish (step 8). The deploy workflow starts one execution after the apis service moves, since the key also holds `DFO_BUILD_COMMIT`.
 
+`GRAPH_RELEASE_ORIGIN=1` also builds each release's origin view as it opens (`graph_release.origin`), and the origin catalogue reads its DFO half from the bound release: each DFO variable's arcs, and the DFO members of each family, joined to the base members of the loaded catalogue build (`origin_catalogue.catalogue.CatalogueSnapshot`). The catalogue build still answers base variables, schema nodes, topics and the UN tables, and a DFO variable the release does not hold is read from the mixer. Loading a catalogue build with the flag on also summarises its base variables' families. The flag is independent of `GRAPH_RELEASE_COVERAGE` and needs `GRAPH_RELEASE_URI` on every process that loads the catalogue. With the flag on and no release bound, a catalogue arc or family read raises `ReleaseNotBound`.
+
 ## Environment
 
 - `GRAPH_RELEASE_URI`: required, `gs://` or `file://`.
