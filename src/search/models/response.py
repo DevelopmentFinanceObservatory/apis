@@ -13,6 +13,7 @@ from pydantic import (
 
 from dfo_platform import Cause
 
+from .assumption import Assumption
 from .base import StrictModel
 from .departure import Departure, departures_in_precedence_order
 from .envelope import Diagnostics, QueryEcho, Timing, Warning
@@ -52,7 +53,9 @@ class _PartBase(StrictModel):
         description=(
             "true when this part was asked beside the others to be compared with them. "
             "A client resubmitting an identity, candidate set, or placeholder posts this "
-            "flag on that entry to preserve the comparison. False, the default, is omitted"
+            "flag on that entry to preserve the comparison. Two parts marked separate that "
+            "resolve to one reading carry the same spec_id and stay two parts. False, the "
+            "default, is omitted"
         ),
     )
     warnings: list[Warning] = Field(
@@ -84,7 +87,8 @@ class _PartBase(StrictModel):
             "there are ('3 readings.'), then each shown candidate's heading and a byline "
             "led by the source and span that set it apart; for no_data, a heading in "
             "the same claim form naming the entity, measure, and counterpart that were "
-            "checked. Either ends with the text of this part's departures, in order. "
+            "checked. Either ends with the text of this part's departures, in order, "
+            "and a candidates part's then closes with its assumptions clause. "
             "For a definite part this stays null or omitted: the confirmation sentence "
             "(heading and byline) lives at spec.resolved.rendered_sentence, and its "
             "departures reach the envelope's composed sentence."
@@ -140,6 +144,27 @@ class _PartBase(StrictModel):
         ),
     )
 
+    assumptions: list[Assumption] = Field(
+        default_factory=list,
+        description=(
+            "every value the engine filled that the request did not ask for, in clause "
+            "order: declared defaults in the order of the Spec's trace.slot_filters, then "
+            "open roles, then the place scope. A declared default is a slot the request "
+            "left open that its code system's or shape's declared default fixed. An open "
+            "role is a flow role the heading states with no entity of its own ('from 164 "
+            "providers', 'owed to all creditors') on an axis the identity neither binds in "
+            "entities nor lists in open_roles, read as the total over every entity on it. "
+            "The place scope is a request that named no place, read across "
+            "every place with data. Filled on every door: on a definite part from its "
+            "Spec, on a candidates part the items every shown reading's Spec yields alike, "
+            "[] on no_data and unsupported. A dataset_resubmit identity entry posts every "
+            "slot bound, so its part keeps a declared default only through the entry's "
+            "assumptions echo. The sentence that carries this part closes with them as "
+            "one segment='assumption' clause ('Assumed: official development assistance; "
+            "every provider.'), after its departures. [] when the answer fills nothing"
+        ),
+    )
+
     @field_validator("departures")
     @classmethod
     def _departures_in_precedence_order(cls, value: list[Departure]) -> list[Departure]:
@@ -152,10 +177,12 @@ class DefinitePart(_PartBase):
     status: Literal["definite"] = Field(description="one answer was resolved")
     spec: Spec = Field(
         description=(
-            "the resolved Spec answering this part. Several parts sharing one five-tuple "
-            "shape carry the identical spec verbatim (the same spec_id); a part that "
-            "shares the spec without minting it carries a part-scoped binding_folded "
-            "warning"
+            "the resolved Spec answering this part. Parts whose specs share a spec_id "
+            "are one reading of the data: the same series, entities and years. A later "
+            "part that folds into an earlier part's spec carries binding_folded; a part "
+            "posted with separate: true never folds and keeps its own part, so two "
+            "separate parts can carry one spec_id by request. Parts sharing a spec_id can "
+            "differ in assumptions, so a client never dedupes parts by spec_id"
         )
     )
 
@@ -335,7 +362,13 @@ class Resolution(_AnswerBase):
             "exactly that part's own sentence. After the headings and bylines, each "
             "part's departures follow in part order as segment='departure' tokens "
             "carrying that part's part_index. This is the one sentence that writes "
-            "out a definite part's departures."
+            "out a definite part's departures. The parts' assumptions close the "
+            "sentence as segment='assumption' tokens: one clause after a joined "
+            "sentence, each item carrying the part_index of its part and an item two "
+            "parts share carrying none, or each part's own clause after its departures "
+            "when the sentence is written part by part. On a mixed resolution with at "
+            "least one definite part, the sentence opens 'Answered N of M parts.', where "
+            "N counts the definite parts, folded ones included, and M is len(parts)."
         ),
     )
     sentence_plan: list[SentenceToken] | None = Field(
@@ -349,7 +382,10 @@ class Resolution(_AnswerBase):
             "shared skeleton (an inter-phrase connective, a hoisted shared qualifier, "
             "the terminal '.', or the shared ' ' the per-part fallback puts between "
             "two sentences) rather than any "
-            "one part's own."
+            "one part's own. On a mixed resolution with at least one definite part, the "
+            "plan opens with two heading tokens carrying no part_index: the opener "
+            "'Answered N of M parts.' and a ' '. A mixed resolution with no definite "
+            "part has no opener."
         ),
     )
     skills: dict[str, Skill] | None = Field(

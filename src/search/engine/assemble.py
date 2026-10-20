@@ -52,6 +52,7 @@ from search.models import (
     UnsupportedPart,
     Warning,
 )
+from search.render.assumptions import assumptions_for, common_assumptions
 from search.render.candidates import candidate_differences, candidates_sentence_plan
 from search.render.departures import departures_from_facts
 from search.render.heading import (
@@ -427,6 +428,7 @@ def build_definite_part(
             operations=operations,
             entity_words=entity_words,
         ),
+        assumptions=assumptions_for(spec),
     )
 
 
@@ -789,9 +791,11 @@ def build_candidates_part(
         keep_how_properties=keep_how_properties,
         request_words=request_words,
     )
+    assumptions = common_assumptions(clamped, keep_how_properties=keep_how_properties)
     plan = candidates_sentence_plan(
         clamped,
         departures=departures,
+        assumptions=assumptions,
         truncated=truncated,
         # Show the pre-clamp total only when no upstream budget hid candidates.
         total=len(specs) if not budget_truncated else None,
@@ -820,4 +824,5 @@ def build_candidates_part(
         restatement=restatement,
         operations=list(operations),
         departures=departures,
+        assumptions=assumptions,
     )

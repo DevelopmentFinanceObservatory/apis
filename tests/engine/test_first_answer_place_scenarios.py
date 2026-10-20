@@ -1009,7 +1009,7 @@ _RETIRED_WORDING = (
 def _sentence_violations(response: Resolution) -> list[str]:
     """Each way a sentence in `response` breaks the sentence invariants: retired wording, a
     plan whose plain join differs from its `rendered_sentence`, a token with no segment or
-    of kind "note", a departure token on a spec's own plan, and a role token naming more than
+    of kind "note", a departure or assumption token on a spec's own plan, and a role token naming more than
     three entities. Every sentence the response carries is checked: the composed one, each
     part's own, and each offered spec's."""
     violations: list[str] = []
@@ -1029,12 +1029,14 @@ def _sentence_violations(response: Resolution) -> list[str]:
                 violations.append(f"{path}: plain join differs from {text!r}")
             violations.extend(f"{path}: retired {w!r}" for w in _RETIRED_WORDING if w in text)
             for token in plan:
-                if token.get("segment") not in ("heading", "byline", "departure"):
+                if token.get("segment") not in ("heading", "byline", "departure", "assumption"):
                     violations.append(f"{path}: token {token['text']!r} has no segment")
                 if token["kind"] == "note":
                     violations.append(f"{path}: note token {token['text']!r}")
-                if "stat_vars" in value and token.get("segment") == "departure":
-                    violations.append(f"{path}: spec plan holds departure {token['text']!r}")
+                if "stat_vars" in value and token.get("segment") in ("departure", "assumption"):
+                    violations.append(
+                        f"{path}: spec plan holds {token['segment']} {token['text']!r}"
+                    )
                 named = [
                     d for d in token.get("entity_refs", []) if labels.get(d, d) in token["text"]
                 ]

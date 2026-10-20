@@ -56,6 +56,15 @@ def with_operations(row_id: str, operations: list[dict[str, Any]]) -> dict[str, 
     return response
 
 
+_EVERY_PROVIDER = {"kind": "open_role", "binding_ref": "origin:", "text": "every provider"}
+
+
+def with_assumptions(row_id: str, assumptions: list[dict[str, Any]]) -> dict[str, Any]:
+    response = panel(row_id)
+    response["parts"][0]["assumptions"] = assumptions
+    return response
+
+
 def with_swapped_provenance(row_id: str) -> dict[str, Any]:
     """A recorded candidates response with its two candidates' provenance facets swapped."""
     response = panel(row_id)
@@ -728,6 +737,27 @@ ROWS = [
         FAIL,
     ),
     ("operations", {"definite": {}}, panel("crs-001"), NA),
+    # assumptions: kind and, where set, binding ref and text, in clause order.
+    ("assumptions", {"definite": {"assumptions": []}}, panel("crs-001"), PASS),
+    (
+        "assumptions",
+        {"definite": {"assumptions": [{"kind": "open_role", "text": "every provider"}]}},
+        with_assumptions("crs-002", [_EVERY_PROVIDER]),
+        PASS,
+    ),
+    (
+        "assumptions",
+        {"definite": {"assumptions": [{"kind": "open_role", "binding_ref": "where:"}]}},
+        with_assumptions("crs-002", [_EVERY_PROVIDER]),
+        FAIL,
+    ),
+    (
+        "assumptions",
+        {"definite": {"assumptions": []}},
+        with_assumptions("crs-002", [_EVERY_PROVIDER]),
+        FAIL,
+    ),
+    ("assumptions", {"definite": {}}, panel("crs-001"), NA),
     # warnings: required codes on the part or the request; extras pass.
     ("warnings", {"definite": {"warnings": ["role_scope_defaulted"]}}, panel("crs-002"), PASS),
     ("warnings", {"definite": {"warnings": ["binding_folded"]}}, panel("crs-002"), FAIL),
@@ -1107,6 +1137,7 @@ ASSERTING = {
     "request": {"definite": {"window": {"kind": "all"}}},
     "operations": {"definite": {"operations": []}},
     "warnings": {"definite": {"warnings": ["role_scope_defaulted"]}},
+    "assumptions": {"definite": {"assumptions": []}},
     "skills": {"definite": {"skills": {"present": True}}},
     "candidates": {"candidates": {"include_families": ["crs.flow"]}},
     "refusal": {"no_data": {"reason": "no_observations"}},

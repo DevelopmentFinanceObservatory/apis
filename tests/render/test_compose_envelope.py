@@ -10,6 +10,7 @@ import pytest
 from search.models import (
     METHOD_REF,
     UNIT_REF,
+    Assumption,
     BindingUnbound,
     BindingValue,
     BreadthDim,
@@ -904,7 +905,7 @@ def test_asked_qualifier_does_not_hoist_across_unresolved_sibling():
     )
     gdp = _unresolved("GDP")
     rendered, plan = compose_envelope_sentence([population, gdp])
-    assert rendered == "Brazil's total population. No data."
+    assert rendered == "Answered 1 of 2 parts. Brazil's total population. No data."
     where_tokens = [t for t in plan if t.axis == "where"]
     assert len(where_tokens) == 1
     assert where_tokens[0].part_index == 0
@@ -923,7 +924,7 @@ def test_read_back_qualifier_does_not_hoist_across_unresolved_sibling():
     )
     gdp = _unresolved("GDP")
     rendered, plan = compose_envelope_sentence([population, gdp])
-    assert rendered == "Total population across 3 countries. No data."
+    assert rendered == "Answered 1 of 2 parts. Total population across 3 countries. No data."
     where_tokens = [t for t in plan if t.axis == "where"]
     assert len(where_tokens) == 1
     assert where_tokens[0].part_index == 0
@@ -1368,7 +1369,7 @@ def test_null_variable_text_does_not_produce_stray_connective():
     population = _definite(_spec(slots=[_what_slot("Total population")]))
     unnamed = _unresolved(None)
     rendered, plan = compose_envelope_sentence([population, unnamed])
-    assert rendered == "Total population. No data."
+    assert rendered == "Answered 1 of 2 parts. Total population. No data."
     assert " and " not in rendered
     assert not [t for t in plan if t.part_index == 1 and t.kind == "slot"]
 
@@ -1630,7 +1631,8 @@ def test_mls_037_mixed_parts_keep_each_departure_after_its_own_sentence():
     rendered, plan = compose_envelope_sentence([no_data, definite])
 
     assert rendered == (
-        f"{refusal} {growth} Denmark's gross ODA disbursements to Kenya for health, "
+        f"Answered 1 of 2 parts. {refusal} {growth} Denmark's gross ODA disbursements to "
+        "Kenya for health, "
         f"2015 to 2024.{_CRS_BYLINE} {growth}"
     )
     assert _departure_tokens(plan) == [(growth, 0), (growth, 1)]
@@ -1719,3 +1721,89 @@ def test_leads_with_one_label_for_two_entities_are_each_stated():
     assert rendered == "Georgia's and Georgia's health ODA to Ethiopia."
     leads = [(t.part_index, t.entity_refs) for t in plan if t.role == "origin"]
     assert leads == [(0, ["country/GEO"]), (1, ["geoId/13"])]
+
+
+# ---------------------------------------------------------------------------
+# The assumptions clause and the mixed opener.
+# ---------------------------------------------------------------------------
+
+_ASSUMED_ODA = Assumption(kind="declared_default", binding_ref="how:crsTypeOfFlow", text="ODA")
+_ASSUMED_PROVIDERS = Assumption(kind="open_role", binding_ref="origin:", text="every provider")
+
+
+def _assuming(part: DefinitePart, *assumptions: Assumption) -> DefinitePart:
+    return part.model_copy(update={"assumptions": list(assumptions)})
+
+
+def _clause_tokens(plan: list[SentenceToken]) -> list[tuple[str, int | None]]:
+    return [(t.text, t.part_index) for t in plan if t.segment == "assumption"]
+
+
+def test_a_joined_sentence_closes_with_one_clause_naming_each_part_item():
+    """Two parts under one byline write one clause after their departures: an item both
+    carry is named once with no part index, an item of one part carries its index."""
+    rendered, plan = compose_envelope_sentence(
+        [
+            _assuming(_crs_part("Germany", "Kenya", (2015, 2020)), _ASSUMED_ODA),
+            _assuming(
+                _crs_part("Germany", "Ghana", (2015, 2020), _SHARE_DEPARTURE),
+                _ASSUMED_ODA,
+                _ASSUMED_PROVIDERS,
+            ),
+        ]
+    )
+    assert rendered.endswith(f"{_SHARE_DEPARTURE.text} Assumed: ODA; every provider.")
+    assert rendered.count("Assumed: ") == 1
+    assert _clause_tokens(plan) == [
+        (" ", None),
+        ("Assumed: ", None),
+        ("ODA", None),
+        ("; ", None),
+        ("every provider", 1),
+        (".", None),
+    ]
+
+
+def test_a_part_by_part_sentence_closes_each_part_with_its_own_clause():
+    """Beside a part that is not definite, the definite part's clause follows its own
+    departures, under its index, before the next part's sentence."""
+    definite = _assuming(
+        _crs_part("Germany", "Kenya", (2015, 2020), _SHARE_DEPARTURE), _ASSUMED_ODA
+    )
+    rendered, plan = compose_envelope_sentence([definite, _unresolved("GDP")])
+    assert f"{_SHARE_DEPARTURE.text} Assumed: ODA. No data." in rendered
+    assert {index for _text, index in _clause_tokens(plan)} == {0}
+
+
+def test_a_part_others_fold_into_states_its_clause_for_all_of_them():
+    """A folded part carries its representative's assumptions, so the clause the
+    representative states belongs to both and carries no part index."""
+    representative = _assuming(_crs_part("Germany", "Kenya", (2015, 2020)), _ASSUMED_ODA)
+    folded = representative.model_copy(
+        update={"warnings": [Warning(code="binding_folded", severity="info", message="folded")]}
+    )
+    rendered, plan = compose_envelope_sentence([representative, folded])
+    assert rendered.endswith(" Assumed: ODA.")
+    assert {index for _text, index in _clause_tokens(plan)} == {None}
+
+
+def test_a_mixed_answer_opens_with_how_many_parts_it_answered():
+    """A definite part beside a no-data part: the plan opens with two unowned heading
+    tokens, the opener and a space."""
+    rendered, plan = compose_envelope_sentence(
+        [_definite(_spec(slots=[_what_slot("Total population")])), _unresolved("GDP")]
+    )
+    assert rendered == "Answered 1 of 2 parts. Total population. No data."
+    assert [(t.text, t.segment, t.part_index) for t in plan[:2]] == [
+        ("Answered 1 of 2 parts.", "heading", None),
+        (" ", "heading", None),
+    ]
+
+
+def test_a_mixed_answer_with_no_definite_part_has_no_opener():
+    """Candidates beside no data answer nothing yet; each part's sentence states its own
+    outcome."""
+    a = _spec(slots=[_what_slot("GDP")])
+    b = _spec(slots=[_what_slot("GDP per capita")])
+    rendered, _plan = compose_envelope_sentence([_candidates("GDP", a, b), _unresolved("debt")])
+    assert not rendered.startswith("Answered")

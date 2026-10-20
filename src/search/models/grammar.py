@@ -379,8 +379,9 @@ class SentenceToken(StrictModel):
     latest-year label when one applies, the plain unit with its price basis
     ("current US dollars", "constant 2022 US dollars") as a slot token with
     axis "unit", the source, and, when the identity binds measurementMethod, the
-    method as a slot token with axis "method". Departures come last and sit only on a part's or
-    the envelope's sentence, so ``spec.resolved.sentence_plan`` carries none.
+    method as a slot token with axis "method". Departures come next, then the
+    assumptions clause, and both sit only on a part's or the envelope's sentence, so
+    ``spec.resolved.sentence_plan`` carries neither.
     """
 
     kind: Literal["text", "slot"] = Field(
@@ -419,9 +420,11 @@ class SentenceToken(StrictModel):
         description=(
             "the part of the sentence this token belongs to: 'heading' (what the "
             "answer is), 'byline' (latest-year label, unit, source, and a bound "
-            "method), or "
+            "method), "
             "'departure' (the text of one Departure on the same part, never on a "
-            "Spec's own plan). A client styles each segment as a block; the plain "
+            "Spec's own plan), or 'assumption' (the closing clause naming what the "
+            "answer assumed, from the parts' assumptions, never on a Spec's own plan). "
+            "A client styles each segment as a block; the plain "
             "join of every token's text still equals rendered_sentence"
         ),
     )

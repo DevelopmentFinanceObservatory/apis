@@ -9,6 +9,7 @@ from pydantic import (
     model_validator,
 )
 
+from .assumption import Assumption
 from .base import StrictModel
 from .entity import EntityGroup
 from .identity import BaseIdentity
@@ -55,6 +56,9 @@ _PARSED_MAX_RAW_QUERY_CHARS = 2000
 # At least extract's MAX_OPERATIONS, the most one query can carry, so every part
 # the engine echoes posts back unrefused. A test pins the relation.
 _PARSED_MAX_PART_OPERATIONS = 8
+# One declared default per identity slot (BaseIdentity.slots holds at most 64), two flow
+# roles and the place scope: the most assumptions one part carries.
+_RESUBMIT_MAX_ASSUMPTIONS = 67
 # Equal to config's max_dropped_qualifier_length, the length a dropped qualifier keeps;
 # extract discards an operation whose phrase is longer. A test pins the relation.
 _PARSED_MAX_OPERATION_PHRASE_CHARS = 200
@@ -387,7 +391,9 @@ class ParsedPart(StrictModel):
             "true when this part is asked beside the others to be compared with them, "
             "as in 'health ODA versus education ODA': it answers as its own part and "
             "never folds into another part of the same shape (binding_folded). False, "
-            "the default, folds parts that share a shape into one set answer"
+            "the default, folds parts that share a shape into one set answer. Two parts "
+            "marked separate that resolve to one reading carry the same spec_id and stay "
+            "two parts"
         ),
     )
 
@@ -546,6 +552,19 @@ class ResubmitIdentityEntry(StrictModel):
         default_factory=list,
         max_length=_PARSED_MAX_PART_OPERATIONS,
         description=_OPERATIONS_DESCRIPTION,
+    )
+    assumptions: list[Assumption] = Field(
+        default_factory=list,
+        max_length=_RESUBMIT_MAX_ASSUMPTIONS,
+        description=(
+            "the assumptions of the part this entry rebuilds, echoed as the response "
+            "gave them. The rebuilt part keeps each echoed declared_default whose slot "
+            "the posted identity still binds to the value its text names, and drops one "
+            "an edit changed. Open-role and place-scope assumptions are read from the "
+            "identity and the answer on every door, so an echoed one adds nothing. "
+            "[], the default, keeps no declared default: the posted identity binds every "
+            "slot it carries, so the engine records none of them as filled"
+        ),
     )
 
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dfo_platform import WarningSeverity
 
+from .assumption import Assumption
 from .coverage import (
     BreadthDim,
     Coverage,
@@ -218,6 +219,7 @@ from .vocab import (
     NO_DATA_RESOLUTION_ORDER,
     SCHEMA_VERSION,
     AnswerKind,
+    AssumptionKind,
     Axis,
     BindingKind,
     BindingProvenance,
@@ -270,6 +272,8 @@ __all__ = [
     "AmbiguousSourceCandidate",
     "AmbiguousSourceGroup",
     "AnswerKind",
+    "Assumption",
+    "AssumptionKind",
     "Axis",
     "BaseIdentity",
     "Binding",

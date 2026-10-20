@@ -9,8 +9,8 @@ the sentence renderer reads and the plans it wrote, and writes
 
 - `id`, `query`: the panel query.
 - `rendered_sentence`, `sentence_plan`: the envelope sentence and plan.
-- `parts`: each part with its status, `variable_text`, warnings, departures and own
-  sentence; a definite part's Spec, a candidates part's shown Specs, a no-data part's reason.
+- `parts`: each part with its status, `variable_text`, warnings, departures, assumptions
+  and own sentence; a definite part's Spec, a candidates part's shown Specs, a no-data part's reason.
 
 A Spec keeps its definition and the resolved fields `render_sentence_plan` reads (shape,
 slots, StatVar counts and served dates, entities and groups, coverage, scope, facets, slot
@@ -84,6 +84,7 @@ _PART_KEYS = (
     "variable_text",
     "warnings",
     "departures",
+    "assumptions",
     "rendered_sentence",
     "sentence_plan",
 )
@@ -199,7 +200,7 @@ def trim_spec(spec: dict[str, Any], facts: dict[str, Any]) -> dict[str, Any]:
 
 
 def trim_part(part: dict[str, Any], facts: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """`part` with its own sentence, departures and warnings, and the inputs the renderer
+    """`part` with its own sentence, departures, assumptions and warnings, and the inputs the renderer
     reads for its status, each Spec with its entry in `facts`, keyed by spec id."""
     trimmed = _pick(part, _PART_KEYS)
     match part["status"]:
@@ -330,7 +331,10 @@ def rerender_line(line: dict[str, Any]) -> dict[str, Any]:
             _set_plan(
                 raw,
                 candidates_sentence_plan(
-                    specs, truncated=part.candidates.truncated, departures=part.departures
+                    specs,
+                    truncated=part.candidates.truncated,
+                    departures=part.departures,
+                    assumptions=part.assumptions,
                 ),
             )
     composed = compose_envelope_sentence(golden_parts(line["parts"]))

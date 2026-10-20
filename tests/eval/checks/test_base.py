@@ -193,6 +193,7 @@ def test_every_check_name_is_registered():
         "operations",
         "refusal",
         "warnings",
+        "assumptions",
         "candidates",
         "parts",
     }

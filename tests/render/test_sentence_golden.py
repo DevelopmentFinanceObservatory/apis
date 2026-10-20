@@ -87,7 +87,10 @@ def test_renderer_reproduces_the_recorded_panel(line: dict[str, Any]) -> None:
                 )
             _assert_plan(
                 candidates_sentence_plan(
-                    specs, truncated=part.candidates.truncated, departures=part.departures
+                    specs,
+                    truncated=part.candidates.truncated,
+                    departures=part.departures,
+                    assumptions=part.assumptions,
                 ),
                 part.sentence_plan,
                 f"part {index} candidates",
