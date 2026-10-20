@@ -1101,33 +1101,38 @@ def settled_roles(shape: ShapeDraft, assignment: PlaceAssignment, places: PlaceL
 
 
 def untold_direction_names(state: ResolveState) -> tuple[str, ...]:
-    """The query names whose flow direction a `role_not_resolved` refusal could not tell,
-    in query order, one per place set: each set no text of which carries a direction,
-    under its name (`part_sets`), and each name that resolved to no set and carries none.
-    Else the names whose stated direction the query's own wording contradicts
-    (`role_text.contradicts`), the first such text of each set. Empty when every name's
-    direction is told, as when materialisation refuses the roles."""
-    named = part_sets(state)
-    directed = {
-        place_key(state.place_sets[name])
-        for name in state.entities
-        if name in state.place_sets and state.entity_roles.get(name)
+    """The request texts whose flow direction a `role_not_resolved` refusal could not tell,
+    in query order: every text of each untold group (`_untold_groups`). Empty when every
+    name's direction is told, as when materialisation refuses the roles."""
+    untold = {
+        name for texts in _untold_groups(state, _text_groups(state)).values() for name in texts
     }
-    undirected: dict[str, str] = {}
-    for name in state.entities:
+    return tuple(name for name in dict.fromkeys(state.entities) if name in untold)
+
+
+def _text_groups(state: ResolveState) -> dict[str, list[str]]:
+    """The request texts in groups, by group key, in query order: the texts that name one
+    place set under its place key, and each text that resolved to no set alone under
+    the text."""
+    groups: dict[str, list[str]] = {}
+    for name in dict.fromkeys(state.entities):
         place_set = state.place_sets.get(name)
-        if place_set is None:
-            if not state.entity_roles.get(name):
-                undirected.setdefault(name, name)
-        elif (key := place_key(place_set)) not in directed:
-            undirected.setdefault(key, named[key].name)
+        groups.setdefault(name if place_set is None else place_key(place_set), []).append(name)
+    return groups
+
+
+def _untold_groups(state: ResolveState, groups: dict[str, list[str]]) -> dict[str, list[str]]:
+    """The `groups` whose flow direction the question leaves untold, in their order: those
+    no text of which carries a direction, else those one of whose texts states a direction
+    the query's own wording contradicts (`role_text.contradicts`)."""
+    undirected = {
+        key: texts
+        for key, texts in groups.items()
+        if not any(state.entity_roles.get(name) for name in texts)
+    }
     if undirected:
-        return tuple(undirected.values())
-    contradicted: dict[str, str] = {}
-    for name in _contradicted_names(state, state.entities):
-        place_set = state.place_sets.get(name)
-        contradicted.setdefault(name if place_set is None else place_key(place_set), name)
-    return tuple(contradicted.values())
+        return undirected
+    return {key: texts for key, texts in groups.items() if _contradicted_names(state, texts)}
 
 
 # The most readings of an unstated direction a `role_not_resolved` refusal offers. Two sets
@@ -1140,34 +1145,26 @@ def direction_readings(state: ResolveState) -> tuple[dict[str, RoleAxis], ...]:
     """The readings a `role_not_resolved` refusal offers for the directions the question
     leaves untold, each mapping every request text of every untold set to one flow axis.
 
-    The untold sets are those no text of which carries a direction, else those whose stated
-    direction the query's wording contradicts (`untold_direction_names`). Each takes one
-    axis on which the elected shape declares a role and that the part does not ask open
-    (`ResolveState.open_axes`, or an operation's `over`); an open axis counts as named and
-    takes no set. A reading is kept when every such axis then holds a set, a directed one
+    The untold sets are the place sets among the untold groups (`_untold_groups`): those no
+    text of which carries a direction, else those whose stated direction the query's
+    wording contradicts. Each takes one axis on which the elected shape declares a role and
+    that the part does not ask open (`ResolveState.open_axes`, or an operation's `over`); an
+    open axis counts as named and takes no set. A reading is kept when every such axis then holds a set, a directed one
     included. Readings run over the sets in query order, origin first. Empty when the shape
     declares no role, no set is untold, or more than `MAX_DIRECTION_READINGS` readings are
     kept; the count stops there, so no reading past it is built."""
     shape = state.shape_draft
     if shape is None or not is_role_bearing(shape):
         return ()
-    named = part_sets(state)
-    texts: dict[str, list[str]] = {}
-    for name in dict.fromkeys(state.entities):
-        if (place_set := state.place_sets.get(name)) is not None:
-            texts.setdefault(place_key(place_set), []).append(name)
+    groups = _text_groups(state)
+    texts = {key: names for key, names in groups.items() if names[0] in state.place_sets}
+    untold = [key for key in _untold_groups(state, groups) if key in texts]
+    if not untold:
+        return ()
     directed = {
         key: {role.axis for name in names for role in state.entity_roles.get(name) or ()}
         for key, names in texts.items()
     }
-    untold = [key for key in named if not directed[key]]
-    if not untold:
-        contradicted = _contradicted_names(
-            state, [name for names in texts.values() for name in names]
-        )
-        untold = list(dict.fromkeys(place_key(state.place_sets[name]) for name in contradicted))
-    if not untold:
-        return ()
     over = {operation.over for operation in state.operations}
     declared = role_names_by_axis(shape)
     axes: tuple[RoleAxis, ...] = tuple(

@@ -386,8 +386,9 @@ class NoData(StrictModel):
         description=(
             "the query entity text responsible for an entity-resolution outcome, in "
             "query order: every entity the engine could not resolve for "
-            "entity_not_resolved, every ambiguous wording for entity_ambiguous, or "
-            "every resolved-but-unadmitted entity for entity_role_not_admitted. Empty "
+            "entity_not_resolved, every ambiguous wording for entity_ambiguous, every "
+            "resolved-but-unadmitted entity for entity_role_not_admitted, or every name "
+            "whose flow direction the query leaves untold for role_not_resolved. Empty "
             "for every other no_data reason. This structured list is the client-facing "
             "source of those terms; rendered_sentence may quote the same wording for "
             "people, but clients must not parse it."

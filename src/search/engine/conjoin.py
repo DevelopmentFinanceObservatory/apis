@@ -181,7 +181,8 @@ def _no_data_entity_terms(region: RegionResult) -> tuple[list[str] | None, list[
         return list(region.unresolved_entity_names) or None, None
     if region.no_data_reason == "role_not_resolved":
         words = region.entity_words or {}
-        return [words.get(name, name) for name in region.unresolved_entity_names] or None, None
+        terms = dict.fromkeys(words.get(name, name) for name in region.unresolved_entity_names)
+        return list(terms) or None, None
     return None, None
 
 
@@ -348,11 +349,16 @@ def _source_code_options(region: RegionResult, part: ParsedPart) -> list[NoDataO
 def _role_options(region: RegionResult, part: ParsedPart) -> list[NoDataOption | None]:
     """One option per reading of the directions the question left untold
     (`RegionResult.role_assignments`): every row of a mapped text states its axis, and a row
-    the reading repeats is dropped. Its mentions are the texts the readings map, in the
-    request's words. The label reads the option's own directions."""
+    the reading repeats is dropped. Its mentions are the untold names
+    (`unresolved_entity_names`) the readings map, which every reading maps alike, in the
+    request's words and in query order. The label reads the option's own directions."""
     words = region.entity_words or {}
-    texts = region.role_assignments[0] if region.role_assignments else {}
-    mentions = list(dict.fromkeys(words.get(text, text) for text in texts))
+    mapped = region.role_assignments[0] if region.role_assignments else {}
+    mentions = list(
+        dict.fromkeys(
+            words.get(name, name) for name in region.unresolved_entity_names if name in mapped
+        )
+    )
     options: list[NoDataOption | None] = []
     for reading in region.role_assignments:
         rows = [
