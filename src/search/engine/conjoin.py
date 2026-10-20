@@ -186,6 +186,20 @@ def _no_data_entity_terms(region: RegionResult) -> tuple[list[str] | None, list[
     return None, None
 
 
+def _untold_place_terms(region: RegionResult) -> list[list[str]] | None:
+    """The terms of a ``role_not_resolved`` refusal grouped by the place each names
+    (``RegionResult.untold_groups``), in the request's own words as
+    `_no_data_entity_terms` gives them, so the sentence counts places. ``None`` for every
+    other reason."""
+    if region.no_data_reason != "role_not_resolved":
+        return None
+    words = region.entity_words or {}
+    return [
+        list(dict.fromkeys(words.get(name, name) for name in group))
+        for group in region.untold_groups
+    ] or None
+
+
 def _ambiguous_entity_groups(region: RegionResult) -> list[AmbiguousEntityGroup]:
     """Convert region ambiguity data to the wire shape, for an ``entity_ambiguous`` region
     only. A region refused for another reason can still name ambiguous entities
@@ -571,6 +585,7 @@ def _build_part(
         alternate_match=region.alternate_match,
         elected_stat_vars=region.elected_stat_vars,
         entity_terms=entity_terms,
+        entity_groups=_untold_place_terms(region),
         role_axis=region.no_data_role_axis,
         bound_role_dcids=region.no_data_bound_role_dcids,
         ambiguous_candidates=ambiguous_candidates,

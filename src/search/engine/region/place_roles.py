@@ -1102,12 +1102,17 @@ def settled_roles(shape: ShapeDraft, assignment: PlaceAssignment, places: PlaceL
 
 def untold_direction_names(state: ResolveState) -> tuple[str, ...]:
     """The request texts whose flow direction a `role_not_resolved` refusal could not tell,
-    in query order: every text of each untold group (`_untold_groups`). Empty when every
-    name's direction is told, as when materialisation refuses the roles."""
-    untold = {
-        name for texts in _untold_groups(state, _text_groups(state)).values() for name in texts
-    }
+    in query order: every text of each untold group (`untold_direction_groups`). Empty when
+    every name's direction is told, as when materialisation refuses the roles."""
+    untold = {name for texts in untold_direction_groups(state) for name in texts}
     return tuple(name for name in dict.fromkeys(state.entities) if name in untold)
+
+
+def untold_direction_groups(state: ResolveState) -> tuple[tuple[str, ...], ...]:
+    """The request texts of each place a `role_not_resolved` refusal could not tell the
+    flow direction of, one tuple per untold group (`_untold_groups`), each in query order,
+    so a refusal names one place set read under several texts as one place."""
+    return tuple(tuple(texts) for texts in _untold_groups(state, _text_groups(state)).values())
 
 
 def _text_groups(state: ResolveState) -> dict[str, list[str]]:
@@ -1149,10 +1154,11 @@ def direction_readings(state: ResolveState) -> tuple[dict[str, RoleAxis], ...]:
     text of which carries a direction, else those whose stated direction the query's
     wording contradicts. Each takes one axis on which the elected shape declares a role and
     that the part does not ask open (`ResolveState.open_axes`, or an operation's `over`); an
-    open axis counts as named and takes no set. A reading is kept when every such axis then holds a set, a directed one
-    included. Readings run over the sets in query order, origin first. Empty when the shape
-    declares no role, no set is untold, or more than `MAX_DIRECTION_READINGS` readings are
-    kept; the count stops there, so no reading past it is built."""
+    open axis counts as named and takes no set. A reading is kept when every such axis then
+    holds a set, a directed one included. Readings run over the sets in query order, origin
+    first. Empty when the shape declares no role, no set is untold, or more than
+    `MAX_DIRECTION_READINGS` readings are kept; the count stops there, so no reading past
+    it is built."""
     shape = state.shape_draft
     if shape is None or not is_role_bearing(shape):
         return ()

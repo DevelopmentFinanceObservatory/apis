@@ -26,6 +26,7 @@ from search.engine.region.grounding import (
 from search.engine.region.place_roles import (
     direction_readings,
     request_named_groups,
+    untold_direction_groups,
     untold_direction_names,
 )
 from search.engine.region.requirements import refusal_terms, settle_answer, settle_flagged
@@ -416,12 +417,13 @@ async def _role_not_resolved_no_data(state: ResolveState, *, offer: bool = True)
     This covers multiple places without resolvable axes, a solitary place without an axis, or
     wording that contradicts a supplied axis. A `flagged_match` requires a resolved role map,
     which this refusal lacks. The names whose direction it could not tell
-    (`untold_direction_names`) ride as the result's `unresolved_entity_names`, and the
-    readings of their directions (`direction_readings`) as its `role_assignments`, unless
+    (`untold_direction_names`) ride as the result's `unresolved_entity_names`, grouped by
+    place (`untold_direction_groups`) as its `untold_groups`, and the readings of their directions (`direction_readings`) as its `role_assignments`, unless
     `offer` is false: every reading was read and none holds data."""
     return state.no_data(
         "role_not_resolved",
         llm_usage=state.var_usage,
         unresolved_entity_names=untold_direction_names(state),
+        untold_groups=untold_direction_groups(state),
         role_assignments=direction_readings(state) if offer else (),
     )

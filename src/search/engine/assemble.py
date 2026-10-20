@@ -478,6 +478,7 @@ def build_no_data_part(
     alternate_match: Spec | None = None,
     elected_stat_vars: list[GraphRef] | None = None,
     entity_terms: list[str] | None = None,
+    entity_groups: Sequence[Sequence[str]] | None = None,
     role_axis: EntityRoleKey | None = None,
     bound_role_dcids: Mapping[EntityRoleKey, Sequence[str]] | None = None,
     ambiguous_candidates: list[str] | None = None,
@@ -509,7 +510,8 @@ def build_no_data_part(
     code lives on ``NoData.gate``. ``elected_stat_vars`` lets sentence composition name an
     exact series match before a nearest substitute.
 
-    ``entity_terms`` preserves the place wording seen by the engine. ``role_axis`` names an
+    ``entity_terms`` preserves the place wording seen by the engine, and ``entity_groups``
+    groups a ``role_not_resolved`` refusal's terms by the place each names. ``role_axis`` names an
     open origin or destination axis in ``no_observations`` copy. ``bound_role_dcids`` records
     query-bound role values for alternate validation, including when both roles are bound.
     ``ambiguous_candidates`` feeds the wording. ``ambiguous_entities`` carries structured
@@ -603,6 +605,7 @@ def build_no_data_part(
         elected_stat_vars=elected_stat_vars,
         variable_term=variable_text,
         entity_terms=entity_terms,
+        entity_groups=entity_groups,
         role_axis=role_axis,
         bound_role_dcids=bound_role_dcids,
         ambiguous_candidates=ambiguous_candidates,
@@ -644,6 +647,7 @@ def build_no_data_part(
                 reason,
                 variable_term=variable_text,
                 entity_terms=entity_terms,
+                entity_groups=entity_groups,
                 role_axis=role_axis,
                 ambiguous_candidates=ambiguous_candidates,
                 elected_stat_vars=elected_stat_vars,

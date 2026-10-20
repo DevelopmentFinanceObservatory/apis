@@ -193,6 +193,7 @@ def no_data_phrase(
     *,
     variable_term: str | None = None,
     entity_terms: list[str] | None = None,
+    entity_groups: Sequence[Sequence[str]] | None = None,
     role_axis: EntityRoleKey | None = None,
     ambiguous_candidates: list[str] | None = None,
     elected_stat_vars: list[GraphRef] | None = None,
@@ -212,6 +213,9 @@ def no_data_phrase(
     role_incompatible. Entity terms are quoted and joined for
     entity_not_resolved, entity_ambiguous, entity_role_not_admitted, and
     role_not_resolved, which asks who among them is giving and who receiving.
+    ``entity_groups`` holds role_not_resolved's terms grouped by the place each names, and
+    the phrase counts and names places from it, one place named by several texts as one
+    (`_untold_places`); without it each term is a place.
     ``ambiguous_candidates`` adds graph matches to
     entity_ambiguous. For entity_role_not_admitted, ``variable_term`` names
     the indicator whose data is unavailable for the entity.
@@ -293,13 +297,16 @@ def no_data_phrase(
                     )
                 return f"{joined} {verb} more than one entity in the graph. Be more specific."
             if reason == "role_not_resolved":
-                if plural:
+                places = _untold_places(entity_groups or [[t] for t in terms])
+                place_list = _join_labels(places)
+                if len(places) != 1:
                     return (
-                        f"Could not tell who is giving and who is receiving among {joined}. "
+                        f"Could not tell who is giving and who is receiving among {place_list}. "
                         f"{_NAME_A_DIRECTION}"
                     )
                 return (
-                    f"Could not tell whether {joined} is giving or receiving. {_NAME_A_DIRECTION}"
+                    f"Could not tell whether {place_list} is giving or receiving. "
+                    f"{_NAME_A_DIRECTION}"
                 )
             if reason == "entity_role_not_admitted":
                 if variable_term:
@@ -307,6 +314,19 @@ def no_data_phrase(
                 verb = "are" if plural else "is"
                 return f"{joined} {verb} not the kind of entity this query's data is reported for."
     return _NO_DATA_PHRASES.get(reason, _GENERIC_NO_DATA)
+
+
+def _untold_places(groups: Sequence[Sequence[str]]) -> list[str]:
+    """Each untold place quoted once, as a role_not_resolved phrase names it: its first
+    text, then any other texts it was named by in parentheses, `"the union" ("European
+    Union")`. A group left with no text after stripping names no place."""
+    places = []
+    for group in groups:
+        texts = [f'"{t.strip()}"' for t in group if t and t.strip()]
+        if texts:
+            others = f" ({', '.join(texts[1:])})" if len(texts) > 1 else ""
+            places.append(f"{texts[0]}{others}")
+    return places
 
 
 def _source_phrase(
@@ -439,6 +459,7 @@ def no_data_message(
     *,
     variable_term: str | None = None,
     entity_terms: list[str] | None = None,
+    entity_groups: Sequence[Sequence[str]] | None = None,
     role_axis: EntityRoleKey | None = None,
     ambiguous_candidates: list[str] | None = None,
     elected_stat_vars: list[GraphRef] | None = None,
@@ -457,6 +478,7 @@ def no_data_message(
         reason,
         variable_term=variable_term,
         entity_terms=entity_terms,
+        entity_groups=entity_groups,
         role_axis=role_axis,
         ambiguous_candidates=ambiguous_candidates,
         elected_stat_vars=elected_stat_vars,
@@ -678,6 +700,7 @@ def no_data_sentence_plan(
     elected_stat_vars: list[GraphRef] | None = None,
     variable_term: str | None = None,
     entity_terms: list[str] | None = None,
+    entity_groups: Sequence[Sequence[str]] | None = None,
     role_axis: EntityRoleKey | None = None,
     bound_role_dcids: Mapping[EntityRoleKey, Sequence[str]] | None = None,
     ambiguous_candidates: list[str] | None = None,
@@ -747,6 +770,7 @@ def no_data_sentence_plan(
         elected_stat_vars=elected_stat_vars,
         variable_term=variable_term,
         entity_terms=entity_terms,
+        entity_groups=entity_groups,
         role_axis=role_axis,
         bound_role_dcids=bound_role_dcids,
         ambiguous_candidates=ambiguous_candidates,
@@ -773,6 +797,7 @@ def _no_data_verdict_plan(
     elected_stat_vars: list[GraphRef] | None,
     variable_term: str | None,
     entity_terms: list[str] | None,
+    entity_groups: Sequence[Sequence[str]] | None,
     role_axis: EntityRoleKey | None,
     bound_role_dcids: Mapping[EntityRoleKey, Sequence[str]] | None,
     ambiguous_candidates: list[str] | None,
@@ -799,6 +824,7 @@ def _no_data_verdict_plan(
             reason,
             variable_term=variable_term,
             entity_terms=entity_terms,
+            entity_groups=entity_groups,
             role_axis=role_axis,
             elected_stat_vars=elected_stat_vars,
         )
@@ -815,6 +841,7 @@ def _no_data_verdict_plan(
                     reason,
                     variable_term=variable_term,
                     entity_terms=entity_terms,
+                    entity_groups=entity_groups,
                     role_axis=role_axis,
                     qualifier_terms=qualifier_terms,
                     scope=scope,
@@ -830,7 +857,11 @@ def _no_data_verdict_plan(
         )
     elif flagged_match is not None:
         phrase = no_data_phrase(
-            reason, variable_term=variable_term, entity_terms=entity_terms, role_axis=role_axis
+            reason,
+            variable_term=variable_term,
+            entity_terms=entity_terms,
+            entity_groups=entity_groups,
+            role_axis=role_axis,
         )
         plan = _checked_match_plan(
             phrase,
@@ -841,7 +872,11 @@ def _no_data_verdict_plan(
         )
     elif nearest_real:
         phrase = no_data_phrase(
-            reason, variable_term=variable_term, entity_terms=entity_terms, role_axis=role_axis
+            reason,
+            variable_term=variable_term,
+            entity_terms=entity_terms,
+            entity_groups=entity_groups,
+            role_axis=role_axis,
         )
         # Siblings keep the how properties that set them apart, as their own plans do.
         lead = _near_match_lead_plan(
@@ -865,6 +900,7 @@ def _no_data_verdict_plan(
                 reason,
                 variable_term=variable_term,
                 entity_terms=entity_terms,
+                entity_groups=entity_groups,
                 role_axis=role_axis,
                 ambiguous_candidates=ambiguous_candidates,
                 elected_stat_vars=elected_stat_vars,

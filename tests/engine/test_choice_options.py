@@ -8,8 +8,6 @@ elect their one shape through a scripted bind."""
 
 from __future__ import annotations
 
-import re
-
 import pytest
 from fastapi.testclient import TestClient
 
@@ -301,32 +299,45 @@ def test_a_role_option_states_a_direction_for_every_untold_name():
 
 
 @pytest.mark.parametrize(
-    ("entities", "names"),
+    ("entities", "names", "untold"),
     [
         pytest.param(
             [{"text": "KE", "dcid": "country/KEN"}, {"text": "Norway"}],
             ["KE", "Norway"],
+            'Could not tell who is giving and who is receiving among "KE" and "Norway"',
             id="pinned-only-text",
         ),
         pytest.param(
             [{"text": "Kenya"}, {"text": "Norway"}, {"text": "KEN", "dcid": "country/KEN"}],
             ["Kenya", "Norway", "KEN"],
+            'Could not tell who is giving and who is receiving among "Kenya" ("KEN") and "Norway"',
             id="two-texts-of-one-set-apart",
+        ),
+        pytest.param(
+            [
+                {"text": "KE", "dcid": "country/KEN"},
+                {"text": "Kenya"},
+                {"text": "Norway", "role_text": "from"},
+            ],
+            ["KE", "Kenya"],
+            'Could not tell whether "KE" ("Kenya") is giving or receiving',
+            id="one-set-named-twice",
         ),
     ],
 )
-def test_a_role_refusal_names_every_untold_text_in_query_order(entities, names):
-    """The options' mentions, the refusal's entity terms and its message name the same
-    request texts in query order, a pin's key included in place of its node's label."""
+def test_a_role_refusal_names_every_untold_text_in_query_order(entities, names, untold):
+    """The options' mentions and the refusal's entity terms name the same request texts in
+    query order, a pin's key included in place of its node's label. The message counts
+    places, naming one place set's several texts as one place."""
     client = _flow_client()
 
     no_data = _no_data(client, {"variable_text": "aid", "entities": entities})
 
     assert no_data["reason"] == "role_not_resolved"
-    assert [o["mentions"] for o in no_data["options"]] == [names] * 2
+    assert no_data["options"]
+    assert [o["mentions"] for o in no_data["options"]] == [names] * len(no_data["options"])
     assert no_data["entity_terms"] == names
-    untold, _ = no_data["message"].split(". ", 1)
-    assert re.findall(r'"([^"]+)"', untold) == names
+    assert no_data["message"].split(". ", 1)[0] == untold
 
 
 def test_a_reading_its_own_wording_contradicts_is_not_offered():

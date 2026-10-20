@@ -155,6 +155,10 @@ class RegionResult:
     # direction the query does not tell (`place_roles.untold_direction_names`). Empty
     # otherwise.
     unresolved_entity_names: tuple[str, ...] = ()
+    # The same `role_not_resolved` names grouped by the place each names, one tuple per
+    # untold place set in query order (`place_roles.untold_direction_groups`), so the
+    # refusal's sentence counts places. Empty for every other outcome.
+    untold_groups: tuple[tuple[str, ...], ...] = ()
     # Query qualifiers without a final binding, including terms absent from the
     # index vocabulary. Populated only for `qualifier_not_bound`. Full records
     # live on `flagged_match.resolved.trace.query_qualifiers`.
