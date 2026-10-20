@@ -28,6 +28,9 @@ Each tick:
    and publishes nothing. Prunes while still holding the lease, then releases it. A failed
    prune or lease release, or a failed write of the built inputs after the pointer moved, is
    logged and leaves the outcome alone.
+8. After a publish, starts an execution of the search catalogue job `SEARCH_CATALOGUE_JOB_NAME`
+   names, when it is set, through the Cloud Run Admin API. A failed start logs
+   `graph_release_catalogue_trigger_failed` and leaves the outcome alone.
 
 Every outcome the tick classifies exits 0, a gate finding and an unavailable dependency
 included, since their log lines raise the alerts. Only an exception the tick does not classify,
@@ -224,6 +227,11 @@ class JobSettings(AliasOnlySettings):
     shadow: bool = Field(default=False, alias="GRAPH_RELEASE_SHADOW")
     coverage_uri: str = Field(default="", alias="COVERAGE_ARTIFACT_URI")
     origin_uri: str = Field(default="", alias="ORIGIN_CATALOGUE_URI")
+    search_catalogue_job: str = Field(
+        default="",
+        pattern=r"^(projects/[^/]+/locations/[^/]+/jobs/[^/]+)?$",
+        alias="SEARCH_CATALOGUE_JOB_NAME",
+    )
 
     @model_validator(mode="after")
     def _shadow_needs_comparators(self) -> Self:
@@ -258,12 +266,14 @@ class Database(Protocol):
     def snapshot(self, **kwargs: Any) -> AbstractContextManager[Snapshot]: ...
 
 
-class ServingRevisions(Protocol):
+class AdminApi(Protocol):
     """`CloudRunAdmin`."""
 
     def serving(self) -> ServingRevision: ...
 
     def created_at(self, revision: str) -> datetime: ...
+
+    def run_job(self, job: str) -> str: ...
 
 
 class Mixer(Protocol):
@@ -333,15 +343,16 @@ def run(
     settings: JobSettings,
     *,
     database: Database,
-    admin: ServingRevisions,
+    admin: AdminApi,
     graph: Mixer,
     sdmx: SeriesReader,
     declarations: Declarations = DECLARATIONS,
     clock: Callable[[], float] = time.time,
 ) -> None:
     """One tick. Every outcome it classifies, a gate finding and an unavailable dependency
-    included, returns, so the process exits 0; their log lines raise the alerts. Logs
-    `graph_release_heartbeat` last, with outcome `error` and the exception type before
+    included, returns, so the process exits 0; their log lines raise the alerts. A tick that
+    published starts the search catalogue job when `settings.search_catalogue_job` names one.
+    Logs `graph_release_heartbeat` last, with outcome `error` and the exception type before
     re-raising anything the tick does not classify, which fails the execution."""
     try:
         result = _run(
@@ -353,6 +364,8 @@ def run(
             declarations=declarations,
             clock=clock,
         )
+        if result.outcome == "published" and settings.search_catalogue_job:
+            _start_search_catalogue(settings.search_catalogue_job, admin)
     except Exception as exc:
         emit("graph_release_heartbeat", severity="ERROR", outcome="error", error=type(exc).__name__)
         raise
@@ -363,7 +376,7 @@ def _run(
     settings: JobSettings,
     *,
     database: Database,
-    admin: ServingRevisions,
+    admin: AdminApi,
     graph: Mixer,
     sdmx: SeriesReader,
     declarations: Declarations,
@@ -408,7 +421,7 @@ def _tick(
     key: ImportKey,
     *,
     database: Database,
-    admin: ServingRevisions,
+    admin: AdminApi,
     graph: Mixer,
     sdmx: SeriesReader,
     declarations: Declarations,
@@ -511,6 +524,24 @@ def _tick(
     return result
 
 
+def _start_search_catalogue(job_name: str, admin: AdminApi) -> None:
+    """Starts an execution of the search catalogue job `job_name`, which keys its build on the
+    release the pointer names. A failed start logs `graph_release_catalogue_trigger_failed` and
+    leaves the tick's outcome alone, since the release is published; the next publish or deploy
+    starts the job again."""
+    try:
+        operation = admin.run_job(job_name)
+    except ServingRevisionError as exc:
+        emit(
+            "graph_release_catalogue_trigger_failed",
+            severity="WARNING",
+            job=job_name,
+            detail=str(exc),
+        )
+        return
+    emit("graph_release_catalogue_started", job=job_name, operation=operation)
+
+
 def _repeat_unavailable(recorded: Mapping[str, Any]) -> None:
     """Logs the recorded `graph_release_unavailable` line again with `backoff`, so the unavailable
     alert sees the outage for as long as it lasts, the retry build included."""
@@ -572,7 +603,7 @@ def _build(
     pointer: Pointer | None,
     generation: str | None,
     database: Database,
-    admin: ServingRevisions,
+    admin: AdminApi,
     graph: Mixer,
     sdmx: SeriesReader,
     declarations: Declarations,
@@ -610,7 +641,7 @@ def _build_phases(
     pointer: Pointer | None,
     generation: str | None,
     database: Database,
-    admin: ServingRevisions,
+    admin: AdminApi,
     graph: Mixer,
     sdmx: SeriesReader,
     declarations: Declarations,
@@ -718,7 +749,7 @@ def _build_phases(
 
 
 def _serving_moved(
-    admin: ServingRevisions, inputs: BuildInputs, *, pending: _Unavailable | None = None
+    admin: AdminApi, inputs: BuildInputs, *, pending: _Unavailable | None = None
 ) -> _Exit | None:
     """Re-reads the serving revision and discards the build, logging
     `graph_release_discarded`, when it no longer equals the inputs'. With an unavailable
@@ -1027,11 +1058,11 @@ __all__ = [
     "STATE_FILE",
     "STATE_WRITE_ATTEMPTS",
     "UNAVAILABLE_BACKOFF_SECONDS",
+    "AdminApi",
     "BuildInputs",
     "Database",
     "JobSettings",
     "Mixer",
-    "ServingRevisions",
     "StateConflict",
     "builder_code_hash",
     "clear_failed",

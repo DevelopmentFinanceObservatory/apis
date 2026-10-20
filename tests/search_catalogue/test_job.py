@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 import pytest
 
 from artifact_publication.jobs import acquire_lease
+from graph_release.context import current_release
 from search.catalogue import job
 from search.catalogue.artifact import (
     FORMAT_ROOT,
@@ -39,6 +40,7 @@ from series_coverage.shared import (
     CoverageService,
     CoverageSnapshot,
 )
+from tests.graph_release.support import build_packaged_index_release, build_view_release
 from tests.origin_catalogue.support import CENSUS_POVERTY, CRS_VARIABLE, GDP, POPULATION
 from tests.search_catalogue.support import (
     Elected,
@@ -569,13 +571,18 @@ def test_nothing_to_build_answers_a_refused_key_from_the_pointers_alone(setup, c
     assert not nothing_to_build(setup.settings, inputs=inputs, clock=lambda: late)
 
 
-def _main_with(monkeypatch, setup, *, coverage) -> int:
+def _main_with(monkeypatch, setup, *, coverage, release_coverage: bool = False) -> int:
     """Runs `main` against `setup`'s settings and examples, with `coverage` as
-    the process-wide coverage service and no origin catalogue to load."""
+    the process-wide coverage service, `GRAPH_RELEASE_COVERAGE` on when
+    `release_coverage`, and no origin catalogue to load."""
 
     def unloadable(_settings):
         raise AssertionError("the origin catalogue was loaded")
 
+    if release_coverage:
+        monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1")
+    else:
+        monkeypatch.delenv("GRAPH_RELEASE_COVERAGE", raising=False)
     monkeypatch.setattr(job, "JobSettings", lambda: setup.settings)
     monkeypatch.setattr(job, "build_commit", lambda: "c1")
     monkeypatch.setattr(job, "load_examples", lambda: load_examples(EXAMPLES))
@@ -596,6 +603,33 @@ def test_a_run_while_a_fallback_build_is_served_settles_as_nothing_to_build(
 
     assert _main_with(monkeypatch, setup, coverage=lambda: setup.coverage) == 0
     assert "search_catalogue_job_noop" in [event["event"] for event in _events(capsys)]
+
+
+def test_with_the_flag_on_the_key_names_the_release_the_pointer_names(
+    setup, monkeypatch, capsys, tmp_path
+):
+    root = (tmp_path / "releases").as_uri()
+    pointed = build_packaged_index_release(root).release_id
+    assert pointed != current_release().release_id
+    monkeypatch.setenv("GRAPH_RELEASE_URI", root)
+    loaded = setup.coverage.snapshot()
+    keyed = replace(loaded, manifest=replace(loaded.manifest, build_id=pointed))
+    _run(setup, _engine(), coverage=_MovingCoverage([keyed]))
+    capsys.readouterr()
+
+    def unopened():
+        raise AssertionError("the release was opened")
+
+    # An unchanged run reads the release pointer alone.
+    monkeypatch.setattr(job, "optional_release_service", unopened)
+    served = job.get_coverage_service
+    assert _main_with(monkeypatch, setup, coverage=served, release_coverage=True) == 0
+    assert "search_catalogue_job_noop" in [event["event"] for event in _events(capsys)]
+
+    # A new release changes the key, so the run goes on to load the origin catalogue.
+    build_view_release(root)
+    with pytest.raises(AssertionError, match="origin catalogue was loaded"):
+        _main_with(monkeypatch, setup, coverage=served, release_coverage=True)
 
 
 @pytest.mark.parametrize(

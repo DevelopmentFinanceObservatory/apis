@@ -60,6 +60,8 @@ from tests.graph_release.recorded import (
 )
 
 _SERVICE = "projects/p/locations/r/services/dc"
+_CATALOGUE_JOB = "projects/p/locations/r/jobs/search-catalogue"
+_OPERATION = "projects/p/locations/r/operations/op-1"
 _COMPLETED = datetime(2026, 10, 19, 6, 0, tzinfo=UTC)
 _NOW = _COMPLETED + timedelta(minutes=10)
 _INGESTED = ("imp-a", "imp-b")
@@ -115,15 +117,22 @@ class FakeDatabase:
 
 class FakeAdminApi:
     """The Admin API: serves `revisions` in turn (the last repeats), each created at
-    `created`."""
+    `created`, and records each job run in `runs`, answering it with `run_status`."""
 
     def __init__(self) -> None:
         self.revisions = ["dc-00001"]
         self.created = _COMPLETED + timedelta(minutes=5)
         self.status = 200
         self.requests: list[str] = []
+        self.run_status = 200
+        self.runs: list[str] = []
 
     def handle(self, request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            self.runs.append(request.url.path.removeprefix("/v2/"))
+            if self.run_status != 200:
+                return httpx.Response(self.run_status, text="denied")
+            return httpx.Response(200, json={"name": _OPERATION})
         path = request.url.path.removeprefix(f"/v2/{_SERVICE}")
         self.requests.append(path)
         if self.status != 200:
@@ -241,6 +250,7 @@ class Builder:
     behind: frozenset[Dependency] = frozenset()
     coverage_build_id: str = "coverage-1"
     comparator_error: GateUnavailable | None = None
+    catalogue_job: str = ""
 
     def comparators(self) -> tuple[ComparatorBuild, ...] | GateUnavailable:
         """The comparators' published builds: those in `behind` hold an earlier import."""
@@ -268,6 +278,7 @@ class Builder:
             shadow=self.shadow,
             coverage_uri="file:///coverage" if self.shadow else "",
             origin_uri="file:///origin" if self.shadow else "",
+            search_catalogue_job=self.catalogue_job,
         )
 
     def run(self) -> None:
@@ -362,6 +373,7 @@ def test_a_tick_publishes_the_release_and_the_next_exits_at_step_three(builder):
     assert last_built["inputs"]["import_execution_id"] == "wf-1"
     assert last_built["release_id"] == pointer.release_id
     assert builder.lease_free()
+    assert builder.admin.runs == []
 
     events = builder.tick()
 
@@ -386,6 +398,35 @@ def test_a_build_of_the_serving_release_records_its_inputs_and_publishes_nothing
     assert read_uri_bytes_and_generation(pointer_uri(builder.root)) == before
     assert builder.state()["last_built"]["inputs"]["builder_code_hash"] == "another-builder"
     assert _outcome(builder.tick()) == "inputs_built"
+
+
+def test_only_a_publish_starts_the_search_catalogue_job(builder, monkeypatch):
+    builder.catalogue_job = _CATALOGUE_JOB
+
+    events = builder.tick()
+
+    assert _outcome(events) == "published"
+    (started,) = _named(events, "graph_release_catalogue_started")
+    assert (started["job"], started["operation"]) == (_CATALOGUE_JOB, _OPERATION)
+    assert builder.admin.runs == [f"{_CATALOGUE_JOB}:run"]
+
+    assert _outcome(builder.tick()) == "inputs_built"
+    monkeypatch.setattr(job, "builder_code_hash", lambda: "another-builder")
+    assert _outcome(builder.tick()) == "release_unchanged"
+    assert builder.admin.runs == [f"{_CATALOGUE_JOB}:run"]
+
+
+def test_a_failed_catalogue_start_is_logged_and_the_tick_still_publishes(builder):
+    builder.catalogue_job = _CATALOGUE_JOB
+    builder.admin.run_status = 403
+
+    events = builder.tick()
+
+    assert _outcome(events) == "published"
+    (failed,) = _named(events, "graph_release_catalogue_trigger_failed")
+    assert (failed["severity"], failed["job"]) == ("WARNING", _CATALOGUE_JOB)
+    assert _named(events, "graph_release_catalogue_started") == []
+    assert read_pointer(builder.root) is not None
 
 
 @pytest.mark.parametrize(
@@ -1070,6 +1111,7 @@ def test_a_shadow_wait_past_its_limit_is_unavailable_and_stale_resumes(builder):
     [
         pytest.param({"datacommons_service": "dfo-dev-dc-datacommons-service"}, id="bare_service"),
         pytest.param({"shadow": True, "coverage_uri": ""}, id="shadow_without_coverage"),
+        pytest.param({"search_catalogue_job": "search-catalogue"}, id="bare_catalogue_job"),
     ],
 )
 def test_settings_refuse_what_the_tick_cannot_use(builder, change):

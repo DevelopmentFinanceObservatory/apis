@@ -37,6 +37,13 @@ Every run prunes builds nothing can still be reading. Every run that exits
 0 logs `search_catalogue_job_heartbeat` last, naming the published build
 and its age.
 
+With `GRAPH_RELEASE_COVERAGE` on, the served graph release takes the
+coverage index's place, and `GRAPH_RELEASE_URI` is required. Step 1 keys on
+the release id the release pointer names, and from step 2 to the end the run
+binds the served release and reads its coverage view. The release id fills
+the build inputs' `coverage_build_id`. The bound release never moves, so
+step 7 publishes a build of the release the run bound.
+
 Environment: `SEARCH_CATALOGUE_URI` (`gs://` or `file://`),
 `ORIGIN_CATALOGUE_URI` and `COVERAGE_ARTIFACT_URI` are required, with the
 engine's own settings (`GEMINI_API_KEY`, `SEARCH_GRAPH_BASE`, ...).
@@ -71,7 +78,13 @@ from artifact_publication.uri import ArtifactUriError
 from code_index.shared import get_index
 from dc_graph import GraphReadError
 from dfo_platform.build import build_commit
-from graph_release.context import bound_served_release, optional_release_service
+from graph_release.context import (
+    URI_ENV_VAR,
+    bound_served_release,
+    coverage_views_enabled,
+    optional_release_service,
+    release_uri,
+)
 from origin_catalogue import bound_catalogue
 from origin_catalogue.artifact import CatalogueArtifactError as OriginArtifactError
 from origin_catalogue.artifact import load_catalogue
@@ -494,17 +507,38 @@ def _pointer_inputs(
     """The build inputs the origin pointer and the served coverage build name,
     or `None` when the origin pointer is missing or malformed. The service
     serves a fallback build while `current.json` names one its index rejects,
-    so the served build keys the run. The loaded catalogue decides the key a
+    so the served build keys the run. With `GRAPH_RELEASE_COVERAGE` on, the
+    graph release's pointer names the coverage build, and `None` comes back
+    when no release is published. The loaded catalogue decides the key a
     build carries; these only let an unchanged run skip loading it."""
     origin = read_origin_pointer(settings.origin_catalogue_uri)
     if origin is None:
         return None
+    served = _pointed_release_id() if coverage_views_enabled() else coverage.manifest.build_id
+    if served is None:
+        return None
     return BuildInputs(
         origin_catalogue_build_id=origin.build_id,
-        coverage_build_id=coverage.manifest.build_id,
+        coverage_build_id=served,
         build_commit=commit,
         examples_digest=examples.digest,
     )
+
+
+def _pointed_release_id() -> str | None:
+    """The release id the pointer under `GRAPH_RELEASE_URI` names, or `None`
+    when no release is published. Reads the pointer alone, so an unchanged run
+    opens no release. Raises `ReleaseUriMissingError` when the variable is
+    unset or blank."""
+    # Both modules import NumPy and pyarrow, which only this path needs.
+    from graph_release.format import read_pointer as read_release_pointer
+    from graph_release.service import ReleaseUriMissingError
+
+    uri = release_uri()
+    if uri is None:
+        raise ReleaseUriMissingError(f"{URI_ENV_VAR} is not set")
+    pointer = read_release_pointer(uri)
+    return None if pointer is None else pointer.release_id
 
 
 def _load_origin_catalogue(settings: JobSettings) -> CatalogueSnapshot:

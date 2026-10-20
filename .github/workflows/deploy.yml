@@ -66,9 +66,10 @@ name: Deploy
 # deploy when it is missing.
 # The coverage and origin catalogue jobs are pointed at the new image on
 # every deploy but built only when no compatible artifact is published for
-# the image's format (see their steps below). The search catalogue and graph
-# release jobs are pointed at the new image and left to their Schedulers (see
-# their steps). A
+# the image's format (see their steps below). The graph release job is
+# pointed at the new image and left to its Scheduler. The search catalogue
+# job is pointed at the new image and, once the apis service has moved, one
+# execution of it is started without waiting for it (see their steps). A
 # failed step stops the job before any step after it runs, so a failed
 # migration or artifact build leaves both services on their current image.
 
@@ -457,13 +458,10 @@ jobs:
       # The search catalogue job (`python -m search.catalogue.job`) builds the
       # example sentences GET /api/search/catalogue serves. It moves onto the
       # new image here, after the coverage and origin catalogue steps, because
-      # it reads both artifacts in the new image's formats. The deploy does
-      # not execute it. The apis service starts without a catalogue, and only
-      # that route answers 503 until one loads. Its Cloud Scheduler tick runs
-      # every 15 minutes, and the build key includes the image's commit, so
-      # the first tick after a deploy rebuilds on the new image in about 90
-      # seconds. Executing it here would add that build, its Gemini calls, and
-      # a dependency on Gemini and the graph being up to every release.
+      # it reads both artifacts in the new image's formats. The apis service
+      # starts without a catalogue, and only that route answers 503 until one
+      # loads. The build key includes the image's commit, so every deploy
+      # needs a new build; the step after the apis service moves starts it.
       - name: Point the search catalogue job at the new image
         if: steps.decide.outputs.deploy == 'true'
         run: |
@@ -510,6 +508,21 @@ jobs:
             --region="${{ vars.REGION }}" \
             --project="${{ vars.PROJECT_ID }}" \
             --quiet
+
+      # The search catalogue build key includes the image's commit, so this
+      # starts one execution of the job on the new image, which builds in
+      # about 90 seconds. `--async` returns once the execution is created:
+      # the build's Gemini calls and graph reads stay out of the deploy, and
+      # a failed build raises the job's own alerts while the last published
+      # catalogue keeps serving.
+      - name: Start a search catalogue build on the new image
+        if: steps.decide.outputs.deploy == 'true'
+        run: |
+          set -euo pipefail
+          gcloud run jobs execute "${{ vars.JOB_SEARCH_CATALOGUE }}" \
+            --region="${{ vars.REGION }}" \
+            --project="${{ vars.PROJECT_ID }}" \
+            --async
 
       # Until the apis service moved, the previous image could still write a
       # pin reference holding the raw shared secret, the shape migration 0026

@@ -25,7 +25,7 @@ A country's examples are the passing lines whose StatVar has data there. A count
 
 ## Build key and skip
 
-A build's key hashes the format version, the origin catalogue build id, the coverage index build id, `DFO_BUILD_COMMIT` and a digest of `examples.toml`. The job first computes the key from the build ids the two artifacts' pointers name and exits without loading either artifact when `current.json` already carries it (`search_catalogue_job_noop`). Otherwise it loads both artifacts, recomputes the key from the builds it loaded, and builds. A new origin catalogue build, a new coverage build, a deploy and an edit to `examples.toml` each produce a new key.
+A build's key hashes the format version, the origin catalogue build id, the coverage index build id, `DFO_BUILD_COMMIT` and a digest of `examples.toml`. The job first computes the key from the build ids the two artifacts' pointers name and exits without loading either artifact when `current.json` already carries it (`search_catalogue_job_noop`). Otherwise it loads both artifacts, recomputes the key from the builds it loaded, and builds. A new origin catalogue build, a new coverage build, a deploy and an edit to `examples.toml` each produce a new key. With `GRAPH_RELEASE_COVERAGE` on, the graph release id under `GRAPH_RELEASE_URI` takes the coverage build id's place in the key, read from the release pointer, and the job binds the served release for the whole build. The graph release builder starts the job after each publish, and the deploy workflow starts it once after the apis service moves (see [deploy/graph-release.md](graph-release.md)).
 
 A refused key stays refused for six hours (`search.catalogue.job.REFUSAL_RETRY_SECONDS`). A run whose key matches `refused.json` inside that window makes no engine calls and logs `search_catalogue_job_still_refused`, so a refused key costs about 16 engine calls once every six hours. A new key builds at once, and the first run after the window builds again, since an engine or graph outage can refuse a build whose inputs would pass.
 
@@ -59,7 +59,7 @@ The job exits 1 on a refused build (`search_catalogue_job_refused`) and on a fai
 
 - `SEARCH_CATALOGUE_URI`: required, `gs://` or `file://`.
 - `ORIGIN_CATALOGUE_URI`: required, the origin catalogue the job counts from and binds for its engine calls. The job loads it under the serving surfaces' `ORIGIN_CATALOGUE_*` settings.
-- `COVERAGE_ARTIFACT_URI`: required, the coverage index the job counts from and the engine reads.
+- `COVERAGE_ARTIFACT_URI`: required, the coverage index the job counts from and the engine reads. With `GRAPH_RELEASE_COVERAGE` on, the job also needs `GRAPH_RELEASE_URI` and reads the bound release's coverage view; it still refuses to start without `COVERAGE_ARTIFACT_URI`, which it then does not read.
 - `SEARCH_CATALOGUE_MAX_CONCURRENCY`: optional, default 4, the most engine calls in flight.
 - The engine's own settings, as on the apis service: `GEMINI_API_KEY`, `SEARCH_GRAPH_BASE`, `SEARCH_GRAPH_TOKEN`, `SEARCH_ENGINE_MODEL`, `UN_GRAPH_BASE_URL`.
 
@@ -88,4 +88,4 @@ The search surface starts and serves resolve whether or not a catalogue is avail
 
 ## Deploy order
 
-`deploy-dev.yml` points `dfo-dev-search-catalogue` at the new image after the origin catalogue steps and before the datasets worker and the apis service move, so the scheduled runs (Cloud Scheduler, every 15 minutes) check the examples against the new code. The key carries `DFO_BUILD_COMMIT`, so the first scheduled run after a deploy rebuilds. The deploy does not wait for a build, since the apis service starts without one. `infra` creates the job, its bucket, its service account, the scheduler and the `SEARCH_CATALOGUE_URI` variable on the apis service.
+`deploy-dev.yml` points `dfo-dev-search-catalogue` at the new image after the origin catalogue steps and before the datasets worker and the apis service move, so the scheduled runs (Cloud Scheduler, every 15 minutes) check the examples against the new code. The key carries `DFO_BUILD_COMMIT`, so after the apis service moves the deploy starts one execution with `--async`, which rebuilds on the new image. The deploy does not wait for the build, since the apis service starts without one. `infra` creates the job, its bucket, its service account, the scheduler and the `SEARCH_CATALOGUE_URI` variable on the apis service.
