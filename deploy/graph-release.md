@@ -34,6 +34,14 @@ An unavailable dependency (Spanner, the Admin API, the mixer, SDMX, the bucket, 
 
 Any other exception ends the tick with `graph_release_heartbeat` at outcome `error`, naming the exception type, and a traceback, and exits non-zero. It records nothing, so the next tick builds again. That exception, the task timeout and an out-of-memory kill are the only ways a tick fails its Cloud Run execution. Findings and unavailable dependencies raise their alerts through their log lines.
 
+## Deploys
+
+The deploy workflow (`.github/workflows/deploy.yml`) points the job at the new image, then, before the datasets worker moves, runs `python -m graph_release.verify` as an execution of the job with its args overridden. Verify opens the release the pointer names for the image's format through `ReleaseService`, builds the serving views and the origin view whatever `GRAPH_RELEASE_COVERAGE` and `GRAPH_RELEASE_ORIGIN` say, and logs one `graph_release_verify` line. Its outcome and exit status are `opened` (0), `refused` (1, naming the exception), `no_uri` (2) or `no_pointer` (3, no release in this format, as after a `FORMAT` bump).
+
+A failed verify runs one build execution on the new image and then verifies again. A tick exits 0 on a gate finding, an unavailable dependency or a held lease, so the second verify decides. A second failure stops the deploy with both services on their current image. A scheduled tick on the new image can hold the lease when the deploy's build starts, in which case the build does nothing and the deploy fails; run it again once the scheduled build has published.
+
+The step runs only when the datasets worker sets `GRAPH_RELEASE_URI`, since only a service that serves a release fails startup without one. Elsewhere it logs a notice and passes.
+
 ## Hold and rollback
 
 ```bash

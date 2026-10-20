@@ -67,7 +67,9 @@ name: Deploy
 # The coverage and origin catalogue jobs are pointed at the new image on
 # every deploy but built only when no compatible artifact is published for
 # the image's format (see their steps below). The graph release job is
-# pointed at the new image and left to its Scheduler. The search catalogue
+# pointed at the new image and left to its Scheduler; when the datasets
+# worker serves a release, the deploy first checks that the new image opens
+# the published one and builds one when it does not (see its step). The search catalogue
 # job is pointed at the new image and, once the apis service has moved, one
 # execution of it is started without waiting for it (see their steps). A
 # failed step stops the job before any step after it runs, so a failed
@@ -444,7 +446,7 @@ jobs:
 
       # The graph release job moves onto the new image on every deploy so its
       # scheduled ticks (Cloud Scheduler, every 2 minutes) build with the new
-      # code. The deploy does not execute it. deploy/graph-release.md covers the job.
+      # code. deploy/graph-release.md covers the job.
       - name: Point the graph release job at the new image
         if: steps.decide.outputs.deploy == 'true'
         run: |
@@ -454,6 +456,51 @@ jobs:
             --region="${{ vars.REGION }}" \
             --project="${{ vars.PROJECT_ID }}" \
             --quiet
+
+      # `python -m graph_release.verify` opens the release GRAPH_RELEASE_URI's
+      # pointer names for the new image's format through
+      # `graph_release.service.ReleaseService`, building the serving views and
+      # the origin view, and exits non-zero unless they build. It runs as an
+      # execution of the graph release job with its args overridden, so it reads
+      # the job's GRAPH_RELEASE_URI.
+      #
+      # The step runs only when the datasets worker sets GRAPH_RELEASE_URI,
+      # since only a service that serves a release fails startup without one;
+      # elsewhere it logs a notice and passes. Verify runs first. A format bump
+      # has no pointer in the new format, and a release the new view code
+      # refuses fails too, so the build job (`python -m graph_release.job`)
+      # runs once on the new image and a second verify checks what it
+      # published. A tick exits 0 on a gate finding, an unavailable dependency
+      # or a scheduled tick holding the lease, so the second verify decides. A
+      # build failure, or a second verify failure, fails the step and stops the
+      # deploy with both services on their current image.
+      - name: Ensure a compatible graph release is published
+        if: steps.decide.outputs.deploy == 'true'
+        run: |
+          set -euo pipefail
+          serving=$(gcloud run services describe "${{ vars.SERVICE_WORKER }}" \
+            --region="${{ vars.REGION }}" \
+            --project="${{ vars.PROJECT_ID }}" \
+            --format=json \
+            | jq -r '[.spec.template.spec.containers[].env[]? | select(.name == "GRAPH_RELEASE_URI" and (.value // "") != "")] | length')
+          if [ "$serving" -eq 0 ]; then
+            echo "::notice::${{ vars.SERVICE_WORKER }} sets no GRAPH_RELEASE_URI; no graph release to verify."
+            exit 0
+          fi
+          verify() {
+            gcloud run jobs execute "${{ vars.JOB_GRAPH_RELEASE }}" \
+              --region="${{ vars.REGION }}" \
+              --project="${{ vars.PROJECT_ID }}" \
+              --wait \
+              --args=-m,graph_release.verify
+          }
+          if ! verify; then
+            gcloud run jobs execute "${{ vars.JOB_GRAPH_RELEASE }}" \
+              --region="${{ vars.REGION }}" \
+              --project="${{ vars.PROJECT_ID }}" \
+              --wait
+            verify
+          fi
 
       # The search catalogue job (`python -m search.catalogue.job`) builds the
       # example sentences GET /api/search/catalogue serves. It moves onto the
