@@ -93,10 +93,11 @@ class ReleaseOrigin:
         A walk over `reader` finds the members a graph walk finds only when no base Data Commons
         variable the catalogue does not list shares the five-tuple, and no DFO
         StatisticalVariable without observations, which the release leaves out and the mixer
-        serves, belongs to the family. Serving checks neither. `scripts/graph_release_parity.py
-        origin` counts both (`blind_spots`), and fails on any the mixer finds in a family the
-        release holds: on dev, 0 unlisted base variables, and 1 unobserved DFO variable, in no
-        family the release holds."""
+        serves, belongs to the family. Serving checks neither. The builder's gate
+        (`graph_release.gate.check_blind_spots`) fails a release with such a DFO variable in a
+        family it holds. It does not read the catalogue, so it publishes a release whose
+        five-tuple a variable outside it shares with a notice. `scripts/graph_release_parity.py
+        origin` counts both with the same functions."""
         held = False
         for role_bearing in (False, True):
             key = FamilyKey(

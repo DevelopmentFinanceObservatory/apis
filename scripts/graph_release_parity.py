@@ -76,7 +76,7 @@ import json
 import os
 import sys
 import tempfile
-from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
 from dataclasses import asdict, dataclass, field, is_dataclass
@@ -85,7 +85,6 @@ from pathlib import Path
 from typing import Final, cast
 
 import pyarrow as pa
-import pyarrow.compute as pc
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO_ROOT))
@@ -98,6 +97,7 @@ from graph_release.context import bound_release  # noqa: E402
 from graph_release.coverage import coverage_rows, role_map  # noqa: E402
 from graph_release.declarations import DECLARATIONS  # noqa: E402
 from graph_release.format import LoadedRelease, Manifest, open_release  # noqa: E402
+from graph_release.gate import unlisted_candidates, unobserved_variables  # noqa: E402
 from graph_release.job import builder_code_hash  # noqa: E402
 from graph_release.origin import ReleaseOrigin, release_origin  # noqa: E402
 from graph_release.service import Release  # noqa: E402
@@ -112,7 +112,6 @@ from graph_release.views import (  # noqa: E402
     release_code_indexes,
     release_coverage_index,
 )
-from origin_catalogue.arc_reads import DFO_VARIABLE_TYPE  # noqa: E402
 from origin_catalogue.catalogue import CatalogueSnapshot  # noqa: E402
 from origin_catalogue.context import bound_catalogue  # noqa: E402
 from origin_catalogue.families import FamilySummary  # noqa: E402
@@ -142,8 +141,6 @@ from statvar_members import (  # noqa: E402
     NotAStatisticalVariable,
     SlotBinding,
     enumerate_members,
-    five_tuple_arcs_match,
-    five_tuple_reverse_filters,
 )
 
 _ROW_KEYS: Final[Mapping[str, tuple[str, ...]]] = {**INDEX_BLOCK_KEYS, "parties": ("dcid",)}
@@ -158,13 +155,6 @@ _DEFAULT_EXAMPLES: Final[int] = 10
 ORIGIN_FLAG: Final[str] = "GRAPH_RELEASE_ORIGIN"
 COVERAGE_FLAG: Final[str] = "GRAPH_RELEASE_COVERAGE"
 _ORIGIN_PARTS: Final[frozenset[str]] = frozenset({"series", "edges", "nodes"})
-_FIVE_TUPLE_ARCS: Final[tuple[str, ...]] = (
-    "populationType",
-    "measuredProperty",
-    "statType",
-    "measurementQualifier",
-    "measurementDenominator",
-)
 _OBSERVATION_PROPERTIES: Final[str] = "observationProperties"
 _UNBOUND: Final[SlotBinding] = ("unbound",)
 _WALK_REFUSALS: Final = (
@@ -611,75 +601,6 @@ def walk_members(
         "inconsistent_candidates": list(group.inconsistent_candidates),
         "undismissed_candidates": list(group.undismissed_candidates),
         "elected_open_role_keys": sorted(group.elected_open_role_keys),
-    }
-
-
-def unlisted_candidates(
-    graph: MemberArcReader, five_tuple: FiveTuple, *, listed: Collection[str]
-) -> tuple[tuple[str, ...], bool]:
-    """The variables of `five_tuple` that `graph`'s reverse read finds and `listed` does not
-    hold: each subject of the walk's reverse query, up to `DEFAULT_SUBJECT_CEILING`, whose
-    five-tuple arcs match `five_tuple` exactly. Also whether the read stopped at that
-    ceiling, leaving subjects unread."""
-    if five_tuple.measured_property is None:
-        return (), False
-    page = graph.node_subjects(
-        five_tuple.measured_property,
-        property="measuredProperty",
-        filters=five_tuple_reverse_filters(
-            population_type=five_tuple.population_type,
-            stat_type=five_tuple.stat_type,
-            measurement_qualifier=five_tuple.measurement_qualifier,
-            measurement_denominator=five_tuple.measurement_denominator,
-        ),
-        max_results=DEFAULT_SUBJECT_CEILING,
-    )
-    others = [dcid for dcid in page.dcids if dcid not in listed]
-    if not others:
-        return (), page.truncated
-    arcs = graph.node_arcs_many(others, properties=_FIVE_TUPLE_ARCS)
-    return tuple(
-        dcid
-        for dcid in others
-        if (found := arcs.get(dcid)) is not None
-        and five_tuple_arcs_match(found, **asdict(five_tuple))
-    ), page.truncated
-
-
-def unobserved_variables(*, series: pa.Table, edges: pa.Table) -> dict[str, FiveTuple]:
-    """Each node a release's `edges` type `StatisticalVariable` that its `series` holds no
-    observation of, with the five-tuple its edges give it. The origin view leaves them out, as
-    the catalogue job does, though the mixer serves them to a member walk."""
-    edge_columns = [
-        edges[name].cast(pa.string()) for name in ("subject_id", "predicate", "object_id")
-    ]
-    subjects, predicates, objects = edge_columns
-    typed = pc.and_(
-        pc.equal(predicates, pa.scalar("typeOf")),
-        pc.equal(objects, pa.scalar(DFO_VARIABLE_TYPE)),
-    )
-    declared = pc.unique(subjects.filter(typed))
-    observed = pc.unique(series["variable_measured"].cast(pa.string()))
-    unobserved = declared.filter(pc.invert(pc.is_in(declared, value_set=observed)))
-    rows = pc.and_(
-        pc.is_in(subjects, value_set=unobserved),
-        pc.is_in(predicates, value_set=pa.array(_FIVE_TUPLE_ARCS)),
-    )
-    arcs: dict[str, dict[str, str]] = {str(dcid): {} for dcid in unobserved.to_pylist()}
-    for subject, predicate, target in zip(
-        *(cast("list[str]", column.filter(rows).to_pylist()) for column in edge_columns),
-        strict=True,
-    ):
-        arcs[subject][predicate] = target
-    return {
-        dcid: FiveTuple(
-            population_type=found.get("populationType"),
-            measured_property=found.get("measuredProperty"),
-            stat_type=found.get("statType"),
-            measurement_qualifier=found.get("measurementQualifier"),
-            measurement_denominator=found.get("measurementDenominator"),
-        )
-        for dcid, found in sorted(arcs.items())
     }
 
 
