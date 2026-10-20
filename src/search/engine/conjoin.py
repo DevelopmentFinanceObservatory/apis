@@ -474,8 +474,9 @@ def _build_part(
 ) -> Part:
     """Build a part from the original region and its answer representative.
 
-    Variable text, restatement, and operations belong to the original region, even when a
-    merged representative supplies its spec. Shared timing appears on the
+    Variable text, restatement, operations, and the declared defaults a definite part
+    assumes belong to the original region, even when a merged representative supplies its
+    spec. Shared timing appears on the
     envelope, so part timing excludes it. Folded parts carry only
     ``binding_folded``. The representative's warnings appear on its first part.
 
@@ -528,6 +529,7 @@ def _build_part(
             entity_words=region.entity_words,
             assumption_echo=region.assumption_echo,
             asked_axes=region.every_member_axes,
+            own_spec=None if representative is region else region.spec,
         )
     if region.status == "candidates":
         return build_candidates_part(

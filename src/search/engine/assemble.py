@@ -399,6 +399,7 @@ def build_definite_part(
     entity_words: Mapping[str, str] | None = NO_ENTITY_WORDS,
     assumption_echo: Sequence[Assumption] | None = None,
     asked_axes: frozenset[RoleAxis] = frozenset(),
+    own_spec: Spec | None = None,
 ) -> DefinitePart:
     """Build a definite part around its answering spec.
 
@@ -413,7 +414,8 @@ def build_definite_part(
     (`render.assumptions.assumptions_for`), None when it echoed none. ``asked_axes`` are
     the flow axes the request's words asked every member of
     (`RegionResult.every_member_axes`); they and the axes ``operations`` run over state no
-    open role.
+    open role. ``own_spec`` is the part's own Spec before a same-shape merge gave it
+    ``spec``, from which its declared defaults are read; None when ``spec`` is its own.
     """
     # A definite spec must carry at least one confirmed StatVar.
     assert spec.resolved.members, "definite Spec has empty stat_vars"
@@ -438,7 +440,11 @@ def build_definite_part(
             entity_words=entity_words,
         ),
         assumptions=assumptions_for(
-            spec, echo=assumption_echo, asked_axes=asked_axes, operations=operations
+            spec,
+            echo=assumption_echo,
+            asked_axes=asked_axes,
+            operations=operations,
+            own_spec=own_spec,
         ),
     )
 
@@ -777,7 +783,8 @@ def build_candidates_part(
     ``request_words`` is false on a door that holds no words of the request (a resubmit).
     ``asked_axes`` are the flow axes the request's words asked every member of
     (`RegionResult.every_member_axes`); they and the axes ``operations`` run over state no
-    open role.
+    open role. ``own_spec`` is the part's own Spec before a same-shape merge gave it
+    ``spec``, from which its declared defaults are read; None when ``spec`` is its own.
     """
     cap = max_candidates if max_candidates is not None else len(specs)
     clamped = list(specs)[:cap]

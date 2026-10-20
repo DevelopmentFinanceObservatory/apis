@@ -4,7 +4,8 @@
 
 - a slot whose trace records `declared_default` provenance, a value its code system's or
   shape's declared default fixed, named by the code's full label in the code index
-  ("official development assistance" for `CRSTypeOfFlow10`, whose short name is "ODA");
+  ("official development assistance" for `CRSTypeOfFlow10`, whose short name is "ODA").
+  A part a same-shape merge serves reads the provenance from its own request's Spec;
 - a flow role no request word asked for, read across every entity on it with data
   ("every provider", "every creditor"): one the engine's role scope default filled
   (`resolved.scope` on that axis), whatever its member count, or one the heading states
@@ -62,9 +63,16 @@ def assumptions_for(
     echo: Sequence[Assumption] | None = None,
     asked_axes: frozenset[RoleAxis] = frozenset(),
     operations: Sequence[Operation] = (),
+    own_spec: Spec | None = None,
 ) -> list[Assumption]:
     """The values `spec` filled that its request did not ask for, in clause order: declared
     defaults in `trace.slot_filters` order, then open roles, then the place scope.
+    ``own_spec`` is the Spec the part's own request resolved to before a same-shape merge
+    gave it `spec`, None when `spec` is its own. A merge ranks the group's slot provenance
+    (`same_shape._merge_slot_filter_properties`), so a slot one member's request left open
+    and another's named reads `text_recognized` on the merged Spec. The declared defaults
+    are read from ``own_spec``: each states the values its slot fixed there that the same
+    slot of `spec` still binds, worded from `spec`.
     ``keep_how_properties`` are the how properties a candidates part keeps visible, under
     which its heading states its roles. ``asked_axes`` are the flow axes the request's words
     asked every member of (`RegionResult.every_member_axes`), and ``operations`` the part's
@@ -81,15 +89,21 @@ def assumptions_for(
     echoed = {_echo_key(item) for item in echo or ()}
     # The posted identity of an echo binds every slot, so none carries declared_default
     # provenance: on an echo a how slot holds its default while it binds the echoed values.
-    defaults = [
-        _declared_default(slot_filter)
-        for slot_filter in spec.resolved.trace.slot_filters
+    fixed = {
+        slot_filter.key.as_ref(): {value.ref for value in slot_filter.refs}
+        for slot_filter in (own_spec or spec).resolved.trace.slot_filters
         if slot_filter.refs
         and (
             slot_filter.key.axis == "how" and _slot_key(slot_filter) in echoed
             if echo is not None
             else slot_filter.provenance == "declared_default"
         )
+    }
+    defaults = [
+        _declared_default(slot_filter, refs=fixed[ref])
+        for slot_filter in spec.resolved.trace.slot_filters
+        if (ref := slot_filter.key.as_ref()) in fixed
+        and fixed[ref] <= {value.ref for value in slot_filter.refs}
     ]
     filled = [*_open_roles(spec, heading, asked_axes, operations), *_place_scope(spec)]
     if echo is not None:
@@ -112,14 +126,17 @@ def _slot_key(slot_filter: ResolvedFilter) -> tuple[str, str, frozenset[str]]:
     )
 
 
-def _declared_default(slot_filter: ResolvedFilter) -> Assumption:
-    """The `declared_default` assumption of a slot bound to `slot_filter.refs`, named by
-    its values' labels (`declared_default_text`)."""
+def _declared_default(slot_filter: ResolvedFilter, *, refs: set[str]) -> Assumption:
+    """The `declared_default` assumption of the values ``refs`` among those `slot_filter`
+    binds, in its order, named by their labels (`declared_default_text`)."""
+    stated = slot_filter.model_copy(
+        update={"refs": [value for value in slot_filter.refs if value.ref in refs]}
+    )
     return Assumption(
         kind="declared_default",
-        binding_ref=slot_filter.key.as_ref(),
-        text=declared_default_text(slot_filter),
-        refs=[value.ref for value in slot_filter.refs],
+        binding_ref=stated.key.as_ref(),
+        text=declared_default_text(stated),
+        refs=[value.ref for value in stated.refs],
     )
 
 

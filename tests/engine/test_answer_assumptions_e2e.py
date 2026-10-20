@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import pytest
 
+from search.engine.bind import SlotBindingDraft
 from search.engine.extract import ExtractedEntity, ExtractedOperation, Extraction
 from search.models import (
     Assumption,
@@ -36,6 +37,7 @@ from tests.engine.test_operations_e2e import (
 from tests.engine.test_qualifier_suppression_and_provenance import (
     _E2E_NODES,
     _E2E_OBS,
+    _E2E_SV_DCID,
     _e2e_graph_for,
     _e2e_sv_arcs,
 )
@@ -86,8 +88,9 @@ _PSI_SV_DCID = (
 )
 
 
-def _graph_with_psi() -> FakeGraph:
-    """The fixture graph with the private sector instruments series beside the ODA one."""
+def _graph_with_psi(detect: dict | None = None) -> FakeGraph:
+    """The fixture graph with the private sector instruments series beside the ODA one,
+    with ``detect`` as its detect entries."""
     return FakeGraph(
         nodes={
             **_E2E_NODES,
@@ -98,7 +101,7 @@ def _graph_with_psi() -> FakeGraph:
             },
             "CRSTypeOfFlow60": {"label": "private sector instruments"},
         },
-        detect={},
+        detect=detect or {},
         resolve={"Kenya": "country/KEN"},
         obs={
             **_E2E_OBS,
@@ -147,6 +150,62 @@ def test_a_first_answer_lists_its_declared_default_and_every_open_role():
     """The flow default and the two roles no request word named are the part's assumptions,
     in clause order, and the envelope sentence closes with them."""
     assert _first_answer().assumptions == [_ASSUMED_ODA, *_ASSUMED_ROLES]
+
+
+class _PsiFlowBindLLM(_OpenFlowAndSectorBindLLM):
+    """Bind fixes the flow to private sector instruments for "psi flows" and leaves it open
+    for every other phrase."""
+
+    async def generate_structured(self, *, prompt, system, schema):
+        result, usage = await super().generate_structured(
+            prompt=prompt, system=system, schema=schema
+        )
+        if schema.__name__ == "_UniversalBindOutput" and "Variable phrase: psi flows" in prompt:
+            result.bindings = [
+                SlotBindingDraft(
+                    axis="how",
+                    property_dcid="crsTypeOfFlow",
+                    kind="value",
+                    value_dcids=["CRSTypeOfFlow60"],
+                ),
+                SlotBindingDraft(axis="how", property_dcid="crsPurpose", kind="unbound"),
+            ]
+        return result, usage
+
+
+def test_a_merged_part_keeps_the_default_its_own_request_left():
+    """ "aid flows" leaves the flow open and "psi flows" names private sector instruments, so
+    the two merge into one Spec whose flow slot reads as recognised. The first part's own
+    request still left its flow to the ODA default, which it states; the second asked for
+    its flow and states none. The merged heading names no flow role, so neither part
+    states one."""
+    detect = {
+        "aid flows": {"svs": [_E2E_SV_DCID], "cosine_scores": [0.9]},
+        "psi flows": {"svs": [_PSI_SV_DCID], "cosine_scores": [0.9]},
+    }
+    response = offline_resolve(
+        ResolveRequest(
+            input=RawTextInput(query="aid flows and psi flows to Kenya"),
+            response_options=ResolveOptions(),
+        ),
+        graph=_graph_with_psi(detect),
+        llm=_PsiFlowBindLLM(
+            Extraction(
+                kind="resolution",
+                variables=["aid flows", "psi flows"],
+                entities=[ExtractedEntity(text="Kenya")],
+            )
+        ),
+        sdmx=_EMPTY_SDMX,
+    )
+    first, second = response.parts
+    assert isinstance(first, DefinitePart)
+    assert isinstance(second, DefinitePart)
+    assert first.spec.spec_id == second.spec.spec_id
+    assert "slot_defaulted" in [warning.code for warning in first.warnings]
+    assert [part.assumptions for part in response.parts] == [[_ASSUMED_ODA], []]
+    assert response.rendered_sentence is not None
+    assert response.rendered_sentence.endswith(" Assumed: official development assistance.")
 
 
 @pytest.mark.parametrize(
