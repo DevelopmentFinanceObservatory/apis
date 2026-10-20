@@ -176,22 +176,29 @@ code_index.shared.load_index = unreadable
 import search.engine.config as config
 print("imported")
 config.settings().capability_version
+print("computed")
 """
 
 
-def test_importing_the_config_reads_no_code_index():
-    """The token hashes the served schema, which reads the code index, so it is computed on
-    first read. An unreadable index lets the import succeed and fails that read."""
+@pytest.mark.parametrize("flag", ["0", "1"])
+def test_the_capability_token_reads_no_code_index(flag: str):
+    """The token hashes the served schema, whose datasets come from the declarations, so
+    neither importing the config nor computing the token reads the code index: not the
+    packaged one, which is unreadable here, and not a release's under
+    `GRAPH_RELEASE_COVERAGE`, since none is bound."""
     result = subprocess.run(
         [sys.executable, "-c", _UNREADABLE_INDEX_PROBE],
         capture_output=True,
         text=True,
-        env={**os.environ, "SEARCH_GRAPH_BASE": "https://graph.invalid/core/api"},
+        env={
+            **os.environ,
+            "SEARCH_GRAPH_BASE": "https://graph.invalid/core/api",
+            "GRAPH_RELEASE_COVERAGE": flag,
+        },
         check=False,
     )
 
-    assert result.stdout.strip() == "imported", result.stderr
-    assert "the code index was read" in result.stderr
+    assert result.stdout.split() == ["imported", "computed"], result.stderr
 
 
 class TestCapabilityVersionPerturbation:

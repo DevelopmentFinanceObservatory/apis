@@ -139,9 +139,10 @@ def datasets_surface(
     `head_writer` is the head store. `now` is the clock every door reads.
 
     A given `code_index` serves every request. Left out, each request reads `get_index()`,
-    which can change between requests. The index is parsed here, so a missing or malformed
-    export fails construction. `coverage` defaults to the process-wide service, resolved here,
-    so a missing or unreadable `COVERAGE_ARTIFACT_URI` fails construction.
+    which can change between requests; the index is read here, under the served release as a
+    request reads it, so a missing or malformed export fails construction. `coverage` defaults
+    to the process-wide service, resolved here, so a missing or unreadable
+    `COVERAGE_ARTIFACT_URI` fails construction.
     `rate_cache` defaults to a cache of this surface's own; pass Search's when composing both.
 
     `pin_allowed_principals` and `publish_allowed_principals` set separate allowlists,
@@ -162,8 +163,32 @@ def datasets_surface(
     _settings = settings if settings is not None else DatasetsBuildSettings.from_env()
     _catalogue = catalogue if catalogue is not None else get_catalogue_service()
     _release = release if release is not None else optional_release_service()
-    if code_index is None:
-        get_index()
+    cell = DepsCell()
+    # The doors read the code index as they are built, so they are built under the release a
+    # request would bind, and keep none of what they read.
+    with bound_served_release(_release):
+        if code_index is None:
+            get_index()
+        doors = (
+            build_meta_door(deps=cell, settings=_settings),
+            build_register_door(deps=cell),
+            build_mint_door(deps=cell),
+            build_definition_door(deps=cell),
+            build_refresh_door(deps=cell, settings=_settings),
+            build_recipe_door(
+                deps=cell, settings=_settings, allowed_principals=publish_allowed_principals
+            ),
+            build_snapshot_door(deps=cell),
+            build_description_door(deps=cell),
+            build_files_door(deps=cell),
+            build_observations_door(deps=cell),
+            build_pin_door(
+                deps=cell, settings=_settings, allowed_principals=pin_allowed_principals
+            ),
+            build_publish_door(
+                deps=cell, settings=_settings, allowed_principals=publish_allowed_principals
+            ),
+        )
     overrides = DepsOverrides(
         coverage=coverage if coverage is not None else get_coverage_service(),
         rate_cache=rate_cache if rate_cache is not None else RateTableCache(),
@@ -184,26 +209,6 @@ def datasets_surface(
         artifact_store=artifact_store,
         task_client=task_client,
         now=now,
-    )
-    cell = DepsCell()
-
-    doors = (
-        build_meta_door(deps=cell, settings=_settings),
-        build_register_door(deps=cell),
-        build_mint_door(deps=cell),
-        build_definition_door(deps=cell),
-        build_refresh_door(deps=cell, settings=_settings),
-        build_recipe_door(
-            deps=cell, settings=_settings, allowed_principals=publish_allowed_principals
-        ),
-        build_snapshot_door(deps=cell),
-        build_description_door(deps=cell),
-        build_files_door(deps=cell),
-        build_observations_door(deps=cell),
-        build_pin_door(deps=cell, settings=_settings, allowed_principals=pin_allowed_principals),
-        build_publish_door(
-            deps=cell, settings=_settings, allowed_principals=publish_allowed_principals
-        ),
     )
 
     router = flatten(doors)

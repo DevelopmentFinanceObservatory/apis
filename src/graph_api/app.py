@@ -217,15 +217,17 @@ def graph_surface(
     release = optional_release_service()
     # Distinct literal prefixes keep documentation and node routes disjoint. The members
     # route goes ahead of the node route, whose dcid convertor accepts slashes and would
-    # take `<dcid>/members` as one dcid.
-    doors: tuple[DoorContribution, ...] = (
-        build_health_door(),
-        build_schema_door(),
-        build_resolve_door(),
-        build_sources_door(),
-        build_members_door(),
-        build_node_door(),
-    )
+    # take `<dcid>/members` as one dcid. The health and node doors read the code index as
+    # they are built, so the doors are built under the release a request would bind.
+    with bound_served_release(release):
+        doors: tuple[DoorContribution, ...] = (
+            build_health_door(),
+            build_schema_door(),
+            build_resolve_door(),
+            build_sources_door(),
+            build_members_door(),
+            build_node_door(),
+        )
 
     router = flatten(doors)
 

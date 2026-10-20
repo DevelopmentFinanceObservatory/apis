@@ -202,7 +202,7 @@ def test_the_worker_builds_its_graph_client_on_the_shared_generation(
         "get_coverage_service",
         lambda: FakeCoverageService(build_coverage_index([], role_names={})),
     )
-    monkeypatch.setattr(worker_module, "_build_live_definition_deps", lambda **_: object())
+    monkeypatch.setattr(worker_module, "_live_deps_factory", lambda **_: object())
     registered: list[tuple[str, ...]] = []
 
     app = build_worker_app(

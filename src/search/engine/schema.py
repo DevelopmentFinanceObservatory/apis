@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
-from code_index.shared import get_index
+from code_index.declarations import DATASETS
 from search.models import RESOLVE_RESPONSE_ADAPTER, SCHEMA_VERSION, ResolveRequest
 
 
 def _with_declared_datasets(request_schema: dict) -> dict:
-    """List the code index's declared datasets, in rank order, as the values a parsed part's
-    `provenance` takes: one `const` per dataset, titled with its label, described by its
-    description and flagged with `x-opt-in`."""
+    """List the declared datasets (`code_index.declarations.DATASETS`), in rank order, as the
+    values a parsed part's `provenance` takes: one `const` per dataset, titled with its label,
+    described by its description and flagged with `x-opt-in`. The declarations are code, so
+    the schema, and the capability version that hashes it, are fixed per process and read no
+    code index, which needs a bound graph release under `GRAPH_RELEASE_COVERAGE`."""
     field = request_schema["$defs"]["ParsedPart"]["properties"]["provenance"]
     named = next(branch for branch in field["anyOf"] if branch.get("type") == "string")
     named["oneOf"] = [
@@ -19,7 +21,7 @@ def _with_declared_datasets(request_schema: dict) -> dict:
             "description": dataset.description,
             "x-opt-in": dataset.opt_in,
         }
-        for dataset in sorted(get_index().datasets.values(), key=lambda dataset: dataset.rank)
+        for dataset in sorted(DATASETS, key=lambda dataset: dataset.rank)
     ]
     return request_schema
 

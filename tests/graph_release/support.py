@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import dataclasses
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -12,6 +14,10 @@ import pyarrow.compute as pc
 
 from artifact_publication.uri import read_uri_bytes_and_generation
 from code_index.loader import default_index_path
+from code_index.query import CodeIndex
+from code_index.types import MeasureIndex
+from graph_release.context import bound_release, current_release
+from graph_release.declarations import DECLARATIONS
 from graph_release.format import (
     PART_SCHEMAS,
     Manifest,
@@ -21,6 +27,8 @@ from graph_release.format import (
     write_part,
 )
 from graph_release.publish import PublishStatus, hold_release, publish_release
+from graph_release.service import Release
+from tests.graph_release.recorded import platform_parts
 
 TEST_EXECUTION = "test-import-execution"
 TEST_REVISION = "test-dc-revision"
@@ -181,6 +189,39 @@ def build_packaged_index_release(root_uri: str) -> Manifest:
     return build_test_release(
         root_uri, tables={}, blobs={"code_index_blocks": default_index_path().read_bytes()}
     )
+
+
+def build_view_release(root_uri: str, *, dc_serving_revision: str = TEST_REVISION) -> Manifest:
+    """Publishes a release under `root_uri` whose views build: the packaged `index.json.gz`
+    document as its code index part, and the recorded slice's platform parts and the
+    declarations as the parts its coverage view reads (`tests.graph_release.recorded`)."""
+    return build_test_release(
+        root_uri,
+        tables=platform_parts().tables(),
+        blobs={
+            "code_index_blocks": default_index_path().read_bytes(),
+            "declarations": DECLARATIONS.declarations_json(),
+        },
+        dc_serving_revision=dc_serving_revision,
+    )
+
+
+@contextmanager
+def serving_index(
+    code_index: CodeIndex, measure_index: MeasureIndex | None = None
+) -> Iterator[Release]:
+    """Binds the bound release with `code_index`, and `measure_index` when given, as its views'
+    indexes for the body of the `with` block, so `get_index()` and `get_measure_index()` serve
+    them as they serve a release's. The release keeps its parts and its coverage view."""
+    release = current_release()
+    assert release.views is not None, "the bound release carries no views"
+    views = dataclasses.replace(
+        release.views,
+        code_index=code_index,
+        measure_index=measure_index if measure_index is not None else release.views.measure_index,
+    )
+    with bound_release(dataclasses.replace(release, views=views)) as bound:
+        yield bound
 
 
 def _provenance_files(

@@ -1095,7 +1095,10 @@ def search_surface(
     get_coverage_service()
     catalogue = get_catalogue_service()
     release = optional_release_service()
-    documents = search_documents()
+    # The documents read the code index as they are built, so they are built under the
+    # release a request would bind.
+    with bound_served_release(release):
+        documents = search_documents()
     owns_conversion = conversion_catalogue is None
     conversions = conversion_catalogue or ConversionCatalogueService()
     # The lifespan sets the reader it builds, so each request binds it (`_request_scope`).

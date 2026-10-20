@@ -7,10 +7,11 @@ internal ingress and has no problem-details envelope or trace id. Cloud Tasks us
 only. A 2xx ends a delivery. Other statuses retry. Cloud Run concurrency 1 allows one request per
 instance.
 
-The lifespan builds one `DefinitionDeps` per process: one artifact store, one graph client, one
-SDMX client, the whole-variable breadth reader over the process's facet profile cache
-(`datasets_api.profile_breadth`), and one materialise semaphore with a single permit, which every
-operation's materialisation takes. Materialisation runs in a worker thread.
+The lifespan builds the dependencies every run shares once per process: one artifact store, one
+graph client, one SDMX client, the whole-variable breadth reader over the process's facet profile
+cache (`datasets_api.profile_breadth`), and one materialise semaphore with a single permit, which
+every operation's materialisation takes. Each run's `DefinitionDeps` pairs them with the code index
+read under the run's bindings. Materialisation runs in a worker thread.
 
 The route verifies the OIDC token and claims the row (`OperationStore.claim`) for the task's
 submission, with a static lease of `LEASE_SECONDS`, under Cloud Tasks' 1,800-second dispatch
@@ -34,14 +35,13 @@ services in its lifespan from shared and worker-specific settings.
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import logging
 import threading
 import time
 from collections.abc import Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import timedelta
-from typing import cast
+from functools import partial
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -49,7 +49,6 @@ from pydantic import Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from artifact_store import ArtifactStore, LiveArtifactInventory, LiveArtifactStore, Tier
-from code_index.query import CodeIndex
 from code_index.shared import get_index
 from dataset_store import DatasetStore, LiveDatasetStore, close_shared_pool, shared_pool
 from dataset_store.snapshot import LiveSnapshotReader
@@ -93,7 +92,7 @@ WORKER_PLACE_SCOPE_MEMO_NAME = "datasets_worker.default_place_scope"
 RUN_ROUTE_PATH = "/internal/datasets/operations/{operation_id}/run"
 
 
-def _build_live_definition_deps(
+def _live_deps_factory(
     *,
     store: DatasetStore,
     graph: GraphReader,
@@ -103,8 +102,9 @@ def _build_live_definition_deps(
     materialise_semaphore: MaterialisePermits,
     variable_breadth: VariableBreadthReader | None = None,
     settings: DatasetsBuildSettings | None = None,
-) -> DefinitionDeps:
-    """Assembles dependencies without I/O.
+) -> partial[DefinitionDeps]:
+    """Assembles a run's dependencies without I/O, and returns the `DefinitionDeps` partial
+    that a run completes with the code index it reads (`code_index=`).
 
     The ceiling, member concurrency, build and capability version match the mint and definition
     doors, keeping admission estimates and execution limits aligned and recording each run
@@ -115,12 +115,12 @@ def _build_live_definition_deps(
     run breaks a single-place facet tie on `variable_breadth`, as a sync mint of the spec does,
     so both elect one facet.
 
-    The deps hold no code index: `code_index` is None until each run replaces it with the index
-    read under the run's bindings (`build_worker_app`), so the long-lived template pins none
-    across a release swap. The enrichment reads party kinds from `get_index()` per lookup.
+    The factory holds no code index, so a run reads the one its bindings give
+    (`build_worker_app`), and the enrichment reads party kinds from `get_index()` per lookup.
     """
     _settings = settings if settings is not None else DatasetsBuildSettings.from_env()
-    return DefinitionDeps(
+    return partial(
+        DefinitionDeps,
         registry=LiveSpecRegistry(store=store),
         spec_reader=LiveSpecReader(store=store),
         graph=graph,
@@ -132,7 +132,6 @@ def _build_live_definition_deps(
         member_concurrency=_settings.mint_member_max_concurrency,
         enumerator=shared_enumerator(),
         enrichment=EnrichmentLookup(graph, parties=lambda: get_index().parties),
-        code_index=cast(CodeIndex, None),
         rate_cache=RateTableCache(),
         coverage=coverage,
         version_writer=LiveVersionRecordWriter(store=store),
@@ -228,13 +227,15 @@ def build_worker_app(
     process-wide service, so a missing or unloadable `ORIGIN_CATALOGUE_URI` fails construction.
     `release` defaults to the process-wide graph release service when `GRAPH_RELEASE_URI` is set,
     and to none otherwise. Injected `deps` serve every run as given. Deps the lifespan builds
-    take the code index each run reads under its bindings, since it can change between runs.
+    take the code index each run reads under its bindings, since it can change between runs;
+    the lifespan reads it once under the served release, so a missing or malformed index fails
+    startup, and keeps none.
     """
     _settings = settings if settings is not None else DatasetsBuildSettings.from_env()
     _max_attempts = max_attempts if max_attempts is not None else _settings.operation_max_attempts
     _operation_store: OperationStore | None = operation_store
     _deps: DefinitionDeps | None = deps
-    _index_per_run = False
+    _deps_for_index: partial[DefinitionDeps] | None = None
     _oidc_verifier: OidcVerifier = (
         oidc_verifier if oidc_verifier is not None else LiveOidcVerifier()
     )
@@ -246,7 +247,7 @@ def build_worker_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        nonlocal _operation_store, _deps, _index_per_run, _worker_url
+        nonlocal _operation_store, _deps, _deps_for_index, _worker_url
         nonlocal _worker_invoker_service_account
         async with AsyncExitStack() as stack:
             pool_opened_here = False
@@ -272,7 +273,7 @@ def build_worker_app(
                             worker_settings.worker_invoker_service_account
                         )
 
-                if _deps is None:
+                if _deps is None and _deps_for_index is None:
                     live_settings = DatasetsSettings.from_env()
                     connections = shared_pool()
                     pool_opened_here = True
@@ -320,12 +321,12 @@ def build_worker_app(
                         stack.callback(
                             _release.register_swap_guard(materialise_semaphore.every_permit)
                         )
-                    # Parse the index at startup so a missing or malformed export fails it. Each
-                    # run reads its own index under its bindings, so the result is dropped.
-                    get_index()
                     # Run state uses the top-level store. This worker only runs tasks.
                     # Dependency defaults stay inert.
-                    _deps = _build_live_definition_deps(
+                    # Parsed now, so a missing or malformed index fails startup.
+                    with bound_served_release(_release):
+                        get_index()
+                    _deps_for_index = _live_deps_factory(
                         store=store,
                         graph=graph,
                         sdmx=sdmx,
@@ -341,7 +342,6 @@ def build_worker_app(
                         ),
                         settings=_settings,
                     )
-                    _index_per_run = True
                 if _operation_store is None:
                     if store is None:
                         connections = shared_pool()
@@ -371,7 +371,8 @@ def build_worker_app(
         except OidcRejected as exc:
             return JSONResponse({"detail": exc.reason}, status_code=401)
 
-        assert _operation_store is not None and _deps is not None
+        assert _operation_store is not None
+        assert _deps is not None or _deps_for_index is not None
         submission_count = await _task_submission_count(request)
         if submission_count is None:
             # Reject malformed tasks before claiming.
@@ -455,9 +456,11 @@ def build_worker_app(
             # One catalogue version and one release serve the whole operation. `to_thread`
             # carries the bindings.
             with bound_catalogue(catalogue), bound_served_release(_release):
-                run_deps = (
-                    dataclasses.replace(_deps, code_index=get_index()) if _index_per_run else _deps
-                )
+                if _deps is not None:
+                    run_deps = _deps
+                else:
+                    assert _deps_for_index is not None
+                    run_deps = _deps_for_index(code_index=get_index())
                 await asyncio.to_thread(
                     run_in_thread,
                     operation=operation,
