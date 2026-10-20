@@ -553,7 +553,7 @@ _SELECTOR_QUERY_PARAMETERS: list[dict[str, object]] = [
         "name": "layout",
         "in": "query",
         "required": False,
-        "description": "frame for a bare parquet file in the frame layout; needs bundle=false",
+        "description": "frame for a bare parquet file in the frame layout; needs format=parquet and bundle=false",
         "schema": {"type": "string", "enum": ["frame"]},
     },
 ]
