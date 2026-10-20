@@ -42,6 +42,12 @@ panel run. It re-renders what the test compares: each definite Spec's plan, each
 part's candidate plans and its own plan, and the envelope plan, with the sentence of each.
 A no-data part's own plan needs inputs the wire does not carry, so it stays as recorded.
 
+A re-render also recomputes assumptions from the Spec alone: a definite part's from its Spec
+(`assumptions_for`) and a candidates part's from its shown Specs (`common_assumptions`), as
+`engine.assemble` does, with no asked axes and no echo, which the golden records neither of.
+A part of another status keeps what it recorded. The golden therefore never holds an
+assumption the request's own words would have suppressed.
+
 Usage:
     just sentence-panel --in-process
     just sentence-golden runs/sentence-panel
@@ -64,6 +70,7 @@ from pydantic import TypeAdapter
 from code_index.shared import get_measure_index
 from code_index.types import label_for_pairs
 from search.models import (
+    Assumption,
     CandidatesPart,
     DefinitePart,
     SentenceFacts,
@@ -71,6 +78,7 @@ from search.models import (
     Spec,
 )
 from search.models.response import Part
+from search.render.assumptions import assumptions_for, common_assumptions
 from search.render.candidates import candidate_differences, candidates_sentence_plan
 from search.render.envelope import compose_envelope_sentence
 from search.render.heading import declared_axis_names, sibling_how_properties
@@ -314,27 +322,37 @@ def _set_plan(target: dict[str, Any], plan: list[SentenceToken]) -> None:
     target["rendered_sentence"] = sentence_from_plan(plan)
 
 
+def _set_assumptions(raw: dict[str, Any], assumptions: list[Assumption]) -> None:
+    """Store `assumptions` on the part `raw` as the wire writes them."""
+    raw["assumptions"] = [item.model_dump(mode="json", exclude_none=True) for item in assumptions]
+
+
 def rerender_line(line: dict[str, Any]) -> dict[str, Any]:
-    """`line` with every plan the golden test compares re-rendered by the current renderer
-    and every input unchanged."""
+    """`line` with every plan the golden test compares re-rendered by the current renderer,
+    each assumptions list recomputed from the Spec, and every other input unchanged."""
     parts = golden_parts(line["parts"])
     declarations = declared_axis_names()
     for part, raw in zip(parts, line["parts"], strict=True):
         if isinstance(part, DefinitePart):
             plan = render_sentence_plan(part.spec, axis_declarations=declarations)
             _set_plan(raw["spec"]["resolved"], plan)
+            _set_assumptions(raw, assumptions_for(part.spec))
         elif isinstance(part, CandidatesPart):
             specs = part.candidates.specs
             raw_specs = raw["candidates"]["specs"]
             for raw_spec, plan in zip(raw_specs, rerendered_candidates(specs), strict=True):
                 _set_plan(raw_spec["resolved"], plan)
+            assumptions = common_assumptions(
+                specs, keep_how_properties=sibling_how_properties(specs)
+            )
+            _set_assumptions(raw, assumptions)
             _set_plan(
                 raw,
                 candidates_sentence_plan(
                     specs,
                     truncated=part.candidates.truncated,
                     departures=part.departures,
-                    assumptions=part.assumptions,
+                    assumptions=assumptions,
                 ),
             )
     composed = compose_envelope_sentence(golden_parts(line["parts"]))
