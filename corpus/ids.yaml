@@ -336,7 +336,7 @@
 
 - id: dq-ids-032
   query: Ghana debt service as a share of exports
-  why: The ratio is a published IDS series with an exports denominator; share_of would ask the caller to divide.
+  why: The ratio is a published IDS series with an exports denominator; a no_data refusal also fits, as the menu holds no such series and the nearest pick rates 0.5.
   reuse: panel/ids-037
   tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical}
   known_failure: {issue: 1156, checks: [measure]}
@@ -345,6 +345,7 @@
       measure: {family: ids.debt_service_ratio}
       entities: [{dcid: country/GHA, role: destination}]
       operations: []
+    no_data: {reason: variable_not_resolved, category: unresolved}
 
 - id: dq-ids-033
   query: debt service and interest payments of Zambia and Ghana

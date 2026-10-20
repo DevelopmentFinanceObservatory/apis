@@ -232,13 +232,13 @@
 
 - id: dq-crs-021
   query: basic sanitation aid from Germany to Kenya in 2022
-  why: Resolves to crs.disbursement_gross for country/DEU as origin and country/KEN as destination in 2022.
+  why: Resolves to crs.grant_equivalent for country/DEU as origin and country/KEN as destination in 2022, a window after 2018 where grant equivalent is the house measure.
   reuse: panel/crs-025
   tags: {theme: health, entity: two_roles, direction: both, unit: default, time: year, operation: none, breakdown: sector, door: raw_text, phrasing: casual}
   expect:
     definite:
       measure:
-        family: crs.disbursement_gross
+        family: crs.grant_equivalent
         bound:
           crsTypeOfFlow: CRSTypeOfFlow10
           crsPurpose: CRSPurposeCode14032
@@ -746,12 +746,12 @@
 
 - id: dq-crs-062
   query: aid for government and civil society to Somalia since 2018
-  why: Government and civil society is CRS sector 150, bound for country/SOM as destination since 2018.
+  why: Government and civil society is CRS sector 150 as grant equivalent, bound for country/SOM as destination since 2018, when grant equivalent is the house measure.
   tags: {theme: governance, entity: country, direction: destination_only, unit: default, time: range, operation: none, breakdown: sector, door: raw_text, phrasing: casual}
   expect:
     definite:
       measure:
-        family: crs.disbursement_gross
+        family: crs.grant_equivalent
         bound:
           crsTypeOfFlow: CRSTypeOfFlow10
           crsPurpose: CRSPurposeCode150

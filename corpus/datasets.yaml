@@ -251,15 +251,14 @@
 # include_families asserts inclusion only; the exact count of two candidates is unasserted.
 - id: dataset-imputed-student-costs-kenya
   query: imputed student costs from Germany to Kenya
-  why: '"Imputed student costs" is a CRS cooperation modality published on two CRS shapes, so both are offered and no table is named.'
+  why: '"Imputed student costs" is a CRS cooperation modality published as grant equivalent and as commitment; disbursements outrank commitments, so grant equivalent answers and no table is named.'
   tags: {theme: education, entity: two_roles, direction: both, door: raw_text, dataset: none}
   expect:
-    candidates:
-      measure: {bound: {crsCooperationModality: CRSCooperationModalityE02}}
+    definite:
+      measure: {family: crs.grant_equivalent, bound: {crsCooperationModality: CRSCooperationModalityE02}}
       provenance: {bound: false}
       entities: [{dcid: country/DEU, role: origin}, {dcid: country/KEN, role: destination}]
       operations: []
-      include_families: [crs.grant_equivalent, crs.commitment]
 
 - id: dataset-imputed-rent-kenya
   query: imputed rent in Kenya
