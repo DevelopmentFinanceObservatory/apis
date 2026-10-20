@@ -418,7 +418,9 @@ class SentenceToken(StrictModel):
     segment: SentenceSegment = Field(
         default="heading",
         description=(
-            "the part of the sentence this token belongs to: 'heading' (what the "
+            "the part of the sentence this token belongs to: 'coverage' (the "
+            "'Answered N of M parts.' a mixed envelope sentence opens with, never on a "
+            "part's or a Spec's own plan), 'heading' (what the "
             "answer is), 'byline' (latest-year label, unit, source, and a bound "
             "method), "
             "'departure' (the text of one Departure on the same part, never on a "

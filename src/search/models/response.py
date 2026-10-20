@@ -423,7 +423,7 @@ class Resolution(_AnswerBase):
             "the terminal '.', or the shared ' ' the per-part fallback puts between "
             "two sentences) rather than any "
             "one part's own. On a mixed resolution with at least one definite part, the "
-            "plan opens with two heading tokens carrying no part_index: the opener "
+            "plan opens with two segment='coverage' tokens carrying no part_index: "
             "'Answered N of M parts.' and a ' '. A mixed resolution with no definite "
             "part has no opener."
         ),

@@ -30,7 +30,7 @@ Axis = Literal["what", "how", "where", "when", "source"]
 # "unit", the byline's unit of measure, and "method", the byline's measurement method,
 # which no request slot carries.
 SentenceAxis = Literal[Axis, "unit", "method"]
-SentenceSegment = Literal["heading", "byline", "departure", "assumption"]
+SentenceSegment = Literal["coverage", "heading", "byline", "departure", "assumption"]
 CoverageKind = Literal["exact", "breadth", "bare"]
 
 # BindingProvenance records why a slot has its value, independently of its

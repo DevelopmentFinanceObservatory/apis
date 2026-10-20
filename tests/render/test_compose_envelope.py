@@ -1866,16 +1866,17 @@ def test_a_folded_part_keeps_its_items_beside_a_separate_part_of_the_same_spec(
 
 
 def test_a_mixed_answer_opens_with_how_many_parts_it_answered():
-    """A definite part beside a no-data part: the plan opens with two unowned heading
-    tokens, the opener and a space."""
+    """A definite part beside a no-data part: the plan opens with two unowned coverage
+    tokens, the opener and a space, and no other token takes that segment."""
     rendered, plan = compose_envelope_sentence(
         [_definite(_spec(slots=[_what_slot("Total population")])), _unresolved("GDP")]
     )
     assert rendered == "Answered 1 of 2 parts. Total population. No data."
     assert [(t.text, t.segment, t.part_index) for t in plan[:2]] == [
-        ("Answered 1 of 2 parts.", "heading", None),
-        (" ", "heading", None),
+        ("Answered 1 of 2 parts.", "coverage", None),
+        (" ", "coverage", None),
     ]
+    assert all(t.segment != "coverage" for t in plan[2:])
 
 
 def test_a_mixed_answer_with_no_definite_part_has_no_opener():

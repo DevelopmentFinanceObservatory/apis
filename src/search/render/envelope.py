@@ -12,7 +12,8 @@ The parts' assumptions close the sentence as one clause ("Assumed: official deve
 assistance; every provider."). A joined sentence has one clause naming every part's items
 in part order, each item under its part and an item two parts share under none. A sentence
 written part by part closes each part's sentence with its own clause after its departures.
-A mixed answer with a definite part opens "Answered N of M parts.", with no part index.
+A mixed answer with a definite part opens "Answered N of M parts." as `coverage` tokens with no
+part index.
 
 A part folded into an earlier part's Spec (`binding_folded`) states that part's heading and
 byline, so their tokens carry no part index. Its assumptions, built from its own request,
@@ -90,14 +91,20 @@ def compose_envelope_sentence(parts: Sequence[Part]) -> tuple[str, list[Sentence
 
 
 def _opener(parts: Sequence[Part]) -> list[Owned]:
-    """ "Answered N of M parts." and a space, unowned heading tokens, when the parts' statuses
-    differ and N, the definite parts with folded ones, is at least one. M is every part.
-    Otherwise none: each part's sentence states its own outcome."""
+    """ "Answered N of M parts." and a space, unowned `coverage` tokens, when the parts'
+    statuses differ and N, the definite parts with folded ones, is at least one. M is every
+    part. Otherwise none: each part's sentence states its own outcome."""
     answered = sum(isinstance(part, DefinitePart) for part in parts)
     if len({part.status for part in parts}) < 2 or not answered:
         return []
     opener = f"Answered {answered} of {len(parts)} parts."
-    return owned(None, [_text_token(opener), _text_token(" ")])
+    return owned(
+        None,
+        [
+            SentenceToken(kind="text", text=opener, segment="coverage"),
+            SentenceToken(kind="text", text=" ", segment="coverage"),
+        ],
+    )
 
 
 def _is_folded(part: Part) -> bool:
