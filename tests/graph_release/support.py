@@ -309,13 +309,14 @@ def slice_series_tables(slice_dir: Path = COVERAGE_SLICE) -> dict[str, pa.Table]
 
 def build_session_release(root_uri: str) -> Manifest:
     """Publishes under `root_uri` the release the suite serves (`tests/conftest.py`):
-    `build_view_release`'s parts, with the recorded coverage slice's rows added to its
-    `series`, `edges` and `facets` (`slice_series_tables`), so its coverage view holds the
-    slice's coverage and the recorded variables', and its origin view the recorded DFO
-    variables."""
+    `build_view_release`'s parts, its `series` the recorded coverage slice's rows alone and its
+    `edges` and `facets` with the slice's added (`slice_series_tables`). Its coverage view is
+    the slice's coverage, and its origin view holds no DFO variable, since no variable it
+    declares has a series: a test that needs DFO variables binds a release holding them
+    (`origin_release`)."""
     tables = dict(platform_parts().tables())
     for name, rows in slice_series_tables().items():
-        base = tables[name]
+        base = tables[name] if name != "series" else tables[name].slice(0, 0)
         tables[name] = conform_part(
             pa.concat_tables([base.cast(_plain(base.schema)), rows], promote_options="default"),
             name=name,

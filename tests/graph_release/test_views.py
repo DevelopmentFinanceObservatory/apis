@@ -20,7 +20,7 @@ import pytest
 
 from code_index.export import content_hash
 from code_index.loader import default_index_path, load_index, load_measure_axes
-from graph_release.context import current_release, current_views
+from graph_release.context import current_release
 from graph_release.declarations import DECLARATIONS
 from graph_release.dfo import build_dfo_parts, dfo_inputs
 from graph_release.format import LoadedRelease, open_release
@@ -82,19 +82,21 @@ def test_the_coverage_view_equals_the_published_coverage_build(tmp_path: Path) -
     assert view.variable_provenances() == loaded.variable_provenances()
 
 
-def test_the_session_release_s_coverage_view_holds_the_recorded_coverage_slice() -> None:
+def test_the_session_release_s_coverage_view_is_the_recorded_coverage_slice() -> None:
     """Each slice row, years and all, though the release counts years from its own mask
-    epoch, beside the recorded variables' rows."""
-    view = current_views().coverage
+    epoch, and no other; its origin view holds no DFO variable."""
+    release = current_release()
+    view = release.views.coverage
     loaded = load_coverage(COVERAGE_SLICE.parent.as_uri()).index
     variables = loaded.role_names.keys()
 
     assert loaded.horizon != view.horizon
+    assert view.num_rows == loaded.num_rows
     assert _years_by_row(view, variables) == _years_by_row(loaded, variables)
     assert {v: view.role_names[v] for v in variables} == loaded.role_names
-    assert view.facet_metadata.items() >= loaded.facet_metadata.items()
-    assert view.variable_provenances().items() >= loaded.variable_provenances().items()
-    assert view.num_rows > loaded.num_rows
+    assert view.facet_metadata == loaded.facet_metadata
+    assert view.variable_provenances() == loaded.variable_provenances()
+    assert release.origin.arcs == {}
 
 
 def _years_by_row(index: CoverageIndex, variables: Collection[str]) -> list[tuple]:
