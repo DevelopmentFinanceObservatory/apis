@@ -11,6 +11,7 @@ import dataclasses
 import gc
 import threading
 import time
+import weakref
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -115,6 +116,15 @@ def _recheck(service: ReleaseService, clock: _Clock) -> Release:
 
 def _files(manifest: Manifest) -> set[str]:
     return {ref.file_name for ref in manifest.parts}
+
+
+@contextmanager
+def _collector_off() -> Iterator[None]:
+    gc.disable()
+    try:
+        yield
+    finally:
+        gc.enable()
 
 
 def _catalogue_service() -> CatalogueService:
@@ -251,20 +261,45 @@ class TestService:
     def test_a_replaced_release_unlinks_its_own_files_once_its_last_holder_drops_it(
         self, root: str, local_dir: Path
     ):
+        """With the collector off, so the release dies by its reference count and no cycle
+        keeps it until a collection."""
         first = build_test_release(root, tables=sample_tables())
         clock = _Clock()
         service = _service(root, local_dir, clock=clock)
         second = build_test_release(root, tables=_other_tables())
         held = service.snapshot()
+        replaced = weakref.ref(held)
+
+        with _collector_off():
+            _recheck(service, clock)
+            on_disk = {path.name for path in local_dir.iterdir()}
+            assert on_disk == _files(first) | _files(second)
+
+            del held
+            assert replaced() is None
+            assert {path.name for path in local_dir.iterdir()} == _files(second)
+        assert _files(first) - _files(second)
+
+    def test_memory_is_handed_back_after_the_first_load_and_each_swap(
+        self, root: str, local_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        handed_back: list[str] = []
+        monkeypatch.setattr(
+            service_module,
+            "_return_freed_memory",
+            lambda: handed_back.append(threading.current_thread().name),
+        )
+        build_test_release(root, tables=sample_tables())
+        clock = _Clock()
+        service = _service(root, local_dir, clock=clock)
+        assert handed_back == [threading.current_thread().name]
 
         _recheck(service, clock)
-        on_disk = {path.name for path in local_dir.iterdir()}
-        assert on_disk == _files(first) | _files(second)
+        assert len(handed_back) == 1
 
-        del held
-        gc.collect()
-        assert {path.name for path in local_dir.iterdir()} == _files(second)
-        assert _files(first) - _files(second)
+        build_test_release(root, tables=_other_tables())
+        _recheck(service, clock)
+        assert handed_back[1:] == ["graph-release-recheck"]
 
     def test_a_release_never_unlinks_the_file_of_a_part_its_loader_skipped(
         self, root: str, local_dir: Path
