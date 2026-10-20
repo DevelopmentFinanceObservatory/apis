@@ -60,14 +60,20 @@ class ReleaseOrigin:
     reader: ReleaseGraphReader
 
     def holds_family(self, five_tuple: FiveTuple, *, catalogue: Catalogue) -> bool:
-        """Whether every member of `five_tuple`'s family is one of the release's DFO variables,
-        so a member walk over `reader` finds the family a graph walk finds.
+        """Whether a member walk of `five_tuple`'s family reads `reader` in place of the graph.
 
-        The family is the release's when it holds a DFO variable of the five-tuple, in either role
-        class, and `catalogue`'s row for each role class (`Catalogue.held_family`, which joins the
-        release's DFO members to the build's base and UN ones) has no member beyond the release's.
-        A family with a base or UN member is the graph's whole, so no walk reads half of it from
-        the release."""
+        The family is the release's when the release holds a DFO variable of the five-tuple, in
+        either role class, and `catalogue`'s row for each role class (`Catalogue.held_family`,
+        which joins the release's DFO members to the build's base and UN ones) has no member
+        beyond the release's. A family with a base or UN member the catalogue lists is walked on
+        the graph whole.
+
+        A walk over `reader` finds the members a graph walk finds only when no base Data Commons
+        variable the catalogue does not list shares the five-tuple, and no DFO
+        StatisticalVariable without observations, which the release leaves out and the mixer
+        serves, belongs to the family. Serving checks neither. `scripts/graph_release_parity.py
+        origin` counts both (`blind_spots`): on dev, 0 unlisted base variables, and 1 unobserved
+        DFO variable, in no family the release holds."""
         held = False
         for role_bearing in (False, True):
             key = FamilyKey(

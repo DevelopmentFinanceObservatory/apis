@@ -10,6 +10,7 @@ from collections.abc import Callable, Iterable, Mapping
 
 from code_index.types import PartyKind, PartyRow
 from dfo_platform.roles import role_key_axis
+from graph_release.context import served_origin_key
 from materialise.graph import GraphReader
 
 ENRICHMENT_PROPERTIES: Mapping[str, str] = {
@@ -45,7 +46,8 @@ its group retry."""
 class EnrichmentLookup:
     """Resolves refs to available `iso3`, `iso2`, `label`, `type` and `party_kind` fields. The
     graph fields are cached per ref in an LRU capped at `_CACHE_CEILING`, and lookups promote
-    refs to most-recently used.
+    refs to most-recently used. With `GRAPH_RELEASE_ORIGIN` on, an entry also keys on the bound
+    release (`served_origin_key`), which answers a DFO variable's `name` and `typeOf`.
 
     `parties` returns the code index's party rows (`CodeIndex.parties`), which give a ref its
     `party_kind` (`party_kind_of`). A ref they do not list has no kind, whatever its graph
@@ -65,7 +67,7 @@ class EnrichmentLookup:
         self._graph = graph
         self._parties = parties
         self._lock = threading.Lock()
-        self._cache: OrderedDict[str, Mapping[str, str]] = OrderedDict()
+        self._cache: OrderedDict[tuple[str, str | None], Mapping[str, str]] = OrderedDict()
 
     @property
     def parties(self) -> Mapping[str, PartyRow]:
@@ -83,7 +85,8 @@ class EnrichmentLookup:
         if not requested:
             return {}
         parties = self._parties()
-        hits, missing = self._hits_and_missing(requested)
+        release = served_origin_key()
+        hits, missing = self._hits_and_missing(requested, release=release)
         if missing:
             fetched = self._graph.node_arcs_many(
                 missing,
@@ -95,7 +98,7 @@ class EnrichmentLookup:
                 ref: {} if (node := fetched.get(ref)) is None else _node_fields(node)
                 for ref in missing
             }
-            self._store(resolved)
+            self._store(resolved, release=release)
             hits.update(resolved)
         return {ref: _with_party_kind(ref, hits[ref], parties=parties) for ref in requested}
 
@@ -105,24 +108,24 @@ class EnrichmentLookup:
         return party_kind_of(ref, parties=self._parties())
 
     def _hits_and_missing(
-        self, requested: list[str]
+        self, requested: list[str], *, release: str | None
     ) -> tuple[dict[str, Mapping[str, str]], list[str]]:
         with self._lock:
             hits: dict[str, Mapping[str, str]] = {}
             missing: list[str] = []
             for ref in requested:
-                if ref in self._cache:
-                    self._cache.move_to_end(ref)
-                    hits[ref] = self._cache[ref]
+                if (key := (ref, release)) in self._cache:
+                    self._cache.move_to_end(key)
+                    hits[ref] = self._cache[key]
                 else:
                     missing.append(ref)
             return hits, missing
 
-    def _store(self, resolved: Mapping[str, Mapping[str, str]]) -> None:
+    def _store(self, resolved: Mapping[str, Mapping[str, str]], *, release: str | None) -> None:
         with self._lock:
             for ref, fields in resolved.items():
-                self._cache[ref] = fields
-                self._cache.move_to_end(ref)
+                self._cache[ref, release] = fields
+                self._cache.move_to_end((ref, release))
             while len(self._cache) > _CACHE_CEILING:
                 self._cache.popitem(last=False)
 

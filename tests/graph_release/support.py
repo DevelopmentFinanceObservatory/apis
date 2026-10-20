@@ -297,6 +297,17 @@ def serving_index(
         yield bound
 
 
+def release_at_revision(revision: str) -> Release:
+    """The bound release under the id DC serving revision `revision` gives it, with its parts and
+    views, served by no service, for a test of what keys on the release id."""
+    release = current_release()
+    loaded = dataclasses.replace(
+        release.loaded,
+        manifest=dataclasses.replace(release.loaded.manifest, dc_serving_revision=revision),
+    )
+    return dataclasses.replace(release, loaded=loaded, service=None)
+
+
 def _provenance_files(
     name: str, table: pa.Table, tables: Mapping[str, pa.Table]
 ) -> list[tuple[str | None, pa.Table]]:

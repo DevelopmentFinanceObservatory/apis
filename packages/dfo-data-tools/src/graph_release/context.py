@@ -13,8 +13,10 @@ the flag on refuses to read anything else (`current_views`). The flag is read he
 call, since `get_index` asks for it per read and a test may set it after import.
 
 `GRAPH_RELEASE_ORIGIN` turns on the release's origin view (`graph_release.origin`), from which
-the origin catalogue reads its DFO half (`served_origin`). It is read per call too, and is
-independent of `GRAPH_RELEASE_COVERAGE`.
+the origin catalogue reads its DFO half (`served_origin`). It is read per call too, and needs
+`GRAPH_RELEASE_COVERAGE` on: a cache that holds what the origin view decides (a search
+response, an options answer, a node envelope, the search catalogue's build) keys on the coverage
+build, which names the release only with coverage views on.
 """
 
 from __future__ import annotations
@@ -70,6 +72,10 @@ class ReleaseViewsNotBuilt(RuntimeError):
     """The bound release's views were read, and its service built none."""
 
 
+class OriginWithoutCoverage(RuntimeError):
+    """`GRAPH_RELEASE_ORIGIN` is on and `GRAPH_RELEASE_COVERAGE` is off."""
+
+
 def coverage_views_enabled() -> bool:
     """Whether `GRAPH_RELEASE_COVERAGE` is on. Unset or blank is off. A value pydantic does
     not read as a boolean raises `pydantic.ValidationError`."""
@@ -77,8 +83,15 @@ def coverage_views_enabled() -> bool:
 
 
 def origin_release_enabled() -> bool:
-    """Whether `GRAPH_RELEASE_ORIGIN` is on, read as `coverage_views_enabled` reads its flag."""
-    return _flag(os.environ.get(_ORIGIN_ENV_VAR))
+    """Whether `GRAPH_RELEASE_ORIGIN` is on, read as `coverage_views_enabled` reads its flag.
+    Raises `OriginWithoutCoverage` when it is on and `GRAPH_RELEASE_COVERAGE` is off."""
+    if not _flag(os.environ.get(_ORIGIN_ENV_VAR)):
+        return False
+    if not coverage_views_enabled():
+        raise OriginWithoutCoverage(
+            f"{_ORIGIN_ENV_VAR} is on and {_COVERAGE_ENV_VAR} is off; turn both on or both off"
+        )
+    return True
 
 
 @lru_cache(maxsize=8)
@@ -161,6 +174,14 @@ def current_views() -> ReleaseViews:
     return release.views
 
 
+def served_origin_key() -> str | None:
+    """The bound release's id with `GRAPH_RELEASE_ORIGIN` on, `None` with it off. A cache whose
+    entries derive from the origin catalogue's DFO half keys on it beside the catalogue build,
+    so a request bound to one release never reads what another release decided. Raises
+    `ReleaseNotBound` when the flag is on and no release is bound."""
+    return current_release().release_id if origin_release_enabled() else None
+
+
 def served_origin() -> ReleaseOrigin | None:
     """The bound release's origin view with `GRAPH_RELEASE_ORIGIN` on, `None` with it off.
     Raises `ReleaseNotBound` when the flag is on and no release is bound, and
@@ -178,6 +199,7 @@ def served_origin() -> ReleaseOrigin | None:
 
 __all__ = [
     "URI_ENV_VAR",
+    "OriginWithoutCoverage",
     "ReleaseNotBound",
     "ReleaseViewsNotBuilt",
     "bind_release",
@@ -191,5 +213,6 @@ __all__ = [
     "origin_release_enabled",
     "release_uri",
     "served_origin",
+    "served_origin_key",
     "unbind_release",
 ]

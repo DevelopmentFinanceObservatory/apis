@@ -897,6 +897,7 @@ def test_the_family_tables_round_trip_and_the_manifest_counts_and_measures_them(
     assert CatalogueManifest.from_json(manifest.to_json()) == manifest
     assert snapshot.base_families is None
     monkeypatch.setenv("GRAPH_RELEASE_ORIGIN", "1")
+    monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1")
     base = summarise_table(arcs.base)
     assert base
     assert load_catalogue(uri).base_families == base

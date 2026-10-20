@@ -38,7 +38,9 @@ back to the OS (`_return_freed_memory`).
 
 With `build_origin`, which `get_release_service()` sets from `GRAPH_RELEASE_ORIGIN`
 (`graph_release.context.origin_release_enabled`), opening a release also builds its origin view
-(`graph_release.origin`), in the same place and under the same refusal as the serving views.
+(`graph_release.origin`), in the same place and under the same refusal as the serving views,
+and the process's member enumerator drops the member groups of each release it replaces
+(`statvar_members.MemberEnumerator.follow_swaps`).
 
 A `Release` the service opened knows whether the service still serves it (`Release.served`),
 so a request bound to a replaced release can refuse rather than build a frame beside both
@@ -437,13 +439,21 @@ def _build() -> ReleaseService:
     uri = release_uri()
     if uri is None:
         raise ReleaseUriMissingError(f"{URI_ENV_VAR} is not set")
+    origin = origin_release_enabled()
     # On Cloud Run the temporary directory is the in-memory filesystem.
-    return ReleaseService(
+    service = ReleaseService(
         uri=uri,
         local_dir=Path(tempfile.mkdtemp(prefix="graph-release-")),
         build_views=coverage_views_enabled(),
-        build_origin=origin_release_enabled(),
+        build_origin=origin,
     )
+    if origin:
+        # The process's member groups key on the release under the flag; a swap drops the
+        # replaced release's.
+        from statvar_members import shared_enumerator
+
+        shared_enumerator().follow_swaps(service)
+    return service
 
 
 _singleton: RefCountedSingleton[ReleaseService] = RefCountedSingleton(

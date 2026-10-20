@@ -23,14 +23,19 @@ import pytest
 
 from code_index.tokens import tokenize
 from entity_resolution import Admission, EntityResolver
-from graph_release.context import ReleaseNotBound, ReleaseViewsNotBuilt, bound_release
+from graph_release.context import (
+    OriginWithoutCoverage,
+    ReleaseNotBound,
+    ReleaseViewsNotBuilt,
+    bound_release,
+)
 from graph_release.service import Release, ReleaseService
 from materialise.place_scope import DefaultPlaceScope, DefaultPresence
 from origin_catalogue import BASE, UN_SYSTEM
 from origin_catalogue.arc_tables import ArcTablesBuilder
 from origin_catalogue.artifact import load_catalogue
 from origin_catalogue.catalogue import CatalogueSnapshot
-from origin_catalogue.families import FamilyKey, FamilySummary, family_tables
+from origin_catalogue.families import FamilyKey, FamilySummary, family_tables, summarise_table
 from origin_catalogue.graph import _table_arcs, _wire
 from origin_catalogue.un_mirror import EMPTY_UN_MIRROR, UnArc, UnVariable
 from scripts.stage_origin_catalogue_fixture import stage_fixture
@@ -117,7 +122,7 @@ from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 from tests.graph_release.recorded import platform_parts, recorded_dfo_arcs
-from tests.graph_release.support import build_test_release
+from tests.graph_release.support import TEST_REVISION, build_test_release
 from tests.origin_catalogue.fake_catalogue import (
     provenance_row,
     restrictive_catalogue,
@@ -553,10 +558,10 @@ def _recorded_catalogue(*, with_dfo: bool) -> CatalogueSnapshot:
     )
 
 
-def _origin_release(root: Path) -> Release:
+def _origin_release(root: Path, *, revision: str = TEST_REVISION) -> Release:
     """The recorded slice's release, opened with its origin view."""
     uri = (root / "releases").as_uri()
-    build_test_release(uri, tables=platform_parts().tables())
+    build_test_release(uri, tables=platform_parts().tables(), dc_serving_revision=revision)
     service = ReleaseService(
         uri=uri, local_dir=root / "local", recheck_seconds=0, build_origin=True
     )
@@ -585,6 +590,7 @@ def test_a_release_s_dfo_half_serves_the_catalogue_s_families_and_arcs(
 
     served = reads(full)
     monkeypatch.setenv("GRAPH_RELEASE_ORIGIN", "1")
+    monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1")
     with bound_release(release):
         assert reads(full) == served
         assert reads(stripped) == served
@@ -604,6 +610,7 @@ def test_the_origin_flag_refuses_a_read_without_a_release_s_origin_view(
     catalogue = _recorded_catalogue(with_dfo=False)
     release = _origin_release(tmp_path)
     monkeypatch.setenv("GRAPH_RELEASE_ORIGIN", "1")
+    monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1")
 
     with pytest.raises(ReleaseNotBound):
         catalogue.held_family(_FLOWS)
@@ -614,6 +621,40 @@ def test_the_origin_flag_refuses_a_read_without_a_release_s_origin_view(
         pytest.raises(ReleaseViewsNotBuilt),
     ):
         catalogue.held_family(_FLOWS)
+    monkeypatch.delenv("GRAPH_RELEASE_COVERAGE")
+    with bound_release(release), pytest.raises(OriginWithoutCoverage):
+        catalogue.held_family(_FLOWS)
+
+
+def test_a_held_decode_keys_on_the_bound_release(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bind_catalogue
+) -> None:
+    """With `GRAPH_RELEASE_ORIGIN` on, a request bound to a release whose family holds other
+    DFO members decodes that family afresh while a request bound to the first still holds
+    its decode."""
+    bind_catalogue(_recorded_catalogue(with_dfo=False))
+    first = _origin_release(tmp_path / "a", revision="rev-a")
+    origin = first.origin
+    assert origin is not None
+    dropped = origin.families[_FLOWS].members[0]
+    arcs = {dcid: rows for dcid, rows in origin.arcs.items() if dcid != dropped}
+    second = dataclasses.replace(
+        _origin_release(tmp_path / "b", revision="rev-b"),
+        origin=dataclasses.replace(origin, arcs=arcs, families=summarise_table(arcs)),
+    )
+    assert first.release_id != second.release_id
+    monkeypatch.setenv("GRAPH_RELEASE_ORIGIN", "1")
+    monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1")
+
+    with bound_release(first), held_family_memo():
+        held = _held_members(_FLOWS)
+    # `held` keeps the first request's decode alive, so `_held_decodes` still holds it.
+    with bound_release(second), held_family_memo():
+        swapped = list(_held_members(_FLOWS).arcs)
+
+    assert dropped in held.arcs
+    assert dropped not in swapped
+    assert swapped == [dcid for dcid in held.arcs if dcid != dropped]
 
 
 def _held_debt_shape(

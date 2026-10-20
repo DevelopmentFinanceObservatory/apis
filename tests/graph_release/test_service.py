@@ -50,6 +50,7 @@ from origin_catalogue.service import CatalogueService
 from presentation_api.app import presentation_surface
 from search.engine.app import search_surface
 from series_coverage.shared import get_coverage_service
+from statvar_members import shared_enumerator
 from tests.datasets_api._artifact_doubles import FakeArtifactStore
 from tests.datasets_api._operation_store import FakeOperationDatasetStore
 from tests.datasets_api.test_worker_app import _complete_run, _submit, _task_body
@@ -71,8 +72,10 @@ class _Clock:
 @pytest.fixture(autouse=True)
 def _views_off(monkeypatch: pytest.MonkeyPatch) -> None:
     """Most releases here hold no view parts, so the process service builds no views unless a
-    test sets `GRAPH_RELEASE_COVERAGE` itself."""
+    test sets `GRAPH_RELEASE_COVERAGE` itself, and no origin view unless it sets
+    `GRAPH_RELEASE_ORIGIN`, which needs the coverage flag."""
     monkeypatch.delenv("GRAPH_RELEASE_COVERAGE", raising=False)
+    monkeypatch.delenv("GRAPH_RELEASE_ORIGIN", raising=False)
 
 
 @pytest.fixture
@@ -476,6 +479,24 @@ class TestProcessService:
         views = get_release_service().snapshot().views
 
         assert (views is not None) == (flag is not None)
+
+    @pytest.mark.parametrize("flag", [None, "1"])
+    def test_the_origin_flag_has_the_shared_member_enumerator_follow_swaps(
+        self, root: str, monkeypatch: pytest.MonkeyPatch, flag: str | None
+    ):
+        build_view_release(root)
+        monkeypatch.setenv("GRAPH_RELEASE_URI", root)
+        monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1")
+        if flag is None:
+            monkeypatch.delenv("GRAPH_RELEASE_ORIGIN", raising=False)
+        else:
+            monkeypatch.setenv("GRAPH_RELEASE_ORIGIN", flag)
+        followed: list[ReleaseService] = []
+        monkeypatch.setattr(shared_enumerator(), "follow_swaps", followed.append)
+
+        service = get_release_service()
+
+        assert followed == ([] if flag is None else [service])
 
     def test_a_set_uri_loads_its_release_once_per_process(
         self, root: str, monkeypatch: pytest.MonkeyPatch

@@ -154,6 +154,7 @@ _RELEASE_PARTS: Final[frozenset[str]] = frozenset(
 _DEFAULT_EXAMPLES: Final[int] = 10
 
 ORIGIN_FLAG: Final[str] = "GRAPH_RELEASE_ORIGIN"
+COVERAGE_FLAG: Final[str] = "GRAPH_RELEASE_COVERAGE"
 _ORIGIN_PARTS: Final[frozenset[str]] = frozenset({"series", "edges", "nodes"})
 _FIVE_TUPLE_ARCS: Final[tuple[str, ...]] = (
     "populationType",
@@ -385,21 +386,25 @@ def _moved_fields(ours: object, theirs: object) -> list[str] | None:
 
 @contextmanager
 def origin_flag(on: bool) -> Iterator[None]:
-    """`GRAPH_RELEASE_ORIGIN` on or off for the body of the `with` block. A serving process
-    reads it per call (`graph_release.context.origin_release_enabled`), so the reads in the
-    body take the path the flag picks."""
-    saved = os.environ.get(ORIGIN_FLAG)
+    """`GRAPH_RELEASE_ORIGIN` on or off for the body of the `with` block, and
+    `GRAPH_RELEASE_COVERAGE` on with it, which the origin flag needs. A serving process reads
+    both per call (`graph_release.context.origin_release_enabled`), so the reads in the body
+    take the path the flag picks. With the flag off, `GRAPH_RELEASE_COVERAGE` keeps the
+    caller's value."""
+    saved = {flag: os.environ.get(flag) for flag in (ORIGIN_FLAG, COVERAGE_FLAG)}
     if on:
         os.environ[ORIGIN_FLAG] = "1"
+        os.environ[COVERAGE_FLAG] = "1"
     else:
         os.environ.pop(ORIGIN_FLAG, None)
     try:
         yield
     finally:
-        if saved is None:
-            os.environ.pop(ORIGIN_FLAG, None)
-        else:
-            os.environ[ORIGIN_FLAG] = saved
+        for flag, value in saved.items():
+            if value is None:
+                os.environ.pop(flag, None)
+            else:
+                os.environ[flag] = value
 
 
 @contextmanager

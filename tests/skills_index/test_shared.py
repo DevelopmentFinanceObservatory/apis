@@ -577,6 +577,7 @@ async def _yield_to_the_loop() -> None:
 
 def test_with_the_origin_flag_a_swap_rebuilds_once_under_the_new_release(monkeypatch):
     monkeypatch.setenv("GRAPH_RELEASE_ORIGIN", "true")
+    monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1")
     first, second = object(), object()
 
     async def scenario() -> None:
@@ -616,6 +617,7 @@ def test_with_the_origin_flag_a_failed_build_keeps_the_index_and_retries_with_ba
     monkeypatch,
 ):
     monkeypatch.setenv("GRAPH_RELEASE_ORIGIN", "true")
+    monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1")
     first, second = object(), object()
 
     async def scenario() -> None:

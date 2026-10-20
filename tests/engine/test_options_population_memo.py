@@ -9,6 +9,7 @@ import time
 import pytest
 
 from graph_generation import FakeGeneration, GenerationStamp
+from graph_release.context import bound_release
 from search.engine.errors import EngineInputError
 from search.engine.options import population as population_module
 from search.engine.options.population import OptionsPopulation
@@ -36,6 +37,7 @@ from tests.code_index.aid_identity import (
     imputed_education_aid_identity,
 )
 from tests.fixtures import FakeGraph
+from tests.graph_release.support import release_at_revision
 from tests.statvar_members.conftest import FakeMemberArcReader, kenya_reader
 
 
@@ -337,6 +339,25 @@ def test_a_different_slot_binding_is_a_different_key():
     )
 
     assert _population_key(unbound) != _population_key(bound)
+
+
+def test_the_bound_release_keys_the_population_under_the_origin_flag(monkeypatch):
+    """A member walk reads the bound release's DFO variables with `GRAPH_RELEASE_ORIGIN` on,
+    so two releases key apart; with it off the release stays out of the key."""
+    identity = _identity()
+    first, second = release_at_revision("rev-1"), release_at_revision("rev-2")
+    monkeypatch.delenv("GRAPH_RELEASE_ORIGIN", raising=False)
+    with bound_release(first):
+        off = _population_key(identity)
+    monkeypatch.setenv("GRAPH_RELEASE_ORIGIN", "1")
+    monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1")
+    with bound_release(first):
+        on_first = _population_key(identity)
+    with bound_release(second):
+        on_second = _population_key(identity)
+
+    assert on_first != on_second
+    assert off not in (on_first, on_second)
 
 
 def test_disabled_memo_derives_every_time_with_no_bookkeeping():

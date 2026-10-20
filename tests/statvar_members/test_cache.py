@@ -13,9 +13,9 @@ import contextvars
 import logging
 import threading
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -567,6 +567,7 @@ def test_every_dfo_family_walks_the_release_to_the_group_the_graph_gives(
     live = walks()
     walked = dict(graph.calls)
     monkeypatch.setenv("GRAPH_RELEASE_ORIGIN", "1")
+    monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1")
     with bound_release(release):
         served = walks()
 
@@ -584,6 +585,7 @@ def test_a_family_with_a_base_member_walks_the_graph(
     release = _origin_release(tmp_path)
     graph = FakeMemberArcReader(arcs=variables)
     monkeypatch.setenv("GRAPH_RELEASE_ORIGIN", "1")
+    monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1")
 
     with bound_release(release), bound_catalogue(catalogue):
         group = MemberEnumerator().enumerate(
@@ -599,6 +601,7 @@ def test_a_walk_under_the_origin_flag_refuses_with_no_release_bound(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("GRAPH_RELEASE_ORIGIN", "1")
+    monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1")
     reader = kenya_reader()
 
     with pytest.raises(ReleaseNotBound):
@@ -619,6 +622,7 @@ def test_a_release_swap_keys_the_walk_afresh(
     graph = FakeMemberArcReader(arcs=variables)
     enumerator = MemberEnumerator()
     monkeypatch.setenv("GRAPH_RELEASE_ORIGIN", "1")
+    monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1")
 
     def walk(release: Release) -> None:
         with bound_release(release), bound_catalogue(catalogue):
@@ -629,3 +633,54 @@ def test_a_release_swap_keys_the_walk_afresh(
     assert graph.calls["node_subjects"] == 2
     walk(first)
     assert graph.calls["node_subjects"] == 2
+
+
+class _SwappingService:
+    """The two calls `MemberEnumerator.follow_swaps` makes on a `ReleaseService`, with `swap`
+    standing for a recheck that serves a new release."""
+
+    def __init__(self, release: Release) -> None:
+        self.release = release
+        self.callbacks: list[Callable[[Release], None]] = []
+
+    def snapshot(self) -> Release:
+        return self.release
+
+    def on_swap(self, callback: Callable[[Release], None]) -> Callable[[], None]:
+        self.callbacks.append(callback)
+        return lambda: self.callbacks.remove(callback)
+
+    def swap(self, release: Release) -> None:
+        self.release = release
+        for callback in self.callbacks:
+            callback(release)
+
+
+def test_a_swap_drops_the_replaced_release_s_groups(
+    recorded_slice, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Following the service, a swap drops the groups keyed on the replaced release, a walk
+    still bound to it stores nothing, and the new release's groups are stored. `close` stops
+    following."""
+    variables, catalogue = recorded_slice
+    first = _origin_release(tmp_path / "a", revision="rev-a")
+    second = _origin_release(tmp_path / "b", revision="rev-b")
+    graph = FakeMemberArcReader(arcs=variables)
+    service = _SwappingService(first)
+    enumerator = MemberEnumerator()
+    enumerator.follow_swaps(cast("ReleaseService", service))
+    monkeypatch.setenv("GRAPH_RELEASE_ORIGIN", "1")
+    monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1")
+
+    def walks(release: Release) -> int:
+        with bound_release(release), bound_catalogue(catalogue):
+            enumerator.enumerate(graph=graph, stamp_key="rev1", five_tuple=_POSITIONS, slots={})
+        return graph.calls["node_subjects"]
+
+    assert [walks(first), walks(first)] == [1, 1]
+    service.swap(second)
+    assert [walks(first), walks(first)] == [2, 3]
+    assert [walks(second), walks(second)] == [4, 4]
+
+    enumerator.close()
+    assert service.callbacks == []

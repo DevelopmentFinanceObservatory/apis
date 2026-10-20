@@ -133,9 +133,11 @@ class ResolvedFrame:
     holds none yet or whose record could not be read. `replay_key` is the key a derived frame's
     recipe replays it under, and `None` for a dataset frame or a frame with no recipe yet.
     `graph_generation` is the graph generation token the store's label read started under, and
-    `catalogue_build` the build id of the origin catalogue that load was bound to; both are
-    `None` for a store that reads no graph, and `graph_generation` is `None` when the generation
-    was unknown. A card's vocabulary revision hashes both (`assembler.mint.card_description`).
+    `catalogue_build` the build id of the origin catalogue that load was bound to, with the
+    bound release under `GRAPH_RELEASE_ORIGIN` (`origin_catalogue.context.current_words_build`);
+    both are `None` for a store that reads no graph, and `graph_generation` is `None` when the
+    generation was unknown. A card's vocabulary revision hashes both
+    (`assembler.mint.card_description`).
     `source_documents` holds what each cited source's document says today, by provenance dcid,
     as the store's citation read found it: the publisher, the last download and the next
     release. A source the read did not document has no entry. `input_records` holds the
