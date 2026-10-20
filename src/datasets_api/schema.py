@@ -258,17 +258,26 @@ class OperationProgress(ResponseModel):
 class OperationEnvelope(ResponseModel):
     model_config = ConfigDict(extra="forbid")
 
-    operation_id: str = Field(pattern=r"^op_")
+    operation_id: str = Field(
+        pattern=r"^op_",
+        description=(
+            "`op_` plus the SHA-256 of the subject and its sorted member dcids, the origin "
+            "catalogue build, and the rendering key. A repeat submission with the same "
+            "identity joins the running operation and returns this id. Synchronous builds "
+            "coalesce per API instance only."
+        ),
+    )
     status: Literal["pending", "running", "done", "failed"]
     poll: str | None = Field(default=None, exclude_if=is_none)
     retry_after_ms: int | None = Field(
         default=None,
         exclude_if=is_none,
         description=(
-            "present only on the initial 202 submit response; absent on a "
-            "pending/running poll -- a caller polling with no backoff strategy of "
-            "its own gets no ongoing pacing guidance from this field past the "
-            "first response"
+            "Milliseconds to wait before the next poll. Present on the 202 submit response "
+            "and on every pending or running poll; absent on a done poll. It "
+            "grows with the operation's age: a quarter of the time since the operation was "
+            "created, from 1,500 to 8,000. The `Retry-After` response header carries the "
+            "same value in whole seconds, rounded up."
         ),
     )
     progress: OperationProgress | None = Field(default=None, exclude_if=is_none)

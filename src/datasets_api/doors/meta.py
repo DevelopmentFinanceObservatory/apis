@@ -59,7 +59,7 @@ from __future__ import annotations
 
 import functools
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
@@ -88,6 +88,7 @@ from datasets_api.operation_store import (
     OperationStore,
 )
 from datasets_api.operations.dispatch import ENQUEUE_RECOVERY_SECONDS, dispatch_if_due
+from datasets_api.operations.submit import poll_interval_ms, retry_after_headers
 from datasets_api.operations.task_client import (
     TaskClient,
 )
@@ -280,12 +281,13 @@ def _failed(operation: Operation) -> OperationFailed:
     )
 
 
-def _progress(operation: Operation) -> OperationResource:
+def _progress(operation: Operation, *, now: datetime) -> OperationResource:
     return OperationResource(
         operation=OperationEnvelope(
             operation_id=operation.id,
             status=operation.state,
             poll=f"/api/datasets/operations/{operation.id}",
+            retry_after_ms=poll_interval_ms(operation, now=now),
             progress=OperationProgress(
                 rows_written=operation.rows_written,
                 estimate_rows=operation.estimate.rows,
@@ -328,7 +330,7 @@ def _resolve_operation(
         )
 
     if operation.state in ("pending", "running"):
-        return _progress(operation)
+        return _progress(operation, now=polled_at)
     if operation.state == "failed":
         raise _failed(operation)
 
@@ -360,7 +362,7 @@ def _resolve_operation(
     if current is None:
         raise OperationNotFound(operation_id=operation.id)
     if current.state in ("pending", "running"):
-        return _progress(current)
+        return _progress(current, now=polled_at)
     if current.state == "failed":
         raise _failed(current)
     # Done again after a resubmit re-ran it: the next poll reads the new completion.
@@ -448,7 +450,10 @@ def build_meta_door(*, deps: DepsCell, settings: DatasetsBuildSettings) -> DoorC
             )
         return JSONResponse(
             resource.model_dump(mode="json", exclude_none=True),
-            headers=no_store_headers(server_timing=call.server_timing),
+            headers={
+                **no_store_headers(server_timing=call.server_timing),
+                **retry_after_headers(resource.operation),
+            },
         )
 
     return DoorContribution(
