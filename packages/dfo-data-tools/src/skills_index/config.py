@@ -94,12 +94,14 @@ SKILL_BODY_MAX_BYTES = 256 * 1024
 # This 128 MiB budget reserves an eighth for skill content.
 SKILLS_CORPUS_CONTENT_BUDGET_BYTES = 128 * 1024 * 1024
 
-# Rebuild `SharedSkillsIndex` from the graph every 15 minutes.
+# Rebuild `SharedSkillsIndex` from the graph every 15 minutes. With `GRAPH_RELEASE_ORIGIN`
+# on it rebuilds on each release swap instead, and this is only the doors' cache max-age.
 SKILLS_INDEX_REFRESH_SECONDS = 900.0
 
 # Retry failed builds every 2 seconds until the first generation binds.
 # Doors return 503 while `index` is `None`. Later failures keep serving the
-# last bound generation and use the normal refresh interval.
+# last bound generation and use the normal refresh interval. With
+# `GRAPH_RELEASE_ORIGIN` on, every failed build retries on this backoff.
 SKILLS_INDEX_FIRST_BUILD_RETRY_INITIAL_SECONDS = 2.0
 
 # Pre-bind retry delay doubles to 60 seconds. The service runs at most two

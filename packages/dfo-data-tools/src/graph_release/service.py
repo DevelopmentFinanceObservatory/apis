@@ -301,11 +301,19 @@ class ReleaseService:
 
         return unregister
 
-    def on_swap(self, callback: Callable[[Release], None]) -> None:
+    def on_swap(self, callback: Callable[[Release], None]) -> Callable[[], None]:
         """Calls `callback` with each new release once it is served, outside the
-        swap guards. A callback that raises is logged and the others still run."""
+        swap guards, in the recheck thread and under its load lock, so a slow callback
+        delays the next recheck. A callback that raises is logged and the others still
+        run. Returns the function that unregisters it."""
         with self._hooks_lock:
             self._swap_callbacks = (*self._swap_callbacks, callback)
+
+        def unregister() -> None:
+            with self._hooks_lock:
+                self._swap_callbacks = tuple(c for c in self._swap_callbacks if c is not callback)
+
+        return unregister
 
     def close(self) -> None:
         """Waits for an in-flight recheck to finish."""
