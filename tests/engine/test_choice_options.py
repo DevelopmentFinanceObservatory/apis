@@ -112,13 +112,11 @@ def _no_data(client: TestClient, part: dict) -> dict:
 
 
 def _assert_options_settle(client: TestClient, no_data: dict) -> None:
-    """Each option's request, posted unchanged, is a valid request that does not refuse
-    with the same reason: it answers, or fails on something the choice does not decide."""
+    """Each option's request, posted unchanged, succeeds and does not refuse with the same
+    reason: it answers, or refuses on something the choice does not decide."""
     for option in no_data["options"]:
         response = client.post("/api/search/resolve", json={"input": option["data_query"]})
-        assert response.status_code not in (400, 422), (option["label"], response.text)
-        if response.status_code != 200:
-            continue
+        assert response.status_code == 200, (option["label"], response.text)
         (answered,) = response.json()["parts"]
         reason = (answered.get("no_data") or {}).get("reason")
         assert reason != no_data["reason"], option["label"]

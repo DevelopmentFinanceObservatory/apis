@@ -57,6 +57,7 @@ from skills_index import SkillsIndex
 if TYPE_CHECKING:
     from search.engine.region import RegionResult
     from search.engine.region.result import AmbiguousEntityCandidate as EngineCandidate
+    from search.engine.region.result import AmbiguousSource
     from search.models import GraphRef, Part, QueryEcho
 
 # ---------------------------------------------------------------------------
@@ -310,10 +311,12 @@ def _entity_options(region: RegionResult, part: ParsedPart) -> list[NoDataOption
 def _source_options(region: RegionResult, part: ParsedPart) -> list[NoDataOption | None]:
     """One option per ambiguous source wording and candidate, setting the candidate's ref on
     every ref-less mention with that wording; a wording mentioned twice gives its options
-    once. A label names an excluded source as excluded."""
+    once, from its first group. A label names an excluded source as excluded."""
+    groups: dict[str, AmbiguousSource] = {}
+    for group in region.ambiguous_sources:
+        groups.setdefault(group.text, group)
     options: list[NoDataOption | None] = []
-    for text in dict.fromkeys(group.text for group in region.ambiguous_sources):
-        group = next(group for group in region.ambiguous_sources if group.text == text)
+    for text, group in groups.items():
         mentions = [m for m in part.sources if m.ref is None and m.text == text]
         excluded = bool(mentions) and mentions[0].polarity == "exclude"
         for candidate in group.candidates:
@@ -345,9 +348,11 @@ def _source_code_options(region: RegionResult, part: ParsedPart) -> list[NoDataO
 def _role_options(region: RegionResult, part: ParsedPart) -> list[NoDataOption | None]:
     """One option per reading of the directions the question left untold
     (`RegionResult.role_assignments`): every row of a mapped text states its axis, and a row
-    the reading repeats is dropped. The label reads the option's own directions."""
+    the reading repeats is dropped. Its mentions are the texts the readings map, in the
+    request's words. The label reads the option's own directions."""
     words = region.entity_words or {}
-    mentions = [words.get(name, name) for name in region.unresolved_entity_names]
+    texts = region.role_assignments[0] if region.role_assignments else {}
+    mentions = list(dict.fromkeys(words.get(text, text) for text in texts))
     options: list[NoDataOption | None] = []
     for reading in region.role_assignments:
         rows = [
