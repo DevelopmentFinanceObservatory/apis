@@ -150,7 +150,7 @@ A manifest has a `content_version`, coverage, and an artifact whose rendering ma
 
 ## Retention and capacity
 
-Generated artifacts are working-tier by default and expire after the retention period published by `GET /api/v1/datasets/capabilities` (30 days), measured from `stored_at`. A pinned artifact is kept indefinitely. After a working-tier artifact expires, its download link renews the file while the file's bytes survive, renders it again from the version's stored frame when they are gone, and answers `410 artifact_expired` when the frame is gone too. A snapshot can return `410 artifact_expired` when no listable artifact location is servable, or `410 snapshot_revoked` for a revoked version.
+Generated artifacts are working-tier by default and expire after the retention period published by `GET /api/v1/datasets/capabilities` (30 days), measured from `stored_at`. A pinned artifact is kept indefinitely. After a working-tier artifact expires, its download link renews the file while the file's bytes survive, renders it again from the version's stored frame when they are gone, and answers `410 artifact_expired` when the frame is gone too. Only a csv, xlsx or parquet data file in the current bundle rendition and layout renders again, so a statistics file, a superseded bundle and a bare file in an old layout answer `410 artifact_expired` with the frame intact. A snapshot can return `410 artifact_expired` when no listable artifact location is servable, or `410 snapshot_revoked` for a revoked version.
 
 Terminal operations are guaranteed pollable for the retention period in the Datasets capabilities response. An older operation can still be present. `404 operation_not_found` means the API does not know that operation.
 

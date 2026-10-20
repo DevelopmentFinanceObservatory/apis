@@ -476,8 +476,11 @@ def test_re_pinning_an_already_pinned_artifact_pins_a_working_tier_canonical_fra
         pytest.param("aged_out_bytes_survive", True, id="aged_out_bytes_survive"),
     ],
 )
-def test_a_pin_retains_an_aged_frame_while_its_bytes_survive(frame: str, frame_pinned: bool):
-    """With no frame, or an aged one whose bytes are gone, the named artifact pins alone."""
+def test_a_pin_retains_an_aged_frame_while_its_bytes_survive(
+    frame: str, frame_pinned: bool, caplog: pytest.LogCaptureFixture
+):
+    """With no frame, or an aged one whose bytes are gone, the named artifact pins alone, and a
+    frame whose bytes are gone is logged."""
     store = FakeArtifactStore()
     parquet = _parquet_location(store)
     locations = [parquet]
@@ -492,14 +495,39 @@ def test_a_pin_retains_an_aged_frame_while_its_bytes_survive(frame: str, frame_p
     )
     writer = FakeArtifactReferenceWriter()
 
-    pinned_at = _pin_parquet(reader, store, writer, parquet.artifact_digest)
+    with caplog.at_level(logging.WARNING, logger="datasets_api.doors.pin"):
+        pinned_at = _pin_parquet(reader, store, writer, parquet.artifact_digest)
 
     assert pinned_at == _NOW
+    if frame == "aged_out_bytes_gone":
+        (record,) = caplog.records
+        message = record.getMessage()
+        assert f"artifact_digest={aged.artifact_digest}" in message
+        assert "subject_id=spec_a" in message
+        assert "content_version=cv1" in message
+    else:
+        assert not caplog.records
     pinned = {parquet.artifact_digest, *([locations[-1].artifact_digest] if frame_pinned else [])}
     assert store.list(tier=Tier.pinned) == pinned
     assert set(writer.records) == {
         (_PRINCIPAL, digest, "spec_a", "cv1", PIN_REFERENCE_KIND) for digest in pinned
     }
+
+
+def test_a_pin_whose_named_bytes_are_gone_refuses_artifact_expired():
+    """The working copy aged out after the location was read; the copy finds no object."""
+    store = FakeArtifactStore()
+    parquet = _parquet_location(store)
+    del store._objects[(parquet.artifact_digest, Tier.working.value)]
+    reader = FakeSnapshotReader(
+        versions={("spec_a", "cv1"): _version()}, locations={("spec_a", "cv1"): [parquet]}
+    )
+    writer = FakeArtifactReferenceWriter()
+
+    with pytest.raises(ArtifactExpired):
+        _pin_parquet(reader, store, writer, parquet.artifact_digest)
+
+    assert not writer.records
 
 
 def _writer_with_pinned_copies(*stored_at: datetime) -> FakeArtifactReferenceWriter:

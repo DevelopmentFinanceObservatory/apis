@@ -37,9 +37,9 @@ import hashlib
 import json
 import logging
 from datetime import datetime
-from typing import Final, Literal
+from typing import Annotated, Final, Literal
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
 from pydantic import (
     BaseModel,
@@ -248,7 +248,14 @@ def build_versions_door(*, deps: DepsCell) -> DoorContribution:
 
     @router.get("/api/datasets/{id:dfo_spec_id}/versions", response_model=DatasetVersionsPage)
     async def list_versions(
-        id: str, limit: int = VERSIONS_PAGE_DEFAULT, cursor: str | None = None
+        id: str,
+        limit: Annotated[
+            int,
+            # Declared for the OpenAPI document only: `read_versions_page` enforces the range,
+            # so an out-of-range value keeps its `request_invalid` refusal and `/limit` pointer.
+            Query(json_schema_extra={"minimum": 1, "maximum": VERSIONS_PAGE_MAX}),
+        ] = VERSIONS_PAGE_DEFAULT,
+        cursor: str | None = None,
     ) -> JSONResponse:
         current = deps.get()
         with door_call("versions", logger=logger) as call:

@@ -17,7 +17,8 @@ recorded under. A quarantined path id, or a quarantined served id bound to it, r
 `identity_quarantined`. The reference
 write checks revocation again in the same transaction, closing the race during
 the copy. Unknown specs and versions, revoked versions, unknown artifacts, and
-expired working-tier artifacts retain their distinct refusals.
+expired working-tier artifacts retain their distinct refusals. A named artifact whose working
+bytes are gone at the copy refuses `ArtifactExpired` as well.
 
 The reference write also holds the version's link lock (`lock_version_links`)
 and refuses `ArtifactNotFound` when the version no longer links the digest. A
@@ -166,7 +167,8 @@ def pin_artifact(
     The refusals concern the named artifact alone. The stored frames are retained after the named
     artifact's reference is recorded: each is the one the version's retention reads at the call's
     read time (`retention.retained_frame_location`), servable or aged. A frame that is missing,
-    or whose bytes are gone, leaves the response unchanged. The transactional revocation
+    or whose bytes are gone, leaves the response unchanged, and a frame whose bytes are gone logs
+    a warning. The transactional revocation
     and link rechecks propagate unlogged. Other reference-write failures are logged and
     re-raised. Pinned copies persist, so a retry attempts only the reference writes.
     """
@@ -198,8 +200,12 @@ def pin_artifact(
         )
         if pinned >= daily_max:
             raise PinBudgetExhausted(pinned=pinned, limit=daily_max)
-        with phase("copy"):
-            artifact_store.copy(artifact_digest, from_tier=Tier.working, to_tier=Tier.pinned)
+        try:
+            with phase("copy"):
+                artifact_store.copy(artifact_digest, from_tier=Tier.working, to_tier=Tier.pinned)
+        except ArtifactNotFoundError as exc:
+            # The working copy aged out between the read and the copy.
+            raise ArtifactExpired(id=id, content_version=content_version) from exc
 
     pinned_at = _record_pin_reference(
         reference_writer,
@@ -233,6 +239,13 @@ def pin_artifact(
                     )
             except ArtifactNotFoundError:
                 # The aged frame's bytes are gone, so nothing is left to retain.
+                logger.warning(
+                    "pin skipped a frame whose bytes are gone artifact_digest=%s subject_id=%s "
+                    "content_version=%s",
+                    frame.artifact_digest,
+                    subject_id,
+                    frame_version,
+                )
                 continue
         _record_pin_reference(
             reference_writer,

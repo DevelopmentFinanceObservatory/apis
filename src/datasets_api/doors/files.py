@@ -201,23 +201,9 @@ def _read(
     A digest the version no longer links, though this deployment stored its bytes, is one a
     re-render replaced, and refuses `ArtifactExpired`. A digest it never stored refuses
     `ArtifactNotFound`."""
-
-    def _read_under(
-        subject_id: str, subject_ids: tuple[str, ...]
-    ) -> tuple[ServableVersion, tuple[str, ...]]:
-        stored = read_servable_version(
-            deps.snapshot_reader,
-            subject_id=subject_id,
-            content_version=content_version,
-            artifact_digest=digest,
-            now=deps.now(),
-            revoked_under=subject_ids,
-        )
-        return stored, subject_ids
-
     try:
-        stored, subject_ids = read_under_served_id(
-            id=id, spec_reader=deps.spec_reader, read=_read_under
+        stored, subject_ids = _read_version(
+            id=id, content_version=content_version, deps=deps, artifact_digest=digest
         )
     except ArtifactNotFound:
         if deps.snapshot_reader.artifact_inventoried(digest):
@@ -432,10 +418,15 @@ def selector_options(items: Sequence[tuple[str, str]]) -> MintOptions:
 
 
 def _read_version(
-    *, id: str, content_version: str, deps: Deps | DefinitionDeps
+    *,
+    id: str,
+    content_version: str,
+    deps: Deps | DefinitionDeps,
+    artifact_digest: str | None = None,
 ) -> tuple[ServableVersion, tuple[str, ...]]:
     """The version the path names, read under the served ids bound to `id`
-    (`read_under_served_id`), and the ids whose revocation withdraws it."""
+    (`read_under_served_id`), and the ids whose revocation withdraws it. With `artifact_digest`
+    the same transaction checks that the version links it."""
 
     def _read_under(
         subject_id: str, subject_ids: tuple[str, ...]
@@ -444,6 +435,7 @@ def _read_version(
             deps.snapshot_reader,
             subject_id=subject_id,
             content_version=content_version,
+            artifact_digest=artifact_digest,
             now=deps.now(),
             revoked_under=subject_ids,
         )

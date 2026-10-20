@@ -127,7 +127,7 @@ Promotes rendered artifacts from the temporary working tier to the pinned retent
 
 Generated artifacts default to working-tier retention and expire 30 days after initial storage. Pinned artifacts remain persisted indefinitely.
 
-Every manifest the mint, definition, snapshot and done operation poll return carries `retention`, computed when the response is served. It reads `{"pinned": true}` when the version's frame has a pinned copy, and otherwise `{"pinned": false, "held_until": ...}`, the frame's `stored_at` plus 30 days. A derived version reports its base version's frame. A download renews only the file it names, so only a download of the frame moves `held_until`. Pinning a version also pins the frame its retention reads, servable or aged, while that frame's bytes survive.
+Every manifest the mint, definition, snapshot and done operation poll return carries `retention`, computed when the response is served. It reads `{"pinned": true}` when the version's frame has a pinned copy, and otherwise `{"pinned": false, "held_until": ...}`, the frame's `stored_at` plus 30 days. A derived version reports its base version's frame. A download of the frame after `held_until`, while its bytes survive, renews it for 30 days. Pinning a version also pins the frame its retention reads, servable or aged, while that frame's bytes survive.
 
 A version's `prepared_at` is written once at its first mint and stored with the version record. Every re-mint and re-render reads the stored value, so the date in a bundle's `README.md`, `CITATION.cff` and file name stays fixed.
 

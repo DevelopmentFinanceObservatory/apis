@@ -4,8 +4,9 @@ Every file of a version renders from one stored frame: its own, or, for a derive
 (`StoredVersion.base_content_version` set: a groupby collapse or a party-totals cut), its base
 version's. The frame is the one `retained_frame_location` gives, which the pin door also
 promotes. A pinned frame has no expiry. A working frame is guaranteed until
-`WORKING_TIER_RETENTION` after its `stored_at`. A download renews only the file it names
-(`doors.files.renew_and_resolve`), so only a download of the frame itself moves that clock.
+`WORKING_TIER_RETENTION` after its `stored_at`. Inside retention a download signs the stored
+copy and stores nothing, so `stored_at` stays. A download of the frame itself after that point,
+while its bytes survive, renews it (`doors.files.renew_and_resolve`) and restarts the clock.
 Past that point the frame also renews when a render from it re-uploads its bytes
 (`doors.files.render_version_from_frame`): the file selector rendering a file the version holds
 no surviving copy of, or a link click whose own file's bytes are gone. When the frame's bytes
