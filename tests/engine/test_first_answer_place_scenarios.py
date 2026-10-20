@@ -60,6 +60,7 @@ from unittest import mock
 
 import pytest
 
+from materialise import place_scope
 from search.engine.bind import _UniversalBindOutput
 from search.engine.clients import materialise_bridge
 from search.engine.conjoin import assemble_region
@@ -76,6 +77,7 @@ from search.engine.region.observations import fetch as observation_fetch
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.result import RegionResult
 from search.engine.region.state import EngineOptions
+from search.engine.retrieval import bound_values
 from search.models import Resolution, Spec
 from series_coverage.schema import RoleNames
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
@@ -297,6 +299,17 @@ _CHILDREN = {
 def _regions(declare_regions):
     """Search reads Africa's members from the membership policy."""
     declare_regions({_AFRICA: _CHILDREN[_AFRICA]["Country"]})
+
+
+@pytest.fixture(autouse=True)
+def _no_wall_clock_budgets(monkeypatch):
+    """A snapshot pins the reads a scenario makes, so no wall-clock budget may cut them.
+
+    The role-class walk and the every-place availability wait each stop reading or fall
+    back when their budget runs out, which a stalled worker can reach.
+    """
+    monkeypatch.setattr(bound_values, "_ROLE_CLASS_WALK_BUDGET_S", 1e6)
+    monkeypatch.setattr(place_scope, "EVERY_PLACE_SECONDS", 1e6)
 
 
 def _facets(*, count: int = 5, start: str = "2015", end: str = "2022") -> list[dict]:
