@@ -14,12 +14,10 @@ import dataclasses
 import json
 from pathlib import Path
 
-import pyarrow as pa
 import pytest
 
 from code_index.export import content_hash
 from code_index.loader import default_index_path, load_index, load_measure_axes
-from graph_release.coverage import HORIZON
 from graph_release.declarations import DECLARATIONS
 from graph_release.dfo import build_dfo_parts, dfo_inputs
 from graph_release.format import LoadedRelease, open_release
@@ -29,88 +27,26 @@ from graph_release.views import (
     release_code_indexes,
     release_coverage_index,
 )
-from series_coverage.io import (
-    write_coverage_table,
-    write_current,
-    write_facet_metadata,
-    write_manifest,
-    write_role_names,
-)
 from series_coverage.loader import load_coverage
-from series_coverage.schema import (
-    FACET_COLUMN,
-    CoverageManifest,
-    CoveragePointer,
-    FacetMetadata,
-    RoleNames,
-)
 from tests.graph_release.recorded import (
     FIXTURES,
     SLICE_BASE_PARTIES,
     SLICE_DECLARATIONS,
     platform_parts,
-    raw_inputs,
     slice_platform_parts,
 )
-from tests.graph_release.support import build_packaged_index_release, build_test_release
-from tests.series_coverage.support import build_dir, pointer_path
+from tests.graph_release.support import (
+    build_packaged_index_release,
+    build_test_release,
+    publish_coverage_build,
+)
 
 _READ_AT = "2026-10-19T00:00:00Z"
-"""`build_test_release`'s `read_timestamp`, as a coverage build's `built_at` and a code index
-stamp's `exported_at` write it."""
+"""`build_test_release`'s `read_timestamp`, as a code index stamp's `exported_at` writes it."""
 
 
 def _open(root: Path, manifest_id: str) -> LoadedRelease:
     return open_release(root.as_uri(), local_dir=root / "local", release_id=manifest_id)
-
-
-def _publish_coverage(base: Path, published: dict) -> str:
-    """Publishes `published`'s rows and role names as the coverage job writes a build, each
-    facet's metadata from the recorded facet JSON."""
-    prefix = build_dir(base, "build")
-    prefix.mkdir(parents=True)
-    table = pa.Table.from_pylist(
-        [dict(zip(published["columns"], row, strict=True)) for row in published["rows"]],
-        schema=HORIZON.schema,
-    )
-    write_coverage_table(table, prefix / "coverage.parquet", horizon=HORIZON)
-    write_role_names(
-        {variable: RoleNames(**names) for variable, names in published["role_names"].items()},
-        prefix / "role_names.json",
-    )
-    covered = set(table[FACET_COLUMN].to_pylist())
-    facets = raw_inputs().facets
-    metadata: dict[str, FacetMetadata] = {}
-    for facet_id, facet in zip(
-        facets["facet_id"].to_pylist(), facets["facet_min"].to_pylist(), strict=True
-    ):
-        if facet_id in covered:
-            fields = json.loads(facet)
-            metadata[facet_id] = FacetMetadata(
-                provenance_id=fields["provenance"],
-                measurement_method=fields.get("measurementMethod"),
-                unit=fields.get("unit"),
-                observation_period=fields.get("observationPeriod"),
-            )
-    write_facet_metadata(metadata, prefix / "facets.json")
-    write_manifest(
-        CoverageManifest(
-            stamp="stamp",
-            build_id="build",
-            built_at=_READ_AT,
-            source="tests.graph_release.test_views",
-            row_counts={"rows": table.num_rows},
-            files={
-                "coverage": "coverage.parquet",
-                "role_names": "role_names.json",
-                "facets": "facets.json",
-            },
-            horizon=HORIZON,
-        ),
-        prefix / "manifest.json",
-    )
-    write_current(CoveragePointer(stamp="stamp", build_id="build"), pointer_path(base))
-    return base.as_uri()
 
 
 def test_the_coverage_view_equals_the_published_coverage_build(tmp_path: Path) -> None:
@@ -122,7 +58,7 @@ def test_the_coverage_view_equals_the_published_coverage_build(tmp_path: Path) -
     )
 
     view = release_coverage_index(_open(tmp_path / "release", manifest.release_id))
-    loaded = load_coverage(_publish_coverage(tmp_path / "coverage", published)).index
+    loaded = load_coverage(publish_coverage_build(tmp_path / "coverage", published)).index
 
     assert view.num_rows == loaded.num_rows == len(published["rows"])
     assert view._table.to_pylist() == loaded._table.to_pylist()

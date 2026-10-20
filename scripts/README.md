@@ -147,6 +147,23 @@ No live credentials needed.
 
 Run by `.github/workflows/bundle-round-trip.yml`, same trigger as `bundle_round_trip.R`.
 
+## `graph_release_parity.py`
+
+Diffs what an environment's graph release serves with what the old path serves for the same import, the switch gate for `GRAPH_RELEASE_COVERAGE`. It builds the current release's views with `graph_release.views`, then compares its `CoverageIndex` with the published coverage build (every row, role names, variable provenances, facet metadata, horizon and build year) and its `code_index_blocks` document with a fresh `export_index` over the live mixer, joined with that coverage build, every block row by row.
+
+```bash
+uv run python scripts/graph_release_parity.py \
+    --release-uri gs://dfo-dev-graph-release-dev-fin-observatory/ \
+    --coverage-uri gs://dfo-dev-coverage-dev-fin-observatory/ \
+    --graph-base https://dfo-dev-dc-datacommons-service-zms5lj4zhq-nn.a.run.app \
+    --datacommons-service projects/dev-fin-observatory/locations/northamerica-northeast1/services/dfo-dev-dc-datacommons-service \
+    --out parity-dev.json
+```
+
+It refuses with exit 2 and a `refused.code` when the coverage build and the release come from different ingestion executions (`import_mismatch`, `coverage_ingestion_unrecorded`), when the checkout's declarations hash differs from the release's (`declarations_moved`), when the DC service serves another revision than the release read (`serving_revision_moved`), or when the export refuses (`export_refused`). Otherwise the JSON report counts, per category, the items compared, the differences, those a named rule explains and the first `--examples` of each; the exit status is 0 when no difference is unexplained and 1 when one is. On dev it takes about 15 minutes, nearly all of them the export's mixer reads.
+
+Needs Google credentials that read both buckets and `run.services.get` on the DC service, and `SEARCH_GRAPH_TOKEN` on a token-gated mixer. Run by hand on each environment before its `GRAPH_RELEASE_COVERAGE` flag is switched on.
+
 ## `harvest_llm_fixtures.py`
 
 Extends `tests/fixtures/llm_responses.json` by replaying the engine offline against the frozen graph fixtures, calling the live LLM only for prompts the offline suite cannot answer yet.
