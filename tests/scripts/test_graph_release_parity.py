@@ -1,6 +1,6 @@
 """Pins `scripts/graph_release_parity.py` on the recorded release slice: a release and the
 coverage build and code index of the same import report parity, and a difference in the rows,
-the provenances or a code index block is unexplained unless a rule names its cause."""
+the provenances or a code index block is a difference, whatever variable it names."""
 
 from __future__ import annotations
 
@@ -84,11 +84,21 @@ def _pinned_row(document: dict) -> None:
     document["listed_statvars"].append(row)
 
 
+def _pinned_and_another_source_code(document: dict) -> None:
+    document["source_codes"][0]["dcids"].extend([_PINNED, "Another_Variable"])
+
+
+def _prefixed_pinned_row(document: dict) -> None:
+    row = copy.deepcopy(document["listed_statvars"][0])
+    row["dcid"] = f"{_PINNED}_Other"
+    document["listed_statvars"].append(row)
+
+
 def test_equal_inputs_report_parity(tmp_path: Path) -> None:
     report = _report(tmp_path)
 
     assert report["outcome"] == "parity"
-    assert report["unexplained"] == 0
+    assert report["differences"] == 0
     categories = report["categories"]
     assert categories["coverage.rows"]["compared"] > 0
     assert categories["code_index.statvars"]["compared"] > 0
@@ -101,23 +111,16 @@ def test_equal_inputs_report_parity(tmp_path: Path) -> None:
         ({"published": _extra_row}, "coverage.rows"),
         ({"facets": _moved_provenance}, "coverage.variable_provenances"),
         ({"export": _relabelled_statvar}, "code_index.statvars"),
+        ({"export": _pinned_row}, "code_index.listed_statvars"),
+        ({"export": _pinned_and_another_source_code}, "code_index.source_codes"),
+        ({"export": _prefixed_pinned_row}, "code_index.listed_statvars"),
     ],
 )
-def test_a_difference_is_unexplained(tmp_path: Path, edits: dict, category: str) -> None:
+def test_a_difference_fails_parity(tmp_path: Path, edits: dict, category: str) -> None:
     report = _report(tmp_path, **edits)
 
     assert report["outcome"] == "differences"
-    assert report["categories"][category]["unexplained"] >= 1
-
-
-def test_a_difference_a_rule_names_is_explained(tmp_path: Path) -> None:
-    report = _report(tmp_path, export=_pinned_row)
-
-    listed = report["categories"]["code_index.listed_statvars"]
-    assert report["outcome"] == "parity"
-    assert listed["differences"] == 1
-    assert listed["explained"] == {"pinned_index_variable": 1}
-    assert listed["explained_examples"][0]["difference"]["side"] == "export_only"
+    assert report["categories"][category]["differences"] >= 1
 
 
 @pytest.mark.parametrize(

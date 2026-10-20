@@ -310,7 +310,7 @@ def test_broken_thread_pool_surfaces_as_internal_error_not_backpressure(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """A broken executor returns a logged, non-retryable 500."""
-    monkeypatch.setattr(door_executor, "ThreadPoolExecutor", BrokenSubmitExecutor)
+    monkeypatch.setattr(door_executor, "ContextCarryingExecutor", BrokenSubmitExecutor)
     client = _client(graph=_default_graph(), work_max_concurrency=1)
 
     with caplog.at_level(logging.ERROR):

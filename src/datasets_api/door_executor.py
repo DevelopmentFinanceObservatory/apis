@@ -13,11 +13,11 @@ import logging
 import threading
 import time
 from collections.abc import Callable
-from concurrent.futures import BrokenExecutor, ThreadPoolExecutor
+from concurrent.futures import BrokenExecutor
 from dataclasses import dataclass
 
 from datasets_api.shutdown import ShutdownBudget
-from dfo_platform.executor import submit_with_context
+from dfo_platform.executor import ContextCarryingExecutor
 from dfo_platform.timings import PhaseTimings
 
 logger = logging.getLogger(__name__)
@@ -28,10 +28,12 @@ class DoorExecutor:
     """An executor and same-sized admission semaphore.
 
     `name` is the surface-qualified executor name (`datasets-read`). It prefixes the
-    worker thread names and appears in the shutdown drain log line.
+    worker thread names and appears in the shutdown drain log line. The executor runs every
+    job under a copy of its submitter's context, so a door that submits to it directly still
+    reads the request's bound graph release and origin catalogue.
     """
 
-    executor: ThreadPoolExecutor
+    executor: ContextCarryingExecutor
     semaphore: threading.BoundedSemaphore
     pool_size: int
     name: str
@@ -59,7 +61,7 @@ class DoorExecutor:
             raise refuse()
         timed = _TimedJob(job, timings) if timings is not None else None
         try:
-            future = submit_with_context(self.executor, timed if timed is not None else job)
+            future = self.executor.submit(timed if timed is not None else job)
         except BrokenExecutor:
             self.semaphore.release()
             logger.error(
@@ -138,7 +140,7 @@ def build_door_executor(pool_size: int, name: str, *, surface: str = "datasets")
     """
     door_name = f"{surface}-{name}"
     return DoorExecutor(
-        executor=ThreadPoolExecutor(max_workers=pool_size, thread_name_prefix=door_name),
+        executor=ContextCarryingExecutor(max_workers=pool_size, thread_name_prefix=door_name),
         semaphore=threading.BoundedSemaphore(pool_size),
         pool_size=pool_size,
         name=door_name,

@@ -20,10 +20,8 @@ declarations, or when the DC service serves another revision than the release re
 after the export (`serving_revision_moved`), since the mixer would then answer from another
 import. An export that refuses ends the run too (`export_refused`).
 
-Each difference is either explained by a rule of `RULES`, which names why the two paths differ
-there by construction, or unexplained. The JSON report gives, per category, how many items were
-compared, how many differ, how many each rule explains and the first `--examples` differences of
-each kind. The exit status is 0 when no difference is unexplained, 1 when one is.
+The JSON report gives, per category, how many items were compared, how many differ and the
+first `--examples` differences. The exit status is 0 when nothing differs, 1 when anything does.
 
 Reads only: the release and coverage buckets, the mixer, and the Cloud Run Admin API's
 `run.services.get` on the DC service.
@@ -44,7 +42,6 @@ import json
 import os
 import sys
 import tempfile
-from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import UTC, datetime
@@ -64,7 +61,7 @@ from graph_release.declarations import DECLARATIONS  # noqa: E402
 from graph_release.format import LoadedRelease, Manifest, open_release  # noqa: E402
 from graph_release.job import builder_code_hash  # noqa: E402
 from graph_release.serving_revision import CloudRunAdmin  # noqa: E402
-from graph_release.shadow import INDEX_BLOCK_KEYS, PINNED_INDEX_VARIABLES, row_diff  # noqa: E402
+from graph_release.shadow import INDEX_BLOCK_KEYS, row_diff  # noqa: E402
 from graph_release.views import (  # noqa: E402
     CODE_INDEX_PART,
     DECLARATIONS_PART,
@@ -84,14 +81,6 @@ from series_coverage.loader import (  # noqa: E402
     read_table,
 )
 from series_coverage.schema import VERSIONS_PREFIX, CoverageManifest  # noqa: E402
-
-RULES: Final[Mapping[str, str]] = {
-    "pinned_index_variable": (
-        "a row naming a variable of graph_release.shadow.PINNED_INDEX_VARIABLES, which the "
-        "release's listed_statvars and source_codes hold and the committed index lacks"
-    ),
-}
-"""Each rule that explains a difference, and why the two paths differ there by construction."""
 
 _ROW_KEYS: Final[Mapping[str, tuple[str, ...]]] = {**INDEX_BLOCK_KEYS, "parties": ("dcid",)}
 """The fields keying a code index block's rows. A list block not named here keys each row by
@@ -114,37 +103,23 @@ class Refused(Exception):
 
 @dataclass
 class Category:
-    """The differences found in one category, the first `limit` of each kind kept."""
+    """The differences found in one category, the first `limit` kept."""
 
     limit: int
     compared: int = 0
     differences: int = 0
-    explained: Counter[str] = field(default_factory=Counter)
     examples: list[object] = field(default_factory=list)
-    explained_examples: list[object] = field(default_factory=list)
 
-    def add(self, difference: object, *, rule: str | None = None) -> None:
+    def add(self, difference: object) -> None:
         self.differences += 1
-        if rule is None:
-            if len(self.examples) < self.limit:
-                self.examples.append(difference)
-            return
-        self.explained[rule] += 1
-        if len(self.explained_examples) < self.limit:
-            self.explained_examples.append({"rule": rule, "difference": difference})
-
-    @property
-    def unexplained(self) -> int:
-        return self.differences - self.explained.total()
+        if len(self.examples) < self.limit:
+            self.examples.append(difference)
 
     def to_json(self) -> dict[str, object]:
         return {
             "compared": self.compared,
             "differences": self.differences,
-            "unexplained": self.unexplained,
-            "explained": dict(sorted(self.explained.items())),
             "examples": self.examples,
-            "explained_examples": self.explained_examples,
         }
 
 
@@ -277,7 +252,7 @@ def code_index_parity(
                 difference = {"key": key, "side": "release_only"}
             else:
                 difference = {"key": key, "side": "both", "fields": _moved_fields(mine, other)}
-            category.add(difference, rule=_explain(mine, other))
+            category.add(difference)
         found[f"code_index.{block}"] = category
     return found
 
@@ -306,14 +281,6 @@ def _moved_fields(ours: object, theirs: object) -> list[str] | None:
     return sorted(
         str(name) for name in ours.keys() | theirs.keys() if ours.get(name) != theirs.get(name)
     )
-
-
-def _explain(ours: object, theirs: object) -> str | None:
-    """The rule of `RULES` that explains why `ours` and `theirs` differ, or `None`."""
-    text = json.dumps([ours, theirs], sort_keys=True)
-    if any(variable in text for variable in PINNED_INDEX_VARIABLES):
-        return "pinned_index_variable"
-    return None
 
 
 # ---------------------------------------------------------------- report
@@ -346,10 +313,10 @@ def parity_report(
 
     document = read_document(release.blobs[CODE_INDEX_PART])
     categories |= code_index_parity(document, export, examples=examples)
-    unexplained = sum(category.unexplained for category in categories.values())
+    differences = sum(category.differences for category in categories.values())
     return {
-        "outcome": "differences" if unexplained else "parity",
-        "unexplained": unexplained,
+        "outcome": "differences" if differences else "parity",
+        "differences": differences,
         "release": _release_summary(release.manifest),
         "coverage_build": _coverage_summary(published.manifest),
         "code_index": {
@@ -357,7 +324,6 @@ def parity_report(
             "export_content_hash": content_hash(_blocks(export)),
             "export_stamp": export.get("stamp"),
         },
-        "rules": dict(RULES),
         "categories": {name: category.to_json() for name, category in sorted(categories.items())},
     }
 
@@ -465,7 +431,7 @@ def main() -> None:
         report = {"outcome": "refused", "refused": {"code": exc.code, "detail": exc.detail}}
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
-    print(json.dumps({"outcome": report["outcome"], "unexplained": report.get("unexplained")}))
+    print(json.dumps({"outcome": report["outcome"], "differences": report.get("differences")}))
     sys.exit({"parity": 0, "differences": 1, "refused": 2}[str(report["outcome"])])
 
 

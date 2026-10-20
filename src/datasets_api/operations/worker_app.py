@@ -52,7 +52,7 @@ from artifact_store import ArtifactStore, LiveArtifactInventory, LiveArtifactSto
 from code_index.shared import get_index
 from dataset_store import DatasetStore, LiveDatasetStore, close_shared_pool, shared_pool
 from dataset_store.snapshot import LiveSnapshotReader
-from datasets_api.admission import MaterialisePermits
+from datasets_api.admission import MaterialisePermits, RebuildFlights
 from datasets_api.config import DatasetsBuildSettings, DatasetsConfigError, DatasetsSettings
 from datasets_api.current import DefinitionDeps
 from datasets_api.generation import enter_shared_generation, register_place_scope_memo
@@ -117,6 +117,7 @@ def _live_deps_factory(
 
     The factory holds no code index, so a run reads the one its bindings give
     (`build_worker_app`), and the enrichment reads party kinds from `get_index()` per lookup.
+    It holds the process's `RebuildFlights`, so every run shares one.
     """
     _settings = settings if settings is not None else DatasetsBuildSettings.from_env()
     return partial(
@@ -138,6 +139,7 @@ def _live_deps_factory(
         head_store=LiveHeadStore(store=store),
         snapshot_reader=LiveSnapshotReader(store=store),
         materialise_semaphore=materialise_semaphore,
+        rebuilds=RebuildFlights(),
         head_recheck_interval=timedelta(seconds=_settings.head_recheck_seconds),
         head_max_age=timedelta(seconds=_settings.head_max_age_seconds),
         variable_breadth=variable_breadth,

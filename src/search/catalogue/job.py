@@ -42,7 +42,10 @@ coverage index's place, and `GRAPH_RELEASE_URI` is required. Step 1 keys on
 the release id the release pointer names, and from step 2 to the end the run
 binds the served release and reads its coverage view. The release id fills
 the build inputs' `coverage_build_id`. The bound release never moves, so
-step 7 publishes a build of the release the run bound.
+step 7 publishes a build of the release the run bound. A run with no release
+to bind, because `GRAPH_RELEASE_URI` is unset, no release is published or the
+release's views do not build, logs `search_catalogue_job_failed` with the
+`reason` and exits 1; the first two end it before the origin catalogue loads.
 
 Environment: `SEARCH_CATALOGUE_URI` (`gs://` or `file://`),
 `ORIGIN_CATALOGUE_URI` and `COVERAGE_ARTIFACT_URI` are required, with the
@@ -62,7 +65,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import asdict
 from datetime import UTC, datetime
-from typing import Final, Protocol
+from typing import TYPE_CHECKING, Final, Protocol
 
 from pydantic import Field
 from pydantic_settings import SettingsConfigDict
@@ -80,6 +83,8 @@ from dc_graph import GraphReadError
 from dfo_platform.build import build_commit
 from graph_release.context import (
     URI_ENV_VAR,
+    ReleaseNotBound,
+    ReleaseViewsNotBuilt,
     bound_served_release,
     coverage_views_enabled,
     optional_release_service,
@@ -122,6 +127,9 @@ from series_coverage.shared import (
     get_coverage_service,
 )
 
+if TYPE_CHECKING:
+    from graph_release.service import ReleaseService
+
 logger = logging.getLogger(__name__)
 
 FLOOR: Final[int] = 5
@@ -144,6 +152,14 @@ class CatalogueFloorError(Exception):
 class CatalogueEngineError(Exception):
     """A check run still failed in the engine after its retry, so the run
     published nothing and recorded no refusal."""
+
+
+class ReleaseUnavailable(Exception):
+    """The run has no graph release to bind; `reason` names why."""
+
+    def __init__(self, reason: str, detail: str) -> None:
+        super().__init__(detail)
+        self.reason = reason
 
 
 class JobSettings(AliasOnlySettings):
@@ -508,14 +524,13 @@ def _pointer_inputs(
     or `None` when the origin pointer is missing or malformed. The service
     serves a fallback build while `current.json` names one its index rejects,
     so the served build keys the run. With `GRAPH_RELEASE_COVERAGE` on, the
-    graph release's pointer names the coverage build, and `None` comes back
-    when no release is published. The loaded catalogue decides the key a
-    build carries; these only let an unchanged run skip loading it."""
+    graph release's pointer names the coverage build, read first, so a run with
+    no release raises `ReleaseUnavailable` whatever the origin pointer holds.
+    The loaded catalogue decides the key a build carries; these only let an
+    unchanged run skip loading it."""
+    served = _pointed_release_id() if coverage_views_enabled() else coverage.manifest.build_id
     origin = read_origin_pointer(settings.origin_catalogue_uri)
     if origin is None:
-        return None
-    served = _pointed_release_id() if coverage_views_enabled() else coverage.manifest.build_id
-    if served is None:
         return None
     return BuildInputs(
         origin_catalogue_build_id=origin.build_id,
@@ -525,20 +540,37 @@ def _pointer_inputs(
     )
 
 
-def _pointed_release_id() -> str | None:
-    """The release id the pointer under `GRAPH_RELEASE_URI` names, or `None`
-    when no release is published. Reads the pointer alone, so an unchanged run
-    opens no release. Raises `ReleaseUriMissingError` when the variable is
-    unset or blank."""
-    # Both modules import NumPy and pyarrow, which only this path needs.
-    from graph_release.format import read_pointer as read_release_pointer
-    from graph_release.service import ReleaseUriMissingError
-
+def _pointed_release_id() -> str:
+    """The release id the pointer under `GRAPH_RELEASE_URI` names. Reads the
+    pointer alone, so an unchanged run opens no release. Raises
+    `ReleaseUnavailable` when the variable is unset or blank
+    (`release_uri_missing`) and when no release is published (`no_release`)."""
     uri = release_uri()
     if uri is None:
-        raise ReleaseUriMissingError(f"{URI_ENV_VAR} is not set")
+        raise ReleaseUnavailable("release_uri_missing", f"{URI_ENV_VAR} is not set")
+    # The module imports NumPy and pyarrow, which only this path needs.
+    from graph_release.format import read_pointer as read_release_pointer
+
     pointer = read_release_pointer(uri)
-    return None if pointer is None else pointer.release_id
+    if pointer is None:
+        raise ReleaseUnavailable("no_release", f"no release pointer under {uri!r}")
+    return pointer.release_id
+
+
+def _release_service() -> ReleaseService | None:
+    """`optional_release_service()`, raising `ReleaseUnavailable` when no release
+    is published (`no_release`) or its views do not build (`views_refused`)."""
+    if release_uri() is None:
+        return None
+    # The module imports NumPy and pyarrow, which only a configured release needs.
+    from graph_release.views import ViewRefused
+
+    try:
+        return optional_release_service()
+    except FileNotFoundError as exc:
+        raise ReleaseUnavailable("no_release", str(exc)) from exc
+    except ViewRefused as exc:
+        raise ReleaseUnavailable("views_refused", str(exc)) from exc
 
 
 def _load_origin_catalogue(settings: JobSettings) -> CatalogueSnapshot:
@@ -608,7 +640,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         # The release is bound before the engine is built, since its construction reads the
         # code index.
         with (
-            bound_served_release(optional_release_service()),
+            bound_served_release(_release_service()),
             _live_engine() as (resolve, place_names),
             bound_catalogue(catalogue),
         ):
@@ -629,6 +661,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     except CatalogueEngineError as exc:
         logger.error("search catalogue job failed: %s", exc)
         return 1
+    except ReleaseUnavailable as exc:
+        emit("search_catalogue_job_failed", severity="ERROR", reason=exc.reason, error=str(exc))
+        logger.error("search catalogue job failed: %s", exc)
+        return 1
     except (
         ArtifactUriError,
         CatalogueArtifactError,
@@ -638,6 +674,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         ExamplesError,
         GraphReadError,
         OriginArtifactError,
+        ReleaseNotBound,
+        ReleaseViewsNotBuilt,
     ) as exc:
         emit("search_catalogue_job_failed", severity="ERROR", error=str(exc))
         logger.error("search catalogue job failed: %s", exc)
@@ -657,6 +695,7 @@ __all__ = [
     "CoverageSource",
     "JobSettings",
     "PlaceNames",
+    "ReleaseUnavailable",
     "main",
     "nothing_to_build",
     "run",

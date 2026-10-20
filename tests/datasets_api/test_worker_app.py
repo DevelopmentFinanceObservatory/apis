@@ -785,6 +785,13 @@ class TestLiveDefinitionDepsConstruction:
         assert "code_index" not in factory.keywords
         assert factory(code_index=index).code_index is index
 
+    def test_runs_share_the_process_rebuild_flights(self):
+        """One head-advancing rebuild per subject at a time holds across the process's runs."""
+        factory = self._factory()
+        index = get_index()
+
+        assert factory(code_index=index).rebuilds is factory(code_index=index).rebuilds
+
     def test_snapshot_reader_is_live(self):
         """`run_operation` reads artifact locations through it before completing a row."""
         assert isinstance(self._deps().snapshot_reader, LiveSnapshotReader)

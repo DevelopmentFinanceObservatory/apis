@@ -160,7 +160,7 @@ uv run python scripts/graph_release_parity.py \
     --out parity-dev.json
 ```
 
-It refuses with exit 2 and a `refused.code` when the coverage build and the release come from different ingestion executions (`import_mismatch`, `coverage_ingestion_unrecorded`), when the checkout's declarations hash differs from the release's (`declarations_moved`), when the DC service serves another revision than the release read (`serving_revision_moved`), or when the export refuses (`export_refused`). Otherwise the JSON report counts, per category, the items compared, the differences, those a named rule explains and the first `--examples` of each; the exit status is 0 when no difference is unexplained and 1 when one is. On dev it takes about 15 minutes, nearly all of them the export's mixer reads.
+It refuses with exit 2 and a `refused.code` when the coverage build and the release come from different ingestion executions (`import_mismatch`, `coverage_ingestion_unrecorded`), when the checkout's declarations hash differs from the release's (`declarations_moved`), when the DC service serves another revision than the release read (`serving_revision_moved`), or when the export refuses (`export_refused`). Otherwise the JSON report counts, per category, the items compared and the differences, with the first `--examples` of them; the exit status is 0 when nothing differs and 1 when anything does. On dev it takes about 15 minutes, nearly all of them the export's mixer reads.
 
 Needs Google credentials that read both buckets and `run.services.get` on the DC service, and `SEARCH_GRAPH_TOKEN` on a token-gated mixer. Run by hand on each environment before its `GRAPH_RELEASE_COVERAGE` flag is switched on.
 
