@@ -81,6 +81,7 @@ from search.engine.region.result import (
     source_code_refusal_result,
 )
 from search.engine.region.status_rule import CLOSED_AXES, OpenAxes, StatusPlan
+from search.engine.region.whole_totals import whole_total_warnings
 from search.engine.retrieval.bound_values import (
     MeasurePartition,
     RoleClassWalks,
@@ -1377,8 +1378,8 @@ class ResolveState:
         `unanswerable` when one did and the part still could not be answered from it.
 
         The part holds `flagged_match` and `alternate_match`, so those Specs raise
-        `family_total_absent`. `elected_stat_vars` names members without a
-        Spec and raises none.
+        `family_total_absent` and `whole_total_available` (`whole_totals.whole_total_warnings`).
+        `elected_stat_vars` names members without a Spec and raises none.
         """
         if (refused := self.source_code_no_data(reason, llm_usage=llm_usage)) is not None:
             return refused
@@ -1386,9 +1387,8 @@ class ResolveState:
             _shape, _mat_result, _place = self.shape_draft, self.mat_result, self.place
         else:
             _shape, _mat_result, _place = candidate.shape, candidate.mat, candidate.place
-        family = self.family_total_absent_departures(
-            [*(flagged_match or ()), *([alternate_match] if alternate_match else [])]
-        )
+        matches = [*(flagged_match or ()), *([alternate_match] if alternate_match else [])]
+        family = self.family_total_absent_departures(matches)
         # Report an open role axis only when materialisation's own no-observation
         # result confirms the discovery gap; later refusals may follow successful discovery.
         return RegionResult(
@@ -1396,7 +1396,15 @@ class ResolveState:
             status="no_data",
             specs=(),
             no_data_reason=reason,
-            warnings=(*self.warnings, *(warning for warning, _fact in family)),
+            warnings=(
+                *self.warnings,
+                *(warning for warning, _fact in family),
+                *(
+                    warning
+                    for match in matches
+                    for warning in whole_total_warnings(match, coverage=self.coverage.index)
+                ),
+            ),
             departure_facts={**self.departure_facts, **raised_facts(family)},
             timing_by_step=dict(self.timing),
             flagged_match=flagged_match,

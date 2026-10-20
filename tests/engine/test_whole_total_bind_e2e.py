@@ -725,6 +725,53 @@ def test_official_donors_covering_the_alternate_alone_refuses_with_the_alternate
     assert _no_donor_named_warnings(answer) == []
 
 
+def test_an_alternate_match_states_the_total_its_reading_lists_beside(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The bind elects the CRS commitments shape for aid to Ethiopia from every donor and
+    nominates DAC2a's official development assistance shape beside it. Coverage holds
+    series in DAC2a alone, so the part refuses `no_observations` and offers DAC2a's reading
+    as its match (`only_alternate_has_data`). That reading lists its donors, and DAC2a
+    publishes the official donors' total with a series to Ethiopia, so the part states the
+    total, stamped with the match, as the match's definite answer would."""
+    names = RoleNames(donor="financingProvider", recipient="financingRecipient")
+    patch_coverage(
+        monkeypatch,
+        [
+            (_DAC2A_MEMBER, "dac2a", _OFFICIAL, _ETH, [2021]),
+            (_DAC2A_MEMBER, "dac2a", _FRA, _ETH, [2021]),
+        ],
+        role_names=dict.fromkeys((_COMMITMENTS_MEMBER, _DAC2A_MEMBER), names),
+        facet_metadata={"dac2a": FacetMetadata(provenance_id=_DAC2A, unit="USD")},
+    )
+    part = {"entities": [_TO_ETHIOPIA], "open_roles": ["donor"], "time": "2021", "variable": "aid"}
+
+    response = offline_resolve(
+        _parsed(part),
+        graph=_graph(members=(_COMMITMENTS_MEMBER, _DAC2A_MEMBER), variable="aid"),
+        llm=_ScriptedLLM("aid", also_plausible=[1]),
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+    )
+
+    assert isinstance(response, Resolution), response
+    (answer,) = response.parts
+    assert isinstance(answer, NoDataPart), answer
+    assert answer.no_data.gate == "only_alternate_has_data"
+    match = answer.no_data.alternate_match
+    assert match is not None
+    assert match.definition.identity.entities == {"destination": [_ETH]}
+    assert [
+        (warning.spec_id, warning.params)
+        for warning in answer.warnings
+        if warning.code == "whole_total_available"
+    ] == [
+        (
+            match.spec_id,
+            {"total": _OFFICIAL, "total_label": "official donors (DAC)", "whole_of": "official"},
+        )
+    ]
+
+
 def test_a_donor_named_alone_binds_no_whole_total(monkeypatch: pytest.MonkeyPatch):
     """ "Private donors" names the private donors' total, which holds private donors alone,
     as a party: it binds as named and carries no whole population."""
@@ -1056,22 +1103,11 @@ def test_a_place_named_without_a_direction_reads_the_total_its_direction_leaves(
     assert (_whole_read(answer) is not None) == official
 
 
-@pytest.mark.parametrize(
-    ("aid_type", "origin"),
-    [
-        pytest.param("own", [_OFFICIAL], id="total-held-for-its-aid-type"),
-        pytest.param("207", None, id="total-held-for-another-aid-type"),
-    ],
-)
-def test_an_alternate_judges_the_total_under_its_own_bindings(
-    monkeypatch: pytest.MonkeyPatch, aid_type: str, origin: list[str] | None
-):
-    """France named with no direction holds data as a donor and as a recipient, so the
-    answer reads it as the donor to all recipients and offers the recipient reading beside
-    it, an alternate walked under its own representative's bindings. That alternate's
-    donor side binds the official donors' total only where coverage holds a series at it
-    for the aid type those bindings bind; held for another aid type alone, the side is left
-    to its donors, as Germany's series to France serves."""
+def _france_coverage(monkeypatch: pytest.MonkeyPatch, *, aid_type: str = "own") -> None:
+    """DAC2a holds series in 2021 to France from Germany and from the official donors'
+    total, the latter for the official development assistance member's own aid type or for
+    `aid_type`, and from France to every recipient and to Ethiopia; the CRS holds France's
+    series to Ethiopia."""
     bound = _DAC2A_MEMBER.split("AidType")[1].split("_")[0]
     held = (
         _DAC2A_MEMBER
@@ -1095,6 +1131,25 @@ def test_an_alternate_judges_the_total_under_its_own_bindings(
         },
     )
 
+
+@pytest.mark.parametrize(
+    ("aid_type", "origin"),
+    [
+        pytest.param("own", [_OFFICIAL], id="total-held-for-its-aid-type"),
+        pytest.param("207", None, id="total-held-for-another-aid-type"),
+    ],
+)
+def test_an_alternate_judges_the_total_under_its_own_bindings(
+    monkeypatch: pytest.MonkeyPatch, aid_type: str, origin: list[str] | None
+):
+    """France named with no direction holds data as a donor and as a recipient, so the
+    answer reads it as the donor to all recipients and offers the recipient reading beside
+    it, an alternate walked under its own representative's bindings. That alternate's
+    donor side binds the official donors' total only where coverage holds a series at it
+    for the aid type those bindings bind; held for another aid type alone, the side is left
+    to its donors, as Germany's series to France serves."""
+    _france_coverage(monkeypatch, aid_type=aid_type)
+
     response = _resolve({"entities": [{"text": "France"}], "time": "2021", "variable": _VARIABLE})
 
     assert isinstance(response, Resolution), response
@@ -1105,6 +1160,66 @@ def test_an_alternate_judges_the_total_under_its_own_bindings(
         {"destination": [_ALL_RECIPIENTS], "origin": [_FRA]},
         {"destination": [_FRA], **({} if origin is None else {"origin": origin})},
     ]
+
+
+@pytest.mark.parametrize(
+    ("open_role", "listed", "params"),
+    [
+        pytest.param(
+            "donor",
+            {"destination": [_FRA]},
+            {
+                "total": _OFFICIAL,
+                "total_label": "official donors (DAC)",
+                "whole_of": "official",
+            },
+            id="donors-listed",
+        ),
+        pytest.param(
+            "recipient",
+            {"origin": [_FRA]},
+            {
+                "total": _ALL_RECIPIENTS,
+                "total_label": "all recipients (DAC)",
+                "whole_of": "official,residual",
+            },
+            id="recipients-listed",
+        ),
+    ],
+)
+def test_a_candidate_set_states_the_total_beside_the_reading_that_lists_its_side(
+    monkeypatch: pytest.MonkeyPatch,
+    open_role: str,
+    listed: dict[str, list[str]],
+    params: dict[str, str],
+):
+    """France named with no direction offers a reading of each direction. Opening one role
+    lists that side member by member in the reading where France stands on the other side,
+    and DAC2a publishes that side's total with a series beside France, so the set states
+    the total once, stamped with that reading, as a definite answer does."""
+    _france_coverage(monkeypatch)
+
+    response = _resolve(
+        {
+            "entities": [{"text": "France"}],
+            "open_roles": [open_role],
+            "time": "2021",
+            "variable": _VARIABLE,
+        }
+    )
+
+    assert isinstance(response, Resolution), response
+    (part,) = response.parts
+    assert isinstance(part, CandidatesPart), part
+    (reading,) = [
+        spec for spec in part.candidates.specs if spec.definition.identity.entities == listed
+    ]
+    stated = [
+        (warning.spec_id, warning.params)
+        for warning in part.warnings
+        if warning.code == "whole_total_available"
+    ]
+    assert stated == [(reading.spec_id, params)]
 
 
 # DAC2a's gross imputed multilateral aid, a shape of its own beside the official
