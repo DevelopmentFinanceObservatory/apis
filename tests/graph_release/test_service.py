@@ -10,6 +10,7 @@ import asyncio
 import dataclasses
 import gc
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -343,18 +344,68 @@ class TestViews:
             _service(root, local_dir, clock=_Clock(), build_views=True)
         assert list(local_dir.iterdir()) == []
 
+    def test_a_swap_builds_the_new_views_only_once_every_permit_is_held(
+        self, root: str, local_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The views are heap that would sit beside the old release's and every frame being
+        built, so a swap builds them inside the guard, after a running materialisation has
+        given its permit back."""
+        build_test_release(root, tables=sample_tables())
+        clock = _Clock()
+        permits = MaterialisePermits(1)
+        loaded = threading.Event()
+        # Whether a materialisation could take a permit as each release's views were built.
+        permit_free: list[bool] = []
+
+        def loader(root_uri: str, *, local_dir: Path, release_id: str | None = None):
+            opened = open_release(root_uri, local_dir=local_dir, release_id=release_id)
+            loaded.set()
+            return opened
+
+        def build_views(_loaded) -> object:
+            free = permits.acquire(timeout=0)
+            if free:
+                permits.release()
+            permit_free.append(free)
+            return object()
+
+        monkeypatch.setattr(service_module, "build_release_views", build_views)
+        service = _service(root, local_dir, clock=clock, loader=loader, build_views=True)
+        service.register_swap_guard(permits.every_permit)
+        loaded.clear()
+        second = build_test_release(root, tables=_other_tables())
+
+        assert permits.acquire(timeout=0)
+        clock.now += _RECHECK
+        service.snapshot()
+        assert loaded.wait(5)
+        time.sleep(0.2)
+        assert permit_free == [True], "the new views were built while a permit was held"
+        permits.release()
+        service.close()
+
+        assert service.snapshot().release_id == second.release_id
+        assert permit_free == [True, False]
+
     def test_a_recheck_keeps_the_served_release_when_the_new_views_do_not_build(
         self, root: str, local_dir: Path
     ):
+        """The views fail inside the guard, which the recheck then leaves, and the new
+        release's own files are unlinked."""
         first = build_view_release(root)
         clock = _Clock()
         service = _service(root, local_dir, clock=clock, build_views=True)
+        permits = MaterialisePermits(1)
+        service.register_swap_guard(permits.every_permit)
         build_test_release(root, tables=sample_tables())
 
         served = _recheck(service, clock)
 
         assert served.release_id == first.release_id
         assert served.views is not None
+        assert permits.acquire(timeout=0)
+        gc.collect()
+        assert {path.name for path in local_dir.iterdir()} == _files(first)
 
 
 class TestProcessService:

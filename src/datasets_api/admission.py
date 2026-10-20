@@ -13,6 +13,14 @@ replaced index within `STALE_CHECK_SECONDS` of the reload. Before it waits, a re
 hold a replaced index for as long as its head checks, its graph reads, member resolution, the
 estimate and the budget decision take, beside the frames of the requests that hold permits.
 
+With `GRAPH_RELEASE_COVERAGE` on, a request reads the code index and coverage of the graph
+release it bound at entry, and a release swap holds every permit. A request whose bound release
+the service no longer serves (`graph_release.service.Release.served`) is refused with retryable
+`MintBackpressure` at the same checks, so it takes no permit or rebuild turn beside both
+releases' views. It cannot start again on the served release instead, since its doors resolve
+members, read heads and capture the code index before `under_current_coverage`, and a restart
+would mix those with the new release's coverage. A retry binds the served release at entry.
+
 A permit covers a frame for as long as its work runs. An error's traceback can keep the frame
 until the door has answered the error, after the permit is released.
 
@@ -53,6 +61,7 @@ from datasets_api.mint_models import MintOptions
 from datasets_api.output_options import movable_totals_roles
 from datasets_api.timings import count, phase
 from dc_sdmx import ContainedIn
+from graph_release.context import bound_release_or_none, coverage_views_enabled
 from materialise.errors import OverCeilingError
 from materialise.formats import EXCEL_MAX_ROWS, ExcelLimitError, check_excel_rows
 from materialise.generation import (
@@ -101,6 +110,22 @@ def _sliced_wait(
         if remaining <= STALE_CHECK_SECONDS:
             return False
     return False
+
+
+def _admission_check(coverage_current: Callable[[], bool] | None) -> Callable[[], bool] | None:
+    """`coverage_current`, preceded by a check that raises `MintBackpressure` once the service
+    no longer serves the graph release bound to the request. Returns `coverage_current` itself
+    with `GRAPH_RELEASE_COVERAGE` off or no release bound."""
+    release = bound_release_or_none() if coverage_views_enabled() else None
+    if release is None:
+        return coverage_current
+
+    def current() -> bool:
+        if not release.served:
+            raise MintBackpressure()
+        return coverage_current is None or coverage_current()
+
+    return current
 
 
 class MaterialisePermits:
@@ -199,6 +224,10 @@ def bounded_materialise_slot(
     releases the permit and raises the same. Every check runs inside the `materialise_wait`
     phase. A caller that takes its snapshot inside the slot passes none.
 
+    With `GRAPH_RELEASE_COVERAGE` on and a graph release bound, every one of those checks
+    first raises `MintBackpressure` once the service no longer serves that release, whether
+    or not the caller passes `coverage_current` (`_admission_check`).
+
     The permit covers a frame for as long as the work inside the slot runs. The function that
     enters the slot binds no frame in its own locals, so a slot that ends without an error
     releases its permit with the frame freed. An error's traceback can keep the frame until
@@ -207,6 +236,7 @@ def bounded_materialise_slot(
     if materialise_semaphore is None:
         yield
         return
+    coverage_current = _admission_check(coverage_current)
     _wait_seconds = float(wait_seconds)
     if deadline is not None:
         _wait_seconds = max(0.0, min(_wait_seconds, deadline - time.monotonic()))
@@ -310,8 +340,11 @@ class RebuildFlights:
         served one (`CoverageService.serves`). It is asked every `STALE_CHECK_SECONDS` of the
         wait (`_sliced_wait`), and a wait that ended on a false answer raises
         `StaleCoverageSnapshot` (`under_current_coverage`), so a waiting caller drops a
-        replaced index within one such slice while the rebuild it waits on still runs.
+        replaced index within one such slice while the rebuild it waits on still runs. A
+        request whose bound graph release the service no longer serves gets `MintBackpressure`
+        at the same checks (`_admission_check`).
         """
+        coverage_current = _admission_check(coverage_current)
         finished = threading.Event()
         running = self._claim(subject_id, finished)
         waited = running is not None

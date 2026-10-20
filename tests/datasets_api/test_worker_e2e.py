@@ -25,6 +25,7 @@ from datasets_api.operations.task_client import FakeTaskClient
 from datasets_api.operations.worker_app import build_worker_app
 from datasets_api.version_store import LiveHeadStore, LiveVersionRecordWriter
 from dc_sdmx import SdmxClient
+from graph_release.service import ReleaseService
 from materialise import EnrichmentLookup
 from materialise.rate_tables import RateTableCache
 from series_coverage.shared import CoverageSnapshot
@@ -36,7 +37,13 @@ from tests.engine._fake_coverage import FakeCoverageService
 from ._app_factories import make_client
 from ._version_record_store import FakeVersionRecordDatasetStore
 from .conftest import FakeDatasetStore
-from .test_materialise_semaphore import _CoverageBuilds, _PermitLog, _reloading_permit
+from .test_materialise_semaphore import (
+    _CoverageBuilds,
+    _PermitLog,
+    _reloading_permit,
+    _SwapBeforePermit,
+    _swapping_release,
+)
 from .test_mint_statvar_set import _CSV_BODY, _HAPPY_PATH_BODY, _coverage_service, _graph
 from .test_pin_door import FakeArtifactReferenceWriter
 from .test_snapshot_lifecycle import _InventoryRecordingArtifactStore
@@ -74,11 +81,13 @@ def api_and_worker(
     coverage: Callable[[], FakeCoverageService],
     worker_coverage: object | None = None,
     worker_permits: MaterialisePermits | None = None,
+    worker_release: ReleaseService | None = None,
 ) -> tuple[TestClient, LiveOperationStore, list[tuple[str, int]]]:
     """The API app and a worker app sharing stores, head store and graph, as the two services
     do in deployment. The fake queue runs each enqueued operation on the worker inline and
     records it in the returned list. `worker_coverage` and `worker_permits` replace the
-    worker's static coverage and its one permit."""
+    worker's static coverage and its one permit. `worker_release` is the graph release
+    service each run binds from."""
     store = FakeDatasetStore()
     version_store = FakeVersionRecordDatasetStore()
     head_store = LiveHeadStore(store=version_store)
@@ -124,6 +133,7 @@ def api_and_worker(
             oidc_verifier=FakeOidcVerifier(),
             worker_url=_WORKER_URL,
             worker_invoker_service_account=_INVOKER,
+            release=worker_release,
         )
     )
 
@@ -327,3 +337,38 @@ def test_a_worker_run_whose_snapshot_a_reload_replaced_materialises_on_the_serve
     kinds_logged = [kind for kind in log.kinds() if kind != "write"]
     assert kinds_logged[:5] == ["reload", "acquire", "release", "acquire", "sdmx"]
     assert kinds_logged.count("acquire") == kinds_logged.count("release") == 2
+
+
+def test_a_worker_run_bound_to_a_swapped_out_release_takes_no_permit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    """The run bound the first release at delivery, and the service swapped to the second
+    before the run's permit. The run resolved its members from the first release's code index,
+    so it takes no permit and fetches nothing, and the operation is left for a later delivery,
+    which binds the served release."""
+    monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1")
+    log = _PermitLog()
+    permit = _SwapBeforePermit(1, log=log)
+    release, swap = _swapping_release(monkeypatch, tmp_path)
+    # The worker's lifespan registers the same guard.
+    release.register_swap_guard(permit.every_permit)
+    requests: list[httpx.Request] = []
+    api_client, operation_store, forwarded = api_and_worker(
+        graph=_graph(),
+        sdmx=lambda: SdmxClient(base_url=_BASE_URL, transport=_sdmx_transport(requests)),
+        coverage=_coverage_service,
+        worker_permits=permit,
+        worker_release=release,
+    )
+    monkeypatch.setattr(kinds.spec_id, "within_sync_budget", lambda estimate, **_: False)
+    permit.before_acquire = swap
+
+    submitted = api_client.post("/api/datasets", json=_HAPPY_PATH_BODY)
+
+    assert submitted.status_code == 202, submitted.text
+    stored = operation_store.get(submitted.json()["operation"]["operation_id"])
+    # Released for redelivery, as a transient failure before the final attempt is.
+    assert stored is not None and stored.state == "pending"
+    assert len(forwarded) == 1
+    assert log.kinds() == ["swap"]
+    assert requests == []

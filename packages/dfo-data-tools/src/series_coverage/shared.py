@@ -46,7 +46,9 @@ serves the coverage view of the release bound to the current request or operatio
 (`graph_release.context.current_views`), whose code index comes from the same release, so no
 compatibility check runs. Its stamp and build id are the release id. A release swap holds every
 materialise permit through the release service's swap guard (`ReleaseService.register_swap_guard`),
-so `ReleaseCoverage` registers no load guard of its own.
+so `ReleaseCoverage` registers no load guard of its own. A request still bound to the replaced
+release is refused at the Datasets admission checks rather than restarted, since it read its
+code index from that release.
 
 For the 1,782,460-row artifact, a full load takes 0.43 to 0.47 s and two
 concurrent loads use up to 1.72 GiB. The compatibility check over 22,208
@@ -498,8 +500,10 @@ class ReleaseCoverage:
 
     def serves(self, snapshot: CoverageSnapshot) -> bool:
         """Whether `snapshot` holds the bound release's coverage index. A request keeps its
-        release across a swap, and with it the index, so a snapshot it took stays served to it.
-        A replaced snapshot here would come back from every retry of the same request."""
+        release across a swap, and with it the index, so a snapshot it took stays served to it,
+        and a replaced snapshot here would come back from every retry of the same request. The
+        Datasets admission checks refuse a request whose bound release the release service no
+        longer serves (`graph_release.service.Release.served`) before they ask this."""
         return snapshot.index is self.current()
 
     def register_load_guard(

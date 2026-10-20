@@ -6,13 +6,16 @@ construction. `snapshot()` returns the served release without I/O and, at
 most once per `recheck_seconds`, starts a daemon thread that reads the pointer.
 The recheck is request-triggered because background loops starve when
 `cpu_idle=true`, as in `series_coverage.shared`. When the pointer has moved,
-the thread downloads and opens the new release beside the old one, then
-enters every registered swap guard only to flip the served release. The
-download needs no guard, since the local directory is an in-memory filesystem
-on Cloud Run and the files are resident whether or not a guard is held. On the
-Datasets surface and its worker the guard is `MaterialisePermits.every_permit`,
-so the flip waits for the frames being built to finish. A failed recheck
-keeps the served release and logs.
+the thread downloads and maps the new release beside the old one, then
+enters every registered swap guard to build its views and flip the served
+release. The download needs no guard, since the local directory is an
+in-memory filesystem on Cloud Run and the files are resident whether or not a
+guard is held. The views live on the heap, where they would otherwise sit
+beside the old release's views and every frame being built. On the Datasets
+surface and its worker the guard is `MaterialisePermits.every_permit`, so the
+build and the flip wait for those frames to finish, and no frame starts until
+the flip ends. A failed recheck keeps the served release, leaves the guards
+and logs.
 
 Parts live in one `local_dir` by content hash, so consecutive releases share
 the files they have in common. A release holds the files its loader read
@@ -26,10 +29,15 @@ stay resident.
 With `build_views`, which `get_release_service()` sets from `GRAPH_RELEASE_COVERAGE`
 (`graph_release.context.coverage_views_enabled`), opening a release also builds its serving
 views (`graph_release.views`): the code index, the measure index and the `CoverageIndex`. They
-are built in the thread that opens the release, so at construction or in the recheck before
-the flip, and live on the `Release`, so they die with it. A release whose views do not build is
-refused as an unreadable one is. Construction raises, and a recheck keeps the served release.
-Without `build_views` a `Release` maps the parts and builds nothing.
+are built in the thread that opens the release, so at construction or in the recheck inside the
+swap guards, and live on the `Release`, so they die with it. A release whose views do not build
+is refused as an unreadable one is, and its files are unlinked. Construction raises, and a
+recheck keeps the served release. Without `build_views` a `Release` maps the parts and builds
+nothing.
+
+A `Release` the service opened knows whether the service still serves it (`Release.served`),
+so a request bound to a replaced release can refuse rather than build a frame beside both
+releases' views (`series_coverage.shared.ReleaseCoverage.serves`).
 """
 
 from __future__ import annotations
@@ -43,7 +51,7 @@ import weakref
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import AbstractContextManager, ExitStack, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
@@ -98,10 +106,18 @@ def build_release_views(loaded: LoadedRelease) -> ReleaseViews:
 @dataclass(frozen=True, eq=False)
 class Release:
     """One mapped release and, when its service builds them, its serving views. Requests and
-    operations hold it for their lifetime through `graph_release.context`."""
+    operations hold it for their lifetime through `graph_release.context`. `service` is the
+    service that opened it, `None` for a release built outside one."""
 
     loaded: LoadedRelease
     views: ReleaseViews | None = None
+    service: ReleaseService | None = field(default=None, repr=False)
+
+    @property
+    def served(self) -> bool:
+        """Whether the service that opened this release still serves it. A release built
+        outside a service is always served."""
+        return self.service is None or self.service.serves(self)
 
     @property
     def manifest(self) -> Manifest:
@@ -214,7 +230,9 @@ class ReleaseService:
         self._swap_callbacks: tuple[Callable[[Release], None], ...] = ()
         self._consecutive_failures = 0
         # `snapshot()` reads this reference lock-free. The GIL makes its assignment atomic.
-        self._served = _Served(release=self._open(release_id=None), checked_at=clock())
+        self._served = _Served(
+            release=self._release(self._load(release_id=None)), checked_at=clock()
+        )
 
     def snapshot(self) -> Release:
         """The served release, without waiting for I/O. Starts a due pointer
@@ -222,12 +240,17 @@ class ReleaseService:
         self._maybe_start_recheck()
         return self._served.release
 
+    def serves(self, release: Release) -> bool:
+        """Whether `release` is the served release, without starting a recheck."""
+        return self._served.release is release
+
     def register_swap_guard(
         self, guard: Callable[[], AbstractContextManager[object]]
     ) -> Callable[[], None]:
-        """Runs every later flip inside a fresh `guard()`, entered once the new
-        release is open and left once the service serves it and holds no
-        reference to the old one. Returns the function that unregisters it."""
+        """Runs every later view build and flip inside a fresh `guard()`, entered
+        once the new release's parts are mapped and left once the service serves
+        it and holds no reference to the old one, or once its views fail to
+        build. Returns the function that unregisters it."""
         with self._hooks_lock:
             self._swap_guards = (*self._swap_guards, guard)
 
@@ -250,17 +273,27 @@ class ReleaseService:
         if future is not None:
             future.result()
 
-    def _open(self, *, release_id: str | None) -> Release:
+    def _load(self, *, release_id: str | None) -> LoadedRelease:
+        """Downloads and maps a release's parts and holds their files. Pass the result to
+        `_release`, which drops them again when the views do not build."""
         with self._files.loading():
             try:
                 loaded = self._loader(self._uri, local_dir=self._local_dir, release_id=release_id)
-                views = build_release_views(loaded) if self._build_views else None
             except Exception:
                 self._files.unlink_unheld()
                 raise
-            release = Release(loaded=loaded, views=views)
-            names = loaded.file_names
-            self._files.hold(names)
+            self._files.hold(loaded.file_names)
+        return loaded
+
+    def _release(self, loaded: LoadedRelease) -> Release:
+        """`loaded` with its views, holding its files until the release dies."""
+        names = loaded.file_names
+        try:
+            views = build_release_views(loaded) if self._build_views else None
+        except Exception:
+            self._files.drop(names)
+            raise
+        release = Release(loaded=loaded, views=views, service=self)
         weakref.finalize(release, self._files.drop, names)
         return release
 
@@ -302,12 +335,18 @@ class ReleaseService:
             if pointer.release_id == replaced:
                 self._served = _Served(release=served, checked_at=self._clock())
                 return
-            release = self._open(release_id=pointer.release_id)
+            loaded = self._load(release_id=pointer.release_id)
             with ExitStack() as guards:
                 with self._hooks_lock:
                     registered, callbacks = self._swap_guards, self._swap_callbacks
-                for guard in registered:
-                    guards.enter_context(guard())
+                try:
+                    for guard in registered:
+                        guards.enter_context(guard())
+                except Exception:
+                    self._files.drop(loaded.file_names)
+                    raise
+                # The views build inside the guards, so they are never resident beside a frame.
+                release = self._release(loaded)
                 self._served = _Served(release=release, checked_at=self._clock())
                 del served
             logger.info(
