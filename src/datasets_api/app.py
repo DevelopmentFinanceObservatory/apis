@@ -9,16 +9,18 @@ Routes include `GET /api/datasets/healthz`, `/api/datasets/schema`,
 `/api/datasets/capabilities`, `/api/datasets/operations/{operation_id}`,
 `GET /api/datasets/{spec_id}/{content_version}/observations`,
 `GET /api/datasets/{spec_id}/{content_version}/files/{digest}`,
+`GET /api/datasets/{spec_id}/{content_version}/file`,
 `GET /api/datasets/{id}/{content_version}/description` and its `/values` page for a `spec_` or
 `ops_` id, `POST /api/datasets/register`,
 `POST /api/datasets`, `POST /api/datasets/frames/publish`, `POST /api/datasets/frames/refresh`,
-and the recipe door's
-`PUT` and `GET /api/datasets/frames/{spec_id}/{content_version}/recipe`,
+the recipe door's
+`PUT` and `GET /api/datasets/frames/{spec_id}/{content_version}/recipe` and
 `GET /api/datasets/recipes/replays/{replay_key}`, and `GET /api/datasets/{spec_id}/versions`.
 Registration stores definitions for later materialisation. The mint route handles four input
-kinds. Publish records derived `ops_`/`ocv_` frames, and the recipe door keeps their recipes. It
-mounts before the snapshot door, whose `GET /api/datasets/{spec_id}/{content_version}` would
-otherwise read `versions` as a content version. Unknown operation ids return `operation_not_found`. Other errors use RFC 9457
+kinds. Publish records derived `ops_`/`ocv_` frames, and the recipe door keeps their recipes.
+The versions door mounts before the snapshot door, whose
+`GET /api/datasets/{spec_id}/{content_version}` would otherwise read `versions` as a content
+version. Unknown operation ids return `operation_not_found`. Other errors use RFC 9457
 problem details.
 
 Callers reach the API through the website's proxy, which may answer a per-IP `429` and passes
@@ -64,6 +66,7 @@ from datasets_api.doors.register import (
     classify_register_exception,
 )
 from datasets_api.doors.snapshot import build_snapshot_door
+from datasets_api.doors.versions import build_versions_door
 from datasets_api.operation_store import OperationStore, classify_operation_store_exception
 from datasets_api.operations.task_client import TaskClient
 from datasets_api.recipe_store import RecipeStore
@@ -179,6 +182,7 @@ def datasets_surface(
             build_recipe_door(
                 deps=cell, settings=_settings, allowed_principals=publish_allowed_principals
             ),
+            build_versions_door(deps=cell),
             build_snapshot_door(deps=cell),
             build_description_door(deps=cell),
             build_files_door(deps=cell),
