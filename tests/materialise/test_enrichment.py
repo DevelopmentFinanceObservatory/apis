@@ -90,7 +90,7 @@ def test_a_partys_kind_comes_from_its_index_row_whatever_its_graph_types():
         graph,
         parties=lambda: {
             "WorldBankGroup": PartyRow(dcid="WorldBankGroup", kind="total"),
-            "Bare": PartyRow(dcid="Bare", kind="residual"),
+            "Bare": PartyRow(dcid="Bare", kind="residual", party_class="residual"),
         },
     )
 
@@ -130,13 +130,13 @@ _DAC2B = "provenance/OECDDAC2B"
 _ETHIOPIA_2021_PARTIES = {
     row.dcid: row
     for row in (
-        PartyRow(dcid="country/FRA", kind="party", sector="official"),
-        PartyRow(dcid="GatesFoundation", kind="party", sector="private"),
+        PartyRow(dcid="country/FRA", kind="party", party_class="official"),
+        PartyRow(dcid="GatesFoundation", kind="party", party_class="private"),
         PartyRow(dcid="DACCountriesTotal", kind="total"),
         PartyRow(
             dcid="DACOfficialDonors",
             kind="total",
-            sector="official",
+            party_class="official",
             whole=(
                 WholeMarker(dataset=_DAC2A, covers=("official",)),
                 WholeMarker(dataset=_DAC2B, covers=("official",)),
@@ -145,16 +145,16 @@ _ETHIOPIA_2021_PARTIES = {
         PartyRow(
             dcid="DACPrivateDonors",
             kind="total",
-            sector="private",
+            party_class="private",
             whole=(WholeMarker(dataset=_DAC2A, covers=("private",)),),
         ),
-        PartyRow(dcid="DACAfricaUnallocated", kind="residual"),
+        PartyRow(dcid="DACAfricaUnallocated", kind="residual", party_class="residual"),
     )
 }
 """The origin refs of DAC2A Ethiopia 2021 as the code index rows give them."""
 
 
-def test_a_dac2a_ethiopia_2021_row_reads_each_partys_kind_sector_and_whole_cells():
+def test_a_dac2a_ethiopia_2021_row_reads_each_partys_kind_class_and_whole_cells():
     cells = {
         ref: tuple(
             party_cell(field, ref, parties=_ETHIOPIA_2021_PARTIES, year=2021, provenance=_DAC2A)
@@ -163,14 +163,14 @@ def test_a_dac2a_ethiopia_2021_row_reads_each_partys_kind_sector_and_whole_cells
         for ref in (*_ETHIOPIA_2021_PARTIES, "country/NOWHERE")
     }
 
-    assert PARTY_FIELDS == ("party_kind", "party_sector", "party_whole")
+    assert PARTY_FIELDS == ("party_kind", "party_class", "party_whole")
     assert cells == {
         "country/FRA": ("party", "official", "false"),
         "GatesFoundation": ("party", "private", "false"),
         "DACCountriesTotal": ("total", "", "false"),
         "DACOfficialDonors": ("total", "official", "true"),
         "DACPrivateDonors": ("total", "private", "true"),
-        "DACAfricaUnallocated": ("residual", "", "false"),
+        "DACAfricaUnallocated": ("residual", "residual", "false"),
         "country/NOWHERE": (None, None, None),
     }
 
@@ -205,45 +205,45 @@ def test_the_render_leaves_a_whole_cell_empty_where_it_knows_no_dataset_or_year(
     cells = reads.fields_of([*_ETHIOPIA_2021_PARTIES, "country/NOWHERE"], fields=PARTY_FIELDS)
 
     assert cells == {
-        "country/FRA": {"party_kind": "party", "party_sector": "official", "party_whole": "false"},
+        "country/FRA": {"party_kind": "party", "party_class": "official", "party_whole": "false"},
         "GatesFoundation": {
             "party_kind": "party",
-            "party_sector": "private",
+            "party_class": "private",
             "party_whole": "false",
         },
-        "DACCountriesTotal": {"party_kind": "total", "party_sector": "", "party_whole": "false"},
+        "DACCountriesTotal": {"party_kind": "total", "party_class": "", "party_whole": "false"},
         "DACOfficialDonors": {
             "party_kind": "total",
-            "party_sector": "official",
+            "party_class": "official",
             "party_whole": "",
         },
         "DACPrivateDonors": {
             "party_kind": "total",
-            "party_sector": "private",
+            "party_class": "private",
             "party_whole": "",
         },
         "DACAfricaUnallocated": {
             "party_kind": "residual",
-            "party_sector": "",
+            "party_class": "residual",
             "party_whole": "false",
         },
         "country/NOWHERE": {},
     }
-    assert reads.fields_of(["GatesFoundation"], fields={"party_sector"}) == {
-        "GatesFoundation": {"party_sector": "private"}
+    assert reads.fields_of(["GatesFoundation"], fields={"party_class"}) == {
+        "GatesFoundation": {"party_class": "private"}
     }
 
 
 _WINDOWED = PartyRow(
     dcid="W",
     kind="total",
-    sector="official",
+    party_class="official",
     whole=(WholeMarker(dataset=_DAC2A, covers=("official",), years=(2010, 2023)),),
 )
 _UNWINDOWED = PartyRow(
     dcid="W",
     kind="total",
-    sector="official",
+    party_class="official",
     whole=(WholeMarker(dataset=_DAC2A, covers=("official",)),),
 )
 
@@ -265,7 +265,7 @@ _UNWINDOWED = PartyRow(
         pytest.param(_UNWINDOWED, 2021, None, False, "", id="no-window-still-needs-a-dataset"),
         pytest.param(PartyRow(dcid="W", kind="total"), None, None, False, "false", id="no-marker"),
         pytest.param(
-            PartyRow(dcid="W", kind="party", sector="private"),
+            PartyRow(dcid="W", kind="party", party_class="private"),
             None,
             None,
             False,
@@ -291,7 +291,7 @@ def test_the_lookup_reads_only_the_kind_and_its_cells_no_whole_total():
     assert lookup.party_kind("W") == "total"
     assert lookup.party_cells("W") == {
         "party_kind": "total",
-        "party_sector": "official",
+        "party_class": "official",
         "party_whole": "",
     }
     assert lookup.party_cells("X") == {}
@@ -613,7 +613,7 @@ def test_a_rows_cells_give_its_party_whole_cell(ref, period, provenance, expecte
         "W": PartyRow(
             dcid="W",
             kind="total",
-            sector="official",
+            party_class="official",
             whole=(WholeMarker(dataset=_DAC2A, covers=("official",), years=(2020, 2021)),),
         )
     }

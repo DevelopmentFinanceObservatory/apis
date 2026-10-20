@@ -84,7 +84,7 @@ TOTAL_CELL = "total"
 WHOLE_TOTAL_CELL = "whole total"
 RESIDUAL_CELL = "unallocated"
 RECIPIENT_PARTY_CELL = "country or organisation"
-"""The `<role>_kind` cell of an official party on the destination axis, where no sector tells
+"""The `<role>_kind` cell of an official party on the destination axis, where no class tells
 recipients apart."""
 
 _YEAR_GRAIN = "year"
@@ -124,7 +124,7 @@ def long_kind_cell(
 
     A total reads `whole total` when it is a whole total for the row's dataset and year
     (`materialise.enrichment.is_whole_total`) and `total` otherwise, and a residual reads
-    `unallocated`. A party on the origin axis reads its sector, `official` or `private`. A party
+    `unallocated`. A party on the origin axis reads its class, `official` or `private`. A party
     on the destination axis reads `country or organisation`, or `private` for a private one.
     `None` for a ref the code index does not list, or one that is not text."""
     party = parties.get(ref) if isinstance(ref, str) else None
@@ -139,8 +139,8 @@ def long_kind_cell(
         return WHOLE_TOTAL_CELL if whole else TOTAL_CELL
     if party.kind == "residual":
         return RESIDUAL_CELL
-    if party.sector == "private" or role_key_axis(role) == "origin":
-        return party.sector
+    if party.party_class == "private" or role_key_axis(role) == "origin":
+        return party.party_class
     return RECIPIENT_PARTY_CELL
 
 

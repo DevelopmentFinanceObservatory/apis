@@ -188,9 +188,9 @@ _FRAME = {"format": "parquet", "bundle": False, "layout": "frame"}
             id="kind",
         ),
         pytest.param(
-            ["party_sector"],
-            {"financingProvider_party_sector", "financingRecipient_party_sector"},
-            id="sector",
+            ["party_class"],
+            {"financingProvider_party_class", "financingRecipient_party_class"},
+            id="class",
         ),
         pytest.param(
             ["financingProvider_party_whole"], {"financingProvider_party_whole"}, id="one-whole"
@@ -211,12 +211,12 @@ def test_a_frame_layout_file_writes_only_the_party_cells_its_tokens_ask_for(colu
     assert {column for column in table.column_names if "_party_" in column} == written
 
 
-def test_a_frame_layout_file_reads_each_partys_sector_and_whole_cells():
+def test_a_frame_layout_file_reads_each_partys_class_and_whole_cells():
     artifact_store = FakeArtifactStore()
     client = _client(FakeDatasetStore(), artifact_store)
 
     resp = client.post(
-        "/api/datasets", json=_body({**_FRAME, "columns": ["party_sector", "party_whole"]})
+        "/api/datasets", json=_body({**_FRAME, "columns": ["party_class", "party_whole"]})
     )
 
     assert resp.status_code == 200, resp.text
@@ -224,15 +224,15 @@ def test_a_frame_layout_file_reads_each_partys_sector_and_whole_cells():
     rows = sorted(
         zip(
             table.column("financingRecipient").to_pylist(),
-            table.column("financingRecipient_party_sector").to_pylist(),
+            table.column("financingRecipient_party_class").to_pylist(),
             table.column("financingRecipient_party_whole").to_pylist(),
-            table.column("financingProvider_party_sector").to_pylist(),
+            table.column("financingProvider_party_class").to_pylist(),
             strict=True,
         )
     )
     assert rows == [
         ("DACAfrica", "", "false", "official"),
-        ("DACAfricaUnallocated", "", "false", "official"),
+        ("DACAfricaUnallocated", "residual", "false", "official"),
         ("country/KEN", "official", "false", "official"),
     ]
 
@@ -251,13 +251,13 @@ def test_a_frame_layout_file_reads_each_partys_sector_and_whole_cells():
         ),
     ],
 )
-def test_a_residuals_empty_sector_counts_as_no_missing_value(options):
-    """A residual's empty `party_sector` is its value, so no layout warns
-    `enrichment_unavailable` for it."""
+def test_a_totals_empty_class_counts_as_no_missing_value(options):
+    """The empty `party_class` of a total that covers more than one class is its value, so no
+    layout warns `enrichment_unavailable` for it."""
     client = _client(FakeDatasetStore(), FakeArtifactStore())
 
     resp = client.post(
-        "/api/datasets", json=_body({**options, "columns": ["party_sector", "party_whole"]})
+        "/api/datasets", json=_body({**options, "columns": ["party_class", "party_whole"]})
     )
 
     assert resp.status_code == 200, resp.text
@@ -267,7 +267,7 @@ def test_a_residuals_empty_sector_counts_as_no_missing_value(options):
 def test_a_long_layout_file_answers_party_field_tokens_with_its_kind_column_once():
     artifact_store = FakeArtifactStore()
     client = _client(FakeDatasetStore(), artifact_store)
-    columns = ["party_kind", "financingRecipient_party_sector", "financingProvider_kind"]
+    columns = ["party_kind", "financingRecipient_party_class", "financingProvider_kind"]
 
     resp = client.post(
         "/api/datasets", json=_body({"format": "parquet", "bundle": False, "columns": columns})
@@ -280,5 +280,5 @@ def test_a_long_layout_file_answers_party_field_tokens_with_its_kind_column_once
     assert not {
         f"{role}_{field}"
         for role in ("financingProvider", "financingRecipient")
-        for field in ("party_kind", "party_sector", "party_whole")
+        for field in ("party_kind", "party_class", "party_whole")
     } & set(table.column_names)

@@ -96,7 +96,7 @@ def test_a_node_takes_the_first_kind_the_rule_gives(dcid, types, kind):
 @pytest.mark.parametrize(
     ("row", "kind"),
     [
-        (PartyRow(dcid="dc/o/Foundation", kind="party", sector="private"), "organisation"),
+        (PartyRow(dcid="dc/o/Foundation", kind="party", party_class="private"), "organisation"),
         (PartyRow(dcid="dc/o/Foundation", kind="total"), "aggregate"),
         (
             PartyRow(
@@ -104,7 +104,7 @@ def test_a_node_takes_the_first_kind_the_rule_gives(dcid, types, kind):
                 kind="total",
                 datasets=("provenance/P",),
                 axes=("origin",),
-                sector="official",
+                party_class="official",
                 whole=(WholeMarker(dataset="provenance/P", covers=("official",)),),
             ),
             "aggregate",

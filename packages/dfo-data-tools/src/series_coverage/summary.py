@@ -47,7 +47,7 @@ class PartyCounts:
     """The distinct parties in one role, split by their kind in the code index.
 
     `parties` counts parties with figures of their own (a country, an organisation),
-    `private` those of them whose sector is private (a foundation), a subset of `parties`,
+    `private` those of them whose class is private (a foundation), a subset of `parties`,
     `totals` parties that hold other parties' figures ("Africa, Total"; a whole total such as
     "Official Donors, Total" is one), and `residual` parties holding figures no other party
     does ("Africa, unallocated by country"). `unclassified` counts parties the code index
@@ -137,7 +137,7 @@ def _split_by_kind(dcids: frozenset[str], parties: Mapping[str, PartyRow]) -> Pa
     kinds = Counter(row.kind if row else None for row in rows)
     return PartyCounts(
         parties=kinds["party"],
-        private=sum(1 for row in rows if row and row.kind == "party" and row.sector == "private"),
+        private=sum(1 for row in rows if row and row.party_class == "private"),
         totals=kinds["total"],
         residual=kinds["residual"],
         unclassified=kinds[None],

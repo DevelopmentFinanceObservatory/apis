@@ -1151,11 +1151,12 @@ _WINDOWED_PARTIES = {
     "donor/ALL": PartyRow(
         dcid="donor/ALL",
         kind="total",
-        sector="official",
+        party_class="official",
         whole=(WholeMarker(dataset=_DAC2A, covers=("official",), years=(2020, 2021)),),
     ),
-    "donor/A": PartyRow(dcid="donor/A", kind="party", sector="private"),
-    "donor/R": PartyRow(dcid="donor/R", kind="residual"),
+    "donor/A": PartyRow(dcid="donor/A", kind="party", party_class="private"),
+    "donor/R": PartyRow(dcid="donor/R", kind="residual", party_class="residual"),
+    "donor/MIX": PartyRow(dcid="donor/MIX", kind="total"),
 }
 
 
@@ -1199,13 +1200,15 @@ class TestEnrichColumns:
                     ("donor/ALL", "2021", _DAC2B),
                     ("donor/A", "2021", _DAC2A),
                     ("donor/R", "2021", _DAC2A),
+                    ("donor/MIX", "2021", _DAC2A),
                 ),
                 [
                     ("total", "official", "false"),
                     ("total", "official", "true"),
                     ("total", "official", "false"),
                     ("party", "private", "false"),
-                    ("residual", "", "false"),
+                    ("residual", "residual", "false"),
+                    ("total", "", "false"),
                 ],
                 id="the-row-dataset-and-year-decide",
             ),
@@ -1235,14 +1238,15 @@ class TestEnrichColumns:
         ],
     )
     def test_party_cells_follow_the_dataset_and_year_of_their_row(self, columns, rows, cells):
-        """An empty `party_sector` of a listed residual is its value, so it counts no miss."""
+        """An empty `party_class` of a listed total that covers more than one class is its
+        value, so it counts no miss."""
         table = Table(columns=columns, rows=rows)
 
         result, warnings = enrich_columns(
             table,
             requests=(
                 ("donor", "party_kind"),
-                ("donor", "party_sector"),
+                ("donor", "party_class"),
                 ("donor", "party_whole"),
             ),
             lookup={},
@@ -1252,7 +1256,7 @@ class TestEnrichColumns:
         assert result.columns == (
             *columns,
             "donor_party_kind",
-            "donor_party_sector",
+            "donor_party_class",
             "donor_party_whole",
         )
         assert [row[-3:] for row in result.rows] == cells
@@ -1264,15 +1268,15 @@ class TestEnrichColumns:
         )
 
         result, warnings = enrich_columns(
-            table, requests=(("donor", "party_sector"),), lookup={}, parties=_WINDOWED_PARTIES
+            table, requests=(("donor", "party_class"),), lookup={}, parties=_WINDOWED_PARTIES
         )
 
-        assert result.columns == ("donor", "time_period", "donor_party_sector")
+        assert result.columns == ("donor", "time_period", "donor_party_class")
         assert [row[-1] for row in result.rows] == ["private", ""]
         (warning,) = (cast(EnrichmentUnavailableWarning, warning) for warning in warnings)
         assert (warning["code"], warning["column"], warning["count"]) == (
             "enrichment_unavailable",
-            "donor_party_sector",
+            "donor_party_class",
             1,
         )
 
@@ -1556,8 +1560,8 @@ class TestParseColumnTokens:
             ("origin_iso2", "origin_iso2"),
             ("origin_iso3", "origin_iso3"),
             ("origin_label", "origin_label"),
+            ("origin_party_class", "origin_party_class"),
             ("origin_party_kind", "origin_party_kind"),
-            ("origin_party_sector", "origin_party_sector"),
             ("origin_party_whole", "origin_party_whole"),
             ("origin_type", "origin_type"),
         ]
@@ -1577,7 +1581,7 @@ class TestParseColumnTokens:
             enrichments=(("destination", "party_kind"), ("origin", "party_kind")),
         )
 
-    @pytest.mark.parametrize("field", ["party_sector", "party_whole"])
+    @pytest.mark.parametrize("field", ["party_class", "party_whole"])
     def test_each_party_field_is_a_bare_token_for_party_roles_only(self, field):
         result = parse_column_tokens(
             (field, "observationAbout_iso3"),

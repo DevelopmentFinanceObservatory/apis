@@ -709,7 +709,7 @@ def test_a_bare_enrichment_field_name_refuses_column_unknown_with_qualified_alte
         "recipient_iso3",
         "recipient_label",
         "recipient_party_kind",
-        "recipient_party_sector",
+        "recipient_party_class",
         "recipient_party_whole",
         "recipient_type",
     }

@@ -31,7 +31,7 @@ Long output gives each party role one `<role>_kind` column in words
 (`materialise.projection.long_kind_cell`): `official` or `private` for a provider, `country or
 organisation` for a recipient, `total`, `whole total` or `unallocated`. Pivot output and the
 frame layout write the machine cells instead, each only when a token asks for it: `party_kind`
-(`party`, `total` or `residual`), `party_sector` (`official`, `private` or empty) and
+(`party`, `total` or `residual`), `party_class` (`official`, `private`, `residual` or empty) and
 `party_whole` (`true` on a row whose total is whole for the row's dataset and year, `false`
 otherwise).
 

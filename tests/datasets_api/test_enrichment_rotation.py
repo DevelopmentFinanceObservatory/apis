@@ -82,10 +82,10 @@ def index_y(index_x: CodeIndex) -> CodeIndex:
         if row["dcid"] == _CHANGED_PARTY:
             assert row["kind"] == "residual"
             row["kind"] = "party"
-            row["sector"] = "official"
+            row["party_class"] = "official"
     index = parse_index(payload)
     assert index.parties[_CHANGED_PARTY] == replace(
-        index_x.parties[_CHANGED_PARTY], kind="party", sector="official"
+        index_x.parties[_CHANGED_PARTY], kind="party", party_class="official"
     )
     return index
 
@@ -347,9 +347,9 @@ _PARQUET = {"format": "parquet", "bundle": False}
             pytest.param({**_PARQUET, "layout": "frame", "columns": [token]}, True, id=token)
             for token in (
                 "party_kind",
-                "party_sector",
+                "party_class",
                 "party_whole",
-                "financingRecipient_party_sector",
+                "financingRecipient_party_class",
                 "financingProvider_party_whole",
             )
         ),

@@ -54,14 +54,14 @@ from code_index.types import (
     MeasureClassDeclaration,
     MeasurePartitionLabel,
     PartlyStatedValue,
+    PartyClass,
     PartyKind,
     PartyWord,
-    Sector,
     ShapeSlotDefault,
     StatedWord,
     StatTypeWordDeclaration,
     WholeTotalSet,
-    covered_sector,
+    covered_class,
     invalid_when_named_entry,
     label_for_pairs,
     party_kind,
@@ -166,7 +166,7 @@ def _check_private_providers(
     `codes` is each published party's donor codes and `origins` the parties published as a donor.
     A listed code must be carried by its listed party alone once either is published; an origin
     party carrying a code in `_PRIVATE_CODE_BLOCK` must be listed; a listed party takes no kind
-    override, since only a `party` carries a sector."""
+    override, since only a `party` can be private."""
     holders: dict[int, list[str]] = defaultdict(list)
     for dcid, party_codes in codes.items():
         for code in party_codes:
@@ -210,7 +210,7 @@ def _check_whole_population_totals(
     total, a window whose first year lies outside the years the dataset publishes the total, or
     a row with no dataset, no class or no reason. Two rows covering one class on one dataset and
     axis fail when the finished document loads (`code_index.loader._check_whole_totals`), as
-    does a row whose windows cover different sectors (`code_index.loader._check_sector`)."""
+    does a row whose windows name different classes (`code_index.loader._check_party_class`)."""
     for dcid, whole in sorted(whole_totals.items()):
         if kinds.get(dcid) != "total":
             raise ExportRefused(
@@ -261,17 +261,17 @@ def _check_classes_on_one_axis(
     holds the same way. That is exact for a one-axis party and for an `official` party, because
     every side a two-axis party reaches already holds an `official` row. A private party, a
     residual or a total on both axes would count on both axes in every dataset. `rows` are the
-    exported `parties` rows, each with its `kind` and `sector`."""
+    exported `parties` rows, each with its `kind` and `party_class`."""
     ambiguous = sorted(
-        (row["dcid"], row["kind"], row["sector"], sorted(parties[row["dcid"]].axes))
+        (row["dcid"], row["kind"], row["party_class"], sorted(parties[row["dcid"]].axes))
         for row in rows
-        if (row["kind"], row["sector"]) != ("party", "official")
+        if (row["kind"], row["party_class"]) != ("party", "official")
         and len(parties[row["dcid"]].axes) > 1
     )
     if ambiguous:
         raise ExportRefused(
             f"parties other than official parties are published on more than one axis: "
-            f"{ambiguous!r} (party, kind, sector, axes) -- the index format cannot tell which "
+            f"{ambiguous!r} (party, kind, class, axes) -- the index format cannot tell which "
             "dataset holds which axis"
         )
 
@@ -286,16 +286,16 @@ def export_parties(
     private_providers: Mapping[int, str],
     whole_totals: Mapping[str, WholePopulationTotal],
 ) -> list[dict]:
-    """Each party's kind, sector, label, the datasets that publish it and the flow axes they
+    """Each party's kind, class, label, the datasets that publish it and the flow axes they
     publish it on (`parties`, each sorted), the group and residuals a total holds, and for a
     whole population total what it covers in each dataset (`whole`), sorted by dcid.
 
     A party in `kind_overrides` takes its override's kind. Any other takes the kind its graph
     types give under `type_kinds`. A `party` whose OECD donor code is in `private_providers` has
-    the sector `private`, and every other `party` `official`, on every axis. A total in
-    `whole_totals` has the sector its windows cover (`covered_sector`), and every other total
-    and every residual none; the document refuses to load when two windows of a total cover
-    different sectors. Its label is its graph name, `None` when the graph gives it
+    the class `private`, every other `party` `official`, on every axis, and every residual
+    `residual`. A total in `whole_totals` has the one class its windows cover (`covered_class`),
+    none when they cover more than one, and every other total none; the document refuses to
+    load when two windows of a total name different classes. Its label is its graph name, `None` when the graph gives it
     none. A row carries `whole` only for a total in `whole_totals`, and a marker's `years` only
     for a window with a first year, ending in the last year the dataset publishes the total.
 
@@ -341,7 +341,7 @@ def export_parties(
         row: dict = {
             "dcid": dcid,
             "kind": kind,
-            "sector": _party_sector(kind, private=dcid in private),
+            "party_class": _party_class(kind, private=dcid in private),
             "label": _first_or_none(party_arcs.get("name", ())),
             "totals": None if total is None else total.group,
             "residuals": [] if total is None else sorted(total.residuals),
@@ -370,7 +370,7 @@ def export_parties(
     _check_whole_population_totals(whole_totals, kinds, parties)
     for row in rows:
         if (whole := whole_totals.get(row["dcid"])) is not None:
-            row["sector"] = covered_sector(next(iter(whole.datasets.values())).covers)
+            row["party_class"] = covered_class(next(iter(whole.datasets.values())).covers)
             row["whole"] = [
                 _whole_marker_to_dict(dataset, window, parties[row["dcid"]])
                 for dataset, window in sorted(whole.datasets.items())
@@ -378,9 +378,11 @@ def export_parties(
     return rows
 
 
-def _party_sector(kind: PartyKind, *, private: bool) -> Sector | None:
-    """A row's sector before whole markers: `private` or `official` for a `party`, none for a
-    total or a residual."""
+def _party_class(kind: PartyKind, *, private: bool) -> PartyClass | None:
+    """A row's class before whole markers: `private` or `official` for a `party`, `residual`
+    for a residual, none for a total."""
+    if kind == "residual":
+        return "residual"
     if kind != "party":
         return None
     return "private" if private else "official"

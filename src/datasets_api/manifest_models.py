@@ -329,8 +329,8 @@ class ArtifactEntryModel(BaseModel):
         default=None,
         exclude_if=_is_none,
         description=(
-            "the digest of the code index's party kinds, sectors and whole-total markers this "
-            "file's party cells ({role}_kind, or {role}_party_kind, {role}_party_sector and "
+            "the digest of the code index's party kinds, classes and whole-total markers this "
+            "file's party cells ({role}_kind, or {role}_party_kind, {role}_party_class and "
             "{role}_party_whole) were read under. Present on a file whose frame holds a party "
             "role and whose layout writes party cells (a long-layout file, or one whose columns "
             "name a party field), when it was rendered under the serving code "

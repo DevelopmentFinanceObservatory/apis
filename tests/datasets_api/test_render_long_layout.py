@@ -122,10 +122,12 @@ _ARCS = {
 }
 _GRAPH = FakeMintGraphReader(arcs=_ARCS)
 _PARTIES = {
-    "country/USA": PartyRow(dcid="country/USA", kind="party", sector="official"),
-    "country/KEN": PartyRow(dcid="country/KEN", kind="party", sector="official"),
+    "country/USA": PartyRow(dcid="country/USA", kind="party", party_class="official"),
+    "country/KEN": PartyRow(dcid="country/KEN", kind="party", party_class="official"),
     "DACAfrica": PartyRow(dcid="DACAfrica", kind="total", datasets=("p1",), axes=("destination",)),
-    "DACAfricaUnallocated": PartyRow(dcid="DACAfricaUnallocated", kind="residual"),
+    "DACAfricaUnallocated": PartyRow(
+        dcid="DACAfricaUnallocated", kind="residual", party_class="residual"
+    ),
     "DACDevelopingCountries": PartyRow(
         dcid="DACDevelopingCountries", kind="total", datasets=("p1",), axes=("destination",)
     ),
@@ -1186,7 +1188,7 @@ _DAC_PARTIES = {
         kind="total",
         datasets=(_DAC2A, _DAC2B),
         axes=("destination",),
-        sector="official",
+        party_class="official",
         whole=(WholeMarker(dataset=_DAC2A, covers=("official", "residual"), years=(2020, 2021)),),
     ),
     "DACOfficialDonors": PartyRow(
@@ -1194,13 +1196,13 @@ _DAC_PARTIES = {
         kind="total",
         datasets=(_DAC2A, _DAC2B),
         axes=("origin",),
-        sector="official",
+        party_class="official",
         whole=(
             WholeMarker(dataset=_DAC2A, covers=("official",)),
             WholeMarker(dataset=_DAC2B, covers=("official",)),
         ),
     ),
-    "GatesFoundation": PartyRow(dcid="GatesFoundation", kind="party", sector="private"),
+    "GatesFoundation": PartyRow(dcid="GatesFoundation", kind="party", party_class="private"),
 }
 
 

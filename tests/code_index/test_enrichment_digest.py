@@ -1,4 +1,4 @@
-"""`CodeIndex.enrichment_digest` moves with a party's kind, sector or whole markers and with
+"""`CodeIndex.enrichment_digest` moves with a party's kind, class or whole markers and with
 nothing else, so an export that changes none of them re-renders no party-kind file."""
 
 from __future__ import annotations
@@ -29,12 +29,16 @@ def _party(dcid: str, kind: str, **extra: Any) -> dict[str, Any]:
 
 
 _ROWS = [
-    _party("Gates", "party", sector="private"),
+    _party("Gates", "party", party_class="private"),
     _party(
-        "DACOfficialDonors", "total", sector="official", datasets=[_DAC2A, _DAC2B], whole=_WHOLE
+        "DACOfficialDonors",
+        "total",
+        party_class="official",
+        datasets=[_DAC2A, _DAC2B],
+        whole=_WHOLE,
     ),
     _party("Africa", "total", totals="africa"),
-    _party("DACAfricaUnallocated", "residual"),
+    _party("DACAfricaUnallocated", "residual", party_class="residual"),
 ]
 
 
@@ -49,7 +53,7 @@ def _replaced(row: int, **changes: Any) -> list[dict[str, Any]]:
     return [{**party, **changes} if at == row else party for at, party in enumerate(_ROWS)]
 
 
-def test_the_digest_ignores_row_order_and_everything_outside_kind_sector_and_whole_markers():
+def test_the_digest_ignores_row_order_and_everything_outside_kind_class_and_whole_markers():
     baseline = _index(_ROWS).enrichment_digest
 
     assert _index(list(reversed(_ROWS))).enrichment_digest == baseline
@@ -62,26 +66,28 @@ def test_the_digest_ignores_row_order_and_everything_outside_kind_sector_and_who
     assert _index(_ROWS, stamp=restamped).enrichment_digest == baseline
 
 
-def _marked(**marker: Any) -> list[dict[str, Any]]:
-    return _replaced(1, datasets=[_DAC2A, _DAC2B], whole=[{**_WHOLE[0], **marker}])
+def _marked(party_class: str | None = "official", **marker: Any) -> list[dict[str, Any]]:
+    return _replaced(
+        1, datasets=[_DAC2A, _DAC2B], party_class=party_class, whole=[{**_WHOLE[0], **marker}]
+    )
 
 
 @pytest.mark.parametrize(
     "changed",
     [
-        _replaced(3, kind="total"),
-        _replaced(0, sector="official"),
-        _marked(covers=["official", "residual"]),
+        _replaced(3, kind="total", party_class=None),
+        _replaced(0, party_class="official"),
+        _marked(covers=["official", "residual"], party_class=None),
         _marked(years=[1960, 2022]),
         _marked(years=None),
         _marked(dataset=_DAC2B),
         _replaced(1, datasets=[_DAC2A, _DAC2B], whole=[*_WHOLE, {**_WHOLE[0], "dataset": _DAC2B}]),
-        _replaced(1, whole=[], sector=None),
+        _replaced(1, whole=[], party_class=None),
         _ROWS[:-1],
     ],
     ids=[
         "kind",
-        "sector",
+        "class",
         "covers",
         "window",
         "window_dropped",
@@ -91,7 +97,7 @@ def _marked(**marker: Any) -> list[dict[str, Any]]:
         "party_dropped",
     ],
 )
-def test_the_digest_moves_when_a_kind_a_sector_a_marker_or_a_window_changes(
+def test_the_digest_moves_when_a_kind_a_class_a_marker_or_a_window_changes(
     changed: list[dict[str, Any]],
 ):
     assert _index(changed).enrichment_digest != _index(_ROWS).enrichment_digest

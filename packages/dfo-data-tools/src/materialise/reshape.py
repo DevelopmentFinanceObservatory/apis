@@ -42,7 +42,7 @@ publishing reads this constant directly rather than duplicating it."""
 
 TABLE_WIDE_ENRICHMENTS: frozenset[str] = frozenset(PARTY_FIELDS)
 """The enrichment fields a bare token requests for every party role of the
-table (`materialise.enrichment.is_party_role`): `party_kind`, `party_sector` and
+table (`materialise.enrichment.is_party_role`): `party_kind`, `party_class` and
 `party_whole`. A sum across any party role needs each party's kind, so a caller
 asks for it without knowing which roles the table carries. Every other field
 needs its entity-column prefix."""
@@ -1240,7 +1240,7 @@ def lookup_cell(
 ) -> str | None:
     """The `field_name` cell `lookup` gives `ref`. `None` when it gives none: a `ref` that is not
     text, or one `lookup` lacks or holds no such field for. An empty string is a value, such as
-    the `party_sector` of a residual, so it counts as no miss."""
+    the `party_class` of a total that covers more than one class, so it counts as no miss."""
     if not isinstance(ref, str):
         return None
     return lookup.get(ref, {}).get(field_name)
