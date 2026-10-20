@@ -456,7 +456,7 @@ def test_a_stand_in_is_judged_on_the_code_the_request_named(bound, unbound):
     assert _departed(state) == []
 
 
-# A price basis is met by the unit request an answer is served under: a Nominal series
+# A price basis is met by the unit request an answer is served under. A Nominal series
 # converted to constant prices reads as RealValue.
 
 _CONSTANT = "constant"

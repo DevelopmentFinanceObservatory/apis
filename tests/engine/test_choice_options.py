@@ -3,7 +3,7 @@
 not refuse with the same reason again.
 
 Every round trip runs the composed search app in process over offline doubles. The
-"fertility rate"/"Kenya" texts match the recorded LLM fixtures; the role-bearing cases
+"fertility rate"/"Kenya" texts match the recorded LLM fixtures. The role-bearing cases
 elect their one shape through a scripted bind."""
 
 from __future__ import annotations

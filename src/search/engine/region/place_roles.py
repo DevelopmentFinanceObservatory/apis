@@ -1141,7 +1141,7 @@ def _untold_groups(state: ResolveState, groups: dict[str, list[str]]) -> dict[st
 
 
 # The most readings of an unstated direction a `role_not_resolved` refusal offers. Two sets
-# on a shape with a role on each axis give 2, three give 6, four 14; past this the refusal
+# on a shape with a role on each axis give 2, three give 6, four 14. Past this the refusal
 # offers none and its message stands.
 MAX_DIRECTION_READINGS = 6
 
@@ -1157,7 +1157,7 @@ def direction_readings(state: ResolveState) -> tuple[dict[str, RoleAxis], ...]:
     open axis counts as named and takes no set. A reading is kept when every such axis then
     holds a set, a directed one included. Readings run over the sets in query order, origin
     first. Empty when the shape declares no role, no set is untold, or more than
-    `MAX_DIRECTION_READINGS` readings are kept; the count stops there, so no reading past
+    `MAX_DIRECTION_READINGS` readings are kept. The count stops there, so no reading past
     it is built."""
     shape = state.shape_draft
     if shape is None or not is_role_bearing(shape):

@@ -133,8 +133,9 @@ def compute_layer2_signals(
 ) -> Layer2Signals:
     """`query` supplies every leg's raw role signals; `entity_roles` lists its
     door-provided occurrences in mention order, and each of `dropped_qualifiers` gives the
-    flow axis it asks every member of, read with the preposition `query` puts before it. `query_text` is set only for a
-    single-variable request, matching the pipeline's own raw-text readers. Each of
+    flow axis it asks every member of, read with the preposition `query` puts before it.
+    `query_text` is set only for a single-variable request, matching the pipeline's own
+    raw-text readers. Each of
     `variables` gives the stretch of `query_text` that writes it (`written_phrase`), which
     the named-member binding reads.
     """

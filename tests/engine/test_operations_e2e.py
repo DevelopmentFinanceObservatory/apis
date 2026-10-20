@@ -967,7 +967,7 @@ def test_an_ambiguous_wording_is_its_own_slot_token_in_the_sentence():
 
 def test_an_ambiguous_part_without_a_restatement_still_carries_options():
     """Congo named on both axes leaves the direction unnameable, so the part withholds
-    its restatement; each option still lists Congo once per axis, pinned to its candidate,
+    its restatement. Each option still lists Congo once per axis, pinned to its candidate,
     beside Kenya pinned, and keeps the operation."""
     llm = _ScriptedLLM(
         _extraction(

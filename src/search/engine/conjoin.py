@@ -388,10 +388,10 @@ def _role_options(region: RegionResult, part: ParsedPart) -> list[NoDataOption |
 
 
 def _direction_label(entities: Sequence[ParsedEntity], region: RegionResult) -> str:
-    """The directions `entities` state, in words: origins "to" destinations, or "From" or
-    "To" with the names when one axis holds them. Each untold place set
+    """The directions `entities` state, in words. Origins read "to" destinations, and one
+    axis alone reads "From" or "To" with its names. Each untold place set
     (``RegionResult.untold_groups``) is named once, as the refusal's message names it
-    (`untold_place_name`): `Kenya ("KEN") to Norway`."""
+    (`untold_place_name`), as in `Kenya ("KEN") to Norway`."""
     words = region.entity_words or {}
     group_of = {name: group for group in region.untold_groups for name in group}
     by_axis: dict[RoleAxis, list[tuple[str, ...]]] = {"origin": [], "destination": []}

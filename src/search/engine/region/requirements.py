@@ -241,7 +241,7 @@ def judge(
 ) -> Judgement:
     """Judge each of `answers` on its own shape and bindings against every requirement.
     `served[i]` is the price basis of the unit request answer `i` is served under, None
-    when it is served under none; an empty `served` serves every answer under none.
+    when it is served under none. An empty `served` serves every answer under none.
 
     A `CodeRule` is met when the answer's bindings bind one of its codes or a descendant on
     its property, unmet when the answer's shape holds the property and binds none of them,

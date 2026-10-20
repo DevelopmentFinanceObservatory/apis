@@ -81,7 +81,7 @@ class AmbiguousEntityCandidate:
     `group_node` is set when the candidate is a group's own node and the part asks for the
     wording's members: a pin on a group's node cannot ask for its members, so the
     candidate's option posts `group_name`, the group's registered name that resolves to it
-    alone, instead. A group node with no such name (`group_name` `None`) has no option.
+    alone. A group node with no such name (`group_name` `None`) has no option.
     `group_name` is `None` on every other candidate."""
 
     dcid: str

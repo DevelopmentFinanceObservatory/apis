@@ -418,8 +418,9 @@ async def _role_not_resolved_no_data(state: ResolveState, *, offer: bool = True)
     wording that contradicts a supplied axis. A `flagged_match` requires a resolved role map,
     which this refusal lacks. The names whose direction it could not tell
     (`untold_direction_names`) ride as the result's `unresolved_entity_names`, grouped by
-    place (`untold_direction_groups`) as its `untold_groups`, and the readings of their directions (`direction_readings`) as its `role_assignments`, unless
-    `offer` is false: every reading was read and none holds data."""
+    place (`untold_direction_groups`) as its `untold_groups`, and the readings of their
+    directions (`direction_readings`) as its `role_assignments`. The readings are left out
+    when `offer` is false, because every reading was read and none holds data."""
     return state.no_data(
         "role_not_resolved",
         llm_usage=state.var_usage,

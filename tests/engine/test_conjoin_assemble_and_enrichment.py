@@ -344,8 +344,8 @@ _TWO_AMBIGUOUS = RegionResult(
 
 
 def test_each_option_pins_one_ambiguous_wording_and_leaves_the_other_bare():
-    """Two ambiguous wordings give one option per wording and candidate, in query order;
-    each pins its wording and every entity that resolved to one node, and leaves the other
+    """Two ambiguous wordings give one option per wording and candidate, in query order.
+    Each pins its wording and every entity that resolved to one node, and leaves the other
     wording unpinned for a second refusal."""
     part = _entity_terms_part(_TWO_AMBIGUOUS)
 

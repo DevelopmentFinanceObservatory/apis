@@ -213,7 +213,7 @@ def _surviving_qualifier_warnings(
 
     Each warning stays paired with its extracted phrase. One region admitting a phrase
     makes the request-wide warning false. A part's departures read its own region's
-    admission instead (`unapplied_qualifier_warnings`, `RegionResult.unapplied_qualifier_warnings`).
+    admission (`unapplied_qualifier_warnings`, `RegionResult.unapplied_qualifier_warnings`).
     """
     admitted = frozenset(
         phrase for region in regions for phrase in region.admitted_qualifier_phrases

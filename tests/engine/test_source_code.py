@@ -822,7 +822,7 @@ def test_a_code_two_named_sources_hold_offers_each_as_the_only_included_source(
         ([_DEGG], [excluded, SourceMention(ref=ref)]) for ref in (_IDS, _CRS)
     ]
     # The coverage holds the code's observations under IDS alone, so the CRS option reads
-    # none; it refuses on its data, not on the choice.
+    # none and refuses on its data, with the choice settled.
     ids, crs = (_answer(o.data_query.parts[0], monkeypatch) for o in options)
     assert ids.status == "definite"
     assert crs.status == "no_data"

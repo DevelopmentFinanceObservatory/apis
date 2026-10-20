@@ -78,7 +78,7 @@ class AmbiguousEntityCandidate(StrictModel):
     an AmbiguousEntityGroup's own `candidates`. Mirrors engine.region.result.
     AmbiguousEntityCandidate field-for-field, with `label` in place of that
     dataclass's `name` (this contract's own vocabulary for a display
-    string, matching ResolvedEntity.label), and without its `group_node`
+    string, matching ResolvedEntity.label), except that it omits `group_node`
     and `group_name`, which only NoData.options read."""
 
     ref: str = Field(description="the candidate's own dcid")
@@ -160,7 +160,7 @@ class UnitAlternative(StrictModel):
 
 class NoDataOption(StrictModel):
     """One answer to the choice a no_data refusal asks for: the words it settles, a label
-    for people, and the request that settles them -- one entry of NoData.options."""
+    for people, and the request that settles them. It is one entry of NoData.options."""
 
     mentions: list[str] = Field(
         description=(
