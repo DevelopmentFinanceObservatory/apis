@@ -22,6 +22,7 @@ from datasets_api.manifest_models import Manifest, OptionsEnvelope
 from datasets_api.schema import OperationResource
 from dfo_apis.app import all_surfaces
 from dfo_platform.app import Surface, create_app
+from search.models.observations import SpecObservations
 
 _HTTP_METHODS = frozenset({"get", "put", "post", "delete", "options", "head", "patch", "trace"})
 
@@ -169,6 +170,17 @@ def test_no_two_schemas_share_a_title(schema: dict[str, Any]):
     assert dupes == {}
 
 
+def test_every_object_schema_names_its_properties(schema: dict[str, Any]):
+    """A model whose wrap serializer is annotated `dict[str, Any]` publishes an open object,
+    which generated clients type as a free map."""
+    untyped = [
+        name
+        for name, schema_node in schema["components"]["schemas"].items()
+        if schema_node.get("type") == "object" and "properties" not in schema_node
+    ]
+    assert untyped == []
+
+
 # The leading word of every handler name. A handler named for a noun or ending in
 # `_endpoint` gives its operation an id that names no action.
 _HANDLER_VERBS = frozenset(
@@ -241,6 +253,7 @@ _EXCLUDE_NONE_DATASETS_MODELS: tuple[type[BaseModel], ...] = (
     Manifest,
     OptionsEnvelope,
     OperationResource,
+    SpecObservations,
 )
 
 

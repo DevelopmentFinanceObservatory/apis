@@ -676,7 +676,10 @@ class LiveArtifactStore:
 
     def copy(self, digest: str, *, from_tier: Tier, to_tier: Tier) -> StoredArtifact:
         """Copy from the recorded source location. Record the destination after success. A
-        source object the lifecycle rule deleted raises `ArtifactNotFoundError`."""
+        source object the lifecycle rule deleted raises `ArtifactNotFoundError`. GCS also
+        answers 404 for a missing destination bucket, so a `NotFound` raises
+        `ArtifactNotFoundError` only when the source object is absent and
+        `ArtifactWriteError` otherwise."""
         location = self._inventory.get_location(digest, tier=from_tier)
         if location is None:
             raise ArtifactNotFoundError(digest=digest, tier=from_tier)
@@ -697,7 +700,11 @@ class LiveArtifactStore:
         except PreconditionFailed:
             deduplicated = True
         except NotFound:
-            source_missing = True
+            try:
+                source_missing = source_bucket.get_blob(location.object_name) is None
+            except Exception:
+                source_missing = False
+            copy_failed = not source_missing
         except Exception:
             copy_failed = True
         if source_missing:

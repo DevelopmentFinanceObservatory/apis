@@ -547,27 +547,41 @@ def render_and_select(
     return _signed_url(location, stored=rendered, artifact_store=deps.artifact_store)
 
 
+def _option_query_schema(name: str) -> dict[str, object]:
+    """The query parameter schema of the `MintOptions` field `name`: its one non-null type, its
+    allowed values and its non-null default."""
+    prop = MintOptions.model_json_schema()["properties"][name]
+    (branch,) = [b for b in prop.get("anyOf", [prop]) if b.get("type") != "null"]
+    schema: dict[str, object] = {"type": branch["type"]}
+    values = branch.get("enum", [branch["const"]] if "const" in branch else None)
+    if values is not None:
+        schema["enum"] = values
+    if prop.get("default") is not None:
+        schema["default"] = prop["default"]
+    return schema
+
+
 _SELECTOR_QUERY_PARAMETERS: list[dict[str, object]] = [
     {
         "name": "format",
         "in": "query",
         "required": False,
         "description": "the file format; csv when absent",
-        "schema": {"type": "string", "enum": ["csv", "xlsx", "parquet"], "default": "csv"},
+        "schema": _option_query_schema("format"),
     },
     {
         "name": "bundle",
         "in": "query",
         "required": False,
         "description": "true for a zip bundle with its documentation; true when absent",
-        "schema": {"type": "boolean", "default": True},
+        "schema": _option_query_schema("bundle"),
     },
     {
         "name": "layout",
         "in": "query",
         "required": False,
         "description": "frame for a bare parquet file in the frame layout; needs format=parquet and bundle=false",
-        "schema": {"type": "string", "enum": ["frame"]},
+        "schema": _option_query_schema("layout"),
     },
 ]
 

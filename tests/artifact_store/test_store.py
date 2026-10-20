@@ -637,13 +637,24 @@ def test_copy_is_idempotent_when_the_destination_already_has_the_object():
     assert client.buckets[_BUCKETS[Tier.pinned]].upload_log == [written.digest]
 
 
-def test_copy_raises_artifact_write_error_on_a_non_precondition_failure():
+@pytest.mark.parametrize(
+    "failure",
+    [
+        pytest.param("service-unavailable", id="service-unavailable"),
+        # GCS answers 404 for a missing destination bucket while the source exists.
+        pytest.param("destination-bucket-missing", id="destination-bucket-missing"),
+    ],
+)
+def test_copy_raises_artifact_write_error_on_a_non_precondition_failure(failure: str):
     client = FakeGCSClient()
     inventory = RecordingArtifactInventory()
     store = _store(client, inventory)
     data = b"a copy that will fail"
     written = store.put(data, tier=Tier.working)
-    client.buckets[_BUCKETS[Tier.working]].raise_on_next_copy = ServiceUnavailable("gcs hiccup")
+    if failure == "service-unavailable":
+        client.buckets[_BUCKETS[Tier.working]].raise_on_next_copy = ServiceUnavailable("gcs hiccup")
+    else:
+        client.bucket(_BUCKETS[Tier.pinned]).missing = True
 
     with pytest.raises(ArtifactWriteError) as excinfo:
         store.copy(written.digest, from_tier=Tier.working, to_tier=Tier.pinned)
