@@ -1,6 +1,7 @@
 """Pins `ReleaseService`: load at start, a request-triggered recheck, the swap
 inside its guards, one release per request across a swap, file cleanup after
-the last holder, the serving views built as a release opens, the Datasets
+the last holder, the memory of a refused release, the events a recheck and a swap log,
+the serving views built as a release opens, the Datasets
 surface and worker wiring with and without `GRAPH_RELEASE_URI`, and the Graph,
 Presentation and Search surfaces' binding under it."""
 
@@ -9,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import gc
+import logging
 import threading
 import time
 import weakref
@@ -33,7 +35,14 @@ from datasets_api.operations.worker_app import RUN_ROUTE_PATH, build_worker_app
 from graph_api.app import graph_surface
 from graph_release import context
 from graph_release.context import ReleaseNotBound, bound_release, current_release
-from graph_release.format import Manifest, Pointer, manifest_uri, open_release, pointer_uri
+from graph_release.format import (
+    Manifest,
+    Pointer,
+    ReleaseFormatError,
+    manifest_uri,
+    open_release,
+    pointer_uri,
+)
 from graph_release.service import (
     Release,
     ReleaseService,
@@ -128,6 +137,15 @@ def _collector_off() -> Iterator[None]:
         yield
     finally:
         gc.enable()
+
+
+def _events(caplog: pytest.LogCaptureFixture, event: str) -> list[dict[str, object]]:
+    """The JSON fields of each `event` line the service logged."""
+    return [
+        fields
+        for record in caplog.records
+        if (fields := getattr(record, "json_fields", {})).get("event") == event
+    ]
 
 
 def _catalogue_service() -> CatalogueService:
@@ -354,6 +372,150 @@ class TestService:
             files.hold(["shared"])
 
         assert {path.name for path in tmp_path.iterdir()} == {"shared"}
+
+
+class TestRefusal:
+    @pytest.fixture(autouse=True)
+    def _events_captured(self, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level(logging.INFO, logger=service_module.__name__)
+
+    @pytest.mark.parametrize("refusal", ["format", "views"])
+    def test_a_refused_release_is_not_loaded_again_while_the_pointer_names_it(
+        self,
+        root: str,
+        local_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        refusal: str,
+    ):
+        first = build_test_release(root, tables=sample_tables())
+        clock = _Clock()
+        refused: set[str] = set()
+        loads: list[str | None] = []
+        guard_entries: list[str] = []
+
+        def loader(root_uri: str, *, local_dir: Path, release_id: str | None = None):
+            loads.append(release_id)
+            if refusal == "format" and release_id in refused:
+                raise ReleaseFormatError("part 'nodes' downloaded with SHA-256 0, manifest says 1")
+            return open_release(root_uri, local_dir=local_dir, release_id=release_id)
+
+        def build_views(loaded) -> object:
+            if loaded.manifest.release_id in refused:
+                raise ViewRefused("the coverage view does not build")
+            return object()
+
+        @contextmanager
+        def guard() -> Iterator[None]:
+            guard_entries.append("enter")
+            yield
+
+        monkeypatch.setattr(service_module, "build_release_views", build_views)
+        service = _service(root, local_dir, clock=clock, loader=loader, build_views=True)
+        service.register_swap_guard(guard)
+        second = build_test_release(root, tables=_other_tables())
+        refused.add(second.release_id)
+
+        for _ in range(3):
+            assert _recheck(service, clock).release_id == first.release_id
+
+        assert loads == [None, second.release_id]
+        assert guard_entries == ([] if refusal == "format" else ["enter"])
+        expected_type = "ReleaseFormatError" if refusal == "format" else "ViewRefused"
+        [refused_line] = _events(caplog, "graph_release_refused")
+        assert refused_line["release_id"] == second.release_id
+        assert refused_line["exception_type"] == expected_type
+        assert refused_line["reason"]
+        failures = _events(caplog, "graph_release_recheck_failed")
+        assert [
+            (f["pointer_release_id"], f["exception_type"], f["deterministic"], f["skipped"])
+            for f in failures
+        ] == [(second.release_id, expected_type, True, skipped) for skipped in (False, True, True)]
+        assert {f["served_release_id"] for f in failures} == {first.release_id}
+
+        third = build_test_release(root, tables=sample_tables(), dc_serving_revision="third")
+        assert _recheck(service, clock).release_id == third.release_id
+        assert loads[-1] == third.release_id
+
+    def test_a_transient_failure_is_loaded_again_at_the_next_recheck(
+        self, root: str, local_dir: Path, caplog: pytest.LogCaptureFixture
+    ):
+        first = build_test_release(root, tables=sample_tables())
+        clock = _Clock()
+        loads: list[str | None] = []
+
+        def loader(root_uri: str, *, local_dir: Path, release_id: str | None = None):
+            loads.append(release_id)
+            if len(loads) in (2, 3):
+                raise OSError("bucket unreachable")
+            return open_release(root_uri, local_dir=local_dir, release_id=release_id)
+
+        service = _service(root, local_dir, clock=clock, loader=loader)
+        second = build_test_release(root, tables=_other_tables())
+
+        assert _recheck(service, clock).release_id == first.release_id
+        assert _recheck(service, clock).release_id == first.release_id
+        assert _recheck(service, clock).release_id == second.release_id
+
+        assert loads == [None, second.release_id, second.release_id, second.release_id]
+        assert _events(caplog, "graph_release_refused") == []
+        failures = _events(caplog, "graph_release_recheck_failed")
+        assert [(f["exception_type"], f["deterministic"], f["skipped"]) for f in failures] == [
+            ("OSError", False, False)
+        ] * 2
+
+    def test_a_recheck_that_cannot_read_the_pointer_logs_no_pointer_id(
+        self, root: str, local_dir: Path, caplog: pytest.LogCaptureFixture
+    ):
+        first = build_test_release(root, tables=sample_tables())
+        clock = _Clock()
+        service = _service(root, local_dir, clock=clock)
+        write_uri_bytes(pointer_uri(root), b"not a pointer")
+
+        assert _recheck(service, clock).release_id == first.release_id
+
+        [failure] = _events(caplog, "graph_release_recheck_failed")
+        assert failure["served_release_id"] == first.release_id
+        assert failure["pointer_release_id"] is None
+        assert failure["exception_type"] == "ReleaseFormatError"
+        assert _events(caplog, "graph_release_refused") == []
+
+    def test_a_swap_logs_its_drain_build_and_memory(
+        self,
+        root: str,
+        local_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ):
+        first = build_test_release(root, tables=sample_tables())
+        clock = _Clock()
+        service = _service(root, local_dir, clock=clock)
+        monkeypatch.setattr(service_module, "_DRAIN_WARNING_SECONDS", 0.05)
+
+        @contextmanager
+        def slow_drain() -> Iterator[None]:
+            time.sleep(0.3)
+            yield
+
+        service.register_swap_guard(slow_drain)
+        second = build_test_release(root, tables=_other_tables())
+
+        assert _recheck(service, clock).release_id == second.release_id
+
+        [swapped] = _events(caplog, "graph_release_swapped")
+        assert swapped["from_release_id"] == first.release_id
+        assert swapped["to_release_id"] == second.release_id
+        assert isinstance(swapped["drain_seconds"], float) and swapped["drain_seconds"] >= 0.3
+        assert isinstance(swapped["build_seconds"], float) and swapped["build_seconds"] >= 0
+        assert isinstance(swapped["peak_rss_bytes"], int) and swapped["peak_rss_bytes"] > 0
+        assert "rss_bytes" in swapped
+        slow = _events(caplog, "graph_release_drain_slow")
+        assert slow, "a drain past the threshold logged nothing"
+        assert slow[0]["served_release_id"] == first.release_id
+        assert slow[0]["pointer_release_id"] == second.release_id
+        drained = [d for line in slow if isinstance(d := line["drain_seconds"], float)]
+        assert len(drained) == len(slow)
+        assert drained == sorted(drained) and drained[0] >= 0.05
 
 
 class TestViews:
