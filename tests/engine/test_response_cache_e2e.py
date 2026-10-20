@@ -723,5 +723,5 @@ def test_a_repeated_query_under_jev_hits_layer1_and_never_a_gemini_entry(
     assert llm.calls[gemini_calls:] == ["Extraction"]
     assert jev_requests == 2
     assert len(ask.requests) == jev_requests
-    assert set(second.diagnostics.timing_ms.by_step or {}) == {"response_cache_layer1"}
+    assert set(second.diagnostics.timing_ms.by_step or {}) == {"coverage", "response_cache_layer1"}
     assert second.parts == first.parts
