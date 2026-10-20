@@ -76,7 +76,6 @@ from search.engine.entry.dataset_entries import (
     resolve_candidates_entry,
     resolve_parsed_entries,
     spec_resubmit_input_for_identity,
-    with_echoed_defaults,
 )
 from search.engine.entry.multi import _stream_combined_regions
 from search.engine.entry.params import EntryParams
@@ -298,12 +297,9 @@ async def handle(
             # Stored before any trailing task launches, without its closures.
             if memo is not None and key is not None:
                 memo.store(key, region)
-        if region.status == "definite" and entry.assumptions:
-            region = dataclasses.replace(
-                region, specs=(with_echoed_defaults(region.spec, entry.assumptions),)
-            )
         return dataclasses.replace(
             region,
+            assumption_echo=tuple(entry.assumptions),
             variable_text=entry.variable_text,
             earliest_index=index,
             separate=entry.separate,

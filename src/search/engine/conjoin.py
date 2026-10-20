@@ -526,6 +526,7 @@ def _build_part(
                 *(() if folded else representative.inferred_facts),
             ),
             entity_words=region.entity_words,
+            assumption_echo=region.assumption_echo,
         )
     if region.status == "candidates":
         return build_candidates_part(

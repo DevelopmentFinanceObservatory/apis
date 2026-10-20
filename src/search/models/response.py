@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import (
     BaseModel,
@@ -158,10 +158,11 @@ class _PartBase(StrictModel):
             "every place with data. Filled on every door: on a definite part from its "
             "Spec, on a candidates part the items every shown reading's Spec yields alike, "
             "[] on no_data and unsupported. A dataset_resubmit identity entry posts every "
-            "slot bound, so its part keeps a declared default only through the entry's "
-            "assumptions echo. The sentence that carries this part closes with them as "
-            "one segment='assumption' clause ('Assumed: official development assistance; "
-            "every provider.'), after its departures. [] when the answer fills nothing"
+            "slot bound, so its part states the items of the entry's assumptions echo "
+            "that still hold (see ResubmitIdentityEntry.assumptions). The sentence that "
+            "carries this part closes with them as one segment='assumption' clause "
+            "('Assumed: official development assistance; every provider.'), after its "
+            "departures. [] when the answer fills nothing"
         ),
     )
 
@@ -279,6 +280,14 @@ class Skill(StrictModel):
     )
 
 
+def _kind_required(schema: dict[str, Any]) -> None:
+    """List `kind` as required in a response kind's JSON schema: every serialised response
+    carries its discriminator, while the constructor keeps its default."""
+    required = schema.setdefault("required", [])
+    if "kind" not in required:
+        required.append("kind")
+
+
 class _AnswerBase(BaseModel):
     """Fields every resolve response carries, whatever its kind."""
 
@@ -332,6 +341,8 @@ class Resolution(_AnswerBase):
             resp.status          # "definite" | "candidates" | "no_data" | "unsupported" | "mixed"
             resp.parts[0].status  # this part's own status
     """
+
+    model_config = ConfigDict(json_schema_extra=_kind_required)
 
     kind: Literal["resolution"] = Field(
         default="resolution",
@@ -416,7 +427,7 @@ class CatalogueAnswer(_AnswerBase):
     neither an indicator nor a subject, such as "what data do you have?". It
     carries the country the question named, when the resolver confirms one."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", json_schema_extra=_kind_required)
 
     kind: Literal["catalogue"] = Field(
         default="catalogue",
@@ -428,7 +439,7 @@ class CatalogueAnswer(_AnswerBase):
 class DeclinedAnswer(_AnswerBase):
     """A resolve response to a question search does not answer."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", json_schema_extra=_kind_required)
 
     kind: Literal["declined"] = Field(
         default="declined",

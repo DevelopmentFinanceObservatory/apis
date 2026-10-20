@@ -13,6 +13,7 @@ from functools import cache
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from scripts.sentence_golden import golden_parts
 from search.models import (
@@ -74,7 +75,12 @@ def test_aid_to_a_named_recipient_assumes_the_default_flow_and_every_provider():
     index names it since the measure noun says it, then the providers no word named."""
     spec = _with_declared_default(_panel_spec("crs-002"), "how:crsTypeOfFlow")
     assert assumptions_for(spec) == [
-        Assumption(kind="declared_default", binding_ref="how:crsTypeOfFlow", text="ODA"),
+        Assumption(
+            kind="declared_default",
+            binding_ref="how:crsTypeOfFlow",
+            text="ODA",
+            refs=["CRSTypeOfFlow10"],
+        ),
         _EVERY_PROVIDER,
     ]
 
@@ -84,7 +90,10 @@ def test_a_declared_default_the_heading_states_takes_the_heading_words():
     heading's words."""
     spec = _with_declared_default(_panel_spec("crs-026"), "how:crsPurpose")
     assert assumptions_for(spec)[0] == Assumption(
-        kind="declared_default", binding_ref="how:crsPurpose", text="malaria control"
+        kind="declared_default",
+        binding_ref="how:crsPurpose",
+        text="malaria control",
+        refs=["CRSPurposeCode12262"],
     )
 
 
@@ -156,3 +165,45 @@ def test_a_candidates_part_assumes_what_every_reading_assumes():
     plan = candidates_sentence_plan(specs, assumptions=common_assumptions(specs))
     assert sentence_from_plan(plan).endswith(" Assumed: every creditor.")
     assert {t.segment for t in plan[-4:]} == {"assumption"}
+
+
+def test_every_declared_default_the_index_holds_fits_an_echoed_assumption():
+    """A resubmit echoes each part's assumptions as posted, so the bounds on `Assumption` hold
+    every declared default the packaged index can fix: one value, named in at most the text
+    bound by its label or short name."""
+    from code_index.shared import get_index
+
+    index = get_index()
+    codes = [
+        *(d.default.code for d in index.declarations.values() if d.default is not None),
+        *(default.value_dcid for default in index.shape_slot_defaults),
+    ]
+    assert codes
+    text_bound = Assumption.model_fields["text"].metadata
+    max_chars = next(m.max_length for m in text_bound if getattr(m, "max_length", None))
+    for code in codes:
+        row = index.code_by_dcid(code)
+        words = [code] if row is None else [row.label, row.short_name or row.label]
+        assert all(len(word) <= max_chars for word in words), code
+
+
+@pytest.mark.parametrize(
+    "update",
+    [
+        pytest.param({"text": "x" * 201}, id="text"),
+        pytest.param({"binding_ref": "how:" + "x" * 1033}, id="binding_ref"),
+        pytest.param({"refs": ["CRSTypeOfFlow10", "CRSTypeOfFlow21"]}, id="refs"),
+        pytest.param({"refs": ["x" * 1025]}, id="ref"),
+    ],
+)
+def test_an_echoed_assumption_past_its_bounds_is_refused(update: dict[str, object]):
+    """An echo is untrusted input, so each string and the value list is bounded."""
+    item = {
+        "kind": "declared_default",
+        "binding_ref": "how:crsTypeOfFlow",
+        "text": "ODA",
+        "refs": ["CRSTypeOfFlow10"],
+    }
+    Assumption.model_validate(item)
+    with pytest.raises(ValidationError):
+        Assumption.model_validate({**item, **update})

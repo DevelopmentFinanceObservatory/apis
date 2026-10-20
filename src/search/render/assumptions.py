@@ -10,6 +10,10 @@
 - the place scope of a request that named no place (`resolved.scope` on
   `observationAbout`), named as the heading counts it ("every country", "every place").
 
+A `dataset_resubmit` identity entry posts every slot bound and echoes the part's list
+back. Its part states the echoed items that still hold, matched by kind, binding and value
+dcids (`Assumption.refs`) and worded from the rebuilt Spec.
+
 The sentence closes with the items as one clause (`clause_tokens`): "Assumed:
 official development assistance; every provider."
 """
@@ -44,23 +48,66 @@ _WORLD = "Earth"
 
 
 def assumptions_for(
-    spec: Spec, *, keep_how_properties: frozenset[str] = frozenset()
+    spec: Spec,
+    *,
+    keep_how_properties: frozenset[str] = frozenset(),
+    echo: Sequence[Assumption] = (),
 ) -> list[Assumption]:
     """The values `spec` filled that its request did not ask for, in clause order: declared
     defaults in `trace.slot_filters` order, then open roles, then the place scope.
     ``keep_how_properties`` are the how properties a candidates part keeps visible, under
-    which its heading names each value."""
+    which its heading names each value.
+
+    ``echo`` is the list a `dataset_resubmit` identity entry posts back. When it holds items,
+    the result is the echoed items that still hold for `spec`, each with its words read from
+    `spec`: a declared default whose slot still binds exactly the echoed `refs`, an open role
+    `spec` still reads open on the echoed axis, and the place scope of a `spec` that still
+    names no place. An item the echo lacks is left out, since the posted identity or its edit
+    asked for it. An empty echo reads `spec` as a fresh request does."""
     heading = heading_for(spec, keep_how_properties=keep_how_properties).heading
+    echoed = {_echo_key(item) for item in echo}
+    # The posted identity of an echo binds every slot, so none carries declared_default
+    # provenance: on an echo a how slot holds its default while it binds the echoed values.
     defaults = [
-        Assumption(
-            kind="declared_default",
-            binding_ref=slot_filter.key.as_ref(),
-            text=declared_default_text(slot_filter, heading),
-        )
+        _declared_default(slot_filter, heading)
         for slot_filter in spec.resolved.trace.slot_filters
-        if slot_filter.provenance == "declared_default" and slot_filter.refs
+        if slot_filter.refs
+        and (
+            slot_filter.key.axis == "how" and _slot_key(slot_filter) in echoed
+            if echo
+            else slot_filter.provenance == "declared_default"
+        )
     ]
-    return [*defaults, *_open_roles(spec, heading), *_place_scope(spec)]
+    filled = [*_open_roles(spec, heading), *_place_scope(spec)]
+    if echo:
+        filled = [item for item in filled if _echo_key(item) in echoed]
+    return [*defaults, *filled]
+
+
+def _echo_key(item: Assumption) -> tuple[str, str, frozenset[str]]:
+    """What an echoed item shares with one the answer yields while it still holds: its kind,
+    its binding and its values. Its words are read from the answer."""
+    return item.kind, item.binding_ref, frozenset(item.refs)
+
+
+def _slot_key(slot_filter: ResolvedFilter) -> tuple[str, str, frozenset[str]]:
+    """The `_echo_key` of the declared default `slot_filter` would state."""
+    return (
+        "declared_default",
+        slot_filter.key.as_ref(),
+        frozenset(value.ref for value in slot_filter.refs),
+    )
+
+
+def _declared_default(slot_filter: ResolvedFilter, heading: Heading) -> Assumption:
+    """The `declared_default` assumption of a slot bound to `slot_filter.refs`, in the
+    heading's words for it (`declared_default_text`)."""
+    return Assumption(
+        kind="declared_default",
+        binding_ref=slot_filter.key.as_ref(),
+        text=declared_default_text(slot_filter, heading),
+        refs=[value.ref for value in slot_filter.refs],
+    )
 
 
 def common_assumptions(

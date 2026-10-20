@@ -29,6 +29,7 @@ from search.models import (
     UNIT_REF,
     AmbiguousEntityGroup,
     AmbiguousSourceGroup,
+    Assumption,
     CandidateSet,
     CandidatesPart,
     DefinitePart,
@@ -396,6 +397,7 @@ def build_definite_part(
     skills_index: SkillsIndex | None = None,
     departure_facts: Sequence[DepartureFact] = (),
     entity_words: Mapping[str, str] | None = NO_ENTITY_WORDS,
+    assumption_echo: Sequence[Assumption] = (),
 ) -> DefinitePart:
     """Build a definite part around its answering spec.
 
@@ -405,6 +407,9 @@ def build_definite_part(
     its envelope holds. ``definite_departures`` adds those the spec, the operations
     and the reading's match carry. ``entity_words`` are the request's own words for each
     entity name (`RegionResult.entity_words`), in which a group read as members is asked.
+    ``assumption_echo`` is the list a dataset resubmit entry echoed
+    (`RegionResult.assumption_echo`), of which the part states those that still hold
+    (`render.assumptions.assumptions_for`).
     """
     # A definite spec must carry at least one confirmed StatVar.
     assert spec.resolved.members, "definite Spec has empty stat_vars"
@@ -428,7 +433,7 @@ def build_definite_part(
             operations=operations,
             entity_words=entity_words,
         ),
-        assumptions=assumptions_for(spec),
+        assumptions=assumptions_for(spec, echo=assumption_echo),
     )
 
 

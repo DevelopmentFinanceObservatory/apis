@@ -46,13 +46,14 @@ _E2E_SV_DCID = (
 _E2E_KEN_DCID = "country/KEN"
 
 
-def _e2e_sv_arcs() -> dict:
+def _e2e_sv_arcs(dcid: str = _E2E_SV_DCID) -> dict:
+    """The graph arcs of the packaged index's StatVar `dcid`."""
     from code_index.shared import get_index
 
-    row = next(r for r in get_index().statvars if r.dcid == _E2E_SV_DCID)
+    row = next(r for r in get_index().statvars if r.dcid == dcid)
     return {
         "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
-        "name": {"nodes": [{"value": _E2E_SV_DCID}]},
+        "name": {"nodes": [{"value": dcid}]},
         "populationType": {"nodes": [{"dcid": "FinancialFlow"}]},
         "measuredProperty": {"nodes": [{"dcid": "grantEquivalent"}]},
         "statType": {"nodes": [{"dcid": "measuredValue"}]},

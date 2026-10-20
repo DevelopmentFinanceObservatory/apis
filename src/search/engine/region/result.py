@@ -34,6 +34,7 @@ from search.engine.source_scope import AmbiguousSource, SourceRefusal, SourceSco
 from search.engine.spec_build import RoleAxisFactInput
 from search.heading.departure_fact import DepartureFact
 from search.models import (
+    Assumption,
     EntityRoleKey,
     GraphRef,
     NearestRealSpec,
@@ -251,6 +252,10 @@ class RegionResult:
     # states. A candidate set the status rule builds is `intent_rank`: the elected reading
     # first, then its rivals in menu order. Assembly keeps the specs' order either way.
     candidate_ordering_override: Ordering | None = None
+    # The assumptions a dataset resubmit identity entry echoed back
+    # (`ResubmitIdentityEntry.assumptions`). Its definite part states those that still hold
+    # (`render.assumptions.assumptions_for`). Empty on every other door.
+    assumption_echo: tuple[Assumption, ...] = ()
     # Unawaited coverage probe for streamed slot options, sent after `response`.
     # It leaves `specs[].slot_options` and the buffered response unchanged.
     # Its events and warnings feed the terminal `done` event.

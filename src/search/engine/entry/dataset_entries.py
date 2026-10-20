@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-from collections.abc import Sequence
 
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from entity_resolution import Admission, EntityResolver
@@ -37,51 +36,19 @@ from search.engine.region import RegionResult, resolve_spec_resubmit
 from search.engine.region.place_options import PlaceOptionsPool
 from search.engine.region.state import EngineOptions
 from search.models import (
-    Assumption,
     ResubmitCandidate,
     ResubmitCandidatesEntry,
     ResubmitIdentityEntry,
     ResubmitIdentityPayload,
     ResubmitParsedEntry,
-    Spec,
     Warning,
 )
-from search.render.assumptions import declared_default_text
-from search.render.heading import heading_for
 from series_coverage.shared import CoverageSnapshot
 
 
 def spec_resubmit_input_for_identity(entry: ResubmitIdentityEntry) -> ResubmitIdentityPayload:
     """Copy an identity entry into its promote payload."""
     return ResubmitIdentityPayload(identity=entry.identity, entity_groups=entry.entity_groups)
-
-
-def with_echoed_defaults(spec: Spec, echoed: Sequence[Assumption]) -> Spec:
-    """`spec` with each how slot an echoed declared default still names recorded as
-    `declared_default` in its trace, so the part it answers keeps that assumption
-    (`render.assumptions.assumptions_for`). A slot still names the echoed value when the
-    words the assumption states for it (`declared_default_text`) equal the echo's; a slot
-    an edit changed reads other words, so its assumption drops. With no echoed declared
-    default, or none a slot still names, `spec` is returned unchanged."""
-    kept = {(item.binding_ref, item.text) for item in echoed if item.kind == "declared_default"}
-    if not kept:
-        return spec
-    heading = heading_for(spec).heading
-    trace = spec.resolved.trace
-    filters = [
-        slot_filter.model_copy(update={"provenance": "declared_default"})
-        if slot_filter.key.axis == "how"
-        and slot_filter.refs
-        and (slot_filter.key.as_ref(), declared_default_text(slot_filter, heading)) in kept
-        else slot_filter
-        for slot_filter in trace.slot_filters
-    ]
-    if filters == trace.slot_filters:
-        return spec
-    resolved = spec.resolved.model_copy(
-        update={"trace": trace.model_copy(update={"slot_filters": filters})}
-    )
-    return spec.model_copy(update={"resolved": resolved})
 
 
 # The promote payload's fields a posted candidate carries under the same names.
