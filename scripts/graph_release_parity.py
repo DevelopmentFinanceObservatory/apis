@@ -26,15 +26,17 @@ the release bound and flag off:
   answer it (`origin.arc_targets`);
 - every member walk of every DFO family the flag on walks over the release's graph reader,
   against the same walk over the mixer with the catalogue bound, as the flag off walks it:
-  members and family in order, refusals included (`origin.members`);
+  members and family in order, refusals included, each walk reading its whole population
+  up to `DEFAULT_SUBJECT_CEILING` with no `CANDIDATE_CAP` page (`origin.members`), and every
+  variable the mixer finds for a five-tuple the release holds that is no DFO variable of
+  the release (`origin.members` too);
 - the skills index built over the mixer: its roster, each skill's attachments and its reach
   (`skills.roster`, `skills.attachments`, `skills.reach`).
 
-The report also counts the families the release-held rule cannot see
-(`ReleaseOrigin.holds_family`), which no category counts unless they change a walk: base Data
-Commons variables of a release-held five-tuple that the catalogue does not list, found by the
-mixer's reverse read, and variables the release's edges type `StatisticalVariable` with no
-observation in its series.
+The report also counts, under `blind_spots`, the variables the release-held rule cannot see
+(`ReleaseOrigin.holds_family`): base Data Commons variables of a release-held five-tuple that
+the catalogue does not list, found by the mixer's reverse read, each also a difference, and
+variables the release's edges type `StatisticalVariable` with no observation in its series.
 
 A gate refuses (exit 2) before comparing anything when the build it compares with and the
 release come from different ingestion workflow executions (`import_mismatch`, or
@@ -578,7 +580,9 @@ def walk_members(
     """`walk` over `graph` as the Datasets mint walks it, under `DEFAULT_SUBJECT_CEILING`
     and no deadline: its group as JSON, members and family in order, or the refusal it
     raised. The member cap is the subject ceiling, so a family past the serving cap
-    (`DEFAULT_MEMBER_CAP`) is compared member by member; equal member counts refuse alike."""
+    (`DEFAULT_MEMBER_CAP`) is compared member by member; equal member counts refuse alike.
+    The first page is the subject ceiling too, so a root on a `CANDIDATE_CAP` page cannot
+    settle the walk before it reads a variable past that page."""
     try:
         group = enumerate_members(
             five_tuple=walk.five_tuple,
@@ -588,6 +592,7 @@ def walk_members(
             member_cap=DEFAULT_SUBJECT_CEILING,
             role_keys=walk.role_keys,
             subject_ceiling=DEFAULT_SUBJECT_CEILING,
+            candidate_cap=DEFAULT_SUBJECT_CEILING,
         )
     except _WALK_REFUSALS as exc:
         return {"refused": type(exc).__name__, "detail": str(exc)}
@@ -611,12 +616,13 @@ def walk_members(
 
 def unlisted_candidates(
     graph: MemberArcReader, five_tuple: FiveTuple, *, listed: Collection[str]
-) -> tuple[str, ...]:
+) -> tuple[tuple[str, ...], bool]:
     """The variables of `five_tuple` that `graph`'s reverse read finds and `listed` does not
     hold: each subject of the walk's reverse query, up to `DEFAULT_SUBJECT_CEILING`, whose
-    five-tuple arcs match `five_tuple` exactly."""
+    five-tuple arcs match `five_tuple` exactly. Also whether the read stopped at that
+    ceiling, leaving subjects unread."""
     if five_tuple.measured_property is None:
-        return ()
+        return (), False
     page = graph.node_subjects(
         five_tuple.measured_property,
         property="measuredProperty",
@@ -630,14 +636,14 @@ def unlisted_candidates(
     )
     others = [dcid for dcid in page.dcids if dcid not in listed]
     if not others:
-        return ()
+        return (), page.truncated
     arcs = graph.node_arcs_many(others, properties=_FIVE_TUPLE_ARCS)
     return tuple(
         dcid
         for dcid in others
         if (found := arcs.get(dcid)) is not None
         and five_tuple_arcs_match(found, **asdict(five_tuple))
-    )
+    ), page.truncated
 
 
 def unobserved_variables(*, series: pa.Table, edges: pa.Table) -> dict[str, FiveTuple]:
@@ -688,11 +694,12 @@ def member_parity(
 ) -> tuple[Category, dict[str, object]]:
     """Every walk of every DFO family (`member_walks`) the flag on reads from the release
     (`ReleaseOrigin.holds_family`), over the release's reader against `live`, the reader the
-    flag off walks, with `catalogue` bound. Also returns the routing counts and the two
-    families the release-held rule cannot see: a variable `live` finds for a release-held
-    five-tuple that is no DFO variable of the release (`unlisted_candidates`), split into
-    the release's unobserved variables (`unobserved_variables`) and the rest, base Data
-    Commons variables the catalogue does not list."""
+    flag off walks, with `catalogue` bound. A walk either side could not read whole, past
+    `DEFAULT_SUBJECT_CEILING`, is a difference, and so is each variable `live` finds for a
+    release-held five-tuple that is no DFO variable of the release (`unlisted_candidates`),
+    or a reverse read that stops at the ceiling. Also returns the routing counts and those
+    variables split into the release's unobserved variables (`unobserved_variables`) and
+    the rest, base Data Commons variables the catalogue does not list."""
     origin = _origin(release)
     walks = member_walks(origin)
     five_tuples = sorted({walk.five_tuple for walk in walks}, key=lambda found: str(found))
@@ -718,14 +725,36 @@ def member_parity(
             workers,
         )
     members = _mapping_diff(ours, theirs, examples=examples, other="live")
+    for label in sorted(ours):
+        if any(cast("dict", side[label]).get("truncated") for side in (ours, theirs)):
+            members.add({"key": label, "unread_past": DEFAULT_SUBJECT_CEILING})
 
     unobserved = unobserved_variables(
         series=release.loaded.tables["series"], edges=release.loaded.tables["edges"]
     )
     held_set = set(held)
     candidates = {
-        dcid: five_tuple for five_tuple, dcids in zip(held, found, strict=True) for dcid in dcids
+        dcid: five_tuple
+        for five_tuple, (dcids, _) in zip(held, found, strict=True)
+        for dcid in dcids
     }
+    members.compared += len(held)
+    for five_tuple, (_, truncated) in zip(held, found, strict=True):
+        if truncated:
+            members.add(
+                {
+                    "key": f"unlisted:{json.dumps(asdict(five_tuple), sort_keys=True)}",
+                    "unread_past": DEFAULT_SUBJECT_CEILING,
+                }
+            )
+    for dcid in sorted(candidates):
+        members.add(
+            {
+                "key": f"unlisted:{dcid}",
+                "five_tuple": asdict(candidates[dcid]),
+                "unobserved": dcid in unobserved,
+            }
+        )
     unlisted = {dcid: tuple_ for dcid, tuple_ in candidates.items() if dcid not in unobserved}
     unobserved_live = sorted(dcid for dcid in candidates if dcid in unobserved)
     extra = {

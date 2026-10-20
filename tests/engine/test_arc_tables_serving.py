@@ -603,6 +603,38 @@ def test_a_release_s_dfo_half_serves_the_catalogue_s_families_and_arcs(
     assert flows.total == _FLOW_TOTAL
 
 
+def test_a_base_variable_the_release_owns_appears_once_with_the_release_s_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With `GRAPH_RELEASE_ORIGIN` on, a variable the catalogue's base table holds and the
+    bound release owns as DFO leaves every base family its base arcs place it in: its own
+    family lists it once with the release's values, and a family it alone made goes."""
+    release = _origin_release(tmp_path)
+    assert release.origin is not None
+    released = release.origin.families[_FLOWS]
+    owned, elsewhere = released.members[:2]
+    real = FamilyKey("FinancialFlow", "amount", "measuredValue", "RealValue", None, False, True)
+    builder = ArcTablesBuilder()
+    builder.add("base", _FLOW_TOTAL, _flow("Financial flows"))
+    builder.add("base", owned, _flow("A stale copy", financialFlowType="Stale"))
+    moved = _flow("A stale copy elsewhere")
+    moved["measurementQualifier"] = {"nodes": [{"dcid": "RealValue"}]}
+    builder.add("base", elsewhere, moved)
+    catalogue = restrictive_catalogue(arcs=build_labelled(builder))
+    assert catalogue.families.arcs[real].members == (elsewhere,)
+    monkeypatch.setenv("GRAPH_RELEASE_ORIGIN", "1")
+    monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1")
+
+    with bound_release(release):
+        flows = catalogue.held_family(_FLOWS)
+        gone = catalogue.held_family(real)
+
+    assert flows is not None
+    assert flows.members == (*released.members, _FLOW_TOTAL)
+    assert flows.values == released.values
+    assert gone is None
+
+
 @pytest.mark.unbound_release
 def test_the_origin_flag_refuses_a_read_without_a_release_s_origin_view(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

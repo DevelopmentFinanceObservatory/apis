@@ -20,6 +20,7 @@ from artifact_publication.jobs import Ingestion
 from code_index.loader import default_index_path
 from graph_release.context import origin_release_enabled
 from graph_release.format import LoadedRelease, open_release
+from graph_release.origin import ReleaseOrigin
 from graph_release.shadow import PINNED_INDEX_VARIABLES
 from origin_catalogue.arc_tables import ArcTables, ArcTablesBuilder
 from origin_catalogue.catalogue import CatalogueSnapshot
@@ -42,7 +43,7 @@ from skills_index.types import (
     SkillsIndex,
     TupleMemberAttachment,
 )
-from statvar_members import MemberArcReader, SubjectPage
+from statvar_members import CANDIDATE_CAP, MemberArcReader, SubjectPage
 from tests.graph_release.recorded import FIXTURES, platform_parts, recorded_dfo_arcs
 from tests.graph_release.support import (
     TEST_EXECUTION,
@@ -409,3 +410,102 @@ def test_a_variable_the_catalogue_does_not_list_is_a_blind_spot(tmp_path: Path) 
     unlisted = report["blind_spots"]["unlisted_base_variables"]
     assert unlisted["count"] == 1
     assert unlisted["examples"][0]["dcid"] == _UNLISTED
+
+
+_DEFLATOR_ARCS = {
+    "typeOf": ("StatisticalVariable",),
+    "populationType": ("EconomicProduction",),
+    "measuredProperty": ("deflator",),
+    "statType": ("measuredValue",),
+    "measurementQualifier": ("ConversionRecipeDAC",),
+}
+_FILLERS = tuple(f"Deflator_Filler_{i:04d}" for i in range(CANDIDATE_CAP))
+"""Subjects of the deflator reverse read that carry a denominator, so no walk admits them and
+the unlisted read leaves them out, enough to push what follows past the first page."""
+_RARE = "Deflator_EconomicProduction_ConversionRecipeDAC_Rare"
+"""A constrained deflator variable the live graph serves and the release does not hold."""
+
+
+class _PastTheCap:
+    """`reader` with the deflator family's reverse read followed by `_FILLERS` and then
+    `tail`, so a variable in `tail` sits past `CANDIDATE_CAP` subjects."""
+
+    def __init__(self, reader: MemberArcReader, *, tail: tuple[str, ...] = ()) -> None:
+        self._reader = reader
+        self._tail = tail
+
+    def node_subjects(
+        self,
+        dcid: str,
+        *,
+        property: str,
+        filters: Mapping[str, str] | None = None,
+        max_results: int,
+        deadline: float | None = None,
+    ) -> SubjectPage:
+        page = self._reader.node_subjects(
+            dcid, property=property, filters=filters, max_results=max_results
+        )
+        if (dcid, property) != ("deflator", "measuredProperty"):
+            return page
+        subjects = (*page.dcids, *_FILLERS, *self._tail)
+        return dc_graph.SubjectPage(
+            dcids=subjects[:max_results], truncated=len(subjects) > max_results
+        )
+
+    def node_arcs_many(
+        self,
+        dcids: Sequence[str],
+        *,
+        properties: Sequence[str],
+        individual_probe_budget: int | None = None,
+        deadline: float | None = None,
+    ) -> dict[str, dict[str, tuple[str, ...]] | None]:
+        added = {
+            **{
+                filler: {**_DEFLATOR_ARCS, "measurementDenominator": ("Filler",)}
+                for filler in _FILLERS
+            },
+            _RARE: {
+                **_DEFLATOR_ARCS,
+                "constraintProperties": ("sector",),
+                "sector": ("Rare",),
+            },
+        }
+        found = self._reader.node_arcs_many(
+            [dcid for dcid in dcids if dcid not in added], properties=properties
+        )
+        for dcid in dcids:
+            if dcid in added:
+                found[dcid] = {name: added[dcid].get(name, ()) for name in properties}
+        return {dcid: found[dcid] for dcid in dcids}
+
+
+@pytest.mark.parametrize("tail", [(), (_RARE,)])
+def test_a_live_variable_past_the_candidate_cap_fails_the_origin_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tail: tuple[str, ...]
+) -> None:
+    """Both walks of the deflator family read `CANDIDATE_CAP` subjects before its root's
+    proof could stop them. A variable only the live graph serves, past that page, is a
+    difference twice: the walks over the whole population differ, and it is an unlisted
+    candidate of a release-held five-tuple. Without it the padded walks agree."""
+    import scripts.graph_release_parity as parity
+    from graph_release.origin import release_origin
+
+    def padded_origin(loaded: LoadedRelease) -> ReleaseOrigin:
+        origin = release_origin(loaded)
+        return dataclasses.replace(origin, reader=_PastTheCap(origin.reader))
+
+    monkeypatch.setattr(parity, "release_origin", padded_origin)
+    report = _origin_report(tmp_path, live=lambda reader: _PastTheCap(reader, tail=tail))
+
+    members = report["categories"]["origin.members"]
+    if not tail:
+        assert report["outcome"] == "parity"
+        return
+    assert report["outcome"] == "differences"
+    keys = [example["key"] for example in members["examples"]]
+    assert any(key.startswith("unlisted:") and _RARE in key for key in keys)
+    walk = next(example for example in members["examples"] if '"deflator"' in example["key"])
+    assert walk["live"]["candidates_considered"] == walk["release"]["candidates_considered"] + 1
+    assert walk["release"]["candidates_considered"] > CANDIDATE_CAP

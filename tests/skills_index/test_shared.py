@@ -15,6 +15,7 @@ from unittest import mock
 import pytest
 from fastapi import FastAPI
 
+import skills_index.build as build_module
 import skills_index.shared as shared_module
 from graph_release.context import bound_release_or_none
 from skills_index.config import HIERARCHY_PROPERTIES
@@ -675,5 +676,64 @@ def test_without_the_origin_flag_a_release_service_gets_no_swap_callback_and_the
                 await release_shared_index(shared)
 
         assert calls[:2] == [900.0, 900.0]
+
+    asyncio.run(scenario())
+
+
+class _SkillReadFailingOnceGraph(FakeSkillsGraph):
+    """Two published skills whose node reads each take their own chunk, the read naming
+    `skill/b` raising on its first call alone."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            subjects={("AgentSkill", "typeOf"): ["skill/a", "skill/b"]},
+            arcs={"skill/a": skill_node("a"), "skill/b": skill_node("b")},
+        )
+        self.failed = False
+
+    def node_arcs_many(
+        self,
+        dcids: Sequence[str],
+        *,
+        properties: Sequence[str],
+        deadline: float | None = None,
+    ) -> dict[str, dict[str, tuple[str, ...]] | None]:
+        if "skill/b" in dcids and not self.failed:
+            self.failed = True
+            raise RuntimeError("simulated read failure for skill/b")
+        return super().node_arcs_many(dcids, properties=properties, deadline=deadline)
+
+
+def test_with_the_origin_flag_a_build_with_failed_reads_retries_until_a_clean_build(
+    monkeypatch,
+):
+    monkeypatch.setenv("GRAPH_RELEASE_ORIGIN", "true")
+    monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1")
+    monkeypatch.setattr(build_module, "_FRONT_MATTER_CHUNK_SIZE", 1)
+
+    async def scenario() -> None:
+        fake_sleep, calls = _recording_sleep()
+        service = _FakeReleaseService(object())
+        with mock.patch.object(shared_module.asyncio, "sleep", fake_sleep):
+            shared = await acquire_shared_index(
+                graph=_SkillReadFailingOnceGraph(),
+                refresh_seconds=900.0,
+                release=service,  # ty: ignore[invalid-argument-type]
+            )
+            try:
+                await shared.wait_for_build_attempt()
+                partial = shared.index
+                assert partial is not None
+                assert list(partial.skills) == ["a"]
+
+                await asyncio.wait_for(shared.wait_for_build_attempt(), timeout=5)
+                recovered = shared.index
+                assert recovered is not None
+                assert list(recovered.skills) == ["a", "b"]
+            finally:
+                await release_shared_index(shared)
+
+        # One backoff after the build with a failed read, then a wait on swaps alone.
+        assert calls == [shared_module.SKILLS_INDEX_FIRST_BUILD_RETRY_INITIAL_SECONDS]
 
     asyncio.run(scenario())

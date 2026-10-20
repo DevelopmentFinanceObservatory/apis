@@ -121,7 +121,7 @@ Reports status and the capability version token.
 
 ## Caching
 
-Every 200 from the list, skill and resources doors carries a strong `ETag` and `Cache-Control: public, max-age=N`, where N is the whole seconds until the index's next rebuild (`SharedSkillsIndex.seconds_until_next_rebuild`), at least 1. A matching `If-None-Match` answers 304. Each door caches encoded bodies per index generation (`skills_api.doors._response_cache.GenerationBodyCache`), up to 8 MiB per door, and drops them all when the generation changes.
+Every 200 from the list, skill and resources doors carries a strong `ETag` and `Cache-Control: public, max-age=N`, where N is the whole seconds until the index's next rebuild (`SharedSkillsIndex.seconds_until_next_rebuild`), at least 1. With `GRAPH_RELEASE_ORIGIN` on, a release swap rebuilds the index at once, so they carry `Cache-Control: public, no-cache` and a cache revalidates each response by its ETag. A matching `If-None-Match` answers 304. Each door caches encoded bodies per index generation (`skills_api.doors._response_cache.GenerationBodyCache`), up to 8 MiB per door, and drops them all when the generation changes.
 
 Before the index's first build the three content doors refuse `503 service_unavailable`. A 200 with an empty list would be cached for a whole refresh window and read as an empty catalogue, and a 503 is never cached.
 

@@ -252,6 +252,27 @@ def test_a_response_served_later_in_a_generation_carries_a_smaller_max_age():
     assert late.headers["cache-control"] == "public, max-age=1"
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "/api/skills",
+        "/api/skills/oda-concepts",
+        "/api/skills/oda-concepts/resources/SKILL.md",
+    ],
+)
+def test_every_door_of_an_index_rebuilt_on_each_release_swap_answers_revalidate(url):
+    """A swap can rebuild the index at any moment, so a cache revalidates each response
+    by its ETag, and a 304 keeps the same policy."""
+    with client_for(index_of(skill_entry()), rebuilds_on_swap=True) as client:
+        resp = client.get(url)
+        assert resp.status_code == 200, resp.text
+        revalidated = client.get(url, headers={"if-none-match": resp.headers["etag"]})
+
+    assert resp.headers["cache-control"] == "public, no-cache"
+    assert revalidated.status_code == 304
+    assert revalidated.headers["cache-control"] == "public, no-cache"
+
+
 def test_strong_etag_and_conditional_requests():
     with client_for(index_of(skill_entry())) as client:
         first = client.get("/api/skills")

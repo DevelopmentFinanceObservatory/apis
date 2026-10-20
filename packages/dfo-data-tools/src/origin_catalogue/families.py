@@ -99,13 +99,40 @@ class ReleaseFamilies:
     `dfo`, the release's summaries of its DFO variables
     (`graph_release.origin.ReleaseOrigin.families`), joined to `base`, a build's summaries of
     its `base` arc table alone (`summarise_table`). `family_tables` joins the build's own
-    DFO and base summaries the same way, so for one import the two agree."""
+    DFO and base summaries the same way, so for one import the two agree.
+
+    `base_without_dfo` answers in place of `base` for each family a base variable the
+    release holds as DFO belongs to (`base_without`), so that variable is a member once,
+    with the release's arcs. None there means no other base variable is left."""
 
     dfo: Mapping[FamilyKey, FamilySummary]
     base: Mapping[FamilyKey, FamilySummary]
+    base_without_dfo: Mapping[FamilyKey, FamilySummary | None] = field(default_factory=dict)
 
     def family(self, key: FamilyKey) -> FamilySummary | None:
+        if key in self.base_without_dfo:
+            return _joined(self.dfo.get(key), self.base_without_dfo[key])
         return _joined(self.dfo.get(key), self.base.get(key))
+
+
+def base_without(
+    variables: Mapping[str, tuple[UnArc, ...]],
+    summaries: Mapping[FamilyKey, FamilySummary],
+    *,
+    dropped: Iterable[str],
+) -> dict[FamilyKey, FamilySummary | None]:
+    """The summary of each family of `summaries`, `summarise_table(variables)`, that a
+    `dropped` variable belongs to, summarised again from its other members in table order,
+    or None when it has none. Families no dropped variable belongs to are left out."""
+    gone = {dcid for dcid in dropped if variables.get(dcid)}
+    keys = {_VariableFacts.read(variables[dcid]).key for dcid in gone}
+    resummarised: dict[FamilyKey, FamilySummary | None] = {}
+    for key in keys:
+        kept = [dcid for dcid in summaries[key].members if dcid not in gone]
+        resummarised[key] = summarise(
+            ((dcid, variables[dcid]) for dcid in kept), un_only=False
+        ).get(key)
+    return resummarised
 
 
 def merge_summaries(first: FamilySummary, second: FamilySummary) -> FamilySummary:
@@ -293,6 +320,7 @@ __all__ = [
     "FamilySummary",
     "FamilyTables",
     "ReleaseFamilies",
+    "base_without",
     "family_tables",
     "merge_summaries",
     "summarise",

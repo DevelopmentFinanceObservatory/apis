@@ -41,7 +41,7 @@ topic names, passes, since every facet read still admits facet by facet, and
 With `GRAPH_RELEASE_ORIGIN` on, `CatalogueSnapshot` reads its DFO half from the request's
 graph release (`graph_release.context.served_origin`): a DFO variable's arcs come from the
 release's origin view, and so do the DFO members of each family, joined to the build's base
-summaries (`families.ReleaseFamilies`). The build's base and schema arcs, and the nodes it
+summaries (`families.ReleaseFamilies`), which leave out a base variable the release holds. The build's base and schema arcs, and the nodes it
 holds empty, still answer, and a DFO variable the release does not hold is read from the graph.
 """
 
@@ -805,7 +805,13 @@ class CatalogueSnapshot:
         return self.families.family(
             key,
             un_system_enabled=self.un_system_enabled,
-            release=ReleaseFamilies(dfo=origin.families, base=self.base_families),
+            release=ReleaseFamilies(
+                dfo=origin.families,
+                base=self.base_families,
+                base_without_dfo=origin.base_families_without_dfo(
+                    self.build_id, base=self.arcs.base, families=self.base_families
+                ),
+            ),
         )
 
     def arc_target(self, dcid: str) -> UnArc | None:

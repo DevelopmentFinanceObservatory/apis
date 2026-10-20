@@ -25,7 +25,7 @@ The view also holds the release's `ReleaseGraphReader`, built once as the releas
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Final, cast
 
 import numpy as np
@@ -38,7 +38,7 @@ from graph_release.platform import PlatformRefusal
 from graph_release.views import ViewRefused
 from origin_catalogue.arc_reads import DFO_VARIABLE_TYPE
 from origin_catalogue.arc_tables import ArcTablesBuilder, SpannerNode, spanner_wire_arcs
-from origin_catalogue.families import FamilyKey, FamilySummary, summarise_table
+from origin_catalogue.families import FamilyKey, FamilySummary, base_without, summarise_table
 from origin_catalogue.un_mirror import UnArc
 
 if TYPE_CHECKING:
@@ -58,6 +58,28 @@ class ReleaseOrigin:
     arcs: Mapping[str, tuple[UnArc, ...]]
     families: Mapping[FamilyKey, FamilySummary]
     reader: ReleaseGraphReader
+    # `base_families_without_dfo` per catalogue build id, held here so it goes with the release.
+    _base_without_dfo: dict[str, Mapping[FamilyKey, FamilySummary | None]] = field(
+        default_factory=dict, init=False, repr=False
+    )
+
+    def base_families_without_dfo(
+        self,
+        build_id: str,
+        *,
+        base: Mapping[str, tuple[UnArc, ...]],
+        families: Mapping[FamilyKey, FamilySummary],
+    ) -> Mapping[FamilyKey, FamilySummary | None]:
+        """Catalogue build `build_id`'s base summaries, `families` over its `base` arc table,
+        again for each family a base variable this release holds as DFO belongs to, without
+        those variables (`origin_catalogue.families.base_without`). Computed once per build."""
+        found = self._base_without_dfo.get(build_id)
+        if found is None:
+            found = base_without(
+                base, families, dropped=[dcid for dcid in self.arcs if dcid in base]
+            )
+            self._base_without_dfo[build_id] = found
+        return found
 
     def holds_family(self, five_tuple: FiveTuple, *, catalogue: Catalogue) -> bool:
         """Whether a member walk of `five_tuple`'s family reads `reader` in place of the graph.
@@ -72,8 +94,9 @@ class ReleaseOrigin:
         variable the catalogue does not list shares the five-tuple, and no DFO
         StatisticalVariable without observations, which the release leaves out and the mixer
         serves, belongs to the family. Serving checks neither. `scripts/graph_release_parity.py
-        origin` counts both (`blind_spots`): on dev, 0 unlisted base variables, and 1 unobserved
-        DFO variable, in no family the release holds."""
+        origin` counts both (`blind_spots`), and fails on any the mixer finds in a family the
+        release holds: on dev, 0 unlisted base variables, and 1 unobserved DFO variable, in no
+        family the release holds."""
         held = False
         for role_bearing in (False, True):
             key = FamilyKey(

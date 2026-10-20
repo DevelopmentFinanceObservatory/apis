@@ -5,7 +5,7 @@ only the refcount. Task cancellation and its await happen outside that lock.
 
 With `GRAPH_RELEASE_ORIGIN` on (`graph_release.context.origin_release_enabled`, read once
 when the first acquirer builds the holder) the index rebuilds when the release service swaps releases, in place of
-the `refresh_seconds` timer.
+the `refresh_seconds` timer, and after a build with a failed graph read until one has none.
 """
 
 from __future__ import annotations
@@ -50,11 +50,12 @@ class SharedSkillsIndex:
     failures retry with exponential backoff, and later failures wait `refresh_seconds`.
     Its deadline follows the generation currently served.
 
-    With it on, the task builds once and then again after each swap of `release`, and
-    runs no timer. Its `on_swap` callback only wakes the task, so the build never runs in
-    the service's recheck thread. Any failed build retries with exponential backoff until
-    one succeeds, and a success resets the backoff. `seconds_until_next_rebuild` answers
-    `refresh_seconds`, since no rebuild is scheduled.
+    With it on (`rebuilds_on_swap`), the task builds once and then again after each swap
+    of `release`, and runs no timer. Its `on_swap` callback only wakes the task, so the
+    build never runs in the service's recheck thread. A build that fails, or that serves an
+    index with failed graph reads (`SkillsIndex.failed_reads`), retries with exponential
+    backoff until one completes with none, which resets the backoff.
+    `seconds_until_next_rebuild` answers `refresh_seconds`, since no rebuild is scheduled.
 
     Each build runs under a catalogue from `catalogue` and `release`'s served release,
     each bound for that build alone, since the refresh task serves no request. `None`
@@ -78,7 +79,7 @@ class SharedSkillsIndex:
         self._catalogue = catalogue
         self._release = release
         self._refresh_seconds = refresh_seconds
-        self._rebuild_on_swap = origin_release_enabled()
+        self.rebuilds_on_swap = origin_release_enabled()
         self.index: SkillsIndex | None = None
         self.build_attempts = 0
         # Monotonic bind time for the generation in `index`. `None` before the first build.
@@ -87,7 +88,7 @@ class SharedSkillsIndex:
         self._build_attempted = asyncio.Event()
         self._swapped = asyncio.Event()
         self._unregister_swap: Callable[[], None] | None = None
-        if self._rebuild_on_swap and release is not None:
+        if self.rebuilds_on_swap and release is not None:
             loop = asyncio.get_running_loop()
 
             def wake(_release: Release) -> None:
@@ -112,7 +113,7 @@ class SharedSkillsIndex:
             raise RuntimeError(
                 "seconds_until_next_rebuild() called before any build has bound a generation"
             )
-        if self._rebuild_on_swap:
+        if self.rebuilds_on_swap:
             return self._refresh_seconds
         deadline = self._bound_at + self._refresh_seconds
         return max(deadline - time.monotonic(), _REFRESH_DEADLINE_FLOOR_SECONDS)
@@ -122,19 +123,19 @@ class SharedSkillsIndex:
         Cancellation exits the loop. Backoff runs from
         `SKILLS_INDEX_FIRST_BUILD_RETRY_INITIAL_SECONDS` to
         `SKILLS_INDEX_FIRST_BUILD_RETRY_CEILING_SECONDS`: before the first bind with the
-        flag off, and after any failure with it on."""
+        flag off, and after any build with it on that failed or had a read fail."""
         retry_seconds = SKILLS_INDEX_FIRST_BUILD_RETRY_INITIAL_SECONDS
         while True:
             # Cleared before the build reads the served release, so a swap that lands
             # during the build triggers another.
             self._swapped.clear()
-            built = await self._build_once()
+            clean = await self._build_once()
             self.build_attempts += 1
             self._build_attempted.set()
-            if self._rebuild_on_swap and built:
+            if self.rebuilds_on_swap and clean:
                 retry_seconds = SKILLS_INDEX_FIRST_BUILD_RETRY_INITIAL_SECONDS
                 await self._swapped.wait()
-            elif self._rebuild_on_swap or self._bound_at is None:
+            elif self.rebuilds_on_swap or self._bound_at is None:
                 await asyncio.sleep(retry_seconds)
                 retry_seconds = min(
                     retry_seconds * 2, SKILLS_INDEX_FIRST_BUILD_RETRY_CEILING_SECONDS
@@ -143,7 +144,8 @@ class SharedSkillsIndex:
                 await asyncio.sleep(self._refresh_seconds)
 
     async def _build_once(self) -> bool:
-        """Builds and publishes one generation. Returns whether it succeeded."""
+        """Builds and publishes one generation. Returns whether it completed with no
+        failed graph read."""
         try:
             with (
                 bound_catalogue(self._catalogue())
@@ -153,14 +155,20 @@ class SharedSkillsIndex:
                 if self._release is not None
                 else contextlib.nullcontext(),
             ):
-                self.index = await asyncio.to_thread(build_index, graph=self._graph)
+                index = await asyncio.to_thread(build_index, graph=self._graph)
         except Exception:
             logger.exception("skills index build failed; the previous index keeps serving")
             return False
+        self.index = index
         # Tie the deadline to the generation published in `index`.
         # Failures leave it unchanged.
         self._bound_at = time.monotonic()
-        return True
+        if index.failed_reads:
+            logger.warning(
+                "skills index build had %d failed graph reads; it serves and is rebuilt",
+                index.failed_reads,
+            )
+        return not index.failed_reads
 
     async def _close(self) -> None:
         if self._unregister_swap is not None:
