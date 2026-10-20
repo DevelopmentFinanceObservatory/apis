@@ -342,23 +342,19 @@ def test_a_different_slot_binding_is_a_different_key():
     assert _population_key(unbound) != _population_key(bound)
 
 
-def test_the_bound_release_keys_the_population_under_the_origin_flag(monkeypatch):
-    """A member walk reads the bound release's DFO variables with `GRAPH_RELEASE_ORIGIN` on,
-    so two releases key apart; with it off the release stays out of the key."""
+def test_the_bound_release_keys_the_population():
+    """A member walk reads the bound release's DFO variables, so two releases key apart and
+    one release keys alike."""
     identity = _identity()
     first, second = release_at_revision("rev-1"), release_at_revision("rev-2")
-    monkeypatch.delenv("GRAPH_RELEASE_ORIGIN", raising=False)
-    with bound_release(first):
-        off = _population_key(identity)
-    monkeypatch.setenv("GRAPH_RELEASE_ORIGIN", "1")
-    monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1")
     with bound_release(first):
         on_first = _population_key(identity)
+        again = _population_key(identity)
     with bound_release(second):
         on_second = _population_key(identity)
 
     assert on_first != on_second
-    assert off not in (on_first, on_second)
+    assert on_first == again
 
 
 def test_disabled_memo_derives_every_time_with_no_bookkeeping():

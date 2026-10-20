@@ -22,6 +22,7 @@ from datasets_api.door_executor import DoorExecutor
 from datasets_api.operations.task_client import FakeTaskClient, LiveTaskClient
 from datasets_api.shutdown import ShutdownBudget
 from graph_generation.fake import FakeGeneration
+from graph_release.service import get_release_service
 from materialise.rate_tables import RateTableCache
 from origin_catalogue.graph import (
     ARCS_CACHE_SIZE,
@@ -166,6 +167,7 @@ def _overrides(*, code_index: CodeIndex | None = None, **injected: object) -> De
     return DepsOverrides(
         coverage=get_coverage_service(),
         rate_cache=RateTableCache(),
+        release=get_release_service(),
         code_index=code_index,
         **injected,
     )

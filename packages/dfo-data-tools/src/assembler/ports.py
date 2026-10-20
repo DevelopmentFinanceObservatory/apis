@@ -134,7 +134,7 @@ class ResolvedFrame:
     recipe replays it under, and `None` for a dataset frame or a frame with no recipe yet.
     `graph_generation` is the graph generation token the store's label read started under, and
     `catalogue_build` the build id of the origin catalogue that load was bound to, with the
-    bound release under `GRAPH_RELEASE_ORIGIN` (`origin_catalogue.context.current_words_build`);
+    bound release (`origin_catalogue.context.current_words_build`);
     both are `None` for a store that reads no graph, and `graph_generation` is `None` when the
     generation was unknown. A card's vocabulary revision hashes both
     (`assembler.mint.card_description`).

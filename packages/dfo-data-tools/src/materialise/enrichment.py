@@ -46,8 +46,8 @@ its group retry."""
 class EnrichmentLookup:
     """Resolves refs to available `iso3`, `iso2`, `label`, `type` and `party_kind` fields. The
     graph fields are cached per ref in an LRU capped at `_CACHE_CEILING`, and lookups promote
-    refs to most-recently used. With `GRAPH_RELEASE_ORIGIN` on, an entry also keys on the bound
-    release (`served_origin_key`), which answers a DFO variable's `name` and `typeOf`.
+    refs to most-recently used. An entry also keys on the bound release (`served_origin_key`),
+    which answers a DFO variable's `name` and `typeOf`.
 
     `parties` returns the code index's party rows (`CodeIndex.parties`), which give a ref its
     `party_kind` (`party_kind_of`). A ref they do not list has no kind, whatever its graph
@@ -67,7 +67,7 @@ class EnrichmentLookup:
         self._graph = graph
         self._parties = parties
         self._lock = threading.Lock()
-        self._cache: OrderedDict[tuple[str, str | None], Mapping[str, str]] = OrderedDict()
+        self._cache: OrderedDict[tuple[str, str], Mapping[str, str]] = OrderedDict()
 
     @property
     def parties(self) -> Mapping[str, PartyRow]:

@@ -77,13 +77,9 @@ def classify_skill_lookup_exception(exc: BaseException) -> ProblemSpec | None:
     return None
 
 
-def cache_control(shared: SharedSkillsIndex) -> str:
-    """Returns a public `Cache-Control` that expires at the next refresh attempt, or, for an
-    index a release swap can rebuild at any moment (`rebuilds_on_swap`), one that has a
-    cache revalidate every response by the ETag each door sends."""
-    if shared.rebuilds_on_swap:
-        return "public, no-cache"
-    return f"public, max-age={int(shared.seconds_until_next_rebuild())}"
+CACHE_CONTROL = "public, no-cache"
+"""Every door's `Cache-Control`. A release swap rebuilds the index at any moment, so a cache
+revalidates every response by the ETag each door sends."""
 
 
 @dataclass(frozen=True, slots=True)

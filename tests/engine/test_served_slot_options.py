@@ -14,9 +14,9 @@ from dataclasses import replace
 import pytest
 
 from code_index.shared import get_index
+from graph_release.context import bound_release
 from materialise.facets import native_currency_iso
 from materialise.rate_tables import RateTableCache
-from origin_catalogue import bound_catalogue
 from search.engine.bind import SlotBindingDraft
 from search.engine.region import resolve_spec_resubmit
 from search.engine.region.option_coverage import (
@@ -81,6 +81,7 @@ from tests.engine.test_conjoin_measure_merge import _recipient_only_shape, _wher
 from tests.engine.test_resubmit_alternative_measure_round_trip import _arcs_for_row
 from tests.fixtures import FakeGraph, _load_json
 from tests.fixtures.provenance import index_provenance
+from tests.graph_release.support import origin_release
 from tests.materialise._rate_table_support import (
     CONVERTIBLE_STAT_VAR_ARCS,
     RateTableServer,
@@ -88,7 +89,6 @@ from tests.materialise._rate_table_support import (
     recipe_table_bodies,
 )
 from tests.materialise.conftest import FakeGraphReader
-from tests.origin_catalogue.support import listing_base_variables
 
 _DEU = "country/DEU"
 _FRA = "country/FRA"
@@ -700,9 +700,9 @@ def _debt_resubmit(monkeypatch: pytest.MonkeyPatch, **bound: str):
     coverage = patch_coverage(
         monkeypatch, _DS_ROWS, role_names=dict.fromkeys(_DS_CONSTRAINTS, _ROLE_NAMES)
     )
-    # The catalogue lists the debt-service StatVars, so the member walk reads this graph.
-    catalogue = listing_base_variables({dcid: _ds_arcs(dcid) for dcid in _DS_CONSTRAINTS})
-    with bound_catalogue(catalogue):
+    # The release holds the debt-service StatVars as DFO, so the member walk reads their arcs.
+    release = origin_release({dcid: _ds_arcs(dcid) for dcid in _DS_CONSTRAINTS})
+    with bound_release(release):
         return resolve_spec_resubmit(
             inp=ResubmitIdentityPayload(
                 identity=identity,

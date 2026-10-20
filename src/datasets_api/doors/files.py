@@ -57,7 +57,7 @@ from dataset_store.snapshot import (
 
 # Register the route converter before building routes.
 from datasets_api import routing  # noqa: F401
-from datasets_api.admission import bounded_materialise_slot, under_current_coverage
+from datasets_api.admission import bounded_materialise_slot
 from datasets_api.artifact_delivery import artifact_content_disposition
 from datasets_api.backpressure import Backpressure
 from datasets_api.codes_materialise import signing_failure_is_permanent
@@ -311,9 +311,7 @@ def _re_render(
     )
     aged_frame = stored_frame_location(source.aged_out)
     if aged_frame is None:
-        under_current_coverage(
-            deps.coverage.snapshot, lambda snapshot: render(coverage_snapshot=snapshot)
-        )
+        render(coverage_snapshot=deps.coverage.snapshot())
         return
     plan = plan_stored_render(
         stored_manifest(source.version),

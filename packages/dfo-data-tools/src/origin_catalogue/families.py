@@ -80,13 +80,11 @@ class FamilyTables:
         key: FamilyKey,
         *,
         un_system_enabled: bool,
-        release: ReleaseFamilies | None = None,
+        release: ReleaseFamilies,
     ) -> FamilySummary | None:
-        """The summary of every member of `key` the build holds, the arc tables' first,
-        leaving the UN variables out with the UN origin off. With `release`, the arc tables'
-        part is `release`'s in place of the build's own. None when they hold none."""
-        held = self.arcs.get(key) if release is None else release.family(key)
-        return _joined(held, self.un.get(key) if un_system_enabled else None)
+        """The summary of every member of `key`: `release`'s arc-table part, then the build's
+        UN variables, left out with the UN origin off. None when they hold none."""
+        return _joined(release.family(key), self.un.get(key) if un_system_enabled else None)
 
 
 EMPTY_FAMILY_TABLES: Final = FamilyTables()

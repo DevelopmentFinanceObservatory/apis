@@ -4,7 +4,6 @@ deploy.yml holds the steps. deploy-dev.yml and deploy-prod.yml call it and choos
 triggers and the GitHub Environment.
 """
 
-import json
 import re
 import subprocess
 from collections import Counter
@@ -193,7 +192,7 @@ def test_every_name_comes_from_the_environment_variables():
             r"gcloud run (?:jobs|services) \w+ (\S+ \S+ \S+)", step.get("run", "")
         )
     ]
-    # Seven job updates, thirteen job executions, one service describe, and two service updates.
+    # Seven job updates, thirteen job executions, and two service updates.
     assert Counter(targets) == {
         f'"${{{{ vars.{name} }}}}"': count
         for name, count in {
@@ -204,7 +203,7 @@ def test_every_name_comes_from_the_environment_variables():
             "JOB_ORIGIN_CATALOGUE": 3,
             "JOB_GRAPH_RELEASE": 3,
             "JOB_SEARCH_CATALOGUE": 2,
-            "SERVICE_WORKER": 2,
+            "SERVICE_WORKER": 1,
             "SERVICE_APIS": 1,
         }.items()
     }
@@ -285,7 +284,6 @@ def test_search_catalogue_job_moves_to_the_new_image_and_one_async_build_starts_
 _FAKE_GCLOUD = """#!/bin/bash
 echo "$*" >> "$GCLOUD_LOG"
 case "$*" in
-  "run services describe"*) echo "$DESCRIBE" ;;
   *graph_release.verify*)
     statuses=($VERIFY_STATUSES)
     exit "${statuses[$(($(grep -c graph_release.verify "$GCLOUD_LOG") - 1))]}" ;;
@@ -294,38 +292,24 @@ esac
 
 
 @pytest.mark.parametrize(
-    ("worker_env", "verify_statuses", "status", "executions"),
+    ("verify_statuses", "status", "executions"),
     [
-        ([], "", 0, []),
-        ([{"name": "GRAPH_RELEASE_URI", "value": ""}], "", 0, []),
-        ([{"name": "GRAPH_RELEASE_URI", "value": "gs://r/"}], "0", 0, ["verify"]),
-        (
-            [{"name": "GRAPH_RELEASE_URI", "value": "gs://r/"}],
-            "3 0",
-            0,
-            ["verify", "build", "verify"],
-        ),
-        (
-            [{"name": "GRAPH_RELEASE_URI", "value": "gs://r/"}],
-            "1 1",
-            1,
-            ["verify", "build", "verify"],
-        ),
+        ("0", 0, ["verify"]),
+        ("3 0", 0, ["verify", "build", "verify"]),
+        ("1 1", 1, ["verify", "build", "verify"]),
     ],
-    ids=["worker-unset", "worker-blank", "opens", "builds-then-opens", "still-refused"],
+    ids=["opens", "builds-then-opens", "still-refused"],
 )
 def test_the_graph_release_step_verifies_builds_once_and_verifies_again(
-    tmp_path: Path, worker_env: list, verify_statuses: str, status: int, executions: list[str]
+    tmp_path: Path, verify_statuses: str, status: int, executions: list[str]
 ):
-    """Only a worker that serves a release fails startup without one, so the step verifies
-    only then. A failed verify runs one build, and a second failed verify stops the deploy."""
+    """A failed verify runs one build, and a second failed verify stops the deploy."""
     gcloud = tmp_path / "bin" / "gcloud"
     gcloud.parent.mkdir()
     gcloud.write_text(_FAKE_GCLOUD)
     gcloud.chmod(0o755)
     log = tmp_path / "gcloud.log"
     log.touch()
-    describe = {"spec": {"template": {"spec": {"containers": [{"env": worker_env}]}}}}
     # The step, with workflow expressions filled in as Actions would.
     step = re.sub(
         r"\$\{\{[^}]*\}\}", "dev", _named("Ensure a compatible graph release is published")["run"]
@@ -336,7 +320,6 @@ def test_the_graph_release_step_verifies_builds_once_and_verifies_again(
         env={
             "PATH": f"{gcloud.parent}:/usr/bin:/bin",
             "GCLOUD_LOG": str(log),
-            "DESCRIBE": json.dumps(describe),
             "VERIFY_STATUSES": verify_statuses,
         },
         capture_output=True,
@@ -346,11 +329,10 @@ def test_the_graph_release_step_verifies_builds_once_and_verifies_again(
 
     assert ran.returncode == status, ran.stderr
     calls = log.read_text().splitlines()
-    assert calls[0].startswith("run services describe")
     assert [
-        "verify" if "--args=-m,graph_release.verify" in call else "build" for call in calls[1:]
+        "verify" if "--args=-m,graph_release.verify" in call else "build" for call in calls
     ] == executions
-    assert all(call.startswith("run jobs execute") and "--wait" in call for call in calls[1:])
+    assert all(call.startswith("run jobs execute") and "--wait" in call for call in calls)
 
 
 def test_maintenance_job_moves_to_the_new_image_after_both_migrations():

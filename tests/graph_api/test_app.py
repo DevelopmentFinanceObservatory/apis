@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import logging
-import sys
 from typing import Any
 
 import pytest
@@ -27,6 +24,7 @@ from graph_api.resolve_models import ResolveResponse
 from graph_api.version import GRAPH_CAPABILITY_VERSION
 from graph_generation import FakeGeneration
 from origin_catalogue.service import get_catalogue_service
+from series_coverage.shared import get_coverage_service
 
 from .conftest import FakeGraphNodeReader, make_client
 
@@ -504,85 +502,12 @@ class TestOpenAPIResponseModels:
         assert resp.content == JSONResponse(rebuilt).body
 
 
-class TestCoverageAcquisition:
-    def test_returns_the_process_wide_service(self, monkeypatch: pytest.MonkeyPatch):
-        import series_coverage.shared as coverage_shared
-
-        sentinel = object()
-        monkeypatch.setattr(coverage_shared, "get_coverage_service", lambda: sentinel)
-
-        assert asyncio.run(app_module._acquire_coverage()) == (sentinel, False)
-
-    def test_unset_uri_returns_none_at_info_and_is_not_a_failure(
-        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-    ):
-        import series_coverage.shared as coverage_shared
-
-        def _missing():
-            raise coverage_shared.CoverageArtifactUriMissingError("unset")
-
-        monkeypatch.setattr(coverage_shared, "get_coverage_service", _missing)
-
-        with caplog.at_level(logging.INFO, logger=app_module.__name__):
-            assert asyncio.run(app_module._acquire_coverage()) == (None, False)
-        assert [r.levelno for r in caplog.records] == [logging.INFO]
-
-    def test_unreadable_artifact_returns_none_at_warning_and_is_a_failure(
-        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-    ):
-        import series_coverage.shared as coverage_shared
-
-        def _unreadable():
-            raise OSError("bucket unreachable")
-
-        monkeypatch.setattr(coverage_shared, "get_coverage_service", _unreadable)
-
-        with caplog.at_level(logging.INFO, logger=app_module.__name__):
-            assert asyncio.run(app_module._acquire_coverage()) == (None, True)
-        assert [r.levelno for r in caplog.records] == [logging.WARNING]
-
-    def test_missing_coverage_extra_returns_none(self, monkeypatch: pytest.MonkeyPatch):
-        # A `None` entry makes the import raise `ImportError`, as a graph-only install does.
-        monkeypatch.setitem(sys.modules, "series_coverage.shared", None)
-
-        assert asyncio.run(app_module._acquire_coverage()) == (None, False)
-
-    def test_live_lifespan_publishes_the_acquired_service(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv("GRAPH_DCP_BASE_URL", "https://graph.example.org/core/api")
-        sentinel = object()
-
-        class _SpyGraphClient:
-            def __init__(self, **_options: object) -> None:
-                pass
-
-            def close(self) -> None:
-                pass
-
-        async def _fake_acquire_coverage():
-            return sentinel, False
-
-        monkeypatch.setattr(app_module, "build_graph_client", _SpyGraphClient)
-        monkeypatch.setattr(app_module, "acquire_shared", _InertShared)
-        monkeypatch.setattr(app_module, "release_shared", lambda shared: None)
-        monkeypatch.setattr(app_module, "_acquire_coverage", _fake_acquire_coverage)
-
-        app = create_app([graph_surface()])
-        with TestClient(app):
-            deps = getattr(app.state, GRAPH_DEPS_SLOT.name)
-            assert deps.coverage is sentinel
-            assert deps.coverage_load_failed is False
-
-    def test_injected_graph_skips_acquisition(self, monkeypatch: pytest.MonkeyPatch):
-        async def _refuse():
-            raise AssertionError("an injected graph must not acquire coverage")
-
-        monkeypatch.setattr(app_module, "_acquire_coverage", _refuse)
-
+class TestCoverage:
+    def test_the_surface_serves_the_bound_release_s_coverage(self):
         app = create_app([graph_surface(graph=FakeGraphNodeReader(), resolver=_InertResolver())])
         with TestClient(app):
             deps = getattr(app.state, GRAPH_DEPS_SLOT.name)
-            assert deps.coverage is None
-            assert deps.profile_cache is None
+            assert deps.coverage is get_coverage_service()
 
 
 class TestProfileWiring:

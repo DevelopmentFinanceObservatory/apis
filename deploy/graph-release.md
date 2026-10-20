@@ -1,6 +1,6 @@
 # Graph release (`graph_release`)
 
-The graph release is one build of DFO's Data Commons graph and the DFO layer per import: the series summary, facets, edges, nodes and imports read from Spanner, plus the code-index blocks, declarations and base parties derived from them. The builder job, `python -m graph_release.job`, builds, gates and publishes a release after each import. No serving process reads it unless `GRAPH_RELEASE_URI` is set on it.
+The graph release is one build of DFO's Data Commons graph and the DFO layer per import: the series summary, facets, edges, nodes and imports read from Spanner, plus the code-index blocks, declarations and base parties derived from them. The builder job, `python -m graph_release.job`, builds, gates and publishes a release after each import. Every serving process serves from it and fails at startup without `GRAPH_RELEASE_URI`.
 
 ## Layout
 
@@ -36,11 +36,11 @@ Any other exception ends the tick with `graph_release_heartbeat` at outcome `err
 
 ## Deploys
 
-The deploy workflow (`.github/workflows/deploy.yml`) points the job at the new image, then, before the datasets worker moves, runs `python -m graph_release.verify` as an execution of the job with its args overridden. Verify opens the release the pointer names for the image's format through `ReleaseService`, builds the serving views and the origin view whatever `GRAPH_RELEASE_COVERAGE` and `GRAPH_RELEASE_ORIGIN` say, and logs one `graph_release_verify` line. Its outcome and exit status are `opened` (0), `refused` (1, naming the exception), `no_uri` (2) or `no_pointer` (3, no release in this format, as after a `FORMAT` bump).
+The deploy workflow (`.github/workflows/deploy.yml`) points the job at the new image, then, before the datasets worker moves, runs `python -m graph_release.verify` as an execution of the job with its args overridden. Verify opens the release the pointer names for the image's format through `ReleaseService`, builds the serving views and the origin view as a serving process does, and logs one `graph_release_verify` line. Its outcome and exit status are `opened` (0), `refused` (1, naming the exception), `no_uri` (2) or `no_pointer` (3, no release in this format, as after a `FORMAT` bump).
 
 A failed verify runs one build execution on the new image and then verifies again. A tick exits 0 on a gate finding, an unavailable dependency or a held lease, so the second verify decides. A second failure stops the deploy with both services on their current image. A scheduled tick on the new image can hold the lease when the deploy's build starts, in which case the build does nothing and the deploy fails; run it again once the scheduled build has published.
 
-The step runs only when the datasets worker sets `GRAPH_RELEASE_URI`, since only a service that serves a release fails startup without one. Elsewhere it logs a notice and passes.
+The step runs on every deploy, since every serving process fails startup without a release it can open.
 
 ## Hold and rollback
 
@@ -87,17 +87,21 @@ Point a local service's `GRAPH_RELEASE_URI` at `file:///tmp/graph-release-local`
 
 ## Serving from a release
 
-A serving process with `GRAPH_RELEASE_URI` set opens the pointer's release at startup, binds it to each request and operation, and swaps to a newer one in the background (`graph_release.service.ReleaseService`).
+Every serving process, the apis service, the datasets worker and the search catalogue job among them, opens the pointer's release at startup with its serving views and its origin view, binds it to each request and operation, and swaps to a newer one in the background (`graph_release.service.get_release_service`). Without `GRAPH_RELEASE_URI` it raises `ReleaseUriMissingError`; with no release published there, or one whose views do not build, it fails startup too.
 
-`GRAPH_RELEASE_COVERAGE=1` also builds each release's serving views as it opens, and serves the code index, the measure index and the coverage index from the bound release (`code_index.shared.get_index`, `series_coverage.shared.get_coverage_service`). The coverage stamp and build id a request records are then the release id. `COVERAGE_ARTIFACT_URI`, `COVERAGE_RECHECK_SECONDS` and `COVERAGE_INDEX_CHECK` are not read, and no coverage and code index compatibility check runs, since both come from one release. Set it on the apis service, the datasets worker and the search catalogue job, each with `GRAPH_RELEASE_URI`. With the flag on and no release bound, a code index or coverage read raises `ReleaseNotBound` and the surface fails startup. Other jobs and scripts run with it off.
+The serving views are the code index, the measure index and the coverage index (`code_index.shared.get_index`, `series_coverage.shared.get_coverage_service`). The coverage stamp and build id a request records are the release id. No coverage and code index compatibility check runs, since both come from one release. With no release bound, a code index or coverage read raises `ReleaseNotBound`.
 
-With the flag on, the search catalogue job (`python -m search.catalogue.job`) keys its build on the release id in place of the coverage build id. It reads the release pointer to decide whether anything changed, and opens and binds the served release for the whole build only when something did. A new release therefore gives a new catalogue key, and the builder starts the job after each publish (step 8). The deploy workflow starts one execution after the apis service moves, since the key also holds `DFO_BUILD_COMMIT`.
+The search catalogue job (`python -m search.catalogue.job`) keys its build on the release id. It reads the release pointer to decide whether anything changed, and opens and binds the served release for the whole build only when something did. A new release therefore gives a new catalogue key, and the builder starts the job after each publish (step 8). The deploy workflow starts one execution after the apis service moves, since the key also holds `DFO_BUILD_COMMIT`.
 
-`GRAPH_RELEASE_ORIGIN=1` also builds each release's origin view as it opens (`graph_release.origin`), and the origin catalogue reads its DFO half from the bound release: each DFO variable's arcs, and the DFO members of each family, joined to the base members of the loaded catalogue build (`origin_catalogue.catalogue.CatalogueSnapshot`). The catalogue build still answers base variables, schema nodes, topics and the UN tables, and a DFO variable the release does not hold is read from the mixer. Loading a catalogue build with the flag on also summarises its base variables' families. The flag needs `GRAPH_RELEASE_COVERAGE` on and `GRAPH_RELEASE_URI` set on every process that loads the catalogue, the search catalogue job among them: the caches that hold what the origin view decides, and the search catalogue's build, key on the coverage build, which names the release only with coverage views on. A process with the origin flag on and the coverage flag off raises `OriginWithoutCoverage` at its first read of the flag, at startup. A StatVar member walk (`statvar_members.MemberEnumerator`) of a family whose every member is a DFO variable of the release reads the release's own graph reader, built with the origin view, in place of the mixer, and every other family is walked on the mixer as before; each cached member group keys on the release id, and a swap drops the replaced release's groups. With the flag on and no release bound, a catalogue arc or family read, or a member walk, raises `ReleaseNotBound`.
+The origin view (`graph_release.origin`) gives the origin catalogue its DFO half: each DFO variable's arcs, and the DFO members of each family, joined to the base members of the loaded catalogue build (`origin_catalogue.catalogue.CatalogueSnapshot`). The catalogue build answers base variables, schema nodes, topics and the UN tables, and a DFO variable the release does not hold is read from the mixer. Loading a catalogue build also summarises its base variables' families. A StatVar member walk (`statvar_members.MemberEnumerator`) of a family whose every member is a DFO variable of the release reads the release's own graph reader, built with the origin view, in place of the mixer, and every other family is walked on the mixer; each cached member group keys on the release id, and a swap drops the replaced release's groups. With no release bound, a catalogue arc or family read, or a member walk, raises `ReleaseNotBound`.
+
+## Rollback floor
+
+Rolling back the apis service, the datasets worker or the search catalogue job to an older image needs the environment that image reads. An image older than `4be674b7d` cannot open a release and serves coverage only from the coverage job's artifact. Images from `4be674b7d` read `GRAPH_RELEASE_COVERAGE`, and images from `7175fe98e` also read `GRAPH_RELEASE_ORIGIN`; each serves from the release only with its flags set to `1`. The `infra` repository therefore keeps `GRAPH_RELEASE_URI`, `GRAPH_RELEASE_COVERAGE=1` and `GRAPH_RELEASE_ORIGIN=1` set on all three, though the current image reads only `GRAPH_RELEASE_URI`. `4be674b7d` is the oldest image a rollback can reach.
 
 ## Environment
 
-- `GRAPH_RELEASE_URI`: required, `gs://` or `file://`.
+- `GRAPH_RELEASE_URI`: required, `gs://` or `file://`, on the builder and every serving process.
 - `GRAPH_RELEASE_SPANNER_PROJECT`, `GRAPH_RELEASE_SPANNER_INSTANCE`, `GRAPH_RELEASE_SPANNER_DATABASE`: required, the DC Spanner database.
 - `DATACOMMONS_SERVICE_NAME`: required, the DC service as `projects/<p>/locations/<r>/services/<s>`.
 - `DATASETS_GRAPH_BASE_URL`, `DATASETS_SDMX_BASE_URL`: required, our mixer's API root including `/core/api`. The dev graph serves reads anonymously, so the job sends no token.

@@ -167,12 +167,13 @@ def _reworded_description(document: dict) -> None:
 
 
 _UNREADABLE_INDEX_PROBE = """
-import code_index.shared
+import code_index
+import code_index.loader
 
 def unreadable(source):
     raise FileNotFoundError("the code index was read")
 
-code_index.shared.load_index = unreadable
+code_index.load_index = code_index.loader.load_index = unreadable
 import search.engine.config as config
 print("imported")
 config.settings().capability_version
@@ -180,20 +181,15 @@ print("computed")
 """
 
 
-@pytest.mark.parametrize("flag", ["0", "1"])
-def test_the_capability_token_reads_no_code_index(flag: str):
+def test_the_capability_token_reads_no_code_index():
     """The token hashes the served schema, whose datasets come from the declarations, so
     importing the config and computing the token read no code index. The packaged index is
-    unreadable in the probe, and no release is bound for `GRAPH_RELEASE_COVERAGE` to read."""
+    unreadable in the probe, and no release is bound for `get_index()` to read."""
     result = subprocess.run(
         [sys.executable, "-c", _UNREADABLE_INDEX_PROBE],
         capture_output=True,
         text=True,
-        env={
-            **os.environ,
-            "SEARCH_GRAPH_BASE": "https://graph.invalid/core/api",
-            "GRAPH_RELEASE_COVERAGE": flag,
-        },
+        env={**os.environ, "SEARCH_GRAPH_BASE": "https://graph.invalid/core/api"},
         check=False,
     )
 

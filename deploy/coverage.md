@@ -2,9 +2,10 @@
 
 The coverage artifact is a precomputed index of every role-bearing series (every variable whose
 Spanner `Edge` rows declare one or two `observationProperties` roles, as `series_coverage.job`
-selects them), one row per `(variable, facet_id, donor, recipient)`, that Search and Datasets both
-load at startup and query in memory. It replaces a graph or SDMX read on every role-bearing scope,
-facet, and headline decision.
+selects them), one row per `(variable, facet_id, donor, recipient)`. The graph release builder's
+shadow diff, the `coverage` gate of `scripts/graph_release_parity.py` and the code index export
+(`scripts/export_code_index.py`) read it. Serving processes read coverage from the graph
+release's coverage view (`deploy/graph-release.md`).
 
 ## Layout
 
@@ -12,7 +13,7 @@ facet, and headline decision.
 
 - `current.json`, the pointer: `{"stamp": ..., "build_id": ...}`. `stamp` is the import key's stamp, a hash of the newest `IngestionHistory` row and the newest successful one, and `build_id` names the build directory that holds it. The job writes it last, so it is the commit point.
 - `versions/<build_id>/`, one directory per build, holding `manifest.json` (which repeats `stamp` and `build_id`, and records `format_version`, `epoch_year` and `mask_words`), `coverage.parquet` (schema `series_coverage.schema.YearHorizon.schema`: `variable`, `facet_id`, `donor`, `recipient`, `n_obs`, `first_year`, `last_year`, and year-mask words `year_mask_0` .. `year_mask_{k-1}`, 64 years each from the manifest's `epoch_year`; the job sets `k`, the manifest's `mask_words`, from the latest year the data carries), `role_names.json` (each variable's donor/recipient role-property dcids, e.g. `financingProvider`/`financingRecipient` for CRS), and `facets.json` (each `facet_id`'s provenance/unit/measurement-method/scaling-factor). A variable that declares one role has rows with its entity in the column of that role's flow axis and an empty value (`series_coverage.schema.ABSENT_ENTITY`) in the other: an IDS total declaring `financingRecipient` fills `recipient`, and a DAC1 aggregate declaring `financingProvider` fills `donor`. Its `role_names.json` entry holds `null` for the role it lacks.
-- `compatible/<content_hash>.json`, one pointer per packaged code index in `current.json`'s form, naming a build that carries that index's provenances. `<content_hash>` is the index's `IndexStamp.content_hash`. The job writes it after a publish the index matches, and the deploy's `verify_index --record` step writes it for the new image (see [How the service loads it](#how-the-service-loads-it)).
+- `compatible/<content_hash>.json`, one pointer per packaged code index in `current.json`'s form, naming a build that carries that index's provenances. `<content_hash>` is the index's `IndexStamp.content_hash`. The job writes it after a publish the index matches, and the deploy's `verify_index --record` step writes it for the new image (see [Deploy order](#deploy-order)).
 - `serving/code_index.json`, `{"content_hash": ...}`: the code index both services ran when the last deploy finished. The deploy's final step writes it, and the job reads it to expire compatibility pointers.
 - `coverage_state.json`, the job's record of when the current stamp was first seen unpublished, which drives the stale-publish alert.
 
@@ -34,7 +35,7 @@ publishes a new version when the underlying data has moved. A run does, in order
 4. Re-reads the import key, and discards the build (a no-op, not a failure) if
    the lock was taken or the stamp moved while the build ran.
 5. Publishes into a new `versions/<build_id>/` directory with create-only writes, then writes `current.json` last, conditional on its generation still matching what step 2 read (a concurrent invocation that published first makes this run's write lose cleanly, leaving an unreferenced build for a later prune); logs a structured `coverage_publish_stale` event when the published stamp has been behind the key's stamp for more than one job cycle.
-6. After a publish, loads the new build with the serving loader and compares it with the code index its image packages (`series_coverage.compatibility.index_coverage_differences`). A build the index matches moves that index's `compatible/` pointer to it and logs `coverage_index_compatible`. A build it does not match logs `coverage_index_incompatible` at severity `ERROR`, naming up to twenty variables, and leaves the pointer where it was: services running that index keep serving the pointer's build until the index is re-exported against the current build.
+6. After a publish, loads the new build with the serving loader and compares it with the code index its image packages (`series_coverage.compatibility.index_coverage_differences`). A build the index matches moves that index's `compatible/` pointer to it and logs `coverage_index_compatible`. A build it does not match logs `coverage_index_incompatible` at severity `ERROR`, naming up to twenty variables, and leaves the pointer where it was until the index is re-exported against the current build.
 7. Prunes build directories nothing can still be using, on every run (published or no-op alike). This is what bounds `versions/`, since the artifacts bucket carries no lifecycle rule of its own. A build is deleted only when neither `current.json` nor any `compatible/` pointer names it, every one of those pointers was written at least 1800 seconds ago (the job's Cloud Run timeout, `_MAX_RUN_SECONDS`), and the build's newest file is at least that old. The first condition protects the live build and each index's compatible build; the second protects a build a pointer named until recently, which a reader that resolved the old pointer may still be loading; the third protects a concurrent run's in-progress publish. An unreadable pointer deletes nothing, and prune never lists or deletes outside its own format root. Prune then deletes a `compatible/` pointer when its index is not the one `serving/code_index.json` names, it was last written before that record, and it was last written seven days ago or more (`_COMPATIBLE_POINTER_RETENTION_SECONDS`). The deploy writes the record only after both services moved, so no revision serving at that point runs another index, and a later deploy that moved only the worker wrote its own index's pointer after the record. The job image does not decide expiry, since the deploy moves the job before the services and a failed deploy leaves the two apart. With no record, nothing expires. The window covers a rollback in the Cloud Run console. A build only an expired pointer named goes on a later run.
 
 Env: `COVERAGE_ARTIFACT_URI` (required, `gs://` or `file://`), `COVERAGE_BQ_CONNECTION` (required,
@@ -59,38 +60,20 @@ export DATASETS_SDMX_BASE_URL=https://dfo-dev-dc-datacommons-service-zms5lj4zhq-
 uv run python -m series_coverage.job
 ```
 
-A live build against the full dataset publishes 1,782,460 rows over 22,509 variables; reconciliation streams at most `COVERAGE_RECONCILE_MAX_ROWS` expected rows from SDMX `/data`, plus each role group's smallest variable, and the build logs the figure as `reconciliation_rows_expected`. Point `datasets_surface`/`search_surface` at the same `file://` URI (`COVERAGE_ARTIFACT_URI`)
-to serve against it locally. A service checks each build against the packaged code index, so a
-local build the index does not match, or a dev-bucket build an undeployed index does not match,
-refuses at startup; set `COVERAGE_INDEX_CHECK=off` to serve it unchecked.
-
-## How the service loads it
-
-`series_coverage.shared.get_coverage_service()` loads the artifact once, synchronously, at surface construction time, the same discipline `code_index.shared.get_index()` applies to the code index: a missing `COVERAGE_ARTIFACT_URI` or an unreadable artifact fails app startup, never a later request. After that, `COVERAGE_RECHECK_SECONDS` (default 300) bounds how often a request-triggered background reload checks `current.json`; a caller never blocks on that reload, and a failed background reload keeps serving the last-known-good artifact. The recheck only ever pays for one `current.json` read (`series_coverage.loader.read_published_pointer`): the full Parquet/role-names/facets load runs only when the pointer's `build_id` differs from the one being served, so a republish of an unchanged stamp still reloads.
-
-Dataset election reads each StatVar's provenances from the packaged code index, and a mint reads facet provenances from the coverage build, so the service serves only a build whose provenances equal the index's and that assigns a listed dataset no StatVar the index's `listed_statvars` lacks (`index_coverage_differences`, the function `verify_index` runs). Every load, at startup and on refresh, runs that check, which takes 0.20 to 0.25 s over the 22,208-row index. A build that differs is rejected: the service logs an error naming the rejected build, the build it serves instead, the index's `content_hash` and `coverage_build`, and up to twenty differing variables and twenty unlisted listed StatVars, and then keeps the build it already serves. It moves to the build the index's `compatible/` pointer names only when that build passes too and its build id sorts after the served build's, so the served data never moves back to an older build. Build ids sort in publication order, since each starts with its build time and a publish commits only over the `current.json` it read before building. At startup it loads the pointer's build. It does not load a rejected build again while `current.json` names it. At startup with no build to fall back on, construction raises `CoverageIncompatibleError` and the surface fails readiness. The rejection is reported in the log only; `CoverageService.rejected_build` holds it in process.
-
-`COVERAGE_INDEX_CHECK=off` turns the check off for a harness that pairs a build with the packaged index on purpose: the CI container smoke test and the eval gate, which serve the recorded test slice, and a local run against an index that was exported but never deployed, which has no `compatible/` pointer. Every load then logs a WARNING naming the index's `content_hash` and the build served unchecked. Any value other than unset or `off` refuses at startup (`CoverageIndexCheckValueError`). Terraform and `deploy-dev.yml` never set it.
+A live build against the full dataset publishes 1,782,460 rows over 22,509 variables; reconciliation streams at most `COVERAGE_RECONCILE_MAX_ROWS` expected rows from SDMX `/data`, plus each role group's smallest variable, and the build logs the figure as `reconciliation_rows_expected`.
 
 ## Deploy order
 
 The coverage job runs as a Cloud Run Job (`dfo-dev-coverage` in dev). `deploy.yml` points it at the new
 image after the migration jobs and before updating the Cloud Run service, so the scheduled runs
-(`dfo-dev-coverage-tick`, every 15 minutes) use the new code. Search and Datasets surface
-construction loads the coverage artifact at startup and fails readiness when none can be loaded, so
-a revision must never roll out against an image whose coverage-dependent surfaces would start with
-no artifact to load. The deploy therefore checks for a published artifact and leaves keeping it
-fresh to the scheduled job. A running service reloads a newer artifact within
-`COVERAGE_RECHECK_SECONDS`.
+(`dfo-dev-coverage-tick`, every 15 minutes) use the new code. The deploy checks for a published
+artifact in the new image's format and leaves keeping it fresh to the scheduled job.
 
 The check is `python -m series_coverage.verify`, run as an execution of the same `dfo-dev-coverage`
 job with its args overridden (the command stays `python`). It inherits that job's own
 `COVERAGE_ARTIFACT_URI` directly rather than a second, workflow-level copy of it, and calls
 `load_coverage` against the new image's format root under it, exiting non-zero unless a compatible
-artifact loads. An artifact in another format's root does not satisfy it. This is the same function
-`get_coverage_service()` calls at startup, so a failure here always means the service would also
-have failed readiness, just caught one step earlier with a clear message instead of a stuck Cloud
-Run revision.
+artifact loads. An artifact in another format's root does not satisfy it.
 
 Verify runs first. It passes when the format root holds a compatible artifact, however old, and the
 deploy goes on without a build, so a data problem in the build (a reconciliation failure, an
@@ -105,8 +88,7 @@ exported (`scripts/export_code_index.py`). The check compares every index row wi
 build, requires every declared dataset to hold a row in it, requires every donor and recipient the build holds on a facet of a declared dataset to appear in the index's `parties` (a new total would otherwise be counted as an ordinary party), requires every StatVar the build assigns to a listed dataset to appear in the index's `listed_statvars` (a series the build adds there would otherwise belong to no answer), prints the index's `coverage_build`
 beside the build it read, and exits non-zero on any difference, naming up to twenty variables, parties or listed StatVars. A
 failure stops the deploy before traffic moves; re-export the index against the current build. On a
-pass, `--record` (which records nothing for a build with an unlisted party or an unlisted listed StatVar) points the new index's `compatible/` pointer at the build it read, so the new
-revision has a build to start from even after a later publish its index does not match.
+pass, `--record` (which records nothing for a build with an unlisted party or an unlisted listed StatVar) points the new index's `compatible/` pointer at the build it read.
 
 The deploy's final step, after both services moved, runs `python -m series_coverage.record_serving_index` the same way. It writes `serving/code_index.json` with the new index's `content_hash`, which the job's prune reads to decide which compatibility pointers no serving revision needs. A deploy that fails before this step leaves the previous record, which expires fewer pointers.
 
@@ -115,8 +97,8 @@ A rollback reads the artifact its own image's format root holds. Two images of t
 ## Re-recording the offline test fixture
 
 `tests/fixtures/coverage_slice/` is a real, unmodified slice of a published artifact, kept
-independent of the fixtures and corpus cases that reference it. `tests/conftest.py` points the suite at
-it, and `tests/series_coverage/test_coverage_slice.py` checks it for drift against `sdmx_obs.json`.
+independent of the fixtures and corpus cases that reference it. The session release
+`tests/conftest.py` publishes carries its rows as the release's coverage, and `tests/series_coverage/test_coverage_slice.py` checks it for drift against `sdmx_obs.json`.
 
 ```bash
 uv run python scripts/record_coverage_slice.py \

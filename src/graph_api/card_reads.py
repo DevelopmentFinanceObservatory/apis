@@ -2,11 +2,10 @@
 door's `facets` relation.
 
 A read starts from the variable's facet profile (`FacetProfileCache.aprofiles`), awaited on the
-event loop under the request's deadline, with the request's origin catalogue and one coverage
-snapshot, and reads each profiled variable's admitted facets from it once
-(`availability.held_facets`). A surface with no profile cache, or no loaded coverage index,
-reads no profile, and the card's availability is `availability.NOT_SERVED`, or `availability.UNAVAILABLE`
-when the coverage index failed to load.
+event loop under the request's deadline, with the request's origin catalogue and one snapshot
+of the bound release's coverage, and reads each profiled variable's admitted facets from it once
+(`availability.held_facets`). A surface with no profile cache reads no profile, and the card's
+availability is `availability.NOT_SERVED`.
 
 Two caches on `GraphDeps.card_reads` supply the rest, each keyed by graph generation, with one
 read in flight per key, and each running its reads on the DCP-read executor:
@@ -14,8 +13,8 @@ read in flight per key, and each running its reads on the DCP-read executor:
 - each place's national currency (`materialise.national_currency.read_national_currencies`),
   read once per generation;
 - each unit's, method's and place's `name` and `typeOf`, cached per dcid and shared by every
-  variable, and with `GRAPH_RELEASE_ORIGIN` on per bound release too, which answers a DFO
-  variable's (`graph_release.context.served_origin_key`). A place counts under the kind its own
+  variable, and per bound release too, which answers a DFO variable's
+  (`graph_release.context.served_origin_key`). A place counts under the kind its own
   node reports (`graph_api.kinds.classify`).
 
 Both reads outlive the request that starts them. The request waits until its deadline; the
@@ -262,9 +261,8 @@ class CardReadCaches:
         return {key: _facts(key[0], arcs.get(key[0])) for key in keys}
 
 
-type _FactsKey = tuple[str, str | None]
-"""A node's facts key: its dcid and the bound release under `GRAPH_RELEASE_ORIGIN`
-(`served_origin_key`), `None` with it off."""
+type _FactsKey = tuple[str, str]
+"""A node's facts key: its dcid and the bound release (`served_origin_key`)."""
 
 
 def _facts(dcid: str, arcs: Mapping[str, tuple[str, ...]] | None) -> NodeFacts:
@@ -294,9 +292,8 @@ async def read_profiles(
     deps: GraphDeps, stat_vars: Collection[str], *, deadline: float
 ) -> ProfileRead | None:
     """Every one of `stat_vars`' profile in one call, awaited on the event loop, and each
-    profiled variable's admitted facets; `None` when the surface has no profile cache or no
-    loaded coverage index."""
-    if deps.profile_cache is None or deps.card_reads is None or deps.coverage is None:
+    profiled variable's admitted facets; `None` when the surface has no profile cache."""
+    if deps.profile_cache is None or deps.card_reads is None:
         return None
     catalogue = current_catalogue()
     coverage = deps.coverage.snapshot()

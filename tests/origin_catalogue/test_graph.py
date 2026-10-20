@@ -23,6 +23,7 @@ from dc_graph import (
     parse_arcs,
 )
 from graph_generation import FakeGeneration
+from graph_release.context import bound_release
 from origin_catalogue import (
     BASE,
     DFO,
@@ -43,6 +44,7 @@ from origin_catalogue.graph import (
     is_un_dcid,
 )
 from origin_catalogue.topic_walk import walk_topics
+from tests.graph_release.support import origin_release
 from tests.origin_catalogue.fake_catalogue import restrictive_catalogue, un_mirror, un_variable
 from tests.origin_catalogue.support import build_arc_tables
 
@@ -91,24 +93,26 @@ _FLOW = "FinancialFlow"
 _AMOUNT = "amount"
 _STATVAR = {"dcid": "StatisticalVariable", "name": "StatisticalVariable", "types": ["Class"]}
 
-_ARCS = build_arc_tables(
-    dfo={
-        _CRS_VARIABLE: {
-            "typeOf": {"nodes": [_STATVAR, _STATVAR]},
-            "name": {"nodes": [{"value": "Gross ODA disbursements"}]},
-            "constraintProperties": {
-                "nodes": [
-                    {"dcid": _RECIPIENT, "name": "Financing recipient", "types": ["Property"]},
-                    {"dcid": "sourceIndicatorCode", "types": ["Property"]},
-                ]
-            },
-            "observationProperties": {"nodes": [{"dcid": _RECIPIENT, "types": ["Property"]}]},
-            "populationType": {"nodes": [{"dcid": _FLOW, "name": "Financial flow"}]},
-            "measuredProperty": {"nodes": [{"dcid": _AMOUNT, "types": ["Property", "Thing"]}]},
-            "measurementDenominator": {"nodes": [{"dcid": _HOUSEHOLDS}]},
-            "statType": {"nodes": [{"dcid": "measuredValue", "types": ["Property"]}]},
-        }
+_CRS_ARCS = {
+    "typeOf": {"nodes": [_STATVAR, _STATVAR]},
+    "name": {"nodes": [{"value": "Gross ODA disbursements"}]},
+    "constraintProperties": {
+        "nodes": [
+            {"dcid": _RECIPIENT, "name": "Financing recipient", "types": ["Property"]},
+            {"dcid": "sourceIndicatorCode", "types": ["Property"]},
+        ]
     },
+    "observationProperties": {"nodes": [{"dcid": _RECIPIENT, "types": ["Property"]}]},
+    "populationType": {"nodes": [{"dcid": _FLOW, "name": "Financial flow"}]},
+    "measuredProperty": {"nodes": [{"dcid": _AMOUNT, "types": ["Property", "Thing"]}]},
+    "measurementDenominator": {"nodes": [{"dcid": _HOUSEHOLDS}]},
+    "statType": {"nodes": [{"dcid": "measuredValue", "types": ["Property"]}]},
+}
+"""DFO's CRS variable: two `typeOf` arcs a redeclaring import repeats, an import-added
+constraint property and a denominator."""
+
+_ARCS = build_arc_tables(
+    dfo={_CRS_VARIABLE: _CRS_ARCS},
     base={
         _GDP: {
             "typeOf": {"nodes": [_STATVAR]},
@@ -127,9 +131,8 @@ _ARCS = build_arc_tables(
         "Place": {},
     },
 )
-"""DFO's CRS variable, two `typeOf` arcs a redeclaring import repeats, an import-added
-constraint property and a denominator; GDP's names; the population variable held empty;
-and the schema the CRS variable's role and denominator depend on."""
+"""DFO's CRS variable (`_CRS_ARCS`); GDP's names; the population variable held empty; and the
+schema the CRS variable's role and denominator depend on."""
 
 _URLS = {
     _CRS: "https://data-explorer.oecd.org/crs",
@@ -338,6 +341,14 @@ def graph() -> _Graph:
             (_UN_MORTALITY, "country/USA"): [_UN_UNKNOWN],
         },
     )
+
+
+@pytest.fixture
+def released_crs() -> Iterator[None]:
+    """Binds a release holding DFO's CRS variable with `_CRS_ARCS`, the arcs the catalogue's
+    DFO table holds for it, as a release and a catalogue build of one import do."""
+    with bound_release(origin_release({_CRS_VARIABLE: _CRS_ARCS})):
+        yield
 
 
 @pytest.fixture
@@ -721,12 +732,12 @@ def test_with_the_un_off_the_un_tables_answer_nothing(
 # -- DFO and base node facts from the arc tables --
 
 
+@pytest.mark.usefixtures("released_crs")
 def test_our_nodes_facts_come_from_the_arc_tables_with_no_request(
-    graph: _Graph, client: OriginGraphClient, bind_catalogue, monkeypatch: pytest.MonkeyPatch
+    graph: _Graph, client: OriginGraphClient, bind_catalogue
 ) -> None:
-    """Table answers reach neither backend nor its caches: the counters do not move. Runs with
-    `GRAPH_RELEASE_ORIGIN` off, as only then does the build's own DFO table answer."""
-    monkeypatch.delenv("GRAPH_RELEASE_ORIGIN", raising=False)
+    """Table answers, the release's DFO arcs among them, reach neither backend nor its caches:
+    the counters do not move."""
     bind_catalogue(_catalogue(arcs=_ARCS))
     before = client.stats()
 
@@ -790,33 +801,33 @@ def test_our_nodes_facts_come_from_the_arc_tables_with_no_request(
 
 
 def test_a_node_an_arc_names_takes_its_label_from_the_labels_and_keeps_its_arc_name(
-    graph: _Graph, client: OriginGraphClient, bind_catalogue, monkeypatch: pytest.MonkeyPatch
+    graph: _Graph, client: OriginGraphClient, bind_catalogue
 ) -> None:
     """The graph's `->*` read names a nameless node by its dcid and a node of several names
     by its first, and `node_label` gives the first no label and the second its last name.
-    The tables answer each read as the graph does, with no request. Runs with
-    `GRAPH_RELEASE_ORIGIN` off, as only then does the build's own DFO table answer."""
-    monkeypatch.delenv("GRAPH_RELEASE_ORIGIN", raising=False)
+    The release and the tables answer each read as the graph does, with no request."""
     age, alcohol = "Years0", "Alcohol"
-    arcs = build_arc_tables(
-        dfo={
-            _CRS_VARIABLE: {
-                "constraintProperties": {
-                    "nodes": [
-                        {"dcid": age, "name": age, "types": ["Quantity"]},
-                        {"dcid": alcohol, "name": "Alcohol", "types": ["Substance"]},
-                    ]
-                }
-            }
+    crs = {
+        "typeOf": {"nodes": [_STATVAR]},
+        "constraintProperties": {
+            "nodes": [
+                {"dcid": age, "name": age, "types": ["Quantity"]},
+                {"dcid": alcohol, "name": "Alcohol", "types": ["Substance"]},
+            ]
         },
+    }
+    arcs = build_arc_tables(
+        dfo={_CRS_VARIABLE: crs},
         base={},
         schema={},
         labels={age: None, alcohol: "Alcoholic beverages"},
     )
     bind_catalogue(_catalogue(arcs=arcs))
+    release = origin_release({_CRS_VARIABLE: crs})
 
-    labels = client.node_labels_batch([age, alcohol])
-    nodes = client.node_arcs_batch([_CRS_VARIABLE])[_CRS_VARIABLE] or {}
+    with bound_release(release):
+        labels = client.node_labels_batch([age, alcohol])
+        nodes = client.node_arcs_batch([_CRS_VARIABLE])[_CRS_VARIABLE] or {}
 
     assert labels == {alcohol: "Alcoholic beverages"}
     assert client.node_label(age) is None
@@ -848,14 +859,13 @@ def test_a_node_the_arc_tables_hold_empty_reads_as_absent_with_no_request(
     assert graph.requests == []
 
 
+@pytest.mark.usefixtures("released_crs")
 def test_a_dcid_outside_the_arc_tables_is_read_live_and_alone(
-    graph: _Graph, client: OriginGraphClient, bind_catalogue, monkeypatch: pytest.MonkeyPatch
+    graph: _Graph, client: OriginGraphClient, bind_catalogue
 ) -> None:
     """An unlisted variable is out of the tables' scope, not absent, so it reads from our
     mixer, and a batch sends only it. A node an arc names with several types reads its type
-    live, since the arc gives them in no order the graph's `typeOf` read shares. Runs with
-    `GRAPH_RELEASE_ORIGIN` off, as only then does the build's own DFO table answer."""
-    monkeypatch.delenv("GRAPH_RELEASE_ORIGIN", raising=False)
+    live, since the arc gives them in no order the graph's `typeOf` read shares."""
     graph.labels[_UNLISTED] = "Female population"
     bind_catalogue(_catalogue(arcs=_ARCS))
 

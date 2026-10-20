@@ -2461,9 +2461,9 @@ class _HeldMembers:
     Guarded by `_held_lock`."""
 
 
-type _HeldKey = tuple[str, str | None, FamilyKey]
+type _HeldKey = tuple[str, str, FamilyKey]
 """A held family's key: the catalogue build, the release whose DFO members the catalogue
-joins (`served_origin_key`, `None` with `GRAPH_RELEASE_ORIGIN` off), and the family."""
+joins (`served_origin_key`), and the family."""
 
 # One request's held-family members (`_held_members`), keyed by `_HeldKey`, bound by
 # `held_family_memo` for the request's life. A plain answer reads its population three times,

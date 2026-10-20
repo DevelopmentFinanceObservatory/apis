@@ -108,7 +108,7 @@ class Deps:
     variable_breadth: VariableBreadthReader | None
     # Bounds the frames alive at once across mints, rebuilds, head renders, file renewals and
     # observation reads. Each holds one permit for as long as its frame's work runs
-    # (`admission.bounded_materialise_slot`), and a coverage reload holds every permit. An
+    # (`admission.bounded_materialise_slot`), and a release swap holds every permit. An
     # error's traceback can keep a frame until the door has answered the error. A publish
     # builds its frame outside the permits.
     materialise_semaphore: MaterialisePermits
@@ -148,15 +148,14 @@ class DepsOverrides:
     """Dependencies the caller supplies in place of live ones. `None` builds the live one.
 
     `coverage` and `rate_cache` are process-wide services the surface resolves when it is
-    built, so a missing coverage artifact fails construction. A given `code_index` serves
-    every request, and `None` reads `get_index()` per request. `release` is the process's graph
-    release service, `None` when `GRAPH_RELEASE_URI` is unset.
+    built. A given `code_index` serves every request, and `None` reads `get_index()` per
+    request. `release` is the process's graph release service.
     """
 
     coverage: ServedCoverage
     rate_cache: RateTableCache
+    release: ReleaseService
     code_index: CodeIndex | None = None
-    release: ReleaseService | None = None
     registry: SpecRegistry | None = None
     spec_reader: SpecReader | None = None
     snapshot_reader: SnapshotReader | None = None
@@ -298,21 +297,16 @@ async def open_deps(
             )
 
         materialise_semaphore = MaterialisePermits(settings.materialise_max_concurrency)
-        # A coverage reload holds every permit, so it loads the new index beside no frame a
-        # permit covers. A request that holds a permit confirmed at admission that its
-        # coverage snapshot is the served one (`admission.under_current_coverage`), so it
-        # builds its frame beside the one index the service serves. A request waiting for a
-        # permit or a rebuild turn releases a replaced index within one wait slice of the
-        # reload (`admission.STALE_CHECK_SECONDS`). Before it waits, a request can hold a
-        # replaced index for as long as its head checks, its graph reads, member resolution,
-        # the estimate and the budget decision take, beside the frames other requests build.
-        # A publish holds no permit, so its frame can be resident during a reload.
-        stack.callback(overrides.coverage.register_load_guard(materialise_semaphore.every_permit))
-        # A release swap holds every permit for the same reason.
-        if overrides.release is not None:
-            stack.callback(
-                overrides.release.register_swap_guard(materialise_semaphore.every_permit)
-            )
+        # A release swap holds every permit, so it loads the new release's views beside no
+        # frame a permit covers. A request that holds a permit confirmed at admission that the
+        # service still serves its bound release (`admission.bounded_materialise_slot`), so it
+        # builds its frame beside the one release the service serves. A request waiting for a
+        # permit or a rebuild turn refuses within one wait slice of the swap
+        # (`admission.STALE_CHECK_SECONDS`). Before it waits, a request can hold a replaced
+        # release for as long as its head checks, its graph reads, member resolution, the
+        # estimate and the budget decision take, beside the frames other requests build. A
+        # publish holds no permit, so its frame can be resident during a swap.
+        stack.callback(overrides.release.register_swap_guard(materialise_semaphore.every_permit))
 
         read_executor, work_executor = build_executors(settings)
         budget = ShutdownBudget()

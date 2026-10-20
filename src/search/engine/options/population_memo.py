@@ -61,15 +61,14 @@ def _population_key(identity: BaseIdentity) -> str:
     digest of its `identity_query` (`family_query_digest`), which carries the role keys,
     the dataset and the source scope the query elects under. These are the fields
     `options_population` reads. It deliberately excludes the entities bound under each role
-    key (see the module docstring). With `GRAPH_RELEASE_ORIGIN` on it holds the bound release
-    (`served_origin_key`), whose DFO variables a member walk reads."""
+    key (see the module docstring). It holds the bound release (`served_origin_key`), whose
+    DFO variables a member walk reads."""
     document: dict[str, object] = {
         "shape": identity.shape.model_dump(mode="json", exclude_none=True),
         "slots": [slot.model_dump(mode="json") for slot in identity.slots],
         "query": family_query_digest(identity_query(identity)).hex(),
+        "release": served_origin_key(),
     }
-    if (release := served_origin_key()) is not None:
-        document["release"] = release
     canonical = rfc8785.dumps(document)
     return hashlib.sha256(canonical).hexdigest()
 

@@ -7,8 +7,10 @@ from origin_catalogue.families import (
     FamilyKey,
     FamilySummary,
     FamilyTables,
+    ReleaseFamilies,
     family_tables,
     summarise,
+    summarise_table,
 )
 from origin_catalogue.un_mirror import EMPTY_UN_MIRROR, UnArc, UnMirror, UnVariable
 from tests.origin_catalogue.fake_catalogue import un_mirror
@@ -164,22 +166,22 @@ def test_a_property_every_member_asserts_at_one_value_is_shared() -> None:
 def test_a_family_held_by_both_tables_reads_the_arc_tables_first_and_the_un_ones_with_the_origin_on() -> (
     None
 ):
-    """The arc tables' members come first, each table's in dcid order: their values lead,
-    their total wins, and a property is shared only when both tables share it at one value. With the UN origin off
-    the family is the arc tables' alone."""
+    """The release's arc-table members come first, DFO then base, each in dcid order: their
+    values lead, their total wins, and a property is shared only when both tables share it at
+    one value. With the UN origin off the family is the arc-table part alone, the build's own
+    join of its DFO and base tables."""
     un = _un_mirror(
         {
             "undata/x/DEBT": _variable(name="UN debt", constraints={"debtor": "Government"}),
             "undata/x/DEBT_TOTAL": _variable(name="UN total"),
         }
     )
-    tables = family_tables(
-        dfo={"Debt_Total": _variable(name="Debt")},
-        base={"Debt_Gov": _variable(constraints={"debtor": "Government", "creditor": "IMF"})},
-        un=un,
-    )
+    dfo = {"Debt_Total": _variable(name="Debt")}
+    base = {"Debt_Gov": _variable(constraints={"debtor": "Government", "creditor": "IMF"})}
+    tables = family_tables(dfo=dfo, base=base, un=un)
+    release = ReleaseFamilies(dfo=summarise_table(dfo), base=summarise_table(base))
 
-    assert tables.family(_DEBT, un_system_enabled=True) == FamilySummary(
+    assert tables.family(_DEBT, un_system_enabled=True, release=release) == FamilySummary(
         members=("Debt_Total", "Debt_Gov", "undata/x/DEBT", "undata/x/DEBT_TOTAL"),
         values={"debtor": ("Government",), "creditor": ("IMF",)},
         shared={},
@@ -187,8 +189,11 @@ def test_a_family_held_by_both_tables_reads_the_arc_tables_first_and_the_un_ones
         total_name="Debt",
         un_only=False,
     )
-    assert tables.family(_DEBT, un_system_enabled=False) == tables.arcs[_DEBT]
-    assert tables.family(_DEBT._replace(role_bearing=True), un_system_enabled=True) is None
+    assert tables.family(_DEBT, un_system_enabled=False, release=release) == tables.arcs[_DEBT]
+    assert (
+        tables.family(_DEBT._replace(role_bearing=True), un_system_enabled=True, release=release)
+        is None
+    )
 
 
 def test_a_family_only_the_un_tables_hold_is_theirs_and_absent_with_the_origin_off() -> None:
@@ -208,5 +213,5 @@ def test_a_family_only_the_un_tables_hold_is_theirs_and_absent_with_the_origin_o
             )
         },
     )
-    assert tables.family(_DEBT, un_system_enabled=False) is None
+    assert tables.family(_DEBT, un_system_enabled=False, release=ReleaseFamilies({}, {})) is None
     assert family_tables(dfo={}, base={}, un=EMPTY_UN_MIRROR) == FamilyTables()

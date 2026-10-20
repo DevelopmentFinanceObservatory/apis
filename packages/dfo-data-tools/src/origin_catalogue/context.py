@@ -72,13 +72,12 @@ def current_build_id(*, default: Callable[[], str]) -> str:
 
 
 def current_words_build() -> str:
-    """The bound catalogue's build id, and with `GRAPH_RELEASE_ORIGIN` on the bound release's id
-    after `@` (`served_origin_key`), which answers the DFO variables' names and types. A label
-    read stamps it, so words read under one release are read again under the next. Raises
-    `CatalogueNotBound` when no catalogue is bound."""
-    build_id = current_catalogue().build_id
-    release = served_origin_key()
-    return build_id if release is None else f"{build_id}@{release}"
+    """The bound catalogue's build id, and the bound release's id after `@`
+    (`served_origin_key`), which answers the DFO variables' names and types. A label read stamps
+    it, so words read under one release are read again under the next. Raises
+    `CatalogueNotBound` when no catalogue is bound, and `graph_release.context.ReleaseNotBound`
+    when no release is."""
+    return f"{current_catalogue().build_id}@{served_origin_key()}"
 
 
 def current_source_scope() -> frozenset[str] | None:

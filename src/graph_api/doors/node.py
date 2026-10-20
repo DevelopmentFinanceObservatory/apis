@@ -30,9 +30,8 @@ measure index and at most two more batched reads (`graph_api.card_definition`), 
 one facet profile read awaited on the event loop, then one read of the names and place types its
 folds need and, once per graph generation, the national currencies (`graph_api.card_reads`),
 waiting until just before the request's deadline while those reads run on and fill their
-caches. A failed profile read, or a coverage index that failed to load, leaves `availability`
-null with a transient gap; a surface with no profile cache or no coverage index configured
-leaves it null with the permanent gap `stat_var.availability.not_served`.
+caches. A failed profile read leaves `availability` null with a transient gap; a surface with
+no profile cache leaves it null with the permanent gap `stat_var.availability.not_served`.
 
 `as_of` on the GET route dates a group's or region's membership. On an undated membership it
 refuses 400 `request_invalid` at `/as_of`; any other kind ignores it.
@@ -657,9 +656,6 @@ async def _availability(
         return _Availability()
     profiles = await read_profiles(deps, stat_vars, deadline=deadline)
     if profiles is None:
-        # A coverage index that failed to load can load after a restart; none configured cannot.
-        if deps.coverage_load_failed:
-            return _Availability()
         return _Availability(reads=dict.fromkeys(stat_vars, NOT_SERVED))
     reads = await read_availability(
         profiles, code_index=tables.code_index, membership=tables.membership, deadline=deadline
@@ -679,7 +675,7 @@ def _lookup_keys(deps: GraphDeps, tables: _Tables, dcids: list[str]) -> dict[str
     stamp = deps.generation.stamp().key
     code_index = tables.code_index.stamp.content_hash
     catalogue = current_catalogue().build_id
-    coverage = deps.coverage.snapshot().manifest.build_id if deps.coverage is not None else None
+    coverage = deps.coverage.snapshot().manifest.build_id
     keys: dict[str, NodeKey] = {}
     for dcid in dcids:
         membership = tables.held_membership(dcid)

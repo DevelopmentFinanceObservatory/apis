@@ -38,7 +38,7 @@ from materialise.graph import GraphReader
 from origin_catalogue import Catalogue, current_catalogue
 from origin_catalogue.service import CatalogueService
 from series_coverage.index import Estimate
-from series_coverage.shared import CoverageService
+from series_coverage.shared import ServedCoverage
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue
 
 from ._operation_store import FakeOperationDatasetStore
@@ -750,7 +750,7 @@ class TestLiveDefinitionDepsConstruction:
             graph=cast(GraphReader, object()),
             sdmx=SdmxClient(base_url="https://example.org"),
             artifact_store=cast(ArtifactStore, object()),
-            coverage=cast(CoverageService, object()),
+            coverage=cast(ServedCoverage, object()),
             materialise_semaphore=self._semaphore,
         )
 

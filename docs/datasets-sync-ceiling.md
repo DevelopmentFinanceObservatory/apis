@@ -200,15 +200,14 @@ The write half checks it before the version record and before each artifact rend
 a run past it takes the transient path below, so no write starts after it. The lease outlasts the
 work deadline by 120 seconds for the writes already under way, and stays under the task's
 1,800-second dispatch deadline. Its materialisation takes one permit from the worker process's single-permit semaphore.
-The run takes one coverage snapshot with `CoverageService.snapshot_current`, which reads the
-published `current.json` pointer and loads a moved build before it returns, so the run never
-executes against an artifact older than the pointer at run start, however long the worker instance
-sat idle with its CPU throttled. A failed pointer read or load is a transient failure of the
-attempt. The run then resolves the stored subject and estimates it against that snapshot with
-`sync_estimate`, the same estimator admission uses. It records the fresh estimate on the row,
+The run binds the graph release the worker process serves when the run starts
+(`graph_release.context.bound_served_release`) and reads coverage from that release's coverage
+view throughout. The process swaps to a newer published release in the background
+(`deploy/graph-release.md`). The run then resolves the stored subject and estimates it against
+that coverage with `sync_estimate`, the same estimator admission uses. It records the fresh estimate on the row,
 checks the async ceilings again (a breach fails the operation `over_ceiling`, not retryable), and
-sizes the raw-fetch guard from the fresh estimate. A coverage republish between submission and
-execution is therefore enforced against the data the run fetches. The run then serves through
+sizes the raw-fetch guard from the fresh estimate. A release published between submission and
+execution is therefore enforced against the data the run fetches once the worker serves it. The run then serves through
 `current.serve_current`, so a current head that holds the request's rendering answers with no fetch,
 and a rebuild advances the head.
 

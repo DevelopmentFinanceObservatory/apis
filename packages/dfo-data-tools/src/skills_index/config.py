@@ -94,27 +94,20 @@ SKILL_BODY_MAX_BYTES = 256 * 1024
 # This 128 MiB budget reserves an eighth for skill content.
 SKILLS_CORPUS_CONTENT_BUDGET_BYTES = 128 * 1024 * 1024
 
-# Rebuild `SharedSkillsIndex` from the graph every 15 minutes. With `GRAPH_RELEASE_ORIGIN`
-# on it rebuilds on each release swap instead, and the doors send `no-cache`.
-SKILLS_INDEX_REFRESH_SECONDS = 900.0
-
-# Retry failed builds every 2 seconds until the first generation binds.
-# Doors return 503 while `index` is `None`. Later failures keep serving the
-# last bound generation and use the normal refresh interval. With
-# `GRAPH_RELEASE_ORIGIN` on, every failed build, and every build with a failed graph
-# read, retries on this backoff.
+# A failed build, or a build with a failed graph read, retries after 2 seconds. Doors return
+# 503 while `SharedSkillsIndex.index` is `None`; once a generation binds, it keeps serving
+# through later failures.
 SKILLS_INDEX_FIRST_BUILD_RETRY_INITIAL_SECONDS = 2.0
 
-# Pre-bind retry delay doubles to 60 seconds. The service runs at most two
-# instances, so jitter offers little benefit. The ceiling remains below the
-# 15-minute refresh interval.
+# The retry delay doubles to 60 seconds. The service runs at most two instances, so jitter
+# offers little benefit.
 SKILLS_INDEX_FIRST_BUILD_RETRY_CEILING_SECONDS = 60.0
 
-# With `GRAPH_RELEASE_ORIGIN` on, `acquire_shared_index` holds application startup for
-# up to 120 seconds while the first build runs. Cloud Run throttles CPU outside requests
-# once an instance is ready, and the build reads the in-memory release, so a build left to
-# the background stalls until traffic arrives while the doors answer 503. Past the bound,
-# or after a failed first build, startup completes and the retry backoff continues.
+# `acquire_shared_index` holds application startup for up to 120 seconds while the first
+# build runs. Cloud Run throttles CPU outside requests once an instance is ready, and the
+# build reads the in-memory release, so a build left to the background stalls until traffic
+# arrives while the doors answer 503. Past the bound, or after a failed first build, startup
+# completes and the retry backoff continues.
 SKILLS_INDEX_FIRST_BUILD_WAIT_SECONDS = 120.0
 
 

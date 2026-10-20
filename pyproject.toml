@@ -106,8 +106,10 @@ graph = [
     # entity_resolution's resolvekit dependency. The exact pin lives on
     # dfo-data-tools's `resolve` extra, the one source of truth for it.
     # `sdmx` is materialise's and dc_sdmx's own dependency (httpx, pyarrow):
-    # graph_api imports both directly.
-    "dfo-data-tools[resolve,sdmx]",
+    # graph_api imports both directly. `coverage` carries numpy, which
+    # graph_api.app needs through graph_release.service (the served release's
+    # mask words) and series_coverage.shared (its coverage view).
+    "dfo-data-tools[resolve,sdmx,coverage]",
 ]
 
 [dependency-groups]

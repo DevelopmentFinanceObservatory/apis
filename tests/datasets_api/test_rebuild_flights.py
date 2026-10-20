@@ -4,6 +4,7 @@ that raises, or a waiter that gives up, leaves for the others."""
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import threading
 import time
 
@@ -17,8 +18,8 @@ _SHORT = 0.05
 
 
 class _Rebuild:
-    """A caller holding its turn on another thread until `finish` is set. `raising` is what its
-    rebuild raises on the way out."""
+    """A caller holding its turn on another thread, under the test's bound release as a request
+    runs, until `finish` is set. `raising` is what its rebuild raises on the way out."""
 
     def __init__(
         self,
@@ -33,7 +34,7 @@ class _Rebuild:
         self._flights = flights
         self._deadline = deadline
         self._raising = raising
-        self._thread = threading.Thread(target=self._run)
+        self._thread = threading.Thread(target=contextvars.copy_context().run, args=(self._run,))
         self._thread.start()
 
     def _run(self) -> None:

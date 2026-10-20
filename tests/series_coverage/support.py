@@ -5,9 +5,7 @@ from __future__ import annotations
 import dataclasses
 import itertools
 import json
-import os
-from collections.abc import Collection, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
 
 import pyarrow as pa
@@ -15,7 +13,6 @@ import pyarrow.parquet as pq
 
 from code_index.query import CodeIndex
 from code_index.types import IndexStamp, StatVarRow
-from series_coverage import shared as coverage_shared
 from series_coverage.io import (
     write_coverage_table,
     write_current,
@@ -302,17 +299,3 @@ def index_for(uri: str, *, content_hash: str = "test-index") -> CodeIndex:
     return code_index_for(
         load_coverage(uri).index.variable_provenances(), content_hash=content_hash
     )
-
-
-@contextmanager
-def session_coverage_service() -> Iterator[None]:
-    """Installs, inside the block, the process-wide coverage service over
-    `COVERAGE_ARTIFACT_URI`, checked against an index built from that build's own provenances.
-    The suite's recorded slice covers a subset of the packaged index's StatVars, so the
-    packaged index would reject it."""
-    uri = os.environ["COVERAGE_ARTIFACT_URI"]
-    service = coverage_shared.CoverageService(
-        artifact_uri=uri, index=index_for(uri), recheck_seconds=0
-    )
-    with coverage_shared._singleton.poisoned_for_test(service):
-        yield

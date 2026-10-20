@@ -5,7 +5,7 @@ under the surface's guard.
 construction. `snapshot()` returns the served release without I/O and, at
 most once per `recheck_seconds`, starts a daemon thread that reads the pointer.
 The recheck is request-triggered because background loops starve when
-`cpu_idle=true`, as in `series_coverage.shared`. When the pointer has moved,
+`cpu_idle=true`. When the pointer has moved,
 the thread downloads and maps the new release beside the old one, then
 enters every registered swap guard to build its views and flip the served
 release. The download needs no guard, since the local directory is an
@@ -33,20 +33,14 @@ since the load may have found the file present and be about to map it. A load
 that fails unlinks every file no live release holds, so its downloads do not
 stay resident.
 
-With `build_views`, which `get_release_service()` sets from `GRAPH_RELEASE_COVERAGE`
-(`graph_release.context.coverage_views_enabled`), opening a release also builds its serving
-views (`graph_release.views`): the code index, the measure index and the `CoverageIndex`. They
-are built in the thread that opens the release, so at construction or in the recheck inside the
+Opening a release builds its serving views (`graph_release.views`): the code index, the
+measure index and the `CoverageIndex`, and its origin view (`graph_release.origin`). They are
+built in the thread that opens the release, so at construction or in the recheck inside the
 swap guards, and live on the `Release`, so they die with it. A release whose views do not build
 is refused as an unreadable one is, and its files are unlinked. Construction raises, and a
-recheck keeps the served release. Without `build_views` a `Release` maps the parts and builds
-nothing. After the first load and after each swap, that thread hands the memory the load freed
-back to the OS (`_return_freed_memory`).
-
-With `build_origin`, which `get_release_service()` sets from `GRAPH_RELEASE_ORIGIN`
-(`graph_release.context.origin_release_enabled`), opening a release also builds its origin view
-(`graph_release.origin`), in the same place and under the same refusal as the serving views,
-and the process's member enumerator drops the member groups of each release it replaces
+recheck keeps the served release. After the first load and after each swap, that thread hands
+the memory the load freed back to the OS (`_return_freed_memory`). The process's member
+enumerator drops the member groups of each release the service replaces
 (`statvar_members.MemberEnumerator.follow_swaps`).
 
 A `Release` the service opened knows whether the service still serves it (`Release.served`),
@@ -79,12 +73,7 @@ from code_index.query import CodeIndex
 from code_index.types import MeasureIndex
 from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
 from dfo_platform.singleton import RefCountedSingleton
-from graph_release.context import (
-    URI_ENV_VAR,
-    coverage_views_enabled,
-    origin_release_enabled,
-    release_uri,
-)
+from graph_release.context import URI_ENV_VAR, release_uri
 from graph_release.format import (
     LoadedRelease,
     Manifest,
@@ -207,13 +196,13 @@ def build_release_views(loaded: LoadedRelease) -> ReleaseViews:
 
 @dataclass(frozen=True, eq=False)
 class Release:
-    """One mapped release and, when its service builds them, its serving views and its origin
-    view. Requests and operations hold it for their lifetime through `graph_release.context`.
-    `service` is the service that opened it, `None` for a release built outside one."""
+    """One mapped release with its serving views and its origin view. Requests and operations
+    hold it for their lifetime through `graph_release.context`. `service` is the service that
+    opened it, `None` for a release built outside one."""
 
     loaded: LoadedRelease
-    views: ReleaseViews | None = None
-    origin: ReleaseOrigin | None = None
+    views: ReleaseViews
+    origin: ReleaseOrigin
     service: ReleaseService | None = field(default=None, repr=False)
 
     @property
@@ -308,10 +297,9 @@ class ReleaseService:
     """Opens the published release at construction and swaps to a newer one in
     the background.
 
-    `recheck_seconds <= 0` disables the recheck. `build_views` builds each
-    release's serving views as it opens, and `build_origin` its origin view. Construction raises
-    `FileNotFoundError` when no release is published, propagates the
-    loader's errors for one that cannot be read, and raises
+    `recheck_seconds <= 0` disables the recheck. Each release builds its serving views and its
+    origin view as it opens. Construction raises `FileNotFoundError` when no release is
+    published, propagates the loader's errors for one that cannot be read, and raises
     `graph_release.views.ViewRefused` for one whose views do not build. A recheck that refuses
     a release for a deterministic reason skips it while the pointer names it.
     """
@@ -324,12 +312,8 @@ class ReleaseService:
         recheck_seconds: float = DEFAULT_RECHECK_SECONDS,
         clock: Callable[[], float] = time.monotonic,
         loader: ReleaseLoader = open_release,
-        build_views: bool = False,
-        build_origin: bool = False,
     ) -> None:
         self._uri = uri
-        self._build_views = build_views
-        self._build_origin = build_origin
         self._local_dir = local_dir
         self._recheck_seconds = recheck_seconds
         self._clock = clock
@@ -413,8 +397,8 @@ class ReleaseService:
         """`loaded` with its views, holding its files until the release dies."""
         names = loaded.file_names
         try:
-            views = build_release_views(loaded) if self._build_views else None
-            origin = release_origin(loaded) if self._build_origin else None
+            views = build_release_views(loaded)
+            origin = release_origin(loaded)
         except Exception:
             self._files.drop(names)
             raise
@@ -562,20 +546,12 @@ def _build() -> ReleaseService:
     uri = release_uri()
     if uri is None:
         raise ReleaseUriMissingError(f"{URI_ENV_VAR} is not set")
-    origin = origin_release_enabled()
     # On Cloud Run the temporary directory is the in-memory filesystem.
-    service = ReleaseService(
-        uri=uri,
-        local_dir=Path(tempfile.mkdtemp(prefix="graph-release-")),
-        build_views=coverage_views_enabled(),
-        build_origin=origin,
-    )
-    if origin:
-        # The process's member groups key on the release under the flag; a swap drops the
-        # replaced release's.
-        from statvar_members import shared_enumerator
+    service = ReleaseService(uri=uri, local_dir=Path(tempfile.mkdtemp(prefix="graph-release-")))
+    # The process's member groups key on the release; a swap drops the replaced release's.
+    from statvar_members import shared_enumerator
 
-        shared_enumerator().follow_swaps(service)
+    shared_enumerator().follow_swaps(service)
     return service
 
 
@@ -588,17 +564,11 @@ def get_release_service() -> ReleaseService:
     """Returns the process-wide service, opening the release on first call.
 
     Raises `ReleaseUriMissingError` when `GRAPH_RELEASE_URI` is unset or blank,
-    `FileNotFoundError` when no release is published there, and, with
-    `GRAPH_RELEASE_COVERAGE` or `GRAPH_RELEASE_ORIGIN` on, `graph_release.views.ViewRefused`
-    when the release's views do not build, so a surface that asks for it fails at startup.
+    `FileNotFoundError` when no release is published there, and
+    `graph_release.views.ViewRefused` when the release's views do not build, so a surface that
+    asks for it fails at startup.
     """
     return _singleton.acquire()
-
-
-def optional_release_service() -> ReleaseService | None:
-    """The process-wide service when `GRAPH_RELEASE_URI` is set, `None` when it
-    is unset or blank."""
-    return None if release_uri() is None else get_release_service()
 
 
 def reset_release_service() -> None:
@@ -615,6 +585,5 @@ __all__ = [
     "ReleaseViews",
     "build_release_views",
     "get_release_service",
-    "optional_release_service",
     "reset_release_service",
 ]
