@@ -122,8 +122,8 @@ _ARCS = {
 }
 _GRAPH = FakeMintGraphReader(arcs=_ARCS)
 _PARTIES = {
-    "country/USA": PartyRow(dcid="country/USA", kind="party"),
-    "country/KEN": PartyRow(dcid="country/KEN", kind="party"),
+    "country/USA": PartyRow(dcid="country/USA", kind="party", sector="official"),
+    "country/KEN": PartyRow(dcid="country/KEN", kind="party", sector="official"),
     "DACAfrica": PartyRow(dcid="DACAfrica", kind="total", datasets=("p1",), axes=("destination",)),
     "DACAfricaUnallocated": PartyRow(dcid="DACAfricaUnallocated", kind="residual"),
     "DACDevelopingCountries": PartyRow(
@@ -140,10 +140,10 @@ _LONG_HEADER = (
     "stat_var",
     "financingProvider",
     "financingProvider_label",
-    "financingProvider_party_kind",
+    "financingProvider_kind",
     "financingRecipient",
     "financingRecipient_label",
-    "financingRecipient_party_kind",
+    "financingRecipient_kind",
     "crsPurpose",
     "crsPurpose_label",
     "crsTypeOfFinance",
@@ -291,9 +291,9 @@ def test_every_code_gets_its_name_and_the_render_warns_of_nothing(
         "United States",
         "Kenya",
     )
-    assert (first["financingProvider_party_kind"], first["financingRecipient_party_kind"]) == (
-        "party",
-        "party",
+    assert (first["financingProvider_kind"], first["financingRecipient_kind"]) == (
+        "official",
+        "country or organisation",
     )
     assert first["provenance_label"] == "Source one"
     # A method shows only a name that says more than its dcid. An unnamed method is not a miss.
@@ -561,7 +561,7 @@ def test_a_failed_name_read_leaves_name_cells_empty_warns_and_completes(error):
     assert {record["provenance_label"] for record in records} == {""}
     # The unit's label and the parties' index kinds are local, so they survive the failed read.
     assert {record["unit_label"] for record in records} == {"Current US dollars"}
-    assert {record["financingRecipient_party_kind"] for record in records} == {"party"}
+    assert {record["financingRecipient_kind"] for record in records} == {"country or organisation"}
     assert _unavailable(rendered) == [
         ("financingProvider_label", 4),
         ("financingRecipient_label", 4),
@@ -839,7 +839,7 @@ def _totals_published(
 _WHOLE_TOTALS = _totals_published(
     datasets=("p1",),
     axes=("destination",),
-    whole=(WholeMarker(dataset="p1", holds=("party", "residual")),),
+    whole=(WholeMarker(dataset="p1", covers=("official", "residual")),),
 )
 
 
@@ -1044,8 +1044,11 @@ def test_a_failed_name_read_still_sets_the_index_totals_apart(chunks, answers, c
     assert not rendered.labels_complete
     assert _recipients(data) == _PARTY_ROWS
     assert _recipients(totals) == _TOTAL_ROWS
-    assert [record["financingRecipient_party_kind"] for record in data] == ["party", "residual"]
-    assert [record["financingRecipient_party_kind"] for record in totals] == ["total", "total"]
+    assert [record["financingRecipient_kind"] for record in data] == [
+        "country or organisation",
+        "unallocated",
+    ]
+    assert [record["financingRecipient_kind"] for record in totals] == ["total", "total"]
     assert "data/p1-totals.csv" in resources["data/p1.csv"]["description"]
     assert "data/p1-totals.csv" in archive.read("README.md").decode()
 
@@ -1183,19 +1186,21 @@ _DAC_PARTIES = {
         kind="total",
         datasets=(_DAC2A, _DAC2B),
         axes=("destination",),
-        whole=(WholeMarker(dataset=_DAC2A, holds=("party", "residual"), years=(2020, 2021)),),
+        sector="official",
+        whole=(WholeMarker(dataset=_DAC2A, covers=("official", "residual"), years=(2020, 2021)),),
     ),
     "DACOfficialDonors": PartyRow(
         dcid="DACOfficialDonors",
         kind="total",
         datasets=(_DAC2A, _DAC2B),
         axes=("origin",),
+        sector="official",
         whole=(
-            WholeMarker(dataset=_DAC2A, holds=("party",)),
-            WholeMarker(dataset=_DAC2B, holds=("party",)),
+            WholeMarker(dataset=_DAC2A, covers=("official",)),
+            WholeMarker(dataset=_DAC2B, covers=("official",)),
         ),
     ),
-    "GatesFoundation": PartyRow(dcid="GatesFoundation", kind="private"),
+    "GatesFoundation": PartyRow(dcid="GatesFoundation", kind="party", sector="private"),
 }
 
 
@@ -1213,31 +1218,48 @@ _WINDOWED_ROWS = (
     _recipient_row("DACAllRecipients", "2021", _DAC2B),
     _recipient_row("DACAllRecipients", "2020", _DAC2B),
 )
+_WINDOWED_WHOLE = [None, False, True, True, False, False, False, False]
+"""Whether each total of `_WINDOWED_ROWS` is whole there, in order (`None` for the party). The
+total is whole in DAC2A inside its marker's years (2020 to 2021), and not in DAC2A outside
+them, across years, or in any DAC2B row, where it carries no marker."""
+
 _WINDOWED_KINDS = [
-    "party",
-    "total",
-    "whole_total",
-    "whole_total",
-    "total",
-    "total",
-    "total",
-    "total",
+    "country or organisation",
+    *("whole total" if whole else "total" for whole in _WINDOWED_WHOLE[1:]),
 ]
-"""The recipient kinds of `_WINDOWED_ROWS` in order. The total reads `whole_total` in DAC2A
-inside its marker's years (2020 to 2021), and `total` in DAC2A outside them, across years, and
-in every DAC2B row, where it carries no marker."""
+_WINDOWED_CELLS = [
+    ("party", "false"),
+    ("total", "false"),
+    ("total", "true"),
+    ("total", "true"),
+    ("total", ""),
+    ("total", "false"),
+    ("total", "false"),
+    ("total", "false"),
+]
+"""The frame cells of `_WINDOWED_ROWS`, which follow `_WINDOWED_WHOLE` except on the DAC2A row
+across 2021 and 2022: that row names no one year for the marker's window, so its `party_whole`
+is empty."""
 
 
 def _kinds_by_row(rows: Sequence[Mapping[str, object]]) -> list[object]:
-    return [row["financingRecipient_party_kind"] for row in rows]
+    return [row["financingRecipient_kind"] for row in rows]
+
+
+def _cells_by_row(rows: Sequence[Mapping[str, object]]) -> list[object]:
+    return [
+        (row["financingRecipient_party_kind"], row["financingRecipient_party_whole"])
+        for row in rows
+    ]
 
 
 @pytest.mark.parametrize(
-    ("options", "reader"),
+    ("options", "reader", "expected"),
     [
         pytest.param(
             MintOptions(format="csv", bundle=False),
             lambda body: _kinds_by_row(_records(body)),
+            _WINDOWED_KINDS,
             id="long-layout",
         ),
         pytest.param(
@@ -1245,27 +1267,27 @@ def _kinds_by_row(rows: Sequence[Mapping[str, object]]) -> list[object]:
                 format="parquet",
                 bundle=False,
                 layout="frame",
-                columns=["financingRecipient_party_kind"],
+                columns=["financingRecipient_party_kind", "financingRecipient_party_whole"],
             ),
-            lambda body: _kinds_by_row(pq.read_table(io.BytesIO(body)).to_pylist()),
+            lambda body: _cells_by_row(pq.read_table(io.BytesIO(body)).to_pylist()),
+            _WINDOWED_CELLS,
             id="reshape-enrichment-keeping-time-period",
         ),
     ],
 )
-def test_a_whole_total_reads_whole_total_only_in_the_dataset_and_years_of_its_marker(
-    options, reader
-):
-    """One frame holds DAC2A and DAC2B rows of the same total in several periods: the cell
-    follows each row's dataset and year, in the long layout and in the reshape enrichment
+def test_a_total_is_whole_only_in_the_dataset_and_years_of_its_marker(options, reader, expected):
+    """One frame holds DAC2A and DAC2B rows of the same total in several periods: whether it is
+    whole follows each row's dataset and year, in the long layout and in the reshape enrichment
     alike."""
     _rendered, body = _render(options, rows=_WINDOWED_ROWS, spec=None, parties=_DAC_PARTIES)
 
-    assert reader(body) == _WINDOWED_KINDS
+    assert reader(body) == expected
 
 
-def test_a_kind_column_a_pivot_indexes_by_reads_a_windowed_whole_total_as_a_total():
-    """A pivot groups rows by its index, so a kind that changed with the year would split one
-    recipient across index rows; the cell stays the `total` that holds in every dataset and year."""
+def test_a_whole_cell_a_pivot_indexes_by_is_empty_for_a_windowed_whole_total():
+    """A pivot groups rows by its index, so a cell that changed with the year would split one
+    recipient across index rows. The pivot reads the cell for no dataset and year, and a whole
+    total's cell is empty there."""
     options = MintOptions(
         format="csv",
         bundle=False,
@@ -1274,23 +1296,23 @@ def test_a_kind_column_a_pivot_indexes_by_reads_a_windowed_whole_total_as_a_tota
             "stat_var",
             "financingProvider",
             "financingRecipient",
-            "financingRecipient_party_kind",
+            "financingRecipient_party_whole",
             "time_period",
             "value",
             "unit",
             "provenance",
         ],
-        pivot={"index": "financingRecipient_party_kind", "columns": "time_period"},
+        pivot={"index": "financingRecipient_party_whole", "columns": "time_period"},
     )
     one_row_per_year = (_WINDOWED_ROWS[1], _WINDOWED_ROWS[2], _WINDOWED_ROWS[5])
 
     _rendered, body = _render(options, rows=one_row_per_year, spec=None, parties=_DAC_PARTIES)
 
     header, *rows = _csv(body)
-    assert [row[header.index("financingRecipient_party_kind")] for row in rows] == ["total"]
+    assert [row[header.index("financingRecipient_party_whole")] for row in rows] == [""]
 
 
-def test_a_dac2a_ethiopia_2021_frame_reads_private_and_whole_total_providers():
+def test_a_dac2a_ethiopia_2021_download_reads_official_private_and_whole_total_providers():
     rows = tuple(
         ("dcid:SV_A", provider, "country/ETH", "2021", 1.0, "USD", None, _DAC2A, None)
         for provider in ("country/USA", "GatesFoundation", "DACOfficialDonors")
@@ -1300,8 +1322,8 @@ def test_a_dac2a_ethiopia_2021_frame_reads_private_and_whole_total_providers():
         MintOptions(format="csv", bundle=False), rows=rows, spec=None, parties=_DAC_PARTIES
     )
 
-    assert [record["financingProvider_party_kind"] for record in _records(body)] == [
-        "party",
+    assert [record["financingProvider_kind"] for record in _records(body)] == [
+        "official",
         "private",
-        "whole_total",
+        "whole total",
     ]

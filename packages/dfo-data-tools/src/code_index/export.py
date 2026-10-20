@@ -56,10 +56,12 @@ from code_index.types import (
     PartlyStatedValue,
     PartyKind,
     PartyWord,
+    Sector,
     ShapeSlotDefault,
     StatedWord,
     StatTypeWordDeclaration,
     WholeTotalSet,
+    covered_sector,
     invalid_when_named_entry,
     label_for_pairs,
     party_kind,
@@ -164,7 +166,7 @@ def _check_private_providers(
     `codes` is each published party's donor codes and `origins` the parties published as a donor.
     A listed code must be carried by its listed party alone once either is published; an origin
     party carrying a code in `_PRIVATE_CODE_BLOCK` must be listed; a listed party takes no kind
-    override."""
+    override, since only a `party` carries a sector."""
     holders: dict[int, list[str]] = defaultdict(list)
     for dcid, party_codes in codes.items():
         for code in party_codes:
@@ -193,8 +195,8 @@ def _check_private_providers(
     overridden = sorted(set(private_providers.values()) & kind_overrides.keys())
     if overridden:
         raise ExportRefused(
-            f"PRIVATE_PROVIDERS and PARTY_KIND_OVERRIDES both name {overridden!r}; a party takes "
-            "one kind"
+            f"PRIVATE_PROVIDERS and PARTY_KIND_OVERRIDES both name {overridden!r}; a private "
+            "provider is a party"
         )
 
 
@@ -206,8 +208,9 @@ def _check_whole_population_totals(
     """Raises `ExportRefused` for a `whole_totals` row naming a party that is not a published
     total, a total not published on exactly the row's axis, a dataset that does not publish the
     total, a window whose first year lies outside the years the dataset publishes the total, or
-    a row with no dataset, no kind or no reason. Two rows holding one kind on one dataset and
-    axis fail when the finished document loads (`code_index.loader._check_whole_totals`)."""
+    a row with no dataset, no class or no reason. Two rows covering one class on one dataset and
+    axis fail when the finished document loads (`code_index.loader._check_whole_totals`), as
+    does a row whose windows cover different sectors (`code_index.loader._check_sector`)."""
     for dcid, whole in sorted(whole_totals.items()):
         if kinds.get(dcid) != "total":
             raise ExportRefused(
@@ -225,12 +228,12 @@ def _check_whole_population_totals(
             )
         if (
             not whole.datasets
-            or not all(window.holds for window in whole.datasets.values())
+            or not all(window.covers for window in whole.datasets.values())
             or not whole.reason
         ):
             raise ExportRefused(
-                f"WHOLE_POPULATION_TOTALS row {dcid!r} names no dataset, holds no kind or gives "
-                "no reason"
+                f"WHOLE_POPULATION_TOTALS row {dcid!r} names no dataset, covers no class or "
+                "gives no reason"
             )
         outside = []
         for dataset, window in sorted(whole.datasets.items()):
@@ -246,27 +249,30 @@ def _check_whole_population_totals(
             )
 
 
-def _check_kinds_on_one_axis(
-    kinds: Mapping[str, PartyKind], parties: Mapping[str, PartyPublication]
+def _check_classes_on_one_axis(
+    rows: Sequence[Mapping], parties: Mapping[str, PartyPublication]
 ) -> None:
-    """Raises `ExportRefused` for a party of any kind but `party` published on more than one axis.
+    """Raises `ExportRefused` for a party of any class but `official`, or a total, published on
+    more than one axis.
 
     A row keeps `axes` and `datasets` as two lists, so a reader cannot tell which dataset holds
     which axis. `datasets_api.output_options` reads the totals a side holds in a dataset from
-    `axis in party.axes and dataset in party.datasets`, and search's side-kind lookups read the
-    kinds a side holds the same way. That is exact for a one-axis party and for a `party`,
-    because every side a two-axis party reaches already holds a `party` row. A private, total or
-    residual party on both axes would count on both axes in every dataset."""
+    `axis in party.axes and dataset in party.datasets`, and search reads the classes a side
+    holds the same way. That is exact for a one-axis party and for an `official` party, because
+    every side a two-axis party reaches already holds an `official` row. A private party, a
+    residual or a total on both axes would count on both axes in every dataset. `rows` are the
+    exported `parties` rows, each with its `kind` and `sector`."""
     ambiguous = sorted(
-        (dcid, kind, sorted(parties[dcid].axes))
-        for dcid, kind in kinds.items()
-        if kind != "party" and len(parties[dcid].axes) > 1
+        (row["dcid"], row["kind"], row["sector"], sorted(parties[row["dcid"]].axes))
+        for row in rows
+        if (row["kind"], row["sector"]) != ("party", "official")
+        and len(parties[row["dcid"]].axes) > 1
     )
     if ambiguous:
         raise ExportRefused(
-            f"parties of a kind other than 'party' are published on more than one axis: "
-            f"{ambiguous!r} (party, kind, axes) -- the index format cannot tell which dataset "
-            "holds which axis"
+            f"parties other than official parties are published on more than one axis: "
+            f"{ambiguous!r} (party, kind, sector, axes) -- the index format cannot tell which "
+            "dataset holds which axis"
         )
 
 
@@ -280,24 +286,27 @@ def export_parties(
     private_providers: Mapping[int, str],
     whole_totals: Mapping[str, WholePopulationTotal],
 ) -> list[dict]:
-    """Each party's kind, label, the datasets that publish it and the flow axes they publish it
-    on (`parties`, each sorted), the group and residuals a total holds, and for a whole
-    population total what it holds in each dataset (`whole`), sorted by dcid.
+    """Each party's kind, sector, label, the datasets that publish it and the flow axes they
+    publish it on (`parties`, each sorted), the group and residuals a total holds, and for a
+    whole population total what it covers in each dataset (`whole`), sorted by dcid.
 
-    A party in `kind_overrides` takes its override's kind. A party whose OECD donor code is in
-    `private_providers` is `private`. Any other takes the kind its graph types give under
-    `type_kinds`. Its label is its graph name, `None` when the graph gives it none. A row carries
-    `whole` only for a total in `whole_totals`, and a marker's `years` only for a window with a
-    first year, ending in the last year the dataset publishes the total.
+    A party in `kind_overrides` takes its override's kind. Any other takes the kind its graph
+    types give under `type_kinds`. A `party` whose OECD donor code is in `private_providers` has
+    the sector `private`, and every other `party` `official`, on every axis. A total in
+    `whole_totals` has the sector its windows cover (`covered_sector`), and every other total
+    and every residual none; the document refuses to load when two windows of a total cover
+    different sectors. Its label is its graph name, `None` when the graph gives it
+    none. A row carries `whole` only for a total in `whole_totals`, and a marker's `years` only
+    for a window with a first year, ending in the last year the dataset publishes the total.
 
     Raises `ExportRefused` for a `kind_overrides` row naming a party not in `parties`, a party the
     graph holds no node or type for, a party carrying a type `type_kinds` does not name, a party
     whose types give it no single kind, a `total_groups` row naming a party that is not a total
     of `parties`, a `total_groups` residual that is not a residual of `parties`, a
     `private_providers` row the graph contradicts (`_check_private_providers`) or whose party the
-    types give a kind other than `party`, a party of a kind other than `party` published on more
-    than one axis (`_check_kinds_on_one_axis`), and a `whole_totals` row the parties contradict
-    (`_check_whole_population_totals`).
+    types give a kind other than `party`, a party of a class other than `official` or a total
+    published on more than one axis (`_check_classes_on_one_axis`), and a `whole_totals` row the
+    parties contradict (`_check_whole_population_totals`).
     """
     published = frozenset(parties)
     unpublished = sorted(kind_overrides.keys() - published)
@@ -322,18 +331,17 @@ def export_parties(
             kind = override.kind
         else:
             kind = _kind_from_types(dcid, party_arcs.get("typeOf", ()), type_kinds)
-        if dcid in private:
-            if kind != "party":
-                raise ExportRefused(
-                    f"PRIVATE_PROVIDERS lists {dcid!r}, whose types give it the kind {kind!r}; "
-                    "only a party can be private"
-                )
-            kind = "private"
+        if dcid in private and kind != "party":
+            raise ExportRefused(
+                f"PRIVATE_PROVIDERS lists {dcid!r}, whose types give it the kind {kind!r}; "
+                "only a party can be private"
+            )
         kinds[dcid] = kind
         total = total_groups.get(dcid)
         row: dict = {
             "dcid": dcid,
             "kind": kind,
+            "sector": _party_sector(kind, private=dcid in private),
             "label": _first_or_none(party_arcs.get("name", ())),
             "totals": None if total is None else total.group,
             "residuals": [] if total is None else sorted(total.residuals),
@@ -358,15 +366,24 @@ def export_parties(
             f"TOTAL_GROUPS counts {not_residuals!r} as residuals, which no declared or listed dataset "
             "publishes as a residual"
         )
-    _check_kinds_on_one_axis(kinds, parties)
+    _check_classes_on_one_axis(rows, parties)
     _check_whole_population_totals(whole_totals, kinds, parties)
     for row in rows:
         if (whole := whole_totals.get(row["dcid"])) is not None:
+            row["sector"] = covered_sector(next(iter(whole.datasets.values())).covers)
             row["whole"] = [
                 _whole_marker_to_dict(dataset, window, parties[row["dcid"]])
                 for dataset, window in sorted(whole.datasets.items())
             ]
     return rows
+
+
+def _party_sector(kind: PartyKind, *, private: bool) -> Sector | None:
+    """A row's sector before whole markers: `private` or `official` for a `party`, none for a
+    total or a residual."""
+    if kind != "party":
+        return None
+    return "private" if private else "official"
 
 
 def strip_system_suffix(name: str) -> str:
@@ -1764,7 +1781,7 @@ def _stated_word_to_dict(stated: StatedWord) -> dict:
 def _whole_marker_to_dict(dataset: str, window: WholeWindow, publication: PartyPublication) -> dict:
     """A `PartyRow.whole` entry, its `years` running from the window's first year to the last
     year `publication` gives `dataset`. `years` is left out when the window has no first year."""
-    marker: dict = {"dataset": dataset, "holds": sorted(window.holds)}
+    marker: dict = {"dataset": dataset, "covers": sorted(window.covers)}
     if window.first_year is not None:
         marker["years"] = [window.first_year, publication.years[dataset][1]]
     return marker

@@ -33,9 +33,10 @@ _PARTIES = {
         PartyRow(
             dcid=_OFFICIAL,
             kind="total",
-            whole=(WholeMarker(dataset="provenance/P", holds=("party",)),),
+            sector="official",
+            whole=(WholeMarker(dataset="provenance/P", covers=("official",)),),
         ),
-        PartyRow(dcid=_GATES, kind="private"),
+        PartyRow(dcid=_GATES, kind="party", sector="private"),
         PartyRow(dcid=_FRANCE, kind="party"),
         PartyRow(dcid=_DEVELOPING, kind="total"),
         PartyRow(dcid=_AFRICA_REGIONAL, kind="residual"),
@@ -113,7 +114,7 @@ _EVERY_PAIR = [
 def test_a_cut_leaves_out_the_totals_of_each_open_party_role(
     identity, kept_providers, kept_recipients, entries
 ):
-    """Totals, whole totals included, leave an open role; parties, private parties, residuals
+    """Totals, whole totals included, leave an open role; parties of either sector, residuals
     and undeclared parties stay, and a bound role keeps every party whatever its kind."""
     kept, trace = _kept(_frame(_EVERY_PAIR), identity=identity)
 

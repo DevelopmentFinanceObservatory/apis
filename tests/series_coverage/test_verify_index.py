@@ -72,7 +72,7 @@ def _slice_document() -> dict:
             for dcid in sorted(provenances)[:_ROWS]
         ],
         "parties": [
-            {"dcid": party, "kind": "party", "totals": None}
+            {"dcid": party, "kind": "party", "sector": "official", "totals": None}
             for party in sorted(coverage.dataset_parties([_CRS]))
         ],
     }

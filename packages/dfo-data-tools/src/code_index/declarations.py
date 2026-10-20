@@ -19,6 +19,7 @@ from code_index.types import (
     MeasureAxis,
     MeasureClassDeclaration,
     MeasurePartitionLabel,
+    MemberClass,
     PartlyStatedValue,
     PartyKind,
     PartyWord,
@@ -515,13 +516,14 @@ TOTAL_GROUPS: Mapping[str, TotalGroup] = {
 # (`dfo-pipelines/dbt/seeds/oecd/dac_codelists/dac_donor_code_codelist.csv`) types 48 donors
 # `Private donor`, codes 1601 to 1650, and the graph types them `Organization` like any
 # multilateral, so the table is the only record of the grouping until the ontology types them. A
-# row takes the kind `private` in place of the `party` the types give. 46 of the 48 codes name a
+# listed party takes the sector `private` (`PartyRow.sector`); every other party is `official`.
+# A listed party keeps the kind `party` its types give. 46 of the 48 codes name a
 # party a declared dataset publishes. Code 1645 (CHANEL Foundation) has no graph node, and 1649
 # (`NovoNordiskFoundation`) has one that no dataset publishes;
 # `code_index.export._check_private_providers` aborts the export when either, or any other code
 # from 1601 to 1699, reaches a published donor unlisted.
 # Code 1014 (Private Infrastructure Development Group) is a multilateral on the same list and stays
-# a `party`; the Postcode Lottery Group (20035) stays a `total` override, and its five national
+# `official`; the Postcode Lottery Group (20035) stays a `total` override, and its five national
 # lotteries are `private`.
 PRIVATE_PROVIDERS: Mapping[int, str] = {
     1601: "GatesFoundation",  # Gates Foundation
@@ -575,12 +577,12 @@ PRIVATE_PROVIDERS: Mapping[int, str] = {
 
 @dataclass(frozen=True)
 class WholeWindow:
-    """What a total holds in one dataset: every party of the kinds in `holds` on its axis, from
+    """What a total holds in one dataset: every party of the classes in `covers` on its axis, from
     `first_year` through the last year the dataset publishes the total, or in every year it
     publishes it when `first_year` is `None` (`code_index.types.WholeMarker`). The export reads
     the last year from the coverage build, so the window grows as the dataset adds years."""
 
-    holds: tuple[PartyKind, ...]
+    covers: tuple[MemberClass, ...]
     first_year: int | None = None
 
 
@@ -598,20 +600,19 @@ class WholePopulationTotal:
 
 
 # The totals that hold a whole population on their axis, per dataset: in a named dataset the total
-# covers every party of the kinds given on its axis, so a sum of those parties and the total count
+# covers every party of the classes given on its axis, so a sum of those parties and the total count
 # the same population. The published figure can still differ from the sum of the listed members,
 # by late reporters for example, as the DACOfficialDonors paragraph below records. The index
-# loader checks that no two markers hold a kind in common on one dataset and axis, and the frame
-# cells write `whole_total` for a marked total (in the window's years, in the named dataset)
-# where they would write `total`. A dataset is named when the total's composition check holds
+# loader checks that no two markers cover a class in common on one dataset and axis, and the frame
+# cells mark a total whole (in the window's years, in the named dataset). A dataset is named when the total's composition check holds
 # there, from the first year given through the last year the dataset publishes the total, or in
 # every year it publishes it when no first year is given. The checks read the dev graph on
-# coverage build 20261013T115221Z-ab2a6880. A party sum is the sum of the party donors' own
-# rows, and a component with no row in a year counts zero.
+# coverage build 20261013T115221Z-ab2a6880. A party sum is the sum of the official party donors'
+# own rows, and a component with no row in a year counts zero.
 #
 # DACOfficialDonors equals DACCountriesTotal + DACNonDACCountries + DACMultilaterals to the dollar
 # in every year it is published, 1960 to 2024, at Bangladesh, Ethiopia, India and Kenya, in DAC2A
-# (aid type 206) and DAC2B (aid type 972). The sum of the party donors differs from the total by
+# (aid type 206) and DAC2B (aid type 972). The sum of the official party donors differs from the total by
 # what late reporters leave out (Ethiopia 2021: 4,267.6m against 4,250.8m). The total has no row
 # at DACAllRecipients in either dataset.
 #
@@ -619,7 +620,7 @@ class WholePopulationTotal:
 # India or Kenya, 1960 to 2024). It equals the sum of the PRIVATE_PROVIDERS rows to the dollar in
 # every year at Ethiopia, Kenya and India (Ethiopia 2021: 310.8m).
 #
-# DACAllRecipients is published in DAC2A and DAC2B and holds in DAC2A alone. The sum of its party
+# DACAllRecipients is published in DAC2A and DAC2B and holds in DAC2A alone. The sum of its official
 # and residual recipients equals the total from 1984 to 2024 for France, the United States,
 # Germany, Japan, the United Kingdom, IDA and the EU institutions, except in Japan 1988 (members
 # 19.5m above the total, 0.19%), Germany 2002 (14.8m, 0.22%) and France 2008 (0.04m), which are
@@ -634,16 +635,16 @@ class WholePopulationTotal:
 WHOLE_POPULATION_TOTALS: Mapping[str, WholePopulationTotal] = {
     "DACAllRecipients": WholePopulationTotal(
         axis="destination",
-        datasets={_DAC2A: WholeWindow(("party", "residual"), first_year=1984)},
+        datasets={_DAC2A: WholeWindow(("official", "residual"), first_year=1984)},
         reason=(
-            "DAC2A: party plus residual recipients equal the total from 1984 to 2024 for seven "
+            "DAC2A: official plus residual recipients equal the total from 1984 to 2024 for seven "
             "donors, apart from Japan 1988 (0.19%), Germany 2002 (0.22%) and France 2008 "
             "(0.04m), which are OECD revision noise; DAC2B fails in nearly every donor-year"
         ),
     ),
     "DACOfficialDonors": WholePopulationTotal(
         axis="origin",
-        datasets={_DAC2A: WholeWindow(("party",)), _DAC2B: WholeWindow(("party",))},
+        datasets={_DAC2A: WholeWindow(("official",)), _DAC2B: WholeWindow(("official",))},
         reason=(
             "DACCountriesTotal plus DACNonDACCountries plus DACMultilaterals, to the dollar in "
             "every year, DAC2A and DAC2B, at four recipients"
@@ -659,7 +660,7 @@ WHOLE_POPULATION_TOTALS: Mapping[str, WholePopulationTotal] = {
     ),
 }
 
-# Whole totals read as one population under a phrase. The members hold disjoint kinds of party
+# Whole totals read as one population under a phrase. The members cover disjoint classes of party
 # and are published together in one dataset (`code_index.loader._check_whole_totals`). Official
 # plus private donors is 4,578.4m for Ethiopia 2021 (4,267.6m and 310.8m). "All donors" and
 # "every donor" name the same population as "all donors including private"; the first phrase

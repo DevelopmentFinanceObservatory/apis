@@ -282,10 +282,9 @@ or, for a unit-request member, the binder's fixed fallback constant)
 supplied it. Shared by ResolvedFacet.basis
 (axis-level) and ResolvedFacet.request_basis (per-member, unit axis only) --
 the same three-value vocabulary either way."""
-PartyKind = Literal["party", "private", "total", "residual"]
+PartyKind = Literal["party", "total", "residual"]
 """What one party of a flow is beside the other parties on its side: a `party` holds figures
-of its own, a `private` party is a private provider that sums like a `party` and is counted
-apart, a `total` holds other parties' figures ("Africa, Total", the G7), so a sum across a
+of its own, a `total` holds other parties' figures ("Africa, Total", the G7), so a sum across a
 flow role that counts it counts its members twice, and a `residual` holds figures no other party
 does ("Africa, unallocated by country"). Mirrors `code_index.types.PartyKind` one-for-one."""
 SlotOptionRelation = Literal["child", "parent", "root"]

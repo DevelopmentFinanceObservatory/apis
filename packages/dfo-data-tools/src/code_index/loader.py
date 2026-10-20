@@ -17,8 +17,9 @@ from typing import get_args
 
 from code_index.query import CodeIndex, DuplicateDcid, fold_text, partly_stated_five_tuples
 from code_index.types import (
+    MEMBER_CLASSES,
     PARTY_KINDS,
-    WHOLE_OF_KINDS,
+    SECTORS,
     AbsentObservation,
     CodeRow,
     CodeSystemDeclaration,
@@ -41,6 +42,7 @@ from code_index.types import (
     StatVarRow,
     WholeMarker,
     WholeTotalSet,
+    covered_sector,
     invalid_when_named_entry,
     marked_datasets,
 )
@@ -96,9 +98,10 @@ def parse_index(payload: Mapping, *, source: object = "<document>") -> CodeIndex
     (`_check_source_codes`), as does a `partly_stated_values` row they contradict
     (`_check_partly_stated_values`). A kind outside `PartyKind`, a type declared twice, a
     `totals` on a party that is not a total, or a false `sums_members` on a party holding no
-    group raises `IndexFormatError`, as does a whole marker (`PartyRow.whole`) the row cannot
-    carry (`_check_whole_markers`), two whole totals holding the same kind on one dataset and
-    axis, and a whole total set its members contradict (`_check_whole_totals`). A party without
+    group raises `IndexFormatError`, as does a sector the row cannot carry (`_check_sector`), a
+    whole marker (`PartyRow.whole`) the row cannot carry (`_check_whole_markers`), two whole
+    totals covering the same class on one dataset and axis, and a whole total set its members
+    contradict (`_check_whole_totals`). A party without
     a `whole` key is no whole total. A code row without a `definition` carries
     none, as does a measure value or measure label in `parse_measure_axes`."""
     try:
@@ -229,12 +232,14 @@ def _parse_party(row: Mapping) -> PartyRow:
     """One `parties` row, refusing a kind outside `PartyKind`, an axis outside the flow axes,
     a `totals` or `residuals` on a party that is not a total, and a false `sums_members` on a
     party that holds no group or that counts residuals. `whole` markers are parsed by
-    `_parse_whole_marker` and checked by `_check_whole_markers`. `residuals`, `sums_members`,
-    `label`, `datasets`, `axes` and `whole` are optional, and a row without `sums_members`
-    reads it as true."""
+    `_parse_whole_marker` and checked by `_check_whole_markers`, and the sector by
+    `_check_sector`. `residuals`, `sums_members`, `label`, `datasets`, `axes` and `whole` are
+    optional, and a row without `sums_members` reads it as true. `sector` is required on a
+    `party` and may be absent on any other row."""
     party = PartyRow(
         dcid=row["dcid"],
         kind=row["kind"],
+        sector=row.get("sector"),
         totals=row["totals"],
         residuals=tuple(row.get("residuals", ())),
         sums_members=row.get("sums_members", True),
@@ -267,11 +272,12 @@ def _parse_party(row: Mapping) -> PartyRow:
             "residuals; only a total that holds a group and counts no residual makes no claim"
         )
     _check_whole_markers(party)
+    _check_sector(party)
     return party
 
 
 def _parse_whole_marker(row: Mapping) -> WholeMarker:
-    """One `whole` entry: its dataset, the kinds it holds (sorted) and its optional window,
+    """One `whole` entry: its dataset, the classes it covers (sorted) and its optional window,
     which must be two years in order. `_check_whole_markers` checks the rest."""
     years = row.get("years")
     if years is not None:
@@ -280,14 +286,14 @@ def _parse_whole_marker(row: Mapping) -> WholeMarker:
             raise IndexFormatError(f"whole marker years {years!r} is not a first and last year")
         if years[0] > years[1]:
             raise IndexFormatError(f"whole marker years {years!r} are out of order")
-    return WholeMarker(dataset=row["dataset"], holds=tuple(sorted(row["holds"])), years=years)
+    return WholeMarker(dataset=row["dataset"], covers=tuple(sorted(row["covers"])), years=years)
 
 
 def _check_whole_markers(party: PartyRow) -> None:
     """Raises `IndexFormatError` for a `whole` marker list the row cannot carry: on a party
     that is not a total, on other than exactly one published axis, for a dataset the party is
-    not published in or twice for one dataset, or holding no kind, a kind outside
-    `WHOLE_OF_KINDS` or one kind twice."""
+    not published in or twice for one dataset, or covering no class, a class outside
+    `MemberClass` or one class twice."""
     if not party.whole:
         return
     if party.kind != "total":
@@ -312,17 +318,48 @@ def _check_whole_markers(party: PartyRow) -> None:
                 f"party {party.dcid!r} carries two whole markers for {marker.dataset!r}"
             )
         marked.add(marker.dataset)
-        if not marker.holds:
-            raise IndexFormatError(f"party {party.dcid!r} holds no kind in {marker.dataset!r}")
-        if unknown := sorted(set(marker.holds) - WHOLE_OF_KINDS):
+        if not marker.covers:
+            raise IndexFormatError(f"party {party.dcid!r} covers no class in {marker.dataset!r}")
+        if unknown := sorted(set(marker.covers) - MEMBER_CLASSES):
             raise IndexFormatError(
-                f"party {party.dcid!r} holds kinds {unknown!r} in {marker.dataset!r}, outside "
-                f"{sorted(WHOLE_OF_KINDS)!r}"
+                f"party {party.dcid!r} covers classes {unknown!r} in {marker.dataset!r}, outside "
+                f"{sorted(MEMBER_CLASSES)!r}"
             )
-        if len(set(marker.holds)) != len(marker.holds):
+        if len(set(marker.covers)) != len(marker.covers):
             raise IndexFormatError(
-                f"party {party.dcid!r} names a held kind more than once in {marker.dataset!r}"
+                f"party {party.dcid!r} names a covered class more than once in {marker.dataset!r}"
             )
+
+
+def _check_sector(party: PartyRow) -> None:
+    """Raises `IndexFormatError` for a sector the row cannot carry: a `party` without one of
+    `Sector`, a residual with one, or a total whose markers cover different sectors or whose
+    sector is not the one they share (`covered_sector`), `None` for a total with no marker. An
+    index exported before parties carried a sector therefore refuses to load."""
+    if party.kind == "party":
+        if party.sector not in SECTORS:
+            raise IndexFormatError(
+                f"party {party.dcid!r} carries sector {party.sector!r}, outside {sorted(SECTORS)!r}"
+            )
+        return
+    if party.kind == "residual":
+        if party.sector is not None:
+            raise IndexFormatError(
+                f"residual {party.dcid!r} carries sector {party.sector!r}; a residual has none"
+            )
+        return
+    sectors = {covered_sector(marker.covers) for marker in party.whole}
+    if len(sectors) > 1:
+        raise IndexFormatError(
+            f"total {party.dcid!r} has whole markers that cover different sectors "
+            f"{sorted(map(str, sectors))!r}"
+        )
+    expected = sectors.pop() if sectors else None
+    if party.sector != expected:
+        raise IndexFormatError(
+            f"total {party.dcid!r} carries sector {party.sector!r}, but its whole markers give "
+            f"{expected!r}"
+        )
 
 
 def _read_json(source: Traversable | Path | str) -> dict:
@@ -645,11 +682,11 @@ def _check_party_words(datasets: Sequence[DatasetDeclaration], parties: Sequence
 
 
 def _check_whole_totals(parties: Sequence[PartyRow], sets: Sequence[WholeTotalSet]) -> None:
-    """Raises `IndexFormatError` for two whole totals whose markers hold a kind in common on one
+    """Raises `IndexFormatError` for two whole totals whose markers cover a class in common on one
     dataset and axis, so every population a dataset's axis counts is counted once, and for a
     `WholeTotalSet` that names a phrase twice, a member that is no whole total on the set's
-    axis, or members no dataset marks together. Members marked together in one dataset hold
-    disjoint kinds there by the first rule, so their sum counts no party twice."""
+    axis, or members no dataset marks together. Members marked together in one dataset cover
+    disjoint classes there by the first rule, so their sum counts no party twice."""
     by_dcid = {party.dcid: party for party in parties}
     held: dict[tuple[str, str], list[tuple[PartyRow, WholeMarker]]] = {}
     for party in parties:
@@ -658,9 +695,9 @@ def _check_whole_totals(parties: Sequence[PartyRow], sets: Sequence[WholeTotalSe
     for (dataset, axis), rows in held.items():
         for index, (first, first_marker) in enumerate(rows):
             for second, second_marker in rows[index + 1 :]:
-                if shared := sorted(set(first_marker.holds) & set(second_marker.holds)):
+                if shared := sorted(set(first_marker.covers) & set(second_marker.covers)):
                     raise IndexFormatError(
-                        f"whole totals {first.dcid!r} and {second.dcid!r} both hold {shared!r} "
+                        f"whole totals {first.dcid!r} and {second.dcid!r} both cover {shared!r} "
                         f"on {axis!r} in {dataset!r}"
                     )
     phrases: set[str] = set()

@@ -245,15 +245,17 @@ def _dataset_pins(
 
 
 def _enrichment_digest(parties: Iterable[PartyRow]) -> str:
-    """The hex SHA-256 of `parties`' `(dcid, kind, whole markers)` rows, sorted by dcid, each
-    marker as `(dataset, holds, years)`. Neither row order nor a label, group or dataset-list
-    change moves it. The markers are in it, windows included, because a whole total's frame
-    cell depends on the row's dataset and on whether its year falls inside the window."""
+    """The hex SHA-256 of `parties`' `(dcid, kind, sector, whole markers)` rows, sorted by dcid,
+    each marker as `(dataset, covers, years)`. Neither row order nor a label, group or
+    dataset-list change moves it. The markers are in it, windows included, because a whole
+    total's frame cell depends on the row's dataset and on whether its year falls inside the
+    window."""
     rows = sorted(
         (
             party.dcid,
             party.kind,
-            [(marker.dataset, sorted(marker.holds), marker.years) for marker in party.whole],
+            party.sector,
+            [(marker.dataset, sorted(marker.covers), marker.years) for marker in party.whole],
         )
         for party in parties
     )
@@ -494,10 +496,11 @@ class CodeIndex:
                     raise DuplicateDcid(f"two totals hold the group {party.totals!r}")
                 self.totals_by_group[party.totals] = party
         self.enrichment_digest = _enrichment_digest(self.parties.values())
-        """SHA-256 over the sorted `(dcid, kind, whole markers)` rows of `parties`, the part of
-        the index a `{role}_party_kind` cell is read from. A file holding such cells is linked
-        under a key salted with it (`datasets_api.version_store.enriched_rendering_key`), so an
-        export that changes no kind and no whole marker leaves every link in place."""
+        """SHA-256 over the sorted `(dcid, kind, sector, whole markers)` rows of `parties`, the
+        part of the index the `{role}_party_kind`, `{role}_party_sector` and `{role}_party_whole`
+        cells are read from. A file holding such cells is linked under a key salted with it
+        (`datasets_api.version_store.enriched_rendering_key`), so an export that changes no
+        kind, sector or whole marker leaves every link in place."""
         self.whole_total_sets = tuple(whole_total_sets)
         """The unions of whole totals read as one population (`WholeTotalSet`), in declaration
         order. The loader refuses two that share a phrase (`loader._check_whole_totals`)."""

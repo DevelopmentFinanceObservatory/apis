@@ -34,7 +34,6 @@ _SOURCE_KIND_BY_TYPE: dict[str, Kind] = {
 }
 _UNIT_TYPES = frozenset({"UnitOfMeasure", "CurrencyUnit", "Currency"})
 _AGGREGATE_PARTY_KINDS = frozenset({"total", "residual"})
-"""A `private` party is an organisation with figures of its own, so it is no aggregate."""
 
 
 def classify(

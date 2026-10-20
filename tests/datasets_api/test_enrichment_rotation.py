@@ -28,6 +28,7 @@ from datasets_api.version_store import (
     LiveVersionRecordWriter,
     enriched_rendering_key,
 )
+from datasets_api.versions import carries_party_kind
 from dc_sdmx import SdmxClient
 from series_coverage.schema import FacetMetadata, RoleNames
 from spec_registry import LiveSpecRegistry
@@ -81,8 +82,11 @@ def index_y(index_x: CodeIndex) -> CodeIndex:
         if row["dcid"] == _CHANGED_PARTY:
             assert row["kind"] == "residual"
             row["kind"] = "party"
+            row["sector"] = "official"
     index = parse_index(payload)
-    assert index.parties[_CHANGED_PARTY] == replace(index_x.parties[_CHANGED_PARTY], kind="party")
+    assert index.parties[_CHANGED_PARTY] == replace(
+        index_x.parties[_CHANGED_PARTY], kind="party", sector="official"
+    )
     return index
 
 
@@ -329,3 +333,35 @@ def test_the_versions_route_lists_the_stamp_each_minted_version_s_kind_file_carr
     assert rig.listed_stamps(index_x, party["definition"]["spec_id"]) == {
         party["content_version"]: index_x.enrichment_digest
     }
+
+
+_PARQUET = {"format": "parquet", "bundle": False}
+
+
+@pytest.mark.parametrize(
+    ("rendering", "carries"),
+    [
+        pytest.param({**_PARQUET, "layout": 4}, True, id="long-layout"),
+        pytest.param({**_PARQUET, "layout": "frame"}, False, id="frame-no-token"),
+        *(
+            pytest.param({**_PARQUET, "layout": "frame", "columns": [token]}, True, id=token)
+            for token in (
+                "party_kind",
+                "party_sector",
+                "party_whole",
+                "financingRecipient_party_sector",
+                "financingProvider_party_whole",
+            )
+        ),
+        pytest.param(
+            {**_PARQUET, "layout": "frame", "columns": ["financingRecipient_iso3"]},
+            False,
+            id="graph-field-token",
+        ),
+        pytest.param({"format": "frame"}, False, id="canonical-frame"),
+    ],
+)
+def test_a_rendering_carries_party_cells_when_its_layout_or_a_party_field_token_writes_them(
+    rendering, carries
+):
+    assert carries_party_kind(rendering) is carries

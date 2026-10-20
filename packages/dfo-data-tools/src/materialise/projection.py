@@ -6,9 +6,8 @@ columns, groupby collapses over them, and `options.columns`, `groupby.by` and `p
 
 - `stat_var`, then `stat_var_label` when the table decodes no code system;
 - each entity role in declared order, as the entity (`<role>`), its name (`<role>_label`),
-  for a party role (`materialise.enrichment.is_party_role`) its party's kind
-  (`<role>_party_kind`: `party`, `private`, `total`, `whole_total` or `residual`), and any
-  requested enrichment (`_iso2`, `_iso3`, `_type`);
+  for a party role (`materialise.enrichment.is_party_role`) its party's kind in words
+  (`<role>_kind`, `long_kind_cell`), and any requested enrichment (`_iso2`, `_iso3`, `_type`);
 - each decoded code system in property order, as `<code_system>` (the value's code dcid) and
   `<code_system>_label` (the decoded label);
 - `time_period` (an integer year for a frame of year points, `period_cell`), `value`;
@@ -23,21 +22,22 @@ the grammar names.
 
 Names come from a `names` mapping (cell value to name) read by the caller for each table in one
 lookup (`LongProjection.refs_to_name`). Kinds come from the code index's `parties` rows, read per
-row: a `<role>_party_kind` cell is `party_kind_cell` of the party for the row's `provenance`
-and the year of its `time_period`, so a whole total reads `whole_total` only in the dataset and
-years its marker holds (`PartyRow.whole`). A table with no `provenance` or `time_period` column,
-or a row with no readable value in one, gives `total`. A name or kind cell left empty beside a
-non-empty entity, and an axis code cell whose label two codes of its system share, count as unavailable. `apply`
-reports those counts per column so the caller can warn. A `<role>_party_kind` column the table
-already carries (an explicit `party_kind` token) takes that column's place, so the layout holds
-it once.
+row: a `<role>_kind` cell is `long_kind_cell` of the party for the row's `provenance` and the
+year of its `time_period`, so a whole total reads `whole total` only in the dataset and years
+its marker holds (`PartyRow.whole`). A table with no `provenance` or `time_period` column, or a
+row with no readable value in one, gives `total`. A name or kind cell left empty beside a
+non-empty entity, and an axis code cell whose label two codes of its system share, count as
+unavailable. `apply` reports those counts per column so the caller can warn. The machine party
+cells (`materialise.enrichment.PARTY_FIELDS`) belong to the frame layout; the long layout's
+`<role>_kind` reads all three.
 
 `measurementMethod_label` holds only a name that differs from the method's dcid, and its empty
 cells are not counted as unavailable. Many methods carry their dcid as their graph name, and some
 have no name, so an empty method name is normal.
 
-A row is a total when a role `totals_roles` names holds a party of kind `total` there
-(`split_totals`). The CSV and XLSX writers keep those rows out of the main table.
+A row is a total when a role `totals_roles` names holds a total there, its `<role>_kind` cell
+reading `total` or `whole total` (`split_totals`). The CSV and XLSX writers keep those rows out
+of the main table.
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ from dfo_frame_grammar.grammar import ComposedUnit, UnitRequest
 
 from code_index.types import PartyRow
 from dfo_platform.roles import role_key_axis
-from materialise.enrichment import PARTY_KIND_FIELD, is_party_role, row_party_kind_cell
+from materialise.enrichment import is_party_role, is_whole_total, period_year
 from materialise.errors import MaterialisationUsageError
 from materialise.reshape import Table, TableLike
 from materialise.unit_cells import unit_cell_text
@@ -75,13 +75,22 @@ _AXIS_SOURCE_PREFIX = f"{_STAT_VAR_COLUMN}_"
 _LABEL_SUFFIX = "_label"
 
 _ENRICHMENT_FIELD_ORDER = ("iso2", "iso3", "type")
-"""The requested enrichment fields that follow an entity's name and party kind."""
+"""The requested enrichment fields that follow an entity's name and kind."""
+
+KIND_SUFFIX = "_kind"
+"""The suffix of a party role's kind column in the long layout (`<role>_kind`)."""
+
+TOTAL_CELL = "total"
+WHOLE_TOTAL_CELL = "whole total"
+RESIDUAL_CELL = "unallocated"
+RECIPIENT_PARTY_CELL = "country or organisation"
+"""The `<role>_kind` cell of an official party on the destination axis, where no sector tells
+recipients apart."""
 
 _YEAR_GRAIN = "year"
 
-_TOTAL_KINDS = frozenset({"total", "whole_total"})
-"""The `<role>_party_kind` cells of a total: `whole_total` is a total that holds every party of
-its kinds on its axis in the row's dataset (`code_index.types.PartyRow.whole`)."""
+_TOTAL_CELLS = frozenset({TOTAL_CELL, WHOLE_TOTAL_CELL})
+"""The `<role>_kind` cells of a total."""
 
 _METHOD_COLUMN = "measurementMethod"
 _PROVENANCE_COLUMN = "provenance"
@@ -93,13 +102,46 @@ _CURRENCY_DCID_PREFIX = "Currency"
 def long_layout_default_enrichments(entity_columns: Sequence[str]) -> tuple[str, ...]:
     """The enrichment columns long output writes for `entity_columns` with no `columns` token,
     in layout order: each role's `<role>_label`, followed for a party role by its
-    `<role>_party_kind`."""
+    `<role>_kind`."""
     columns: list[str] = []
     for entity in entity_columns:
         columns.append(f"{entity}{_LABEL_SUFFIX}")
         if is_party_role(entity):
-            columns.append(f"{entity}_{PARTY_KIND_FIELD}")
+            columns.append(f"{entity}{KIND_SUFFIX}")
     return tuple(columns)
+
+
+def long_kind_cell(
+    ref: object,
+    *,
+    role: str,
+    parties: Mapping[str, PartyRow],
+    period: object,
+    provenance: object,
+) -> str | None:
+    """The `<role>_kind` cell of a long-layout row whose `role` cell is `ref`, `time_period` cell
+    `period` and `provenance` cell `provenance`, in words for a reader of the file.
+
+    A total reads `whole total` when it is a whole total for the row's dataset and year
+    (`materialise.enrichment.is_whole_total`) and `total` otherwise, and a residual reads
+    `unallocated`. A party on the origin axis reads its sector, `official` or `private`. A party
+    on the destination axis reads `country or organisation`, or `private` for a private one.
+    `None` for a ref the code index does not list, or one that is not text."""
+    party = parties.get(ref) if isinstance(ref, str) else None
+    if party is None:
+        return None
+    if party.kind == "total":
+        whole = is_whole_total(
+            party,
+            year=period_year(period),
+            provenance=provenance if isinstance(provenance, str) else None,
+        )
+        return WHOLE_TOTAL_CELL if whole else TOTAL_CELL
+    if party.kind == "residual":
+        return RESIDUAL_CELL
+    if party.sector == "private" or role_key_axis(role) == "origin":
+        return party.sector
+    return RECIPIENT_PARTY_CELL
 
 
 def period_grain(periods: Iterable[object]) -> str | None:
@@ -162,19 +204,19 @@ def totals_roles(identity: Mapping[str, object], entity_columns: Sequence[str]) 
 
 def split_totals(table: Table, *, roles: Sequence[str]) -> tuple[Table, Table]:
     """`table`, a table in the long layout, split into the rows of parties and residuals and
-    the rows where any of `roles` holds a party of kind `total` or `whole_total` (its
-    `<role>_party_kind` cell). A role the table does not carry splits nothing."""
+    the rows where any of `roles` holds a total (its `<role>_kind` cell reads `total` or
+    `whole total`). A role the table does not carry splits nothing."""
     positions = [
         list(table.columns).index(column)
         for role in roles
-        if (column := f"{role}_{PARTY_KIND_FIELD}") in table.columns
+        if (column := f"{role}{KIND_SUFFIX}") in table.columns
     ]
     if not positions:
         return table, Table(columns=table.columns, rows=())
     parties: list[Row] = []
     totals: list[Row] = []
     for row in table.rows:
-        (totals if any(row[at] in _TOTAL_KINDS for at in positions) else parties).append(row)
+        (totals if any(row[at] in _TOTAL_CELLS for at in positions) else parties).append(row)
     return Table(columns=table.columns, rows=tuple(parties)), Table(
         columns=table.columns, rows=tuple(totals)
     )
@@ -311,8 +353,8 @@ class LongProjection:
         self, table: TableLike, *, names: Names, parties: Mapping[str, PartyRow]
     ) -> ProjectedTable:
         """`table` in this layout, its name cells read from `names` and its kind cells from
-        `parties`, each for the year of its row. Raises `MaterialisationUsageError` when `table`'s columns differ from the
-        ones the layout was planned for."""
+        `parties`, each for the dataset and year of its row. Raises `MaterialisationUsageError`
+        when `table`'s columns differ from the ones the layout was planned for."""
         if tuple(table.columns) != self.source_columns:
             raise MaterialisationUsageError(
                 f"a long projection planned for columns {self.source_columns!r} was applied to "
@@ -380,21 +422,22 @@ def plan_long_projection(
             lambda row, reads: _name_missing(row[at], reads.names),
         )
 
-    def add_party_kind(entity: str) -> None:
+    def add_kind(entity: str) -> None:
         at = position[entity]
         period_at = position.get(TIME_PERIOD_COLUMN)
         provenance_at = position.get(_PROVENANCE_COLUMN)
 
         def kind(row: Row, reads: NodeReads) -> str | None:
-            return row_party_kind_cell(
+            return long_kind_cell(
                 row[at],
+                role=entity,
                 parties=reads.parties,
                 period=None if period_at is None else row[period_at],
                 provenance=None if provenance_at is None else row[provenance_at],
             )
 
         add(
-            f"{entity}_{PARTY_KIND_FIELD}",
+            f"{entity}{KIND_SUFFIX}",
             kind,
             lambda row, reads: _name_missing(row[at], reads.parties),
         )
@@ -418,11 +461,8 @@ def plan_long_projection(
     for entity in entity_columns:
         if entity in position:
             take_named(entity)
-        party_kind_column = f"{entity}_{PARTY_KIND_FIELD}"
-        if party_kind_column in position:
-            take(party_kind_column)
-        elif entity in position and is_party_role(entity):
-            add_party_kind(entity)
+        if entity in position and is_party_role(entity):
+            add_kind(entity)
         for field in _ENRICHMENT_FIELD_ORDER:
             if f"{entity}_{field}" in position:
                 take(f"{entity}_{field}")
