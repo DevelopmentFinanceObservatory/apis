@@ -6,6 +6,8 @@ only the refcount. Task cancellation and its await happen outside that lock.
 With `GRAPH_RELEASE_ORIGIN` on (`graph_release.context.origin_release_enabled`, read once
 when the first acquirer builds the holder) the index rebuilds when the release service swaps releases, in place of
 the `refresh_seconds` timer, and after a build with a failed graph read until one has none.
+Its first acquirer then waits for the first build attempt, bounded by
+`SKILLS_INDEX_FIRST_BUILD_WAIT_SECONDS`, so startup completes with full CPU behind the build.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ from skills_index.build import build_index
 from skills_index.config import (
     SKILLS_INDEX_FIRST_BUILD_RETRY_CEILING_SECONDS,
     SKILLS_INDEX_FIRST_BUILD_RETRY_INITIAL_SECONDS,
+    SKILLS_INDEX_FIRST_BUILD_WAIT_SECONDS,
     SKILLS_INDEX_REFRESH_SECONDS,
 )
 from skills_index.graph import SkillsGraph
@@ -86,6 +89,7 @@ class SharedSkillsIndex:
         self._bound_at: float | None = None
         # The event belongs to the running loop that constructs this instance.
         self._build_attempted = asyncio.Event()
+        self._first_build_attempted = asyncio.Event()
         self._swapped = asyncio.Event()
         self._unregister_swap: Callable[[], None] | None = None
         if self.rebuilds_on_swap and release is not None:
@@ -104,6 +108,10 @@ class SharedSkillsIndex:
         while self.build_attempts < target:
             await self._build_attempted.wait()
             self._build_attempted.clear()
+
+    async def wait_for_first_build_attempt(self) -> None:
+        """Await the first build attempt, successful or not. Later calls return at once."""
+        await self._first_build_attempted.wait()
 
     def seconds_until_next_rebuild(self) -> float:
         """Return seconds until the current generation's next scheduled build, floored
@@ -132,6 +140,7 @@ class SharedSkillsIndex:
             clean = await self._build_once()
             self.build_attempts += 1
             self._build_attempted.set()
+            self._first_build_attempted.set()
             if self.rebuilds_on_swap and clean:
                 retry_seconds = SKILLS_INDEX_FIRST_BUILD_RETRY_INITIAL_SECONDS
                 await self._swapped.wait()
@@ -146,6 +155,7 @@ class SharedSkillsIndex:
     async def _build_once(self) -> bool:
         """Builds and publishes one generation. Returns whether it completed with no
         failed graph read."""
+        started = time.monotonic()
         try:
             with (
                 bound_catalogue(self._catalogue())
@@ -163,6 +173,12 @@ class SharedSkillsIndex:
         # Tie the deadline to the generation published in `index`.
         # Failures leave it unchanged.
         self._bound_at = time.monotonic()
+        logger.info(
+            "skills index built: %d skills in %.1f s, %d failed graph reads",
+            len(index.skills),
+            self._bound_at - started,
+            index.failed_reads,
+        )
         if index.failed_reads:
             logger.warning(
                 "skills index build had %d failed graph reads; it serves and is rebuilt",
@@ -210,14 +226,38 @@ async def acquire_shared_index(
     after the last caller. Only the first acquirer supplies `graph`, `catalogue` and
     `release`.
     Later arguments are ignored. `graph=None` on the first call raises `RuntimeError`.
-    Call from a running event loop, which owns the refresh task."""
+    Call from a running event loop, which owns the refresh task.
+
+    With `rebuilds_on_swap`, returns only after the first build attempt has finished or
+    `SKILLS_INDEX_FIRST_BUILD_WAIT_SECONDS` has passed. Either shortfall logs a warning,
+    and the refresh task keeps retrying. With it off, returns before the first build."""
     shared = _singleton.acquire(graph, refresh_seconds, catalogue, release)
     if graph is not None and graph is not shared._graph:
         logger.info(
             "skills index already built; the existing index's graph is in use, this "
             "acquirer's graph is discarded"
         )
+    if shared.rebuilds_on_swap:
+        await _wait_for_first_build(shared)
     return shared
+
+
+async def _wait_for_first_build(shared: SharedSkillsIndex) -> None:
+    try:
+        async with asyncio.timeout(SKILLS_INDEX_FIRST_BUILD_WAIT_SECONDS):
+            await shared.wait_for_first_build_attempt()
+    except TimeoutError:
+        logger.warning(
+            "skills index first build did not finish within %.0f s; serving starts and the "
+            "doors answer 503 until it does",
+            SKILLS_INDEX_FIRST_BUILD_WAIT_SECONDS,
+        )
+        return
+    if shared.index is None:
+        logger.warning(
+            "skills index first build failed; serving starts and the doors answer 503 "
+            "until a retry succeeds"
+        )
 
 
 async def release_shared_index(shared: SharedSkillsIndex) -> None:

@@ -110,6 +110,13 @@ SKILLS_INDEX_FIRST_BUILD_RETRY_INITIAL_SECONDS = 2.0
 # 15-minute refresh interval.
 SKILLS_INDEX_FIRST_BUILD_RETRY_CEILING_SECONDS = 60.0
 
+# With `GRAPH_RELEASE_ORIGIN` on, `acquire_shared_index` holds application startup for
+# up to 120 seconds while the first build runs. Cloud Run throttles CPU outside requests
+# once an instance is ready, and the build reads the in-memory release, so a build left to
+# the background stalls until traffic arrives while the doors answer 503. Past the bound,
+# or after a failed first build, startup completes and the retry backoff continues.
+SKILLS_INDEX_FIRST_BUILD_WAIT_SECONDS = 120.0
+
 
 def classify_attachment(properties: frozenset[str]) -> AttachmentKind:
     """Classify observed incoming arcs, excluding schema arcs and the skill

@@ -576,6 +576,81 @@ async def _yield_to_the_loop() -> None:
         await _real_sleep(0)
 
 
+@pytest.mark.parametrize("origin", [False, True], ids=["flag-off", "flag-on"])
+def test_acquire_waits_for_the_first_build_attempt_only_with_the_origin_flag(monkeypatch, origin):
+    if origin:
+        monkeypatch.setenv("GRAPH_RELEASE_ORIGIN", "true")
+        monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1")
+    graph = _BlockingRosterGraph()
+
+    async def scenario() -> None:
+        acquiring = asyncio.create_task(acquire_shared_index(graph=graph, refresh_seconds=1000.0))
+        try:
+            await asyncio.to_thread(graph.entered.wait)
+            await _yield_to_the_loop()
+            returned_before_the_build = acquiring.done()
+        finally:
+            # A worker left blocked would hang `asyncio.run`'s executor shutdown.
+            graph.release_build.set()
+        shared = await acquiring
+        assert returned_before_the_build is not origin
+        try:
+            if origin:
+                assert shared.build_attempts == 1
+                assert shared.index is not None
+                # A later acquirer returns at once. Waiting on one more attempt would
+                # wait for a swap that never comes.
+                second = await asyncio.wait_for(acquire_shared_index(), timeout=5)
+                assert second is shared
+                await release_shared_index(second)
+        finally:
+            await release_shared_index(shared)
+
+    asyncio.run(scenario())
+
+
+def _slow_first_build() -> tuple[_BlockingRosterGraph, Callable[[], None]]:
+    graph = _BlockingRosterGraph()
+    return graph, graph.release_build.set
+
+
+def _failed_first_build() -> tuple[_CountingRosterGraph, Callable[[], None]]:
+    return _CountingRosterGraph(fail_on_attempts=frozenset({1})), lambda: None
+
+
+@pytest.mark.parametrize(
+    ("first_build", "attempts_at_return", "returns_at_the_bound"),
+    [(_slow_first_build, 0, True), (_failed_first_build, 1, False)],
+    ids=["slower-than-the-bound", "failed"],
+)
+def test_with_the_origin_flag_startup_proceeds_past_a_first_build_shortfall_and_retries(
+    monkeypatch, first_build, attempts_at_return, returns_at_the_bound
+):
+    monkeypatch.setenv("GRAPH_RELEASE_ORIGIN", "true")
+    monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1")
+    bound = 0.05
+    monkeypatch.setattr(shared_module, "SKILLS_INDEX_FIRST_BUILD_WAIT_SECONDS", bound)
+    graph, unblock = first_build()
+
+    async def scenario() -> None:
+        loop = asyncio.get_running_loop()
+        with mock.patch.object(shared_module.asyncio, "sleep", _instant_sleep):
+            started = loop.time()
+            shared = await acquire_shared_index(graph=graph, refresh_seconds=900.0)
+            try:
+                assert (loop.time() - started >= bound) is returns_at_the_bound
+                assert shared.build_attempts == attempts_at_return
+                assert shared.index is None
+
+                unblock()
+                while shared.index is None:
+                    await shared.wait_for_build_attempt()
+            finally:
+                await release_shared_index(shared)
+
+    asyncio.run(scenario())
+
+
 def test_with_the_origin_flag_a_swap_rebuilds_once_under_the_new_release(monkeypatch):
     monkeypatch.setenv("GRAPH_RELEASE_ORIGIN", "true")
     monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1")
@@ -592,7 +667,6 @@ def test_with_the_origin_flag_a_swap_rebuilds_once_under_the_new_release(monkeyp
                 release=service,  # ty: ignore[invalid-argument-type]
             )
             try:
-                await shared.wait_for_build_attempt()
                 first_index = shared.index
                 assert first_index is not None
                 await _yield_to_the_loop()
@@ -632,8 +706,7 @@ def test_with_the_origin_flag_a_failed_build_keeps_the_index_and_retries_with_ba
                 release=service,  # ty: ignore[invalid-argument-type]
             )
             try:
-                await shared.wait_for_build_attempt()  # Attempt 1 succeeds.
-                first_index = shared.index
+                first_index = shared.index  # Attempt 1 succeeds before acquire returns.
                 assert first_index is not None
 
                 service.swap(second)
@@ -721,7 +794,6 @@ def test_with_the_origin_flag_a_build_with_failed_reads_retries_until_a_clean_bu
                 release=service,  # ty: ignore[invalid-argument-type]
             )
             try:
-                await shared.wait_for_build_attempt()
                 partial = shared.index
                 assert partial is not None
                 assert list(partial.skills) == ["a"]
