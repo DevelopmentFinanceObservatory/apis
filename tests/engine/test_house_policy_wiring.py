@@ -195,7 +195,7 @@ def test_education_aid_to_uganda_elects_the_crs_shape():
 
     result = _bind(shapes, reply, frame=_TO_UGANDA, admitted_qualifiers=[(), (_EDUCATION,), ()])
 
-    assert result.policy_pool == PolicyPool(measuring=(0, 1, 2), rated=True)
+    assert result.policy_pool == PolicyPool(measuring=(0, 1, 2))
     assert result.policy_choice is not None
     assert (result.policy_choice.survivor, result.policy_choice.fired) == (1, ("default_dataset",))
     assert result.output.chosen_shape_index == 1
@@ -219,7 +219,7 @@ def test_where_no_policy_fires_the_reply_is_gemini_s():
 
     result = _bind(shapes, reply, frame=_NO_PLACE)
 
-    assert result.policy_pool == PolicyPool(measuring=(2, 0, 1), rated=True)
+    assert result.policy_pool == PolicyPool(measuring=(2, 0, 1))
     assert result.policy_choice is not None and result.policy_choice.fired == ()
     direct, _usage = asyncio.run(
         bind_universal("aid", shapes, frame=_NO_PLACE, llm=_StubLLM(reply))
@@ -232,7 +232,8 @@ _FLOW = SlotKeyDraft(axis="how", property_dcid="flowKind", label="flow kind")
 
 def _rated_alike(shapes: Sequence[ShapeDraft], reply: _UniversalBindOutput) -> PolicyPool:
     """The rated pool of `reply` with every menu shape rated at the best."""
-    return rated_pool(shapes, reply, dict.fromkeys(range(len(shapes)), 1.0))
+    pool, _holds = rated_pool(shapes, reply, dict.fromkeys(range(len(shapes)), 1.0))
+    return pool
 
 
 def test_the_pool_admits_a_shape_only_with_a_slot_for_each_mentioned_value():
@@ -249,7 +250,7 @@ def test_the_pool_admits_a_shape_only_with_a_slot_for_each_mentioned_value():
 
     assert _rated_alike(shapes, _reply(0, channel)).measuring == (0,)
     assert _rated_alike([grants, loans, both], _reply(0, _value("flowKind", "Grant"))) == (
-        PolicyPool(measuring=(0, 2), rated=True)
+        PolicyPool(measuring=(0, 2))
     )
     assert _rated_alike(shapes, _reply(1, _SOLE_AID_TYPE)).measuring == (1, 0, 2)
     assert _rated_alike(shapes, _reply(0, open_channel)).measuring == (0, 1, 2)
@@ -258,7 +259,7 @@ def test_the_pool_admits_a_shape_only_with_a_slot_for_each_mentioned_value():
     )
     assert _rated_alike([grants, loans, both], _reply(0, every_flow)).measuring == (0, 2)
     assert _rated_alike(shapes, _reply(0, _value("crsChannel", "ChannelA", "sole_option"))) == (
-        PolicyPool(measuring=(0, 1, 2), rated=True)
+        PolicyPool(measuring=(0, 1, 2))
     )
 
 
@@ -309,7 +310,7 @@ def test_grant_aid_to_uganda_keeps_the_crs_shape_whose_slot_holds_the_grant():
 
     result = _bind([crs, dac2a], reply, frame=_TO_UGANDA)
 
-    assert result.policy_pool == PolicyPool(measuring=(0,), rated=True)
+    assert result.policy_pool == PolicyPool(measuring=(0,))
     assert result.output.chosen_shape_index == 0
     assert [(b.property_dcid, b.value_dcids) for b in result.output.bindings] == [
         ("flowKind", ["Grant"])
@@ -613,7 +614,6 @@ def test_each_bind_call_logs_one_bind_decision_line(caplog: pytest.LogCaptureFix
             "elected": 1,
             "answered": 1,
             "pool": [0, 1],
-            "rated": True,
             "fired": ["default_dataset"],
             "ratings": [{"index": 0, "rating": 1.0}, {"index": 1, "rating": 1.0}],
             "refused": False,
@@ -641,7 +641,6 @@ def test_a_schema_refusal_logs_a_refused_bind_decision(caplog: pytest.LogCapture
         "elected": None,
         "answered": None,
         "pool": [],
-        "rated": False,
         "fired": [],
         "ratings": None,
         "facts": [],
@@ -724,7 +723,7 @@ def test_only_shapes_rated_near_the_best_reach_the_policies(
 ):
     result = _rated_bind(shapes, _rated(0, ratings))
 
-    assert result.policy_pool == PolicyPool(measuring=pool, rated=True)
+    assert result.policy_pool == PolicyPool(measuring=pool)
     assert result.output.chosen_shape_index == elected
 
 
@@ -750,9 +749,8 @@ def test_the_rated_pool_reads_each_rating_against_the_bound(
     shapes = [_OUTPUT, replace(_OUTPUT, shape_id="output_other", label="other output")]
     reply = _rated(0, ratings)
 
-    assert rated_pool(shapes, reply, shape_ratings(reply, len(shapes))) == PolicyPool(
-        measuring=pool, rated=True
-    )
+    pooled, _holds = rated_pool(shapes, reply, shape_ratings(reply, len(shapes)))
+    assert pooled == PolicyPool(measuring=pool)
 
 
 @pytest.mark.parametrize(
@@ -771,9 +769,20 @@ def test_a_twin_of_the_pick_joins_the_pool_whatever_its_rating(ratings: Mapping[
 
     result = _rated_bind(shapes, reply)
 
-    assert result.policy_pool == PolicyPool(measuring=(1, 0), rated=True)
+    assert result.policy_pool == PolicyPool(measuring=(1, 0))
     among = frozenset(result.policy_pool.measuring)
     assert rank_elected(shapes, result.output, among=among) == 0
+
+
+def test_a_pick_the_reply_leaves_unrated_takes_its_twins_rating():
+    """The menu prints the pick and its twin alike, so the reply's rating of the twin rates
+    the pick, and the pick the reply leaves unrated stands on it."""
+    shapes = [replace(_OUTPUT, shape_id="output_first"), _OUTPUT]
+
+    result = _rated_bind(shapes, _rated(1, {0: 1.0}))
+
+    assert result.output.ask is None
+    assert result.policy_pool == PolicyPool(measuring=(1, 0))
 
 
 def test_the_rated_pool_keeps_the_chosen_denominator_and_the_named_values():
@@ -783,9 +792,9 @@ def test_the_rated_pool_keeps_the_chosen_denominator_and_the_named_values():
     shapes = [_OUTPUT, _PER_CAPITA_OUTPUT, _CRS, replace(_CRS, shape_id="crs_twin")]
     reply = _rated(2, {0: 1.0, 1: 1.0, 2: 1.0, 3: 1.0}, channel)
 
-    assert rated_pool(shapes, reply, shape_ratings(reply, 4)).measuring == (2, 3)
+    assert rated_pool(shapes, reply, shape_ratings(reply, 4))[0].measuring == (2, 3)
     plain = _rated(0, {0: 1.0, 1: 1.0, 2: 1.0})
-    assert rated_pool(shapes, plain, shape_ratings(plain, 4)).measuring == (0, 2)
+    assert rated_pool(shapes, plain, shape_ratings(plain, 4))[0].measuring == (0, 2)
 
 
 def test_a_chosen_shape_below_the_bound_survives_as_the_pick():
@@ -795,7 +804,7 @@ def test_a_chosen_shape_below_the_bound_survives_as_the_pick():
 
     result = _rated_bind(shapes, _rated(0, {0: 0.6, 1: 1.0}))
 
-    assert result.policy_pool == PolicyPool(measuring=(0, 1), rated=True)
+    assert result.policy_pool == PolicyPool(measuring=(0, 1))
     assert result.output.chosen_shape_index == 0
 
 
@@ -811,9 +820,8 @@ def test_the_bind_decision_line_records_the_ratings_as_the_reply_wrote_them(
     asyncio.run(_phase_bind(state))
 
     [line] = _decisions(caplog)
-    assert (line["pool"], line["rated"], line["fired"], line["elected"]) == (
+    assert (line["pool"], line["fired"], line["elected"]) == (
         [1, 0],
-        True,
         ["nominal_vs_va"],
         1,
     )

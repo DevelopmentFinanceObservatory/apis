@@ -3594,7 +3594,7 @@ class _HousePolicyStep:
     binder's pool (`house_policy.apply_house_policies`), the pool's first index the binder's
     pick, read against the part's menu, frame, each shape's admitted qualifiers and
     availability, and the code index's house default datasets, with the binder's ratings of
-    a rated pool and its report of the pool shapes that hold what it recognised on its
+    the pool shapes and its report of the pool shapes that hold what it recognised on its
     pick. `calls` counts the binder's calls."""
 
     shapes: Sequence[ShapeDraft]
@@ -3658,7 +3658,7 @@ def _log_bind_decision(state: ResolveState, decision: BindResult | None) -> None
     binder, the menu's shape ids, the shape the binder chose (``chosen``), the one the house
     policies elect (``elected``) and the one the part answers with after the menu-rank
     tie-break (``answered``, `_elected_index`), each None when the reply elects none, the
-    policy pool and whether a rating bounds it, the policies that narrowed, the reply's
+    policy pool, the policies that narrowed, the reply's
     ratings as it wrote them (None on a refusal), the facts the policies read
     of each pool shape, and whether the schema refused the reply (`decision` None)."""
     pool = decision.policy_pool if decision is not None else None
@@ -3673,7 +3673,6 @@ def _log_bind_decision(state: ResolveState, decision: BindResult | None) -> None
         "elected": choice.survivor if choice is not None else None,
         "answered": _elected_index(state) if choice is not None else None,
         "pool": list(pool.measuring) if pool is not None else [],
-        "rated": pool.rated if pool is not None else False,
         "fired": list(choice.fired) if choice is not None else [],
         "ratings": [r.model_dump() for r in output.measuring] if output is not None else None,
         "facts": [asdict(f) for f in choice.facts] if choice is not None else [],

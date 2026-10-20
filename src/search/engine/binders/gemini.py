@@ -34,8 +34,8 @@ if TYPE_CHECKING:
 RATED_POOL_FLOOR = 0.1
 RATED_POOL_FRACTION = 0.1
 
-# A reply that rates its own pick below `DECLINE_FLOOR` declines (`declined`). The part
-# asks, as a reply that asked does, and no policy runs.
+# A reply that rates its own pick below `DECLINE_FLOOR` (`pick_rating`) declines
+# (`declined`). The part asks, as a reply that asked does, and no policy runs.
 DECLINE_FLOOR = 0.6
 
 # The slack `near_best` gives the bound, wider than a float product's rounding and far
@@ -53,12 +53,12 @@ class GeminiBinder:
     near the best and the pick's twins (`rated_pool`), over which all six policies run with
     the ratings. Each pool shape holds the pick's constraints when it holds each value the
     reply drafted as named and every value of each slot the reply asks for in full
-    (`holds_mentioned_values`). A nomination in `also_plausible` stands only when the reply
+    (`holds_mentioned_values`), which the pool reads as it admits each shape. A nomination in `also_plausible` stands only when the reply
     rates it near its best rating, whatever its denominator (`nominated_near_best`).
 
-    A reply that leaves its pick out of `measuring`, an empty one included, or rates it
-    below `DECLINE_FLOOR`, says the pick measures something else, so it declines
-    (`declined`) and no policy runs."""
+    A reply that rates neither its pick nor a twin of it in `measuring`, an empty one
+    included, or rates it below `DECLINE_FLOOR` (`pick_rating`), says the pick measures
+    something else, so it declines (`declined`) and no policy runs."""
 
     @property
     def name(self) -> str:
@@ -93,11 +93,9 @@ class GeminiBinder:
             return BindResult(output=output, binder=self.name), usage
         shapes = request.shapes
         ratings = shape_ratings(output, len(shapes))
-        if ratings.get(output.chosen_shape_index, 0.0) < DECLINE_FLOOR:
+        if pick_rating(shapes, output, ratings) < DECLINE_FLOOR:
             return BindResult(output=declined(output), binder=self.name), usage
-        pool = rated_pool(shapes, output, ratings)
-        chosen = shapes[output.chosen_shape_index]
-        holds = {i: holds_mentioned_values(chosen, shapes[i], output) for i in pool.measuring}
+        pool, holds = rated_pool(shapes, output, ratings)
         choice = request.apply_policies(pool, ratings=ratings, holds=holds)
         result = BindResult(
             output=nominated_near_best(
@@ -142,38 +140,60 @@ def shape_ratings(output: _UniversalBindOutput, size: int) -> dict[int, float]:
     }
 
 
+def pick_rating(
+    shapes: Sequence[ShapeDraft], output: _UniversalBindOutput, ratings: Mapping[int, float]
+) -> float:
+    """The reply's rating of the shape `output` elects. A pick the reply leaves unrated takes
+    the best rating of a shape the menu states as its reading (`bind._states_same_reading`),
+    since the menu prints the two alike. A pick with neither reads 0."""
+    chosen = output.chosen_shape_index
+    if chosen in ratings:
+        return ratings[chosen]
+    return max(
+        (
+            rating
+            for index, rating in ratings.items()
+            if index != chosen
+            and _states_same_reading(shapes[chosen], shapes[index], output.bindings)
+        ),
+        default=0.0,
+    )
+
+
 def rated_pool(
     shapes: Sequence[ShapeDraft], output: _UniversalBindOutput, ratings: Mapping[int, float]
-) -> PolicyPool:
-    """The rated pool of the shape `output` elects: that shape first, then in menu order
-    every menu shape rated above `RATED_POOL_FLOOR` and near the best rating of the menu
-    (`near_best` with `RATED_POOL_FRACTION`), that states the chosen shape's denominator
-    (`bind.stated_reading`). The chosen shape stays whatever its rating, and so does each
+) -> tuple[PolicyPool, dict[int, bool]]:
+    """The rated pool of the shape `output` elects, and whether each pool shape holds the
+    chosen shape's constraints (`holds_mentioned_values`). The pool is that shape first,
+    then in menu order every menu shape rated above `RATED_POOL_FLOOR` and near the best
+    rating of the menu (`near_best` with `RATED_POOL_FRACTION`), that states the chosen
+    shape's denominator (`bind.stated_reading`). The chosen shape stays whatever its rating, and so does each
     shape the menu states as its reading (`bind._states_same_reading`), so the menu-rank
     tie-break (`bind.rank_elected`) can choose between the two.
 
     A rated shape joins only when it holds every value the phrase names as the chosen shape
-    does (`holds_mentioned_values`), so the phrase's own words stand before any policy runs.
-    A twin holds them by being one reading."""
+    does, so the phrase's own words stand before any policy runs, and so holds them. A twin
+    joins whether or not it holds them, and the house policies read which."""
     chosen = output.chosen_shape_index
-    denominator = stated_reading(shapes[chosen]).denominator
+    pick = shapes[chosen]
+    denominator = stated_reading(pick).denominator
     best = max(ratings.values(), default=0.0)
-
-    def joins(index: int, shape: ShapeDraft) -> bool:
-        if _states_same_reading(shapes[chosen], shape, output.bindings):
-            return True
+    holds = {chosen: True}
+    for index, shape in enumerate(shapes):
+        if index == chosen:
+            continue
+        if _states_same_reading(pick, shape, output.bindings):
+            holds[index] = holds_mentioned_values(pick, shape, output)
+            continue
         rating = ratings.get(index, 0.0)
-        return (
+        if (
             rating > RATED_POOL_FLOOR
             and near_best(rating, best, RATED_POOL_FRACTION)
             and stated_reading(shape).denominator == denominator
-            and holds_mentioned_values(shapes[chosen], shape, output)
-        )
-
-    others = (
-        index for index, shape in enumerate(shapes) if index != chosen and joins(index, shape)
-    )
-    return PolicyPool(measuring=(chosen, *others), rated=True)
+            and holds_mentioned_values(pick, shape, output)
+        ):
+            holds[index] = True
+    return PolicyPool(measuring=tuple(holds)), holds
 
 
 def nominated_near_best(

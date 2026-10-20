@@ -142,7 +142,7 @@ def test_a_binder_answering_as_gemini_leaves_the_part_in_the_same_state():
         "female population",
     )
     assert [s.bind_decision.policy_pool for s in (gemini, fixed) if s.bind_decision] == [
-        PolicyPool(measuring=(1,), rated=True),
+        PolicyPool(measuring=(1,)),
         PolicyPool(measuring=(1,)),
     ]
     assert [s.bind_decision.binder for s in (gemini, fixed) if s.bind_decision] == [

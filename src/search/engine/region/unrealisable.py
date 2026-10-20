@@ -6,7 +6,7 @@ elected shape's door then unbinds a set chosen by `BoundValuesUnrealisable.relax
 resolves again. A declared default or the elected measure partition gives way first, then
 every value bound as its slot's sole option that some member conflicts on, then a minimal
 set of the values the request named. A single-member slot the unbinding opens takes the
-value its population forces, unless that is the value it released
+value its population forces, unless it released that value
 (`_with_forced_values`). The engine-chosen and sole-option values go
 silently, with what the engine derived from them (`ResolveState.forget_bound`), and each
 request-named one is recorded as a code requirement (`region.state.Requirement`) on a property the shape holds, so the answer
@@ -138,14 +138,14 @@ def _with_forced_values(
     its population forces (`phase_election._settle_sole_options`), so the answer states
     what the elected shape forces whatever path opened the slot. "Female unemployment rate"
     over a shape whose one member is male reads `gender=Male`, as it does when the bind
-    reply leaves gender unbound. A slot keeps open when the forced value is the one the
-    unbinding released from it, since that value is what no member holds beside the rest,
-    and each unbinding then releases a value it does not bind again."""
+    reply leaves gender unbound. A slot keeps open when the forced value is one the
+    unbinding released from it, alone or in a set, since no member holds it beside the
+    rest, and each unbinding then releases a value it does not bind again."""
     forced = _settle_sole_options(bindings, shape)
     return [
         claim
         if claim.kind == "value"
-        and claim.value_dcids != list(released.get(claim.property_dcid, ()))
+        and not set(claim.value_dcids) <= set(released.get(claim.property_dcid, ()))
         else draft
         for draft, claim in zip(bindings, forced, strict=True)
     ]

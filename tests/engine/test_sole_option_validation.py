@@ -23,6 +23,7 @@ from search.engine.region.phase_election import (
     _unbind_implied_values,
     _validate_sole_option_bindings,
 )
+from search.engine.region.unrealisable import _with_forced_values
 from search.engine.retrieval.derive import derive_shapes
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from tests.fixtures import FakeGraph
@@ -682,6 +683,7 @@ _INFANT_MEMBERS = {
         "UnindexedMortalityEvent", "count", ageGroupClassification="Newborn"
     ),
 }
+_MALE_MEMBERS = {"Count_Person_Male": _member_arcs("UnindexedPerson", "count", gender="Male")}
 _POPULATION_MEMBERS = {
     "Count_Person": _member_arcs("UnindexedPerson", "count"),
     "Count_Person_Female": _member_arcs("UnindexedPerson", "count", gender="Female"),
@@ -727,3 +729,25 @@ def test_a_single_member_slot_the_reply_leaves_unbound_binds_where_the_populatio
     assert [b for b in settled if b.kind != "value"] == [
         b for b in drafted if b.property_dcid not in bound
     ]
+
+
+@pytest.mark.parametrize(
+    ("released", "bound"),
+    [
+        pytest.param(("Male",), [], id="released-value"),
+        pytest.param(("Male", "Female"), [], id="released-in-a-set"),
+        pytest.param(("Female",), ["Male"], id="another-value-released"),
+    ],
+)
+def test_an_unbinding_binds_no_value_it_released_again(released, bound):
+    """A single-member slot the unbinding opens takes the value its population forces,
+    unless the unbinding released that value from it, alone or in a set: no member holds
+    it beside the rest of the bindings."""
+    shape = replace(
+        _measure_shape("UnindexedPerson", "count", _MALE_MEMBERS),
+        slot_taxonomy={"how:gender": ["Male"]},
+    )
+
+    (settled,) = _with_forced_values([_unbound("gender")], shape, {"gender": released})
+
+    assert settled.value_dcids == bound

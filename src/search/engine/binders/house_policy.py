@@ -11,8 +11,8 @@ The six policies run in order, each over the survivors of the one before:
 1. `nominal_vs_va`: nominal output (EconomicActivity `amount`, Nominal where only some
    output shapes are) over value added, when a value-added shape is among the candidates.
 2. `amount_vs_ge`: on FinancialFlow shapes, grant equivalent, or `amount` when the window
-   starts before grant-equivalent reporting does (`GE_STARTS`) or names no years, so the
-   years before it stay in the answer.
+   starts before grant-equivalent reporting does (`GE_STARTS`) or names no start year, so
+   the years before it stay in the answer.
 3. `net_vs_gross`: a shape whose `nettingBasis` slot offers Gross.
 4. `default_dataset`: a shape whose family the part's house default dataset
    (`Context.wanted_dataset`) publishes. An opt-in table is its own dataset, so the
@@ -26,15 +26,12 @@ recognised on its pick (`apply_house_policies`'s `holds`), so a policy never tra
 the phrase names for a convention. The pick holds its own.
 
 A policy narrows only when some, not all, candidates fit it, and does nothing with one
-candidate left. A rated pool (bounded by a near-best rating) runs all six. An unrated pool
-runs policies 4 to 6, since a policy that trades the measure itself needs the rating to keep
-rejected shapes out of the pool.
+candidate left.
 
 Several shapes may survive. The tie-break picks one:
 
 - with election probabilities (`PolicyPool.election`), the most probable survivor;
-- else with ratings, the binder's pick if it survives, else the highest-rated survivor;
-- else the binder's pick if it survives, else the first survivor in the binder's order.
+- else the binder's pick if it survives, else the highest-rated survivor.
 
 Equal probabilities or ratings go to the lower menu index, and a survivor the binder gives no
 probability or rating reads as 0.
@@ -71,7 +68,6 @@ POLICY_ORDER: tuple[PolicyName, ...] = (
     "commit_vs_disb",
     "data_at_places",
 )
-UNRATED_POLICIES: tuple[PolicyName, ...] = POLICY_ORDER[3:]
 
 # The first year donors report official development assistance as grant equivalent.
 GE_STARTS = 2018
@@ -104,9 +100,10 @@ class ShapeFacts:
 class Context:
     """What the part asks, as the policies read it.
 
-    `pre_ge` says the window starts before `GE_STARTS`, or, open at its start, ends before
-    it. A part that names no years asks for every year the data holds, those before
-    `GE_STARTS` included, so it is pre-GE. A part that asks for the latest year is not.
+    `pre_ge` says the window starts before `GE_STARTS` or names no start year. A window
+    open at its start, and a part that names no years, ask for every year the data holds
+    up to their end, those before `GE_STARTS` included, so both are pre-GE. A part that
+    asks for the latest year is not.
     `dataset_case` is the kind of question the part is for the default-dataset policy, and
     `wanted_dataset` that kind's declared house default. Both are `None` when the part names
     no place and admits no code that declares a kind.
@@ -122,13 +119,11 @@ class PolicyPool:
     """The shapes a binder declares as measuring the phrase.
 
     `measuring` holds their menu indices in the binder's order, its pick included.
-    `election` is a per-index probability when the binder computes one. `rated` is true when
-    the pool is bounded by a near-best rating, and selects all six policies.
+    `election` is a per-index probability when the binder computes one.
     """
 
     measuring: tuple[int, ...]
     election: Mapping[int, float] | None = None
-    rated: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,9 +200,7 @@ def context_of(
     elif window == "latest":
         pre_ge = False
     else:
-        # A window open at its start states its end year alone.
-        first_year = window.start_year if window.start_year is not None else window.end_year
-        pre_ge = first_year is not None and first_year < GE_STARTS
+        pre_ge = window.start_year is None or window.start_year < GE_STARTS
     directions = [place.direction for place in frame.places]
     admitted = {
         case_systems[match.code_system]
@@ -309,7 +302,7 @@ def apply_house_policies(
     """The pool shape the house policies and the tie-break elect.
 
     `facts` covers every pool shape (`shape_facts`), `chosen` is the binder's pick, and
-    `ratings` the binder's per-index rating of a rated pool when it gives no election
+    `ratings` the binder's per-index rating of the pool when it gives no election
     probability. `holds` says, per pool shape, whether it holds every constraint the binder
     recognised on `chosen`. The policies run over `chosen` and the shapes that hold, and
     set the rest aside. A pool shape `holds` leaves out does not hold, and None holds them
@@ -327,7 +320,7 @@ def apply_house_policies(
         f for f in pooled if holds is None or f.index == chosen or holds.get(f.index, False)
     ]
     fired: list[PolicyName] = []
-    for policy in POLICY_ORDER if pool.rated else UNRATED_POLICIES:
+    for policy in POLICY_ORDER:
         kept = apply_policy(policy, candidates, context)
         if len(kept) < len(candidates):
             fired.append(policy)
@@ -353,6 +346,5 @@ def _tie_break(
         return min(survivors, key=lambda i: (-election.get(i, 0.0), i))
     if chosen in survivors:
         return chosen
-    if ratings is not None:
-        return min(survivors, key=lambda i: (-ratings.get(i, 0.0), i))
-    return survivors[0]
+    rating = ratings or {}
+    return min(survivors, key=lambda i: (-rating.get(i, 0.0), i))

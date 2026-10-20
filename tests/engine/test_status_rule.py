@@ -358,18 +358,11 @@ _NODES: dict = {
 
 class _FixedBindLLM:
     """Elects the shape at `chosen`, the first by default, with a caller-supplied
-    `also_plausible`, rating its pick and each shape in `rated` at 1."""
+    `also_plausible`, rating its pick at 1."""
 
-    def __init__(
-        self,
-        also_plausible: list[int] | None = None,
-        *,
-        chosen: int = 0,
-        rated: tuple[int, ...] = (),
-    ) -> None:
+    def __init__(self, also_plausible: list[int] | None = None, *, chosen: int = 0) -> None:
         self._also_plausible = also_plausible
         self._chosen = chosen
-        self._rated = rated
 
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
@@ -380,11 +373,8 @@ class _FixedBindLLM:
             also_plausible=self._also_plausible,
             ask=None,
             measuring=[
-                *(
-                    ShapeRating(index=i, rating=1.0)
-                    for i in dict.fromkeys([self._chosen, *self._rated])
-                ),
-                *nominee_ratings(self._also_plausible, rated=(self._chosen, *self._rated)),
+                ShapeRating(index=self._chosen, rating=1.0),
+                *nominee_ratings(self._also_plausible, rated=(self._chosen,)),
             ],
         ), None
 
@@ -646,11 +636,10 @@ def _per_person_sv(label: str, pop_type: str, denominator: str) -> dict:
 def test_the_rank_elects_between_two_shapes_the_menu_states_alike(variable, also_plausible):
     """ "GDP per capita" in Brazil holds one label twice: a series dividing by the
     ProvisionalNode `PerCapita`, ranked first, and one dividing by `Count_Person`. The menu
-    prints both as per person, and the model elects the second and rates both alike. The
-    first is elected in its place, whether or not the model also nominated it, and the
-    second is no rival. It is the same reading, on a denominator "GDP per capita" closes
-    and "living standard", which names no form, leaves open. The nominated income series is
-    offered beside it."""
+    prints both as per person, and the model elects the second. The first is elected in
+    its place, whether or not the model also nominated it, and the second is no rival. It
+    is the same reading, on a denominator "GDP per capita" closes and "living standard",
+    which names no form, leaves open. The nominated income series is offered beside it."""
     svs = [_GDP_PER_CAPITA_SV, _GDP_PER_HEAD_SV, _INCOME_PER_CAPITA_SV]
     graph = FakeGraph(
         nodes={
@@ -676,7 +665,7 @@ def test_the_rank_elects_between_two_shapes_the_menu_states_alike(variable, also
             pac=True,
             graph=graph,
             resolver=make_resolver(graph),
-            llm=_FixedBindLLM(also_plausible, chosen=1, rated=(0, 1)),
+            llm=_FixedBindLLM(also_plausible, chosen=1),
             base_timing={},
             sdmx=FakeSdmxClient(
                 observations={}, availability={}, scope_availability=graph.scope_availability

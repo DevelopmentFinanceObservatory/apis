@@ -139,7 +139,7 @@ _BY_DATASET = (
 def test_a_rated_pool_elects_the_shape_the_house_policies_prefer(
     facts: tuple[ShapeFacts, ...], context: Context, chosen: int, expected: int
 ):
-    pool = PolicyPool(measuring=tuple(f.index for f in facts), rated=True)
+    pool = PolicyPool(measuring=tuple(f.index for f in facts))
 
     assert apply_house_policies(facts, pool, context, chosen=chosen).survivor == expected
 
@@ -151,23 +151,14 @@ def test_equal_availability_leaves_the_tie_to_the_lower_index(
     available: tuple[bool | None, bool | None],
 ):
     facts = tuple(_facts(i, available=a) for i, a in enumerate(available))
-    pool = PolicyPool(measuring=(1, 0), election={0: 0.4, 1: 0.4}, rated=True)
+    pool = PolicyPool(measuring=(1, 0), election={0: 0.4, 1: 0.4})
 
     choice = apply_house_policies(facts, pool, _ctx(case="recipient"), chosen=1)
 
     assert (choice.survivor, choice.fired) == (0, ())
 
 
-def test_an_unrated_pool_keeps_the_binders_pick_on_the_measure_policies():
-    facts = (_OUTPUT, _VALUE_ADDED, _facts(2, measured_property="grantEquivalent"))
-    pool = PolicyPool(measuring=(1, 0, 2))
-
-    choice = apply_house_policies(facts, pool, _ctx(), chosen=1)
-
-    assert (choice.survivor, choice.fired, choice.dropped) == (1, (), frozenset())
-
-
-def test_an_unrated_pool_runs_the_dataset_flow_and_place_policies():
+def test_the_choice_names_the_policies_that_fired_and_the_pool_in_the_binders_order():
     pool = PolicyPool(measuring=(2, 1, 0))
 
     choice = apply_house_policies(_BY_DATASET, pool, _ctx(case="sector"), chosen=2)
@@ -192,7 +183,7 @@ def test_the_policies_choose_only_among_the_shapes_that_hold_the_picks_constrain
 ):
     """A recipient question prefers DAC2a, but a DAC2a shape that does not hold a value the
     binder recognised on its CRS pick is set aside before the dataset policy runs."""
-    pool = PolicyPool(measuring=(0, 1, 2), rated=True)
+    pool = PolicyPool(measuring=(0, 1, 2))
 
     choice = apply_house_policies(_BY_DATASET, pool, _ctx(case="recipient"), chosen=0, holds=holds)
 
@@ -233,7 +224,7 @@ def _survivors_of_two() -> tuple[ShapeFacts, ...]:
 def test_the_election_probability_breaks_the_tie(
     election: dict[int, float], chosen: int, expected: int
 ):
-    pool = PolicyPool(measuring=(0, 1, 2), election=election, rated=True)
+    pool = PolicyPool(measuring=(0, 1, 2), election=election)
 
     choice = apply_house_policies(_survivors_of_two(), pool, _ctx(), chosen=chosen)
 
@@ -241,12 +232,12 @@ def test_the_election_probability_breaks_the_tie(
 
 
 def test_a_survivor_with_no_probability_or_rating_reads_as_zero():
-    unrated_survivor = PolicyPool(measuring=(0, 1, 2), election={0: 0.0, 1: 0.9}, rated=True)
+    unrated_survivor = PolicyPool(measuring=(0, 1, 2), election={0: 0.0, 1: 0.9})
     assert (
         apply_house_policies(_survivors_of_two(), unrated_survivor, _ctx(), chosen=1).survivor == 0
     )
 
-    pool = PolicyPool(measuring=(0, 1, 2), rated=True)
+    pool = PolicyPool(measuring=(0, 1, 2))
     choice = apply_house_policies(
         _survivors_of_two(), pool, _ctx(), chosen=1, ratings={1: 1.0, 2: 0.1}
     )
@@ -264,24 +255,11 @@ def test_a_survivor_with_no_probability_or_rating_reads_as_zero():
 def test_a_rated_pool_without_probabilities_breaks_the_tie_by_rating(
     ratings: dict[int, float], chosen: int, expected: int
 ):
-    pool = PolicyPool(measuring=(2, 1, 0), rated=True)
+    pool = PolicyPool(measuring=(2, 1, 0))
 
     choice = apply_house_policies(_survivors_of_two(), pool, _ctx(), chosen=chosen, ratings=ratings)
 
     assert choice.survivor == expected
-
-
-@pytest.mark.parametrize(
-    ("chosen", "expected"),
-    [pytest.param(0, 0, id="surviving-pick"), pytest.param(1, 2, id="first-survivor-in-order")],
-)
-def test_an_unrated_pool_breaks_the_tie_by_the_binders_order(chosen: int, expected: int):
-    pool = PolicyPool(measuring=(1, 2, 0))
-
-    choice = apply_house_policies(_survivors_of_two(), pool, _ctx(), chosen=chosen)
-
-    assert choice.survivor == expected
-    assert choice.fired == ("data_at_places",)
 
 
 def test_a_pick_outside_the_pool_is_refused():
@@ -465,7 +443,7 @@ def _purpose(code_system: str) -> QualifierMatch:
         pytest.param(_frame(window=TimeWindow(start_year=2010)), True, id="open-end"),
         pytest.param(_frame(window=TimeWindow(start_year=2019)), False, id="open-end-from-2019"),
         pytest.param(_frame(window=TimeWindow(end_year=2017)), True, id="open-start-to-2017"),
-        pytest.param(_frame(window=TimeWindow(end_year=2022)), False, id="open-start-to-2022"),
+        pytest.param(_frame(window=TimeWindow(end_year=2022)), True, id="open-start-to-2022"),
         pytest.param(_frame(window=TimeWindow(start_year=2022, end_year=2022)), False, id="2022"),
         pytest.param(_frame(latest=True), False, id="latest"),
         pytest.param(_frame(), True, id="no-window"),
