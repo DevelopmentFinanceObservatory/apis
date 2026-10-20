@@ -53,6 +53,7 @@ from series_coverage.schema import (
     FacetMetadata,
     RoleNames,
     YearHorizon,
+    widen_span,
 )
 from series_coverage.summary import CoverageSummary
 
@@ -663,6 +664,31 @@ class CoverageIndex:
                 if facet_id in facets and party != ABSENT_ENTITY:
                     axes.setdefault(party, set()).add(axis)
         return {party: frozenset(found) for party, found in axes.items()}
+
+    def dataset_party_years(
+        self, provenances: Collection[str]
+    ) -> dict[str, dict[str, tuple[int, int]]]:
+        """For every donor and recipient of `dataset_parties`, the first and last year,
+        inclusive, in which each of `provenances` publishes it, keyed by provenance."""
+        facet_provenances = {
+            facet_id: provenance
+            for facet_id, metadata in self._facet_metadata.items()
+            if (provenance := metadata.provenance_id) is not None and provenance in provenances
+        }
+        years: dict[str, dict[str, tuple[int, int]]] = {}
+        for role in _ROLE_AXES:
+            by_facet = self.grouped(by=(role, "facet_id"))
+            for party, facet_id, first, last in zip(
+                _key_values(by_facet[role]),
+                _key_values(by_facet[FACET_COLUMN]),
+                cast("list[int]", by_facet[FIRST_YEAR_COLUMN].to_pylist()),
+                cast("list[int]", by_facet[LAST_YEAR_COLUMN].to_pylist()),
+                strict=True,
+            ):
+                if facet_id not in facet_provenances or party == ABSENT_ENTITY:
+                    continue
+                widen_span(years.setdefault(party, {}), facet_provenances[facet_id], first, last)
+        return years
 
     def _member_rows(self, *, variables: Sequence[str], bound: BoundRoles) -> pa.Table:
         """The rows of `variables` surviving `bound`, in table order.

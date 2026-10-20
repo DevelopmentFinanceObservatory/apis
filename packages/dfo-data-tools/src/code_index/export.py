@@ -16,7 +16,7 @@ import re
 import sys
 from collections import Counter, defaultdict
 from collections.abc import Collection, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
 from code_index.declarations import (
@@ -117,10 +117,12 @@ class ExportRefused(Exception):
 @dataclass(frozen=True)
 class PartyPublication:
     """The datasets that publish one party, by provenance, and the flow axes they publish it
-    on: `origin` as a donor, `destination` as a recipient."""
+    on: `origin` as a donor, `destination` as a recipient. `years` gives the first and last
+    year, inclusive, in which each dataset publishes it."""
 
     datasets: frozenset[str]
     axes: frozenset[RoleAxis]
+    years: Mapping[str, tuple[int, int]] = field(default_factory=dict)
 
 
 def _kind_from_types(
@@ -203,9 +205,9 @@ def _check_whole_population_totals(
 ) -> None:
     """Raises `ExportRefused` for a `whole_totals` row naming a party that is not a published
     total, a total not published on exactly the row's axis, a dataset that does not publish the
-    total, or a row with no dataset, no kind or no reason. Two rows holding one kind on one
-    dataset and axis fail when the finished document loads
-    (`code_index.loader._check_whole_totals`)."""
+    total, a window whose first year lies outside the years the dataset publishes the total, or
+    a row with no dataset, no kind or no reason. Two rows holding one kind on one dataset and
+    axis fail when the finished document loads (`code_index.loader._check_whole_totals`)."""
     for dcid, whole in sorted(whole_totals.items()):
         if kinds.get(dcid) != "total":
             raise ExportRefused(
@@ -230,6 +232,42 @@ def _check_whole_population_totals(
                 f"WHOLE_POPULATION_TOTALS row {dcid!r} names no dataset, holds no kind or gives "
                 "no reason"
             )
+        outside = []
+        for dataset, window in sorted(whole.datasets.items()):
+            span = parties[dcid].years.get(dataset)
+            if window.first_year is not None and (
+                span is None or not span[0] <= window.first_year <= span[1]
+            ):
+                outside.append((dataset, window.first_year, span))
+        if outside:
+            raise ExportRefused(
+                f"WHOLE_POPULATION_TOTALS starts {dcid!r} outside the years its datasets publish "
+                f"it: {outside!r} (dataset, first year, published years)"
+            )
+
+
+def _check_kinds_on_one_axis(
+    kinds: Mapping[str, PartyKind], parties: Mapping[str, PartyPublication]
+) -> None:
+    """Raises `ExportRefused` for a party of any kind but `party` published on more than one axis.
+
+    A row keeps `axes` and `datasets` as two lists, so a reader cannot tell which dataset holds
+    which axis. `datasets_api.output_options` reads the totals a side holds in a dataset from
+    `axis in party.axes and dataset in party.datasets`, and search's side-kind lookups read the
+    kinds a side holds the same way. That is exact for a one-axis party and for a `party`,
+    because every side a two-axis party reaches already holds a `party` row. A private, total or
+    residual party on both axes would count on both axes in every dataset."""
+    ambiguous = sorted(
+        (dcid, kind, sorted(parties[dcid].axes))
+        for dcid, kind in kinds.items()
+        if kind != "party" and len(parties[dcid].axes) > 1
+    )
+    if ambiguous:
+        raise ExportRefused(
+            f"parties of a kind other than 'party' are published on more than one axis: "
+            f"{ambiguous!r} (party, kind, axes) -- the index format cannot tell which dataset "
+            "holds which axis"
+        )
 
 
 def export_parties(
@@ -249,14 +287,16 @@ def export_parties(
     A party in `kind_overrides` takes its override's kind. A party whose OECD donor code is in
     `private_providers` is `private`. Any other takes the kind its graph types give under
     `type_kinds`. Its label is its graph name, `None` when the graph gives it none. A row carries
-    `whole` only for a total in `whole_totals`, and a marker's `years` only with a window.
+    `whole` only for a total in `whole_totals`, and a marker's `years` only for a window with a
+    first year, ending in the last year the dataset publishes the total.
 
     Raises `ExportRefused` for a `kind_overrides` row naming a party not in `parties`, a party the
     graph holds no node or type for, a party carrying a type `type_kinds` does not name, a party
     whose types give it no single kind, a `total_groups` row naming a party that is not a total
     of `parties`, a `total_groups` residual that is not a residual of `parties`, a
     `private_providers` row the graph contradicts (`_check_private_providers`) or whose party the
-    types give a kind other than `party`, and a `whole_totals` row the parties contradict
+    types give a kind other than `party`, a party of a kind other than `party` published on more
+    than one axis (`_check_kinds_on_one_axis`), and a `whole_totals` row the parties contradict
     (`_check_whole_population_totals`).
     """
     published = frozenset(parties)
@@ -291,7 +331,7 @@ def export_parties(
             kind = "private"
         kinds[dcid] = kind
         total = total_groups.get(dcid)
-        row = {
+        row: dict = {
             "dcid": dcid,
             "kind": kind,
             "label": _first_or_none(party_arcs.get("name", ())),
@@ -301,11 +341,6 @@ def export_parties(
             "datasets": sorted(parties[dcid].datasets),
             "axes": sorted(parties[dcid].axes),
         }
-        if (whole := whole_totals.get(dcid)) is not None:
-            row["whole"] = [
-                _whole_marker_to_dict(dataset, window)
-                for dataset, window in sorted(whole.datasets.items())
-            ]
         rows.append(row)
     stale = sorted(dcid for dcid in total_groups if kinds.get(dcid) != "total")
     if stale:
@@ -323,7 +358,14 @@ def export_parties(
             f"TOTAL_GROUPS counts {not_residuals!r} as residuals, which no declared or listed dataset "
             "publishes as a residual"
         )
+    _check_kinds_on_one_axis(kinds, parties)
     _check_whole_population_totals(whole_totals, kinds, parties)
+    for row in rows:
+        if (whole := whole_totals.get(row["dcid"])) is not None:
+            row["whole"] = [
+                _whole_marker_to_dict(dataset, window, parties[row["dcid"]])
+                for dataset, window in sorted(whole.datasets.items())
+            ]
     return rows
 
 
@@ -1719,11 +1761,12 @@ def _stated_word_to_dict(stated: StatedWord) -> dict:
     }
 
 
-def _whole_marker_to_dict(dataset: str, window: WholeWindow) -> dict:
-    """A `PartyRow.whole` entry. `years` is left out when the window has none."""
+def _whole_marker_to_dict(dataset: str, window: WholeWindow, publication: PartyPublication) -> dict:
+    """A `PartyRow.whole` entry, its `years` running from the window's first year to the last
+    year `publication` gives `dataset`. `years` is left out when the window has no first year."""
     marker: dict = {"dataset": dataset, "holds": sorted(window.holds)}
-    if window.years is not None:
-        marker["years"] = list(window.years)
+    if window.first_year is not None:
+        marker["years"] = [window.first_year, publication.years[dataset][1]]
     return marker
 
 
