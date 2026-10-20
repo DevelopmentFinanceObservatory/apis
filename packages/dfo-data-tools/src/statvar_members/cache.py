@@ -9,6 +9,11 @@ by `graph_generation.ttu_from_stamp_key`, so a new graph generation or catalogue
 walks afresh, and an unknown generation keeps its entries for the shorter unknown
 lifetime.
 
+With `GRAPH_RELEASE_ORIGIN` on, a call reads the request's graph release
+(`graph_release.context.served_origin`), and raises when none is bound. A family the release
+holds (`graph_release.origin.ReleaseOrigin.holds_family`) walks the release's graph reader in
+place of the caller's, and every entry's key also holds the release id, so a swap walks afresh.
+
 Each entry weighs one plus its family size, the dcids of every confirmed candidate
 before antichain reduction, since a deep root's family runs to about 14,000 dcids.
 Concurrent misses on one key run one enumeration. The others wait, each bounded by its
@@ -121,8 +126,9 @@ class MemberEnumerator:
         reading `graph` on a miss.
 
         `stamp_key` is the `GenerationStamp.key` of `graph`'s reads. The cache key holds
-        it, the five-tuple, slots, readings, `subject_ceiling`, extra candidates, and bound
-        and open role keys. `deadline` bounds the walk's first page and `full_read_deadline`, which
+        it, joined to the release id under `GRAPH_RELEASE_ORIGIN` (`_served_walk`), the
+        five-tuple, slots, readings, `subject_ceiling`, extra candidates, and bound and open
+        role keys. `deadline` bounds the walk's first page and `full_read_deadline`, which
         defaults to `deadline` and stays out of the key, its full read. The later of the
         two bounds any wait for another call's walk of the same key. A read or wait past
         its bound raises `MemberReadDeadline`. `spec_id` names the walk in its log line.
@@ -131,6 +137,7 @@ class MemberEnumerator:
         waiting on that flight take the group it returned. A group whose inconsistent
         candidates a confirmed root dismisses is settled and stored: its members cannot
         change, and a fresh walk leaves the same candidates past the same re-probe budget."""
+        graph, stamp_key = _served_walk(graph, stamp_key=stamp_key, five_tuple=five_tuple)
         key: _CacheKey = (
             stamp_key,
             five_tuple,
@@ -261,6 +268,28 @@ class MemberEnumerator:
             time.monotonic() - started,
         )
         return group
+
+
+def _served_walk(
+    graph: MemberArcReader, *, stamp_key: str, five_tuple: FiveTuple
+) -> tuple[MemberArcReader, str]:
+    """The reader `five_tuple`'s walk reads and the stamp key its group stores under: `graph`
+    and `stamp_key` with `GRAPH_RELEASE_ORIGIN` off. With it on, the key joins the bound
+    release's id after `@`, and a family the release holds reads the release's graph reader.
+    Raises `graph_release.context.ReleaseNotBound` when no release is bound."""
+    # Imported here, as `_ttu` imports `graph_generation`, so `statvar_members` imports
+    # without the release and catalogue packages.
+    from graph_release.context import current_release, served_origin
+
+    origin = served_origin()
+    if origin is None:
+        return graph, stamp_key
+    from origin_catalogue.context import current_catalogue
+
+    served_key = f"{stamp_key}@{current_release().release_id}"
+    if origin.holds_family(five_tuple, catalogue=current_catalogue()):
+        return origin.reader, served_key
+    return graph, served_key
 
 
 def _later(deadline: float | None, full_read_deadline: float | None) -> float | None:

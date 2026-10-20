@@ -16,24 +16,34 @@ same import.
 (`graph_release.context.origin_release_enabled`), and it lives on the `Release`.
 `origin_catalogue.catalogue.CatalogueSnapshot` reads it through `served_origin` for the DFO
 variables' arcs and joins its summaries to the catalogue's base ones.
+
+The view also holds the release's `ReleaseGraphReader`, built once as the release opens, which
+`statvar_members.MemberEnumerator` walks in place of the graph for a family the release holds
+(`ReleaseOrigin.holds_family`).
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Final, cast
+from typing import TYPE_CHECKING, Final, cast
 
 import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 
+from graph_release.dfo import ReleaseGraphReader
 from graph_release.format import LoadedRelease
+from graph_release.platform import PlatformRefusal
 from graph_release.views import ViewRefused
 from origin_catalogue.arc_reads import DFO_VARIABLE_TYPE
 from origin_catalogue.arc_tables import ArcTablesBuilder, SpannerNode, spanner_wire_arcs
 from origin_catalogue.families import FamilyKey, FamilySummary, summarise_table
 from origin_catalogue.un_mirror import UnArc
+
+if TYPE_CHECKING:
+    from origin_catalogue.catalogue import Catalogue
+    from statvar_members.types import FiveTuple
 
 _TYPE_OF: Final[str] = "typeOf"
 
@@ -42,10 +52,39 @@ _TYPE_OF: Final[str] = "typeOf"
 class ReleaseOrigin:
     """A release's DFO variables, each with its arc rows in dcid order (`arcs`), and the
     summary of each family of them (`families`), as the catalogue job's `dfo` arc table and
-    `origin_catalogue.families.summarise_table` over it give them."""
+    `origin_catalogue.families.summarise_table` over it give them. `reader` answers graph reads
+    over the DFO variables' edges and the nodes those edges join."""
 
     arcs: Mapping[str, tuple[UnArc, ...]]
     families: Mapping[FamilyKey, FamilySummary]
+    reader: ReleaseGraphReader
+
+    def holds_family(self, five_tuple: FiveTuple, *, catalogue: Catalogue) -> bool:
+        """Whether every member of `five_tuple`'s family is one of the release's DFO variables,
+        so a member walk over `reader` finds the family a graph walk finds.
+
+        The family is the release's when it holds a DFO variable of the five-tuple, in either role
+        class, and `catalogue`'s row for each role class (`Catalogue.held_family`, which joins the
+        release's DFO members to the build's base and UN ones) has no member beyond the release's.
+        A family with a base or UN member is the graph's whole, so no walk reads half of it from
+        the release."""
+        held = False
+        for role_bearing in (False, True):
+            key = FamilyKey(
+                five_tuple.population_type or "",
+                five_tuple.measured_property or "",
+                five_tuple.stat_type or "",
+                five_tuple.measurement_qualifier,
+                five_tuple.measurement_denominator,
+                five_tuple.denominator_unresolved,
+                role_bearing,
+            )
+            released = self.families.get(key)
+            row = catalogue.held_family(key)
+            if row is not None and (released is None or row.members != released.members):
+                return False
+            held = held or released is not None
+        return held
 
 
 def origin_view(*, series: pa.Table, edges: pa.Table, nodes: pa.Table) -> ReleaseOrigin:
@@ -75,10 +114,8 @@ def origin_view(*, series: pa.Table, edges: pa.Table, nodes: pa.Table) -> Releas
         by_variable.setdefault(subjects.values[subject], {}).setdefault(
             predicates.values[predicate], []
         ).append(objects.values[target])
-    targets = _target_nodes(
-        nodes,
-        pa.array([objects.values[code] for code in np.unique(objects.codes[held])], pa.string()),
-    )
+    named = pa.array([objects.values[code] for code in np.unique(objects.codes[held])], pa.string())
+    targets = _target_nodes(nodes, named)
 
     builder = ArcTablesBuilder()
     try:
@@ -87,7 +124,19 @@ def origin_view(*, series: pa.Table, edges: pa.Table, nodes: pa.Table) -> Releas
     except ValueError as exc:
         raise ViewRefused(f"the origin view does not build: {exc}") from exc
     table = builder.table("dfo")
-    return ReleaseOrigin(arcs=table, families=summarise_table(table))
+    # The walk reads only families whose every member is a DFO variable, so the reader holds
+    # their edges and the nodes those edges join.
+    ends = pa.concat_arrays(
+        [pa.array([subjects.values[code] for code in variables], pa.string()), named]
+    )
+    try:
+        reader = ReleaseGraphReader(
+            edges=edges.filter(pa.array(held)),
+            nodes=nodes.filter(pc.is_in(nodes["subject_id"], value_set=ends)),
+        )
+    except PlatformRefusal as exc:
+        raise ViewRefused(f"the origin view does not build: {exc}") from exc
+    return ReleaseOrigin(arcs=table, families=summarise_table(table), reader=reader)
 
 
 @dataclass(frozen=True)
