@@ -137,7 +137,9 @@ def _split_by_kind(dcids: frozenset[str], parties: Mapping[str, PartyRow]) -> Pa
     kinds = Counter(row.kind if row else None for row in rows)
     return PartyCounts(
         parties=kinds["party"],
-        private=sum(1 for row in rows if row and row.party_class == "private"),
+        private=sum(
+            1 for row in rows if row and row.kind == "party" and row.party_class == "private"
+        ),
         totals=kinds["total"],
         residual=kinds["residual"],
         unclassified=kinds[None],

@@ -1238,7 +1238,7 @@ class TestEnrichColumns:
         ],
     )
     def test_party_cells_follow_the_dataset_and_year_of_their_row(self, columns, rows, cells):
-        """An empty `party_class` of a listed total that covers more than one class is its
+        """An empty `party_class` of a listed total with no single covered class is its
         value, so it counts no miss."""
         table = Table(columns=columns, rows=rows)
 

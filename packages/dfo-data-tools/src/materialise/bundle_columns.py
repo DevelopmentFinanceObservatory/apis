@@ -138,7 +138,7 @@ _ENRICHMENT_COLUMNS: Mapping[str, tuple[str, str]] = {
         "class",
         "Whose money the {noun}'s figures count: `official`, `private` (a foundation or other "
         "private body), or `residual` for a {noun} that holds figures no other {noun} holds. "
-        "Empty for a total that mixes classes.",
+        "A total reads the one class its whole markers cover, and reads empty otherwise.",
     ),
     "party_whole": (
         "whole total",

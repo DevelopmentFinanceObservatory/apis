@@ -252,7 +252,7 @@ def test_a_frame_layout_file_reads_each_partys_class_and_whole_cells():
     ],
 )
 def test_a_totals_empty_class_counts_as_no_missing_value(options):
-    """The empty `party_class` of a total that covers more than one class is its value, so no
+    """The empty `party_class` of a total with no single covered class is its value, so no
     layout warns `enrichment_unavailable` for it."""
     client = _client(FakeDatasetStore(), FakeArtifactStore())
 
