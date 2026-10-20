@@ -1,8 +1,9 @@
 """End-to-end tests for a part's `assumptions` on the raw-text and dataset_resubmit doors.
 
 "aid flows to Kenya" leaves the flow slot open, so the election fixes it to its declared
-default, ODA, and the fixture's heading reads both flow roles open ("to all recipients
-from all providers"). A resubmit posts the identity whole, so the engine records the flow
+default, official development assistance (CRSTypeOfFlow10, short name "ODA"), and the
+fixture's heading reads both flow roles open ("to all recipients from all providers").
+A resubmit posts the identity whole, so the engine records the flow
 as posted, and the part keeps the default only through the entry's `assumptions` echo,
 matched to the rebuilt slot by its value dcids.
 """
@@ -11,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from search.engine.extract import ExtractedEntity, Extraction
+from search.engine.extract import ExtractedEntity, ExtractedOperation, Extraction
 from search.models import (
     Assumption,
     BaseIdentity,
@@ -24,8 +25,14 @@ from search.models import (
     ResolveRequest,
     ResubmitIdentityEntry,
 )
-from tests.engine._harness import offline_resolve
-from tests.engine.test_operations_e2e import _EMPTY_SDMX, _OpenFlowAndSectorBindLLM
+from tests.engine._harness import make_request, offline_resolve
+from tests.engine.test_operations_e2e import (
+    _EMPTY_SDMX,
+    _QUERY,
+    _extraction,
+    _OpenFlowAndSectorBindLLM,
+    _ScriptedLLM,
+)
 from tests.engine.test_qualifier_suppression_and_provenance import (
     _E2E_NODES,
     _E2E_OBS,
@@ -35,13 +42,16 @@ from tests.engine.test_qualifier_suppression_and_provenance import (
 from tests.fixtures import FakeGraph
 
 _ASSUMED_ODA = Assumption(
-    kind="declared_default", binding_ref="how:crsTypeOfFlow", text="ODA", refs=["CRSTypeOfFlow10"]
+    kind="declared_default",
+    binding_ref="how:crsTypeOfFlow",
+    text="official development assistance",
+    refs=["CRSTypeOfFlow10"],
 )
 _ASSUMED_ROLES = [
     Assumption(kind="open_role", binding_ref="where:", text="every recipient"),
     Assumption(kind="open_role", binding_ref="origin:", text="every provider"),
 ]
-_ASSUMED_CLAUSE = " Assumed: ODA; every recipient; every provider."
+_ASSUMED_CLAUSE = " Assumed: official development assistance; every recipient; every provider."
 # A parametrize row's echo that is the first answer's own list.
 _FIRST = "first"
 
@@ -140,6 +150,39 @@ def test_a_first_answer_lists_its_declared_default_and_every_open_role():
 
 
 @pytest.mark.parametrize(
+    ("over", "expected"),
+    [
+        pytest.param(None, _ASSUMED_ROLES, id="no-operation"),
+        # "top 5 donors" ranks over the providers, so the request asked every one of them.
+        pytest.param("origin", _ASSUMED_ROLES[:1], id="rank-over-origin"),
+        pytest.param("destination", _ASSUMED_ROLES[1:], id="rank-over-destination"),
+        # An operation over places asks no flow role (`asked_open_axes`).
+        pytest.param("place", _ASSUMED_ROLES, id="rank-over-place"),
+    ],
+)
+def test_a_role_an_operation_runs_over_is_asked(over: str | None, expected: list[Assumption]):
+    """A rank over a flow axis asks every member of it, so that role is no open-role
+    assumption, in the part's list or in the sentence's clause."""
+    operations = (
+        []
+        if over is None
+        else [ExtractedOperation(verb="rank", variable=0, phrase="top 5 donors", over=over)]
+    )
+    response = offline_resolve(
+        make_request("top 5 donors for standard grants in Kenya"),
+        graph=_e2e_graph_for(_QUERY),
+        llm=_ScriptedLLM(_extraction(operations=operations)),
+        sdmx=_EMPTY_SDMX,
+    )
+    part = response.parts[0]
+    assert isinstance(part, DefinitePart)
+    assert part.assumptions == expected
+    assert response.rendered_sentence is not None
+    clause = "; ".join(item.text for item in expected)
+    assert response.rendered_sentence.endswith(f" Assumed: {clause}.")
+
+
+@pytest.mark.parametrize(
     ("edit", "echo", "expected"),
     [
         pytest.param(None, _FIRST, [_ASSUMED_ODA, *_ASSUMED_ROLES], id="unchanged"),
@@ -150,7 +193,7 @@ def test_a_first_answer_lists_its_declared_default_and_every_open_role():
         # deploys; the refs still match, so the default holds in the rebuilt words.
         pytest.param(
             None,
-            [_ASSUMED_ODA.model_copy(update={"text": "official development assistance"})],
+            [_ASSUMED_ODA.model_copy(update={"text": "ODA"})],
             [_ASSUMED_ODA],
             id="echo-words-differ",
         ),
@@ -179,7 +222,7 @@ def test_a_first_answer_lists_its_declared_default_and_every_open_role():
                 Assumption(
                     kind="declared_default",
                     binding_ref="how:crsTypeOfFinance",
-                    text="standard grants",
+                    text="standard grant",
                     refs=["CRSTypeOfFinance110"],
                 )
             ],
@@ -192,7 +235,7 @@ def test_a_resubmit_states_the_echoed_assumptions_that_still_hold(
 ):
     """Each echoed item holds while the rebuilt answer still yields it, matched by kind,
     binding and value dcids, and is worded from the rebuilt answer. With no edit to the
-    flow slot, a repost or a new year keeps the ODA default."""
+    flow slot, a repost or a new year keeps the official development assistance default."""
     first = _first_answer()
     identity = first.spec.definition.identity
     if edit == "year":
@@ -223,3 +266,53 @@ def test_an_edit_that_changes_the_defaulted_slot_drops_its_assumption():
     )
     assert [value.ref for value in flow.refs] == ["CRSTypeOfFlow60"]
     assert [item.kind for item in part.assumptions if item.kind == "declared_default"] == []
+
+
+def _graph_with_ghana() -> FakeGraph:
+    """The fixture graph with the fixture's series also held at Ghana."""
+    return FakeGraph(
+        nodes={**_E2E_NODES, "country/GHA": {"label": "Ghana", "type": "Country"}},
+        detect={},
+        resolve={"Kenya": "country/KEN"},
+        obs={
+            **_E2E_OBS,
+            **{key.replace("country/KEN", "country/GHA"): value for key, value in _E2E_OBS.items()},
+        },
+    )
+
+
+def test_a_folded_part_states_only_its_own_assumptions():
+    """Entries for Kenya and Ghana fold into one Spec. The first echoes the flow default
+    and the providers, the second echoes none: the clause names both items under the
+    first part alone, and no token claims them for the second."""
+    first = _first_answer()
+    identity = first.spec.definition.identity
+    ghana = identity.model_copy(update={"entities": {"observationAbout": ["country/GHA"]}})
+    echo = [_ASSUMED_ODA, _ASSUMED_ROLES[1]]
+    response = offline_resolve(
+        ResolveRequest(
+            input=DatasetResubmitInput(
+                entries=[
+                    ResubmitIdentityEntry(
+                        variable_text="aid flows", identity=identity, assumptions=echo
+                    ),
+                    ResubmitIdentityEntry(
+                        variable_text="aid flows", identity=ghana, assumptions=[]
+                    ),
+                ]
+            ),
+            response_options=ResolveOptions(),
+        ),
+        graph=_graph_with_ghana(),
+        llm=_OpenFlowAndSectorBindLLM(Extraction(kind="resolution", variables=[], entities=[])),
+        sdmx=_EMPTY_SDMX,
+    )
+    assert [part.assumptions for part in response.parts] == [echo, []]
+    assert "binding_folded" in [warning.code for warning in response.parts[1].warnings]
+    assert response.sentence_plan is not None
+    items = {item.text for item in echo}
+    assert [
+        token.part_index
+        for token in response.sentence_plan
+        if token.segment == "assumption" and token.text in items
+    ] == [0, 0]

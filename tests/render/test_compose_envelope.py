@@ -1775,16 +1775,44 @@ def test_a_part_by_part_sentence_closes_each_part_with_its_own_clause():
     assert {index for _text, index in _clause_tokens(plan)} == {0}
 
 
-def test_a_part_others_fold_into_states_its_clause_for_all_of_them():
-    """A folded part carries its representative's assumptions, so the clause the
-    representative states belongs to both and carries no part index."""
+@pytest.mark.parametrize(
+    ("folded_assumptions", "clause"),
+    [
+        # Both carry the item, so the clause belongs to both and carries no part index.
+        pytest.param(
+            [_ASSUMED_ODA],
+            [(" ", None), ("Assumed: ", None), ("ODA", None), (".", None)],
+            id="shared",
+        ),
+        # Only the part folded into carries it, so the whole clause is that part's.
+        pytest.param([], [(" ", 0), ("Assumed: ", 0), ("ODA", 0), (".", 0)], id="own"),
+        # The folded part alone carries the providers, so that item is its own.
+        pytest.param(
+            [_ASSUMED_ODA, _ASSUMED_PROVIDERS],
+            [
+                (" ", None),
+                ("Assumed: ", None),
+                ("ODA", None),
+                ("; ", None),
+                ("every provider", 1),
+                (".", None),
+            ],
+            id="folded-own",
+        ),
+    ],
+)
+def test_a_part_others_fold_into_states_its_clause_for_all_of_them(
+    folded_assumptions: list[Assumption], clause: list[tuple[str, int | None]]
+):
+    """A part and the parts folded into it state one clause naming every item any of
+    them carries: an item all carry has no part index, an item one alone carries has its
+    part's."""
     representative = _assuming(_crs_part("Germany", "Kenya", (2015, 2020)), _ASSUMED_ODA)
-    folded = representative.model_copy(
+    folded = _assuming(representative, *folded_assumptions).model_copy(
         update={"warnings": [Warning(code="binding_folded", severity="info", message="folded")]}
     )
-    rendered, plan = compose_envelope_sentence([representative, folded])
-    assert rendered.endswith(" Assumed: ODA.")
-    assert {index for _text, index in _clause_tokens(plan)} == {None}
+    _rendered, plan = compose_envelope_sentence([representative, folded])
+    assert _clause_tokens(plan) == clause
 
 
 def test_a_mixed_answer_opens_with_how_many_parts_it_answered():

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unicodedata
+from collections.abc import Collection, Sequence
 from typing import Annotated, Literal
 
 from pydantic import (
@@ -20,6 +21,7 @@ from .vocab import (
     OperationAxis,
     OperationVerb,
     Ordering,
+    RoleAxis,
     SourcePolarity,
     _require_schema_version_int,
 )
@@ -136,6 +138,20 @@ class Operation(StrictModel):
         if not phrase.strip():
             raise ValueError("phrase must not be blank")
         return phrase
+
+
+def asked_open_axes(
+    open_axes: Collection[RoleAxis], operations: Sequence[Operation]
+) -> frozenset[RoleAxis]:
+    """The flow axes a part asks every member of: ``open_axes``, the roles its request
+    leaves open, and each flow axis one of its ``operations`` runs over (origin or
+    destination). An operation over `place` asks no flow axis. Resolution leaves these axes
+    open, and the part states no open-role assumption on them."""
+    return frozenset(open_axes) | {
+        operation.over
+        for operation in operations
+        if operation.over == "origin" or operation.over == "destination"
+    }
 
 
 _OPERATIONS_DESCRIPTION = (

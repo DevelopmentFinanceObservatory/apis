@@ -14,9 +14,9 @@ _MAX_REF_CHARS = 1024
 _MAX_REFS = 1
 # A binding ref is an axis, a colon and a property dcid; "destination:" is the longest prefix.
 _MAX_BINDING_REF_CHARS = len("destination:") + _MAX_REF_CHARS
-# The words for a declared default are its heading text or one code's name, which the bound
-# of a variable text (`request._PARSED_MAX_VARIABLE_TEXT_CHARS`) holds for every default the
-# packaged index declares.
+# The words for a declared default are one code's full label; the longest label in the
+# packaged index runs 126 characters, within the bound of a variable text
+# (`request._PARSED_MAX_VARIABLE_TEXT_CHARS`).
 _MAX_TEXT_CHARS = 200
 
 
@@ -51,8 +51,9 @@ class Assumption(StrictModel):
         min_length=1,
         max_length=_MAX_TEXT_CHARS,
         description=(
-            "the words the sentence's assumptions clause states for this fill: the "
-            "heading's words for a declared default ('official development assistance'), "
+            "the words the sentence's assumptions clause states for this fill: the bound "
+            "code's full label for a declared default ('official development assistance' "
+            "for CRSTypeOfFlow10, whose short name is 'ODA'), "
             "'every' and the role's noun in the answer's flow family for an open role "
             "('every provider', 'every creditor'), and 'every country', 'every place' or "
             "'the world as a whole' for the place scope, as its members are typed"

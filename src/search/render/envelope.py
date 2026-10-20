@@ -14,8 +14,10 @@ in part order, each item under its part and an item two parts share under none. 
 written part by part closes each part's sentence with its own clause after its departures.
 A mixed answer with a definite part opens "Answered N of M parts.", with no part index.
 
-A part folded into an earlier part's Spec (`binding_folded`) states that part's heading,
-byline and assumptions, so their tokens carry no part index.
+A part folded into an earlier part's Spec (`binding_folded`) states that part's heading and
+byline, so their tokens carry no part index. Its assumptions, built from its own request,
+can differ from that part's, so the clause names the items of both: an item every one of
+them carries is unowned, and an item one alone carries is that part's.
 
 A definite part's heading and byline come from its Spec (`heading_for`), with the
 declared how-axis names its own sentence plan was rendered with (`declared_axis_names`).
@@ -56,7 +58,8 @@ from .what import _lower_first_word
 def compose_envelope_sentence(parts: Sequence[Part]) -> tuple[str, list[SentenceToken]] | None:
     """Return the envelope sentence and plan, or None when no part has a sentence.
 
-    Omit parts folded into an earlier Spec. A lone part that is not definite is mirrored
+    Omit parts folded into an earlier Spec, whose assumptions join that part's clause
+    (`_fold_groups`). A lone part that is not definite is mirrored
     verbatim. Definite parts use general composition, even when alone, so shared tokens
     have no part index. Token indices always refer to the original ``parts`` list,
     including gaps from folded parts. A mixed answer opens with how many parts it answered
@@ -74,8 +77,10 @@ def compose_envelope_sentence(parts: Sequence[Part]) -> tuple[str, list[Sentence
             for index, part in contributing
             if isinstance(part, DefinitePart)
         }
+        groups = _fold_groups(parts, contributing)
         composed = _unowned_by_folds(
-            _compose_general(contributing, plans), _folded_into_parts(parts, contributing)
+            _compose_general(contributing, plans, groups),
+            frozenset(index for index, group in groups.items() if len(group) > 1),
         )
     plan = [
         token.model_copy(update={"part_index": owner})
@@ -110,49 +115,70 @@ def _has_own_sentence(part: Part) -> bool:
     return part.sentence_plan is not None
 
 
-def _folded_into_parts(
+def _fold_groups(
     parts: Sequence[Part], contributing: list[tuple[int, Part]]
-) -> frozenset[int]:
-    """The indices of the definite parts a later part folded into. A folded part carries
-    the Spec of the part it folded into."""
+) -> dict[int, list[tuple[int, Part]]]:
+    """Each contributing part by index, with itself first and then, for a definite part,
+    every later part folded into it, in part order. A folded part carries the Spec of the
+    part it folded into."""
+    groups = {index: [(index, part)] for index, part in contributing}
     folded_into = {
         part.spec.spec_id: index for index, part in contributing if isinstance(part, DefinitePart)
     }
-    return frozenset(
-        first
-        for index, part in enumerate(parts)
-        if isinstance(part, DefinitePart)
-        and _is_folded(part)
-        and (first := folded_into.get(part.spec.spec_id)) is not None
-        and first < index
-    )
+    for index, part in enumerate(parts):
+        if (
+            isinstance(part, DefinitePart)
+            and _is_folded(part)
+            and (first := folded_into.get(part.spec.spec_id)) is not None
+            and first < index
+        ):
+            groups[first].append((index, part))
+    return groups
+
+
+def _assumption_items(parts: Sequence[tuple[int, Part]]) -> list[tuple[int | None, str]]:
+    """Each assumption text `parts` carry, in part order, under the one part that carries
+    it, or under none when several do: a part and the parts folded into it state one
+    sentence, so an item every one of them carries is stated once for all."""
+    holders: dict[str, set[int]] = {}
+    for index, part in parts:
+        for item in part.assumptions:
+            holders.setdefault(item.text, set()).add(index)
+    return [
+        (next(iter(owners)) if len(owners) == 1 else None, text) for text, owners in holders.items()
+    ]
 
 
 def _unowned_by_folds(composed: list[Owned], folded_into: frozenset[int]) -> list[Owned]:
-    """`composed` with the heading, byline and assumption tokens of each part in
-    ``folded_into`` unowned, since every part folded into it states them. Departures keep
-    their part."""
+    """`composed` with the heading and byline tokens of each part in ``folded_into``
+    unowned, since every part folded into it states them. Departures keep their part, and
+    an assumption keeps the owner `_assumption_items` gave it."""
     return [
-        (None, token) if owner in folded_into and token.segment != "departure" else (owner, token)
+        (None, token) if owner in folded_into and token.segment not in _TRAILING else (owner, token)
         for owner, token in composed
     ]
 
 
 def _compose_general(
-    contributing: list[tuple[int, Part]], plans: Mapping[int, HeadingPlan]
+    contributing: list[tuple[int, Part]],
+    plans: Mapping[int, HeadingPlan],
+    groups: Mapping[int, list[tuple[int, Part]]],
 ) -> list[Owned]:
     """One joined sentence when every part is definite and it can be written, else one
     sentence per part. A lone definite part takes this path so shared-token provenance
-    stays clear."""
+    stays clear. ``groups`` holds each contributing part with the parts folded into it
+    (`_fold_groups`), whose assumptions its sentence states."""
     if len(plans) == len(contributing):
-        joined = _compose_joined(contributing, plans)
+        joined = _compose_joined(contributing, plans, groups)
         if joined is not None:
             return joined
-    return _compose_per_part(contributing, plans)
+    return _compose_per_part(contributing, plans, groups)
 
 
 def _compose_joined(
-    contributing: list[tuple[int, Part]], plans: Mapping[int, HeadingPlan]
+    contributing: list[tuple[int, Part]],
+    plans: Mapping[int, HeadingPlan],
+    groups: Mapping[int, list[tuple[int, Part]]],
 ) -> list[Owned] | None:
     """The definite parts' headings, then the byline they share, then their departures,
     then one assumptions clause (`_clause`) naming every part's items in part order.
@@ -167,7 +193,7 @@ def _compose_joined(
     byline once, unowned. An empty source placeholder every part shares is written once,
     unowned, and otherwise each stays with its own part. Each part's departures follow
     under its own part, a text two parts carry stated once, unowned. An assumption two
-    parts carry alike is named once, unowned.
+    parts carry alike, a folded part among them, is named once, unowned.
     """
     headings = {index: heading_tokens(plans[index].heading) for index, _part in contributing}
     after_heading = {
@@ -200,15 +226,8 @@ def _compose_joined(
     departures = _stated_once(
         [_departure_sentence(text, index) for index, part in contributing for text in _texts(part)]
     )
-    owners: dict[str, set[int]] = {}
-    for index, part in contributing:
-        for item in part.assumptions:
-            owners.setdefault(item.text, set()).add(index)
     clause = _clause(
-        [
-            (next(iter(holders)) if len(holders) == 1 else None, text)
-            for text, holders in owners.items()
-        ]
+        _assumption_items([member for index, _part in contributing for member in groups[index]])
     )
     return _joined_sentences([*departures, *([clause] if clause else [])], before=composed)
 
@@ -222,12 +241,15 @@ def _placeholder_key(byline: Byline) -> Hashable:
 
 
 def _compose_per_part(
-    contributing: list[tuple[int, Part]], plans: Mapping[int, HeadingPlan]
+    contributing: list[tuple[int, Part]],
+    plans: Mapping[int, HeadingPlan],
+    groups: Mapping[int, list[tuple[int, Part]]],
 ) -> list[Owned]:
     """Write one sentence per part in part order, each followed by its departures and its
     assumptions clause.
 
-    A definite part's sentence is its heading and byline. A part that is not definite
+    A definite part's sentence is its heading and byline, and its clause names the
+    assumptions of the parts folded into it too (`_assumption_items`). A part that is not definite
     contributes `_unresolved_sentence`, and no-data parts refused for the same reason name
     their variables in one sentence (`_shared_refusals`), written where the first of them
     stands. A sentence two parts state alike is stated once, unowned. A departure or
@@ -240,7 +262,7 @@ def _compose_per_part(
         if isinstance(part, DefinitePart):
             sentence = owned(index, plan_tokens(plans[index]))
             texts = _texts(part)
-            clause = _clause([(index, item.text) for item in part.assumptions])
+            clause = _clause(_assumption_items(groups[index]))
         else:
             tokens = _unresolved_sentence(part)
             sentence = refusals.get(

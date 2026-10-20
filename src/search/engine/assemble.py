@@ -412,7 +412,8 @@ def build_definite_part(
     (`RegionResult.assumption_echo`), of which the part states those that still hold
     (`render.assumptions.assumptions_for`), None when it echoed none. ``asked_axes`` are
     the flow axes the request's words asked every member of
-    (`RegionResult.every_member_axes`), which state no open role.
+    (`RegionResult.every_member_axes`); they and the axes ``operations`` run over state no
+    open role.
     """
     # A definite spec must carry at least one confirmed StatVar.
     assert spec.resolved.members, "definite Spec has empty stat_vars"
@@ -436,7 +437,9 @@ def build_definite_part(
             operations=operations,
             entity_words=entity_words,
         ),
-        assumptions=assumptions_for(spec, echo=assumption_echo, asked_axes=asked_axes),
+        assumptions=assumptions_for(
+            spec, echo=assumption_echo, asked_axes=asked_axes, operations=operations
+        ),
     )
 
 
@@ -773,7 +776,8 @@ def build_candidates_part(
     (`_with_readings_substituted`).
     ``request_words`` is false on a door that holds no words of the request (a resubmit).
     ``asked_axes`` are the flow axes the request's words asked every member of
-    (`RegionResult.every_member_axes`), which state no open role.
+    (`RegionResult.every_member_axes`); they and the axes ``operations`` run over state no
+    open role.
     """
     cap = max_candidates if max_candidates is not None else len(specs)
     clamped = list(specs)[:cap]
@@ -803,7 +807,10 @@ def build_candidates_part(
         request_words=request_words,
     )
     assumptions = common_assumptions(
-        clamped, keep_how_properties=keep_how_properties, asked_axes=asked_axes
+        clamped,
+        keep_how_properties=keep_how_properties,
+        asked_axes=asked_axes,
+        operations=operations,
     )
     plan = candidates_sentence_plan(
         clamped,

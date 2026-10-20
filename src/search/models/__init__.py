@@ -159,6 +159,7 @@ from .request import (
     ResubmitParsedEntry,
     ResubmitPlaceholderEntry,
     SourceMention,
+    asked_open_axes,
 )
 from .response import (
     RESOLVE_RESPONSE_ADAPTER,
@@ -447,6 +448,7 @@ __all__ = [
     "ValueKind",
     "Warning",
     "WarningSeverity",
+    "asked_open_axes",
     "coverage_is_empty",
     "departures_in_precedence_order",
     "elect_no_data_reason",
