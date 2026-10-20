@@ -31,17 +31,33 @@ read then runs again, and a digest still unservable, because the frame's object 
 the rendering is not one this build renders, or the render produced other bytes, refuses
 `artifact_expired`, pointing the caller at definition retrieval.
 
+`GET /api/datasets/{id}/{content_version}/file?format=&bundle=&layout=` selects one file of
+the version and answers 302 to it, signed as a link is. The query takes the closed
+namespace's `format`, `bundle` and `layout` (`layout` takes only `frame`), with the definition
+GET's defaults, and any other key refuses `request_invalid` before the version is read. The
+version reads under the same served-id, quarantine and revocation rules as a link. Its options
+are the requested ones laid over the version's own minting options
+(`recorded_rendering.recorded_minting`), so a derived version renders as itself, and a derived
+version whose files record none refuses `artifact_expired`. A file the version's snapshot lists
+under that rendering is signed in hand. Otherwise the version renders from its stored frame
+(`render_version_from_frame`, which a link's renewal also calls) on the work executor under a
+materialise permit and the request deadline, and the redirect names the file the render
+returned. A frame past working retention renews first, and only frame bytes that are gone
+refuse `artifact_expired`. The render's refusals answer as the definition GET's do: an `xlsx`
+over a sheet's limit refuses `excel_limit` (422). A bundle render reads graph metadata for its
+citations.
+
 The read and the signing run on the read executor. Presentation reads frames in process and
-never calls this route.
+never calls these routes.
 """
 
 from __future__ import annotations
 
 import functools
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse
 
 from artifact_store import ArtifactSigningError, ArtifactStore, Tier
@@ -60,27 +76,41 @@ from datasets_api import routing  # noqa: F401
 from datasets_api.admission import bounded_materialise_slot, under_current_coverage
 from datasets_api.artifact_delivery import artifact_content_disposition
 from datasets_api.backpressure import Backpressure
-from datasets_api.codes_materialise import signing_failure_is_permanent
+from datasets_api.codes_materialise import CapabilityUnavailable, signing_failure_is_permanent
 from datasets_api.codes_snapshot import ArtifactExpired, SnapshotSigningFailed, SpecNotFound
 from datasets_api.config import DOWNLOAD_SIGNED_URL_TTL
-from datasets_api.current import DefinitionDeps, StoredFrame, head_rendering, plan_stored_render
+from datasets_api.current import (
+    DefinitionDeps,
+    StoredFrame,
+    StoredTraceMissingResolvedStatVars,
+    head_rendering,
+    plan_stored_render,
+)
 from datasets_api.deps import Deps, DepsCell
 from datasets_api.doors.definition import _run_retrieval, request_definition_deps
-from datasets_api.doors.mint_errors import MintBackpressure
-from datasets_api.doors.snapshot import read_under_served_id
+from datasets_api.doors.mint_errors import MintBackpressure, classify_mint_exception
+from datasets_api.doors.mint_inventory import MINT_EXCEPTION_EXEMPLARS
+from datasets_api.doors.snapshot import read_under_served_id, servable_listable_locations
 from datasets_api.headers import no_store_headers
 from datasets_api.manifest import stored_manifest, stored_manifest_facts
-from datasets_api.manifest_models import CitationModel
-from datasets_api.refusals import classify_datasets_refusal
+from datasets_api.manifest_models import CitationModel, Manifest
+from datasets_api.mint_models import MintOptions
+from datasets_api.query_options import QueryOptionsInvalid, parse_query_options, pointer_for_key
+from datasets_api.recorded_rendering import recorded_minting
 from datasets_api.render import (
+    artifact_rendering_key,
     complete_rendering,
     rendering_options,
+    rendition_token,
     stored_artifact_file_name,
     stored_frame_location,
 )
 from datasets_api.timings import door_call, phase, run_with_timings
+from datasets_api.version_store import rendering_key
 from dfo_platform import ProblemSpec
 from dfo_platform.doors import DoorContribution, route_registry_endpoints
+from materialise.formats import ExcelIllegalCharacterError, ExcelLimitError, ParquetSizeBoundError
+from materialise.reshape import RollupNotSummableError
 from spec_registry import IdentityQuarantined
 
 logger = logging.getLogger(__name__)
@@ -119,7 +149,8 @@ def classify_files_exception(exc: BaseException) -> ProblemSpec | None:
             detail="signing this snapshot's artifact download url failed; retry",
             retryable=True,
         )
-    return classify_datasets_refusal(exc)
+    # A selector render raises the mint's rendering refusals, which its classifier maps.
+    return classify_mint_exception(exc)
 
 
 def _signed_url(
@@ -241,57 +272,50 @@ def _renew(location: StoredArtifactLocation, *, deps: DefinitionDeps) -> bool:
 def _render_renewed(
     aged_frame: StoredArtifactLocation,
     *,
-    render: Callable[..., object],
+    render: Callable[..., Manifest | None],
     deps: DefinitionDeps,
-) -> None:
+) -> Manifest | None:
     """Renew `aged_frame`'s object (`_reupload`) and render from the renewed bytes with
-    `render`, on a coverage snapshot taken here. Bytes that are gone render nothing. The
-    caller holds a materialise permit and binds no frame itself, so the bytes are freed when
-    this returns, before the permit is released."""
+    `render`, on a coverage snapshot taken here, returning what `render` returns. Bytes that
+    are gone render nothing and return `None`. The caller holds a materialise permit and binds
+    no frame itself, so the bytes are freed when this returns, before the permit is
+    released."""
     data = _reupload(aged_frame, deps=deps)
     if data is None:
-        return
-    render(
+        return None
+    return render(
         coverage_snapshot=deps.coverage.snapshot(),
         frame=StoredFrame(location=aged_frame, data=data),
     )
 
 
-def _re_render(
-    clicked: StoredArtifactLocation,
+def render_version_from_frame(
     *,
     stored: ServableVersion,
     subject_ids: tuple[str, ...],
+    options: MintOptions,
     deps: DefinitionDeps,
-) -> None:
-    """Render `clicked`'s rendering again from the stored frame it was rendered from, through
-    the definition head path (`current.head_rendering`), which links the result.
+) -> Manifest | None:
+    """Render `options` of the version `stored` from its stored frame, through the definition
+    head path (`current.head_rendering`), which links the result, and return the manifest that
+    path gives, or `None` when no frame bytes are left to render from. The files door's
+    renewal (`renew_and_resolve`) and the version file selector (`render_and_select`) both
+    render here.
 
     A derived version (`base_content_version` set: a groupby collapse or a party-totals cut)
-    renders from its base version's frame, as its mint did, and the head path links the result
-    under the derived version again. A frame past
-    retention renews first (`_reupload`) and the render takes the renewed bytes, reading the
-    frame once: one materialise slot holds from before the read to the end of the render, and
-    the coverage snapshot is taken inside it. A frame still in retention is read by the head
-    path under its own slot, and the head path decides the source version's refusals
-    (`current.plan_stored_render`) once it has found a servable frame location, so a version
-    with no frame renders nothing and the link answers `artifact_expired`. Before an aged
-    frame renews, `plan_stored_render` decides from the source version's record the refusals
-    it alone decides, so each raises with no frame re-uploaded or rendered and no slot taken.
-    Whether the aged frame's bytes are still in the store is known only by fetching them, so
-    that refusal also answers a link whose frame bytes are gone.
-
-    The options are those of the complete form of `clicked`'s rendering
-    (`render.complete_rendering`), so an incomplete rendering renders as the complete one its
-    request named and the head path links the result under the complete key. The caller's
-    read after the render decides the outcome by digest: a render that gives `clicked`'s
-    bytes makes its link servable, and one that gives other bytes leaves it past retention.
-    The stored frame (`render.stored_frame_location`), statistics renderings, a superseded
-    bundle rendition and an old bare layout have no options that render them
-    (`render.rendering_options`), and a gone frame leaves nothing to render from."""
-    options = rendering_options(complete_rendering(clicked.rendering), site=deps.settings.site)
-    if options is None:
-        return
+    renders from its base version's frame, as its mint did, so `options` carry the derived
+    version's own minting options and the head path links the result under the derived
+    version again. The base version is read under `subject_ids`, so a revoked base refuses
+    `snapshot_revoked`. A frame past retention renews first (`_reupload`) and the render takes
+    the renewed bytes, reading the frame once: one materialise slot holds from before the read
+    to the end of the render, and the coverage snapshot is taken inside it. A frame still in
+    retention is read by the head path under its own slot, and the head path decides the
+    source version's refusals (`current.plan_stored_render`) once it has found a servable frame
+    location, so a version with no frame renders nothing. Before an aged frame renews,
+    `plan_stored_render` decides from the source version's record the refusals it alone
+    decides, so each raises with no frame re-uploaded or rendered and no slot taken. Whether
+    the aged frame's bytes are still in the store is known only by fetching them, so that
+    refusal also answers a version whose frame bytes are gone."""
     source = stored
     if stored.version.base_content_version is not None:
         source = read_servable_version(
@@ -308,13 +332,13 @@ def _re_render(
         deps=deps,
         options=options,
         trace_id=None,
+        revoked_under=subject_ids,
     )
     aged_frame = stored_frame_location(source.aged_out)
     if aged_frame is None:
-        under_current_coverage(
+        return under_current_coverage(
             deps.coverage.snapshot, lambda snapshot: render(coverage_snapshot=snapshot)
         )
-        return
     plan = plan_stored_render(
         stored_manifest(source.version),
         options=options,
@@ -328,16 +352,22 @@ def _re_render(
         wait_seconds=deps.settings.materialise_wait_seconds,
         deadline=deps.deadline,
     ):
-        _render_renewed(aged_frame, render=functools.partial(render, plan=plan), deps=deps)
+        return _render_renewed(aged_frame, render=functools.partial(render, plan=plan), deps=deps)
 
 
 def renew_and_resolve(*, id: str, content_version: str, digest: str, deps: DefinitionDeps) -> str:
     """Renew the digest's object, then resolve the link as `resolve_link` does.
 
-    The clicked digest's own object renews when still present (`_renew`); otherwise its
-    rendering renders again (`_re_render`). The version is then read again in full, so a
-    re-render that linked other bytes in the digest's place refuses `ArtifactExpired`, as does
-    a digest still not servable.
+    The clicked digest's own object renews when still present (`_renew`). Otherwise its
+    rendering renders again from the stored frame (`render_version_from_frame`) under the
+    options of its complete form (`render.complete_rendering`), so an incomplete rendering
+    renders as the complete one its request named and the head path links the result under
+    the complete key. The stored frame (`render.stored_frame_location`), statistics renderings,
+    a superseded bundle rendition and an old bare layout have no options that render them
+    (`render.rendering_options`) and render nothing. The version is then read again in full and
+    decides the outcome by digest: a render that gives the clicked bytes makes the link
+    servable, and a render that linked other bytes in the digest's place refuses
+    `ArtifactExpired`, as does a digest still not servable.
     """
     stored, subject_ids, location = _read(
         id=id, content_version=content_version, digest=digest, deps=deps
@@ -345,7 +375,14 @@ def renew_and_resolve(*, id: str, content_version: str, digest: str, deps: Defin
     if location is None:
         clicked = next(loc for loc in stored.aged_out if loc.artifact_digest == digest)
         if not _renew(clicked, deps=deps):
-            _re_render(clicked, stored=stored, subject_ids=subject_ids, deps=deps)
+            # The complete form of an incomplete rendering renders as the request named it.
+            options = rendering_options(
+                complete_rendering(clicked.rendering), site=deps.settings.site
+            )
+            if options is not None:
+                render_version_from_frame(
+                    stored=stored, subject_ids=subject_ids, options=options, deps=deps
+                )
         stored = read_servable_version(
             deps.snapshot_reader,
             subject_id=stored.version.subject_id,
@@ -359,6 +396,179 @@ def renew_and_resolve(*, id: str, content_version: str, digest: str, deps: Defin
     return _signed_url(location, stored=stored, artifact_store=deps.artifact_store)
 
 
+SELECTOR_QUERY_KEYS = frozenset({"format", "bundle", "layout"})
+"""The query keys the version file selector reads. A reshape (`groupby.*`, `pivot.*`,
+`columns`, `without_party_totals`) makes another dataset, which `GET /api/datasets/{id}`
+serves."""
+
+# The rendering refusals a render from the stored frame can raise for a format, a bundle, a
+# layout and a derived version's own minting options.
+_SELECTOR_RENDERING_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
+    StoredTraceMissingResolvedStatVars,
+    CapabilityUnavailable,
+    ExcelLimitError,
+    ExcelIllegalCharacterError,
+    ParquetSizeBoundError,
+    RollupNotSummableError,
+)
+
+
+def selector_options(items: Sequence[tuple[str, str]]) -> MintOptions:
+    """The options the selector's query `items` name, parsed as the definition GET parses its
+    closed namespace (`query_options.parse_query_options`). A key outside
+    `SELECTOR_QUERY_KEYS` raises `QueryOptionsInvalid` at its body pointer."""
+    for key, _value in items:
+        if key not in SELECTOR_QUERY_KEYS:
+            raise QueryOptionsInvalid(
+                pointer=pointer_for_key(key),
+                detail=(
+                    f"query key {key!r} does not select a stored version's file; the file "
+                    "selector reads format, bundle and layout, and GET /api/datasets/{id} "
+                    "reshapes a dataset"
+                ),
+            )
+    return parse_query_options(items)
+
+
+def _read_version(
+    *, id: str, content_version: str, deps: Deps | DefinitionDeps
+) -> tuple[ServableVersion, tuple[str, ...]]:
+    """The version the path names, read under the served ids bound to `id`
+    (`read_under_served_id`), and the ids whose revocation withdraws it."""
+
+    def _read_under(
+        subject_id: str, subject_ids: tuple[str, ...]
+    ) -> tuple[ServableVersion, tuple[str, ...]]:
+        stored = read_servable_version(
+            deps.snapshot_reader,
+            subject_id=subject_id,
+            content_version=content_version,
+            now=deps.now(),
+            revoked_under=subject_ids,
+        )
+        return stored, subject_ids
+
+    return read_under_served_id(id=id, spec_reader=deps.spec_reader, read=_read_under)
+
+
+def _version_options(stored: ServableVersion, requested: MintOptions, *, id: str) -> MintOptions:
+    """`requested` laid over the minting options of the version `stored`, so a derived version
+    renders as itself. A raw version has none. A derived version takes the ones a file linked
+    under it records (`recorded_rendering.recorded_minting`), and one whose files record none
+    refuses `ArtifactExpired`, as it has no options that render it."""
+    if stored.version.base_content_version is None:
+        return requested
+    minting = recorded_minting(loc.rendering for loc in (*stored.servable, *stored.aged_out))
+    if minting is None:
+        raise ArtifactExpired(id=id, content_version=stored.version.content_version)
+    return requested.model_copy(
+        update={
+            "groupby": minting.groupby,
+            "without_party_totals": minting.without_party_totals,
+        }
+    )
+
+
+def select_file(*, id: str, content_version: str, requested: MintOptions, deps: Deps) -> str | None:
+    """The signed URL of the file the version links under the rendering `requested` names, or
+    `None` when the version lists no servable file of that rendering and it must render first
+    (`render_and_select`). The version's listable files are the ones its snapshot lists
+    (`doors.snapshot.servable_listable_locations`).
+
+    Raises `SpecNotFound`, `IdentityQuarantined`, `SnapshotNotFound`, `SnapshotRevoked` or
+    `ArtifactExpired` before any signing."""
+    stored, _subject_ids = _read_version(id=id, content_version=content_version, deps=deps)
+    key = artifact_rendering_key(
+        _version_options(stored, requested, id=id), site=deps.settings.site
+    )
+    listable = servable_listable_locations(
+        stored.servable, now=deps.now(), rendition=rendition_token(deps.settings.site)
+    )
+    location = next((loc for loc in listable if loc.rendering_key == key), None)
+    if location is None:
+        return None
+    return _signed_url(location, stored=stored, artifact_store=deps.artifact_store)
+
+
+def render_and_select(
+    *, id: str, content_version: str, requested: MintOptions, deps: DefinitionDeps
+) -> str:
+    """Render the rendering `requested` names of the version from its stored frame
+    (`render_version_from_frame`) and return the signed URL of the file the render returned.
+
+    The returned file is the manifest's artifact whose complete rendering
+    (`render.complete_rendering`) is the requested one, and the URL names it by digest, so a
+    render linked as incomplete (`render.incomplete_rendering`) is served too. A version with
+    no frame bytes left, or a render that gives another version, refuses `ArtifactExpired`."""
+    stored, subject_ids = _read_version(id=id, content_version=content_version, deps=deps)
+    options = _version_options(stored, requested, id=id)
+    manifest = render_version_from_frame(
+        stored=stored, subject_ids=subject_ids, options=options, deps=deps
+    )
+    key = artifact_rendering_key(options, site=deps.settings.site)
+    artifact = (
+        next(
+            (
+                a
+                for a in manifest.artifacts
+                if rendering_key(complete_rendering(a.rendering)) == key
+            ),
+            None,
+        )
+        if manifest is not None and manifest.content_version == content_version
+        else None
+    )
+    if artifact is None:
+        raise ArtifactExpired(id=id, content_version=content_version)
+    rendered = read_servable_version(
+        deps.snapshot_reader,
+        subject_id=stored.version.subject_id,
+        content_version=content_version,
+        now=deps.now(),
+        artifact_digest=artifact.artifact_digest,
+        revoked_under=subject_ids,
+    )
+    location = rendered.servable_digest(artifact.artifact_digest)
+    if location is None:
+        raise ArtifactExpired(id=id, content_version=content_version)
+    return _signed_url(location, stored=rendered, artifact_store=deps.artifact_store)
+
+
+_SELECTOR_QUERY_PARAMETERS: list[dict[str, object]] = [
+    {
+        "name": "format",
+        "in": "query",
+        "required": False,
+        "description": "the file format; csv when absent",
+        "schema": {"type": "string", "enum": ["csv", "xlsx", "parquet"], "default": "csv"},
+    },
+    {
+        "name": "bundle",
+        "in": "query",
+        "required": False,
+        "description": "true for a zip bundle with its documentation; true when absent",
+        "schema": {"type": "boolean", "default": True},
+    },
+    {
+        "name": "layout",
+        "in": "query",
+        "required": False,
+        "description": "frame for a bare parquet file in the frame layout; needs bundle=false",
+        "schema": {"type": "string", "enum": ["frame"]},
+    },
+]
+
+_REDIRECT_RESPONSE = {
+    "description": "a redirect to the artifact's bytes",
+    "headers": {
+        "Location": {
+            "description": "a GET URL signed for at most five minutes",
+            "schema": {"type": "string"},
+        }
+    },
+}
+
+
 def build_files_door(*, deps: DepsCell) -> DoorContribution:
     """Build the download door over the surface's dependency cell. The read and the signing run
     on the read executor, and a renewal on the work executor under the request deadline."""
@@ -368,17 +578,7 @@ def build_files_door(*, deps: DepsCell) -> DoorContribution:
         "/api/datasets/{id:dfo_spec_id}/{content_version}/files/{digest}",
         status_code=302,
         response_class=RedirectResponse,
-        responses={
-            302: {
-                "description": "a redirect to the artifact's bytes",
-                "headers": {
-                    "Location": {
-                        "description": "a GET URL signed for at most five minutes",
-                        "schema": {"type": "string"},
-                    }
-                },
-            }
-        },
+        responses={302: _REDIRECT_RESPONSE},
     )
     async def get_file(id: str, content_version: str, digest: str) -> RedirectResponse:
         current = deps.get()
@@ -410,6 +610,46 @@ def build_files_door(*, deps: DepsCell) -> DoorContribution:
             url, status_code=302, headers=no_store_headers(server_timing=call.server_timing)
         )
 
+    @router.get(
+        "/api/datasets/{id:dfo_spec_id}/{content_version}/file",
+        status_code=302,
+        response_class=RedirectResponse,
+        responses={302: _REDIRECT_RESPONSE},
+        openapi_extra={"parameters": _SELECTOR_QUERY_PARAMETERS},
+    )
+    async def get_version_file(id: str, content_version: str, request: Request) -> RedirectResponse:
+        """Redirect to the version's file in the format, bundle and layout the query names,
+        rendering it from the version's stored frame when the version links none."""
+        requested = selector_options(request.query_params.multi_items())
+        current = deps.get()
+        with door_call("file_selector", logger=logger) as call:
+            url = await current.read_executor.run(
+                functools.partial(
+                    run_with_timings,
+                    select_file,
+                    call.timings,
+                    id=id,
+                    content_version=content_version,
+                    requested=requested,
+                    deps=current,
+                ),
+                refuse=DownloadBackpressure,
+            )
+            if url is None:
+                url = await _run_retrieval(
+                    current.work_executor,
+                    render_and_select,
+                    deps=request_definition_deps(current),
+                    timings=call.timings,
+                    refuse=DownloadBackpressure,
+                    id=id,
+                    content_version=content_version,
+                    requested=requested,
+                )
+        return RedirectResponse(
+            url, status_code=302, headers=no_store_headers(server_timing=call.server_timing)
+        )
+
     return DoorContribution(
         router=router,
         registry_endpoints=route_registry_endpoints(router, "datasets.files"),
@@ -429,6 +669,9 @@ def build_files_door(*, deps: DepsCell) -> DoorContribution:
             SnapshotSigningFailed,
             # Wrapped before classification, but signing can raise it.
             ArtifactSigningError,
+            # The file selector's query and its render from the stored frame.
+            QueryOptionsInvalid,
+            *_SELECTOR_RENDERING_EXCEPTION_TYPES,
         ),
         exception_exemplars=(
             SpecNotFound(id="spec_exemplar"),
@@ -449,6 +692,15 @@ def build_files_door(*, deps: DepsCell) -> DoorContribution:
             ),
             ArtifactSigningError(
                 bucket="exemplar-bucket", object_name="sha256:exemplar", digest="sha256:exemplar"
+            ),
+            QueryOptionsInvalid(pointer="/options/exemplar", detail="exemplar"),
+            StoredTraceMissingResolvedStatVars(
+                subject_id="spec_exemplar", content_version="cv_exemplar"
+            ),
+            *(
+                exemplar
+                for exemplar in MINT_EXCEPTION_EXEMPLARS
+                if isinstance(exemplar, _SELECTOR_RENDERING_EXCEPTION_TYPES)
             ),
         ),
     )
