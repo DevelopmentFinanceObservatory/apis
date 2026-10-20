@@ -574,7 +574,9 @@ class ResubmitIdentityEntry(StrictModel):
         max_length=_RESUBMIT_MAX_ASSUMPTIONS,
         description=(
             "the assumptions of the part this entry rebuilds, echoed as the response "
-            "gave them. The rebuilt part states the echoed items that still hold, each "
+            "gave them: a definite part's assumptions, or, for a reading picked from a "
+            "candidates part, that part's reading_assumptions under the reading's "
+            "spec_id. The rebuilt part states the echoed items that still hold, each "
             "worded from the rebuilt answer: a declared_default whose slot (binding_ref) "
             "still binds exactly the echoed refs, an open_role whose axis the answer "
             "still reads across every member with no entity of the identity's, and a "

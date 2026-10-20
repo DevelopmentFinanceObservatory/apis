@@ -783,8 +783,9 @@ def build_candidates_part(
     ``request_words`` is false on a door that holds no words of the request (a resubmit).
     ``asked_axes`` are the flow axes the request's words asked every member of
     (`RegionResult.every_member_axes`); they and the axes ``operations`` run over state no
-    open role. ``own_spec`` is the part's own Spec before a same-shape merge gave it
-    ``spec``, from which its declared defaults are read; None when ``spec`` is its own.
+    open role. The part's assumptions are the items every shown reading yields alike
+    (`common_assumptions`); `CandidatesPart.reading_assumptions` holds each reading's own
+    list, as a definite part answering it would carry (`assumptions_for`).
     """
     cap = max_candidates if max_candidates is not None else len(specs)
     clamped = list(specs)[:cap]
@@ -819,6 +820,11 @@ def build_candidates_part(
         asked_axes=asked_axes,
         operations=operations,
     )
+    # What each reading assumes once picked: the list its definite part would carry.
+    reading_assumptions = {
+        spec.spec_id: assumptions_for(spec, asked_axes=asked_axes, operations=operations)
+        for spec in clamped
+    }
     plan = candidates_sentence_plan(
         clamped,
         departures=departures,
@@ -852,4 +858,5 @@ def build_candidates_part(
         operations=list(operations),
         departures=departures,
         assumptions=assumptions,
+        reading_assumptions=reading_assumptions,
     )

@@ -5,7 +5,10 @@ default, official development assistance (CRSTypeOfFlow10, short name "ODA"), an
 fixture's heading reads both flow roles open ("to all recipients from all providers").
 A resubmit posts the identity whole, so the engine records the flow
 as posted, and the part keeps the default only through the entry's `assumptions` echo,
-matched to the rebuilt slot by its value dcids.
+matched to the rebuilt slot by its value dcids. A candidates entry posting the aid
+reading beside a loan reading, whose debt roles read "every debtor" and "every creditor",
+shows a part whose readings share no item, each reading's own list in
+`reading_assumptions`.
 """
 
 from __future__ import annotations
@@ -17,13 +20,17 @@ from search.engine.extract import ExtractedEntity, ExtractedOperation, Extractio
 from search.models import (
     Assumption,
     BaseIdentity,
+    CandidatesPart,
     DatasetResubmitInput,
     DefinitePart,
     IdentityBindingValue,
     IdentityWindowRange,
+    Operation,
     RawTextInput,
     ResolveOptions,
     ResolveRequest,
+    ResubmitCandidate,
+    ResubmitCandidatesEntry,
     ResubmitIdentityEntry,
 )
 from tests.engine._harness import make_request, offline_resolve
@@ -375,3 +382,151 @@ def test_a_folded_part_states_only_its_own_assumptions():
         for token in response.sentence_plan
         if token.segment == "assumption" and token.text in items
     ] == [0, 0]
+
+
+# A loan disbursement series outside the code index: its `financialFlowType` puts it in the
+# debt lending family, whose roles read "every debtor" and "every creditor" where the aid
+# series reads "every recipient" and "every provider".
+_LOAN_SV_DCID = "TESTFIXTURE/AnswerAssumptionsE2E/LoanDisbursement"
+_ASSUMED_LOAN_ROLES = [
+    Assumption(kind="open_role", binding_ref="where:", text="every debtor"),
+    Assumption(kind="open_role", binding_ref="origin:", text="every creditor"),
+]
+
+
+def _graph_with_loans() -> FakeGraph:
+    """The fixture graph with the loan series beside the aid one, both held at Kenya."""
+    return FakeGraph(
+        nodes={
+            **_E2E_NODES,
+            _LOAN_SV_DCID: {
+                "label": "test loan disbursements",
+                "type": "StatisticalVariable",
+                "arcs": {
+                    "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
+                    "populationType": {"nodes": [{"dcid": "FinancialFlow"}]},
+                    "measuredProperty": {"nodes": [{"dcid": "amount"}]},
+                    "statType": {"nodes": [{"dcid": "measuredValue"}]},
+                    "constraintProperties": {"nodes": [{"dcid": "financialFlowType"}]},
+                    "financialFlowType": {"nodes": [{"dcid": "Disbursement"}]},
+                },
+            },
+            "Disbursement": {"label": "disbursement"},
+        },
+        detect={"loans": {"svs": [_LOAN_SV_DCID], "cosine_scores": [0.9]}},
+        resolve={"Kenya": "country/KEN"},
+        obs={
+            **_E2E_OBS,
+            f"{_LOAN_SV_DCID}|country/KEN": [
+                {"earliestDate": "2020", "latestDate": "2020", "obsCount": 3}
+            ],
+        },
+    )
+
+
+def _loan_identity() -> BaseIdentity:
+    """The identity a fresh "loans to Kenya" answers with."""
+    response = offline_resolve(
+        make_request("loans to Kenya"),
+        graph=_graph_with_loans(),
+        llm=_ScriptedLLM(
+            Extraction(
+                kind="resolution", variables=["loans"], entities=[ExtractedEntity(text="Kenya")]
+            )
+        ),
+        sdmx=_EMPTY_SDMX,
+    )
+    part = response.parts[0]
+    assert isinstance(part, DefinitePart)
+    assert part.assumptions == _ASSUMED_LOAN_ROLES
+    return part.spec.definition.identity
+
+
+def _post(entry: ResubmitIdentityEntry | ResubmitCandidatesEntry):
+    """The response to a dataset_resubmit of ``entry`` alone, on the loan graph."""
+    return offline_resolve(
+        ResolveRequest(
+            input=DatasetResubmitInput(entries=[entry]), response_options=ResolveOptions()
+        ),
+        graph=_graph_with_loans(),
+        llm=_OpenFlowAndSectorBindLLM(Extraction(kind="resolution", variables=[], entities=[])),
+        sdmx=_EMPTY_SDMX,
+    )
+
+
+def _aid_or_loans(operations: list[Operation]) -> CandidatesPart:
+    """The candidates part a dataset_resubmit of the aid and loan readings answers with."""
+    response = _post(
+        ResubmitCandidatesEntry(
+            variable_text="aid flows",
+            ordering="intent_rank",
+            truncated=False,
+            candidates=[
+                ResubmitCandidate(identity=_first_answer().spec.definition.identity),
+                ResubmitCandidate(identity=_loan_identity()),
+            ],
+            operations=operations,
+        )
+    )
+    part = response.parts[0]
+    assert isinstance(part, CandidatesPart)
+    assert response.rendered_sentence is not None
+    assert "Assumed:" not in response.rendered_sentence
+    return part
+
+
+@pytest.mark.parametrize(
+    ("operations", "aid", "loans"),
+    [
+        pytest.param([], _ASSUMED_ROLES, _ASSUMED_LOAN_ROLES, id="no-operation"),
+        # A rank over the destination asks it on every reading, leaving the origin open.
+        pytest.param(
+            [Operation(verb="rank", phrase="top 5 recipients", over="destination")],
+            _ASSUMED_ROLES[1:],
+            _ASSUMED_LOAN_ROLES[1:],
+            id="rank-over-destination",
+        ),
+    ],
+)
+def test_a_candidates_part_lists_each_reading_s_own_assumptions(
+    operations: list[Operation], aid: list[Assumption], loans: list[Assumption]
+):
+    """The aid reading assumes every provider where the loan reading assumes every creditor,
+    so the readings share no item: the part and its clause state none, and
+    reading_assumptions holds what each reading assumes once picked, read with the part's
+    operations."""
+    part = _aid_or_loans(operations)
+    assert part.assumptions == []
+    aid_spec, loan_spec = part.candidates.specs
+    assert part.reading_assumptions == {aid_spec.spec_id: aid, loan_spec.spec_id: loans}
+
+
+@pytest.mark.parametrize(
+    ("echo", "expected"),
+    [
+        pytest.param("reading", _ASSUMED_LOAN_ROLES, id="reading-assumptions"),
+        # The part's shared list leaves out every item the readings word differently.
+        pytest.param("part", [], id="part-assumptions"),
+    ],
+)
+def test_a_picked_reading_echoing_its_own_list_states_it(echo: str, expected: list[Assumption]):
+    """A client picks the loan reading and posts its identity with an echo: the reading's
+    own list states what that reading assumed, the part's shared list states none."""
+    part = _aid_or_loans([])
+    loan_spec = part.candidates.specs[1]
+    echoed = part.reading_assumptions[loan_spec.spec_id] if echo == "reading" else part.assumptions
+    response = _post(
+        ResubmitIdentityEntry(
+            variable_text="aid flows",
+            identity=loan_spec.definition.identity,
+            assumptions=echoed,
+        )
+    )
+    picked = response.parts[0]
+    assert isinstance(picked, DefinitePart)
+    assert picked.spec.spec_id == loan_spec.spec_id
+    assert picked.assumptions == expected
+    assert response.rendered_sentence is not None
+    clause = "; ".join(item.text for item in expected)
+    assert response.rendered_sentence.endswith(f" Assumed: {clause}." if expected else ".")
+    assert ("Assumed:" in response.rendered_sentence) == bool(expected)

@@ -24,9 +24,11 @@ class Assumption(StrictModel):
     """One value the answer filled that its request did not ask for, stated for people
     in `text` and for code in `kind`, `binding_ref` and `refs`.
 
-    Assumptions live on the part (`_PartBase.assumptions`). The sentence that carries
-    the part closes with them as one clause: "Assumed: official development assistance;
-    every provider."
+    Assumptions live on the part (`_PartBase.assumptions`), and a candidates part holds
+    each shown reading's own list as well (`CandidatesPart.reading_assumptions`), the one
+    a client echoes on a dataset_resubmit after picking that reading. The sentence that
+    carries the part closes with them as one clause: "Assumed: official development
+    assistance; every provider."
     """
 
     kind: AssumptionKind = Field(

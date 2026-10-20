@@ -162,6 +162,7 @@ class _PartBase(StrictModel):
             "every member of ('all donors'), is asked. The place scope is a "
             "request that named no place, read across every place with data. Filled on every door: on a definite part from its "
             "Spec, on a candidates part the items every shown reading's Spec yields alike, "
+            "text included (each reading's own list is CandidatesPart.reading_assumptions), "
             "[] on no_data and unsupported. A dataset_resubmit identity entry posts every "
             "slot bound, so its part states the items of the entry's assumptions echo "
             "that still hold (see ResubmitIdentityEntry.assumptions). The sentence that "
@@ -200,6 +201,22 @@ class CandidatesPart(_PartBase):
         description="this part's variable was genuinely ambiguous"
     )
     candidates: CandidateSet = Field(description="2..N competing Specs")
+    reading_assumptions: dict[str, list[Assumption]] = Field(
+        default_factory=dict,
+        description=(
+            "each shown reading's own assumptions, keyed by its Spec's spec_id "
+            "(candidates.specs[].spec_id): the list a definite part answering that Spec "
+            "for this part's request carries, read with the part's operations and the "
+            "axes the request's words asked every member of. The part's own assumptions "
+            "keep only the items every reading yields alike, text included, so an open "
+            "role one reading reads, or an item two readings word differently ('every "
+            "provider' against 'every creditor'), is stated here alone. A client that "
+            "picks a reading posts its identity as a dataset_resubmit identity entry and "
+            "echoes reading_assumptions[spec_id] as the entry's assumptions, so the picked "
+            "answer states what that reading assumed. [] for a reading that assumes "
+            "nothing"
+        ),
+    )
 
 
 class NoDataPart(_PartBase):
