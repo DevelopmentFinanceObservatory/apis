@@ -1685,13 +1685,13 @@
           role: observationAbout
 - id: nd-06
   query: female urban literacy rate
-  why: Female urban literacy rate with no place ends no_data with qualifier_not_bound, because the literacy family declares no gender or residence slot.
+  why: Female urban literacy rate ends no_data, because no literacy series combines a sex and a residence breakdown.
   tags:
     directional_flow: na
     conjunction: none
   expect:
     no_data:
-      reason: qualifier_not_bound
+      reason: [qualifier_not_bound, no_matching_slice]
       category: absent
 - id: nd-07
   query: teacher count per capita in Kenya
