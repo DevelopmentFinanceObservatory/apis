@@ -45,7 +45,6 @@ from typing import TYPE_CHECKING, cast
 
 import pytest
 
-from code_index import shared as code_index_shared
 from code_index.types import StatVarRow
 from datasets_api.adapter import resolve_definition_members
 from dfo_platform.roles import ROLE_AXES
@@ -97,6 +96,7 @@ from tests.engine._fake_coverage import FakeCoverageService, build_coverage_inde
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
+from tests.graph_release.support import serving_index
 from tests.statvar_members.role_grid import (
     ASKED_AGAIN,
     DESTINATION,
@@ -170,7 +170,7 @@ def _process_index(path: str, population: Population) -> Iterator[None]:
     if path != SYNTHETIC_INDEX:
         yield
         return
-    with code_index_shared._singleton.poisoned_for_test(synthetic_index(population.name)):
+    with serving_index(synthetic_index(population.name)):
         yield
 
 
@@ -574,7 +574,7 @@ def test_search_admits_from_a_shared_family_what_the_mint_serves_for_its_identit
             refusal = "role_incompatible"
         elif election.tied:
             refusal = "role_signature_incompatible"
-        with code_index_shared._singleton.poisoned_for_test(shared_index(cell.family.name)):
+        with serving_index(shared_index(cell.family.name)):
             admitted = _shared_admitted(cell, dataset)
             if isinstance(admitted, NoDataDraft):
                 if admitted.reason != refusal:
@@ -820,7 +820,7 @@ def test_a_question_opening_both_axes_over_two_datasets_mints_what_the_mint_serv
     )
     providers = [row for row in index.statvars if row.observation_properties == _PROVIDER]
 
-    with code_index_shared._singleton.poisoned_for_test(index):
+    with serving_index(index):
         # Each provider row's facet takes the dataset the index records the row under.
         coverage = FakeCoverageService(
             build_coverage_index(

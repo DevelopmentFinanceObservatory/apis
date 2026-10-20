@@ -229,7 +229,7 @@ def diff_coverage(
             )
         )
     else:
-        differ, examples = _row_diff(rows, published)
+        differ, examples = row_diff(rows, published)
         if differ:
             findings.append(
                 GateFinding(
@@ -257,10 +257,12 @@ def diff_coverage(
     )
 
 
-def _row_diff(ours: pa.Table, theirs: pa.Table) -> tuple[int, tuple[str, ...]]:
+def row_diff(
+    ours: pa.Table, theirs: pa.Table, *, examples: int = _EXAMPLES
+) -> tuple[int, tuple[str, ...]]:
     """How many series keys hold different rows in `ours` and `theirs`, a key held by one
-    table only, or more than once by one table, counting as one, and the first few in key code
-    order.
+    table only, or more than once by one table, counting as one, and the first `examples` in
+    key code order.
 
     Each key column becomes codes into the union of both tables' dictionaries, so no key is
     decoded and no join builds a table. The codes fold into one dense rank per key. The rows of
@@ -295,7 +297,7 @@ def _row_diff(ours: pa.Table, theirs: pa.Table) -> tuple[int, tuple[str, ...]]:
     differs[np.flatnonzero(paired)[unequal]] = True
 
     found = first[differs]
-    examples = tuple(
+    keys = tuple(
         " ".join(
             str(value)
             for value in (ours.slice(row, 1) if row < size else theirs.slice(row - size, 1))
@@ -303,9 +305,9 @@ def _row_diff(ours: pa.Table, theirs: pa.Table) -> tuple[int, tuple[str, ...]]:
             .to_pylist()[0]
             .values()
         )
-        for row in found[:_EXAMPLES].tolist()
+        for row in found[:examples].tolist()
     )
-    return len(found), examples
+    return len(found), keys
 
 
 def _union(*columns: pa.ChunkedArray) -> pa.Array:
@@ -484,6 +486,7 @@ __all__ = [
     "diff_coverage",
     "diff_origin_arcs",
     "index_report",
+    "row_diff",
     "shadow_builds",
     "shadow_diff",
 ]

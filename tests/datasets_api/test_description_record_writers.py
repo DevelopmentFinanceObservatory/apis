@@ -381,6 +381,20 @@ def test_a_rewrite_leaves_a_record_of_a_later_schema_as_it_stands(
     assert (row["schema_version"], row["record"]) == (SCHEMA_VERSION + 1, later)
 
 
+def _summing_steps() -> list[dict[str, object]]:
+    """`quotient_steps` and a sum step, which names a graph ref the record's labels are read
+    for."""
+    return [
+        *quotient_steps(),
+        {
+            "id": "s4",
+            "op": "sum_variables",
+            "input": "s3",
+            "summed": {"count": 1, "variables": [{"ref": "Count_Person"}]},
+        },
+    ]
+
+
 @pytest.mark.parametrize(
     "error",
     [
@@ -404,16 +418,7 @@ def test_a_publish_label_read_is_bounded_and_a_failed_one_still_stores_the_recor
 
     monkeypatch.setattr(EnrichmentLookup, "lookup", failing)
     store = FakeVersionRecordDatasetStore()
-    # A sum step names a graph ref, which the record's labels are read for.
-    steps = [
-        *quotient_steps(),
-        {
-            "id": "s4",
-            "op": "sum_variables",
-            "input": "s3",
-            "summed": {"count": 1, "variables": [{"ref": "Count_Person"}]},
-        },
-    ]
+    steps = _summing_steps()
     started = time.monotonic()
 
     response = publish(datasets_client(store), publish_body(steps=steps))
@@ -426,6 +431,23 @@ def test_a_publish_label_read_is_bounded_and_a_failed_one_still_stores_the_recor
     assert record is not None
     assert served_steps(record) == steps
     assert record.evidence.labels == []
+
+
+def test_a_publish_reads_its_labels_under_the_requests_graph_release(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With `GRAPH_RELEASE_COVERAGE` on, the label read on the work executor reads the code
+    index from the release the request bound, so the record is stored. Lost on the pool thread,
+    the binding would fail the read and leave the version without a record."""
+    monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1")
+    store = FakeVersionRecordDatasetStore()
+
+    response = publish(datasets_client(store), publish_body(steps=_summing_steps()))
+
+    assert response.status_code == 200, response.text
+    record = read_record(store, subject_id=OPS_ID, content_version=OCV)
+    assert record is not None
+    assert served_steps(record) == _summing_steps()
 
 
 def test_a_publish_builds_its_record_once(monkeypatch: pytest.MonkeyPatch) -> None:

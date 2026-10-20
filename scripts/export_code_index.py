@@ -70,6 +70,7 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from code_index.declarations import (
     CODE_SYSTEMS,
@@ -109,6 +110,9 @@ from code_index.types import (
 from dc_graph import GraphClient
 from dfo_platform.roles import RoleAxis
 
+if TYPE_CHECKING:
+    from series_coverage.loader import LoadedCoverage
+
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_OUT = (
     _REPO_ROOT / "packages" / "dfo-data-tools" / "src" / "code_index" / "data" / "index.json.gz"
@@ -129,15 +133,19 @@ class CoverageJoin:
 
 
 def load_coverage_join(base_uri: str, *, datasets: Collection[str]) -> CoverageJoin:
-    """Load the published coverage build under `base_uri` and read its variable provenances and
-    the parties on the facets of the `datasets` provenances.
+    """`coverage_join` of the published coverage build under `base_uri`.
 
     `series_coverage` needs the `coverage` extra, which the graph-only callers of this module
     run without, so the import stays inside this function.
     """
     from series_coverage.loader import load_coverage
 
-    loaded = load_coverage(base_uri)
+    return coverage_join(load_coverage(base_uri), datasets=datasets)
+
+
+def coverage_join(loaded: LoadedCoverage, *, datasets: Collection[str]) -> CoverageJoin:
+    """The variable provenances of the coverage build `loaded` and the parties on the facets
+    of the `datasets` provenances."""
     publishers: dict[str, set[str]] = defaultdict(set)
     axes: dict[str, set[RoleAxis]] = defaultdict(set)
     for dataset in datasets:

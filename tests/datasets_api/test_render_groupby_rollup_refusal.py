@@ -94,7 +94,7 @@ _SOLE_CONTRIBUTOR_TABLE = Table(
 
 
 def _enrichment() -> EnrichmentLookup:
-    return EnrichmentLookup(FakeMintGraphReader(), parties={})
+    return EnrichmentLookup(FakeMintGraphReader(), parties=lambda: {})
 
 
 def test_by_omitting_stat_var_refuses_when_no_summable_axis_and_multiple_contributors():

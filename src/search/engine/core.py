@@ -268,7 +268,7 @@ async def resolve_events(
     else:
         _shared_resolvekit = acquire_shared()
         _resolver = EntityResolver(
-            graph=_graph, shared=_shared_resolvekit, generation=generation, code_index=get_index()
+            graph=_graph, shared=_shared_resolvekit, generation=generation, code_index=get_index
         )
     _admission = (
         admission if admission is not None else Admission(graph=_graph, generation=generation)

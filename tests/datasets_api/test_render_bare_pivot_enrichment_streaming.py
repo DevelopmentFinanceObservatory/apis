@@ -45,7 +45,7 @@ def _whole():
         options=_options(),
         entity_columns=("recipient",),
         reads=_RenderReads(
-            enrichment=EnrichmentLookup(_GRAPH, parties={}), known={}, deadline=None
+            enrichment=EnrichmentLookup(_GRAPH, parties=lambda: {}), known={}, deadline=None
         ),
         code_index=None,
         resolved_stat_var_refs=(),
@@ -60,7 +60,7 @@ def _streamed(bounds: list[int]):
         options=_options(),
         entity_columns=("recipient",),
         reads=_RenderReads(
-            enrichment=EnrichmentLookup(_GRAPH, parties={}), known={}, deadline=None
+            enrichment=EnrichmentLookup(_GRAPH, parties=lambda: {}), known={}, deadline=None
         ),
         code_index=None,
         resolved_stat_var_refs=(),

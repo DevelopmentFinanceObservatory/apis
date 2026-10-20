@@ -332,14 +332,20 @@ def _client() -> Langfuse:
 def _run_nightly(
     by_file: Mapping[str, Sequence[Case]], url: str, schema: Mapping[str, Any], langfuse: Langfuse
 ) -> tuple[list[NightlyCase], dict[str, str | None]]:
+    from graph_release.context import bound_served_release, optional_release_service
     from origin_catalogue import bound_catalogue
     from origin_catalogue.service import get_catalogue_service
     from search.eval.live_clients import score_clients
 
-    # The graph client reads under a bound origin catalogue; the experiment's tasks and the
-    # scoring threads inherit this binding.
+    # The graph client reads under a bound origin catalogue, and the served graph release when
+    # `GRAPH_RELEASE_URI` is set. The experiment's tasks and the scoring threads inherit both
+    # bindings.
     catalogue = get_catalogue_service().snapshot()
-    with score_clients() as clients, bound_catalogue(catalogue):
+    with (
+        score_clients() as clients,
+        bound_catalogue(catalogue),
+        bound_served_release(optional_release_service()),
+    ):
         ctx = ScoreContext(
             schema=WireSchema.from_document(schema),
             graph=clients.graph,

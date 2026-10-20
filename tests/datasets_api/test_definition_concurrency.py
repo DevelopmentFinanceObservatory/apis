@@ -390,7 +390,7 @@ def test_broken_thread_pool_surfaces_as_internal_error_not_backpressure(
     graph = _default_graph()
     spec_id = _mint_one_spec(_client(graph=graph, store=store, work_max_concurrency=1))
 
-    monkeypatch.setattr(door_executor, "ThreadPoolExecutor", BrokenSubmitExecutor)
+    monkeypatch.setattr(door_executor, "ContextCarryingExecutor", BrokenSubmitExecutor)
     client = _client(graph=graph, store=store, work_max_concurrency=1)
 
     with caplog.at_level(logging.ERROR):

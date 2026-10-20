@@ -232,7 +232,7 @@ class ServeDeps:
     ceiling: int
     member_concurrency: int
     enrichment: EnrichmentLookup
-    # Process-wide index used by rendering and manifest assembly.
+    # The code index this request reads, used by rendering and manifest assembly.
     code_index: CodeIndex
     # One process-wide rate-table cache shared by materialisations.
     rate_cache: RateTableCache

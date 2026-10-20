@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,8 @@ from urllib.parse import urlparse
 import pytest
 
 from artifact_publication.jobs import acquire_lease
+from graph_release.context import ReleaseNotBound, ReleaseViewsNotBuilt, current_release
+from graph_release.views import ViewRefused
 from search.catalogue import job
 from search.catalogue.artifact import (
     FORMAT_ROOT,
@@ -39,6 +42,7 @@ from series_coverage.shared import (
     CoverageService,
     CoverageSnapshot,
 )
+from tests.graph_release.support import build_packaged_index_release, build_view_release
 from tests.origin_catalogue.support import CENSUS_POVERTY, CRS_VARIABLE, GDP, POPULATION
 from tests.search_catalogue.support import (
     Elected,
@@ -569,13 +573,23 @@ def test_nothing_to_build_answers_a_refused_key_from_the_pointers_alone(setup, c
     assert not nothing_to_build(setup.settings, inputs=inputs, clock=lambda: late)
 
 
-def _main_with(monkeypatch, setup, *, coverage) -> int:
+def _main_with(
+    monkeypatch, setup, *, coverage, release_coverage: bool = False, catalogue_loads: bool = False
+) -> int:
     """Runs `main` against `setup`'s settings and examples, with `coverage` as
-    the process-wide coverage service and no origin catalogue to load."""
+    the process-wide coverage service, `GRAPH_RELEASE_COVERAGE` on when
+    `release_coverage`, and no origin catalogue to load unless `catalogue_loads`,
+    when the load answers `setup`'s."""
 
     def unloadable(_settings):
+        if catalogue_loads:
+            return setup.catalogue
         raise AssertionError("the origin catalogue was loaded")
 
+    if release_coverage:
+        monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1")
+    else:
+        monkeypatch.delenv("GRAPH_RELEASE_COVERAGE", raising=False)
     monkeypatch.setattr(job, "JobSettings", lambda: setup.settings)
     monkeypatch.setattr(job, "build_commit", lambda: "c1")
     monkeypatch.setattr(job, "load_examples", lambda: load_examples(EXAMPLES))
@@ -598,6 +612,33 @@ def test_a_run_while_a_fallback_build_is_served_settles_as_nothing_to_build(
     assert "search_catalogue_job_noop" in [event["event"] for event in _events(capsys)]
 
 
+def test_with_the_flag_on_the_key_names_the_release_the_pointer_names(
+    setup, monkeypatch, capsys, tmp_path
+):
+    root = (tmp_path / "releases").as_uri()
+    pointed = build_packaged_index_release(root).release_id
+    assert pointed != current_release().release_id
+    monkeypatch.setenv("GRAPH_RELEASE_URI", root)
+    loaded = setup.coverage.snapshot()
+    keyed = replace(loaded, manifest=replace(loaded.manifest, build_id=pointed))
+    _run(setup, _engine(), coverage=_MovingCoverage([keyed]))
+    capsys.readouterr()
+
+    def unopened():
+        raise AssertionError("the release was opened")
+
+    # An unchanged run reads the release pointer alone.
+    monkeypatch.setattr(job, "optional_release_service", unopened)
+    served = job.get_coverage_service
+    assert _main_with(monkeypatch, setup, coverage=served, release_coverage=True) == 0
+    assert "search_catalogue_job_noop" in [event["event"] for event in _events(capsys)]
+
+    # A new release changes the key, so the run goes on to load the origin catalogue.
+    build_view_release(root)
+    with pytest.raises(AssertionError, match="origin catalogue was loaded"):
+        _main_with(monkeypatch, setup, coverage=served, release_coverage=True)
+
+
 @pytest.mark.parametrize(
     "error",
     [
@@ -615,3 +656,66 @@ def test_a_coverage_service_that_refuses_is_reported_as_a_failed_job(
     [failed] = _named(_events(capsys), "search_catalogue_job_failed")
     assert failed["severity"] == "ERROR"
     assert failed["error"] == str(error)
+
+
+@pytest.mark.parametrize(
+    ("published", "reason"),
+    [(None, "release_uri_missing"), (False, "no_release")],
+    ids=["uri-unset", "nothing-published"],
+)
+def test_with_the_flag_on_a_run_with_no_release_fails_before_the_catalogue_loads(
+    setup, monkeypatch, capsys, tmp_path, published, reason
+):
+    if published is None:
+        monkeypatch.delenv("GRAPH_RELEASE_URI", raising=False)
+    else:
+        monkeypatch.setenv("GRAPH_RELEASE_URI", (tmp_path / "releases").as_uri())
+
+    served = job.get_coverage_service
+    assert _main_with(monkeypatch, setup, coverage=served, release_coverage=True) == 1
+    [failed] = _named(_events(capsys), "search_catalogue_job_failed")
+    assert (failed["severity"], failed["reason"]) == ("ERROR", reason)
+
+
+def _raising(error: Exception):
+    def raise_(*_args, **_kwargs):
+        raise error
+
+    return raise_
+
+
+@contextmanager
+def _no_engine():
+    yield _engine(), lambda _dcids: {}
+
+
+@pytest.mark.parametrize(
+    ("opened", "ran", "reason", "error"),
+    [
+        (_raising(FileNotFoundError("no pointer")), None, "no_release", "no pointer"),
+        (_raising(ViewRefused("unbuildable")), None, "views_refused", "unbuildable"),
+        (lambda: None, _raising(ReleaseNotBound("unbound")), None, "unbound"),
+        (lambda: None, _raising(ReleaseViewsNotBuilt("no views")), None, "no views"),
+    ],
+    ids=["unpublished-at-open", "views-refused", "not-bound", "views-not-built"],
+)
+def test_with_the_flag_on_a_release_failure_is_reported_as_a_failed_job(
+    setup, monkeypatch, capsys, tmp_path, opened, ran, reason, error
+):
+    """A release that fails as it opens, or a read of it during the run, ends in the job's
+    failure event like any other failure."""
+    root = (tmp_path / "releases").as_uri()
+    build_packaged_index_release(root)
+    monkeypatch.setenv("GRAPH_RELEASE_URI", root)
+    monkeypatch.setattr(job, "optional_release_service", opened)
+    monkeypatch.setattr(job, "_live_engine", _no_engine)
+    if ran is not None:
+        monkeypatch.setattr(job, "run", ran)
+
+    served = job.get_coverage_service
+    assert (
+        _main_with(monkeypatch, setup, coverage=served, release_coverage=True, catalogue_loads=True)
+        == 1
+    )
+    [failed] = _named(_events(capsys), "search_catalogue_job_failed")
+    assert (failed["severity"], failed.get("reason"), failed["error"]) == ("ERROR", reason, error)

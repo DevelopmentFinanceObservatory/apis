@@ -48,7 +48,7 @@ if TYPE_CHECKING:
     from materialise.provenance_doc import ProvenanceDoc
 
     # `series_coverage.shared` needs numpy, which the `graph` extra does not install.
-    from series_coverage.shared import CoverageService
+    from series_coverage.shared import ServedCoverage
 
 
 logger = logging.getLogger(__name__)
@@ -71,7 +71,7 @@ class GraphDeps:
     # read on `dcp_executor`.
     provenance_docs: SingleFlightCache[tuple[str, str], ProvenanceDoc]
     # `None` when `COVERAGE_ARTIFACT_URI` is unset or the artifact failed to load.
-    coverage: CoverageService | None = None
+    coverage: ServedCoverage | None = None
     # True when `coverage` is `None` because the artifact failed to load, a gap a later start
     # can clear. An unset URI is a deployment's choice, so it leaves this false.
     coverage_load_failed: bool = False

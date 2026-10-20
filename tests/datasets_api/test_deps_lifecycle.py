@@ -11,6 +11,8 @@ from typing import ClassVar
 
 import pytest
 
+from code_index.loader import load_index
+from code_index.query import CodeIndex
 from code_index.shared import get_index
 from datasets_api import deps as deps_module
 from datasets_api import generation as generation_module
@@ -29,6 +31,8 @@ from origin_catalogue.graph import (
     UN_BASE_URL,
 )
 from series_coverage.shared import get_coverage_service
+from tests.code_index.conftest import FIXTURE_PATH
+from tests.graph_release.support import serving_index
 
 from ._artifact_doubles import FakeArtifactStore, RecordingArtifactStore
 
@@ -158,11 +162,11 @@ def pool(monkeypatch: pytest.MonkeyPatch) -> _RecordingPool:
     return recorder
 
 
-def _overrides(**injected: object) -> DepsOverrides:
+def _overrides(*, code_index: CodeIndex | None = None, **injected: object) -> DepsOverrides:
     return DepsOverrides(
         coverage=get_coverage_service(),
         rate_cache=RateTableCache(),
-        code_index=get_index(),
+        code_index=code_index,
         **injected,
     )
 
@@ -388,6 +392,24 @@ def _run_through_shutdown(
     loop_thread = asyncio.run(_drive())
     (graph,) = _RecordingGraphReader.created
     return graph, drain_threads, loop_thread
+
+
+def test_an_omitted_code_index_is_read_per_request_and_a_given_one_serves_every_request(
+    pool: _RecordingPool,
+) -> None:
+    """The index `get_index()` returns can change between requests, as a graph release swap
+    replaces it, so the deps read it on each access, party kinds included."""
+    given, replacement = load_index(FIXTURE_PATH), load_index(FIXTURE_PATH)
+    injected = {**_every_store_injected(), "task_client": FakeTaskClient()}
+    live = _open_and_close(_overrides(**injected))
+    fixed = _open_and_close(_overrides(code_index=given, **injected))
+
+    with serving_index(replacement):
+        assert live.code_index is replacement
+        assert live.enrichment.parties is replacement.parties
+        assert fixed.code_index is given
+        assert fixed.enrichment.parties is given.parties
+    assert live.code_index is get_index()
 
 
 def test_shutdown_drains_running_work_before_closing_clients_off_the_event_loop(

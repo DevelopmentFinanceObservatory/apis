@@ -9,6 +9,7 @@ from typing import get_args
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from code_index.query import CodeIndex
 from code_index.shared import get_index
 from dfo_platform.build import build_commit
 from search.engine.config import (
@@ -214,12 +215,13 @@ class Capabilities(BaseModel):
     code_index: CodeIndexStamp = Field(description="provenance for the packaged code index")
 
 
-def build_capabilities() -> Capabilities:
-    """Build capabilities from enforced config values and the packaged code-index stamp.
+def build_capabilities(index: CodeIndex | None = None) -> Capabilities:
+    """Build capabilities from enforced config values and the stamp of `index`, by default the
+    one `get_index()` returns.
 
     App construction loads the index, so a missing or malformed export fails startup.
     """
-    index_stamp = get_index().stamp
+    index_stamp = (index if index is not None else get_index()).stamp
     doors = [
         CapabilityDoor(name=door, live=door not in SEARCH_UNIMPLEMENTED_DOORS)
         for door in _RESOLVE_DOORS

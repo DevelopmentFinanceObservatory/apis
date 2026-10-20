@@ -53,7 +53,7 @@ from series_coverage.loader import CoverageArtifactError
 if TYPE_CHECKING:
     from search.engine.clients.sdmx import EngineSdmxClient
     from search.eval.graph import GraphClient
-    from series_coverage.shared import CoverageService
+    from series_coverage.shared import ServedCoverage
 
 
 STATUS_KEYS: tuple[StatusKey, ...] = get_args(StatusKey)
@@ -230,7 +230,7 @@ class ScoreContext:
     """The responding app's ``GET /api/search/schema``, parsed."""
     graph: GraphClient | None = None
     sdmx: EngineSdmxClient | None = None
-    coverage: CoverageService | None = None
+    coverage: ServedCoverage | None = None
     side: Literal["head", "base"] = "head"
     members: MembersReader | None = None
     """The responding app's members door (``runner.members_door_reader``): the wire states

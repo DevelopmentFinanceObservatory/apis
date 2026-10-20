@@ -47,7 +47,7 @@ def _render(
         content_version=_CONTENT_VERSION,
         artifact_store=artifact_store,
         entity_columns=("recipient",),
-        enrichment=EnrichmentLookup(_GRAPH, parties={}),
+        enrichment=EnrichmentLookup(_GRAPH, parties=lambda: {}),
         code_index=code_index,
         resolved_stat_var_refs=(),
         pivot_max_output_cells=pivot_max_output_cells,
@@ -111,7 +111,7 @@ def _profile(rows: tuple[tuple[object, ...], ...]) -> OutputProfile:
     return compute_output_profile(
         Table(columns=_BARE_COLUMNS, rows=rows),
         role_columns=("recipient",),
-        enrichment=EnrichmentLookup(_GRAPH, parties={}),
+        enrichment=EnrichmentLookup(_GRAPH, parties=lambda: {}),
     )
 
 
@@ -279,7 +279,7 @@ def _render_groupby_pivot(chunks: tuple[Table, ...]):
         content_version=_CONTENT_VERSION,
         artifact_store=artifact_store,
         entity_columns=("recipient",),
-        enrichment=EnrichmentLookup(_GRAPH, parties={}),
+        enrichment=EnrichmentLookup(_GRAPH, parties=lambda: {}),
         code_index=_INDEX,
         resolved_stat_var_refs=_GROUPBY_RESOLVED_REFS,
         pivot_max_output_cells=5_000_000,

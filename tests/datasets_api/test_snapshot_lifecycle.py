@@ -111,7 +111,7 @@ def test_backpressure_refuses_503_retryable_when_executor_is_already_at_capacity
 def test_broken_thread_pool_surfaces_as_internal_error_not_backpressure(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    monkeypatch.setattr(door_executor, "ThreadPoolExecutor", BrokenSubmitExecutor)
+    monkeypatch.setattr(door_executor, "ContextCarryingExecutor", BrokenSubmitExecutor)
     store = FakeArtifactStore()
     location = _store_and_locate(store, b"broken-pool-data")
     reader = FakeSnapshotReader(

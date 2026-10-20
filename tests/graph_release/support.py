@@ -2,15 +2,25 @@
 
 from __future__ import annotations
 
+import dataclasses
+import json
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.compute as pc
 
+from artifact_publication.jobs import Ingestion
 from artifact_publication.uri import read_uri_bytes_and_generation
+from code_index.loader import default_index_path
+from code_index.query import CodeIndex
+from code_index.types import MeasureIndex
+from graph_release.context import bound_release, current_release
+from graph_release.coverage import HORIZON
+from graph_release.declarations import DECLARATIONS
 from graph_release.format import (
     PART_SCHEMAS,
     Manifest,
@@ -20,9 +30,28 @@ from graph_release.format import (
     write_part,
 )
 from graph_release.publish import PublishStatus, hold_release, publish_release
+from graph_release.service import Release
+from series_coverage.io import (
+    write_coverage_table,
+    write_current,
+    write_facet_metadata,
+    write_manifest,
+    write_role_names,
+)
+from series_coverage.schema import (
+    FACET_COLUMN,
+    CoverageManifest,
+    CoveragePointer,
+    FacetMetadata,
+    RoleNames,
+)
+from tests.graph_release.recorded import platform_parts, raw_inputs
+from tests.series_coverage.support import build_dir, pointer_path
 
 TEST_EXECUTION = "test-import-execution"
 TEST_REVISION = "test-dc-revision"
+_READ_AT = "2026-10-19T00:00:00Z"
+"""`build_test_release`'s `read_timestamp`, as a coverage build's `built_at` writes it."""
 
 
 def sample_tables() -> dict[str, pa.Table]:
@@ -172,6 +201,100 @@ def build_test_release(
     if hold:
         hold_release(root_uri, manifest.release_id)
     return manifest
+
+
+def build_packaged_index_release(root_uri: str) -> Manifest:
+    """Publishes a release under `root_uri` whose only part is the code index, the
+    packaged `index.json.gz` document byte for byte."""
+    return build_test_release(
+        root_uri, tables={}, blobs={"code_index_blocks": default_index_path().read_bytes()}
+    )
+
+
+def build_view_release(root_uri: str, *, dc_serving_revision: str = TEST_REVISION) -> Manifest:
+    """Publishes a release under `root_uri` whose views build: the packaged `index.json.gz`
+    document as its code index part, and the recorded slice's platform parts and the
+    declarations as the parts its coverage view reads (`tests.graph_release.recorded`)."""
+    return build_test_release(
+        root_uri,
+        tables=platform_parts().tables(),
+        blobs={
+            "code_index_blocks": default_index_path().read_bytes(),
+            "declarations": DECLARATIONS.declarations_json(),
+        },
+        dc_serving_revision=dc_serving_revision,
+    )
+
+
+def publish_coverage_build(
+    base: Path, published: dict, *, ingestion: Ingestion | None = None
+) -> str:
+    """Publishes `published`'s rows and role names under `base` as the coverage job writes a
+    build, built at `build_test_release`'s read time from `ingestion`, each facet's metadata
+    from the recorded facet JSON. Returns `base`'s URI."""
+    prefix = build_dir(base, "build")
+    prefix.mkdir(parents=True)
+    table = pa.Table.from_pylist(
+        [dict(zip(published["columns"], row, strict=True)) for row in published["rows"]],
+        schema=HORIZON.schema,
+    )
+    write_coverage_table(table, prefix / "coverage.parquet", horizon=HORIZON)
+    write_role_names(
+        {variable: RoleNames(**names) for variable, names in published["role_names"].items()},
+        prefix / "role_names.json",
+    )
+    covered = set(table[FACET_COLUMN].to_pylist())
+    facets = raw_inputs().facets
+    metadata: dict[str, FacetMetadata] = {}
+    for facet_id, facet in zip(
+        facets["facet_id"].to_pylist(), facets["facet_min"].to_pylist(), strict=True
+    ):
+        if facet_id in covered:
+            fields = json.loads(facet)
+            metadata[facet_id] = FacetMetadata(
+                provenance_id=fields["provenance"],
+                measurement_method=fields.get("measurementMethod"),
+                unit=fields.get("unit"),
+                observation_period=fields.get("observationPeriod"),
+            )
+    write_facet_metadata(metadata, prefix / "facets.json")
+    write_manifest(
+        CoverageManifest(
+            stamp="stamp",
+            build_id="build",
+            built_at=_READ_AT,
+            ingestion=ingestion,
+            source="tests.graph_release.support",
+            row_counts={"rows": table.num_rows},
+            files={
+                "coverage": "coverage.parquet",
+                "role_names": "role_names.json",
+                "facets": "facets.json",
+            },
+            horizon=HORIZON,
+        ),
+        prefix / "manifest.json",
+    )
+    write_current(CoveragePointer(stamp="stamp", build_id="build"), pointer_path(base))
+    return base.as_uri()
+
+
+@contextmanager
+def serving_index(
+    code_index: CodeIndex, measure_index: MeasureIndex | None = None
+) -> Iterator[Release]:
+    """Binds the bound release with `code_index`, and `measure_index` when given, as its views'
+    indexes for the body of the `with` block, so `get_index()` and `get_measure_index()` serve
+    them as they serve a release's. The release keeps its parts and its coverage view."""
+    release = current_release()
+    assert release.views is not None, "the bound release carries no views"
+    views = dataclasses.replace(
+        release.views,
+        code_index=code_index,
+        measure_index=measure_index if measure_index is not None else release.views.measure_index,
+    )
+    with bound_release(dataclasses.replace(release, views=views)) as bound:
+        yield bound
 
 
 def _provenance_files(

@@ -221,7 +221,7 @@ def test_member_converts_to_eur_current_and_unit_cells_are_the_struct():
         graph=graph,
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(graph, parties={}),
+        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
         rate_cache=RateTableCache(),
         coverage=coverage,
     )
@@ -263,7 +263,7 @@ def test_member_loads_both_tables_for_constant_prices():
         graph=graph,
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(graph, parties={}),
+        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
         rate_cache=RateTableCache(),
         coverage=coverage,
     )
@@ -312,7 +312,7 @@ def _constant_usd_member(
         "graph": graph,
         "materialiser_build": "test-build",
         "capability_version": "v1",
-        "enrichment": EnrichmentLookup(graph, parties={}),
+        "enrichment": EnrichmentLookup(graph, parties=lambda: {}),
         "rate_cache": RateTableCache(),
         "ceiling": ceiling,
         "coverage": coverage,
@@ -351,7 +351,7 @@ def test_native_current_passes_values_through():
         graph=graph,
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(graph, parties={}),
+        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
         rate_cache=RateTableCache(),
         coverage=coverage,
     )
@@ -382,7 +382,7 @@ def test_ref_form_unit_binding_stays_unconverted():
         graph=graph,
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(graph, parties={}),
+        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
         coverage=coverage,
     )
 
@@ -443,7 +443,7 @@ def test_recipe_not_declared_refuses_before_any_data_request():
             graph=graph,
             materialiser_build="test-build",
             capability_version="v1",
-            enrichment=EnrichmentLookup(graph, parties={}),
+            enrichment=EnrichmentLookup(graph, parties=lambda: {}),
             rate_cache=RateTableCache(),
         )
     assert exc_info.value.cause == "recipe_undeclared"
@@ -464,7 +464,7 @@ def test_member_with_request_unit_binding_and_no_rate_cache_raises_before_any_sd
             graph=graph,
             materialiser_build="test-build",
             capability_version="v1",
-            enrichment=EnrichmentLookup(graph, parties={}),
+            enrichment=EnrichmentLookup(graph, parties=lambda: {}),
         )
     assert requests == []  # no SDMX call at all: refused before any fetch
 
@@ -511,7 +511,7 @@ def test_latest_window_refuses_rate_coverage_gap_on_the_chosen_year_only():
             graph=graph,
             materialiser_build="test-build",
             capability_version="v1",
-            enrichment=EnrichmentLookup(graph, parties={}),
+            enrichment=EnrichmentLookup(graph, parties=lambda: {}),
             rate_cache=RateTableCache(),
             coverage=coverage,
         )
@@ -579,7 +579,7 @@ def test_group_with_request_unit_binding_and_no_rate_cache_raises_before_any_sdm
             graph=graph,
             materialiser_build="test-build",
             capability_version="v1",
-            enrichment=EnrichmentLookup(graph, parties={}),
+            enrichment=EnrichmentLookup(graph, parties=lambda: {}),
         )
     assert requests == []  # no SDMX call at all: refused before any fetch
 
@@ -608,7 +608,7 @@ def test_group_with_ref_unit_binding_stays_unconverted():
         graph=graph,
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(graph, parties={}),
+        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
         coverage=coverage,
     )
 
@@ -708,7 +708,7 @@ def test_group_converts_both_members_to_eur_current_with_one_concat_schema():
         graph=graph,
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(graph, parties={}),
+        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
         rate_cache=RateTableCache(),
         coverage=coverage,
     )
@@ -792,7 +792,7 @@ def test_group_with_an_empty_member_keeps_the_struct_unit_type():
         graph=graph,
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(graph, parties={}),
+        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
         rate_cache=RateTableCache(),
         coverage=coverage,
     )
@@ -866,7 +866,7 @@ def test_group_uniform_request_passes_groupby_homogeneity():
         graph=graph,
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(graph, parties={}),
+        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
         rate_cache=RateTableCache(),
         coverage=coverage,
     )
@@ -927,7 +927,7 @@ def test_group_role_shaped_request_refuses_groupby_homogeneity():
         graph=graph,
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(graph, parties={}),
+        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
         rate_cache=RateTableCache(),
         coverage=coverage,
     )
@@ -990,7 +990,7 @@ def test_group_rate_coverage_gap_preempts_the_pooled_ceiling_check():
             graph=graph,
             materialiser_build="test-build",
             capability_version="v1",
-            enrichment=EnrichmentLookup(graph, parties={}),
+            enrichment=EnrichmentLookup(graph, parties=lambda: {}),
             rate_cache=RateTableCache(),
             ceiling=1,
             coverage=coverage,
@@ -1074,7 +1074,7 @@ def test_group_role_shaped_rate_coverage_gap_preempts_the_pooled_ceiling_check()
             graph=graph,
             materialiser_build="test-build",
             capability_version="v1",
-            enrichment=EnrichmentLookup(graph, parties={}),
+            enrichment=EnrichmentLookup(graph, parties=lambda: {}),
             rate_cache=RateTableCache(),
             ceiling=1,
             coverage=coverage,
@@ -1258,7 +1258,7 @@ def test_a_converted_group_sharing_one_provenance_reads_the_graph_once_more_than
             graph=graph,
             materialiser_build="test-build",
             capability_version="v1",
-            enrichment=EnrichmentLookup(graph, parties={}),
+            enrichment=EnrichmentLookup(graph, parties=lambda: {}),
             rate_cache=RateTableCache(),
             coverage=coverage,
         )
@@ -1353,7 +1353,7 @@ def test_group_members_share_one_table_when_the_refresh_date_moves_between_loads
         graph=graph,
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(graph, parties={}),
+        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
         rate_cache=RateTableCache(),
         coverage=_coverage_for(
             [(_BARE_STAT_VAR, "country/KEN"), (_BARE_STAT_VAR_B, "country/KEN")]
@@ -1514,7 +1514,7 @@ def test_a_converted_mint_stores_the_records_a_series_roles_preview_gives(
         graph=graph,
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(graph, parties={}),
+        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
         rate_cache=RateTableCache(),
         coverage=coverage,
     )

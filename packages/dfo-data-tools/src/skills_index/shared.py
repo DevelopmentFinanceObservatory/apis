@@ -11,8 +11,10 @@ import contextlib
 import logging
 import time
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from dfo_platform.singleton import RefCountedSingleton
+from graph_release.context import bound_release
 from origin_catalogue import Catalogue, bound_catalogue
 from skills_index.build import build_index
 from skills_index.config import (
@@ -22,6 +24,9 @@ from skills_index.config import (
 )
 from skills_index.graph import SkillsGraph
 from skills_index.types import SkillsIndex
+
+if TYPE_CHECKING:
+    from graph_release.service import Release
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +44,9 @@ class SharedSkillsIndex:
     with exponential backoff. Later failures keep the last generation serving and
     wait `refresh_seconds`. Its deadline follows the generation currently served.
 
-    Each build runs under a catalogue from `catalogue`, bound for that build alone,
-    since the refresh task serves no request. `None` binds nothing.
+    Each build runs under a catalogue from `catalogue` and a release from `release`,
+    each bound for that build alone, since the refresh task serves no request. `None`
+    binds nothing.
 
     `wait_for_build_attempt` observes one additional attempt, successful or not.
     `_close` cancels and awaits the refresh task. A running worker thread may finish
@@ -54,9 +60,11 @@ class SharedSkillsIndex:
         graph: SkillsGraph,
         refresh_seconds: float,
         catalogue: Callable[[], Catalogue] | None = None,
+        release: Callable[[], Release] | None = None,
     ) -> None:
         self._graph = graph
         self._catalogue = catalogue
+        self._release = release
         self._refresh_seconds = refresh_seconds
         self.index: SkillsIndex | None = None
         self.build_attempts = 0
@@ -97,7 +105,10 @@ class SharedSkillsIndex:
                 with (
                     bound_catalogue(self._catalogue())
                     if self._catalogue is not None
-                    else contextlib.nullcontext()
+                    else contextlib.nullcontext(),
+                    bound_release(self._release())
+                    if self._release is not None
+                    else contextlib.nullcontext(),
                 ):
                     self.index = await asyncio.to_thread(build_index, graph=self._graph)
                 # Tie the deadline to the generation published in `index`.
@@ -125,13 +136,16 @@ def _build(
     graph: SkillsGraph | None,
     refresh_seconds: float,
     catalogue: Callable[[], Catalogue] | None,
+    release: Callable[[], Release] | None,
 ) -> SharedSkillsIndex:
     if graph is None:
         raise RuntimeError(
             "acquire_shared_index() needs a graph on the first call: no skills index "
             "has been built yet, and this acquirer passed graph=None"
         )
-    return SharedSkillsIndex(graph=graph, refresh_seconds=refresh_seconds, catalogue=catalogue)
+    return SharedSkillsIndex(
+        graph=graph, refresh_seconds=refresh_seconds, catalogue=catalogue, release=release
+    )
 
 
 _singleton: RefCountedSingleton[SharedSkillsIndex] = RefCountedSingleton(
@@ -144,12 +158,14 @@ async def acquire_shared_index(
     graph: SkillsGraph | None = None,
     refresh_seconds: float = SKILLS_INDEX_REFRESH_SECONDS,
     catalogue: Callable[[], Catalogue] | None = None,
+    release: Callable[[], Release] | None = None,
 ) -> SharedSkillsIndex:
     """Acquire the process-wide index, building it on the first call and releasing it
-    after the last caller. Only the first acquirer supplies `graph` and `catalogue`.
+    after the last caller. Only the first acquirer supplies `graph`, `catalogue` and
+    `release`.
     Later arguments are ignored. `graph=None` on the first call raises `RuntimeError`.
     Call from a running event loop, which owns the refresh task."""
-    shared = _singleton.acquire(graph, refresh_seconds, catalogue)
+    shared = _singleton.acquire(graph, refresh_seconds, catalogue, release)
     if graph is not None and graph is not shared._graph:
         logger.info(
             "skills index already built; the existing index's graph is in use, this "

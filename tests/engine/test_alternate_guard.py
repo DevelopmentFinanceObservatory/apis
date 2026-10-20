@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import sys
 
 import pytest
 
+from code_index.shared import get_measure_index
 from search.engine.bind import _UniversalBindOutput
 from search.engine.qualifier_match import CodedQualifier
 from search.engine.quantity import (
@@ -29,6 +31,7 @@ from search.engine.region import resolve_variable
 from search.engine.region.alternate_guard import (
     AlternateJudge,
     QueryPins,
+    _price_basis_vocabulary,
     inadmissible_alternates,
     inadmissible_reason,
     measure_class,
@@ -2212,3 +2215,15 @@ def test_a_value_word_and_a_drafted_value_of_one_phrase_depart_once():
     ).departures()
 
     assert [fact.asked.casefold() for _warning, fact in departed] == ["male"]
+
+
+def test_the_price_basis_vocabulary_cache_holds_no_measure_index():
+    """A measure index a release swap replaces must be freeable, so the memo keys on the
+    qualifier rows' text. A key holding the index adds a reference to it."""
+    index = dataclasses.replace(get_measure_index(), nouns=())
+    before = sys.getrefcount(index)
+
+    vocabulary = _price_basis_vocabulary(index)
+
+    assert vocabulary
+    assert sys.getrefcount(index) == before

@@ -135,7 +135,7 @@ def _render(frame: Frame, options: MintOptions) -> tuple[RenderedDefinition, str
         content_version=mint_version(frame),
         artifact_store=artifact_store,
         entity_columns=("recipient",),
-        enrichment=EnrichmentLookup(FakeMintGraphReader(), parties=_PARTIES),
+        enrichment=EnrichmentLookup(FakeMintGraphReader(), parties=lambda: _PARTIES),
         code_index=_INDEX,
         resolved_stat_var_refs=_RESOLVED,
         pivot_max_output_cells=5_000_000,
