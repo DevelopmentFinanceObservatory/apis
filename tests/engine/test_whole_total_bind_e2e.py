@@ -25,6 +25,7 @@ import pytest
 
 from code_index.shared import get_index
 from search.engine.bind import SlotBindingDraft
+from search.engine.departures import OPERATIONS_NOT_RUN
 from search.engine.region import (
     candidate_collapse,
     phase_election,
@@ -41,6 +42,7 @@ from search.models import (
     CandidatesPart,
     DatasetResubmitInput,
     DefinitePart,
+    EntityGroup,
     NoDataPart,
     ParsedInput,
     ParsedPart,
@@ -219,7 +221,14 @@ def _group(spec: Spec, role: str) -> dict[str, Any] | None:
 
 _TO_ETHIOPIA = {"role": "to", "text": "Ethiopia"}
 _FROM_FRANCE = {"role": "from", "text": "France"}
-_OFFICIAL_GROUP = {"label": "official donors (DAC)", "total": _OFFICIAL, "whole_of": ["party"]}
+# DAC2a publishes official, private and residual donors, so "Private donors" is outside the
+# official donors' total there.
+_OFFICIAL_GROUP = {
+    "label": "official donors (DAC)",
+    "side_kinds": ["party", "private", "residual"],
+    "total": _OFFICIAL,
+    "whole_of": ["party"],
+}
 _CRS_NAMED = [{"ref": CRS_PROVENANCE}]
 
 
@@ -261,36 +270,6 @@ _CRS_NAMED = [{"ref": CRS_PROVENANCE}]
         pytest.param(
             {
                 "entities": [_TO_ETHIOPIA],
-                "open_roles": ["donor"],
-                "operations": [
-                    {"over": "origin", "phrase": "from all donors", "verb": "aggregate"}
-                ],
-                "time": "2021",
-                "variable": _VARIABLE,
-            },
-            None,
-            id="open-donors-summed",
-        ),
-        pytest.param(
-            {
-                "entities": [_TO_ETHIOPIA],
-                "open_roles": ["donor"],
-                "operations": [
-                    {
-                        "over": "origin",
-                        "phrase": "number of donors giving more than 100 million",
-                        "verb": "aggregate",
-                    }
-                ],
-                "time": "2021",
-                "variable": _VARIABLE,
-            },
-            None,
-            id="open-donors-counted",
-        ),
-        pytest.param(
-            {
-                "entities": [_TO_ETHIOPIA],
                 "operations": [{"phrase": "total aid from all donors", "verb": "aggregate"}],
                 "time": "2021",
                 "variable": _VARIABLE,
@@ -315,11 +294,10 @@ def test_a_totalled_or_whole_named_donor_side_binds_the_official_donors_total(
 ):
     """Each "all donors" question an outside client sent reads DAC2a's official donors'
     total on the donor side: no donor named, "official donors", "All Donors, Total" or the
-    total's label named, a sum or count over the opened donors, and a sum or report over no
-    axis. The role carries the population as its group, the part departs as
-    `whole_total_read` asked in the request's words for the population, the total answers a
-    sum over the donors so it departs as no operation, and no side is listed member by
-    member, so no `whole_total_available`."""
+    total's label named, and a sum or report over no axis. The role carries the population
+    as its group, the part departs as `whole_total_read` asked in the request's words for
+    the population, and no side is listed member by member, so no `whole_total_available`.
+    A sum over no axis departs as not applied, as any operation Search does not run."""
     _coverage(monkeypatch)
 
     answer = _part(_resolve(part))
@@ -330,12 +308,11 @@ def test_a_totalled_or_whole_named_donor_side_binds_the_official_donors_total(
     assert spec.definition.identity.open_roles is None
     assert _group(spec, "origin") == _OFFICIAL_GROUP
     assert _whole_read(answer) == ("origin:", asked)
-    summed = [op["phrase"] for op in part.get("operations", ()) if op.get("over") == "origin"]
-    assert not [
-        departure
+    assert [
+        departure.asked
         for departure in answer.departures
-        if departure.code == "operation_not_applied" and departure.asked in summed
-    ]
+        if departure.code == "operation_not_applied"
+    ] == [op["phrase"] for op in part.get("operations", ()) if op["verb"] in OPERATIONS_NOT_RUN]
     assert _available(answer) == []
 
 
@@ -401,16 +378,74 @@ def test_a_totalled_or_whole_named_donor_side_binds_the_official_donors_total(
             },
             id="donors-shared",
         ),
+        pytest.param(
+            {
+                "entities": [_TO_ETHIOPIA],
+                "open_roles": ["donor"],
+                "operations": [
+                    {"over": "origin", "phrase": "from all donors", "verb": "aggregate"}
+                ],
+                "time": "2021",
+                "variable": _VARIABLE,
+            },
+            id="open-donors-summed",
+        ),
+        pytest.param(
+            {
+                "entities": [_TO_ETHIOPIA],
+                "open_roles": ["donor"],
+                "operations": [
+                    {
+                        "over": "origin",
+                        "phrase": "sum aid from donors giving more than 100 million",
+                        "verb": "aggregate",
+                    }
+                ],
+                "time": "2021",
+                "variable": _VARIABLE,
+            },
+            id="open-donors-summed-over-a-threshold",
+        ),
+        pytest.param(
+            {
+                "entities": [_TO_ETHIOPIA],
+                "open_roles": ["donor"],
+                "operations": [
+                    {
+                        "over": "origin",
+                        "phrase": "number of donors giving more than 100 million",
+                        "verb": "aggregate",
+                    }
+                ],
+                "time": "2021",
+                "variable": _VARIABLE,
+            },
+            id="open-donors-counted",
+        ),
+        pytest.param(
+            {
+                "entities": [_TO_ETHIOPIA],
+                "operations": [
+                    {"over": "origin", "phrase": "total from all donors", "verb": "aggregate"}
+                ],
+                "time": "2021",
+                "variable": _VARIABLE,
+            },
+            id="donors-summed-without-open-roles",
+        ),
     ],
 )
 def test_a_listed_donor_side_keeps_its_members(
     monkeypatch: pytest.MonkeyPatch, part: dict[str, Any]
 ):
-    """A donor side the part opens with no operation, or ranks, reports or shares over,
-    lists its donors, as the questions asking for the top donors and for how many donors
-    gave send it: the identity leaves the donor side open and carries no group. DAC2a
+    """A donor side the part opens with no operation, or runs any operation over, lists its
+    donors, as the questions asking for the top donors, for how many donors gave and for a
+    sum over the donors past a threshold send it: an operation over the side may filter or
+    count its members, so no total stands in for them. The identity leaves the donor side
+    open and carries no group, and each operation over it that Search does not run departs
+    as not applied. DAC2a
     publishes the official donors' total, so the part states it beside the listed donors,
-    whether `open_roles` opened the side or a rank over it did."""
+    whether `open_roles` opened the side or an operation over it did."""
     _coverage(monkeypatch)
 
     answer = _part(_resolve(part))
@@ -423,6 +458,16 @@ def test_a_listed_donor_side_keeps_its_members(
     assert _available(answer) == [
         {"total": _OFFICIAL, "total_label": "official donors (DAC)", "whole_of": "party"}
     ]
+    over_donors = [
+        op["phrase"]
+        for op in part.get("operations", ())
+        if op["over"] == "origin" and op["verb"] in OPERATIONS_NOT_RUN
+    ]
+    assert [
+        departure.asked
+        for departure in answer.departures
+        if departure.code == "operation_not_applied"
+    ] == over_donors
 
 
 def test_official_donors_read_the_official_total_where_the_crs_holds_private_donors(
@@ -467,6 +512,7 @@ def test_all_donors_binds_both_totals(monkeypatch: pytest.MonkeyPatch, text: str
     assert _origin(spec) == [_OFFICIAL, _PRIVATE]
     assert _group(spec, "origin") == {
         "label": "all donors including private",
+        "side_kinds": ["party", "private", "residual"],
         "whole_of": ["party", "private"],
     }
     assert "group_read_as_members" not in [
@@ -747,6 +793,67 @@ def test_a_named_whole_population_holding_no_series_refuses_as_a_named_party(
 
     assert isinstance(answer, NoDataPart)
     assert answer.no_data.reason == "no_observations"
+
+
+_LISTED_OFFICIAL = {"role": "from", "text": "official donors", "members": True}
+
+
+@pytest.mark.parametrize(
+    ("text", "asked", "donors"),
+    [
+        pytest.param("official donors", {}, _FROM_FRANCE, id="official-donors"),
+        pytest.param("all donors", {}, _FROM_FRANCE, id="all-donors"),
+        pytest.param("Official Donors, Total", {}, _FROM_FRANCE, id="official-donors-total"),
+        pytest.param(
+            "official donors", {"members": True}, _FROM_FRANCE, id="official-donors-listed"
+        ),
+        pytest.param("all donors", {"members": True}, _FROM_FRANCE, id="all-donors-listed"),
+        pytest.param(
+            "official donors",
+            {"operations": [{"over": "origin", "phrase": "number of donors", "verb": "aggregate"}]},
+            _FROM_FRANCE,
+            id="official-donors-counted",
+        ),
+        pytest.param(
+            "all donors", {}, _LISTED_OFFICIAL, id="all-donors-beside-unlisted-official-donors"
+        ),
+        pytest.param(
+            "all donors",
+            {"members": True},
+            _LISTED_OFFICIAL,
+            id="all-donors-listed-beside-unlisted-official-donors",
+        ),
+    ],
+)
+def test_a_whole_population_directed_to_the_other_side_refuses(
+    monkeypatch: pytest.MonkeyPatch, text: str, asked: dict[str, Any], donors: dict[str, Any]
+):
+    """A donor population the request directs to the recipient side ("from France to
+    official donors") names parties the code index publishes on the donor side alone, so
+    the part refuses `role_incompatible`, and binds neither the population beside France on
+    the donor side nor leaves the recipient side unnamed. It refuses so however it is
+    asked: posted with `members: true`, or under an operation over the donors, it lists no
+    donor side in its place. The conflict is the request's own, so it refuses so before any
+    shape is pruned, beside "official donors" posted with `members: true`, which no DAC2a or
+    CRS shape lists. The refusal names the text, and only it."""
+    _coverage(monkeypatch)
+    recipients = {"role": "to", "text": text, "members": asked.get("members", False)}
+    part = {
+        "entities": [donors, recipients],
+        "time": "2021",
+        "variable": _VARIABLE,
+        **{key: value for key, value in asked.items() if key != "members"},
+    }
+
+    (answer,) = _resolve(part).parts
+
+    assert isinstance(answer, NoDataPart)
+    assert answer.no_data.reason == "role_incompatible"
+    assert answer.no_data.entity_terms == [text]
+    assert answer.no_data.message == (
+        f'No data for "{_VARIABLE}" as a flow to or from any place named in this query. '
+        f'"{text}" belongs on the other side of the flow. Swap its "from" or "to".'
+    )
 
 
 def test_a_total_holding_series_only_for_another_aid_type_leaves_the_side_to_its_parties(
@@ -1340,8 +1447,10 @@ def test_a_whole_population_asked_member_by_member_lists_its_members(
     monkeypatch: pytest.MonkeyPatch, text: str
 ):
     """A whole population posted with `members: true` asks for each of its donors, so the
-    donor side lists them as `open_roles` does, answering the same Spec, and no total
-    stands in for them."""
+    donor side lists them as `open_roles` does, and no total stands in for them. It lists
+    on the CRS, whose donors are official and private ones alone, and answers the Spec
+    `open_roles` answers there; DAC2a, offered first, also holds a residual donor ("other
+    multilaterals (DAC)") the population's markers leave out."""
     _coverage(monkeypatch)
     part = {
         "entities": [_TO_ETHIOPIA, {"role": "from", "text": text, "members": True}],
@@ -1360,9 +1469,298 @@ def test_a_whole_population_asked_member_by_member_lists_its_members(
     spec = answer.spec
     assert _origin(spec) is None
     assert spec.definition.identity.open_roles == ["origin"]
-    assert spec.spec_id == _spec(_resolve(opened)).spec_id
+    assert spec.spec_id == _spec(_resolve(opened, crs_first=True)).spec_id
     assert _group(spec, "origin") is None
     assert _whole_read(answer) is None
+
+
+@pytest.mark.parametrize(
+    "asked",
+    [
+        pytest.param({"members": True}, id="members"),
+        pytest.param(
+            {
+                "operations": [
+                    {
+                        "over": "origin",
+                        "phrase": "sum from official donors giving more than 100 million",
+                        "verb": "aggregate",
+                    }
+                ]
+            },
+            id="summed-over-a-threshold",
+        ),
+        pytest.param(
+            {
+                "operations": [
+                    {
+                        "over": "origin",
+                        "phrase": "number of official donors giving more than 100 million",
+                        "verb": "aggregate",
+                    }
+                ]
+            },
+            id="counted",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    ("members", "listed"),
+    [
+        pytest.param((_COMMITMENTS_MEMBER, _IMPUTED_MEMBER), IMPUTED_PROVENANCE, id="imputed"),
+        pytest.param((_DAC2A_MEMBER, _CRS_MEMBER), None, id="dac2a-and-crs"),
+    ],
+)
+def test_official_donors_asked_member_by_member_list_where_no_private_donor_stands_beside(
+    monkeypatch: pytest.MonkeyPatch,
+    members: tuple[str, ...],
+    listed: str | None,
+    asked: dict[str, Any],
+):
+    """ "Official donors" posted with `members: true`, or named under an operation over the
+    donors, which may filter or count them, opens the donor side only on a shape whose
+    datasets hold official donors alone there, as the imputed multilateral table does. The
+    CRS and DAC2a hold private donors beside them, which an open side would list, so a part
+    offered those alone refuses `entity_role_not_admitted` for the population, naming the
+    kinds they hold beside it: DAC2a's private and residual donors, the CRS's private
+    ones."""
+    names = RoleNames(donor="financingProvider", recipient="financingRecipient")
+    patch_coverage(
+        monkeypatch,
+        [
+            (_COMMITMENTS_MEMBER, "crs", _FRA, _ETH, [2021]),
+            (_IMPUTED_MEMBER, "imputed", _FRA, _ETH, [2021]),
+            (_DAC2A_MEMBER, "dac2a", _FRA, _ETH, [2021]),
+            (_CRS_MEMBER, "crs", _FRA, _ETH, [2021]),
+        ],
+        role_names=dict.fromkeys(members, names),
+        facet_metadata={
+            "crs": FacetMetadata(provenance_id=CRS_PROVENANCE, unit="USD"),
+            "imputed": FacetMetadata(provenance_id=IMPUTED_PROVENANCE, unit="USD"),
+            "dac2a": FacetMetadata(provenance_id=_DAC2A, unit="USD"),
+        },
+    )
+    donors = {"role": "from", "text": "official donors", "members": asked.get("members", False)}
+    part = {
+        "entities": [_TO_ETHIOPIA, donors],
+        "time": "2021",
+        "variable": "aid",
+        **{key: value for key, value in asked.items() if key != "members"},
+    }
+
+    (answer,) = offline_resolve(
+        _parsed(part),
+        graph=_graph(members=members, variable="aid"),
+        llm=_ScriptedLLM("aid"),
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+    ).parts
+
+    if listed is None:
+        assert isinstance(answer, NoDataPart), answer
+        assert answer.no_data.reason == "entity_role_not_admitted"
+        assert answer.no_data.message == (
+            '"official donors" cannot be listed donor by donor: every source of the "aid" data '
+            'also holds private donors, which "official donors" leaves out. Ask for its total, '
+            "or name the donors to list."
+        )
+        return
+    assert isinstance(answer, DefinitePart), answer
+    identity = answer.spec.definition.identity
+    assert identity.open_roles == ["origin"]
+    assert identity.entities == {"destination": [_ETH]}
+    assert [source.ref for source in answer.spec.resolved.trace.resolved_sources] == [listed]
+
+
+_OFFICIAL_UNLISTED = (
+    '"official donors" cannot be listed donor by donor: every source of the '
+    f'"{_VARIABLE}" data also holds private donors, which "official donors" leaves out. Ask '
+    "for its total, or name the donors to list."
+)
+
+
+@pytest.mark.parametrize(
+    "beside",
+    [
+        pytest.param(
+            {"role": "to", "text": "all recipients", "members": True}, id="all-recipients"
+        ),
+        pytest.param({"role": "from", "text": "all donors", "members": True}, id="all-donors"),
+    ],
+)
+def test_a_population_that_lists_is_left_out_of_the_listing_refusal(
+    monkeypatch: pytest.MonkeyPatch, beside: dict[str, Any]
+):
+    """ "Official donors" posted with `members: true` lists on no DAC2a or CRS shape, since
+    both hold private donors, the one kind each holds beside it. Beside it, "all recipients"
+    lists exactly on both and "all donors" on the CRS, whose donors are official and private
+    ones alone, so the refusal names "official donors" alone."""
+    _coverage(monkeypatch)
+    part = {
+        "entities": [
+            _LISTED_OFFICIAL,
+            beside,
+            *([_TO_ETHIOPIA] if beside["role"] == "from" else []),
+        ],
+        "time": "2021",
+        "variable": _VARIABLE,
+    }
+
+    (answer,) = _resolve(part).parts
+
+    assert isinstance(answer, NoDataPart), answer
+    assert answer.no_data.reason == "entity_role_not_admitted"
+    assert answer.no_data.message == _OFFICIAL_UNLISTED
+
+
+def test_populations_each_listed_alone_refuse_together(monkeypatch: pytest.MonkeyPatch):
+    """ "Official donors" and "all recipients", both posted with `members: true`, on the
+    imputed multilateral table and the CRS, where the table also holds a kind of recipient
+    "all recipients" leaves out: "official donors" lists exactly on the table alone and "all
+    recipients" on the CRS alone, so no shape lists both and neither is unlistable on its
+    own. The refusal names both as ones no source lists together."""
+    names = RoleNames(donor="financingProvider", recipient="financingRecipient")
+    members = (_COMMITMENTS_MEMBER, _IMPUTED_MEMBER)
+    patch_coverage(
+        monkeypatch,
+        [
+            (_COMMITMENTS_MEMBER, "crs", _FRA, _ETH, [2021]),
+            (_IMPUTED_MEMBER, "imputed", _FRA, _ETH, [2021]),
+        ],
+        role_names=dict.fromkeys(members, names),
+        facet_metadata={
+            "crs": FacetMetadata(provenance_id=CRS_PROVENANCE, unit="USD"),
+            "imputed": FacetMetadata(provenance_id=IMPUTED_PROVENANCE, unit="USD"),
+        },
+    )
+    monkeypatch.setitem(
+        get_index().party_kinds_by_side,
+        ("destination", IMPUTED_PROVENANCE),
+        frozenset({"party", "private", "residual"}),
+    )
+    part = {
+        "entities": [
+            _LISTED_OFFICIAL,
+            {"role": "to", "text": "all recipients", "members": True},
+        ],
+        "time": "2021",
+        "variable": "aid",
+    }
+
+    (answer,) = offline_resolve(
+        _parsed(part),
+        graph=_graph(members=members, variable="aid"),
+        llm=_ScriptedLLM("aid"),
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+    ).parts
+
+    assert isinstance(answer, NoDataPart), answer
+    assert answer.no_data.reason == "entity_role_not_admitted"
+    assert answer.no_data.message == (
+        'No source of the "aid" data can list "official donors" and "all recipients" member '
+        "by member together, though each can be listed alone. Search for them separately, or "
+        "ask for their totals."
+    )
+
+
+def _index_declared_roles(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Have the fake graph answer every code index member's declared roles, as the
+    catalogue's arc tables answer them live (`origin_catalogue.graph`), where `_graph` holds
+    arcs only for the recalled members. A side opened with no place named elects its role
+    class over the whole index family, and a member the fake graph has no arcs for would
+    read as declaring no role."""
+    rows = {row.dcid: row for row in get_index().statvars}
+    recorded = FakeGraph.node_observation_properties_batch
+
+    def declared(graph: FakeGraph, dcids: list[str]) -> dict[str, tuple[str, ...]]:
+        held = recorded(graph, dcids)
+        return {
+            dcid: held.get(dcid)
+            or (tuple(rows[dcid].observation_properties) if dcid in rows else ())
+            for dcid in dcids
+        }
+
+    monkeypatch.setattr(FakeGraph, "node_observation_properties_batch", declared)
+
+
+@pytest.mark.parametrize(
+    "official",
+    [pytest.param(True, id="with-official-donors"), pytest.param(False, id="without")],
+)
+def test_three_populations_each_take_their_own_outcome(
+    monkeypatch: pytest.MonkeyPatch, official: bool
+):
+    """ "All donors" posted with `members: true` lists exactly on the CRS, "official donors"
+    posted so lists on no DAC2a or CRS shape, and "all recipients" is named on its own side.
+    Beside "official donors" the part refuses `entity_role_not_admitted` for it alone: no
+    `role_incompatible`, so "all recipients" is directed to its side, and neither "all
+    donors" nor "all recipients" is named. Without it the part answers on the CRS: it lists
+    the donors and reads the recipient side as every recipient the CRS holds, departing
+    `whole_total_unpublished` for "all recipients" and warning no `role_scope_defaulted`."""
+    _coverage(monkeypatch)
+    _index_declared_roles(monkeypatch)
+    part = {
+        "entities": [
+            *([_LISTED_OFFICIAL] if official else []),
+            {"role": "from", "text": "all donors", "members": True},
+            {"role": "to", "text": "all recipients"},
+        ],
+        "time": "2021",
+        "variable": _VARIABLE,
+    }
+
+    (answer,) = _resolve(part).parts
+
+    if official:
+        assert isinstance(answer, NoDataPart), answer
+        assert answer.no_data.reason == "entity_role_not_admitted"
+        assert answer.no_data.message == _OFFICIAL_UNLISTED
+        return
+    assert isinstance(answer, DefinitePart), answer
+    spec = answer.spec
+    assert [source.ref for source in spec.resolved.trace.resolved_sources] == [CRS_PROVENANCE]
+    assert spec.definition.identity.entities == {}
+    assert spec.definition.identity.open_roles == ["origin"]
+    assert [(departure.code, departure.asked) for departure in answer.departures] == [
+        ("whole_total_unpublished", "all recipients")
+    ]
+    assert [w.code for w in answer.warnings if w.code == "role_scope_defaulted"] == []
+
+
+@pytest.mark.parametrize(
+    ("listed", "named", "side"),
+    [
+        pytest.param(
+            {"role": "to", "text": "all recipients", "members": True},
+            _FROM_FRANCE,
+            "destination",
+            id="all-recipients",
+        ),
+        pytest.param(
+            {"role": "from", "text": "all donors", "members": True},
+            _TO_ETHIOPIA,
+            "origin",
+            id="all-donors",
+        ),
+    ],
+)
+def test_a_side_a_listed_population_opens_warns_no_role_scope_defaulted(
+    monkeypatch: pytest.MonkeyPatch, listed: dict[str, Any], named: dict[str, Any], side: str
+):
+    """A whole population posted with `members: true` names its side, so the side it opens
+    warns no `role_scope_defaulted` that nothing was named there, where `open_roles` naming
+    the same side does."""
+    _coverage(monkeypatch)
+    part = {"entities": [named, listed], "time": "2021", "variable": _VARIABLE}
+    role = "donor" if side == "origin" else "recipient"
+    opened = {"entities": [named], "open_roles": [role], "time": "2021", "variable": _VARIABLE}
+
+    def defaulted(part: dict[str, Any]) -> list[str]:
+        answer = _part(_resolve(part, crs_first=True))
+        assert answer.spec.definition.identity.open_roles == [side]
+        return [w.code for w in answer.warnings if w.code == "role_scope_defaulted"]
+
+    assert defaulted(part) == []
+    assert defaulted(opened) != []
 
 
 def test_a_whole_population_asked_member_by_member_beside_a_named_donor_warns(
@@ -1424,24 +1822,6 @@ _OFFICIAL_SHOWN = (
         ),
         pytest.param(
             {
-                "entities": [_TO_ETHIOPIA],
-                "open_roles": ["donor"],
-                "operations": [
-                    {
-                        "over": "origin",
-                        "phrase": "number of donors giving more than 100 million",
-                        "verb": "aggregate",
-                    }
-                ],
-                "time": "2021",
-                "variable": _VARIABLE,
-            },
-            f"No donor was named, so this shows {_OFFICIAL_SHOWN} To list each donor, search "
-            "again with open_roles ['donor'] and no aggregate over the donors.",
-            id="open-donors-counted",
-        ),
-        pytest.param(
-            {
                 "entities": [
                     _TO_ETHIOPIA,
                     {"role": "from", "text": "all donors including private"},
@@ -1467,8 +1847,7 @@ def test_a_side_read_whole_departs_with_the_way_back_to_its_members(
     monkeypatch: pytest.MonkeyPatch, part: dict[str, Any], text: str
 ):
     """The `whole_total_read` departure says what the side's total holds and how to list
-    its members: the request's words for the population are replaced by `open_roles`, and a
-    sum over the side the total answered is dropped."""
+    its members: the request's words for the population are replaced by `open_roles`."""
     _coverage(monkeypatch)
 
     (departure,) = [
@@ -1480,12 +1859,112 @@ def test_a_side_read_whole_departs_with_the_way_back_to_its_members(
     assert departure.text == text
 
 
-def test_a_resubmit_restores_the_whole_population_from_the_identity(
+# DAC2b's net other official flows member, a family DAC2a and the CRS do not publish, with
+# the bindings that settle it to one StatVar. "Other official flows" names its aid type.
+_DAC2B_MEMBER = "Amount_FinancialFlow_Net_Disbursement_DAC2bAidType972_Nominal"
+_DAC2B_DRAFTED = tuple(
+    SlotBindingDraft(axis="how", property_dcid=prop, kind="value", value_dcids=[value])
+    for prop, value in (
+        ("dac2bAidType", "DAC2bAidType972"),
+        ("financialFlowType", "Disbursement"),
+        ("nettingBasis", "Net"),
+    )
+)
+
+
+def _dac2b_part(
+    monkeypatch: pytest.MonkeyPatch, part: dict[str, Any], *, origin: str, destination: str
+) -> DefinitePart:
+    """The one part answering `part` from DAC2b's member, whose coverage holds a series
+    from `origin` to `destination` in 2020."""
+    patch_coverage(
+        monkeypatch,
+        [(_DAC2B_MEMBER, "dac2b", origin, destination, [2020])],
+        role_names={
+            _DAC2B_MEMBER: RoleNames(donor="financingProvider", recipient="financingRecipient")
+        },
+        facet_metadata={"dac2b": FacetMetadata(provenance_id=_DAC2B, unit="USD")},
+    )
+    response = offline_resolve(
+        _parsed(part),
+        graph=_graph(members=(_DAC2B_MEMBER,), variable=part["variable"]),
+        llm=_ScriptedLLM(part["variable"], drafted=_DAC2B_DRAFTED),
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+    )
+    return _part(response)
+
+
+def test_a_total_dac2b_publishes_unmarked_binds_as_a_named_party(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """A resubmit of the answer's identity that posts no group reads the official donors'
-    total as the donor side's whole population again, and answers the same Spec. Its door
-    holds no words of the request, so the departure states only what the answer shows."""
+    """DAC2b publishes "All Recipients, Total" with no whole marker, so "other official
+    flows from France to all recipients" binds it as a named party there: the recipient side
+    is not left unnamed as on a dataset publishing no recipients' total, and reads no whole
+    population."""
+    part = {
+        "entities": [_FROM_FRANCE, {"role": "to", "text": "all recipients"}],
+        "time": "2020",
+        "variable": "other official flows",
+    }
+
+    answer = _dac2b_part(monkeypatch, part, origin=_FRA, destination=_ALL_RECIPIENTS)
+
+    spec = answer.spec
+    assert spec.definition.identity.entities == {
+        "destination": [_ALL_RECIPIENTS],
+        "origin": [_FRA],
+    }
+    assert _group(spec, "destination") is None
+    assert [
+        departure.code
+        for departure in answer.departures
+        if departure.code in ("whole_total_read", "whole_total_unpublished")
+    ] == []
+
+
+def test_the_official_donors_total_names_private_donors_where_its_dataset_holds_them(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """DAC2a and DAC2b both mark "Official Donors, Total" whole. DAC2a publishes private
+    donors beside it, so the role's group lists `private` among its `side_kinds` and its
+    `whole_total_read` says they are outside the total; DAC2b publishes none, so its group
+    lists no `private` and its departure says nothing of them."""
+    _coverage(monkeypatch)
+    dac2a = _part(_resolve({"entities": [_TO_ETHIOPIA], "time": "2021", "variable": _VARIABLE}))
+    dac2b = _dac2b_part(
+        monkeypatch,
+        {"entities": [_TO_ETHIOPIA], "time": "2020", "variable": "other official flows"},
+        origin=_OFFICIAL,
+        destination=_ETH,
+    )
+
+    def read(answer: DefinitePart) -> str:
+        (text,) = [d.text for d in answer.departures if d.code == "whole_total_read"]
+        return text
+
+    assert _group(dac2a.spec, "origin") == _OFFICIAL_GROUP
+    assert "Private donors are outside it." in read(dac2a)
+    assert _group(dac2b.spec, "origin") == {**_OFFICIAL_GROUP, "side_kinds": ["party", "residual"]}
+    assert "Private donors" not in read(dac2b)
+
+
+@pytest.mark.parametrize(
+    "posted",
+    [
+        pytest.param(None, id="no-group-posted"),
+        pytest.param(
+            {"origin": EntityGroup.model_validate({**_OFFICIAL_GROUP, "side_kinds": ["party"]})},
+            id="side-kinds-posted",
+        ),
+    ],
+)
+def test_a_resubmit_restores_the_whole_population_from_the_identity(
+    monkeypatch: pytest.MonkeyPatch, posted: dict[str, EntityGroup] | None
+):
+    """A resubmit of the answer's identity reads the official donors' total as the donor
+    side's whole population again, and answers the same Spec, with the kinds DAC2a
+    publishes on the donor side whatever group it posts. Its door holds no words of the
+    request, so the departure states only what the answer shows."""
     _coverage(monkeypatch)
     first = _spec(_resolve({"entities": [_TO_ETHIOPIA], "time": "2021", "variable": _VARIABLE}))
 
@@ -1494,7 +1973,9 @@ def test_a_resubmit_restores_the_whole_population_from_the_identity(
             input=DatasetResubmitInput(
                 entries=[
                     ResubmitIdentityEntry(
-                        variable_text=_VARIABLE, identity=first.definition.identity
+                        variable_text=_VARIABLE,
+                        identity=first.definition.identity,
+                        entity_groups=posted,
                     )
                 ]
             )
@@ -1554,21 +2035,25 @@ def test_a_side_reads_whole_where_every_dataset_marks_its_parties(dcids, dataset
         pytest.param([_OFFICIAL], [CRS_PROVENANCE], False, id="crs-official-donors"),
         pytest.param([_OFFICIAL], [_DAC1], True, id="dac1-official-donors"),
         pytest.param([_ALL_RECIPIENTS], [_DAC2A], False, id="dac2a-marks-the-recipients"),
+        pytest.param(
+            [_ALL_RECIPIENTS], [_DAC2B], False, id="dac2b-publishes-the-recipients-unmarked"
+        ),
         pytest.param([_ALL_RECIPIENTS], ["provenance/Unindexed"], False, id="no-party-held"),
         pytest.param([_ALL_RECIPIENTS], [], False, id="no-dataset"),
     ],
 )
 def test_a_population_covers_a_side_its_datasets_publish_no_total_of(dcids, datasets, covers):
-    """A whole population reads as its side left unnamed where none of the datasets marks
+    """A whole population reads as its side left unnamed where none of the datasets publishes
     it and every party they hold there, totals aside, is of a kind it holds. The CRS's
     recipients are all countries or residuals, its donors official or private, and DAC1's
-    donors official alone; DAC2a marks the recipients' total; a dataset holding no party on
-    the side covers nothing."""
+    donors official alone; DAC2a marks the recipients' total, and DAC2b publishes it
+    unmarked; a dataset holding no party on the side covers nothing."""
     assert covers_unpublished(dcids, datasets=datasets) is covers
 
 
 _RECIPIENTS_GROUP = {
     "label": "all recipients (DAC)",
+    "side_kinds": ["party", "residual"],
     "total": _ALL_RECIPIENTS,
     "whole_of": ["party", "residual"],
 }

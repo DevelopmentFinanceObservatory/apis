@@ -17,6 +17,7 @@ from types import MappingProxyType
 
 from code_index.tokens import Token, TokenLookup, word_tokens
 from code_index.types import (
+    POPULATION_KIND,
     AbsentObservation,
     Bound,
     BoundSet,
@@ -37,6 +38,7 @@ from code_index.types import (
     WholeTotalSet,
     party_kind,
 )
+from dfo_platform.roles import RoleAxis
 from statvar_members import FiveTuple
 
 
@@ -402,7 +404,9 @@ class CodeIndex:
         "measure_classes",
         "parties",
         "partly_stated_values",
+        "party_kinds_by_side",
         "party_types",
+        "population_totals_by_axis",
         "shape_slot_defaults",
         "source_code_provenances",
         "source_codes",
@@ -493,6 +497,26 @@ class CodeIndex:
                 if party.totals in self.totals_by_group:
                     raise DuplicateDcid(f"two totals hold the group {party.totals!r}")
                 self.totals_by_group[party.totals] = party
+        party_kinds_by_side: dict[tuple[RoleAxis, str], set[PartyKind]] = defaultdict(set)
+        population_totals_by_axis: dict[RoleAxis, list[str]] = defaultdict(list)
+        for party in self.parties.values():
+            if party.kind != "total":
+                for axis in party.axes:
+                    for dataset in party.datasets:
+                        party_kinds_by_side[axis, dataset].add(party.kind)
+            elif any(POPULATION_KIND in marker.holds for marker in party.whole):
+                population_totals_by_axis[party.axes[0]].append(party.dcid)
+        self.party_kinds_by_side: dict[tuple[RoleAxis, str], frozenset[PartyKind]] = {
+            side: frozenset(kinds) for side, kinds in party_kinds_by_side.items()
+        }
+        """The kinds of party, totals aside, each dataset publishes on each flow axis, by
+        `(axis, dataset)`. A `PartyRow` keeps its axes and datasets apart, so a party
+        published on both axes counts on each in every dataset that publishes it."""
+        self.population_totals_by_axis: dict[RoleAxis, tuple[str, ...]] = {
+            axis: tuple(sorted(dcids)) for axis, dcids in population_totals_by_axis.items()
+        }
+        """The totals some dataset marks as holding the `party` kind (`PartyRow.whole`), by
+        the one axis each stands on, sorted by dcid."""
         self.enrichment_digest = _enrichment_digest(self.parties.values())
         """SHA-256 over the sorted `(dcid, kind, whole markers)` rows of `parties`, the part of
         the index a `{role}_party_kind` cell is read from. A file holding such cells is linked

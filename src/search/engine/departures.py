@@ -239,9 +239,9 @@ def spec_departure_facts(
     flow role a group read as members names the residuals its total counts that the members
     leave out and the served dataset publishes on that role. A group read as its total
     departs nothing. A side read whole (`EntityGroup.whole_of`) departs as
-    `whole_total_read`, which names the population and the way back to its members, and an
-    `aggregate` over that side was answered by the total, so it departs nothing.
-    With no `spec`, only the operations not run.
+    `whole_total_read`, which names the population and the way back to its members. An
+    `aggregate` over that side still departs as not run: it may filter its members, which
+    the total does not answer. With no `spec`, only the operations not run.
 
     A forecast to a target year that a `year_unavailable` fact states departs as that
     fact alone; any other forecast departs as `operation_not_applied`. A group, read as
@@ -252,7 +252,6 @@ def spec_departure_facts(
     part states its departures without them (`without_request_words`)."""
     year_facts = _year_facts(spec, operations=operations) if spec is not None else []
     stated_years = {fact.requested_years for fact in year_facts}
-    whole_axes = _whole_axes(spec) if spec is not None else frozenset()
     facts = [
         fact
         for operation in operations
@@ -260,7 +259,6 @@ def spec_departure_facts(
             operation.target_year is not None
             and (operation.target_year, operation.target_year) in stated_years
         )
-        and not (operation.verb == "aggregate" and operation.over in whole_axes)
         and (fact := _operation_fact(operation))
     ]
     if spec is None:
@@ -272,18 +270,9 @@ def spec_departure_facts(
         facts.append(modelled)
     for role, group in (spec.resolved.entity_groups or {}).items():
         if group.whole_of:
-            summed = any(
-                operation.verb == "aggregate" and operation.over == role_key_axis(role)
-                for operation in operations
-            )
             facts.append(
                 _whole_total_fact(
-                    spec,
-                    role,
-                    group,
-                    words=words,
-                    request_words=entity_words is not None,
-                    summed=summed,
+                    spec, role, group, words=words, request_words=entity_words is not None
                 )
             )
             continue
@@ -305,15 +294,6 @@ def spec_departure_facts(
     return facts
 
 
-def _whole_axes(spec: Spec) -> frozenset[RoleAxis]:
-    """The flow axes `spec` reads as their whole population (`EntityGroup.whole_of`)."""
-    return frozenset(
-        axis
-        for role, group in (spec.resolved.entity_groups or {}).items()
-        if group.whole_of and (axis := role_key_axis(role)) is not None
-    )
-
-
 def _whole_total_fact(
     spec: Spec,
     role: str,
@@ -321,23 +301,22 @@ def _whole_total_fact(
     *,
     words: Mapping[str, str],
     request_words: bool,
-    summed: bool,
 ) -> DepartureFact:
     """`whole_total_read` for `role`, which reads `group`'s whole population. The request's
     words for it (`words`, keyed by the group's label) are `asked`; with none on a door that
     holds the request's words (`request_words`), the request named nothing on the side, so
     the fact is `inferred`. A union of totals (`EntityGroup.total` `None`) names each by its
-    code index label, as the group names a single total. A
-    request that summed over the side (`summed`), which the total answered, carries
-    `aggregate` as its `verb`."""
+    code index label, as the group names a single total. `side_kinds` is the group's
+    (`spec_build.with_side_kinds`)."""
     asked = words.get(group.label)
     parties = get_index().parties
+    axis = role_key_axis(role)
     totals = [entity.ref for entity in spec.resolved.entities if entity.role == role]
     return DepartureFact(
         code="whole_total_read",
         binding_ref=role_ref(role),
         asked=asked,
-        over=role_key_axis(role),
+        over=axis,
         group=group.label,
         entities=()
         if group.total is not None
@@ -346,8 +325,8 @@ def _whole_total_fact(
             for dcid in totals
         ),
         whole_of=tuple(group.whole_of or ()),
+        side_kinds=tuple(group.side_kinds or ()),
         inferred=asked is None and request_words,
-        verb="aggregate" if summed else None,
     )
 
 

@@ -762,6 +762,11 @@ class ResolveState:
     # member (`member_entities`), with the side it names: it holds no place set and names
     # no total, and the side is among `open_axes`, so the answer lists that side's parties.
     whole_listed: dict[str, RoleAxis] = field(default_factory=dict)
+    # The texts of the part naming a whole population, listed or not, that the request
+    # directs to the side other than the one its parties are published on, in query order.
+    # They refuse the part `role_incompatible` before any shape is derived, which names
+    # them (`_phase_check_entities`). Set by `_phase_resolve_places`.
+    whole_misdirected: tuple[str, ...] = ()
     # Start tick for the shape timing span, including derivation and ranking.
     shape_t0: int = 0
     # All confirmed shapes, before eligibility and ranking filters.

@@ -428,10 +428,11 @@ def _whole_total_read(fact: DepartureFact, _family: FlowFamily | None, shows_dat
     """The whole population the side shows (`DepartureFact.group`), what it holds, and the
     way back to the side's members. A request that named nothing on the side reads "No donor
     was named, so this shows ..."; one that named it ("all donors") is asked in its words,
-    and its way back replaces those words with `open_roles`. One whose `aggregate` over the
-    side the total answered (`DepartureFact.verb`) drops it on the way back. A union of totals names each
+    and its way back replaces those words with `open_roles`. A union of totals names each
     (`DepartureFact.entities`). A donor total that holds no private donor says they are
-    outside it, and a total holding residuals says it holds aid allocated to no country."""
+    outside it where the answer's dataset holds private donors on the side
+    (`DepartureFact.side_kinds`), and a total holding residuals says it holds aid allocated
+    to no country."""
     if fact.over is None or fact.group is None:
         raise ValueError("whole_total_read needs the side and the population it shows")
     noun = WHOLE_MEMBER_NOUNS.get(fact.over, "member")
@@ -442,7 +443,9 @@ def _whole_total_read(fact: DepartureFact, _family: FlowFamily | None, shows_dat
         every = whole_population_text(fact.over, fact.whole_of)
         holds = whole_residual_text(fact.whole_of)
         official = whole_population_is_official(fact.over, fact.whole_of)
-        outside = " Private donors are outside it." if official else ""
+        outside = (
+            " Private donors are outside it." if official and "private" in fact.side_kinds else ""
+        )
         shown = f"{fact.group}, the source's total for {every}{holds}.{outside}"
     if not shown.endswith("."):
         shown += "."
@@ -455,8 +458,6 @@ def _whole_total_read(fact: DepartureFact, _family: FlowFamily | None, shows_dat
     else:
         lead = f"This {verb}"
         instead = ""
-    if fact.verb == "aggregate":
-        instead += f" and no aggregate over the {noun}s"
     return f"{lead} {shown} To list each {noun}, search again with open_roles ['{noun}']{instead}."
 
 

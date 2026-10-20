@@ -192,7 +192,9 @@ confirmed identity whose expansion is unusable, to one confirmed identity
 whose role is wrong. An elected shape whose places exceed the bound gets
 `entity_set_too_large` only once elected, after the variable reasons),
 variable, role (the two
-role-compatibility codes sit at the role position), unit (`rate_coverage_gap`,
+role-compatibility codes sit at the role position; a whole population the request
+directs to the other side refuses role_incompatible once every entity resolves,
+before the variable reasons, since the conflict holds on every shape), unit (`rate_coverage_gap`,
 currency-conversion's own no_data reason, sits immediately after
 `unit_not_resolved`. `recipe_not_declared`, the other currency-conversion
 code, maps to `unsupported_code` rather than `no_data_reason` on the `raw_text`/`parsed`

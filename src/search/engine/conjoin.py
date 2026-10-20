@@ -36,7 +36,7 @@ from search.models import (
     Timing,
     Warning,
 )
-from search.render.no_data import ScopeSources
+from search.render.no_data import ScopeSources, UnlistedPopulation
 from skills_index import SkillsIndex
 
 if TYPE_CHECKING:
@@ -150,8 +150,10 @@ def _no_data_entity_terms(region: RegionResult) -> tuple[list[str] | None, list[
     Ambiguous entities supply terms and ordered candidate names.
     Role-not-admitted entities supply terms only. Unresolved entities use
     ``unresolved_entity_names``, and so do the names whose direction a
-    ``role_not_resolved`` refusal could not tell, each in the request's own words for it
-    (``RegionResult.entity_words``). Other reasons or empty values return ``None``.
+    ``role_not_resolved`` refusal could not tell and the whole populations a
+    ``role_incompatible`` refusal found directed to the other side, each in the request's
+    own words for it (``RegionResult.entity_words``). Other reasons or empty values return
+    ``None``.
     """
     if region.no_data_reason == "entity_ambiguous":
         entity_terms = [e.text for e in region.ambiguous_entities] or None
@@ -162,10 +164,20 @@ def _no_data_entity_terms(region: RegionResult) -> tuple[list[str] | None, list[
         return entity_terms, None
     if region.no_data_reason == "entity_not_resolved":
         return list(region.unresolved_entity_names) or None, None
-    if region.no_data_reason == "role_not_resolved":
+    if region.no_data_reason in ("role_not_resolved", "role_incompatible"):
         words = region.entity_words or {}
         return [words.get(name, name) for name in region.unresolved_entity_names] or None, None
     return None, None
+
+
+def _unlisted_populations(region: RegionResult) -> dict[str, UnlistedPopulation]:
+    """Each population an ``entity_role_not_admitted`` region refuses because no shape lists
+    it exactly (`RoleNotAdmittedEntity.unlisted`), by the text the refusal names."""
+    return {
+        entity.text: entity.unlisted
+        for entity in region.role_not_admitted_entities
+        if entity.unlisted is not None
+    }
 
 
 def _ambiguous_entity_groups(region: RegionResult) -> list[AmbiguousEntityGroup]:
@@ -404,6 +416,7 @@ def _build_part(
         alternate_match=region.alternate_match,
         elected_stat_vars=region.elected_stat_vars,
         entity_terms=entity_terms,
+        unlisted=_unlisted_populations(region),
         role_axis=region.no_data_role_axis,
         bound_role_dcids=region.no_data_bound_role_dcids,
         ambiguous_candidates=ambiguous_candidates,

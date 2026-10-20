@@ -108,8 +108,9 @@ class EntityGroup(StrictModel):
     party and the role's one dcid is it. A role read as the whole population of
     its side, the source's total of every party there ("Official Donors, Total")
     or a union of such totals ("all donors including private"), states the
-    kinds of party that population holds in `whole_of`; a resubmit derives it
-    from the identity and the code index, whatever it posts. A Spec serves its groups on
+    kinds of party that population holds in `whole_of`, and the kinds the answer's
+    dataset publishes on that side in `side_kinds`; a resubmit derives both from the
+    identity and the code index, whatever it posts. A Spec serves its groups on
     `ResolvedSpec.entity_groups`, and a resubmit posts them beside the identity
     (`ResubmitIdentityEntry.entity_groups`, `ResubmitCandidate.entity_groups`)."""
 
@@ -153,6 +154,17 @@ class EntityGroup(StrictModel):
             'the kinds of party the role\'s whole population holds, e.g. ["party"] for '
             "Official Donors, Total, which holds every official donor and no private one; "
             "absent for any other group"
+        ),
+    )
+    side_kinds: list[PartyKind] | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "for a role read as its whole population, the kinds of party, totals aside, the "
+            'answer\'s dataset publishes on that side, sorted, e.g. ["party", "private", '
+            '"residual"] for donors in DAC2a; a kind here and not in whole_of, such as '
+            '"private", is outside the total. Absent for any other group. Derived from the '
+            "identity on every answer; a posted value is ignored"
         ),
     )
 

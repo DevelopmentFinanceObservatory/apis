@@ -352,11 +352,14 @@ class NoData(StrictModel):
     entity_terms: list[str] = Field(
         default_factory=list,
         description=(
-            "the query entity text responsible for an entity-resolution outcome, in "
-            "query order: every entity the engine could not resolve for "
-            "entity_not_resolved, every ambiguous wording for entity_ambiguous, or "
-            "every resolved-but-unadmitted entity for entity_role_not_admitted. Empty "
-            "for every other no_data reason. This structured list is the client-facing "
+            "the query entity text responsible for the outcome, in query order: every "
+            "entity the engine could not resolve for entity_not_resolved, every "
+            "ambiguous wording for entity_ambiguous, every resolved-but-unadmitted "
+            "entity for entity_role_not_admitted, every name whose direction the query "
+            "does not tell for role_not_resolved, and every whole population the query "
+            "directs to the other side of the flow for role_incompatible, which is "
+            "empty when the refusal has another cause. Empty for every other no_data "
+            "reason. This structured list is the client-facing "
             "source of those terms; rendered_sentence may quote the same wording for "
             "people, but clients must not parse it."
         ),

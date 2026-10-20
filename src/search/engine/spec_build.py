@@ -18,6 +18,7 @@ from code_index.labels import (
 from code_index.shared import get_index, get_measure_index
 from code_index.types import label_for_pairs
 from description.blocks import ranked_values
+from dfo_platform.roles import role_key_axis
 from origin_catalogue import ORIGINS, current_catalogue
 from search.engine.bind import SlotBindingDraft
 from search.engine.config import settings
@@ -410,6 +411,25 @@ def role_entity_groups(
                 group_id=group.group_id,
                 whole_of=list(group.whole_of) or None,
             )
+    return result
+
+
+def with_side_kinds(
+    groups: Mapping[str, EntityGroup], *, dataset: str | None
+) -> dict[str, EntityGroup]:
+    """`groups` with each group read as a whole population (`EntityGroup.whole_of`) stating
+    the kinds of party, totals aside, `dataset` publishes on its role's side
+    (`CodeIndex.party_kinds_by_side`): "Official Donors, Total" read from DAC2a states
+    `party`, `private` and `residual`, and from DAC2b `party` and `residual`. A group with
+    no whole reading, and every group where no dataset is elected, is unchanged."""
+    by_side = get_index().party_kinds_by_side
+    result = dict(groups)
+    for role, group in groups.items():
+        axis = role_key_axis(role)
+        if not group.whole_of or axis is None or dataset is None:
+            continue
+        kinds = sorted(by_side.get((axis, dataset), ()))
+        result[role] = group.model_copy(update={"side_kinds": kinds or None})
     return result
 
 
@@ -1198,7 +1218,6 @@ def build_spec(
     # spec_id and identity derive from one projection through build_spec_identity.
     hashed_entities = identity_entities if identity_entities is not None else entities
     named_groups = tuple(named_groups)
-    entity_groups = role_entity_groups(named_groups, hashed_entities)
     spec_id, identity_doc = build_spec_identity(
         identity_shape_from_wire(shape),
         slots,
@@ -1206,6 +1225,9 @@ def build_spec(
         open_roles=open_roles,
         requested_window=requested_window,
         explicit_facets=facet_bindings,
+    )
+    entity_groups = with_side_kinds(
+        role_entity_groups(named_groups, hashed_entities), dataset=identity_dataset(identity_doc)
     )
     definition = SpecDefinition(spec_id=spec_id, identity=identity_doc)
     slots = slots_in_identity_order(slots, identity_doc)

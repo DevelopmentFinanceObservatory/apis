@@ -599,12 +599,28 @@ _CASES: list[tuple[DepartureFact, str | None, str]] = [
             over="origin",
             group="official donors (DAC)",
             whole_of=("party",),
+            side_kinds=("party", "private", "residual"),
             inferred=True,
         ),
         "aid",
         "No donor was named, so this shows official donors (DAC), the source's total for "
         "every official donor. Private donors are outside it. To list each donor, search again "
         "with open_roles ['donor'].",
+    ),
+    # DAC2b publishes no private donor, so its official donors' total leaves none out.
+    (
+        DepartureFact(
+            code="whole_total_read",
+            binding_ref="origin:",
+            over="origin",
+            group="official donors (DAC)",
+            whole_of=("party",),
+            side_kinds=("party", "residual"),
+            inferred=True,
+        ),
+        "aid",
+        "No donor was named, so this shows official donors (DAC), the source's total for "
+        "every official donor. To list each donor, search again with open_roles ['donor'].",
     ),
     (
         DepartureFact(
@@ -628,12 +644,11 @@ _CASES: list[tuple[DepartureFact, str | None, str]] = [
             over="destination",
             group="all recipients (DAC)",
             whole_of=("party", "residual"),
-            verb="aggregate",
         ),
         "aid",
         "This shows all recipients (DAC), the source's total for every recipient, which "
         "includes aid not allocated to a country. To list each recipient, search again with "
-        "open_roles ['recipient'] and no aggregate over the recipients.",
+        "open_roles ['recipient'].",
     ),
     (
         DepartureFact(
@@ -836,6 +851,7 @@ _NO_DATA_CASES: list[tuple[DepartureFact, str | None, str]] = [
             over="origin",
             group="official donors (DAC)",
             whole_of=("party",),
+            side_kinds=("party", "private", "residual"),
             inferred=True,
         ),
         "aid",

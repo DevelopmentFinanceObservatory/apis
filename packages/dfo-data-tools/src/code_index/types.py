@@ -374,6 +374,10 @@ WHOLE_OF_KINDS: frozenset[str] = frozenset({"party", "private", "residual"})
 """The kinds a whole total can hold (`WholeMarker.holds`). A `total` is never one of them, so
 no whole total holds another."""
 
+POPULATION_KIND: PartyKind = "party"
+"""The kind every whole population holds: a side read whole holds its ordinary parties, so a
+total whose markers hold it stands for a population (`CodeIndex.population_totals_by_axis`)."""
+
 
 @dataclass(frozen=True, slots=True)
 class WholeMarker:

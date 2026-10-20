@@ -51,6 +51,7 @@ from search.models import (
     Unsupported,
     Warning,
 )
+from search.render.no_data import UnlistedPopulation
 
 if TYPE_CHECKING:
     from search.engine.bind import SlotBindingDraft
@@ -104,6 +105,9 @@ class RoleNotAdmittedEntity:
     dcid: str
     # `None` for a set with no node whose members share no stated type.
     graph_type: str | None
+    # A whole population asked member by member that no shape lists exactly
+    # (`phase_intake._prune_shapes_by_listing`): its side and the kinds it leaves out.
+    unlisted: UnlistedPopulation | None = None
 
 
 @dataclass(frozen=True)
@@ -142,9 +146,10 @@ class RegionResult:
     elected_stat_vars: list[GraphRef] | None = None
     # Input entity names the answer could not place, in input order: on a refusal of the
     # entity check (`phase_intake._phase_check_entities`), every name that resolved to no
-    # single node, ambiguous ones included, and for `role_not_resolved` those whose flow
-    # direction the query does not tell (`place_roles.untold_direction_names`). Empty
-    # otherwise.
+    # single node, ambiguous ones included, for `role_not_resolved` those whose flow
+    # direction the query does not tell (`place_roles.untold_direction_names`), and for
+    # `role_incompatible` at that check each whole population directed to the other side
+    # (`ResolveState.whole_misdirected`). Empty otherwise.
     unresolved_entity_names: tuple[str, ...] = ()
     # Query qualifiers without a final binding, including terms absent from the
     # index vocabulary. Populated only for `qualifier_not_bound`. Full records

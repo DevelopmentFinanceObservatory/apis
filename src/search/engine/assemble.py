@@ -63,6 +63,7 @@ from search.render.heading import (
 )
 from search.render.no_data import (
     ScopeSources,
+    UnlistedPopulation,
     alternate_preserves_bound_role,
     no_data_message,
     no_data_sentence_plan,
@@ -469,6 +470,7 @@ def build_no_data_part(
     alternate_match: Spec | None = None,
     elected_stat_vars: list[GraphRef] | None = None,
     entity_terms: list[str] | None = None,
+    unlisted: Mapping[str, UnlistedPopulation] | None = None,
     role_axis: EntityRoleKey | None = None,
     bound_role_dcids: Mapping[EntityRoleKey, Sequence[str]] | None = None,
     ambiguous_candidates: list[str] | None = None,
@@ -501,7 +503,8 @@ def build_no_data_part(
     code lives on ``NoData.gate``. ``elected_stat_vars`` lets sentence composition name an
     exact series match before a nearest substitute.
 
-    ``entity_terms`` preserves the place wording seen by the engine. ``role_axis`` names an
+    ``entity_terms`` preserves the place wording seen by the engine, and ``unlisted`` the
+    populations among them no source lists exactly (`UnlistedPopulation`). ``role_axis`` names an
     open origin or destination axis in ``no_observations`` copy. ``bound_role_dcids`` records
     query-bound role values for alternate validation, including when both roles are bound.
     ``ambiguous_candidates`` feeds the wording. ``ambiguous_entities`` carries structured
@@ -604,6 +607,7 @@ def build_no_data_part(
         elected_stat_vars=elected_stat_vars,
         variable_term=variable_text,
         entity_terms=entity_terms,
+        unlisted=unlisted,
         role_axis=role_axis,
         bound_role_dcids=bound_role_dcids,
         ambiguous_candidates=ambiguous_candidates,
@@ -645,6 +649,7 @@ def build_no_data_part(
                 reason,
                 variable_term=variable_text,
                 entity_terms=entity_terms,
+                unlisted=unlisted,
                 role_axis=role_axis,
                 ambiguous_candidates=ambiguous_candidates,
                 elected_stat_vars=elected_stat_vars,

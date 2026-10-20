@@ -813,7 +813,10 @@ async def _end_related_reads(state: ResolveState) -> None:
 # Entity errors come from `_phase_check_entities`, which runs before shape derivation and
 # the bind call. Each name with no place set mints `entity_not_resolved`, `entity_ambiguous`
 # (an Ambiguous resolution) or `entity_set_too_large` (a Group with more members than a
-# Spec binds), and `elect_no_data_reason` picks the part's reason from them.
+# Spec binds), and `elect_no_data_reason` picks the part's reason from them. Where every name
+# resolved, it mints `role_incompatible` for a whole population the request directs to the
+# other side, ahead of the variable reasons: the conflict is the request's own and holds on
+# every shape.
 # `_phase_place_bindings` mints `entity_set_too_large` too, for an
 # elected shape whose places exceed that bound. The count depends on the elected shape's
 # roles, so it is known only once a shape is elected. A request whose variable does not

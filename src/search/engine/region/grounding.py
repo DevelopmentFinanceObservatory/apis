@@ -364,8 +364,8 @@ def role_scope_defaulted_warnings(
     adds an unqualified warning. A bound
     destination with an open origin also warns, even when `open_origin_dcids` is empty.
     An axis in `unnamed_wholes` is one a whole population the request names reads as left
-    unnamed (`place_roles.PlaceRoles.unnamed_wholes`), so the request named something there
-    and it warns nothing. Return an empty list when no axis warns. `label_of` runs only for
+    unnamed or lists (`place_roles.PlaceRoles.unnamed_wholes`), so the request named
+    something there and it warns nothing. Return an empty list when no axis warns. `label_of` runs only for
     a discovered scope that warns.
     """
     warnings: list[Warning] = []

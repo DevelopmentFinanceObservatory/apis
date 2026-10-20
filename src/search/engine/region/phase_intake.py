@@ -41,10 +41,12 @@ from search.engine.region.result import (
 )
 from search.engine.region.source_choice import allows_un_system
 from search.engine.region.state import ResolveState, UnLeg, UnPool
-from search.engine.region.whole_totals import named_whole, population_totals
+from search.engine.region.whole_totals import named_whole, population_totals, side_kinds
+from search.engine.retrieval.bound_values import declared_datasets
 from search.engine.retrieval.derive import derive_shapes
 from search.engine.shape import ShapeDraft, role_names_by_axis
-from search.models import EntityRoleKey, NoDataReason, RoleAxis, elect_no_data_reason
+from search.models import EntityRoleKey, NoDataReason, PartyKind, RoleAxis, elect_no_data_reason
+from search.render.no_data import UnlistedPopulation
 
 # Full-facet probing is capped at 6 candidates. This phase checks raw recall count before
 # expansion. derive_shapes checks the confirmed count to bound the actual read.
@@ -120,8 +122,11 @@ async def _phase_resolve_places(state: ResolveState) -> None:
     (`ResolveState.party_sets`, `_party_word_sets`). A text naming a whole population ("all
     donors") gets no place set: it and each whole total the part can bind on a side it
     totals get a set of their node (`ResolveState.whole_sets`, `_whole_total_sets`). Such a
-    text asked for its members (`ResolveState.whole_listed`) opens its side
-    (`ResolveState.open_axes`) in place of naming a total there.
+    text asked for its members, or under an operation over its side ("official donors
+    giving more than 100 million"), is listed (`ResolveState.whole_listed`): it opens its side
+    (`ResolveState.open_axes`) in place of naming a total there, on the shapes that list
+    exactly its parties there (`_prune_shapes_by_listing`). Whether the request directs such
+    a text to the other side is recorded too (`ResolveState.whole_misdirected`).
     """
     # The type checker narrows locals, while state attributes need this explicit cast.
     rcl = cast(Recall, state.rcl)
@@ -141,16 +146,25 @@ async def _phase_resolve_places(state: ResolveState) -> None:
         if isinstance(resolution, Resolved)
     }
     # A text naming a whole population ("all donors") binds as a whole total
-    # (`_whole_total_sets`), so it holds no place set. Asked for its members, it asks for
-    # every party of its side, which it leaves open and no total binds.
+    # (`_whole_total_sets`), so it holds no place set. Asked for its members, or under an
+    # operation over its side, which may filter, rank or count them, it asks for every
+    # party of its side, which it leaves open and no total binds.
     whole_named = _whole_named(state, resolved)
     groups = {name: group for name, group in groups.items() if name not in whole_named}
     resolved = {name: entity for name, entity in resolved.items() if name not in whole_named}
     parties = get_index().parties
+    over = {operation.over for operation in state.operations}
+    sides = {name: parties[dcids[0]].axes[0] for name, dcids in whole_named.items()}
+    # A population's side is the one axis the code index publishes its parties on, so a text
+    # the request directs to the other side ("from France to official donors") is refused
+    # `role_incompatible` however it is asked (`_phase_check_entities`).
+    state.whole_misdirected = tuple(
+        name
+        for name, axis in sides.items()
+        if any(role.stated and role.axis != axis for role in state.entity_roles.get(name) or ())
+    )
     state.whole_listed = {
-        name: parties[dcids[0]].axes[0]
-        for name, dcids in whole_named.items()
-        if name in state.member_entities
+        name: axis for name, axis in sides.items() if name in state.member_entities or axis in over
     }
     state.open_axes |= set(state.whole_listed.values())
     whole_named = {
@@ -318,6 +332,12 @@ async def _phase_check_entities(state: ResolveState) -> RegionResult | None:
     An oversized group resolved, so it is never among the unresolved. Both keep query
     order. The place sets are final once `_phase_resolve_places` has run,
     so every later phase sees only resolved entities.
+
+    A part whose names all resolved but which directs a whole population to the side other
+    than its own (`ResolveState.whole_misdirected`) refuses ``role_incompatible`` here,
+    naming those texts as unresolved, before any shape is derived or pruned: the conflict
+    is the request's own and holds on every shape, so no listing or variable refusal
+    stands in front of it.
     """
     rcl = cast(Recall, state.rcl)
     # One reason per name, in query order.
@@ -329,6 +349,10 @@ async def _phase_check_entities(state: ResolveState) -> RegionResult | None:
         and name not in state.whole_listed
     }
     if not reasons:
+        if state.whole_misdirected:
+            return state.no_data(
+                "role_incompatible", unresolved_entity_names=state.whole_misdirected
+            )
         return None
     ambiguous_entities = tuple(
         AmbiguousEntity(
@@ -487,6 +511,72 @@ async def _prune_shapes_by_admission(
     return [], [not_admitted_entity(place_set) for place_set in refused]
 
 
+def _prune_shapes_by_listing(
+    state: ResolveState, shapes: list[ShapeDraft]
+) -> tuple[list[ShapeDraft], list[RoleNotAdmittedEntity]]:
+    """Keep shapes on which each whole population a text asks the members of
+    (`ResolveState.whole_listed`) opens its side to exactly its parties: every kind of party
+    the shape's declared datasets hold there, totals aside (`whole_totals.side_kinds`), is
+    one the population's markers hold (`WholeMarker.holds`). An open side lists every party
+    its dataset holds, and a Spec states no kind it leaves out, so "official donors" asked
+    member by member lists on no CRS shape, where private donors stand beside official ones.
+
+    Return the rejected populations, each named by its first party (`UnlistedPopulation`),
+    only when every shape fails. Where some population fails on every shape, those are the
+    ones named, each with the kinds every shape's datasets hold beside it. Otherwise each
+    population fails only beside the others, and every one some shape fails is named as
+    listing alone. A population every shape lists exactly is no cause of the refusal."""
+    if not state.whole_listed:
+        return shapes, []
+    resolved = {
+        name: resolution.entity
+        for name, resolution in cast(Recall, state.rcl).resolutions.items()
+        if name in state.whole_listed and isinstance(resolution, Resolved)
+    }
+    listed = {
+        name: dcids
+        for name, dcids in _whole_named(state, resolved).items()
+        if name in state.whole_listed
+    }
+    parties = get_index().parties
+    held = {
+        name: {kind for dcid in dcids for marker in parties[dcid].whole for kind in marker.holds}
+        for name, dcids in listed.items()
+    }
+
+    def left_out(shape: ShapeDraft, name: str) -> set[PartyKind]:
+        datasets = [dataset.provenance for dataset in declared_datasets(shape, get_index())]
+        return set(side_kinds(state.whole_listed[name], datasets=datasets)) - held[name]
+
+    left_outs = {name: [left_out(shape, name) for shape in shapes] for name in listed}
+    survivors = [
+        shape
+        for position, shape in enumerate(shapes)
+        if not any(kinds[position] for kinds in left_outs.values())
+    ]
+    if survivors:
+        return survivors, []
+    nowhere = [name for name, kinds in left_outs.items() if all(kinds)]
+    if nowhere:
+        unlisted = {
+            name: UnlistedPopulation(
+                axis=state.whole_listed[name],
+                left_out=tuple(sorted(set.intersection(*left_outs[name]))),
+            )
+            for name in nowhere
+        }
+    else:
+        unlisted = {
+            name: UnlistedPopulation(axis=state.whole_listed[name], left_out=(), listed_alone=True)
+            for name, kinds in left_outs.items()
+            if any(kinds)
+        }
+    return [], [
+        RoleNotAdmittedEntity(text=name, dcid=listed[name][0], graph_type=None, unlisted=population)
+        for name, population in unlisted.items()
+    ]
+
+
 def _set_types(place_set: PlaceSet) -> tuple[str, ...]:
     """The graph types of every reading `place_set` has: its node's, then the one its
     members share."""
@@ -616,7 +706,8 @@ async def _phase_derive_shapes(state: ResolveState) -> RegionResult | None:
     for that task; the UN pass, which runs only when ours ends no_data
     (`pipeline._fill_gap`), takes its shapes, already in `state.shapes_found`. Return
     ``role_signature_incompatible`` or ``variable_not_resolved`` when the pass derives no
-    shape, and ``entity_role_not_admitted`` when all shapes fail role checks. A part whose
+    shape, and ``entity_role_not_admitted`` when all shapes fail role checks or none lists
+    a whole population asked member by member exactly (`_prune_shapes_by_listing`). A part whose
     series code named its candidates (`ResolveState.source_code`) and derives no shape from
     them refuses ``source_code_not_held`` in place of ``variable_not_resolved``
     (`ResolveState.no_data`). Surviving
@@ -672,6 +763,8 @@ async def _phase_derive_shapes(state: ResolveState) -> RegionResult | None:
     # Prune before ranking so every later count sees only compatible shapes.
     admission_t0 = now_ms()
     shapes_found, never_admitted = await _prune_shapes_by_admission(state, shapes_found)
+    if shapes_found:
+        shapes_found, never_admitted = _prune_shapes_by_listing(state, shapes_found)
     state.timing["shape_admission"] = now_ms() - admission_t0
     state.shapes_found = shapes_found
     if not shapes_found:

@@ -42,9 +42,7 @@ class DepartureFact:
     The remaining fields are set by the codes named on each, and are `None` (or `False`)
     on every other code:
 
-    - `verb` (`operation_not_applied`): the operation the request named. On
-      `whole_total_read`, `aggregate` when the request summed over the side, which the
-      published total answered.
+    - `verb` (`operation_not_applied`): the operation the request named.
     - `over` (`breakdown_not_applied`, `direction_discarded`, `direction_inferred`,
       `whole_total_read`): the flow axis the request broke the answer down by, named the
       place on, the axis the answer reads a place named without a direction on, or the side
@@ -65,6 +63,8 @@ class DepartureFact:
       request named nothing on the side or its door holds no words.
     - `whole_of` (`whole_total_read`): the kinds of party the population holds
       (`EntityGroup.whole_of`).
+    - `side_kinds` (`whole_total_read`): the kinds of party, totals aside, the answer's
+      dataset holds on the side (`whole_totals.side_kinds`).
     - `inferred` (`whole_total_read`): the request named nothing on the side, so the answer
       read it whole. False on a door that holds no words of the request (a resubmit).
     - `shown`, `over` and `whole_of` (`whole_total_unpublished`): the name of the dataset
@@ -120,6 +120,7 @@ class DepartureFact:
     excluded: tuple[str, ...] = ()
     sum_differs: bool = False
     whole_of: tuple[PartyKind, ...] = ()
+    side_kinds: tuple[PartyKind, ...] = ()
     inferred: bool = False
     sources: tuple[str, ...] = ()
     latest_years: tuple[int, int] | None = None

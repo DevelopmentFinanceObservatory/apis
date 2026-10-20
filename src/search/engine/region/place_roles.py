@@ -109,8 +109,9 @@ class PlaceAssignment:
     # `sets` (`whole_total_candidates`), `None` when it reads none.
     whole: WholeReading | None = None
     # The sides no place is named on where a whole population a text names reads as left
-    # unnamed, set where the places are bound (`_named_wholes`). No `role_scope_defaulted`
-    # warning says the request named nothing there.
+    # unnamed (`_named_wholes`) or is listed (`ResolveState.whole_listed`), set where the
+    # places are bound (`bind_place_roles`). No `role_scope_defaulted` warning says the
+    # request named nothing there.
     unnamed_wholes: frozenset[RoleAxis] = frozenset()
 
     @property
@@ -789,6 +790,12 @@ def bind_place_roles(
     if isinstance(assignment, str):
         return assignment
     assignment = _named_wholes(state, shape, assignment)
+    # A side a listed population opens was named in the request's words.
+    listed = frozenset(state.whole_listed.values()) - assignment.sets.keys()
+    if listed:
+        assignment = dataclasses.replace(
+            assignment, unnamed_wholes=assignment.unnamed_wholes | listed
+        )
     parties: dict[EntityRoleKey, tuple[PlaceSet, ...]] = {
         named.axis: (state.party_sets[named.party],)
         for named in _held_party_words(state, shape, assignment)
@@ -813,7 +820,9 @@ def _named_wholes(
     `shape` that declares that side. Such a text names its parties as any named party does:
     "official donors to Ethiopia" binds "Official Donors, Total", and "France and official
     donors to Ethiopia" binds France beside it. Where no series holds the total, the answer
-    departs `entity_unavailable` for it or refuses, as for any party.
+    departs `entity_unavailable` for it or refuses, as for any party. A text the request's
+    words direct to the side other than its population's is refused before any shape binds
+    (`phase_intake._phase_check_entities`).
 
     A side that holds one population alone reads it whole where every dataset the shape
     answers from (`bound_values.declared_datasets`) marks it whole over the part's period
@@ -873,20 +882,19 @@ def _named_wholes(
 
 def totalled_axes(state: ResolveState) -> tuple[RoleAxis, ...]:
     """The flow axes the part totals, origin first, read from the part alone: no name of
-    the part is directed to the axis, and either every operation over it is an `aggregate`,
-    whatever its open roles say, or no operation runs over it and the part does not ask
-    every member of it (`ResolveState.open_axes`). "ODA to Ethiopia" and "total ODA Kenya
-    received from all donors" total the donors; "ODA to Ethiopia by donor", "top donors to
-    Ethiopia" and a share or growth over the donors list them."""
+    the part is directed to the axis, no operation runs over it, and the part does not ask
+    every member of it (`ResolveState.open_axes`). An operation over an axis needs every
+    member's value (`Operation.over`): it may filter, rank or count them, so the side's
+    total cannot stand in for them, an `aggregate` included. "ODA to Ethiopia" and a sum
+    over no axis total the donors; "ODA to Ethiopia by donor", "top donors to Ethiopia",
+    a sum over the donors and a share or growth over them list them."""
     directed = {role.axis for name in state.entities for role in state.entity_roles.get(name) or ()}
-    axes: list[RoleAxis] = []
-    for axis in ("origin", "destination"):
-        if axis in directed:
-            continue
-        verbs = {operation.verb for operation in state.operations if operation.over == axis}
-        if verbs == {"aggregate"} or (not verbs and axis not in state.open_axes):
-            axes.append(axis)
-    return tuple(axes)
+    over = {operation.over for operation in state.operations}
+    return tuple(
+        axis
+        for axis in ("origin", "destination")
+        if axis not in directed and axis not in over and axis not in state.open_axes
+    )
 
 
 def named_whole_axes(state: ResolveState) -> frozenset[RoleAxis]:

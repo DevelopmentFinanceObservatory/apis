@@ -15,6 +15,7 @@ from search.models import (
     NoDataDenominator,
     NoDataGate,
     NoDataReason,
+    PartyKind,
     ResolvedQualifier,
     RoleAxis,
     SentenceToken,
@@ -188,11 +189,68 @@ def _no_observations_concept(
     return _join_labels([*labels[:_MAX_NAMED_CONCEPTS], f"{remaining:,} more"])
 
 
+@dataclass(frozen=True)
+class UnlistedPopulation:
+    """A whole population a request asked member by member ("official donors" with
+    `members: true`) on a side no source of the data lists exactly beside the others the
+    request asks so. An open side lists every party its source holds, so such a population
+    refuses `entity_role_not_admitted`.
+
+    `axis` is its side. Where no source lists it exactly, `left_out` is the kinds of party,
+    totals aside, that every source holds there and the population leaves out, sorted,
+    possibly none when the sources share no such kind. Where some source lists it exactly,
+    but none that also lists the request's other populations, `listed_alone` is true and
+    `left_out` empty."""
+
+    axis: RoleAxis
+    left_out: tuple[PartyKind, ...]
+    listed_alone: bool = False
+
+
+# The words for the parties of each kind a population leaves out, by its side's noun.
+_LEFT_OUT_WORDS: Mapping[PartyKind, str] = {
+    "party": "official {noun}s",
+    "private": "private {noun}s",
+    "residual": "residual {noun} entries",
+}
+
+
+def _unlisted_phrase(
+    terms: Sequence[str], unlisted: Mapping[str, UnlistedPopulation], variable_term: str | None
+) -> str:
+    """The entity_role_not_admitted phrase for populations no source lists exactly
+    (`UnlistedPopulation`): for each, the kinds of party every source holds beside it, and
+    the two ways to ask instead. Populations each listed alone are named together, as ones
+    no source lists side by side."""
+    data = f'the "{variable_term}" data' if variable_term else "the data"
+    if any(unlisted[term].listed_alone for term in terms):
+        joined = _join_labels([f'"{term}"' for term in terms])
+        return (
+            f"No source of {data} can list {joined} member by member together, though each "
+            "can be listed alone. Search for them separately, or ask for their totals."
+        )
+    sentences = []
+    for term in terms:
+        population = unlisted[term]
+        noun = "donor" if population.axis == "origin" else "recipient"
+        if population.left_out:
+            kinds = [_LEFT_OUT_WORDS[kind].format(noun=noun) for kind in population.left_out]
+            held = f'{_join_labels(kinds)}, which "{term}" leaves out'
+        else:
+            held = f'{noun}s "{term}" leaves out'
+        sentences.append(
+            f'"{term}" cannot be listed {noun} by {noun}: every source of {data} also holds '
+            f"{held}. Ask for its total, or name the {noun}s to list."
+        )
+    return " ".join(sentences)
+
+
 def no_data_phrase(
     reason: NoDataReason,
     *,
     variable_term: str | None = None,
     entity_terms: list[str] | None = None,
+    unlisted: Mapping[str, UnlistedPopulation] | None = None,
     role_axis: EntityRoleKey | None = None,
     ambiguous_candidates: list[str] | None = None,
     elected_stat_vars: list[GraphRef] | None = None,
@@ -214,7 +272,9 @@ def no_data_phrase(
     role_not_resolved, which asks who among them is giving and who receiving.
     ``ambiguous_candidates`` adds graph matches to
     entity_ambiguous. For entity_role_not_admitted, ``variable_term`` names
-    the indicator whose data is unavailable for the entity.
+    the indicator whose data is unavailable for the entity; where every term is a
+    population asked member by member that no source lists exactly beside the others
+    (``unlisted``), the phrase says why (`_unlisted_phrase`).
 
     ``source_terms`` are quoted and joined for source_not_resolved and
     source_ambiguous, where ``ambiguous_candidates`` holds the labels of the
@@ -302,6 +362,8 @@ def no_data_phrase(
                     f"Could not tell whether {joined} is giving or receiving. {_NAME_A_DIRECTION}"
                 )
             if reason == "entity_role_not_admitted":
+                if unlisted and all(term in unlisted for term in terms):
+                    return _unlisted_phrase(terms, unlisted, variable_term)
                 if variable_term:
                     return f'"{variable_term}" data is not reported for {joined}.'
                 verb = "are" if plural else "is"
@@ -439,6 +501,7 @@ def no_data_message(
     *,
     variable_term: str | None = None,
     entity_terms: list[str] | None = None,
+    unlisted: Mapping[str, UnlistedPopulation] | None = None,
     role_axis: EntityRoleKey | None = None,
     ambiguous_candidates: list[str] | None = None,
     elected_stat_vars: list[GraphRef] | None = None,
@@ -450,13 +513,15 @@ def no_data_message(
 ) -> str:
     """The bare no-data sentence: `no_data_phrase` with every term given, plus the guidance
     a bare no_observations sentence adds, the denominators a denominator_not_available
-    refusal compared (`denominator_sentence`), and the sources a scoped part was read
+    refusal compared (`denominator_sentence`), the side a role_incompatible refusal's
+    terms belong on (`misdirected_sentence`), and the sources a scoped part was read
     under (`scope_sentence`), as `no_data_sentence_plan` renders it when it names no near
     match."""
     phrase = no_data_phrase(
         reason,
         variable_term=variable_term,
         entity_terms=entity_terms,
+        unlisted=unlisted,
         role_axis=role_axis,
         ambiguous_candidates=ambiguous_candidates,
         elected_stat_vars=elected_stat_vars,
@@ -468,8 +533,24 @@ def no_data_message(
     text = _bare_no_data_text(phrase, reason)
     if denominator is not None:
         text += denominator_sentence(denominator)
+    if misdirected := misdirected_sentence(reason, entity_terms):
+        text += f" {misdirected}"
     closing = scope_sentence(reason, scope, qualifier_terms)
     return f"{text} {closing}" if closing else text
+
+
+def misdirected_sentence(reason: NoDataReason, entity_terms: list[str] | None) -> str | None:
+    """The sentence a role_incompatible refusal closes on for the whole populations the
+    request directs to the side other than their own (`entity_terms`): '"all donors"
+    belongs on the other side of the flow. Swap its "from" or "to".' `None` for any other
+    reason, or with no term."""
+    terms = [t.strip() for t in entity_terms or () if t and t.strip()]
+    if reason != "role_incompatible" or not terms:
+        return None
+    joined = _join_labels([f'"{t}"' for t in terms])
+    if len(terms) == 1:
+        return f'{joined} belongs on the other side of the flow. Swap its "from" or "to".'
+    return f'{joined} belong on the other side of the flow. Swap their "from" or "to".'
 
 
 def denominator_sentence(denominator: NoDataDenominator) -> str:
@@ -678,6 +759,7 @@ def no_data_sentence_plan(
     elected_stat_vars: list[GraphRef] | None = None,
     variable_term: str | None = None,
     entity_terms: list[str] | None = None,
+    unlisted: Mapping[str, UnlistedPopulation] | None = None,
     role_axis: EntityRoleKey | None = None,
     bound_role_dcids: Mapping[EntityRoleKey, Sequence[str]] | None = None,
     ambiguous_candidates: list[str] | None = None,
@@ -730,11 +812,15 @@ def no_data_sentence_plan(
     naming the place twice. ``bound_role_dcids`` checks alternate roles.
     ``ambiguous_candidates`` and ``ambiguous_roles`` apply only to the bare
     entity-ambiguity form; ``ambiguous_roles`` maps a wording to its flow axis.
+    ``unlisted`` words the bare entity_role_not_admitted verdict for populations no source
+    lists exactly (`no_data_phrase`).
     ``elected_stat_vars`` are added when the verdict would not repeat a
     variable already named by the match. ``qualifier_terms`` apply only to
     qualifier_not_bound, ``source_terms`` to the two source reasons, whose
     ``ambiguous_candidates`` are source labels, and ``source_code_refusal`` to the
-    source-code reasons (`no_data_phrase`). A part read under a source ``scope``
+    source-code reasons (`no_data_phrase`). A role_incompatible verdict naming
+    ``entity_terms`` says they belong on the other side (`misdirected_sentence`), as its
+    own token, so a composed envelope keeps it. A part read under a source ``scope``
     closes its verdict on the sources it was read under (`scope_sentence`). The part's
     ``departures`` follow as departure-segment tokens.
     """
@@ -747,6 +833,7 @@ def no_data_sentence_plan(
         elected_stat_vars=elected_stat_vars,
         variable_term=variable_term,
         entity_terms=entity_terms,
+        unlisted=unlisted,
         role_axis=role_axis,
         bound_role_dcids=bound_role_dcids,
         ambiguous_candidates=ambiguous_candidates,
@@ -757,8 +844,12 @@ def no_data_sentence_plan(
         denominator=denominator,
         source_code_refusal=source_code_refusal,
     )
-    if closing := scope_sentence(reason, scope, qualifier_terms):
-        plan.append(_text(f" {closing}" if plan else closing))
+    for closing in (
+        misdirected_sentence(reason, entity_terms),
+        scope_sentence(reason, scope, qualifier_terms),
+    ):
+        if closing:
+            plan.append(_text(f" {closing}" if plan else closing))
     plan.extend(departure_tokens([d.text for d in departures], after_text=bool(plan)))
     return plan
 
@@ -773,6 +864,7 @@ def _no_data_verdict_plan(
     elected_stat_vars: list[GraphRef] | None,
     variable_term: str | None,
     entity_terms: list[str] | None,
+    unlisted: Mapping[str, UnlistedPopulation] | None,
     role_axis: EntityRoleKey | None,
     bound_role_dcids: Mapping[EntityRoleKey, Sequence[str]] | None,
     ambiguous_candidates: list[str] | None,
@@ -865,6 +957,7 @@ def _no_data_verdict_plan(
                 reason,
                 variable_term=variable_term,
                 entity_terms=entity_terms,
+                unlisted=unlisted,
                 role_axis=role_axis,
                 ambiguous_candidates=ambiguous_candidates,
                 elected_stat_vars=elected_stat_vars,
