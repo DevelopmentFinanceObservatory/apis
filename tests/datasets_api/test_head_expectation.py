@@ -6,6 +6,7 @@ real. Graph, SDMX, artifact, and head stores are fakes.
 
 from __future__ import annotations
 
+import contextvars
 import itertools
 import threading
 from collections.abc import Callable, Iterator
@@ -431,9 +432,13 @@ def test_two_concurrent_rebuilds_from_one_head_read_advance_it_once() -> None:
     fetches = []
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        responses = list(
-            pool.map(lambda client: client.get(f"/api/datasets/{spec_id}?bundle=false"), processes)
-        )
+        futures = [
+            pool.submit(
+                contextvars.copy_context().run, client.get, f"/api/datasets/{spec_id}?bundle=false"
+            )
+            for client in processes
+        ]
+        responses = [future.result() for future in futures]
 
     assert [response.status_code for response in responses] == [200, 200]
     rebuilds = [

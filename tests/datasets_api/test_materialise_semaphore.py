@@ -4,6 +4,7 @@ A barrier-controlled SDMX transport makes overlap observable without timing assu
 
 from __future__ import annotations
 
+import contextvars
 import functools
 import gc
 import itertools
@@ -281,8 +282,8 @@ def test_materialise_semaphore_of_one_serialises_two_concurrent_mints():
             resp = client.post("/api/datasets", json=_scope(statvar=statvar_ref))
             results.append(resp.status_code)
 
-        first = threading.Thread(target=_mint, args=(_REF_A,))
-        second = threading.Thread(target=_mint, args=(_REF_B,))
+        first = threading.Thread(target=contextvars.copy_context().run, args=(_mint, _REF_A))
+        second = threading.Thread(target=contextvars.copy_context().run, args=(_mint, _REF_B))
         first.start()
         assert transport.first_entered.wait(timeout=5)
         second.start()
@@ -314,8 +315,8 @@ def test_materialise_semaphore_of_two_lets_two_concurrent_mints_overlap():
             results.append(resp.status_code)
 
         threads = [
-            threading.Thread(target=_mint, args=(_REF_A,)),
-            threading.Thread(target=_mint, args=(_REF_B,)),
+            threading.Thread(target=contextvars.copy_context().run, args=(_mint, _REF_A)),
+            threading.Thread(target=contextvars.copy_context().run, args=(_mint, _REF_B)),
         ]
         for thread in threads:
             thread.start()
@@ -355,8 +356,12 @@ def test_options_route_re_materialise_counts_against_the_semaphore():
             resp = client.get(f"/api/datasets/{spec_id}/options")
             results.append(resp.status_code)
 
-        first = threading.Thread(target=_options, args=(spec_ids[_REF_A],))
-        second = threading.Thread(target=_options, args=(spec_ids[_REF_B],))
+        first = threading.Thread(
+            target=contextvars.copy_context().run, args=(_options, spec_ids[_REF_A])
+        )
+        second = threading.Thread(
+            target=contextvars.copy_context().run, args=(_options, spec_ids[_REF_B])
+        )
         first.start()
         assert transport.first_entered.wait(timeout=5)
         second.start()
@@ -506,7 +511,7 @@ def test_stale_head_rebuild_waits_for_a_materialise_slot_and_times_out_as_503(
             resp = client.post("/api/datasets", json=_scope(statvar=_REF_A))
             results["mint_a"] = resp.status_code
 
-        mint_thread = threading.Thread(target=_mint_a)
+        mint_thread = threading.Thread(target=contextvars.copy_context().run, args=(_mint_a,))
         mint_thread.start()
         assert started.wait(timeout=5)
         # A's probe reads coverage. B's fetch must wait for release.
@@ -577,7 +582,7 @@ def test_materialise_wait_expires_returns_retryable_503_and_frees_the_pool_threa
             resp = client.post("/api/datasets", json=_scope(statvar=_REF_A))
             results["mint_a"] = resp.status_code
 
-        mint_thread = threading.Thread(target=_mint_a)
+        mint_thread = threading.Thread(target=contextvars.copy_context().run, args=(_mint_a,))
         mint_thread.start()
         assert started.wait(timeout=5)
 
@@ -801,7 +806,7 @@ def test_mint_facet_probe_waits_for_a_materialise_slot_and_times_out_as_503(
             resp = client.post("/api/datasets", json=_scope(statvar=_REF_A))
             results["mint_a"] = resp.status_code
 
-        mint_thread = threading.Thread(target=_mint_a)
+        mint_thread = threading.Thread(target=contextvars.copy_context().run, args=(_mint_a,))
         mint_thread.start()
         assert started.wait(timeout=5)
         # A's fetch holds the slot. Its probe reads coverage, so B's fetch must wait.
@@ -870,7 +875,7 @@ def test_posted_definition_options_wait_for_the_slot_a_mint_holds_and_refuse_ret
             resp = client.post("/api/datasets", json=_scope(statvar=_REF_A))
             results["mint_a"] = resp.status_code
 
-        mint_thread = threading.Thread(target=_mint_a)
+        mint_thread = threading.Thread(target=contextvars.copy_context().run, args=(_mint_a,))
         mint_thread.start()
         assert started.wait(timeout=5)
 
@@ -1089,14 +1094,19 @@ def test_a_coverage_reload_waits_for_a_running_mint_then_holds_every_permit(
         coverage=coverage,
     ) as client:
         mint = threading.Thread(
-            target=lambda: results.append(
-                client.post("/api/datasets", json=_scope(statvar=_REF_A)).status_code
-            )
+            target=contextvars.copy_context().run,
+            args=(
+                lambda: results.append(
+                    client.post("/api/datasets", json=_scope(statvar=_REF_A)).status_code
+                ),
+            ),
         )
         mint.start()
         assert entered.wait(timeout=5)
         published["build_id"] = "build-2"
-        reload = threading.Thread(target=coverage.snapshot_current)
+        reload = threading.Thread(
+            target=contextvars.copy_context().run, args=(coverage.snapshot_current,)
+        )
         reload.start()
         assert not reloaded.wait(timeout=0.3)
         release.set()
@@ -1662,7 +1672,7 @@ def test_a_request_at_the_gate_during_a_reload_starts_again_without_taking_a_per
             built_on.append(snapshot.stamp)
 
     waiter = threading.Thread(target=under_current_coverage, args=(coverage.service.snapshot, work))
-    reload = threading.Thread(target=coverage.reload)
+    reload = threading.Thread(target=contextvars.copy_context().run, args=(coverage.reload,))
     waiter.start()
     try:
         assert took.wait(timeout=5)

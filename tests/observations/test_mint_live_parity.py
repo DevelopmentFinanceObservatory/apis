@@ -29,6 +29,7 @@ import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import cast
 
 import httpx
 import pytest
@@ -42,6 +43,7 @@ from dc_sdmx import SdmxClient, SdmxObservation
 from materialise.graph import Facet
 from materialise.rate_tables import RateTableCache
 from origin_catalogue import BASE, Catalogue
+from origin_catalogue.arc_tables import WireArcs
 from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.graph import Facet as EngineFacet
 from search.engine.quantity_read import QuantityOutput
@@ -70,10 +72,10 @@ from tests.materialise._rate_table_support import (
 )
 from tests.materialise._scope_availability import ScopeAvailability
 from tests.origin_catalogue.fake_catalogue import (
-    FakeCatalogue,
     fake_catalogue_service,
     provenance_row,
 )
+from tests.origin_catalogue.support import listing_base_variables
 
 _SDMX_CSV = "application/vnd.sdmx.data+csv;version=2.0.0"
 _SDMX_BASE_URL = "https://example.org/core/api"
@@ -249,6 +251,14 @@ class _Upstream:
             },
         }
 
+    def stat_var_arcs_by_dcid(self) -> dict[str, WireArcs]:
+        """The arcs of each StatVar detection offers, in the graph's node form."""
+        return {
+            dcid: cast("WireArcs", node["arcs"])
+            for dcid, node in self._nodes().items()
+            if "arcs" in node
+        }
+
     def engine_graph(self) -> FakeGraph:
         return FakeGraph(
             nodes=self._nodes(),
@@ -399,12 +409,15 @@ class _Upstream:
         )
 
 
-def _catalogue() -> Catalogue:
-    return FakeCatalogue(
+def _catalogue(upstream: _Upstream) -> Catalogue:
+    """Lists the upstream's StatVars as base variables, so their `FinancialFlow` amount family,
+    which the bound release holds as DFO, is walked on the upstream's graph."""
+    return listing_base_variables(
+        upstream.stat_var_arcs_by_dcid(),
         provenances={
             _PROV_A: provenance_row(_PROV_A, BASE, source="ParitySourceA"),
             _PROV_B: provenance_row(_PROV_B, BASE, source="ParitySourceB"),
-        }
+        },
     )
 
 
@@ -473,7 +486,7 @@ def _mint_and_read_frozen(upstream: _Upstream, spec: Spec) -> dict[str, object]:
         reference_writer=FakeArtifactReferenceWriter(),
         coverage=upstream.coverage(),
         rate_cache=RateTableCache(),
-        catalogue=fake_catalogue_service(_catalogue()),
+        catalogue=fake_catalogue_service(_catalogue(upstream)),
     )
     assert spec.definition is not None
     minted = client.post(
@@ -752,7 +765,7 @@ def test_the_frozen_observations_equal_the_live_preview(
     that stops exercising it fails rather than passing trivially."""
     if caps is not None:
         monkeypatch.setattr(search.observations, "_SETTINGS", caps)
-    bind_catalogue(_catalogue())
+    bind_catalogue(_catalogue(upstream))
     spec = _resolve_live(upstream)
     check_live(spec)
     live = spec.resolved.observations

@@ -16,12 +16,13 @@ from origin_catalogue.catalogue import (
     CardFacts,
     DatasetRef,
     Licence,
+    ProvenanceRow,
     SourceDocumentation,
 )
 from origin_catalogue.graph import _wire
 from origin_catalogue.schema import FORMAT_ROOT, UnAgencyCounts
 from origin_catalogue.un_mirror import UnArc, UnMirror, UnVariable
-from tests.origin_catalogue.fake_catalogue import provenance_row
+from tests.origin_catalogue.fake_catalogue import FakeCatalogue, provenance_row
 
 
 def named_labels(*tables: Mapping[str, tuple[UnArc, ...]]) -> dict[str, str | None]:
@@ -58,6 +59,18 @@ def build_arc_tables(
         for node, arcs in answers.items():
             builder.add(name, node, arcs)
     return build_labelled(builder, labels=labels)
+
+
+def listing_base_variables(
+    base: Mapping[str, WireArcs], *, provenances: Mapping[str, ProvenanceRow] | None = None
+) -> FakeCatalogue:
+    """A `FakeCatalogue` listing `provenances` whose base arc table lists each variable of
+    `base` with its `->*` arcs, as a catalogue build lists every base variable. A family the
+    bound release holds as DFO that also holds one of them is then walked on the graph whole
+    (`graph_release.origin.ReleaseOrigin.holds_family`)."""
+    return FakeCatalogue(
+        provenances=provenances or {}, arcs=build_arc_tables(dfo={}, base=base, schema={})
+    )
 
 
 def held_wire_arcs(tables: ArcTables, dcid: str) -> dict | None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import json
 from concurrent.futures import ThreadPoolExecutor
 
@@ -214,12 +215,19 @@ def test_empty_refs_makes_no_call():
 
 def test_concurrent_lookups_of_the_same_uncached_refs_are_all_correct_then_cached():
     # Graph reads run outside the cache lock, so concurrent misses may fetch
-    # the same refs. Results remain correct and later reads use the cache.
+    # the same refs. Results remain correct and later reads use the cache. Each
+    # worker runs in a copy of the caller's context, as pooled request work does,
+    # so it reads the release the caller bound.
     graph = _graph()
     lookup = EnrichmentLookup(graph, parties=lambda: {})
 
     with ThreadPoolExecutor(max_workers=8) as pool:
-        futures = [pool.submit(lookup.lookup, ["country/KEN", "org/WORLDBANK"]) for _ in range(8)]
+        futures = [
+            pool.submit(
+                contextvars.copy_context().run, lookup.lookup, ["country/KEN", "org/WORLDBANK"]
+            )
+            for _ in range(8)
+        ]
         results = [future.result() for future in futures]
 
     for result in results:

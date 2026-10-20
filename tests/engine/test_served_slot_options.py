@@ -16,6 +16,7 @@ import pytest
 from code_index.shared import get_index
 from materialise.facets import native_currency_iso
 from materialise.rate_tables import RateTableCache
+from origin_catalogue import bound_catalogue
 from search.engine.bind import SlotBindingDraft
 from search.engine.region import resolve_spec_resubmit
 from search.engine.region.option_coverage import (
@@ -87,6 +88,7 @@ from tests.materialise._rate_table_support import (
     recipe_table_bodies,
 )
 from tests.materialise.conftest import FakeGraphReader
+from tests.origin_catalogue.support import listing_base_variables
 
 _DEU = "country/DEU"
 _FRA = "country/FRA"
@@ -698,22 +700,25 @@ def _debt_resubmit(monkeypatch: pytest.MonkeyPatch, **bound: str):
     coverage = patch_coverage(
         monkeypatch, _DS_ROWS, role_names=dict.fromkeys(_DS_CONSTRAINTS, _ROLE_NAMES)
     )
-    return resolve_spec_resubmit(
-        inp=ResubmitIdentityPayload(
-            identity=identity,
-        ),
-        graph=graph,
-        sdmx=FakeSdmxClient(observations={}, availability={}),
-        coverage=FakeCoverageService(coverage).snapshot(),
-        options=walk_options(
-            graph,
-            EngineOptions(
-                materialise_graph=with_member_arcs(
-                    axis_confirming_reader(*_DS_CONSTRAINTS, graph=graph), graph
-                )
+    # The catalogue lists the debt-service StatVars, so the member walk reads this graph.
+    catalogue = listing_base_variables({dcid: _ds_arcs(dcid) for dcid in _DS_CONSTRAINTS})
+    with bound_catalogue(catalogue):
+        return resolve_spec_resubmit(
+            inp=ResubmitIdentityPayload(
+                identity=identity,
             ),
-        ),
-    )
+            graph=graph,
+            sdmx=FakeSdmxClient(observations={}, availability={}),
+            coverage=FakeCoverageService(coverage).snapshot(),
+            options=walk_options(
+                graph,
+                EngineOptions(
+                    materialise_graph=with_member_arcs(
+                        axis_confirming_reader(*_DS_CONSTRAINTS, graph=graph), graph
+                    )
+                ),
+            ),
+        )
 
 
 @pytest.mark.usefixtures("unlisted_index")

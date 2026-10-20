@@ -7,7 +7,8 @@ property, its label and type, and, for every node those arcs name, its label and
 names the arcs carry for it. The arcs name a node with no name by its dcid and a node of
 several names by its first, where its label is none or its last name. The build in
 `tests/fixtures/origin_catalogue_eval` must answer each from its tables with the same value,
-or leave it to a live read.
+or leave it to a live read. The tests run with `GRAPH_RELEASE_ORIGIN` off, as only then does
+the build's own DFO table answer.
 """
 
 from __future__ import annotations
@@ -35,6 +36,11 @@ def catalogue(tmp_path_factory: pytest.TempPathFactory) -> CatalogueSnapshot:
     return load_catalogue(
         stage_fixture(_FIXTURES / "origin_catalogue_eval", tmp_path_factory.mktemp("eval"))
     )
+
+
+@pytest.fixture(autouse=True)
+def _build_dfo_table(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GRAPH_RELEASE_ORIGIN", raising=False)
 
 
 def _value_sets(arcs: Mapping[str, dict] | None) -> dict[str, list[str]] | None:

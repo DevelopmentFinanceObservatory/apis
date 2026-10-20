@@ -578,11 +578,15 @@ _DEBT = FamilyKey("Debt", "amount", "measuredValue", None, None, False, False)
 _UN_MORTALITY = FamilyKey(UN_SERIES, "value", "", None, None, False, False)
 
 
-def test_a_snapshot_reads_each_family_summary_the_job_computed_from_its_tables() -> None:
+def test_a_snapshot_reads_each_family_summary_the_job_computed_from_its_tables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A DFO and a base variable whose only difference is a qualifier typed only
     ProvisionalNode, which search reads as none, share a family, summarised once; a real
     qualifier makes another. A node held empty belongs to none. The UN family reads from
-    the UN tables, and with the UN origin off it is not held."""
+    the UN tables, and with the UN origin off it is not held. Runs with
+    `GRAPH_RELEASE_ORIGIN` off, as only then does the build's own DFO table answer."""
+    monkeypatch.delenv("GRAPH_RELEASE_ORIGIN", raising=False)
     dfo, base, qualified, empty = "Debt_Dfo", "Debt_Base", "Debt_Real", "Debt_Empty"
     snapshot = restrictive_catalogue(
         provenances=[provenance_row(WDI, BASE)],
