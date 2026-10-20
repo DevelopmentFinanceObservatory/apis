@@ -192,7 +192,7 @@ class TestEnrichments:
 
     def test_a_party_roles_kind_coverage_lists_every_party_field(self):
         """A stored profile counts `party_kind` alone; one code-index row gives a party all
-        three cells, so the sector and whole cells list the same counts."""
+        three cells, so the class and whole cells list the same counts."""
         coverage = (
             _coverage(
                 "financingRecipient",
@@ -212,7 +212,7 @@ class TestEnrichments:
             for e in document.enrichments
         ] == [
             (f"financingRecipient_{field}", "partial", 2, ["country/NOWHERE"])
-            for field in ("party_kind", "party_sector", "party_whole")
+            for field in ("party_kind", "party_class", "party_whole")
         ]
 
     def test_truncated_flag_passes_through(self):

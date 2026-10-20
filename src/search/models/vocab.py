@@ -291,11 +291,11 @@ PartyKind = Literal["party", "total", "residual"]
 of its own, a `total` holds other parties' figures ("Africa, Total", the G7), so a sum across a
 flow role that counts it counts its members twice, and a `residual` holds figures no other party
 does ("Africa, unallocated by country"). Mirrors `code_index.types.PartyKind` one-for-one."""
-MemberClass = Literal["official", "private", "residual"]
-"""The class of a flow party that is not a total: its sector, `official` or `private`, for a
-`party`, and `residual` for a residual. A whole population covers classes
-(`EntityGroup.whole_of`): "Official Donors, Total" covers every `official` donor. Mirrors
-`code_index.types.MemberClass` one-for-one."""
+PartyClass = Literal["official", "private", "residual"]
+"""Whose money a flow party's figures count: `private` for a private provider of development
+finance, `official` for any other party, and `residual` for a residual. A whole population
+covers classes (`EntityGroup.whole_of`): "Official Donors, Total" covers every `official`
+donor. Mirrors `code_index.types.PartyClass` one-for-one."""
 SlotOptionRelation = Literal["child", "parent", "root"]
 """Where a level-scoped `SlotOption` sits in its slot's menu. On a bound slot,
 `"child"`/`"parent"` narrow or widen one step from the bound value in a

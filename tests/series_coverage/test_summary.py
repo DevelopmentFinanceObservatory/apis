@@ -94,12 +94,12 @@ def test_party_counts_split_the_union_of_facets_by_code_index_kind() -> None:
     )
     index = CoverageIndex(table, {"V-a": _FLOW_ROLES}, horizon=horizon)
     parties = {
-        FRA: PartyRow(dcid=FRA, kind="party", sector="official"),
-        DEU: PartyRow(dcid=DEU, kind="party", sector="official"),
-        gates: PartyRow(dcid=gates, kind="party", sector="private"),
-        KEN: PartyRow(dcid=KEN, kind="party", sector="official"),
+        FRA: PartyRow(dcid=FRA, kind="party", party_class="official"),
+        DEU: PartyRow(dcid=DEU, kind="party", party_class="official"),
+        gates: PartyRow(dcid=gates, kind="party", party_class="private"),
+        KEN: PartyRow(dcid=KEN, kind="party", party_class="official"),
         africa_total: PartyRow(dcid=africa_total, kind="total", totals="africa"),
-        africa_residual: PartyRow(dcid=africa_residual, kind="residual"),
+        africa_residual: PartyRow(dcid=africa_residual, kind="residual", party_class="residual"),
     }
 
     summary = index.facet_summary.variable("V-a")

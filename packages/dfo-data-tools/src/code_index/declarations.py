@@ -19,8 +19,8 @@ from code_index.types import (
     MeasureAxis,
     MeasureClassDeclaration,
     MeasurePartitionLabel,
-    MemberClass,
     PartlyStatedValue,
+    PartyClass,
     PartyKind,
     PartyWord,
     ShapeSlotDefault,
@@ -516,7 +516,7 @@ TOTAL_GROUPS: Mapping[str, TotalGroup] = {
 # (`dfo-pipelines/dbt/seeds/oecd/dac_codelists/dac_donor_code_codelist.csv`) types 48 donors
 # `Private donor`, codes 1601 to 1650, and the graph types them `Organization` like any
 # multilateral, so the table is the only record of the grouping until the ontology types them. A
-# listed party takes the sector `private` (`PartyRow.sector`); every other party is `official`.
+# listed party takes the class `private` (`PartyRow.party_class`); every other party is `official`.
 # A listed party keeps the kind `party` its types give. 46 of the 48 codes name a
 # party a declared dataset publishes. Code 1645 (CHANEL Foundation) has no graph node, and 1649
 # (`NovoNordiskFoundation`) has one that no dataset publishes;
@@ -582,7 +582,7 @@ class WholeWindow:
     publishes it when `first_year` is `None` (`code_index.types.WholeMarker`). The export reads
     the last year from the coverage build, so the window grows as the dataset adds years."""
 
-    covers: tuple[MemberClass, ...]
+    covers: tuple[PartyClass, ...]
     first_year: int | None = None
 
 

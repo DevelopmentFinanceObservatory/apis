@@ -82,9 +82,9 @@ from search.models import (
     Headline,
     IdentityFacetBinding,
     MeasureAxisValue,
-    MemberClass,
     OpenAxisValueCount,
     OpenConstraintAxisFact,
+    PartyClass,
     ProvenanceRef,
     QuantityForm,
     RequestedWindow,
@@ -305,7 +305,7 @@ class NamedGroup:
     named_alone: frozenset[tuple[str, str]] = frozenset()
     total: str | None = None
     group_id: str | None = None
-    whole_of: tuple[MemberClass, ...] = ()
+    whole_of: tuple[PartyClass, ...] = ()
 
 
 def spec_named_groups(spec: Spec) -> tuple[NamedGroup, ...]:

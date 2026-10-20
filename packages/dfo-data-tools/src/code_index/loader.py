@@ -17,9 +17,8 @@ from typing import get_args
 
 from code_index.query import CodeIndex, DuplicateDcid, fold_text, partly_stated_five_tuples
 from code_index.types import (
-    MEMBER_CLASSES,
+    PARTY_CLASSES,
     PARTY_KINDS,
-    SECTORS,
     AbsentObservation,
     CodeRow,
     CodeSystemDeclaration,
@@ -42,7 +41,7 @@ from code_index.types import (
     StatVarRow,
     WholeMarker,
     WholeTotalSet,
-    covered_sector,
+    covered_class,
     invalid_when_named_entry,
     marked_datasets,
 )
@@ -98,7 +97,7 @@ def parse_index(payload: Mapping, *, source: object = "<document>") -> CodeIndex
     (`_check_source_codes`), as does a `partly_stated_values` row they contradict
     (`_check_partly_stated_values`). A kind outside `PartyKind`, a type declared twice, a
     `totals` on a party that is not a total, or a false `sums_members` on a party holding no
-    group raises `IndexFormatError`, as does a sector the row cannot carry (`_check_sector`), a
+    group raises `IndexFormatError`, as does a class the row cannot carry (`_check_party_class`), a
     whole marker (`PartyRow.whole`) the row cannot carry (`_check_whole_markers`), two whole
     totals covering the same class on one dataset and axis, and a whole total set its members
     contradict (`_check_whole_totals`). A party without
@@ -232,14 +231,14 @@ def _parse_party(row: Mapping) -> PartyRow:
     """One `parties` row, refusing a kind outside `PartyKind`, an axis outside the flow axes,
     a `totals` or `residuals` on a party that is not a total, and a false `sums_members` on a
     party that holds no group or that counts residuals. `whole` markers are parsed by
-    `_parse_whole_marker` and checked by `_check_whole_markers`, and the sector by
-    `_check_sector`. `residuals`, `sums_members`, `label`, `datasets`, `axes` and `whole` are
-    optional, and a row without `sums_members` reads it as true. `sector` is required on a
-    `party` and may be absent on any other row."""
+    `_parse_whole_marker` and checked by `_check_whole_markers`, and the class by
+    `_check_party_class`. `residuals`, `sums_members`, `label`, `datasets`, `axes` and `whole`
+    are optional, and a row without `sums_members` reads it as true. `party_class` is required
+    on a `party` and a residual and may be absent on a total."""
     party = PartyRow(
         dcid=row["dcid"],
         kind=row["kind"],
-        sector=row.get("sector"),
+        party_class=row.get("party_class"),
         totals=row["totals"],
         residuals=tuple(row.get("residuals", ())),
         sums_members=row.get("sums_members", True),
@@ -272,7 +271,7 @@ def _parse_party(row: Mapping) -> PartyRow:
             "residuals; only a total that holds a group and counts no residual makes no claim"
         )
     _check_whole_markers(party)
-    _check_sector(party)
+    _check_party_class(party)
     return party
 
 
@@ -293,7 +292,7 @@ def _check_whole_markers(party: PartyRow) -> None:
     """Raises `IndexFormatError` for a `whole` marker list the row cannot carry: on a party
     that is not a total, on other than exactly one published axis, for a dataset the party is
     not published in or twice for one dataset, or covering no class, a class outside
-    `MemberClass` or one class twice."""
+    `PartyClass` or one class twice."""
     if not party.whole:
         return
     if party.kind != "total":
@@ -320,10 +319,10 @@ def _check_whole_markers(party: PartyRow) -> None:
         marked.add(marker.dataset)
         if not marker.covers:
             raise IndexFormatError(f"party {party.dcid!r} covers no class in {marker.dataset!r}")
-        if unknown := sorted(set(marker.covers) - MEMBER_CLASSES):
+        if unknown := sorted(set(marker.covers) - PARTY_CLASSES):
             raise IndexFormatError(
                 f"party {party.dcid!r} covers classes {unknown!r} in {marker.dataset!r}, outside "
-                f"{sorted(MEMBER_CLASSES)!r}"
+                f"{sorted(PARTY_CLASSES)!r}"
             )
         if len(set(marker.covers)) != len(marker.covers):
             raise IndexFormatError(
@@ -331,34 +330,37 @@ def _check_whole_markers(party: PartyRow) -> None:
             )
 
 
-def _check_sector(party: PartyRow) -> None:
-    """Raises `IndexFormatError` for a sector the row cannot carry: a `party` without one of
-    `Sector`, a residual with one, or a total whose markers cover different sectors or whose
-    sector is not the one they share (`covered_sector`), `None` for a total with no marker. An
-    index exported before parties carried a sector therefore refuses to load."""
+def _check_party_class(party: PartyRow) -> None:
+    """Raises `IndexFormatError` for a class the row cannot carry: a `party` reading other
+    than `official` or `private`, a residual reading other than `residual`, or a total whose
+    markers name different classes or whose class is not the one they name (`covered_class`),
+    `None` for a total with no marker. An index exported before parties carried a class
+    therefore refuses to load."""
     if party.kind == "party":
-        if party.sector not in SECTORS:
+        if party.party_class not in ("official", "private"):
             raise IndexFormatError(
-                f"party {party.dcid!r} carries sector {party.sector!r}, outside {sorted(SECTORS)!r}"
+                f"party {party.dcid!r} carries class {party.party_class!r}; a party is "
+                "official or private"
             )
         return
     if party.kind == "residual":
-        if party.sector is not None:
+        if party.party_class != "residual":
             raise IndexFormatError(
-                f"residual {party.dcid!r} carries sector {party.sector!r}; a residual has none"
+                f"residual {party.dcid!r} carries class {party.party_class!r}; a residual is "
+                "residual"
             )
         return
-    sectors = {covered_sector(marker.covers) for marker in party.whole}
-    if len(sectors) > 1:
+    classes = {covered_class(marker.covers) for marker in party.whole}
+    if len(classes) > 1:
         raise IndexFormatError(
-            f"total {party.dcid!r} has whole markers that cover different sectors "
-            f"{sorted(map(str, sectors))!r}"
+            f"total {party.dcid!r} has whole markers that name different classes "
+            f"{sorted(map(str, classes))!r}"
         )
-    expected = sectors.pop() if sectors else None
-    if party.sector != expected:
+    expected = classes.pop() if classes else None
+    if party.party_class != expected:
         raise IndexFormatError(
-            f"total {party.dcid!r} carries sector {party.sector!r}, but its whole markers give "
-            f"{expected!r}"
+            f"total {party.dcid!r} carries class {party.party_class!r}, but its whole markers "
+            f"give {expected!r}"
         )
 
 

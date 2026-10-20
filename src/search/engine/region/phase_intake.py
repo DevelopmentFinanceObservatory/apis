@@ -11,7 +11,7 @@ from typing import Final, cast
 
 import dc_graph
 from code_index.shared import get_index
-from code_index.types import MemberClass
+from code_index.types import PartyClass
 from dfo_platform.timings import PhaseTimings, collecting
 from entity_resolution import Ambiguous, Entity, Group, Resolved
 from origin_catalogue import recording_un_blocked_places
@@ -550,12 +550,12 @@ def _prune_shapes_by_listing(
         for name, dcids in listed.items()
     }
 
-    def left_out(shape: ShapeDraft, name: str) -> set[MemberClass] | None:
+    def left_out(shape: ShapeDraft, name: str) -> set[PartyClass] | None:
         datasets = [dataset.provenance for dataset in declared_datasets(shape, get_index())]
         classes = side_classes(state.whole_listed[name], datasets=datasets)
         return set(classes) - covered[name] if classes else None
 
-    def fails(classes: set[MemberClass] | None) -> bool:
+    def fails(classes: set[PartyClass] | None) -> bool:
         return classes is None or bool(classes)
 
     left_outs = {name: [left_out(shape, name) for shape in shapes] for name in listed}

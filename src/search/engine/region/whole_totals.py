@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, cast
 from code_index.shared import get_index
 from code_index.types import (
     POPULATION_CLASS,
-    MemberClass,
+    PartyClass,
     PartyRow,
     WholeMarker,
     WholeTotalSet,
@@ -67,7 +67,7 @@ class WholeReading:
     members: tuple[str, ...]
     total: str | None
     label: str
-    whole_of: tuple[MemberClass, ...]
+    whole_of: tuple[PartyClass, ...]
 
     def named_group(self) -> NamedGroup:
         """The group a Spec carries for the side (`spec_build.role_entity_groups`): a single
@@ -145,7 +145,7 @@ def whole_reading(
         if whole_set is None:
             return None
         parties = [index.parties.get(dcid) for dcid in whole_set.members]
-    covered: set[MemberClass] = set()
+    covered: set[PartyClass] = set()
     for party in parties:
         if party is None or (markers := _markers(party, datasets)) is None:
             return None
@@ -198,7 +198,7 @@ def covers_unpublished(dcids: Collection[str], *, datasets: Sequence[str]) -> bo
     return bool(classes) and set(classes) <= covers
 
 
-def side_classes(axis: RoleAxis, *, datasets: Sequence[str]) -> tuple[MemberClass, ...]:
+def side_classes(axis: RoleAxis, *, datasets: Sequence[str]) -> tuple[PartyClass, ...]:
     """The classes of party, totals aside, that `datasets` hold on `axis`, sorted
     (`CodeIndex.side_classes`)."""
     by_side = get_index().side_classes

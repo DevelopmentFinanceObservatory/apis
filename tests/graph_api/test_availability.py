@@ -137,7 +137,7 @@ def _crs_coverage() -> tuple[CoverageIndex, dict[str, PartyRow]]:
         },
     )
     parties = {
-        d: PartyRow(dcid=d, kind="party", sector="private" if i >= 24 else "official")
+        d: PartyRow(dcid=d, kind="party", party_class="private" if i >= 24 else "official")
         for i, d in enumerate(donors)
     }
     parties.update(

@@ -78,8 +78,8 @@ from code_index.types import (
     DeclaredDefault,
     MeasureAxis,
     MeasurePartitionLabel,
-    MemberClass,
     PartlyStatedValue,
+    PartyClass,
     PartyRow,
     WholeMarker,
     WholeTotalSet,
@@ -3017,16 +3017,20 @@ def test_export_index_writes_each_partys_kind_label_and_the_group_a_total_holds(
         "country/FRA": PartyRow(
             dcid="country/FRA",
             kind="party",
-            sector="official",
+            party_class="official",
             label="France",
             datasets=published,
             axes=recipient,
         ),
         "country/IND": PartyRow(
-            dcid="country/IND", kind="party", sector="official", datasets=published, axes=recipient
+            dcid="country/IND",
+            kind="party",
+            party_class="official",
+            datasets=published,
+            axes=recipient,
         ),
         "IDA": PartyRow(
-            dcid="IDA", kind="party", sector="official", datasets=published, axes=recipient
+            dcid="IDA", kind="party", party_class="official", datasets=published, axes=recipient
         ),
         "DACAfrica": PartyRow(
             dcid="DACAfrica",
@@ -3051,6 +3055,7 @@ def test_export_index_writes_each_partys_kind_label_and_the_group_a_total_holds(
         "DACAfricaUnallocated": PartyRow(
             dcid="DACAfricaUnallocated",
             kind="residual",
+            party_class="residual",
             label="Africa, unallocated by country (DAC)",
             datasets=published,
             axes=recipient,
@@ -3147,11 +3152,17 @@ def test_a_kind_override_replaces_the_kind_the_types_give(tmp_path: Path):
         "InternationalFinanceCorporation": PartyRow(
             dcid="InternationalFinanceCorporation",
             kind="party",
-            sector="official",
+            party_class="official",
             datasets=published,
             axes=recipient,
         ),
-        "Mystery": PartyRow(dcid="Mystery", kind="residual", datasets=published, axes=recipient),
+        "Mystery": PartyRow(
+            dcid="Mystery",
+            kind="residual",
+            party_class="residual",
+            datasets=published,
+            axes=recipient,
+        ),
     }
 
 
@@ -3199,7 +3210,8 @@ def test_the_packaged_index_carries_each_reviewed_kind_override(group: str, memb
     assert (index.parties[group].kind, index.parties[group].totals) == ("total", None)
     # The five national lotteries are private providers; every other member is official.
     assert {
-        member: (index.parties[member].kind, index.parties[member].sector) for member in members
+        member: (index.parties[member].kind, index.parties[member].party_class)
+        for member in members
     } == {
         member: ("party", "private" if member in PRIVATE_PROVIDERS.values() else "official")
         for member in members
@@ -3344,7 +3356,7 @@ def test_the_packaged_index_declares_the_exporters_party_types():
 # --- Private providers ---
 
 
-def test_a_listed_private_provider_takes_the_sector_private(tmp_path: Path):
+def test_a_listed_private_provider_takes_the_class_private(tmp_path: Path):
     document = _export_parties(
         {"GatesFoundation": ("Organization",), "WorldBank": ("Organization",)},
         dac_codes={"GatesFoundation": ("1601",), "WorldBank": ("1011",)},
@@ -3355,7 +3367,7 @@ def test_a_listed_private_provider_takes_the_sector_private(tmp_path: Path):
     out.write_text(json.dumps(document))
 
     parties = load_index(out).parties
-    assert {dcid: (row.kind, row.sector) for dcid, row in parties.items()} == {
+    assert {dcid: (row.kind, row.party_class) for dcid, row in parties.items()} == {
         "GatesFoundation": ("party", "private"),
         "WorldBank": ("party", "official"),
     }
@@ -3433,7 +3445,7 @@ def test_export_index_refuses_a_private_provider_table_the_graph_contradicts(
             {"DACAfricaUnallocated": ("DACRecipientUnallocatedByCountry",)},
             {},
             {},
-            "'residual', None",
+            "'residual', 'residual'",
             id="residual",
         ),
         pytest.param({"DACAllRecipients": ("DACGroup",)}, {}, {}, "'total', None", id="total"),
@@ -3453,7 +3465,7 @@ def test_export_index_refuses_a_party_other_than_official_on_both_axes(
 
 def test_export_index_accepts_an_official_party_on_both_axes():
     document = _export_parties({"Canada": ("Country",)}, axes=frozenset({"origin", "destination"}))
-    assert [(row["kind"], row["sector"], row["axes"]) for row in document["parties"]] == [
+    assert [(row["kind"], row["party_class"], row["axes"]) for row in document["parties"]] == [
         ("party", "official", ["destination", "origin"])
     ]
 
@@ -3462,7 +3474,9 @@ def test_a_private_code_on_a_recipient_is_no_donor_to_list():
     document = _export_parties(
         {"SomeRecipient": ("Country",)}, dac_codes={"SomeRecipient": ("1607",)}, axis="destination"
     )
-    assert [(row["kind"], row["sector"]) for row in document["parties"]] == [("party", "official")]
+    assert [(row["kind"], row["party_class"]) for row in document["parties"]] == [
+        ("party", "official")
+    ]
 
 
 # The OECD donor codes 1601 to 1650 marked `Private donor` in the donor code list, with the party
@@ -3527,18 +3541,18 @@ def test_private_providers_holds_only_reviewed_rows():
 
 def test_the_packaged_index_makes_exactly_the_listed_providers_private():
     index = get_index()
-    sectors = {(row.kind, row.sector) for row in index.parties.values()}
-    private = {dcid for dcid, row in index.parties.items() if row.sector == "private"}
+    classes = {(row.kind, row.party_class) for row in index.parties.values()}
+    private = {dcid for dcid, row in index.parties.items() if row.party_class == "private"}
     assert private - {"DACPrivateDonors"} == set(_REVIEWED_PRIVATE_PROVIDERS.values())
     assert all(index.parties[dcid].axes == ("origin",) for dcid in private)
-    # Every other party is official, and a residual carries no sector.
-    assert sectors == {
+    # Every other party is official, and every residual reads residual.
+    assert classes == {
         ("party", "official"),
         ("party", "private"),
         ("total", None),
         ("total", "official"),
         ("total", "private"),
-        ("residual", None),
+        ("residual", "residual"),
     }
 
 
@@ -3552,7 +3566,7 @@ _OTHER = "provenance/OtherDataset"
 _BOTH = frozenset({_TEST_PROVENANCE, _OTHER})
 
 
-def _window(*covers: MemberClass, first_year: int | None = None) -> WholeWindow:
+def _window(*covers: PartyClass, first_year: int | None = None) -> WholeWindow:
     return WholeWindow(covers, first_year)
 
 
@@ -3582,7 +3596,7 @@ def test_a_whole_total_carries_one_marker_per_named_dataset_and_a_set_joins_two(
     out.write_text(json.dumps(document))
 
     index = load_index(out)
-    assert {dcid: (row.sector, row.whole) for dcid, row in index.parties.items()} == {
+    assert {dcid: (row.party_class, row.whole) for dcid, row in index.parties.items()} == {
         "DACOfficialDonors": (
             "official",
             (
@@ -3630,7 +3644,7 @@ def test_a_dataset_the_whole_row_leaves_out_reads_the_total_as_ordinary(
     out.write_text(json.dumps(document))
 
     row = load_index(out).parties["DACAllRecipients"]
-    assert row.sector == "official"
+    assert row.party_class is None
     assert row.marker(_TEST_PROVENANCE) == WholeMarker(
         _TEST_PROVENANCE, ("official", "residual"), window
     )
@@ -3768,8 +3782,8 @@ _REVIEWED_WHOLE_TOTALS = {
     ),
     "DACPrivateDonors": ("origin", {_DAC2A: (("private",), None)}),
 }
-_REVIEWED_WHOLE_SECTORS = {
-    "DACAllRecipients": "official",
+_REVIEWED_WHOLE_CLASSES = {
+    "DACAllRecipients": None,
     "DACOfficialDonors": "official",
     "DACPrivateDonors": "private",
 }
@@ -3802,7 +3816,11 @@ def test_the_packaged_index_carries_each_reviewed_whole_total():
     index = get_index()
     for dcid, (axis, datasets) in _REVIEWED_WHOLE_TOTALS.items():
         row = index.parties[dcid]
-        assert (row.kind, row.sector, row.axes) == ("total", _REVIEWED_WHOLE_SECTORS[dcid], (axis,))
+        assert (row.kind, row.party_class, row.axes) == (
+            "total",
+            _REVIEWED_WHOLE_CLASSES[dcid],
+            (axis,),
+        )
         assert row.whole == tuple(
             WholeMarker(dataset, covers, years)
             for dataset, (covers, years) in sorted(datasets.items())

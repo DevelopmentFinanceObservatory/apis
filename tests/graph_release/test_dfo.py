@@ -318,7 +318,7 @@ def test_dfo_parts_read_a_base_partys_donor_code_from_the_mixer() -> None:
     built = build_dfo_parts(dfo_inputs(slice_platform_parts(), declarations), base)
 
     rows = {
-        row["dcid"]: (row["kind"], row["sector"])
+        row["dcid"]: (row["kind"], row["party_class"])
         for row in json.loads(gzip.decompress(built.code_index_blocks))["parties"]
     }
     assert rows[PLACEHOLDER_PARTY] == ("party", "private")

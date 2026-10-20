@@ -7,7 +7,7 @@ from pydantic import Field, model_validator
 from .base import StrictModel
 from .grammar import GraphRef
 from .identity import IdentityString
-from .vocab import Confidence, EntityRoleKey, MemberClass, RoleAxis
+from .vocab import Confidence, EntityRoleKey, PartyClass, RoleAxis
 
 # ---------------------------------------------------------------------------
 # Entity and EntityRole
@@ -147,7 +147,7 @@ class EntityGroup(StrictModel):
         ),
     )
 
-    whole_of: list[MemberClass] | None = Field(
+    whole_of: list[PartyClass] | None = Field(
         default=None,
         exclude_if=_is_none,
         description=(
@@ -156,7 +156,7 @@ class EntityGroup(StrictModel):
             "every official donor and no private one; absent for any other group"
         ),
     )
-    side_classes: list[MemberClass] | None = Field(
+    side_classes: list[PartyClass] | None = Field(
         default=None,
         exclude_if=_is_none,
         description=(

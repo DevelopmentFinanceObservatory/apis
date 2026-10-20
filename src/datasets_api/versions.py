@@ -47,7 +47,7 @@ def carries_party_kind(rendering: Mapping[str, object]) -> bool:
     neither a `pivot` nor `layout: "frame"` (a bare long file records its layout version under
     `layout`, so only the value `"frame"` marks the frame layout), writes a `{role}_kind`
     column for every party role of its frame by default. Any other layout asks for them when its
-    `columns` name a party field (`party_kind`, `party_sector` or `party_whole`), bare or
+    `columns` name a party field (`party_kind`, `party_class` or `party_whole`), bare or
     qualified as `{role}_{field}`. A frame with no party role gets no such cell either way
     (`enrichment_stamp`).
     """

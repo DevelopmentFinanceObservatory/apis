@@ -1,7 +1,7 @@
 """Batched graph lookups for materialisation's country-code, label and place-type enrichment
 fields, the party fields the code index gives, and `read_party_kinds`, Search's reader of a
 party's kind. Every reader takes the kind from the code index alone (`party_kind_of`). A frame
-row's party cells (`party_cell`) are its party's kind, its sector, and whether it is a whole
+row's party cells (`party_cell`) are its party's kind, its class, and whether it is a whole
 total for that row's dataset and year (`is_whole_total`)."""
 
 from __future__ import annotations
@@ -29,16 +29,16 @@ PARTY_KIND_FIELD = "party_kind"
 """The field a lookup derives with no graph read: the party's kind (`party`, `total` or
 `residual`) the code index declares (`party_kind_of`)."""
 
-PARTY_SECTOR_FIELD = "party_sector"
-"""The party's sector (`official` or `private`, `PartyRow.sector`), empty for a residual and
-for a total that covers no single sector."""
+PARTY_CLASS_FIELD = "party_class"
+"""The party's class (`official`, `private` or `residual`, `PartyRow.party_class`), empty for
+a total that covers no single class."""
 
 PARTY_WHOLE_FIELD = "party_whole"
 """`true` on a row whose party is a whole total for the row's dataset and year
 (`is_whole_total`), `false` on a row where it is not, and empty where the row names no one
 dataset and year that decides it (`whole_cell`)."""
 
-PARTY_FIELDS: tuple[str, ...] = (PARTY_KIND_FIELD, PARTY_SECTOR_FIELD, PARTY_WHOLE_FIELD)
+PARTY_FIELDS: tuple[str, ...] = (PARTY_KIND_FIELD, PARTY_CLASS_FIELD, PARTY_WHOLE_FIELD)
 """The fields the code index's party rows fill with no graph read (`party_cell`). Each
 qualifies a party role only, and a frame carries one only when a token asks for it."""
 
@@ -221,7 +221,7 @@ def party_cell(
     provenance: str | None = None,
 ) -> str | None:
     """The `<role>_<field>` cell of the party `ref`, for `field` one of `PARTY_FIELDS`, on a
-    row of `provenance` in `year`: its kind (`party_kind_of`), its sector (empty when it has
+    row of `provenance` in `year`: its kind (`party_kind_of`), its class (empty when it has
     none), or whether it is a whole total there (`whole_cell`). `None` for a ref the rows do not
     list."""
     party = parties.get(ref)
@@ -229,8 +229,8 @@ def party_cell(
         return None
     if field == PARTY_KIND_FIELD:
         return party.kind
-    if field == PARTY_SECTOR_FIELD:
-        return party.sector or ""
+    if field == PARTY_CLASS_FIELD:
+        return party.party_class or ""
     if field == PARTY_WHOLE_FIELD:
         return whole_cell(party, year=year, provenance=provenance)
     raise ValueError(f"{field!r} is not a party field; expected one of {PARTY_FIELDS!r}")

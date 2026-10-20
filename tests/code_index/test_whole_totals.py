@@ -1,4 +1,4 @@
-"""A whole total (`PartyRow.whole`), a party's sector and a whole total set load and refuse what
+"""A whole total (`PartyRow.whole`), a party's class and a whole total set load and refuse what
 they contradict; an index that carries no marker loads with no whole total."""
 
 from __future__ import annotations
@@ -10,13 +10,11 @@ import pytest
 
 from code_index import CodeIndex, IndexFormatError, default_index_path, load_index, parse_index
 from code_index.types import (
-    MEMBER_CLASSES,
+    PARTY_CLASSES,
     PARTY_KINDS,
-    PartyRow,
     WholeMarker,
     WholeTotalSet,
-    covered_sector,
-    member_class,
+    covered_class,
 )
 
 from .conftest import FIXTURE_PATH
@@ -36,12 +34,12 @@ def _total(
     datasets: list[str] | None = None,
     axes: list[str] | None = None,
     kind: str = "total",
-    sector: str | None = "official",
+    party_class: str | None = "official",
 ) -> dict[str, Any]:
     return {
         "dcid": dcid,
         "kind": kind,
-        "sector": sector,
+        "party_class": party_class,
         "totals": None,
         "datasets": [_DAC2A, _DAC2B] if datasets is None else datasets,
         "axes": ["origin"] if axes is None else axes,
@@ -54,12 +52,13 @@ _OFFICIAL = _total(
     [_marker(_DAC2A, ["official"], [1960, 2023]), _marker(_DAC2B, ["official"])],
 )
 _PRIVATE = _total(
-    "DACPrivateDonors", [_marker(_DAC2A, ["private"])], datasets=[_DAC2A], sector="private"
+    "DACPrivateDonors", [_marker(_DAC2A, ["private"])], datasets=[_DAC2A], party_class="private"
 )
 _RECIPIENTS = _total(
     "DACAllRecipients",
     [_marker(_DAC2A, ["residual", "official"], [1984, 2024])],
     axes=["destination"],
+    party_class=None,
 )
 _ALL_DONORS = {
     "phrase": "All donors including private",
@@ -79,13 +78,14 @@ def test_a_whole_total_and_a_set_load_and_answer_the_lookups():
     index = _parse([_OFFICIAL, _PRIVATE, _RECIPIENTS], [_ALL_DONORS])
 
     official = index.parties["DACOfficialDonors"]
-    assert (official.kind, official.sector) == ("total", "official")
+    assert (official.kind, official.party_class) == ("total", "official")
     assert official.marker(_DAC2B) == WholeMarker(dataset=_DAC2B, covers=("official",), years=None)
     assert official.marker(_DAC2A) == WholeMarker(
         dataset=_DAC2A, covers=("official",), years=(1960, 2023)
     )
-    assert index.parties["DACPrivateDonors"].sector == "private"
+    assert index.parties["DACPrivateDonors"].party_class == "private"
     assert index.parties["DACPrivateDonors"].marker(_DAC2B) is None
+    assert index.parties["DACAllRecipients"].party_class is None
     # A marker's classes are sorted.
     assert index.parties["DACAllRecipients"].marker(_DAC2A) == WholeMarker(
         dataset=_DAC2A, covers=("official", "residual"), years=(1984, 2024)
@@ -102,8 +102,8 @@ def test_side_classes_and_population_totals_read_classes_and_covers():
     """Each side holds the classes of its parties, totals aside, and a population total is one
     whose markers cover `official`: the private donors' total is no population total."""
     france = _total("France", [], datasets=[_DAC2A, _DAC2B], axes=["origin", "destination"])
-    gates = _total("Gates", [], datasets=[_DAC2A], sector="private")
-    other = _total("DACOtherDonors", [], datasets=[_DAC2A], sector=None)
+    gates = _total("Gates", [], datasets=[_DAC2A], party_class="private")
+    other = _total("DACOtherDonors", [], datasets=[_DAC2A], party_class="residual")
     index = _parse(
         [
             {**france, "kind": "party"},
@@ -143,7 +143,7 @@ def test_the_packaged_index_holds_only_whole_totals_that_are_totals_of_known_cla
     for party in index.parties.values():
         if party.whole:
             assert party.kind == "total"
-            assert all(set(marker.covers) <= MEMBER_CLASSES for marker in party.whole)
+            assert all(set(marker.covers) <= PARTY_CLASSES for marker in party.whole)
     # A population total covers the official parties of its side.
     assert {
         dcid
@@ -153,31 +153,17 @@ def test_the_packaged_index_holds_only_whole_totals_that_are_totals_of_known_cla
 
 
 @pytest.mark.parametrize(
-    ("row", "expected"),
-    [
-        (PartyRow(dcid="France", kind="party", sector="official"), "official"),
-        (PartyRow(dcid="Gates", kind="party", sector="private"), "private"),
-        (PartyRow(dcid="DACAfricaUnallocated", kind="residual"), "residual"),
-        (PartyRow(dcid="DACPrivateDonors", kind="total", sector="private"), None),
-    ],
-    ids=["official-party", "private-party", "residual", "total"],
-)
-def test_member_class_reads_a_partys_sector_and_names_a_residual(row, expected):
-    assert member_class(row) == expected
-
-
-@pytest.mark.parametrize(
     ("covers", "expected"),
     [
-        (("official", "residual"), "official"),
+        (("official", "residual"), None),
         (("private",), "private"),
-        (("residual",), None),
+        (("residual",), "residual"),
         (("official", "private"), None),
     ],
-    ids=["official-and-residual", "private", "residual-only", "both-sectors"],
+    ids=["official-and-residual", "private", "residual-only", "official-and-private"],
 )
-def test_covered_sector_is_the_one_sector_a_marker_covers(covers, expected):
-    assert covered_sector(covers) == expected
+def test_covered_class_is_the_one_class_a_marker_covers(covers, expected):
+    assert covered_class(covers) == expected
 
 
 def _party_marked(dcid: str, *markers: dict[str, Any], **extra: Any) -> dict[str, Any]:
@@ -220,35 +206,53 @@ def _party_marked(dcid: str, *markers: dict[str, Any], **extra: Any) -> dict[str
         (
             [
                 _party_marked("A", _marker(_DAC2A, ["official"])),
-                _party_marked("B", _marker(_DAC2A, ["official", "private"]), sector=None),
+                _party_marked("B", _marker(_DAC2A, ["official", "private"]), party_class=None),
             ],
             [],
             "both cover",
         ),
-        ([{"dcid": "France", "kind": "party", "totals": None}], [], "carries sector None"),
-        ([{"dcid": "France", "kind": "party", "sector": "public", "totals": None}], [], "outside"),
+        ([{"dcid": "France", "kind": "party", "totals": None}], [], "carries class None"),
+        (
+            [{"dcid": "France", "kind": "party", "party_class": "public", "totals": None}],
+            [],
+            "a party is official or private",
+        ),
+        (
+            [{"dcid": "France", "kind": "party", "party_class": "residual", "totals": None}],
+            [],
+            "a party is official or private",
+        ),
+        (
+            [{"dcid": "DACAfricaUnallocated", "kind": "residual", "totals": None}],
+            [],
+            "a residual is residual",
+        ),
         (
             [
                 {
                     "dcid": "DACAfricaUnallocated",
                     "kind": "residual",
-                    "sector": "official",
+                    "party_class": "official",
                     "totals": None,
                 }
             ],
             [],
-            "a residual has none",
+            "a residual is residual",
         ),
         (
             [
                 _party_marked(
-                    "A", _marker(_DAC2A, ["official"]), _marker(_DAC2B, ["private"]), sector=None
+                    "A",
+                    _marker(_DAC2A, ["official"]),
+                    _marker(_DAC2B, ["private"]),
+                    party_class=None,
                 )
             ],
             [],
-            "cover different sectors",
+            "name different classes",
         ),
-        ([{**_OFFICIAL, "sector": "private"}], [], "whole markers give"),
+        ([{**_OFFICIAL, "party_class": "private"}], [], "whole markers give"),
+        ([{**_RECIPIENTS, "party_class": "official"}], [], "whole markers give"),
         ([_party_marked("Plain")], [], "whole markers give"),
         (
             [_OFFICIAL, _PRIVATE],
@@ -267,7 +271,7 @@ def _party_marked(dcid: str, *markers: dict[str, Any], **extra: Any) -> dict[str
         ),
         ([_OFFICIAL, _PRIVATE], [{**_ALL_DONORS, "axis": "destination"}], "no whole total"),
         (
-            [_OFFICIAL, _party_marked("Plain", datasets=[_DAC2A], sector=None)],
+            [_OFFICIAL, _party_marked("Plain", datasets=[_DAC2A], party_class=None)],
             [{**_ALL_DONORS, "members": ["DACOfficialDonors", "Plain"]}],
             "no whole total",
         ),
@@ -275,7 +279,7 @@ def _party_marked(dcid: str, *markers: dict[str, Any], **extra: Any) -> dict[str
             [
                 _party_marked("A", _marker(_DAC2A, ["official"]), datasets=[_DAC2A]),
                 _party_marked(
-                    "B", _marker(_DAC2B, ["private"]), datasets=[_DAC2B], sector="private"
+                    "B", _marker(_DAC2B, ["private"]), datasets=[_DAC2B], party_class="private"
                 ),
             ],
             [{**_ALL_DONORS, "members": ["A", "B"]}],
@@ -294,12 +298,15 @@ def _party_marked(dcid: str, *markers: dict[str, Any], **extra: Any) -> dict[str
         "years-out-of-order",
         "years-one-year",
         "overlapping-covers",
-        "party-without-sector",
-        "party-with-unknown-sector",
-        "residual-with-sector",
-        "total-markers-disagree-on-sector",
-        "total-sector-not-its-markers",
-        "unmarked-total-with-sector",
+        "party-without-class",
+        "party-with-unknown-class",
+        "party-reading-residual",
+        "residual-without-class",
+        "residual-reading-official",
+        "total-markers-name-different-classes",
+        "total-class-not-its-markers",
+        "total-class-beside-mixed-covers",
+        "unmarked-total-with-class",
         "set-of-one",
         "set-phrase-twice",
         "set-member-missing",

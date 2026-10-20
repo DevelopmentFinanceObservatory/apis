@@ -11,7 +11,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Literal
 
-from search.models import DEPARTURE_ORDER, DepartureCode, MemberClass, OperationVerb, RoleAxis
+from search.models import DEPARTURE_ORDER, DepartureCode, OperationVerb, PartyClass, RoleAxis
 
 
 @dataclass(frozen=True)
@@ -119,8 +119,8 @@ class DepartureFact:
     group_dcid: str | None = None
     excluded: tuple[str, ...] = ()
     sum_differs: bool = False
-    whole_of: tuple[MemberClass, ...] = ()
-    side_classes: tuple[MemberClass, ...] = ()
+    whole_of: tuple[PartyClass, ...] = ()
+    side_classes: tuple[PartyClass, ...] = ()
     inferred: bool = False
     sources: tuple[str, ...] = ()
     latest_years: tuple[int, int] | None = None

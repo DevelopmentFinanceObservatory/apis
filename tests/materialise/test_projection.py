@@ -7,7 +7,7 @@ from collections.abc import Mapping
 import pytest
 from dfo_frame_grammar.grammar import ComposedUnit, StatVarPart, UnitRequest
 
-from code_index.types import PartyKind, PartyRow, WholeMarker
+from code_index.types import PartyClass, PartyKind, PartyRow, WholeMarker
 from materialise.errors import MaterialisationUsageError
 from materialise.projection import (
     NativeCurrency,
@@ -50,9 +50,16 @@ _NAMES = {
 }
 
 
+_CLASS_OF_KIND: Mapping[PartyKind, PartyClass | None] = {
+    "party": "official",
+    "total": None,
+    "residual": "residual",
+}
+
+
 def _parties(kinds: Mapping[str, PartyKind]) -> dict[str, PartyRow]:
     return {
-        ref: PartyRow(dcid=ref, kind=kind, sector="official" if kind == "party" else None)
+        ref: PartyRow(dcid=ref, kind=kind, party_class=_CLASS_OF_KIND[kind])
         for ref, kind in kinds.items()
     }
 
@@ -268,7 +275,7 @@ def test_a_party_role_gets_one_kind_column_in_words_and_a_subject_role_none():
     assert not {
         f"{role}_{field}"
         for role in ("observationAbout", "financingRecipient")
-        for field in ("party_kind", "party_sector", "party_whole")
+        for field in ("party_kind", "party_class", "party_whole")
     } & set(projected.table.columns)
 
 
@@ -494,7 +501,7 @@ _WHOLE_PARTIES = {
     "DACOfficialDonors": PartyRow(
         dcid="DACOfficialDonors",
         kind="total",
-        sector="official",
+        party_class="official",
         datasets=(_DAC2A, _DAC2B),
         axes=("origin",),
         whole=(
@@ -582,9 +589,11 @@ def test_a_row_without_a_readable_dataset_or_year_reads_total(columns, rows):
 
 
 _SIDE_PARTIES = {
-    "country/FRA": PartyRow(dcid="country/FRA", kind="party", sector="official"),
-    "GatesFoundation": PartyRow(dcid="GatesFoundation", kind="party", sector="private"),
-    "DACAfricaUnallocated": PartyRow(dcid="DACAfricaUnallocated", kind="residual"),
+    "country/FRA": PartyRow(dcid="country/FRA", kind="party", party_class="official"),
+    "GatesFoundation": PartyRow(dcid="GatesFoundation", kind="party", party_class="private"),
+    "DACAfricaUnallocated": PartyRow(
+        dcid="DACAfricaUnallocated", kind="residual", party_class="residual"
+    ),
     **_WHOLE_PARTIES,
 }
 

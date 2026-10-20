@@ -44,7 +44,8 @@ StatVar row aborts the export.
 The same build names every donor and recipient of a declared or listed dataset. Each party's graph
 types give it a kind (party, total or residual) under the authored `PARTY_TYPE_KINDS`, except a
 party the authored `PARTY_KIND_OVERRIDES` names. A party the authored `PRIVATE_PROVIDERS` lists by
-OECD donor code (`dacCode`) has the sector `private`, and every other party `official`. Its graph
+OECD donor code (`dacCode`) has the class `private`, every other party `official`, and every
+residual `residual`. Its graph
 name is its label, and its row lists the
 datasets that publish it and the flow axes they publish it on. The authored `TOTAL_GROUPS` names the group each total holds, whether
 the total equals the sum of the group's members plus the residuals it counts beside them, and those
@@ -55,12 +56,12 @@ total, and each residual it names to be a published residual).
 
 The authored `WHOLE_POPULATION_TOTALS` marks the totals that hold a whole population on their one
 axis in the datasets it names (`PartyRow.whole`, with the classes it covers and the years its
-composition check holds), gives each the sector those classes share, and `WHOLE_TOTAL_SETS` the unions of such totals read as one population. The export aborts when a
+composition check holds), gives each the one class it covers, none when it covers more than one, and `WHOLE_TOTAL_SETS` the unions of such totals read as one population. The export aborts when a
 `PRIVATE_PROVIDERS` code is carried by another party than its listed one, when a published donor
 carries an unlisted code from 1601 to 1699, and when a whole-population row names a party that is
 no published total, is published on another axis or is marked in a dataset that does not publish
 it; the finished document must also load, which refuses two whole totals that cover one class on
-one dataset and axis, and a whole total that covers different sectors in different datasets.
+one dataset and axis, and a whole total whose markers name different classes in different datasets.
 
 Requires `SEARCH_GRAPH_BASE` and `COVERAGE_ARTIFACT_URI`, with read access to the coverage bucket
 for a `gs://` URI. Sorted JSON is stable. `content_hash` covers data blocks and excludes the stamp.

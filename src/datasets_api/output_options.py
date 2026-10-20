@@ -139,7 +139,7 @@ def _bundle_option(bundle_active: bool) -> BundleOptionModel:
 def _party_field_coverages(coverage: EnrichmentCoverage) -> tuple[EnrichmentCoverage, ...]:
     """`coverage`, and for a `party_kind` pair the same counts for every party field
     (`PARTY_FIELDS`). One code-index row gives a party all three cells, so a party covered for
-    its kind is covered for its sector and whole cell too. A profile stores the kind alone, so
+    its kind is covered for its class and whole cell too. A profile stores the kind alone, so
     the options of a version stored before the other fields existed list them as well."""
     if coverage.field != PARTY_KIND_FIELD:
         return (coverage,)

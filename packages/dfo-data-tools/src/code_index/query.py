@@ -28,8 +28,8 @@ from code_index.types import (
     IndexStamp,
     LevelOption,
     MeasureClassDeclaration,
-    MemberClass,
     PartlyStatedValue,
+    PartyClass,
     PartyKind,
     PartyRow,
     ShapeSlotDefault,
@@ -37,7 +37,6 @@ from code_index.types import (
     StatTypeWordDeclaration,
     StatVarRow,
     WholeTotalSet,
-    member_class,
     party_kind,
 )
 from dfo_platform.roles import RoleAxis
@@ -249,8 +248,8 @@ def _dataset_pins(
 
 
 def _enrichment_digest(parties: Iterable[PartyRow]) -> str:
-    """The hex SHA-256 of `parties`' `(dcid, kind, sector, whole markers)` rows, sorted by dcid,
-    each marker as `(dataset, covers, years)`. Neither row order nor a label, group or
+    """The hex SHA-256 of `parties`' `(dcid, kind, party_class, whole markers)` rows, sorted by
+    dcid, each marker as `(dataset, covers, years)`. Neither row order nor a label, group or
     dataset-list change moves it. The markers are in it, windows included, because a whole
     total's frame cell depends on the row's dataset and on whether its year falls inside the
     window."""
@@ -258,7 +257,7 @@ def _enrichment_digest(parties: Iterable[PartyRow]) -> str:
         (
             party.dcid,
             party.kind,
-            party.sector,
+            party.party_class,
             [(marker.dataset, sorted(marker.covers), marker.years) for marker in party.whole],
         )
         for party in parties
@@ -501,19 +500,19 @@ class CodeIndex:
                 if party.totals in self.totals_by_group:
                     raise DuplicateDcid(f"two totals hold the group {party.totals!r}")
                 self.totals_by_group[party.totals] = party
-        side_classes: dict[tuple[RoleAxis, str], set[MemberClass]] = defaultdict(set)
+        side_classes: dict[tuple[RoleAxis, str], set[PartyClass]] = defaultdict(set)
         population_totals_by_axis: dict[RoleAxis, list[str]] = defaultdict(list)
         for party in self.parties.values():
-            if (cls := member_class(party)) is not None:
+            if party.kind != "total" and party.party_class is not None:
                 for axis in party.axes:
                     for dataset in party.datasets:
-                        side_classes[axis, dataset].add(cls)
+                        side_classes[axis, dataset].add(party.party_class)
             elif any(POPULATION_CLASS in marker.covers for marker in party.whole):
                 population_totals_by_axis[party.axes[0]].append(party.dcid)
-        self.side_classes: dict[tuple[RoleAxis, str], frozenset[MemberClass]] = {
+        self.side_classes: dict[tuple[RoleAxis, str], frozenset[PartyClass]] = {
             side: frozenset(classes) for side, classes in side_classes.items()
         }
-        """The classes of party, totals aside (`member_class`), each dataset publishes on each
+        """The classes of party, totals aside, each dataset publishes on each
         flow axis, by `(axis, dataset)`. A `PartyRow` keeps its axes and datasets apart, so a
         party published on both axes counts on each in every dataset that publishes it."""
         self.population_totals_by_axis: dict[RoleAxis, tuple[str, ...]] = {
@@ -522,11 +521,11 @@ class CodeIndex:
         """The totals some dataset marks as covering the `official` class (`PartyRow.whole`),
         by the one axis each stands on, sorted by dcid."""
         self.enrichment_digest = _enrichment_digest(self.parties.values())
-        """SHA-256 over the sorted `(dcid, kind, sector, whole markers)` rows of `parties`, the
-        part of the index the `{role}_party_kind`, `{role}_party_sector` and `{role}_party_whole`
-        cells are read from. A file holding such cells is linked under a key salted with it
+        """SHA-256 over the sorted `(dcid, kind, party_class, whole markers)` rows of `parties`,
+        the part of the index the `{role}_party_kind`, `{role}_party_class` and
+        `{role}_party_whole` cells are read from. A file holding such cells is linked under a key salted with it
         (`datasets_api.version_store.enriched_rendering_key`), so an export that changes no
-        kind, sector or whole marker leaves every link in place."""
+        kind, class or whole marker leaves every link in place."""
         self.whole_total_sets = tuple(whole_total_sets)
         """The unions of whole totals read as one population (`WholeTotalSet`), in declaration
         order. The loader refuses two that share a phrase (`loader._check_whole_totals`)."""

@@ -26,7 +26,7 @@ from types import MappingProxyType
 from typing import Final
 
 from code_index.labels import HOW_PHRASE_LEADS_WITH_PREPOSITION
-from code_index.types import MemberClass
+from code_index.types import PartyClass
 from dfo_platform.roles import GENERIC_ROLE_WORDING, FlowFamily, role_wording
 from search.heading.departure_fact import DepartureFact, ordered_facts
 from search.models import (
@@ -404,14 +404,14 @@ WHOLE_MEMBER_NOUNS: Final[Mapping[RoleAxis, str]] = MappingProxyType(
 
 
 def private_outside(
-    axis: RoleAxis, whole_of: Collection[MemberClass], side_classes: Collection[MemberClass]
+    axis: RoleAxis, whole_of: Collection[PartyClass], side_classes: Collection[PartyClass]
 ) -> bool:
     """Whether the private donors a dataset holds on a donor side (`side_classes`) are
     outside a whole population covering the `whole_of` classes there."""
     return axis == "origin" and "private" in side_classes and "private" not in whole_of
 
 
-def whole_population_text(axis: RoleAxis, whole_of: Collection[MemberClass]) -> str:
+def whole_population_text(axis: RoleAxis, whole_of: Collection[PartyClass]) -> str:
     """The members a whole population covering the `whole_of` classes on `axis` holds:
     "every official donor" for a donor side covering no private donor, else "every donor"
     or "every recipient"."""
@@ -420,7 +420,7 @@ def whole_population_text(axis: RoleAxis, whole_of: Collection[MemberClass]) -> 
     return f"every official {noun}" if official else f"every {noun}"
 
 
-def whole_residual_text(whole_of: Collection[MemberClass]) -> str:
+def whole_residual_text(whole_of: Collection[PartyClass]) -> str:
     """The clause saying a whole population covering the `whole_of` classes holds aid
     allocated to no country, empty when it covers no residual."""
     return ", which includes aid not allocated to a country" if "residual" in whole_of else ""

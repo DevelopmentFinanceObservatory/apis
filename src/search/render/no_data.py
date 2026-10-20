@@ -11,11 +11,11 @@ from search.models import (
     Departure,
     EntityRoleKey,
     GraphRef,
-    MemberClass,
     NearestRealSpec,
     NoDataDenominator,
     NoDataGate,
     NoDataReason,
+    PartyClass,
     ResolvedQualifier,
     RoleAxis,
     SentenceToken,
@@ -203,7 +203,7 @@ class UnlistedPopulation:
     `listed_alone` is true and `left_out` empty."""
 
     axis: RoleAxis
-    left_out: tuple[MemberClass, ...]
+    left_out: tuple[PartyClass, ...]
     listed_alone: bool = False
 
     def __post_init__(self) -> None:
@@ -215,7 +215,7 @@ class UnlistedPopulation:
 
 
 # The words for the parties of each class a population leaves out, by its side's noun.
-_LEFT_OUT_WORDS: Mapping[MemberClass, str] = {
+_LEFT_OUT_WORDS: Mapping[PartyClass, str] = {
     "official": "official {noun}s",
     "private": "private {noun}s",
     "residual": "residual {noun} entries",
