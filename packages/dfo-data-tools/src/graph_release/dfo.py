@@ -47,7 +47,15 @@ from graph_release.coverage import coverage_rows, role_map
 from graph_release.declarations import Declarations
 from graph_release.format import StagedPart, write_blob_part
 from graph_release.platform import PlatformParts, PlatformRefusal
-from series_coverage.schema import ABSENT_ENTITY, DONOR_COLUMN, FACET_COLUMN, RECIPIENT_COLUMN
+from series_coverage.schema import (
+    ABSENT_ENTITY,
+    DONOR_COLUMN,
+    FACET_COLUMN,
+    FIRST_YEAR_COLUMN,
+    LAST_YEAR_COLUMN,
+    RECIPIENT_COLUMN,
+    widen_span,
+)
 
 if TYPE_CHECKING:
     from dc_graph import SubjectPage
@@ -270,25 +278,32 @@ def _variable_provenances(inputs: DfoInputs) -> dict[str, tuple[str, ...]]:
 
 
 def _parties(inputs: DfoInputs, datasets: set[str]) -> dict[str, PartyPublication]:
-    """Every donor and recipient on a row of `datasets`, with the datasets that publish it and
-    the flow axes they publish it on: `origin` as a donor, `destination` as a recipient."""
-    publishers: dict[str, set[str]] = {}
+    """Every donor and recipient on a row of `datasets`, with the datasets that publish it, the
+    flow axes they publish it on (`origin` as a donor, `destination` as a recipient) and the
+    first and last year each publishes it."""
+    years: dict[str, dict[str, tuple[int, int]]] = {}
     axes: dict[str, set[RoleAxis]] = {}
     for column, axis in _PARTY_AXES.items():
-        pairs = inputs.coverage.group_by([column, FACET_COLUMN], use_threads=False).aggregate([])
-        for party, facet_id in zip(
-            cast("list[str]", _strings(pairs[column]).to_pylist()),
-            cast("list[str]", _strings(pairs[FACET_COLUMN]).to_pylist()),
+        spans = inputs.coverage.group_by([column, FACET_COLUMN], use_threads=False).aggregate(
+            ((FIRST_YEAR_COLUMN, "min"), (LAST_YEAR_COLUMN, "max"))
+        )
+        for party, facet_id, first, last in zip(
+            cast("list[str]", _strings(spans[column]).to_pylist()),
+            cast("list[str]", _strings(spans[FACET_COLUMN]).to_pylist()),
+            cast("list[int]", spans[f"{FIRST_YEAR_COLUMN}_min"].to_pylist()),
+            cast("list[int]", spans[f"{LAST_YEAR_COLUMN}_max"].to_pylist()),
             strict=True,
         ):
             provenance = inputs.facet_provenances[facet_id]
             if party == ABSENT_ENTITY or provenance not in datasets:
                 continue
-            publishers.setdefault(party, set()).add(provenance)
+            widen_span(years.setdefault(party, {}), provenance, first, last)
             axes.setdefault(party, set()).add(axis)
     return {
-        party: PartyPublication(datasets=frozenset(found), axes=frozenset(axes[party]))
-        for party, found in publishers.items()
+        party: PartyPublication(
+            datasets=frozenset(published), axes=frozenset(axes[party]), years=published
+        )
+        for party, published in years.items()
     }
 
 

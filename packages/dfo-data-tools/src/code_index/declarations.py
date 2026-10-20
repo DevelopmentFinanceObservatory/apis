@@ -575,12 +575,13 @@ PRIVATE_PROVIDERS: Mapping[int, str] = {
 
 @dataclass(frozen=True)
 class WholeWindow:
-    """What a total holds in one dataset: every party of the kinds in `holds` on its axis, in the
-    years `years` gives (first and last, inclusive), or in every year the dataset publishes it when
-    `years` is `None` (`code_index.types.WholeMarker`)."""
+    """What a total holds in one dataset: every party of the kinds in `holds` on its axis, from
+    `first_year` through the last year the dataset publishes the total, or in every year it
+    publishes it when `first_year` is `None` (`code_index.types.WholeMarker`). The export reads
+    the last year from the coverage build, so the window grows as the dataset adds years."""
 
     holds: tuple[PartyKind, ...]
-    years: tuple[int, int] | None = None
+    first_year: int | None = None
 
 
 @dataclass(frozen=True)
@@ -601,12 +602,12 @@ class WholePopulationTotal:
 # the same population. The published figure can still differ from the sum of the listed members,
 # by late reporters for example, as the DACOfficialDonors paragraph below records. The index
 # loader checks that no two markers hold a kind in common on one dataset and axis, and the frame
-# cells write `whole_total` for a marked total (in the years given, in the named dataset) where
-# they would write `total`. A dataset is named when
-# the total's composition check holds there, over the years given (none: every year the dataset
-# publishes it). The checks read the dev graph on coverage build 20261013T115221Z-ab2a6880. A
-# party sum is the sum of the party donors' own rows, and a component with no row in a year counts
-# zero.
+# cells write `whole_total` for a marked total (in the window's years, in the named dataset)
+# where they would write `total`. A dataset is named when the total's composition check holds
+# there, from the first year given through the last year the dataset publishes the total, or in
+# every year it publishes it when no first year is given. The checks read the dev graph on
+# coverage build 20261013T115221Z-ab2a6880. A party sum is the sum of the party donors' own
+# rows, and a component with no row in a year counts zero.
 #
 # DACOfficialDonors equals DACCountriesTotal + DACNonDACCountries + DACMultilaterals to the dollar
 # in every year it is published, 1960 to 2024, at Bangladesh, Ethiopia, India and Kenya, in DAC2A
@@ -624,14 +625,16 @@ class WholePopulationTotal:
 # 19.5m above the total, 0.19%), Germany 2002 (14.8m, 0.22%) and France 2008 (0.04m), which are
 # OECD revision noise. Before 1984 the members exceed it by 0.02% to 0.83% (France 1976 to 1983,
 # Japan and the United Kingdom 1976 to 1982), the Part II and MADCT recipients outside the
-# developing-country population, so the window starts in 1984. In DAC2B the check fails in nearly
-# every year for every DAC donor checked, because DAC2B publishes regional totals with no country
-# rows for most donors (France 2020: 965.1m at DACAllRecipients against 77.9m of residual rows
-# and no country row; Japan 2020: short by 8.6bn), so DAC2B is not named.
+# developing-country population, so the window starts in 1984. The export ends the window in the
+# last year DAC2A publishes the total, so a year after 2024 joins it without a composition check:
+# the check covers 1984 to 2024 alone. In DAC2B the check fails in nearly every year for every
+# DAC donor checked, because DAC2B publishes regional totals with no country rows for most donors
+# (France 2020: 965.1m at DACAllRecipients against 77.9m of residual rows and no country row;
+# Japan 2020: short by 8.6bn), so DAC2B is not named.
 WHOLE_POPULATION_TOTALS: Mapping[str, WholePopulationTotal] = {
     "DACAllRecipients": WholePopulationTotal(
         axis="destination",
-        datasets={_DAC2A: WholeWindow(("party", "residual"), (1984, 2024))},
+        datasets={_DAC2A: WholeWindow(("party", "residual"), first_year=1984)},
         reason=(
             "DAC2A: party plus residual recipients equal the total from 1984 to 2024 for seven "
             "donors, apart from Japan 1988 (0.19%), Germany 2002 (0.22%) and France 2008 "

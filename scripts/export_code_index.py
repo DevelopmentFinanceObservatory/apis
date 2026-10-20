@@ -75,7 +75,6 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from collections import defaultdict
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -122,7 +121,6 @@ from code_index.types import (
     WholeTotalSet,
 )
 from dc_graph import GraphClient
-from dfo_platform.roles import RoleAxis
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_OUT = (
@@ -145,7 +143,7 @@ class CoverageJoin:
 
 def load_coverage_join(base_uri: str, *, datasets: Collection[str]) -> CoverageJoin:
     """Load the published coverage build under `base_uri` and read its variable provenances and
-    the parties on the facets of the `datasets` provenances.
+    the parties on the facets of the `datasets` provenances, with the years each publishes them.
 
     `series_coverage` needs the `coverage` extra, which the graph-only callers of this module
     run without, so the import stays inside this function.
@@ -153,18 +151,15 @@ def load_coverage_join(base_uri: str, *, datasets: Collection[str]) -> CoverageJ
     from series_coverage.loader import load_coverage
 
     loaded = load_coverage(base_uri)
-    publishers: dict[str, set[str]] = defaultdict(set)
-    axes: dict[str, set[RoleAxis]] = defaultdict(set)
-    for dataset in datasets:
-        for party, published_on in loaded.index.dataset_parties({dataset}).items():
-            publishers[party].add(dataset)
-            axes[party].update(published_on)
+    years = loaded.index.dataset_party_years(datasets)
     return CoverageJoin(
         build_id=loaded.manifest.build_id,
         provenances=loaded.index.variable_provenances(),
         parties={
-            party: PartyPublication(datasets=frozenset(found), axes=frozenset(axes[party]))
-            for party, found in publishers.items()
+            party: PartyPublication(
+                datasets=frozenset(years[party]), axes=published_on, years=years[party]
+            )
+            for party, published_on in loaded.index.dataset_parties(datasets).items()
         },
     )
 
