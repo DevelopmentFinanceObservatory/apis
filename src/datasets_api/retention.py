@@ -4,9 +4,16 @@ Every file of a version renders from one stored frame: its own, or, for a derive
 (`StoredVersion.base_content_version` set: a groupby collapse or a party-totals cut), its base
 version's. The frame is the one `render.servable_frame_location` gives, so a pinned copy wins,
 else the aged frame a renewal would renew (`render.stored_frame_location`). A pinned frame has
-no expiry. A working frame is guaranteed until `WORKING_TIER_RETENTION` after its `stored_at`. A
-download before then does not move that clock; a fetch or rebuild after it renews the frame for
-another 30 days when its bytes survive.
+no expiry. A working frame is guaranteed until `WORKING_TIER_RETENTION` after its `stored_at`.
+A download does not move that clock: a link click whose file is still stored renews that file
+alone (`doors.files.renew_and_resolve`), and a request for a file still in retention serves it.
+Past that point the frame renews only when a render from it re-uploads its bytes
+(`doors.files.render_version_from_frame`): the file selector rendering a file the version holds
+no servable copy of, or a link click whose own file's bytes are gone. When the frame's bytes are
+gone too, both refuse `artifact_expired`. A definition GET over an aged frame and a mint build
+from upstream instead, and a build of unchanged data uploads the frame again, restarting its
+clock. The snapshot and observations routes refuse `artifact_expired` once no listed file of
+the version is in retention, whatever the frame's bytes.
 
 A version that links no frame renders nothing, so it reports over its own listed data artifacts
 instead: pinned when one is pinned, else the latest of their 30-day guarantees.

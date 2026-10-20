@@ -101,7 +101,7 @@ This page stores the Search response in `resolve.json`, the response to the crea
    Path("manifest.json").write_text(json.dumps(manifest))
    ```
 
-   Operations can be `pending`, `running`, `done`, or `failed`. Poll responses for pending and running work carry `retry_after_ms`, which grows from 1,500 to 8,000 as the operation ages, and a `Retry-After` header with the same wait in whole seconds, rounded up. Wait that long between polls. A done response omits `poll` and places the manifest beside `operation`. A failed poll returns `500 operation_failed`, so `raise_for_status()` stops the script.
+   Operations can be `pending`, `running`, `done`, or `failed`. Poll responses for pending and running work carry `retry_after_ms`, which grows from 1,500 to 8,000 as the build runs (a resubmission that restarts a failed build starts again at 1,500), and a `Retry-After` header with the same wait in whole seconds, rounded up. Wait that long between polls. A done response omits `poll` and places the manifest beside `operation`. A failed poll returns `500 operation_failed`, so `raise_for_status()` stops the script.
 
 5. Select the data artifact by `rendering`, then download it from its link.
 
@@ -150,7 +150,7 @@ A manifest has a `content_version`, coverage, and an artifact whose rendering ma
 
 ## Retention and capacity
 
-Generated artifacts are working-tier by default and expire after the retention period published by `GET /api/v1/datasets/capabilities` (30 days), measured from `stored_at`. A pinned artifact is kept indefinitely. After a working-tier artifact expires, its download link renders the file again from the version's stored frame while that frame is present, and otherwise answers `410 artifact_expired`. A snapshot can return `410 artifact_expired` when no listable artifact location is servable, or `410 snapshot_revoked` for a revoked version.
+Generated artifacts are working-tier by default and expire after the retention period published by `GET /api/v1/datasets/capabilities` (30 days), measured from `stored_at`. A pinned artifact is kept indefinitely. After a working-tier artifact expires, its download link renews the file while the file's bytes survive, renders it again from the version's stored frame when they are gone, and answers `410 artifact_expired` when the frame is gone too. A snapshot can return `410 artifact_expired` when no listable artifact location is servable, or `410 snapshot_revoked` for a revoked version.
 
 Terminal operations are guaranteed pollable for the retention period in the Datasets capabilities response. An older operation can still be present. `404 operation_not_found` means the API does not know that operation.
 

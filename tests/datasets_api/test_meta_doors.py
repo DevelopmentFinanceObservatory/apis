@@ -29,6 +29,8 @@ from datasets_api.operations.lease import LEASE_SECONDS
 from datasets_api.operations.submit import (
     OPERATION_POLL_MAX_MS,
     OPERATION_SUBMIT_RETRY_AFTER_MS,
+    OperationSubmitted,
+    operation_submitted_resource,
     poll_interval_ms,
     retry_after_headers,
 )
@@ -345,6 +347,45 @@ def test_poll_interval_is_a_quarter_of_the_age_between_the_floor_and_the_cap(
     interval = poll_interval_ms(operation, now=_OP_NOW + timedelta(seconds=age_seconds))
 
     assert interval == expected_ms
+
+
+@pytest.mark.parametrize(
+    ("fails_first", "resubmit_after_s", "expected_ms"),
+    [
+        pytest.param(True, 3_600, OPERATION_SUBMIT_RETRY_AFTER_MS, id="restarted-build-floors"),
+        pytest.param(False, 20, 5_000, id="join-keeps-the-running-builds-age"),
+    ],
+)
+def test_a_resubmission_is_paced_from_its_current_submission(
+    fails_first: bool, resubmit_after_s: int, expected_ms: int
+) -> None:
+    """A failed operation resubmitted an hour after its creation restarts its build, so its
+    first 202 answers the floor. A resubmission that joins a running build keeps that build's
+    age-derived wait."""
+    now_box = {"t": _OP_NOW}
+    store = LiveOperationStore(store=FakeOperationDatasetStore(), now=lambda: now_box["t"])
+    submission = {
+        "request_identity": {"input": {"spec_id": "spec_a"}},
+        "options": _PARQUET_BUNDLE.model_dump(mode="json"),
+        "coverage_stamp": "cov_stamp_1",
+        "origin_catalogue_build_id": "fake-catalogue",
+        "estimate": _DEFAULT_ESTIMATE,
+    }
+    created = store.create_or_get(**submission)
+    assert store.claim(
+        created.id, submission_count=0, lease_seconds=LEASE_SECONDS, final_delivery=True
+    )
+    if fails_first:
+        assert store.fail(created.id, attempt=1, refusal_code="internal_error", retryable=True)
+    now_box["t"] += timedelta(seconds=resubmit_after_s)
+
+    resubmitted = store.create_or_get(**submission)
+    resource = operation_submitted_resource(
+        OperationSubmitted(operation=resubmitted), now=now_box["t"]
+    )
+
+    assert resubmitted.created_at == _OP_NOW
+    assert resource.operation.retry_after_ms == expected_ms
 
 
 def test_a_done_operation_is_paced_at_the_floor_whatever_its_age() -> None:

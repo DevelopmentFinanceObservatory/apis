@@ -208,7 +208,7 @@ The components envelope (`assembler.mint.provenance`) carries the same pair on e
 
 ## Trust Boundary
 
-Callers reach the API through the website's proxy, which answers a per-IP `429` only while a Redis is configured and passes `Authorization` upstream unread. The deployment bounds request bodies, and publish also checks its own `Content-Length` ceiling at admission, before it reads the body.
+Callers reach the API through the website's proxy, which counts each IP's calls in a fixed window kept in Postgres and shared by every proxy instance, answers `429` past the allowance (120 calls a minute on `/api/*` by default), lets a call through when the count fails, and passes `Authorization` upstream unread. The deployment bounds request bodies, and publish also checks its own `Content-Length` ceiling at admission, before it reads the body.
 
 The Datasets API checks the caller only on the Pin door (`POST /{id}/{content_version}/pin`), the Publish and recipe doors (`POST /frames/publish` and the recipe routes), and the frame refresh. `datasets_api.principals` reads the configured principal header (`DATASETS_PRINCIPAL_HEADER`, default `x-dfo-principal`) into the grants its value holds: `pin` for `DATASETS_PIN_FIRST_PARTY_PRINCIPAL`, `publish` for `DATASETS_FIRST_PARTY_PRINCIPAL`, and `refresh` for `LIVE_REFRESH_PRINCIPAL`. Each route requires one grant and refuses a caller lacking it with 403 before the body is read. Pinning and publishing take two independent values, since pinning has no unpin or delete route on this surface and a principal trusted to publish must not automatically gain that irreversible capability too.
 

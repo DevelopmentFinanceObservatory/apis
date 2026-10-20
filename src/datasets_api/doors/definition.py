@@ -894,7 +894,7 @@ OPERATION_SUBMITTED_RESPONSES: dict[int | str, dict[str, Any]] = {
             "Retry-After": {
                 "description": (
                     "Whole seconds to wait before the next poll, rounded up from "
-                    "`operation.retry_after_ms`. The value grows with the operation's age."
+                    "`operation.retry_after_ms`. The value grows as the build runs."
                 ),
                 "schema": {"type": "integer", "minimum": 1},
             },

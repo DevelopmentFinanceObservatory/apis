@@ -4,8 +4,10 @@ Injected stores are shared across doors. Missing stores are built in each door's
 Construction resolves the pinned catalogue to compute `capability_version` from packaged data,
 and loads the origin catalogue, whose snapshot each request binds. With `GRAPH_RELEASE_URI` set,
 each request also binds the release service's served release, and an unreadable release fails
-construction. Live stores and credentials load in door lifespans. The website's proxy answers a
-per-IP `429` only while a Redis is configured and passes `Authorization` upstream unread. A `cmp_`
+construction. Live stores and credentials load in door lifespans. The website's proxy answers
+`429` once an IP passes its allowance, 120 calls a minute on `/api/*` by default, counted in a
+fixed window that every proxy instance shares in Postgres. A call whose count fails goes
+through. The proxy passes `Authorization` upstream unread. A `cmp_`
 or `cps_` id grants read of a draft, and the write token its create returned grants write, so the
 doors take no caller or session. The two render routes of `presentation_api.doors.render` are
 the exception. They admit the live-refresh principal the composition passes in, and refuse

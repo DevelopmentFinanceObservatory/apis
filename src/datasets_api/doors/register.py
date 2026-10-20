@@ -7,8 +7,10 @@ return retryable 503s. Invalid identity documents return `request_invalid`
 (400). Platform validation handles other malformed bodies and unsupported
 schema versions.
 
-Callers reach the API through the website's proxy, which may answer a per-IP
-429 and passes `Authorization` upstream unread. The deployment platform limits
+Callers reach the API through the website's proxy, which answers `429` once an
+IP passes its allowance, 120 calls a minute on `/api/*` by default, counted in a
+fixed window that every proxy instance shares in Postgres. A call whose count
+fails goes through. The proxy passes `Authorization` upstream unread. The deployment platform limits
 request-body size.
 """
 

@@ -129,15 +129,16 @@ def request_identity_member_dcids(request_identity: Mapping[str, object]) -> tup
 
 
 def poll_interval_ms(operation: Operation, *, now: datetime) -> int:
-    """The milliseconds a caller waits before polling `operation` again: a quarter of its age
-    since `created_at`, held between `OPERATION_SUBMIT_RETRY_AFTER_MS` and
-    `OPERATION_POLL_MAX_MS`. A repeat submission that joins a long build gets the slow value,
-    and a waiting browser backs off as the build runs. A done operation answers its next poll
-    at once, so it gets the shortest interval.
+    """The milliseconds a caller waits before polling `operation` again: a quarter of the time
+    since its current submission (`submitted_at`), held between
+    `OPERATION_SUBMIT_RETRY_AFTER_MS` and `OPERATION_POLL_MAX_MS`. A repeat submission that
+    joins a long build gets the slow value, a resubmission that restarts a failed build starts
+    at the floor, and a waiting browser backs off as the build runs. A done operation answers
+    its next poll at once, so it gets the shortest interval.
     """
     if operation.state == "done":
         return OPERATION_SUBMIT_RETRY_AFTER_MS
-    age_ms = (now - operation.created_at) // timedelta(milliseconds=1)
+    age_ms = (now - operation.submitted_at) // timedelta(milliseconds=1)
     return min(OPERATION_POLL_MAX_MS, max(OPERATION_SUBMIT_RETRY_AFTER_MS, age_ms // 4))
 
 

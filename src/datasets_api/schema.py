@@ -54,9 +54,11 @@ class Retention(ResponseModel):
         default=None,
         exclude_if=is_none,
         description="when the working-tier frame stops being guaranteed, 30 days after it was "
-        "stored. A fetch before then does not extend it; after it, a fetch or rebuild renews it "
-        "for 30 days if the bytes survive, else refuses `artifact_expired`. Absent when pinned; "
-        "can be in the past",
+        "stored. Downloads do not extend it. After it, a file selector or download link request "
+        "that must render its file again renews the frame for 30 days if the frame's bytes "
+        "survive, else refuses `artifact_expired`; a rebuild of unchanged data through "
+        "`GET /api/datasets/{id}` or `POST /api/datasets` stores the frame again. Absent when "
+        "pinned; can be in the past",
     )
 
 
@@ -301,8 +303,8 @@ class OperationEnvelope(ResponseModel):
         description=(
             "Milliseconds to wait before the next poll. Present on the 202 submit response "
             "and on every pending or running poll; absent on a done poll. It "
-            "grows with the operation's age: a quarter of the time since the operation was "
-            "created, from 1,500 to 8,000. The `Retry-After` response header carries the "
+            "grows as the build runs: a quarter of the time since the operation's current "
+            "submission, from 1,500 to 8,000. The `Retry-After` response header carries the "
             "same value in whole seconds, rounded up."
         ),
     )
