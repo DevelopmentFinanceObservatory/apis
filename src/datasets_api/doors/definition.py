@@ -115,6 +115,7 @@ from datasets_api.operation_store import OperationBacklogFull
 from datasets_api.operations.submit import (
     OperationSubmitted,
     operation_submitted_resource,
+    retry_after_headers,
 )
 from datasets_api.query_options import (
     QueryOptionsInvalid,
@@ -659,7 +660,7 @@ async def _get_definition_impl(id: str, request: Request, *, deps: Deps) -> JSON
             )
         except OperationSubmitted as submitted:
             # Treat a 202 submission as a successful `door_call` outcome.
-            submitted_resource = operation_submitted_resource(submitted)
+            submitted_resource = operation_submitted_resource(submitted, now=deps.now())
     if submitted_resource is not None:
         assert submitted_resource.operation.poll is not None
         return JSONResponse(
@@ -668,6 +669,7 @@ async def _get_definition_impl(id: str, request: Request, *, deps: Deps) -> JSON
             headers={
                 **no_store_headers(server_timing=call.server_timing),
                 "Location": submitted_resource.operation.poll,
+                **retry_after_headers(submitted_resource.operation),
             },
         )
     # The links name the requested id, so a click honours the revocations this request did.

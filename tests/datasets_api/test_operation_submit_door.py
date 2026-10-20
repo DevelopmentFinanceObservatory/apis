@@ -5,7 +5,7 @@ rows and requests, so tests patch each door's imported `within_sync_budget` dire
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
@@ -15,7 +15,12 @@ from datasets_api import kinds
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.mint_models import MintOptions
 from datasets_api.operation_store import LiveOperationStore, compute_operation_id
-from datasets_api.operations.submit import OperationSubmitted, submit_over_budget
+from datasets_api.operations.submit import (
+    OPERATION_POLL_MAX_MS,
+    OPERATION_SUBMIT_RETRY_AFTER_MS,
+    OperationSubmitted,
+    submit_over_budget,
+)
 from datasets_api.operations.task_client import FakeTaskClient
 from dc_sdmx import SdmxClient
 from materialise.errors import OverCeilingError
@@ -103,6 +108,8 @@ def test_over_budget_mint_returns_202_with_location_and_pending_status(
     assert body["operation"]["status"] == "pending"
     assert body["operation"]["poll"] == f"/api/datasets/operations/{operation_id}"
     assert resp.headers["location"] == f"/api/datasets/operations/{operation_id}"
+    assert body["operation"]["retry_after_ms"] == OPERATION_SUBMIT_RETRY_AFTER_MS
+    assert resp.headers["retry-after"] == "2"
     assert "manifest" not in body
 
     # Enqueued exactly once, as submission 0's task.
@@ -113,6 +120,22 @@ def test_over_budget_mint_returns_202_with_location_and_pending_status(
     stored = operation_store.get(operation_id)
     assert stored is not None
     assert stored.state == "pending"
+
+
+def test_a_submission_joining_a_long_running_operation_gets_the_slow_pacing(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The operation was created ten minutes ago, so the 202 carries the capped interval."""
+    _force_mint_over_budget(monkeypatch)
+    created = datetime.now(UTC) - timedelta(minutes=10)
+    operation_store = LiveOperationStore(store=FakeOperationDatasetStore(), now=lambda: created)
+    client = _client(operation_store=operation_store, task_client=FakeTaskClient())
+
+    resp = client.post("/api/datasets", json=_HAPPY_PATH_BODY)
+
+    assert resp.status_code == 202, resp.text
+    assert resp.json()["operation"]["retry_after_ms"] == OPERATION_POLL_MAX_MS
+    assert resp.headers["retry-after"] == str(OPERATION_POLL_MAX_MS // 1000)
 
 
 def test_over_budget_role_bearing_mint_with_no_bound_entity_is_submitted(
@@ -249,6 +272,7 @@ def test_over_budget_definition_retrieval_returns_202(monkeypatch: pytest.Monkey
     body = resp.json()
     assert body["operation"]["operation_id"].startswith("op_")
     assert resp.headers["location"] == body["operation"]["poll"]
+    assert resp.headers["retry-after"] == "2"
 
 
 class _RaisingTaskClient:

@@ -37,6 +37,7 @@ from datasets_api.mint_models import MintRequest, StatVarSetInput
 from datasets_api.operations.submit import (
     OperationSubmitted,
     operation_submitted_resource,
+    retry_after_headers,
 )
 from datasets_api.render import check_options_supported
 from datasets_api.schema import OperationResource
@@ -131,7 +132,7 @@ async def _mint_response(body: MintRequest, *, deps: Deps) -> JSONResponse:
             )
         except OperationSubmitted as submitted:
             # A deferred 202 is a successful outcome, not a refusal.
-            submitted_resource = operation_submitted_resource(submitted)
+            submitted_resource = operation_submitted_resource(submitted, now=deps.now())
     if submitted_resource is not None:
         assert submitted_resource.operation.poll is not None
         return JSONResponse(
@@ -140,6 +141,7 @@ async def _mint_response(body: MintRequest, *, deps: Deps) -> JSONResponse:
             headers={
                 **no_store_headers(server_timing=call.server_timing),
                 "Location": submitted_resource.operation.poll,
+                **retry_after_headers(submitted_resource.operation),
             },
         )
     return JSONResponse(

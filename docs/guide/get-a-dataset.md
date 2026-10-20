@@ -95,12 +95,13 @@ This page stores the Search response in `resolve.json`, the response to the crea
                if result["operation"]["status"] == "done":
                    manifest = result["manifest"]
                    break
+               wait_seconds = result["operation"]["retry_after_ms"] / 1000
        else:
            manifest = result
    Path("manifest.json").write_text(json.dumps(manifest))
    ```
 
-   Operations can be `pending`, `running`, `done`, or `failed`. Poll responses for pending and running work omit `retry_after_ms`. A done response omits `poll` and places the manifest beside `operation`. A failed poll returns `500 operation_failed`, so `raise_for_status()` stops the script.
+   Operations can be `pending`, `running`, `done`, or `failed`. Poll responses for pending and running work carry `retry_after_ms`, which grows from 1,500 to 8,000 as the operation ages, and a `Retry-After` header with the same wait in whole seconds, rounded up. Wait that long between polls. A done response omits `poll` and places the manifest beside `operation`. A failed poll returns `500 operation_failed`, so `raise_for_status()` stops the script.
 
 5. Select the data artifact by `rendering`, then download it from its link.
 
