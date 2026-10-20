@@ -157,6 +157,7 @@ def _run(
     coverage_rows: list[CoverageRow] | None = None,
     coverage_role_names: dict[str, RoleNames] | None = None,
     coverage_facet_metadata: dict[str, FacetMetadata] | None = None,
+    dropped_qualifier_phrases: list[str] | None = None,
 ):
     coverage_snapshot = empty_coverage_snapshot()
     if coverage_rows is not None:
@@ -192,6 +193,7 @@ def _run(
             sdmx=sdmx,
             base_timing={},
             unit_text=unit_text,
+            dropped_qualifier_phrases=dropped_qualifier_phrases,
             coverage=coverage_snapshot,
             options=EngineOptions(include_observations=include_observations),
         )
@@ -709,6 +711,73 @@ def test_origin_only_signature_discovers_the_provider_scope(monkeypatch):
     assert spec.resolved.scope is not None
     assert spec.resolved.scope.axis == "origin"
     assert sorted(m.ref for m in spec.resolved.scope.members) == [_DEU, _FRA]
+
+
+@pytest.mark.parametrize(
+    ("role_query", "phrase", "observation_properties", "admitted"),
+    [
+        pytest.param(
+            "aid from France to all recipients",
+            "to all recipients",
+            ["creditor", "debtor"],
+            True,
+            id="open-axis-the-answer-serves-member-by-member",
+        ),
+        pytest.param(
+            "aid from France to all recipients",
+            "to all recipients",
+            ["creditor"],
+            True,
+            id="axis-the-answer-totals-over",
+        ),
+        pytest.param(
+            "aid from France and all donors",
+            "all donors",
+            ["creditor", "debtor"],
+            False,
+            id="axis-a-named-place-binds",
+        ),
+        pytest.param(
+            "aid from France in all sectors",
+            "in all sectors",
+            ["creditor", "debtor"],
+            False,
+            id="all-names-no-role",
+        ),
+    ],
+)
+def test_a_dropped_phrase_asking_for_every_member_of_a_role_is_met_by_an_answer_leaving_it_unbound(
+    monkeypatch, role_query, phrase, observation_properties, admitted
+):
+    """The phrase is admitted, so its `query_qualifier_dropped` warning and departure go,
+    when the role-bearing answer binds no place on the axis the phrase names."""
+    sv_dcid = _SV_DCID if "debtor" in observation_properties else _ORIGIN_ONLY_SV_DCID
+    if "debtor" in observation_properties:
+        rows, role_names = _coverage_seed_for(
+            "debtor", [_KEN], [sv_dcid], filters={"creditor": [_FRA]}
+        )
+        observations = {sv_dcid: {(("creditor", _FRA), ("debtor", _KEN)): [_facet()]}}
+    else:
+        rows, role_names = _coverage_seed_for("creditor", [_FRA], [sv_dcid])
+        observations = {sv_dcid: {(("creditor", _FRA),): [_facet()]}}
+
+    result = _run(
+        entities=["France"],
+        sv_dcid=sv_dcid,
+        sv_arcs=_declaring_arcs(observation_properties=observation_properties),
+        resolve={"France": _FRA},
+        sv_score=0.9,
+        role_query=role_query,
+        sdmx=FakeSdmxClient(observations=observations, availability={}),
+        monkeypatch=monkeypatch,
+        coverage_rows=rows,
+        coverage_role_names=role_names,
+        dropped_qualifier_phrases=[phrase],
+    )
+
+    assert result.status == "definite", result
+    assert result.specs[0].definition.identity.entities.get("origin") == [_FRA]
+    assert (phrase in result.admitted_qualifier_phrases) is admitted
 
 
 # ---------------------------------------------------------------------------

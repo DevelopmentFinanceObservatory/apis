@@ -32,7 +32,7 @@ def _count_state_attribute_reads(attr: str) -> int:
 
 
 def test_query_text_and_role_query_reader_counts_are_covered() -> None:
-    """Pin the 7 `query_text` readers and 1 `role_query` reader covered by cache signals."""
+    """Pin the 7 `query_text` readers and 2 `role_query` readers covered by cache signals."""
     query_text_reads = _count_state_attribute_reads("query_text")
     role_query_reads = _count_state_attribute_reads("role_query")
     assert query_text_reads == 7, (
@@ -40,9 +40,9 @@ def test_query_text_and_role_query_reader_counts_are_covered() -> None:
         "not the 7 compute_layer2_signals computes signals for. Update "
         "compute_layer2_signals (and this test) to cover the new reader."
     )
-    assert role_query_reads == 1, (
+    assert role_query_reads == 2, (
         f"state.role_query has {role_query_reads} readers in src/search/engine/region/, "
-        "not the 1 compute_layer2_signals computes a signal for. Update "
+        "not the 2 compute_layer2_signals computes signals for. Update "
         "compute_layer2_signals (and this test) to cover the new reader."
     )
 
@@ -257,7 +257,7 @@ def test_negated_stated_words_against_the_real_index(
 
 
 def test_layer2_signals_carries_one_field_per_numbered_signal() -> None:
-    """The dataclass has one field for each of the ten cache signals."""
+    """The dataclass has one field for each of the eleven cache signals."""
     field_names = {f.name for f in fields(Layer2Signals)}
     assert field_names == {
         "role_contradictions",
@@ -270,7 +270,24 @@ def test_layer2_signals_carries_one_field_per_numbered_signal() -> None:
         "declared_default_slots_named",
         "written_variable_phrases",
         "query_text_negated_stated_words",
+        "every_member_axes",
     }
+
+
+def test_a_dropped_phrase_of_place_nouns_takes_its_axis_from_the_query() -> None:
+    """Two queries that extract "all countries" alike key apart by the preposition before
+    it, on a request of several variables too."""
+
+    def axes(query: str) -> tuple[str | None, ...]:
+        return compute_layer2_signals(
+            query=query,
+            entity_roles={},
+            query_text=None,
+            dropped_qualifiers=["all countries", "in all sectors"],
+        ).every_member_axes
+
+    assert axes("aid to Ethiopia from all countries in all sectors") == ("origin", None)
+    assert axes("aid from Ethiopia to all countries in all sectors") == ("destination", None)
 
 
 def test_each_variable_carries_the_stretch_of_the_query_that_writes_it() -> None:

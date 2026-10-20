@@ -9,6 +9,7 @@ from search.engine.entry.parsed import _role_query_for_part
 from search.engine.role_text import (
     contradicts,
     debt_axes,
+    every_member_axis,
     role_axis_for_text,
 )
 from search.models import ParsedEntity, ParsedPart, RoleAxis
@@ -29,6 +30,33 @@ class TestDebtAndTradeVocabulary:
 @pytest.mark.parametrize("axis", ["origin", "destination"])
 def test_each_axis_name_resolves_to_its_own_axis(axis: RoleAxis) -> None:
     assert role_axis_for_text(axis) == axis
+
+
+@pytest.mark.parametrize(
+    ("phrase", "query", "axis"),
+    [
+        ("all donors", "aid from all donors to Ethiopia in 2022", "origin"),
+        ("from all donors", "aid to Ethiopia from all donors in 2022", "origin"),
+        ("every provider", "aid to Ethiopia from every provider in 2022", "origin"),
+        ("to all creditors", "debt owed to all creditors by Kenya", "origin"),
+        ("all the recipients", "aid from Germany to all the recipients", "destination"),
+        ("each beneficiary", "aid from Germany to each beneficiary", "destination"),
+        ("all countries", "aid to Ethiopia from all countries in 2022", "origin"),
+        ("to all countries", "aid from France to all countries", "destination"),
+        ("all donor countries", "aid to Ethiopia from all donor countries", "origin"),
+        ("all countries", "aid from all countries to all countries", None),
+        ("all countries", "GDP of all countries", None),
+        ("in all sectors", "aid to Ethiopia in all sectors in 2022", None),
+        ("all bilateral donors", "aid from all bilateral donors to Kenya", None),
+        ("all donors and recipients", "aid between all donors and recipients", None),
+        ("all", "aid to Ethiopia from all", None),
+        ("donors", "aid to Ethiopia from donors", None),
+    ],
+)
+def test_every_member_axis_reads_the_role_a_phrase_asks_every_member_of(
+    phrase: str, query: str, axis: RoleAxis | None
+) -> None:
+    assert every_member_axis(phrase, query=query) == axis
 
 
 class TestUnrecognised:
