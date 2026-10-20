@@ -3,6 +3,8 @@ the claims an operation over a category makes without bind."""
 
 from __future__ import annotations
 
+import pytest
+
 from search.engine.bind import SlotBindingDraft
 from search.engine.region.phase_rank_bind import (
     _open_operation_slots,
@@ -122,6 +124,31 @@ def test_a_mixed_batch_only_demotes_the_invalid_claim():
     assert validated[1].evidence == "mentioned"
     assert validated[1].requested_all_phrase is None
     assert applied == frozenset({_PHRASE})
+
+
+@pytest.mark.parametrize(
+    ("property_dcid", "phrase"),
+    [
+        # "total" asks for a sum and names no slot.
+        ("crsTypeOfFlow", "total"),
+        # The phrase names the flow slot, not the instrument slot the claim is on.
+        ("crsTypeOfFinance", _PHRASE),
+    ],
+)
+def test_requested_all_whose_phrase_names_another_slot_or_none_is_demoted(
+    property_dcid: str, phrase: str
+):
+    """A verbatim phrase that does not name the claimed slot by its declared plain name is
+    demoted, so a declared default still binds the slot."""
+    binding = _unbound(property_dcid, evidence="requested_all", requested_all_phrase=phrase)
+
+    validated, applied = _validate_requested_all_bindings(
+        [binding], [phrase], slot_properties=_SLOTS
+    )
+
+    assert validated[0].evidence == "mentioned"
+    assert validated[0].requested_all_phrase is None
+    assert applied == frozenset()
 
 
 def test_requested_all_on_a_property_the_elected_shape_lacks_is_demoted():

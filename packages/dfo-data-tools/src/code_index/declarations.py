@@ -91,6 +91,10 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
         declared_by_every_statvar_of=(_CRS, _IMPUTED_MULTILATERAL_SECTORS),
         plain_name="sector",
         house_case="sector",
+        # The CRS tags climate finance with its Rio markers, which the pipeline drops, and no
+        # purpose code names it, so a question naming climate on a CRS shape refuses the
+        # qualifier.
+        no_vocabulary_terms=("climate",),
     ),
     CodeSystemConfig(
         code_system="crsTypeOfFinance",
