@@ -876,6 +876,21 @@ _BASIS_SLOT = SlotKeyDraft(axis="how", property_dcid="priceBasis", label="priceB
 
 _GDP_VALUE = "GrossDomesticProduction"
 
+# The education codes of the code index's CRS amount and grant-equivalent families: the
+# amount family lists the rollups 110 to 114 beside the leaves, the grant-equivalent family
+# the leaves alone.
+_EDUCATION_LEAVES = [
+    f"CRSPurposeCode{code}"
+    for code in (
+        *(11110, 11120, 11130, 11182, 11220, 11230, 11231, 11232),
+        *(11240, 11250, 11260, 11320, 11330, 11420, 11430),
+    )
+]
+_EDUCATION_AMOUNT = [
+    *(f"CRSPurposeCode{code}" for code in (110, 111, 112, 113, 114)),
+    *_EDUCATION_LEAVES,
+]
+
 
 @pytest.mark.parametrize(
     ("top", "picked", "bound", "availability", "elected"),
@@ -922,6 +937,22 @@ _GDP_VALUE = "GrossDomesticProduction"
             1,
             id="bound-parent-it-holds-only-a-child-of",
         ),
+        pytest.param(
+            {"slot_taxonomy": {"how:activitySource": _EDUCATION_LEAVES}},
+            {"slot_taxonomy": {"how:activitySource": _EDUCATION_AMOUNT}},
+            "CRSPurposeCode110",
+            (),
+            0,
+            id="bound-parent-one-lists-beside-the-leaves-both-hold",
+        ),
+        pytest.param(
+            {"slot_taxonomy": {"how:activitySource": _EDUCATION_LEAVES[1:]}},
+            {"slot_taxonomy": {"how:activitySource": _EDUCATION_AMOUNT}},
+            "CRSPurposeCode110",
+            (),
+            1,
+            id="bound-parent-whose-leaf-one-lacks",
+        ),
         pytest.param({}, {}, None, (), 1, id="open-slot-on-another-taxonomy"),
         pytest.param(
             {"slot_taxonomy": {"how:activitySource": ["NetDomesticProduction", _GDP_VALUE]}},
@@ -943,10 +974,12 @@ def test_the_rank_elects_among_shapes_the_menu_states_alike(
     says nothing and the higher-ranked shape is elected. A difference the menu states
     leaves the model's choice: another denominator meaning, qualifier, label, role class
     or slot, a bound value the first shape lacks or holds only a child code of, where the
-    binding would read the child alone, a slot left open over another taxonomy,
+    binding would read the child alone, or one under which it lacks a leaf the second
+    covers, a slot left open over another taxonomy,
     or another availability, as where only the model's choice has data at the named
     places. Two unresolved arcs naming no schema term print alike and are one reading
-    only as the same arc."""
+    only as the same arc. A bound parent the second shape lists beside its leaves reads
+    alike on a first shape listing the leaves alone."""
     chosen = dataclasses.replace(
         _shape(
             "gdp-per-capita",

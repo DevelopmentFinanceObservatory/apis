@@ -9,7 +9,7 @@ inapplicable property and maps to wire ``unbound`` plus ``inapplicable_slots``.
 from __future__ import annotations
 
 import functools
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, Literal, NamedTuple
 
@@ -533,8 +533,8 @@ def _states_same_reading(
     denominators mean one base (`quantity.denominator_meaning`): a schema term's meaning or
     the same arc, since two unresolved arcs that name no schema term print alike
     (`UNRESOLVED_DENOMINATOR`). Each slot reads the same members on both. A value the
-    bindings bind on it applies to the same taxonomy codes on both, and to at least one
-    (`reads_bound_values_alike`). A code only one of them offers outside the bound value
+    bindings bind on it applies to codes covering the same leaf codes on both, and to at
+    least one (`reads_bound_values_alike`). A code only one of them offers outside the bound value
     tells no reading apart, and a shape holding only a child of a bound parent reads the
     child alone. A slot the bindings bind no value on holds one taxonomy on both, since it stays
     open over every value it holds."""
@@ -558,20 +558,33 @@ def _states_same_reading(
 def reads_bound_values_alike(
     elected: ShapeDraft, other: ShapeDraft, bindings: Sequence[SlotBindingDraft]
 ) -> bool:
-    """Whether each value `bindings` bind on a slot of `elected` applies to the same
-    taxonomy codes of `other`'s slot on that property as of `elected`'s, and to at least
-    one (`applies_value`), so `other` holds every bound value as `elected` does. A shape
-    with no slot on the property holds none of its values."""
+    """Whether each value `bindings` bind on a slot of `elected` applies to taxonomy codes
+    of `other`'s slot on that property that cover the same leaf codes as those of
+    `elected`'s (`covered_leaves`), and to at least one (`applies_value`), so
+    `other` holds every bound value as `elected` does. A family that lists a parent code
+    beside its children reads the parent as another listing lists its children alone. A
+    shape with no slot on the property holds none of its values."""
     bound = _bound_slots(bindings)
     own, held = elected.slot_taxonomy or {}, other.slot_taxonomy or {}
     for axis, prop in _slot_properties(elected):
         key = f"{axis}:{prop}"
-        ours, theirs = set(own.get(key, [])), set(held.get(key, []))
+        ours, theirs = own.get(key, []), held.get(key, [])
         for value in bound.get((axis, prop), ()):
-            read = {code for code in ours if applies_value(value, code)}
-            if not read or read != {code for code in theirs if applies_value(value, code)}:
+            read = [code for code in ours if applies_value(value, code)]
+            read_there = [code for code in theirs if applies_value(value, code)]
+            if not read or covered_leaves(read) != covered_leaves(read_there):
                 return False
     return True
+
+
+def covered_leaves(codes: Iterable[str]) -> frozenset[str]:
+    """The leaf codes `codes` cover in the code index's hierarchy: each code's descendants
+    that have no children (`CodeIndex.descendants`), so a parent covers its subtree's
+    leaves. A leaf, a code of a flat system, and a code the index lacks cover themselves."""
+    index = get_index()
+    return frozenset(
+        leaf for code in codes for leaf in index.descendants(code) if not index.has_children(leaf)
+    )
 
 
 def _bound_slots(bindings: Sequence[SlotBindingDraft]) -> dict[tuple[Axis, str], list[str]]:

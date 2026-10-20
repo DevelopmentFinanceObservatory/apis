@@ -47,6 +47,7 @@ from search.engine.role_text import DoorRole
 from search.engine.shape import Pool, ShapeDraft, SlotKeyDraft
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._quantity import NO_QUANTITY
+from tests.engine.test_bind import _EDUCATION_AMOUNT, _EDUCATION_LEAVES
 
 _HOUSE = get_index().house_defaults()
 _AID_TYPE = SlotKeyDraft(axis="how", property_dcid="dac2aAidType", label="aid type")
@@ -259,6 +260,39 @@ def test_the_pool_admits_a_shape_only_with_a_slot_for_each_mentioned_value():
     assert _rated_alike(shapes, _reply(0, _value("crsChannel", "ChannelA", "sole_option"))) == (
         PolicyPool(measuring=(0, 1, 2), rated=True)
     )
+
+
+_PURPOSE = SlotKeyDraft(axis="how", property_dcid="crsPurpose", label="purpose")
+_EVERY_PURPOSE = SlotBindingDraft(
+    axis="how", property_dcid="crsPurpose", kind="unbound", evidence="requested_all"
+)
+
+
+@pytest.mark.parametrize(
+    ("grant_equivalent_codes", "pool"),
+    [
+        pytest.param(_EDUCATION_LEAVES, (0, 1), id="the-leaves-the-rollups-cover"),
+        pytest.param(_EDUCATION_LEAVES[1:], (0,), id="missing-a-leaf"),
+    ],
+)
+def test_a_slot_asked_for_in_full_is_held_by_the_leaves_its_rollups_cover(
+    grant_equivalent_codes: list[str], pool: tuple[int, ...]
+):
+    """The CRS amount family lists the education rollups beside their leaves and the
+    grant-equivalent family the leaves alone. A phrase asking for every purpose admits the
+    grant-equivalent shape when it covers every leaf the amount shape's purposes cover, and
+    keeps it out when it lacks one."""
+    amount = _shape("amount", _PURPOSE, taxonomy={"how:crsPurpose": _EDUCATION_AMOUNT})
+    grant_equivalent = _shape(
+        "grant_equivalent",
+        _PURPOSE,
+        taxonomy={"how:crsPurpose": grant_equivalent_codes},
+        measured_property="grantEquivalent",
+    )
+
+    reply = _reply(0, _EVERY_PURPOSE)
+
+    assert _rated_alike([amount, grant_equivalent], reply).measuring == pool
 
 
 def test_grant_aid_to_uganda_keeps_the_crs_shape_whose_slot_holds_the_grant():

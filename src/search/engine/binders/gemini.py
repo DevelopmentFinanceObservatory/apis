@@ -12,6 +12,7 @@ from search.engine.bind import (
     _UniversalBindOutput,
     _without_partly_stated_values,
     bind_universal,
+    covered_leaves,
     reads_bound_values_alike,
     stated_reading,
 )
@@ -218,10 +219,12 @@ def holds_requested_slots(
     chosen: ShapeDraft, shape: ShapeDraft, bindings: Sequence[SlotBindingDraft]
 ) -> bool:
     """Whether, for each ``requested_all`` draft of `bindings`, `shape`'s slot on its
-    property holds every taxonomy code `chosen`'s slot holds."""
+    property covers every leaf code `chosen`'s slot covers (`bind.covered_leaves`)."""
     own, held = chosen.slot_taxonomy or {}, shape.slot_taxonomy or {}
     keys = [f"{d.axis}:{d.property_dcid}" for d in bindings if d.evidence == "requested_all"]
-    return all(set(own.get(key, ())) <= set(held.get(key, ())) for key in keys)
+    return all(
+        covered_leaves(own.get(key, ())) <= covered_leaves(held.get(key, ())) for key in keys
+    )
 
 
 def holds_drafted_values(
