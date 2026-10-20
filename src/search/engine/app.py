@@ -721,8 +721,10 @@ async def _open_search_deps(
         )
         logger.info("graph generation provider acquired (service base: %s)", settings().graph_base)
 
-    # The code index's views are built on first read, so build them before serving.
-    await asyncio.to_thread(prepare_index_views)
+    # The code index's views are built on first read, so build them before serving, from the
+    # index a request would read. `to_thread` carries the binding into the worker thread.
+    with bound_served_release(release):
+        await asyncio.to_thread(prepare_index_views)
 
     shared_resolvekit: SharedResolver | None = None
     if resolver is None:
