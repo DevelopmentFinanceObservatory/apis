@@ -75,11 +75,16 @@ class FacetAxisFilter:
 
 @dataclass(frozen=True)
 class AmbiguousEntityCandidate:
-    """One graph node that could match an ambiguous query wording."""
+    """One graph node that could match an ambiguous query wording.
+
+    `group_name` is the registered name of the group whose own node the candidate is, set
+    when the part asks for the wording's members: a pin on a group's node cannot ask for
+    its members, so the candidate's option posts this name instead. `None` otherwise."""
 
     dcid: str
     name: str
     kind: str
+    group_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -174,7 +179,7 @@ class RegionResult:
     # its sentence names. `None` for every other outcome.
     source_code_refusal: SourceCodeRefusal | None = None
     # Entity names that resolved to exactly one graph node, with that node's dcid,
-    # populated only for `entity_ambiguous`. The part's `data_query` pins them.
+    # populated only for `entity_ambiguous`. Each of the part's options pins them.
     resolved_entity_dcids: Mapping[str, str] = field(default_factory=dict)
     # Resolved entities without an admitted role in resolution order, populated
     # only for `entity_role_not_admitted`.
@@ -204,6 +209,11 @@ class RegionResult:
     # Capped currencies a `unit_not_resolved` refusal offers. Empty for every other
     # outcome and for a refusal with no candidates.
     unit_alternatives: tuple[UnitAlternative, ...] = ()
+    # The readings of a `role_not_resolved` refusal's unstated directions, each mapping
+    # every request text of every set whose direction the question leaves untold to one
+    # flow axis (`place_roles.direction_readings`). Empty for every other outcome, past
+    # `place_roles.MAX_DIRECTION_READINGS` readings, and when no reading holds data.
+    role_assignments: tuple[Mapping[str, RoleAxis], ...] = ()
     # The denominator the question named and the one the flagged match divides by, set on a
     # `denominator_not_available` refusal after election. `None` on every other outcome.
     denominator: NoDataDenominator | None = None
@@ -277,7 +287,7 @@ class RegionResult:
     # while part assembly reads restatement from each original region.
     restatement: ParsedPart | None = None
     # A resolved leg's inputs as one parsed part, set whether or not `restatement`
-    # echoes them. `NoData.data_query` pins into it. The parsed doors set it to the
+    # echoes them. `NoData.options` are built from it. The parsed doors set it to the
     # posted part. `None` when `ParsedPart` bounds reject the inputs, on soft-deadline
     # placeholders, and on resubmit identity, candidate and placeholder regions.
     parsed_form: ParsedPart | None = None

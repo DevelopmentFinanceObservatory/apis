@@ -101,6 +101,7 @@ __all__ = [
     "bind_unit_text",
     "names_price_basis",
     "names_unit_request",
+    "unit_text_naming",
     "with_unit_lexicon_version",
 ]
 
@@ -275,6 +276,9 @@ class _ClassifyOutcome:
     prices_token: bool = False
     # "beside" or fixed role per match. _assemble resolves "beside" against bound roles.
     role_currency_mentions: tuple[str, ...] = ()
+    # The (start, length) in tokens of the first ambiguous currency mention, else of the
+    # first "beside" role currency mention: the words a refusal's alternatives replace.
+    choice_span: tuple[int, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -331,6 +335,8 @@ def _classify(tokens: list[str]) -> _ClassifyOutcome:
     base_year_cue = False
     prices_token = False
     role_currency_mentions: list[str] = []
+    ambiguous_span: tuple[int, int] | None = None
+    beside_span: tuple[int, int] | None = None
 
     i = 0
     n = len(tokens)
@@ -357,8 +363,11 @@ def _classify(tokens: list[str]) -> _ClassifyOutcome:
                 # Report alternatives for the first ambiguous mention only.
                 if not ambiguous_alternatives:
                     ambiguous_alternatives = hit.alternatives
+                    ambiguous_span = (i, matched_len)
             elif hit.kind == "role_currency":
                 role_currency_mentions.append(hit.value)
+                if hit.value == "beside" and beside_span is None:
+                    beside_span = (i, matched_len)
             i += matched_len
             continue
 
@@ -393,6 +402,7 @@ def _classify(tokens: list[str]) -> _ClassifyOutcome:
         base_year_cue=base_year_cue,
         prices_token=prices_token,
         role_currency_mentions=tuple(role_currency_mentions),
+        choice_span=ambiguous_span or beside_span,
     )
 
 
@@ -638,6 +648,35 @@ def bind_unit_text(
     if not isinstance(assembled, _Assembled):
         return assembled
     return _complete(assembled, policy=policy)
+
+
+def _phrases_naming(currency: IdentityCurrency) -> list[str]:
+    """The lexicon's words that name `currency` alone: an ISO code that collides with no
+    English word, then the code's curated aliases; for a role shape, its fixed-role
+    phrases."""
+    if isinstance(currency, str):
+        code = [] if currency in AMBIGUOUS_ISO_CODES else [currency]
+        return [*code, *(alias for alias, named in CURRENCY_ALIASES.items() if named == currency)]
+    return [phrase for phrase, role in ROLE_CURRENCY_PHRASES.items() if role == currency.role]
+
+
+def unit_text_naming(text: str, currency: IdentityCurrency) -> str | None:
+    """`text` with the words its `unit_not_resolved` alternatives stand for (the first
+    ambiguous currency name, else a role-relative currency phrase) replaced by words that
+    name `currency` alone, such as "constant 2015 XOF" for "constant 2015 francs". The
+    result is read back through the binder, with no role bound, and kept only when it binds
+    `currency`. `None` when `text` has no such words or no replacement binds."""
+    tokens = _tokenise(_normalise(text))
+    span = _classify(tokens).choice_span
+    if span is None:
+        return None
+    start, length = span
+    for words in _phrases_naming(currency):
+        named = " ".join([*tokens[:start], words, *tokens[start + length :]])
+        parsed = _parse(named, bound_roles=frozenset())
+        if isinstance(parsed, _Assembled) and parsed.currency == currency:
+            return named
+    return None
 
 
 def names_price_basis(text: str) -> bool:

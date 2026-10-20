@@ -38,11 +38,11 @@ from search.models import (
     NoData,
     NoDataDenominator,
     NoDataGate,
+    NoDataOption,
     NoDataPart,
     NoDataReason,
     Operation,
     Ordering,
-    ParsedInput,
     ParsedPart,
     ResolvedQualifier,
     RoleAxis,
@@ -470,7 +470,7 @@ def build_no_data_part(
     ambiguous_candidates: list[str] | None = None,
     ambiguous_entities: list[AmbiguousEntityGroup] | None = None,
     ambiguous_roles: Mapping[str, RoleAxis] | None = None,
-    data_query: ParsedInput | None = None,
+    options: list[NoDataOption] | None = None,
     source_terms: list[str] | None = None,
     ambiguous_sources: list[AmbiguousSourceGroup] | None = None,
     qualifier_terms: list[ResolvedQualifier] | None = None,
@@ -501,8 +501,8 @@ def build_no_data_part(
     query-bound role values for alternate validation, including when both roles are bound.
     ``ambiguous_candidates`` feeds the wording. ``ambiguous_entities`` carries structured
     graph candidates, and ``ambiguous_roles`` names the flow axis of each ambiguous wording
-    the sentence marks as a slot. ``data_query`` is the part's parsed form for
-    ``entity_ambiguous``, ``source_ambiguous`` and ``source_code_ambiguous``.
+    the sentence marks as a slot. ``options`` are the ready requests of a refusal that
+    asks for a choice (`conjoin._options`).
     ``source_terms`` are the source wordings a ``source_not_resolved`` or
     ``source_ambiguous`` outcome rests on, or the series code a ``source_code_*`` outcome
     rests on, and ``ambiguous_sources`` pairs each ambiguous one with its candidates. For
@@ -653,7 +653,7 @@ def build_no_data_part(
             unbound_qualifiers=[*(qualifier_terms or ()), *(unbound_sources or ())],
             unit_alternatives=unit_alternatives,
             denominator=denominator,
-            data_query=data_query,
+            options=options or [],
         ),
         rendered_sentence=rendered,
         sentence_plan=plan,

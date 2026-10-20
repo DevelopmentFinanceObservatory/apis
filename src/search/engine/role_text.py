@@ -10,7 +10,7 @@ import re
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 
-from search.models import RoleAxis
+from search.models import ParsedPart, RoleAxis
 
 # Warning for parsed role_text values absent from the lexicon.
 ROLE_TEXT_NOT_RECOGNISED = "role_text_not_recognised"
@@ -351,6 +351,24 @@ def contradicts(query: str, *, span: str, axis: RoleAxis) -> bool:
             continue
         saw_contradiction = True
     return saw_contradiction
+
+
+def parsed_role_query(part: ParsedPart) -> str:
+    """The query the parsed door checks `part`'s role text against: its variable text and
+    each entity's text, space-separated so direction cues stay local."""
+    return " ".join([part.variable_text, *(entity.text for entity in part.entities or ())])
+
+
+def parsed_directions_contradicted(part: ParsedPart) -> bool:
+    """Whether the parsed door would find one of `part`'s stated directions contradicted
+    by its own wording (`contradicts` over `parsed_role_query`), which refuses
+    ``role_not_resolved``."""
+    query = parsed_role_query(part)
+    for entity in part.entities or ():
+        axis = role_axis_for_text(entity.role_text)
+        if axis is not None and contradicts(query, span=entity.text, axis=axis):
+            return True
+    return False
 
 
 @dataclass(frozen=True, slots=True)

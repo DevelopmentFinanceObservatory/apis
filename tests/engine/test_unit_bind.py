@@ -25,6 +25,7 @@ from search.engine.unit.bind import (
     _tokenise,
     bind_unit_text,
     names_unit_request,
+    unit_text_naming,
     with_unit_lexicon_version,
 )
 from search.engine.unit.lexicon import (
@@ -1174,3 +1175,26 @@ def test_a_bound_outcome_states_its_lexicon_version_on_a_copy_of_the_spec() -> N
 def test_names_unit_request_is_whether_the_binder_accepts_the_phrase(text, expected):
     assert names_unit_request(text) is expected
     assert isinstance(bind_unit_text(text, policy=_policy()), BoundUnitRequest) is expected
+
+
+@pytest.mark.parametrize(
+    ("text", "currency", "named"),
+    [
+        ("Constant 2015 Francs", "XOF", "constant 2015 XOF"),
+        ("kr", "SEK", "SEK"),
+        # A code that spells an English word is replaced by its curated name.
+        ("try", "TRY", "turkish lira"),
+        ("local currency", IdentityCurrencyRole(role="destination"), "recipient currency"),
+        ("own currency", IdentityCurrencyRole(role="origin"), "donor currency"),
+        # No ambiguous words to replace.
+        ("USD", "USD", None),
+    ],
+)
+def test_unit_text_naming_replaces_the_ambiguous_words_with_ones_naming_the_choice(
+    text, currency, named
+) -> None:
+    assert unit_text_naming(text, currency) == named
+    if named is not None:
+        rebound = _bind(named)
+        assert not isinstance(rebound, UnitNotResolved)
+        assert rebound.currency == currency

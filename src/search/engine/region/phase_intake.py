@@ -265,23 +265,35 @@ async def _phase_check_entities(state: ResolveState) -> RegionResult | None:
     }
     if not reasons:
         return None
+    ambiguous = [name for name, name_reason in reasons.items() if name_reason == "entity_ambiguous"]
+    # A pin on a group's own node cannot ask for its members, so a candidate of a wording
+    # asked for its members carries the group's registered name for its option to post.
+    group_names = (
+        await state.resolver.group_node_names()
+        if any(name in state.member_entities for name in ambiguous)
+        else {}
+    )
     ambiguous_entities = tuple(
         AmbiguousEntity(
             text=name,
             candidates=tuple(
                 AmbiguousEntityCandidate(
-                    dcid=candidate.dcid, name=candidate.name, kind=candidate.kind
+                    dcid=candidate.dcid,
+                    name=candidate.name,
+                    kind=candidate.kind,
+                    group_name=(
+                        group_names.get(candidate.dcid) if name in state.member_entities else None
+                    ),
                 )
                 for candidate in cast(Ambiguous, rcl.resolutions[name]).candidates
             ),
             role=_sole_axis(state, name),
         )
-        for name, name_reason in reasons.items()
-        if name_reason == "entity_ambiguous"
+        for name in ambiguous
     )
-    # The part's `data_query` pins these on an `entity_ambiguous` refusal. A group, and a
-    # set read as its members, stay unpinned: re-resolving the text keeps the members,
-    # whether an alias row or the part's flag asked for them.
+    # Each option of an `entity_ambiguous` refusal pins these. A group, and a set read as
+    # its members, stay unpinned: re-resolving the text keeps the members, whether an alias
+    # row or the part's flag asked for them.
     resolved_entity_dcids = {
         name: place_set.node.dcid
         for name in dict.fromkeys(state.entities)

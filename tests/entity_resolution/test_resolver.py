@@ -759,12 +759,15 @@ def test_group_node_dcids_are_the_nodes_a_group_resolves_to(shared_resolver):
 
     async def resolve_and_look_up():
         (union,) = await resolver.resolve(["European Union"])
-        return union, await resolver.group_node_dcids()
+        return union, await resolver.group_node_dcids(), await resolver.group_node_names()
 
-    union, group_nodes = _run(resolve_and_look_up())
+    union, group_nodes, names = _run(resolve_and_look_up())
 
     assert isinstance(union, Group) and union.entity is not None
     assert union.entity.dcid in group_nodes
+    assert set(names) == group_nodes
+    (again,) = _run(resolver.resolve([names[union.entity.dcid]]))
+    assert isinstance(again, Group) and again.entity == union.entity
     assert not group_nodes & {*(member.dcid for member in union.members), "africa"}
     # The one graph read is the resolve's confirmation: the lookup reads the packs alone.
     assert len(graph.node_arcs_many_calls) == 1

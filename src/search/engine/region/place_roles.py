@@ -1130,6 +1130,65 @@ def untold_direction_names(state: ResolveState) -> tuple[str, ...]:
     return tuple(contradicted.values())
 
 
+# The most readings of an unstated direction a `role_not_resolved` refusal offers. Two sets
+# on a shape with a role on each axis give 2, three give 6, four 14; past this the refusal
+# offers none and its message stands.
+MAX_DIRECTION_READINGS = 6
+
+
+def direction_readings(state: ResolveState) -> tuple[dict[str, RoleAxis], ...]:
+    """The readings a `role_not_resolved` refusal offers for the directions the question
+    leaves untold, each mapping every request text of every untold set to one flow axis.
+
+    The untold sets are those no text of which carries a direction, else those whose stated
+    direction the query's wording contradicts (`untold_direction_names`). Each takes one
+    axis on which the elected shape declares a role and that the part does not ask open
+    (`ResolveState.open_axes`, or an operation's `over`); an open axis counts as named and
+    takes no set. A reading is kept when every such axis then holds a set, a directed one
+    included. Readings run over the sets in query order, origin first. Empty when the shape
+    declares no role, no set is untold, or more than `MAX_DIRECTION_READINGS` readings are
+    kept; the count stops there, so no reading past it is built."""
+    shape = state.shape_draft
+    if shape is None or not is_role_bearing(shape):
+        return ()
+    named = part_sets(state)
+    texts: dict[str, list[str]] = {}
+    for name in dict.fromkeys(state.entities):
+        if (place_set := state.place_sets.get(name)) is not None:
+            texts.setdefault(place_key(place_set), []).append(name)
+    directed = {
+        key: {role.axis for name in names for role in state.entity_roles.get(name) or ()}
+        for key, names in texts.items()
+    }
+    untold = [key for key in named if not directed[key]]
+    if not untold:
+        contradicted = _contradicted_names(
+            state, [name for names in texts.values() for name in names]
+        )
+        untold = list(dict.fromkeys(place_key(state.place_sets[name]) for name in contradicted))
+    if not untold:
+        return ()
+    over = {operation.over for operation in state.operations}
+    declared = role_names_by_axis(shape)
+    axes: tuple[RoleAxis, ...] = tuple(
+        axis
+        for axis in ("origin", "destination")
+        if axis in declared and axis not in state.open_axes and axis not in over
+    )
+    held = {axis for key, told in directed.items() if key not in untold for axis in told}
+    needed = set(axes) - held
+    readings: list[dict[str, RoleAxis]] = []
+    for choice in itertools.product(axes, repeat=len(untold)):
+        if not needed <= set(choice):
+            continue
+        if len(readings) == MAX_DIRECTION_READINGS:
+            return ()
+        readings.append(
+            {text: axis for key, axis in zip(untold, choice, strict=True) for text in texts[key]}
+        )
+    return tuple(readings)
+
+
 def _contradicted_names(state: ResolveState, names: Iterable[str]) -> tuple[str, ...]:
     """The names in `names`, in order, one of whose stated directions the query's own
     wording contradicts (`role_text.contradicts`)."""

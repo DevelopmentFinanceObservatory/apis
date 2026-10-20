@@ -507,7 +507,7 @@ def test_an_unresolved_source_answers_no_data_quoting_its_words():
     assert part.no_data.reason == "source_not_resolved"
     assert part.no_data.source_terms == ["XYZ statistics"]
     assert part.no_data.ambiguous_sources == []
-    assert part.no_data.data_query is None
+    assert part.no_data.options == []
     assert "XYZ statistics" in part.no_data.message
 
 
@@ -598,18 +598,21 @@ def test_a_no_data_outcome_under_a_scope_names_its_sources(
     )
 
 
-def test_an_ambiguous_source_answers_no_data_with_its_candidates_and_the_part_to_post():
-    """The part names each candidate by ref, label and kind, and `data_query` is the part
-    with every resolved mention carrying its ref and the ambiguous one none."""
+@pytest.mark.parametrize(("polarity", "prefix"), [("include", ""), ("exclude", "Excluding ")])
+def test_an_ambiguous_source_answers_no_data_with_an_option_per_candidate(polarity, prefix):
+    """The part names each candidate by ref, label and kind, and offers one option per
+    candidate: the part with the ambiguous mention carrying that candidate's ref, keeping
+    its words and polarity, and every resolved mention carrying its own ref. An excluded
+    mention's label says so."""
     candidates = (
         SourceReference(ref="dc/s/A", label="Source A", kind="source"),
         SourceReference(ref="dc/d/B", label="Dataset B", kind="dataset"),
         SourceReference(ref="provenance/C", label="Table C", kind="provenance"),
     )
-    mentions = (
-        SourceMention(text="ambiguous"),
-        SourceMention(text="crs", ref="provenance/OECDCreditorReportingSystem", polarity="exclude"),
+    crs = SourceMention(
+        text="crs", ref="provenance/OECDCreditorReportingSystem", polarity="exclude"
     )
+    mentions = (SourceMention(text="ambiguous", polarity=polarity), crs)
     refusal = SourceRefusal(
         reason="source_ambiguous",
         terms=("ambiguous",),
@@ -631,8 +634,14 @@ def test_an_ambiguous_source_answers_no_data_with_its_candidates_and_the_part_to
         ("dc/d/B", "Dataset B", "dataset"),
         ("provenance/C", "Table C", "provenance"),
     ]
-    assert part.no_data.data_query is not None
-    assert part.no_data.data_query.parts[0].sources == list(mentions)
+    assert [(o.mentions, o.label, o.data_query.parts[0].sources) for o in part.no_data.options] == [
+        (
+            ["ambiguous"],
+            f"{prefix}{c.label}",
+            [SourceMention(text="ambiguous", ref=c.ref, polarity=polarity), crs],
+        )
+        for c in candidates
+    ]
 
 
 # ---------------------------------------------------------------------------

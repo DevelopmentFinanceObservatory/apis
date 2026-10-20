@@ -224,7 +224,7 @@ def _leg_parsed_form(
     open_axes: Collection[RoleAxis] = (),
     separate: bool = False,
 ) -> ParsedPart | None:
-    """Build the leg's inputs as one parsed part, the form `data_query` pins into.
+    """Build the leg's inputs as one parsed part, the form `NoData.options` are built from.
 
     Each entity appears once per distinct axis the door gave it, with that axis as
     `role_text`, as the parsed door reads a name repeated on opposite axes. An entity

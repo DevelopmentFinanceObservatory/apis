@@ -27,6 +27,8 @@ from search.models import (
     CandidatesPart,
     CoverageBare,
     NoDataPart,
+    ParsedEntity,
+    ParsedPart,
     QueryEcho,
     SlotKey,
     SlotOptions,
@@ -217,6 +219,9 @@ def test_assemble_region_threads_every_unresolved_entity_term():
     )
 
 
+_KEN = "country/KEN"
+
+
 def test_assemble_region_entity_not_resolved_keeps_ambiguous_candidates_off_the_wire():
     """The entity check names an ambiguous entity with its candidates whatever reason it
     elects. The wire carries candidates only on entity_ambiguous, the one reason whose part
@@ -229,6 +234,10 @@ def test_assemble_region_entity_not_resolved_keeps_ambiguous_candidates_off_the_
         warnings=(),
         timing_by_step={},
         unresolved_entity_names=("Congo", "Atlantis"),
+        parsed_form=ParsedPart(
+            variable_text="population",
+            entities=[ParsedEntity(text="Congo"), ParsedEntity(text="Atlantis")],
+        ),
         ambiguous_entities=(
             AmbiguousEntity(
                 text="Congo",
@@ -248,6 +257,7 @@ def test_assemble_region_entity_not_resolved_keeps_ambiguous_candidates_off_the_
 
     assert part.no_data.entity_terms == ["Congo", "Atlantis"]
     assert part.no_data.ambiguous_entities == []
+    assert part.no_data.options == []
 
 
 def test_assemble_region_threads_every_ambiguous_entity_term():
@@ -290,6 +300,100 @@ def test_assemble_region_threads_every_ambiguous_entity_term():
         '"Guinea" and "Congo" match more than one entity: "Guinea", '
         '"Congo [DRC]", and "Congo [Republic]". Be more specific.'
     )
+
+
+_TWO_AMBIGUOUS = RegionResult(
+    variable_text="ODA",
+    status="no_data",
+    specs=(),
+    no_data_reason="entity_ambiguous",
+    warnings=(),
+    timing_by_step={},
+    parsed_form=ParsedPart(
+        variable_text="ODA",
+        entities=[
+            ParsedEntity(text="Korea", role_text="from"),
+            ParsedEntity(text="Congo", role_text="to"),
+            ParsedEntity(text="Kenya", role_text="to"),
+        ],
+    ),
+    resolved_entity_dcids={"Kenya": "country/KEN"},
+    ambiguous_entities=(
+        AmbiguousEntity(
+            text="Korea",
+            candidates=(
+                AmbiguousEntityCandidate(dcid="country/KOR", name="South Korea", kind="Country"),
+                AmbiguousEntityCandidate(dcid="country/PRK", name="North Korea", kind="Country"),
+            ),
+            role="origin",
+        ),
+        AmbiguousEntity(
+            text="Congo",
+            candidates=(
+                AmbiguousEntityCandidate(dcid="country/COD", name="Congo [DRC]", kind="Country"),
+                AmbiguousEntityCandidate(
+                    dcid="country/COG", name="Congo [Republic]", kind="Country"
+                ),
+            ),
+            role="destination",
+        ),
+    ),
+)
+
+
+def test_each_option_pins_one_ambiguous_wording_and_leaves_the_other_bare():
+    """Two ambiguous wordings give one option per wording and candidate, in query order;
+    each pins its wording and every entity that resolved to one node, and leaves the other
+    wording unpinned for a second refusal."""
+    part = _entity_terms_part(_TWO_AMBIGUOUS)
+
+    def pins(option) -> list[tuple[str, str | None]]:
+        return [(e.text, e.dcid) for e in option.data_query.parts[0].entities]
+
+    assert [(o.mentions, o.label, pins(o)) for o in part.no_data.options] == [
+        (["Korea"], "South Korea", [("Korea", "country/KOR"), ("Congo", None), ("Kenya", _KEN)]),
+        (["Korea"], "North Korea", [("Korea", "country/PRK"), ("Congo", None), ("Kenya", _KEN)]),
+        (["Congo"], "Congo [DRC]", [("Korea", None), ("Congo", "country/COD"), ("Kenya", _KEN)]),
+        (
+            ["Congo"],
+            "Congo [Republic]",
+            [("Korea", None), ("Congo", "country/COG"), ("Kenya", _KEN)],
+        ),
+    ]
+
+
+def test_a_group_candidate_on_a_members_row_posts_the_group_name_without_a_pin():
+    """A pin on a group's own node cannot ask for its members, so the candidate's option
+    posts the group's registered name with the members flag and no dcid."""
+    region = dataclasses.replace(
+        _TWO_AMBIGUOUS,
+        parsed_form=ParsedPart(
+            variable_text="ODA", entities=[ParsedEntity(text="the Union", members=True)]
+        ),
+        resolved_entity_dcids={},
+        ambiguous_entities=(
+            AmbiguousEntity(
+                text="the Union",
+                candidates=(
+                    AmbiguousEntityCandidate(
+                        dcid="EuropeanUnion",
+                        name="European Union",
+                        kind="continental_union",
+                        group_name="European Union",
+                    ),
+                    AmbiguousEntityCandidate(dcid="africa", name="Africa", kind="continent"),
+                ),
+            ),
+        ),
+    )
+
+    part = _entity_terms_part(region)
+
+    assert [o.data_query.parts[0].entities for o in part.no_data.options] == [
+        [ParsedEntity(text="European Union", members=True)],
+        [ParsedEntity(text="the Union", members=True, dcid="africa")],
+    ]
+    assert [o.mentions for o in part.no_data.options] == [["the Union"], ["the Union"]]
 
 
 def test_assemble_region_non_entity_reason_ignores_unresolved_entity_names():

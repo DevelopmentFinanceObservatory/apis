@@ -78,7 +78,8 @@ class AmbiguousEntityCandidate(StrictModel):
     an AmbiguousEntityGroup's own `candidates`. Mirrors engine.region.result.
     AmbiguousEntityCandidate field-for-field, with `label` in place of that
     dataclass's `name` (this contract's own vocabulary for a display
-    string, matching ResolvedEntity.label)."""
+    string, matching ResolvedEntity.label), and without its `group_name`,
+    which only NoData.options read."""
 
     ref: str = Field(description="the candidate's own dcid")
     label: str = Field(description="the candidate's display name")
@@ -155,6 +156,37 @@ class UnitAlternative(StrictModel):
         )
     )
     label: str = Field(description="the currency's display name, or the role's reader-facing noun")
+
+
+class NoDataOption(StrictModel):
+    """One answer to the choice a no_data refusal asks for: the words it settles, a label
+    for people, and the request that settles them -- one entry of NoData.options."""
+
+    mentions: list[str] = Field(
+        description=(
+            "the request's own words this option settles, in query order: the ambiguous "
+            "entity wording, the ambiguous source wording, the part's source_code, the "
+            "part's unit_text, or for role_not_resolved every name whose direction the "
+            "option states"
+        )
+    )
+    label: str = Field(
+        description=(
+            "the choice in words for a menu: the candidate's display name, prefixed "
+            "'Excluding' for a source the part excludes; for role_not_resolved the "
+            "direction the option reads, such as 'France to Germany' or 'To Kenya and "
+            "Uganda'; for a role currency the role's currency, such as \"recipient's "
+            'currency". Clients must not parse it'
+        )
+    )
+    data_query: ParsedInput = Field(
+        description=(
+            "a one-part parsed input settling this choice only. Post it unchanged as the "
+            "input of /api/search/resolve; its one part is a dataset_resubmit parsed "
+            "entry's part. A second ambiguous wording refuses again. Whether data exists "
+            "for it is not checked"
+        )
+    )
 
 
 class NoDataDenominator(StrictModel):
@@ -391,9 +423,8 @@ class NoData(StrictModel):
             "every ambiguous source wording responsible for a source_ambiguous outcome, in "
             "query order, each paired with the admitted sources it could name, and for "
             "source_code_ambiguous the part's source_code paired with the provenances "
-            "holding it. Empty for every other no_data reason. A client posts the chosen "
-            "candidate's ref on that mention of data_query, or for a source code as a new "
-            "mention in its sources, and posts the part back."
+            "holding it. Empty for every other no_data reason. A client posts the matching "
+            "entry of options."
         ),
     )
     unit_alternatives: list[UnitAlternative] | None = Field(
@@ -434,24 +465,27 @@ class NoData(StrictModel):
             "denominator asked and divide them"
         ),
     )
-    data_query: ParsedInput | None = Field(
-        default=None,
+    options: list[NoDataOption] = Field(
+        default_factory=list,
         description=(
-            "the parsed form of this part, one part long, set when reason is "
-            "entity_ambiguous, source_ambiguous or source_code_ambiguous: its variable "
-            "text, entities with "
-            "role_text, time, unit, sources, and operations. On entity_ambiguous every "
-            "entity that resolved to one graph node is pinned to its dcid and each "
-            "ambiguous wording left unpinned. A named group stays unpinned too, so it "
-            "resolves to the same members again. On source_ambiguous every source "
-            "mention that resolved carries its ref and each ambiguous wording carries "
-            "none. On source_code_ambiguous it carries the code and the part's mentions. "
-            "A client pins the candidate the user picks from ambiguous_entities or "
-            "ambiguous_sources and posts the part back, through the parsed door "
-            "or as a dataset_resubmit parsed entry. It is set when the part has no "
-            "restatement too: an entity whose direction the question leaves unnamed "
-            "carries no role_text. Null for every other no_data reason, and when the "
-            "part's inputs exceed the ParsedPart bounds"
+            "one ready request per choice of an entity_ambiguous, source_ambiguous, "
+            "source_code_ambiguous, role_not_resolved or unit_not_resolved refusal, in "
+            "query then candidate order. An entity option pins the candidate on every row "
+            "with the ambiguous wording and every entity that resolved to one node; named "
+            "groups, sets read as members and other ambiguous wordings stay unpinned, so a "
+            "second ambiguity refuses again with the first pick kept. A candidate that is a "
+            "group's own node, asked for its members, posts the group's registry name with "
+            "no dcid. A source option sets the candidate's ref on the ambiguous mention; a "
+            "source-code option names the holding provenance as the part's only included "
+            "source. A role option states a direction for every name the question left "
+            "unstated, offered while the shape's roles give at most six readings. A unit "
+            "option names one of unit_alternatives in place of the ambiguous currency "
+            "words. Empty for other reasons; when the part's inputs exceed the ParsedPart "
+            "bounds; on a role_not_resolved refusal with more than six readings, whose "
+            "readings all hold no data, or that the shape refused before placing names; "
+            "and on a unit_not_resolved refusal without unit_alternatives. It can list "
+            "fewer entries than the candidates when a candidate's request cannot be "
+            "posted, such as a group node with no registry name"
         ),
     )
 
