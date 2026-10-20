@@ -24,7 +24,6 @@ from search.engine.bind import (
     CandidateMenu,
     SlotBindingDraft,
     _build_universal_bind_prompt,
-    _UniversalBindOutput,
 )
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
@@ -70,6 +69,7 @@ from search.heading.departure_fact import DepartureFact
 from search.models import SourceMention
 from search.render.plan import render_sentence
 from series_coverage.schema import RoleNames
+from tests.engine._binders import elected_reply
 from tests.engine._builders import place_sets
 from tests.engine._fake_coverage import FakeCoverageService, empty_coverage_snapshot, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
@@ -811,9 +811,7 @@ def _vet_state(
         admitted_ties=admitted_ties,
         variable_matched_qualifier_phrases=variable_matched_qualifier_phrases,
         query_qualifier_readings=query_qualifier_readings,
-        bind_result=_UniversalBindOutput(
-            chosen_shape_index=chosen_shape_index, bindings=bindings, also_plausible=None, ask=None
-        ),
+        bind_result=elected_reply(chosen_shape_index, bindings=bindings, also_plausible=None),
         coverage=empty_coverage_snapshot(),
     )
 
@@ -1905,9 +1903,7 @@ class _NoBindingLLM:
         # The raw phrase appears only in the echoed variable line, not fixed context.
         fixed_context = prompt.split("FIXED CONTEXT")[1].split("CANDIDATE")[0]
         assert "standard grants" not in fixed_context
-        return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=[], also_plausible=[], ask=None
-        ), None
+        return elected_reply(0, also_plausible=[]), None
 
 
 def _run_e2e(
@@ -2031,7 +2027,7 @@ class _PermissiveNoBindingLLM:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return (
-            _UniversalBindOutput(chosen_shape_index=0, bindings=[], also_plausible=[], ask=None),
+            elected_reply(0, also_plausible=[]),
             None,
         )
 
@@ -2062,8 +2058,8 @@ class _TieElectingLLM:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return (
-            _UniversalBindOutput(
-                chosen_shape_index=0,
+            elected_reply(
+                0,
                 bindings=[
                     SlotBindingDraft(
                         axis="what",
@@ -2073,7 +2069,6 @@ class _TieElectingLLM:
                     )
                 ],
                 also_plausible=[],
-                ask=None,
             ),
             None,
         )
@@ -2450,9 +2445,7 @@ class _MenuChoosingLLM:
             value_dcids=["CRSPurposeCode11110"],
         )
         return (
-            _UniversalBindOutput(
-                chosen_shape_index=0, bindings=[binding], also_plausible=[], ask=None
-            ),
+            elected_reply(0, bindings=[binding], also_plausible=[]),
             None,
         )
 

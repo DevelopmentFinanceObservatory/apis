@@ -61,7 +61,6 @@ from unittest import mock
 import pytest
 
 from materialise import place_scope
-from search.engine.bind import _UniversalBindOutput
 from search.engine.clients import materialise_bridge
 from search.engine.conjoin import assemble_region
 from search.engine.envelope import now_ms
@@ -81,6 +80,7 @@ from search.engine.retrieval import bound_values
 from search.models import Resolution, Spec
 from series_coverage.schema import RoleNames
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
+from tests.engine._binders import elected_reply
 from tests.engine._facet_option_builds import wrap_facet_option_builds
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 from tests.engine._fake_sdmx import FakeSdmxClient
@@ -358,12 +358,7 @@ class _Bind:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=self._chosen,
-            bindings=[],
-            also_plausible=self._also_plausible,
-            ask=None,
-        ), None
+        return elected_reply(self._chosen, bindings=[], also_plausible=self._also_plausible), None
 
 
 _MORTALITY = "mortality count"

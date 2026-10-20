@@ -123,7 +123,13 @@ class _FirstShapeLLM:
     """A bind model that elects the first shape of its menu and binds nothing."""
 
     async def generate_structured(self, *, prompt, system, schema):
-        return schema(chosen_shape_index=0, bindings=[], also_plausible=None, ask=None), None
+        return schema(
+            chosen_shape_index=0,
+            bindings=[],
+            also_plausible=None,
+            ask=None,
+            measuring=[{"index": 0, "rating": 1.0}],
+        ), None
 
 
 def _resolve(parts: list[ParsedPart], graph: FakeGraph):
@@ -968,7 +974,13 @@ class _MenuLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         self.prompts.append(prompt)
-        return schema(chosen_shape_index=0, bindings=[], also_plausible=None, ask=None), None
+        return schema(
+            chosen_shape_index=0,
+            bindings=[],
+            also_plausible=None,
+            ask=None,
+            measuring=[{"index": 0, "rating": 1.0}],
+        ), None
 
 
 def test_an_exclusion_of_every_publisher_the_question_reaches_refuses_naming_it(

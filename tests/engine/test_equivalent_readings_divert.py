@@ -10,7 +10,6 @@ from collections.abc import Callable
 
 import pytest
 
-from search.engine.bind import _UniversalBindOutput
 from search.engine.config import SearchSettings
 from search.engine.conjoin import assemble_region
 from search.engine.envelope import now_ms
@@ -18,6 +17,7 @@ from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.region.codes import ELECTED_SHAPE_NO_DATA
 from search.engine.region.state import EngineOptions
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
@@ -92,11 +92,8 @@ class _CandidateBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=self._chosen_shape_index,
-            bindings=[],
-            also_plausible=self._also_plausible,
-            ask=None,
+        return elected_reply(
+            self._chosen_shape_index, bindings=[], also_plausible=self._also_plausible
         ), None
 
 

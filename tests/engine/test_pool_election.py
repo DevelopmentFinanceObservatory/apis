@@ -25,7 +25,7 @@ import pytest
 from dfo_platform.timings import record_elapsed
 from materialise.errors import UpstreamVersionChangedError
 from origin_catalogue import note_un_blocked_places
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import ShapeRating, SlotBindingDraft, _UniversalBindOutput
 from search.engine.clients.graph import DetectedSV, Detection
 from search.engine.errors import DeclaredDefaultUnsupportedError, GraphInfraError
 from search.engine.events import Event, EventSink, FrameEvent, SentenceEvent, StepEvent
@@ -184,6 +184,7 @@ class _ElectLLM:
             bindings=list(self.bindings) if len(self.prompts) == 1 else [],
             also_plausible=nominated or None,
             ask="Which measure do you mean?" if chosen is None and self.ask_without else None,
+            measuring=[ShapeRating(index=chosen or 0, rating=1.0)],
         )
         return output, usage
 

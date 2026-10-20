@@ -25,6 +25,7 @@ from search.engine.retrieval.member_facts import ArcsMemberFacts
 from search.engine.retrieval.retrieve import Materialised
 from search.engine.role_text import DoorRole
 from search.models import CoverageBare, NoDataPart
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.fixtures import FakeGraph, _load_json, make_resolver
@@ -60,12 +61,7 @@ class _ElectSingleShapeLLM:
             return QuantityOutput(), None
         assert schema.__name__ == "_UniversalBindOutput"
         return (
-            _UniversalBindOutput(
-                chosen_shape_index=0,
-                bindings=[],
-                also_plausible=[],
-                ask=None,
-            ),
+            elected_reply(0, also_plausible=[]),
             None,
         )
 
@@ -539,11 +535,9 @@ class _ReadingLLM(_MenuLLM):
             )
             return output, None
         chosen = next(int(i) for i, label in labels if label == self.elect)
-        output = _UniversalBindOutput(
-            chosen_shape_index=chosen,
-            bindings=[],
+        output = elected_reply(
+            chosen,
             also_plausible=[int(i) for i, label in labels if label in self.also],
-            ask=None,
             unplaced=list(self.unplaced),
         )
         return output, None

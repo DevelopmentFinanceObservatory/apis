@@ -10,12 +10,13 @@ import hashlib
 import rfc8785
 
 from code_index.shared import get_index
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import Facet
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from series_coverage.schema import RoleNames
 from statvar_members import FiveTuple, enumerate_members
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query
@@ -158,8 +159,8 @@ class _BindAllFourSharedAxesLLM:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         recalled_row = _real_row(_RECALLED_SV)
-        return _UniversalBindOutput(
-            chosen_shape_index=0,
+        return elected_reply(
+            0,
             bindings=[
                 SlotBindingDraft(
                     axis="how",
@@ -170,7 +171,6 @@ class _BindAllFourSharedAxesLLM:
                 for prop in _BOUND_PROPS
             ],
             also_plausible=[],
-            ask=None,
         ), None
 
 

@@ -1,15 +1,37 @@
-"""Binder doubles: the Gemini binder with its menus recorded, one that elects without a
-model call, a house-policy step that keeps the binder's pick, and a recorded-fixture LLM
-whose bind call answers with a fixed reply."""
+"""Binder doubles: a scripted elected bind reply that rates its pick, the Gemini binder
+with its menus recorded, one that elects without a model call, a house-policy step that
+keeps the binder's pick, and a recorded-fixture LLM whose bind call answers with a fixed
+reply."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
-from search.engine.bind import _UniversalBindOutput
+from search.engine.bind import ShapeRating, SlotBindingDraft, _UniversalBindOutput
 from search.engine.binders import BindRequest, BindResult, GeminiBinder
 from search.engine.binders.house_policy import PolicyChoice, PolicyPool
 from tests.fixtures import FakeLLM
+
+
+def elected_reply(
+    chosen_shape_index: int,
+    *,
+    bindings: Sequence[SlotBindingDraft] = (),
+    also_plausible: Sequence[int] | None = None,
+    unplaced: Sequence[str] = (),
+    rating: float | None = 1.0,
+) -> _UniversalBindOutput:
+    """A bind reply electing `chosen_shape_index` that rates its pick at `rating` in
+    `measuring`, as the bind prompt asks of a reply that elects. The Gemini binder reads a
+    pick the reply leaves unrated as a decline, so a test pinning that decline passes
+    `rating=None`."""
+    return _UniversalBindOutput(
+        chosen_shape_index=chosen_shape_index,
+        bindings=list(bindings),
+        also_plausible=None if also_plausible is None else list(also_plausible),
+        unplaced=list(unplaced),
+        measuring=[] if rating is None else [ShapeRating(index=chosen_shape_index, rating=rating)],
+    )
 
 
 def keep_the_pick(

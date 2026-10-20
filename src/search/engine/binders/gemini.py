@@ -49,9 +49,9 @@ class GeminiBinder:
     the ratings. Each pool shape holds the pick's constraints when it holds each value the
     reply drafted as named (`holds_mentioned_values`).
 
-    A reply that rates shapes but leaves its pick out of `measuring`, or rates it at or
-    below `RATED_POOL_FLOOR`, says the pick measures something else, so it declines
-    (`declined`) and no policy runs. A reply that rates no shape keeps its pick."""
+    A reply that leaves its pick out of `measuring`, an empty one included, or rates it at
+    or below `RATED_POOL_FLOOR`, says the pick measures something else, so it declines
+    (`declined`) and no policy runs."""
 
     @property
     def name(self) -> str:
@@ -86,10 +86,10 @@ class GeminiBinder:
             return BindResult(output=output, binder=self.name), usage
         shapes = request.shapes
         ratings = shape_ratings(output, len(shapes))
-        # A reply that rates shapes and leaves its pick out of `measuring`, or rates it at or
-        # below the pool's floor, says by its own rating that the pick measures something
-        # else, so it declines. A reply that rates no shape says nothing of its pick.
-        if output.measuring and ratings.get(output.chosen_shape_index, 0.0) <= RATED_POOL_FLOOR:
+        # A reply that leaves its pick out of `measuring`, an empty one included, or rates
+        # it at or below the pool's floor, says by its own rating that the pick measures
+        # something else, so it declines.
+        if ratings.get(output.chosen_shape_index, 0.0) <= RATED_POOL_FLOOR:
             return BindResult(output=declined(output), binder=self.name), usage
         pool = rated_pool(shapes, output, ratings)
         chosen = shapes[output.chosen_shape_index]

@@ -13,7 +13,7 @@ import threading
 import pytest
 
 from search.engine.assemble import build_no_data_part
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import (
     candidate_collapse,
@@ -30,6 +30,7 @@ from search.engine.region.codes import (
 from search.engine.region.state import EngineOptions
 from search.models import DatasetResubmitInput, Operation, ResolveRequest
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import offline_resolve
@@ -158,12 +159,7 @@ class _NoAmbiguityBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=self._chosen_shape_index,
-            bindings=[],
-            also_plausible=self._also_plausible,
-            ask=None,
-        ), None
+        return elected_reply(self._chosen_shape_index, also_plausible=self._also_plausible), None
 
 
 class _RecordingWalkReader(FakeMintGraphReader):
@@ -845,8 +841,8 @@ class _BindsActivityLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0,
+        return elected_reply(
+            0,
             bindings=[
                 SlotBindingDraft(
                     axis="what",
@@ -857,7 +853,6 @@ class _BindsActivityLLM:
                 )
             ],
             also_plausible=None,
-            ask=None,
         ), None
 
 
@@ -1363,9 +1358,7 @@ class _StrayFemaleBindLLM:
         draft = SlotBindingDraft(
             axis="how", property_dcid="gender", kind="value", value_dcids=["Female"]
         )
-        return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=[draft], also_plausible=None, ask=None
-        ), None
+        return elected_reply(0, bindings=[draft], also_plausible=None), None
 
 
 @pytest.mark.parametrize(
@@ -1444,9 +1437,7 @@ class _StrayFemaleNominatingLLM:
         draft = SlotBindingDraft(
             axis="how", property_dcid="gender", kind="value", value_dcids=["Female"]
         )
-        return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=[draft], also_plausible=[1], ask=None
-        ), None
+        return elected_reply(0, bindings=[draft], also_plausible=[1]), None
 
 
 def test_a_rider_holding_the_stray_value_keeps_the_refusal_it_rides_on():
@@ -1530,9 +1521,7 @@ class _StrayGenderNominatingTwoLLM:
             kind="value" if len(self.values) == 1 else "set",
             value_dcids=self.values,
         )
-        return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=[draft], also_plausible=[1, 2], ask=None
-        ), None
+        return elected_reply(0, bindings=[draft], also_plausible=[1, 2]), None
 
 
 def _resolve_stray_gender(
@@ -1864,9 +1853,7 @@ class _NoDraftNominatingTwoLLM:
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
-        return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=[], also_plausible=[1, 2], ask=None
-        ), None
+        return elected_reply(0, also_plausible=[1, 2]), None
 
 
 def _resolve_by_sex(

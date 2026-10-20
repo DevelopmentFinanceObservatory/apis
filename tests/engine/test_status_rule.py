@@ -357,7 +357,7 @@ _NODES: dict = {
 
 class _FixedBindLLM:
     """Elects the shape at `chosen`, the first by default, with a caller-supplied
-    `also_plausible`, rating each shape in `rated` at 1."""
+    `also_plausible`, rating its pick and each shape in `rated` at 1."""
 
     def __init__(
         self,
@@ -378,7 +378,10 @@ class _FixedBindLLM:
             bindings=[],
             also_plausible=self._also_plausible,
             ask=None,
-            measuring=[ShapeRating(index=i, rating=1.0) for i in self._rated],
+            measuring=[
+                ShapeRating(index=i, rating=1.0)
+                for i in dict.fromkeys([self._chosen, *self._rated])
+            ],
         ), None
 
 

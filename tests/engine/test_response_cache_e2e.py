@@ -28,6 +28,7 @@ from search.models import (
 )
 from series_coverage.schema import RoleNames
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import EMPTY_SDMX, make_request, member_walk_reader
@@ -438,7 +439,7 @@ class _FixedExtractionLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert issubclass(schema, _UniversalBindOutput)
-        return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
+        return elected_reply(0), None
 
 
 def _role_bearing_graph() -> FakeGraph:

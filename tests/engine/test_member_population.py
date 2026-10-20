@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.retrieval.retrieve import Materialised, materialise
@@ -15,6 +15,7 @@ from search.engine.retrieval.role_resolve import graph_confirm_resolve
 from search.engine.shape import ShapeDraft
 from series_coverage.schema import RoleNames
 from tests.engine import test_index_sourced_grounding as _idx
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import FakeCoverageService, empty_coverage_snapshot, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._index_slots import index_slot_keys
@@ -270,7 +271,7 @@ class _NoBindingLLM:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return (
-            _UniversalBindOutput(chosen_shape_index=0, bindings=[], also_plausible=None, ask=None),
+            elected_reply(0, bindings=[], also_plausible=None),
             None,
         )
 

@@ -10,7 +10,6 @@ import asyncio
 
 import pytest
 
-from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.graph import Facet
 from search.engine.conjoin import _build_part
 from search.engine.extract import DateRequest
@@ -26,6 +25,7 @@ from search.render.plan import render_sentence
 from series_coverage.schema import FacetMetadata, RoleNames
 from tests.engine import test_place_scope_default as place_scope_default
 from tests.engine import test_role_bearing_pipeline_e2e as role_bearing
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import FakeCoverageService, empty_coverage_snapshot, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
@@ -88,9 +88,7 @@ class _BindLLM:
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
-        return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=[], also_plausible=self.also, ask=None
-        ), None
+        return elected_reply(0, also_plausible=self.also), None
 
 
 def _count_arcs(population_type: str) -> dict:

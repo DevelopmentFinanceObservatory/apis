@@ -17,6 +17,7 @@ from search.engine.events import Event, FrameEvent, ResponseEvent
 from search.engine.extract import ExtractedEntity, Extraction
 from search.engine.quantity_read import QuantityOutput
 from search.models import DefinitePart, NoDataPart, Resolution, Spec
+from tests.engine._binders import elected_reply
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import make_request, offline_events
 from tests.engine._quantity import NO_QUANTITY
@@ -77,9 +78,7 @@ class _LLM:
             return _UniversalBindOutput(
                 chosen_shape_index=0, ask="no reading holds the purpose", nearest_refused_index=0
             ), None
-        return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=[], unplaced=[], also_plausible=self._also_plausible
-        ), None
+        return elected_reply(0, also_plausible=self._also_plausible), None
 
 
 def _events(

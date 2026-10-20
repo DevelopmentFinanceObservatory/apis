@@ -11,7 +11,6 @@ import asyncio
 
 import pytest
 
-from search.engine.bind import _UniversalBindOutput
 from search.engine.conjoin import assemble_region
 from search.engine.envelope import now_ms
 from search.engine.extract import DateRequest
@@ -22,6 +21,7 @@ from search.engine.retrieval import standard
 from search.models import TimeWindow
 from tests.engine import test_equivalent_readings_divert as twins
 from tests.engine import test_zero_observation_election as reelection
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
@@ -51,9 +51,7 @@ class _BindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=[], also_plausible=self._also_plausible, ask=None
-        ), None
+        return elected_reply(0, bindings=[], also_plausible=self._also_plausible), None
 
 
 def _resolve(

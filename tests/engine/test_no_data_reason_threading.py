@@ -17,6 +17,7 @@ from search.engine.region import resolve_variable
 from search.engine.region.codes import NO_MEMBER_ASSERTS_BOUND_PROPERTIES
 from search.engine.retrieval.retrieve import NoDataDraft, UnsupportedDraft
 from search.engine.retrieval.retrieve import materialise as _real_materialise
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
@@ -70,12 +71,7 @@ class _ElectedBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=1,
-            bindings=[],
-            also_plausible=[0],
-            ask=None,
-        ), None
+        return elected_reply(1, bindings=[], also_plausible=[0]), None
 
 
 def _run(
@@ -352,8 +348,8 @@ class _PerCapitaSplitOwnershipBindLLM:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return (
-            _UniversalBindOutput(
-                chosen_shape_index=0,
+            elected_reply(
+                0,
                 bindings=[
                     SlotBindingDraft(
                         axis="how",
@@ -369,7 +365,6 @@ class _PerCapitaSplitOwnershipBindLLM:
                     ),
                 ],
                 also_plausible=[],
-                ask=None,
             ),
             dict(_PC_USAGE),
         )

@@ -63,6 +63,7 @@ from search.models import (
 )
 from search.render.tokens import sentence_from_plan
 from tests.engine._base_identity import subject_entity
+from tests.engine._binders import elected_reply
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import (
     DEADLINE_TIMEOUT_S,
@@ -162,12 +163,7 @@ def test_dropped_qualifier_note_matches_raw_text_sentence_event(monkeypatch):
         async def generate_structured(self, *, prompt, system, schema):
             if issubclass(schema, _UniversalBindOutput):
                 return (
-                    _UniversalBindOutput(
-                        chosen_shape_index=0,
-                        bindings=[],
-                        also_plausible=None,
-                        ask=None,
-                    ),
+                    elected_reply(0, also_plausible=None),
                     None,
                 )
             return await super().generate_structured(prompt=prompt, system=system, schema=schema)

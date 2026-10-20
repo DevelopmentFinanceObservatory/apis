@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import asyncio
 
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region.pipeline import resolve_variable
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
@@ -83,8 +84,8 @@ class _ElectShape0AlsoPlausibleShape1LLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0,
+        return elected_reply(
+            0,
             bindings=[
                 SlotBindingDraft(
                     axis="how",
@@ -94,7 +95,6 @@ class _ElectShape0AlsoPlausibleShape1LLM:
                 )
             ],
             also_plausible=[1],
-            ask=None,
         ), None
 
 
@@ -105,8 +105,8 @@ class _ExplicitBindNoAdmissionLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0,
+        return elected_reply(
+            0,
             bindings=[
                 SlotBindingDraft(
                     axis="what",
@@ -128,7 +128,6 @@ class _ExplicitBindNoAdmissionLLM:
                 ),
             ],
             also_plausible=[1],
-            ask=None,
         ), None
 
 

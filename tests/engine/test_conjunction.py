@@ -9,7 +9,6 @@ import dataclasses
 
 import pytest
 
-from search.engine.bind import _UniversalBindOutput
 from search.engine.config import settings
 from search.engine.conjoin import BINDING_FOLDED, VARIABLES_CLAMPED, combine_regions
 from search.engine.envelope import now_ms
@@ -29,6 +28,7 @@ from search.models import (
     StatVar,
     Warning,
 )
+from tests.engine._binders import elected_reply
 from tests.engine._builders import (
     conjoin_spec as _spec,
 )
@@ -635,12 +635,7 @@ class _DedupLLM:
 
     async def generate_structured(self, *, prompt, system, schema):
         if schema.__name__ == "_UniversalBindOutput":
-            return _UniversalBindOutput(
-                chosen_shape_index=0,
-                bindings=[],
-                also_plausible=None,
-                ask=None,
-            ), None
+            return elected_reply(0, bindings=[], also_plausible=None), None
         if schema is QuantityOutput:
             return NO_QUANTITY
         return await self._fake.generate_structured(prompt=prompt, system=system, schema=schema)

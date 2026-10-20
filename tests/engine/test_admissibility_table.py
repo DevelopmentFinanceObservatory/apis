@@ -60,7 +60,7 @@ from search.engine.retrieval.bound_values import (
 from search.engine.role_text import DoorRole
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.models import CandidatesPart, Operation, Resolution, RoleAxis, TimeWindow
-from tests.engine._binders import FixedBindReplyLLM
+from tests.engine._binders import FixedBindReplyLLM, elected_reply
 from tests.engine._builders import place_sets
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
@@ -1677,12 +1677,7 @@ class _SoleOptionLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0,
-            bindings=self._bindings,
-            also_plausible=self._also_plausible,
-            ask=None,
-        ), None
+        return elected_reply(0, bindings=self._bindings, also_plausible=self._also_plausible), None
 
 
 def _resolve_gdp_of_kenya(

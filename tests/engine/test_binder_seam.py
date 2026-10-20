@@ -28,7 +28,7 @@ from search.engine.quantity_read import QuantityOutput
 from search.engine.region.phase_rank_bind import _phase_bind
 from search.engine.region.state import ResolveState
 from search.engine.shape import ShapeDraft, SlotKeyDraft
-from tests.engine._binders import FixedBinder
+from tests.engine._binders import FixedBinder, elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._quantity import NO_QUANTITY
 
@@ -52,9 +52,10 @@ def _shape(shape_id: str, *slots: SlotKeyDraft) -> ShapeDraft:
 
 _MENU = [_shape("population"), _shape("population_by_sex", _GENDER_SLOT)]
 
-# The reply elects the shape by sex, binds "Female" on it, and names the other as plausible.
-_REPLY = _UniversalBindOutput(
-    chosen_shape_index=1,
+# The reply elects the shape by sex, binds "Female" on it, rates it, and names the other as
+# plausible.
+_REPLY = elected_reply(
+    1,
     bindings=[
         SlotBindingDraft(axis="how", property_dcid="gender", kind="value", value_dcids=["Female"])
     ],
@@ -180,15 +181,16 @@ class _ReplyLLM:
 @pytest.mark.parametrize(
     ("measuring", "declines"),
     [
+        ([], True),
         ([ShapeRating(index=0, rating=1.0)], True),
         ([ShapeRating(index=1, rating=0.0), ShapeRating(index=0, rating=1.0)], True),
         ([ShapeRating(index=1, rating=0.11)], False),
     ],
-    ids=["pick-unrated", "pick-rated-0", "pick-just-above-the-floor"],
+    ids=["rates-nothing", "pick-unrated", "pick-rated-0", "pick-just-above-the-floor"],
 )
 def test_a_reply_rating_its_pick_at_or_below_the_floor_declines(measuring, declines):
-    """A reply that rates shapes but leaves its pick out of `measuring`, or rates it at or
-    below `RATED_POOL_FLOOR`, says the pick measures something else: the part refuses
+    """A reply that leaves its pick out of `measuring`, an empty one included, or rates it
+    at or below `RATED_POOL_FLOOR`, says the pick measures something else: the part refuses
     `variable_not_resolved` as a reply that asked does. A pick rated just above the floor
     stands."""
     reply = _REPLY.model_copy(update={"measuring": measuring})

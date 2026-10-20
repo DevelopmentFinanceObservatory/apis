@@ -34,7 +34,7 @@ from origin_catalogue.families import FamilyKey, FamilySummary, family_tables, s
 from origin_catalogue.graph import _table_arcs, _wire
 from origin_catalogue.un_mirror import EMPTY_UN_MIRROR, UnArc, UnVariable
 from scripts.stage_origin_catalogue_fixture import stage_fixture
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.graph_client import LiveGraphClient
 from search.engine.clients.llm import SupportsLLM
@@ -111,6 +111,7 @@ from search.engine.retrieval.standard import (
 from search.engine.shape import ShapeDraft
 from search.models import GraphRef
 from statvar_members import MultiValuedConstraint
+from tests.engine._binders import elected_reply
 from tests.engine._builders import subject_place_roles
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
@@ -1216,7 +1217,7 @@ def test_a_binding_a_held_member_realises_is_kept(bind_catalogue) -> None:
         async def generate_structured(self, *, prompt, system, schema):
             if schema is QuantityOutput:
                 return NO_QUANTITY
-            return _UniversalBindOutput(chosen_shape_index=0, bindings=bindings, ask=None), None
+            return elected_reply(0, bindings=bindings), None
 
     result = asyncio.run(
         resolve_variable(

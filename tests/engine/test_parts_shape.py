@@ -9,7 +9,6 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from search.engine.assemble import OBSERVATIONS_OMITTED
-from search.engine.bind import _UniversalBindOutput
 from search.engine.conjoin import BINDING_FOLDED, NESTED_SHAPE_STEPS
 from search.engine.extract import _EXTRACTION_SYSTEM_PROMPT, Extraction
 from search.engine.quantity_read import QuantityOutput
@@ -24,6 +23,7 @@ from search.models import (
     ResubmitIdentityEntry,
 )
 from tests.engine._axis_doubles import TOTAL_POPULATION_INDIA_FAMILY, axis_confirming_reader
+from tests.engine._binders import elected_reply
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import (
     PINNED_DATE,
@@ -161,12 +161,7 @@ class _FixedShapeBindLLM:
 
     async def generate_structured(self, *, prompt, system, schema):
         if schema.__name__ == "_UniversalBindOutput":
-            return _UniversalBindOutput(
-                chosen_shape_index=0,
-                bindings=[],
-                also_plausible=None,
-                ask=None,
-            ), None
+            return elected_reply(0, also_plausible=None), None
         if schema is QuantityOutput:
             return NO_QUANTITY
         return await self._fake.generate_structured(prompt=prompt, system=system, schema=schema)

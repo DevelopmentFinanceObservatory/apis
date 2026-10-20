@@ -16,10 +16,11 @@ import asyncio
 
 import pytest
 
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region.pipeline import resolve_variable
 from series_coverage.schema import RoleNames
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
@@ -75,9 +76,7 @@ class _BindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         return (
-            _UniversalBindOutput(
-                chosen_shape_index=0, bindings=self._bindings, also_plausible=[1], ask=None
-            ),
+            elected_reply(0, bindings=self._bindings, also_plausible=[1]),
             None,
         )
 

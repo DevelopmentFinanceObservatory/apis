@@ -37,7 +37,7 @@ from search.engine.region.requirements import judge
 from search.engine.role_text import DoorRole
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.models import GraphRef, QuantityForm
-from tests.engine._binders import keep_the_pick
+from tests.engine._binders import elected_reply, keep_the_pick
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
@@ -151,7 +151,7 @@ def test_split_stray_bindings_drops_drafts_on_another_shapes_slots():
     open_age = SlotBindingDraft(axis="how", property_dcid="age", kind="unbound")
 
     def output(index: int) -> _UniversalBindOutput:
-        return _UniversalBindOutput(chosen_shape_index=index, bindings=[gender, open_age])
+        return elected_reply(index, bindings=[gender, open_age])
 
     kept, stray = split_stray_bindings(output(1), shapes)
     assert (kept.bindings, stray) == ([open_age], (gender,))
@@ -167,15 +167,14 @@ def test_bind_universal_chooses_shape_and_binds_slots(bind):
             slot_taxonomy={"how:gender": ["Male", "Female"]},
         ),
     ]
-    output = _UniversalBindOutput(
-        chosen_shape_index=0,
+    output = elected_reply(
+        0,
         bindings=[
             SlotBindingDraft(
                 axis="how", property_dcid="gender", kind="value", value_dcids=["Female"]
             ),
         ],
         also_plausible=None,
-        ask=None,
     )
     result, usage = _run(bind("female population", shapes, llm=_StubLLM(output)))
     assert result.chosen_shape_index == 0
@@ -193,8 +192,8 @@ def test_bind_universal_unbinds_a_source_draft_the_model_writes(bind):
     gender = SlotBindingDraft(
         axis="how", property_dcid="gender", kind="value", value_dcids=["Female"]
     )
-    output = _UniversalBindOutput(
-        chosen_shape_index=0,
+    output = elected_reply(
+        0,
         bindings=[
             gender,
             SlotBindingDraft(
@@ -202,7 +201,6 @@ def test_bind_universal_unbinds_a_source_draft_the_model_writes(bind):
             ),
         ],
         also_plausible=None,
-        ask=None,
     )
 
     result, _ = _run(bind("female population", shapes, llm=_StubLLM(output)))
@@ -390,9 +388,7 @@ def test_bind_universal_unbinds_a_value_a_dataset_states_on_only_some_of_its_ser
         kind="set" if len(values) > 1 else "value",
         value_dcids=values,
     )
-    output = _UniversalBindOutput(
-        chosen_shape_index=0, bindings=[resource], also_plausible=None, ask=None
-    )
+    output = elected_reply(0, bindings=[resource], also_plausible=None)
 
     result, _ = _run(bind("debt service", [_debt_shape(*members)], llm=_StubLLM(output)))
 
@@ -482,8 +478,8 @@ def test_bind_universal_grounds_values_in_the_chosen_shapes_taxonomy(
         _shape("other_shape", slot_keys=(_AGE_SLOT,), slot_taxonomy={"how:undataAge": ["x"]}),
         _shape("under5", slot_keys=(_AGE_SLOT,), slot_taxonomy={"how:undataAge": taxonomy}),
     ]
-    output = _UniversalBindOutput(
-        chosen_shape_index=1,
+    output = elected_reply(
+        1,
         bindings=[
             SlotBindingDraft(
                 axis="how",
@@ -493,7 +489,6 @@ def test_bind_universal_grounds_values_in_the_chosen_shapes_taxonomy(
             )
         ],
         also_plausible=None,
-        ask=None,
     )
 
     result, _ = _run(bind("under-five mortality", shapes, llm=_StubLLM(output)))
@@ -520,19 +515,14 @@ def test_bind_universal_picks_non_first_shape(bind):
         _shape("wrong_shape", score=0.9),
         _shape("right_shape", score=0.6),
     ]
-    output = _UniversalBindOutput(chosen_shape_index=1, bindings=[], also_plausible=None, ask=None)
+    output = elected_reply(1, bindings=[], also_plausible=None)
     result, _ = _run(bind("some variable", shapes, llm=_StubLLM(output)))
     assert result.chosen_shape_index == 1
 
 
 def test_bind_universal_also_plausible_ranked(bind):
     shapes = [_shape("a"), _shape("b"), _shape("c")]
-    output = _UniversalBindOutput(
-        chosen_shape_index=0,
-        bindings=[],
-        also_plausible=[2, 1],
-        ask=None,
-    )
+    output = elected_reply(0, bindings=[], also_plausible=[2, 1])
     result, _ = _run(bind("ambiguous variable", shapes, llm=_StubLLM(output)))
     assert result.also_plausible == [2, 1]
 
@@ -627,9 +617,7 @@ class _ForeignSlotLLM:
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
-        return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=self.drafts, also_plausible=None, ask=None
-        ), _USAGE
+        return elected_reply(0, bindings=self.drafts, also_plausible=None), _USAGE
 
 
 _USAGE = {"input_tokens": 7, "output_tokens": 3, "cached_tokens": 0}
@@ -978,11 +966,8 @@ def test_the_rank_elects_among_shapes_the_menu_states_alike(
         | top,
     )
     chosen = dataclasses.replace(chosen, **picked)
-    output = _UniversalBindOutput(
-        chosen_shape_index=1,
-        bindings=[_value("activitySource", bound)] if bound else [],
-        also_plausible=None,
-        ask=None,
+    output = elected_reply(
+        1, bindings=[_value("activitySource", bound)] if bound else [], also_plausible=None
     )
 
     assert rank_elected([first, chosen], output, availability=availability) == elected

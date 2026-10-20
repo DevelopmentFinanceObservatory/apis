@@ -65,7 +65,7 @@ _ELECTED_NODE = {
 
 class _GuardBindLLM:
     """Elects the data-empty shape, binds `bindings` on it, marks the standard
-    alternatives as plausible and rates each shape in `rated` at 1."""
+    alternatives as plausible and rates its pick and each shape in `rated` at 1."""
 
     def __init__(
         self,
@@ -92,7 +92,10 @@ class _GuardBindLLM:
             also_plausible=self._also_plausible,
             ask=None,
             unplaced=self._unplaced,
-            measuring=[ShapeRating(index=i, rating=1.0) for i in self._rated],
+            measuring=[
+                ShapeRating(index=i, rating=1.0)
+                for i in dict.fromkeys([self._chosen_shape_index, *self._rated])
+            ],
         ), None
 
 

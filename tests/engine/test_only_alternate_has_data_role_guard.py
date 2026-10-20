@@ -8,12 +8,12 @@ from __future__ import annotations
 import asyncio
 
 from search.engine.assemble import build_no_data_part
-from search.engine.bind import _UniversalBindOutput
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.region.codes import ONLY_ALTERNATE_HAS_DATA
 from search.models import ResolvedEntity
 from series_coverage.schema import RoleNames
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query
@@ -45,9 +45,7 @@ class _ElectNoDataAlsoPlausibleHasDataLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=[], also_plausible=[1], ask=None
-        ), None
+        return elected_reply(0, also_plausible=[1]), None
 
 
 def _run(monkeypatch):

@@ -8,13 +8,13 @@ from typing import Any
 
 import pytest
 
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import ShapeRating, SlotBindingDraft, _UniversalBindOutput
 from search.engine.config import settings
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.region.result import RegionResult
 from search.models import Binding, BindingSet, BindingUnbound, BindingValue
-from tests.engine._binders import FixedBindReplyLLM
+from tests.engine._binders import FixedBindReplyLLM, elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import make_request, offline_resolve
@@ -92,6 +92,7 @@ class _RecordingBindLLM:
                 bindings=self.bindings,
                 ask=self.ask,
                 nearest_refused_index=self.nearest_refused_index,
+                measuring=[ShapeRating(index=self.chosen_shape_index, rating=1.0)],
             ),
             self.usage,
         )
@@ -616,8 +617,8 @@ class _FemaleUrbanBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0,
+        return elected_reply(
+            0,
             bindings=[
                 SlotBindingDraft(
                     axis="how", property_dcid="gender", kind="value", value_dcids=["Female"]

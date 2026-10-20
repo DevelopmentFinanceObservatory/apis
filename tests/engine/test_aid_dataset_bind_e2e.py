@@ -1157,6 +1157,7 @@ class _ScriptedLLM:
             bindings=self._drafted,
             also_plausible=self._also_plausible,
             ask=self._ask,
+            measuring=[{"index": 0, "rating": 1.0}],
         ), None
 
 

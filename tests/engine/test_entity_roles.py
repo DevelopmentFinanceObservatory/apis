@@ -6,7 +6,6 @@ import asyncio
 
 import pytest
 
-from search.engine.bind import _UniversalBindOutput
 from search.engine.entry.dataset_entries import interpret_parts as dataset_door_interpretation
 from search.engine.entry.parsed import (
     _entity_roles_for_part,
@@ -21,6 +20,7 @@ from search.engine.role_text import DoorRole, contradicts
 from search.models import ParsedEntity, ParsedPart, RoleAxis
 from series_coverage.schema import RoleNames
 from series_coverage.shared import CoverageSnapshot
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import (
     FakeCoverageService,
     empty_coverage_snapshot,
@@ -606,7 +606,7 @@ class _FixedBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
+        return elected_reply(0, bindings=[]), None
 
 
 def _run_self_flow_occurrences(

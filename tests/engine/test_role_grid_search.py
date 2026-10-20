@@ -48,7 +48,7 @@ import pytest
 from code_index.types import StatVarRow
 from datasets_api.adapter import resolve_definition_members
 from dfo_platform.roles import ROLE_AXES
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.state import _served_members
@@ -92,6 +92,7 @@ from tests.datasets_api.test_role_grid_members import (
     shared_identity,
     shared_served,
 )
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
@@ -703,7 +704,7 @@ class _ElectFirst:
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
-        return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
+        return elected_reply(0), None
 
 
 def _index_row_node(row: StatVarRow) -> dict:

@@ -36,7 +36,7 @@ from entity_resolution import Entity, Resolved
 from graph_generation import UNKNOWN_GENERATION
 from materialise.graph import Facet as MaterialiseFacet
 from materialise.graph import SubjectPage
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft
 from search.engine.core import resolve_async
 from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.errors import GraphInfraError
@@ -88,7 +88,7 @@ from search.models import (
 )
 from series_coverage.schema import RoleNames
 from tests.engine import test_first_answer_place_scenarios as scenarios
-from tests.engine._binders import MenuRecordingBinder
+from tests.engine._binders import MenuRecordingBinder, elected_reply
 from tests.engine._builders import place_sets, settled_place_roles
 from tests.engine._fake_coverage import (
     FakeCoverageService,
@@ -184,7 +184,7 @@ class _ElectFirstWithAlternate:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(chosen_shape_index=0, bindings=[], also_plausible=[1]), None
+        return elected_reply(0, bindings=[], also_plausible=[1]), None
 
 
 def _resolve(query: str, order: list[str], scores: list[float], entities: list[str]):
@@ -365,7 +365,7 @@ class _ElectFirstOnly:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(chosen_shape_index=0, bindings=[], also_plausible=[]), None
+        return elected_reply(0, bindings=[], also_plausible=[]), None
 
 
 _GNI_IDS_BY_CREDITOR = "Amount_EconomicActivity_GrossNationalIncome_Nominal_ByCreditor"
@@ -1822,7 +1822,7 @@ def test_elected_shape_drops_a_model_emitted_entity_only_where_binding(places, e
         _economic_activity_arcs("PurchasingPowerParity", {"activitySource": "GrossNationalIncome"})
     )
     state.capped_shapes = [state.shape_draft]
-    state.bind_result = _UniversalBindOutput(chosen_shape_index=0, bindings=[], also_plausible=[])
+    state.bind_result = elected_reply(0, bindings=[], also_plausible=[])
     state.elected_index = 0
     # With no place named, the shape's default scope reads Earth's countries.
     state.graph = FakeGraph(
@@ -1867,7 +1867,7 @@ def test_placeless_election_reads_presence_for_its_flagged_alternates_too() -> N
     state.sdmx = FakeSdmxClient(observations={}, scope_availability=graph.scope_availability)
     state.capped_shapes = [shapes[_GNI_PPP], shapes[atlas]]
     state.shape_draft = shapes[_GNI_PPP]
-    state.bind_result = _UniversalBindOutput(chosen_shape_index=0, bindings=[], also_plausible=[1])
+    state.bind_result = elected_reply(0, bindings=[], also_plausible=[1])
     state.elected_index = 0
 
     assert asyncio.run(_phase_place_bindings(state)) is None
