@@ -52,7 +52,6 @@ from search.engine.quantity_read import (
 from search.models import (
     DatasetResubmitInput,
     GraphRef,
-    RawTextInput,
     ResubmitPlaceholderEntry,
 )
 from tests.engine._binders import FakeAsk, FixedBinder, keep_the_pick
@@ -189,23 +188,20 @@ def test_the_jev_setting_alone_routes_every_query_to_jev(monkeypatch):
     assert type(configured_binder(None)) is FallbackBinder
 
 
-def _routed_input(door: str, n: int) -> RawTextInput | DatasetResubmitInput:
-    """A request the models accept holding a lone surrogate: a raw query, or the code a
-    resubmitted placeholder restates (a parsed request's text fields refuse one)."""
-    if door == "raw":
-        return RawTextInput(query=f"aid to Kenya {n}\ud800")
+def _routed_input(n: int) -> DatasetResubmitInput:
+    """A request the models accept holding a lone surrogate: the code a resubmitted
+    placeholder restates (a raw query and a parsed request's text fields refuse one)."""
     entry = ResubmitPlaceholderEntry(
         variable_text=f"aid to Kenya {n}", status="unsupported", code="code\ud800"
     )
     return DatasetResubmitInput(entries=[entry])
 
 
-@pytest.mark.parametrize("door", ["raw", "resubmit"])
-def test_a_request_with_a_lone_surrogate_routes_at_a_partial_share(monkeypatch, door: str):
+def test_a_request_with_a_lone_surrogate_routes_at_a_partial_share(monkeypatch):
     """A lone surrogate in an accepted request routes by its hash as any other text, the
     same way on every call."""
     _with_settings(monkeypatch, binder="jev", jev_traffic_pct=50)
-    texts = [core._routing_text(_routed_input(door, n)) for n in range(200)]
+    texts = [core._routing_text(_routed_input(n)) for n in range(200)]
 
     routed = [type(configured_binder(text)) for text in texts]
 

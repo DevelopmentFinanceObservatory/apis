@@ -164,10 +164,13 @@ def _near_elect(nouls: Mapping[str, float]) -> object:
     return sorted(conf.pool.measuring)
 
 
-def _alternates(shapes: list[ShapeDraft], elect: Mapping[int, float]):
+def _alternates(shapes: list[ShapeDraft], elect: Mapping[int, float], best: float):
+    """The alternates of a menu whose elected shape 0 scores `best`, near enough to the
+    threshold under test that the near-best bar on alternates passes both sides of it."""
+
     def read(nouls: Mapping[str, float]) -> object:
-        output, _conf = _assemble(_request(shapes), _answers({"m|0": 0.9, **nouls}, elect=elect))
-        return output.also_plausible
+        output, _conf = _assemble(_request(shapes), _answers({"m|0": best, **nouls}, elect=elect))
+        return output.also_plausible or None
 
     return read
 
@@ -195,12 +198,17 @@ def _gate(nouls: Mapping[str, float]) -> object:
 _PLAIN_AND_DIVIDED = [_shape(0), _shape(1, denominator="Count_Person")]
 _VALUE_ADDED = _shape(0, population="EconomicProduction", measured="valueAdded")
 _OUTPUT = _shape(1, population="EconomicActivity", measured="amount", qualifier="Nominal")
-_NOMINAL_AND_REAL = [_shape(0), _shape(1, qualifier="RealValue")]
+_DEFAULT_AND_REAL = [_shape(0), _shape(1, qualifier="RealValue")]
+_PERSON_AND_PLACE = [_shape(0), _shape(1, population="Place")]
+_AMOUNT_AND_GE = [
+    _shape(0, population="FinancialFlow", measured="grantEquivalent", qualifier="Nominal"),
+    _shape(1, population="FinancialFlow", measured="amount", qualifier="Nominal"),
+]
 
 _CUTS = {
-    "ask": _Cut(_ask, "m|0", 0.1, 0.11, True, False),
+    "ask": _Cut(_ask, "m|0", 0.15, 0.16, True, False),
     "measures": _Cut(
-        _alternates(_PLAIN_AND_DIVIDED, {0: 1.0}),
+        _alternates(_PLAIN_AND_DIVIDED, {0: 1.0}, 0.55),
         "m|1",
         0.5,
         0.51,
@@ -225,7 +233,7 @@ _CUTS = {
         [0, 1],
     ),
     "alt_floor": _Cut(
-        _alternates([_shape(0), _shape(1, population="Place")], {0: 0.9, 1: 0.1}),
+        _alternates([_shape(0), _shape(1, population="Place")], {0: 0.9, 1: 0.1}, 0.32),
         "m|1",
         0.3,
         0.31,
@@ -234,12 +242,20 @@ _CUTS = {
     ),
     "near_alt": _Cut(_near_alt, "elect|1", 0.04, 0.05, None, [1]),
     "measure_value": _Cut(
-        _elected(_NOMINAL_AND_REAL, {0: 0.6, 1: 0.4}, {"m|0": 0.9, "m|1": 0.9}),
-        "mv|RealValue",
+        _elected(_PERSON_AND_PLACE, {0: 0.6, 1: 0.4}, {"m|0": 0.9, "m|1": 0.9}),
+        "mv|Place",
         0.4,
         0.41,
         (0, []),
-        (1, ["named: measurementQualifier"]),
+        (1, ["named: populationType"]),
+    ),
+    "policy_value": _Cut(
+        _elected(_AMOUNT_AND_GE, {0: 0.6, 1: 0.4}, {"m|0": 0.9, "m|1": 0.9}),
+        "mv|grantEquivalent",
+        0.8,
+        0.81,
+        (1, ["house: amount_vs_ge"]),
+        (0, ["named: measuredProperty"]),
     ),
     "named": _Cut(
         _elected(
@@ -535,17 +551,60 @@ def test_the_form_sets_aside_divided_shapes_only_when_the_phrase_states_none():
     assert framed.chosen_shape_index == 1
 
 
-def test_the_bind_result_carries_each_alternate_s_measure_score():
-    shapes = [_shape(0), _shape(1, population="Place"), _shape(2, population="Region")]
-    answers = _answers({"m|0": 0.9, "m|1": 0.7, "m|2": 0.4}, elect={0: 0.4, 1: 0.3, 2: 0.3})
+@pytest.mark.parametrize(("measure", "also"), [(0.8, []), (0.81, [1])])
+def test_an_alternate_stands_only_near_the_best_measure_score(measure: float, also: list[int]):
+    """An alternate scoring under 0.9 of the best measure score is a weaker reading, the
+    bar a Gemini nomination clears on its rating (`gemini.nominated_near_best`)."""
+    shapes = [_shape(0), _shape(1, population="Place")]
+    answers = _answers({"m|0": 0.9, "m|1": measure}, elect={0: 0.6, 1: 0.4})
 
     result, _conf = bind_result(jev_menu(_request(shapes)), answers, stated_form=None)
 
     assert result.binder == "jev"
-    assert result.output.also_plausible == [1, 2]
-    assert result.also_plausible_support == {1: pytest.approx(0.7), 2: pytest.approx(0.4)}
+    assert result.output.also_plausible == also
     assert result.policy_pool is not None
     assert result.policy_choice is not None and result.policy_choice.survivor == 0
+
+
+def test_another_dataset_s_copy_of_the_elected_reading_is_no_alternate():
+    shapes = [_shape(0, label="UNICEF series"), _shape(1, label="WHO series")]
+    answers = _answers({"m|0": 0.9, "m|1": 0.9}, elect={0: 1.0})
+
+    output, _conf = _assemble(_request(shapes), answers)
+
+    assert output.chosen_shape_index == 0
+    assert not output.also_plausible
+
+
+@pytest.mark.parametrize(("real", "elected"), [(0.8, 0), (0.81, 1)])
+def test_a_shape_stating_no_price_basis_reads_at_the_default_one(real: float, elected: int):
+    """A shape with no measurement qualifier reads as Nominal, so real terms beside it is
+    `nominal_vs_va`'s choice, and Jev names it only above the policy bar."""
+    answers = _answers({"m|0": 0.9, "m|1": 0.9, "mv|RealValue": real}, elect={0: 0.6, 1: 0.4})
+
+    output, _conf = _assemble(_request(_DEFAULT_AND_REAL), answers)
+
+    assert output.chosen_shape_index == elected
+
+
+def test_a_value_no_house_policy_chooses_narrows_at_the_measure_value_bar():
+    """Attributed amount is no policy's choice, so Jev naming it at the ordinary bar keeps
+    the shape beside an amount and a grant equivalent, which `amount_vs_ge` chooses
+    between."""
+    shapes = [
+        _shape(0, population="FinancialFlow", measured="amount", qualifier="Nominal"),
+        _shape(1, population="FinancialFlow", measured="grantEquivalent", qualifier="Nominal"),
+        _shape(2, population="FinancialFlow", measured="attributedAmount", qualifier="Nominal"),
+    ]
+    answers = _answers(
+        {"m|0": 0.9, "m|1": 0.9, "m|2": 0.9, "mv|attributedAmount": 0.5},
+        elect={0: 0.5, 1: 0.3, 2: 0.2},
+    )
+
+    output, conf = _assemble(_request(shapes), answers)
+
+    assert output.chosen_shape_index == 2
+    assert conf.rules == ["named: measuredProperty"]
 
 
 def test_a_request_without_a_query_asks_no_query_question():

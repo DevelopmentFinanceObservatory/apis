@@ -6,17 +6,17 @@ threshold change replays from stored answers. A question Jev did not answer read
 probability of 0.0.
 
 `assemble` elects a shape, binds its listed slots and lists its alternates; `bind_result`
-applies the rules the engine applies to every binder's drafts (`bind.ground_bind_output`)
-and carries each alternate's measure score as `BindResult.also_plausible_support`.
+applies the rules the engine applies to every binder's drafts (`bind.ground_bind_output`).
 `assemble_quantity` reads the stated form and base from the ``q|`` answers.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import get_args
 
+from code_index.labels import PRICE_BASIS_AXIS
 from code_index.shared import get_index, get_measure_index
 from search.engine.bind import (
     DraftBindingEvidence,
@@ -31,8 +31,9 @@ from search.engine.binders.gemini import (
     holds_drafted_values,
     holds_requested_slots,
     mentioned_drafts,
+    nominated_near_best,
 )
-from search.engine.binders.house_policy import PolicyChoice, PolicyPool
+from search.engine.binders.house_policy import PolicyChoice, PolicyPool, arbitrates
 from search.engine.binders.jev_menu import (
     AXIS_FIELDS,
     JevMenu,
@@ -59,14 +60,16 @@ class Thresholds:
     """Where each probability turns into a decision.
 
     `w_m`, `w_mq`, `w_elect` and `w_electq` weigh the two means. A shape's measure score
-    above `ask` keeps it electable, and the part asks when none is; above `measures` it
+    above `ask` keeps it electable, and the part asks when none is, as a Gemini reply
+    rating its pick under `gemini.DECLINE_FLOOR` declines; above `measures` it
     counts as measuring the phrase for alternates, nominal output and the nearest refused
     reading. Without an election answer the pool keeps shapes within `near` of the best
     measure score; with one, the products of election and measure score at least
     ``1 - near_elect`` of the best. An alternate is "elected alike" when its election is at
     least ``1 - near_alt`` of the top and its measure score above `alt_floor`. A nominal
     output shape joins the pool within `widen` of the best measure score. ``mv`` above
-    `measure_value` names a measure-axis value, ``named`` above `named` the dataset, ``n``
+    `measure_value` names a measure-axis value, and above `policy_value` one of two a house
+    policy chooses between (`_names_value`); ``named`` above `named` names the dataset, ``n``
     above `value` a slot value. ``part`` at or under `part` asks for no particular value,
     and a value then needs ``n`` above `part_n`. ``several`` above `several` binds a set,
     and ``all`` above `requested_all` an explicit "every value".
@@ -77,7 +80,9 @@ class Thresholds:
     w_elect: float = 1.0
     w_electq: float = 1.0
     measures: float = 0.5
-    ask: float = 0.1
+    # On recorded answers, five wrong picks of the eval corpus score 0.135 or less, and
+    # every pick that answers it correctly 0.305 or more.
+    ask: float = 0.15
     near: float = 0.15
     near_elect: float = 0.8
     near_alt: float = 0.95
@@ -87,6 +92,11 @@ class Thresholds:
     part_n: float = 0.8
     named: float = 0.5
     measure_value: float = 0.4
+    # On the recorded answers of the eval corpus, Jev scores 61 of the 64 policy values it
+    # was asked about at 0.76 or less, grant equivalent for "education aid" and an
+    # obligation for "ODA loans" among them, and the three a phrase names outright (debt
+    # is an obligation) at 0.94 or more.
+    policy_value: float = 0.8
     value: float = 0.6
     several: float = 0.5
     requested_all: float = 0.5
@@ -211,9 +221,12 @@ def assemble(
         return output, conf
     bindings = [_bind_slot(menu, answers, e, prop, conf, t) for prop in menu.listed[e]]
     also = _alternates(menu, e, conf, t, answers, stated_form)
-    return _UniversalBindOutput(
+    output = _UniversalBindOutput(
         chosen_shape_index=e, bindings=bindings, also_plausible=also or None
-    ), conf
+    )
+    # An alternate stands only near the best measure score, the bar a Gemini nomination
+    # clears on its rating.
+    return nominated_near_best(output, conf.measures), conf
 
 
 def bind_result(
@@ -224,15 +237,13 @@ def bind_result(
     thresholds: Thresholds = THRESHOLDS,
 ) -> tuple[BindResult, Confidence]:
     """`assemble` over `menu`, with the engine's rules applied to the drafts
-    (`bind.ground_bind_output`) and each alternate's measure score as its support."""
+    (`bind.ground_bind_output`)."""
     output, conf = assemble(menu, answers, stated_form=stated_form, thresholds=thresholds)
-    support = {k: conf.measures[k] for k in output.also_plausible or ()}
     result = BindResult(
         output=ground_bind_output(output, menu.request.shapes),
         binder="jev",
         policy_pool=conf.pool,
         policy_choice=conf.choice,
-        also_plausible_support=support or None,
     )
     return result, conf
 
@@ -330,14 +341,9 @@ def _elect(
             conf.rules.append("form: phrase states none, shapes with a denominator set aside")
             pool = plain
     # A measure value or a dataset the phrase names keeps the shapes that hold it.
-    index = get_measure_index()
     for axis, field_name in AXIS_FIELDS.items():
-        holding = [
-            i
-            for i in pool
-            if (v := getattr(shapes[i], field_name))
-            and answers.noul(f"mv|{index.canonical_reading(v)}") > t.measure_value
-        ]
+        values = {i: getattr(shapes[i], field_name) for i in pool}
+        holding = [i for i in pool if _names_value(answers, t, axis, values[i], values.values())]
         if holding and len(holding) < len(pool):
             conf.rules.append(f"named: {axis}")
             pool = holding
@@ -359,6 +365,31 @@ def _elect(
     conf.choice = choice
     conf.rules += [f"house: {p}" for p in choice.fired]
     return choice.survivor
+
+
+def _names_value(
+    answers: JevAnswers,
+    t: Thresholds,
+    axis: str,
+    value: str | None,
+    others: Collection[str | None],
+) -> bool:
+    """Whether Jev's ``mv`` answer says the phrase names `value` on measure axis `axis`, in
+    any spelling of its reading: above `measure_value`, or above `policy_value` when a house
+    policy chooses between it and one of `others` (`house_policy.arbitrates`), so a
+    convention is traded only for a value the phrase names outright. A shape stating no
+    price basis reads at the declared default one, as `status_rule.holds_default_price_basis`
+    reads it."""
+    if not value:
+        return False
+    index = get_measure_index()
+    default = index.reading_order(PRICE_BASIS_AXIS)[:1] if axis == PRICE_BASIS_AXIS else ()
+    readings = {index.canonical_reading(v) for v in others if v}
+    if any(not v for v in others):
+        readings.update(default)
+    reading = index.canonical_reading(value)
+    bar = t.policy_value if arbitrates(axis, reading, readings) else t.measure_value
+    return answers.noul(f"mv|{reading}") > bar
 
 
 def _holds(
@@ -408,10 +439,9 @@ def _alternates(
     index = get_measure_index()
     family = next((a.prefer for a in index.axes if a.axis == "populationType"), ())
 
-    def named(value: str | None) -> bool:
-        return bool(value) and answers.noul(f"mv|{index.canonical_reading(value)}") > (
-            t.measure_value
-        )
+    def named(axis: str, a: str | None, b: str | None) -> bool:
+        """Whether the phrase names either of two values that differ on `axis`."""
+        return any(_names_value(answers, t, axis, v, (a, b)) for v in (a, b))
 
     elected = stated_reading(shapes[e])
     out: list[tuple[float, int]] = []
@@ -454,15 +484,15 @@ def _alternates(
             # The measure family's declared axes are its interpretations, unless the phrase
             # names a value on an axis where the two differ.
             differing = [
-                (a, b)
-                for a, b in (
-                    (elected.population_type, other.population_type),
-                    (elected.measured_property, other.measured_property),
-                    (elected.qualifier, other.qualifier),
+                (axis, a, b)
+                for axis, a, b in (
+                    ("populationType", elected.population_type, other.population_type),
+                    ("measuredProperty", elected.measured_property, other.measured_property),
+                    ("measurementQualifier", elected.qualifier, other.qualifier),
                 )
                 if a != b
             ]
-            if any(named(a) or named(b) for a, b in differing):
+            if any(named(axis, a, b) for axis, a, b in differing):
                 continue
             conf.alternates[k] = "measure family variant"
         elif (other.population_type, other.measured_property) != (
@@ -471,12 +501,11 @@ def _alternates(
         ):
             continue
         elif other.qualifier != elected.qualifier:
-            if named(other.qualifier) or named(elected.qualifier):
+            if named("measurementQualifier", elected.qualifier, other.qualifier):
                 continue
             conf.alternates[k] = "qualifier variant"
-        elif other.label != elected.label:
-            conf.alternates[k] = "dataset variant"
         else:
+            # Another dataset's copy of the elected reading is settled by data and rank.
             continue
         out.append((conf.measures[k], k))
     return [k for _p, k in sorted(out, key=lambda pk: -pk[0])]

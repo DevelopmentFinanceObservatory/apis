@@ -348,8 +348,8 @@ def test_key_moves_on_each_request_field(monkeypatch, field):
 
 
 def test_lone_surrogate_prompt_keys_and_behaves_as_without_a_memo(monkeypatch):
-    """A lone surrogate survives request parsing as one query character, though RFC 8785 rejects it.
-    The ASCII-escaped memo key lets the first call reach the model and the repeat hit the memo."""
+    """A prompt holding a lone surrogate, which RFC 8785 rejects, still keys: the
+    ASCII-escaped memo key lets the first call reach the model and the repeat hit the memo."""
     prompt = "\ud800"
     memo = _memo()
 

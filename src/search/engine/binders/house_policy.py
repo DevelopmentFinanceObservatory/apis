@@ -21,6 +21,10 @@ The six policies run in order, each over the survivors of the one before:
    Disbursement.
 6. `data_at_places`: a shape with data at the named places.
 
+Three policies declare the measure-axis values they choose between (`CHOICES`). A binder
+that narrows its pool to a value the phrase names leaves the choice between two such values
+to the policy unless the phrase names the value outright (`arbitrates`).
+
 The policies choose only among the pool shapes that hold every constraint the binder
 recognised on its pick (`apply_house_policies`'s `holds`), so a policy never trades a value
 the phrase names for a convention. The pick holds its own.
@@ -39,7 +43,7 @@ probability or rating reads as 0.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal, get_args
 
@@ -71,6 +75,27 @@ POLICY_ORDER: tuple[PolicyName, ...] = (
 
 # The first year donors report official development assistance as grant equivalent.
 GE_STARTS = 2018
+
+_OUTPUT = "EconomicActivity"
+_FLOW = "FinancialFlow"
+_OBLIGATION = "FinancialObligation"
+_AMOUNT = "amount"
+_VALUE_ADDED = "valueAdded"
+_GRANT_EQUIVALENT = "grantEquivalent"
+_NOMINAL = "Nominal"
+_REAL = "RealValue"
+
+# The values each policy chooses between, by measure axis, in their canonical readings:
+# nominal output over value added and over real output, amount or grant equivalent by the
+# window, and a flow's disbursements over an obligation's commitments.
+CHOICES: Mapping[PolicyName, Mapping[str, frozenset[str]]] = {
+    "nominal_vs_va": {
+        "measuredProperty": frozenset({_AMOUNT, _VALUE_ADDED}),
+        "measurementQualifier": frozenset({_NOMINAL, _REAL}),
+    },
+    "amount_vs_ge": {"measuredProperty": frozenset({_AMOUNT, _GRANT_EQUIVALENT})},
+    "commit_vs_disb": {"populationType": frozenset({_FLOW, _OBLIGATION})},
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,6 +160,16 @@ class PolicyChoice:
     fired: tuple[PolicyName, ...]
     dropped: frozenset[int]
     facts: tuple[ShapeFacts, ...]
+
+
+def arbitrates(axis: str, value: str, others: Collection[str]) -> bool:
+    """Whether a house policy chooses between `value` and one of `others` on measure axis
+    `axis`, all in their canonical readings (`CHOICES`)."""
+    return any(
+        value in values and not values.isdisjoint(set(others) - {value})
+        for choice in CHOICES.values()
+        if (values := choice.get(axis))
+    )
 
 
 def shape_facts(
@@ -225,23 +260,17 @@ def context_of(
 
 
 def _nominal_output(shapes: Sequence[ShapeFacts], _ctx: Context) -> list[int]:
-    if not any(s.measured_property == "valueAdded" for s in shapes):
+    if not any(s.measured_property == _VALUE_ADDED for s in shapes):
         return []
-    output = [
-        s
-        for s in shapes
-        if s.population_type == "EconomicActivity" and s.measured_property == "amount"
-    ]
-    nominal = [s for s in output if s.qualifier == "Nominal"]
+    output = [s for s in shapes if s.population_type == _OUTPUT and s.measured_property == _AMOUNT]
+    nominal = [s for s in output if s.qualifier == _NOMINAL]
     return [s.index for s in (nominal if 0 < len(nominal) < len(output) else output)]
 
 
 def _amount_or_ge(shapes: Sequence[ShapeFacts], ctx: Context) -> list[int]:
-    measure = "amount" if ctx.pre_ge else "grantEquivalent"
+    measure = _AMOUNT if ctx.pre_ge else _GRANT_EQUIVALENT
     return [
-        s.index
-        for s in shapes
-        if s.population_type == "FinancialFlow" and s.measured_property == measure
+        s.index for s in shapes if s.population_type == _FLOW and s.measured_property == measure
     ]
 
 
@@ -259,7 +288,7 @@ def _disbursed(shapes: Sequence[ShapeFacts], _ctx: Context) -> list[int]:
     return [
         s.index
         for s in shapes
-        if s.population_type == "FinancialFlow" and "Disbursement" in (s.flow_types or ())
+        if s.population_type == _FLOW and "Disbursement" in (s.flow_types or ())
     ]
 
 

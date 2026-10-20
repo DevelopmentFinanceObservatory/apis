@@ -520,6 +520,30 @@ def test_a_held_detached_call_leaves_the_served_connection_free(
     assert holding_listener.max_open == 2
 
 
+@pytest.mark.usefixtures("live_client_env")
+def test_an_api_key_llm_builds_each_client_on_its_first_call(monkeypatch: pytest.MonkeyPatch):
+    """An `LLM(api_key=...)` builds no client until a call needs one, and builds each once:
+    its stage and detached clones share the two it builds."""
+    built: list[int] = []
+
+    def build(api_key: str, *, max_connections: int) -> object:
+        built.append(max_connections)
+        return object()
+
+    monkeypatch.setattr(llm_module, "_build_client", build)
+    settings = llm_module.config.settings()
+    llm = LLM(model="gemini-3.5-flash-lite", api_key="override")
+    assert built == []
+
+    served = llm._client()
+    assert llm_module.for_stage(llm, "bind")._client() is served  # ty: ignore[unresolved-attribute]  # for_stage clones the LLM
+    assert built == [settings.llm_max_concurrency]
+
+    shadow = detached(llm)._client()  # ty: ignore[unresolved-attribute]  # detached clones the LLM
+    assert detached(llm_module.for_stage(llm, "bind"))._client() is shadow  # ty: ignore[unresolved-attribute]
+    assert built == [settings.llm_max_concurrency, settings.jev_shadow_max_inflight]
+
+
 @pytest.mark.usefixtures("live_client_env", "loopback_transport")
 def test_an_api_key_override_llm_reuses_one_client(
     monkeypatch: pytest.MonkeyPatch, keepalive_listener: tuple[int, set[tuple[str, int]]]

@@ -104,7 +104,7 @@ async def _bind_through_the_gemini_binder(variable, shapes, *, llm):
         variable=variable, shapes=shapes, query_text=None, apply_policies=keep_the_pick
     )
     result, usage = await GeminiBinder().bind(request, llm=llm)
-    assert (result.binder, result.also_plausible_support) == ("gemini", None)
+    assert result.binder == "gemini"
     return result.output, usage
 
 

@@ -567,9 +567,8 @@ def _memo_key(
     instruction, temperature, thinking config, and seed, enter the key.
     A floating model alias keeps its key until the memo entry expires.
 
-    ASCII-escaped JSON handles lone surrogates that can survive request
-    parsing. Such prompts form deterministic keys and reach Gemini as ordinary
-    cache misses.
+    ASCII-escaped JSON keys any prompt, a lone surrogate included, though the
+    request models refuse one in every text a prompt is built from.
     """
     document = {
         "model": model,
@@ -582,6 +581,25 @@ def _memo_key(
         document, sort_keys=True, separators=(",", ":"), ensure_ascii=True
     ).encode("utf-8")
     return "llm_" + hashlib.sha256(canonical).hexdigest()
+
+
+class _ApiKeyClients:
+    """The two clients of an `LLM` built with its own api key, the served calls' and the
+    detached calls', each built on first use with the pool size its singleton has. Clones of
+    the `LLM` hold this same object, so they share both clients."""
+
+    def __init__(self, api_key: str) -> None:
+        self._api_key = api_key
+
+    @functools.cached_property
+    def served(self) -> genai.Client:
+        return _build_client(self._api_key, max_connections=config.settings().llm_max_concurrency)
+
+    @functools.cached_property
+    def detached(self) -> genai.Client:
+        return _build_client(
+            self._api_key, max_connections=config.settings().jev_shadow_max_inflight
+        )
 
 
 class LLM:
@@ -617,20 +635,10 @@ class LLM:
         memo: LLMMemo | None = None,
         extraction_store: ExtractionStore | None = None,
     ):
-        # An instance api_key creates one client, and one for detached calls, shared with its
-        # clones. Otherwise _client() uses the singletons.
+        # An instance api_key gets its own clients, each built on its first call and shared
+        # with the instance's clones. Otherwise _client() uses the singletons.
         self._model = model or config.settings().engine_model
-        settings = config.settings()
-        self._override_client = (
-            _build_client(api_key, max_connections=settings.llm_max_concurrency)
-            if api_key
-            else None
-        )
-        self._override_detached_client = (
-            _build_client(api_key, max_connections=settings.jev_shadow_max_inflight)
-            if api_key
-            else None
-        )
+        self._own_clients = _ApiKeyClients(api_key) if api_key else None
         # Explicit seed and thinking_level kwargs override settings.
         # Unset kwargs use process defaults.
         self._seed = seed if seed is not None else config.settings().llm_seed
@@ -647,9 +655,10 @@ class LLM:
         return {"model": self._model, "seed": self._seed, "thinking_level": self._thinking_level}
 
     def _client(self) -> genai.Client:
+        own = self._own_clients
         if self._detached:
-            return self._override_detached_client or _get_detached_client()
-        return self._override_client or _get_client()
+            return own.detached if own is not None else _get_detached_client()
+        return own.served if own is not None else _get_client()
 
     def _resolve_config(self, *, system: str, schema: type[BaseModel]) -> GenerateContentConfig:
         """Build the config shared by live calls and the memo key."""
