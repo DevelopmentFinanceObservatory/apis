@@ -119,7 +119,7 @@ def as_candidates(row_id: str, *, second_dataset: str | None = None) -> dict[str
 
 
 def candidates_of(*readings: tuple[str, int]) -> dict[str, Any]:
-    """A candidates response whose readings are recorded Specs: each ``(row id, index)``
+    """A candidates response whose readings are recorded Specs. Each ``(row id, index)``
     names the Spec at ``index`` among the specs of that row's first part (`spec_dicts`)."""
     specs = [
         copy.deepcopy(spec_dicts(panel(row_id)["parts"][0])[index]) for row_id, index in readings
@@ -310,7 +310,7 @@ ROWS = [
         PASS,
     ),
     ("measure", {"definite": {"measure": {"stat_vars": ["Count_Person"]}}}, panel("weo-033"), FAIL),
-    # weo-014's identity marks the PerCapita denominator unresolved; the dcid is resolved.
+    # weo-014's identity marks the PerCapita denominator unresolved, and the dcid is resolved.
     (
         "measure",
         {"definite": {"measure": {"shape": {"measurement_denominator": "PerCapita"}}}},

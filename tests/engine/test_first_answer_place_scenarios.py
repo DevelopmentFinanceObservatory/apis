@@ -1009,9 +1009,9 @@ _RETIRED_WORDING = (
 def _sentence_violations(response: Resolution) -> list[str]:
     """Each way a sentence in `response` breaks the sentence invariants: retired wording, a
     plan whose plain join differs from its `rendered_sentence`, a token with no segment or
-    of kind "note", a departure or assumption token on a spec's own plan, and a role token naming more than
-    three entities. Every sentence the response carries is checked: the composed one, each
-    part's own, and each offered spec's."""
+    of kind "note", a departure or assumption token on a spec's own plan, and a role token
+    naming more than three entities. Every sentence the response carries is checked: the
+    composed one, each part's own, and each offered spec's."""
     violations: list[str] = []
     labels = {dcid: node["label"] for dcid, node in _NODES.items()}
 

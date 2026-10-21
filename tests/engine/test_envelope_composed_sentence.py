@@ -266,8 +266,8 @@ def test_ethiopia_population_and_birth_rate_composed_sentence_buffered():
     assert when_slot["part_index"] == 0
 
     # The mixed answer opens with two unindexed tokens, the opener and its space. After
-    # them every token belongs to exactly one sentence -- connectives and the terminal "."
-    # included -- joined by exactly one shared, unindexed " ".
+    # them every token belongs to exactly one sentence (connectives and the terminal "."
+    # included), joined by exactly one shared, unindexed " ".
     opener, body_plan = plan[:2], plan[2:]
     assert [(t["text"], t.get("part_index")) for t in opener] == [
         ("Answered 1 of 2 parts.", None),

@@ -148,27 +148,29 @@ class _PartBase(StrictModel):
         default_factory=list,
         description=(
             "every value the engine filled that the request did not ask for, in clause "
-            "order: declared defaults in the order of the Spec's trace.slot_filters, then "
-            "open roles, then the place scope. A declared default is a slot the request "
-            "left open that its code system's or shape's declared default fixed, named by "
-            "the bound code's full label. An open "
-            "role is a flow role no request word asked for, read across every entity on it "
-            "with data: one the role scope default filled (resolved.scope on that axis), "
-            "whatever its member count, served one series per member where the shape "
-            "declares the role, or one the heading states with no entity of its own ('from "
-            "164 providers', 'owed to all creditors'), the total over its members. A role "
-            "the identity binds in entities or lists in open_roles, that one of the part's "
+            "order. Declared defaults come first, in the order of the Spec's "
+            "trace.slot_filters, then open roles, then the place scope. A declared "
+            "default is a slot the request left open that its code system's or shape's "
+            "declared default fixed, named by the bound code's full label. An open role "
+            "is a flow role no request word asked for, read across every entity on it "
+            "with data. It is either a role the role scope default filled "
+            "(resolved.scope on that axis), whatever its member count, served as one "
+            "series per member where the shape declares the role, or a role the heading "
+            "states with no entity of its own ('from 164 providers', 'owed to all "
+            "creditors'), served as the total over its members. A role the identity "
+            "binds in entities or lists in open_roles, that one of the part's "
             "operations runs over ('top 5 donors'), or that the request's words asked "
-            "every member of ('all donors'), is asked. The place scope is a "
-            "request that named no place, read across every place with data. Filled on every door: on a definite part from its "
-            "Spec, on a candidates part the items every list in "
-            "CandidatesPart.reading_assumptions holds alike, text included, "
-            "[] on no_data and unsupported. A dataset_resubmit identity entry posts every "
-            "slot bound, so its part states the items of the entry's assumptions echo "
-            "that still hold (see ResubmitIdentityEntry.assumptions), and a candidates "
-            "entry reads each reading with its candidate's echo (see "
-            "ResubmitCandidate.assumptions). The sentence that "
-            "carries this part closes with them as one segment='assumption' clause "
+            "every member of ('all donors'), is asked. The place scope is a request "
+            "that named no place, read across every place with data. Every door fills "
+            "assumptions. A definite part reads them from its Spec, a candidates part "
+            "carries the items every list in CandidatesPart.reading_assumptions holds "
+            "alike, text included, and no_data and unsupported parts carry []. A "
+            "dataset_resubmit identity entry posts every slot bound, so its part states "
+            "the items of the entry's assumptions echo that still hold (see "
+            "ResubmitIdentityEntry.assumptions), and a candidates entry reads each "
+            "reading with its candidate's echo (see ResubmitCandidate.assumptions). The "
+            "sentence that carries this part closes with them as one "
+            "segment='assumption' clause "
             "('Assumed: official development assistance; every provider.'), after its "
             "departures. [] when the answer fills nothing"
         ),
@@ -187,8 +189,8 @@ class DefinitePart(_PartBase):
     spec: Spec = Field(
         description=(
             "the resolved Spec answering this part. Parts whose specs share a spec_id "
-            "are one reading of the data: the same series, entities and years. A later "
-            "part that folds into an earlier part's spec carries binding_folded; a part "
+            "are one reading of the data, the same series, entities and years. A later "
+            "part that folds into an earlier part's spec carries binding_folded. A part "
             "posted with separate: true never folds and keeps its own part, so two "
             "separate parts can carry one spec_id by request. Parts sharing a spec_id can "
             "differ in assumptions, so a client never dedupes parts by spec_id"
@@ -207,17 +209,17 @@ class CandidatesPart(_PartBase):
         default_factory=dict,
         description=(
             "each shown reading's own assumptions, keyed by its Spec's spec_id "
-            "(candidates.specs[].spec_id): the list a definite part answering that Spec "
-            "for this part's request carries, read with the part's operations and the "
-            "axes the request's words asked every member of. The part's own assumptions "
-            "are the items every list here holds alike, text included, so an open "
-            "role one reading reads, or an item two readings word differently ('every "
-            "provider' against 'every creditor'), is stated here alone. A client that "
-            "picks a reading posts its identity as a dataset_resubmit identity entry and "
-            "echoes reading_assumptions[spec_id] as the entry's assumptions, so the picked "
-            "answer states what that reading assumed; a client that edits the set echoes "
-            "each reading's entry as its candidate's assumptions. [] for a reading that "
-            "assumes nothing"
+            "(candidates.specs[].spec_id). Each list is the one a definite part "
+            "answering that Spec for this part's request carries, read with the part's "
+            "operations and the axes the request's words asked every member of. The "
+            "part's own assumptions are the items every list here holds alike, text "
+            "included, so an open role one reading reads, or an item two readings word "
+            "differently ('every provider' against 'every creditor'), is stated here "
+            "alone. A client that picks a reading posts its identity as a "
+            "dataset_resubmit identity entry and echoes reading_assumptions[spec_id] as "
+            "the entry's assumptions, so the picked answer states what that reading "
+            "assumed. A client that edits the set echoes each reading's entry as its "
+            "candidate's assumptions. [] for a reading that assumes nothing"
         ),
     )
 
@@ -306,8 +308,8 @@ class Skill(StrictModel):
 
 
 def _kind_required(schema: dict[str, Any]) -> None:
-    """List `kind` as required in a response kind's JSON schema: every serialised response
-    carries its discriminator, while the constructor keeps its default."""
+    """List `kind` as required in a response kind's JSON schema, since every serialised
+    response carries its discriminator while the constructor keeps its default."""
     required = schema.setdefault("required", [])
     if "kind" not in required:
         required.append("kind")
@@ -399,16 +401,16 @@ class Resolution(_AnswerBase):
             "part's departures follow in part order as segment='departure' tokens "
             "carrying that part's part_index. This is the one sentence that writes "
             "out a definite part's departures. The parts' assumptions close the "
-            "sentence as segment='assumption' tokens: one clause after a joined "
-            "sentence, each item carrying the part_index of its part and an item two "
-            "parts share carrying none, or each part's own clause after its departures "
-            "when the sentence is written part by part. There, a part whose sentence and "
+            "sentence as segment='assumption' tokens. A joined sentence takes one "
+            "clause, each item carrying the part_index of its part and an item two "
+            "parts share carrying none. A sentence written part by part takes each "
+            "part's own clause after its departures. There, a part whose sentence and "
             "clause both repeat an earlier part's is stated once with it, that sentence "
             "and clause carrying no part_index, followed by each part's own departures, "
             "and a part whose clause differs keeps its own sentence. On a mixed "
-            "resolution with at "
-            "least one definite part, the sentence opens 'Answered N of M parts.', where "
-            "N counts the definite parts, folded ones included, and M is len(parts)."
+            "resolution with at least one definite part, the sentence opens "
+            "'Answered N of M parts.', where N counts the definite parts, folded ones "
+            "included, and M is len(parts)."
         ),
     )
     sentence_plan: list[SentenceToken] | None = Field(
@@ -423,8 +425,8 @@ class Resolution(_AnswerBase):
             "the terminal '.', or the shared ' ' the per-part fallback puts between "
             "two sentences) rather than any "
             "one part's own. On a mixed resolution with at least one definite part, the "
-            "plan opens with two segment='coverage' tokens carrying no part_index: "
-            "'Answered N of M parts.' and a ' '. A mixed resolution with no definite "
+            "plan opens with two segment='coverage' tokens carrying no part_index, "
+            "'Answered N of M parts.' and ' '. A mixed resolution with no definite "
             "part has no opener."
         ),
     )

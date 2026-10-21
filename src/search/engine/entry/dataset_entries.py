@@ -118,7 +118,7 @@ def _build_candidates_region(
     """Keep definite promotes in posted order, which `gather` preserves.
     No-data and unsupported promotes both drop. Two or more survivors rebuild
     the set. One becomes definite and zero becomes no-data, each with a warning.
-    Each survivor carries its candidate's assumptions echo: a set reads each reading with
+    Each survivor carries its candidate's assumptions echo. A set reads each reading with
     its own, and a lone survivor's definite part states its own.
     """
     echoes = [

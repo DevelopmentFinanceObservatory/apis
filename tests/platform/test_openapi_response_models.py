@@ -126,7 +126,7 @@ def test_every_search_resolve_response_kind_requires_its_discriminator(
     schema: dict[str, Any], kind: str
 ):
     """Every resolve response carries `kind`, so each kind's served schema lists it as
-    required while its constructor keeps the default; no other defaulted field joins it."""
+    required while its constructor keeps the default. No other defaulted field joins it."""
     components = schema["components"]["schemas"]
     op = schema["paths"]["/api/search/resolve"]["post"]
     union = op["responses"]["200"]["content"]["application/json"]["schema"]

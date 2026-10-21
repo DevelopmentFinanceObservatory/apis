@@ -476,9 +476,8 @@ def _build_part(
 
     Variable text, restatement, operations, and the declared defaults a definite part
     assumes belong to the original region, even when a merged representative supplies its
-    spec. Shared timing appears on the
-    envelope, so part timing excludes it. Folded parts carry only
-    ``binding_folded``. The representative's warnings appear on its first part.
+    spec. Shared timing appears on the envelope, so part timing excludes it. Folded parts
+    carry only ``binding_folded``. The representative's warnings appear on its first part.
 
     A raised departure fact reaches the part only while the part's or the envelope's warnings,
     or the request-wide qualifier warnings its own region leaves unapplied

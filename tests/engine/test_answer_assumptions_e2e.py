@@ -3,12 +3,11 @@
 "aid flows to Kenya" leaves the flow slot open, so the election fixes it to its declared
 default, official development assistance (CRSTypeOfFlow10, short name "ODA"), and the
 fixture's heading reads both flow roles open ("to all recipients from all providers").
-A resubmit posts the identity whole, so the engine records the flow
-as posted, and the part keeps the default only through the entry's `assumptions` echo,
-matched to the rebuilt slot by its value dcids. A candidates entry posting the aid
-reading beside a loan reading, whose debt roles read "every debtor" and "every creditor",
-shows a part whose readings share no item, each reading's own list in
-`reading_assumptions`.
+A resubmit posts the identity whole, so the engine records the flow as posted, and the
+part keeps the default only through the entry's `assumptions` echo, matched to the rebuilt
+slot by its value dcids. A candidates entry posting the aid reading beside a loan reading,
+whose debt roles read "every debtor" and "every creditor", shows a part whose readings
+share no item, each reading's own list in `reading_assumptions`.
 """
 
 from __future__ import annotations
@@ -88,7 +87,7 @@ def _first_answer() -> DefinitePart:
     return part
 
 
-# The grant equivalent of private sector instruments in Kenya: the series a flow edit from
+# The grant equivalent of private sector instruments in Kenya, the series a flow edit from
 # ODA to private sector instruments reads, held beside the fixture's ODA series.
 _PSI_SV_DCID = (
     "GrantEquivalent_FinancialFlow_Disbursement_CRSTypeOfFlow60_CRSTypeOfFinance1101_"
@@ -294,7 +293,7 @@ def test_a_role_an_operation_runs_over_is_asked(over: str | None, expected: list
         # The echo of a part that stated none states none, whatever a fresh request yields.
         pytest.param("year", [], [], id="year-edited-empty-echo"),
         # The echo's words differ from the rebuilt ones, as after a label change between
-        # deploys; the refs still match, so the default holds in the rebuilt words.
+        # deploys. The refs still match, so the default holds in the rebuilt words.
         pytest.param(
             None,
             [_ASSUMED_ODA.model_copy(update={"text": "ODA"})],
@@ -310,8 +309,8 @@ def test_a_role_an_operation_runs_over_is_asked(over: str | None, expected: list
         ),
         # An item the echo lacks is not stated.
         pytest.param(None, [_ASSUMED_ODA], [_ASSUMED_ODA], id="echo-without-roles"),
-        # The limit of an unsigned echo: an item for a slot the engine never defaulted
-        # holds while its refs match the posted value, stated in the rebuilt words.
+        # An unsigned echo can state an item for a slot the engine never defaulted. The
+        # item holds while its refs match the posted value, stated in the rebuilt words.
         pytest.param(
             "finance",
             [
@@ -360,7 +359,7 @@ def test_a_resubmit_with_no_echo_states_the_roles_alone():
 
 
 def test_an_edit_that_changes_the_defaulted_slot_drops_its_assumption():
-    """The echo names ODA; the flow slot edited to private sector instruments binds another
+    """The echo names ODA. The flow slot edited to private sector instruments binds another
     value, so the rebuilt answer states no flow default."""
     first = _first_answer()
     edited = _bound(first.spec.definition.identity, "crsTypeOfFlow", "CRSTypeOfFlow60")
@@ -387,7 +386,7 @@ def _graph_with_ghana() -> FakeGraph:
 
 def test_a_folded_part_states_only_its_own_assumptions():
     """Entries for Kenya and Ghana fold into one Spec. The first echoes the flow default
-    and the providers, the second echoes none: the clause names both items under the
+    and the providers, the second echoes none. The clause names both items under the
     first part alone, and no token claims them for the second."""
     first = _first_answer()
     identity = first.spec.definition.identity
@@ -422,7 +421,7 @@ def test_a_folded_part_states_only_its_own_assumptions():
     ] == [0, 0]
 
 
-# A loan disbursement series outside the code index: its `financialFlowType` puts it in the
+# A loan disbursement series outside the code index. Its `financialFlowType` puts it in the
 # debt lending family, whose roles read "every debtor" and "every creditor" where the aid
 # series reads "every recipient" and "every provider".
 _LOAN_SV_DCID = "TESTFIXTURE/AnswerAssumptionsE2E/LoanDisbursement"
@@ -530,7 +529,7 @@ def test_a_candidates_part_lists_each_reading_s_own_assumptions(
     operations: list[Operation], aid: list[Assumption], loans: list[Assumption]
 ):
     """The aid reading assumes every provider where the loan reading assumes every creditor,
-    so the readings share no item: the part and its clause state none, and
+    so the readings share no item. The part and its clause state none, and
     reading_assumptions holds what each reading assumes once picked, read with the part's
     operations."""
     part = _aid_or_loans(operations)
@@ -548,8 +547,8 @@ def test_a_candidates_part_lists_each_reading_s_own_assumptions(
     ],
 )
 def test_a_picked_reading_echoing_its_own_list_states_it(echo: str, expected: list[Assumption]):
-    """A client picks the loan reading and posts its identity with an echo: the reading's
-    own list states what that reading assumed, the part's shared list states none."""
+    """A client picks the loan reading and posts its identity with an echo. The reading's
+    own list states what that reading assumed, and the part's shared list states none."""
     part = _aid_or_loans([])
     loan_spec = part.candidates.specs[1]
     echoed = part.reading_assumptions[loan_spec.spec_id] if echo == "reading" else part.assumptions
@@ -645,7 +644,7 @@ def test_an_edited_candidates_set_states_the_default_and_roles_its_readings_shar
 ):
     """Two aid readings, one binding the standard grant the other leaves to the series,
     both echo the official development assistance default and both read every recipient
-    and every provider; after a year edit the part and its clause state each item every
+    and every provider. After a year edit the part and its clause state each item every
     reading's own list holds."""
     identity = _first_answer().spec.definition.identity
     part, sentence = _edited_set(

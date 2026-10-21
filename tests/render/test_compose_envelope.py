@@ -1740,8 +1740,8 @@ def _clause_tokens(plan: list[SentenceToken]) -> list[tuple[str, int | None]]:
 
 
 def test_a_joined_sentence_closes_with_one_clause_naming_each_part_item():
-    """Two parts under one byline write one clause after their departures: an item both
-    carry is named once with no part index, an item of one part carries its index."""
+    """Two parts under one byline write one clause after their departures. An item both
+    carry is named once with no part index, and an item of one part carries its index."""
     rendered, plan = compose_envelope_sentence(
         [
             _assuming(_crs_part("Germany", "Kenya", (2015, 2020)), _ASSUMED_ODA),
@@ -1838,8 +1838,8 @@ def test_a_part_others_fold_into_states_its_clause_for_all_of_them(
     folded_assumptions: list[Assumption], clause: list[tuple[str, int | None]]
 ):
     """A part and the parts folded into it state one clause naming every item any of
-    them carries: an item all carry has no part index, an item one alone carries has its
-    part's."""
+    them carries. An item all carry has no part index, and an item one alone carries has
+    its part's."""
     representative = _assuming(_crs_part("Germany", "Kenya", (2015, 2020)), _ASSUMED_ODA)
     folded = _assuming(representative, *folded_assumptions).model_copy(
         update={"warnings": [Warning(code="binding_folded", severity="info", message="folded")]}
@@ -1854,7 +1854,7 @@ def test_a_part_others_fold_into_states_its_clause_for_all_of_them(
 def test_a_folded_part_keeps_its_items_beside_a_separate_part_of_the_same_spec(
     after: list[NoDataPart],
 ):
-    """A separate part can carry the Spec a part folded into: the folded part's own item
+    """A separate part can carry the Spec a part folded into. The folded part's own item
     stays in the clause of the part it folded into."""
     representative = _assuming(_crs_part("Germany", "Kenya", (2015, 2020)), _ASSUMED_ODA)
     folded = _assuming(representative, _ASSUMED_ODA, _ASSUMED_PROVIDERS).model_copy(
@@ -1866,8 +1866,8 @@ def test_a_folded_part_keeps_its_items_beside_a_separate_part_of_the_same_spec(
 
 
 def test_a_mixed_answer_opens_with_how_many_parts_it_answered():
-    """A definite part beside a no-data part: the plan opens with two unowned coverage
-    tokens, the opener and a space, and no other token takes that segment."""
+    """A definite part beside a no-data part gives a plan that opens with two unowned
+    coverage tokens, the opener and a space, and no other token takes that segment."""
     rendered, plan = compose_envelope_sentence(
         [_definite(_spec(slots=[_what_slot("Total population")])), _unresolved("GDP")]
     )
@@ -1880,8 +1880,8 @@ def test_a_mixed_answer_opens_with_how_many_parts_it_answered():
 
 
 def test_a_mixed_answer_with_no_definite_part_has_no_opener():
-    """Candidates beside no data answer nothing yet; each part's sentence states its own
-    outcome."""
+    """Candidates beside no data answer nothing yet, and each part's sentence states its
+    own outcome."""
     a = _spec(slots=[_what_slot("GDP")])
     b = _spec(slots=[_what_slot("GDP per capita")])
     rendered, _plan = compose_envelope_sentence([_candidates("GDP", a, b), _unresolved("debt")])

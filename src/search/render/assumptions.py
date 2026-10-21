@@ -17,12 +17,11 @@
   country", "every place").
 
 A `dataset_resubmit` identity entry posts every slot bound and may echo the part's list
-back. Its part states the echoed items that still hold, matched by kind and binding, a
-declared default while its slot still binds the echoed value dcids (`Assumption.refs`), and
-worded from the rebuilt Spec. An entry with no echo reads as
-a fresh request.
+back. Its part states the echoed items that still hold, matched by kind and binding and
+worded from the rebuilt Spec. A declared default holds while its slot still binds the
+echoed value dcids (`Assumption.refs`). An entry with no echo reads as a fresh request.
 
-The sentence closes with the items as one clause (`clause_tokens`): "Assumed:
+The sentence closes with the items as one clause (`clause_tokens`), for example "Assumed:
 official development assistance; every provider."
 """
 
@@ -71,19 +70,19 @@ def assumptions_for(
     gave it `spec`, None when `spec` is its own. A merge ranks the group's slot provenance
     (`same_shape._merge_slot_filter_properties`), so a slot one member's request left open
     and another's named reads `text_recognized` on the merged Spec. The declared defaults
-    are read from ``own_spec``: each states the values its slot fixed there that the same
+    are read from ``own_spec``. Each states the values its slot fixed there that the same
     slot of `spec` still binds, worded from `spec`. The open roles are those the heading of
-    a definite part answering `spec` states. ``asked_axes`` are the flow axes the request's words
-    asked every member of (`RegionResult.every_member_axes`), and ``operations`` the part's
-    operations, each asking the flow axis it runs over; neither states an open role.
+    a definite part answering `spec` states. ``asked_axes`` are the flow axes the request's
+    words asked every member of (`RegionResult.every_member_axes`), and ``operations`` the
+    part's operations, each asking the flow axis it runs over. Neither states an open role.
 
     ``echo`` is the list a `dataset_resubmit` identity entry posts back, None when it posts
     none. With an echo, the result is the echoed items that still hold for `spec`, each with
-    its words read from `spec`: a declared default whose slot still binds the echoed `refs`,
-    stating those refs, an open role `spec` still reads open on the echoed axis, and the place scope of a
-    `spec` that still names no place. An item the echo lacks is left out, since the posted
-    identity or its edit asked for it, so an empty echo states none. With no echo, `spec`
-    reads as a fresh request does."""
+    its words read from `spec`. A declared default holds while its slot still binds the
+    echoed `refs`, and states those refs. An open role holds while `spec` still reads it open
+    on the echoed axis, and the place scope while `spec` still names no place. An item the
+    echo lacks is left out, since the posted identity or its edit asked for it, so an empty
+    echo states none. With no echo, `spec` reads as a fresh request does."""
     heading = heading_for(spec).heading
     echoed = {_echo_key(item) for item in echo or ()}
     slots = (own_spec or spec).resolved.trace.slot_filters
@@ -95,7 +94,7 @@ def assumptions_for(
         }
     else:
         # The posted identity of an echo binds every slot, so none carries declared_default
-        # provenance: on an echo a how slot holds an echoed default while it binds its refs.
+        # provenance. On an echo a how slot holds an echoed default while it binds its refs.
         how = {slot_filter.key.as_ref() for slot_filter in slots if slot_filter.key.axis == "how"}
         fixed = {
             item.binding_ref: set(item.refs)
@@ -176,8 +175,8 @@ def _open_roles(
     and a role stated with no entity of its own ("from 164 providers", "owed to all
     creditors"). A role is asked when the identity binds it in `entities`, or when
     `search.models.asked_open_axes` holds it: the identity lists it in `open_roles`, it is
-    in ``asked_axes``, or one of ``operations`` runs over it. The noun is the role's in the answer's
-    flow family (`role_wording`). A role a spoken how value narrows ("owed to bondholders")
+    in ``asked_axes``, or one of ``operations`` runs over it. The noun is the role's in the
+    answer's flow family (`role_wording`). A role a spoken how value narrows ("owed to bondholders")
     states no open role, so it assumes none."""
     identity = spec.definition.identity
     asked = {role_key_axis(key) for key in identity.entities} | asked_open_axes(

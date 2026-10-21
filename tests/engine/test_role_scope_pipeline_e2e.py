@@ -780,7 +780,7 @@ def test_a_dropped_phrase_asking_for_every_member_of_a_role_is_met_by_an_answer_
 ):
     """The phrase is admitted, so its `query_qualifier_dropped` warning and departure go,
     when the role-bearing answer binds no place on the axis the phrase names. An admitted
-    phrase asks for its axis, so the part assumes no open role there; the recipients the
+    phrase asks for its axis, so the part assumes no open role there. The recipients the
     scope default fills are assumed while no phrase asks for them."""
     sv_dcid = _SV_DCID if "debtor" in observation_properties else _ORIGIN_ONLY_SV_DCID
     if "debtor" in observation_properties:

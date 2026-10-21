@@ -60,7 +60,7 @@ The status keys `definite`, `candidates`, `no_data`, `unsupported` and `mixed` a
 | `unit`                       | shared or status | `{currency, prices, base_year}` as the identity's unit request, or `none`.                                                          |
 | `operations`                 | shared or status | `[{verb, over, target_year}]` in query order; `[]` asserts none.                                                                    |
 | `warnings`                   | shared or status | Warning codes the answer must carry; extra warnings pass.                                                                           |
-| `assumptions`                | shared or status | `[{kind, binding_ref, text}]` in clause order; `kind` is required, the others asserted when set; `[]` asserts none.                 |
+| `assumptions`                | shared or status | `[{kind, binding_ref, text}]` in clause order; `kind` is required and the others are asserted when set. `[]` asserts none.                 |
 | `skills`                     | `definite`       | `{present, ids}`.                                                                                                                   |
 | `include_families`           | `candidates`     | Families the offered candidates must include.                                                                                       |
 | `reason`, `category`, `gate` | `no_data`        | The refusal; `reason` may be a list of accepted reasons.                                                                            |

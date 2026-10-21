@@ -477,8 +477,9 @@ async def _stream_one_variable(
     region and its restatement, their phrases join `dropped_qualifier_phrases` for this leg's
     bind alone, and the region opens the slots they run over. `open_axes` are the leg's own
     open roles. Together with the flow axes its operations run over they are the axes
-    resolution leaves open (`asked_open_axes`); place binding drops an axis a place binds, and the part warns for each of its own that
-    the answer drops (`with_dropped_open_roles`). `separate` marks a leg compared with the
+    resolution leaves open (`asked_open_axes`). Place binding drops an axis a place binds,
+    and the part warns for each of its own that the answer drops
+    (`with_dropped_open_roles`). `separate` marks a leg compared with the
     others (`RegionResult.separate`). The final region is appended to `landed` before
     its terminal marker is queued. `phase` records the step the leg is in
     (`search.engine.leg_phase`). `door` is the door the leg was posted on

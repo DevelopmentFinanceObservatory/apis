@@ -1,7 +1,7 @@
 """``assumptions``: the part's assumptions in clause order.
 
 Reads ``parts[].assumptions[].{kind,binding_ref,text}``. Each expected assumption asserts
-its kind, and its ``binding_ref`` and ``text`` when the case sets them; ``[]`` asserts none.
+its kind, and its ``binding_ref`` and ``text`` when the case sets them. ``[]`` asserts none.
 """
 
 from __future__ import annotations

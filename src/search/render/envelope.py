@@ -12,8 +12,8 @@ The parts' assumptions close the sentence as one clause ("Assumed: official deve
 assistance; every provider."). A joined sentence has one clause naming every part's items
 in part order, each item under its part and an item two parts share under none. A sentence
 written part by part closes each part's sentence with its own clause after its departures.
-A mixed answer with a definite part opens "Answered N of M parts." as `coverage` tokens with no
-part index.
+A mixed answer with a definite part opens "Answered N of M parts." as `coverage` tokens
+with no part index.
 
 A part folded into an earlier part's Spec (`binding_folded`) states that part's heading and
 byline, so their tokens carry no part index. Its assumptions, built from its own request,
@@ -60,10 +60,10 @@ def compose_envelope_sentence(parts: Sequence[Part]) -> tuple[str, list[Sentence
     """Return the envelope sentence and plan, or None when no part has a sentence.
 
     Omit parts folded into an earlier Spec, whose assumptions join that part's clause
-    (`_fold_groups`). A lone part that is not definite is mirrored
-    verbatim. Definite parts use general composition, even when alone, so shared tokens
-    have no part index. Token indices always refer to the original ``parts`` list,
-    including gaps from folded parts. A mixed answer opens with how many parts it answered
+    (`_fold_groups`). A lone part that is not definite is mirrored verbatim. Definite
+    parts use general composition, even when alone, so shared tokens have no part index.
+    Token indices always refer to the original ``parts`` list, including gaps from folded
+    parts. A mixed answer opens with how many parts it answered
     (`_opener`).
     """
     contributing = [(index, part) for index, part in enumerate(parts) if not _is_folded(part)]
@@ -93,7 +93,7 @@ def compose_envelope_sentence(parts: Sequence[Part]) -> tuple[str, list[Sentence
 def _opener(parts: Sequence[Part]) -> list[Owned]:
     """ "Answered N of M parts." and a space, unowned `coverage` tokens, when the parts'
     statuses differ and N, the definite parts with folded ones, is at least one. M is every
-    part. Otherwise none: each part's sentence states its own outcome."""
+    part. Otherwise none, since each part's sentence states its own outcome."""
     answered = sum(isinstance(part, DefinitePart) for part in parts)
     if len({part.status for part in parts}) < 2 or not answered:
         return []
@@ -127,7 +127,7 @@ def _fold_groups(
 ) -> dict[int, list[tuple[int, Part]]]:
     """Each contributing part by index, with itself first and then, for a definite part,
     every later part folded into it, in part order. A folded part carries the Spec of the
-    part it folded into, the first part of its fold group, which is never separate; a
+    part it folded into, the first part of its fold group, which is never separate. A
     separate part can carry the same spec_id and takes no folds."""
     groups = {index: [(index, part)] for index, part in contributing}
     folded_into: dict[str, int] = {}
@@ -147,7 +147,7 @@ def _fold_groups(
 
 def _assumption_items(parts: Sequence[tuple[int, Part]]) -> list[tuple[int | None, str]]:
     """Each assumption text `parts` carry, in part order, under the one part that carries
-    it, or under none when several do: a part and the parts folded into it state one
+    it, or under none when several do. A part and the parts folded into it state one
     sentence, so an item every one of them carries is stated once for all."""
     holders: dict[str, set[int]] = {}
     for index, part in parts:
@@ -258,12 +258,12 @@ def _compose_per_part(
     assumptions clause.
 
     A definite part's sentence is its heading and byline, and its clause names the
-    assumptions of the parts folded into it too (`_assumption_items`). A part that is not definite
-    contributes `_unresolved_sentence`, and no-data parts refused for the same reason name
-    their variables in one sentence (`_shared_refusals`), written where the first of them
-    stands. A sentence two parts state alike with the same clause is stated once, unowned,
-    followed by each part's departures; a part whose sentence repeats another's beside a
-    different clause keeps its own sentence (`_statements_stated_once`).
+    assumptions of the parts folded into it too (`_assumption_items`). A part that is not
+    definite contributes `_unresolved_sentence`, and no-data parts refused for the same
+    reason name their variables in one sentence (`_shared_refusals`), written where the
+    first of them stands. A sentence two parts state alike with the same clause is stated
+    once, unowned, followed by each part's departures. A part whose sentence repeats
+    another's beside a different clause keeps its own sentence (`_statements_stated_once`).
     """
     refusals = _shared_refusals(contributing)
     chunks: list[list[Owned]] = []
@@ -293,8 +293,8 @@ def _compose_per_part(
 def _statements_stated_once(chunks: list[list[Owned]]) -> list[list[Owned]]:
     """`chunks` in order as statements, each a sentence followed by its departures, then
     its clauses. A sentence equal to an earlier statement's, with the same clauses, is
-    dropped: the earlier statement loses its owners and takes the dropped one's departures
-    after its own. A sentence whose clauses differ keeps its own statement, so each clause
+    dropped, and the earlier statement loses its owners and takes the dropped one's
+    departures after its own. A sentence whose clauses differ keeps its own statement, so each clause
     follows the sentence of its part. A departure or clause equal to one already in its
     statement is dropped and that one loses its owner. A departure stated after another
     part's sentence is kept, so the reader sees which part each limit belongs to."""
@@ -346,7 +346,7 @@ class _Statement:
         )
 
     def absorb(self, other: _Statement) -> None:
-        """Take `other`, a repeat of this statement: the sentence and clauses lose their
+        """Take `other`, a repeat of this statement. The sentence and clauses lose their
         owners, and `other`'s departures follow this one's."""
         self.sentence = owned(None, _tokens(self.sentence))
         self.clauses = [owned(None, _tokens(clause)) for clause in self.clauses]

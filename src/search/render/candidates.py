@@ -3,8 +3,8 @@
 This module marks the tokens that differ between candidates and writes the part's
 sentence. The sentence gives the count of readings, then each shown reading's heading
 and a byline led by its source and span, then the part's departures and its assumptions
-clause. Readings whose
-heading and byline read alike add to the byline the graph name that sets them apart.
+clause. Readings whose heading and byline read alike add to the byline the graph name that
+sets them apart.
 """
 
 from __future__ import annotations

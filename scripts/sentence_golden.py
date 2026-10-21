@@ -17,15 +17,17 @@ A Spec keeps its definition and the resolved fields `render_sentence_plan` reads
 slots, StatVar counts and served dates, entities and groups, coverage, scope, facets, slot
 options, open-axis and role-axis facts, measure label, the trace's sources and slot filters)
 with its recorded sentence. The slot filters carry each slot's key, binding kind, values and
-provenance, so a replay reads every declared default the answer stated. Beside `resolved` each Spec stores `sentence_facts`, what the renderer reads that
-the wire does not carry: the facts of its served members (`search.models.SentenceFacts`),
+provenance, so a replay reads every declared default the answer stated. Beside `resolved`
+each Spec stores `sentence_facts`, what the renderer reads that the wire does not carry: the
+facts of its served members (`search.models.SentenceFacts`),
 which the in-process panel run records from each answer, and, for a Spec whose measure label
 names code pairs, those pairs (`measure_label_named_values`), which the script derives from
 the Spec's `measure_axis_values` and the packaged measure index, as
 `spec_build.measure_label_for_partition` does. A replay states both on the Spec it rebuilds
 (`golden_parts`). Observations, timing, diagnostics, skills, entity and facet options and the
-rest of the trace go; the trace's entity list, required but unread, is written empty, and a role-axis fact's `member_count`, which the wire omits
-when it is null, is restored as null. A no-data part keeps only its reason, since the envelope
+rest of the trace go; the trace's entity list, required but unread, is written empty, and a
+role-axis fact's `member_count`, which the wire omits when it is null, is restored as null.
+A no-data part keeps only its reason, since the envelope
 composer reads no other `no_data` field.
 
 The files are gzipped: the 182-query golden is about 370 kB compressed against 4.8 MB
@@ -46,12 +48,12 @@ A no-data part's own plan needs inputs the wire does not carry, so it stays as r
 A recording keeps each part's assumptions as the answer gave them. A re-render recomputes
 them from what the golden holds: a definite part's from its Spec and operations
 (`assumptions_for`) and a candidates part's as the items every shown Spec's list so read
-holds alike (`common_assumptions`), as `engine.assemble` does. The golden records no every-member axes
-("all donors") and no resubmit echo, so a re-render states an open role on an axis the
-request's words asked every member of. Nor does it record the Spec each part of a same-shape
-merge or a fold resolved to before the merge, from which that part reads its declared
-defaults, so a definite part whose Spec another part of the line shares keeps the
-assumptions it recorded, as does a part of another status.
+holds alike (`common_assumptions`), as `engine.assemble` does. The golden records no
+every-member axes ("all donors") and no resubmit echo, so a re-render states an open role on
+an axis the request's words asked every member of. The golden also lacks the Spec each part
+of a same-shape merge or a fold resolved to before the merge, from which that part reads its
+declared defaults. A definite part whose Spec another part of the line shares therefore
+keeps the assumptions it recorded, as does a part of another status.
 
 Usage:
     just sentence-panel --in-process
@@ -121,8 +123,8 @@ _RESOLVED_KEYS = (
     "sentence_plan",
 )
 
-# Every field of a `trace.slot_filters` entry: the assumptions read a declared default's
-# slot, values and provenance off it.
+# The fields of a `trace.slot_filters` entry that the assumptions read: a declared default's
+# slot, values and provenance.
 _SLOT_FILTER_KEYS = ("key", "binding_kind", "refs", "provenance")
 
 _PARTS = TypeAdapter(list[Part])
@@ -222,8 +224,8 @@ def trim_spec(spec: dict[str, Any], facts: dict[str, Any]) -> dict[str, Any]:
 
 
 def trim_part(part: dict[str, Any], facts: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """`part` with its own sentence, departures, assumptions and warnings, and the inputs the renderer
-    reads for its status, each Spec with its entry in `facts`, keyed by spec id."""
+    """`part` with its own sentence, departures, assumptions and warnings, and the inputs
+    the renderer reads for its status, each Spec with its entry in `facts`, keyed by spec id."""
     trimmed = _pick(part, _PART_KEYS)
     match part["status"]:
         case "definite":

@@ -2,7 +2,7 @@
 recorded live, and the clause a candidates part's own sentence closes with.
 
 The panel keeps each Spec's trace slot filters, so a declared default the election fixed
-reads as recorded; a test that needs one on another slot records it there as the election
+reads as recorded. A test that needs one on another slot records it there as the election
 does (`provenance="declared_default"`).
 """
 
@@ -79,16 +79,16 @@ def _with_declared_default(spec: Spec, ref: str) -> Spec:
     ("query_id", "binding_ref", "ref"),
     [
         pytest.param("crs-002", "how:dac2aAidType", "DAC2aAidType206", id="crs-002 DAC2a"),
-        # The CRS flow code's short name is "ODA"; the clause states its full label.
+        # The CRS flow code's short name is "ODA", and the clause states its full label.
         pytest.param("crs-026", "how:crsTypeOfFlow", "CRSTypeOfFlow10", id="crs-026 CRS"),
     ],
 )
 def test_aid_to_a_named_recipient_assumes_the_default_flow_and_every_provider(
     query_id: str, binding_ref: str, ref: str
 ):
-    """crs-002, "aid to Bangladesh", and crs-026, malaria control in Uganda: the flow the
-    recorded declared default fixed, named by the code's full label, then the providers no
-    word named."""
+    """crs-002, "aid to Bangladesh", and crs-026, malaria control in Uganda, each assume the
+    flow the recorded declared default fixed, named by the code's full label, then the
+    providers no word named."""
     assert assumptions_for(_panel_spec(query_id)) == [
         Assumption(
             kind="declared_default",
@@ -101,7 +101,7 @@ def test_aid_to_a_named_recipient_assumes_the_default_flow_and_every_provider(
 
 
 def test_a_declared_default_the_heading_states_takes_the_code_label():
-    """crs-026: a purpose slot the heading states ("for malaria control") is named by its
+    """In crs-026 a purpose slot the heading states ("for malaria control") is named by its
     code's label, as a slot the heading leaves silent is."""
     spec = _with_declared_default(_panel_spec("crs-026"), "how:crsPurpose")
     assert assumptions_for(spec)[0] == Assumption(
@@ -186,13 +186,13 @@ def test_a_role_the_scope_default_filled_is_assumed_whatever_its_member_count():
 
 
 def test_a_role_the_request_words_asked_every_member_of_is_no_assumption():
-    """ "aid from all donors to Bangladesh": the words asked for every provider."""
+    """The words "aid from all donors to Bangladesh" asked for every provider."""
     spec = _panel_spec("crs-002")
     assert _open_roles(assumptions_for(spec, asked_axes=frozenset({"origin"}))) == []
 
 
 def test_a_candidates_part_assumes_what_every_reading_assumes():
-    """ids-001's and ids-003's readings both read every creditor; beside a reading that
+    """ids-001's and ids-003's readings both read every creditor. Beside a reading that
     names its creditor (ids-002), nothing is common."""
     specs = [_panel_spec("ids-001"), _panel_spec("ids-003")]
     lists = [assumptions_for(spec) for spec in specs]
