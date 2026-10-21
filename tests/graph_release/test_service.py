@@ -606,7 +606,11 @@ class TestViews:
 
 class TestProcessService:
     @pytest.fixture(autouse=True)
-    def _fresh_singleton(self) -> Iterator[None]:
+    def _fresh_singleton(self, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+        # Each test opens its own service in place of the session's, and the shared member
+        # enumerator keeps following the session's. A test that records the follow replaces
+        # this stub.
+        monkeypatch.setattr(shared_enumerator(), "follow_swaps", lambda service: None)
         with service_module._singleton.isolated():
             yield
 
