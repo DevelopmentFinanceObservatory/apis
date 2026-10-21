@@ -2891,8 +2891,8 @@ def model_only_values(
     ):
         return ()
     texts = [state.variable, *state.dropped_qualifier_phrases]
-    if state.query_text:
-        texts.append(state.query_text)
+    if query_text := state.query_text:
+        texts.append(query_text)
     sources = [tokenize(text) for text in dict.fromkeys(texts)]
     return tuple(
         value

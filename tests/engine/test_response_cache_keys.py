@@ -121,6 +121,7 @@ def _layer2_key(
     declared_default_trigger_words: list[dict[str, str]] | None = None,
     declared_default_slots_named: list[str] | None = None,
     query_text_negated_stated_words: list[str] | None = None,
+    query_text_value_source: str | None = None,
     scope: dict | None = None,
     source_codes: list[str | None] | None = None,
     separate: list[bool] | None = None,
@@ -167,6 +168,7 @@ def _layer2_key(
         query_text_negated_stated_words=(
             query_text_negated_stated_words if query_text_negated_stated_words is not None else ()
         ),
+        query_text_value_source=query_text_value_source,
         source_codes=source_codes if source_codes is not None else (),
         separate=separate if separate is not None else (),
         written_variable_phrases=(
@@ -457,8 +459,8 @@ def test_query_text_qualifier_reading_alone_changes_layer2_key() -> None:
     assert with_reading != without_reading
 
 
-def _query_text_key(query_text: str) -> str:
-    """The layer-2 key of one extraction under `query_text`'s raw-text signals."""
+def _qualifier_text_key(query_text: str) -> str:
+    """The qualifier-matching signals' contribution to one extraction's layer-2 key."""
     signals = compute_layer2_signals(query=query_text, entity_roles={}, query_text=query_text)
     return _layer2_key(
         query_text_qualifier_matches=list(signals.query_text_qualifier_matches),
@@ -498,7 +500,17 @@ def test_query_text_some_vocabulary_reads_apart_changes_layer2_key(first, second
         for text in (first, second)
     ]
     assert signals[0].query_text_qualifier_matches == signals[1].query_text_qualifier_matches
-    assert (_query_text_key(first) == _query_text_key(second)) is same
+    assert (_qualifier_text_key(first) == _qualifier_text_key(second)) is same
+
+
+def test_graph_value_grounding_text_changes_the_layer2_key() -> None:
+    assert _layer2_key(query_text_value_source="female population in Kenya") != _layer2_key(
+        query_text_value_source="male population in Kenya"
+    )
+    assert _layer2_key(query_text_value_source=None) == _layer2_key()
+    assert _layer2_key(query_text_value_source="female  population in Kenya") == _layer2_key(
+        query_text_value_source="female population in Kenya"
+    )
 
 
 def test_unsupported_qualifier_phrase_alone_changes_layer2_key() -> None:
