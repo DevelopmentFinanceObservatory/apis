@@ -6,7 +6,8 @@ as concurrent chunks (`jev_split.split_questions`) whose answers merge into one 
 One `asyncio.timeout` at `Settings.jev_ceiling_s` bounds the whole call: the wait for a
 concurrency slot, every chunk, and the one retry. Every failure leaves as `JevError`. A call
 the ceiling cuts fails as ``timeout`` when any of its requests took a slot and started, and
-as ``slot_wait`` when none did.
+as ``slot_wait`` when none did. A ceiling that fires after every request has answered cuts
+nothing outstanding, so the call returns those answers.
 
 A circuit breaker shared by the process opens after `BREAKER_FAILURES` consecutive calls
 inside `BREAKER_WINDOW_S` that failed in a way that says Jev is unhealthy (`_HEALTH_KINDS`:
@@ -312,11 +313,15 @@ async def _ask_chunks(
 ) -> list[SystemOneResponse]:
     """Every chunk's response, sent concurrently under one deadline. The first failed
     chunk cancels the rest and fails the call. A passed deadline fails it as ``timeout``
-    when any request started, and as ``slot_wait`` when none did."""
+    when any request started, and as ``slot_wait`` when none did, unless every chunk had
+    already answered, when it returns them: a loop stalled past the deadline can run a
+    response before the deadline's timer, and one chunk's answer without the others'
+    completes nothing."""
     client = _client(settings)
     semaphore = _SEMAPHORES.get(lambda: asyncio.Semaphore(settings.jev_max_concurrency))
     sent = asyncio.Event()
     deadline = asyncio.get_running_loop().time() + settings.jev_ceiling_s
+    tasks: list[asyncio.Task[SystemOneResponse]] = []
     try:
         async with asyncio.timeout_at(deadline):
             async with asyncio.TaskGroup() as group:
@@ -334,6 +339,10 @@ async def _ask_chunks(
                     for chunk in chunks
                 ]
     except TimeoutError as exc:
+        if tasks and all(
+            task.done() and not task.cancelled() and not task.exception() for task in tasks
+        ):
+            return [task.result() for task in tasks]
         raise JevError(None, "timeout" if sent.is_set() else "slot_wait") from exc
     except ExceptionGroup as group:
         first = group.exceptions[0]
