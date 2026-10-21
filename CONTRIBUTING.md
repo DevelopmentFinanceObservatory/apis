@@ -202,3 +202,19 @@ surface's `prefix` at all. (A successful `/codes/{code}` lookup returns a bare
 either `dfo_spec_kit.registry.REGISTRY` or the merged refusal catalogue. Registry-derived fields
 may be null and `mappings` empty. `title` and `detail` may be null when the merged catalogue has
 no entry. Only the refusal goes through the envelope.) You never set or read that token yourself.
+
+### Changing what the clients read
+
+`tests/contract/test_client_contract.py` checks the app against the client contract spec-kit
+ships as `dfo-spec-kit-client-contract`. Each recorded scenario's requests and responses must
+validate against the app's OpenAPI document, every required member `strict-fields.json` lists
+must stay required and non-nullable, every enum value it lists must stay admitted, and every
+problem code a response carries must stay registered on its route at its status. When the test
+fails for a wire change you intend, commit the change, record the contract against your branch's
+local app with spec-kit's `tools/capture_client_contract.py`
+(`openapi --dfo-apis <checkout>`, then `record --base-url http://127.0.0.1:8083/api`), open the
+spec-kit PR, and cut a spec-kit release. Move all six spec-kit pins to that release's commit in
+the same dfo-apis PR as the change: `dfo-spec-kit` and `dfo-spec-kit-client-contract` in the root
+`pyproject.toml`, and the four in `packages/dfo-data-tools/pyproject.toml`. A change that keeps
+the shape and alters behaviour passes this test, and the sdk's scheduled end-to-end run catches
+it after merge.

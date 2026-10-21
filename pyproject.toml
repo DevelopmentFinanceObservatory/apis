@@ -135,6 +135,8 @@ test = [
     # A bare `just test` selects the tests affected by a change; CI never
     # passes --testmon, so it stays inactive there.
     "pytest-testmon>=2.2.0",
+    # tests/contract/test_client_contract.py reads the recorded client scenarios.
+    "dfo-spec-kit-client-contract",
 ]
 
 [build-system]
@@ -163,7 +165,10 @@ dfo-data-tools = { workspace = true }
 # uv resolves relative to frame-grammar's own pinned commit -- so this
 # project's own `dfo-spec-kit` source MUST resolve to that identical commit,
 # or `uv lock` refuses with "conflicting URLs for package dfo-spec-kit"
-# (confirmed live). All five pins move together as a single rev. This rev's
+# (confirmed live). All six pins move together as a single rev: these four,
+# `dfo-spec-kit`, and `dfo-spec-kit-client-contract`. uv does not force the
+# contract package onto this commit; tests/contract/test_client_contract.py
+# checks that its rev equals `dfo-spec-kit`'s. This rev's
 # registry schema has no `spec_resubmit` door: a code with a raise site in
 # this repo maps to `dataset_resubmit` instead. `entity_set_too_large` is
 # mapped on `search.resolve` for the `raw_text` and `parsed` doors, which serve
@@ -239,9 +244,11 @@ dfo-data-tools = { workspace = true }
 # The pin is a commit of spec-kit's main. It registers
 # slot_default_not_applied and the three source-code refusals, and retires
 # starved_axis_binding_restored.
-# Follow-up: move all five to a real spec-kit tag once one is cut, so a
+# Follow-up: move all six, `dfo-spec-kit-client-contract` included, to a real
+# spec-kit tag once one is cut, so a
 # future force-push or GC on spec-kit's main can't silently break this lock.
-dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "3616b64245c2db8af3187552e9e5de99b6d304d4", subdirectory = "python/spec-kit" }
+dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "98d78be4ebaad0575ce56c8e9fb400c0848c7247", subdirectory = "python/spec-kit" }
+dfo-spec-kit-client-contract = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "98d78be4ebaad0575ce56c8e9fb400c0848c7247", subdirectory = "python/client-contract" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
